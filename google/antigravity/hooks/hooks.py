@@ -27,6 +27,7 @@ from google.antigravity.types import AskQuestionInteractionSpec
 from google.antigravity.types import HookResult
 from google.antigravity.types import QuestionHookResult
 
+
 # --- Contexts ---
 
 
@@ -87,8 +88,8 @@ class OperationContext(HookContext):
 # --- Base Hook Types ---
 
 
-T = TypeVar('T')
-R = TypeVar('R')
+T = TypeVar("T")
+R = TypeVar("R")
 
 
 class InspectHook(abc.ABC, Generic[T]):

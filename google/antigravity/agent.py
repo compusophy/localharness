@@ -32,6 +32,9 @@ from google.antigravity.triggers import trigger_runner
 from google.antigravity.triggers import triggers as triggers_lib
 
 
+__all__ = ["Agent"]
+
+
 class Agent:
   """High-level Agent API for simplified interaction."""
 

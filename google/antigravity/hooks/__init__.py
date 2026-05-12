@@ -15,25 +15,43 @@
 """Hooks package for the Google Antigravity SDK."""
 
 from google.antigravity.hooks import policy
+from google.antigravity.hooks.hooks import on_compaction
+from google.antigravity.hooks.hooks import on_interaction
+from google.antigravity.hooks.hooks import on_session_end
+from google.antigravity.hooks.hooks import on_session_start
+from google.antigravity.hooks.hooks import on_tool_error
 from google.antigravity.hooks.hooks import OnCompactionHook
 from google.antigravity.hooks.hooks import OnInteractionHook
 from google.antigravity.hooks.hooks import OnSessionEndHook
 from google.antigravity.hooks.hooks import OnSessionStartHook
 from google.antigravity.hooks.hooks import OnToolErrorHook
+from google.antigravity.hooks.hooks import post_tool_call
+from google.antigravity.hooks.hooks import post_turn
 from google.antigravity.hooks.hooks import PostToolCallHook
 from google.antigravity.hooks.hooks import PostTurnHook
+from google.antigravity.hooks.hooks import pre_tool_call_decide
+from google.antigravity.hooks.hooks import pre_turn
 from google.antigravity.hooks.hooks import PreToolCallDecideHook
 from google.antigravity.hooks.hooks import PreTurnHook
 
 __all__ = [
     "policy",
+    "OnCompactionHook",
     "OnInteractionHook",
     "OnSessionEndHook",
     "OnSessionStartHook",
+    "OnToolErrorHook",
     "PostToolCallHook",
     "PostTurnHook",
     "PreToolCallDecideHook",
     "PreTurnHook",
-    "OnToolErrorHook",
-    "OnCompactionHook",
+    "on_compaction",
+    "on_interaction",
+    "on_session_end",
+    "on_session_start",
+    "on_tool_error",
+    "post_tool_call",
+    "post_turn",
+    "pre_tool_call_decide",
+    "pre_turn",
 ]

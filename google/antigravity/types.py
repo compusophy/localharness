@@ -28,6 +28,48 @@ from typing import Annotated, Any, AsyncIterator, Callable, List, Literal, Optio
 
 import pydantic
 
+__all__ = [
+    "ThinkingLevel",
+    "GenerationConfig",
+    "ModelEntry",
+    "ModelConfig",
+    "GeminiConfig",
+    "SystemInstructionSection",
+    "CustomSystemInstructions",
+    "TemplatedSystemInstructions",
+    "SystemInstructions",
+    "BuiltinTools",
+    "CapabilitiesConfig",
+    "McpStdioServer",
+    "McpSseServer",
+    "McpStreamableHttpServer",
+    "McpServerConfig",
+    "ToolCall",
+    "ToolResult",
+    "PythonTool",
+    "UsageMetadata",
+    "StepType",
+    "StepSource",
+    "StepTarget",
+    "StepStatus",
+    "Step",
+    "HookResult",
+    "QuestionResponse",
+    "QuestionHookResult",
+    "AskQuestionOption",
+    "AskQuestionEntry",
+    "AskQuestionInteractionSpec",
+    "AntigravityConnectionError",
+    "AntigravityValidationError",
+    "TriggerDelivery",
+    "FileChangeKind",
+    "FileChange",
+    "StreamChunk",
+    "Thought",
+    "Text",
+    "ChatResponse",
+]
+
 # =============================================================================
 # Config types
 # =============================================================================

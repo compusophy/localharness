@@ -71,6 +71,7 @@ import pydantic
 from google.antigravity import types
 from google.antigravity.hooks import hooks
 
+
 _logger = logging.getLogger(__name__)
 
 # A predicate receives the tool call's argument dict and returns whether

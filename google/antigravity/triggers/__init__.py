@@ -17,6 +17,7 @@
 from google.antigravity.triggers.helpers import every
 from google.antigravity.triggers.helpers import on_file_change
 from google.antigravity.triggers.triggers import Trigger
+from google.antigravity.triggers.triggers import trigger
 from google.antigravity.triggers.triggers import TriggerContext
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "on_file_change",
     "Trigger",
     "TriggerContext",
+    "trigger",
 ]
