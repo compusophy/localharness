@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-05-20
+
+### Changed
+
+- Rewrote `README.md` as a full crate landing page: hero example,
+  collapsible feature tour (streaming, dual-cursor, custom tools,
+  policies, workspace, triggers, multimodal, resume), ASCII
+  architecture diagrams, design-notes section, comparison table
+  vs the Python SDK, and FAQ.
+
+### Added
+
+- `RELEASING.md`, `CHANGELOG.md`, and `scripts/release.{sh,ps1}`
+  define a one-command atomic release process.
+
 ## [0.1.0] - 2026-05-20
 
 ### Added
