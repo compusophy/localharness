@@ -27,6 +27,21 @@ function Step($msg) { Write-Host "==> $msg" -ForegroundColor Green }
 function Warn($msg) { Write-Host "!!  $msg" -ForegroundColor Yellow }
 function Fail($msg) { Write-Host "xx  $msg" -ForegroundColor Red; exit 1 }
 
+# PowerShell 5.1 wraps every line a native exe writes to stderr in an
+# ErrorRecord. With $ErrorActionPreference = "Stop" that turns a cargo
+# "Checking foo" progress line into a terminating error even though the
+# process exited 0. Run native commands inside this wrapper so the EAP
+# trap is scoped to their lifetime; we check $LASTEXITCODE ourselves.
+function Invoke-Native([string]$Name, [scriptblock]$Block) {
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $Block
+        if ($LASTEXITCODE -ne 0) { Fail "$Name failed (exit $LASTEXITCODE)" }
+    }
+    finally { $ErrorActionPreference = $prev }
+}
+
 # Validate version shape (X.Y.Z plus optional pre-release).
 if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$') {
     Fail "version must look like X.Y.Z (got '$Version')"
@@ -102,41 +117,37 @@ if (-not (Select-String -Path CHANGELOG.md -Pattern "^## \[$([regex]::Escape($Ve
 # ---------------------------------------------------------------------------
 
 Step "cargo build (refreshes Cargo.lock)"
-cargo build --quiet; if ($LASTEXITCODE -ne 0) { Fail "cargo build failed" }
+Invoke-Native "cargo build" { cargo build --quiet }
 
 Step "cargo test"
-cargo test --quiet; if ($LASTEXITCODE -ne 0) { Fail "cargo test failed" }
+Invoke-Native "cargo test" { cargo test --quiet }
 
 Step "cargo clippy"
-cargo clippy --all-targets -- -D warnings; if ($LASTEXITCODE -ne 0) { Fail "cargo clippy failed" }
+Invoke-Native "cargo clippy" { cargo clippy --all-targets -- -D warnings }
 
 Step "cargo publish --dry-run"
-cargo publish --dry-run --allow-dirty; if ($LASTEXITCODE -ne 0) { Fail "cargo publish dry-run failed" }
+Invoke-Native "cargo publish --dry-run" { cargo publish --dry-run --allow-dirty }
 
 # ---------------------------------------------------------------------------
 # Commit + tag + push
 # ---------------------------------------------------------------------------
 
 Step "git commit"
-git add Cargo.toml Cargo.lock CHANGELOG.md
-git commit -m "release $Tag" | Out-Null
-if ($LASTEXITCODE -ne 0) { Fail "git commit failed" }
+Invoke-Native "git add"    { git add Cargo.toml Cargo.lock CHANGELOG.md }
+Invoke-Native "git commit" { git commit -m "release $Tag" }
 
 Step "git tag $Tag"
-git tag -a $Tag -m $Tag
-if ($LASTEXITCODE -ne 0) { Fail "git tag failed" }
+Invoke-Native "git tag" { git tag -a $Tag -m $Tag }
 
 Step "git push --atomic origin main $Tag"
-git push --atomic origin main $Tag
-if ($LASTEXITCODE -ne 0) { Fail "git push failed" }
+Invoke-Native "git push" { git push --atomic origin main $Tag }
 
 # ---------------------------------------------------------------------------
 # Publish + GH release
 # ---------------------------------------------------------------------------
 
 Step "cargo publish"
-cargo publish
-if ($LASTEXITCODE -ne 0) { Fail "cargo publish failed" }
+Invoke-Native "cargo publish" { cargo publish }
 
 Step "extract release notes from CHANGELOG.md"
 $notesFile = [System.IO.Path]::GetTempFileName()
@@ -158,8 +169,7 @@ try {
     [System.IO.File]::WriteAllText($notesFile, ($notes -join "`n"), (New-Object System.Text.UTF8Encoding $false))
 
     Step "gh release create $Tag"
-    gh release create $Tag --repo $Repo --title $Tag --notes-file $notesFile
-    if ($LASTEXITCODE -ne 0) { Fail "gh release create failed" }
+    Invoke-Native "gh release create" { gh release create $Tag --repo $Repo --title $Tag --notes-file $notesFile }
 }
 finally {
     Remove-Item $notesFile -ErrorAction SilentlyContinue

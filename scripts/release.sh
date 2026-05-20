@@ -135,13 +135,9 @@ cargo publish
 step "extract release notes from CHANGELOG.md"
 NOTES_FILE="$(mktemp)"
 trap 'rm -f "$NOTES_FILE"' EXIT
-awk -v v="$VERSION" '
-    /^## \[/ {
-        if (in_section) { exit }
-        if (match($0, "^## \\[" v "\\]")) { in_section=1; next }
-    }
-    in_section { print }
-' CHANGELOG.md > "$NOTES_FILE"
+# Print the lines between `## [VERSION]` and the next `## [...]` heading.
+# Use perl so we get reliable regex behavior across awk variants.
+perl -ne 'BEGIN { $in = 0 } if (/^## \[/) { last if $in; if (/^## \['"$VERSION"'\]/) { $in = 1; next } } print if $in;' CHANGELOG.md > "$NOTES_FILE"
 if [[ ! -s "$NOTES_FILE" ]]; then
     warn "release notes are empty; falling back to generic"
     echo "Release $TAG." > "$NOTES_FILE"
