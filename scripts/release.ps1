@@ -44,7 +44,11 @@ try { gh auth status 2>&1 | Out-Null } catch { Fail "gh not authenticated (run: 
 if ($LASTEXITCODE -ne 0) { Fail "gh not authenticated (run: gh auth login)" }
 
 Step "pre-flight: git state"
-if ((git status --porcelain).Length -gt 0) { Fail "working tree dirty; commit/stash first" }
+# CHANGELOG.md may be dirty — the user is staging release notes for
+# *this* release. Every other dirty file is a hard error so we don't
+# bundle unrelated work into the release commit.
+$dirty = git status --porcelain | Where-Object { $_ -notmatch '^(\s|M)M CHANGELOG\.md$' }
+if ($dirty) { Fail ("working tree has dirty files other than CHANGELOG.md:`n" + ($dirty -join "`n")) }
 $branch = (git rev-parse --abbrev-ref HEAD).Trim()
 if ($branch -ne "main") { Fail "not on main (on $branch)" }
 git fetch --quiet origin main

@@ -52,7 +52,11 @@ command -v git   >/dev/null || fail "git not on PATH"
 gh auth status >/dev/null 2>&1 || fail "gh not authenticated (run: gh auth login)"
 
 step "pre-flight: git state"
-[[ -z "$(git status --porcelain)" ]] || fail "working tree dirty; commit/stash first"
+# CHANGELOG.md may be dirty — the user is staging release notes for
+# *this* release. Every other dirty file is a hard error so we don't
+# accidentally bundle unrelated work into the release commit.
+DIRTY_OTHERS="$(git status --porcelain | grep -v '^.M CHANGELOG.md$' | grep -v '^ M CHANGELOG.md$' || true)"
+[[ -z "$DIRTY_OTHERS" ]] || fail $'working tree has dirty files other than CHANGELOG.md:\n'"$DIRTY_OTHERS"
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 [[ "$BRANCH" == "main" ]]            || fail "not on main (on $BRANCH)"
 git fetch --quiet origin main
