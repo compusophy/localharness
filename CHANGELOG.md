@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-20
+
+GA of the Rust-native runtime. The crate is now fully self-contained —
+no Go binary, no Python install, no localhost daemon.
+
+### Added
+
+- README rewritten for the Gemini backend as the documented default.
+  Built-in tool catalog table, structured-output and workspace
+  examples, updated architecture diagram showing the inline tool
+  dispatch loop.
+
+### Changed
+
+- The `start_gemini` API surface is now considered stable for 0.2.x.
+  Breaking changes will require a minor (or major) bump.
+
+### Deprecated
+
+- `Agent::start_local`, `LocalAgentConfig`, `LocalConfig`,
+  `LocalConnection`, `LocalConnectionStrategy` remain marked
+  `#[deprecated(since = "0.2.0-alpha.1")]`. Removal scheduled for 0.3.0.
+
 ## [0.2.0-beta.1] - 2026-05-20
 
 ### Added
