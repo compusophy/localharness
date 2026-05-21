@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0-alpha.2] - 2026-05-21
+
+### Added
+
+- **MCP stdio client** under `backends::mcp`. The agent can now expose
+  tools served by an external [MCP][mcp] server. Configure via
+  `with_mcp_server(McpServerConfig::Stdio { command, args })`; the
+  bridge spawns the server, performs the JSON-RPC `initialize`
+  handshake, fetches `tools/list`, and registers each remote tool into
+  the `ToolRunner` as an `McpTool` adapter. Tool calls are forwarded
+  to the server with a 60 s per-call timeout; the response is
+  flattened into `{ text, images, is_error }`.
+
+  Scope (alpha.2):
+  - Stdio transport only. `Sse` / `Http` variants on
+    `McpServerConfig` are accepted at the type level but
+    `connect()` returns `Error::Config`. SSE / HTTP land in a later
+    alpha.
+  - Tools surface only — prompts, resources, sampling, and
+    subscriptions are out of scope.
+  - Eager registration. Tools are fetched once at connect; server-side
+    tool changes are not re-discovered.
+  - Custom or built-in tools already registered under the same name
+    **win** (MCP doesn't overwrite).
+
+- `AgentConfig::with_mcp_server` and `GeminiAgentConfig::with_mcp_server`
+  builder methods.
+- Re-exports: `McpBridge`, `McpClient`, `McpToolDecl` from the crate
+  root.
+- The agent shutdown sequence tears down every MCP subprocess after
+  the connection closes.
+
+[mcp]: https://modelcontextprotocol.io
+
 ## [0.4.0-alpha.1] - 2026-05-21
 
 ### Added
