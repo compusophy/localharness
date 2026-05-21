@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0-alpha.1] - 2026-05-21
+
+### Added
+
+- **Context-window compaction** under
+  `backends::gemini::compaction`. When the last turn's
+  `prompt_token_count` exceeds
+  `CapabilitiesConfig::compaction_threshold`, the loop summarizes the
+  oldest history entries via a separate Gemini call and replaces them
+  with one synthetic user-role turn tagged `[compacted prior context]`.
+
+  Algorithm:
+  - Always preserve the system instruction and the **last 6 user/model
+    pairs** verbatim.
+  - Honor function-call / function-response pairing — never split a
+    `Model { functionCall }` from its `User { functionResponse }`.
+  - If summarization fails (network, missing client), fall back to a
+    drop-oldest strategy with a tag so the model knows context was
+    dropped.
+  - A turn never errors out because of a compaction failure; the loop
+    logs at WARN and continues.
+
+- 4 new unit tests covering `pick_split` boundary behavior and the
+  `should_compact` threshold check. Total: 24 passing.
+
+### Notes
+
+- Threshold is opt-in via `CapabilitiesConfig::compaction_threshold`
+  (existing field — previously unused). Set to `None` (default) to
+  disable. Typical values: 60-80% of your model's max context window.
+- Compaction is intentionally conservative: a small history isn't
+  compacted at all (`MIN_HISTORY_TO_COMPACT = 8`).
+
 ## [0.3.0] - 2026-05-20
 
 ### Removed (BREAKING)
