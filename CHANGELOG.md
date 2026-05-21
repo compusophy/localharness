@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-21
+
+GA of Phase 7 — context-window compaction + MCP stdio bridge. The
+crate now covers every roadmap item from the original `DESIGN.md`.
+
+### Added
+
+- README expanded with feature-tour entries for MCP-bridged tools
+  and automatic compaction.
+
+### Changed
+
+- Built-in tool table marks `start_subagent` as shipping (was
+  "not yet implemented" in 0.2.0).
+
+This release contains no code changes vs `0.4.0-alpha.2` other than
+the bump and the doc edits. The two alphas covered the implementation.
+
 ## [0.4.0-alpha.2] - 2026-05-21
 
 ### Added
