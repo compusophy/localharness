@@ -4,7 +4,7 @@
 
 **A Rust-native agent SDK for Gemini.** Build production agents with
 streaming text, custom tools, safety policies, and background triggers
-— all from a single `cargo add`.
+— all from a single `cargo add`. Zero external binaries.
 
 [![crates.io](https://img.shields.io/crates/v/localharness.svg?style=flat-square)](https://crates.io/crates/localharness)
 [![docs.rs](https://img.shields.io/docsrs/localharness?style=flat-square)](https://docs.rs/localharness)
@@ -14,14 +14,13 @@ streaming text, custom tools, safety policies, and background triggers
 </div>
 
 ```rust
-use localharness::{Agent, LocalAgentConfig};
+use localharness::{Agent, GeminiAgentConfig};
 
 #[tokio::main]
 async fn main() -> localharness::Result<()> {
-    let agent = Agent::start_local(
-        LocalAgentConfig::new()
-            .with_system_instructions("You are a concise code reviewer.")
-            .with_api_key(std::env::var("GEMINI_API_KEY").unwrap()),
+    let agent = Agent::start_gemini(
+        GeminiAgentConfig::new(std::env::var("GEMINI_API_KEY").unwrap())
+            .with_system_instructions("You are a concise code reviewer."),
     ).await?;
 
     let response = agent.chat("Review: fn add(a: i32, b: i32) -> i32 { a - b }").await?;
@@ -32,29 +31,7 @@ async fn main() -> localharness::Result<()> {
 }
 ```
 
-> **Status:** alpha · pre-1.0 · the 0.2.x line is mid-pivot — see
-> [`DESIGN.md`](DESIGN.md) for the roadmap.
-
----
-
-## Roadmap (0.2.x)
-
-`localharness` started life (0.1.x) as a Rust client for Google's
-[`google-antigravity`][upstream] Python SDK, talking to a bundled Go
-runtime binary. **The 0.2.x line replaces that runtime with a Rust
-agent loop that hits the Gemini API directly** — no Go binary, no
-Python install, no external process. The public API (`Agent`,
-`Conversation`, `Tool`, `Policy`, `Hook`, `Trigger`) is preserved.
-
-| Phase | Version | What lands |
-|:-----:|---------|------------|
-| 1 | `0.2.0-alpha.1` | Gemini backend, text-only chat, streaming |
-| 2 | `0.2.0-alpha.2` | Tool calling + read-only built-ins |
-| 3 | `0.2.0-alpha.3` | Write tools + workspace sandbox |
-| 4 | `0.2.0-beta.1`  | Thoughts, structured output, image gen, ask-question |
-| 5 | `0.2.0` GA      | `LocalConnectionStrategy` deprecated; Gemini default |
-
-See [`DESIGN.md`](DESIGN.md) for the full plan with module-by-module specs.
+> **Status:** 0.2.x · stable Rust-native runtime · 10/11 built-in tools shipping.
 
 ---
 
@@ -63,6 +40,7 @@ See [`DESIGN.md`](DESIGN.md) for the full plan with module-by-module specs.
 - [Install](#install)
 - [Concepts](#concepts) — `Agent`, `Conversation`, `Connection`
 - [Examples](#examples) — streaming, tools, hooks, policies, triggers, multimodal
+- [Built-in tools](#built-in-tools)
 - [Architecture](#architecture)
 - [Design notes](#design-notes-performance--safety)
 - [FAQ](#faq)
@@ -74,34 +52,22 @@ See [`DESIGN.md`](DESIGN.md) for the full plan with module-by-module specs.
 
 ```toml
 [dependencies]
-localharness = "0.1"
+localharness = "0.2"
 tokio        = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-### 0.1.x (current) — Go-backed
-
-Today's release proxies to a Go runtime binary called `localharness`.
-The Python SDK ships it; install once to grab the binary:
-
 ```sh
-pip install google-antigravity
-export ANTIGRAVITY_HARNESS_PATH="$(python -c 'import importlib.resources, google.antigravity; print(importlib.resources.files(google.antigravity) / "bin" / "localharness")')"
 export GEMINI_API_KEY="your_api_key_here"
 ```
 
-If `localharness` is already on your `PATH`, the env var is optional.
+No Python install, no Go binary, no harness process — `cargo build` and
+you have an agent. Get an API key from [Google AI Studio][aistudio].
 
-### 0.2.x (in progress) — no external runtime
-
-`Agent::start_gemini(config)` will talk to the Gemini API directly.
-A single `cargo add` is all you'll need. Track progress in
-[`DESIGN.md`](DESIGN.md) and [`CHANGELOG.md`](CHANGELOG.md).
+[aistudio]: https://aistudio.google.com/app/apikey
 
 ---
 
 ## Concepts
-
-The SDK is layered so you can pick the surface that fits the task:
 
 | Layer | Type | Use when |
 |------:|------|----------|
@@ -161,7 +127,7 @@ a?; b?;
 <details><summary><b>Register a custom tool</b></summary>
 
 ```rust
-use localharness::{allow_all, ClosureTool, LocalAgentConfig};
+use localharness::{allow_all, Agent, ClosureTool, GeminiAgentConfig};
 use serde_json::json;
 
 let weather = ClosureTool::new(
@@ -174,12 +140,32 @@ let weather = ClosureTool::new(
     },
 );
 
-let agent = Agent::start_local(
-    LocalAgentConfig::new()
+let agent = Agent::start_gemini(
+    GeminiAgentConfig::new(api_key)
         .with_tool(weather)
         .with_policies(vec![allow_all()]),
 ).await?;
 ```
+</details>
+
+<details><summary><b>Use the built-in file tools with a workspace sandbox</b></summary>
+
+```rust
+use localharness::{Agent, CapabilitiesConfig, GeminiAgentConfig};
+
+let agent = Agent::start_gemini(
+    GeminiAgentConfig::new(api_key)
+        .with_capabilities(CapabilitiesConfig::unrestricted())
+        .with_workspace("/home/me/project"),
+).await?;
+
+let response = agent.chat("List the Rust files under src/ and show the first 50 lines of lib.rs.").await?;
+println!("{}", response.text().await?);
+```
+
+`workspace_only(...)` policies are auto-installed when `with_workspace`
+is set; every file tool's path is canonicalized and rejected if it
+escapes the workspace.
 </details>
 
 <details><summary><b>Policies — deny-by-default, ask before dangerous calls</b></summary>
@@ -199,19 +185,35 @@ let policies = vec![
 ];
 ```
 
-Precedence matches the Python SDK: `specific deny ≻ specific ask ≻
-specific allow ≻ wildcard deny ≻ wildcard ask ≻ wildcard allow`.
+Precedence: `specific deny ≻ specific ask ≻ specific allow ≻ wildcard
+deny ≻ wildcard ask ≻ wildcard allow`. Matches the Python SDK rule.
 </details>
 
-<details><summary><b>Constrain file tools to a workspace</b></summary>
+<details><summary><b>Structured output</b></summary>
 
 ```rust
-use localharness::workspace_only;
+let schema = serde_json::json!({
+    "type": "object",
+    "properties": {
+        "summary":  { "type": "string" },
+        "severity": { "type": "string", "enum": ["low", "medium", "high"] }
+    },
+    "required": ["summary", "severity"]
+});
 
-let policies = workspace_only(vec!["/home/me/project".into()]);
-// view_file / create_file / edit_file outside the workspace are denied.
-// Component-wise comparison; "/home/me/project-evil" is NOT a match.
+let agent = Agent::start_gemini(
+    GeminiAgentConfig::new(api_key)
+        .with_response_schema(schema.to_string()),
+).await?;
+
+let response = agent.chat("Triage this bug report: ...").await?;
+let _ = response.text().await?; // drain
+let out = agent.conversation().last_structured_output().unwrap();
+println!("{out}");
 ```
+
+The model calls the built-in `finish(output)` tool when it's done; the
+agent extracts `output` into `last_structured_output()`.
 </details>
 
 <details><summary><b>Background triggers</b></summary>
@@ -224,8 +226,8 @@ let watchdog = every(Duration::from_secs(60), "deploy_watch", |ctx| async move {
     ctx.send_when_idle("Check the deployment status.").await
 });
 
-let agent = Agent::start_local(
-    LocalAgentConfig::new().with_trigger(watchdog),
+let agent = Agent::start_gemini(
+    GeminiAgentConfig::new(api_key).with_trigger(watchdog),
 ).await?;
 ```
 </details>
@@ -256,11 +258,37 @@ refcounted, so a 30 MB PDF is never copied.
 <details><summary><b>Resume a conversation</b></summary>
 
 ```rust
-let agent = Agent::start_local(
-    LocalAgentConfig::new().resume("conv-abc123"),
+let agent = Agent::start_gemini(
+    GeminiAgentConfig::new(api_key).resume("conv-abc123"),
 ).await?;
 ```
 </details>
+
+---
+
+## Built-in tools
+
+The Gemini backend ships **10 of 11** tools enabled by `BuiltinTool`,
+auto-registered into the `ToolRunner` per `CapabilitiesConfig`. The
+default `CapabilitiesConfig` exposes the read-only safety subset; call
+`CapabilitiesConfig::unrestricted()` to enable everything.
+
+| Tool | Read/Write | Description |
+|------|:----------:|-------------|
+| `list_directory` | R | Sorted children with `name`, `kind`, `size`. |
+| `view_file` | R | UTF-8 lossy read with optional 1-indexed line range; 256 KiB cap. |
+| `find_file` | R | Glob-matched recursive name search; 1000-match cap. |
+| `search_directory` | R | Regex content search with optional file glob; 500-match cap. |
+| `finish` | term | Terminate turn + capture structured output. |
+| `create_file` | W | Atomic write via tempfile + rename; refuses to overwrite. |
+| `edit_file` | W | Exact-once substring replace (or `replace_all`); atomic write. |
+| `run_command` | W | Shell exec with timeout (default 30s / max 600s), 256 KiB output cap. |
+| `generate_image` | W | Call the image model; returns base64 + MIME. |
+| `ask_question` | I/O | Default no-op (returns `skipped: true`); register a custom `ask_question` tool for interactive UI. |
+| `start_subagent` | — | **Not yet implemented** (lands in 0.3.x). |
+
+Custom tools registered with the same name as a built-in **win** —
+overrides are intentional.
 
 ---
 
@@ -274,88 +302,79 @@ let agent = Agent::start_local(
    │       ChatResponse    text · thoughts · tool_calls   │
    ├──────────────────────────────────────────────────────┤
    │  L3   Connection      transport abstraction          │
-   │       LocalConnection ws + stdio handshake           │
+   │       GeminiConnection  reqwest + SSE + tool loop    │
    └──────────────────────────────────────────────────────┘
                               │
-                              │  localharness (Go binary)
+                              │  HTTPS (rustls)
                               ▼
-                            Gemini
+                          Gemini API
 ```
 
-Inside `LocalConnection`:
+Inside the Gemini agent loop:
 
 ```text
-       ┌──────────┐  inbox: mpsc(InputEvent, cap 16)  ┌────────────────┐
-       │  callers │ ─────────────────────────────────►│  ws_writer     │
-       └──────────┘                                   └────────┬───────┘
-                                                              │
-                                                       ┌──────▼──────┐
-                                                       │  websocket  │
-                                                       └──────▲──────┘
-                                                              │
-       ┌────────────┐  broadcast(Step, cap 256)  ┌────────────┴──────┐
-       │ subscribers│ ◄─────────────────────────│  ws_reader        │
-       └────────────┘                            └───────────────────┘
+   user prompt ───►│                                         ▲
+                   │ build GenerateContentRequest            │  emit Step
+                   │ ───────► Gemini SSE ──────────► chunks  │  (text,
+                   │             │                           │   thought,
+                   │             ▼                           │   tool_call)
+                   │   functionCall parts?  ────► dispatch ──┘
+                   │             │              hooks→policy→tool_runner
+                   │             ▼
+                   │   append functionResponse ──► loop ─────┐
+                   │                                         │
+                   │   no more calls / finish ──► terminal Step
 ```
 
-A single `tokio::select!` supervisor owns the WebSocket and arbitrates
-inbox writes against incoming frames. A separate task supervises the
-child process (`kill_on_drop` on the handle, plus an explicit
-`shutdown` flag).
+A single broadcast channel fans `Step`s out to every cursor
+(`ChatResponse::chunks`, `text_stream`, `thoughts`, `tool_calls`). The
+tool dispatch loop is inline inside the turn — no out-of-band
+round-trip through a sidecar process.
 
 ---
 
 ## Design notes (performance & safety)
 
-A short tour of the load-bearing choices:
-
 - **Lock-free idle polling.** `Connection::is_idle()` reads an
-  `AtomicBool` — no mutex, no syscalls, nanoseconds. Trigger handlers
-  can call it inside hot loops.
-- **Broadcast fan-out for steps.** Any number of cursors can subscribe
-  without blocking the producer. Replays are bounded (256 in flight); a
-  slow consumer fails fast with a "lagged" error rather than ballooning
-  memory.
-- **Bounded backpressure everywhere.** The writer inbox is 16, the step
-  broadcast is 256. There's no unbounded `Vec<Message>` waiting for the
-  socket to drain.
+  `AtomicBool`. Trigger handlers can hot-loop without contention.
+- **Broadcast fan-out for steps.** Cursors subscribe without blocking
+  the producer; replay buffer is bounded; slow consumers fail fast.
+- **Bounded backpressure everywhere.** Step broadcast cap 256.
+  Function-call dispatch capped at 16 rounds per turn (`MAX_TOOL_ROUNDS`).
+- **Atomic file writes.** `create_file` and `edit_file` write through
+  a `tempfile::NamedTempFile` in the same directory and rename into
+  place — a crash mid-write never leaves a partially written file.
+- **Bounded subprocess output.** `run_command` caps each stream at
+  256 KiB and kills the child on timeout with `kill_on_drop`.
+- **Component-wise path containment.** `workspace_only()` defeats
+  prefix tricks (`/foo/bar-evil` vs `/foo/bar`).
 - **Lock-free tool-context swap.** `arc_swap::ArcSwapOption` replaces
-  the runtime context atomically. Concurrent tool calls never serialize
-  on a mutex just to fetch the context.
-- **No mutex poisoning footguns.** `parking_lot::{Mutex,RwLock}` mean
-  `lock()` doesn't return `Result`; one panicking thread doesn't taint
-  every other reader.
-- **Typed errors, no `unwrap` on hot paths.** [`Error`] is a flat
-  `thiserror` enum. `io::Error`, `serde_json::Error`, and `prost`
-  errors fold into it via `#[from]`; `?` works everywhere.
+  the runtime context atomically across concurrent tool calls.
+- **Typed errors.** Flat `thiserror` enum; `io::Error`,
+  `serde_json::Error`, `reqwest::Error` fold via `#[from]`.
+- **API key redaction.** `Debug` for `GeminiClient` prints
+  `<redacted>` for the key.
 - **Zero-copy media.** `Media::data` is `bytes::Bytes`. Cloning a part
-  into multiple frames is a refcount bump; a 30 MB PDF is never copied.
-- **Bounded resource lifetimes.** `kill_on_drop` on the child, a 10 s
-  handshake timeout, idempotent `shutdown()`, and a `Drop` impl that
-  flips the shutdown flag so leaked agents don't leak processes.
-- **Strict policy precedence.** Component-wise path containment defeats
-  prefix tricks like `/foo/bar-evil` vs `/foo/bar`. Wildcard rules
-  always lose to specific rules.
-
-[`Error`]: https://docs.rs/localharness/latest/localharness/enum.Error.html
+  into multiple frames is a refcount bump.
 
 ---
 
 ## FAQ
 
-**What's the Go binary I keep hearing about?** Today's 0.1.x release
-talks to a runtime binary that happens to be written in Go (Google
-ships it inside the `google-antigravity` Python wheel). You never write
-Go; you just point an env var at the binary once. **The 0.2.x line
-removes the binary entirely** — see [Roadmap](#roadmap-02x).
+**Does this need a server?** No. The crate uses `reqwest` to call the
+Gemini REST API directly. No localhost daemon, no Go binary, no Python.
 
-**Does this need `GEMINI_API_KEY`?** Yes — either set the env var or
-pass it via `LocalAgentConfig::with_api_key()`.
+**How do I get a `GEMINI_API_KEY`?** From [Google AI Studio][aistudio].
+Free tier is sufficient for development.
+
+**Which model does it use?** Default `gemini-3.5-flash` for chat,
+`gemini-3.1-flash-image-preview` for `generate_image`. Override with
+`GeminiBackendConfig::with_model(...)`.
 
 **Why does write-tool access require a policy?** Enabling tools that
 write to disk or run commands without a policy is almost always a bug.
-Add `policies: vec![allow_all()]` to opt in, or use `workspace_only(…)`
-to scope.
+Add `with_policies(vec![allow_all()])` to opt in, or
+`with_workspace(...)` to scope.
 
 **MSRV?** Rust 1.85 (edition 2024).
 
@@ -367,16 +386,15 @@ to scope.
 tracing_subscriber::fmt().with_env_filter("localharness=debug").init();
 ```
 
-**Origin of the project.** 0.1.x began life as a port of Google's
-[`google-antigravity`][upstream] Python SDK. See
-[`UPSTREAM.md`](UPSTREAM.md) for the historical record and
-[`DESIGN.md`](DESIGN.md) for the Rust-native pivot plan.
+**What about the 0.1.x `start_local` / Go binary?** Still works in
+0.2.x but marked `#[deprecated]`; removed in 0.3.0. Migrate to
+`start_gemini`. See [`UPSTREAM.md`](UPSTREAM.md) and
+[`DESIGN.md`](DESIGN.md) for the historical context.
 
 ---
 
 ## License
 
-[Apache-2.0](LICENSE). The `LICENSE` file is inherited from upstream
-for attribution.
+[Apache-2.0](LICENSE).
 
 [upstream]: https://github.com/google-antigravity/antigravity-sdk-python
