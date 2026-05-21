@@ -107,6 +107,12 @@ impl ToolRunner {
         self.tools.read().keys().cloned().collect()
     }
 
+    /// Snapshot every registered tool as `Arc<dyn Tool>`. Cheap clone —
+    /// the `Arc`s share their backing data.
+    pub fn iter_tools(&self) -> Vec<Arc<dyn Tool>> {
+        self.tools.read().values().cloned().collect()
+    }
+
     pub async fn execute(&self, name: &str, args: Value) -> Result<Value> {
         let tool = self
             .tools

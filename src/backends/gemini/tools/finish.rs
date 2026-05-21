@@ -1,0 +1,52 @@
+//! `finish` — special tool the model calls to terminate the turn.
+//!
+//! When `response_schema` is configured, the model is asked to call
+//! `finish` with the structured payload as the `output` arg; the loop
+//! pulls that out and stashes it as `structured_output` on the
+//! conversation state.
+//!
+//! The loop recognises `finish` by name (see [`FINISH_TOOL_NAME`]) and
+//! exits the outer dispatch loop after handling it — `execute` here is
+//! just a no-op that echoes the args so the function response is well
+//! formed for the model's history.
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use serde_json::{json, Value};
+
+use crate::error::Result;
+use crate::tools::{Tool, ToolContext};
+
+pub const FINISH_TOOL_NAME: &str = "finish";
+
+pub struct Finish;
+
+#[async_trait]
+impl Tool for Finish {
+    fn name(&self) -> &str {
+        FINISH_TOOL_NAME
+    }
+
+    fn description(&self) -> &str {
+        "Signal that the turn is complete. Pass `output` when the agent is configured \
+         with a response schema; it will be returned to the caller as the structured \
+         output of this turn."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "output": { "description": "Optional structured output. Must conform to the agent's response_schema when one is set." }
+            }
+        })
+    }
+
+    async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
+        // The runtime intercepts this call to extract `output` before we run.
+        // Returning the args back lets the model see a well-formed response
+        // even if the runtime didn't intercept (defensive).
+        Ok(json!({ "ok": true, "args": args }))
+    }
+}

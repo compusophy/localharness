@@ -23,7 +23,7 @@ use futures_util::stream::StreamExt;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
-use crate::backends::gemini::{GeminiBackendConfig, GeminiConnectionStrategy};
+use crate::backends::gemini::{GeminiBackendConfig, GeminiConnectionStrategy, GeminiRunners};
 use crate::connections::local::{LocalConfig, LocalConnectionStrategy};
 use crate::connections::{Connection, ConnectionStrategy};
 use crate::content::Content;
@@ -263,8 +263,10 @@ impl Agent {
     pub async fn start_local(mut config: LocalAgentConfig) -> Result<Self> {
         config.agent.capabilities.validate()?;
         Self::wire_response_schema(&mut config.agent);
-        let strategy = LocalConnectionStrategy::new(config.local);
-        Self::start_with_strategy(config.agent, strategy).await
+        Self::start_with_factory(config.agent, |_, _, _| {
+            LocalConnectionStrategy::new(config.local)
+        })
+        .await
     }
 
     /// Start an `Agent` backed by the Rust-native Gemini runtime.
@@ -272,15 +274,31 @@ impl Agent {
     pub async fn start_gemini(mut config: GeminiAgentConfig) -> Result<Self> {
         config.agent.capabilities.validate()?;
         Self::wire_response_schema(&mut config.agent);
-        let strategy = GeminiConnectionStrategy::new(config.gemini);
-        Self::start_with_strategy(config.agent, strategy).await
+        // The Gemini strategy is bound to the agent's runners so that
+        // function-call dispatch can run through hooks + policies +
+        // tool_runner without round-tripping through `send_tool_results`.
+        let mut gemini_config = config.gemini;
+        // Make sure the backend's CapabilitiesConfig matches the agent's
+        // (so register_builtins enables the right set).
+        gemini_config.capabilities = config.agent.capabilities.clone();
+        Self::start_with_factory(config.agent, |hooks, tools, ctx| {
+            GeminiConnectionStrategy::new(gemini_config).with_runners(GeminiRunners {
+                tool_runner: Some(tools),
+                hook_runner: Some(hooks),
+                session_ctx: Some(ctx),
+            })
+        })
+        .await
     }
 
-    /// Internal: shared bootstrap used by every `start_*` constructor.
-    async fn start_with_strategy<S: ConnectionStrategy + 'static>(
-        agent_config: AgentConfig,
-        strategy: S,
-    ) -> Result<Self> {
+    /// Internal: shared bootstrap. The `factory` closure receives the
+    /// fully-wired hook/tool runners and session context so backends
+    /// that dispatch tools inline (Gemini) can inject them.
+    async fn start_with_factory<S, F>(agent_config: AgentConfig, factory: F) -> Result<Self>
+    where
+        S: ConnectionStrategy + 'static,
+        F: FnOnce(Arc<HookRunner>, Arc<ToolRunner>, SessionContext) -> S,
+    {
         let hook_runner = Arc::new(HookRunner::new());
         let tool_runner = Arc::new(ToolRunner::new());
 
@@ -312,9 +330,10 @@ impl Agent {
             hook_runner.register_pre_tool_call_decide(policy::enforce(active_policies));
         }
 
+        let session_ctx = SessionContext::new();
+        let strategy = factory(hook_runner.clone(), tool_runner.clone(), session_ctx.clone());
         let connection = strategy.connect().await?;
 
-        let session_ctx = SessionContext::new();
         hook_runner.dispatch_session_start(&session_ctx).await;
 
         tool_runner.set_context(Arc::new(ToolContext::new(connection.clone())));

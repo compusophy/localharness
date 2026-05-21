@@ -4,9 +4,12 @@
 //! `localharness` binary). The runtime hits the Gemini REST API
 //! directly — zero external processes.
 //!
-//! See `DESIGN.md` for the phased roadmap. **Phase 1 (this module
-//! today) is text-only**: no tool dispatch, no thinking, no structured
-//! output. Send a prompt, stream text deltas back, end the turn.
+//! See `DESIGN.md` for the phased roadmap.
+//!
+//! Phase 2 (this module today) adds tool calling. The agent loop
+//! dispatches function calls inline through the registered hooks +
+//! policies + `ToolRunner`, appends the response to history, and
+//! continues until the model produces no further function calls.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -19,20 +22,24 @@ use tracing::warn;
 
 use crate::backends::gemini::api::{GeminiClient, SharedClient};
 use crate::backends::gemini::r#loop::{
-    run_turn, to_wire_user_content, LoopConfig, LoopState,
+    run_turn, to_wire_user_content, LoopConfig, LoopState, TurnDeps,
 };
+use crate::backends::gemini::tools::register_builtins;
 use crate::connections::{Connection, ConnectionStrategy};
 use crate::content::Content;
 use crate::error::{Error, Result};
+use crate::hooks::{HookRunner, SessionContext};
+use crate::tools::ToolRunner;
 use crate::types::{
-    Step, SystemInstructions, ThinkingLevel, ToolResult, DEFAULT_IMAGE_GENERATION_MODEL,
-    DEFAULT_MODEL,
+    CapabilitiesConfig, Step, SystemInstructions, ThinkingLevel, ToolResult,
+    DEFAULT_IMAGE_GENERATION_MODEL, DEFAULT_MODEL,
 };
 
 pub mod api;
-pub mod wire;
 #[path = "loop.rs"]
 mod r#loop;
+pub mod tools;
+pub mod wire;
 
 const STEP_BROADCAST_CAPACITY: usize = 256;
 
@@ -55,6 +62,9 @@ pub struct GeminiBackendConfig {
     /// Pre-existing conversation id to resume from. When `None`, a
     /// fresh UUID is generated.
     pub conversation_id: Option<String>,
+    /// Capability/built-in-tool selection. Defaults to the read-only
+    /// safety set.
+    pub capabilities: CapabilitiesConfig,
 }
 
 impl GeminiBackendConfig {
@@ -68,6 +78,7 @@ impl GeminiBackendConfig {
             response_schema: None,
             base_url: None,
             conversation_id: None,
+            capabilities: CapabilitiesConfig::default(),
         }
     }
 
@@ -90,19 +101,43 @@ impl GeminiBackendConfig {
         self.response_schema = Some(schema.into());
         self
     }
+
+    pub fn with_capabilities(mut self, c: CapabilitiesConfig) -> Self {
+        self.capabilities = c;
+        self
+    }
 }
 
 // =============================================================================
 // Strategy
 // =============================================================================
 
+#[derive(Default)]
+pub struct GeminiRunners {
+    pub tool_runner: Option<Arc<ToolRunner>>,
+    pub hook_runner: Option<Arc<HookRunner>>,
+    pub session_ctx: Option<SessionContext>,
+}
+
 pub struct GeminiConnectionStrategy {
     config: GeminiBackendConfig,
+    runners: GeminiRunners,
 }
 
 impl GeminiConnectionStrategy {
     pub fn new(config: GeminiBackendConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            runners: GeminiRunners::default(),
+        }
+    }
+
+    /// Inject the runners the Agent owns. The Gemini backend dispatches
+    /// custom + built-in tool calls inline; without runners those calls
+    /// fall back to a static error.
+    pub fn with_runners(mut self, runners: GeminiRunners) -> Self {
+        self.runners = runners;
+        self
     }
 }
 
@@ -118,11 +153,28 @@ impl ConnectionStrategy for GeminiConnectionStrategy {
         }
         let client: SharedClient = Arc::new(client);
 
+        // Auto-register built-in tools per the capabilities config.
+        if let Some(runner) = self.runners.tool_runner.as_ref() {
+            let registered = register_builtins(runner, &self.config.capabilities);
+            if !registered.is_empty() {
+                tracing::debug!(?registered, "registered built-in tools");
+            }
+        }
+
+        // Build tool declarations from the runner's full set.
+        let tool_decls = self
+            .runners
+            .tool_runner
+            .as_ref()
+            .map(|r| build_tool_declarations(r))
+            .unwrap_or_default();
+
         let loop_config = LoopConfig::from_system(
             self.config.model.clone(),
             self.config.system_instructions.as_ref(),
             self.config.thinking,
             self.config.response_schema.as_deref(),
+            tool_decls,
         )?;
 
         let (steps_tx, _) = broadcast::channel::<Step>(STEP_BROADCAST_CAPACITY);
@@ -135,12 +187,30 @@ impl ConnectionStrategy for GeminiConnectionStrategy {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
         Ok(Arc::new(GeminiConnection {
-            client,
-            loop_config,
+            deps_template: TurnDeps {
+                client,
+                config: loop_config,
+                state: state.clone(),
+                tool_runner: self.runners.tool_runner.clone(),
+                hook_runner: self.runners.hook_runner.clone(),
+                session_ctx: self.runners.session_ctx.clone(),
+            },
             state,
             conversation_id: conv_id.into(),
         }))
     }
+}
+
+fn build_tool_declarations(runner: &ToolRunner) -> Vec<wire::FunctionDeclaration> {
+    runner
+        .iter_tools()
+        .into_iter()
+        .map(|tool| wire::FunctionDeclaration {
+            name: tool.name().to_string(),
+            description: tool.description().to_string(),
+            parameters: tool.input_schema(),
+        })
+        .collect()
 }
 
 // =============================================================================
@@ -148,8 +218,7 @@ impl ConnectionStrategy for GeminiConnectionStrategy {
 // =============================================================================
 
 pub struct GeminiConnection {
-    client: SharedClient,
-    loop_config: LoopConfig,
+    deps_template: TurnDeps,
     state: Arc<LoopState>,
     conversation_id: Arc<str>,
 }
@@ -166,14 +235,9 @@ impl Connection for GeminiConnection {
 
     async fn send(&self, content: Content) -> Result<()> {
         let user = to_wire_user_content(content)?;
-        let client = self.client.clone();
-        let config = self.loop_config.clone();
-        let state = self.state.clone();
-
-        // Spawn the turn so `send` returns immediately and the caller
-        // can `subscribe_steps()` to observe progress.
+        let deps = self.deps_template.clone();
         tokio::spawn(async move {
-            if let Err(e) = run_turn(client, config, state, user).await {
+            if let Err(e) = run_turn(deps, user).await {
                 warn!(error = %e, "gemini turn failed");
             }
         });
@@ -181,14 +245,12 @@ impl Connection for GeminiConnection {
     }
 
     async fn send_trigger(&self, content: String) -> Result<()> {
-        // Triggers are just user messages.
         self.send(Content::text(content)).await
     }
 
     async fn send_tool_results(&self, _results: Vec<ToolResult>) -> Result<()> {
         // The Gemini backend dispatches tools inline inside the loop.
-        // External callers pushing tool results out-of-band is a no-op
-        // here — kept on the trait so the LocalConnection still works.
+        // External callers pushing tool results out-of-band is a no-op.
         Ok(())
     }
 
@@ -209,8 +271,6 @@ impl Connection for GeminiConnection {
     }
 
     async fn shutdown(&self) -> Result<()> {
-        // No background tasks to kill (turns are self-contained tokio
-        // spawns); just mark idle so `wait_for_idle` returns.
         self.state.idle.store(true, Ordering::Release);
         self.state.idle_notify.notify_waiters();
         Ok(())
