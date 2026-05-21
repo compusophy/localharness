@@ -61,6 +61,43 @@ impl GeminiClient {
         self
     }
 
+    /// Non-streaming `generateContent`. Use for one-shot endpoints like
+    /// image generation where there's no benefit to SSE.
+    pub async fn generate(
+        &self,
+        model: &str,
+        req: &GenerateContentRequest,
+    ) -> Result<GenerateChunk> {
+        let path = format!("v1beta/models/{model}:generateContent");
+        let url = self
+            .base_url
+            .join(&path)
+            .map_err(|e| Error::other(format!("invalid model url: {e}")))?;
+
+        let response = self
+            .http
+            .post(url)
+            .header("x-goog-api-key", self.api_key.as_ref())
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| Error::other(format!("gemini POST: {e}")))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "<no body>".to_string());
+            return Err(Error::other(format!("gemini HTTP {status}: {body}")));
+        }
+
+        response
+            .json::<GenerateChunk>()
+            .await
+            .map_err(|e| Error::other(format!("gemini JSON: {e}")))
+    }
+
     /// Streaming `generateContent`. Returns a `Stream` that yields one
     /// `GenerateChunk` per SSE `data:` frame (excluding the synthetic
     /// `data: [DONE]` terminator).

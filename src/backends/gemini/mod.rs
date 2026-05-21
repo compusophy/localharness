@@ -24,7 +24,7 @@ use crate::backends::gemini::api::{GeminiClient, SharedClient};
 use crate::backends::gemini::r#loop::{
     run_turn, to_wire_user_content, LoopConfig, LoopState, TurnDeps,
 };
-use crate::backends::gemini::tools::register_builtins;
+use crate::backends::gemini::tools::{register_builtins, BuiltinDeps};
 use crate::connections::{Connection, ConnectionStrategy};
 use crate::content::Content;
 use crate::error::{Error, Result};
@@ -155,7 +155,11 @@ impl ConnectionStrategy for GeminiConnectionStrategy {
 
         // Auto-register built-in tools per the capabilities config.
         if let Some(runner) = self.runners.tool_runner.as_ref() {
-            let registered = register_builtins(runner, &self.config.capabilities);
+            let deps = BuiltinDeps {
+                image_client: Some(client.clone()),
+                image_model: self.config.image_model.clone(),
+            };
+            let registered = register_builtins(runner, &self.config.capabilities, &deps);
             if !registered.is_empty() {
                 tracing::debug!(?registered, "registered built-in tools");
             }
