@@ -11,22 +11,12 @@ keywords = ["agent", "ai", "gemini", "llm", "sdk"]
 categories = ["api-bindings", "asynchronous"]
 rust-version = "1.85"
 exclude = [
-    "upstream/**",
-    ".kokoro/**",
-    ".github/**",
-    "google/**",
-    "skills/**",
-    "examples/getting_started/**",
-    "examples/deep_dives/**",
-    "examples/resources/**",
-    "examples/README.md",
-    "pyproject.toml",
-    "CODE_OF_CONDUCT.md",
-    "CONTRIBUTING.md",
-    "SECURITY.md",
-    "PYTHON_README.md",
     "UPSTREAM.md",
+    "DESIGN.md",
+    "RELEASING.md",
+    "CHANGELOG.md",
     "scripts/**",
+    ".github/**",
 ]
 
 [dependencies]

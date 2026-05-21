@@ -1,8 +1,0 @@
-# Direct dependencies for the release pipeline.
-# Run: pip-compile --allow-unsafe --generate-hashes requirements-release.in
-#      to regenerate requirements-release.txt.
-build
-setuptools>=68.0
-twine
-wheel
-keyrings.google-artifactregistry-auth

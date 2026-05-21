@@ -1,2 +1,0 @@
-This is a sample document for testing Antigravity SDK multimodal capabilities.
-Secret number: 789456

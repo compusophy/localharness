@@ -2,15 +2,14 @@
 
 # `localharness`
 
-**Rust client SDK for the `localharness` agent runtime** — build
-Gemini-backed agents from Rust with the same wire protocol as Google's
-[`google-antigravity`][upstream] Python SDK.
+**A Rust-native agent SDK for Gemini.** Build production agents with
+streaming text, custom tools, safety policies, and background triggers
+— all from a single `cargo add`.
 
 [![crates.io](https://img.shields.io/crates/v/localharness.svg?style=flat-square)](https://crates.io/crates/localharness)
 [![docs.rs](https://img.shields.io/docsrs/localharness?style=flat-square)](https://docs.rs/localharness)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg?style=flat-square)](LICENSE)
 [![CI](https://img.shields.io/badge/MSRV-1.85-orange.svg?style=flat-square)](Cargo.toml)
-[![upstream](https://img.shields.io/badge/upstream-d6be9ca-purple.svg?style=flat-square)](UPSTREAM.md)
 
 </div>
 
@@ -33,8 +32,29 @@ async fn main() -> localharness::Result<()> {
 }
 ```
 
-> **Status:** alpha · pinned to upstream commit [`d6be9ca`](UPSTREAM.md) ·
-> unofficial · not affiliated with Google.
+> **Status:** alpha · pre-1.0 · the 0.2.x line is mid-pivot — see
+> [`DESIGN.md`](DESIGN.md) for the roadmap.
+
+---
+
+## Roadmap (0.2.x)
+
+`localharness` started life (0.1.x) as a Rust client for Google's
+[`google-antigravity`][upstream] Python SDK, talking to a bundled Go
+runtime binary. **The 0.2.x line replaces that runtime with a Rust
+agent loop that hits the Gemini API directly** — no Go binary, no
+Python install, no external process. The public API (`Agent`,
+`Conversation`, `Tool`, `Policy`, `Hook`, `Trigger`) is preserved.
+
+| Phase | Version | What lands |
+|:-----:|---------|------------|
+| 1 | `0.2.0-alpha.1` | Gemini backend, text-only chat, streaming |
+| 2 | `0.2.0-alpha.2` | Tool calling + read-only built-ins |
+| 3 | `0.2.0-alpha.3` | Write tools + workspace sandbox |
+| 4 | `0.2.0-beta.1`  | Thoughts, structured output, image gen, ask-question |
+| 5 | `0.2.0` GA      | `LocalConnectionStrategy` deprecated; Gemini default |
+
+See [`DESIGN.md`](DESIGN.md) for the full plan with module-by-module specs.
 
 ---
 
@@ -45,9 +65,6 @@ async fn main() -> localharness::Result<()> {
 - [Examples](#examples) — streaming, tools, hooks, policies, triggers, multimodal
 - [Architecture](#architecture)
 - [Design notes](#design-notes-performance--safety)
-- [Comparison with the Python SDK](#comparison-with-the-python-sdk)
-- [What's not (yet) ported](#whats-not-yet-ported)
-- [Upstream sync](#upstream-sync)
 - [FAQ](#faq)
 - [License](#license)
 
@@ -61,7 +78,9 @@ localharness = "0.1"
 tokio        = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-The crate calls a Go binary named `localharness` over stdio + WebSocket.
+### 0.1.x (current) — Go-backed
+
+Today's release proxies to a Go runtime binary called `localharness`.
 The Python SDK ships it; install once to grab the binary:
 
 ```sh
@@ -71,6 +90,12 @@ export GEMINI_API_KEY="your_api_key_here"
 ```
 
 If `localharness` is already on your `PATH`, the env var is optional.
+
+### 0.2.x (in progress) — no external runtime
+
+`Agent::start_gemini(config)` will talk to the Gemini API directly.
+A single `cargo add` is all you'll need. Track progress in
+[`DESIGN.md`](DESIGN.md) and [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 
@@ -316,97 +341,42 @@ A short tour of the load-bearing choices:
 
 ---
 
-## Comparison with the Python SDK
-
-| | Python (`google-antigravity`) | Rust (`localharness`) |
-|---|---|---|
-| Concurrency | asyncio | tokio |
-| Errors | exceptions | `Result<T, Error>` (thiserror) |
-| Multi-cursor `ChatResponse` | ✓ | ✓ |
-| Idle check | mutex-guarded bool | `AtomicBool` (lock-free) |
-| Step fan-out | single async iterator | `broadcast` (multi-cursor) |
-| Multimodal media | bytes copies | `Bytes` (refcounted) |
-| Hooks (6 kinds) | ✓ | ✓ |
-| Policy precedence | ✓ | ✓ + component-wise path check |
-| `every()` trigger | ✓ | ✓ |
-| `workspace_only()` | ✓ | ✓ |
-| Conversation resume | ✓ | ✓ |
-| MCP server bridge | ✓ | config-types only (see below) |
-| Interactive REPL helper | ✓ | not yet |
-| Bundled harness binary | ✓ (in wheel) | reuses Python install |
-
----
-
-## What's not (yet) ported
-
-- **MCP server bridge.** `McpServerConfig` exists as a type, but the
-  client that connects to stdio/SSE/HTTP MCP servers and exposes their
-  tools to the agent isn't implemented. The Python implementation lives
-  in [`google/antigravity/mcp/bridge.py`][mcp].
-- **Interactive REPL.** Python has `utils.interactive.run_interactive_loop`.
-  Easy to write on top of the existing `Agent::chat` + `text_stream`
-  surface; not bundled.
-- **Bundled harness binary.** The crate doesn't ship a `localharness`
-  binary. You need a Python install (or your own build) to provide one.
-
-Issues / PRs welcome.
-
-[mcp]: https://github.com/google-antigravity/antigravity-sdk-python/blob/main/google/antigravity/mcp/bridge.py
-
----
-
-## Upstream sync
-
-This is a translation, not a fork. The pinned upstream commit lives in
-[`UPSTREAM.md`](UPSTREAM.md). To check what's changed since:
-
-```sh
-./scripts/sync-upstream.sh        # bash, git-bash
-./scripts/sync-upstream.ps1       # PowerShell
-```
-
-The script clones upstream into a temp dir, diffs against the pinned
-commit, prints a porting punch list, and **does not modify your working
-tree**. Promote the pin by updating `UPSTREAM.md` once the Rust source
-catches up.
-
----
-
 ## FAQ
 
-**Why "unofficial"?** Google publishes the Python SDK; the Rust port is
-maintained by the community. Bug reports here, not upstream.
-
-**Where do I get the `localharness` binary?** From `pip install
-google-antigravity`. The crate doesn't redistribute it.
+**What's the Go binary I keep hearing about?** Today's 0.1.x release
+talks to a runtime binary that happens to be written in Go (Google
+ships it inside the `google-antigravity` Python wheel). You never write
+Go; you just point an env var at the binary once. **The 0.2.x line
+removes the binary entirely** — see [Roadmap](#roadmap-02x).
 
 **Does this need `GEMINI_API_KEY`?** Yes — either set the env var or
 pass it via `LocalAgentConfig::with_api_key()`.
 
-**Why does write-tool access require a policy?** Same safety check as
-the Python SDK: enabling tools that write to disk or run commands
-without a policy is almost always a bug. Add `policies: vec![allow_all()]`
-to opt in.
+**Why does write-tool access require a policy?** Enabling tools that
+write to disk or run commands without a policy is almost always a bug.
+Add `policies: vec![allow_all()]` to opt in, or use `workspace_only(…)`
+to scope.
 
 **MSRV?** Rust 1.85 (edition 2024).
 
-**Async runtime?** Tokio. The `tokio-tungstenite`, `tokio::process`, and
-`tokio::sync` primitives are baked in.
+**Async runtime?** Tokio.
 
-**How do I get `tracing` logs?** Add `tracing-subscriber` and
-initialize a subscriber early:
+**How do I get `tracing` logs?**
 
 ```rust
 tracing_subscriber::fmt().with_env_filter("localharness=debug").init();
 ```
 
+**Origin of the project.** 0.1.x began life as a port of Google's
+[`google-antigravity`][upstream] Python SDK. See
+[`UPSTREAM.md`](UPSTREAM.md) for the historical record and
+[`DESIGN.md`](DESIGN.md) for the Rust-native pivot plan.
+
 ---
 
 ## License
 
-[Apache-2.0](LICENSE). Derived from Google's [`google-antigravity`][upstream]
-Python SDK (same license); the original `LICENSE` file is preserved at
-the root for attribution. The original Python README is preserved as
-[`PYTHON_README.md`](PYTHON_README.md).
+[Apache-2.0](LICENSE). The `LICENSE` file is inherited from upstream
+for attribution.
 
 [upstream]: https://github.com/google-antigravity/antigravity-sdk-python

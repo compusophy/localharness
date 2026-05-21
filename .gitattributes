@@ -2,69 +2,42 @@
 # Language statistics (GitHub Linguist)
 # =============================================================================
 #
-# This repository is a Rust crate. The Python tree under `google/`, the
-# Python build files, and Google's release infrastructure are vendored
-# upstream reference material, not authored here — exclude them so the
-# "Languages" bar on GitHub reflects the actual crate.
-#
-# Docs are explicitly marked so Markdown bytes don't dominate either.
+# Docs are explicitly marked so Markdown bytes don't dominate the
+# "Languages" bar on GitHub.
 # See https://github.com/github-linguist/linguist/blob/master/docs/overrides.md
 
-# ---- vendored upstream Python SDK -------------------------------------------
-google/**                       linguist-vendored
-pyproject.toml                  linguist-vendored
-.kokoro/**                      linguist-vendored
-skills/**                       linguist-vendored
-
-# ---- vendored upstream Python examples --------------------------------------
-examples/deep_dives/**          linguist-vendored
-examples/getting_started/**     linguist-vendored
-examples/resources/**           linguist-vendored
-examples/README.md              linguist-vendored
-
-# ---- vendored upstream CI / templates ---------------------------------------
-.github/workflows/**            linguist-vendored
-.github/ISSUE_TEMPLATE/**       linguist-vendored
-.github/CODEOWNERS              linguist-vendored
-
-# ---- documentation (counted separately, not in the language bar) ------------
-README.md                       linguist-documentation
-PYTHON_README.md                linguist-documentation
-CHANGELOG.md                    linguist-documentation
-RELEASING.md                    linguist-documentation
-UPSTREAM.md                     linguist-documentation
-CODE_OF_CONDUCT.md              linguist-documentation
-CONTRIBUTING.md                 linguist-documentation
-SECURITY.md                     linguist-documentation
+README.md           linguist-documentation
+CHANGELOG.md        linguist-documentation
+RELEASING.md        linguist-documentation
+UPSTREAM.md         linguist-documentation
+DESIGN.md           linguist-documentation
 
 # =============================================================================
 # Line endings
 # =============================================================================
 #
-# Authoritative LF for portable text; CRLF for files that must be CRLF on
-# Windows (PowerShell scripts). Silences the "LF will be replaced by CRLF"
-# warnings on every commit.
+# Authoritative LF for portable text; CRLF only for files that must be
+# CRLF on Windows (PowerShell scripts).
 
 * text=auto eol=lf
 
-*.rs        text eol=lf
-*.toml      text eol=lf
-*.md        text eol=lf
-*.sh        text eol=lf
-*.py        text eol=lf
-*.yml       text eol=lf
-*.yaml      text eol=lf
-*.json      text eol=lf
-.gitignore  text eol=lf
-.gitattributes text eol=lf
+*.rs            text eol=lf
+*.toml          text eol=lf
+*.md            text eol=lf
+*.sh            text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.json          text eol=lf
+.gitignore      text eol=lf
+.gitattributes  text eol=lf
 
-*.ps1       text eol=crlf
+*.ps1           text eol=crlf
 
-# Treat binary blobs as binary so git doesn't try to diff them.
-*.png       binary
-*.jpg       binary
-*.jpeg      binary
-*.pdf       binary
-*.wav       binary
-*.mp3       binary
-*.mp4       binary
+# Treat binary blobs as binary so git doesn't diff them.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.pdf   binary
+*.wav   binary
+*.mp3   binary
+*.mp4   binary

@@ -1,11 +1,16 @@
-# Upstream tracking
+# Upstream tracking — historical record
 
-This Rust port is a translation of the **Python** SDK published by Google
-at:
+## tl;dr
 
-> https://github.com/google-antigravity/antigravity-sdk-python
+`localharness` **was** a port of Google's [`google-antigravity`][upstream]
+Python SDK. As of **2026-05-20** it is no longer a port: the 0.2.x line
+replaces the Go `localharness` runtime binary with a Rust-native agent
+loop that talks to the Gemini API directly. We diverge from upstream by
+design.
 
-## Pinned upstream commit
+See [`DESIGN.md`](DESIGN.md) for the Rust-native runtime plan.
+
+## What we ported from (0.1.x)
 
 | Field          | Value |
 |----------------|-------|
@@ -14,45 +19,34 @@ at:
 | Pinned date    | 2026-05-20 |
 | Reviewed by    | initial port |
 
-The Rust SDK in `src/` was ported against the Python source at that exact
-commit. The vendored Python snapshot under `google/` matches this commit
-verbatim and is kept in the tree as a reference.
+The 0.1.x Rust source mirrored that commit. We deliberately stopped
+shipping the vendored Python tree in this repository because:
 
-## Checking for upstream changes
+1. The 0.2.x runtime no longer depends on the Go harness, so parity
+   with the Python client is no longer the goal.
+2. The upstream lived in `google/` and made the repo look like a
+   Python project to GitHub Linguist and to humans skimming the tree.
+3. The Python source is still public at the upstream repository if
+   anyone needs it for reference.
 
-Run the sync script:
+## When upstream changes
+
+We may still glance at upstream for design ideas — naming, hook
+ordering, edge cases the Go binary handles — but **we do not promise
+behavioral parity**. The Rust crate's behavior is defined by its own
+tests and by `DESIGN.md`.
+
+To peek at upstream:
 
 ```sh
-# Linux / macOS / git-bash
-./scripts/sync-upstream.sh
-
-# Windows PowerShell
-./scripts/sync-upstream.ps1
+git clone --depth=1 https://github.com/google-antigravity/antigravity-sdk-python /tmp/antigravity-python
 ```
 
-The script clones upstream into a scratch directory, fetches the latest
-commit on the default branch, and prints a diff summary against the pinned
-commit. **It does not modify your working tree.** Use the output to scope
-the porting work required to advance the pin.
+## License attribution
 
-## Promoting a new pin
+The `LICENSE` file at the repo root is Apache-2.0, identical to
+upstream's. The 0.1.x Rust code was a derivative work; 0.2.x is
+inspired-by rather than ported, but we keep the Apache-2.0 license for
+continuity and because attribution costs nothing.
 
-1. Run the sync script and review the diff.
-2. Decide whether to port the changes wholesale, partially, or wait.
-3. Once the Rust source reflects the new upstream state, replace the
-   `Pinned commit` and `Pinned date` in this file with the new SHA / date.
-4. Update the vendored Python snapshot under `google/` to match.
-5. Commit with a message like `sync upstream <short-sha>`.
-
-## What we do *not* track
-
-The following upstream directories are reference material and not part of
-the published crate (see `Cargo.toml` `exclude`):
-
-- `.kokoro/` — Google's release infrastructure.
-- `pyproject.toml`, `skills/` — Python packaging.
-- `examples/getting_started/`, `examples/deep_dives/`, `examples/resources/`
-  — Python examples. Rust examples live in `examples/test_agent.rs`.
-
-The `LICENSE` (Apache-2.0) is preserved at the root — required for
-attribution since this is a derivative work.
+[upstream]: https://github.com/google-antigravity/antigravity-sdk-python
