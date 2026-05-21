@@ -241,37 +241,43 @@ impl ChatResponse {
     }
 
     /// Filtered cursor that yields only conversational text deltas.
-    pub fn text_stream(&self) -> impl Stream<Item = Result<String>> {
-        self.chunks().filter_map(|res| async move {
-            match res {
-                Ok(StreamChunk::Text { text, .. }) => Some(Ok(text)),
-                Ok(_) => None,
-                Err(e) => Some(Err(e)),
-            }
-        })
+    pub fn text_stream(&self) -> futures_util::stream::BoxStream<'static, Result<String>> {
+        self.chunks()
+            .filter_map(|res| async move {
+                match res {
+                    Ok(StreamChunk::Text { text, .. }) => Some(Ok(text)),
+                    Ok(_) => None,
+                    Err(e) => Some(Err(e)),
+                }
+            })
+            .boxed()
     }
 
     /// Filtered cursor that yields only thought (reasoning) deltas.
-    pub fn thoughts(&self) -> impl Stream<Item = Result<String>> {
-        self.chunks().filter_map(|res| async move {
-            match res {
-                Ok(StreamChunk::Thought { text, .. }) => Some(Ok(text)),
-                Ok(_) => None,
-                Err(e) => Some(Err(e)),
-            }
-        })
+    pub fn thoughts(&self) -> futures_util::stream::BoxStream<'static, Result<String>> {
+        self.chunks()
+            .filter_map(|res| async move {
+                match res {
+                    Ok(StreamChunk::Thought { text, .. }) => Some(Ok(text)),
+                    Ok(_) => None,
+                    Err(e) => Some(Err(e)),
+                }
+            })
+            .boxed()
     }
 
     /// Filtered cursor that yields strongly-typed `ToolCall`s as the model
     /// dispatches them.
-    pub fn tool_calls(&self) -> impl Stream<Item = Result<ToolCall>> {
-        self.chunks().filter_map(|res| async move {
-            match res {
-                Ok(StreamChunk::ToolCall(t)) => Some(Ok(t)),
-                Ok(_) => None,
-                Err(e) => Some(Err(e)),
-            }
-        })
+    pub fn tool_calls(&self) -> futures_util::stream::BoxStream<'static, Result<ToolCall>> {
+        self.chunks()
+            .filter_map(|res| async move {
+                match res {
+                    Ok(StreamChunk::ToolCall(t)) => Some(Ok(t)),
+                    Ok(_) => None,
+                    Err(e) => Some(Err(e)),
+                }
+            })
+            .boxed()
     }
 
     /// Drain the stream and return the full concatenated text response.

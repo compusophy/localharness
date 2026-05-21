@@ -48,6 +48,9 @@ dunce = "1.0"
 path-clean = "1.0"
 arc-swap = "1"
 base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+uuid = { version = "1", features = ["v4"] }
+url = "2"
 
 [dev-dependencies]
 tokio = { version = "1.42", features = ["macros", "rt-multi-thread", "test-util"] }
@@ -56,6 +59,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [[example]]
 name = "smoke"
 path = "examples/test_agent.rs"
+
+[[example]]
+name = "text_chat"
+path = "examples/text_chat.rs"
 
 [profile.release]
 opt-level = 3

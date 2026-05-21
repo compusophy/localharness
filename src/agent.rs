@@ -23,6 +23,7 @@ use futures_util::stream::StreamExt;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
+use crate::backends::gemini::{GeminiBackendConfig, GeminiConnectionStrategy};
 use crate::connections::local::{LocalConfig, LocalConnectionStrategy};
 use crate::connections::{Connection, ConnectionStrategy};
 use crate::content::Content;
@@ -164,6 +165,80 @@ impl LocalAgentConfig {
     }
 }
 
+/// Configuration for the Rust-native Gemini backend.
+///
+/// Pairs the generic `AgentConfig` (hooks, tools, policies, triggers)
+/// with `GeminiBackendConfig` (model, API key, thinking, etc.).
+pub struct GeminiAgentConfig {
+    pub agent: AgentConfig,
+    pub gemini: GeminiBackendConfig,
+}
+
+impl GeminiAgentConfig {
+    pub fn new(api_key: impl Into<String>) -> Self {
+        Self {
+            agent: AgentConfig::default(),
+            gemini: GeminiBackendConfig::new(api_key),
+        }
+    }
+
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.gemini = self.gemini.with_model(model);
+        self
+    }
+
+    pub fn with_system_instructions(mut self, instr: impl Into<SystemInstructions>) -> Self {
+        let instr = instr.into();
+        self.gemini = self.gemini.with_system_instructions(instr.clone());
+        self.agent = self.agent.with_system_instructions(instr);
+        self
+    }
+
+    pub fn with_thinking(mut self, level: crate::types::ThinkingLevel) -> Self {
+        self.gemini = self.gemini.with_thinking(level);
+        self
+    }
+
+    pub fn with_response_schema(mut self, schema: impl Into<String>) -> Self {
+        let s = schema.into();
+        self.gemini = self.gemini.with_response_schema(s.clone());
+        self.agent.response_schema = Some(s);
+        self
+    }
+
+    pub fn with_capabilities(mut self, cap: CapabilitiesConfig) -> Self {
+        self.agent = self.agent.with_capabilities(cap);
+        self
+    }
+
+    pub fn with_tool(mut self, tool: Arc<dyn Tool>) -> Self {
+        self.agent = self.agent.with_tool(tool);
+        self
+    }
+
+    pub fn with_policies(mut self, policies: Vec<Policy>) -> Self {
+        self.agent = self.agent.with_policies(policies);
+        self
+    }
+
+    pub fn with_workspace(mut self, ws: impl Into<PathBuf>) -> Self {
+        self.agent = self.agent.with_workspace(ws);
+        self
+    }
+
+    pub fn with_trigger(mut self, trigger: Arc<dyn Trigger>) -> Self {
+        self.agent = self.agent.with_trigger(trigger);
+        self
+    }
+
+    pub fn resume(mut self, conversation_id: impl Into<String>) -> Self {
+        let id = conversation_id.into();
+        self.gemini.conversation_id = Some(id.clone());
+        self.agent.conversation_id = Some(id);
+        self
+    }
+}
+
 // =============================================================================
 // Agent
 // =============================================================================
@@ -180,27 +255,49 @@ pub struct Agent {
 }
 
 impl Agent {
+    #[deprecated(
+        since = "0.2.0-alpha.1",
+        note = "the localharness Go binary backend will be removed in 0.3.0; \
+                migrate to Agent::start_gemini"
+    )]
     pub async fn start_local(mut config: LocalAgentConfig) -> Result<Self> {
         config.agent.capabilities.validate()?;
         Self::wire_response_schema(&mut config.agent);
+        let strategy = LocalConnectionStrategy::new(config.local);
+        Self::start_with_strategy(config.agent, strategy).await
+    }
 
+    /// Start an `Agent` backed by the Rust-native Gemini runtime.
+    /// Replaces `start_local` from 0.1.x.
+    pub async fn start_gemini(mut config: GeminiAgentConfig) -> Result<Self> {
+        config.agent.capabilities.validate()?;
+        Self::wire_response_schema(&mut config.agent);
+        let strategy = GeminiConnectionStrategy::new(config.gemini);
+        Self::start_with_strategy(config.agent, strategy).await
+    }
+
+    /// Internal: shared bootstrap used by every `start_*` constructor.
+    async fn start_with_strategy<S: ConnectionStrategy + 'static>(
+        agent_config: AgentConfig,
+        strategy: S,
+    ) -> Result<Self> {
         let hook_runner = Arc::new(HookRunner::new());
         let tool_runner = Arc::new(ToolRunner::new());
 
-        for t in &config.agent.tools {
+        for t in &agent_config.tools {
             tool_runner.register(t.clone());
         }
 
         // Build the effective policy list. Mirror Python's safety check:
         // write tools or MCP servers require either a policy list or a
         // user-installed pre-tool-call hook.
-        let mut active_policies = config.agent.policies;
-        if !config.agent.workspaces.is_empty() {
-            let mut ws_policies = policy::workspace_only(config.agent.workspaces.clone());
+        let mut active_policies = agent_config.policies;
+        if !agent_config.workspaces.is_empty() {
+            let mut ws_policies = policy::workspace_only(agent_config.workspaces.clone());
             ws_policies.extend(active_policies);
             active_policies = ws_policies;
         }
-        let effective_tools = config.agent.capabilities.effective_tools();
+        let effective_tools = agent_config.capabilities.effective_tools();
         let has_write = effective_tools
             .iter()
             .any(|t| !BuiltinTool::READ_ONLY.contains(t));
@@ -215,7 +312,6 @@ impl Agent {
             hook_runner.register_pre_tool_call_decide(policy::enforce(active_policies));
         }
 
-        let strategy = LocalConnectionStrategy::new(config.local);
         let connection = strategy.connect().await?;
 
         let session_ctx = SessionContext::new();
@@ -234,11 +330,11 @@ impl Agent {
             shutdown_flag.clone(),
         );
 
-        let trigger_runner = if config.agent.triggers.is_empty() {
+        let trigger_runner = if agent_config.triggers.is_empty() {
             None
         } else {
             let runner = Arc::new(TriggerRunner::new(
-                config.agent.triggers,
+                agent_config.triggers,
                 connection.clone(),
             ));
             runner.start()?;

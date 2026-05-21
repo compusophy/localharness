@@ -13,3 +13,6 @@
 .env
 .env.*
 !.env.example
+
+# Claude Code session state
+.claude/

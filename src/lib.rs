@@ -37,6 +37,7 @@
 //! [`connections::Connection`]: connections::Connection
 
 pub mod agent;
+pub mod backends;
 pub mod connections;
 pub mod content;
 pub mod conversation;
@@ -48,7 +49,10 @@ pub mod tools;
 pub mod triggers;
 pub mod types;
 
-pub use agent::{Agent, AgentConfig, LocalAgentConfig};
+pub use agent::{Agent, AgentConfig, GeminiAgentConfig, LocalAgentConfig};
+pub use backends::gemini::{
+    GeminiBackendConfig, GeminiConnection, GeminiConnectionStrategy,
+};
 pub use connections::local::LocalConfig;
 pub use connections::{Connection, ConnectionStrategy};
 pub use content::{Content, Media, MediaKind, Part};
