@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0-alpha.3] - 2026-05-20
+
+### Added
+
+- **Three write tools** under `backends::gemini::tools`:
+  - `create_file(path, content)` — atomic write via `NamedTempFile` +
+    rename. Refuses to overwrite. Auto-creates parent directories.
+  - `edit_file(path, old_string, new_string, replace_all?)` — exact-once
+    substring replacement (or `replace_all: true` to replace every
+    occurrence). Atomic write.
+  - `run_command(command, working_dir?, timeout_sec?)` — shell exec
+    (`cmd /C` on Windows, `sh -c` elsewhere). Per-stream 256 KiB output
+    cap, default 30s / max 600s timeout, `kill_on_drop`, surfaces
+    `{stdout, stderr, exit_code, timed_out}`.
+- All three are auto-registered when `CapabilitiesConfig` enables them
+  (the unrestricted default). Workspace-only safety: pair with
+  `with_workspace(...)` to gate file writes inside specified directories.
+
+### Changed
+
+- `extract_canonical_path` now resolves the parent directory when the
+  target file does not yet exist (necessary for `create_file` to be
+  guarded by `workspace_only`).
+- 8 new unit tests covering create/edit/run_command happy + error
+  paths. Total: 20 tests passing.
+
+### Dependencies
+
+- `tempfile = "3"` (atomic file writes).
+
 ## [0.2.0-alpha.2] - 2026-05-20
 
 ### Added
