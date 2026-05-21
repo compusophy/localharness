@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-20
+
+### Removed (BREAKING)
+
+- `Agent::start_local`, `LocalAgentConfig`, `LocalConfig`,
+  `connections::local::LocalConnection`,
+  `connections::local::LocalConnectionStrategy`, and the entire `proto`
+  module are gone. The Go-binary backend they implemented was
+  `#[deprecated]` since `0.2.0-alpha.1`; migrate to `start_gemini` /
+  `GeminiAgentConfig`.
+- Dependencies dropped: `tokio-tungstenite`, `prost`, `prost-types`,
+  `path-clean`. The `signal` tokio feature is no longer enabled.
+- `Error::ProtoEncode`, `Error::ProtoDecode`, `Error::WebSocket`,
+  `Error::BinaryNotFound` removed (no callers). `Error::Http` added in
+  case a future backend wants it.
+
+### Added
+
+- **`start_subagent` built-in tool** — completes the 11/11 `BuiltinTool`
+  matrix. Spawns a one-shot subagent against the parent's Gemini client:
+  takes `{ system_instructions, prompt }`, runs a single text-only turn,
+  returns `{ final_response, finish_reason }`. No tool delegation in v1
+  (subagent tool dispatch is 0.4.x work).
+
+### Changed
+
+- Crate description updated for the post-Go-binary world.
+
 ## [0.2.0] - 2026-05-20
 
 GA of the Rust-native runtime. The crate is now fully self-contained —
