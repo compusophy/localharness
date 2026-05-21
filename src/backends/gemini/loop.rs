@@ -492,10 +492,25 @@ fn thinking_level_to_config(level: ThinkingLevel) -> ThinkingConfig {
 }
 
 fn extract_canonical_path(args: &Value) -> Option<String> {
-    args.get("path")
-        .and_then(|v| v.as_str())
-        .and_then(|s| dunce::canonicalize(s).ok())
-        .map(|p| p.display().to_string())
+    let path_str = args.get("path").and_then(|v| v.as_str())?;
+    let path = std::path::Path::new(path_str);
+    // Existing files / dirs: canonicalize directly.
+    if let Ok(p) = dunce::canonicalize(path) {
+        return Some(p.display().to_string());
+    }
+    // Non-existent target (e.g. create_file): canonicalize the parent
+    // and join the file name so workspace_only still has something to
+    // check against.
+    let parent = path.parent()?;
+    let file = path.file_name()?;
+    let parent = if parent.as_os_str().is_empty() {
+        std::path::Path::new(".")
+    } else {
+        parent
+    };
+    dunce::canonicalize(parent)
+        .ok()
+        .map(|p| p.join(file).display().to_string())
 }
 
 fn emit_error(state: &LoopState, message: String) {

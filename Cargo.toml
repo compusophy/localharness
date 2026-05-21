@@ -54,6 +54,7 @@ url = "2"
 walkdir = "2"
 globset = "0.4"
 regex = "1"
+tempfile = "3"
 
 [dev-dependencies]
 tokio = { version = "1.42", features = ["macros", "rt-multi-thread", "test-util"] }

@@ -10,15 +10,21 @@ use std::sync::Arc;
 use crate::tools::{Tool, ToolRunner};
 use crate::types::{BuiltinTool, CapabilitiesConfig};
 
+mod create_file;
+mod edit_file;
 mod find_file;
 mod finish;
 mod list_directory;
+mod run_command;
 mod search_directory;
 mod view_file;
 
+pub use create_file::CreateFile;
+pub use edit_file::EditFile;
 pub use find_file::FindFile;
 pub use finish::{Finish, FINISH_TOOL_NAME};
 pub use list_directory::ListDirectory;
+pub use run_command::RunCommand;
 pub use search_directory::SearchDirectory;
 pub use view_file::ViewFile;
 
@@ -39,11 +45,11 @@ pub fn register_builtins(runner: &ToolRunner, capabilities: &CapabilitiesConfig)
             BuiltinTool::FindFile => Some(Arc::new(FindFile)),
             BuiltinTool::SearchDirectory => Some(Arc::new(SearchDirectory)),
             BuiltinTool::Finish => Some(Arc::new(Finish)),
-            // Phase 3+ tools — not implemented yet.
-            BuiltinTool::CreateFile
-            | BuiltinTool::EditFile
-            | BuiltinTool::RunCommand
-            | BuiltinTool::AskQuestion
+            BuiltinTool::CreateFile => Some(Arc::new(CreateFile)),
+            BuiltinTool::EditFile => Some(Arc::new(EditFile)),
+            BuiltinTool::RunCommand => Some(Arc::new(RunCommand)),
+            // Phase 4+ tools — not implemented yet.
+            BuiltinTool::AskQuestion
             | BuiltinTool::StartSubagent
             | BuiltinTool::GenerateImage => None,
         };
