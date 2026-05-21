@@ -36,6 +36,7 @@ use crate::types::{
 };
 
 pub mod api;
+pub mod compaction;
 #[path = "loop.rs"]
 mod r#loop;
 pub mod tools;
@@ -181,6 +182,7 @@ impl ConnectionStrategy for GeminiConnectionStrategy {
             self.config.thinking,
             self.config.response_schema.as_deref(),
             tool_decls,
+            self.config.capabilities.compaction_threshold,
         )?;
 
         let (steps_tx, _) = broadcast::channel::<Step>(STEP_BROADCAST_CAPACITY);

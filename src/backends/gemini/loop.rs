@@ -26,6 +26,7 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::backends::gemini::api::SharedClient;
+use crate::backends::gemini::compaction::{self, should_compact};
 use crate::backends::gemini::tools::FINISH_TOOL_NAME;
 use crate::backends::gemini::wire::{
     self, ContentRole, FinishReason, FunctionCall, FunctionResponse, GenerateContentRequest,
@@ -53,6 +54,10 @@ pub(crate) struct LoopConfig {
     pub temperature: Option<f32>,
     pub max_output_tokens: Option<u32>,
     pub tool_declarations: Vec<wire::FunctionDeclaration>,
+    /// Token threshold; when the last turn's cumulative prompt-token
+    /// count exceeds this, the loop summarizes the old prefix of
+    /// history (see `compaction.rs`). `None` disables.
+    pub compaction_threshold: Option<u32>,
 }
 
 impl LoopConfig {
@@ -62,6 +67,7 @@ impl LoopConfig {
         thinking: Option<ThinkingLevel>,
         response_schema: Option<&str>,
         tool_declarations: Vec<wire::FunctionDeclaration>,
+        compaction_threshold: Option<u32>,
     ) -> Result<Self> {
         let system_instruction = system.map(|s| match s {
             SystemInstructions::Custom(c) => wire::Content::system_text(c.text.clone()),
@@ -100,6 +106,7 @@ impl LoopConfig {
             temperature: None,
             max_output_tokens: None,
             tool_declarations,
+            compaction_threshold,
         })
     }
 }
@@ -388,7 +395,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content) -> Result<()> 
     let usage_opt = if usage == UsageMetadata::default() {
         None
     } else {
-        Some(usage)
+        Some(usage.clone())
     };
 
     let (status, error_msg): (StepStatus, &str) = match last_finish {
@@ -428,6 +435,19 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content) -> Result<()> 
         usage_metadata: usage_opt,
     };
     deps.state.emit(terminal);
+
+    // Compaction: if the turn pushed total tokens over the configured
+    // threshold, summarize the old prefix of history before the next
+    // turn starts. Never errors out — see compaction.rs for fallback.
+    let used = usage.prompt_token_count;
+    if should_compact(used, deps.config.compaction_threshold) {
+        debug!(
+            used,
+            threshold = ?deps.config.compaction_threshold,
+            "compaction triggered"
+        );
+        compaction::try_compact(&deps.state.history, &deps.client, &deps.config.model).await;
+    }
 
     deps.state.idle.store(true, Ordering::Release);
     deps.state.idle_notify.notify_waiters();
