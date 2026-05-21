@@ -20,6 +20,7 @@ mod generate_image;
 mod list_directory;
 mod run_command;
 mod search_directory;
+mod start_subagent;
 mod view_file;
 
 pub use ask_question::AskQuestion;
@@ -31,11 +32,16 @@ pub use generate_image::GenerateImage;
 pub use list_directory::ListDirectory;
 pub use run_command::RunCommand;
 pub use search_directory::SearchDirectory;
+pub use start_subagent::StartSubagent;
 pub use view_file::ViewFile;
 
-/// Construction dependencies the built-in tools optionally need. Pass
-/// `image_client` when `generate_image` should be registered.
+/// Construction dependencies the built-in tools optionally need.
+///
+/// * `chat_client` + `chat_model` — used by `start_subagent`.
+/// * `image_client` + `image_model` — used by `generate_image`.
 pub struct BuiltinDeps {
+    pub chat_client: Option<SharedClient>,
+    pub chat_model: String,
     pub image_client: Option<SharedClient>,
     pub image_model: String,
 }
@@ -66,8 +72,9 @@ pub fn register_builtins(
             BuiltinTool::GenerateImage => deps.image_client.as_ref().map(|c| {
                 Arc::new(GenerateImage::new(c.clone(), deps.image_model.clone())) as Arc<dyn Tool>
             }),
-            // Phase 5+ tools — not implemented yet.
-            BuiltinTool::StartSubagent => None,
+            BuiltinTool::StartSubagent => deps.chat_client.as_ref().map(|c| {
+                Arc::new(StartSubagent::new(c.clone(), deps.chat_model.clone())) as Arc<dyn Tool>
+            }),
         };
         if let Some(t) = boxed {
             let name = t.name().to_string();

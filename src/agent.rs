@@ -8,8 +8,8 @@
 //! Lifecycle:
 //!
 //! ```rust,ignore
-//! let cfg = LocalAgentConfig::new().with_system_instructions("You are helpful.");
-//! let agent = Agent::start_local(cfg).await?;
+//! let cfg = GeminiAgentConfig::new(api_key).with_system_instructions("You are helpful.");
+//! let agent = Agent::start_gemini(cfg).await?;
 //! let response = agent.chat("hello").await?;
 //! println!("{}", response.text().await?);
 //! agent.shutdown().await?;
@@ -24,7 +24,6 @@ use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 use crate::backends::gemini::{GeminiBackendConfig, GeminiConnectionStrategy, GeminiRunners};
-use crate::connections::local::{LocalConfig, LocalConnectionStrategy};
 use crate::connections::{Connection, ConnectionStrategy};
 use crate::content::Content;
 use crate::conversation::{ChatResponse, Conversation};
@@ -96,71 +95,6 @@ impl AgentConfig {
 
     pub fn with_api_key(mut self, key: impl Into<String>) -> Self {
         self.gemini.api_key = Some(key.into());
-        self
-    }
-}
-
-/// Configuration for the local-harness backend.
-#[derive(Default)]
-pub struct LocalAgentConfig {
-    pub agent: AgentConfig,
-    pub local: LocalConfig,
-}
-
-impl LocalAgentConfig {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_system_instructions(mut self, instr: impl Into<SystemInstructions>) -> Self {
-        self.agent = self.agent.with_system_instructions(instr);
-        self
-    }
-
-    pub fn with_capabilities(mut self, cap: CapabilitiesConfig) -> Self {
-        self.agent = self.agent.with_capabilities(cap);
-        self
-    }
-
-    pub fn with_tool(mut self, tool: Arc<dyn Tool>) -> Self {
-        self.agent = self.agent.with_tool(tool);
-        self
-    }
-
-    pub fn with_policies(mut self, policies: Vec<Policy>) -> Self {
-        self.agent = self.agent.with_policies(policies);
-        self
-    }
-
-    pub fn with_workspace(mut self, ws: impl Into<PathBuf>) -> Self {
-        self.agent = self.agent.with_workspace(ws);
-        self
-    }
-
-    pub fn with_trigger(mut self, trigger: Arc<dyn Trigger>) -> Self {
-        self.agent = self.agent.with_trigger(trigger);
-        self
-    }
-
-    pub fn with_api_key(mut self, key: impl Into<String>) -> Self {
-        self.agent = self.agent.with_api_key(key);
-        self
-    }
-
-    pub fn with_binary(mut self, path: impl Into<PathBuf>) -> Self {
-        self.local.binary_path = Some(path.into());
-        self
-    }
-
-    pub fn with_storage_dir(mut self, dir: impl Into<PathBuf>) -> Self {
-        self.local.storage_dir = Some(dir.into());
-        self
-    }
-
-    pub fn resume(mut self, conversation_id: impl Into<String>) -> Self {
-        let id = conversation_id.into();
-        self.local.conversation_id = Some(id.clone());
-        self.agent.conversation_id = Some(id);
         self
     }
 }
@@ -255,22 +189,7 @@ pub struct Agent {
 }
 
 impl Agent {
-    #[deprecated(
-        since = "0.2.0-alpha.1",
-        note = "the localharness Go binary backend will be removed in 0.3.0; \
-                migrate to Agent::start_gemini"
-    )]
-    pub async fn start_local(mut config: LocalAgentConfig) -> Result<Self> {
-        config.agent.capabilities.validate()?;
-        Self::wire_response_schema(&mut config.agent);
-        Self::start_with_factory(config.agent, |_, _, _| {
-            LocalConnectionStrategy::new(config.local)
-        })
-        .await
-    }
-
     /// Start an `Agent` backed by the Rust-native Gemini runtime.
-    /// Replaces `start_local` from 0.1.x.
     pub async fn start_gemini(mut config: GeminiAgentConfig) -> Result<Self> {
         config.agent.capabilities.validate()?;
         Self::wire_response_schema(&mut config.agent);

@@ -3,7 +3,7 @@ name = "localharness"
 version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "Unofficial Rust client SDK for the `localharness` agent runtime (Google Antigravity)."
+description = "A Rust-native agent SDK for Gemini. Streaming, custom tools, safety policies, background triggers — zero external binaries."
 repository = "https://github.com/compusophy/localharness"
 documentation = "https://docs.rs/localharness"
 readme = "README.md"
@@ -26,17 +26,12 @@ tokio = { version = "1.42", features = [
     "sync",
     "process",
     "io-util",
-    "net",
     "time",
     "fs",
-    "signal",
 ] }
-tokio-tungstenite = { version = "0.20", features = ["rustls-tls-webpki-roots"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-prost = "0.12"
-prost-types = "0.12"
 async-trait = "0.1"
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 futures-core = "0.3"
@@ -45,7 +40,6 @@ tracing = "0.1"
 bytes = "1"
 parking_lot = "0.12"
 dunce = "1.0"
-path-clean = "1.0"
 arc-swap = "1"
 base64 = "0.22"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }

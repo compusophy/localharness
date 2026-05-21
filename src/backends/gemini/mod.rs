@@ -156,6 +156,8 @@ impl ConnectionStrategy for GeminiConnectionStrategy {
         // Auto-register built-in tools per the capabilities config.
         if let Some(runner) = self.runners.tool_runner.as_ref() {
             let deps = BuiltinDeps {
+                chat_client: Some(client.clone()),
+                chat_model: self.config.model.clone(),
                 image_client: Some(client.clone()),
                 image_model: self.config.image_model.clone(),
             };

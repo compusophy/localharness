@@ -1,21 +1,19 @@
-//! # localharness — Rust client for the Antigravity agent runtime
+//! # localharness — Rust-native agent SDK for Gemini
 //!
-//! Unofficial Rust port of the [`google-antigravity`](https://pypi.org/project/google-antigravity/)
-//! Python SDK. Drives the same `localharness` binary using the same wire
-//! protocol, so Rust callers can build agents against a Gemini-backed
-//! runtime with the same semantics as the Python client.
+//! Build production agents with streaming text, custom tools, safety
+//! policies, and background triggers — all from a single `cargo add`,
+//! zero external binaries.
 //!
 //! ## Quick start
 //!
 //! ```rust,no_run
-//! use localharness::{Agent, LocalAgentConfig};
+//! use localharness::{Agent, GeminiAgentConfig};
 //!
 //! # async fn run() -> localharness::Result<()> {
-//! let cfg = LocalAgentConfig::new()
-//!     .with_system_instructions("You are a concise code reviewer.")
-//!     .with_api_key(std::env::var("GEMINI_API_KEY").unwrap());
+//! let cfg = GeminiAgentConfig::new(std::env::var("GEMINI_API_KEY").unwrap())
+//!     .with_system_instructions("You are a concise code reviewer.");
 //!
-//! let agent = Agent::start_local(cfg).await?;
+//! let agent = Agent::start_gemini(cfg).await?;
 //! let response = agent.chat("What is 2+2?").await?;
 //! println!("{}", response.text().await?);
 //! agent.shutdown().await?;
@@ -44,16 +42,14 @@ pub mod conversation;
 pub mod error;
 pub mod hooks;
 pub mod policy;
-pub mod proto;
 pub mod tools;
 pub mod triggers;
 pub mod types;
 
-pub use agent::{Agent, AgentConfig, GeminiAgentConfig, LocalAgentConfig};
+pub use agent::{Agent, AgentConfig, GeminiAgentConfig};
 pub use backends::gemini::{
     GeminiBackendConfig, GeminiConnection, GeminiConnectionStrategy,
 };
-pub use connections::local::LocalConfig;
 pub use connections::{Connection, ConnectionStrategy};
 pub use content::{Content, Media, MediaKind, Part};
 pub use conversation::{ChatCursor, ChatResponse, Conversation};

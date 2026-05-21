@@ -17,14 +17,8 @@ pub enum Error {
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
 
-    #[error("protobuf encode: {0}")]
-    ProtoEncode(#[from] prost::EncodeError),
-
-    #[error("protobuf decode: {0}")]
-    ProtoDecode(#[from] prost::DecodeError),
-
-    #[error("websocket: {0}")]
-    WebSocket(String),
+    #[error("http: {0}")]
+    Http(String),
 
     #[error("connection closed")]
     Closed,
@@ -34,9 +28,6 @@ pub enum Error {
 
     #[error("already started")]
     AlreadyStarted,
-
-    #[error("harness binary not found (set ANTIGRAVITY_HARNESS_PATH or place 'localharness' on PATH)")]
-    BinaryNotFound,
 
     #[error("config: {0}")]
     Config(String),
@@ -64,18 +55,6 @@ impl Error {
 
     pub fn config(msg: impl Into<String>) -> Self {
         Self::Config(msg.into())
-    }
-}
-
-impl From<tokio_tungstenite::tungstenite::Error> for Error {
-    fn from(e: tokio_tungstenite::tungstenite::Error) -> Self {
-        Self::WebSocket(e.to_string())
-    }
-}
-
-impl From<tokio_tungstenite::tungstenite::http::Error> for Error {
-    fn from(e: tokio_tungstenite::tungstenite::http::Error) -> Self {
-        Self::WebSocket(e.to_string())
     }
 }
 
