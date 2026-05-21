@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0-alpha.1] - 2026-05-20
+
+### Added
+
+- **`Agent::start_gemini(GeminiAgentConfig)`** — Rust-native Gemini
+  backend. Talks to the Gemini REST API directly via `reqwest`; no Go
+  binary, no Python install, no external process. This is Phase 1 of
+  the 0.2.x runtime per `DESIGN.md`.
+- `backends::gemini::{GeminiBackendConfig, GeminiConnectionStrategy,
+  GeminiConnection}` — public API for the new backend.
+- `backends::gemini::api::GeminiClient` — async client over `reqwest`
+  with API-key redaction in `Debug`. Includes a small SSE decoder
+  (`GeminiSseStream`) that handles partial chunks and `[DONE]` terminators.
+- `backends::gemini::wire::*` — `serde` types matching the Gemini REST
+  contract (camelCase verbatim). Round-trip tests cover text, thought,
+  and `functionCall` part shapes.
+- `backends::gemini::loop::run_turn` — the agent loop. Streams text and
+  thought deltas, accumulates the assistant turn into history, emits a
+  terminal `Step`. Phase 1 is text-only; tool calls land in Phase 2.
+- `examples/text_chat.rs` — end-to-end example against `GEMINI_API_KEY`:
+  streams tokens, prints usage summary.
+
+### Changed
+
+- `ChatResponse::text_stream()`, `thoughts()`, `tool_calls()` now return
+  `BoxStream<...>` so callers can iterate with `.next().await` without
+  needing to `Box::pin` themselves.
+- `Agent::start_local`/`start_gemini` share a single
+  `start_with_strategy` bootstrap — every future backend gets the same
+  hook/tool/policy wiring for free.
+
+### Deprecated
+
+- `Agent::start_local` and the entire 0.1.x `LocalConnection`
+  (Go-binary-backed) backend. Will be removed in 0.3.0.
+
 ## [0.1.1] - 2026-05-20
 
 ### Changed
