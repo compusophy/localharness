@@ -31,7 +31,7 @@ async fn main() -> localharness::Result<()> {
 }
 ```
 
-> **Status:** 0.2.x · stable Rust-native runtime · 10/11 built-in tools shipping.
+> **Status:** 0.4.x · stable Rust-native runtime · 11/11 built-in tools · MCP bridge · context-window compaction.
 
 ---
 
@@ -52,7 +52,7 @@ async fn main() -> localharness::Result<()> {
 
 ```toml
 [dependencies]
-localharness = "0.2"
+localharness = "0.4"
 tokio        = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -255,6 +255,58 @@ Media is stored as `Bytes` — cloning into multiple stream frames is
 refcounted, so a 30 MB PDF is never copied.
 </details>
 
+<details><summary><b>Bridge an MCP server's tools</b></summary>
+
+Connect to an external [Model Context Protocol][mcp] server and expose
+its tools to the agent. The bridge spawns the server, fetches its tool
+catalog, and registers each as a regular `Tool` — the model can't tell
+the difference between an in-process tool and an MCP-served one.
+
+```rust
+use localharness::{Agent, GeminiAgentConfig};
+use localharness::types::McpServerConfig;
+
+let agent = Agent::start_gemini(
+    GeminiAgentConfig::new(api_key)
+        .with_mcp_server(McpServerConfig::Stdio {
+            command: "uvx".into(),
+            args: vec!["mcp-server-fetch".into()],
+        }),
+).await?;
+```
+
+Today: stdio transport only; SSE/HTTP variants return an error.
+Tools surface only — prompts, resources, sampling, and subscriptions
+are out of scope.
+
+[mcp]: https://modelcontextprotocol.io
+</details>
+
+<details><summary><b>Compact long conversations automatically</b></summary>
+
+When prompt tokens for a turn exceed
+`CapabilitiesConfig::compaction_threshold`, the agent summarizes the
+oldest history entries via a separate Gemini call and replaces them
+with one synthetic user-role turn tagged `[compacted prior context]`.
+The most-recent 6 user/model pairs are kept verbatim; function-call /
+response pairs are kept together.
+
+```rust
+use localharness::{Agent, CapabilitiesConfig, GeminiAgentConfig};
+
+let mut caps = CapabilitiesConfig::unrestricted();
+caps.compaction_threshold = Some(60_000);
+
+let agent = Agent::start_gemini(
+    GeminiAgentConfig::new(api_key).with_capabilities(caps),
+).await?;
+```
+
+Disabled by default (set to `None`). Typical values: 60-80% of your
+model's max context window. Summarization failures fall back to a
+drop-oldest strategy with the same tag.
+</details>
+
 <details><summary><b>Resume a conversation</b></summary>
 
 ```rust
@@ -285,7 +337,7 @@ default `CapabilitiesConfig` exposes the read-only safety subset; call
 | `run_command` | W | Shell exec with timeout (default 30s / max 600s), 256 KiB output cap. |
 | `generate_image` | W | Call the image model; returns base64 + MIME. |
 | `ask_question` | I/O | Default no-op (returns `skipped: true`); register a custom `ask_question` tool for interactive UI. |
-| `start_subagent` | — | **Not yet implemented** (lands in 0.3.x). |
+| `start_subagent` | spawn | One-shot text-only subagent with isolated context. Returns `{ final_response, finish_reason }`. |
 
 Custom tools registered with the same name as a built-in **win** —
 overrides are intentional.
