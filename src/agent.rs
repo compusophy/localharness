@@ -32,8 +32,10 @@ use crate::hooks::{HookRunner, SessionContext};
 use crate::policy::{self, Policy};
 use crate::tools::{Tool, ToolContext, ToolRunner};
 use crate::triggers::{Trigger, TriggerRunner};
+use crate::backends::mcp::McpBridge;
 use crate::types::{
-    BuiltinTool, CapabilitiesConfig, GeminiConfig, StepStatus, SystemInstructions, ToolCall,
+    BuiltinTool, CapabilitiesConfig, GeminiConfig, McpServerConfig, StepStatus,
+    SystemInstructions, ToolCall,
 };
 
 // =============================================================================
@@ -48,6 +50,7 @@ pub struct AgentConfig {
     pub policies: Vec<Policy>,
     pub triggers: Vec<Arc<dyn Trigger>>,
     pub workspaces: Vec<PathBuf>,
+    pub mcp_servers: Vec<McpServerConfig>,
     pub conversation_id: Option<String>,
     pub gemini: GeminiConfig,
     pub response_schema: Option<String>,
@@ -95,6 +98,11 @@ impl AgentConfig {
 
     pub fn with_api_key(mut self, key: impl Into<String>) -> Self {
         self.gemini.api_key = Some(key.into());
+        self
+    }
+
+    pub fn with_mcp_server(mut self, server: McpServerConfig) -> Self {
+        self.mcp_servers.push(server);
         self
     }
 }
@@ -165,6 +173,11 @@ impl GeminiAgentConfig {
         self
     }
 
+    pub fn with_mcp_server(mut self, server: McpServerConfig) -> Self {
+        self.agent = self.agent.with_mcp_server(server);
+        self
+    }
+
     pub fn resume(mut self, conversation_id: impl Into<String>) -> Self {
         let id = conversation_id.into();
         self.gemini.conversation_id = Some(id.clone());
@@ -183,6 +196,7 @@ pub struct Agent {
     hook_runner: Arc<HookRunner>,
     tool_runner: Arc<ToolRunner>,
     trigger_runner: Option<Arc<TriggerRunner>>,
+    mcp_bridge: Option<Arc<McpBridge>>,
     session_ctx: SessionContext,
     dispatcher: parking_lot::Mutex<Option<JoinHandle<()>>>,
     shutdown_flag: Arc<AtomicBool>,
@@ -249,6 +263,23 @@ impl Agent {
             hook_runner.register_pre_tool_call_decide(policy::enforce(active_policies));
         }
 
+        // MCP servers: connect, register their tools BEFORE the
+        // strategy spins up so the GeminiConnection captures them in
+        // its FunctionDeclarations.
+        let mcp_bridge = if agent_config.mcp_servers.is_empty() {
+            None
+        } else {
+            let mut bridge = McpBridge::new();
+            for cfg in &agent_config.mcp_servers {
+                bridge.connect(cfg).await?;
+            }
+            let registered = bridge.register_into(&tool_runner);
+            if !registered.is_empty() {
+                tracing::debug!(?registered, "registered MCP tools");
+            }
+            Some(Arc::new(bridge))
+        };
+
         let session_ctx = SessionContext::new();
         let strategy = factory(hook_runner.clone(), tool_runner.clone(), session_ctx.clone());
         let connection = strategy.connect().await?;
@@ -285,6 +316,7 @@ impl Agent {
             hook_runner,
             tool_runner,
             trigger_runner,
+            mcp_bridge,
             session_ctx,
             dispatcher: parking_lot::Mutex::new(Some(dispatcher)),
             shutdown_flag,
@@ -329,6 +361,9 @@ impl Agent {
         }
         self.hook_runner.dispatch_session_end(&self.session_ctx).await;
         self.connection.shutdown().await?;
+        if let Some(bridge) = self.mcp_bridge.as_ref() {
+            bridge.shutdown().await;
+        }
         Ok(())
     }
 }

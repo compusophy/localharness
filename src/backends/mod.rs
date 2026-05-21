@@ -15,3 +15,4 @@
 //! [`Connection`]: crate::connections::Connection
 
 pub mod gemini;
+pub mod mcp;

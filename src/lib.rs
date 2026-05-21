@@ -50,6 +50,7 @@ pub use agent::{Agent, AgentConfig, GeminiAgentConfig};
 pub use backends::gemini::{
     GeminiBackendConfig, GeminiConnection, GeminiConnectionStrategy,
 };
+pub use backends::mcp::{McpBridge, McpClient, McpToolDecl};
 pub use connections::{Connection, ConnectionStrategy};
 pub use content::{Content, Media, MediaKind, Part};
 pub use conversation::{ChatCursor, ChatResponse, Conversation};
