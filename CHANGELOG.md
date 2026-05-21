@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0-alpha.2] - 2026-05-20
+
+### Added
+
+- **Tool calling end-to-end** through the Gemini backend. The agent
+  loop now drives a model ↔ tool dispatch loop: streams the response,
+  collects `functionCall` parts, routes each through hooks → policies →
+  `ToolRunner`, appends `functionResponse` parts to history, and
+  continues until the model produces no more function calls (or hits
+  the 16-round safety cap).
+- **Five read-only built-in tools** under `backends::gemini::tools`:
+  - `list_directory(path)` — sorted children with name/kind/size.
+  - `view_file(path, start_line?, end_line?)` — 1-indexed inclusive
+    range, 256 KiB truncation cap, UTF-8 lossy.
+  - `find_file(path, pattern, max_depth?)` — glob-matched recursive
+    file search, 1000-match cap.
+  - `search_directory(path, pattern, file_glob?, case_sensitive?)` —
+    regex content search, 500-match / 4 MiB-per-file cap.
+  - `finish(output?)` — terminates the turn; captures structured
+    output when the agent is configured with a response schema.
+- `tools::ToolRunner::iter_tools()` — snapshot every registered tool
+  for `FunctionDeclaration` construction.
+- `GeminiBackendConfig::with_capabilities` and `GeminiAgentConfig`
+  routes built-in selection through `CapabilitiesConfig::effective_tools`.
+- Built-in tools are auto-registered into the `ToolRunner` at connect
+  time per the capability list. User-registered tools of the same name
+  win (no overwrite).
+- Unit tests for `list_directory`, `view_file` against the real
+  filesystem.
+
+### Changed
+
+- `Agent::start_local` / `start_gemini` now go through
+  `start_with_factory<S, F>` so backends can opt into runner injection.
+  The Gemini strategy uses this to dispatch function calls inline.
+- The agent loop emits `Step { kind: ToolCall, target: Environment }`
+  events when dispatching, so `ChatResponse::tool_calls()` lights up.
+- `walkdir`, `globset`, `regex` added as deps (built-ins only).
+
 ## [0.2.0-alpha.1] - 2026-05-20
 
 ### Added
