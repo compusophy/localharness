@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0-beta.1] - 2026-05-20
+
+### Added
+
+- **`generate_image` built-in tool** — calls the Gemini image-generation
+  model (default `gemini-3.1-flash-image-preview`) via a new
+  `GeminiClient::generate` non-streaming method. Returns
+  `{ mime_type, data_base64, bytes_len }`; the agent's `image_model`
+  config and shared `GeminiClient` are injected at strategy time.
+- **`ask_question` built-in tool** (default no-op). Returns
+  `{ skipped: true, responses: [] }`. Designed to be overridden — a
+  user-registered `ask_question` tool wins (the strategy never
+  overwrites). Lets the model attempt interactive flows on hosts that
+  don't yet wire interactive UI.
+- `BuiltinDeps` struct passed to `register_builtins` so future built-ins
+  can pick up additional construction context (image client today).
+
+### Status
+
+All 11 `BuiltinTool` variants except `start_subagent` are now
+implemented. Subagents land in 0.3.x.
+
 ## [0.2.0-alpha.3] - 2026-05-20
 
 ### Added
