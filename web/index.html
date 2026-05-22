@@ -24,9 +24,25 @@
       font: 14px/1.55 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
     }
     main {
-      max-width: 860px;
+      max-width: 1180px;
       margin: 0 auto;
       padding: 32px 24px 160px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 32px;
+    }
+    main > .col-chat { min-width: 0; }
+    main > .col-fs {
+      position: sticky;
+      top: 32px;
+      align-self: start;
+      max-height: calc(100vh - 64px);
+      display: flex;
+      flex-direction: column;
+    }
+    @media (max-width: 900px) {
+      main { grid-template-columns: 1fr; }
+      main > .col-fs { position: static; max-height: none; }
     }
     header {
       display: flex; align-items: baseline; gap: 12px;
@@ -162,48 +178,177 @@
     footer { color: var(--muted); font-size: 11px; margin-top: 48px; line-height: 1.6; }
     footer a { color: var(--accent); text-decoration: none; }
     footer a:hover { text-decoration: underline; }
+
+    /* OPFS panel */
+    .fs-panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+    }
+    .fs-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .fs-title {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .fs-actions { display: flex; gap: 6px; }
+    .fs-actions button {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 3px 8px;
+      font: 11px ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+      cursor: pointer;
+    }
+    .fs-actions button:hover { color: var(--fg); border-color: var(--fg); }
+    .fs-breadcrumb {
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 6px;
+      word-break: break-all;
+    }
+    .fs-breadcrumb a {
+      color: var(--accent);
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .fs-breadcrumb a:hover { text-decoration: underline; }
+    .fs-list {
+      flex: 1;
+      overflow-y: auto;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      border-top: 1px solid var(--border);
+    }
+    .fs-list li {
+      padding: 6px 4px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .fs-list li:hover { background: var(--panel-2); }
+    .fs-list .name { color: var(--fg); }
+    .fs-list .dir .name::before { content: "▸ "; color: var(--accent); }
+    .fs-list .file .name::before { content: "· "; color: var(--muted); }
+    .fs-list .size { color: var(--muted); font-size: 11px; }
+    .fs-list .empty {
+      color: var(--muted);
+      font-style: italic;
+      padding: 12px 4px;
+      cursor: default;
+    }
+    .fs-list .empty:hover { background: transparent; }
+    .fs-viewer {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      margin-top: 10px;
+      padding: 10px 12px;
+      max-height: 240px;
+      overflow: auto;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .fs-viewer-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 10px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .fs-viewer-header .close-viewer {
+      background: transparent;
+      color: var(--muted);
+      border: 0;
+      padding: 0;
+      cursor: pointer;
+      font: inherit;
+    }
+    .fs-viewer-header .close-viewer:hover { color: var(--fg); }
   </style>
 </head>
 <body>
 <main>
-  <header>
-    <h1>localharness</h1>
-    <span class="tag">web demo</span>
-  </header>
-  <p class="sub">Streaming Gemini chat compiled to wasm32 — no backend, key stays in this tab.</p>
+  <div class="col-chat">
+    <header>
+      <h1>localharness</h1>
+      <span class="tag">web demo · 0.6.0</span>
+    </header>
+    <p class="sub">Streaming Gemini chat compiled to wasm32 — no backend, key stays in this tab. The model can now read/write files in your tab's private OPFS storage.</p>
 
-  <div class="row">
-    <label for="key">Gemini API key <span id="keymeta"></span></label>
-    <div class="key-row">
-      <input id="key" type="password" autocomplete="off" placeholder="paste key (sessionStorage only)" />
-      <button id="clearkey" class="ghost" type="button" title="Wipe the cached key from sessionStorage">clear</button>
+    <div class="row">
+      <label for="key">Gemini API key <span id="keymeta"></span></label>
+      <div class="key-row">
+        <input id="key" type="password" autocomplete="off" placeholder="paste key (sessionStorage only)" />
+        <button id="clearkey" class="ghost" type="button" title="Wipe the cached key from sessionStorage">clear</button>
+      </div>
     </div>
+
+    <div class="row">
+      <label for="prompt">Prompt</label>
+      <textarea id="prompt" placeholder="try: 'create notes.md with a haiku about Rust', then 'list my files', then 'show me notes.md' · ⌘/Ctrl+Enter to send"></textarea>
+    </div>
+
+    <div class="actions">
+      <button id="send">send</button>
+      <button id="reset" class="ghost">new conversation</button>
+    </div>
+
+    <div id="status" class="status">loading wasm…</div>
+    <div id="transcript" class="transcript"></div>
+
+    <footer>
+      <p>
+        Compiled from <a href="https://github.com/compusophy/localharness">localharness</a> (Rust→wasm32).
+        Driving the full <code>Agent</code> loop in the browser — same code path the CLI host uses.
+        <strong>10 of 11 builtins wired</strong> — the 6 fs tools land in M3 via an OPFS-backed <code>Filesystem</code> trait;
+        <code>run_command</code> remains native-only.
+      </p>
+      <p>
+        Conversation history is held in this tab only — refresh to start fresh.
+        OPFS storage persists across reloads but is sandboxed per-origin.
+      </p>
+    </footer>
   </div>
 
-  <div class="row">
-    <label for="prompt">Prompt</label>
-    <textarea id="prompt" placeholder="ask anything · ⌘/Ctrl+Enter to send"></textarea>
-  </div>
-
-  <div class="actions">
-    <button id="send">send</button>
-    <button id="reset" class="ghost">new conversation</button>
-  </div>
-
-  <div id="status" class="status">loading wasm…</div>
-  <div id="transcript" class="transcript"></div>
-
-  <footer>
-    <p>
-      Compiled from <a href="https://github.com/compusophy/localharness">localharness</a> (Rust→wasm32).
-      Driving the full <code>Agent</code> loop in the browser — same code path the CLI host uses.
-      Currently 4/11 builtins are wired (ask_question, finish, generate_image, start_subagent);
-      the 6 fs builtins land in M3 with an OPFS-backed Filesystem trait.
-    </p>
-    <p>
-      Conversation history is held in this tab only — refresh to start fresh.
-    </p>
-  </footer>
+  <aside class="col-fs">
+    <div class="fs-panel">
+      <div class="fs-header">
+        <div class="fs-title">OPFS · this tab</div>
+        <div class="fs-actions">
+          <button id="fs-refresh" title="Re-list the current directory">refresh</button>
+          <button id="fs-wipe" title="Delete all files in OPFS for this origin">wipe</button>
+        </div>
+      </div>
+      <div class="fs-breadcrumb" id="fs-breadcrumb">/</div>
+      <ul class="fs-list" id="fs-list"></ul>
+      <div id="fs-viewer-wrap" hidden>
+        <div class="fs-viewer-header">
+          <span id="fs-viewer-name"></span>
+          <button class="close-viewer" id="fs-viewer-close" type="button">close</button>
+        </div>
+        <pre class="fs-viewer" id="fs-viewer"></pre>
+      </div>
+    </div>
+  </aside>
 </main>
 
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
@@ -346,6 +491,10 @@
       const total = Math.round(performance.now() - t0);
       const ttft = firstChunkAt ? Math.round(firstChunkAt - t0) : total;
       statusEl.textContent = `done · ttft ${ttft} ms · total ${total} ms · ${turnCount} turn${turnCount === 1 ? "" : "s"} · Agent loop`;
+
+      // Refresh the OPFS panel so any create_file / edit_file the model
+      // just performed shows up immediately.
+      if (window.__refreshFs) window.__refreshFs().catch(() => {});
     } catch (e) {
       assistantWrap.classList.remove("streaming");
       assistantBody.textContent = "(error — see status)";
@@ -370,6 +519,185 @@
     statusEl.textContent = "ready · new conversation";
     promptEl.focus();
   });
+
+  // ---------------------------------------------------------------------
+  // OPFS file browser
+  //
+  // Talks to the same OPFS root that the Rust-side `OpfsFilesystem` uses
+  // (navigator.storage.getDirectory()), so files the model creates via
+  // the fs builtins appear here, and vice versa.
+  // ---------------------------------------------------------------------
+
+  const fsListEl       = $("fs-list");
+  const fsBreadcrumbEl = $("fs-breadcrumb");
+  const fsRefreshBtn   = $("fs-refresh");
+  const fsWipeBtn      = $("fs-wipe");
+  const fsViewerWrap   = $("fs-viewer-wrap");
+  const fsViewerEl     = $("fs-viewer");
+  const fsViewerName   = $("fs-viewer-name");
+  const fsViewerClose  = $("fs-viewer-close");
+
+  // OPFS is hierarchical but we render one level at a time. cwd is an
+  // array of directory names from the OPFS root.
+  let cwd = [];
+
+  function pathString() {
+    return "/" + cwd.join("/");
+  }
+
+  function setBreadcrumb() {
+    if (cwd.length === 0) {
+      fsBreadcrumbEl.textContent = "/";
+      return;
+    }
+    fsBreadcrumbEl.innerHTML = "";
+    const root = document.createElement("a");
+    root.textContent = "/";
+    root.addEventListener("click", () => navigateTo([]));
+    fsBreadcrumbEl.appendChild(root);
+    cwd.forEach((part, idx) => {
+      const link = document.createElement("a");
+      link.textContent = part + "/";
+      link.addEventListener("click", () => navigateTo(cwd.slice(0, idx + 1)));
+      fsBreadcrumbEl.appendChild(link);
+    });
+  }
+
+  async function getOpfsRoot() {
+    if (!navigator.storage || !navigator.storage.getDirectory) {
+      throw new Error("OPFS not supported in this browser");
+    }
+    return await navigator.storage.getDirectory();
+  }
+
+  async function getCwdHandle() {
+    let dir = await getOpfsRoot();
+    for (const part of cwd) {
+      dir = await dir.getDirectoryHandle(part);
+    }
+    return dir;
+  }
+
+  async function refreshFs() {
+    setBreadcrumb();
+    fsListEl.innerHTML = "";
+    let dir;
+    try {
+      dir = await getCwdHandle();
+    } catch (e) {
+      const li = document.createElement("li");
+      li.className = "empty";
+      li.textContent = `error: ${e.message || e}`;
+      fsListEl.appendChild(li);
+      return;
+    }
+    const entries = [];
+    for await (const [name, handle] of dir.entries()) {
+      entries.push({ name, handle });
+    }
+    entries.sort((a, b) => {
+      const aDir = a.handle.kind === "directory";
+      const bDir = b.handle.kind === "directory";
+      if (aDir !== bDir) return aDir ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    if (entries.length === 0) {
+      const li = document.createElement("li");
+      li.className = "empty";
+      li.textContent = "(empty)";
+      fsListEl.appendChild(li);
+      return;
+    }
+
+    for (const { name, handle } of entries) {
+      const li = document.createElement("li");
+      li.className = handle.kind === "directory" ? "dir" : "file";
+      const nameEl = document.createElement("span");
+      nameEl.className = "name";
+      nameEl.textContent = name;
+      li.appendChild(nameEl);
+      if (handle.kind === "file") {
+        try {
+          const file = await handle.getFile();
+          const sizeEl = document.createElement("span");
+          sizeEl.className = "size";
+          sizeEl.textContent = formatBytes(file.size);
+          li.appendChild(sizeEl);
+        } catch (_) { /* ignore size failures */ }
+        li.addEventListener("click", () => openFile(name));
+      } else {
+        li.addEventListener("click", () => navigateTo([...cwd, name]));
+      }
+      fsListEl.appendChild(li);
+    }
+  }
+
+  function formatBytes(n) {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  }
+
+  async function navigateTo(newCwd) {
+    cwd = newCwd;
+    closeViewer();
+    await refreshFs();
+  }
+
+  async function openFile(name) {
+    try {
+      const dir = await getCwdHandle();
+      const handle = await dir.getFileHandle(name);
+      const file = await handle.getFile();
+      // Show at most 256 KiB; the wasm builtin uses the same cap.
+      const slice = file.slice(0, 256 * 1024);
+      const text = await slice.text();
+      fsViewerName.textContent = `${pathString().replace(/\/$/, "")}/${name}`;
+      fsViewerEl.textContent = text + (file.size > 256 * 1024 ? "\n\n… (truncated)" : "");
+      fsViewerWrap.hidden = false;
+    } catch (e) {
+      fsViewerName.textContent = name;
+      fsViewerEl.textContent = `error: ${e.message || e}`;
+      fsViewerWrap.hidden = false;
+    }
+  }
+
+  function closeViewer() {
+    fsViewerWrap.hidden = true;
+    fsViewerEl.textContent = "";
+    fsViewerName.textContent = "";
+  }
+
+  async function wipeOpfs() {
+    if (!confirm("Wipe all files in this tab's OPFS? This can't be undone.")) return;
+    const root = await getOpfsRoot();
+    const names = [];
+    for await (const name of root.keys()) names.push(name);
+    for (const name of names) {
+      try { await root.removeEntry(name, { recursive: true }); } catch (_) {}
+    }
+    cwd = [];
+    closeViewer();
+    await refreshFs();
+  }
+
+  fsRefreshBtn.addEventListener("click", refreshFs);
+  fsWipeBtn.addEventListener("click", wipeOpfs);
+  fsViewerClose.addEventListener("click", closeViewer);
+
+  // Initial population. After every chat turn we refresh so any
+  // create_file / edit_file the model performed becomes visible.
+  refreshFs().catch((e) => {
+    fsListEl.innerHTML = "";
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = `OPFS unavailable: ${e.message || e}`;
+    fsListEl.appendChild(li);
+  });
+
+  // Re-export so runChat can trigger a refresh after each turn.
+  window.__refreshFs = refreshFs;
 </script>
 </body>
 </html>
