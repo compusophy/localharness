@@ -30,7 +30,8 @@ struct Args {
     case_sensitive: Option<bool>,
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl Tool for SearchDirectory {
     fn name(&self) -> &str {
         "search_directory"

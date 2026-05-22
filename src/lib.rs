@@ -34,12 +34,20 @@
 //! [`ChatResponse`]: conversation::ChatResponse
 //! [`connections::Connection`]: connections::Connection
 
+// On wasm32 the upper architecture (Agent → Conversation → Connection)
+// is temporarily gated behind `native` because its trait bounds require
+// `Send` futures, which reqwest's browser fetch can't satisfy. The wasm
+// surface exposes `error`, `content`, `types`, and the low-level
+// `backends::gemini::api::GeminiClient` so a web demo can drive the
+// Gemini REST API directly. Lifting the gate is M2.5: thread a
+// `MaybeSend` shim through the Tool/Connection/Hook traits.
 pub mod agent;
 pub mod backends;
 pub mod connections;
 pub mod content;
 pub mod conversation;
 pub mod error;
+pub(crate) mod runtime;
 pub mod hooks;
 pub mod policy;
 pub mod tools;
@@ -50,6 +58,7 @@ pub use agent::{Agent, AgentConfig, GeminiAgentConfig};
 pub use backends::gemini::{
     GeminiBackendConfig, GeminiConnection, GeminiConnectionStrategy,
 };
+#[cfg(feature = "native")]
 pub use backends::mcp::{McpBridge, McpClient, McpToolDecl};
 pub use connections::{Connection, ConnectionStrategy};
 pub use content::{Content, Media, MediaKind, Part};

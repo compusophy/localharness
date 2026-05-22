@@ -19,7 +19,8 @@ use crate::tools::{Tool, ToolContext};
 
 pub struct AskQuestion;
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl Tool for AskQuestion {
     fn name(&self) -> &str {
         "ask_question"

@@ -15,4 +15,5 @@
 //! [`Connection`]: crate::connections::Connection
 
 pub mod gemini;
+#[cfg(feature = "native")]
 pub mod mcp;

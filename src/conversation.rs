@@ -17,10 +17,9 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
-use futures_util::stream::{BoxStream, StreamExt};
+use futures_util::stream::StreamExt;
 use parking_lot::Mutex;
 use tokio::sync::Notify;
-use tokio::task::JoinHandle;
 
 use crate::connections::Connection;
 use crate::content::Content;
@@ -99,34 +98,41 @@ impl Conversation {
     /// Drains steps from the connection, accumulating into history and
     /// usage as they arrive. The stream terminates when the connection
     /// closes — callers wanting per-turn termination should use `chat()`.
-    pub fn receive_steps(&self) -> BoxStream<'static, Result<Step>> {
+    pub fn receive_steps(&self) -> crate::connections::StepStream {
         let upstream = self.connection.subscribe_steps();
         let state = self.state.clone();
-        upstream
-            .map(move |res| {
-                if let Ok(step) = &res {
-                    let mut s = state.lock();
-                    s.history.push(step.clone());
-                    if let Some(u) = &step.usage_metadata {
-                        s.cumulative_usage.accumulate(u);
-                        if let Some(turn) = s.last_turn_usage.as_mut() {
-                            turn.accumulate(u);
-                        } else {
-                            let mut fresh = UsageMetadata::default();
-                            fresh.accumulate(u);
-                            s.last_turn_usage = Some(fresh);
-                        }
-                    }
-                    if step.is_terminal_response() {
-                        s.last_response = Some(step.content.clone());
-                    }
-                    if let Some(out) = &step.structured_output {
-                        s.last_structured_output = Some(out.clone());
+        let mapped = upstream.map(move |res| {
+            if let Ok(step) = &res {
+                let mut s = state.lock();
+                s.history.push(step.clone());
+                if let Some(u) = &step.usage_metadata {
+                    s.cumulative_usage.accumulate(u);
+                    if let Some(turn) = s.last_turn_usage.as_mut() {
+                        turn.accumulate(u);
+                    } else {
+                        let mut fresh = UsageMetadata::default();
+                        fresh.accumulate(u);
+                        s.last_turn_usage = Some(fresh);
                     }
                 }
-                res
-            })
-            .boxed()
+                if step.is_terminal_response() {
+                    s.last_response = Some(step.content.clone());
+                }
+                if let Some(out) = &step.structured_output {
+                    s.last_structured_output = Some(out.clone());
+                }
+            }
+            res
+        });
+        // BoxStream requires Send; wasm fetch streams aren't.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            mapped.boxed()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            mapped.boxed_local()
+        }
     }
 
     /// Sends a prompt and returns the response stream. The returned
@@ -150,7 +156,6 @@ impl Conversation {
 
 pub struct ChatResponse {
     inner: Arc<ChatInner>,
-    _producer: JoinHandle<()>,
 }
 
 struct ChatInner {
@@ -166,7 +171,7 @@ struct ChatBuf {
 
 impl ChatResponse {
     fn new(
-        mut step_stream: BoxStream<'static, Result<Step>>,
+        mut step_stream: crate::connections::StepStream,
         conv_state: Arc<Mutex<ConversationState>>,
     ) -> Self {
         let inner = Arc::new(ChatInner {
@@ -178,7 +183,7 @@ impl ChatResponse {
             notify: Notify::new(),
         });
         let inner_clone = inner.clone();
-        let producer = tokio::spawn(async move {
+        crate::runtime::spawn(async move {
             let mut emitted_text = String::new();
             while let Some(step) = step_stream.next().await {
                 match step {
@@ -224,10 +229,7 @@ impl ChatResponse {
             inner_clone.notify.notify_waiters();
         });
 
-        Self {
-            inner,
-            _producer: producer,
-        }
+        Self { inner }
     }
 
     /// A fresh cursor that replays every chunk from the start. Multiple

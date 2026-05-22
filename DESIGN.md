@@ -235,9 +235,52 @@ Notes:
 | **5** | 0.2.0 | GA. `LocalConnectionStrategy` is `#[deprecated]`. Docs front-page Gemini backend. Smoke tests pass against live API. | 1 session |
 | **6** | 0.3.0 | Delete `LocalConnectionStrategy` and the proto layer. Add subagents. | future |
 | **7** | 0.4.0 | Compaction (sliding-window context management), MCP client integration. | future |
+| **8** | 0.5.0 | `wasm32-unknown-unknown` target + live browser demo. Native code stays gated behind a `native` cargo feature; the Agent loop runs in a tab via a `localharness-web` cdylib. | shipped |
 
 Per phase: tests, doctests, smoke example, CHANGELOG entry, release via
 `scripts/release.{sh,ps1}`.
+
+### Phase 8 notes — wasm32 + web demo (0.5.0)
+
+Phase 8 isn't in the original phase plan; it was triggered by a
+"kitchen-sink demo" request after 0.4.0 GA. Scope:
+
+- **`native` cargo feature.** Default-on. Gates `tokio` multi-thread
+  + `process` + `fs` features, `walkdir`, `tempfile`, the 6 fs
+  builtins, `run_command`, and the MCP stdio bridge. wasm callers opt
+  out via `default-features = false`.
+- **`src/runtime.rs`.** New module — defines `spawn` (cfg-gated
+  `tokio::spawn` vs `wasm_bindgen_futures::spawn_local`) and a
+  `MaybeSendSync` marker (`Send + Sync` on native, empty on wasm).
+- **Trait Send-relaxation.** Every `#[async_trait]` is `cfg_attr`'d
+  to `async_trait(?Send)` on wasm so browser-fetch futures (which
+  aren't `Send`) can satisfy the method signatures. Trait supertraits
+  changed from `: Send + Sync` to `: MaybeSendSync`.
+- **`Connection::subscribe_steps`.** Returns a new `StepStream` type
+  alias that maps to `BoxStream` (native) or `LocalBoxStream` (wasm).
+- **`localharness-web/` cdylib.** Out-of-tree (not a workspace
+  member). Depends on `localharness = { path = "..", default-features
+  = false }`. Stores one `Agent` per browser tab in a
+  `thread_local<RefCell<Option<Rc<Agent>>>>`. Exposes
+  `start_session`, `chat(prompt, on_chunk)`, `reset_session` to JS.
+- **`web/` static site.** `index.html` (chat UI, marked.js for
+  assistant-side markdown) + `web/pkg/` (wasm-pack output, committed
+  for static deploy). Vercel serves `web/` verbatim with
+  `max-age=0, must-revalidate` on `/pkg/*` so redeploys don't get
+  stuck behind aggressive caching.
+- **SSE parser fix.** `GeminiSseStream::take_frame` now matches both
+  `\n\n` and `\r\n\r\n` frame separators — browser fetch surfaces
+  Gemini's SSE with CRLF. A regression test covers the CRLF case.
+
+What didn't ship in Phase 8 (deferred to Phase 9 / 0.6.0):
+
+- The 6 fs builtins on wasm — they need a `Filesystem` trait abstraction
+  with an OPFS-backed implementation behind `web-sys`.
+- Tool-call rendering in the web demo. Today only assistant text streams;
+  tool calls are dispatched server-side but the UI doesn't surface them.
+- `policy.rs::dunce::canonicalize` compiles on wasm but would panic at
+  runtime if anyone wired up `workspace_only` policies in the browser.
+  Not a problem today; would be for fs builtins.
 
 ## Module-by-module spec — Phase 1
 

@@ -15,14 +15,16 @@ use serde_json::Value;
 
 use crate::connections::Connection;
 use crate::error::{Error, Result};
+use crate::runtime::MaybeSendSync;
 use crate::types::{ToolCall, ToolResult};
 
 // =============================================================================
 // Tool trait
 // =============================================================================
 
-#[async_trait]
-pub trait Tool: Send + Sync {
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait Tool: MaybeSendSync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn input_schema(&self) -> Value;
@@ -142,8 +144,16 @@ impl ToolRunner {
 // Builder helper for ad-hoc closure-based tools
 // =============================================================================
 
+// On wasm32 the future doesn't need `Send` (single-threaded executor)
+// and the closure doesn't either. Keep the native signature unchanged.
+#[cfg(not(target_arch = "wasm32"))]
 type ToolFuture = futures_util::future::BoxFuture<'static, Result<Value>>;
+#[cfg(target_arch = "wasm32")]
+type ToolFuture = futures_util::future::LocalBoxFuture<'static, Result<Value>>;
+#[cfg(not(target_arch = "wasm32"))]
 type ClosureHandler = Arc<dyn Fn(Value, Option<Arc<ToolContext>>) -> ToolFuture + Send + Sync>;
+#[cfg(target_arch = "wasm32")]
+type ClosureHandler = Arc<dyn Fn(Value, Option<Arc<ToolContext>>) -> ToolFuture>;
 
 /// A `Tool` whose `execute` is an `Arc<dyn Fn>` closure. Useful for binding
 /// a Rust function into the SDK without creating a dedicated type.
@@ -155,6 +165,7 @@ pub struct ClosureTool {
 }
 
 impl ClosureTool {
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new<F, Fut>(
         name: impl Into<String>,
         description: impl Into<String>,
@@ -172,9 +183,28 @@ impl ClosureTool {
             handler: Arc::new(move |a, c| Box::pin(handler(a, c))),
         })
     }
+    #[cfg(target_arch = "wasm32")]
+    pub fn new<F, Fut>(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        schema: Value,
+        handler: F,
+    ) -> Arc<Self>
+    where
+        F: Fn(Value, Option<Arc<ToolContext>>) -> Fut + 'static,
+        Fut: std::future::Future<Output = Result<Value>> + 'static,
+    {
+        Arc::new(Self {
+            name: name.into(),
+            description: description.into(),
+            schema,
+            handler: Arc::new(move |a, c| Box::pin(handler(a, c))),
+        })
+    }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl Tool for ClosureTool {
     fn name(&self) -> &str {
         &self.name

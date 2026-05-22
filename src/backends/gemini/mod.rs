@@ -11,11 +11,18 @@
 //! policies + `ToolRunner`, appends the response to history, and
 //! continues until the model produces no further function calls.
 
+pub mod api;
+pub mod compaction;
+pub mod wire;
+#[path = "loop.rs"]
+mod r#loop;
+pub mod tools;
+
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
-use futures_util::stream::{BoxStream, StreamExt};
+use futures_util::stream::StreamExt;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tracing::warn;
@@ -25,7 +32,7 @@ use crate::backends::gemini::r#loop::{
     run_turn, to_wire_user_content, LoopConfig, LoopState, TurnDeps,
 };
 use crate::backends::gemini::tools::{register_builtins, BuiltinDeps};
-use crate::connections::{Connection, ConnectionStrategy};
+use crate::connections::{Connection, ConnectionStrategy, StepStream};
 use crate::content::Content;
 use crate::error::{Error, Result};
 use crate::hooks::{HookRunner, SessionContext};
@@ -34,13 +41,6 @@ use crate::types::{
     CapabilitiesConfig, Step, SystemInstructions, ThinkingLevel, ToolResult,
     DEFAULT_IMAGE_GENERATION_MODEL, DEFAULT_MODEL,
 };
-
-pub mod api;
-pub mod compaction;
-#[path = "loop.rs"]
-mod r#loop;
-pub mod tools;
-pub mod wire;
 
 const STEP_BROADCAST_CAPACITY: usize = 256;
 
@@ -113,6 +113,7 @@ impl GeminiBackendConfig {
 // Strategy
 // =============================================================================
 
+
 #[derive(Default)]
 pub struct GeminiRunners {
     pub tool_runner: Option<Arc<ToolRunner>>,
@@ -120,10 +121,12 @@ pub struct GeminiRunners {
     pub session_ctx: Option<SessionContext>,
 }
 
+
 pub struct GeminiConnectionStrategy {
     config: GeminiBackendConfig,
     runners: GeminiRunners,
 }
+
 
 impl GeminiConnectionStrategy {
     pub fn new(config: GeminiBackendConfig) -> Self {
@@ -142,7 +145,9 @@ impl GeminiConnectionStrategy {
     }
 }
 
-#[async_trait]
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl ConnectionStrategy for GeminiConnectionStrategy {
     async fn connect(&self) -> Result<Arc<dyn Connection>> {
         if self.config.api_key.trim().is_empty() {
@@ -209,6 +214,7 @@ impl ConnectionStrategy for GeminiConnectionStrategy {
     }
 }
 
+
 fn build_tool_declarations(runner: &ToolRunner) -> Vec<wire::FunctionDeclaration> {
     runner
         .iter_tools()
@@ -225,13 +231,16 @@ fn build_tool_declarations(runner: &ToolRunner) -> Vec<wire::FunctionDeclaration
 // Connection
 // =============================================================================
 
+
 pub struct GeminiConnection {
     deps_template: TurnDeps,
     state: Arc<LoopState>,
     conversation_id: Arc<str>,
 }
 
-#[async_trait]
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl Connection for GeminiConnection {
     fn is_idle(&self) -> bool {
         self.state.idle.load(Ordering::Acquire)
@@ -244,7 +253,7 @@ impl Connection for GeminiConnection {
     async fn send(&self, content: Content) -> Result<()> {
         let user = to_wire_user_content(content)?;
         let deps = self.deps_template.clone();
-        tokio::spawn(async move {
+        crate::runtime::spawn(async move {
             if let Err(e) = run_turn(deps, user).await {
                 warn!(error = %e, "gemini turn failed");
             }
@@ -262,11 +271,18 @@ impl Connection for GeminiConnection {
         Ok(())
     }
 
-    fn subscribe_steps(&self) -> BoxStream<'static, Result<Step>> {
+    fn subscribe_steps(&self) -> StepStream {
         let rx = self.state.steps.subscribe();
-        BroadcastStream::new(rx)
-            .map(|r| r.map_err(|e| Error::other(format!("gemini step lag: {e}"))))
-            .boxed()
+        let mapped = BroadcastStream::new(rx)
+            .map(|r| r.map_err(|e| Error::other(format!("gemini step lag: {e}"))));
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            mapped.boxed()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            mapped.boxed_local()
+        }
     }
 
     async fn wait_for_idle(&self) -> Result<()> {

@@ -11,19 +11,32 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+#[cfg(not(target_arch = "wasm32"))]
 use futures_util::stream::BoxStream;
+#[cfg(target_arch = "wasm32")]
+use futures_util::stream::LocalBoxStream;
 
 use crate::content::Content;
 use crate::error::Result;
+use crate::runtime::MaybeSendSync;
 use crate::types::{Step, ToolResult};
+
+/// Connection step stream alias. `BoxStream` on native (Send-bound,
+/// for tokio::spawn compatibility); `LocalBoxStream` on wasm32 where
+/// browser fetch streams aren't Send.
+#[cfg(not(target_arch = "wasm32"))]
+pub type StepStream = BoxStream<'static, Result<Step>>;
+#[cfg(target_arch = "wasm32")]
+pub type StepStream = LocalBoxStream<'static, Result<Step>>;
 
 /// A live, owned session with a backend.
 ///
 /// Implementations are `Send + Sync` and may be shared via `Arc`. Every
 /// method takes `&self` so handlers (tools, triggers) can call back
 /// into the connection without exclusive access.
-#[async_trait]
-pub trait Connection: Send + Sync {
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait Connection: MaybeSendSync {
     /// True when the backend reports no active turn. Backed by an
     /// `AtomicBool` so callers may poll without contention.
     fn is_idle(&self) -> bool;
@@ -48,7 +61,7 @@ pub trait Connection: Send + Sync {
     /// an independent cursor; the underlying source is typically a
     /// broadcast channel so late subscribers see steps that arrive
     /// after they subscribe.
-    fn subscribe_steps(&self) -> BoxStream<'static, Result<Step>>;
+    fn subscribe_steps(&self) -> StepStream;
 
     /// Park the caller until the backend transitions to idle.
     async fn wait_for_idle(&self) -> Result<()>;
@@ -58,7 +71,8 @@ pub trait Connection: Send + Sync {
 }
 
 /// Opens a [`Connection`].
-#[async_trait]
-pub trait ConnectionStrategy: Send + Sync {
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait ConnectionStrategy: MaybeSendSync {
     async fn connect(&self) -> Result<Arc<dyn Connection>>;
 }

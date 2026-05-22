@@ -22,7 +22,8 @@ pub const FINISH_TOOL_NAME: &str = "finish";
 
 pub struct Finish;
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl Tool for Finish {
     fn name(&self) -> &str {
         FINISH_TOOL_NAME

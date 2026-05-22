@@ -26,7 +26,8 @@ struct Args {
     replace_all: bool,
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl Tool for EditFile {
     fn name(&self) -> &str {
         "edit_file"

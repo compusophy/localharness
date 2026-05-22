@@ -13,6 +13,7 @@ use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
@@ -25,6 +26,7 @@ use crate::backends::gemini::wire::{GenerateChunk, GenerateContentRequest};
 use crate::error::{Error, Result};
 
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
+#[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub struct GeminiClient {
@@ -44,9 +46,13 @@ impl fmt::Debug for GeminiClient {
 
 impl GeminiClient {
     pub fn new(api_key: impl Into<String>) -> Result<Self> {
-        let http = Client::builder()
-            .user_agent(concat!("localharness/", env!("CARGO_PKG_VERSION")))
-            .timeout(DEFAULT_TIMEOUT)
+        let builder = Client::builder()
+            .user_agent(concat!("localharness/", env!("CARGO_PKG_VERSION")));
+        // reqwest's wasm builder doesn't have .timeout() — fetch timeouts
+        // are controlled by the browser, not the client config.
+        #[cfg(not(target_arch = "wasm32"))]
+        let builder = builder.timeout(DEFAULT_TIMEOUT);
+        let http = builder
             .build()
             .map_err(|e| Error::other(format!("reqwest client build: {e}")))?;
         Ok(Self {
@@ -146,8 +152,16 @@ impl GeminiClient {
 // SSE stream
 // =============================================================================
 
+// On native, the SSE byte stream must be `Send` so it can move into a
+// `tokio::spawn`'d turn. On wasm32, reqwest's browser fetch stream isn't
+// Send — that's fine because everything single-threads through
+// `wasm_bindgen_futures::spawn_local`.
+#[cfg(not(target_arch = "wasm32"))]
 type ByteStream =
     Pin<Box<dyn Stream<Item = Result<Bytes>> + Send + 'static>>;
+#[cfg(target_arch = "wasm32")]
+type ByteStream =
+    Pin<Box<dyn Stream<Item = Result<Bytes>> + 'static>>;
 
 /// Decodes a Gemini SSE byte stream into parsed [`GenerateChunk`]s.
 ///
@@ -173,14 +187,29 @@ impl GeminiSseStream {
     /// Pull a complete frame's bytes from `self.buffer` if one is
     /// present. Returns the JSON payload (without the `data:` prefix
     /// or trailing newlines), or `None` if no full frame is buffered.
+    ///
+    /// A frame ends at the first blank line. Two byte sequences mark
+    /// that boundary: `\n\n` (LF) or `\r\n\r\n` (CRLF). Browser fetch
+    /// surfaces Gemini's SSE with CRLF, so we must accept both.
     fn take_frame(&mut self) -> Option<Vec<u8>> {
-        // A frame ends at the first blank line ("\n\n" after normalising CRLF).
         let bytes = &self.buffer[..];
-        for i in 0..bytes.len().saturating_sub(1) {
-            if bytes[i] == b'\n' && bytes[i + 1] == b'\n' {
+        let mut i = 0;
+        while i < bytes.len() {
+            // Prefer the longer CRLF boundary so we consume it whole.
+            if i + 3 < bytes.len()
+                && bytes[i] == b'\r'
+                && bytes[i + 1] == b'\n'
+                && bytes[i + 2] == b'\r'
+                && bytes[i + 3] == b'\n'
+            {
+                let frame = self.buffer.split_to(i + 4);
+                return Some(extract_data_payload(&frame));
+            }
+            if i + 1 < bytes.len() && bytes[i] == b'\n' && bytes[i + 1] == b'\n' {
                 let frame = self.buffer.split_to(i + 2);
                 return Some(extract_data_payload(&frame));
             }
+            i += 1;
         }
         None
     }
@@ -279,6 +308,25 @@ mod tests {
         let second = s.next().await.unwrap().unwrap();
         assert_eq!(second.candidates[0].finish_reason.unwrap(),
             crate::backends::gemini::wire::FinishReason::Stop);
+        assert!(s.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn decodes_crlf_terminated_frames() {
+        // Browser fetch surfaces Gemini's SSE with CRLF line endings.
+        // The parser must split on \r\n\r\n, not just \n\n.
+        let bytes = bytes_from(&[
+            b"data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hi\"}]}}]}\r\n\r\n",
+            b"data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\r\n\r\ndata: [DONE]\r\n\r\n",
+        ]);
+        let mut s = GeminiSseStream::new(bytes);
+        let first = s.next().await.unwrap().unwrap();
+        assert_eq!(first.candidates.len(), 1);
+        let second = s.next().await.unwrap().unwrap();
+        assert_eq!(
+            second.candidates[0].finish_reason.unwrap(),
+            crate::backends::gemini::wire::FinishReason::Stop
+        );
         assert!(s.next().await.is_none());
     }
 

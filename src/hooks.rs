@@ -16,6 +16,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+
+use crate::runtime::MaybeSendSync;
 use parking_lot::RwLock;
 use tracing::warn;
 
@@ -74,48 +76,54 @@ pub type OperationContext = HookContext;
 // Hook traits
 // =============================================================================
 
-#[async_trait]
-pub trait OnSessionStartHook: Send + Sync {
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait OnSessionStartHook: MaybeSendSync {
     fn name(&self) -> &str {
         "on_session_start"
     }
     async fn run(&self, ctx: &SessionContext) -> Result<()>;
 }
 
-#[async_trait]
-pub trait OnSessionEndHook: Send + Sync {
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait OnSessionEndHook: MaybeSendSync {
     fn name(&self) -> &str {
         "on_session_end"
     }
     async fn run(&self, ctx: &SessionContext) -> Result<()>;
 }
 
-#[async_trait]
-pub trait PreTurnHook: Send + Sync {
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait PreTurnHook: MaybeSendSync {
     fn name(&self) -> &str {
         "pre_turn"
     }
     async fn run(&self, ctx: &TurnContext, prompt: &Content) -> Result<HookResult>;
 }
 
-#[async_trait]
-pub trait PostTurnHook: Send + Sync {
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait PostTurnHook: MaybeSendSync {
     fn name(&self) -> &str {
         "post_turn"
     }
     async fn run(&self, ctx: &TurnContext, response: &str) -> Result<()>;
 }
 
-#[async_trait]
-pub trait PreToolCallDecideHook: Send + Sync {
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait PreToolCallDecideHook: MaybeSendSync {
     fn name(&self) -> &str {
         "pre_tool_call_decide"
     }
     async fn run(&self, ctx: &OperationContext, call: &ToolCall) -> Result<HookResult>;
 }
 
-#[async_trait]
-pub trait PostToolCallHook: Send + Sync {
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait PostToolCallHook: MaybeSendSync {
     fn name(&self) -> &str {
         "post_tool_call"
     }

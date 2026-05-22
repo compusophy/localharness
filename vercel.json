@@ -1,0 +1,23 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "buildCommand": null,
+  "outputDirectory": "web",
+  "installCommand": null,
+  "headers": [
+    {
+      "source": "/pkg/(.*).wasm",
+      "headers": [
+        { "key": "Content-Type", "value": "application/wasm" },
+        { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }
+      ]
+    },
+    {
+      "source": "/pkg/(.*).js",
+      "headers": [
+        { "key": "Content-Type", "value": "application/javascript" },
+        { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+# Only web/ + vercel.json are served. Everything else is local-only.
+.env
+.env.*
+target
+localharness-web/target
+src
+examples
+scripts
+localharness-web
+Cargo.toml
+Cargo.lock
+.git
+.claude
+.github
+.idea
+.vscode
+*.md
+DESIGN.md
+RELEASING.md
+CHANGELOG.md
+UPSTREAM.md
+README.md
+LICENSE
+.gitattributes
+.gitignore

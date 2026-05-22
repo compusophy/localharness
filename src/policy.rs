@@ -261,7 +261,8 @@ struct PolicyEnforcer {
     policies: RwLock<Vec<Policy>>,
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl PreToolCallDecideHook for PolicyEnforcer {
     fn name(&self) -> &str {
         "policy::enforce"

@@ -24,7 +24,8 @@ struct Args {
     content: String,
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl Tool for CreateFile {
     fn name(&self) -> &str {
         "create_file"

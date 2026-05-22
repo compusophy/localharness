@@ -31,7 +31,9 @@ async fn main() -> localharness::Result<()> {
 }
 ```
 
-> **Status:** 0.4.x · stable Rust-native runtime · 11/11 built-in tools · MCP bridge · context-window compaction.
+> **Status:** 0.5.x · stable Rust-native runtime · 11/11 built-in tools · MCP bridge · context-window compaction · **wasm32 target + browser demo**.
+
+**Try it in your browser:** [`antig-compusophys-projects.vercel.app`](https://antig-compusophys-projects.vercel.app/) — the same `Agent` loop, compiled to wasm and driven from a single `index.html`.
 
 ---
 
@@ -42,6 +44,7 @@ async fn main() -> localharness::Result<()> {
 - [Examples](#examples) — streaming, tools, hooks, policies, triggers, multimodal
 - [Built-in tools](#built-in-tools)
 - [Architecture](#architecture)
+- [Run in the browser](#run-in-the-browser)
 - [Design notes](#design-notes-performance--safety)
 - [FAQ](#faq)
 - [License](#license)
@@ -52,7 +55,7 @@ async fn main() -> localharness::Result<()> {
 
 ```toml
 [dependencies]
-localharness = "0.4"
+localharness = "0.5"
 tokio        = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -382,6 +385,50 @@ A single broadcast channel fans `Step`s out to every cursor
 (`ChatResponse::chunks`, `text_stream`, `thoughts`, `tool_calls`). The
 tool dispatch loop is inline inside the turn — no out-of-band
 round-trip through a sidecar process.
+
+---
+
+## Run in the browser
+
+`localharness` compiles to `wasm32-unknown-unknown`. The same `Agent`
+loop that drives a CLI runs inside a browser tab — no server,
+no backend, key stays in the page.
+
+**Live demo:** [`antig-compusophys-projects.vercel.app`](https://antig-compusophys-projects.vercel.app/)
+
+Drop the default `native` feature when targeting wasm:
+
+```toml
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+localharness = { version = "0.5", default-features = false }
+```
+
+Run the demo locally:
+
+```sh
+git clone https://github.com/compusophy/localharness
+cd localharness
+./scripts/build-web.sh        # wasm-pack build → web/pkg/
+python -m http.server 8765 -d web
+```
+
+**What works on wasm:** the full `Agent` → `Conversation` →
+`Connection` → `ToolRunner` chain, plus the 4 portable built-in tools
+(`ask_question`, `finish`, `generate_image`, `start_subagent`). The
+Gemini SSE stream parses the same way; everything streams through the
+same code path the native CLI uses.
+
+**What doesn't (yet):** the 6 filesystem builtins (`list_directory`,
+`view_file`, `find_file`, `search_directory`, `create_file`,
+`edit_file`), `run_command`, and the MCP stdio bridge all need OS
+primitives the browser sandbox doesn't expose. They stay gated behind
+the `native` cargo feature. An OPFS-backed `Filesystem` trait lands in
+a later release.
+
+The `localharness-web/` cdylib crate in this repo is the reference
+wasm-bindgen wrapper; it stores one `Agent` per tab in a
+`thread_local` and exposes `start_session`, `chat`, and
+`reset_session` to JavaScript.
 
 ---
 

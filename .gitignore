@@ -1,5 +1,6 @@
 # Rust
 /target
+/localharness-web/target
 **/*.rs.bk
 
 # Editor
@@ -16,3 +17,5 @@
 
 # Claude Code session state
 .claude/
+
+.vercel

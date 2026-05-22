@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures_util::stream::StreamExt;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
@@ -32,9 +33,12 @@ use crate::hooks::{HookRunner, SessionContext};
 use crate::policy::{self, Policy};
 use crate::tools::{Tool, ToolContext, ToolRunner};
 use crate::triggers::{Trigger, TriggerRunner};
+#[cfg(feature = "native")]
 use crate::backends::mcp::McpBridge;
+#[cfg(feature = "native")]
+use crate::types::McpServerConfig;
 use crate::types::{
-    BuiltinTool, CapabilitiesConfig, GeminiConfig, McpServerConfig, StepStatus,
+    BuiltinTool, CapabilitiesConfig, GeminiConfig, StepStatus,
     SystemInstructions, ToolCall,
 };
 
@@ -50,6 +54,7 @@ pub struct AgentConfig {
     pub policies: Vec<Policy>,
     pub triggers: Vec<Arc<dyn Trigger>>,
     pub workspaces: Vec<PathBuf>,
+    #[cfg(feature = "native")]
     pub mcp_servers: Vec<McpServerConfig>,
     pub conversation_id: Option<String>,
     pub gemini: GeminiConfig,
@@ -101,6 +106,7 @@ impl AgentConfig {
         self
     }
 
+    #[cfg(feature = "native")]
     pub fn with_mcp_server(mut self, server: McpServerConfig) -> Self {
         self.mcp_servers.push(server);
         self
@@ -173,6 +179,7 @@ impl GeminiAgentConfig {
         self
     }
 
+    #[cfg(feature = "native")]
     pub fn with_mcp_server(mut self, server: McpServerConfig) -> Self {
         self.agent = self.agent.with_mcp_server(server);
         self
@@ -196,8 +203,10 @@ pub struct Agent {
     hook_runner: Arc<HookRunner>,
     tool_runner: Arc<ToolRunner>,
     trigger_runner: Option<Arc<TriggerRunner>>,
+    #[cfg(feature = "native")]
     mcp_bridge: Option<Arc<McpBridge>>,
     session_ctx: SessionContext,
+    #[cfg(not(target_arch = "wasm32"))]
     dispatcher: parking_lot::Mutex<Option<JoinHandle<()>>>,
     shutdown_flag: Arc<AtomicBool>,
 }
@@ -266,6 +275,7 @@ impl Agent {
         // MCP servers: connect, register their tools BEFORE the
         // strategy spins up so the GeminiConnection captures them in
         // its FunctionDeclarations.
+        #[cfg(feature = "native")]
         let mcp_bridge = if agent_config.mcp_servers.is_empty() {
             None
         } else {
@@ -291,7 +301,16 @@ impl Agent {
         let conversation = Conversation::new(connection.clone());
 
         let shutdown_flag = Arc::new(AtomicBool::new(false));
+        #[cfg(not(target_arch = "wasm32"))]
         let dispatcher = spawn_tool_dispatcher(
+            connection.clone(),
+            tool_runner.clone(),
+            hook_runner.clone(),
+            session_ctx.clone(),
+            shutdown_flag.clone(),
+        );
+        #[cfg(target_arch = "wasm32")]
+        spawn_tool_dispatcher(
             connection.clone(),
             tool_runner.clone(),
             hook_runner.clone(),
@@ -316,8 +335,10 @@ impl Agent {
             hook_runner,
             tool_runner,
             trigger_runner,
+            #[cfg(feature = "native")]
             mcp_bridge,
             session_ctx,
+            #[cfg(not(target_arch = "wasm32"))]
             dispatcher: parking_lot::Mutex::new(Some(dispatcher)),
             shutdown_flag,
         })
@@ -351,16 +372,20 @@ impl Agent {
 
     pub async fn shutdown(self) -> Result<()> {
         self.shutdown_flag.store(true, Ordering::Release);
-        let handle = self.dispatcher.lock().take();
-        if let Some(handle) = handle {
-            handle.abort();
-            let _ = handle.await;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let handle = self.dispatcher.lock().take();
+            if let Some(handle) = handle {
+                handle.abort();
+                let _ = handle.await;
+            }
         }
         if let Some(triggers) = self.trigger_runner.as_ref() {
             triggers.stop().await;
         }
         self.hook_runner.dispatch_session_end(&self.session_ctx).await;
         self.connection.shutdown().await?;
+        #[cfg(feature = "native")]
         if let Some(bridge) = self.mcp_bridge.as_ref() {
             bridge.shutdown().await;
         }
@@ -371,6 +396,7 @@ impl Agent {
 impl Drop for Agent {
     fn drop(&mut self) {
         self.shutdown_flag.store(true, Ordering::Release);
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(handle) = self.dispatcher.lock().take() {
             handle.abort();
         }
@@ -381,6 +407,7 @@ impl Drop for Agent {
 // Tool dispatcher
 // =============================================================================
 
+#[cfg(not(target_arch = "wasm32"))]
 fn spawn_tool_dispatcher(
     connection: Arc<dyn Connection>,
     tool_runner: Arc<ToolRunner>,
@@ -452,4 +479,75 @@ fn spawn_tool_dispatcher(
         }
         debug!("tool dispatcher exiting");
     })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn spawn_tool_dispatcher(
+    connection: Arc<dyn Connection>,
+    tool_runner: Arc<ToolRunner>,
+    hook_runner: Arc<HookRunner>,
+    session_ctx: SessionContext,
+    shutdown: Arc<AtomicBool>,
+) {
+    let registered: std::collections::HashSet<String> =
+        tool_runner.names().into_iter().collect();
+    crate::runtime::spawn(async move {
+        let mut stream = connection.subscribe_steps();
+        while let Some(step) = stream.next().await {
+            if shutdown.load(Ordering::Acquire) {
+                return;
+            }
+            let step = match step {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(error = %e, "tool dispatcher stream error");
+                    continue;
+                }
+            };
+            if step.tool_calls.is_empty() {
+                continue;
+            }
+            if matches!(step.status, StepStatus::Done) {
+                continue;
+            }
+            let custom_calls: Vec<ToolCall> = step
+                .tool_calls
+                .into_iter()
+                .filter(|tc| registered.contains(&tc.name))
+                .collect();
+            if custom_calls.is_empty() {
+                continue;
+            }
+            let turn_ctx = session_ctx.child();
+            let mut results = Vec::with_capacity(custom_calls.len());
+            for call in custom_calls {
+                let (decision, op_ctx) =
+                    hook_runner.dispatch_pre_tool_call(&turn_ctx, &call).await;
+                if !decision.allow {
+                    let r = crate::types::ToolResult::err(
+                        call.name.clone(),
+                        call.id.clone(),
+                        decision.message.clone(),
+                    );
+                    hook_runner.dispatch_post_tool_call(&op_ctx, &r).await;
+                    results.push(r);
+                    continue;
+                }
+                let r = match tool_runner.execute(&call.name, call.args.clone()).await {
+                    Ok(v) => crate::types::ToolResult::ok(call.name.clone(), call.id.clone(), v),
+                    Err(e) => crate::types::ToolResult::err(
+                        call.name.clone(),
+                        call.id.clone(),
+                        e.to_string(),
+                    ),
+                };
+                hook_runner.dispatch_post_tool_call(&op_ctx, &r).await;
+                results.push(r);
+            }
+            if let Err(e) = connection.send_tool_results(results).await {
+                warn!(error = %e, "failed to send tool results");
+            }
+        }
+        debug!("tool dispatcher exiting");
+    });
 }
