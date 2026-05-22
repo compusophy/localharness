@@ -7,6 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-22
+
+Phase 8 — the SDK now compiles to `wasm32-unknown-unknown`. The same
+`Agent` loop the CLI uses runs inside a browser tab; a live demo is
+hosted at [antig-compusophys-projects.vercel.app](https://antig-compusophys-projects.vercel.app/).
+
+### Added
+
+- **`wasm32-unknown-unknown` target.** `cargo check
+  --no-default-features --target wasm32-unknown-unknown` succeeds.
+  The full `Agent → Conversation → Connection → ToolRunner` chain
+  is available in the browser; 4 portable built-in tools
+  (`ask_question`, `finish`, `generate_image`, `start_subagent`)
+  register automatically.
+- **`native` cargo feature** (default-on). Gates the parts of the
+  SDK that need OS primitives: subprocess spawning, multi-threaded
+  tokio, the 6 filesystem builtins (`list_directory`, `view_file`,
+  `find_file`, `search_directory`, `create_file`, `edit_file`),
+  `run_command`, and the MCP stdio bridge. wasm callers depend with
+  `default-features = false`.
+- **`src/runtime.rs`** — new module. `runtime::spawn` cfg-gates
+  between `tokio::spawn` (native) and
+  `wasm_bindgen_futures::spawn_local` (wasm).
+  `runtime::MaybeSendSync` is a marker trait that's `Send + Sync` on
+  native and empty on wasm — every trait supertraits it instead of
+  `Send + Sync` directly.
+- **`Connection::subscribe_steps`** now returns a `StepStream` type
+  alias that maps to `BoxStream` on native (Send-bound, for
+  `tokio::spawn` compatibility) and `LocalBoxStream` on wasm (where
+  browser fetch streams aren't `Send`).
+- **`localharness-web/` cdylib** (not published). wasm-bindgen
+  reference wrapper exposing `start_session(api_key)`,
+  `chat(prompt, on_chunk)`, `reset_session()` to JavaScript. Stores
+  one `Agent` per tab in a `thread_local<RefCell<Option<Rc<Agent>>>>`.
+- **`web/` static site** with `index.html` (streaming chat UI,
+  markdown rendering, multi-turn conversation, key cached in
+  sessionStorage) and `web/pkg/` (committed wasm-pack output).
+- **`vercel.json` + `.vercelignore`** for static-deploy config.
+- **`scripts/build-web.{ps1,sh}`** to rebuild the wasm bundle.
+- **`scripts/probe-gemini.ps1`** — isolates request-shape vs
+  response-parse bugs by hitting the live Gemini API with curl-style
+  diagnostics.
+- **`CLAUDE.md`** at the repo root — project orientation for future
+  Claude Code sessions.
+- **`DESIGN.md` Phase 8 addendum** documenting the wasm scope and
+  what's deferred.
+
+### Changed
+
+- Every `#[async_trait]` site is now `cfg_attr`'d to use
+  `async_trait(?Send)` on wasm so reqwest's browser-fetch futures
+  (which aren't `Send`) can satisfy the trait method signatures.
+- Trait supertraits — `Tool`, `Connection`, `ConnectionStrategy`,
+  the 6 hook traits, `Trigger` — changed from `: Send + Sync` to
+  `: MaybeSendSync`.
+- `JoinHandle` storage in `Agent` / `Conversation` /
+  `TriggerRunner` is cfg-gated; on wasm we fire-and-forget through
+  `spawn_local` (no abort handle).
+- README adds a "Run in the browser" section and the status line
+  now mentions wasm32.
+
+### Fixed
+
+- **`GeminiSseStream::take_frame`** now accepts `\r\n\r\n` frame
+  separators in addition to `\n\n`. Browser fetch surfaces Gemini's
+  SSE with CRLF — the old parser silently dropped every frame on
+  wasm (0 chunks emitted). Regression test covers the CRLF case.
+
+### Compatibility
+
+- 0.x → 0.x: the trait supertrait change (`Send + Sync` →
+  `MaybeSendSync`) is source-compatible for downstream impls
+  because `MaybeSendSync` is blanket-implemented for any
+  `T: Send + Sync` on native. On wasm the bound is relaxed.
+- `wasm-bindgen-futures` is a new wasm-target-only dependency.
+  Native consumers don't pull it in.
+
 ## [0.4.0] - 2026-05-21
 
 GA of Phase 7 — context-window compaction + MCP stdio bridge. The
