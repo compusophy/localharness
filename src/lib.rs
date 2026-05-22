@@ -28,11 +28,13 @@
 //! | 1 | [`Agent`] | High-level facade: connect, chat, shutdown. |
 //! | 2 | [`Conversation`] / [`ChatResponse`] | Stateful session, multi-cursor streams. |
 //! | 3 | [`connections::Connection`] | Transport abstraction. |
+//! | aux | [`Filesystem`] | What the 6 fs-shaped built-in tools call into; swap the impl to target OPFS, an in-memory FS, etc. |
 //!
 //! [`Agent`]: agent::Agent
 //! [`Conversation`]: conversation::Conversation
 //! [`ChatResponse`]: conversation::ChatResponse
 //! [`connections::Connection`]: connections::Connection
+//! [`Filesystem`]: filesystem::Filesystem
 
 // On wasm32 the upper architecture (Agent → Conversation → Connection)
 // is temporarily gated behind `native` because its trait bounds require
@@ -47,6 +49,7 @@ pub mod connections;
 pub mod content;
 pub mod conversation;
 pub mod error;
+pub mod filesystem;
 pub(crate) mod runtime;
 pub mod hooks;
 pub mod policy;
@@ -64,6 +67,9 @@ pub use connections::{Connection, ConnectionStrategy};
 pub use content::{Content, Media, MediaKind, Part};
 pub use conversation::{ChatCursor, ChatResponse, Conversation};
 pub use error::{Error, Result};
+pub use filesystem::{DirEntry, EntryKind, Filesystem, Metadata, SharedFilesystem, WalkEntry};
+#[cfg(feature = "native")]
+pub use filesystem::NativeFilesystem;
 pub use hooks::{
     HookContext, HookRunner, OnSessionEndHook, OnSessionStartHook, OperationContext,
     PostToolCallHook, PostTurnHook, PreToolCallDecideHook, PreTurnHook, SessionContext,

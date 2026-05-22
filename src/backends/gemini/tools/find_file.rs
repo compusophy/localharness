@@ -1,21 +1,28 @@
 //! `find_file` — recursive file-name search.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use globset::{Glob, GlobMatcher};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use walkdir::WalkDir;
 
 use crate::error::{Error, Result};
+use crate::filesystem::{file_name, EntryKind, SharedFilesystem};
 use crate::tools::{Tool, ToolContext};
 
 /// Cap on results to prevent unbounded output for shallow patterns.
 const MAX_RESULTS: usize = 1000;
 
-pub struct FindFile;
+pub struct FindFile {
+    fs: SharedFilesystem,
+}
+
+impl FindFile {
+    pub fn new(fs: SharedFilesystem) -> Self {
+        Self { fs }
+    }
+}
 
 #[derive(Deserialize)]
 struct Args {
@@ -55,43 +62,137 @@ impl Tool for FindFile {
         let matcher: GlobMatcher = Glob::new(&args.pattern)
             .map_err(|e| Error::other(format!("invalid glob '{}': {e}", args.pattern)))?
             .compile_matcher();
-        let root = PathBuf::from(&args.path);
-        let max_depth = args.max_depth;
 
-        // walkdir is sync; run on the blocking pool so we don't park
-        // an async worker.
-        let result = tokio::task::spawn_blocking(move || {
-            let mut walker = WalkDir::new(&root).follow_links(false);
-            if let Some(d) = max_depth {
-                walker = walker.max_depth(d);
-            }
-            let mut matches = Vec::new();
-            let mut truncated = false;
-            for entry in walker.into_iter().filter_map(|e| e.ok()) {
-                if !entry.file_type().is_file() {
-                    continue;
-                }
-                if !matcher.is_match(entry.file_name()) {
-                    continue;
-                }
-                if matches.len() >= MAX_RESULTS {
-                    truncated = true;
-                    break;
-                }
-                matches.push(entry.path().display().to_string());
-            }
-            (matches, truncated, root)
-        })
-        .await
-        .map_err(|e| Error::other(format!("find_file join: {e}")))?;
+        let entries = self.fs.walk(&args.path, args.max_depth).await?;
 
-        let (matches, truncated, root) = result;
+        let mut matches: Vec<String> = Vec::new();
+        let mut truncated = false;
+        for entry in entries {
+            if !matches!(entry.kind, EntryKind::File) {
+                continue;
+            }
+            let name = file_name(&entry.path);
+            if !matcher.is_match(name) {
+                continue;
+            }
+            if matches.len() >= MAX_RESULTS {
+                truncated = true;
+                break;
+            }
+            matches.push(entry.path);
+        }
+
+        let count = matches.len();
         Ok(json!({
-            "root": root.display().to_string(),
+            "root": args.path,
             "pattern": args.pattern,
             "matches": matches,
-            "count": matches.len(),
+            "count": count,
             "truncated": truncated,
         }))
+    }
+}
+
+#[cfg(all(test, feature = "native"))]
+mod tests {
+    use super::*;
+    use crate::filesystem::NativeFilesystem;
+    use std::path::PathBuf;
+
+    fn unique_dir(label: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("lh_find_file_{label}_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn write(dir: &std::path::Path, rel: &str, content: &str) {
+        let mut p = dir.to_path_buf();
+        for part in rel.split('/') {
+            p.push(part);
+        }
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&p, content).unwrap();
+    }
+
+    #[tokio::test]
+    async fn matches_glob_recursively() {
+        let root = unique_dir("recursive");
+        write(&root, "a.rs", "");
+        write(&root, "b.py", "");
+        write(&root, "sub/c.rs", "");
+        write(&root, "sub/d.txt", "");
+        write(&root, "sub/deeper/e.rs", "");
+
+        let tool = FindFile::new(Arc::new(NativeFilesystem::new()));
+        let out = tool
+            .execute(
+                json!({"path": root.display().to_string(), "pattern": "*.rs"}),
+                None,
+            )
+            .await
+            .unwrap();
+        let count = out["count"].as_u64().unwrap();
+        assert_eq!(count, 3, "expected three .rs files, got {}", out);
+        assert_eq!(out["truncated"].as_bool(), Some(false));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn max_depth_caps_recursion() {
+        let root = unique_dir("depth");
+        write(&root, "top.rs", "");
+        write(&root, "sub/mid.rs", "");
+        write(&root, "sub/deeper/bottom.rs", "");
+
+        let tool = FindFile::new(Arc::new(NativeFilesystem::new()));
+        let out = tool
+            .execute(
+                json!({
+                    "path": root.display().to_string(),
+                    "pattern": "*.rs",
+                    "max_depth": 2,
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+        // walkdir depth: root=0, top.rs=1, sub/mid.rs=2; deeper/bottom.rs=3 excluded.
+        assert_eq!(out["count"].as_u64(), Some(2), "got {}", out);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[tokio::test]
+    async fn missing_root_returns_empty_silently() {
+        // walkdir filter_map(|e| e.ok()) swallows the not-found error, so
+        // find_file on a missing root returns 0 matches rather than Err.
+        // This is the pre-M3a behavior and we lock it in here.
+        let tool = FindFile::new(Arc::new(NativeFilesystem::new()));
+        let out = tool
+            .execute(
+                json!({"path": "/definitely/missing/lh-find-test-zzz", "pattern": "*.rs"}),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["count"].as_u64(), Some(0));
+        assert_eq!(out["truncated"].as_bool(), Some(false));
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_glob() {
+        let root = unique_dir("badglob");
+        let tool = FindFile::new(Arc::new(NativeFilesystem::new()));
+        let res = tool
+            .execute(
+                json!({"path": root.display().to_string(), "pattern": "[abc"}),
+                None,
+            )
+            .await;
+        assert!(res.is_err());
+        std::fs::remove_dir_all(&root).ok();
     }
 }

@@ -418,12 +418,31 @@ python -m http.server 8765 -d web
 Gemini SSE stream parses the same way; everything streams through the
 same code path the native CLI uses.
 
-**What doesn't (yet):** the 6 filesystem builtins (`list_directory`,
+**What doesn't (yet):** `run_command` and the MCP stdio bridge stay
+native-only — the browser sandbox has no subprocess primitives.
+
+**What does now:** the 6 filesystem builtins (`list_directory`,
 `view_file`, `find_file`, `search_directory`, `create_file`,
-`edit_file`), `run_command`, and the MCP stdio bridge all need OS
-primitives the browser sandbox doesn't expose. They stay gated behind
-the `native` cargo feature. An OPFS-backed `Filesystem` trait lands in
-a later release.
+`edit_file`) run in the browser via OPFS (the Origin Private File
+System). Each tab gets its own private root directory; writes are
+atomic; the model can list, read, create, search, and edit files
+exactly as it does on the CLI.
+
+```rust
+use std::sync::Arc;
+use localharness::filesystem::OpfsFilesystem;
+use localharness::{CapabilitiesConfig, GeminiAgentConfig};
+
+let cfg = GeminiAgentConfig::new(api_key)
+    .with_capabilities(CapabilitiesConfig::unrestricted())
+    .with_filesystem(Arc::new(OpfsFilesystem::new()));
+```
+
+To target a different backend (mock filesystem for tests, a custom
+in-memory store), implement [`Filesystem`] and pass it to
+`with_filesystem` the same way.
+
+[`Filesystem`]: https://docs.rs/localharness/latest/localharness/filesystem/trait.Filesystem.html
 
 The `localharness-web/` cdylib crate in this repo is the reference
 wasm-bindgen wrapper; it stores one `Agent` per tab in a

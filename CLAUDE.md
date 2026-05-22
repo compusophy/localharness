@@ -29,6 +29,7 @@ src/                       library crate
 ├── policy.rs              Predicate / Policy / Decision + workspace_only
 ├── triggers.rs            Trigger trait + TriggerRunner + every()
 ├── runtime.rs             cfg-gated spawn helper + MaybeSendSync marker
+├── filesystem/            Filesystem trait + Native + OPFS impls (M3)
 ├── types.rs               wire-adjacent enums (BuiltinTool, Step, etc.)
 ├── error.rs               Error + Result
 └── backends/
@@ -147,12 +148,33 @@ hand-fix.
 
 ## What's planned
 
-- **M3 — Filesystem trait + OPFS.** Lift the 6 fs builtins onto a
-  `Filesystem` trait. Native impl wraps `tokio::fs` + `walkdir` +
-  `tempfile` (zero behaviour change). Wasm impl is OPFS via
-  `web-sys`. Unlocks fs-shaped builtins in the browser demo.
 - **Live tool-call rendering in the web demo.** Surface tool calls
-  + thoughts as collapsible blocks in `index.html`.
+  + thoughts as collapsible blocks in `index.html`. The fs builtins
+  now run in the browser, so seeing them act on OPFS is the obvious
+  next demo win.
 - **Commit hygiene cleanup.** The 0.5.0 release squashed a multi-
   session arc into one feature commit; for 0.6+ keep the WIP
   reviewable.
+
+## Filesystem trait (M3)
+
+The 6 fs-shaped builtins (`list_directory`, `view_file`, `find_file`,
+`search_directory`, `create_file`, `edit_file`) call into
+`crate::filesystem::Filesystem` instead of `tokio::fs` directly. The
+trait surface is small:
+
+- `read`, `write_atomic`, `metadata`, `read_dir`, `walk`
+
+Two implementations ship:
+
+- **`NativeFilesystem`** (gated on `feature = "native"`): `tokio::fs` +
+  `walkdir` + `tempfile`; atomicity via tempfile + rename.
+- **`OpfsFilesystem`** (wasm32 only): Origin Private File System via
+  `web-sys`; atomicity via `FileSystemWritableFileStream.close()` swap.
+
+`GeminiConnectionStrategy::connect` honors a caller-supplied
+`Filesystem` via `with_filesystem`, otherwise auto-installs
+`NativeFilesystem` on native (or `None` on wasm, where the caller is
+expected to supply OPFS — `localharness-web` does so). Plug-in impls
+(mocks for tests, custom backends) implement the trait and hand a
+`SharedFilesystem = Arc<dyn Filesystem>` via the builder.

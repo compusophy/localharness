@@ -2,7 +2,7 @@
 //!
 //! Single public type: [`GeminiClient`]. One useful method:
 //! [`stream_generate`][GeminiClient::stream_generate], which posts a
-//! [`GenerateContentRequest`][crate::backends::gemini::wire::GenerateContentRequest]
+//! [`crate::backends::gemini::wire::GenerateContentRequest`]
 //! and returns a `Stream` of decoded SSE chunks.
 //!
 //! The API key is held as a `Box<str>` so it never appears in `Debug`

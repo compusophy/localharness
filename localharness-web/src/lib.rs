@@ -9,11 +9,13 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use futures_util::StreamExt;
 use wasm_bindgen::prelude::*;
 
-use localharness::{Agent, GeminiAgentConfig, StreamChunk};
+use localharness::filesystem::OpfsFilesystem;
+use localharness::{Agent, CapabilitiesConfig, GeminiAgentConfig, StreamChunk};
 
 #[wasm_bindgen]
 extern "C" {
@@ -50,7 +52,12 @@ pub async fn start_session(api_key: String) -> Result<(), JsValue> {
     }
     log(&format!("start_session: key_len={}", key.len()));
 
-    let cfg = GeminiAgentConfig::new(key.to_string());
+    // Plug in OPFS so the 6 fs builtins (list_directory, view_file,
+    // find_file, search_directory, create_file, edit_file) register
+    // against the browser's Origin Private File System.
+    let cfg = GeminiAgentConfig::new(key.to_string())
+        .with_capabilities(CapabilitiesConfig::unrestricted())
+        .with_filesystem(Arc::new(OpfsFilesystem::new()));
     let agent = Agent::start_gemini(cfg)
         .await
         .map_err(|e| JsValue::from_str(&format!("start_gemini: {e}")))?;

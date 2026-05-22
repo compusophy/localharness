@@ -66,6 +66,11 @@ pub struct GeminiBackendConfig {
     /// Capability/built-in-tool selection. Defaults to the read-only
     /// safety set.
     pub capabilities: CapabilitiesConfig,
+    /// Filesystem implementation the 6 fs built-ins call into. When
+    /// `None`, `connect` falls back to `NativeFilesystem::new()` on
+    /// native (and to `None` on wasm — so fs builtins simply don't
+    /// register until a custom impl is supplied).
+    pub filesystem: Option<crate::filesystem::SharedFilesystem>,
 }
 
 impl GeminiBackendConfig {
@@ -80,7 +85,19 @@ impl GeminiBackendConfig {
             base_url: None,
             conversation_id: None,
             capabilities: CapabilitiesConfig::default(),
+            filesystem: None,
         }
+    }
+
+    /// Plug in a custom [`Filesystem`] implementation that the 6 fs
+    /// built-ins will call into. Without this, `connect` falls back to
+    /// `NativeFilesystem::new()` on native (or to no filesystem at all
+    /// on wasm, in which case the fs builtins skip registration).
+    ///
+    /// [`Filesystem`]: crate::filesystem::Filesystem
+    pub fn with_filesystem(mut self, fs: crate::filesystem::SharedFilesystem) -> Self {
+        self.filesystem = Some(fs);
+        self
     }
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
@@ -161,11 +178,20 @@ impl ConnectionStrategy for GeminiConnectionStrategy {
 
         // Auto-register built-in tools per the capabilities config.
         if let Some(runner) = self.runners.tool_runner.as_ref() {
+            // Honor an explicit filesystem override; otherwise fall back
+            // to NativeFilesystem on native and None on wasm.
+            let fs: Option<crate::filesystem::SharedFilesystem> = self
+                .config
+                .filesystem
+                .clone()
+                .or_else(default_filesystem);
+
             let deps = BuiltinDeps {
                 chat_client: Some(client.clone()),
                 chat_model: self.config.model.clone(),
                 image_client: Some(client.clone()),
                 image_model: self.config.image_model.clone(),
+                fs,
             };
             let registered = register_builtins(runner, &self.config.capabilities, &deps);
             if !registered.is_empty() {
@@ -214,6 +240,20 @@ impl ConnectionStrategy for GeminiConnectionStrategy {
     }
 }
 
+
+/// Default filesystem used when `GeminiBackendConfig.filesystem` is
+/// `None`. On native this is `NativeFilesystem`; on wasm there is no
+/// portable default, so the fs builtins simply don't register until
+/// the caller supplies one via `with_filesystem`.
+#[cfg(feature = "native")]
+fn default_filesystem() -> Option<crate::filesystem::SharedFilesystem> {
+    Some(Arc::new(crate::filesystem::NativeFilesystem::new()))
+}
+
+#[cfg(not(feature = "native"))]
+fn default_filesystem() -> Option<crate::filesystem::SharedFilesystem> {
+    None
+}
 
 fn build_tool_declarations(runner: &ToolRunner) -> Vec<wire::FunctionDeclaration> {
     runner
@@ -298,5 +338,107 @@ impl Connection for GeminiConnection {
         self.state.idle.store(true, Ordering::Release);
         self.state.idle_notify.notify_waiters();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::filesystem::{DirEntry, EntryKind, Filesystem, Metadata, WalkEntry};
+    use crate::tools::ToolRunner;
+    use async_trait::async_trait;
+    use parking_lot::Mutex;
+    use serde_json::json;
+
+    /// Test Filesystem that records every method invocation. Returns
+    /// minimal valid responses for each call.
+    #[derive(Debug, Default)]
+    struct TrackingFs {
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl TrackingFs {
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().clone()
+        }
+        fn record(&self, s: String) {
+            self.calls.lock().push(s);
+        }
+    }
+
+    #[async_trait]
+    impl Filesystem for TrackingFs {
+        async fn read(&self, path: &str) -> Result<Vec<u8>> {
+            self.record(format!("read:{path}"));
+            Ok(b"hello\n".to_vec())
+        }
+        async fn write_atomic(&self, path: &str, _bytes: &[u8]) -> Result<()> {
+            self.record(format!("write_atomic:{path}"));
+            Ok(())
+        }
+        async fn metadata(&self, path: &str) -> Result<Option<Metadata>> {
+            self.record(format!("metadata:{path}"));
+            Ok(None)
+        }
+        async fn read_dir(&self, path: &str) -> Result<Vec<DirEntry>> {
+            self.record(format!("read_dir:{path}"));
+            Ok(vec![DirEntry {
+                name: "stub".into(),
+                kind: EntryKind::File,
+                size: Some(0),
+            }])
+        }
+        async fn walk(&self, path: &str, _max_depth: Option<usize>) -> Result<Vec<WalkEntry>> {
+            self.record(format!("walk:{path}"));
+            Ok(Vec::new())
+        }
+    }
+
+    /// `with_filesystem` must override the default and the runtime must
+    /// route the 6 fs builtins through the supplied impl.
+    #[tokio::test]
+    async fn with_filesystem_override_flows_to_tools() {
+        let fs = Arc::new(TrackingFs::default());
+        let runner = Arc::new(ToolRunner::new());
+
+        let cfg = GeminiBackendConfig::new("test-key")
+            .with_capabilities(CapabilitiesConfig::unrestricted())
+            .with_filesystem(fs.clone());
+
+        let strategy = GeminiConnectionStrategy::new(cfg).with_runners(GeminiRunners {
+            tool_runner: Some(runner.clone()),
+            ..Default::default()
+        });
+
+        // connect() registers the builtins against our TrackingFs.
+        let _conn = strategy.connect().await.unwrap();
+
+        // Sanity: the fs builtins are now registered.
+        let names = runner.names();
+        for expected in [
+            "list_directory",
+            "view_file",
+            "find_file",
+            "search_directory",
+            "create_file",
+            "edit_file",
+        ] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "missing builtin {expected} (got {names:?})",
+            );
+        }
+
+        // Invoke list_directory — it must call TrackingFs::read_dir.
+        let out = runner
+            .execute("list_directory", json!({"path": "/synthetic/dir"}))
+            .await
+            .unwrap();
+        assert_eq!(out["count"].as_u64(), Some(1));
+        let calls = fs.calls();
+        assert!(
+            calls.iter().any(|c| c == "read_dir:/synthetic/dir"),
+            "expected read_dir call recorded; got {calls:?}",
+        );
     }
 }

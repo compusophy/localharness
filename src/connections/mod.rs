@@ -45,7 +45,7 @@ pub trait Connection: MaybeSendSync {
     fn conversation_id(&self) -> &str;
 
     /// Send a user prompt. Returns once the message is dispatched —
-    /// the response arrives via [`subscribe_steps`].
+    /// the response arrives via [`Connection::subscribe_steps`].
     async fn send(&self, content: Content) -> Result<()>;
 
     /// Push an out-of-band trigger event into the agent. Unlike `send`,

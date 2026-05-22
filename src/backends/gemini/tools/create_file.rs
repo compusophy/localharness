@@ -1,22 +1,27 @@
 //! `create_file` — atomically create a new file with content.
 //!
-//! Writes via a tempfile in the same directory, then renames into place
-//! — so a crash mid-write never leaves a half-written file. Refuses to
-//! overwrite an existing file (use `edit_file` for that).
+//! Refuses to overwrite an existing file (use `edit_file` for that).
+//! Atomicity is provided by [`Filesystem::write_atomic`].
 
-use std::io::Write as _;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tempfile::NamedTempFile;
 
 use crate::error::{Error, Result};
+use crate::filesystem::SharedFilesystem;
 use crate::tools::{Tool, ToolContext};
 
-pub struct CreateFile;
+pub struct CreateFile {
+    fs: SharedFilesystem,
+}
+
+impl CreateFile {
+    pub fn new(fs: SharedFilesystem) -> Self {
+        Self { fs }
+    }
+}
 
 #[derive(Deserialize)]
 struct Args {
@@ -50,56 +55,36 @@ impl Tool for CreateFile {
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
         let args: Args = serde_json::from_value(args)
             .map_err(|e| Error::other(format!("create_file args: {e}")))?;
-        let path = PathBuf::from(&args.path);
 
-        if path.exists() {
+        if self.fs.metadata(&args.path).await?.is_some() {
             return Err(Error::other(format!(
                 "create_file refuses to overwrite existing file: {}",
-                path.display()
+                args.path
             )));
         }
 
-        let parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .map(|p| p.to_path_buf());
         let bytes = args.content.into_bytes();
-        let path_for_task = path.clone();
-
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            if let Some(p) = &parent {
-                std::fs::create_dir_all(p)
-                    .map_err(|e| Error::other(format!("create_dir_all: {e}")))?;
-            }
-            let dir = parent.as_deref().unwrap_or(std::path::Path::new("."));
-            let mut tmp = NamedTempFile::new_in(dir)
-                .map_err(|e| Error::other(format!("tempfile: {e}")))?;
-            tmp.write_all(&bytes)
-                .map_err(|e| Error::other(format!("write: {e}")))?;
-            tmp.persist(&path_for_task)
-                .map_err(|e| Error::other(format!("rename: {e}")))?;
-            Ok(())
-        })
-        .await
-        .map_err(|e| Error::other(format!("create_file join: {e}")))??;
+        let len = bytes.len() as u64;
+        self.fs.write_atomic(&args.path, &bytes).await?;
 
         Ok(json!({
             "ok": true,
-            "path": path.display().to_string(),
-            "bytes": std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
+            "path": args.path,
+            "bytes": len,
         }))
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "native"))]
 mod tests {
     use super::*;
+    use crate::filesystem::NativeFilesystem;
 
     #[tokio::test]
     async fn writes_new_file() {
         let mut p = std::env::temp_dir();
         p.push(format!("create_file_test_{}.txt", uuid::Uuid::new_v4()));
-        let tool = CreateFile;
+        let tool = CreateFile::new(Arc::new(NativeFilesystem::new()));
         let out = tool
             .execute(
                 json!({"path": p.display().to_string(), "content": "hello\n"}),
@@ -108,6 +93,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out["ok"].as_bool(), Some(true));
+        assert_eq!(out["bytes"].as_u64(), Some(6));
         let content = std::fs::read_to_string(&p).unwrap();
         assert_eq!(content, "hello\n");
         let _ = std::fs::remove_file(p);
@@ -118,7 +104,7 @@ mod tests {
         let mut p = std::env::temp_dir();
         p.push(format!("create_file_overwrite_{}.txt", uuid::Uuid::new_v4()));
         std::fs::write(&p, "existing").unwrap();
-        let tool = CreateFile;
+        let tool = CreateFile::new(Arc::new(NativeFilesystem::new()));
         let res = tool
             .execute(
                 json!({"path": p.display().to_string(), "content": "new"}),

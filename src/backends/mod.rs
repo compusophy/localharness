@@ -4,13 +4,10 @@
 //! responses. The Connection trait is the abstraction boundary; backends
 //! never leak into Agent/Conversation code.
 //!
-//! | Backend  | Status | Path  | Notes |
-//! |----------|--------|-------|-------|
-//! | `gemini` | alpha  | [`gemini`] | Rust-native; hits the Gemini REST API |
-//!
-//! The 0.1.x `LocalConnection` backend (which proxied to Google's Go
-//! `localharness` binary) lives under [`crate::connections::local`] and is
-//! kept for source compatibility through 0.2.x.
+//! | Backend  | Status | Path       | Notes                                |
+//! |----------|--------|------------|--------------------------------------|
+//! | `gemini` | stable | [`gemini`] | Rust-native; hits the Gemini REST API |
+//! | `mcp`    | native | [`mcp`]    | stdio bridge to MCP servers          |
 //!
 //! [`Connection`]: crate::connections::Connection
 

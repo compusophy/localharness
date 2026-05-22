@@ -5,7 +5,51 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0]
+
+M3 — fs builtins on a portable `Filesystem` trait with native + OPFS
+implementations. The same 6 fs-shaped tools the CLI uses now run in a
+browser tab against the Origin Private File System.
+
+### Added
+
+- **`Filesystem` trait** (`src/filesystem/`). Five-method async surface
+  (`read`, `write_atomic`, `metadata`, `read_dir`, `walk`) plus
+  `DirEntry` / `WalkEntry` / `Metadata` / `EntryKind` value types. The
+  `write_atomic` docstring spells out the atomicity contract every impl
+  must satisfy.
+- **`NativeFilesystem`** (gated on `feature = "native"`). Wraps
+  `tokio::fs` + `walkdir` + `tempfile`. Atomicity via tempfile + rename.
+- **`OpfsFilesystem`** (wasm32 only). Backs the trait against the
+  browser's Origin Private File System via `web-sys`. Atomicity via
+  `FileSystemWritableFileStream.close()` swap. Recursive walk + async
+  iteration over `FileSystemDirectoryHandle.entries()`.
+- **`GeminiBackendConfig::with_filesystem(fs)`** and the delegating
+  **`GeminiAgentConfig::with_filesystem(fs)`**. Plug in any
+  `Filesystem` impl; `Arc<ConcreteFs>` unsize-coerces to
+  `Arc<dyn Filesystem>` automatically.
+- **Browser demo gains the 6 fs builtins.** `localharness-web` now
+  ships an `OpfsFilesystem` to the agent and enables the full
+  capabilities set, so the model in the live demo can `list_directory`,
+  `view_file`, `find_file`, `search_directory`, `create_file`, and
+  `edit_file` against per-origin OPFS storage.
+
+### Changed
+
+- The 6 fs built-ins (`list_directory`, `view_file`, `find_file`,
+  `search_directory`, `create_file`, `edit_file`) no longer call
+  `tokio::fs` / `walkdir` / `tempfile` directly — they hold an
+  `Arc<dyn Filesystem>` and dispatch through the trait. Their
+  constructors changed from unit structs to `Tool::new(fs)`. Source
+  compat for downstream code that built tools directly is broken; the
+  `register_builtins` path is unchanged.
+- The 6 fs built-ins lost their per-file `#[cfg(feature = "native")]`
+  gates. They now compile on all targets; registration is gated by
+  whether `BuiltinDeps.fs` is `Some(_)`. On native, `connect`
+  auto-installs `NativeFilesystem`; on wasm, callers supply an OPFS
+  (or other) impl via `with_filesystem`.
+- `GeminiConnectionStrategy::connect` honors a caller-supplied
+  filesystem before falling back to the platform default.
 
 ## [0.5.0] - 2026-05-22
 

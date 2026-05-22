@@ -1,6 +1,5 @@
 //! `list_directory` — list immediate children of a directory.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -8,9 +7,18 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
+use crate::filesystem::SharedFilesystem;
 use crate::tools::{Tool, ToolContext};
 
-pub struct ListDirectory;
+pub struct ListDirectory {
+    fs: SharedFilesystem,
+}
+
+impl ListDirectory {
+    pub fn new(fs: SharedFilesystem) -> Self {
+        Self { fs }
+    }
+}
 
 #[derive(Deserialize)]
 struct Args {
@@ -42,76 +50,51 @@ impl Tool for ListDirectory {
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
         let args: Args = serde_json::from_value(args)
             .map_err(|e| Error::other(format!("list_directory args: {e}")))?;
-        let path: PathBuf = PathBuf::from(&args.path);
+        let entries = self.fs.read_dir(&args.path).await?;
 
-        let read = tokio::fs::read_dir(&path)
-            .await
-            .map_err(|e| Error::other(format!("read_dir({}): {e}", path.display())))?;
-        let mut entries = Vec::new();
-        let mut iter = read;
-        while let Some(entry) = iter
-            .next_entry()
-            .await
-            .map_err(|e| Error::other(format!("next_entry: {e}")))?
-        {
-            let meta = entry
-                .metadata()
-                .await
-                .map_err(|e| Error::other(format!("metadata: {e}")))?;
-            let kind = if meta.file_type().is_symlink() {
-                "symlink"
-            } else if meta.is_dir() {
-                "directory"
-            } else if meta.is_file() {
-                "file"
-            } else {
-                "other"
-            };
-            let mut entry_obj = json!({
-                "name": entry.file_name().to_string_lossy(),
-                "kind": kind,
-            });
-            if meta.is_file() {
-                entry_obj["size"] = json!(meta.len());
-            }
-            entries.push(entry_obj);
-        }
-        // Stable order so the model sees the same listing across calls.
-        entries.sort_by(|a, b| {
-            a["name"]
-                .as_str()
-                .unwrap_or("")
-                .cmp(b["name"].as_str().unwrap_or(""))
-        });
+        let entry_values: Vec<Value> = entries
+            .into_iter()
+            .map(|e| {
+                let mut obj = json!({
+                    "name": e.name,
+                    "kind": e.kind.as_str(),
+                });
+                if let Some(size) = e.size {
+                    obj["size"] = json!(size);
+                }
+                obj
+            })
+            .collect();
 
+        let count = entry_values.len();
         Ok(json!({
-            "path": path.display().to_string(),
-            "entries": entries,
-            "count": entries.len(),
+            "path": args.path,
+            "entries": entry_values,
+            "count": count,
         }))
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "native"))]
 mod tests {
     use super::*;
+    use crate::filesystem::NativeFilesystem;
 
     #[tokio::test]
     async fn lists_known_directory() {
         let tmp = std::env::temp_dir();
-        let tool = ListDirectory;
+        let tool = ListDirectory::new(Arc::new(NativeFilesystem::new()));
         let out = tool
             .execute(json!({"path": tmp.display().to_string()}), None)
             .await
             .unwrap();
         assert!(out["entries"].is_array(), "entries should be an array");
-        // Count is a non-negative integer.
         assert!(out["count"].as_u64().is_some());
     }
 
     #[tokio::test]
     async fn errors_on_missing_directory() {
-        let tool = ListDirectory;
+        let tool = ListDirectory::new(Arc::new(NativeFilesystem::new()));
         let res = tool
             .execute(json!({"path": "/definitely/does/not/exist/abc123"}), None)
             .await;

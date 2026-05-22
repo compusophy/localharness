@@ -1,6 +1,5 @@
 //! `view_file` — read a text file with optional line range.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -8,13 +7,22 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::{Error, Result};
+use crate::filesystem::SharedFilesystem;
 use crate::tools::{Tool, ToolContext};
 
 /// Soft cap on how much we'll send to the model in one call. Past this
 /// the tool truncates and the model is told there's more.
 const MAX_BYTES_RETURNED: usize = 256 * 1024;
 
-pub struct ViewFile;
+pub struct ViewFile {
+    fs: SharedFilesystem,
+}
+
+impl ViewFile {
+    pub fn new(fs: SharedFilesystem) -> Self {
+        Self { fs }
+    }
+}
 
 #[derive(Deserialize)]
 struct Args {
@@ -52,11 +60,8 @@ impl Tool for ViewFile {
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
         let args: Args = serde_json::from_value(args)
             .map_err(|e| Error::other(format!("view_file args: {e}")))?;
-        let path: PathBuf = PathBuf::from(&args.path);
 
-        let bytes = tokio::fs::read(&path)
-            .await
-            .map_err(|e| Error::other(format!("read({}): {e}", path.display())))?;
+        let bytes = self.fs.read(&args.path).await?;
 
         // UTF-8 lossy so we don't error on the occasional binary nibble.
         let full = String::from_utf8_lossy(&bytes);
@@ -94,7 +99,7 @@ impl Tool for ViewFile {
         };
 
         Ok(json!({
-            "path": path.display().to_string(),
+            "path": args.path,
             "total_lines": total_lines,
             "start_line": start,
             "end_line": end,
@@ -104,9 +109,26 @@ impl Tool for ViewFile {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "native"))]
 mod tests {
     use super::*;
+    use crate::filesystem::NativeFilesystem;
+    use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn rejects_inverted_line_range() {
+        let tmp = tempfile_path("view_file_inverted.txt");
+        tokio::fs::write(&tmp, b"a\nb\nc\nd\n").await.unwrap();
+        let tool = ViewFile::new(Arc::new(NativeFilesystem::new()));
+        let res = tool
+            .execute(
+                json!({"path": tmp.display().to_string(), "start_line": 3, "end_line": 2}),
+                None,
+            )
+            .await;
+        assert!(res.is_err(), "start_line > end_line should error");
+        let _ = std::fs::remove_file(tmp);
+    }
 
     #[tokio::test]
     async fn reads_existing_file_with_range() {
@@ -114,7 +136,7 @@ mod tests {
         tokio::fs::write(&tmp, b"alpha\nbeta\ngamma\ndelta\n")
             .await
             .unwrap();
-        let tool = ViewFile;
+        let tool = ViewFile::new(Arc::new(NativeFilesystem::new()));
         let out = tool
             .execute(
                 json!({"path": tmp.display().to_string(), "start_line": 2, "end_line": 3}),

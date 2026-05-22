@@ -159,6 +159,16 @@ impl GeminiAgentConfig {
         self
     }
 
+    /// Plug in a custom [`Filesystem`] impl for the 6 fs built-ins.
+    /// Without this, native builds use `NativeFilesystem`; wasm builds
+    /// have no filesystem and the fs builtins skip registration.
+    ///
+    /// [`Filesystem`]: crate::filesystem::Filesystem
+    pub fn with_filesystem(mut self, fs: crate::filesystem::SharedFilesystem) -> Self {
+        self.gemini = self.gemini.with_filesystem(fs);
+        self
+    }
+
     pub fn with_tool(mut self, tool: Arc<dyn Tool>) -> Self {
         self.agent = self.agent.with_tool(tool);
         self
