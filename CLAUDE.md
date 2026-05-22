@@ -148,13 +148,21 @@ hand-fix.
 
 ## What's planned
 
-- **Live tool-call rendering in the web demo.** Surface tool calls
-  + thoughts as collapsible blocks in `index.html`. The fs builtins
-  now run in the browser, so seeing them act on OPFS is the obvious
-  next demo win.
-- **Commit hygiene cleanup.** The 0.5.0 release squashed a multi-
-  session arc into one feature commit; for 0.6+ keep the WIP
-  reviewable.
+- **Inline tool-call rendering in the web demo.** Today the OPFS panel
+  shows the *result* of fs builtin calls (files appear after a turn),
+  but the chat transcript doesn't surface "the model called
+  `create_file(notes.md)`" mid-stream. Add collapsible tool-call blocks
+  to the transcript using the existing `chat()` callback shape (will
+  need a second callback channel or a typed event stream).
+- **Provider-agnostic Filesystem usage.** The trait sits below
+  `Connection` so any future backend (OpenAI, Anthropic, local model)
+  can reuse the same `OpfsFilesystem` + `NativeFilesystem` without
+  duplication. Today only `GeminiBackendConfig::with_filesystem` exists;
+  the seam is ready when a second backend lands.
+- **Web IDE expansion.** Beyond the file browser: inline editing of
+  OPFS files, persistent agent state across reloads (history in OPFS),
+  a "scratch" area pre-populated with starter files. Treat the demo as
+  a tab-resident IDE the agent shares with the user.
 
 ## Filesystem trait (M3)
 

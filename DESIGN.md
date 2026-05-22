@@ -236,6 +236,7 @@ Notes:
 | **6** | 0.3.0 | Delete `LocalConnectionStrategy` and the proto layer. Add subagents. | future |
 | **7** | 0.4.0 | Compaction (sliding-window context management), MCP client integration. | future |
 | **8** | 0.5.0 | `wasm32-unknown-unknown` target + live browser demo. Native code stays gated behind a `native` cargo feature; the Agent loop runs in a tab via a `localharness-web` cdylib. | shipped |
+| **9** | 0.6.0 | `Filesystem` trait + `NativeFilesystem` + `OpfsFilesystem`. The 6 fs-shaped builtins now run in a browser tab against the Origin Private File System. New `with_filesystem` builder lets callers plug in any impl. Web demo gains an OPFS file browser. | shipped |
 
 Per phase: tests, doctests, smoke example, CHANGELOG entry, release via
 `scripts/release.{sh,ps1}`.
@@ -272,15 +273,50 @@ Phase 8 isn't in the original phase plan; it was triggered by a
   `\n\n` and `\r\n\r\n` frame separators — browser fetch surfaces
   Gemini's SSE with CRLF. A regression test covers the CRLF case.
 
-What didn't ship in Phase 8 (deferred to Phase 9 / 0.6.0):
+What didn't ship in Phase 8 (largely closed by Phase 9 / 0.6.0):
 
-- The 6 fs builtins on wasm — they need a `Filesystem` trait abstraction
-  with an OPFS-backed implementation behind `web-sys`.
+- ~~The 6 fs builtins on wasm.~~ Shipped in 0.6.0 via `OpfsFilesystem`.
 - Tool-call rendering in the web demo. Today only assistant text streams;
-  tool calls are dispatched server-side but the UI doesn't surface them.
-- `policy.rs::dunce::canonicalize` compiles on wasm but would panic at
-  runtime if anyone wired up `workspace_only` policies in the browser.
-  Not a problem today; would be for fs builtins.
+  tool calls are dispatched in-Rust but the UI surfaces only their net
+  effect (e.g. the OPFS file list refresh after a turn). Inline tool-call
+  rendering is still pending.
+- `policy.rs::dunce::canonicalize` compiles on wasm but degrades to
+  identity (Err-on-canonicalize), so `workspace_only` policies match
+  trivially. Not a runtime panic — but the workspace check isn't
+  meaningful on wasm until canonicalisation lives in the `Filesystem`
+  layer.
+
+### Phase 9 notes — Filesystem trait + OPFS (0.6.0)
+
+Triggered by the M3 plan in CLAUDE.md. Scope:
+
+- **`Filesystem` trait** (`src/filesystem/mod.rs`). Five async methods —
+  `read`, `write_atomic`, `metadata`, `read_dir`, `walk` — plus
+  `DirEntry` / `WalkEntry` / `Metadata` / `EntryKind`. The
+  `write_atomic` docstring spells out the atomicity contract.
+- **`NativeFilesystem`** (gated on `feature = "native"`). Wraps
+  `tokio::fs` + `walkdir` + `tempfile`; atomicity via tempfile + rename.
+- **`OpfsFilesystem`** (wasm32 only). Backs the trait against
+  `navigator.storage.getDirectory()`. Atomicity via
+  `FileSystemWritableFileStream.close()` swap. Recursive walk + async
+  iteration over `FileSystemDirectoryHandle.entries()` via the JS
+  iterator protocol (web-sys's typed wrappers don't expose async
+  iterators directly, so we use `Reflect::get` + `JsFuture`).
+- **6 fs tools refactored.** Each holds an `Arc<dyn Filesystem>`,
+  lost its per-file `cfg(feature = "native")` gate. Constructors
+  changed from unit structs to `Tool::new(fs)` — source-compat break
+  for downstream code that built tools directly; `register_builtins`
+  unchanged.
+- **`with_filesystem` builder** on both `GeminiBackendConfig` and
+  `GeminiAgentConfig`. Without it, native installs `NativeFilesystem`
+  automatically and wasm skips fs-builtin registration.
+- **`localharness-web` wires OPFS.** Plugs `OpfsFilesystem` via
+  `with_filesystem`, enables `CapabilitiesConfig::unrestricted()` so
+  all 10 portable builtins register.
+- **Web demo file browser.** Vanilla JS panel reads
+  `navigator.storage.getDirectory()` directly (same OPFS root the
+  Rust side uses), with breadcrumb navigation, file preview, and a
+  wipe button. Auto-refreshes after each chat turn.
 
 ## Module-by-module spec — Phase 1
 
