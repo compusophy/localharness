@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-05-23
+
+Bugfix for the 0.7.0 browser app — `start_session` failed immediately
+with "write tools are enabled but no safety policies are configured"
+because the app called `with_capabilities(CapabilitiesConfig::unrestricted())`
+without installing a corresponding policy.
+
+### Fixed
+
+- **`src/app/chat.rs::start_session`** now installs
+  `policy::allow_all()` alongside the unrestricted capabilities so the
+  Agent constructor accepts the configuration. OPFS is sandboxed
+  per-origin and the demo is single-tenant, so `allow_all` is the
+  right policy here; library consumers in less trusted contexts
+  should pick a tighter one.
+
+### Changed
+
+- Web demo footer + version tag now reflect 0.7.0+ behavior:
+  conversation history persists across reloads, inline file editing
+  is available, fs tools work against OPFS. Previous copy still
+  claimed history was tab-only.
+
 ## [0.7.0] - 2026-05-23
 
 M4 — the browser-resident IDE moves into the crate as `src/app/`,
