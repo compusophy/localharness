@@ -17,7 +17,6 @@ exclude = [
     "CHANGELOG.md",
     "scripts/**",
     ".github/**",
-    "localharness-web/**",
     "web/**",
     "vercel.json",
     ".vercelignore",
@@ -26,6 +25,12 @@ exclude = [
     ".env.example",
     "CLAUDE.md",
 ]
+
+[lib]
+# `lib` (rlib) for native consumers (`cargo add localharness`);
+# `cdylib` for wasm-pack builds when the browser-app is enabled.
+# Native builds produce both; cdylib is a no-op without a wasm target.
+crate-type = ["lib", "cdylib"]
 
 [features]
 default = ["native"]
@@ -43,6 +48,12 @@ native = [
     "tokio/fs",
     "tokio/io-util",
 ]
+# `browser-app` compiles the in-tab HTMX-style web IDE into the crate
+# as a wasm cdylib. Off by default so library consumers don't pay for
+# `maud` or DOM web-sys features. Enable it together with
+# `--no-default-features --target wasm32-unknown-unknown` via wasm-pack
+# to build the shipping browser bundle. Has no effect on a native build.
+browser-app = ["dep:maud", "dep:console_error_panic_hook", "dep:pulldown-cmark"]
 
 [dependencies]
 tokio = { version = "1.42", default-features = false, features = [
@@ -71,6 +82,15 @@ walkdir = { version = "2", optional = true }
 globset = "0.4"
 regex = "1"
 tempfile = { version = "3", optional = true }
+# UI-only; pulled in only when --features browser-app is set. Maud is a
+# proc-macro that compiles HTML templates to string-builders — no runtime
+# framework, no vdom. Compiles on every target; only used by src/app/.
+maud = { version = "0.26", optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
+# Markdown rendering for assistant text in the browser app. No syntax
+# highlighting, no html-on-the-wire: we hand pulldown-cmark a string,
+# get HTML back, swap it into the segment via maud's PreEscaped.
+pulldown-cmark = { version = "0.10", optional = true, default-features = false, features = ["html"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { version = "1", features = ["js"] }
@@ -79,6 +99,7 @@ wasm-bindgen-futures = "0.4"
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = [
+    # Used by OpfsFilesystem
     "Navigator",
     "StorageManager",
     "FileSystemDirectoryHandle",
@@ -87,11 +108,28 @@ web-sys = { version = "0.3", features = [
     "FileSystemHandleKind",
     "FileSystemGetDirectoryOptions",
     "FileSystemGetFileOptions",
+    "FileSystemRemoveOptions",
     "FileSystemWritableFileStream",
     "File",
     "Blob",
     "Window",
     "WorkerGlobalScope",
+    # Used by src/app/ (browser-app feature). Cheap to include
+    # unconditionally — web-sys feature flags only affect symbol
+    # visibility, not compiled code size.
+    "Document",
+    "Element",
+    "HtmlElement",
+    "HtmlInputElement",
+    "HtmlTextAreaElement",
+    "HtmlDetailsElement",
+    "Event",
+    "EventTarget",
+    "MouseEvent",
+    "KeyboardEvent",
+    "InputEvent",
+    "Storage",
+    "console",
 ] }
 
 [dev-dependencies]
@@ -112,3 +150,11 @@ lto = "thin"
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# wasm-pack runs an old `wasm-opt` that rejects post-MVP features the
+# current rustc target emits (bulk-memory, nontrapping-fptoint, …). The
+# rustc-generated bundle is already well-optimised; skipping wasm-opt
+# costs ~10-20% binary size in exchange for a build that doesn't depend
+# on a moving toolchain target.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

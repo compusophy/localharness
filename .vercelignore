@@ -2,11 +2,9 @@
 .env
 .env.*
 target
-localharness-web/target
 src
 examples
 scripts
-localharness-web
 Cargo.toml
 Cargo.lock
 .git

@@ -5,6 +5,87 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+M4 — the browser-resident IDE moves into the crate as `src/app/`,
+gated on `feature = "browser-app"`. The previous `localharness-web`
+JS-binding crate and the ~700 lines of inline JS in `web/index.html`
+are gone; the UI is now pure Rust + maud HTML templates + HTMX-style
+fragment swaps.
+
+### Added
+
+- **`feature = "browser-app"`** (default off). Compiles `src/app/`
+  into the crate as a wasm cdylib. Pulls in `maud` for HTML templating
+  and `console_error_panic_hook`. Has no effect on a native build.
+- **`src/app/`** — the in-tab IDE. Modules: `mod` (mount + state),
+  `templates` (maud), `dom` (web-sys helpers), `events` (delegated
+  click + keydown), `chat` (turn flow), `opfs` (file browser).
+  Architectural rule: no imperative DOM manipulation — all updates are
+  `swap_inner` / `swap_outer` / `insert_adjacent_html` targeted at
+  fixed element ids.
+- **Inline tool-call rendering.** Each `ToolCall` from the
+  `StreamChunk` stream renders a collapsible `<details>` block in
+  the assistant turn; the matching `ToolResult` swaps the block's
+  status pill (`⋯ running` → `✓ done` / `✗ error`) and fills the
+  args + result panes.
+- **Rust-driven OPFS panel.** The file browser now reads through the
+  `Filesystem` trait (was: hand-rolled JS over `navigator.storage`).
+  Navigate via `data-action="opfs-nav"` + `data-arg=path`; open files
+  via `data-action="opfs-open"`. Refreshes after every chat turn.
+
+### Changed
+
+- **`web/index.html`** shrunk from ~700 lines of JS application code +
+  ~250 lines of HTML/CSS to a ~15-line bootstrap (style + `<div id="root">`
+  + a one-line `import init` script). All chrome is rendered by Rust
+  templates.
+- **`scripts/build-web.{sh,ps1}`** now invokes `wasm-pack build .
+  --features browser-app --no-default-features` against the root crate
+  (was: `wasm-pack build ./localharness-web`). Output bundle name
+  changed from `localharness_web*` to `localharness*`.
+- **`[lib] crate-type = ["lib", "cdylib"]`** added so native consumers
+  still get an rlib and wasm-pack gets a cdylib from the same package.
+- `[package.metadata.wasm-pack.profile.release].wasm-opt = false` —
+  modern rustc emits post-MVP wasm ops (bulk-memory,
+  nontrapping-fptoint) that the wasm-pack-bundled wasm-opt rejects.
+  Costs ~10-20% binary size; gains a build that doesn't depend on a
+  moving toolchain target.
+
+- **Markdown rendering for assistant text** via `pulldown-cmark`
+  (optional dep, pulled in by `browser-app`). Renders at end-of-turn
+  per text segment; tool-call blocks remain interleaved between
+  rendered segments.
+- **`Filesystem::delete(path)`** trait method. Implemented on
+  `NativeFilesystem` (recursive `remove_dir_all` / `remove_file`) and
+  `OpfsFilesystem` (`removeEntry` with `recursive: true`). Required
+  `FileSystemRemoveOptions` web-sys feature. Source-compat break for
+  external `Filesystem` impls — they must implement the new method.
+- **OPFS wipe button** now actually wipes. Confirms via `window.confirm`,
+  walks the OPFS root, deletes every top-level entry, refreshes the panel.
+- **Per-turn timing pills** in the status line —
+  `done · ttft N ms · total M ms · K turns`.
+- **Conversation history persistence.** `GeminiConnection::history_bytes()`
+  / `set_history_bytes()` serialize/restore the Gemini wire history as
+  opaque bytes. `GeminiAgentConfig::with_history_bytes()` seeds a new
+  agent on startup. `Agent::history_bytes()` exposes the typed accessor
+  for non-trait Gemini APIs (typed handle stashed during
+  `start_gemini` via a new `GeminiConnectionStrategy::with_typed_capture`).
+  The browser app writes `.lh_history.json` to OPFS after every turn
+  and restores on mount; the "new conversation" button also deletes
+  the marker file so a reload starts fresh.
+- **Inline OPFS file editing.** The file viewer gains an `edit` button
+  that swaps it into an editor (textarea + save/cancel). Save calls
+  `Filesystem::write_atomic` and re-renders the viewer with the new
+  contents.
+
+### Removed
+
+- **`localharness-web/`** crate. The published SDK never re-exported it
+  (it was `publish = false`), and no external consumer existed. All
+  its functionality (`start_session`, `chat`) moved into `src/app/`
+  as internal-only code.
+
 ## [0.6.0] - 2026-05-22
 
 M3 — fs builtins on a portable `Filesystem` trait with native + OPFS

@@ -57,6 +57,11 @@ pub mod tools;
 pub mod triggers;
 pub mod types;
 
+// The browser-resident IDE. Gated on the `browser-app` feature AND a
+// wasm target, so a native `cargo add localharness` never compiles it.
+#[cfg(all(feature = "browser-app", target_arch = "wasm32"))]
+mod app;
+
 pub use agent::{Agent, AgentConfig, GeminiAgentConfig};
 pub use backends::gemini::{
     GeminiBackendConfig, GeminiConnection, GeminiConnectionStrategy,

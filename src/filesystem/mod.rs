@@ -49,6 +49,9 @@
 //!     ) -> Result<Vec<WalkEntry>> {
 //!         Ok(Vec::new())
 //!     }
+//!     async fn delete(&self, _path: &str) -> Result<()> {
+//!         Ok(())
+//!     }
 //! }
 //!
 //! // `Arc<MyFs>` unsize-coerces to `Arc<dyn Filesystem>` automatically.
@@ -164,6 +167,11 @@ pub trait Filesystem: MaybeSendSync + std::fmt::Debug {
     /// `Some(d)`, recursion is limited to depth `d` (the root itself is
     /// depth 0). Implementations may return entries in any order.
     async fn walk(&self, path: &str, max_depth: Option<usize>) -> Result<Vec<WalkEntry>>;
+
+    /// Delete `path`. If `path` names a directory, the directory and
+    /// all its contents are removed (recursive). If `path` does not
+    /// exist, returns `Err`. Symlinks are removed, not followed.
+    async fn delete(&self, path: &str) -> Result<()>;
 }
 
 /// Type alias for a shared filesystem handle.

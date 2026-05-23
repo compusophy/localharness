@@ -28,7 +28,8 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
     File, FileSystemDirectoryHandle, FileSystemFileHandle, FileSystemGetDirectoryOptions,
-    FileSystemGetFileOptions, FileSystemHandle, FileSystemHandleKind, FileSystemWritableFileStream,
+    FileSystemGetFileOptions, FileSystemHandle, FileSystemHandleKind, FileSystemRemoveOptions,
+    FileSystemWritableFileStream,
 };
 
 use super::{DirEntry, EntryKind, Filesystem, Metadata, WalkEntry};
@@ -191,6 +192,19 @@ impl Filesystem for OpfsFilesystem {
         });
         walk_dir(&root, path, 1, max_depth, &mut out).await?;
         Ok(out)
+    }
+
+    async fn delete(&self, path: &str) -> Result<()> {
+        let (parent, name) = self.resolve_parent(path, false).await?;
+        let name =
+            name.ok_or_else(|| Error::other(format!("delete({path}): cannot delete OPFS root")))?;
+        let opts = FileSystemRemoveOptions::new();
+        opts.set_recursive(true);
+        let promise = parent.remove_entry_with_options(&name, &opts);
+        JsFuture::from(promise)
+            .await
+            .map_err(|e| Error::other(format!("removeEntry({path}): {}", js_err(&e))))?;
+        Ok(())
     }
 }
 

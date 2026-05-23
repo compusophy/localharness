@@ -1,6 +1,5 @@
 # Rust
 /target
-/localharness-web/target
 **/*.rs.bk
 
 # Editor

@@ -24,7 +24,9 @@ use futures_util::stream::StreamExt;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
-use crate::backends::gemini::{GeminiBackendConfig, GeminiConnectionStrategy, GeminiRunners};
+use crate::backends::gemini::{
+    GeminiBackendConfig, GeminiConnection, GeminiConnectionStrategy, GeminiRunners,
+};
 use crate::connections::{Connection, ConnectionStrategy};
 use crate::content::Content;
 use crate::conversation::{ChatResponse, Conversation};
@@ -120,6 +122,10 @@ impl AgentConfig {
 pub struct GeminiAgentConfig {
     pub agent: AgentConfig,
     pub gemini: GeminiBackendConfig,
+    /// Opaque history bytes from a previous session, as returned by
+    /// `Agent::history_bytes()`. Applied to the new connection
+    /// immediately after `connect()`. Empty / missing means "start fresh."
+    pub initial_history: Option<Vec<u8>>,
 }
 
 impl GeminiAgentConfig {
@@ -127,7 +133,16 @@ impl GeminiAgentConfig {
         Self {
             agent: AgentConfig::default(),
             gemini: GeminiBackendConfig::new(api_key),
+            initial_history: None,
         }
+    }
+
+    /// Seed the new connection with previously-saved history bytes
+    /// (obtained from `Agent::history_bytes()`). If the bytes fail to
+    /// parse at start time, `Agent::start_gemini` returns an error.
+    pub fn with_history_bytes(mut self, bytes: Vec<u8>) -> Self {
+        self.initial_history = Some(bytes);
+        self
     }
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
@@ -210,6 +225,11 @@ impl GeminiAgentConfig {
 pub struct Agent {
     conversation: Conversation,
     connection: Arc<dyn Connection>,
+    /// Typed handle to the Gemini connection when `start_gemini` was
+    /// used. Lets backend-specific APIs like `history_bytes()` work
+    /// without forcing the Connection trait to carry every backend's
+    /// per-protocol surface.
+    gemini_connection: Option<Arc<GeminiConnection>>,
     hook_runner: Arc<HookRunner>,
     tool_runner: Arc<ToolRunner>,
     trigger_runner: Option<Arc<TriggerRunner>>,
@@ -233,14 +253,39 @@ impl Agent {
         // Make sure the backend's CapabilitiesConfig matches the agent's
         // (so register_builtins enables the right set).
         gemini_config.capabilities = config.agent.capabilities.clone();
-        Self::start_with_factory(config.agent, |hooks, tools, ctx| {
-            GeminiConnectionStrategy::new(gemini_config).with_runners(GeminiRunners {
-                tool_runner: Some(tools),
-                hook_runner: Some(hooks),
-                session_ctx: Some(ctx),
-            })
+        let initial_history = config.initial_history.take();
+        // Capture the typed Arc<GeminiConnection> through a shared slot
+        // the strategy fills during connect(). Lets us call
+        // backend-specific methods (history snapshot, etc.) without
+        // bloating the Connection trait.
+        let capture: Arc<parking_lot::Mutex<Option<Arc<GeminiConnection>>>> =
+            Arc::new(parking_lot::Mutex::new(None));
+        let capture_for_factory = capture.clone();
+        let mut agent = Self::start_with_factory(config.agent, move |hooks, tools, ctx| {
+            GeminiConnectionStrategy::new(gemini_config)
+                .with_runners(GeminiRunners {
+                    tool_runner: Some(tools),
+                    hook_runner: Some(hooks),
+                    session_ctx: Some(ctx),
+                })
+                .with_typed_capture(capture_for_factory)
         })
-        .await
+        .await?;
+        agent.gemini_connection = capture.lock().take();
+        if let (Some(bytes), Some(gc)) = (initial_history, agent.gemini_connection.as_ref()) {
+            gc.set_history_bytes(&bytes)?;
+        }
+        Ok(agent)
+    }
+
+    /// Opaque snapshot of the current Gemini conversation history.
+    /// Returns `None` for non-Gemini backends. Round-trips through
+    /// [`GeminiAgentConfig::with_history_bytes`] for session resume.
+    pub fn history_bytes(&self) -> Result<Option<Vec<u8>>> {
+        match self.gemini_connection.as_ref() {
+            Some(gc) => gc.history_bytes().map(Some),
+            None => Ok(None),
+        }
     }
 
     /// Internal: shared bootstrap. The `factory` closure receives the
@@ -342,6 +387,7 @@ impl Agent {
         Ok(Self {
             conversation,
             connection,
+            gemini_connection: None,
             hook_runner,
             tool_runner,
             trigger_runner,

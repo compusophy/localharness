@@ -237,6 +237,7 @@ Notes:
 | **7** | 0.4.0 | Compaction (sliding-window context management), MCP client integration. | future |
 | **8** | 0.5.0 | `wasm32-unknown-unknown` target + live browser demo. Native code stays gated behind a `native` cargo feature; the Agent loop runs in a tab via a `localharness-web` cdylib. | shipped |
 | **9** | 0.6.0 | `Filesystem` trait + `NativeFilesystem` + `OpfsFilesystem`. The 6 fs-shaped builtins now run in a browser tab against the Origin Private File System. New `with_filesystem` builder lets callers plug in any impl. Web demo gains an OPFS file browser. | shipped |
+| **10** | 0.7.0 | Browser-resident IDE absorbed into the crate. `localharness-web` deleted; UI lives in `src/app/` behind `feature = "browser-app"`. HTMX-style — all HTML rendered by `maud` templates, all interactions delegated through `data-action` + `data-arg` attributes. No JS application code in `web/index.html`. | in flight |
 
 Per phase: tests, doctests, smoke example, CHANGELOG entry, release via
 `scripts/release.{sh,ps1}`.

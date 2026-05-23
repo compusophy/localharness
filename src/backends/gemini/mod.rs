@@ -142,6 +142,11 @@ pub struct GeminiRunners {
 pub struct GeminiConnectionStrategy {
     config: GeminiBackendConfig,
     runners: GeminiRunners,
+    /// Optional out-slot: if set, `connect()` stashes a clone of the
+    /// typed `Arc<GeminiConnection>` here before upcasting to the
+    /// trait object. `Agent::start_gemini` uses this to keep a typed
+    /// handle for backend-specific APIs (e.g. history snapshot).
+    typed_capture: Option<Arc<parking_lot::Mutex<Option<Arc<GeminiConnection>>>>>,
 }
 
 
@@ -150,6 +155,7 @@ impl GeminiConnectionStrategy {
         Self {
             config,
             runners: GeminiRunners::default(),
+            typed_capture: None,
         }
     }
 
@@ -158,6 +164,17 @@ impl GeminiConnectionStrategy {
     /// fall back to a static error.
     pub fn with_runners(mut self, runners: GeminiRunners) -> Self {
         self.runners = runners;
+        self
+    }
+
+    /// Provide a slot for `connect()` to write the typed connection into.
+    /// Used by `Agent::start_gemini` to retain a `&GeminiConnection` for
+    /// methods like `history_bytes()` that aren't on the `Connection` trait.
+    pub fn with_typed_capture(
+        mut self,
+        slot: Arc<parking_lot::Mutex<Option<Arc<GeminiConnection>>>>,
+    ) -> Self {
+        self.typed_capture = Some(slot);
         self
     }
 }
@@ -225,7 +242,7 @@ impl ConnectionStrategy for GeminiConnectionStrategy {
             .clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
-        Ok(Arc::new(GeminiConnection {
+        let typed = Arc::new(GeminiConnection {
             deps_template: TurnDeps {
                 client,
                 config: loop_config,
@@ -236,7 +253,11 @@ impl ConnectionStrategy for GeminiConnectionStrategy {
             },
             state,
             conversation_id: conv_id.into(),
-        }))
+        });
+        if let Some(slot) = &self.typed_capture {
+            *slot.lock() = Some(typed.clone());
+        }
+        Ok(typed)
     }
 }
 
@@ -276,6 +297,30 @@ pub struct GeminiConnection {
     deps_template: TurnDeps,
     state: Arc<LoopState>,
     conversation_id: Arc<str>,
+}
+
+impl GeminiConnection {
+    /// Snapshot the current conversation history as opaque bytes.
+    /// Round-trips through `set_history_bytes`; the on-disk format is
+    /// not part of the public API and may change between minor versions.
+    pub fn history_bytes(&self) -> Result<Vec<u8>> {
+        let snapshot = self.state.history.lock().clone();
+        serde_json::to_vec(&snapshot)
+            .map_err(|e| Error::other(format!("history_bytes: {e}")))
+    }
+
+    /// Replace the entire conversation history with one previously
+    /// returned by `history_bytes`. Use this on connection start to
+    /// resume a saved session; calling it mid-turn is undefined.
+    pub fn set_history_bytes(&self, bytes: &[u8]) -> Result<()> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let restored: Vec<wire::Content> = serde_json::from_slice(bytes)
+            .map_err(|e| Error::other(format!("set_history_bytes: {e}")))?;
+        *self.state.history.lock() = restored;
+        Ok(())
+    }
 }
 
 
@@ -391,6 +436,10 @@ mod tests {
         async fn walk(&self, path: &str, _max_depth: Option<usize>) -> Result<Vec<WalkEntry>> {
             self.record(format!("walk:{path}"));
             Ok(Vec::new())
+        }
+        async fn delete(&self, path: &str) -> Result<()> {
+            self.record(format!("delete:{path}"));
+            Ok(())
         }
     }
 

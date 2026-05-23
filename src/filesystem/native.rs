@@ -168,6 +168,23 @@ impl Filesystem for NativeFilesystem {
         .map_err(|e| Error::other(format!("walk join: {e}")))?;
         Ok(result)
     }
+
+    async fn delete(&self, path: &str) -> Result<()> {
+        let p = PathBuf::from(path);
+        let meta = tokio::fs::symlink_metadata(&p)
+            .await
+            .map_err(|e| Error::other(format!("delete({path}): {e}")))?;
+        if meta.is_dir() {
+            tokio::fs::remove_dir_all(&p)
+                .await
+                .map_err(|e| Error::other(format!("delete({path}): {e}")))?;
+        } else {
+            tokio::fs::remove_file(&p)
+                .await
+                .map_err(|e| Error::other(format!("delete({path}): {e}")))?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

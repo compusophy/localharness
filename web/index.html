@@ -115,63 +115,79 @@
       word-break: break-word;
     }
     .turn.user .body { white-space: pre-wrap; }
-    /* Assistant body is rendered as markdown - reset spacing so it
-       doesn't look like a wall of text. */
-    .turn.assistant .body p { margin: 0 0 8px; }
-    .turn.assistant .body p:last-child { margin-bottom: 0; }
-    .turn.assistant .body h1,
-    .turn.assistant .body h2,
-    .turn.assistant .body h3,
-    .turn.assistant .body h4 {
-      font-size: 13px;
-      font-weight: 600;
-      margin: 14px 0 6px;
-      letter-spacing: 0.02em;
-    }
-    .turn.assistant .body h1:first-child,
-    .turn.assistant .body h2:first-child,
-    .turn.assistant .body h3:first-child { margin-top: 0; }
-    .turn.assistant .body ul,
-    .turn.assistant .body ol { margin: 6px 0 10px; padding-left: 22px; }
-    .turn.assistant .body li { margin: 2px 0; }
-    .turn.assistant .body code {
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 3px;
-      padding: 1px 5px;
-      font-size: 12.5px;
-    }
-    .turn.assistant .body pre {
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 10px 12px;
-      overflow-x: auto;
-      margin: 8px 0;
-    }
-    .turn.assistant .body pre code {
-      background: none;
-      border: 0;
-      padding: 0;
-    }
-    .turn.assistant .body strong { color: var(--fg); font-weight: 600; }
-    .turn.assistant .body em { color: var(--fg); }
-    .turn.assistant .body a { color: var(--accent); }
-    .turn.assistant .body blockquote {
-      margin: 8px 0;
-      padding-left: 12px;
-      border-left: 2px solid var(--border);
-      color: var(--muted);
-    }
-    .turn.assistant .body hr {
-      border: 0;
-      border-top: 1px solid var(--border);
-      margin: 12px 0;
-    }
+    .turn.assistant .body .text-segment { white-space: pre-wrap; }
     .turn.streaming .role::after {
       content: " · streaming";
       color: var(--muted);
     }
+
+    /* Inline tool-call blocks inside an assistant turn. */
+    .tool-call {
+      margin: 8px 0;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+      font-size: 12.5px;
+      overflow: hidden;
+    }
+    .tool-call > summary {
+      cursor: pointer;
+      padding: 6px 10px;
+      color: var(--muted);
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      user-select: none;
+    }
+    .tool-call > summary::-webkit-details-marker { display: none; }
+    .tool-call > summary::before {
+      content: "▸";
+      color: var(--muted);
+      font-size: 10px;
+      transition: transform 80ms ease;
+    }
+    .tool-call[open] > summary::before { transform: rotate(90deg); }
+    .tool-call .tc-name {
+      color: var(--fg);
+      font-weight: 600;
+    }
+    .tool-call .tc-status {
+      margin-left: auto;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .tool-call .tc-status.running::before { content: "⋯ running"; }
+    .tool-call .tc-status.ok::before { content: "✓ done"; color: var(--accent); }
+    .tool-call .tc-status.err::before { content: "✗ error"; color: var(--error); }
+    .tool-call .tc-body {
+      padding: 8px 10px 10px;
+      border-top: 1px solid var(--border);
+      display: grid;
+      gap: 8px;
+    }
+    .tool-call .tc-section-label {
+      font-size: 10px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .tool-call pre {
+      margin: 0;
+      padding: 6px 8px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow-x: auto;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .tool-call .tc-error pre {
+      border-color: var(--error);
+      color: var(--error);
+    }
+
     .status { color: var(--muted); font-size: 11px; margin-top: 10px; min-height: 16px; }
     .err { color: var(--error); }
 
@@ -283,421 +299,30 @@
       font: inherit;
     }
     .fs-viewer-header .close-viewer:hover { color: var(--fg); }
+    .fs-viewer-actions { display: flex; gap: 6px; }
+    textarea.fs-editor {
+      min-height: 240px;
+      max-height: 480px;
+      resize: vertical;
+      width: 100%;
+      border-color: var(--accent);
+      background: var(--bg);
+      color: var(--fg);
+      font: 12px ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+    }
   </style>
 </head>
 <body>
-<main>
-  <div class="col-chat">
-    <header>
-      <h1>localharness</h1>
-      <span class="tag">web demo · 0.6.0</span>
-    </header>
-    <p class="sub">Streaming Gemini chat compiled to wasm32 — no backend, key stays in this tab. The model can now read/write files in your tab's private OPFS storage.</p>
-
-    <div class="row">
-      <label for="key">Gemini API key <span id="keymeta"></span></label>
-      <div class="key-row">
-        <input id="key" type="password" autocomplete="off" placeholder="paste key (sessionStorage only)" />
-        <button id="clearkey" class="ghost" type="button" title="Wipe the cached key from sessionStorage">clear</button>
-      </div>
-    </div>
-
-    <div class="row">
-      <label for="prompt">Prompt</label>
-      <textarea id="prompt" placeholder="try: 'create notes.md with a haiku about Rust', then 'list my files', then 'show me notes.md' · ⌘/Ctrl+Enter to send"></textarea>
-    </div>
-
-    <div class="actions">
-      <button id="send">send</button>
-      <button id="reset" class="ghost">new conversation</button>
-    </div>
-
-    <div id="status" class="status">loading wasm…</div>
-    <div id="transcript" class="transcript"></div>
-
-    <footer>
-      <p>
-        Compiled from <a href="https://github.com/compusophy/localharness">localharness</a> (Rust→wasm32).
-        Driving the full <code>Agent</code> loop in the browser — same code path the CLI host uses.
-        <strong>10 of 11 builtins wired</strong> — the 6 fs tools land in M3 via an OPFS-backed <code>Filesystem</code> trait;
-        <code>run_command</code> remains native-only.
-      </p>
-      <p>
-        Conversation history is held in this tab only — refresh to start fresh.
-        OPFS storage persists across reloads but is sandboxed per-origin.
-      </p>
-    </footer>
-  </div>
-
-  <aside class="col-fs">
-    <div class="fs-panel">
-      <div class="fs-header">
-        <div class="fs-title">OPFS · this tab</div>
-        <div class="fs-actions">
-          <button id="fs-refresh" title="Re-list the current directory">refresh</button>
-          <button id="fs-wipe" title="Delete all files in OPFS for this origin">wipe</button>
-        </div>
-      </div>
-      <div class="fs-breadcrumb" id="fs-breadcrumb">/</div>
-      <ul class="fs-list" id="fs-list"></ul>
-      <div id="fs-viewer-wrap" hidden>
-        <div class="fs-viewer-header">
-          <span id="fs-viewer-name"></span>
-          <button class="close-viewer" id="fs-viewer-close" type="button">close</button>
-        </div>
-        <pre class="fs-viewer" id="fs-viewer"></pre>
-      </div>
-    </div>
-  </aside>
-</main>
-
-<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<!--
+  This page is intentionally a near-empty shell. All chrome, transcript,
+  tool-call blocks, and the OPFS panel are rendered by Rust → maud
+  templates inside the wasm bundle, and swapped into #root via
+  set_inner_html. No JavaScript application code lives here.
+-->
+<div id="root">loading…</div>
 <script type="module">
-  import init, { start_session, chat, reset_session } from "./pkg/localharness_web.js";
-
-  // Render assistant markdown. marked is loaded as a global by the
-  // non-module script above; configure it for safe-ish defaults.
-  if (window.marked) {
-    window.marked.setOptions({ gfm: true, breaks: true });
-  }
-  const renderMarkdown = (s) => window.marked ? window.marked.parse(s) : s;
-
-  const $ = (id) => document.getElementById(id);
-  const statusEl = $("status");
-  const transcript = $("transcript");
-  const send = $("send");
-  const reset = $("reset");
-  const keyEl = $("key");
-  const promptEl = $("prompt");
-
-  // Multi-turn conversation state now lives Rust-side inside the
-  // wasm Agent. We track the key-bound session so a key change resets.
-  let sessionKey = null;
-  let turnCount = 0;
-
-  send.disabled = true;
-  try {
-    await init();
-    statusEl.textContent = "ready · type a prompt";
-    send.disabled = false;
-  } catch (e) {
-    statusEl.textContent = "wasm init failed: " + e;
-    statusEl.classList.add("err");
-  }
-
-  const keymetaEl = $("keymeta");
-  const clearkeyBtn = $("clearkey");
-
-  function updateKeymeta() {
-    const n = keyEl.value.length;
-    if (n === 0) { keymetaEl.textContent = ""; return; }
-    const looksRight = n >= 30 && n <= 60 && /^[A-Za-z0-9_-]+$/.test(keyEl.value);
-    keymetaEl.textContent = `(${n} chars${looksRight ? "" : " - check"})`;
-    keymetaEl.style.color = looksRight ? "" : "var(--error)";
-  }
-
-  const cached = sessionStorage.getItem("gemini_api_key");
-  if (cached) keyEl.value = cached;
-  updateKeymeta();
-  keyEl.addEventListener("input", () => {
-    sessionStorage.setItem("gemini_api_key", keyEl.value);
-    updateKeymeta();
-  });
-  clearkeyBtn.addEventListener("click", () => {
-    keyEl.value = "";
-    sessionStorage.removeItem("gemini_api_key");
-    updateKeymeta();
-    keyEl.focus();
-    statusEl.classList.remove("err");
-    statusEl.textContent = "key cleared - paste a fresh one";
-  });
-
-  function addTurn(role, text, streaming = false) {
-    const wrap = document.createElement("div");
-    wrap.className = `turn ${role}` + (streaming ? " streaming" : "");
-    const r = document.createElement("div");
-    r.className = "role";
-    r.textContent = role;
-    const b = document.createElement("div");
-    b.className = "body";
-    // User text is plain; assistant gets markdown rendering (set at
-    // completion, while streaming we show raw text to avoid mid-token
-    // markdown glitches).
-    if (role === "assistant") {
-      b.dataset.raw = text;
-      b.textContent = text;
-    } else {
-      b.textContent = text;
-    }
-    wrap.appendChild(r);
-    wrap.appendChild(b);
-    transcript.appendChild(wrap);
-    wrap.scrollIntoView({ behavior: "smooth", block: "end" });
-    return b;
-  }
-
-  async function runChat() {
-    const key = keyEl.value.trim();
-    const prompt = promptEl.value.trim();
-    if (!key) { statusEl.textContent = "enter an API key first."; statusEl.classList.add("err"); return; }
-    if (!prompt) { statusEl.textContent = "enter a prompt first."; statusEl.classList.add("err"); return; }
-
-    statusEl.classList.remove("err");
-    send.disabled = true;
-    sessionStorage.setItem("gemini_api_key", key);
-
-    // (Re)start the Agent session if the key changed or no session yet.
-    if (sessionKey !== key) {
-      statusEl.textContent = "starting session…";
-      try {
-        await start_session(key);
-        sessionKey = key;
-        turnCount = 0;
-      } catch (e) {
-        statusEl.textContent = "session start failed: " + e;
-        statusEl.classList.add("err");
-        send.disabled = false;
-        return;
-      }
-    }
-
-    statusEl.textContent = "thinking…";
-    addTurn("user", prompt);
-    const assistantBody = addTurn("assistant", "", true);
-    const assistantWrap = assistantBody.parentElement;
-
-    promptEl.value = "";
-
-    const t0 = performance.now();
-    let firstChunkAt = null;
-    let acc = "";
-
-    try {
-      const reply = await chat(prompt, (chunk) => {
-        if (firstChunkAt === null) {
-          firstChunkAt = performance.now();
-          statusEl.textContent = `streaming · ttft ${Math.round(firstChunkAt - t0)} ms`;
-        }
-        acc += chunk;
-        assistantBody.textContent = acc;
-        assistantWrap.scrollIntoView({ behavior: "smooth", block: "end" });
-      });
-
-      turnCount += 1;
-
-      // Stream done - swap raw text for rendered markdown.
-      assistantBody.innerHTML = renderMarkdown(reply);
-      assistantWrap.classList.remove("streaming");
-      const total = Math.round(performance.now() - t0);
-      const ttft = firstChunkAt ? Math.round(firstChunkAt - t0) : total;
-      statusEl.textContent = `done · ttft ${ttft} ms · total ${total} ms · ${turnCount} turn${turnCount === 1 ? "" : "s"} · Agent loop`;
-
-      // Refresh the OPFS panel so any create_file / edit_file the model
-      // just performed shows up immediately.
-      if (window.__refreshFs) window.__refreshFs().catch(() => {});
-    } catch (e) {
-      assistantWrap.classList.remove("streaming");
-      assistantBody.textContent = "(error — see status)";
-      statusEl.textContent = "error: " + e;
-      statusEl.classList.add("err");
-    } finally {
-      send.disabled = false;
-      promptEl.focus();
-    }
-  }
-
-  send.addEventListener("click", runChat);
-  promptEl.addEventListener("keydown", (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") runChat();
-  });
-  reset.addEventListener("click", () => {
-    reset_session();
-    sessionKey = null;
-    turnCount = 0;
-    transcript.innerHTML = "";
-    statusEl.classList.remove("err");
-    statusEl.textContent = "ready · new conversation";
-    promptEl.focus();
-  });
-
-  // ---------------------------------------------------------------------
-  // OPFS file browser
-  //
-  // Talks to the same OPFS root that the Rust-side `OpfsFilesystem` uses
-  // (navigator.storage.getDirectory()), so files the model creates via
-  // the fs builtins appear here, and vice versa.
-  // ---------------------------------------------------------------------
-
-  const fsListEl       = $("fs-list");
-  const fsBreadcrumbEl = $("fs-breadcrumb");
-  const fsRefreshBtn   = $("fs-refresh");
-  const fsWipeBtn      = $("fs-wipe");
-  const fsViewerWrap   = $("fs-viewer-wrap");
-  const fsViewerEl     = $("fs-viewer");
-  const fsViewerName   = $("fs-viewer-name");
-  const fsViewerClose  = $("fs-viewer-close");
-
-  // OPFS is hierarchical but we render one level at a time. cwd is an
-  // array of directory names from the OPFS root.
-  let cwd = [];
-
-  function pathString() {
-    return "/" + cwd.join("/");
-  }
-
-  function setBreadcrumb() {
-    if (cwd.length === 0) {
-      fsBreadcrumbEl.textContent = "/";
-      return;
-    }
-    fsBreadcrumbEl.innerHTML = "";
-    const root = document.createElement("a");
-    root.textContent = "/";
-    root.addEventListener("click", () => navigateTo([]));
-    fsBreadcrumbEl.appendChild(root);
-    cwd.forEach((part, idx) => {
-      const link = document.createElement("a");
-      link.textContent = part + "/";
-      link.addEventListener("click", () => navigateTo(cwd.slice(0, idx + 1)));
-      fsBreadcrumbEl.appendChild(link);
-    });
-  }
-
-  async function getOpfsRoot() {
-    if (!navigator.storage || !navigator.storage.getDirectory) {
-      throw new Error("OPFS not supported in this browser");
-    }
-    return await navigator.storage.getDirectory();
-  }
-
-  async function getCwdHandle() {
-    let dir = await getOpfsRoot();
-    for (const part of cwd) {
-      dir = await dir.getDirectoryHandle(part);
-    }
-    return dir;
-  }
-
-  async function refreshFs() {
-    setBreadcrumb();
-    fsListEl.innerHTML = "";
-    let dir;
-    try {
-      dir = await getCwdHandle();
-    } catch (e) {
-      const li = document.createElement("li");
-      li.className = "empty";
-      li.textContent = `error: ${e.message || e}`;
-      fsListEl.appendChild(li);
-      return;
-    }
-    const entries = [];
-    for await (const [name, handle] of dir.entries()) {
-      entries.push({ name, handle });
-    }
-    entries.sort((a, b) => {
-      const aDir = a.handle.kind === "directory";
-      const bDir = b.handle.kind === "directory";
-      if (aDir !== bDir) return aDir ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
-
-    if (entries.length === 0) {
-      const li = document.createElement("li");
-      li.className = "empty";
-      li.textContent = "(empty)";
-      fsListEl.appendChild(li);
-      return;
-    }
-
-    for (const { name, handle } of entries) {
-      const li = document.createElement("li");
-      li.className = handle.kind === "directory" ? "dir" : "file";
-      const nameEl = document.createElement("span");
-      nameEl.className = "name";
-      nameEl.textContent = name;
-      li.appendChild(nameEl);
-      if (handle.kind === "file") {
-        try {
-          const file = await handle.getFile();
-          const sizeEl = document.createElement("span");
-          sizeEl.className = "size";
-          sizeEl.textContent = formatBytes(file.size);
-          li.appendChild(sizeEl);
-        } catch (_) { /* ignore size failures */ }
-        li.addEventListener("click", () => openFile(name));
-      } else {
-        li.addEventListener("click", () => navigateTo([...cwd, name]));
-      }
-      fsListEl.appendChild(li);
-    }
-  }
-
-  function formatBytes(n) {
-    if (n < 1024) return `${n} B`;
-    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-    return `${(n / 1024 / 1024).toFixed(1)} MB`;
-  }
-
-  async function navigateTo(newCwd) {
-    cwd = newCwd;
-    closeViewer();
-    await refreshFs();
-  }
-
-  async function openFile(name) {
-    try {
-      const dir = await getCwdHandle();
-      const handle = await dir.getFileHandle(name);
-      const file = await handle.getFile();
-      // Show at most 256 KiB; the wasm builtin uses the same cap.
-      const slice = file.slice(0, 256 * 1024);
-      const text = await slice.text();
-      fsViewerName.textContent = `${pathString().replace(/\/$/, "")}/${name}`;
-      fsViewerEl.textContent = text + (file.size > 256 * 1024 ? "\n\n… (truncated)" : "");
-      fsViewerWrap.hidden = false;
-    } catch (e) {
-      fsViewerName.textContent = name;
-      fsViewerEl.textContent = `error: ${e.message || e}`;
-      fsViewerWrap.hidden = false;
-    }
-  }
-
-  function closeViewer() {
-    fsViewerWrap.hidden = true;
-    fsViewerEl.textContent = "";
-    fsViewerName.textContent = "";
-  }
-
-  async function wipeOpfs() {
-    if (!confirm("Wipe all files in this tab's OPFS? This can't be undone.")) return;
-    const root = await getOpfsRoot();
-    const names = [];
-    for await (const name of root.keys()) names.push(name);
-    for (const name of names) {
-      try { await root.removeEntry(name, { recursive: true }); } catch (_) {}
-    }
-    cwd = [];
-    closeViewer();
-    await refreshFs();
-  }
-
-  fsRefreshBtn.addEventListener("click", refreshFs);
-  fsWipeBtn.addEventListener("click", wipeOpfs);
-  fsViewerClose.addEventListener("click", closeViewer);
-
-  // Initial population. After every chat turn we refresh so any
-  // create_file / edit_file the model performed becomes visible.
-  refreshFs().catch((e) => {
-    fsListEl.innerHTML = "";
-    const li = document.createElement("li");
-    li.className = "empty";
-    li.textContent = `OPFS unavailable: ${e.message || e}`;
-    fsListEl.appendChild(li);
-  });
-
-  // Re-export so runChat can trigger a refresh after each turn.
-  window.__refreshFs = refreshFs;
+  import init from "./pkg/localharness.js";
+  await init();
 </script>
 </body>
 </html>

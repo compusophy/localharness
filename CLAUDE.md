@@ -32,6 +32,13 @@ src/                       library crate
 ├── filesystem/            Filesystem trait + Native + OPFS impls (M3)
 ├── types.rs               wire-adjacent enums (BuiltinTool, Step, etc.)
 ├── error.rs               Error + Result
+├── app/                   browser-resident IDE (M4) — gated on the
+│   ├── mod.rs             `browser-app` feature + wasm32 target. See
+│   ├── templates.rs       below for module-by-module notes.
+│   ├── dom.rs
+│   ├── events.rs
+│   ├── chat.rs
+│   └── opfs.rs
 └── backends/
     ├── gemini/
     │   ├── api.rs         GeminiClient + SSE decoder (CRLF + LF tolerant)
@@ -42,12 +49,11 @@ src/                       library crate
     │   └── mod.rs         GeminiConnectionStrategy + GeminiConnection
     └── mcp/               stdio MCP client (native-only)
 
-localharness-web/          wasm cdylib (publish=false)
-└── src/lib.rs             wasm-bindgen wrapper exposing chat() to JS
-
 web/                       static site for Vercel
-├── index.html             chat UI
-└── pkg/                   wasm-pack output (committed for deploy)
+├── index.html             bootstrap shell (CSS + #root + init())
+└── pkg/                   wasm-pack output (gitignored; built locally
+                           and uploaded by `vercel deploy`):
+                           localharness.js + localharness_bg.wasm
 
 scripts/
 ├── release.{ps1,sh}       atomic release tool (see RELEASING.md)
@@ -75,12 +81,19 @@ vercel deploy --prod --yes                                    # deploy web/
 ## Cargo features
 
 - `native` (default): enables `tokio` multi-thread + process + fs +
-  io-util, plus the `walkdir` and `tempfile` deps. Required for the 6
-  filesystem builtins, `run_command`, and the MCP stdio bridge.
+  io-util, plus the `walkdir` and `tempfile` deps. Required for
+  `run_command` and the MCP stdio bridge, and is what lets the 6 fs
+  builtins register a `NativeFilesystem` by default.
+- `browser-app` (off by default): compiles the `src/app/` module into
+  the crate as a wasm cdylib — the browser IDE. Pulls in `maud` for
+  HTML templating and `console_error_panic_hook`. Has no effect on a
+  native build. Built by `scripts/build-web.{sh,ps1}` via
+  `wasm-pack build --no-default-features --features browser-app`.
 - (wasm targets) automatically drop `walkdir`/`tempfile` and add
   `wasm-bindgen-futures`, `uuid/js`, `getrandom/js` via target-cfg.
 
-wasm callers should depend with `default-features = false`.
+Library callers on wasm32 who only want the SDK (not the browser app)
+depend with `default-features = false` and skip `browser-app`.
 
 ## The wasm story (M2.5)
 
@@ -118,8 +131,7 @@ or wasm will break silently (the gated modules don't trip in a default
   *before* `Part::Text { text }`. Gemini 3.x stamps every part with a
   `thought` field, so a normal text part deserializes into
   `Part::Thought { thought: false, text: Some(...), .. }`. Consumers
-  must handle that variant explicitly. See
-  `localharness-web/src/lib.rs` for the working match.
+  must handle that variant explicitly.
 - **SSE on wasm uses CRLF.** Browser fetch surfaces Gemini's SSE
   with `\r\n\r\n` frame separators. `GeminiSseStream::take_frame`
   now matches both `\n\n` and `\r\n\r\n`. Don't regress to LF-only.
@@ -146,23 +158,68 @@ commit → tag → push → cargo publish → GH release in one shot. If it
 fails mid-way, consult the recovery table in `RELEASING.md`; don't
 hand-fix.
 
+## The browser app (M4)
+
+Compiled into the crate as `src/app/`, gated on `feature = "browser-app"`
+plus `target_arch = "wasm32"`. The previous `localharness-web` JS-binding
+crate and the ~700 lines of inline JS in `web/index.html` are gone; the
+browser UI is now pure Rust.
+
+Design rule: **no imperative DOM manipulation**. All HTML comes from
+`maud` templates; the only DOM operations are `set_inner_html` /
+`set_outer_html` / `insert_adjacent_html` targeted at fixed element
+ids (HTMX-style fragment swaps). One delegated `click` listener and one
+`keydown` listener at the document level handle every interaction by
+reading `data-action` and `data-arg` attributes off the event target's
+ancestor chain. There are zero `Closure::wrap` calls outside of those
+two listeners.
+
+Layout inside `src/app/`:
+
+- `mod.rs` — `#[wasm_bindgen(start)]` entry, `App` state in a
+  `thread_local<RefCell<App>>`, `shared_opfs()` for the one-per-tab
+  `OpfsFilesystem`.
+- `templates.rs` — all maud functions. Chrome, turn, text segment,
+  tool-call block + result, OPFS breadcrumb/list/viewer.
+- `dom.rs` — `swap_inner`, `swap_outer`, `append_html`, `by_id`,
+  `set_status`. Pure web-sys, no node construction.
+- `events.rs` — `Action` enum + parser + `install_delegated_listeners`.
+- `chat.rs` — `run_send()`: lazy session start, then stream `StreamChunk`s
+  into the assistant turn via fixed ids. Tool calls render with a
+  monotonic `seg_id` and a `VecDeque` correlates `ToolResult`s back to
+  their `ToolCall` block.
+- `opfs.rs` — read-only file browser (read_dir, open file in preview).
+  Wipe is deferred pending `Filesystem::delete`.
+
+Build: `wasm-pack build . --target web --out-dir web/pkg --release
+--no-default-features --features browser-app`. wasm-opt is disabled in
+`[package.metadata.wasm-pack.profile.release]` because the wasm-pack-
+bundled wasm-opt rejects post-MVP features that modern rustc emits.
+
 ## What's planned
 
-- **Inline tool-call rendering in the web demo.** Today the OPFS panel
-  shows the *result* of fs builtin calls (files appear after a turn),
-  but the chat transcript doesn't surface "the model called
-  `create_file(notes.md)`" mid-stream. Add collapsible tool-call blocks
-  to the transcript using the existing `chat()` callback shape (will
-  need a second callback channel or a typed event stream).
+- **Markdown rendering for assistant text segments.** Today the
+  `text_segment` template emits raw text; the previous demo ran
+  `marked.js` on the final string. Replacement: add `pulldown-cmark`
+  behind the `browser-app` feature, render at end-of-turn, swap into
+  the segment via `dom::swap_inner`.
+- **`Filesystem::delete` + OPFS wipe button.** The panel's wipe action
+  shows "not yet" because the trait has no remove method. Adding it
+  unblocks the wipe button and also lets the `delete_file` builtin
+  exist (currently absent).
+- **OPFS file edit in the panel.** Today files are read-only previews;
+  inline editing fits naturally as another `data-action` (e.g.
+  `opfs-edit`, `opfs-save`) and a `write_atomic` call.
+- **Persistent conversation history.** Refreshing the tab wipes the
+  in-memory Agent. Serialise the Gemini `history` into OPFS (or
+  IndexedDB) per session and reload on mount.
 - **Provider-agnostic Filesystem usage.** The trait sits below
   `Connection` so any future backend (OpenAI, Anthropic, local model)
-  can reuse the same `OpfsFilesystem` + `NativeFilesystem` without
-  duplication. Today only `GeminiBackendConfig::with_filesystem` exists;
-  the seam is ready when a second backend lands.
-- **Web IDE expansion.** Beyond the file browser: inline editing of
-  OPFS files, persistent agent state across reloads (history in OPFS),
-  a "scratch" area pre-populated with starter files. Treat the demo as
-  a tab-resident IDE the agent shares with the user.
+  can reuse `OpfsFilesystem` + `NativeFilesystem`. Today only
+  `GeminiBackendConfig::with_filesystem` exists; the seam is ready
+  when a second backend lands.
+- **Backend selector in the app.** A `data-action="set-backend"`
+  control once a second `ConnectionStrategy` exists.
 
 ## Filesystem trait (M3)
 
