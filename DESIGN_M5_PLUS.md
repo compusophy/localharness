@@ -83,29 +83,151 @@ their identity.
 **Cost:** added wasm dep — likely `alloy` or a tempo-specific crate.
 Bundle grows; gate behind a feature so the SDK side stays clean.
 
-### L3 — Auth, in-app
+### L3 — Auth: keys only, no emails
 
-For the home origin (`john.localharness.xyz`):
+User preference is explicit: **no email auth, ever**. Sign-in is
+purely cryptographic.
 
-- App reads registry contract: "owner of `john` is `0xABC...`"
-- App checks: does the local OPFS wallet's pubkey match `0xABC`?
-  - **Yes** → unlock "owner mode" — show send/edit/save/wipe affordances.
-  - **No** → "this is John's public profile" — read-only; show "import
-    wallet" affordance for the case where John is on a new device.
+The trick: the wallet must live at one origin (the apex) but be
+usable by every subdomain, because per-origin OPFS isolation means a
+wallet stored at `localharness.xyz` is NOT visible to
+`john.localharness.xyz`. Three patterns considered:
 
-No session cookies, no JWTs, no auth server. Possession of the
-private key for the registered pubkey IS authentication. Every
-state-changing action that touches the registry contract is signed.
+1. **Wallet per origin** (simplest, worst UX). Every subdomain
+   generates its own wallet. No "master identity" possible. User has
+   to manage N wallets for N subdomains.
+2. **Master wallet at apex, paste private key on each subdomain**
+   (medium UX). User generates wallet on first visit to apex, exports
+   it, pastes it into each subdomain they own. Works but security
+   gross — private key crossing origin boundaries by hand.
+3. **Master wallet at apex, sign via iframe** (best UX, most code).
+   Apex hosts a `/signer` iframe that holds the wallet. Subdomains
+   embed it, send `postMessage` "please sign this hash", get a
+   signature back without ever seeing the private key. Same model as
+   Phantom / MetaMask Snaps / WebAuthn extensions.
+
+Pattern 3 is the right destination. Pattern 1 is the right interim.
+Pattern 2 is a footgun we should not ship.
+
+**Per-subdomain sign-in flow (pattern 3, final):**
+1. User visits `john.localharness.xyz`.
+2. App reads registry: `ownerOf(idOfName["john"])` → `0xABC...`.
+3. App embeds `https://localharness.xyz/signer?nonce=<random>` in a
+   hidden iframe.
+4. Iframe asks user (in apex-origin UI) to approve signing.
+5. Iframe returns signature via postMessage.
+6. App verifies signature against `0xABC...`. If valid → owner mode.
+
+No session cookies, no JWTs, no central auth server. Possession of
+the private key the master wallet holds IS authentication.
 
 **For state local to this origin** (saving a conversation, editing a
 file in OPFS), the wallet is moot — same-origin JS access already
-implies write authority. The wallet only matters for things the
-registry contract enforces, or for at-rest encryption (L6 / future).
+implies write authority. The wallet only matters for registry-state
+changes (mint, transfer, metadata) and for proving ownership to
+visitors / 3rd-party services.
 
-### L4 — Registry contract (Tempo)
+**Cross-device:** the user can export the master wallet (private key
+or seed phrase) from apex on device A, import it to apex on device B,
+and instantly have ownership of every subdomain in the registry.
+That's the only thing they ever have to back up. (See L7.)
 
-The minimum: `subdomain → ownerPubkey` mapping, on Tempo testnet,
-deployed via Foundry.
+### L4 — Registry contract (Tempo) — track the EIPs
+
+Two recent EIPs cover this exact ground; we should align rather than
+invent. Decision is between them, not whether to use one.
+
+**ERC-8004 (Trustless Agents)** — three coupled registries:
+- *Identity Registry* (ERC-721 based): each agent is an NFT.
+  `register()`, `setAgentURI(uri)`, `setAgentWallet(addr)`.
+- *Reputation Registry*: signed feedback values for sorting agents.
+- *Validation Registry*: stake-secured re-execution / zkML / TEE.
+
+**ERC-8122 (Minimal Agent Registry)** — single contract:
+- `register()`, `registerBatch()`, `ownerOf()`, `setMetadata()`.
+- Extends ERC-6909 (multi-token) for ownership.
+- Extends ERC-8048 (key-value metadata).
+- ERC-7930 interoperable addresses for cross-chain.
+
+**ERC-6551 (Token-Bound Accounts)** — orthogonal but load-bearing:
+each NFT gets a deterministic smart contract account via a singleton
+registry (create2-derived address). The NFT holder controls the
+bound account. Means **every agent NFT automatically has its own
+wallet** without us deploying per-agent contracts.
+
+**My read of the trade-off:**
+- 8122 is lighter and ships sooner. It's the "minimal" baseline.
+- 8004 is the proper standard for the "Shopify-for-agents" endgame
+  (discovery + trust + validation), and being ERC-721-based makes it
+  6551-compatible out of the box.
+- We can start with 8122-shaped storage and migrate to 8004 once
+  reputation/validation matter; nothing locks us in either direction.
+
+**Concrete v1 contract:** ERC-8122 surface (`register / ownerOf /
+setMetadata`) on Tempo testnet, with metadata key `subdomain` carrying
+the chosen name. The `name → owner` reverse lookup we need for "is
+this taken?" is just iterating `setMetadata` events, or storing a
+secondary mapping. Easier: combine 8122's `agentId` with an extra
+`name → agentId` map in our deployment.
+
+**Why "registry on-chain even when reading from the browser":** every
+visitor's wasm bundle hits Tempo RPC directly to read; only the OWNER
+needs to send a tx (to register/transfer). Reads are free and
+permissionless. No backend, no API key, no central failure point.
+
+Sketch (combining 8122 surface + a name index):
+
+```solidity
+// LocalharnessRegistry.sol — sketch (combines 8122 shape)
+interface IMinimalAgentRegistry {
+    function register(address to) external returns (uint256 agentId);
+    function ownerOf(uint256 agentId) external view returns (address);
+    function setMetadata(uint256 agentId, bytes32 key, bytes calldata value) external;
+}
+
+contract LocalharnessRegistry is IMinimalAgentRegistry {
+    mapping(uint256 => address) public ownerOfId;
+    mapping(string => uint256)  public idOfName;     // the "is it taken" map
+    mapping(uint256 => string)  public nameOfId;
+    mapping(uint256 => mapping(bytes32 => bytes)) public metadata;
+    uint256 public nextId;
+
+    event Registered(uint256 indexed agentId, address indexed owner, string name);
+    event MetadataSet(uint256 indexed agentId, bytes32 indexed key, bytes value);
+
+    function registerName(address to, string calldata name) external returns (uint256) {
+        require(idOfName[name] == 0, "taken");
+        require(_isValid(name), "invalid name");
+        uint256 id = ++nextId;
+        ownerOfId[id] = to;
+        idOfName[name] = id;
+        nameOfId[id] = name;
+        emit Registered(id, to, name);
+        return id;
+    }
+
+    function setMetadata(uint256 agentId, bytes32 key, bytes calldata value) external {
+        require(msg.sender == ownerOfId[agentId], "not owner");
+        metadata[agentId][key] = value;
+        emit MetadataSet(agentId, key, value);
+    }
+
+    // ... validation, transfer, ERC-6909/8048 conformance per the
+    // EIP. The above is the load-bearing surface for "claim a name".
+}
+```
+
+**ERC-6551 layer:** once `LocalharnessRegistry` is an ERC-721 (or
+ERC-6909 implementing the right interfaces), every registered name
+automatically gets a deterministic 6551 account via the singleton
+6551 registry (already deployed on most chains). That account is the
+**agent's wallet** — can hold tokens, sign txs, pay/receive x402 or
+MPP. No new deployment per agent.
+
+The original handwritten sketch below is kept for reference but is
+*not* what we should ship — the EIP-aligned version is the target.
+
+```solidity
 
 ```solidity
 // LocalharnessRegistry.sol — sketch
@@ -226,18 +348,30 @@ Don't pretend to solve sync until users actually feel the lack.
 
 ## Phase plan
 
+Revised after grounding L4 in ERC-8004/8122/6551 and confirming the
+no-email constraint.
+
 | M | Surface | Effort | Blocker | Notes |
 |---|---------|--------|---------|-------|
-| **M5** | DNS + subdomain self-awareness in the app | small | DNS propagation | App reads `hostname`, shows "this is X's space", switches OPFS just by virtue of being on a different origin. No identity yet. |
-| **M6** | Browser wallet (gen + import + export); `.lh_wallet.json` in OPFS | medium | M5 | Add wasm-compatible crypto dep (alloy, tempo-x402, or hand-rolled). Wallet exists but isn't checked against anything. |
-| **M7** | `LocalharnessRegistry` deployed on Tempo testnet; app reads it on mount | medium | M6 + you running `forge create` once | Address goes into the bundle as a const. Contract is immutable; bundle re-reads on every load. |
-| **M8** | Owner-gated UX (sign/verify against registry on mount) | small | M7 | Lock down write actions when wallet doesn't match. Show "import wallet" UX for new device. |
-| **M9** | x402 payment hooks | large | M8 + a real use case | Don't build until there's a flow that needs payment. |
-| **M10** | At-rest encryption | medium | M8 + a real threat | Don't build until OPFS visibility actually matters. |
-| **M11** | Cross-device sync | large | M8 + user demand | Don't build until users complain about device drift. |
+| ~~**M5**~~ | ~~DNS + subdomain self-awareness in the app~~ | done | — | Shipped 2026-05-23. `tenant.rs` + apex chrome + per-device claim. |
+| **M5.1** | Apex→subdomain query-param hand-off so claim is one click | tiny | — | Shipped 2026-05-23 — `?claim=1`. |
+| **M6 spike** | Compile `alloy` (`signer-local` only) to wasm32 in this crate | small | none | Probe whether the wallet can live in the bundle without a JS bridge. Half-day. If it fails, evaluate `k256` + hand-rolled. |
+| **M6** | Master wallet at apex: gen, persist `.lh_wallet.json` in apex's OPFS, export seed phrase | medium | M6 spike | One wallet per device-at-apex. Pattern-1 UX (each subdomain still independent). |
+| **M7 contract** | Write `LocalharnessRegistry.sol` (ERC-8122 surface + name index), Foundry deploy script, you `forge create` once on Tempo testnet | medium | foundry available locally | I write, you sign + send. Address baked into the wasm bundle as a const. |
+| **M7 read-side** | Bundle reads registry via JSON-RPC on mount. "is this name taken" check on apex finally works. | small | M7 contract | `alloy::provider` against Tempo public RPC. Read-only — no wallet needed. |
+| **M7 write-side** | Bundle writes claim tx, signed by master wallet, via RPC | medium | M6 + M7 read-side | Bootstrap: how does a new user get testnet gas? Either a built-in faucet endpoint we hit on first claim, or a "fund this address via the testnet faucet" interstitial. |
+| **M8 iframe-signer** | `/signer.html` at apex: a tiny page holding the wallet, exposing a `postMessage`-based signing API to subdomains | medium | M7 | Pattern 3 UX. Subdomains never see the private key. |
+| **M8 verify** | Subdomains verify signed nonce on mount, lock writes when wallet doesn't match owner | small | M8 iframe-signer | True owner-gated UX. |
+| **M9** | ERC-6551 token-bound account exposed on every registered name → that's the agent's wallet | small (just reads the singleton 6551 registry) | M7 | Agents can hold funds, sign txs, interact with x402/MPP. No contract changes — 6551 is permissionless. |
+| **M10** | x402 or MPP payment hooks: pre-tool-call gate that requires payment | large | M9 + real demand | Whatever the user-tier story turns out to be. |
+| **M11** | ERC-8004 expansion: reputation + validation registries on top of M7's identity registry | large | M9 + multi-party usage | When agents start consuming each other's services. |
+| **M12** | At-rest encryption (wallet-derived sym key over OPFS contents) | medium | M8 + real threat | Don't ship until OPFS visibility matters. |
 
-The first three (M5–M7) are sequenced. M8+ branches — pick based on
-what hurts.
+**No L7 "cross-device sync server" entry anymore** — the wallet IS
+the sync. Export seed phrase from device A, import on device B.
+Registry state is on-chain and globally readable. Per-subdomain OPFS
+contents (chat history, files) are the only thing that stays local;
+those we treat as per-device working state, not authoritative.
 
 ---
 
@@ -272,23 +406,44 @@ needed (or maybe a tiny wasm bundle for the registry call only).
 
 ## Open questions
 
-1. **Tempo crate.** Does `tempo-x402` compile on wasm32 today? If not,
-   how much porting is needed? Worth a 30-minute spike before
-   committing to the dep.
+1. **Which crate stack on wasm32.** `tempo-x402` workspace is mostly
+   server-side (actix, tokio, wasmtime); `tempo-x402-identity` likely
+   needs porting. `alloy` with `signer-local` is the canonical
+   browser-friendly path and is what M6 spike should try first. If
+   that fails, `k256` + hand-rolled signing is the fallback (smaller,
+   less ergonomic).
 2. **Wallet UX for non-crypto users.** "Generate wallet" → "back up
    your phrase" → "actually let me skip" → user loses access on next
    device. Need a forcing function or a clear "you're on your own"
    warning. The Phantom model is the right inspiration.
-3. **Squatting.** First-come-first-served + one-per-pubkey is naive
-   but ships. Reserved names list? Anti-bot via a small testnet fee?
-4. **Apex login.** Should the apex page require a wallet to claim, or
-   should claim happen on the subdomain after redirect? Latter is
-   simpler (the subdomain is the canonical place for the wallet).
-5. **What if Tempo is down / RPC fails on mount?** App should
-   degrade gracefully — show "registry unreachable" but still let the
-   user use the local OPFS data. Identity check can be deferred.
-6. **Discovery.** How does anyone find John's agent if they don't know
-   the subdomain? Eventually: a directory page on the apex. Defer.
+3. **Bootstrap gas.** First-time user has zero TMP. Options:
+   - Operator-funded faucet endpoint we hit on first claim (centralised,
+     rate-limit-spammable)
+   - Public Tempo faucet — instructions, paste the address yourself
+   - Sponsored / meta-transactions where someone else pays gas (EIP-2771).
+3. **Squatting.** ERC-8004/8122 don't prevent it. Options: one-per-key
+   limit (naive but ships), reserved-names allowlist for early users,
+   pay-per-name in mainnet phase. Defer the policy decision.
+4. **Apex login.** Today the wallet would live in apex's OPFS. If a
+   visitor lands on `john.localharness.xyz` with no apex history,
+   they need to bounce through apex to authenticate. iframe-signer
+   pattern resolves this without requiring full redirects.
+5. **What if Tempo RPC is down on mount?** App should degrade
+   gracefully — show "registry unreachable; using cached state" and
+   still let the user use the local OPFS data. Optimistic local
+   reads with eventual on-chain reconciliation.
+6. **Discovery.** How does anyone find John's agent if they don't
+   know the subdomain? Eventually: a directory page on the apex,
+   reading registry events. Defer.
+7. **ERC-8004 vs 8122 final pick.** Ship M7 with 8122 surface; reach
+   for 8004 (ERC-721 identity, reputation, validation) when
+   agent-to-agent commerce starts mattering. The two are migrate-able
+   because metadata fields are extensible.
+8. **MPP vs x402.** User stated preference for MPP (Stripe / Tempo
+   ecosystem) over x402 (Coinbase / Base). The tempo-x402 workspace
+   is named after x402 but built on Tempo; whether the actual MPP
+   wire protocol has its own Rust crate is unverified. Resolve when
+   M10 starts.
 
 ---
 

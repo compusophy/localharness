@@ -194,7 +194,9 @@ fn dispatch(action: Action) {
             });
         }
         Action::ApexClaim => {
-            // Read the apex form's input, sanitize, redirect.
+            // Read the apex form's input, sanitize, redirect with a
+            // ?claim=1 hint so the destination subdomain auto-claims
+            // on arrival (rather than re-prompting the user).
             let raw = dom::input_by_id("apex-input")
                 .map(|i| i.value())
                 .unwrap_or_default();
@@ -206,9 +208,10 @@ fn dispatch(action: Action) {
                 );
                 return;
             }
-            // Build the URL and navigate. window.location.assign keeps
-            // forward navigation in the browser history.
-            let target = format!("https://{cleaned}.localharness.xyz/");
+            // Apex and subdomain are different origins — we cannot
+            // write to the subdomain's OPFS from here. Hand off intent
+            // via the URL.
+            let target = format!("https://{cleaned}.localharness.xyz/?claim=1");
             if let Ok(window) = dom::window() {
                 let _ = window.location().assign(&target);
             }

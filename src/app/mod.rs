@@ -192,7 +192,17 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
     let Ok(doc) = dom::document() else { return };
     let Some(root) = doc.get_element_by_id("root") else { return };
 
-    let owner = owner::current_owner().await;
+    let mut owner = owner::current_owner().await;
+    // Apex sends users here with ?claim=1 to skip the
+    // "claim this name?" interstitial — the user has already expressed
+    // intent on the previous page. Auto-claim, then strip the param so
+    // a refresh doesn't trigger anything weird.
+    if owner.is_none() && has_claim_hint() {
+        if let Ok(id) = owner::claim().await {
+            owner = Some(id);
+            strip_claim_hint();
+        }
+    }
     if owner.is_none() {
         // Unclaimed on this device — paint the prompt.
         root.set_inner_html(&templates::unclaimed(&host, &name).into_string());
@@ -220,4 +230,21 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
     }
     history::load_into_pending().await;
     opfs::refresh().await;
+}
+
+/// `true` iff `?claim=1` (or `?claim=anything`) is in the URL.
+fn has_claim_hint() -> bool {
+    let Ok(window) = dom::window() else { return false };
+    let Ok(search) = window.location().search() else { return false };
+    // search is like "?claim=1" or "" — naive contains() is fine for our flag.
+    search.contains("claim=1") || search.contains("claim=true")
+}
+
+/// Remove the claim-hint query param without reloading the page. Used
+/// once auto-claim succeeds so the URL looks clean.
+fn strip_claim_hint() {
+    let Ok(window) = dom::window() else { return };
+    let Ok(history) = window.history() else { return };
+    let url = window.location().pathname().unwrap_or_else(|_| "/".into());
+    let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&url));
 }
