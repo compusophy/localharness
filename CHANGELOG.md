@@ -5,6 +5,38 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] - 2026-05-23
+
+Two browser-app fixes surfaced by the first real end-to-end smoke of
+0.7.1, plus API-key-in-OPFS for ergonomics.
+
+### Fixed
+
+- **Tool result panel never rendered.** The Gemini agent loop emitted
+  `StreamChunk::ToolCall` but never `StreamChunk::ToolResult`, so the
+  app's result branch was dead code — tool blocks stayed in "running"
+  state and the result panel never appeared. Fixed in
+  `backends/gemini/loop.rs`: after every tool execution we now emit a
+  `ToolResult` chunk in addition to dispatching the post-tool hook.
+- **Tool-level errors looked like successes.** When a built-in tool
+  returned its error as `{"error": "..."}` JSON (the wire convention),
+  `ToolResult.error` was still `None`, so UIs couldn't tell. The loop
+  now lifts the JSON `error` field into the typed `ToolResult.error`
+  so consumers can branch cleanly.
+
+### Added
+
+- **API key persistence in OPFS** (`src/app/key_store.rs`). The key is
+  stored at `.lh_api_key` next to `.lh_history.json` so it survives a
+  tab close (sessionStorage doesn't). Same threat model as
+  sessionStorage — per-origin sandboxed, XSS-readable. The existing
+  "clear" button wipes both OPFS and sessionStorage.
+
+### Notes
+
+- DESIGN_M5_PLUS.md added at repo root — multi-tenant / subdomain /
+  wallet plan for what comes after 0.7.x. Nothing in it is shipped.
+
 ## [0.7.1] - 2026-05-23
 
 Bugfix for the 0.7.0 browser app — `start_session` failed immediately
