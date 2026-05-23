@@ -188,8 +188,12 @@ Layout inside `src/app/`:
   into the assistant turn via fixed ids. Tool calls render with a
   monotonic `seg_id` and a `VecDeque` correlates `ToolResult`s back to
   their `ToolCall` block.
-- `opfs.rs` — read-only file browser (read_dir, open file in preview).
-  Wipe is deferred pending `Filesystem::delete`.
+- `opfs.rs` — file browser: read_dir, file preview, inline edit
+  (textarea + save via `Filesystem::write_atomic`), recursive wipe.
+- `history.rs` — conversation persistence. Reads `.lh_history.json`
+  from OPFS on mount, paints the prior turns into `#transcript` via
+  `decode_transcript_bytes` (free function — no live agent needed),
+  saves after every successful turn, deleted on "new conversation".
 
 Build: `wasm-pack build . --target web --out-dir web/pkg --release
 --no-default-features --features browser-app`. wasm-opt is disabled in
@@ -198,28 +202,31 @@ bundled wasm-opt rejects post-MVP features that modern rustc emits.
 
 ## What's planned
 
-- **Markdown rendering for assistant text segments.** Today the
-  `text_segment` template emits raw text; the previous demo ran
-  `marked.js` on the final string. Replacement: add `pulldown-cmark`
-  behind the `browser-app` feature, render at end-of-turn, swap into
-  the segment via `dom::swap_inner`.
-- **`Filesystem::delete` + OPFS wipe button.** The panel's wipe action
-  shows "not yet" because the trait has no remove method. Adding it
-  unblocks the wipe button and also lets the `delete_file` builtin
-  exist (currently absent).
-- **OPFS file edit in the panel.** Today files are read-only previews;
-  inline editing fits naturally as another `data-action` (e.g.
-  `opfs-edit`, `opfs-save`) and a `write_atomic` call.
-- **Persistent conversation history.** Refreshing the tab wipes the
-  in-memory Agent. Serialise the Gemini `history` into OPFS (or
-  IndexedDB) per session and reload on mount.
-- **Provider-agnostic Filesystem usage.** The trait sits below
-  `Connection` so any future backend (OpenAI, Anthropic, local model)
-  can reuse `OpfsFilesystem` + `NativeFilesystem`. Today only
+- **Browser smoke test of the live 0.7.0 demo.** The 0.7.0 release
+  shipped fully but the live demo's end-to-end path was never driven
+  by a human or a headless harness — compile + deploy + serve all
+  worked. Before adding more, walk: paste key → "create notes.md" →
+  panel shows file → "show me notes.md" → refresh → transcript
+  replays → conversation continues. Fix anything that breaks.
+- **Provider-agnostic Filesystem usage.** The `Filesystem` trait sits
+  below `Connection` so any future backend (OpenAI, Anthropic, local
+  model) can reuse `OpfsFilesystem` + `NativeFilesystem`. Today only
   `GeminiBackendConfig::with_filesystem` exists; the seam is ready
   when a second backend lands.
+- **Second backend.** Anthropic or OpenAI `ConnectionStrategy` to
+  validate the cross-provider claim. The trait abstractions are in
+  place — this is the test of whether they hold up.
 - **Backend selector in the app.** A `data-action="set-backend"`
   control once a second `ConnectionStrategy` exists.
+- **Tool-call activity in restored transcripts.** Today
+  `TranscriptEntry` drops FunctionCall / FunctionResponse parts on
+  replay — the agent's context is correct but the user can't see
+  prior tool activity. Either project tool turns into the transcript
+  too, or surface them as collapsed "(N tool calls)" stubs.
+- **Wildcard-subdomain subagents.** Per the north-star vision —
+  each subagent gets its own browser-origin sandbox (separate OPFS,
+  sessionStorage, cookies). Needs DNS + Vercel domain configuration
+  + per-subdomain agent spawn flow. Large; sketch in DESIGN.md first.
 
 ## Filesystem trait (M3)
 
