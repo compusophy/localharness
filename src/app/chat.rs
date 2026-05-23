@@ -11,6 +11,7 @@ use futures_util::StreamExt;
 use maud::html;
 use wasm_bindgen::JsValue;
 
+use crate::policy;
 use crate::{Agent, CapabilitiesConfig, GeminiAgentConfig, StreamChunk};
 
 use super::dom;
@@ -202,8 +203,15 @@ pub(crate) async fn run_send() {
 }
 
 async fn start_session(key: &str) -> Result<(), JsValue> {
+    // Unrestricted capabilities turn on the write tools; the Agent
+    // constructor refuses to start without a policy gate. OPFS is
+    // sandboxed per-origin (no path-escape risk) and this is the
+    // user's own tab, so allow_all is the right policy for the demo —
+    // anyone running the SDK as a library in less trusted contexts
+    // should pick a tighter one (e.g. workspace_only / per-tool allow).
     let mut cfg = GeminiAgentConfig::new(key.to_string())
         .with_capabilities(CapabilitiesConfig::unrestricted())
+        .with_policies(vec![policy::allow_all()])
         .with_filesystem(super::shared_opfs());
     // If a previous session left history on OPFS, restore it into the
     // new connection. Consumed once — subsequent key changes start

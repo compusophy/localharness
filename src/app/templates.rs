@@ -32,11 +32,12 @@ pub(crate) fn chrome() -> Markup {
             div.col-chat {
                 header {
                     h1 { "localharness" }
-                    span.tag { "web demo · 0.6.0" }
+                    span.tag { "web demo · 0.7.0" }
                 }
                 p.sub {
                     "Streaming Gemini chat compiled to wasm32 — no backend, key stays in this tab. "
-                    "The model can read/write files in your tab's private OPFS storage. "
+                    "The model can read/write files in your tab's private OPFS storage; "
+                    "conversation history persists across reloads. "
                     "UI is rendered entirely by Rust → HTML; no JavaScript application code in the page."
                 }
 
@@ -83,11 +84,16 @@ pub(crate) fn chrome() -> Markup {
                         strong { "10 of 11 builtins wired" }
                         " — including the 6 fs tools against per-origin OPFS storage; "
                         code { "run_command" }
-                        " remains native-only. Tool calls appear inline below as they execute."
+                        " remains native-only. Tool calls render inline as they execute; "
+                        "click a file in the panel to view or edit."
                     }
                     p {
-                        "Conversation history is held in this tab only — refresh to start fresh. "
-                        "OPFS storage persists across reloads but is sandboxed per-origin."
+                        "Conversation history and OPFS files both persist across "
+                        "reloads (per-origin sandbox). Use "
+                        strong { "new conversation" }
+                        " to start fresh, or "
+                        strong { "wipe" }
+                        " in the OPFS panel to clear files."
                     }
                 }
             }
