@@ -27,22 +27,34 @@ pub(crate) fn rendered_markdown(raw: &str) -> Markup {
     html! { (PreEscaped(out)) }
 }
 
-/// The initial page chrome, painted once into `#root` on mount.
-pub(crate) fn chrome(host: &Host) -> Markup {
+/// Header bar (h1 + version tag + tenant tag). Used by every chrome
+/// variant so the brand + home link are consistent.
+fn site_header(host: &Host) -> Markup {
     let (tenant_class, tenant_label) = match host {
         Host::Tenant(name) => ("tenant", format!("tenant · {name}")),
         Host::Apex => ("apex", "apex".to_string()),
         Host::Other(_) => ("other", host.label()),
     };
     html! {
+        header {
+            h1 {
+                a href="https://localharness.xyz/" title="go home" { "localharness" }
+            }
+            span.tag { "web demo · 0.7.2" }
+            span class={ "tag tenant-tag tenant-" (tenant_class) }
+                title=(host.label()) { (tenant_label) }
+        }
+    }
+}
+
+/// The full app chrome (key + prompt + transcript + OPFS panel). Used
+/// when we're on a claimed tenant subdomain or any fallback
+/// (localhost, vercel preview).
+pub(crate) fn chrome(host: &Host) -> Markup {
+    html! {
         main {
             div.col-chat {
-                header {
-                    h1 { "localharness" }
-                    span.tag { "web demo · 0.7.2" }
-                    span class={ "tag tenant-tag tenant-" (tenant_class) }
-                        title=(host.label()) { (tenant_label) }
-                }
+                (site_header(host))
                 p.sub {
                     "Streaming Gemini chat compiled to wasm32 — no backend, key stays in this tab. "
                     "The model can read/write files in your tab's private OPFS storage; "
@@ -207,7 +219,118 @@ pub(crate) fn tool_call_result(result: &ToolResult) -> Markup {
     }
 }
 
-// --- OPFS panel templates ---------------------------------------------
+// --- Apex / claim templates --------------------------------------------
+
+/// Apex page — `localharness.xyz/`. Single-CTA marketing surface,
+/// mirrors `self.tools/` in spirit: input + go button → redirect to
+/// the named subdomain.
+pub(crate) fn apex(host: &Host) -> Markup {
+    html! {
+        main.apex-main {
+            div.col-chat {
+                (site_header(host))
+
+                section.apex-hero {
+                    h2.apex-headline { "your own browser-resident agent." }
+                    p.apex-sub {
+                        "pick a name. it becomes your subdomain. "
+                        "the agent loop, your files, and your conversation history all live "
+                        "in that subdomain's per-origin sandbox — no servers, no accounts to recover, "
+                        "no one else can read your data."
+                    }
+
+                    form.apex-form data-action="apex-claim" {
+                        div.apex-input-row {
+                            input #apex-input
+                                type="text"
+                                placeholder="your-name"
+                                autocomplete="off"
+                                spellcheck="false"
+                                maxlength="32"
+                                required {}
+                            span.apex-suffix { ".localharness.xyz" }
+                        }
+                        button type="submit" { "claim →" }
+                        div #apex-msg .apex-msg {}
+                    }
+
+                    p.apex-fine {
+                        "a–z, 0–9, dash. 3–32 chars. "
+                        "first device to claim a name owns it on that device — "
+                        "a central registry that prevents cross-device squatting lands in "
+                        a href="https://github.com/compusophy/localharness/blob/main/DESIGN_M5_PLUS.md" { "M7" }
+                        "."
+                    }
+                }
+
+                footer {
+                    p {
+                        "Open source · "
+                        a href="https://github.com/compusophy/localharness" { "github.com/compusophy/localharness" }
+                        " · Rust → wasm32 · no analytics, no telemetry, no backend."
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Tenant subdomain that no one on this device has claimed yet —
+/// "unclaimed mode". Show a "claim this name" CTA + an "I already
+/// own it elsewhere" import affordance (paste your owner UUID).
+pub(crate) fn unclaimed(host: &Host, name: &str) -> Markup {
+    html! {
+        main.apex-main {
+            div.col-chat {
+                (site_header(host))
+
+                section.apex-hero {
+                    h2.apex-headline { "this name is open: " (name) }
+                    p.apex-sub {
+                        "no one on this device has claimed " strong { (name) ".localharness.xyz" }
+                        " yet. claim it to start using it as your space — your conversations and "
+                        "files will live in this subdomain's private OPFS storage."
+                    }
+
+                    form.apex-form data-action="claim-here" {
+                        button type="submit" { "claim " (name) " →" }
+                        div #claim-msg .apex-msg {}
+                    }
+
+                    details.apex-details {
+                        summary { "already own this name on another device?" }
+                        div.apex-import {
+                            p.apex-fine {
+                                "if you claimed " (name) " elsewhere, paste the owner UUID from "
+                                "that device's OPFS panel (file " code { ".lh_owner" } "). "
+                                "this puts a copy of the marker on this device too. "
+                                "(cross-device claim sync lands in M7.)"
+                            }
+                            div.apex-input-row {
+                                input #import-uuid
+                                    type="text"
+                                    placeholder="00000000-0000-0000-0000-000000000000"
+                                    autocomplete="off"
+                                    spellcheck="false" {}
+                            }
+                            button type="button" data-action="import-owner" { "save UUID" }
+                        }
+                    }
+                }
+
+                footer {
+                    p {
+                        "want a different name? "
+                        a href="https://localharness.xyz/" { "go home" }
+                        " and pick a new one."
+                    }
+                }
+            }
+        }
+    }
+}
+
+// --- OPFS panel templates --------------------------------------------
 
 pub(crate) fn opfs_breadcrumb(cwd: &[String]) -> Markup {
     html! {

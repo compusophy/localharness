@@ -28,6 +28,7 @@ mod events;
 mod history;
 mod key_store;
 mod opfs;
+mod owner;
 mod templates;
 mod tenant;
 
@@ -113,11 +114,44 @@ fn mount() -> Result<(), JsValue> {
         .get_element_by_id("root")
         .ok_or_else(|| JsValue::from_str("missing <div id=\"root\"> in the host page"))?;
 
-    // Resolve which tenant we're being served as (apex vs subdomain
-    // vs Vercel preview). The bundle is the same for every host; the
-    // chrome just labels which space the user is in.
+    // Resolve which tenant we're being served as. On apex, we paint a
+    // marketing chrome with a single "claim a subdomain" CTA. On a
+    // tenant subdomain, we check the OPFS ownership marker and paint
+    // either the unclaimed-prompt or the full app. On unknown hosts
+    // (localhost, Vercel preview) we paint the full app for testing.
     let host = tenant::current();
-    // Single set_inner_html call paints the entire initial UI.
+    let host_for_listeners = host.clone();
+
+    // Delegated listeners are installed first so the apex / unclaimed
+    // templates' buttons work even before we hit the async branches.
+    events::install_delegated_listeners(&doc)?;
+
+    match &host {
+        tenant::Host::Apex => {
+            root.set_inner_html(&templates::apex(&host).into_string());
+            return Ok(());
+        }
+        tenant::Host::Tenant(name) => {
+            // Tenant subdomain — defer the chrome choice until we've
+            // peeked at the ownership marker (async).
+            let placeholder = format!(
+                "<main style=\"padding:48px;text-align:center;color:#7a8493;\
+                 font:14px ui-monospace,Menlo,Consolas,monospace\">\
+                 resolving {name}…</main>"
+            );
+            root.set_inner_html(&placeholder);
+            let name = name.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                paint_tenant(host_for_listeners, name).await;
+            });
+            return Ok(());
+        }
+        tenant::Host::Other(_) => {
+            // Fall through to the existing chrome path.
+        }
+    }
+
+    // Full-app chrome (localhost, Vercel preview, etc.).
     root.set_inner_html(&templates::chrome(&host).into_string());
 
     // sessionStorage is the synchronous fallback for the input field's
@@ -132,7 +166,6 @@ fn mount() -> Result<(), JsValue> {
         }
     }
 
-    events::install_delegated_listeners(&doc)?;
     dom::set_status("ready · type a prompt", false);
 
     // Initial OPFS panel paint + history restore + key restore. All
@@ -149,4 +182,42 @@ fn mount() -> Result<(), JsValue> {
         opfs::refresh().await;
     });
     Ok(())
+}
+
+/// Render a tenant subdomain after we know whether it's claimed. If
+/// no `.lh_owner` marker exists in this device's OPFS, paint the
+/// claim flow; otherwise paint the full app and run the usual restore
+/// path. Called once on mount and again after a successful claim.
+pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
+    let Ok(doc) = dom::document() else { return };
+    let Some(root) = doc.get_element_by_id("root") else { return };
+
+    let owner = owner::current_owner().await;
+    if owner.is_none() {
+        // Unclaimed on this device — paint the prompt.
+        root.set_inner_html(&templates::unclaimed(&host, &name).into_string());
+        return;
+    }
+
+    // Claimed — paint the full app.
+    root.set_inner_html(&templates::chrome(&host).into_string());
+
+    if let Ok(Some(storage)) = dom::session_storage() {
+        if let Ok(Some(cached)) = storage.get_item("gemini_api_key") {
+            if let Some(input) = dom::input_by_id("key") {
+                input.set_value(&cached);
+                events::refresh_keymeta();
+            }
+        }
+    }
+    dom::set_status("ready · type a prompt", false);
+
+    if let Some(persisted_key) = key_store::load().await {
+        if let Some(input) = dom::input_by_id("key") {
+            input.set_value(&persisted_key);
+            events::refresh_keymeta();
+        }
+    }
+    history::load_into_pending().await;
+    opfs::refresh().await;
 }

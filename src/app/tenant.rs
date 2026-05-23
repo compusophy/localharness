@@ -52,6 +52,19 @@ pub(crate) fn current() -> Host {
     classify(&hostname)
 }
 
+/// Normalise a user-typed subdomain candidate to the same character
+/// set the registry will (eventually) enforce: lowercase ASCII
+/// alphanumeric + dash. Matches the contract sketch in
+/// `DESIGN_M5_PLUS.md` and `self.tools`' `[^a-z0-9-]` filter.
+pub(crate) fn sanitize(input: &str) -> String {
+    input
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect()
+}
+
 fn classify(hostname: &str) -> Host {
     // Strip any leading "www.".
     let h = hostname.strip_prefix("www.").unwrap_or(hostname);

@@ -15,6 +15,8 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{Document, Element, KeyboardEvent, MouseEvent};
 
+use crate::filesystem::Filesystem;
+
 use super::dom;
 use super::templates;
 
@@ -33,6 +35,9 @@ enum Action {
     OpfsOpen(String),
     OpfsEdit(String),
     OpfsSave(String),
+    ApexClaim,
+    ClaimHere,
+    ImportOwner,
 }
 
 impl Action {
@@ -48,6 +53,9 @@ impl Action {
             "opfs-open" => Action::OpfsOpen(arg.unwrap_or_default()),
             "opfs-edit" => Action::OpfsEdit(arg.unwrap_or_default()),
             "opfs-save" => Action::OpfsSave(arg.unwrap_or_default()),
+            "apex-claim" => Action::ApexClaim,
+            "claim-here" => Action::ClaimHere,
+            "import-owner" => Action::ImportOwner,
             _ => return None,
         })
     }
@@ -101,6 +109,22 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
     });
     doc.add_event_listener_with_callback("input", input_handler.as_ref().unchecked_ref())?;
     input_handler.forget();
+
+    // Delegated submit handler — apex / claim forms route through
+    // this. preventDefault before dispatch so the browser doesn't try
+    // to GET the page with form fields in the query string.
+    let submit_handler = Closure::<dyn FnMut(_)>::new(move |event: web_sys::Event| {
+        let Some(target) = event.target() else { return };
+        let Ok(form) = target.dyn_into::<Element>() else { return };
+        if let Some(name) = form.get_attribute("data-action") {
+            if let Some(action) = Action::parse(&name, form.get_attribute("data-arg")) {
+                event.prevent_default();
+                dispatch(action);
+            }
+        }
+    });
+    doc.add_event_listener_with_callback("submit", submit_handler.as_ref().unchecked_ref())?;
+    submit_handler.forget();
 
     // Cmd/Ctrl+Enter inside the prompt textarea triggers send.
     let keydown = Closure::<dyn FnMut(_)>::new(move |event: KeyboardEvent| {
@@ -167,6 +191,77 @@ fn dispatch(action: Action) {
         Action::OpfsSave(name) => {
             wasm_bindgen_futures::spawn_local(async move {
                 super::opfs::save_file(&name).await;
+            });
+        }
+        Action::ApexClaim => {
+            // Read the apex form's input, sanitize, redirect.
+            let raw = dom::input_by_id("apex-input")
+                .map(|i| i.value())
+                .unwrap_or_default();
+            let cleaned = super::tenant::sanitize(&raw);
+            if cleaned.len() < 3 || cleaned.len() > 32 {
+                dom::swap_inner(
+                    "apex-msg",
+                    "<span style=\"color:var(--error)\">name must be 3-32 chars, a-z 0-9 -</span>",
+                );
+                return;
+            }
+            // Build the URL and navigate. window.location.assign keeps
+            // forward navigation in the browser history.
+            let target = format!("https://{cleaned}.localharness.xyz/");
+            if let Ok(window) = dom::window() {
+                let _ = window.location().assign(&target);
+            }
+        }
+        Action::ClaimHere => {
+            wasm_bindgen_futures::spawn_local(async move {
+                match super::owner::claim().await {
+                    Ok(id) => {
+                        web_sys::console::log_1(&JsValue::from_str(&format!(
+                            "claimed with owner id {id}"
+                        )));
+                        // Re-render the tenant chrome now that we own it.
+                        if let super::tenant::Host::Tenant(name) = super::tenant::current() {
+                            super::paint_tenant(super::tenant::Host::Tenant(name.clone()), name)
+                                .await;
+                        }
+                    }
+                    Err(err) => {
+                        dom::swap_inner(
+                            "claim-msg",
+                            &format!(
+                                "<span style=\"color:var(--error)\">claim failed: {err}</span>"
+                            ),
+                        );
+                    }
+                }
+            });
+        }
+        Action::ImportOwner => {
+            let raw = dom::input_by_id("import-uuid")
+                .map(|i| i.value().trim().to_string())
+                .unwrap_or_default();
+            if raw.len() < 32 {
+                dom::swap_inner(
+                    "claim-msg",
+                    "<span style=\"color:var(--error)\">paste a full UUID (36 chars with dashes)</span>",
+                );
+                return;
+            }
+            wasm_bindgen_futures::spawn_local(async move {
+                let fs = super::shared_opfs();
+                if let Err(err) = fs.write_atomic(".lh_owner", raw.as_bytes()).await {
+                    dom::swap_inner(
+                        "claim-msg",
+                        &format!(
+                            "<span style=\"color:var(--error)\">import failed: {err}</span>"
+                        ),
+                    );
+                    return;
+                }
+                if let super::tenant::Host::Tenant(name) = super::tenant::current() {
+                    super::paint_tenant(super::tenant::Host::Tenant(name.clone()), name).await;
+                }
             });
         }
         Action::OpfsWipe => {
