@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.7.0] - 2026-05-23
 
 M4 — the browser-resident IDE moves into the crate as `src/app/`,
 gated on `feature = "browser-app"`. The previous `localharness-web`
@@ -78,6 +78,13 @@ fragment swaps.
   that swaps it into an editor (textarea + save/cancel). Save calls
   `Filesystem::write_atomic` and re-renders the viewer with the new
   contents.
+- **Public transcript view** for repainting a UI on session resume.
+  New types `TranscriptEntry { role, text }` + `TranscriptRole`; new
+  methods `GeminiConnection::transcript()` and `Agent::transcript()`;
+  new free function `decode_transcript_bytes(&[u8])` for the
+  no-instance case (the browser app uses this on mount before any
+  agent exists). Tool-call activity is intentionally dropped from the
+  projection — this is the human-readable view.
 
 ### Removed
 
