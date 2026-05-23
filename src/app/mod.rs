@@ -29,6 +29,7 @@ mod history;
 mod key_store;
 mod opfs;
 mod templates;
+mod tenant;
 
 /// Per-tab state. One instance lives in [`APP`] for the lifetime of the
 /// page. Nothing here is `Send`/`Sync` — wasm32 is single-threaded.
@@ -112,8 +113,12 @@ fn mount() -> Result<(), JsValue> {
         .get_element_by_id("root")
         .ok_or_else(|| JsValue::from_str("missing <div id=\"root\"> in the host page"))?;
 
+    // Resolve which tenant we're being served as (apex vs subdomain
+    // vs Vercel preview). The bundle is the same for every host; the
+    // chrome just labels which space the user is in.
+    let host = tenant::current();
     // Single set_inner_html call paints the entire initial UI.
-    root.set_inner_html(&templates::chrome().into_string());
+    root.set_inner_html(&templates::chrome(&host).into_string());
 
     // sessionStorage is the synchronous fallback for the input field's
     // initial value. The OPFS-stored key (async) takes over once it

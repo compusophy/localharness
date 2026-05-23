@@ -128,6 +128,7 @@ web-sys = { version = "0.3", features = [
     "MouseEvent",
     "KeyboardEvent",
     "InputEvent",
+    "Location",
     "Storage",
     "console",
 ] }

@@ -10,6 +10,8 @@ use maud::{html, Markup, PreEscaped};
 use crate::filesystem::{DirEntry, EntryKind};
 use crate::types::{ToolCall, ToolResult};
 
+use super::tenant::Host;
+
 /// Render assistant markdown to HTML and wrap as `Markup` so callers
 /// can swap it straight into the DOM. pulldown-cmark sanitises by
 /// default (no raw HTML pass-through), so `PreEscaped` is safe.
@@ -26,13 +28,20 @@ pub(crate) fn rendered_markdown(raw: &str) -> Markup {
 }
 
 /// The initial page chrome, painted once into `#root` on mount.
-pub(crate) fn chrome() -> Markup {
+pub(crate) fn chrome(host: &Host) -> Markup {
+    let (tenant_class, tenant_label) = match host {
+        Host::Tenant(name) => ("tenant", format!("tenant · {name}")),
+        Host::Apex => ("apex", "apex".to_string()),
+        Host::Other(_) => ("other", host.label()),
+    };
     html! {
         main {
             div.col-chat {
                 header {
                     h1 { "localharness" }
-                    span.tag { "web demo · 0.7.0" }
+                    span.tag { "web demo · 0.7.2" }
+                    span class={ "tag tenant-tag tenant-" (tenant_class) }
+                        title=(host.label()) { (tenant_label) }
                 }
                 p.sub {
                     "Streaming Gemini chat compiled to wasm32 — no backend, key stays in this tab. "
