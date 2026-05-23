@@ -349,26 +349,51 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content) -> Result<()> 
                 (crate::types::HookResult::allow(), turn_ctx.clone())
             };
 
-            let result_value: Value = if !decision.allow {
-                json!({ "error": decision.message })
-            } else if let Some(runner) = deps.tool_runner.as_ref() {
-                match runner.execute(&call.name, call.args.clone()).await {
-                    Ok(v) => v,
-                    Err(e) => json!({ "error": e.to_string() }),
-                }
-            } else {
-                json!({ "error": format!("no tool runner registered for '{}'", call.name) })
-            };
+            // Resolve to (value_for_wire, error_string_for_typed_result).
+            // The wire side always gets a JSON value (Gemini needs to see
+            // errors as part of the conversation); the typed ToolResult
+            // gets `error: Some(msg)` whenever execution didn't produce
+            // a real result, so consumers (UI, hooks) can branch cleanly.
+            let (result_value, post_result_error): (Value, Option<String>) =
+                if !decision.allow {
+                    let msg = decision.message.clone();
+                    (json!({ "error": msg.clone() }), Some(msg))
+                } else if let Some(runner) = deps.tool_runner.as_ref() {
+                    match runner.execute(&call.name, call.args.clone()).await {
+                        Ok(v) => {
+                            // Convention: built-in tools encode failures
+                            // as `{"error": "..."}`. Lift that into the
+                            // typed result so the UI can render an error.
+                            let err = v
+                                .get("error")
+                                .and_then(|e| e.as_str())
+                                .map(String::from);
+                            (v, err)
+                        }
+                        Err(e) => {
+                            let s = e.to_string();
+                            (json!({ "error": s.clone() }), Some(s))
+                        }
+                    }
+                } else {
+                    let s = format!("no tool runner registered for '{}'", call.name);
+                    (json!({ "error": s.clone() }), Some(s))
+                };
 
             let post_result = ToolResult {
                 name: tool_call.name.clone(),
                 id: None,
                 result: Some(result_value.clone()),
-                error: None,
+                error: post_result_error,
             };
             if let Some(hooks) = deps.hook_runner.as_ref() {
                 hooks.dispatch_post_tool_call(&op_ctx, &post_result).await;
             }
+            // Surface the result on the stream so UIs can flip the
+            // tool block from "running" to ok/err. Until 0.7.1 this
+            // emit was missing — the result panel stayed empty.
+            deps.state
+                .emit_chunk_step(StreamChunk::ToolResult(post_result.clone()));
 
             response_parts.push(Part::FunctionResponse {
                 function_response: FunctionResponse {

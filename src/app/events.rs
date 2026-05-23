@@ -80,9 +80,9 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
     doc.add_event_listener_with_callback("click", click.as_ref().unchecked_ref())?;
     click.forget(); // listener lives for the lifetime of the document
 
-    // Key input mirroring: input → sessionStorage + keymeta refresh.
-    // This isn't a "data-action" because it's per-keystroke; we attach
-    // a single delegated input listener instead.
+    // Key input mirroring: input → sessionStorage + OPFS + keymeta
+    // refresh. sessionStorage is the synchronous backstop; OPFS lets
+    // the key survive a tab close. Both writes are best-effort.
     let input_handler = Closure::<dyn FnMut(_)>::new(move |event: web_sys::Event| {
         let Some(target) = event.target() else { return };
         let Ok(el) = target.dyn_into::<Element>() else { return };
@@ -93,6 +93,9 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
                     let _ = storage.set_item("gemini_api_key", &value);
                 }
                 refresh_keymeta();
+                wasm_bindgen_futures::spawn_local(async move {
+                    super::key_store::save(&value).await;
+                });
             }
         }
     });
@@ -216,5 +219,8 @@ fn clear_key_pressed() {
     if let Some(input) = dom::input_by_id("key") {
         input.focus().ok();
     }
-    dom::set_status("key cleared - paste a fresh one", false);
+    wasm_bindgen_futures::spawn_local(async move {
+        super::key_store::clear().await;
+    });
+    dom::set_status("key cleared (sessionStorage + OPFS)", false);
 }
