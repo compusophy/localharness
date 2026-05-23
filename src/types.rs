@@ -608,3 +608,38 @@ pub enum StreamChunk {
     ToolCall(ToolCall),
     ToolResult(ToolResult),
 }
+
+// =============================================================================
+// Persisted transcript
+// =============================================================================
+
+/// User-visible role of a [`TranscriptEntry`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TranscriptRole {
+    User,
+    Assistant,
+}
+
+impl TranscriptRole {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TranscriptRole::User => "user",
+            TranscriptRole::Assistant => "assistant",
+        }
+    }
+}
+
+/// One turn-or-message in a flattened, user-visible transcript.
+///
+/// Produced by [`Agent::transcript`] — text-only summary of the
+/// internal Gemini history, useful for repainting a UI after a session
+/// resume. Tool-call activity is intentionally dropped: this is a
+/// human-readable view, not a fidelity-preserving snapshot.
+///
+/// [`Agent::transcript`]: crate::Agent::transcript
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TranscriptEntry {
+    pub role: TranscriptRole,
+    pub text: String,
+}

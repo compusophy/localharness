@@ -122,13 +122,19 @@ pub(crate) fn chrome() -> Markup {
 
 /// One assistant or user turn. `body_html` is already HTML (assistant
 /// turns inject their streaming segments and tool blocks here, so the
-/// caller passes a `Markup` for that).
-pub(crate) fn turn(turn_id: u32, role: &str, body: Markup) -> Markup {
+/// caller passes a `Markup` for that). `streaming = false` for replayed
+/// turns from history so they don't show the "· streaming" suffix.
+pub(crate) fn turn(turn_id: u32, role: &str, body: Markup, streaming: bool) -> Markup {
     let role_class = role; // "user" | "assistant"
     let id_str = format!("turn-{turn_id}");
     let body_id = format!("turn-body-{turn_id}");
+    let cls = if streaming {
+        format!("turn {role_class} streaming")
+    } else {
+        format!("turn {role_class}")
+    };
     html! {
-        div id=(id_str) class={ "turn " (role_class) " streaming" } {
+        div id=(id_str) class=(cls) {
             div.role { (role) }
             div id=(body_id) .body { (body) }
         }

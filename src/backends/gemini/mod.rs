@@ -321,6 +321,61 @@ impl GeminiConnection {
         *self.state.history.lock() = restored;
         Ok(())
     }
+
+    /// Project the wire history into a flat, text-only sequence of
+    /// `(role, text)` turns suitable for repainting a UI. Tool-call
+    /// activity (FunctionCall / FunctionResponse) is dropped — this is
+    /// the human-readable view, not a fidelity snapshot.
+    pub fn transcript(&self) -> Vec<crate::types::TranscriptEntry> {
+        let snap = self.state.history.lock().clone();
+        project_history(&snap)
+    }
+}
+
+/// Decode the opaque bytes produced by [`GeminiConnection::history_bytes`]
+/// into a flat user-visible transcript, without needing a live
+/// connection. Useful for repainting a UI on page load before any
+/// agent has been started.
+pub fn decode_transcript_bytes(bytes: &[u8]) -> Result<Vec<crate::types::TranscriptEntry>> {
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let history: Vec<wire::Content> = serde_json::from_slice(bytes)
+        .map_err(|e| Error::other(format!("decode_transcript_bytes: {e}")))?;
+    Ok(project_history(&history))
+}
+
+fn project_history(history: &[wire::Content]) -> Vec<crate::types::TranscriptEntry> {
+    use crate::types::{TranscriptEntry, TranscriptRole};
+    use wire::{ContentRole, Part};
+    let mut out = Vec::with_capacity(history.len());
+    for content in history {
+        let role = match content.role {
+            ContentRole::User => TranscriptRole::User,
+            ContentRole::Model => TranscriptRole::Assistant,
+        };
+        let mut buf = String::new();
+        for part in &content.parts {
+            match part {
+                Part::Text { text } => buf.push_str(text),
+                // Gemini 3.x stamps every text part with a `thought`
+                // field; `thought: false` is normal output text. Skip
+                // `thought: true` (model reasoning) from the
+                // user-visible transcript.
+                Part::Thought {
+                    thought: false,
+                    text: Some(text),
+                    ..
+                } => buf.push_str(text),
+                _ => {}
+            }
+        }
+        if buf.is_empty() {
+            continue;
+        }
+        out.push(TranscriptEntry { role, text: buf.clone() });
+    }
+    out
 }
 
 

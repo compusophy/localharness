@@ -73,7 +73,7 @@ pub(crate) async fn run_send() {
 
     dom::append_html(
         "transcript",
-        &templates::turn(user_turn_id, "user", html! { (prompt) }).into_string(),
+        &templates::turn(user_turn_id, "user", html! { (prompt) }, false).into_string(),
     );
     dom::append_html(
         "transcript",
@@ -81,6 +81,7 @@ pub(crate) async fn run_send() {
             assistant_turn_id,
             "assistant",
             templates::text_segment(seg_id, ""),
+            true,
         )
         .into_string(),
     );

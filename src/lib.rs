@@ -64,7 +64,7 @@ mod app;
 
 pub use agent::{Agent, AgentConfig, GeminiAgentConfig};
 pub use backends::gemini::{
-    GeminiBackendConfig, GeminiConnection, GeminiConnectionStrategy,
+    decode_transcript_bytes, GeminiBackendConfig, GeminiConnection, GeminiConnectionStrategy,
 };
 #[cfg(feature = "native")]
 pub use backends::mcp::{McpBridge, McpClient, McpToolDecl};
@@ -89,5 +89,6 @@ pub use triggers::{every, Trigger, TriggerContext, TriggerRunner};
 pub use types::{
     BuiltinTool, CapabilitiesConfig, GeminiConfig, GenerationConfig, HookResult, ModelConfig,
     ModelEntry, Step, StepSource, StepStatus, StepTarget, StepType, StreamChunk,
-    SystemInstructions, ThinkingLevel, ToolCall, ToolResult, TriggerDelivery, UsageMetadata,
+    SystemInstructions, ThinkingLevel, ToolCall, ToolResult, TranscriptEntry, TranscriptRole,
+    TriggerDelivery, UsageMetadata,
 };

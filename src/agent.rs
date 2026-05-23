@@ -288,6 +288,18 @@ impl Agent {
         }
     }
 
+    /// Human-readable transcript of the current session. Drops
+    /// tool-call activity — see [`TranscriptEntry`] for the shape.
+    /// Returns an empty vec for non-Gemini backends.
+    ///
+    /// [`TranscriptEntry`]: crate::types::TranscriptEntry
+    pub fn transcript(&self) -> Vec<crate::types::TranscriptEntry> {
+        self.gemini_connection
+            .as_ref()
+            .map(|gc| gc.transcript())
+            .unwrap_or_default()
+    }
+
     /// Internal: shared bootstrap. The `factory` closure receives the
     /// fully-wired hook/tool runners and session context so backends
     /// that dispatch tools inline (Gemini) can inject them.
