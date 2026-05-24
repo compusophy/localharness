@@ -30,6 +30,8 @@ enum Action {
     ClearKey,
     OpfsRefresh,
     OpfsWipe,
+    OpfsWipeConfirm,
+    OpfsWipeCancel,
     OpfsCloseViewer,
     OpfsNav(String),
     OpfsOpen(String),
@@ -43,9 +45,12 @@ enum Action {
     ImportSeed,
     CreateIdentity,
     ShowImport,
-    AdminToggle,
-    AdminClose,
-    AdminReset,
+    CancelImport,
+    HeaderAdminToggle,
+    HeaderAdminClose,
+    ResetArm,
+    ResetConfirm,
+    ResetCancel,
     PricingSave,
 }
 
@@ -57,6 +62,8 @@ impl Action {
             "clear-key" => Action::ClearKey,
             "opfs-refresh" => Action::OpfsRefresh,
             "opfs-wipe" => Action::OpfsWipe,
+            "opfs-wipe-confirm" => Action::OpfsWipeConfirm,
+            "opfs-wipe-cancel" => Action::OpfsWipeCancel,
             "opfs-close-viewer" => Action::OpfsCloseViewer,
             "opfs-nav" => Action::OpfsNav(arg.unwrap_or_default()),
             "opfs-open" => Action::OpfsOpen(arg.unwrap_or_default()),
@@ -70,9 +77,12 @@ impl Action {
             "import-seed" => Action::ImportSeed,
             "create-identity" => Action::CreateIdentity,
             "show-import" => Action::ShowImport,
-            "admin-toggle" => Action::AdminToggle,
-            "admin-close" => Action::AdminClose,
-            "admin-reset" => Action::AdminReset,
+            "cancel-import" => Action::CancelImport,
+            "header-admin-toggle" => Action::HeaderAdminToggle,
+            "header-admin-close" => Action::HeaderAdminClose,
+            "reset-arm" => Action::ResetArm,
+            "reset-confirm" => Action::ResetConfirm,
+            "reset-cancel" => Action::ResetCancel,
             "pricing-save" => Action::PricingSave,
             _ => return None,
         })
@@ -491,21 +501,17 @@ fn dispatch(action: Action) {
             );
         }
         Action::CreateIdentity => {
-            // Hard-gate exit: generate the master wallet and re-paint
-            // apex so the claim form unlocks and the agents list / seed
-            // disclosures replace the pre-identity sidecar.
+            // Generate the wallet, then run the full bootstrap-funding
+            // sequence so the user lands on a wallet with enough gas
+            // to claim a name immediately — instead of hitting the old
+            // "have 0 want N" error from the claim flow.
             dom::swap_inner(
                 "identity-msg",
                 "<span style=\"color:var(--muted)\">generating identity…</span>",
             );
             wasm_bindgen_futures::spawn_local(async move {
-                match super::wallet_store::create_and_persist().await {
-                    Ok(_) => {
-                        let host = super::tenant::current();
-                        if matches!(host, super::tenant::Host::Apex) {
-                            super::paint_apex(host).await;
-                        }
-                    }
+                let wallet = match super::wallet_store::create_and_persist().await {
+                    Ok(w) => w,
                     Err(err) => {
                         dom::swap_inner(
                             "identity-msg",
@@ -513,7 +519,13 @@ fn dispatch(action: Action) {
                                 "<span style=\"color:var(--error)\">create failed: {err}</span>"
                             ),
                         );
+                        return;
                     }
+                };
+                run_bootstrap_funding(wallet.signer.clone(), wallet.address_hex()).await;
+                let host = super::tenant::current();
+                if matches!(host, super::tenant::Host::Apex) {
+                    super::paint_apex(host).await;
                 }
             });
         }
@@ -562,24 +574,164 @@ fn dispatch(action: Action) {
             });
         }
         Action::OpfsWipe => {
-            // Browser confirm() is sync — fine here since the click
-            // handler is already a synchronous closure dispatching to
-            // a future. Skip the deletion if the user backs out.
-            let proceed = dom::window()
-                .ok()
-                .and_then(|w| w.confirm_with_message("Wipe all files in this tab's OPFS? This can't be undone.").ok())
-                .unwrap_or(false);
-            if proceed {
-                wasm_bindgen_futures::spawn_local(async move {
-                    super::opfs::wipe().await;
-                });
-            }
+            // Arm the wipe — swap the button into an inline confirm
+            // pair (yes / no). The actual wipe runs via OpfsWipeConfirm.
+            dom::swap_outer(
+                "opfs-wipe-slot",
+                &templates::opfs_wipe_confirm_inline().into_string(),
+            );
         }
-        Action::AdminToggle => admin_toggle(),
-        Action::AdminClose => admin_close(),
-        Action::AdminReset => admin_reset(),
+        Action::OpfsWipeConfirm => {
+            // Restore the slot first so the in-flight wipe doesn't
+            // leave stale confirm buttons visible.
+            dom::swap_outer(
+                "opfs-wipe-slot",
+                &templates::opfs_wipe_armed_inline().into_string(),
+            );
+            wasm_bindgen_futures::spawn_local(async move {
+                super::opfs::wipe().await;
+            });
+        }
+        Action::OpfsWipeCancel => {
+            dom::swap_outer(
+                "opfs-wipe-slot",
+                &templates::opfs_wipe_armed_inline().into_string(),
+            );
+        }
+        Action::CancelImport => {
+            dom::swap_outer("import-slot", r#"<div id="import-slot"></div>"#);
+        }
+        Action::HeaderAdminToggle => header_admin_toggle(),
+        Action::HeaderAdminClose => header_admin_close(),
+        Action::ResetArm => {
+            dom::swap_outer(
+                "reset-confirm-slot",
+                &templates::reset_confirm_inline().into_string(),
+            );
+        }
+        Action::ResetCancel => {
+            dom::swap_outer(
+                "reset-confirm-slot",
+                &templates::reset_armed_inline().into_string(),
+            );
+        }
+        Action::ResetConfirm => reset_confirm_pressed(),
         Action::PricingSave => pricing_save_pressed(),
     }
+}
+
+/// Toggle the header admin dropdown. Origin determines content —
+/// apex shows seed reveal + import + reset, tenant just shows reset.
+fn header_admin_toggle() {
+    // Already open? Close it.
+    let is_open = super::dom::by_id("header-admin-panel")
+        .and_then(|el| el.get_attribute("hidden").map(|_| false).or(Some(true)))
+        .unwrap_or(false);
+    // The 'hidden' attribute is *present* when the panel is closed
+    // (placeholder), and absent when it's the populated open variant.
+    // Above is inverted on purpose; simplify by always re-rendering.
+    let _ = is_open; // silence unused
+    let body = match super::tenant::current() {
+        super::tenant::Host::Apex => templates::admin_dropdown_apex().into_string(),
+        super::tenant::Host::Tenant(_) => templates::admin_dropdown_tenant().into_string(),
+        super::tenant::Host::Other(_) => templates::admin_dropdown_tenant().into_string(),
+    };
+    dom::swap_outer("header-admin-panel", &body);
+}
+
+fn header_admin_close() {
+    dom::swap_outer(
+        "header-admin-panel",
+        r#"<div id="header-admin-panel" hidden></div>"#,
+    );
+}
+
+/// Full bootstrap-funding sequence for a freshly-created wallet:
+/// 1. `tempo_fundAddress` for the gas drip (so subsequent contract
+///    calls can pay their own gas).
+/// 2. Poll `eth_getBalance` until the gas lands (or timeout).
+/// 3. If [`super::registry::BOOTSTRAP_FAUCET_ADDRESS`] is set (non-zero),
+///    call `BootstrapFaucet.fund(self)` for the bigger drip so the
+///    user can register a name + transact without re-hitting the public
+///    faucet.
+///
+/// Status messages flow into `#identity-msg` so the user sees what's
+/// happening. Errors short-circuit the rest of the sequence but the
+/// identity itself is already saved — the user can retry funding
+/// later via a (future) "top up" affordance, or just live with the
+/// gas drip until the BootstrapFaucet is reachable.
+async fn run_bootstrap_funding(
+    signer: k256::ecdsa::SigningKey,
+    addr_hex: String,
+) {
+    dom::swap_inner(
+        "identity-msg",
+        "<span style=\"color:var(--muted)\">funding wallet (gas drip)…</span>",
+    );
+    if let Err(err) = super::registry::request_faucet_funds(&addr_hex).await {
+        // Faucet rate-limited or down — show but proceed; balance poll
+        // below will catch the "actually 0" case and bail.
+        web_sys::console::warn_1(&JsValue::from_str(&format!("faucet: {err}")));
+    }
+
+    dom::swap_inner(
+        "identity-msg",
+        "<span style=\"color:var(--muted)\">waiting for gas to land…</span>",
+    );
+    // 15-second window. Tempo blocks are ~1s.
+    if let Err(err) = super::registry::wait_for_min_balance(&addr_hex, 1, 15).await {
+        dom::swap_inner(
+            "identity-msg",
+            &format!(
+                "<span style=\"color:var(--error)\">funding stalled: {err}. \
+                 identity saved; try again later.</span>"
+            ),
+        );
+        return;
+    }
+
+    // If the on-chain bootstrap faucet is deployed, top up from it for
+    // the bulk drip. Otherwise stop here — the gas drip is at least
+    // enough to read state, even if it can't cover a register() tx.
+    if super::registry::BOOTSTRAP_FAUCET_ADDRESS
+        == "0x0000000000000000000000000000000000000000"
+    {
+        return;
+    }
+
+    dom::swap_inner(
+        "identity-msg",
+        "<span style=\"color:var(--muted)\">topping up from bootstrap faucet…</span>",
+    );
+    match super::registry::bootstrap_fund_self(&signer).await {
+        Ok(tx) => {
+            web_sys::console::log_1(&JsValue::from_str(&format!(
+                "bootstrap_fund_self tx: {tx}"
+            )));
+        }
+        Err(err) => {
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "bootstrap_fund_self: {err}"
+            )));
+            // Soft-fail: keep going. User still has the gas drip.
+        }
+    }
+}
+
+/// Inline-confirmed reset: nuke every entry at OPFS root, reload.
+/// Replaces the old `window.confirm()` flow per [[feedback-no-js-alerts]].
+fn reset_confirm_pressed() {
+    wasm_bindgen_futures::spawn_local(async move {
+        let fs = super::shared_opfs();
+        if let Ok(entries) = fs.read_dir("").await {
+            for entry in entries {
+                let _ = fs.delete(&entry.name).await;
+            }
+        }
+        if let Ok(window) = dom::window() {
+            let _ = window.location().reload();
+        }
+    });
 }
 
 /// Parse the pricing-input as a decimal test-ETH amount, convert to
@@ -679,86 +831,6 @@ fn parse_eth_to_wei(s: &str) -> Result<u128, String> {
         .ok_or_else(|| "price too large".into())
 }
 
-/// Reveal the admin panel below the footer admin link. Body text is
-/// origin-aware so the user sees exactly what's about to be wiped
-/// before they click reset.
-fn admin_toggle() {
-    let blurb = match super::tenant::current() {
-        super::tenant::Host::Apex => {
-            "this wipes your master wallet from this origin's OPFS. \
-             back up your 12-word seed first if you want to recover \
-             this identity — anyone with the seed controls every \
-             subdomain you've claimed. subdomain OPFS at \
-             *.localharness.xyz is in separate origins and stays \
-             untouched."
-        }
-        super::tenant::Host::Tenant(_) => {
-            "this wipes the owner marker, conversation history, API \
-             key, and any files in this subdomain's OPFS. your master \
-             wallet at the apex origin is untouched."
-        }
-        super::tenant::Host::Other(_) => {
-            "this wipes every file in this origin's OPFS sandbox \
-             (host page is a localhost / preview deployment)."
-        }
-    };
-    dom::swap_outer(
-        "admin-panel",
-        &templates::admin_panel_open(blurb).into_string(),
-    );
-}
-
-/// Collapse the admin panel back to the hidden placeholder so the
-/// "admin" link can re-open it on the next click.
-fn admin_close() {
-    dom::swap_outer(
-        "admin-panel",
-        r#"<div id="admin-panel" hidden></div>"#,
-    );
-}
-
-/// Confirm + wipe every entry at the OPFS root for this origin, then
-/// reload the page so the next paint starts from the first-visit
-/// state. Reload happens unconditionally on confirm so the new state
-/// is what the user actually sees (no stale `App` cache holding the
-/// previous wallet etc.).
-fn admin_reset() {
-    let prompt = match super::tenant::current() {
-        super::tenant::Host::Apex => {
-            "Reset apex local state? This deletes your master wallet \
-             (and every other file at this origin's OPFS). You won't be \
-             able to recover the wallet without the 12-word seed. \
-             Continue?"
-        }
-        super::tenant::Host::Tenant(_) => {
-            "Reset this subdomain's local state? This deletes the owner \
-             marker, conversation history, API key, and every file in \
-             this subdomain's OPFS. Continue?"
-        }
-        super::tenant::Host::Other(_) => {
-            "Reset this origin's local state? This deletes every file \
-             in this origin's OPFS sandbox. Continue?"
-        }
-    };
-    let proceed = dom::window()
-        .ok()
-        .and_then(|w| w.confirm_with_message(prompt).ok())
-        .unwrap_or(false);
-    if !proceed {
-        return;
-    }
-    wasm_bindgen_futures::spawn_local(async move {
-        let fs = super::shared_opfs();
-        if let Ok(entries) = fs.read_dir("").await {
-            for entry in entries {
-                let _ = fs.delete(&entry.name).await;
-            }
-        }
-        if let Ok(window) = dom::window() {
-            let _ = window.location().reload();
-        }
-    });
-}
 
 // --- Action handlers ---------------------------------------------------
 

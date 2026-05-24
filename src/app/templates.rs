@@ -28,29 +28,31 @@ pub(crate) fn rendered_markdown(raw: &str) -> Markup {
     html! { (PreEscaped(out)) }
 }
 
-/// Header bar (h1 + version tag + tenant tag + verification pill).
-/// Used by every chrome variant so the brand + home link + verify
-/// status are consistent.
+/// Header bar — brand + version + (tenant-only) verify/TBA pills +
+/// admin button at the right. Apex / tenant / other share this so the
+/// admin button is in the same place everywhere.
 fn site_header(host: &Host) -> Markup {
-    let (tenant_class, tenant_label) = match host {
-        Host::Tenant(name) => ("tenant", format!("tenant · {name}")),
-        Host::Apex => ("apex", "apex".to_string()),
-        Host::Other(_) => ("other", host.label()),
-    };
     html! {
         header {
             h1 {
                 a href="https://localharness.xyz/" title="go home" { "localharness" }
             }
-            span.tag { "web demo · 0.10.3" }
-            span class={ "tag tenant-tag tenant-" (tenant_class) }
-                title=(host.label()) { (tenant_label) }
+            span.tag { "0.10.4" } // bumped in lockstep with Cargo.toml
             // Verify pill — present only on tenant subdomains.
             @if matches!(host, Host::Tenant(_)) {
                 (verify_pill(&VerifyState::Pending))
                 // TBA pill placeholder — filled in by kick_verification
                 // once the address is fetched from the registry.
                 span #tba-pill {}
+            }
+            // Admin button pushed to the right via .header-spacer.
+            // Click toggles the dropdown (hidden by default).
+            span.header-spacer {}
+            div #header-admin .header-admin {
+                button type="button"
+                    data-action="header-admin-toggle"
+                    .admin-button { "admin" }
+                div #header-admin-panel hidden {}
             }
         }
     }
@@ -125,83 +127,45 @@ pub(crate) fn chrome(host: &Host) -> Markup {
         main {
             div.col-chat {
                 (site_header(host))
-                p.sub {
-                    "Streaming Gemini chat compiled to wasm32 — no backend, key stays in this tab. "
-                    "The model can read/write files in your tab's private OPFS storage; "
-                    "conversation history persists across reloads. "
-                    "UI is rendered entirely by Rust → HTML; no JavaScript application code in the page."
-                }
 
                 div #input-region {
                     div.row {
-                        label for="key" {
-                            "Gemini API key "
-                            span #keymeta {}
-                        }
                         div.key-row {
                             input #key
                                 type="password"
                                 autocomplete="off"
-                                placeholder="paste key (sessionStorage only)" {}
+                                placeholder="gemini api key" {}
                             button.ghost
                                 type="button"
-                                data-action="clear-key"
-                                title="Wipe the cached key from sessionStorage" {
-                                "clear"
-                            }
+                                data-action="clear-key" { "clear" }
+                            span #keymeta {}
                         }
                     }
 
                     div.row {
-                        label for="prompt" { "Prompt" }
                         textarea #prompt
-                            placeholder="try: 'create notes.md with a haiku about Rust', then 'list my files', then 'show me notes.md' · ⌘/Ctrl+Enter to send" {}
+                            placeholder="prompt · ⌘/Ctrl+Enter" {}
                     }
 
                     div.actions {
                         button data-action="send" { "send" }
-                        button.ghost data-action="reset" { "new conversation" }
+                        button.ghost data-action="reset" { "new" }
                     }
                 }
 
                 div #status .status { "loading…" }
                 div #transcript .transcript {}
 
-                footer {
-                    p {
-                        "Compiled from "
-                        a href="https://github.com/compusophy/localharness" { "localharness" }
-                        " (Rust→wasm32). Driving the full "
-                        code { "Agent" }
-                        " loop in the browser — same code path the CLI host uses. "
-                        strong { "10 of 11 builtins wired" }
-                        " — including the 6 fs tools against per-origin OPFS storage; "
-                        code { "run_command" }
-                        " remains native-only. Tool calls render inline as they execute; "
-                        "click a file in the panel to view or edit."
-                    }
-                    p {
-                        "Conversation history and OPFS files both persist across "
-                        "reloads (per-origin sandbox). Use "
-                        strong { "new conversation" }
-                        " to start fresh, or "
-                        strong { "wipe" }
-                        " in the OPFS panel to clear files."
-                    }
-                    (admin_corner())
-                }
             }
 
             aside.col-fs {
                 (pricing_card_placeholder())
                 div.fs-panel {
                     div.fs-header {
-                        div.fs-title { "OPFS · this tab" }
+                        div.fs-title { "files" }
                         div.fs-actions {
-                            button data-action="opfs-refresh"
-                                title="Re-list the current directory" { "refresh" }
-                            button data-action="opfs-wipe"
-                                title="Delete all files in OPFS for this origin" { "wipe" }
+                            button data-action="opfs-refresh" { "refresh" }
+                            (opfs_wipe_armed_inline())
                         }
                     }
                     div #fs-breadcrumb .fs-breadcrumb { "/" }
@@ -295,112 +259,168 @@ pub(crate) fn tool_call_result(result: &ToolResult) -> Markup {
 
 // --- Apex / claim templates --------------------------------------------
 
-/// Apex page — `localharness.xyz/`. Identity sidecar at the top
-/// gates the claim form: without an on-device wallet the form is
-/// disabled and the sidecar shows `[Create identity]` + `[Import
-/// seed]`; with a wallet the form is live and the sidecar collapses
-/// to address + agents + seed/import disclosures.
+/// Apex page — `localharness.xyz/`. Renders exactly one of two
+/// states at a time. Header carries the admin dropdown for seed
+/// reveal / import / reset; main body shows only the current step.
 pub(crate) fn apex(host: &Host, wallet_address_hex: Option<&str>) -> Markup {
-    let has_identity = wallet_address_hex.is_some();
     html! {
         main.apex-main {
             div.col-chat {
                 (site_header(host))
-
-                (identity_sidecar(wallet_address_hex))
-
-                section.apex-hero {
-                    h2.apex-headline { "your own browser-resident agent." }
-                    p.apex-sub {
-                        "pick a name. it becomes your subdomain. "
-                        "the agent loop, your files, and your conversation history all live "
-                        "in that subdomain's per-origin sandbox — no servers, no accounts to recover, "
-                        "no one else can read your data."
-                    }
-
-                    form.apex-form data-action="apex-claim" {
-                        div.apex-input-row {
-                            @if has_identity {
-                                input #apex-input
-                                    type="text"
-                                    placeholder="your-name"
-                                    autocomplete="off"
-                                    spellcheck="false"
-                                    maxlength="32"
-                                    required {}
-                            } @else {
-                                input #apex-input
-                                    type="text"
-                                    placeholder="your-name"
-                                    autocomplete="off"
-                                    spellcheck="false"
-                                    maxlength="32"
-                                    disabled
-                                    required {}
-                            }
-                            span.apex-suffix { ".localharness.xyz" }
-                        }
-                        @if has_identity {
-                            button type="submit" { "claim →" }
-                        } @else {
-                            button type="submit" disabled
-                                title="create or import an identity above first" {
-                                "claim →"
-                            }
-                        }
-                        div #apex-msg .apex-msg {
-                            @if !has_identity {
-                                span style="color:var(--muted)" {
-                                    "create or import an identity above to claim a name."
-                                }
-                            }
-                        }
-                    }
-
-                    p.apex-fine {
-                        "a–z, 0–9, dash. 3–32 chars. "
-                        "names mint as NFTs on the Tempo Moderato registry; the wallet "
-                        "that claims a name owns it across devices."
-                    }
-                }
-
-                footer {
-                    p {
-                        "Open source · "
-                        a href="https://github.com/compusophy/localharness" { "github.com/compusophy/localharness" }
-                        " · Rust → wasm32 · no analytics, no telemetry, no backend."
-                    }
-                    (admin_corner())
+                @match wallet_address_hex {
+                    None => (apex_step_identity()),
+                    Some(addr) => (apex_step_agents(addr)),
                 }
             }
         }
     }
 }
 
-/// Footer-corner admin affordance — a small muted link that toggles
-/// an inline panel containing the "Reset local state" button.
-/// Embedded in both apex and tenant chrome footers so a tester can
-/// nuke this origin's OPFS without opening an incognito tab.
-pub(crate) fn admin_corner() -> Markup {
+/// Step 1 — no identity yet. Only thing on the page.
+fn apex_step_identity() -> Markup {
     html! {
-        div #admin-corner .admin-corner {
-            a href="#" data-action="admin-toggle" .admin-link { "admin" }
-            div #admin-panel hidden {}
+        section.step.step-identity {
+            div.identity-actions {
+                button type="button" data-action="create-identity" { "create identity" }
+                button type="button" data-action="show-import" .ghost { "import seed" }
+            }
+            div #identity-msg .step-msg {}
+            div #import-slot {}
         }
     }
 }
 
-/// Expanded admin panel — swapped into `#admin-panel` when the user
-/// clicks the admin link. `body` is origin-specific warning text the
-/// dispatcher composed from `tenant::current()`.
-pub(crate) fn admin_panel_open(body: &str) -> Markup {
+/// Step 2 — identity exists. Agents list (async, may be empty) plus
+/// the create-agent input. Wallet address shows in a small footer.
+fn apex_step_agents(addr: &str) -> Markup {
     html! {
-        div #admin-panel .admin-panel {
-            p.apex-fine { (body) }
+        section.step.step-agents {
+            div #agents-list .agents-list {
+                p.step-msg { "(loading your agents…)" }
+            }
+
+            form.apex-form data-action="apex-claim" {
+                div.apex-input-row {
+                    input #apex-input
+                        type="text"
+                        placeholder="name"
+                        autocomplete="off"
+                        spellcheck="false"
+                        maxlength="32"
+                        required {}
+                    span.apex-suffix { ".localharness.xyz" }
+                }
+                button type="submit" { "create" }
+                div #apex-msg .step-msg {}
+            }
+
+            div.identity-footer {
+                span.identity-label { "wallet" }
+                code .wallet-address { (addr) }
+            }
+        }
+    }
+}
+
+/// Header admin dropdown — toggled by the "admin" button in the
+/// header. Single source of truth for seed reveal, seed import, and
+/// reset-local-state on apex; tenant chrome reuses the same dropdown
+/// but show different reset copy via [`admin_dropdown_tenant`].
+pub(crate) fn admin_dropdown_apex() -> Markup {
+    html! {
+        div #header-admin-panel .header-admin-panel {
+            div.admin-section {
+                div.admin-section-title { "seed phrase" }
+                div #seed-reveal .seed-reveal {
+                    button type="button" data-action="reveal-seed" .ghost { "reveal" }
+                }
+            }
+            div.admin-section {
+                div.admin-section-title { "import a different seed" }
+                (import_seed_inline())
+            }
+            div.admin-section {
+                div.admin-section-title { "reset local state" }
+                p.admin-blurb {
+                    "wipes your master wallet from this origin's OPFS. "
+                    "back up the seed first or lose the identity."
+                }
+                div #reset-confirm-slot {
+                    button type="button" data-action="reset-arm" .ghost { "reset…" }
+                }
+            }
             div.admin-actions {
-                button type="button" data-action="admin-reset" .ghost { "reset local state" }
-                button type="button" data-action="admin-close" .ghost { "cancel" }
+                button type="button" data-action="header-admin-close" .ghost { "close" }
             }
+        }
+    }
+}
+
+/// Tenant-variant of the admin dropdown — reset wipes per-subdomain
+/// state (owner, history, key, files) and surfaces that copy. No
+/// seed/import section because the wallet lives at apex, not here.
+pub(crate) fn admin_dropdown_tenant() -> Markup {
+    html! {
+        div #header-admin-panel .header-admin-panel {
+            div.admin-section {
+                div.admin-section-title { "reset local state" }
+                p.admin-blurb {
+                    "wipes the owner marker, conversation history, API key, "
+                    "and every file in this subdomain's OPFS. your master "
+                    "wallet at the apex origin is untouched."
+                }
+                div #reset-confirm-slot {
+                    button type="button" data-action="reset-arm" .ghost { "reset…" }
+                }
+            }
+            div.admin-actions {
+                button type="button" data-action="header-admin-close" .ghost { "close" }
+            }
+        }
+    }
+}
+
+/// Confirm-state for the reset button. Swapped into
+/// `#reset-confirm-slot` when the user clicks `reset…` — they then
+/// pick `confirm` (runs the wipe) or `cancel` (swaps back to the
+/// armed button). Pure HTML; no JS dialog.
+pub(crate) fn reset_confirm_inline() -> Markup {
+    html! {
+        div #reset-confirm-slot .reset-confirm {
+            span.reset-confirm-prompt { "are you sure?" }
+            div.reset-confirm-actions {
+                button type="button" data-action="reset-confirm" .danger { "yes, wipe" }
+                button type="button" data-action="reset-cancel" .ghost { "cancel" }
+            }
+        }
+    }
+}
+
+/// Armed-state reset button (the default before the user clicks).
+/// Used to restore `#reset-confirm-slot` after a cancel.
+pub(crate) fn reset_armed_inline() -> Markup {
+    html! {
+        div #reset-confirm-slot {
+            button type="button" data-action="reset-arm" .ghost { "reset…" }
+        }
+    }
+}
+
+/// Armed-state for the OPFS panel's wipe button (default).
+pub(crate) fn opfs_wipe_armed_inline() -> Markup {
+    html! {
+        span #opfs-wipe-slot {
+            button data-action="opfs-wipe" { "wipe" }
+        }
+    }
+}
+
+/// Confirm-state for the OPFS panel's wipe button (after arm).
+pub(crate) fn opfs_wipe_confirm_inline() -> Markup {
+    html! {
+        span #opfs-wipe-slot .opfs-wipe-confirm {
+            button data-action="opfs-wipe-confirm" .danger { "wipe?" }
+            button data-action="opfs-wipe-cancel" .ghost { "no" }
         }
     }
 }
@@ -451,88 +471,21 @@ pub(crate) fn pricing_card_body(price_wei: u128, is_owner: bool) -> Markup {
     }
 }
 
-/// Identity sidecar that sits between the header and the claim form.
-/// Two shapes — pre-identity (create / import buttons) and
-/// post-identity (address + agents list + seed/import disclosures).
-fn identity_sidecar(wallet_address_hex: Option<&str>) -> Markup {
-    match wallet_address_hex {
-        None => html! {
-            section #identity-sidecar .apex-wallet .identity-empty {
-                h3.apex-sub-headline { "sign in" }
-                p.apex-sub {
-                    "your identity is a secp256k1 keypair stored in this origin's "
-                    "per-tab sandbox. create one to claim a fresh name, or import "
-                    "your existing 12-word seed if you already own names on another device."
-                }
-                div.identity-actions {
-                    button type="button" data-action="create-identity" { "create identity" }
-                    button type="button" data-action="show-import" .ghost { "import existing seed" }
-                }
-                div #identity-msg .apex-msg {}
-                div #import-slot {}
-            }
-        },
-        Some(addr) => html! {
-            section #identity-sidecar .apex-wallet {
-                div.wallet-address-row {
-                    span.wallet-label { "identity" }
-                    code #wallet-address .wallet-address { (addr) }
-                }
-
-                // Async-populated by paint_apex once the registry
-                // returns the user's owned tokens. Empty state shows
-                // "(loading…)" while in flight.
-                div #agents-list .agents-list {
-                    p.apex-fine { "(loading your agents…)" }
-                }
-
-                details.apex-details {
-                    summary { "show seed phrase (12 words)" }
-                    div.apex-import {
-                        p.apex-fine {
-                            "write these 12 words down somewhere safe. "
-                            "anyone with this phrase controls your identity and every subdomain you own."
-                        }
-                        div #seed-reveal .seed-reveal {
-                            button type="button" data-action="reveal-seed" { "I have a pen and paper — reveal" }
-                        }
-                    }
-                }
-
-                details.apex-details {
-                    summary { "import a different seed phrase" }
-                    div.apex-import {
-                        p.apex-fine {
-                            "paste 12 words separated by spaces. "
-                            strong { "this replaces your current wallet" }
-                            " on this device — back up the existing seed phrase first if you want to keep it."
-                        }
-                        textarea #import-seed
-                            placeholder="abandon ability able about above absent absorb abstract absurd abuse access accident"
-                            rows="3" {}
-                        button type="button" data-action="import-seed" { "import" }
-                        div #seed-msg .apex-msg {}
-                    }
-                }
-            }
-        },
-    }
-}
-
-/// Inline import-seed form swapped into `#import-slot` when a
-/// pre-identity visitor clicks "import existing seed".
+/// Inline import-seed form. Used in two places: swapped into
+/// `#import-slot` on the no-identity step (when a fresh visitor
+/// clicks "import seed"), and inside the header admin dropdown
+/// (when an existing identity wants to swap to a different one).
 pub(crate) fn import_seed_inline() -> Markup {
     html! {
-        div #import-slot .apex-import {
-            p.apex-fine {
-                "paste 12 words separated by spaces. they'll be used to derive "
-                "your secp256k1 key — make sure no one's watching."
-            }
+        div #import-slot .seed-import {
             textarea #import-seed
-                placeholder="abandon ability able about above absent absorb abstract absurd abuse access accident"
+                placeholder="paste 12 words separated by spaces"
                 rows="3" {}
-            button type="button" data-action="import-seed" { "import" }
-            div #seed-msg .apex-msg {}
+            div.seed-import-actions {
+                button type="button" data-action="import-seed" { "import" }
+                button type="button" data-action="cancel-import" .ghost { "cancel" }
+            }
+            div #seed-msg .step-msg {}
         }
     }
 }
@@ -542,16 +495,11 @@ pub(crate) fn import_seed_inline() -> Markup {
 pub(crate) fn agents_list(agents: &[crate::app::registry::OwnedToken]) -> Markup {
     if agents.is_empty() {
         return html! {
-            div #agents-list .agents-list {
-                p.apex-fine {
-                    "you don't own any agents yet — claim a name above to mint your first."
-                }
-            }
+            div #agents-list .agents-list .agents-empty {}
         };
     }
     html! {
         div #agents-list .agents-list {
-            h4.agents-headline { "your agents (" (agents.len()) ")" }
             ul.agents-rows {
                 @for agent in agents {
                     li.agent-row {

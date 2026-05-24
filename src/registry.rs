@@ -36,6 +36,14 @@ pub const REGISTRY_ADDRESS: &str = "0xed7a2d170ab2d41721c9bd7368adbff6df0c656d";
 /// Tempo Moderato chain id — used in EIP-155 v computation.
 pub const CHAIN_ID: u64 = 42431;
 
+/// `BootstrapFaucet.sol` — admin-pre-funded distribution for new
+/// wallets. Set to the zero address until deployed; the bundle
+/// short-circuits the fund call when this is zero. Update this
+/// constant after `forge script script/DeployBootstrapFaucet.s.sol
+/// --rpc-url tempo_moderato --private-key $EVM_PRIVATE_KEY --broadcast`
+/// emits the deployed address.
+pub const BOOTSTRAP_FAUCET_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
+
 /// What we can learn about a name without touching the wallet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
@@ -531,6 +539,88 @@ pub fn rlp_native_transfer_signed(
 /// Gas limit for a vanilla native-ETH transfer with no calldata.
 /// The protocol-mandated 21_000 (EIP-2028 doesn't apply here — no data).
 pub const NATIVE_TRANSFER_GAS_LIMIT: u128 = 21_000;
+
+/// Native-ETH balance of `address_hex` in wei.
+pub async fn balance_of(address_hex: &str) -> Result<u128, String> {
+    let hex = rpc(
+        "eth_getBalance",
+        serde_json::json!([address_hex, "latest"]),
+    )
+    .await?;
+    parse_hex_quantity(&hex)
+}
+
+/// Poll `eth_getBalance` until it reports at least `min_wei`, with
+/// 1-second cadence. Returns the observed balance on success, errors
+/// if no observation reached `min_wei` within `max_attempts` seconds.
+/// Used by the identity-creation flow to confirm the faucet drip
+/// actually landed before letting the user try a real tx.
+pub async fn wait_for_min_balance(
+    address_hex: &str,
+    min_wei: u128,
+    max_attempts: u32,
+) -> Result<u128, String> {
+    for _ in 0..max_attempts {
+        let bal = balance_of(address_hex).await?;
+        if bal >= min_wei {
+            return Ok(bal);
+        }
+        sleep_ms(1000).await;
+    }
+    Err(format!(
+        "balance for {address_hex} did not reach {min_wei} wei within {max_attempts}s"
+    ))
+}
+
+/// Sign + submit a `BootstrapFaucet.fund(signer.address)` tx. The
+/// signer pays gas; the contract responds with a per-recipient drip
+/// (`dripWei` configured on-chain). Errors if
+/// `BOOTSTRAP_FAUCET_ADDRESS` is the zero address (contract not
+/// deployed yet), if the signer hasn't been bootstrap-funded enough
+/// to cover gas (chicken-and-egg — call `request_faucet_funds` +
+/// `wait_for_min_balance` first), or if the on-chain call reverts
+/// (already claimed, contract drained).
+pub async fn bootstrap_fund_self(signer: &SigningKey) -> Result<String, String> {
+    if BOOTSTRAP_FAUCET_ADDRESS == zero_address() {
+        return Err("bootstrap faucet not deployed (set BOOTSTRAP_FAUCET_ADDRESS)".into());
+    }
+    let from_bytes = wallet::address(signer);
+    let from_hex = address_to_hex(&from_bytes);
+
+    // calldata: fund(address) selector + 32-byte recipient (= self)
+    let selector = selector("fund(address)");
+    let mut padded = [0u8; 32];
+    padded[12..].copy_from_slice(&from_bytes);
+    let mut calldata = Vec::with_capacity(36);
+    calldata.extend_from_slice(&selector);
+    calldata.extend_from_slice(&padded);
+
+    let nonce = eth_get_transaction_count(&from_hex).await?;
+    let gas_price = eth_gas_price().await?;
+    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
+    let gas_limit = eth_estimate_gas(&from_hex, BOOTSTRAP_FAUCET_ADDRESS, &calldata_hex).await?;
+
+    let unsigned = rlp_legacy_unsigned(
+        nonce, gas_price, gas_limit, BOOTSTRAP_FAUCET_ADDRESS, 0, &calldata, CHAIN_ID,
+    )?;
+    let mut hasher = Keccak256::new();
+    hasher.update(&unsigned);
+    let mut prehash = [0u8; 32];
+    prehash.copy_from_slice(&hasher.finalize());
+
+    let sig = wallet::sign_hash(signer, &prehash);
+    let rec_id = (sig[64] - 27) as u64;
+    let v = CHAIN_ID * 2 + 35 + rec_id;
+    let signed = rlp_legacy_signed(
+        nonce, gas_price, gas_limit, BOOTSTRAP_FAUCET_ADDRESS, 0, &calldata,
+        v, &sig[..32], &sig[32..64],
+    )?;
+    let raw_hex = format!("0x{}", bytes_to_hex(&signed));
+
+    let tx_hash = eth_send_raw_transaction(&raw_hex).await?;
+    wait_for_receipt(&tx_hash).await?;
+    Ok(tx_hash)
+}
 
 // --- legacy / EIP-155 transaction RLP --------------------------------
 

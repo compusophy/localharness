@@ -70,7 +70,8 @@
     .tba-pill { color: #f4c47e; border-color: #f4c47e; text-decoration: none; font-variant-numeric: tabular-nums; }
     .tba-pill:hover { background: rgba(244, 196, 126, 0.08); }
 
-    .agents-list { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+    .agents-list { margin-bottom: 24px; }
+    .agents-empty { display: none; }
     .agents-headline { font-size: 13px; font-weight: 600; margin: 0 0 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
     .agents-rows { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
     .agent-row {
@@ -362,39 +363,83 @@
     footer a { color: var(--accent); text-decoration: none; }
     footer a:hover { text-decoration: underline; }
 
-    /* Tucked-away admin affordance — small, muted, off the visual path
-       but discoverable for a tester who wants to nuke local state. */
-    .admin-corner {
-      margin-top: 16px;
-      padding-top: 12px;
-      border-top: 1px dashed var(--border);
-      text-align: right;
-    }
-    .admin-link {
+    /* Header admin dropdown — sits at top-right, click to expand */
+    .header-spacer { flex: 1; }
+    .header-admin { position: relative; }
+    .admin-button {
+      background: transparent;
       color: var(--muted);
-      font-size: 10px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 4px 10px;
+      font: 11px ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
       text-transform: uppercase;
-      letter-spacing: 0.1em;
-      text-decoration: none;
-      opacity: 0.5;
+      letter-spacing: 0.06em;
+      cursor: pointer;
     }
-    .admin-link:hover { color: var(--error); opacity: 1; text-decoration: none; }
-    .admin-panel {
-      margin-top: 12px;
-      padding: 12px 14px;
+    .admin-button:hover { color: var(--fg); border-color: var(--fg); }
+    .header-admin-panel {
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      min-width: 320px;
+      max-width: 420px;
       background: var(--panel);
-      border: 1px solid var(--error);
+      border: 1px solid var(--border);
       border-radius: 6px;
-      text-align: left;
+      padding: 14px 16px;
+      z-index: 10;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
     }
-    .admin-panel p { margin: 0 0 10px; color: var(--fg); font-size: 12px; }
-    .admin-actions { display: flex; gap: 8px; }
-    .admin-actions button[data-action="admin-reset"] {
-      border-color: var(--error); color: var(--error);
+    .admin-section { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+    .admin-section:last-of-type { border-bottom: 0; padding-bottom: 0; margin-bottom: 8px; }
+    .admin-section-title {
+      font-size: 10px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 8px;
     }
-    .admin-actions button[data-action="admin-reset"]:hover {
-      background: var(--error); color: var(--bg);
+    .admin-blurb { margin: 0 0 8px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .admin-actions { display: flex; justify-content: flex-end; gap: 6px; }
+    button.danger {
+      background: var(--error); color: var(--bg); border: 0;
     }
+    button.danger:hover { opacity: 0.85; }
+    .reset-confirm { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .reset-confirm-prompt { color: var(--error); font-size: 12px; }
+    .reset-confirm-actions { display: flex; gap: 6px; }
+    .reset-confirm-actions button { padding: 4px 10px; font-size: 11px; }
+    .opfs-wipe-confirm { display: inline-flex; gap: 4px; }
+    .opfs-wipe-confirm button { padding: 3px 8px; font-size: 11px; }
+
+    /* Step-based apex onboarding */
+    .step { margin: 64px 0; min-height: 200px; }
+    .step-identity .identity-actions {
+      display: flex; gap: 12px; flex-wrap: wrap;
+    }
+    .step-identity .identity-actions button { padding: 12px 24px; font-size: 14px; }
+    .step-msg { font-size: 12px; min-height: 16px; margin-top: 12px; color: var(--muted); }
+    .seed-import { display: grid; gap: 8px; margin-top: 8px; }
+    .seed-import textarea {
+      min-height: 64px; background: var(--bg);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 10px 12px; font: inherit; color: var(--fg);
+    }
+    .seed-import-actions { display: flex; gap: 8px; }
+
+    .identity-footer {
+      margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--border);
+      display: flex; align-items: center; gap: 12px; font-size: 11px;
+    }
+    .identity-label {
+      color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em;
+    }
+    .identity-footer .wallet-address {
+      font-size: 11px; color: var(--muted);
+    }
+
+    .agents-empty { min-height: 0; }
 
     /* Pricing card — payment gate config, lives above the OPFS panel */
     .pricing-card {

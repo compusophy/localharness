@@ -24,6 +24,7 @@ pub(crate) enum Host {
 
 impl Host {
     /// Short display label for the chrome.
+    #[allow(dead_code)]
     pub(crate) fn label(&self) -> String {
         match self {
             Host::Apex => format!("{ROOT_DOMAIN} · home"),

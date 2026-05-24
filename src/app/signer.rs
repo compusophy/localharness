@@ -173,23 +173,15 @@ fn build_tx_response(id: &str, tx: &JsValue, purpose: &str) -> Result<JsValue, S
     let (signer, address) = wallet_handle()?;
     let from_hex = hex_addr(&address);
 
-    let prompt = format!(
-        "Sign transaction?\n\n\
-         purpose: {purpose}\n\
-         from:    {from_hex}\n\
-         to:      {to_hex}\n\
-         value:   {} test ETH ({value_wei} wei)\n\
-         gas:     {gas_limit} @ {gas_price} wei\n\
-         chain:   {chain_id}\n\
-         nonce:   {nonce}",
-        super::format_wei_as_test_eth(value_wei),
-    );
-    let consent = web_sys::window()
-        .and_then(|w| w.confirm_with_message(&prompt).ok())
-        .unwrap_or(false);
-    if !consent {
-        return Err("user denied signing".into());
-    }
+    // Consent is collected at the SUBDOMAIN before the iframe call
+    // (the user clicks a Rust-rendered pay-card knowing the price).
+    // The iframe signer trusts that — same model as `lh-sign-challenge`
+    // which auto-approves. No JS dialog here per
+    // [[feedback-no-js-alerts]]. The `purpose` field is currently
+    // unused on the signer side; logged via console for debuggability.
+    web_sys::console::log_1(&JsValue::from_str(&format!(
+        "lh-sign-tx auto-approved: {purpose} ({value_wei} wei → {to_hex})"
+    )));
 
     let unsigned = crate::registry::rlp_native_transfer_unsigned(
         &to_hex, value_wei, nonce, gas_price, gas_limit,
