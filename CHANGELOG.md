@@ -5,6 +5,62 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.6] - 2026-05-24
+
+UX cleanup pass driven by real-use feedback. SSOT sticky chrome
+across every page, verify-fail diagnostics so the next failure
+mode is actually inspectable, and a heavy declutter of the
+create-agent + pricing surface.
+
+### Changed (browser app)
+
+- **SSOT sticky header + footer.** `site_header` and a new
+  `site_footer` template are now used by every chrome variant
+  (apex, tenant, unclaimed, signer). Header sticks to the top of
+  the viewport at `position: sticky; top: 0`; footer to the
+  bottom. Header on tenant pages still carries the verify + TBA
+  pills; footer carries a (dummy for now) `feedback` button —
+  real channel lands later.
+- **Apex no longer shows the wallet address inline.** It moved
+  into the header admin dropdown's new "wallet" section so the
+  main flow stays focused on the create-agent input.
+- **Create-agent form decluttered.** Input is full-width on its
+  own row, button under it (`justify-self: start` so it doesn't
+  stretch), hint text *under* the button reads "3–32 chars, a–z
+  0–9 dash." Placeholder shifted from `name` to `my-agent`.
+- **Pricing card hidden for non-owners.** Was always-rendered
+  before — now only injected by `kick_verification` when the
+  visitor is the verified owner. Visitors see the price in chat
+  status messages during send instead of a permanent card.
+- **Unclaimed-subdomain page simplified.** Was a wall of explainer
+  copy + legacy local-UUID claim option. Now just shows
+  `<name>.localharness.xyz` + a single `[claim on apex]` button
+  that pre-fills the apex form via `?prefill=`.
+
+### Fixed
+
+- **Verify-fail race condition.** The apex signer's `paint_signer`
+  is async; if the subdomain posted its sign challenge before the
+  apex wallet had loaded, the signer responded with "no identity"
+  and verify failed permanently. Bumped the pre-post sleep from
+  200ms → 500ms and added a 1500ms-backoff retry at the
+  `verify_owner` level. Race-condition failures should drop to
+  near zero.
+- **Verify-fail diagnostic visibility.** The failure reason was
+  only in the pill's `title` tooltip — invisible to most users.
+  Now also written to `dom::set_status` (visible in the status
+  area below the input) and `console.warn` for cross-reload
+  inspection.
+
+### Added (browser app)
+
+- **`templates::site_footer`** — global sticky footer.
+- **`templates::pricing_card`** — full-card variant injected into
+  `#pricing-slot` when the visitor is the owner (replaces the
+  always-rendered placeholder pattern).
+- **`Action::Feedback`** — wired to a no-op + console log for now,
+  ready for a real channel later.
+
 ## [0.10.5] - 2026-05-24
 
 **$localharness ERC-20 ships.** Replaces 0.10.4's
