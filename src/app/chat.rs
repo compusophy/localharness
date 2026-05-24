@@ -42,6 +42,25 @@ pub(crate) async fn run_send() {
         return;
     }
 
+    // Payment gate. If the agent's owner has set a per-turn price AND
+    // we know this visitor is *not* the owner, collect payment via
+    // the cross-origin iframe signer before the LLM call runs.
+    // Owner-of-the-agent always sends free; verification-pending /
+    // unregistered / failed states fall through without charging.
+    match collect_payment_if_required().await {
+        Ok(None) => {} // free or no gate
+        Ok(Some(tx_hash)) => {
+            dom::set_status(
+                &format!("payment received ({}); sending…", short_hash(&tx_hash)),
+                false,
+            );
+        }
+        Err(err) => {
+            dom::set_status(&format!("payment failed: {err}"), true);
+            return;
+        }
+    }
+
     // Cache the key in sessionStorage so a refresh doesn't lose it.
     if let Ok(Some(storage)) = dom::session_storage() {
         let _ = storage.set_item("gemini_api_key", &key);
@@ -253,4 +272,86 @@ fn update_tool_status(tool_seg_id: u32, ok: bool) {
     }
     .into_string();
     dom::swap_outer(&target, &new_html);
+}
+
+/// Returns `Ok(Some(tx_hash))` if a payment was collected, `Ok(None)`
+/// if no payment was required (free agent, owner sending, unverified
+/// origin), or `Err(_)` if the visitor refused or the on-chain leg
+/// failed. Caller short-circuits the send on `Err`.
+async fn collect_payment_if_required() -> Result<Option<String>, String> {
+    use super::VerifyState;
+
+    let (price_wei, verify_state, tba) = APP.with(|cell| {
+        let app = cell.borrow();
+        (
+            app.pricing_wei.unwrap_or(0),
+            app.verify_state.clone(),
+            app.tba_address.clone(),
+        )
+    });
+    if price_wei == 0 {
+        return Ok(None);
+    }
+    let Some(tba) = tba else {
+        // Priced but no TBA known — can't route the funds. Fail closed
+        // rather than silently letting the visitor through for free.
+        return Err("agent is priced but its TBA isn't known yet (verification still running?)".into());
+    };
+    let visitor_address = match verify_state {
+        VerifyState::Verified { .. } => return Ok(None), // owner sends free
+        VerifyState::Visitor { visitor_address, .. } => visitor_address,
+        VerifyState::Pending | VerifyState::Unregistered | VerifyState::Failed { .. } => {
+            // Without a recovered visitor address we can't build a tx
+            // from-them. Fail closed.
+            return Err(
+                "agent is priced but owner verification didn't complete — refresh and retry"
+                    .into(),
+            );
+        }
+    };
+
+    let purpose = format!(
+        "pay {} test ETH per turn to this agent",
+        super::format_wei_as_test_eth(price_wei),
+    );
+
+    dom::set_status("payment: funding wallet…", false);
+    // Best-effort faucet; if the wallet is already funded the call
+    // rate-limits gracefully and we proceed regardless.
+    let _ = crate::registry::request_faucet_funds(&visitor_address).await;
+
+    dom::set_status("payment: reading nonce + gas…", false);
+    let nonce = crate::registry::next_nonce(&visitor_address)
+        .await
+        .map_err(|e| format!("nonce: {e}"))?;
+    let gas_price = crate::registry::current_gas_price()
+        .await
+        .map_err(|e| format!("gas price: {e}"))?;
+
+    dom::set_status("payment: waiting for your approval at the signer iframe…", false);
+    let raw_tx = super::verify::sign_tx_via_iframe(super::verify::SignTxRequest {
+        to_hex: &tba,
+        value_wei: price_wei,
+        nonce,
+        gas_limit: crate::registry::NATIVE_TRANSFER_GAS_LIMIT,
+        gas_price,
+        chain_id: crate::registry::CHAIN_ID,
+        purpose: &purpose,
+    })
+    .await?;
+
+    dom::set_status("payment: submitting + waiting for receipt…", false);
+    let tx_hash = crate::registry::submit_and_wait_receipt(&raw_tx)
+        .await
+        .map_err(|e| format!("submit: {e}"))?;
+
+    Ok(Some(tx_hash))
+}
+
+fn short_hash(hash: &str) -> String {
+    let stripped = hash.trim_start_matches("0x");
+    if stripped.len() < 12 {
+        return hash.to_string();
+    }
+    format!("0x{}…{}", &stripped[..6], &stripped[stripped.len() - 4..])
 }

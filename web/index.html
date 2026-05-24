@@ -396,6 +396,50 @@
       background: var(--error); color: var(--bg);
     }
 
+    /* Pricing card — payment gate config, lives above the OPFS panel */
+    .pricing-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 14px 16px;
+      margin-bottom: 16px;
+    }
+    .pricing-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .pricing-title {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .pricing-value {
+      color: #f4c47e;
+      font-size: 14px;
+      font-variant-numeric: tabular-nums;
+      margin-bottom: 10px;
+    }
+    .pricing-edit {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .pricing-edit input {
+      flex: 1; min-width: 80px;
+      padding: 6px 8px;
+      font-size: 12px;
+      background: var(--bg);
+    }
+    .pricing-unit { color: var(--muted); font-size: 11px; }
+    .pricing-edit button {
+      padding: 6px 12px; font-size: 12px;
+    }
+    .pricing-msg { font-size: 11px; margin-top: 6px; min-height: 14px; }
+
     /* OPFS panel */
     .fs-panel {
       background: var(--panel);

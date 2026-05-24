@@ -6,21 +6,36 @@
 //! send a `lh-sign-challenge` postMessage, and recover the signer's
 //! address from the returned signature. M8 in the design doc.
 //!
-//! The signer auto-approves all requests for v1 — the trust boundary
-//! is "you have JS access to the apex origin, you control the wallet."
-//! That's the same boundary as the apex chrome itself; an interactive
-//! approval prompt can be layered on later if multi-tenant signing
-//! ever matters.
+//! Challenge-signing auto-approves for v1 (verification is read-only,
+//! the trust boundary is "you have JS access to the apex origin").
+//! Transaction-signing **always asks consent** via a synchronous
+//! `window.confirm()` dialog — txs move real value and we don't want
+//! a captured-from-XSS subdomain draining the wallet without the user
+//! seeing it.
 //!
 //! **Message protocol:**
 //! ```text
-//! parent  → signer: { type: "lh-sign-challenge", id, nonce }
-//! signer → parent: { type: "lh-sign-response", id, address, signature }
-//!                       or: { type: "lh-sign-response", id, error }
+//! Verification (auto-approved):
+//!   parent  → signer: { type: "lh-sign-challenge", id, nonce }
+//!   signer → parent:  { type: "lh-sign-response",  id, address, signature }
+//!                or:  { type: "lh-sign-response",  id, error }
+//!
+//! Payments (consent-prompted):
+//!   parent  → signer: { type: "lh-sign-tx", id, tx: {
+//!                         to, value, nonce, gas, gasPrice, chainId
+//!                       }, purpose }
+//!   signer → parent:  { type: "lh-sign-response", id, address, raw_tx_hex }
+//!                or:  { type: "lh-sign-response", id, error }
 //! ```
-//! `nonce` is a hex-encoded 32-byte challenge. The signer signs
-//! `keccak256("localharness-auth-v0:" || nonce_bytes)` (domain-
+//! `nonce` (challenge) is a hex-encoded 32-byte challenge. The signer
+//! signs `keccak256("localharness-auth-v0:" || nonce_bytes)` (domain-
 //! separated so a captured signature can't be replayed as a real tx).
+//!
+//! Tx fields are hex-encoded (`0x...`) except `nonce` / `gas` which can
+//! be either a hex string or a JS number. `chainId` must match
+//! [`crate::registry::CHAIN_ID`] (42431); otherwise the signer rejects
+//! to avoid a replay-on-a-different-chain footgun. `purpose` is the
+//! human-readable description shown in the consent dialog.
 
 use sha3::{Digest, Keccak256};
 use wasm_bindgen::prelude::*;
@@ -56,27 +71,23 @@ fn handle_message(event: &MessageEvent) -> Result<(), String> {
         .ok()
         .and_then(|v| v.as_string())
         .unwrap_or_default();
-    if msg_type != "lh-sign-challenge" {
-        // Not for us; ignore silently.
-        return Ok(());
-    }
 
     let origin = event.origin();
     if !is_trusted_origin(&origin) {
-        return Err(format!("untrusted origin: {origin}"));
+        // Drop silently on truly unknown message types; only error on
+        // recognised types from untrusted origins so we don't log
+        // noise from unrelated postMessage chatter.
+        if matches!(msg_type.as_str(), "lh-sign-challenge" | "lh-sign-tx") {
+            return Err(format!("untrusted origin: {origin}"));
+        }
+        return Ok(());
     }
 
     let id = js_sys::Reflect::get(&data, &JsValue::from_str("id"))
         .ok()
         .and_then(|v| v.as_string())
         .unwrap_or_default();
-    let nonce_hex = js_sys::Reflect::get(&data, &JsValue::from_str("nonce"))
-        .ok()
-        .and_then(|v| v.as_string())
-        .ok_or_else(|| "nonce not a string".to_string())?;
 
-    // Reply via the event source (cross-origin), echoing the id so the
-    // parent can correlate request to response.
     let source = event
         .source()
         .ok_or_else(|| "no source window on the message event".to_string())?;
@@ -84,17 +95,39 @@ fn handle_message(event: &MessageEvent) -> Result<(), String> {
         .dyn_into()
         .map_err(|_| "source is not a Window".to_string())?;
 
-    let reply = match build_response(&id, &nonce_hex) {
-        Ok(obj) => obj,
-        Err(err) => error_response(&id, &err),
+    let reply = match msg_type.as_str() {
+        "lh-sign-challenge" => {
+            let nonce_hex = js_sys::Reflect::get(&data, &JsValue::from_str("nonce"))
+                .ok()
+                .and_then(|v| v.as_string())
+                .ok_or_else(|| "nonce not a string".to_string())?;
+            match build_challenge_response(&id, &nonce_hex) {
+                Ok(obj) => obj,
+                Err(err) => error_response(&id, &err),
+            }
+        }
+        "lh-sign-tx" => {
+            let purpose = js_sys::Reflect::get(&data, &JsValue::from_str("purpose"))
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_else(|| "sign transaction".into());
+            let tx = js_sys::Reflect::get(&data, &JsValue::from_str("tx"))
+                .map_err(|_| "tx field missing".to_string())?;
+            match build_tx_response(&id, &tx, &purpose) {
+                Ok(obj) => obj,
+                Err(err) => error_response(&id, &err),
+            }
+        }
+        _ => return Ok(()), // not for us
     };
+
     window
         .post_message(&reply, &origin)
         .map_err(|e| format!("post_message: {e:?}"))?;
     Ok(())
 }
 
-fn build_response(id: &str, nonce_hex: &str) -> Result<JsValue, String> {
+fn build_challenge_response(id: &str, nonce_hex: &str) -> Result<JsValue, String> {
     let nonce = parse_nonce(nonce_hex)?;
     // Domain-separated digest the signer commits to.
     let mut hasher = Keccak256::new();
@@ -103,11 +136,7 @@ fn build_response(id: &str, nonce_hex: &str) -> Result<JsValue, String> {
     let mut prehash = [0u8; 32];
     prehash.copy_from_slice(&hasher.finalize());
 
-    // Pull the wallet out of App state. paint_apex caches it on mount.
-    let (signer, address) = super::APP
-        .with(|cell| cell.borrow().wallet.as_ref().map(|w| (w.signer.clone(), w.address)))
-        .ok_or_else(|| "wallet not loaded yet — refresh and retry".to_string())?;
-
+    let (signer, address) = wallet_handle()?;
     let signature = wallet::sign_hash(&signer, &prehash);
 
     let obj = js_sys::Object::new();
@@ -117,6 +146,118 @@ fn build_response(id: &str, nonce_hex: &str) -> Result<JsValue, String> {
     set(&obj, "signature", JsValue::from_str(&hex_bytes(&signature)));
     Ok(JsValue::from(obj))
 }
+
+/// Sign an EIP-155 native-ETH transfer after explicit user consent.
+/// The consent dialog spells out the recipient, value (in test ETH),
+/// and the human-readable purpose so the user knows what they're
+/// authorizing — postMessage from a compromised subdomain can't move
+/// funds without this.
+fn build_tx_response(id: &str, tx: &JsValue, purpose: &str) -> Result<JsValue, String> {
+    let to_hex = field_string(tx, "to")?;
+    let value_wei = field_u128(tx, "value")?;
+    let nonce = field_u128(tx, "nonce")?;
+    let gas_limit = field_u128(tx, "gas")?;
+    let gas_price = field_u128(tx, "gasPrice")?;
+    let chain_id = field_u128(tx, "chainId")?;
+
+    if chain_id != crate::registry::CHAIN_ID as u128 {
+        return Err(format!(
+            "chainId mismatch: tx wants {chain_id}, signer is locked to {}",
+            crate::registry::CHAIN_ID
+        ));
+    }
+    if !is_address_shape(&to_hex) {
+        return Err(format!("`to` doesn't look like a 20-byte address: {to_hex}"));
+    }
+
+    let (signer, address) = wallet_handle()?;
+    let from_hex = hex_addr(&address);
+
+    let prompt = format!(
+        "Sign transaction?\n\n\
+         purpose: {purpose}\n\
+         from:    {from_hex}\n\
+         to:      {to_hex}\n\
+         value:   {} test ETH ({value_wei} wei)\n\
+         gas:     {gas_limit} @ {gas_price} wei\n\
+         chain:   {chain_id}\n\
+         nonce:   {nonce}",
+        super::format_wei_as_test_eth(value_wei),
+    );
+    let consent = web_sys::window()
+        .and_then(|w| w.confirm_with_message(&prompt).ok())
+        .unwrap_or(false);
+    if !consent {
+        return Err("user denied signing".into());
+    }
+
+    let unsigned = crate::registry::rlp_native_transfer_unsigned(
+        &to_hex, value_wei, nonce, gas_price, gas_limit,
+    )?;
+    let mut hasher = Keccak256::new();
+    hasher.update(&unsigned);
+    let mut prehash = [0u8; 32];
+    prehash.copy_from_slice(&hasher.finalize());
+    let sig = wallet::sign_hash(&signer, &prehash);
+
+    let raw_hex = crate::registry::rlp_native_transfer_signed(
+        &to_hex, value_wei, nonce, gas_price, gas_limit, &sig,
+    )?;
+
+    let obj = js_sys::Object::new();
+    set(&obj, "type", JsValue::from_str("lh-sign-response"));
+    set(&obj, "id", JsValue::from_str(id));
+    set(&obj, "address", JsValue::from_str(&from_hex));
+    set(&obj, "raw_tx_hex", JsValue::from_str(&raw_hex));
+    Ok(JsValue::from(obj))
+}
+
+fn wallet_handle() -> Result<(k256::ecdsa::SigningKey, [u8; 20]), String> {
+    super::APP
+        .with(|cell| {
+            cell.borrow()
+                .wallet
+                .as_ref()
+                .map(|w| (w.signer.clone(), w.address))
+        })
+        .ok_or_else(|| "no identity on this device — create one at the apex".to_string())
+}
+
+fn field_string(obj: &JsValue, key: &str) -> Result<String, String> {
+    js_sys::Reflect::get(obj, &JsValue::from_str(key))
+        .ok()
+        .and_then(|v| v.as_string())
+        .ok_or_else(|| format!("tx.{key} not a string"))
+}
+
+/// Read a numeric tx field that may arrive as either a hex string
+/// (`"0x..."`) or a JS number. JSON-from-JS objects often serialize
+/// small ints as numbers; hex strings are the canonical eth-RPC form.
+fn field_u128(obj: &JsValue, key: &str) -> Result<u128, String> {
+    let raw = js_sys::Reflect::get(obj, &JsValue::from_str(key))
+        .map_err(|_| format!("tx.{key} missing"))?;
+    if let Some(n) = raw.as_f64() {
+        if n.is_finite() && n >= 0.0 {
+            return Ok(n as u128);
+        }
+        return Err(format!("tx.{key} non-finite or negative: {n}"));
+    }
+    if let Some(s) = raw.as_string() {
+        let trimmed = s.trim_start_matches("0x").trim_start_matches("0X");
+        if trimmed.is_empty() {
+            return Ok(0);
+        }
+        return u128::from_str_radix(trimmed, 16)
+            .map_err(|e| format!("tx.{key} bad hex: {e}"));
+    }
+    Err(format!("tx.{key} must be hex string or number"))
+}
+
+fn is_address_shape(hex: &str) -> bool {
+    let stripped = hex.trim_start_matches("0x").trim_start_matches("0X");
+    stripped.len() == 40 && stripped.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 
 fn error_response(id: &str, err: &str) -> JsValue {
     let obj = js_sys::Object::new();

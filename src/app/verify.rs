@@ -34,7 +34,14 @@ const TIMEOUT_MS: u32 = 5_000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum VerifyResult {
     VerifiedOwner { address: String },
-    Visitor { owner_address: String },
+    Visitor {
+        owner_address: String,
+        /// Recovered address that signed the challenge — the visitor's
+        /// master-wallet address. The payment flow uses it as the
+        /// `from` of the on-chain payment tx so the iframe signer can
+        /// query the correct nonce + gas-price + balance.
+        visitor_address: String,
+    },
     Unregistered,
 }
 
@@ -87,6 +94,7 @@ pub(crate) async fn verify_owner(name: &str) -> Result<VerifyResult, String> {
     } else {
         Ok(VerifyResult::Visitor {
             owner_address: expected,
+            visitor_address: recovered_hex,
         })
     }
 }
@@ -94,6 +102,125 @@ pub(crate) async fn verify_owner(name: &str) -> Result<VerifyResult, String> {
 /// Embed the signer iframe, send a sign challenge, wait for the
 /// reply. Cleans up the iframe before returning.
 async fn sign_via_iframe(nonce_hex: &str) -> Result<(String, String), String> {
+    let id = format!("verify-{}", random_id_hex());
+    let payload = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &payload,
+        &JsValue::from_str("type"),
+        &JsValue::from_str("lh-sign-challenge"),
+    );
+    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("id"), &JsValue::from_str(&id));
+    let _ = js_sys::Reflect::set(
+        &payload,
+        &JsValue::from_str("nonce"),
+        &JsValue::from_str(nonce_hex),
+    );
+
+    let data = signer_iframe_request(&id, &payload.into(), TIMEOUT_MS).await?;
+    let address = js_sys::Reflect::get(&data, &JsValue::from_str("address"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
+    let signature = js_sys::Reflect::get(&data, &JsValue::from_str("signature"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
+    if address.is_empty() || signature.is_empty() {
+        return Err("signer reply missing address or signature".into());
+    }
+    Ok((address, signature))
+}
+
+/// Payment-flow companion: build an `lh-sign-tx` payload, hand it to
+/// the iframe signer, return the signed raw tx hex on success. The
+/// signer prompts the user for explicit consent before returning;
+/// callers should expect either the raw hex back or a "user denied"
+/// error.
+///
+/// The timeout is generous (90s) because the user has to click through
+/// the browser confirm() dialog at the apex origin — that's not bounded
+/// by network latency.
+pub(crate) struct SignTxRequest<'a> {
+    pub to_hex: &'a str,
+    pub value_wei: u128,
+    pub nonce: u128,
+    pub gas_limit: u128,
+    pub gas_price: u128,
+    pub chain_id: u64,
+    pub purpose: &'a str,
+}
+
+pub(crate) async fn sign_tx_via_iframe(req: SignTxRequest<'_>) -> Result<String, String> {
+    let id = format!("tx-{}", random_id_hex());
+    let tx = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &tx,
+        &JsValue::from_str("to"),
+        &JsValue::from_str(req.to_hex),
+    );
+    let _ = js_sys::Reflect::set(
+        &tx,
+        &JsValue::from_str("value"),
+        &JsValue::from_str(&format!("0x{:x}", req.value_wei)),
+    );
+    let _ = js_sys::Reflect::set(
+        &tx,
+        &JsValue::from_str("nonce"),
+        &JsValue::from_str(&format!("0x{:x}", req.nonce)),
+    );
+    let _ = js_sys::Reflect::set(
+        &tx,
+        &JsValue::from_str("gas"),
+        &JsValue::from_str(&format!("0x{:x}", req.gas_limit)),
+    );
+    let _ = js_sys::Reflect::set(
+        &tx,
+        &JsValue::from_str("gasPrice"),
+        &JsValue::from_str(&format!("0x{:x}", req.gas_price)),
+    );
+    let _ = js_sys::Reflect::set(
+        &tx,
+        &JsValue::from_str("chainId"),
+        &JsValue::from_f64(req.chain_id as f64),
+    );
+
+    let payload = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &payload,
+        &JsValue::from_str("type"),
+        &JsValue::from_str("lh-sign-tx"),
+    );
+    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("id"), &JsValue::from_str(&id));
+    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("tx"), &tx);
+    let _ = js_sys::Reflect::set(
+        &payload,
+        &JsValue::from_str("purpose"),
+        &JsValue::from_str(req.purpose),
+    );
+
+    let data = signer_iframe_request(&id, &payload.into(), TX_TIMEOUT_MS).await?;
+    let raw = js_sys::Reflect::get(&data, &JsValue::from_str("raw_tx_hex"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
+    if raw.is_empty() {
+        return Err("signer reply missing raw_tx_hex".into());
+    }
+    Ok(raw)
+}
+
+const TX_TIMEOUT_MS: u32 = 90_000;
+
+/// Shared iframe-lifecycle dance — load the apex signer in a hidden
+/// iframe, attach a correlation-id-filtered listener, post `payload`,
+/// race the reply against `timeout_ms`, tear down. Returns the raw
+/// response `JsValue` (a `{type:"lh-sign-response", id, ...}` object);
+/// callers parse the variant-specific fields.
+async fn signer_iframe_request(
+    expected_id: &str,
+    payload: &JsValue,
+    timeout_ms: u32,
+) -> Result<JsValue, String> {
     let doc = super::dom::document().map_err(|e| format!("document: {e:?}"))?;
     let body = doc.body().ok_or_else(|| "no body".to_string())?;
 
@@ -110,23 +237,18 @@ async fn sign_via_iframe(nonce_hex: &str) -> Result<(String, String), String> {
     body.append_child(&iframe)
         .map_err(|e| format!("append iframe: {e:?}"))?;
 
-    // Wire up the listener BEFORE posting (in case the signer is fast
-    // enough to reply between append and listener install — unlikely
-    // but the cost is one extra await tick at worst).
-    let id = format!("verify-{}", random_id_hex());
-    let result_slot: Rc<RefCell<Option<Result<(String, String), String>>>> =
+    let result_slot: Rc<RefCell<Option<Result<JsValue, String>>>> =
         Rc::new(RefCell::new(None));
     let waker_slot: Rc<RefCell<Option<js_sys::Function>>> = Rc::new(RefCell::new(None));
 
     let result_for_handler = result_slot.clone();
     let waker_for_handler = waker_slot.clone();
-    let id_for_handler = id.clone();
+    let id_for_handler = expected_id.to_string();
     let handler = Closure::<dyn FnMut(_)>::new(move |event: MessageEvent| {
         let data = event.data();
         if data.is_null() || data.is_undefined() {
             return;
         }
-        // Only respond to messages from the apex origin.
         if event.origin() != SIGNER_ORIGIN {
             return;
         }
@@ -150,19 +272,7 @@ async fn sign_via_iframe(nonce_hex: &str) -> Result<(String, String), String> {
         {
             Err(format!("signer: {err}"))
         } else {
-            let address = js_sys::Reflect::get(&data, &JsValue::from_str("address"))
-                .ok()
-                .and_then(|v| v.as_string())
-                .unwrap_or_default();
-            let signature = js_sys::Reflect::get(&data, &JsValue::from_str("signature"))
-                .ok()
-                .and_then(|v| v.as_string())
-                .unwrap_or_default();
-            if address.is_empty() || signature.is_empty() {
-                Err("signer reply missing address or signature".into())
-            } else {
-                Ok((address, signature))
-            }
+            Ok(data.clone())
         };
         *result_for_handler.borrow_mut() = Some(outcome);
         if let Some(waker) = waker_for_handler.borrow_mut().take() {
@@ -174,9 +284,7 @@ async fn sign_via_iframe(nonce_hex: &str) -> Result<(String, String), String> {
         .add_event_listener_with_callback("message", handler.as_ref().unchecked_ref())
         .map_err(|e| format!("add listener: {e:?}"))?;
 
-    // Wait for the iframe to load. content_window is None until the
-    // iframe has navigated — poll briefly. Most browsers expose the
-    // window immediately for cross-origin iframes, so this is cheap.
+    // Wait for the iframe content_window to materialize.
     let mut content_window: Option<web_sys::Window> = None;
     for _ in 0..50 {
         if let Some(w) = iframe.content_window() {
@@ -185,44 +293,26 @@ async fn sign_via_iframe(nonce_hex: &str) -> Result<(String, String), String> {
         }
         sleep_ms(50).await;
     }
-    let target = content_window.ok_or_else(|| "iframe content window never available".to_string())?;
+    let target = content_window
+        .ok_or_else(|| "iframe content window never available".to_string())?;
 
-    // Build the request payload.
-    let payload = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("type"),
-        &JsValue::from_str("lh-sign-challenge"),
-    );
-    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("id"), &JsValue::from_str(&id));
-    let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("nonce"),
-        &JsValue::from_str(nonce_hex),
-    );
-
-    // Give the signer a moment to register its listener after load.
     sleep_ms(200).await;
     target
-        .post_message(&payload, SIGNER_ORIGIN)
+        .post_message(payload, SIGNER_ORIGIN)
         .map_err(|e| format!("postMessage: {e:?}"))?;
 
-    // Race the reply against a timeout.
     let promise = js_sys::Promise::new(&mut |resolve, _reject| {
         let resolve_clone = resolve.clone();
         *waker_slot.borrow_mut() = Some(resolve_clone);
-        // Timeout wakes the same resolver; the outcome slot stays None
-        // and we error below.
         if let Some(window) = web_sys::window() {
             let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
                 &resolve,
-                TIMEOUT_MS as i32,
+                timeout_ms as i32,
             );
         }
     });
     let _ = JsFuture::from(promise).await;
 
-    // Clean up the iframe + listener.
     let _ = window.remove_event_listener_with_callback(
         "message",
         handler.as_ref().unchecked_ref(),

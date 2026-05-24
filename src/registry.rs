@@ -459,6 +459,79 @@ fn parse_hex_quantity(hex: &str) -> Result<u128, String> {
     u128::from_str_radix(trimmed, 16).map_err(|e| e.to_string())
 }
 
+// --- public helpers for cross-module tx flows -------------------------
+//
+// The browser app's chat flow (subdomain origin) and iframe signer
+// (apex origin) both need to compose native-ETH transfers — visitor
+// pays the agent's TBA for a turn. These wrap the registry's RLP +
+// JSON-RPC primitives so callers don't reimplement EIP-155 envelope
+// encoding. Available on every target; gated only by `wallet`.
+
+/// Pending nonce for `address_hex`. Use this as the next tx nonce so a
+/// burst of payments doesn't collide with the previous tx still being
+/// mined.
+pub async fn next_nonce(address_hex: &str) -> Result<u128, String> {
+    eth_get_transaction_count(address_hex).await
+}
+
+/// Current `eth_gasPrice` reported by the node, in wei.
+pub async fn current_gas_price() -> Result<u128, String> {
+    eth_gas_price().await
+}
+
+/// Submit a signed raw tx hex and block until the receipt is mined.
+/// Returns the tx hash. Errors if the receipt status is `0x0` (revert)
+/// or if no receipt lands within the polling window.
+pub async fn submit_and_wait_receipt(raw_hex: &str) -> Result<String, String> {
+    let tx_hash = eth_send_raw_transaction(raw_hex).await?;
+    wait_for_receipt(&tx_hash).await?;
+    Ok(tx_hash)
+}
+
+/// EIP-155 unsigned RLP for a native ETH transfer (zero calldata).
+/// Hash this with keccak256 to get the prehash a signer commits to.
+pub fn rlp_native_transfer_unsigned(
+    to_hex: &str,
+    value_wei: u128,
+    nonce: u128,
+    gas_price: u128,
+    gas_limit: u128,
+) -> Result<Vec<u8>, String> {
+    rlp_legacy_unsigned(nonce, gas_price, gas_limit, to_hex, value_wei, &[], CHAIN_ID)
+}
+
+/// Assemble a `0x`-prefixed signed raw tx hex from a native-ETH
+/// transfer's parameters plus a 65-byte signature (r||s||v, where v
+/// is 27 or 28 — the format `wallet::sign_hash` produces). Lifts v
+/// into the EIP-155 form (`chain_id * 2 + 35 + recovery_id`).
+pub fn rlp_native_transfer_signed(
+    to_hex: &str,
+    value_wei: u128,
+    nonce: u128,
+    gas_price: u128,
+    gas_limit: u128,
+    sig_65: &[u8; 65],
+) -> Result<String, String> {
+    let rec_id = (sig_65[64] - 27) as u64;
+    let v = CHAIN_ID * 2 + 35 + rec_id;
+    let signed = rlp_legacy_signed(
+        nonce,
+        gas_price,
+        gas_limit,
+        to_hex,
+        value_wei,
+        &[],
+        v,
+        &sig_65[..32],
+        &sig_65[32..64],
+    )?;
+    Ok(format!("0x{}", bytes_to_hex(&signed)))
+}
+
+/// Gas limit for a vanilla native-ETH transfer with no calldata.
+/// The protocol-mandated 21_000 (EIP-2028 doesn't apply here — no data).
+pub const NATIVE_TRANSFER_GAS_LIMIT: u128 = 21_000;
+
 // --- legacy / EIP-155 transaction RLP --------------------------------
 
 #[allow(clippy::too_many_arguments)]

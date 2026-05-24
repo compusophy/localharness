@@ -29,6 +29,7 @@ mod history;
 mod key_store;
 mod opfs;
 mod owner;
+mod pricing;
 mod signer;
 mod templates;
 mod tenant;
@@ -70,6 +71,15 @@ pub(crate) struct App {
     /// tenant subdomain. Updated asynchronously after `paint_tenant`
     /// renders the chrome; the UI pill reflects whatever's here.
     pub(crate) verify_state: VerifyState,
+    /// Agent's ERC-6551 token-bound account, populated by
+    /// `kick_verification` after the on-chain TBA lookup. Read by
+    /// the payment flow so the visitor pays the right address.
+    pub(crate) tba_address: Option<String>,
+    /// Per-turn payment price in wei for this tenant. Populated by
+    /// the same load step that reads the verify state; consulted by
+    /// `chat::run_send` to decide whether to gate the next turn.
+    /// `None` means "haven't checked yet"; `Some(0)` means "free".
+    pub(crate) pricing_wei: Option<u128>,
 }
 
 /// Surface-level summary of the cross-origin verification flow,
@@ -85,8 +95,11 @@ pub(crate) enum VerifyState {
     },
     /// On-chain owner exists but the visitor's wallet signed with a
     /// different address — they're browsing someone else's space.
+    /// `visitor_address` is the recovered signer; payment flow uses it
+    /// as the `from` of the on-chain payment tx.
     Visitor {
         owner_address: String,
+        visitor_address: String,
     },
     /// Name has no on-chain owner; legacy local-OPFS marker is the
     /// only source of truth.
@@ -111,6 +124,8 @@ impl App {
             pending_history: None,
             wallet: None,
             verify_state: VerifyState::Pending,
+            tba_address: None,
+            pricing_wei: None,
         }
     }
 
@@ -252,10 +267,14 @@ fn mount() -> Result<(), JsValue> {
     Ok(())
 }
 
-/// Render a tenant subdomain after we know whether it's claimed. If
-/// no `.lh_owner` marker exists in this device's OPFS, paint the
-/// claim flow; otherwise paint the full app and run the usual restore
-/// path. Called once on mount and again after a successful claim.
+/// Render a tenant subdomain. Three branches:
+/// 1. Local `.lh_owner` marker → device thinks it owns the name. Paint
+///    full chat app, kick verification in the background.
+/// 2. No local marker but the name IS on-chain owned (by anyone) →
+///    paint full chat app as a visitor; verification will recover the
+///    visitor's address and the pricing/payment loop takes it from there.
+/// 3. No local marker AND no on-chain owner → genuinely unclaimed;
+///    paint the "claim this name?" prompt.
 pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
     let Ok(doc) = dom::document() else { return };
     let Some(root) = doc.get_element_by_id("root") else { return };
@@ -272,12 +291,20 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
         }
     }
     if owner.is_none() {
-        // Unclaimed on this device — paint the prompt.
-        root.set_inner_html(&templates::unclaimed(&host, &name).into_string());
-        return;
+        // No local-device claim. Check on-chain — if someone owns this
+        // name in the registry, the visitor isn't claiming, they're
+        // browsing. Paint the chat chrome and let verification figure
+        // out whether they're the owner or a paying visitor.
+        let on_chain = registry::owner_of_name(&name).await.ok().flatten();
+        if on_chain.is_none() {
+            root.set_inner_html(&templates::unclaimed(&host, &name).into_string());
+            return;
+        }
+        // Fall through to chrome paint as visitor.
     }
 
-    // Claimed — paint the full app.
+    // Paint the full app — either we own it on this device or someone
+    // else owns it on-chain and we're visiting.
     root.set_inner_html(&templates::chrome(&host).into_string());
 
     if let Ok(Some(storage)) = dom::session_storage() {
@@ -316,9 +343,13 @@ async fn kick_verification(name: String) {
         Ok(verify::VerifyResult::VerifiedOwner { address }) => {
             VerifyState::Verified { address }
         }
-        Ok(verify::VerifyResult::Visitor { owner_address }) => {
-            VerifyState::Visitor { owner_address }
-        }
+        Ok(verify::VerifyResult::Visitor {
+            owner_address,
+            visitor_address,
+        }) => VerifyState::Visitor {
+            owner_address,
+            visitor_address,
+        },
         Ok(verify::VerifyResult::Unregistered) => VerifyState::Unregistered,
         Err(err) => VerifyState::Failed { reason: err },
     };
@@ -326,13 +357,25 @@ async fn kick_verification(name: String) {
     let html = templates::verify_pill(&outcome).into_string();
     dom::swap_outer("verify-pill", &html);
 
-    // Visitor mode: replace the input region with a read-only banner.
-    // The transcript + OPFS panel stay visible (they live outside
-    // `#input-region`), but the visitor can't send messages or save
-    // anything new in the chat session.
-    if let VerifyState::Visitor { owner_address } = &outcome {
-        let html = templates::visitor_banner(owner_address).into_string();
-        dom::swap_outer("input-region", &html);
+    // Pricing is per-tenant OPFS, same-origin readable regardless of
+    // verification outcome. Load once and stash so `chat::run_send`
+    // can consult it before each turn — and so the visitor-banner
+    // logic below can decide whether to lock down the input region.
+    let price = pricing::load().await.unwrap_or(0);
+    APP.with(|cell| cell.borrow_mut().pricing_wei = Some(price));
+    let is_owner = matches!(outcome, VerifyState::Verified { .. });
+    let pricing_html = templates::pricing_card_body(price, is_owner).into_string();
+    dom::swap_outer("pricing-body", &pricing_html);
+
+    // Visitor mode: replace the input region with a read-only banner
+    // ONLY when no payment-gate is set. Payment-gated agents keep the
+    // input live so the visitor can pay-to-send; the chat dispatcher
+    // owns the payment flow.
+    if let VerifyState::Visitor { owner_address, .. } = &outcome {
+        if price == 0 {
+            let html = templates::visitor_banner(owner_address).into_string();
+            dom::swap_outer("input-region", &html);
+        }
     }
 
     // When the name is on-chain (Verified or Visitor), look up its
@@ -348,6 +391,7 @@ async fn kick_verification(name: String) {
         if let Ok(Some(tba)) = registry::tba_of_name(&name).await {
             let html = templates::tba_pill(&tba).into_string();
             dom::swap_outer("tba-pill", &html);
+            APP.with(|cell| cell.borrow_mut().tba_address = Some(tba));
         }
     }
 }
@@ -425,6 +469,23 @@ pub(crate) async fn paint_signer() {
             root.set_inner_html(&templates::signer_no_identity().into_string());
         }
     }
+}
+
+/// Format a wei value as a human-readable test-ETH string with up to
+/// 6 decimals trimmed. Cosmetic only — the wei integer is what gets
+/// signed and submitted on-chain.
+pub(crate) fn format_wei_as_test_eth(wei: u128) -> String {
+    const WEI_PER_ETH: u128 = 1_000_000_000_000_000_000;
+    let whole = wei / WEI_PER_ETH;
+    let frac_wei = wei % WEI_PER_ETH;
+    if frac_wei == 0 {
+        return whole.to_string();
+    }
+    let frac = (frac_wei * 1_000_000) / WEI_PER_ETH;
+    format!("{whole}.{:06}", frac)
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string()
 }
 
 /// Read a `?key=value` query parameter from the current URL, naive

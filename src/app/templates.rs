@@ -42,7 +42,7 @@ fn site_header(host: &Host) -> Markup {
             h1 {
                 a href="https://localharness.xyz/" title="go home" { "localharness" }
             }
-            span.tag { "web demo · 0.10.2" }
+            span.tag { "web demo · 0.10.3" }
             span class={ "tag tenant-tag tenant-" (tenant_class) }
                 title=(host.label()) { (tenant_label) }
             // Verify pill — present only on tenant subdomains.
@@ -88,7 +88,7 @@ pub(crate) fn verify_pill(state: &VerifyState) -> Markup {
             "✓ owner".to_string(),
             format!("signature recovered {address} — matches on-chain owner"),
         ),
-        VerifyState::Visitor { owner_address } => (
+        VerifyState::Visitor { owner_address, .. } => (
             "tag verify-pill verify-visitor",
             format!("visitor · owner {}", short_addr(owner_address)),
             format!("the on-chain owner of this name is {owner_address}"),
@@ -193,6 +193,7 @@ pub(crate) fn chrome(host: &Host) -> Markup {
             }
 
             aside.col-fs {
+                (pricing_card_placeholder())
                 div.fs-panel {
                     div.fs-header {
                         div.fs-title { "OPFS · this tab" }
@@ -399,6 +400,52 @@ pub(crate) fn admin_panel_open(body: &str) -> Markup {
             div.admin-actions {
                 button type="button" data-action="admin-reset" .ghost { "reset local state" }
                 button type="button" data-action="admin-close" .ghost { "cancel" }
+            }
+        }
+    }
+}
+
+/// Pricing card placeholder. Painted into the right sidebar at
+/// chrome-render time; `paint_tenant` swaps the inner once it knows
+/// the verify state + current price.
+pub(crate) fn pricing_card_placeholder() -> Markup {
+    html! {
+        section #pricing-card .pricing-card {
+            div.pricing-header {
+                div.pricing-title { "pricing" }
+            }
+            div #pricing-body .pricing-body {
+                p.apex-fine { "(loading…)" }
+            }
+        }
+    }
+}
+
+/// Pricing card body painted when verify is settled. Owner gets an
+/// inline edit form; everyone else gets a read-only display of the
+/// current per-turn cost.
+pub(crate) fn pricing_card_body(price_wei: u128, is_owner: bool) -> Markup {
+    let display = if price_wei == 0 {
+        "free".to_string()
+    } else {
+        format!("{} test ETH/turn", super::format_wei_as_test_eth(price_wei))
+    };
+    html! {
+        div #pricing-body .pricing-body {
+            div.pricing-value { (display) }
+            @if is_owner {
+                div.pricing-edit {
+                    input #pricing-input
+                        type="text"
+                        inputmode="decimal"
+                        placeholder="0.001"
+                        value=(if price_wei == 0 { String::new() } else { super::format_wei_as_test_eth(price_wei) }) {}
+                    span.pricing-unit { "test ETH/turn" }
+                    button.ghost
+                        type="button"
+                        data-action="pricing-save" { "save" }
+                }
+                div #pricing-msg .pricing-msg {}
             }
         }
     }
