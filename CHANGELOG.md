@@ -5,6 +5,81 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-05-23
+
+M5 + M6 + M7 — the SDK gains a self-sovereign identity story. The
+browser bundle now reads its hostname to know which tenant it's
+serving, generates an Ethereum-compatible keypair on the apex origin,
+hits an on-chain registry on Tempo Moderato testnet to check + claim
+names, and persists the master identity via a 12-word BIP-39 seed
+phrase. Crate consumers gain `wallet` as a standalone feature for the
+keypair / RLP / hashing primitives.
+
+### Added
+
+- **`feature = "wallet"`** (off by default; pulled in by `browser-app`).
+  Adds `k256 + sha3 + rand_core + bip39` deps. New public module
+  `localharness::wallet` with:
+  - `generate()`, `generate_with_mnemonic()`, `signer_from_mnemonic()`,
+    `mnemonic_from_phrase()` for keypair management
+  - `address(signer)`, `sign_hash`, `recover_address`, `verify_hash`
+    for Ethereum-style identity primitives
+  - `rlp_bytes`, `rlp_list`, `rlp_uint` for minimal RLP encoding of
+    tx envelopes (12 unit tests covering the spec's canonical vectors)
+- **Wildcard subdomain awareness** in the browser app. The bundle
+  classifies its hostname into `Apex` (`localharness.xyz`) /
+  `Tenant(name)` / `Other(raw)` and routes to three chrome variants:
+  apex marketing page, per-tenant claim prompt, full app. Per-origin
+  OPFS gives per-subdomain data isolation for free.
+- **Apex marketing page** with a single-CTA "claim your subdomain"
+  input that live-checks availability on every keystroke via an
+  on-chain `idOfName(string)` call.
+- **Master wallet at the apex origin** — auto-generated on first
+  visit, persisted to OPFS at `.lh_wallet` as the 12-word phrase.
+  Affordances: collapsible "show seed phrase" with a reveal confirm,
+  collapsible "import a seed phrase" to migrate from another device.
+- **On-chain registry** — `LocalharnessRegistry.sol` in `contracts/`
+  (foundry project). Mirrors ERC-8122's `register / ownerOf /
+  setMetadata` surface plus an `idOfName` reverse index for fast
+  "is this taken?" checks. Validates names on-chain (a-z 0-9 -,
+  3–32 chars, no leading/trailing dash) so the wasm sanitiser
+  doesn't have to stay in sync. Deployed on Tempo Moderato testnet
+  at `0x42c8D4EaF99bA80F6B6FCA8E163E077D9FC2F9db` (chain id 42431).
+- **On-chain claim flow.** Click "claim →" on apex → bundle hits
+  the Tempo faucet (`tempo_fundAddress`) to fund the wallet → builds
+  + signs + RLP-encodes a `register(name)` legacy tx → submits via
+  `eth_sendRawTransaction` → polls `eth_getTransactionReceipt` →
+  redirects to the new subdomain with `?claim=1` for the local OPFS
+  marker. Brand-new users go from "nothing" to "owns name.localharness.xyz
+  with a verifiable on-chain address" in one click, no email, no
+  wallet extension.
+- **Inline tool-result rendering on subdomains** (carried over from
+  0.7.2): tool blocks now flip from `⋯ running` to `✓ done` / `✗ error`
+  and the result panel fills with the returned JSON.
+
+### Changed
+
+- `browser-app` feature now transitively pulls in `wallet`. Library
+  consumers can still take `wallet` alone for non-browser uses.
+- Bundle: ~2.0 MB (0.7.2) → ~2.2 MB (0.8.0). Delta is k256 + sha3 +
+  bip39 + the larger app surface.
+
+### Fixed (in addition to 0.7.x rollups)
+
+- The agent loop now emits `StreamChunk::ToolResult` after every tool
+  execution (was dead code; never emitted in 0.7.0/0.7.1).
+- `ToolResult.error` now reflects tool-encoded `{"error": ...}` JSON
+  so UIs can branch cleanly on success vs failure.
+
+### Notes
+
+- `DESIGN_M5_PLUS.md` is the design doc for everything in this
+  release plus the M8+ roadmap (iframe-signer for cross-origin auth,
+  ERC-6551 per-agent wallets, x402/MPP payments, ERC-8004 reputation).
+- Contract source + Foundry deploy script live in `contracts/`. The
+  deployed address is baked into `src/app/registry.rs::REGISTRY_ADDRESS`.
+- API key persistence in OPFS (`.lh_api_key`) is unchanged from 0.7.2.
+
 ## [0.7.2] - 2026-05-23
 
 Two browser-app fixes surfaced by the first real end-to-end smoke of
