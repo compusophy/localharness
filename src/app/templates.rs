@@ -28,31 +28,43 @@ pub(crate) fn rendered_markdown(raw: &str) -> Markup {
     html! { (PreEscaped(out)) }
 }
 
-/// Header bar — brand + version + (tenant-only) verify/TBA pills +
-/// admin button at the right. Apex / tenant / other share this so the
-/// admin button is in the same place everywhere.
-fn site_header(host: &Host) -> Markup {
+/// Global sticky header — same on apex + tenant + other. Brand +
+/// version + (tenant-only) verify/TBA pills + admin button at the
+/// right. `.site-header` CSS class makes it `position: sticky` at top.
+pub(crate) fn site_header(host: &Host) -> Markup {
     html! {
-        header {
-            h1 {
-                a href="https://localharness.xyz/" title="go home" { "localharness" }
+        header.site-header {
+            div.header-inner {
+                h1 {
+                    a href="https://localharness.xyz/" title="go home" { "localharness" }
+                }
+                span.tag { "0.10.6" } // bumped in lockstep with Cargo.toml
+                @if matches!(host, Host::Tenant(_)) {
+                    (verify_pill(&VerifyState::Pending))
+                    // TBA pill placeholder — filled in by kick_verification
+                    // once the address is fetched from the registry.
+                    span #tba-pill {}
+                }
+                span.header-spacer {}
+                div #header-admin .header-admin {
+                    button type="button"
+                        data-action="header-admin-toggle"
+                        .admin-button { "admin" }
+                    div #header-admin-panel hidden {}
+                }
             }
-            span.tag { "0.10.5" } // bumped in lockstep with Cargo.toml
-            // Verify pill — present only on tenant subdomains.
-            @if matches!(host, Host::Tenant(_)) {
-                (verify_pill(&VerifyState::Pending))
-                // TBA pill placeholder — filled in by kick_verification
-                // once the address is fetched from the registry.
-                span #tba-pill {}
-            }
-            // Admin button pushed to the right via .header-spacer.
-            // Click toggles the dropdown (hidden by default).
-            span.header-spacer {}
-            div #header-admin .header-admin {
-                button type="button"
-                    data-action="header-admin-toggle"
-                    .admin-button { "admin" }
-                div #header-admin-panel hidden {}
+        }
+    }
+}
+
+/// Global sticky footer — same on every page. Currently just a dummy
+/// `feedback` button; will host real surface area later (status, links).
+pub(crate) fn site_footer() -> Markup {
+    html! {
+        footer.site-footer {
+            div.footer-inner {
+                span.footer-spacer {}
+                button type="button" data-action="feedback" .ghost { "feedback" }
             }
         }
     }
@@ -124,10 +136,9 @@ fn short_addr(addr: &str) -> String {
 /// (localhost, vercel preview).
 pub(crate) fn chrome(host: &Host) -> Markup {
     html! {
+        (site_header(host))
         main {
             div.col-chat {
-                (site_header(host))
-
                 div #input-region {
                     div.row {
                         div.key-row {
@@ -159,7 +170,11 @@ pub(crate) fn chrome(host: &Host) -> Markup {
             }
 
             aside.col-fs {
-                (pricing_card_placeholder())
+                // Pricing card is injected by kick_verification only
+                // when the visitor is the owner (so they can edit) —
+                // visitors see price embedded in the send button label
+                // instead of a permanent right-column card.
+                div #pricing-slot {}
                 div.fs-panel {
                     div.fs-header {
                         div.fs-title { "files" }
@@ -182,6 +197,7 @@ pub(crate) fn chrome(host: &Host) -> Markup {
                 }
             }
         }
+        (site_footer())
     }
 }
 
@@ -264,15 +280,16 @@ pub(crate) fn tool_call_result(result: &ToolResult) -> Markup {
 /// reveal / import / reset; main body shows only the current step.
 pub(crate) fn apex(host: &Host, wallet_address_hex: Option<&str>) -> Markup {
     html! {
+        (site_header(host))
         main.apex-main {
             div.col-chat {
-                (site_header(host))
                 @match wallet_address_hex {
                     None => (apex_step_identity()),
-                    Some(addr) => (apex_step_agents(addr)),
+                    Some(_) => (apex_step_agents()),
                 }
             }
         }
+        (site_footer())
     }
 }
 
@@ -291,32 +308,29 @@ fn apex_step_identity() -> Markup {
 }
 
 /// Step 2 — identity exists. Agents list (async, may be empty) plus
-/// the create-agent input. Wallet address shows in a small footer.
-fn apex_step_agents(addr: &str) -> Markup {
+/// the create-agent input. Wallet address is NOT shown here — it
+/// lives in the admin dropdown to keep the main flow uncluttered.
+fn apex_step_agents() -> Markup {
     html! {
         section.step.step-agents {
             div #agents-list .agents-list {
                 p.step-msg { "(loading your agents…)" }
             }
 
-            form.apex-form data-action="apex-claim" {
-                div.apex-input-row {
+            form.create-form data-action="apex-claim" {
+                div.create-input-row {
                     input #apex-input
                         type="text"
-                        placeholder="name"
+                        placeholder="my-agent"
                         autocomplete="off"
                         spellcheck="false"
                         maxlength="32"
                         required {}
-                    span.apex-suffix { ".localharness.xyz" }
+                    span.create-suffix { ".localharness.xyz" }
                 }
-                button type="submit" { "create" }
+                button type="submit" .create-button { "create" }
+                p.create-hint { "3–32 chars, a–z 0–9 dash." }
                 div #apex-msg .step-msg {}
-            }
-
-            div.identity-footer {
-                span.identity-label { "wallet" }
-                code .wallet-address { (addr) }
             }
         }
     }
@@ -327,8 +341,19 @@ fn apex_step_agents(addr: &str) -> Markup {
 /// reset-local-state on apex; tenant chrome reuses the same dropdown
 /// but show different reset copy via [`admin_dropdown_tenant`].
 pub(crate) fn admin_dropdown_apex() -> Markup {
+    // Pull the cached wallet address out of App state so the panel
+    // can show it without an OPFS round-trip.
+    let wallet_addr = super::APP.with(|cell| {
+        cell.borrow().wallet.as_ref().map(|w| w.address_hex())
+    });
     html! {
         div #header-admin-panel .header-admin-panel {
+            @if let Some(addr) = wallet_addr {
+                div.admin-section {
+                    div.admin-section-title { "wallet" }
+                    code.admin-address { (addr) }
+                }
+            }
             div.admin-section {
                 div.admin-section-title { "seed phrase" }
                 div #seed-reveal .seed-reveal {
@@ -425,25 +450,23 @@ pub(crate) fn opfs_wipe_confirm_inline() -> Markup {
     }
 }
 
-/// Pricing card placeholder. Painted into the right sidebar at
-/// chrome-render time; `paint_tenant` swaps the inner once it knows
-/// the verify state + current price.
-pub(crate) fn pricing_card_placeholder() -> Markup {
+/// Full pricing card — injected into `#pricing-slot` by
+/// `kick_verification` only when the visitor is the verified owner.
+/// (Visitors don't get a card; their price shows up in chat status.)
+pub(crate) fn pricing_card(price_wei: u128) -> Markup {
     html! {
-        section #pricing-card .pricing-card {
+        section #pricing-slot .pricing-card {
             div.pricing-header {
                 div.pricing-title { "pricing" }
             }
-            div #pricing-body .pricing-body {
-                p.apex-fine { "(loading…)" }
-            }
+            (pricing_card_body(price_wei, true))
         }
     }
 }
 
-/// Pricing card body painted when verify is settled. Owner gets an
-/// inline edit form; everyone else gets a read-only display of the
-/// current per-turn cost.
+/// Pricing card body — owner-only edit form. Kept as a separate
+/// template so `Action::PricingSave` can swap-outer just the body
+/// after a successful save without re-rendering the slot.
 pub(crate) fn pricing_card_body(price_wei: u128, is_owner: bool) -> Markup {
     let display = if price_wei == 0 {
         "free".to_string()
@@ -620,72 +643,17 @@ pub(crate) fn signer_chrome(address_hex: &str) -> Markup {
 pub(crate) fn unclaimed(host: &Host, name: &str) -> Markup {
     let apex_claim_url = format!("https://localharness.xyz/?prefill={name}");
     html! {
+        (site_header(host))
         main.apex-main {
             div.col-chat {
-                (site_header(host))
-
-                section.apex-hero {
-                    h2.apex-headline { "this name is open: " (name) }
-                    p.apex-sub {
-                        "no one on this device has claimed " strong { (name) ".localharness.xyz" }
-                        " yet. you can claim it on-chain (cross-device, owned by your master "
-                        "wallet) or just locally on this device."
-                    }
-
-                    div.claim-cards {
-                        section.claim-card.claim-primary {
-                            h3 { "claim on-chain" }
-                            p.apex-fine {
-                                "recommended. mints an agentId in the registry contract on Tempo "
-                                "testnet, tied to your master wallet. any device with your seed "
-                                "phrase can access this space. takes ~5 seconds."
-                            }
-                            a.button-link href=(apex_claim_url) { "go to apex →" }
-                        }
-                        section.claim-card.claim-secondary {
-                            h3 { "save locally only" }
-                            p.apex-fine {
-                                "writes a random UUID to this device's OPFS. fast, no blockchain. "
-                                "but: only this device can access it; lose this browser profile, "
-                                "lose the name."
-                            }
-                            form.apex-form data-action="claim-here" {
-                                button type="submit" { "claim " (name) " locally" }
-                                div #claim-msg .apex-msg {}
-                            }
-                        }
-                    }
-
-                    details.apex-details {
-                        summary { "already own this name on another device (UUID-style)?" }
-                        div.apex-import {
-                            p.apex-fine {
-                                "if you claimed " (name) " on another device before on-chain "
-                                "registration landed, paste the owner UUID from that device's "
-                                "OPFS panel (file " code { ".lh_owner" } "). new claims should "
-                                "go through the on-chain flow above instead."
-                            }
-                            div.apex-input-row {
-                                input #import-uuid
-                                    type="text"
-                                    placeholder="00000000-0000-0000-0000-000000000000"
-                                    autocomplete="off"
-                                    spellcheck="false" {}
-                            }
-                            button type="button" data-action="import-owner" { "save UUID" }
-                        }
-                    }
-                }
-
-                footer {
-                    p {
-                        "want a different name? "
-                        a href="https://localharness.xyz/" { "go home" }
-                        " and pick a new one."
-                    }
+                section.step.step-unclaimed {
+                    h2.unclaimed-name { (name) ".localharness.xyz" }
+                    p.step-msg { "this name is open. claim it from the apex." }
+                    a.button-link href=(apex_claim_url) { "claim on apex" }
                 }
             }
         }
+        (site_footer())
     }
 }
 

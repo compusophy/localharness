@@ -22,21 +22,69 @@
       margin: 0; padding: 0;
       background: var(--bg); color: var(--fg);
       font: 14px/1.55 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+      min-height: 100vh;
     }
+    body {
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* SSOT sticky header + footer used by apex + tenant + unclaimed */
+    .site-header {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 24px;
+    }
+    .header-inner {
+      max-width: 1180px;
+      margin: 0 auto;
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+    }
+    .site-footer {
+      position: sticky;
+      bottom: 0;
+      z-index: 100;
+      background: var(--bg);
+      border-top: 1px solid var(--border);
+      padding: 8px 24px;
+      margin-top: auto;
+    }
+    .footer-inner {
+      max-width: 1180px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .footer-spacer { flex: 1; }
+    .site-footer button {
+      padding: 6px 14px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
     main {
       max-width: 1180px;
       margin: 0 auto;
-      padding: 32px 24px 160px;
+      padding: 32px 24px;
       display: grid;
       grid-template-columns: minmax(0, 1fr) 320px;
       gap: 32px;
+      flex: 1;
+      width: 100%;
     }
     main > .col-chat { min-width: 0; }
     main > .col-fs {
       position: sticky;
-      top: 32px;
+      top: 80px;
       align-self: start;
-      max-height: calc(100vh - 64px);
+      max-height: calc(100vh - 160px);
       display: flex;
       flex-direction: column;
     }
@@ -44,7 +92,9 @@
       main { grid-template-columns: 1fr; }
       main > .col-fs { position: static; max-height: none; }
     }
-    header {
+    .apex-main { display: block; }
+    .apex-main > .col-chat { max-width: 600px; margin: 0 auto; }
+    header { /* old in-flow header still used in unrelated templates */
       display: flex; align-items: baseline; gap: 12px;
       margin-bottom: 4px;
     }
@@ -402,6 +452,11 @@
     }
     .admin-blurb { margin: 0 0 8px; color: var(--muted); font-size: 12px; line-height: 1.5; }
     .admin-actions { display: flex; justify-content: flex-end; gap: 6px; }
+    .admin-address {
+      display: block; padding: 8px 10px;
+      background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+      font-size: 11px; color: var(--muted); word-break: break-all;
+    }
     button.danger {
       background: var(--error); color: var(--bg); border: 0;
     }
@@ -414,7 +469,7 @@
     .opfs-wipe-confirm button { padding: 3px 8px; font-size: 11px; }
 
     /* Step-based apex onboarding */
-    .step { margin: 64px 0; min-height: 200px; }
+    .step { margin: 48px 0; min-height: 200px; }
     .step-identity .identity-actions {
       display: flex; gap: 12px; flex-wrap: wrap;
     }
@@ -428,15 +483,31 @@
     }
     .seed-import-actions { display: flex; gap: 8px; }
 
-    .identity-footer {
-      margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--border);
-      display: flex; align-items: center; gap: 12px; font-size: 11px;
+    /* Create-agent form (apex_step_agents) — input full width, button under */
+    .create-form { display: grid; gap: 10px; max-width: 480px; }
+    .create-input-row {
+      display: flex; align-items: stretch;
+      border: 1px solid var(--border); border-radius: 6px; overflow: hidden;
+      background: var(--panel);
     }
-    .identity-label {
-      color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em;
+    .create-input-row input {
+      flex: 1; min-width: 0; border: 0; background: transparent;
+      padding: 12px 14px; color: var(--fg); font: inherit; outline: none;
     }
-    .identity-footer .wallet-address {
-      font-size: 11px; color: var(--muted);
+    .create-input-row input:focus { background: var(--panel-2); }
+    .create-suffix {
+      padding: 0 14px; display: flex; align-items: center;
+      color: var(--muted); background: var(--panel-2);
+      border-left: 1px solid var(--border); font-size: 13px;
+    }
+    .create-button { justify-self: start; padding: 10px 24px; }
+    .create-hint { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
+
+    /* Unclaimed (fresh subdomain visited by someone who doesn't own it) */
+    .step-unclaimed { text-align: center; }
+    .unclaimed-name {
+      font-size: 18px; font-weight: 600; color: var(--accent);
+      margin: 0 0 16px; word-break: break-all;
     }
 
     .agents-empty { min-height: 0; }

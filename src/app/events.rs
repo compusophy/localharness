@@ -52,6 +52,7 @@ enum Action {
     ResetConfirm,
     ResetCancel,
     PricingSave,
+    Feedback,
 }
 
 impl Action {
@@ -84,6 +85,7 @@ impl Action {
             "reset-confirm" => Action::ResetConfirm,
             "reset-cancel" => Action::ResetCancel,
             "pricing-save" => Action::PricingSave,
+            "feedback" => Action::Feedback,
             _ => return None,
         })
     }
@@ -617,6 +619,10 @@ fn dispatch(action: Action) {
         }
         Action::ResetConfirm => reset_confirm_pressed(),
         Action::PricingSave => pricing_save_pressed(),
+        Action::Feedback => {
+            // Dummy for now — wire up a real feedback channel later.
+            web_sys::console::log_1(&JsValue::from_str("feedback button clicked"));
+        }
     }
 }
 

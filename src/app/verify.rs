@@ -54,10 +54,22 @@ pub(crate) async fn verify_owner(name: &str) -> Result<VerifyResult, String> {
         return Ok(VerifyResult::Unregistered);
     };
 
-    // 2. Get a signature from the apex signer.
+    // 2. Get a signature from the apex signer. The signer's `paint_signer`
+    // is async — it might not have loaded the master wallet by the time
+    // we post the first challenge. Retry once after a short backoff so a
+    // simple race condition doesn't surface as "verify failed".
     let nonce = random_nonce();
     let nonce_hex = bytes_to_hex(&nonce);
-    let (signer_address, signature) = sign_via_iframe(&nonce_hex).await?;
+    let (signer_address, signature) = match sign_via_iframe(&nonce_hex).await {
+        Ok(pair) => pair,
+        Err(first_err) => {
+            sleep_ms(1500).await;
+            sign_via_iframe(&nonce_hex).await
+                .map_err(|second_err| format!(
+                    "signer didn't respond — first attempt: {first_err}; retry: {second_err}"
+                ))?
+        }
+    };
 
     // 3. Recover the signer address from the signature and verify it
     //    matches what the signer claimed (basic sanity check).
@@ -305,7 +317,11 @@ async fn signer_iframe_request(
     let target = content_window
         .ok_or_else(|| "iframe content window never available".to_string())?;
 
-    sleep_ms(200).await;
+    // 500ms is a comfortable margin for the apex signer's async
+    // wallet-load (which races our challenge if it's still in flight).
+    // Combined with the higher-level retry in verify_owner this should
+    // make race-condition failures vanishingly rare.
+    sleep_ms(500).await;
     target
         .post_message(payload, SIGNER_ORIGIN)
         .map_err(|e| format!("postMessage: {e:?}"))?;

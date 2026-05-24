@@ -357,15 +357,33 @@ async fn kick_verification(name: String) {
     let html = templates::verify_pill(&outcome).into_string();
     dom::swap_outer("verify-pill", &html);
 
+    // Surface the failure reason somewhere visible — the pill's
+    // title tooltip alone isn't discoverable. Log to console too
+    // for inspection across reloads.
+    if let VerifyState::Failed { reason } = &outcome {
+        dom::set_status(&format!("verify failed: {reason}"), true);
+        web_sys::console::warn_1(&JsValue::from_str(&format!(
+            "lh verify_owner failed: {reason}"
+        )));
+    }
+
     // Pricing is per-tenant OPFS, same-origin readable regardless of
     // verification outcome. Load once and stash so `chat::run_send`
     // can consult it before each turn — and so the visitor-banner
     // logic below can decide whether to lock down the input region.
     let price = pricing::load().await.unwrap_or(0);
     APP.with(|cell| cell.borrow_mut().pricing_wei = Some(price));
+
+    // Inject the pricing card only when the visitor is the verified
+    // owner — that's the only person who needs the editing surface.
+    // Visitors see the price embedded in chat-flow status messages
+    // (and eventually the send button label) instead of a permanent
+    // right-column card.
     let is_owner = matches!(outcome, VerifyState::Verified { .. });
-    let pricing_html = templates::pricing_card_body(price, is_owner).into_string();
-    dom::swap_outer("pricing-body", &pricing_html);
+    if is_owner {
+        let html = templates::pricing_card(price).into_string();
+        dom::swap_outer("pricing-slot", &html);
+    }
 
     // Visitor mode: replace the input region with a read-only banner
     // ONLY when no payment-gate is set. Payment-gated agents keep the
