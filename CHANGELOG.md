@@ -5,6 +5,80 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.3] - 2026-05-24
+
+Phase 1 of the payment-hooks frontier: **visitor-pays-agent
+gating on Tempo Moderato testnet**, native-ETH only (no Stripe
+yet — that's Phase 2). Owner sets a per-turn price; visitors who
+aren't the owner must sign a payment tx to the agent's ERC-6551
+TBA before each turn runs. The whole loop is client-side — no
+backend, no off-chain ledger — and reuses the existing
+master-wallet + iframe-signer plumbing.
+
+### Added (Rust SDK)
+
+- **`registry::next_nonce(address_hex)`** — pending-nonce lookup.
+- **`registry::current_gas_price()`** — `eth_gasPrice` wrapper.
+- **`registry::submit_and_wait_receipt(raw_hex)`** — send a signed
+  raw tx and block until the receipt is mined.
+- **`registry::rlp_native_transfer_unsigned(...)`** + **`registry::rlp_native_transfer_signed(...)`**
+  — EIP-155 envelope builders for a native-ETH transfer. Lift v
+  to `chain_id * 2 + 35 + recovery_id` internally so callers
+  don't have to remember the rule.
+- **`registry::NATIVE_TRANSFER_GAS_LIMIT`** const (21_000).
+
+All `pub`-level additions; no breaks.
+
+### Added (browser app)
+
+- **Payment-gated turns.** New `src/app/pricing.rs` reads/writes
+  `.lh_pricing.json` (per-turn price in wei, stringified to
+  survive JSON's 53-bit integer limit). `chat::run_send` calls
+  `collect_payment_if_required` before each turn — short-circuits
+  on free agents, owner-of-this-agent, or unverified state.
+- **Iframe signer extended with `lh-sign-tx`.** New postMessage
+  message type sits alongside the existing `lh-sign-challenge`.
+  Tx-signing always asks the user's explicit consent via
+  `window.confirm()` (challenges still auto-approve — they're
+  read-only). Consent dialog spells out the recipient, value in
+  test ETH, gas, chain id, nonce, and the human-readable purpose.
+- **Pricing card** in the right sidebar on tenant chrome. Owner
+  sees a decimal-ETH input + save button; visitors see the
+  current per-turn cost as read-only. Save validates input
+  (positive decimal, max 18 fractional digits) and re-checks
+  `verify_state` before writing — belt-and-suspenders against a
+  stale DOM submission from a non-owner.
+- **Visitor flow unblocked.** `paint_tenant` no longer forces
+  fresh visitors to the "claim this name?" prompt when the name
+  has an on-chain owner — they get the chat chrome directly so
+  the payment loop is reachable.
+- **`VerifyState::Visitor` carries `visitor_address`** (the
+  recovered signer) so the payment flow can build a tx from the
+  correct `from`. Owner banner / pill markup unchanged.
+
+### Refactored (browser app)
+
+- `verify.rs`: the iframe lifecycle (create hidden iframe,
+  attach correlation-id-filtered listener, post payload, race
+  vs timeout, tear down) is now in a shared `signer_iframe_request`
+  helper. Both `sign_via_iframe` (challenges) and the new
+  `sign_tx_via_iframe` use it — no more ~80 lines duplicated.
+
+### Known limitations (Phase 2/3 scope)
+
+- **Test-ETH only.** "TIP-20 we mint and control" was discussed
+  for a later phase; test ETH is what the Tempo faucet gives us
+  today.
+- **No Stripe MPP yet.** Pure on-chain settlement. Stripe Sessions
+  + Stripe Connect + Stripe Issuing come in Phase 2/3 — they need
+  a thin Vercel serverless function for session creation +
+  webhook receipt, which doesn't exist yet.
+- **No receipt log.** Each turn pays again; no "I already paid for
+  this turn" memory. Reasonable for MVP; a paid-credits balance
+  belongs in a follow-up.
+- **No price feed.** Owner sets price in wei via a decimal-ETH
+  input. No USD pegging yet.
+
 ## [0.10.2] - 2026-05-24
 
 ### Added (browser app)
