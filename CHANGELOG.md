@@ -5,6 +5,84 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-05-23
+
+M8 + M9 — the identity story gets a real auth boundary (cross-origin
+signature verification) and the on-chain registry is now an EIP-2535
+Diamond, so future facets (ERC-721 / ERC-8004 / ERC-6551 / MPP)
+won't churn the bundle's registry address constant ever again.
+
+### Added
+
+- **Cross-origin owner verification** via an apex-hosted iframe
+  signer. Subdomains create a hidden iframe to
+  `localharness.xyz/?signer=1`, send a domain-separated sign
+  challenge (`keccak256("localharness-auth-v0:" || nonce)`), recover
+  the address from the returned signature, and compare it to the
+  on-chain owner. Status pill in the tenant chrome reflects the
+  result: `verifying… → ✓ owner / visitor · owner 0xABC… / not
+  on-chain / verify failed`.
+- **Visitor read-only mode.** When verification confirms the visitor
+  isn't the on-chain owner, the entire input region (key + prompt +
+  send button) swaps for a "visitor mode" banner showing who owns
+  the name and a link to claim your own. The transcript + OPFS panel
+  stay browsable — read access is unaffected.
+- **Wildcard subdomain awareness** in the bundle.
+  `window.location.hostname` classifies the request into apex /
+  tenant / other, and three chrome variants render accordingly. The
+  apex marketing page has a single-CTA "claim your subdomain" input
+  that does a live on-chain `idOfName(string)` check on every
+  keystroke.
+- **Master wallet at the apex origin** — auto-generated on first
+  visit via `k256 + sha3` directly (avoided alloy due to a
+  `serde::__private` compat snag). Persisted to OPFS at `.lh_wallet`
+  as a 12-word BIP-39 mnemonic. Show/hide seed phrase + import flow
+  for cross-device migration.
+- **On-chain registration flow.** Apex form submission: faucet the
+  wallet via `tempo_fundAddress`, build + sign + RLP-encode a
+  `register(name)` legacy EIP-155 tx, send via
+  `eth_sendRawTransaction`, poll for receipt, redirect to the new
+  subdomain. Brand-new users go from nothing to "owns
+  name.localharness.xyz with a verifiable EVM address" in one click,
+  no email, no wallet extension.
+- **`feature = "wallet"`** standalone public feature for the keypair
+  + signing primitives (also pulled in transitively by
+  `browser-app`). New public module `localharness::wallet` with
+  `generate`, `generate_with_mnemonic`, `from_private_key_hex`,
+  `address`, `sign_hash`, `recover_address`, `verify_hash`, plus
+  hand-rolled `rlp_bytes` / `rlp_list` / `rlp_uint` for tx envelope
+  encoding (12 unit tests cover the spec's canonical RLP vectors).
+
+### Changed
+
+- **Registry is now an EIP-2535 Diamond** at
+  `0xed7a2d170ab2d41721c9bd7368adbff6df0c656d` on Tempo Moderato
+  testnet. Replaces the flat contract at `0x42c8D4…F9db`. ABI
+  surface is identical (`register / ownerOfName / idOfName /
+  setMetadata / transfer / ownerOfId / nextId / metadata`), so the
+  wasm bundle code didn't change — only the `REGISTRY_ADDRESS`
+  constant. Future ERC-721 / ERC-8004 / ERC-6551 / MPP facets cut in
+  without changing the bundle's address.
+- The legacy flat `LocalharnessRegistry.sol` stays in-tree as
+  historical reference. The deployed-but-unused address is
+  documented in the registry module's doc comment.
+- `browser-app` feature now transitively pulls in `wallet` (the
+  apex chrome needs it).
+- Bundle: ~2.2 MB → ~2.2 MB (no measurable delta from the M8 work).
+
+### Notes
+
+- `contracts/src/Diamond.sol` + the 4-facet stack (Cut, Loupe,
+  Ownership, LocalharnessRegistryFacet) + `DiamondInit` reference
+  nick-mudge's MIT EIP-2535 impl, with the registry's storage
+  isolated at `keccak256("localharness.registry.storage.v1")` via
+  `LibRegistryStorage`. New facets get their own
+  `LibXyzStorage` modules at fresh slots — never touch existing
+  ones. Full architecture write-up in `contracts/README.md`.
+- The legacy UUID-format `.lh_owner` files on existing tenant
+  subdomains keep working as a fallback when verification fails or
+  the name has no on-chain entry. No forced migration.
+
 ## [0.8.0] - 2026-05-23
 
 M5 + M6 + M7 — the SDK gains a self-sovereign identity story. The
