@@ -72,15 +72,17 @@ fn handle_message(event: &MessageEvent) -> Result<(), String> {
         .and_then(|v| v.as_string())
         .unwrap_or_default();
 
+    // Early-return for message types we don't handle BEFORE doing any
+    // source/origin work. Pages run lots of incidental postMessage
+    // chatter (Vercel's lockdown.js, browser extensions, dev tooling)
+    // and we don't want to log "source is not a Window" for any of it.
+    if !matches!(msg_type.as_str(), "lh-sign-challenge" | "lh-sign-tx") {
+        return Ok(());
+    }
+
     let origin = event.origin();
     if !is_trusted_origin(&origin) {
-        // Drop silently on truly unknown message types; only error on
-        // recognised types from untrusted origins so we don't log
-        // noise from unrelated postMessage chatter.
-        if matches!(msg_type.as_str(), "lh-sign-challenge" | "lh-sign-tx") {
-            return Err(format!("untrusted origin: {origin}"));
-        }
-        return Ok(());
+        return Err(format!("untrusted origin: {origin}"));
     }
 
     let id = js_sys::Reflect::get(&data, &JsValue::from_str("id"))
@@ -88,12 +90,15 @@ fn handle_message(event: &MessageEvent) -> Result<(), String> {
         .and_then(|v| v.as_string())
         .unwrap_or_default();
 
+    // Don't `dyn_into::<Window>` here — cross-origin parent
+    // references are `WindowProxy` objects which fail strict
+    // wasm-bindgen type checks even though they expose `postMessage`.
+    // Hold the source as a generic JsValue and call postMessage via
+    // Reflect on the way out.
     let source = event
         .source()
         .ok_or_else(|| "no source window on the message event".to_string())?;
-    let window: web_sys::Window = source
-        .dyn_into()
-        .map_err(|_| "source is not a Window".to_string())?;
+    let source_jsval: JsValue = source.into();
 
     let reply = match msg_type.as_str() {
         "lh-sign-challenge" => {
@@ -121,9 +126,17 @@ fn handle_message(event: &MessageEvent) -> Result<(), String> {
         _ => return Ok(()), // not for us
     };
 
-    window
-        .post_message(&reply, &origin)
-        .map_err(|e| format!("post_message: {e:?}"))?;
+    // Reflect-based postMessage on the source (which may be a
+    // cross-origin WindowProxy, not a strict Window). Equivalent to
+    // `source.postMessage(reply, origin)` in JS.
+    let post_msg = js_sys::Reflect::get(&source_jsval, &JsValue::from_str("postMessage"))
+        .map_err(|_| "source has no postMessage".to_string())?;
+    let post_fn: js_sys::Function = post_msg
+        .dyn_into()
+        .map_err(|_| "source.postMessage isn't a function".to_string())?;
+    post_fn
+        .call2(&source_jsval, &reply, &JsValue::from_str(&origin))
+        .map_err(|e| format!("postMessage call: {e:?}"))?;
     Ok(())
 }
 

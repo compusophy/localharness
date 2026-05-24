@@ -38,7 +38,7 @@ pub(crate) fn site_header(host: &Host) -> Markup {
                 h1 {
                     a href="https://localharness.xyz/" title="go home" { "localharness" }
                 }
-                span.tag { "0.10.7" } // bumped in lockstep with Cargo.toml
+                span.tag { "0.10.8" } // bumped in lockstep with Cargo.toml
                 @if matches!(host, Host::Tenant(_)) {
                     (verify_pill(&VerifyState::Pending))
                     // TBA pill placeholder — filled in by kick_verification
