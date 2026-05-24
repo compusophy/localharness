@@ -377,6 +377,27 @@ pub(crate) async fn paint_apex(host: tenant::Host) {
                     }
                 }
             }
+            // Async-populate the "your agents" list. Slot was painted
+            // with a "(loading…)" placeholder; we replace it with the
+            // real list (or a "no agents yet" message) once the
+            // registry roundtrip completes.
+            let owner_addr = addr.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match registry::list_owned_tokens(&owner_addr).await {
+                    Ok(agents) => {
+                        let html = templates::agents_list(&agents).into_string();
+                        dom::swap_outer("agents-list", &html);
+                    }
+                    Err(err) => {
+                        dom::swap_outer(
+                            "agents-list",
+                            &format!(
+                                r#"<div id="agents-list" class="agents-list"><p class="apex-fine" style="color:var(--error)">couldn't list agents: {err}</p></div>"#
+                            ),
+                        );
+                    }
+                }
+            });
         }
         Err(err) => {
             web_sys::console::error_1(&JsValue::from_str(&format!("wallet: {err}")));

@@ -341,13 +341,20 @@ pub(crate) fn apex(host: &Host, wallet_address_hex: &str) -> Markup {
                     h3.apex-sub-headline { "your master identity" }
                     p.apex-sub {
                         "a secp256k1 keypair generated on this device. "
-                        "every subdomain you claim will be tied to this address "
-                        "(once the on-chain registry lands in M7). "
+                        "every subdomain you claim is tied to this address "
+                        "in the on-chain registry. "
                         "the only thing you need to back up to keep your account."
                     }
                     div.wallet-address-row {
                         span.wallet-label { "address" }
                         code #wallet-address .wallet-address { (wallet_address_hex) }
+                    }
+
+                    // Async-populated by paint_apex once the registry
+                    // returns the user's owned tokens. Empty state shows
+                    // "(loading…)" while in flight.
+                    div #agents-list .agents-list {
+                        p.apex-fine { "(loading your agents…)" }
                     }
 
                     details.apex-details {
@@ -386,6 +393,45 @@ pub(crate) fn apex(host: &Host, wallet_address_hex: &str) -> Markup {
                         "Open source · "
                         a href="https://github.com/compusophy/localharness" { "github.com/compusophy/localharness" }
                         " · Rust → wasm32 · no analytics, no telemetry, no backend."
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Render the "your agents" table on apex. `agents` is what the
+/// registry's `list_owned_tokens(wallet_address)` returned.
+pub(crate) fn agents_list(agents: &[crate::app::registry::OwnedToken]) -> Markup {
+    if agents.is_empty() {
+        return html! {
+            div #agents-list .agents-list {
+                p.apex-fine {
+                    "you don't own any agents yet — claim a name above to mint your first."
+                }
+            }
+        };
+    }
+    html! {
+        div #agents-list .agents-list {
+            h4.agents-headline { "your agents (" (agents.len()) ")" }
+            ul.agents-rows {
+                @for agent in agents {
+                    li.agent-row {
+                        a.agent-name
+                            href=(format!("https://{}.localharness.xyz/", agent.name)) {
+                            (agent.name) ".localharness.xyz"
+                        }
+                        span.agent-id { "#" (agent.token_id) }
+                        @if let Some(tba) = &agent.tba {
+                            a.agent-tba
+                                href=(format!("https://moderato.tempo.xyz/address/{tba}"))
+                                target="_blank"
+                                rel="noopener"
+                                title=(format!("agent wallet (ERC-6551): {tba}")) {
+                                "💰 " (short_addr(tba))
+                            }
+                        }
                     }
                 }
             }

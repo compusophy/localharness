@@ -47,6 +47,94 @@ pub(crate) enum Status {
     Taken { agent_id: u64 },
 }
 
+/// One entry in the "your agents" list rendered on apex. Read from
+/// the diamond via `list_owned_tokens(owner)`.
+#[derive(Debug, Clone)]
+pub(crate) struct OwnedToken {
+    pub(crate) token_id: u64,
+    pub(crate) name: String,
+    pub(crate) tba: Option<String>,
+}
+
+/// All NFTs (= registered names) currently owned by `owner_hex`.
+/// Iterates `1..nextId` and filters by `ownerOf(i) == owner_hex`.
+/// Fine for testnet where the total token count is small; if the
+/// registry ever grows past a few hundred we'd swap to log-based
+/// indexing or a multicall batch. Returns entries newest-first.
+pub(crate) async fn list_owned_tokens(owner_hex: &str) -> Result<Vec<OwnedToken>, String> {
+    if REGISTRY_ADDRESS == zero_address() {
+        return Ok(Vec::new());
+    }
+    let total = next_id().await?;
+    let owner_lower = owner_hex.to_lowercase();
+    let mut out: Vec<OwnedToken> = Vec::new();
+    // nextId is one-past the highest issued id (we start at 1, so the
+    // valid range is 1..nextId-1 inclusive — equivalent to 1..nextId).
+    for id in 1..total {
+        let owner = match owner_of_id(id).await {
+            Ok(Some(addr)) => addr,
+            _ => continue,
+        };
+        if owner.to_lowercase() != owner_lower {
+            continue;
+        }
+        let name = name_of_id(id).await.unwrap_or_default();
+        if name.is_empty() {
+            continue;
+        }
+        let tba = tba_of_name(&name).await.ok().flatten();
+        out.push(OwnedToken {
+            token_id: id,
+            name,
+            tba,
+        });
+    }
+    // Reverse so newer registrations land at the top.
+    out.reverse();
+    Ok(out)
+}
+
+async fn next_id() -> Result<u64, String> {
+    let calldata = format!("0x{}", bytes_to_hex(&selector("nextId()")));
+    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    decode_u256_as_u64(&result_hex)
+}
+
+async fn owner_of_id(id: u64) -> Result<Option<String>, String> {
+    let mut data = Vec::with_capacity(4 + 32);
+    data.extend_from_slice(&selector("ownerOfId(uint256)"));
+    data.extend_from_slice(&u256_be(id as u128));
+    let calldata = format!("0x{}", bytes_to_hex(&data));
+    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let trimmed = result_hex.trim().trim_start_matches("0x");
+    if trimmed.len() < 64 {
+        return Ok(None);
+    }
+    let addr_hex = &trimmed[trimmed.len() - 40..];
+    if addr_hex.chars().all(|c| c == '0') {
+        return Ok(None);
+    }
+    Ok(Some(format!("0x{}", addr_hex.to_lowercase())))
+}
+
+async fn name_of_id(id: u64) -> Result<String, String> {
+    let mut data = Vec::with_capacity(4 + 32);
+    data.extend_from_slice(&selector("nameOfId(uint256)"));
+    data.extend_from_slice(&u256_be(id as u128));
+    let calldata = format!("0x{}", bytes_to_hex(&data));
+    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    // ABI-encoded string: offset (32 bytes, value 0x20) + length (32 bytes) + bytes
+    let raw = hex_to_bytes(&result_hex)?;
+    if raw.len() < 64 {
+        return Err(format!("nameOfId: short response {} bytes", raw.len()));
+    }
+    let len = u64::from_be_bytes(raw[56..64].try_into().map_err(|e: std::array::TryFromSliceError| e.to_string())?) as usize;
+    if raw.len() < 64 + len {
+        return Err(format!("nameOfId: truncated body (need {} bytes, have {})", 64 + len, raw.len()));
+    }
+    String::from_utf8(raw[64..64 + len].to_vec()).map_err(|e| e.to_string())
+}
+
 /// `eth_call tokenBoundAccountByName(name)` and return the ERC-6551
 /// account address. None when the name is unregistered. The address
 /// is deterministic — it exists counterfactually even if the account

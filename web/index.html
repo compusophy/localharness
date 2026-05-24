@@ -70,6 +70,21 @@
     .tba-pill { color: #f4c47e; border-color: #f4c47e; text-decoration: none; font-variant-numeric: tabular-nums; }
     .tba-pill:hover { background: rgba(244, 196, 126, 0.08); }
 
+    .agents-list { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+    .agents-headline { font-size: 13px; font-weight: 600; margin: 0 0 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+    .agents-rows { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+    .agent-row {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 14px; background: var(--panel); border: 1px solid var(--border);
+      border-radius: 6px; font-size: 13px;
+    }
+    .agent-row:hover { border-color: var(--accent); }
+    .agent-name { flex: 1; color: var(--accent); text-decoration: none; word-break: break-all; }
+    .agent-name:hover { text-decoration: underline; }
+    .agent-id { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+    .agent-tba { color: #f4c47e; text-decoration: none; font-size: 11px; font-variant-numeric: tabular-nums; }
+    .agent-tba:hover { text-decoration: underline; }
+
     .claim-cards {
       display: grid;
       grid-template-columns: 1fr 1fr;
