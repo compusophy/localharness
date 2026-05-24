@@ -19,7 +19,7 @@ use sha3::{Digest, Keccak256};
 use crate::wallet;
 
 /// Tempo Moderato testnet RPC. Per the tempo-x402 reference.
-pub(crate) const RPC_URL: &str = "https://rpc.moderato.tempo.xyz";
+pub const RPC_URL: &str = "https://rpc.moderato.tempo.xyz";
 
 /// `LocalharnessRegistry` Diamond on Tempo Moderato testnet
 /// (chain id 42431). Deployed 2026-05-23 from
@@ -31,14 +31,14 @@ pub(crate) const RPC_URL: &str = "https://rpc.moderato.tempo.xyz";
 ///
 /// Owner (deployer / admin): 0x81E9c327562ABecaBf561F321B340200046D3106
 /// Predecessor (flat) at:    0x42c8D4EaF99bA80F6B6FCA8E163E077D9FC2F9db
-pub(crate) const REGISTRY_ADDRESS: &str = "0xed7a2d170ab2d41721c9bd7368adbff6df0c656d";
+pub const REGISTRY_ADDRESS: &str = "0xed7a2d170ab2d41721c9bd7368adbff6df0c656d";
 
 /// Tempo Moderato chain id — used in EIP-155 v computation.
-pub(crate) const CHAIN_ID: u64 = 42431;
+pub const CHAIN_ID: u64 = 42431;
 
 /// What we can learn about a name without touching the wallet.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Status {
+pub enum Status {
     /// Registry isn't deployed (or address still set to zero).
     Unknown,
     /// `idOfName` returned 0 — free to register.
@@ -50,10 +50,10 @@ pub(crate) enum Status {
 /// One entry in the "your agents" list rendered on apex. Read from
 /// the diamond via `list_owned_tokens(owner)`.
 #[derive(Debug, Clone)]
-pub(crate) struct OwnedToken {
-    pub(crate) token_id: u64,
-    pub(crate) name: String,
-    pub(crate) tba: Option<String>,
+pub struct OwnedToken {
+    pub token_id: u64,
+    pub name: String,
+    pub tba: Option<String>,
 }
 
 /// All NFTs (= registered names) currently owned by `owner_hex`.
@@ -61,7 +61,7 @@ pub(crate) struct OwnedToken {
 /// Fine for testnet where the total token count is small; if the
 /// registry ever grows past a few hundred we'd swap to log-based
 /// indexing or a multicall batch. Returns entries newest-first.
-pub(crate) async fn list_owned_tokens(owner_hex: &str) -> Result<Vec<OwnedToken>, String> {
+pub async fn list_owned_tokens(owner_hex: &str) -> Result<Vec<OwnedToken>, String> {
     if REGISTRY_ADDRESS == zero_address() {
         return Ok(Vec::new());
     }
@@ -139,7 +139,7 @@ async fn name_of_id(id: u64) -> Result<String, String> {
 /// account address. None when the name is unregistered. The address
 /// is deterministic — it exists counterfactually even if the account
 /// hasn't been deployed yet.
-pub(crate) async fn tba_of_name(name: &str) -> Result<Option<String>, String> {
+pub async fn tba_of_name(name: &str) -> Result<Option<String>, String> {
     if REGISTRY_ADDRESS == zero_address() {
         return Ok(None);
     }
@@ -170,7 +170,7 @@ pub(crate) async fn tba_of_name(name: &str) -> Result<Option<String>, String> {
 /// `eth_call ownerOfName(name)` and return the address as a
 /// `0x`-prefixed lowercase hex string. `None` if the name has no
 /// on-chain owner (returns the zero address).
-pub(crate) async fn owner_of_name(name: &str) -> Result<Option<String>, String> {
+pub async fn owner_of_name(name: &str) -> Result<Option<String>, String> {
     if REGISTRY_ADDRESS == zero_address() {
         return Ok(None);
     }
@@ -198,7 +198,7 @@ fn encode_string_call(signature: &str, value: &str) -> String {
     let sel = selector(signature);
     let bytes = value.as_bytes();
     let len = bytes.len();
-    let padded_len = ((len + 31) / 32) * 32;
+    let padded_len = len.div_ceil(32) * 32;
 
     let mut buf = Vec::with_capacity(4 + 32 + 32 + padded_len);
     buf.extend_from_slice(&sel);
@@ -216,7 +216,7 @@ fn encode_string_call(signature: &str, value: &str) -> String {
 }
 
 /// `eth_call idOfName(name)` and classify the result. Single round trip.
-pub(crate) async fn check_name(name: &str) -> Result<Status, String> {
+pub async fn check_name(name: &str) -> Result<Status, String> {
     if REGISTRY_ADDRESS == zero_address() {
         return Ok(Status::Unknown);
     }
@@ -235,7 +235,7 @@ pub(crate) async fn check_name(name: &str) -> Result<Status, String> {
 /// Returns the transaction hash once it's been included in a block.
 /// The wallet needs testnet TMP for gas — the apex page is expected
 /// to faucet-fund it on first claim attempt.
-pub(crate) async fn claim_name(signer: &SigningKey, name: &str) -> Result<String, String> {
+pub async fn claim_name(signer: &SigningKey, name: &str) -> Result<String, String> {
     if REGISTRY_ADDRESS == zero_address() {
         return Err("registry not deployed".into());
     }
@@ -297,7 +297,7 @@ pub(crate) async fn claim_name(signer: &SigningKey, name: &str) -> Result<String
 /// supplied address. The faucet returns the funding tx hashes on
 /// success. Bundled here because the apex claim flow uses it
 /// pre-emptively before a brand-new wallet tries to send its first tx.
-pub(crate) async fn request_faucet_funds(address_hex: &str) -> Result<(), String> {
+pub async fn request_faucet_funds(address_hex: &str) -> Result<(), String> {
     let body = RpcRequest {
         jsonrpc: "2.0",
         id: 1,
@@ -342,7 +342,7 @@ fn encode_id_of_name(name: &str) -> String {
     let sel = selector("idOfName(string)");
     let bytes = name.as_bytes();
     let len = bytes.len();
-    let padded_len = ((len + 31) / 32) * 32;
+    let padded_len = len.div_ceil(32) * 32;
 
     let mut buf = Vec::with_capacity(4 + 32 + 32 + padded_len);
     buf.extend_from_slice(&sel);
@@ -364,7 +364,7 @@ fn encode_register(name: &str) -> String {
     let sel = selector("register(string)");
     let bytes = name.as_bytes();
     let len = bytes.len();
-    let padded_len = ((len + 31) / 32) * 32;
+    let padded_len = len.div_ceil(32) * 32;
 
     let mut buf = Vec::with_capacity(4 + 32 + 32 + padded_len);
     buf.extend_from_slice(&sel);
@@ -654,6 +654,15 @@ async fn wait_for_receipt(tx_hash: &str) -> Result<(), String> {
     Err(format!("receipt timeout for {tx_hash}"))
 }
 
+/// Cross-target sleep — `tokio::time::sleep` on native, a Promise
+/// around `setTimeout` on wasm. Used by `claim_name` to poll the
+/// transaction receipt every second.
+#[cfg(not(target_arch = "wasm32"))]
+async fn sleep_ms(ms: u32) {
+    tokio::time::sleep(std::time::Duration::from_millis(ms as u64)).await;
+}
+
+#[cfg(target_arch = "wasm32")]
 async fn sleep_ms(ms: u32) {
     use wasm_bindgen_futures::JsFuture;
     let promise = js_sys::Promise::new(&mut |resolve, _| {
