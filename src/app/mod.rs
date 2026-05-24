@@ -30,8 +30,10 @@ mod key_store;
 mod opfs;
 mod owner;
 mod registry;
+mod signer;
 mod templates;
 mod tenant;
+mod verify;
 mod wallet_store;
 
 /// Per-tab state. One instance lives in [`APP`] for the lifetime of the
@@ -61,6 +63,37 @@ pub(crate) struct App {
     /// the "reveal seed" affordance can read it without re-touching
     /// OPFS. `None` everywhere except the apex chrome path.
     pub(crate) wallet: Option<wallet_store::MasterWallet>,
+    /// Result of the most-recent on-chain owner verification on a
+    /// tenant subdomain. Updated asynchronously after `paint_tenant`
+    /// renders the chrome; the UI pill reflects whatever's here.
+    pub(crate) verify_state: VerifyState,
+}
+
+/// Surface-level summary of the cross-origin verification flow,
+/// mirrored into the chrome via a status pill.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) enum VerifyState {
+    #[default]
+    Pending,
+    /// On-chain owner exists AND the iframe signer's signature
+    /// recovered to that address.
+    Verified {
+        address: String,
+    },
+    /// On-chain owner exists but the visitor's wallet signed with a
+    /// different address — they're browsing someone else's space.
+    Visitor {
+        owner_address: String,
+    },
+    /// Name has no on-chain owner; legacy local-OPFS marker is the
+    /// only source of truth.
+    Unregistered,
+    /// Verification flow itself failed (RPC down, iframe failed,
+    /// signer didn't respond). Treat as legacy-trust mode but show
+    /// the user that verification didn't complete.
+    Failed {
+        reason: String,
+    },
 }
 
 impl App {
@@ -74,6 +107,7 @@ impl App {
             opfs: None,
             pending_history: None,
             wallet: None,
+            verify_state: VerifyState::Pending,
         }
     }
 
@@ -132,6 +166,21 @@ fn mount() -> Result<(), JsValue> {
     // Delegated listeners are installed first so the apex / unclaimed
     // templates' buttons work even before we hit the async branches.
     events::install_delegated_listeners(&doc)?;
+
+    // Signer mode short-circuit. When apex is loaded with ?signer=1
+    // (typically in a hidden iframe from a subdomain doing owner
+    // verification), skip the marketing chrome entirely and just turn
+    // this tab into a postMessage signing service.
+    if matches!(&host, tenant::Host::Apex) && has_signer_hint() {
+        root.set_inner_html("<main style=\"padding:48px;text-align:center;color:#7a8493;font:14px ui-monospace,Menlo,Consolas,monospace\">localharness signer · loading…</main>");
+        signer::install_signer_listener()?;
+        wasm_bindgen_futures::spawn_local(async move {
+            // Loading the wallet warms it into App state so the
+            // postMessage handler can pull it synchronously.
+            paint_signer().await;
+        });
+        return Ok(());
+    }
 
     match &host {
         tenant::Host::Apex => {
@@ -245,6 +294,33 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
     }
     history::load_into_pending().await;
     opfs::refresh().await;
+
+    // Background: try to verify the visitor against the on-chain
+    // owner via the apex iframe signer. Fire-and-forget so the
+    // chrome paint doesn't block on a ~1-5s roundtrip; the pill
+    // updates when the result lands.
+    wasm_bindgen_futures::spawn_local(async move {
+        kick_verification(name).await;
+    });
+}
+
+/// Run `verify::verify_owner` for `name` and stash the result. The
+/// pill in the chrome reflects whatever lands here. Falls back to
+/// the legacy local-OPFS marker if the on-chain check fails.
+async fn kick_verification(name: String) {
+    let outcome = match verify::verify_owner(&name).await {
+        Ok(verify::VerifyResult::VerifiedOwner { address }) => {
+            VerifyState::Verified { address }
+        }
+        Ok(verify::VerifyResult::Visitor { owner_address }) => {
+            VerifyState::Visitor { owner_address }
+        }
+        Ok(verify::VerifyResult::Unregistered) => VerifyState::Unregistered,
+        Err(err) => VerifyState::Failed { reason: err },
+    };
+    APP.with(|cell| cell.borrow_mut().verify_state = outcome.clone());
+    let html = templates::verify_pill(&outcome).into_string();
+    dom::swap_outer("verify-pill", &html);
 }
 
 /// Load (or generate) the master wallet, stash it in `App`, then
@@ -259,6 +335,23 @@ pub(crate) async fn paint_apex(host: tenant::Host) {
             let addr = wallet.address_hex();
             APP.with(|cell| cell.borrow_mut().wallet = Some(wallet));
             root.set_inner_html(&templates::apex(&host, &addr).into_string());
+            // Pre-fill the claim input + trigger the live-check if the
+            // user landed here via `?prefill=<name>` (e.g. from a
+            // tenant subdomain's "claim on-chain" CTA).
+            if let Some(prefill) = read_query_param("prefill") {
+                let cleaned = tenant::sanitize(&prefill);
+                if !cleaned.is_empty() {
+                    if let Some(input) = dom::input_by_id("apex-input") {
+                        input.set_value(&cleaned);
+                        // Dispatch an input event so the existing
+                        // delegated listener kicks off the live check.
+                        if let Ok(event) = web_sys::Event::new("input") {
+                            let _ = input.dispatch_event(&event);
+                        }
+                        let _ = input.focus();
+                    }
+                }
+            }
         }
         Err(err) => {
             web_sys::console::error_1(&JsValue::from_str(&format!("wallet: {err}")));
@@ -267,6 +360,55 @@ pub(crate) async fn paint_apex(host: tenant::Host) {
             );
         }
     }
+}
+
+/// Paint the minimal signer chrome once the wallet has loaded.
+pub(crate) async fn paint_signer() {
+    let Ok(doc) = dom::document() else { return };
+    let Some(root) = doc.get_element_by_id("root") else { return };
+    match wallet_store::load_or_create().await {
+        Ok(wallet) => {
+            let addr = wallet.address_hex();
+            APP.with(|cell| cell.borrow_mut().wallet = Some(wallet));
+            root.set_inner_html(&templates::signer_chrome(&addr).into_string());
+        }
+        Err(err) => {
+            web_sys::console::error_1(&JsValue::from_str(&format!("signer wallet: {err}")));
+            root.set_inner_html(
+                "<main style=\"padding:48px;text-align:center;color:#ff8b8b;font:14px ui-monospace,Menlo,Consolas,monospace\">signer wallet failed — see console</main>",
+            );
+        }
+    }
+}
+
+/// Read a `?key=value` query parameter from the current URL, naive
+/// implementation that avoids pulling a URL crate. Returns `None` if
+/// the param is missing or empty.
+fn read_query_param(key: &str) -> Option<String> {
+    let window = dom::window().ok()?;
+    let search = window.location().search().ok()?;
+    let stripped = search.trim_start_matches('?');
+    for pair in stripped.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            if k == key && !v.is_empty() {
+                return Some(decode_uri_component(v));
+            }
+        }
+    }
+    None
+}
+
+fn decode_uri_component(s: &str) -> String {
+    js_sys::decode_uri_component(s)
+        .map(|js| js.as_string().unwrap_or_else(|| s.to_string()))
+        .unwrap_or_else(|_| s.to_string())
+}
+
+/// `true` iff `?signer=1` is in the URL.
+fn has_signer_hint() -> bool {
+    let Ok(window) = dom::window() else { return false };
+    let Ok(search) = window.location().search() else { return false };
+    search.contains("signer=1")
 }
 
 /// `true` iff `?claim=1` (or `?claim=anything`) is in the URL.

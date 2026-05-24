@@ -40,6 +40,48 @@ pub(crate) enum Status {
     Taken { agent_id: u64 },
 }
 
+/// `eth_call ownerOfName(name)` and return the address as a
+/// `0x`-prefixed lowercase hex string. `None` if the name has no
+/// on-chain owner (returns the zero address).
+pub(crate) async fn owner_of_name(name: &str) -> Result<Option<String>, String> {
+    if REGISTRY_ADDRESS == zero_address() {
+        return Ok(None);
+    }
+    let calldata = encode_owner_of_name(name);
+    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    // Address is the last 20 bytes of a 32-byte uint256 return.
+    let trimmed = result_hex.trim().trim_start_matches("0x");
+    if trimmed.len() < 64 {
+        return Err(format!("ownerOfName: short response {trimmed}"));
+    }
+    let addr_hex = &trimmed[trimmed.len() - 40..];
+    if addr_hex.chars().all(|c| c == '0') {
+        return Ok(None);
+    }
+    Ok(Some(format!("0x{}", addr_hex.to_lowercase())))
+}
+
+fn encode_owner_of_name(name: &str) -> String {
+    let sel = selector("ownerOfName(string)");
+    let bytes = name.as_bytes();
+    let len = bytes.len();
+    let padded_len = ((len + 31) / 32) * 32;
+
+    let mut buf = Vec::with_capacity(4 + 32 + 32 + padded_len);
+    buf.extend_from_slice(&sel);
+    buf.extend_from_slice(&u256_be(0x20));
+    buf.extend_from_slice(&u256_be(len as u128));
+    buf.extend_from_slice(bytes);
+    buf.resize(4 + 32 + 32 + padded_len, 0);
+
+    let mut out = String::with_capacity(2 + buf.len() * 2);
+    out.push_str("0x");
+    for b in &buf {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
 /// `eth_call idOfName(name)` and classify the result. Single round trip.
 pub(crate) async fn check_name(name: &str) -> Result<Status, String> {
     if REGISTRY_ADDRESS == zero_address() {

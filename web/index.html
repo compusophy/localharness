@@ -62,6 +62,43 @@
     .tenant-tag.tenant-apex   { color: var(--muted); border-color: var(--border); }
     .tenant-tag.tenant-other  { color: var(--muted); border-color: var(--border); }
 
+    .verify-pill.verify-pending      { color: var(--muted);  border-color: var(--border); }
+    .verify-pill.verify-ok           { color: var(--accent); border-color: var(--accent); }
+    .verify-pill.verify-visitor      { color: #6aa7ff; border-color: #6aa7ff; }
+    .verify-pill.verify-unregistered { color: var(--muted);  border-color: var(--border); }
+    .verify-pill.verify-failed       { color: var(--error);  border-color: var(--error); }
+
+    .claim-cards {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin: 24px 0;
+    }
+    @media (max-width: 720px) { .claim-cards { grid-template-columns: 1fr; } }
+    .claim-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 16px;
+    }
+    .claim-card.claim-primary { border-color: var(--accent); }
+    .claim-card h3 {
+      font-size: 14px; font-weight: 600; margin: 0 0 8px;
+      color: var(--fg);
+    }
+    .claim-card.claim-primary h3 { color: var(--accent); }
+    .claim-card p { margin: 0 0 12px; }
+    .button-link {
+      display: inline-block;
+      background: var(--accent);
+      color: #0b0d12;
+      text-decoration: none;
+      padding: 10px 16px;
+      border-radius: 6px;
+      font-weight: 600;
+    }
+    .button-link:hover { opacity: 0.9; }
+
     h1 a { color: inherit; text-decoration: none; }
     h1 a:hover { color: var(--accent); }
 

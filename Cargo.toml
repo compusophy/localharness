@@ -148,9 +148,11 @@ web-sys = { version = "0.3", features = [
     "MouseEvent",
     "KeyboardEvent",
     "InputEvent",
+    "MessageEvent",
     "History",
     "Location",
     "Storage",
+    "HtmlIFrameElement",
     "console",
 ] }
 

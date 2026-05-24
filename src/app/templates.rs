@@ -11,6 +11,7 @@ use crate::filesystem::{DirEntry, EntryKind};
 use crate::types::{ToolCall, ToolResult};
 
 use super::tenant::Host;
+use super::VerifyState;
 
 /// Render assistant markdown to HTML and wrap as `Markup` so callers
 /// can swap it straight into the DOM. pulldown-cmark sanitises by
@@ -27,8 +28,9 @@ pub(crate) fn rendered_markdown(raw: &str) -> Markup {
     html! { (PreEscaped(out)) }
 }
 
-/// Header bar (h1 + version tag + tenant tag). Used by every chrome
-/// variant so the brand + home link are consistent.
+/// Header bar (h1 + version tag + tenant tag + verification pill).
+/// Used by every chrome variant so the brand + home link + verify
+/// status are consistent.
 fn site_header(host: &Host) -> Markup {
     let (tenant_class, tenant_label) = match host {
         Host::Tenant(name) => ("tenant", format!("tenant · {name}")),
@@ -43,8 +45,56 @@ fn site_header(host: &Host) -> Markup {
             span.tag { "web demo · 0.8.0" }
             span class={ "tag tenant-tag tenant-" (tenant_class) }
                 title=(host.label()) { (tenant_label) }
+            // Verify pill — present only on tenant subdomains.
+            @if matches!(host, Host::Tenant(_)) {
+                (verify_pill(&VerifyState::Pending))
+            }
         }
     }
+}
+
+/// The verification status pill that lives in the header on tenant
+/// subdomains. Reflects the current `VerifyState`; mounted with
+/// `#verify-pill` so background verification can swap it in place.
+pub(crate) fn verify_pill(state: &VerifyState) -> Markup {
+    let (class, label, title) = match state {
+        VerifyState::Pending => (
+            "tag verify-pill verify-pending",
+            "verifying…".to_string(),
+            "checking ownership against the on-chain registry".to_string(),
+        ),
+        VerifyState::Verified { address } => (
+            "tag verify-pill verify-ok",
+            "✓ owner".to_string(),
+            format!("signature recovered {address} — matches on-chain owner"),
+        ),
+        VerifyState::Visitor { owner_address } => (
+            "tag verify-pill verify-visitor",
+            format!("visitor · owner {}", short_addr(owner_address)),
+            format!("the on-chain owner of this name is {owner_address}"),
+        ),
+        VerifyState::Unregistered => (
+            "tag verify-pill verify-unregistered",
+            "not on-chain".to_string(),
+            "this name isn't in the registry — local-only".to_string(),
+        ),
+        VerifyState::Failed { reason } => (
+            "tag verify-pill verify-failed",
+            "verify failed".to_string(),
+            format!("verification didn't complete: {reason}"),
+        ),
+    };
+    html! {
+        span #verify-pill class=(class) title=(title) { (label) }
+    }
+}
+
+fn short_addr(addr: &str) -> String {
+    let stripped = addr.trim_start_matches("0x");
+    if stripped.len() < 8 {
+        return addr.to_string();
+    }
+    format!("0x{}…{}", &stripped[..4], &stripped[stripped.len() - 4..])
 }
 
 /// The full app chrome (key + prompt + transcript + OPFS panel). Used
@@ -334,10 +384,42 @@ pub(crate) fn seed_phrase(words: &str) -> Markup {
     }
 }
 
+/// Minimal chrome for `?signer=1` — when apex is iframed from a
+/// subdomain for owner verification. Shows just enough so the
+/// developer console isn't a blank page, but nothing functional.
+pub(crate) fn signer_chrome(address_hex: &str) -> Markup {
+    html! {
+        main.apex-main {
+            div.col-chat {
+                section.apex-hero {
+                    h2.apex-headline { "localharness signer" }
+                    p.apex-sub {
+                        "this tab is acting as a signing service for an embedded "
+                        "subdomain. it will sign authentication challenges from "
+                        "any *.localharness.xyz origin using the master wallet:"
+                    }
+                    div.wallet-address-row {
+                        span.wallet-label { "address" }
+                        code .wallet-address { (address_hex) }
+                    }
+                    p.apex-fine {
+                        "if you opened this manually rather than via an iframe, "
+                        a href="https://localharness.xyz/" { "go home" }
+                        "."
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Tenant subdomain that no one on this device has claimed yet —
-/// "unclaimed mode". Show a "claim this name" CTA + an "I already
-/// own it elsewhere" import affordance (paste your owner UUID).
+/// "unclaimed mode". M8 update: the recommended path is now a
+/// cross-device-portable on-chain claim via apex; the original local
+/// UUID flow stays as a "just save it on this device" fallback so
+/// existing users aren't broken.
 pub(crate) fn unclaimed(host: &Host, name: &str) -> Markup {
+    let apex_claim_url = format!("https://localharness.xyz/?prefill={name}");
     html! {
         main.apex-main {
             div.col-chat {
@@ -347,23 +429,42 @@ pub(crate) fn unclaimed(host: &Host, name: &str) -> Markup {
                     h2.apex-headline { "this name is open: " (name) }
                     p.apex-sub {
                         "no one on this device has claimed " strong { (name) ".localharness.xyz" }
-                        " yet. claim it to start using it as your space — your conversations and "
-                        "files will live in this subdomain's private OPFS storage."
+                        " yet. you can claim it on-chain (cross-device, owned by your master "
+                        "wallet) or just locally on this device."
                     }
 
-                    form.apex-form data-action="claim-here" {
-                        button type="submit" { "claim " (name) " →" }
-                        div #claim-msg .apex-msg {}
+                    div.claim-cards {
+                        section.claim-card.claim-primary {
+                            h3 { "claim on-chain" }
+                            p.apex-fine {
+                                "recommended. mints an agentId in the registry contract on Tempo "
+                                "testnet, tied to your master wallet. any device with your seed "
+                                "phrase can access this space. takes ~5 seconds."
+                            }
+                            a.button-link href=(apex_claim_url) { "go to apex →" }
+                        }
+                        section.claim-card.claim-secondary {
+                            h3 { "save locally only" }
+                            p.apex-fine {
+                                "writes a random UUID to this device's OPFS. fast, no blockchain. "
+                                "but: only this device can access it; lose this browser profile, "
+                                "lose the name."
+                            }
+                            form.apex-form data-action="claim-here" {
+                                button type="submit" { "claim " (name) " locally" }
+                                div #claim-msg .apex-msg {}
+                            }
+                        }
                     }
 
                     details.apex-details {
-                        summary { "already own this name on another device?" }
+                        summary { "already own this name on another device (UUID-style)?" }
                         div.apex-import {
                             p.apex-fine {
-                                "if you claimed " (name) " elsewhere, paste the owner UUID from "
-                                "that device's OPFS panel (file " code { ".lh_owner" } "). "
-                                "this puts a copy of the marker on this device too. "
-                                "(cross-device claim sync lands in M7.)"
+                                "if you claimed " (name) " on another device before on-chain "
+                                "registration landed, paste the owner UUID from that device's "
+                                "OPFS panel (file " code { ".lh_owner" } "). new claims should "
+                                "go through the on-chain flow above instead."
                             }
                             div.apex-input-row {
                                 input #import-uuid
