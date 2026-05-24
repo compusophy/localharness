@@ -17,11 +17,10 @@ use sha3::{Digest, Keccak256};
 /// Tempo Moderato testnet RPC. Per the tempo-x402 reference.
 pub(crate) const RPC_URL: &str = "https://rpc.moderato.tempo.xyz";
 
-/// Where `LocalharnessRegistry` lives on-chain. Replace this constant
-/// with the deployed address after running `contracts/script/Deploy.s.sol`,
-/// then rebuild the wasm bundle. Until then the registry checks
-/// return `Status::Unknown` and the UI shows "(registry pending deploy)".
-pub(crate) const REGISTRY_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
+/// `LocalharnessRegistry` on Tempo Moderato testnet (chain id 42431).
+/// Deployed 2026-05-23 from `contracts/script/Deploy.s.sol`. Update
+/// by re-deploying + bumping this constant + rebuilding the bundle.
+pub(crate) const REGISTRY_ADDRESS: &str = "0x42c8D4EaF99bA80F6B6FCA8E163E077D9FC2F9db";
 
 /// What we can learn about a name without touching the wallet.
 #[derive(Debug, Clone, PartialEq, Eq)]
