@@ -17,35 +17,29 @@ import {LibRegistryStorage} from "../libraries/LibRegistryStorage.sol";
 ///         collision.
 contract LocalharnessRegistryFacet {
     event Registered(uint256 indexed agentId, address indexed owner, string name);
-    event Transferred(uint256 indexed agentId, address indexed from, address indexed to);
     event MetadataSet(uint256 indexed agentId, bytes32 indexed key, bytes value);
+    // ERC-721 Transfer event — emitted on register (mint, from = 0) and
+    // on the proper ERC-721 transferFrom (lives in ERC721Facet).
+    event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
 
     // --- public mutators -------------------------------------------------
 
-    /// Register `name` to `msg.sender`. Reverts if the name is taken
-    /// or if the sender already owns a name (loosen via M9 if needed).
+    /// Register `name` to `msg.sender`. Mints an ERC-721 token whose
+    /// tokenId == agentId. One name -> one tokenId; an address can hold
+    /// many tokens (multi-agent ownership is the intended path for
+    /// wallets-per-agent via ERC-6551).
     function register(string calldata name) external returns (uint256 agentId) {
         LibRegistryStorage.Storage storage s = LibRegistryStorage.load();
         require(s.idOfName[name] == 0, "name taken");
-        require(s.idOf[msg.sender] == 0, "sender already owns one");
         require(_isValidName(name), "invalid name");
         agentId = s.nextId++;
         s.ownerOfId[agentId] = msg.sender;
         s.idOfName[name] = agentId;
         s.nameOfId[agentId] = name;
-        s.idOf[msg.sender] = agentId;
+        s.idOf[msg.sender] = agentId; // "most recent" for back-compat reads
+        s.balanceOf[msg.sender] += 1;
         emit Registered(agentId, msg.sender, name);
-    }
-
-    function transfer(uint256 agentId, address to) external {
-        LibRegistryStorage.Storage storage s = LibRegistryStorage.load();
-        require(s.ownerOfId[agentId] == msg.sender, "not owner");
-        require(to != address(0), "burn via release");
-        require(s.idOf[to] == 0, "recipient already owns one");
-        delete s.idOf[msg.sender];
-        s.ownerOfId[agentId] = to;
-        s.idOf[to] = agentId;
-        emit Transferred(agentId, msg.sender, to);
+        emit Transfer(address(0), msg.sender, agentId);
     }
 
     function setMetadata(uint256 agentId, bytes32 key, bytes calldata value) external {

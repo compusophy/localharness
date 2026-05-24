@@ -104,17 +104,18 @@ contract DeployDiamond is Script {
     }
 
     function _registrySelectors() internal pure returns (bytes4[] memory s) {
-        s = new bytes4[](11);
-        s[0]  = LocalharnessRegistryFacet.register.selector;
-        s[1]  = LocalharnessRegistryFacet.transfer.selector;
-        s[2]  = LocalharnessRegistryFacet.setMetadata.selector;
-        s[3]  = LocalharnessRegistryFacet.isTaken.selector;
-        s[4]  = LocalharnessRegistryFacet.ownerOfName.selector;
-        s[5]  = LocalharnessRegistryFacet.ownerOfId.selector;
-        s[6]  = LocalharnessRegistryFacet.idOfName.selector;
-        s[7]  = LocalharnessRegistryFacet.nameOfId.selector;
-        s[8]  = LocalharnessRegistryFacet.idOf.selector;
-        s[9]  = LocalharnessRegistryFacet.nextId.selector;
-        s[10] = LocalharnessRegistryFacet.metadata.selector;
+        // `transfer(uint256,address)` was dropped — ERC-721
+        // transferFrom is the canonical path now (lives in ERC721Facet).
+        s = new bytes4[](10);
+        s[0] = LocalharnessRegistryFacet.register.selector;
+        s[1] = LocalharnessRegistryFacet.setMetadata.selector;
+        s[2] = LocalharnessRegistryFacet.isTaken.selector;
+        s[3] = LocalharnessRegistryFacet.ownerOfName.selector;
+        s[4] = LocalharnessRegistryFacet.ownerOfId.selector;
+        s[5] = LocalharnessRegistryFacet.idOfName.selector;
+        s[6] = LocalharnessRegistryFacet.nameOfId.selector;
+        s[7] = LocalharnessRegistryFacet.idOf.selector;
+        s[8] = LocalharnessRegistryFacet.nextId.selector;
+        s[9] = LocalharnessRegistryFacet.metadata.selector;
     }
 }

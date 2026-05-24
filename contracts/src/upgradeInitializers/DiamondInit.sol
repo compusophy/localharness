@@ -25,4 +25,15 @@ contract DiamondInit {
             rs.nextId = 1;
         }
     }
+
+    /// One-shot init for the ERC-721 facet upgrade. Registers the
+    /// ERC-721 + ERC-721 Metadata interface IDs so `supportsInterface`
+    /// reports true. Safe to re-run (sets idempotent flags).
+    function initErc721() external {
+        LibDiamond.DiamondStorage storage ds = LibDiamond.diamondStorage();
+        // ERC-721
+        ds.supportedInterfaces[0x80ac58cd] = true;
+        // ERC-721 Metadata
+        ds.supportedInterfaces[0x5b5e139f] = true;
+    }
 }
