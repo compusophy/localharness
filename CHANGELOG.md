@@ -5,6 +5,43 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.7] - 2026-05-24
+
+Chrome alignment + a real fix for the verify timeout that 0.10.6
+only mitigated. Both surfaced from live testing.
+
+### Fixed
+
+- **Verify timeout** — the apex signer iframe's wasm bundle takes
+  longer to compile + install its postMessage listener than the
+  previous fixed 500ms sleep allowed for, so the subdomain's
+  challenge was posted into a void and timed out. The cold-load
+  case hit this consistently. Real fix: `paint_signer` now sends a
+  `lh-signer-ready` postMessage to its parent once the listener is
+  installed and the wallet is loaded-or-known-absent;
+  `signer_iframe_request` gates challenge posting on receiving
+  that ping (with a 15s ceiling falling back to post-anyway).
+  Eliminates the race entirely instead of guessing at sleep
+  durations.
+
+### Changed (browser app)
+
+- **Header + footer content aligns with body content.** Both wrap
+  in `.header-inner` / `.footer-inner` boxes with the same
+  `max-width: 1180px; padding: 0 24px` as `main`, so the columns
+  line up at the same edges. Before, the header's outer padding
+  was *additive* and content extended 48px past where body content
+  starts.
+- **Footer feedback button centered** instead of right-aligned.
+  Same height as the header admin button (`padding: 4px 14px`,
+  same font-size). Header and footer are now the same physical
+  height.
+- **Mobile-friendly chrome.** `.header-inner` / `.footer-inner`
+  get `flex-wrap: wrap`; the admin button uses `margin-left: auto`
+  so it stays right-aligned regardless of how many pills landed
+  on the left side, and wraps gracefully when they don't fit on
+  one line.
+
 ## [0.10.6] - 2026-05-24
 
 UX cleanup pass driven by real-use feedback. SSOT sticky chrome
