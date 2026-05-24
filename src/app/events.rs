@@ -43,6 +43,9 @@ enum Action {
     ImportSeed,
     CreateIdentity,
     ShowImport,
+    AdminToggle,
+    AdminClose,
+    AdminReset,
 }
 
 impl Action {
@@ -66,6 +69,9 @@ impl Action {
             "import-seed" => Action::ImportSeed,
             "create-identity" => Action::CreateIdentity,
             "show-import" => Action::ShowImport,
+            "admin-toggle" => Action::AdminToggle,
+            "admin-close" => Action::AdminClose,
+            "admin-reset" => Action::AdminReset,
             _ => return None,
         })
     }
@@ -567,7 +573,91 @@ fn dispatch(action: Action) {
                 });
             }
         }
+        Action::AdminToggle => admin_toggle(),
+        Action::AdminClose => admin_close(),
+        Action::AdminReset => admin_reset(),
     }
+}
+
+/// Reveal the admin panel below the footer admin link. Body text is
+/// origin-aware so the user sees exactly what's about to be wiped
+/// before they click reset.
+fn admin_toggle() {
+    let blurb = match super::tenant::current() {
+        super::tenant::Host::Apex => {
+            "this wipes your master wallet from this origin's OPFS. \
+             back up your 12-word seed first if you want to recover \
+             this identity — anyone with the seed controls every \
+             subdomain you've claimed. subdomain OPFS at \
+             *.localharness.xyz is in separate origins and stays \
+             untouched."
+        }
+        super::tenant::Host::Tenant(_) => {
+            "this wipes the owner marker, conversation history, API \
+             key, and any files in this subdomain's OPFS. your master \
+             wallet at the apex origin is untouched."
+        }
+        super::tenant::Host::Other(_) => {
+            "this wipes every file in this origin's OPFS sandbox \
+             (host page is a localhost / preview deployment)."
+        }
+    };
+    dom::swap_outer(
+        "admin-panel",
+        &templates::admin_panel_open(blurb).into_string(),
+    );
+}
+
+/// Collapse the admin panel back to the hidden placeholder so the
+/// "admin" link can re-open it on the next click.
+fn admin_close() {
+    dom::swap_outer(
+        "admin-panel",
+        r#"<div id="admin-panel" hidden></div>"#,
+    );
+}
+
+/// Confirm + wipe every entry at the OPFS root for this origin, then
+/// reload the page so the next paint starts from the first-visit
+/// state. Reload happens unconditionally on confirm so the new state
+/// is what the user actually sees (no stale `App` cache holding the
+/// previous wallet etc.).
+fn admin_reset() {
+    let prompt = match super::tenant::current() {
+        super::tenant::Host::Apex => {
+            "Reset apex local state? This deletes your master wallet \
+             (and every other file at this origin's OPFS). You won't be \
+             able to recover the wallet without the 12-word seed. \
+             Continue?"
+        }
+        super::tenant::Host::Tenant(_) => {
+            "Reset this subdomain's local state? This deletes the owner \
+             marker, conversation history, API key, and every file in \
+             this subdomain's OPFS. Continue?"
+        }
+        super::tenant::Host::Other(_) => {
+            "Reset this origin's local state? This deletes every file \
+             in this origin's OPFS sandbox. Continue?"
+        }
+    };
+    let proceed = dom::window()
+        .ok()
+        .and_then(|w| w.confirm_with_message(prompt).ok())
+        .unwrap_or(false);
+    if !proceed {
+        return;
+    }
+    wasm_bindgen_futures::spawn_local(async move {
+        let fs = super::shared_opfs();
+        if let Ok(entries) = fs.read_dir("").await {
+            for entry in entries {
+                let _ = fs.delete(&entry.name).await;
+            }
+        }
+        if let Ok(window) = dom::window() {
+            let _ = window.location().reload();
+        }
+    });
 }
 
 // --- Action handlers ---------------------------------------------------

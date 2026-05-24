@@ -362,6 +362,40 @@
     footer a { color: var(--accent); text-decoration: none; }
     footer a:hover { text-decoration: underline; }
 
+    /* Tucked-away admin affordance — small, muted, off the visual path
+       but discoverable for a tester who wants to nuke local state. */
+    .admin-corner {
+      margin-top: 16px;
+      padding-top: 12px;
+      border-top: 1px dashed var(--border);
+      text-align: right;
+    }
+    .admin-link {
+      color: var(--muted);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      text-decoration: none;
+      opacity: 0.5;
+    }
+    .admin-link:hover { color: var(--error); opacity: 1; text-decoration: none; }
+    .admin-panel {
+      margin-top: 12px;
+      padding: 12px 14px;
+      background: var(--panel);
+      border: 1px solid var(--error);
+      border-radius: 6px;
+      text-align: left;
+    }
+    .admin-panel p { margin: 0 0 10px; color: var(--fg); font-size: 12px; }
+    .admin-actions { display: flex; gap: 8px; }
+    .admin-actions button[data-action="admin-reset"] {
+      border-color: var(--error); color: var(--error);
+    }
+    .admin-actions button[data-action="admin-reset"]:hover {
+      background: var(--error); color: var(--bg);
+    }
+
     /* OPFS panel */
     .fs-panel {
       background: var(--panel);

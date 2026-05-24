@@ -42,7 +42,7 @@ fn site_header(host: &Host) -> Markup {
             h1 {
                 a href="https://localharness.xyz/" title="go home" { "localharness" }
             }
-            span.tag { "web demo · 0.10.1" }
+            span.tag { "web demo · 0.10.2" }
             span class={ "tag tenant-tag tenant-" (tenant_class) }
                 title=(host.label()) { (tenant_label) }
             // Verify pill — present only on tenant subdomains.
@@ -188,6 +188,7 @@ pub(crate) fn chrome(host: &Host) -> Markup {
                         strong { "wipe" }
                         " in the OPFS panel to clear files."
                     }
+                    (admin_corner())
                 }
             }
 
@@ -368,7 +369,36 @@ pub(crate) fn apex(host: &Host, wallet_address_hex: Option<&str>) -> Markup {
                         a href="https://github.com/compusophy/localharness" { "github.com/compusophy/localharness" }
                         " · Rust → wasm32 · no analytics, no telemetry, no backend."
                     }
+                    (admin_corner())
                 }
+            }
+        }
+    }
+}
+
+/// Footer-corner admin affordance — a small muted link that toggles
+/// an inline panel containing the "Reset local state" button.
+/// Embedded in both apex and tenant chrome footers so a tester can
+/// nuke this origin's OPFS without opening an incognito tab.
+pub(crate) fn admin_corner() -> Markup {
+    html! {
+        div #admin-corner .admin-corner {
+            a href="#" data-action="admin-toggle" .admin-link { "admin" }
+            div #admin-panel hidden {}
+        }
+    }
+}
+
+/// Expanded admin panel — swapped into `#admin-panel` when the user
+/// clicks the admin link. `body` is origin-specific warning text the
+/// dispatcher composed from `tenant::current()`.
+pub(crate) fn admin_panel_open(body: &str) -> Markup {
+    html! {
+        div #admin-panel .admin-panel {
+            p.apex-fine { (body) }
+            div.admin-actions {
+                button type="button" data-action="admin-reset" .ghost { "reset local state" }
+                button type="button" data-action="admin-close" .ghost { "cancel" }
             }
         }
     }
