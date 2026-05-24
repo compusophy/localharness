@@ -5,6 +5,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.2] - 2026-05-24
+
+### Added (browser app)
+
+- **Admin reset affordance** in the footer of apex and tenant
+  chrome. Click the small "admin" link (intentionally muted +
+  dashed-border-separated from the main footer) to reveal a panel
+  with a `Reset local state` button. Confirm dialog is
+  origin-aware:
+  - **Apex:** "Reset apex local state? This deletes your master
+    wallet…" — back up the seed first or lose the identity.
+  - **Tenant subdomain:** "Reset this subdomain's local state?
+    This deletes the owner marker, conversation history, API
+    key, and every file in this subdomain's OPFS. Your master
+    wallet at the apex origin is untouched."
+  - **Other** (localhost / Vercel preview): wipes every file in
+    this origin's OPFS sandbox.
+
+  The wipe walks `read_dir("")` and deletes every top-level
+  entry — including dotfiles like `.lh_wallet` / `.lh_owner` /
+  `.lh_chat_history` / `gemini_api_key` — then reloads the page
+  so the next paint is the first-visit state. Lets a developer
+  see the new-visitor UX without opening an incognito tab.
+
 ## [0.10.1] - 2026-05-24
 
 UX polish on the apex onboarding flow plus a repo cleanup pass.
