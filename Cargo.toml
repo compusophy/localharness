@@ -158,15 +158,6 @@ web-sys = { version = "0.3", features = [
 
 [dev-dependencies]
 tokio = { version = "1.42", features = ["macros", "rt-multi-thread", "test-util"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-[[example]]
-name = "smoke"
-path = "examples/test_agent.rs"
-
-[[example]]
-name = "text_chat"
-path = "examples/text_chat.rs"
 
 [profile.release]
 opt-level = 3

@@ -1,16 +1,18 @@
-# `localharness` — M5+ design doc (multi-tenant, self-sovereign)
+# `localharness` — platform-layer design (subdomains, wallets, registry)
 
-> This is a planning doc, not a spec — written 2026-05-23 after the
-> 0.7.x line landed. The 0.7.x plan (Phases 1–10) lives in `DESIGN.md`;
-> this doc picks up where that one stops. **Nothing here is shipped.**
-> The plan exists so we can debate the shape before writing code.
+> Written 2026-05-23 as a planning doc; the layers it sketched
+> shipped in 0.8.0 → 0.10.0. Now serves as the architecture
+> reference for the platform stack on top of the SDK (0.2.x–0.6.x
+> plan lives in `DESIGN.md`). The phase table at the bottom marks
+> what's done; the "What's actually next" section after it covers
+> the frontier.
 
 ## Goal in one sentence
 
-Turn `localharness` from a single-tenant browser demo into a
-multi-tenant, self-sovereign agent platform where each user owns their
-own subdomain, their own data, and their own keys — with the operator
-(you) running zero per-user infrastructure beyond a thin name registry.
+`localharness` is a self-sovereign agent platform: each user owns
+their own subdomain, their own data, and their own keys — with the
+operator running zero per-user infrastructure beyond a thin name
+registry contract deployed once.
 
 ## Constraints we keep
 
@@ -346,131 +348,119 @@ Don't pretend to solve sync until users actually feel the lack.
 
 ---
 
-## Phase plan
+## What shipped
 
-Revised after grounding L4 in ERC-8004/8122/6551 and confirming the
-no-email constraint.
+Through 0.10.0 — released 2026-05-23, live at
+[`localharness.xyz`](https://localharness.xyz/). Diamond proxy
+address (immutable for the project's lifetime):
+`0xed7a2d170ab2d41721c9bd7368adbff6df0c656d`.
 
-| M | Surface | Effort | Blocker | Notes |
-|---|---------|--------|---------|-------|
-| ~~**M5**~~ | ~~DNS + subdomain self-awareness in the app~~ | done | — | Shipped 2026-05-23. `tenant.rs` + apex chrome + per-device claim. |
-| ~~**M5.1**~~ | ~~Apex→subdomain query-param hand-off so claim is one click~~ | done | — | Shipped 2026-05-23 — `?claim=1`. |
-| ~~**M6 spike**~~ | ~~Compile `alloy` to wasm32~~ | done | — | Pivoted to `k256 + sha3` because alloy-consensus 1.0.22 trips on `serde::__private`. Same primitives under the hood, smaller dep tree. |
-| ~~**M6**~~ | ~~Master wallet at apex, BIP-39 seed export~~ | done | — | Shipped 2026-05-23 in 0.8.0. `src/app/wallet_store.rs`. |
-| ~~**M7 contract**~~ | ~~`LocalharnessRegistry.sol`~~ | done | — | Deployed 2026-05-23 at `0x42c8D4EaF99bA80F6B6FCA8E163E077D9FC2F9db` on Tempo Moderato. |
-| ~~**M7 read-side**~~ | ~~Bundle reads registry via JSON-RPC~~ | done | — | `registry::check_name` + `registry::owner_of_name`. Hand-rolled ABI encoding + JSON-RPC over reqwest. |
-| ~~**M7 write-side**~~ | ~~Bundle writes claim tx, signed by master wallet~~ | done | — | `registry::claim_name` with hand-rolled RLP + EIP-155 legacy tx envelope. Faucet bootstrap via `tempo_fundAddress` before first claim. |
-| ~~**M8 iframe-signer**~~ | ~~`?signer=1` at apex hosting the wallet~~ | done | — | Shipped 2026-05-23 post-0.8.0 (Vercel only, no crates.io bump). `src/app/signer.rs`. Trusted-origin check `*.localharness.xyz` + `localhost`. Domain-separated digest `localharness-auth-v0:` + nonce. |
-| ~~**M8 verify**~~ | ~~Subdomains verify via iframe~~ | done | — | `src/app/verify.rs` creates hidden iframe, postMessage sign-challenge with 5s timeout. `kick_verification` runs after `paint_tenant` and updates the chrome's verify pill. |
-| ~~**M8 visitor lockdown**~~ | ~~Hide write affordances for non-owners~~ | done | — | `templates::visitor_banner` swapped into `#input-region` when verify resolves to Visitor. |
-| **M9** | ERC-6551 token-bound account exposed on every registered name → that's the agent's wallet | **needs ERC-721 upgrade** | M7 (deployed) | Current registry is **not** ERC-721 — 6551 expects ERC-721 NFTs. Either (a) upgrade the registry to ERC-721 + redeploy + migrate, or (b) deploy a custom token-bound-account derivation. (a) is more standards-aligned. Either way it invalidates the names currently registered against the existing contract. |
-| **M10** | x402 or MPP payment hooks: pre-tool-call gate that requires payment | large | M9 + real demand | Whatever the user-tier story turns out to be. |
-| **M11** | ERC-8004 expansion: reputation + validation registries on top of M7's identity registry | large | M9 + multi-party usage | When agents start consuming each other's services. |
-| **M12** | At-rest encryption (wallet-derived sym key over OPFS contents) | medium | M8 + real threat | Don't ship until OPFS visibility matters. |
+| Layer | Where it lives | Notes |
+|-------|----------------|-------|
+| Wildcard subdomains | `src/app/tenant.rs` + Vercel DNS | `Apex` / `Tenant(name)` / `Other(raw)` classification on mount. Per-origin OPFS = per-subdomain sandbox, free. |
+| Apex `?claim=1` hop | `src/app/events.rs::run_apex_claim` | One-click apex→subdomain. |
+| Master wallet | `src/app/wallet_store.rs` + `src/wallet.rs` | k256 + sha3 + BIP-39. Persisted to apex OPFS at `.lh_wallet` as the 12-word phrase. Show/hide + import flow on apex. |
+| Diamond proxy | `contracts/src/Diamond.sol` + facets | EIP-2535. Cut/Loupe/Ownership/Registry/ERC721/TBA facets. New facets add without churning the address constant. |
+| Registry contract | `contracts/src/facets/LocalharnessRegistryFacet.sol` | `register / ownerOfName / setMetadata / …` + on-chain name validation. Mints emit ERC-721 Transfer events. |
+| Read-side RPC client | `src/registry.rs` (public, `feature = "wallet"`) | Hand-rolled JSON-RPC + ABI encoding. `check_name`, `owner_of_name`, `tba_of_name`, `list_owned_tokens`. |
+| Write-side (claim) | `src/registry.rs::claim_name` | RLP + EIP-155 legacy tx. Faucet bootstrap via `tempo_fundAddress` before first claim. |
+| Iframe signer | `src/app/signer.rs` (apex `?signer=1`) | postMessage signing service. Domain-separated `keccak256("localharness-auth-v0:" || nonce)`. Trusted origins: `*.localharness.xyz` + `localhost`. |
+| Subdomain verify | `src/app/verify.rs` (`kick_verification`) | Hidden iframe → sign-challenge → recover address → compare to `ownerOfName`. 5s timeout. Pill in header reflects state. |
+| Visitor lockdown | `src/app/templates.rs::visitor_banner` | `#input-region` swap when verify resolves to Visitor. Read-only browsing. |
+| ERC-721 facet | `contracts/src/facets/ERC721Facet.sol` | Every name is an NFT. Standard surface + Metadata extension. `tokenURI` → `https://<name>.localharness.xyz/`. |
+| ERC-6551 stack | `contracts/src/erc6551/` + `contracts/src/facets/TbaFacet.sol` | Vendored reference registry + CALL-only account impl. `tokenBoundAccount(id)` + `tokenBoundAccountByName(name)` on the diamond. Every name's wallet is counterfactual + deterministic. |
+| "Your agents" panel | `src/app/templates.rs::agents_list` | Iterates `1..nextId`, filters by `ownerOf`, surfaces name + tokenId + TBA. |
+| TBA pill in tenant chrome | `src/app/templates.rs::tba_pill` | 💰 link to the agent's wallet on the block explorer. |
+| Public SDK surface | `pub mod wallet` + `pub mod registry` (0.10.0) | Off-bundle consumers can query/claim from native too. |
 
-**No L7 "cross-device sync server" entry anymore** — the wallet IS
-the sync. Export seed phrase from device A, import on device B.
-Registry state is on-chain and globally readable. Per-subdomain OPFS
-contents (chat history, files) are the only thing that stays local;
-those we treat as per-device working state, not authoritative.
+**No L7 "cross-device sync server."** The wallet IS the sync.
+Export seed phrase from device A, import on device B. Registry
+state is on-chain and globally readable. Per-subdomain OPFS contents
+(chat history, files) are per-device working state, not authoritative.
+
+## What's actually next
+
+In rough order of leverage:
+
+1. **MPP / x402 payment hooks.** Pre-tool-call gate that requires a
+   payment to the agent's TBA before the LLM call runs, or an
+   agent-pays-agent flow over Stripe's MPP (preferred) or Coinbase's
+   x402. Either fits behind the existing `Hook` trait. The on-chain
+   plumbing exists; this is wiring + UX. Open question: where do
+   funds come from on first-call (faucet, master wallet sweep, both)?
+2. **TBA-driven actions in the bundle.** UI for "let your agent
+   send this transaction from its TBA." Master wallet signs a
+   TBA.execute payload via the existing iframe signer; bundle wires
+   the RPC. Contract surface is done.
+3. **ERC-8004 reputation + validation facets.** Two more facets cut
+   into the diamond — `ReputationFacet` (signed feedback storage)
+   and `ValidationFacet` (validator stake escrow + re-execution
+   requests). The standard's mostly-finalised; vendoring the
+   reference impl into `contracts/src/erc8004/` is the path.
+4. **Second backend** (Anthropic, OpenAI, local). The
+   `Connection` / `ConnectionStrategy` abstractions have been
+   waiting for a non-Gemini implementation to validate them. Should
+   be straightforward (the abstraction is exactly the right shape).
+5. **Tool-call activity in restored transcripts.** `TranscriptEntry`
+   drops FunctionCall / FunctionResponse on replay — the agent's
+   context is correct but the user can't see prior tool use.
+   Either project tool turns into the transcript or surface them
+   as collapsed "(N tool calls)" stubs.
+6. **At-rest encryption.** Wallet-derived sym key over OPFS contents
+   so an XSS-equivalent attack on an origin can't trivially
+   exfiltrate. Adds UX friction; don't ship until the threat is real.
 
 ---
 
 ## Apex marketing site
 
-`localharness.xyz` (the apex, no subdomain) needs a separate page
-than `*.localharness.xyz`. Probably:
+Shipped differently than originally sketched. There's only one
+`web/index.html` — the same bootstrap shell loads on both apex and
+every subdomain. The wasm bundle classifies the hostname on mount
+(`src/app/tenant.rs`) and renders one of three chrome variants
+from the same `src/app/templates.rs`:
 
-```
-web/
-├── index.html         currently the IDE
-├── apex.html          NEW: marketing / signup
-└── pkg/               wasm (unchanged)
-```
+- `Host::Apex` → `templates::apex(host, wallet_addr)` — wallet
+  panel, claim form with live availability check, "your agents"
+  list, footer.
+- `Host::Tenant(name)` → `templates::chrome(host)` if the local
+  owner marker exists; `templates::unclaimed(host, name)` otherwise.
+- `Host::Other(_)` → `templates::chrome(host)` (Vercel previews,
+  localhost — full app, no verification).
 
-Vercel routing — either two separate projects, or one project with
-host-based rewrites in `vercel.json`:
-
-```json
-{
-  "rewrites": [
-    { "source": "/", "has": [{ "type": "host", "value": "localharness.xyz" }], "destination": "/apex.html" }
-  ]
-}
-```
-
-Content of apex: explain what this is, "claim your name" form (calls
-the registry contract), link to source on GitHub. Static, no wasm
-needed (or maybe a tiny wasm bundle for the registry call only).
+No Vercel host-based rewrite needed; same `index.html` for everything.
 
 ---
 
-## Open questions
+## Open questions (still open)
 
-1. **Which crate stack on wasm32.** `tempo-x402` workspace is mostly
-   server-side (actix, tokio, wasmtime); `tempo-x402-identity` likely
-   needs porting. `alloy` with `signer-local` is the canonical
-   browser-friendly path and is what M6 spike should try first. If
-   that fails, `k256` + hand-rolled signing is the fallback (smaller,
-   less ergonomic).
-2. **Wallet UX for non-crypto users.** "Generate wallet" → "back up
-   your phrase" → "actually let me skip" → user loses access on next
-   device. Need a forcing function or a clear "you're on your own"
-   warning. The Phantom model is the right inspiration.
-3. **Bootstrap gas.** First-time user has zero TMP. Options:
-   - Operator-funded faucet endpoint we hit on first claim (centralised,
-     rate-limit-spammable)
-   - Public Tempo faucet — instructions, paste the address yourself
-   - Sponsored / meta-transactions where someone else pays gas (EIP-2771).
-3. **Squatting.** ERC-8004/8122 don't prevent it. Options: one-per-key
-   limit (naive but ships), reserved-names allowlist for early users,
-   pay-per-name in mainnet phase. Defer the policy decision.
-4. **Apex login.** Today the wallet would live in apex's OPFS. If a
-   visitor lands on `john.localharness.xyz` with no apex history,
-   they need to bounce through apex to authenticate. iframe-signer
-   pattern resolves this without requiring full redirects.
-5. **What if Tempo RPC is down on mount?** App should degrade
-   gracefully — show "registry unreachable; using cached state" and
-   still let the user use the local OPFS data. Optimistic local
-   reads with eventual on-chain reconciliation.
-6. **Discovery.** How does anyone find John's agent if they don't
-   know the subdomain? Eventually: a directory page on the apex,
-   reading registry events. Defer.
-7. **ERC-8004 vs 8122 final pick.** Ship M7 with 8122 surface; reach
-   for 8004 (ERC-721 identity, reputation, validation) when
-   agent-to-agent commerce starts mattering. The two are migrate-able
-   because metadata fields are extensible.
-8. **MPP vs x402.** User stated preference for MPP (Stripe / Tempo
-   ecosystem) over x402 (Coinbase / Base). The tempo-x402 workspace
-   is named after x402 but built on Tempo; whether the actual MPP
-   wire protocol has its own Rust crate is unverified. Resolve when
-   M10 starts.
-
----
-
-## What I'd build next, in order
-
-Assuming you green-light each:
-
-1. **DNS sanity check** — once propagation completes, hit
-   `https://test.localharness.xyz/` and confirm the bundle loads.
-   (No code change needed — Vercel wildcards just work.)
-2. **Surface the subdomain in the app's chrome.** Tiny change to
-   `templates::chrome()` — read `hostname` via web-sys and show it.
-   "you are on john.localharness.xyz · per-origin OPFS active".
-3. **Apex page.** Static HTML at `web/apex.html`, Vercel routing tweak.
-   Just text + a link to "go to your subdomain" (no form yet).
-4. **Wallet module.** `src/app/wallet.rs` — gen, store in OPFS, expose
-   getter. No UI yet beyond a "your pubkey: 0xABC" line.
-5. **Registry contract + Foundry project.** `contracts/` directory,
-   forge.toml, the contract above, a deploy script. You run
-   `forge create` once; I tell you what to paste where.
-6. **Registry read in the app.** On mount, fetch
-   `ownerOf[hostname.split('.')[0]]`. Show "owner: 0x..." in chrome.
-7. **Claim flow.** "claim this name" button if unowned and wallet
-   exists → builds & sends tx → waits for confirmation → reloads.
-8. **Owner-gated UX.** Hide send/save actions if wallet doesn't match
-   registered owner. Add a "this is read-only" banner.
+1. **Bootstrap gas at scale.** Today the apex form auto-faucets the
+   master wallet via `tempo_fundAddress` before the first claim. Fine
+   for testnet (which the operator runs the faucet for); on mainnet
+   somebody has to pay. Options when that day comes:
+   - Operator-funded faucet endpoint (centralised, rate-limit-spammable)
+   - Public faucet with instructions
+   - Sponsored / meta-transactions via EIP-2771
+2. **Wallet UX for non-crypto users.** Today the seed-phrase reveal
+   is collapsed behind a confirm — easy to skip, and skipping costs
+   you everything on the next device. Need a forcing function or a
+   sharper warning before the first claim succeeds.
+3. **Squatting.** No anti-squatting mechanism today (was just
+   one-per-address until ERC-721 dropped that constraint). Options:
+   reserved-names allowlist for early users, pay-per-name on mainnet,
+   reputation-weighted reclaim periods. Policy decision, not a code
+   one.
+4. **Tempo RPC outage.** Bundle errors out today if the RPC is down.
+   Should degrade gracefully — show "registry unreachable, using
+   cached state" and trust the legacy local-OPFS marker as fallback.
+5. **Discovery.** No directory page yet — you have to know a
+   subdomain to visit it. A future apex page could read registry
+   events (`Registered` topic) and render a public agent listing.
+6. **MPP vs x402.** User-stated preference: MPP (Stripe ecosystem)
+   over x402 (Coinbase). The `tempo-x402` workspace mostly hosts
+   server-side Rust; whether MPP has its own Rust crate worth
+   reusing is unverified. Resolve when the payment-hook design
+   starts.
 
 Each step ships on its own. M5 = steps 1–3. M6 = step 4. M7 = steps
 5–6. M8 = steps 7–8.
@@ -479,14 +469,16 @@ Each step ships on its own. M5 = steps 1–3. M6 = step 4. M7 = steps
 
 ## What I will NOT do without explicit go-ahead
 
-- Deploy any smart contract anywhere (you control the keys).
+- Deploy a NEW smart contract to mainnet — testnet deploys via the
+  scratch deployer wallet are fine and have shipped already.
 - Buy / register / DNS-modify any domain (you control localharness.xyz).
-- Add a "premium" tier that uses an operator-funded API key.
+- Add a "premium" tier that uses an operator-funded LLM API key.
 - Pull in a heavy framework (Leptos, Yew) for the wallet UI — same
   rule as the rest of the app, maud + HTMX swaps.
 - Persist anything beyond the user's own OPFS without their consent.
 - Run any background process or scheduled job.
 
-Once a step is greenlit I run it autonomously per
-[[feedback-execution-autonomy]] — but the steps above need individual
-approval because each one is a meaningful architectural commitment.
+Once a direction is greenlit I run it autonomously per
+[[feedback-execution-autonomy]] — but the items above need individual
+approval because each one is a meaningful architectural or
+operational commitment.

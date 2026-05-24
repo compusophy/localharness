@@ -4,16 +4,22 @@ Project context for Claude Code sessions. Read this first.
 
 ## What this is
 
-`localharness` is a Rust-native agent SDK for Google's Gemini API.
-Single crate, zero external binaries — `cargo add` and you have an
-agent loop with streaming text, tool calling, hooks, policies,
-triggers, MCP integration, and context compaction.
+`localharness` is a Rust-native agent SDK for Google's Gemini API
+**and** a self-sovereign browser-resident agent platform built on top
+of it. One crate; `cargo add` and you have an agent loop with streaming
+text, tool calling, hooks, policies, triggers, MCP integration, and
+context compaction. Build with the `browser-app` feature on wasm32 and
+you also get the live IDE at `<name>.localharness.xyz`.
 
 - Published on [crates.io/crates/localharness](https://crates.io/crates/localharness)
+  (current: **0.10.x**)
 - Repo at [github.com/compusophy/localharness](https://github.com/compusophy/localharness)
 - Native target: stable Rust 1.85+, tokio-driven
-- wasm32 target: same crate compiles to the browser; live demo at
-  [antig-compusophys-projects.vercel.app](https://antig-compusophys-projects.vercel.app/)
+- wasm32 target: same crate compiles to the browser
+- Live demo: [`localharness.xyz`](https://localharness.xyz/) —
+  marketing apex + wildcard `*.localharness.xyz` for per-user agents
+- On-chain registry: EIP-2535 Diamond on Tempo Moderato testnet at
+  [`0xed7a2d…c656d`](https://moderato.tempo.xyz/address/0xed7a2d170ab2d41721c9bd7368adbff6df0c656d)
 
 ## Repo layout
 
@@ -29,16 +35,27 @@ src/                       library crate
 ├── policy.rs              Predicate / Policy / Decision + workspace_only
 ├── triggers.rs            Trigger trait + TriggerRunner + every()
 ├── runtime.rs             cfg-gated spawn helper + MaybeSendSync marker
-├── filesystem/            Filesystem trait + Native + OPFS impls (M3)
+├── filesystem/            Filesystem trait + Native + OPFS impls
 ├── types.rs               wire-adjacent enums (BuiltinTool, Step, etc.)
 ├── error.rs               Error + Result
-├── app/                   browser-resident IDE (M4) — gated on the
-│   ├── mod.rs             `browser-app` feature + wasm32 target. See
-│   ├── templates.rs       below for module-by-module notes.
-│   ├── dom.rs
-│   ├── events.rs
-│   ├── chat.rs
-│   └── opfs.rs
+├── wallet.rs              secp256k1 keypair + BIP-39 + RLP encoding
+│                          (feature = "wallet"; works on every target)
+├── registry.rs            JSON-RPC client for the on-chain Diamond
+│                          (feature = "wallet"; works on every target)
+├── app/                   browser-resident IDE — gated on
+│   ├── mod.rs             `browser-app` feature + wasm32 target
+│   ├── templates.rs       all maud HTML
+│   ├── dom.rs             web-sys helpers (swap_inner, …)
+│   ├── events.rs          delegated click/keydown/submit/input dispatch
+│   ├── chat.rs            chat-turn streaming
+│   ├── history.rs         OPFS-persisted conversation
+│   ├── opfs.rs            file browser + inline editor
+│   ├── key_store.rs       Gemini API key in OPFS
+│   ├── owner.rs           legacy local-UUID owner marker
+│   ├── tenant.rs          hostname classifier (apex / tenant / other)
+│   ├── wallet_store.rs    master wallet persisted to apex OPFS
+│   ├── signer.rs          postMessage signer service at apex/?signer=1
+│   └── verify.rs          subdomain-side iframe owner verification
 └── backends/
     ├── gemini/
     │   ├── api.rs         GeminiClient + SSE decoder (CRLF + LF tolerant)
@@ -48,6 +65,36 @@ src/                       library crate
     │   ├── tools/         11 built-in tools
     │   └── mod.rs         GeminiConnectionStrategy + GeminiConnection
     └── mcp/               stdio MCP client (native-only)
+
+contracts/                 Foundry project for the on-chain registry
+├── src/
+│   ├── Diamond.sol                       EIP-2535 proxy
+│   ├── interfaces/                       IDiamond, IDiamondCut,
+│   │                                     IDiamondLoupe, IERC165, IERC173
+│   ├── libraries/
+│   │   ├── LibDiamond.sol                proxy storage + cut impl
+│   │   ├── LibRegistryStorage.sol        registry state (slot v1)
+│   │   └── LibTbaConfigStorage.sol       TBA config (slot v1)
+│   ├── facets/
+│   │   ├── DiamondCutFacet.sol           owner-only upgrade
+│   │   ├── DiamondLoupeFacet.sol         introspection + supportsInterface
+│   │   ├── OwnershipFacet.sol            EIP-173 owner()/transfer
+│   │   ├── LocalharnessRegistryFacet.sol register / ownerOfName / ...
+│   │   ├── ERC721Facet.sol               ERC-721 + Metadata surface
+│   │   └── TbaFacet.sol                  ERC-6551 token-bound accounts
+│   ├── erc6551/                          vendored EIP-6551 reference
+│   │   ├── IERC6551Registry.sol
+│   │   ├── ERC6551Registry.sol
+│   │   └── ERC6551Account.sol
+│   ├── upgradeInitializers/
+│   │   └── DiamondInit.sol               one-shot init for ERC-165 flags
+│   └── LocalharnessRegistry.sol          legacy flat contract (archived)
+├── script/
+│   ├── DeployDiamond.s.sol               from-scratch diamond deploy
+│   ├── AddErc721Facet.s.sol              cut ERC-721 surface
+│   ├── AddTbaFacet.s.sol                 cut 6551 + helper
+│   └── Deploy.s.sol                      legacy flat deploy (archived)
+└── README.md                             architecture write-up
 
 web/                       static site for Vercel
 ├── index.html             bootstrap shell (CSS + #root + init())
@@ -60,12 +107,14 @@ scripts/
 ├── build-web.{ps1,sh}     wasm-pack build → web/pkg/
 └── probe-gemini.ps1       isolate request-shape vs. response-parse bugs
 
-DESIGN.md                  phase plan + per-module spec
+DESIGN.md                  0.2.x phase plan (historical; SDK runtime)
+DESIGN_M5_PLUS.md          platform layer plan (subdomains / wallet /
+                           registry / iframe-signer / ERC-6551 / what's next)
 RELEASING.md               step-by-step + recovery table
 CHANGELOG.md               per-version changes (Keep-a-Changelog)
 UPSTREAM.md                history with the Python repo
 vercel.json                static-deploy config (no build step)
-.vercelignore              keep target/ out of the upload (28k+ files)
+.vercelignore              keep target/ + Cargo.* out of the upload
 ```
 
 ## Build / test / run
@@ -84,16 +133,24 @@ vercel deploy --prod --yes                                    # deploy web/
   io-util, plus the `walkdir` and `tempfile` deps. Required for
   `run_command` and the MCP stdio bridge, and is what lets the 6 fs
   builtins register a `NativeFilesystem` by default.
+- `wallet` (off by default): exposes `pub mod wallet` (secp256k1 +
+  BIP-39 + RLP) and `pub mod registry` (JSON-RPC client for the
+  Diamond). Pulls in `k256 + sha3 + rand_core + bip39`. Works on
+  every target — `sleep_ms` is cfg-gated to `tokio::time::sleep` on
+  native, `setTimeout` on wasm.
 - `browser-app` (off by default): compiles the `src/app/` module into
   the crate as a wasm cdylib — the browser IDE. Pulls in `maud` for
-  HTML templating and `console_error_panic_hook`. Has no effect on a
-  native build. Built by `scripts/build-web.{sh,ps1}` via
-  `wasm-pack build --no-default-features --features browser-app`.
+  HTML templating, `pulldown-cmark` for markdown, plus the `wallet`
+  feature transitively. Has no effect on a native build. Built by
+  `scripts/build-web.{sh,ps1}` via `wasm-pack build
+  --no-default-features --features browser-app`.
 - (wasm targets) automatically drop `walkdir`/`tempfile` and add
   `wasm-bindgen-futures`, `uuid/js`, `getrandom/js` via target-cfg.
 
 Library callers on wasm32 who only want the SDK (not the browser app)
 depend with `default-features = false` and skip `browser-app`.
+Off-bundle consumers (CLI indexers, back-ends) that want to query the
+on-chain registry pick `default-features = false, features = ["wallet"]`.
 
 ## The wasm story (M2.5)
 
@@ -158,95 +215,131 @@ commit → tag → push → cargo publish → GH release in one shot. If it
 fails mid-way, consult the recovery table in `RELEASING.md`; don't
 hand-fix.
 
-## The browser app (M4)
+## The browser app
 
 Compiled into the crate as `src/app/`, gated on `feature = "browser-app"`
-plus `target_arch = "wasm32"`. The previous `localharness-web` JS-binding
-crate and the ~700 lines of inline JS in `web/index.html` are gone; the
-browser UI is now pure Rust.
+plus `target_arch = "wasm32"`. Module list in the repo-layout block
+above; the per-module summaries below cover the load-bearing pieces.
 
-Design rule: **no imperative DOM manipulation**. All HTML comes from
+**Design rule: no imperative DOM manipulation.** All HTML comes from
 `maud` templates; the only DOM operations are `set_inner_html` /
 `set_outer_html` / `insert_adjacent_html` targeted at fixed element
-ids (HTMX-style fragment swaps). One delegated `click` listener and one
-`keydown` listener at the document level handle every interaction by
-reading `data-action` and `data-arg` attributes off the event target's
-ancestor chain. There are zero `Closure::wrap` calls outside of those
-two listeners.
+ids (HTMX-style fragment swaps). One delegated `click` listener, one
+`keydown`, one `submit`, one `input` listener at the document level
+handle every interaction by reading `data-action` and `data-arg`
+attributes off the event target's ancestor chain. There are zero
+`Closure::wrap` calls outside of those four listeners.
 
-Layout inside `src/app/`:
+Mount-time routing in `mod.rs::mount`:
 
-- `mod.rs` — `#[wasm_bindgen(start)]` entry, `App` state in a
-  `thread_local<RefCell<App>>`, `shared_opfs()` for the one-per-tab
-  `OpfsFilesystem`.
-- `templates.rs` — all maud functions. Chrome, turn, text segment,
-  tool-call block + result, OPFS breadcrumb/list/viewer.
-- `dom.rs` — `swap_inner`, `swap_outer`, `append_html`, `by_id`,
-  `set_status`. Pure web-sys, no node construction.
-- `events.rs` — `Action` enum + parser + `install_delegated_listeners`.
-- `chat.rs` — `run_send()`: lazy session start, then stream `StreamChunk`s
-  into the assistant turn via fixed ids. Tool calls render with a
-  monotonic `seg_id` and a `VecDeque` correlates `ToolResult`s back to
-  their `ToolCall` block.
-- `opfs.rs` — file browser: read_dir, file preview, inline edit
-  (textarea + save via `Filesystem::write_atomic`), recursive wipe.
-- `history.rs` — conversation persistence. Reads `.lh_history.json`
-  from OPFS on mount, paints the prior turns into `#transcript` via
-  `decode_transcript_bytes` (free function — no live agent needed),
-  saves after every successful turn, deleted on "new conversation".
+1. If `?signer=1` → render minimal signer chrome, install
+   postMessage listener (`signer::install_signer_listener`), return.
+   The tab is now a cross-origin signing service.
+2. Else, classify hostname via `tenant::current()`:
+   - `Host::Apex` (`localharness.xyz`) → marketing chrome with
+     wallet panel + "claim a subdomain" form + "your agents" list.
+   - `Host::Tenant(name)` → check `.lh_owner` marker:
+     - Missing + `?claim=1` → auto-claim, paint full app.
+     - Missing + no hint → paint "claim this name" prompt.
+     - Present → paint full chat app.
+     Then `kick_verification` runs in the background: queries
+     on-chain owner via `registry::owner_of_name`, runs
+     `verify::verify_owner` (iframe sign challenge), updates the
+     `#verify-pill` and (if visitor) swaps `#input-region` for a
+     read-only banner. Also fetches `tba_of_name` for the 💰 pill.
+   - `Host::Other` (Vercel preview, localhost) → paint full chat
+     app, no verification.
 
 Build: `wasm-pack build . --target web --out-dir web/pkg --release
 --no-default-features --features browser-app`. wasm-opt is disabled in
 `[package.metadata.wasm-pack.profile.release]` because the wasm-pack-
 bundled wasm-opt rejects post-MVP features that modern rustc emits.
 
+## The on-chain stack
+
+The registry lives at one address forever — the diamond proxy at
+`0xed7a2d170ab2d41721c9bd7368adbff6df0c656d` on Tempo Moderato
+testnet (chain id 42431, RPC `https://rpc.moderato.tempo.xyz`).
+Facets are added/removed via `diamondCut`; the wasm bundle's
+`registry::REGISTRY_ADDRESS` constant doesn't change.
+
+Currently cut in:
+
+- **DiamondCutFacet** — owner-only `diamondCut(...)` (upgrades).
+- **DiamondLoupeFacet** — introspection + `supportsInterface`.
+- **OwnershipFacet** — EIP-173 `owner()` + `transferOwnership`.
+- **LocalharnessRegistryFacet** — `register / ownerOfName /
+  ownerOfId / idOfName / nameOfId / idOf / setMetadata / nextId /
+  metadata / isTaken`. Mints emit `Transfer(0, owner, tokenId)` so
+  the ERC-721 facet stays consistent.
+- **ERC721Facet** — full ERC-721 + Metadata. Every name is an NFT.
+  `tokenURI(id)` → `https://<name>.localharness.xyz/`.
+- **TbaFacet** — wraps EIP-6551. `tokenBoundAccount(id)` and
+  `tokenBoundAccountByName(name)` return the deterministic
+  counterfactual account address. `createTokenBoundAccount(id)`
+  actually deploys it (anyone can call, idempotent).
+
+ERC-6551 reference contracts (separate addresses, configured via
+`TbaFacet::setTbaConfig`):
+- Registry: `0xc7cadc487eeb06fe8807104443b2f76b45c041d6`
+- Account impl: `0x8ad49e86b2da342a20c49538ef727eeab304d7f4`
+  (CALL-only — DELEGATECALL is explicitly disabled to avoid the
+  self-destruct footgun).
+
+Adding a new facet: write `LibXyzStorage` at a fresh
+`keccak256("localharness.xyz.storage.v1")` slot, write the facet,
+forge build, write a one-off cut script following `AddTbaFacet.s.sol`
+as a template, deploy. See `contracts/README.md` for the full
+walkthrough.
+
 ## What's planned
 
-- **Browser smoke test of the live 0.7.0 demo.** The 0.7.0 release
-  shipped fully but the live demo's end-to-end path was never driven
-  by a human or a headless harness — compile + deploy + serve all
-  worked. Before adding more, walk: paste key → "create notes.md" →
-  panel shows file → "show me notes.md" → refresh → transcript
-  replays → conversation continues. Fix anything that breaks.
-- **Provider-agnostic Filesystem usage.** The `Filesystem` trait sits
-  below `Connection` so any future backend (OpenAI, Anthropic, local
-  model) can reuse `OpfsFilesystem` + `NativeFilesystem`. Today only
-  `GeminiBackendConfig::with_filesystem` exists; the seam is ready
-  when a second backend lands.
-- **Second backend.** Anthropic or OpenAI `ConnectionStrategy` to
-  validate the cross-provider claim. The trait abstractions are in
-  place — this is the test of whether they hold up.
-- **Backend selector in the app.** A `data-action="set-backend"`
-  control once a second `ConnectionStrategy` exists.
-- **Tool-call activity in restored transcripts.** Today
-  `TranscriptEntry` drops FunctionCall / FunctionResponse parts on
-  replay — the agent's context is correct but the user can't see
-  prior tool activity. Either project tool turns into the transcript
-  too, or surface them as collapsed "(N tool calls)" stubs.
-- **Wildcard-subdomain subagents.** Per the north-star vision —
-  each subagent gets its own browser-origin sandbox (separate OPFS,
-  sessionStorage, cookies). Needs DNS + Vercel domain configuration
-  + per-subdomain agent spawn flow. Large; sketch in DESIGN.md first.
+The SDK runtime (0.2.x–0.6.x) and the in-tree browser IDE (0.7.x)
+shipped. The platform layer (subdomains + master wallet + on-chain
+registry + ERC-721 NFTs + ERC-6551 token-bound wallets + iframe
+signer + visitor lockdown) shipped through 0.10.0. What's next:
 
-## Filesystem trait (M3)
+- **MPP / x402 payment hooks.** A pre-tool-call hook that requires
+  a payment to the agent's TBA before the LLM call executes, or an
+  agent-pays-agent flow over Stripe's MPP (preferred per user) or
+  Coinbase's x402. Either fits behind the existing `Hook` trait;
+  the on-chain plumbing exists already.
+- **ERC-8004 reputation + validation facets.** Cut into the diamond
+  alongside the existing registry facets. Lets agents accrue
+  reputation that other agents can read; validators stake to
+  re-execute claims.
+- **TBA-driven actions in the bundle.** UX for "let your agent send
+  this transaction from its TBA" — the master wallet signs a
+  TBA.execute payload, the bundle wires the RPC. Mostly a UI piece;
+  the contract surface is ready.
+- **Second backend** (Anthropic, OpenAI, or local). The
+  `Connection` / `ConnectionStrategy` abstractions are in place;
+  validating them with a non-Gemini implementation is overdue.
+- **Tool-call activity in restored transcripts.** `TranscriptEntry`
+  drops FunctionCall / FunctionResponse on replay today — the
+  agent's context is correct but the user can't see prior tool use.
+- **At-rest encryption.** Wallet-derived sym key over OPFS contents
+  so XSS-equivalent attacks on origins can't trivially exfiltrate.
+
+## Filesystem trait
 
 The 6 fs-shaped builtins (`list_directory`, `view_file`, `find_file`,
 `search_directory`, `create_file`, `edit_file`) call into
 `crate::filesystem::Filesystem` instead of `tokio::fs` directly. The
-trait surface is small:
+trait surface:
 
-- `read`, `write_atomic`, `metadata`, `read_dir`, `walk`
+- `read`, `write_atomic`, `metadata`, `read_dir`, `walk`, `delete`
 
 Two implementations ship:
 
-- **`NativeFilesystem`** (gated on `feature = "native"`): `tokio::fs` +
-  `walkdir` + `tempfile`; atomicity via tempfile + rename.
+- **`NativeFilesystem`** (gated on `feature = "native"`): `tokio::fs`
+  + `walkdir` + `tempfile`; atomicity via tempfile + rename.
 - **`OpfsFilesystem`** (wasm32 only): Origin Private File System via
   `web-sys`; atomicity via `FileSystemWritableFileStream.close()` swap.
 
 `GeminiConnectionStrategy::connect` honors a caller-supplied
 `Filesystem` via `with_filesystem`, otherwise auto-installs
 `NativeFilesystem` on native (or `None` on wasm, where the caller is
-expected to supply OPFS — `localharness-web` does so). Plug-in impls
+expected to supply OPFS — the browser app does so). Plug-in impls
 (mocks for tests, custom backends) implement the trait and hand a
 `SharedFilesystem = Arc<dyn Filesystem>` via the builder.

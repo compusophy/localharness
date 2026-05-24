@@ -31,9 +31,17 @@ async fn main() -> localharness::Result<()> {
 }
 ```
 
-> **Status:** 0.5.x · stable Rust-native runtime · 11/11 built-in tools · MCP bridge · context-window compaction · **wasm32 target + browser demo**.
+> **Status:** 0.10.x · stable Rust-native runtime · 11/11 built-in
+> tools · MCP bridge · context-window compaction · **wasm32 + browser
+> IDE** · **on-chain identity** (EIP-2535 Diamond registry on Tempo
+> Moderato; every claimed name is an ERC-721 NFT with an ERC-6551
+> token-bound wallet).
 
-**Try it in your browser:** [`antig-compusophys-projects.vercel.app`](https://antig-compusophys-projects.vercel.app/) — the same `Agent` loop, compiled to wasm and driven from a single `index.html`.
+**Try it in your browser:** [`localharness.xyz`](https://localharness.xyz/)
+— pick a name, claim a subdomain. The same `Agent` loop you'd embed
+in a CLI host runs in a browser tab at `<name>.localharness.xyz`,
+backed by a wallet you control and an on-chain registry that proves
+it's yours across devices.
 
 ---
 
@@ -55,9 +63,19 @@ async fn main() -> localharness::Result<()> {
 
 ```toml
 [dependencies]
-localharness = "0.5"
+localharness = "0.10"
 tokio        = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
+
+Cargo features (off by default):
+
+- `wallet` — `localharness::{wallet, registry}` modules: secp256k1
+  keypair + BIP-39 mnemonic + RLP encoding + a JSON-RPC client for
+  the on-chain `LocalharnessRegistry` Diamond. Useful for CLI tools
+  and back-end indexers that want to query the registry without
+  spinning up the browser app.
+- `browser-app` — the in-tab HTMX-style IDE (cdylib for wasm-pack).
+  Transitively enables `wallet`.
 
 ```sh
 export GEMINI_API_KEY="your_api_key_here"
@@ -391,16 +409,15 @@ round-trip through a sidecar process.
 ## Run in the browser
 
 `localharness` compiles to `wasm32-unknown-unknown`. The same `Agent`
-loop that drives a CLI runs inside a browser tab — no server,
-no backend, key stays in the page.
+loop that drives a CLI runs inside a browser tab — no server, no
+backend, key stays in the page.
 
-**Live demo:** [`antig-compusophys-projects.vercel.app`](https://antig-compusophys-projects.vercel.app/)
-
-Drop the default `native` feature when targeting wasm:
+**Live demo:** [`localharness.xyz`](https://localharness.xyz/) — pick
+a name, claim a subdomain, chat with the agent in `<name>.localharness.xyz`.
 
 ```toml
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-localharness = { version = "0.5", default-features = false }
+localharness = { version = "0.10", default-features = false }
 ```
 
 Run the demo locally:
@@ -412,21 +429,14 @@ cd localharness
 python -m http.server 8765 -d web
 ```
 
-**What works on wasm:** the full `Agent` → `Conversation` →
-`Connection` → `ToolRunner` chain, plus the 4 portable built-in tools
-(`ask_question`, `finish`, `generate_image`, `start_subagent`). The
-Gemini SSE stream parses the same way; everything streams through the
-same code path the native CLI uses.
+**What works on wasm:** the full `Agent → Conversation → Connection
+→ ToolRunner` chain, plus 10 of 11 built-in tools — the 4 portable
+ones (`ask_question`, `finish`, `generate_image`, `start_subagent`)
+and the 6 filesystem ones backed by OPFS (Origin Private File System;
+per-origin sandbox, atomic writes).
 
-**What doesn't (yet):** `run_command` and the MCP stdio bridge stay
-native-only — the browser sandbox has no subprocess primitives.
-
-**What does now:** the 6 filesystem builtins (`list_directory`,
-`view_file`, `find_file`, `search_directory`, `create_file`,
-`edit_file`) run in the browser via OPFS (the Origin Private File
-System). Each tab gets its own private root directory; writes are
-atomic; the model can list, read, create, search, and edit files
-exactly as it does on the CLI.
+**What doesn't:** `run_command` and the MCP stdio bridge stay
+native-only — the browser has no subprocess primitives.
 
 ```rust
 use std::sync::Arc;
@@ -444,10 +454,36 @@ in-memory store), implement [`Filesystem`] and pass it to
 
 [`Filesystem`]: https://docs.rs/localharness/latest/localharness/filesystem/trait.Filesystem.html
 
-The `localharness-web/` cdylib crate in this repo is the reference
-wasm-bindgen wrapper; it stores one `Agent` per tab in a
-`thread_local` and exposes `start_session`, `chat`, and
-`reset_session` to JavaScript.
+### Platform: subdomains, wallets, registry
+
+The reference browser app at `localharness.xyz` extends the SDK with
+a self-sovereign identity layer:
+
+- **Wildcard subdomain per user** (`<name>.localharness.xyz`). Each
+  one is a separate origin → separate OPFS → separate working state,
+  for free.
+- **Master wallet** auto-generated in the apex's OPFS on first visit
+  (secp256k1 + BIP-39, via the new `wallet` feature). Importable on
+  any device via the 12-word seed phrase.
+- **On-chain registry** — `LocalharnessRegistry` as an EIP-2535
+  Diamond on Tempo Moderato testnet
+  ([`0xed7a2d…c656d`](https://moderato.tempo.xyz/address/0xed7a2d170ab2d41721c9bd7368adbff6df0c656d)).
+  Names are claimed by signing a registration transaction with the
+  master wallet. Every name is an ERC-721 NFT; every NFT has an
+  ERC-6551 token-bound account (the agent's wallet).
+- **Cross-origin owner verification.** Tenant subdomains embed
+  `apex/?signer=1` in a hidden iframe, send a postMessage sign
+  challenge, recover the address from the signature, compare it to
+  the on-chain owner. Visitors who don't hold the NFT see read-only
+  mode automatically.
+
+The on-chain stack lives behind the `wallet` feature and is exposed
+via `pub mod registry` for off-bundle consumers (CLI tools, indexers,
+back-ends). Contract source + Foundry deploy scripts live in
+[`contracts/`](contracts/); architecture write-up in
+[`contracts/README.md`](contracts/README.md). Roadmap for the next
+layers (MPP/x402 payments, ERC-8004 reputation) is in
+[`DESIGN_M5_PLUS.md`](DESIGN_M5_PLUS.md).
 
 ---
 
