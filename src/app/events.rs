@@ -38,6 +38,9 @@ enum Action {
     ApexClaim,
     ClaimHere,
     ImportOwner,
+    RevealSeed,
+    HideSeed,
+    ImportSeed,
 }
 
 impl Action {
@@ -56,6 +59,9 @@ impl Action {
             "apex-claim" => Action::ApexClaim,
             "claim-here" => Action::ClaimHere,
             "import-owner" => Action::ImportOwner,
+            "reveal-seed" => Action::RevealSeed,
+            "hide-seed" => Action::HideSeed,
+            "import-seed" => Action::ImportSeed,
             _ => return None,
         })
     }
@@ -264,6 +270,61 @@ fn dispatch(action: Action) {
                 }
                 if let super::tenant::Host::Tenant(name) = super::tenant::current() {
                     super::paint_tenant(super::tenant::Host::Tenant(name.clone()), name).await;
+                }
+            });
+        }
+        Action::RevealSeed => {
+            // Read the mnemonic out of the cached wallet (loaded in
+            // paint_apex) and swap it into the reveal slot. No async
+            // I/O needed — the wallet is in App state.
+            let phrase = super::APP.with(|cell| {
+                cell.borrow()
+                    .wallet
+                    .as_ref()
+                    .map(|w| w.mnemonic.to_string())
+            });
+            if let Some(p) = phrase {
+                dom::swap_inner(
+                    "seed-reveal",
+                    &super::templates::seed_phrase(&p).into_string(),
+                );
+            }
+        }
+        Action::HideSeed => {
+            dom::swap_inner(
+                "seed-reveal",
+                r#"<button type="button" data-action="reveal-seed">I have a pen and paper — reveal</button>"#,
+            );
+        }
+        Action::ImportSeed => {
+            let phrase = dom::textarea_by_id("import-seed")
+                .map(|t| t.value())
+                .unwrap_or_default();
+            if phrase.trim().split_whitespace().count() != 12 {
+                dom::swap_inner(
+                    "seed-msg",
+                    "<span style=\"color:var(--error)\">expected exactly 12 words</span>",
+                );
+                return;
+            }
+            wasm_bindgen_futures::spawn_local(async move {
+                match super::wallet_store::import(&phrase).await {
+                    Ok(_) => {
+                        // Refresh the apex chrome — wallet field will
+                        // show the imported address.
+                        let host = super::tenant::current();
+                        if matches!(host, super::tenant::Host::Apex) {
+                            super::paint_apex(host).await;
+                        }
+                    }
+                    Err(err) => {
+                        dom::swap_inner(
+                            "seed-msg",
+                            &format!(
+                                "<span style=\"color:var(--error)\">import failed: {err}</span>"
+                            ),
+                        );
+                    }
                 }
             });
         }

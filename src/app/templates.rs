@@ -223,8 +223,10 @@ pub(crate) fn tool_call_result(result: &ToolResult) -> Markup {
 
 /// Apex page — `localharness.xyz/`. Single-CTA marketing surface,
 /// mirrors `self.tools/` in spirit: input + go button → redirect to
-/// the named subdomain.
-pub(crate) fn apex(host: &Host) -> Markup {
+/// the named subdomain. Also surfaces the master wallet — generated
+/// on first visit, persisted in this origin's OPFS — with affordances
+/// to back up or import a seed phrase.
+pub(crate) fn apex(host: &Host, wallet_address_hex: &str) -> Markup {
     html! {
         main.apex-main {
             div.col-chat {
@@ -263,6 +265,50 @@ pub(crate) fn apex(host: &Host) -> Markup {
                     }
                 }
 
+                section.apex-wallet {
+                    h3.apex-sub-headline { "your master identity" }
+                    p.apex-sub {
+                        "a secp256k1 keypair generated on this device. "
+                        "every subdomain you claim will be tied to this address "
+                        "(once the on-chain registry lands in M7). "
+                        "the only thing you need to back up to keep your account."
+                    }
+                    div.wallet-address-row {
+                        span.wallet-label { "address" }
+                        code #wallet-address .wallet-address { (wallet_address_hex) }
+                    }
+
+                    details.apex-details {
+                        summary { "show seed phrase (12 words)" }
+                        div.apex-import {
+                            p.apex-fine {
+                                "write these 12 words down somewhere safe. "
+                                "anyone with this phrase controls your identity and every subdomain you own. "
+                                "click the button below to reveal."
+                            }
+                            div #seed-reveal .seed-reveal {
+                                button type="button" data-action="reveal-seed" { "I have a pen and paper — reveal" }
+                            }
+                        }
+                    }
+
+                    details.apex-details {
+                        summary { "import a seed phrase from another device" }
+                        div.apex-import {
+                            p.apex-fine {
+                                "paste 12 words separated by spaces. "
+                                strong { "this replaces your current wallet" }
+                                " on this device — back up the existing seed phrase first if you want to keep it."
+                            }
+                            textarea #import-seed
+                                placeholder="abandon ability able about above absent absorb abstract absurd abuse access accident"
+                                rows="3" {}
+                            button type="button" data-action="import-seed" { "import" }
+                            div #seed-msg .apex-msg {}
+                        }
+                    }
+                }
+
                 footer {
                     p {
                         "Open source · "
@@ -271,6 +317,19 @@ pub(crate) fn apex(host: &Host) -> Markup {
                     }
                 }
             }
+        }
+    }
+}
+
+/// The hidden seed-phrase view — swapped into `#seed-reveal` when the
+/// user confirms they're ready to write it down.
+pub(crate) fn seed_phrase(words: &str) -> Markup {
+    html! {
+        div.seed-words { (words) }
+        p.apex-fine {
+            "12 words above. close this page or click "
+            button type="button" data-action="hide-seed" .link-button { "hide" }
+            " when you're done."
         }
     }
 }

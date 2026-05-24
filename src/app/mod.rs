@@ -31,6 +31,7 @@ mod opfs;
 mod owner;
 mod templates;
 mod tenant;
+mod wallet_store;
 
 /// Per-tab state. One instance lives in [`APP`] for the lifetime of the
 /// page. Nothing here is `Send`/`Sync` — wasm32 is single-threaded.
@@ -55,6 +56,10 @@ pub(crate) struct App {
     /// next `start_session`. None after first use so it doesn't get
     /// re-applied on subsequent key changes.
     pub(crate) pending_history: Option<Vec<u8>>,
+    /// Master wallet at the apex origin. Cached after first load so
+    /// the "reveal seed" affordance can read it without re-touching
+    /// OPFS. `None` everywhere except the apex chrome path.
+    pub(crate) wallet: Option<wallet_store::MasterWallet>,
 }
 
 impl App {
@@ -67,6 +72,7 @@ impl App {
             opfs_cwd: Vec::new(),
             opfs: None,
             pending_history: None,
+            wallet: None,
         }
     }
 
@@ -128,7 +134,15 @@ fn mount() -> Result<(), JsValue> {
 
     match &host {
         tenant::Host::Apex => {
-            root.set_inner_html(&templates::apex(&host).into_string());
+            // Wallet load is async (OPFS); paint a placeholder first
+            // and refresh once we know the address.
+            let host_for_apex = host.clone();
+            root.set_inner_html(
+                &templates::apex(&host_for_apex, "loading…").into_string(),
+            );
+            wasm_bindgen_futures::spawn_local(async move {
+                paint_apex(host_for_apex).await;
+            });
             return Ok(());
         }
         tenant::Host::Tenant(name) => {
@@ -230,6 +244,28 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
     }
     history::load_into_pending().await;
     opfs::refresh().await;
+}
+
+/// Load (or generate) the master wallet, stash it in `App`, then
+/// re-paint the apex chrome with the real address. Called once on
+/// mount and again after an `import-seed` action.
+pub(crate) async fn paint_apex(host: tenant::Host) {
+    let Ok(doc) = dom::document() else { return };
+    let Some(root) = doc.get_element_by_id("root") else { return };
+
+    match wallet_store::load_or_create().await {
+        Ok(wallet) => {
+            let addr = wallet.address_hex();
+            APP.with(|cell| cell.borrow_mut().wallet = Some(wallet));
+            root.set_inner_html(&templates::apex(&host, &addr).into_string());
+        }
+        Err(err) => {
+            web_sys::console::error_1(&JsValue::from_str(&format!("wallet: {err}")));
+            root.set_inner_html(
+                &templates::apex(&host, "(wallet unavailable — see console)").into_string(),
+            );
+        }
+    }
 }
 
 /// `true` iff `?claim=1` (or `?claim=anything`) is in the URL.

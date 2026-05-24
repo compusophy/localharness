@@ -53,14 +53,15 @@ native = [
 # `maud` or DOM web-sys features. Enable it together with
 # `--no-default-features --target wasm32-unknown-unknown` via wasm-pack
 # to build the shipping browser bundle. Has no effect on a native build.
-browser-app = ["dep:maud", "dep:console_error_panic_hook", "dep:pulldown-cmark"]
+browser-app = ["dep:maud", "dep:console_error_panic_hook", "dep:pulldown-cmark", "wallet"]
 # `wallet` is the M6 in-browser keypair. Uses k256 + sha3 directly
 # rather than alloy's split crates — alloy's TransactionEnvelope
 # proc-macro currently trips on `serde::__private` symbol resolution
 # (1.0.22 vs serde 1.0.228), and we don't need EIP-1559 envelope
 # encoding for an identity wallet. k256 alone is wasm-clean and
-# what alloy uses under the hood anyway.
-wallet = ["dep:k256", "dep:sha3", "dep:rand_core"]
+# what alloy uses under the hood anyway. bip39 gives us the
+# 12-word seed phrase for human-friendly backup.
+wallet = ["dep:k256", "dep:sha3", "dep:rand_core", "dep:bip39"]
 
 [dependencies]
 tokio = { version = "1.42", default-features = false, features = [
@@ -109,6 +110,7 @@ pulldown-cmark = { version = "0.10", optional = true, default-features = false, 
 k256 = { version = "0.13", optional = true, default-features = false, features = ["ecdsa", "arithmetic", "std"] }
 sha3 = { version = "0.10", optional = true, default-features = false }
 rand_core = { version = "0.6", optional = true, default-features = false, features = ["getrandom"] }
+bip39 = { version = "2", optional = true, default-features = false, features = ["std", "rand"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { version = "1", features = ["js"] }

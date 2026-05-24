@@ -43,6 +43,45 @@ pub fn generate() -> GeneratedWallet {
     finalize(signer)
 }
 
+/// Generate a BIP-39 12-word mnemonic (English wordlist) AND the
+/// SigningKey derived from its 32-byte seed. We use the seed
+/// directly as the private key — no HD derivation path — because
+/// this is identity, not a hierarchical wallet. One mnemonic, one
+/// key, one address.
+pub fn generate_with_mnemonic() -> (bip39::Mnemonic, SigningKey) {
+    let mnemonic = bip39::Mnemonic::generate(12).expect("12 is a valid word count");
+    let signer = signer_from_mnemonic(&mnemonic);
+    (mnemonic, signer)
+}
+
+/// Derive the SigningKey from a mnemonic — same path as
+/// `generate_with_mnemonic` so the round-trip is stable.
+pub fn signer_from_mnemonic(mnemonic: &bip39::Mnemonic) -> SigningKey {
+    let entropy = mnemonic.to_entropy(); // 16 bytes for 12 words
+    // Stretch the entropy into 32 bytes via keccak256 — a single
+    // hash is enough for "identity from mnemonic"; this isn't HD
+    // derivation territory.
+    let mut hasher = Keccak256::new();
+    hasher.update(b"localharness/v0/identity");
+    hasher.update(&entropy);
+    let digest = hasher.finalize();
+    SigningKey::from_slice(&digest)
+        .expect("keccak256 output is 32 bytes; SigningKey is infallible for valid scalars")
+}
+
+/// Parse a 12-word phrase. Whitespace is normalised, case is
+/// ignored. Returns the underlying Mnemonic so callers can
+/// re-derive the signer.
+pub fn mnemonic_from_phrase(phrase: &str) -> Result<bip39::Mnemonic, String> {
+    let normalised: String = phrase
+        .split_whitespace()
+        .map(|w| w.to_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ");
+    bip39::Mnemonic::parse_in_normalized(bip39::Language::English, &normalised)
+        .map_err(|e| e.to_string())
+}
+
 /// Restore from `0x`-prefixed (or bare) hex.
 pub fn from_private_key_hex(hex: &str) -> Result<SigningKey, String> {
     let trimmed = hex.trim().trim_start_matches("0x").trim_start_matches("0X");
@@ -219,5 +258,30 @@ mod tests {
         let hash = [0x01u8; 32];
         let sig = sign_hash(&w.signer, &hash);
         verify_hash(&w.signer, &hash, &sig).unwrap();
+    }
+
+    #[test]
+    fn mnemonic_round_trips_through_phrase_to_address() {
+        let (m, k1) = generate_with_mnemonic();
+        let phrase = m.to_string();
+        // 12 space-separated words
+        assert_eq!(phrase.split_whitespace().count(), 12);
+        let restored = mnemonic_from_phrase(&phrase).unwrap();
+        let k2 = signer_from_mnemonic(&restored);
+        assert_eq!(address(&k1), address(&k2));
+    }
+
+    #[test]
+    fn mnemonic_phrase_is_case_and_whitespace_tolerant() {
+        let (m, k1) = generate_with_mnemonic();
+        let messy = m
+            .to_string()
+            .split_whitespace()
+            .map(|w| if w.len() > 3 { w.to_uppercase() } else { w.to_string() })
+            .collect::<Vec<_>>()
+            .join("   ");
+        let restored = mnemonic_from_phrase(&messy).unwrap();
+        let k2 = signer_from_mnemonic(&restored);
+        assert_eq!(address(&k1), address(&k2));
     }
 }
