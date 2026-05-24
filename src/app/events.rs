@@ -41,6 +41,8 @@ enum Action {
     RevealSeed,
     HideSeed,
     ImportSeed,
+    CreateIdentity,
+    ShowImport,
 }
 
 impl Action {
@@ -62,6 +64,8 @@ impl Action {
             "reveal-seed" => Action::RevealSeed,
             "hide-seed" => Action::HideSeed,
             "import-seed" => Action::ImportSeed,
+            "create-identity" => Action::CreateIdentity,
+            "show-import" => Action::ShowImport,
             _ => return None,
         })
     }
@@ -477,6 +481,45 @@ fn dispatch(action: Action) {
                 "seed-reveal",
                 r#"<button type="button" data-action="reveal-seed">I have a pen and paper — reveal</button>"#,
             );
+        }
+        Action::CreateIdentity => {
+            // Hard-gate exit: generate the master wallet and re-paint
+            // apex so the claim form unlocks and the agents list / seed
+            // disclosures replace the pre-identity sidecar.
+            dom::swap_inner(
+                "identity-msg",
+                "<span style=\"color:var(--muted)\">generating identity…</span>",
+            );
+            wasm_bindgen_futures::spawn_local(async move {
+                match super::wallet_store::create_and_persist().await {
+                    Ok(_) => {
+                        let host = super::tenant::current();
+                        if matches!(host, super::tenant::Host::Apex) {
+                            super::paint_apex(host).await;
+                        }
+                    }
+                    Err(err) => {
+                        dom::swap_inner(
+                            "identity-msg",
+                            &format!(
+                                "<span style=\"color:var(--error)\">create failed: {err}</span>"
+                            ),
+                        );
+                    }
+                }
+            });
+        }
+        Action::ShowImport => {
+            // Reveal the import textarea in place of the secondary
+            // button — the ImportSeed action handler picks it up from
+            // there.
+            dom::swap_outer(
+                "import-slot",
+                &templates::import_seed_inline().into_string(),
+            );
+            if let Some(textarea) = dom::textarea_by_id("import-seed") {
+                let _ = textarea.focus();
+            }
         }
         Action::ImportSeed => {
             let phrase = dom::textarea_by_id("import-seed")

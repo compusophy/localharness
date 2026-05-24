@@ -38,18 +38,25 @@ impl MasterWallet {
     }
 }
 
-/// Get the master wallet for this device. Generates one on first call
-/// and persists it; subsequent calls restore from OPFS.
-pub(crate) async fn load_or_create() -> Result<MasterWallet, String> {
+/// Load the master wallet for this device if one exists. Returns
+/// `None` on a fresh device — never generates a wallet implicitly.
+/// Wallet creation must come from an explicit user action via
+/// [`create_and_persist`] or [`import`].
+pub(crate) async fn load() -> Option<MasterWallet> {
     let fs = super::shared_opfs();
-    if let Ok(bytes) = fs.read(WALLET_FILE).await {
-        if !bytes.is_empty() {
-            let phrase = String::from_utf8(bytes)
-                .map_err(|e| format!("wallet file isn't utf8: {e}"))?;
-            return restore_from_phrase(&phrase);
-        }
+    let bytes = fs.read(WALLET_FILE).await.ok()?;
+    if bytes.is_empty() {
+        return None;
     }
-    // Fresh device → generate + persist.
+    let phrase = String::from_utf8(bytes).ok()?;
+    restore_from_phrase(&phrase).ok()
+}
+
+/// Generate a fresh keypair, persist its mnemonic to OPFS, and return
+/// the wallet. Caller is responsible for confirming intent — this
+/// overwrites any existing wallet file at the apex origin.
+pub(crate) async fn create_and_persist() -> Result<MasterWallet, String> {
+    let fs = super::shared_opfs();
     let (mnemonic, signer) = wallet::generate_with_mnemonic();
     fs.write_atomic(WALLET_FILE, mnemonic.to_string().as_bytes())
         .await

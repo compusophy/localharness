@@ -187,11 +187,12 @@ fn mount() -> Result<(), JsValue> {
 
     match &host {
         tenant::Host::Apex => {
-            // Wallet load is async (OPFS); paint a placeholder first
-            // and refresh once we know the address.
+            // Wallet load is async (OPFS). Show a single-line placeholder
+            // rather than the full chrome so we don't flash the
+            // pre-identity sidecar before we know whether a wallet exists.
             let host_for_apex = host.clone();
             root.set_inner_html(
-                &templates::apex(&host_for_apex, "loading…").into_string(),
+                "<main style=\"padding:48px;text-align:center;color:#7a8493;font:14px ui-monospace,Menlo,Consolas,monospace\">localharness · loading…</main>",
             );
             wasm_bindgen_futures::spawn_local(async move {
                 paint_apex(host_for_apex).await;
@@ -351,81 +352,77 @@ async fn kick_verification(name: String) {
     }
 }
 
-/// Load (or generate) the master wallet, stash it in `App`, then
-/// re-paint the apex chrome with the real address. Called once on
-/// mount and again after an `import-seed` action.
+/// Paint the apex chrome. Reads (never creates) the master wallet —
+/// fresh visitors see a slim "create or import an identity" sidecar
+/// with the claim form gated until they do. Returning visitors see
+/// their address, agents list, and a live claim form. Called once on
+/// mount and again after create/import/forget actions.
 pub(crate) async fn paint_apex(host: tenant::Host) {
     let Ok(doc) = dom::document() else { return };
     let Some(root) = doc.get_element_by_id("root") else { return };
 
-    match wallet_store::load_or_create().await {
-        Ok(wallet) => {
-            let addr = wallet.address_hex();
-            APP.with(|cell| cell.borrow_mut().wallet = Some(wallet));
-            root.set_inner_html(&templates::apex(&host, &addr).into_string());
-            // Pre-fill the claim input + trigger the live-check if the
-            // user landed here via `?prefill=<name>` (e.g. from a
-            // tenant subdomain's "claim on-chain" CTA).
-            if let Some(prefill) = read_query_param("prefill") {
-                let cleaned = tenant::sanitize(&prefill);
-                if !cleaned.is_empty() {
-                    if let Some(input) = dom::input_by_id("apex-input") {
-                        input.set_value(&cleaned);
-                        // Dispatch an input event so the existing
-                        // delegated listener kicks off the live check.
-                        if let Ok(event) = web_sys::Event::new("input") {
-                            let _ = input.dispatch_event(&event);
-                        }
-                        let _ = input.focus();
-                    }
+    let wallet = wallet_store::load().await;
+    let addr_hex = wallet.as_ref().map(|w| w.address_hex());
+    APP.with(|cell| cell.borrow_mut().wallet = wallet);
+
+    root.set_inner_html(
+        &templates::apex(&host, addr_hex.as_deref()).into_string(),
+    );
+
+    // Pre-fill the claim input + trigger the live-check if the user
+    // landed here via `?prefill=<name>` (e.g. from a tenant subdomain's
+    // "claim on-chain" CTA). Works even when the form is gated — the
+    // value persists across the re-paint after create-identity lands.
+    if let Some(prefill) = read_query_param("prefill") {
+        let cleaned = tenant::sanitize(&prefill);
+        if !cleaned.is_empty() {
+            if let Some(input) = dom::input_by_id("apex-input") {
+                input.set_value(&cleaned);
+                if let Ok(event) = web_sys::Event::new("input") {
+                    let _ = input.dispatch_event(&event);
+                }
+                let _ = input.focus();
+            }
+        }
+    }
+
+    // Only fetch the "your agents" list when there's an identity to
+    // fetch for — saves a roundtrip on first-visit.
+    if let Some(owner_addr) = addr_hex {
+        wasm_bindgen_futures::spawn_local(async move {
+            match registry::list_owned_tokens(&owner_addr).await {
+                Ok(agents) => {
+                    let html = templates::agents_list(&agents).into_string();
+                    dom::swap_outer("agents-list", &html);
+                }
+                Err(err) => {
+                    dom::swap_outer(
+                        "agents-list",
+                        &format!(
+                            r#"<div id="agents-list" class="agents-list"><p class="apex-fine" style="color:var(--error)">couldn't list agents: {err}</p></div>"#
+                        ),
+                    );
                 }
             }
-            // Async-populate the "your agents" list. Slot was painted
-            // with a "(loading…)" placeholder; we replace it with the
-            // real list (or a "no agents yet" message) once the
-            // registry roundtrip completes.
-            let owner_addr = addr.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                match registry::list_owned_tokens(&owner_addr).await {
-                    Ok(agents) => {
-                        let html = templates::agents_list(&agents).into_string();
-                        dom::swap_outer("agents-list", &html);
-                    }
-                    Err(err) => {
-                        dom::swap_outer(
-                            "agents-list",
-                            &format!(
-                                r#"<div id="agents-list" class="agents-list"><p class="apex-fine" style="color:var(--error)">couldn't list agents: {err}</p></div>"#
-                            ),
-                        );
-                    }
-                }
-            });
-        }
-        Err(err) => {
-            web_sys::console::error_1(&JsValue::from_str(&format!("wallet: {err}")));
-            root.set_inner_html(
-                &templates::apex(&host, "(wallet unavailable — see console)").into_string(),
-            );
-        }
+        });
     }
 }
 
-/// Paint the minimal signer chrome once the wallet has loaded.
+/// Paint the minimal signer chrome once we've checked for a wallet.
+/// If the apex origin has no wallet yet, render a "no identity" notice
+/// instead of conjuring one — the parent subdomain will see signing
+/// requests rejected by [`signer::handle_message`] in that case.
 pub(crate) async fn paint_signer() {
     let Ok(doc) = dom::document() else { return };
     let Some(root) = doc.get_element_by_id("root") else { return };
-    match wallet_store::load_or_create().await {
-        Ok(wallet) => {
+    match wallet_store::load().await {
+        Some(wallet) => {
             let addr = wallet.address_hex();
             APP.with(|cell| cell.borrow_mut().wallet = Some(wallet));
             root.set_inner_html(&templates::signer_chrome(&addr).into_string());
         }
-        Err(err) => {
-            web_sys::console::error_1(&JsValue::from_str(&format!("signer wallet: {err}")));
-            root.set_inner_html(
-                "<main style=\"padding:48px;text-align:center;color:#ff8b8b;font:14px ui-monospace,Menlo,Consolas,monospace\">signer wallet failed — see console</main>",
-            );
+        None => {
+            root.set_inner_html(&templates::signer_no_identity().into_string());
         }
     }
 }

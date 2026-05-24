@@ -42,7 +42,7 @@ fn site_header(host: &Host) -> Markup {
             h1 {
                 a href="https://localharness.xyz/" title="go home" { "localharness" }
             }
-            span.tag { "web demo · 0.10.0" }
+            span.tag { "web demo · 0.10.1" }
             span class={ "tag tenant-tag tenant-" (tenant_class) }
                 title=(host.label()) { (tenant_label) }
             // Verify pill — present only on tenant subdomains.
@@ -293,16 +293,19 @@ pub(crate) fn tool_call_result(result: &ToolResult) -> Markup {
 
 // --- Apex / claim templates --------------------------------------------
 
-/// Apex page — `localharness.xyz/`. Single-CTA marketing surface,
-/// mirrors `self.tools/` in spirit: input + go button → redirect to
-/// the named subdomain. Also surfaces the master wallet — generated
-/// on first visit, persisted in this origin's OPFS — with affordances
-/// to back up or import a seed phrase.
-pub(crate) fn apex(host: &Host, wallet_address_hex: &str) -> Markup {
+/// Apex page — `localharness.xyz/`. Identity sidecar at the top
+/// gates the claim form: without an on-device wallet the form is
+/// disabled and the sidecar shows `[Create identity]` + `[Import
+/// seed]`; with a wallet the form is live and the sidecar collapses
+/// to address + agents + seed/import disclosures.
+pub(crate) fn apex(host: &Host, wallet_address_hex: Option<&str>) -> Markup {
+    let has_identity = wallet_address_hex.is_some();
     html! {
         main.apex-main {
             div.col-chat {
                 (site_header(host))
+
+                (identity_sidecar(wallet_address_hex))
 
                 section.apex-hero {
                     h2.apex-headline { "your own browser-resident agent." }
@@ -315,76 +318,47 @@ pub(crate) fn apex(host: &Host, wallet_address_hex: &str) -> Markup {
 
                     form.apex-form data-action="apex-claim" {
                         div.apex-input-row {
-                            input #apex-input
-                                type="text"
-                                placeholder="your-name"
-                                autocomplete="off"
-                                spellcheck="false"
-                                maxlength="32"
-                                required {}
+                            @if has_identity {
+                                input #apex-input
+                                    type="text"
+                                    placeholder="your-name"
+                                    autocomplete="off"
+                                    spellcheck="false"
+                                    maxlength="32"
+                                    required {}
+                            } @else {
+                                input #apex-input
+                                    type="text"
+                                    placeholder="your-name"
+                                    autocomplete="off"
+                                    spellcheck="false"
+                                    maxlength="32"
+                                    disabled
+                                    required {}
+                            }
                             span.apex-suffix { ".localharness.xyz" }
                         }
-                        button type="submit" { "claim →" }
-                        div #apex-msg .apex-msg {}
+                        @if has_identity {
+                            button type="submit" { "claim →" }
+                        } @else {
+                            button type="submit" disabled
+                                title="create or import an identity above first" {
+                                "claim →"
+                            }
+                        }
+                        div #apex-msg .apex-msg {
+                            @if !has_identity {
+                                span style="color:var(--muted)" {
+                                    "create or import an identity above to claim a name."
+                                }
+                            }
+                        }
                     }
 
                     p.apex-fine {
                         "a–z, 0–9, dash. 3–32 chars. "
-                        "first device to claim a name owns it on that device — "
-                        "a central registry that prevents cross-device squatting lands in "
-                        a href="https://github.com/compusophy/localharness/blob/main/DESIGN_M5_PLUS.md" { "M7" }
-                        "."
-                    }
-                }
-
-                section.apex-wallet {
-                    h3.apex-sub-headline { "your master identity" }
-                    p.apex-sub {
-                        "a secp256k1 keypair generated on this device. "
-                        "every subdomain you claim is tied to this address "
-                        "in the on-chain registry. "
-                        "the only thing you need to back up to keep your account."
-                    }
-                    div.wallet-address-row {
-                        span.wallet-label { "address" }
-                        code #wallet-address .wallet-address { (wallet_address_hex) }
-                    }
-
-                    // Async-populated by paint_apex once the registry
-                    // returns the user's owned tokens. Empty state shows
-                    // "(loading…)" while in flight.
-                    div #agents-list .agents-list {
-                        p.apex-fine { "(loading your agents…)" }
-                    }
-
-                    details.apex-details {
-                        summary { "show seed phrase (12 words)" }
-                        div.apex-import {
-                            p.apex-fine {
-                                "write these 12 words down somewhere safe. "
-                                "anyone with this phrase controls your identity and every subdomain you own. "
-                                "click the button below to reveal."
-                            }
-                            div #seed-reveal .seed-reveal {
-                                button type="button" data-action="reveal-seed" { "I have a pen and paper — reveal" }
-                            }
-                        }
-                    }
-
-                    details.apex-details {
-                        summary { "import a seed phrase from another device" }
-                        div.apex-import {
-                            p.apex-fine {
-                                "paste 12 words separated by spaces. "
-                                strong { "this replaces your current wallet" }
-                                " on this device — back up the existing seed phrase first if you want to keep it."
-                            }
-                            textarea #import-seed
-                                placeholder="abandon ability able about above absent absorb abstract absurd abuse access accident"
-                                rows="3" {}
-                            button type="button" data-action="import-seed" { "import" }
-                            div #seed-msg .apex-msg {}
-                        }
+                        "names mint as NFTs on the Tempo Moderato registry; the wallet "
+                        "that claims a name owns it across devices."
                     }
                 }
 
@@ -396,6 +370,92 @@ pub(crate) fn apex(host: &Host, wallet_address_hex: &str) -> Markup {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Identity sidecar that sits between the header and the claim form.
+/// Two shapes — pre-identity (create / import buttons) and
+/// post-identity (address + agents list + seed/import disclosures).
+fn identity_sidecar(wallet_address_hex: Option<&str>) -> Markup {
+    match wallet_address_hex {
+        None => html! {
+            section #identity-sidecar .apex-wallet .identity-empty {
+                h3.apex-sub-headline { "sign in" }
+                p.apex-sub {
+                    "your identity is a secp256k1 keypair stored in this origin's "
+                    "per-tab sandbox. create one to claim a fresh name, or import "
+                    "your existing 12-word seed if you already own names on another device."
+                }
+                div.identity-actions {
+                    button type="button" data-action="create-identity" { "create identity" }
+                    button type="button" data-action="show-import" .ghost { "import existing seed" }
+                }
+                div #identity-msg .apex-msg {}
+                div #import-slot {}
+            }
+        },
+        Some(addr) => html! {
+            section #identity-sidecar .apex-wallet {
+                div.wallet-address-row {
+                    span.wallet-label { "identity" }
+                    code #wallet-address .wallet-address { (addr) }
+                }
+
+                // Async-populated by paint_apex once the registry
+                // returns the user's owned tokens. Empty state shows
+                // "(loading…)" while in flight.
+                div #agents-list .agents-list {
+                    p.apex-fine { "(loading your agents…)" }
+                }
+
+                details.apex-details {
+                    summary { "show seed phrase (12 words)" }
+                    div.apex-import {
+                        p.apex-fine {
+                            "write these 12 words down somewhere safe. "
+                            "anyone with this phrase controls your identity and every subdomain you own."
+                        }
+                        div #seed-reveal .seed-reveal {
+                            button type="button" data-action="reveal-seed" { "I have a pen and paper — reveal" }
+                        }
+                    }
+                }
+
+                details.apex-details {
+                    summary { "import a different seed phrase" }
+                    div.apex-import {
+                        p.apex-fine {
+                            "paste 12 words separated by spaces. "
+                            strong { "this replaces your current wallet" }
+                            " on this device — back up the existing seed phrase first if you want to keep it."
+                        }
+                        textarea #import-seed
+                            placeholder="abandon ability able about above absent absorb abstract absurd abuse access accident"
+                            rows="3" {}
+                        button type="button" data-action="import-seed" { "import" }
+                        div #seed-msg .apex-msg {}
+                    }
+                }
+            }
+        },
+    }
+}
+
+/// Inline import-seed form swapped into `#import-slot` when a
+/// pre-identity visitor clicks "import existing seed".
+pub(crate) fn import_seed_inline() -> Markup {
+    html! {
+        div #import-slot .apex-import {
+            p.apex-fine {
+                "paste 12 words separated by spaces. they'll be used to derive "
+                "your secp256k1 key — make sure no one's watching."
+            }
+            textarea #import-seed
+                placeholder="abandon ability able about above absent absorb abstract absurd abuse access accident"
+                rows="3" {}
+            button type="button" data-action="import-seed" { "import" }
+            div #seed-msg .apex-msg {}
         }
     }
 }
@@ -471,6 +531,28 @@ pub(crate) fn visitor_banner(owner_address: &str) -> Markup {
                 "want your own space? "
                 a href="https://localharness.xyz/" { "go to apex" }
                 " and claim a name."
+            }
+        }
+    }
+}
+
+/// Chrome shown when the signer iframe loads but no identity exists
+/// at the apex origin. The postMessage handler errors on every
+/// challenge in this state — owner verification on the parent
+/// subdomain will surface as "verify failed · no identity".
+pub(crate) fn signer_no_identity() -> Markup {
+    html! {
+        main.apex-main {
+            div.col-chat {
+                section.apex-hero {
+                    h2.apex-headline { "localharness signer" }
+                    p.apex-sub {
+                        "no identity exists on this device yet, so this signer "
+                        "tab can't sign anything. "
+                        a href="https://localharness.xyz/" { "go to apex" }
+                        " to create or import one."
+                    }
+                }
             }
         }
     }
