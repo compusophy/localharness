@@ -321,6 +321,15 @@ async fn kick_verification(name: String) {
     APP.with(|cell| cell.borrow_mut().verify_state = outcome.clone());
     let html = templates::verify_pill(&outcome).into_string();
     dom::swap_outer("verify-pill", &html);
+
+    // Visitor mode: replace the input region with a read-only banner.
+    // The transcript + OPFS panel stay visible (they live outside
+    // `#input-region`), but the visitor can't send messages or save
+    // anything new in the chat session.
+    if let VerifyState::Visitor { owner_address } = &outcome {
+        let html = templates::visitor_banner(owner_address).into_string();
+        dom::swap_outer("input-region", &html);
+    }
 }
 
 /// Load (or generate) the master wallet, stash it in `App`, then

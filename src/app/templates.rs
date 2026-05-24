@@ -112,34 +112,36 @@ pub(crate) fn chrome(host: &Host) -> Markup {
                     "UI is rendered entirely by Rust → HTML; no JavaScript application code in the page."
                 }
 
-                div.row {
-                    label for="key" {
-                        "Gemini API key "
-                        span #keymeta {}
-                    }
-                    div.key-row {
-                        input #key
-                            type="password"
-                            autocomplete="off"
-                            placeholder="paste key (sessionStorage only)" {}
-                        button.ghost
-                            type="button"
-                            data-action="clear-key"
-                            title="Wipe the cached key from sessionStorage" {
-                            "clear"
+                div #input-region {
+                    div.row {
+                        label for="key" {
+                            "Gemini API key "
+                            span #keymeta {}
+                        }
+                        div.key-row {
+                            input #key
+                                type="password"
+                                autocomplete="off"
+                                placeholder="paste key (sessionStorage only)" {}
+                            button.ghost
+                                type="button"
+                                data-action="clear-key"
+                                title="Wipe the cached key from sessionStorage" {
+                                "clear"
+                            }
                         }
                     }
-                }
 
-                div.row {
-                    label for="prompt" { "Prompt" }
-                    textarea #prompt
-                        placeholder="try: 'create notes.md with a haiku about Rust', then 'list my files', then 'show me notes.md' · ⌘/Ctrl+Enter to send" {}
-                }
+                    div.row {
+                        label for="prompt" { "Prompt" }
+                        textarea #prompt
+                            placeholder="try: 'create notes.md with a haiku about Rust', then 'list my files', then 'show me notes.md' · ⌘/Ctrl+Enter to send" {}
+                    }
 
-                div.actions {
-                    button data-action="send" { "send" }
-                    button.ghost data-action="reset" { "new conversation" }
+                    div.actions {
+                        button data-action="send" { "send" }
+                        button.ghost data-action="reset" { "new conversation" }
+                    }
                 }
 
                 div #status .status { "loading…" }
@@ -380,6 +382,30 @@ pub(crate) fn seed_phrase(words: &str) -> Markup {
             "12 words above. close this page or click "
             button type="button" data-action="hide-seed" .link-button { "hide" }
             " when you're done."
+        }
+    }
+}
+
+/// Visitor-mode replacement for `#input-region` on a tenant subdomain
+/// when the verifier confirms the visitor isn't the on-chain owner.
+/// Hides every write affordance; the transcript + OPFS panel still
+/// render because they live outside `#input-region`.
+pub(crate) fn visitor_banner(owner_address: &str) -> Markup {
+    html! {
+        div #input-region .visitor-banner {
+            h3 { "visitor mode · read-only" }
+            p {
+                "this subdomain is owned by "
+                code { (owner_address) }
+                " on the Tempo Moderato registry. you can read the public "
+                "transcript and any OPFS files the owner has made visible, "
+                "but you can't send messages or write state."
+            }
+            p.apex-fine {
+                "want your own space? "
+                a href="https://localharness.xyz/" { "go to apex" }
+                " and claim a name."
+            }
         }
     }
 }
