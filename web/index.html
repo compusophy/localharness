@@ -30,22 +30,27 @@
     }
 
     /* SSOT sticky header + footer used by apex + tenant + unclaimed.
-       Padding pattern matches `main` so header/footer content aligns
-       with body content at the same column boundaries. */
+       Identical sizing — both clamp to the same min-height so the
+       footer never visually outweighs the header regardless of which
+       content lands in either row. */
     .site-header,
     .site-footer {
       position: sticky;
       z-index: 100;
       background: var(--bg);
-      padding: 10px 0;
+      padding: 0;
+      min-height: 40px;
+      display: flex;
+      align-items: center;
     }
     .site-header { top: 0; border-bottom: 1px solid var(--border); }
     .site-footer { bottom: 0; border-top: 1px solid var(--border); margin-top: auto; }
     .header-inner,
     .footer-inner {
       max-width: 1180px;
+      width: 100%;
       margin: 0 auto;
-      padding: 0 24px;
+      padding: 4px 24px;
       display: flex;
       align-items: center;
       gap: 12px;
@@ -56,11 +61,15 @@
        chips landed in the header. margin-left:auto works under
        flex-wrap; items before it group left, admin always right. */
     .header-admin { margin-left: auto; }
+    /* Match the header admin button exactly — same padding, font,
+       border-radius — so the two ends of the page feel symmetric. */
     .site-footer button {
-      padding: 4px 14px;
+      padding: 4px 10px;
       font-size: 11px;
+      font-weight: 400;
       text-transform: uppercase;
       letter-spacing: 0.06em;
+      border-radius: 4px;
     }
 
     main {
