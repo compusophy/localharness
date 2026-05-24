@@ -48,7 +48,27 @@ fn site_header(host: &Host) -> Markup {
             // Verify pill — present only on tenant subdomains.
             @if matches!(host, Host::Tenant(_)) {
                 (verify_pill(&VerifyState::Pending))
+                // TBA pill placeholder — filled in by kick_verification
+                // once the address is fetched from the registry.
+                span #tba-pill {}
             }
+        }
+    }
+}
+
+/// ERC-6551 token-bound account pill — the agent's wallet address.
+/// Lives in the header next to verify-pill on tenant subdomains.
+pub(crate) fn tba_pill(address: &str) -> Markup {
+    let short = short_addr(address);
+    let title = format!("agent wallet (ERC-6551): {address}");
+    html! {
+        a #tba-pill
+            class="tag tba-pill"
+            href=(format!("https://moderato.tempo.xyz/address/{address}"))
+            target="_blank"
+            rel="noopener"
+            title=(title) {
+            "💰 " (short)
         }
     }
 }

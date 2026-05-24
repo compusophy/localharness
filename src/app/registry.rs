@@ -47,6 +47,38 @@ pub(crate) enum Status {
     Taken { agent_id: u64 },
 }
 
+/// `eth_call tokenBoundAccountByName(name)` and return the ERC-6551
+/// account address. None when the name is unregistered. The address
+/// is deterministic — it exists counterfactually even if the account
+/// hasn't been deployed yet.
+pub(crate) async fn tba_of_name(name: &str) -> Result<Option<String>, String> {
+    if REGISTRY_ADDRESS == zero_address() {
+        return Ok(None);
+    }
+    let calldata = encode_string_call("tokenBoundAccountByName(string)", name);
+    let result_hex = match eth_call(REGISTRY_ADDRESS, &calldata).await {
+        Ok(h) => h,
+        Err(err) => {
+            // The contract reverts with "TBA: name unregistered" when
+            // the name has no token — surface that as None rather than
+            // an error so the UI can degrade cleanly.
+            if err.contains("name unregistered") || err.contains("nonexistent token") {
+                return Ok(None);
+            }
+            return Err(err);
+        }
+    };
+    let trimmed = result_hex.trim().trim_start_matches("0x");
+    if trimmed.len() < 64 {
+        return Err(format!("tokenBoundAccountByName: short response {trimmed}"));
+    }
+    let addr_hex = &trimmed[trimmed.len() - 40..];
+    if addr_hex.chars().all(|c| c == '0') {
+        return Ok(None);
+    }
+    Ok(Some(format!("0x{}", addr_hex.to_lowercase())))
+}
+
 /// `eth_call ownerOfName(name)` and return the address as a
 /// `0x`-prefixed lowercase hex string. `None` if the name has no
 /// on-chain owner (returns the zero address).
@@ -69,8 +101,14 @@ pub(crate) async fn owner_of_name(name: &str) -> Result<Option<String>, String> 
 }
 
 fn encode_owner_of_name(name: &str) -> String {
-    let sel = selector("ownerOfName(string)");
-    let bytes = name.as_bytes();
+    encode_string_call("ownerOfName(string)", name)
+}
+
+/// Generic `fn(string)` calldata encoder. ABI: selector + 0x20 offset
+/// + length + UTF-8 bytes padded to a 32-byte multiple.
+fn encode_string_call(signature: &str, value: &str) -> String {
+    let sel = selector(signature);
+    let bytes = value.as_bytes();
     let len = bytes.len();
     let padded_len = ((len + 31) / 32) * 32;
 

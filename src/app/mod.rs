@@ -330,6 +330,22 @@ async fn kick_verification(name: String) {
         let html = templates::visitor_banner(owner_address).into_string();
         dom::swap_outer("input-region", &html);
     }
+
+    // When the name is on-chain (Verified or Visitor), look up its
+    // ERC-6551 token-bound account and surface it as a TBA pill in
+    // the header. This is the agent's wallet — receives funds,
+    // signs messages, settles payments. Counterfactual; address
+    // exists whether the account has been deployed yet or not.
+    let on_chain = matches!(
+        outcome,
+        VerifyState::Verified { .. } | VerifyState::Visitor { .. }
+    );
+    if on_chain {
+        if let Ok(Some(tba)) = registry::tba_of_name(&name).await {
+            let html = templates::tba_pill(&tba).into_string();
+            dom::swap_outer("tba-pill", &html);
+        }
+    }
 }
 
 /// Load (or generate) the master wallet, stash it in `App`, then
