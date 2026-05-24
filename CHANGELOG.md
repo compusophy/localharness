@@ -5,6 +5,100 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-05-23
+
+The on-chain story landed in 0.9.0; this release exposes the
+registry as a real SDK module so off-bundle consumers (CLI tools,
+indexers, native back-ends) can query it without instantiating the
+browser app. Also: the registry contract is now a Diamond with an
+ERC-721 facet + ERC-6551 token-bound accounts wired up.
+
+### Added (Rust SDK)
+
+- **`pub mod registry`** — JSON-RPC client for the on-chain
+  `LocalharnessRegistry` diamond. Hand-rolled (no alloy
+  dependency). Gated on `feature = "wallet"`. Constants exposed:
+  `RPC_URL`, `REGISTRY_ADDRESS`, `CHAIN_ID`. Public API:
+  - `check_name(name) → Status` (Unknown / Available / Taken)
+  - `owner_of_name(name) → Option<address-hex>`
+  - `tba_of_name(name) → Option<address-hex>` (ERC-6551)
+  - `list_owned_tokens(owner_hex) → Vec<OwnedToken>` (iterates
+    `1..nextId`; fine for small token counts, swap for log
+    indexing or multicall if registry grows past a few hundred)
+  - `claim_name(signer, name) → tx hash` (faucet → sign → send
+    → poll receipt; requires `feature = "wallet"`)
+  - `request_faucet_funds(address_hex)` (Tempo's
+    `tempo_fundAddress` JSON-RPC method)
+  - `Status`, `OwnedToken` public types
+- `sleep_ms` is cfg-gated: `tokio::time::sleep` on native,
+  Promise-around-`setTimeout` on wasm. Means the entire registry
+  module — including write methods — works equally on a CLI host
+  and in the browser bundle.
+
+### On-chain — Tempo Moderato testnet (chain 42431)
+
+The diamond's address (`0xed7a2d170ab2d41721c9bd7368adbff6df0c656d`)
+is the only constant the bundle reads. Facets are added/removed via
+`diamondCut` without ever changing it.
+
+- **Diamond** at `0xed7a2d…c656d` — EIP-2535 proxy. Storage
+  isolated per facet via `keccak256("localharness.<name>.storage.v1")`
+  slots.
+- **ERC-721 facet** at `0x016882…0e5e` — every registered name is
+  now an NFT. `register()` mints `tokenId == agentId` and emits
+  Transfer(0, owner, id). Standard surface: balanceOf, ownerOf,
+  transferFrom, safeTransferFrom, approve, setApprovalForAll +
+  Metadata extension (name="Localharness Names", symbol="LH",
+  tokenURI returns `https://<name>.localharness.xyz/`).
+- **TBA facet** at `0xe43d11…73a4` — wraps EIP-6551. Public views:
+  `tokenBoundAccount(tokenId)`, `tokenBoundAccountByName(name)`,
+  `createTokenBoundAccount(tokenId)`. Every name gets a
+  deterministic counterfactual wallet at a predictable address.
+- **ERC-6551 reference** deployed at:
+  - Registry: `0xc7cadc…41d6`
+  - Account impl: `0x8ad49e…d7f4` (CALL-only variant — DELEGATECALL
+    explicitly disabled to avoid the self-destruct footgun)
+
+### Added (browser app)
+
+- **Cross-origin iframe signer** at `localharness.xyz/?signer=1`
+  (M8). Subdomains verify the visitor's address against the
+  on-chain owner via postMessage + signature recovery.
+- **Visitor read-only mode** — when verification confirms the
+  visitor isn't the owner, the input region swaps for a banner.
+  Transcript + OPFS panel stay browsable.
+- **Apex "your agents" panel** — read the diamond after wallet
+  load, list all NFTs owned by the master wallet, link each to
+  its subdomain + ERC-6551 wallet on the block explorer.
+- **TBA pill in tenant chrome** — header shows the agent's ERC-6551
+  wallet address with a link to the explorer.
+- **`?prefill=<name>`** apex query param — tenant subdomains' "claim
+  on-chain" CTA pre-fills the apex form and kicks off the live
+  availability check on arrival.
+
+### Changed
+
+- The registry is now a Diamond at the same address forever;
+  future facets (ERC-8004 reputation/validation, MPP/x402
+  payments, anything else) cut in without touching the bundle.
+- The flat `LocalharnessRegistry.sol` at `0x42c8D4…F9db` is
+  abandoned (state not migrated; testnet population was tiny).
+- One-name-per-address constraint **dropped** — multi-agent
+  ownership is the intended path now that each name is an NFT.
+- 67 lib tests pass (up from 62 — registry module brought
+  selector + encoding tests with it).
+
+### Notes
+
+- `contracts/` has the full Solidity stack: Diamond core +
+  Cut/Loupe/Ownership/Registry/ERC721/TBA facets +
+  ERC-6551 reference (registry + account impl) + foundry deploy
+  scripts. Architecture write-up in `contracts/README.md`.
+- The wasm bundle's behaviour didn't change between 0.9.0 and
+  0.10.0 except for the new "your agents" panel and the TBA pill —
+  this release is primarily about exposing the registry as a
+  reusable SDK module.
+
 ## [0.9.0] - 2026-05-23
 
 M8 + M9 — the identity story gets a real auth boundary (cross-origin
