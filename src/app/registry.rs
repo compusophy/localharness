@@ -21,10 +21,17 @@ use crate::wallet;
 /// Tempo Moderato testnet RPC. Per the tempo-x402 reference.
 pub(crate) const RPC_URL: &str = "https://rpc.moderato.tempo.xyz";
 
-/// `LocalharnessRegistry` on Tempo Moderato testnet (chain id 42431).
-/// Deployed 2026-05-23 from `contracts/script/Deploy.s.sol`. Update
-/// by re-deploying + bumping this constant + rebuilding the bundle.
-pub(crate) const REGISTRY_ADDRESS: &str = "0x42c8D4EaF99bA80F6B6FCA8E163E077D9FC2F9db";
+/// `LocalharnessRegistry` Diamond on Tempo Moderato testnet
+/// (chain id 42431). Deployed 2026-05-23 from
+/// `contracts/script/DeployDiamond.s.sol`. The diamond proxy holds
+/// the storage; the actual `register / ownerOfName / idOfName / …`
+/// selectors are dispatched to LocalharnessRegistryFacet at
+/// `0x44e1776be804f760a13d650889478ac8df6a06b5`. ABI-compatible with
+/// the previous flat contract — bundle code didn't change shape.
+///
+/// Owner (deployer / admin): 0x81E9c327562ABecaBf561F321B340200046D3106
+/// Predecessor (flat) at:    0x42c8D4EaF99bA80F6B6FCA8E163E077D9FC2F9db
+pub(crate) const REGISTRY_ADDRESS: &str = "0xed7a2d170ab2d41721c9bd7368adbff6df0c656d";
 
 /// Tempo Moderato chain id — used in EIP-155 v computation.
 pub(crate) const CHAIN_ID: u64 = 42431;
