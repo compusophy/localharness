@@ -311,14 +311,9 @@ async fn collect_payment_if_required() -> Result<Option<String>, String> {
     };
 
     let purpose = format!(
-        "pay {} test ETH per turn to this agent",
+        "pay {} $localharness per turn to this agent",
         super::format_wei_as_test_eth(price_wei),
     );
-
-    dom::set_status("payment: funding wallet…", false);
-    // Best-effort faucet; if the wallet is already funded the call
-    // rate-limits gracefully and we proceed regardless.
-    let _ = crate::registry::request_faucet_funds(&visitor_address).await;
 
     dom::set_status("payment: reading nonce + gas…", false);
     let nonce = crate::registry::next_nonce(&visitor_address)
@@ -328,15 +323,43 @@ async fn collect_payment_if_required() -> Result<Option<String>, String> {
         .await
         .map_err(|e| format!("gas price: {e}"))?;
 
-    dom::set_status("payment: waiting for your approval at the signer iframe…", false);
+    // Build ERC-20 transfer(tba, price_wei) calldata. We do this
+    // here in the subdomain bundle (it's all pure Rust + the
+    // registry helpers) so the iframe signer just signs whatever
+    // calldata we hand it.
+    let tba_bytes = parse_address(&tba)?;
+    let mut tba_padded = [0u8; 32];
+    tba_padded[12..].copy_from_slice(&tba_bytes);
+    let amount_bytes = u256_be(price_wei);
+    let selector = transfer_selector();
+    let mut calldata = Vec::with_capacity(4 + 32 + 32);
+    calldata.extend_from_slice(&selector);
+    calldata.extend_from_slice(&tba_padded);
+    calldata.extend_from_slice(&amount_bytes);
+    let data_hex = bytes_to_hex(&calldata);
+
+    // Estimate gas for the ERC-20 transfer. Tempo gas accounting
+    // can be twitchy; a buffer here saves a "out of gas" surprise.
+    dom::set_status("payment: estimating gas…", false);
+    let gas_limit = match estimate_call_gas(
+        &visitor_address,
+        crate::registry::LOCALHARNESS_TOKEN_ADDRESS,
+        &data_hex,
+    ).await {
+        Ok(g) => g,
+        Err(_) => 120_000, // safe fallback for an ERC-20 transfer
+    };
+
+    dom::set_status("payment: signing via apex…", false);
     let raw_tx = super::verify::sign_tx_via_iframe(super::verify::SignTxRequest {
-        to_hex: &tba,
-        value_wei: price_wei,
+        to_hex: crate::registry::LOCALHARNESS_TOKEN_ADDRESS,
+        value_wei: 0,
         nonce,
-        gas_limit: crate::registry::NATIVE_TRANSFER_GAS_LIMIT,
+        gas_limit,
         gas_price,
         chain_id: crate::registry::CHAIN_ID,
         purpose: &purpose,
+        data_hex: &data_hex,
     })
     .await?;
 
@@ -346,6 +369,90 @@ async fn collect_payment_if_required() -> Result<Option<String>, String> {
         .map_err(|e| format!("submit: {e}"))?;
 
     Ok(Some(tx_hash))
+}
+
+fn parse_address(hex: &str) -> Result<[u8; 20], String> {
+    let trimmed = hex.trim().trim_start_matches("0x").trim_start_matches("0X");
+    if trimmed.len() != 40 {
+        return Err(format!("address must be 20 bytes hex, got {}", trimmed.len()));
+    }
+    let mut out = [0u8; 20];
+    let bytes = trimmed.as_bytes();
+    for i in 0..20 {
+        let hi = hex_nibble(bytes[i * 2])?;
+        let lo = hex_nibble(bytes[i * 2 + 1])?;
+        out[i] = (hi << 4) | lo;
+    }
+    Ok(out)
+}
+
+fn hex_nibble(b: u8) -> Result<u8, String> {
+    match b {
+        b'0'..=b'9' => Ok(b - b'0'),
+        b'a'..=b'f' => Ok(b - b'a' + 10),
+        b'A'..=b'F' => Ok(b - b'A' + 10),
+        _ => Err(format!("non-hex byte {b}")),
+    }
+}
+
+fn u256_be(value: u128) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out[16..].copy_from_slice(&value.to_be_bytes());
+    out
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+fn transfer_selector() -> [u8; 4] {
+    use sha3::{Digest, Keccak256};
+    let mut hasher = Keccak256::new();
+    hasher.update(b"transfer(address,uint256)");
+    let mut out = [0u8; 4];
+    out.copy_from_slice(&hasher.finalize()[..4]);
+    out
+}
+
+async fn estimate_call_gas(
+    from_hex: &str,
+    to_hex: &str,
+    data_hex: &str,
+) -> Result<u128, String> {
+    // Direct RPC because we don't have eth_estimateGas exposed from
+    // registry. Mirror its 25% buffer pattern.
+    let payload = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "eth_estimateGas",
+        "params": [{
+            "from": from_hex,
+            "to": to_hex,
+            "data": format!("0x{data_hex}"),
+        }],
+    });
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(crate::registry::RPC_URL)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("estimateGas: {e}"))?;
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("estimateGas parse: {e}"))?;
+    let hex = json
+        .get("result")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("estimateGas: {json}"))?;
+    let raw = u128::from_str_radix(hex.trim_start_matches("0x"), 16)
+        .map_err(|e| format!("estimateGas hex: {e}"))?;
+    Ok(raw + raw / 4)
 }
 
 fn short_hash(hash: &str) -> String {

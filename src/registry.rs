@@ -36,13 +36,25 @@ pub const REGISTRY_ADDRESS: &str = "0xed7a2d170ab2d41721c9bd7368adbff6df0c656d";
 /// Tempo Moderato chain id — used in EIP-155 v computation.
 pub const CHAIN_ID: u64 = 42431;
 
-/// `BootstrapFaucet.sol` — admin-pre-funded distribution for new
-/// wallets. Set to the zero address until deployed; the bundle
-/// short-circuits the fund call when this is zero. Update this
-/// constant after `forge script script/DeployBootstrapFaucet.s.sol
-/// --rpc-url tempo_moderato --private-key $EVM_PRIVATE_KEY --broadcast`
-/// emits the deployed address.
+/// `BootstrapFaucet.sol` — DORMANT. Deployed at
+/// `0xA439c7C31fa8DeD94d90D3fD3958438A4876dc0f` but unusable on
+/// Tempo Moderato because the chain refuses EOA↔contract native
+/// value transfers ("value transfer not allowed"). Kept as a
+/// historical breadcrumb; all distribution flows through
+/// [`LOCALHARNESS_TOKEN_ADDRESS`] now.
 pub const BOOTSTRAP_FAUCET_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
+
+/// `LocalharnessToken.sol` — the $localharness ERC-20 with a
+/// once-per-address `faucet(recipient)` that mints `faucetAmount`
+/// fresh tokens. Replaces BootstrapFaucet — works on Tempo Moderato
+/// because every move is a contract call, not a native transfer.
+///
+/// Deployed 2026-05-24 from an ephemeral key; ownership transferred
+/// to the admin EOA (`0x81E9c327…`) immediately after deploy.
+///
+/// name: "localharness", symbol: "localharness", decimals: 18,
+/// faucetAmount: 1000 LH.
+pub const LOCALHARNESS_TOKEN_ADDRESS: &str = "0xcC8A300658dC8d0648D984A5066Af3F8E75e0936";
 
 /// What we can learn about a name without touching the wallet.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -572,36 +584,98 @@ pub async fn wait_for_min_balance(
     ))
 }
 
-/// Sign + submit a `BootstrapFaucet.fund(signer.address)` tx. The
-/// signer pays gas; the contract responds with a per-recipient drip
-/// (`dripWei` configured on-chain). Errors if
-/// `BOOTSTRAP_FAUCET_ADDRESS` is the zero address (contract not
-/// deployed yet), if the signer hasn't been bootstrap-funded enough
-/// to cover gas (chicken-and-egg — call `request_faucet_funds` +
-/// `wait_for_min_balance` first), or if the on-chain call reverts
-/// (already claimed, contract drained).
-pub async fn bootstrap_fund_self(signer: &SigningKey) -> Result<String, String> {
-    if BOOTSTRAP_FAUCET_ADDRESS == zero_address() {
-        return Err("bootstrap faucet not deployed (set BOOTSTRAP_FAUCET_ADDRESS)".into());
-    }
-    let from_bytes = wallet::address(signer);
-    let from_hex = address_to_hex(&from_bytes);
+// --- $localharness ERC-20 helpers ------------------------------------
 
-    // calldata: fund(address) selector + 32-byte recipient (= self)
-    let selector = selector("fund(address)");
+/// `balanceOf(holder)` on [`LOCALHARNESS_TOKEN_ADDRESS`]. Returns the
+/// holder's $localharness balance in 18-decimal token wei. Useful for
+/// confirming the faucet/transfer flows actually landed funds.
+pub async fn token_balance_of(holder_hex: &str) -> Result<u128, String> {
+    if LOCALHARNESS_TOKEN_ADDRESS == zero_address() {
+        return Err("localharness token not deployed".into());
+    }
+    let selector = selector("balanceOf(address)");
+    let holder_bytes = hex_to_bytes(holder_hex)?;
+    if holder_bytes.len() != 20 {
+        return Err(format!("holder must be 20 bytes, got {}", holder_bytes.len()));
+    }
     let mut padded = [0u8; 32];
-    padded[12..].copy_from_slice(&from_bytes);
+    padded[12..].copy_from_slice(&holder_bytes);
     let mut calldata = Vec::with_capacity(36);
     calldata.extend_from_slice(&selector);
     calldata.extend_from_slice(&padded);
 
+    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
+    let result = eth_call(LOCALHARNESS_TOKEN_ADDRESS, &calldata_hex).await?;
+    decode_u256_as_u128(&result)
+}
+
+/// Sign + submit `LocalharnessToken.faucet(signer.address)`. Mints
+/// `faucetAmount` fresh tokens to the signer (one claim per address
+/// ever). Caller pays gas. Used by the identity-creation flow so a
+/// fresh wallet ends up with a starter $localharness balance.
+pub async fn token_faucet_self(signer: &SigningKey) -> Result<String, String> {
+    let from_bytes = wallet::address(signer);
+    let calldata = encode_address_call("faucet(address)", &from_bytes);
+    sign_and_submit_call(signer, LOCALHARNESS_TOKEN_ADDRESS, 0, &calldata).await
+}
+
+/// Sign + submit `LocalharnessToken.transfer(to, amount)`. The
+/// payment loop's substitute for `rlp_native_transfer` —
+/// `transfer` is an ERC-20 contract call, which Tempo allows.
+pub async fn token_transfer(
+    signer: &SigningKey,
+    to_hex: &str,
+    amount_token_wei: u128,
+) -> Result<String, String> {
+    let to_bytes = hex_to_bytes(to_hex)?;
+    if to_bytes.len() != 20 {
+        return Err(format!("to must be 20 bytes, got {}", to_bytes.len()));
+    }
+    let selector = selector("transfer(address,uint256)");
+    let mut to_padded = [0u8; 32];
+    to_padded[12..].copy_from_slice(&to_bytes);
+    let amount_bytes = u256_be(amount_token_wei);
+    let mut calldata = Vec::with_capacity(4 + 32 + 32);
+    calldata.extend_from_slice(&selector);
+    calldata.extend_from_slice(&to_padded);
+    calldata.extend_from_slice(&amount_bytes);
+    sign_and_submit_call(signer, LOCALHARNESS_TOKEN_ADDRESS, 0, &calldata).await
+}
+
+/// Build calldata for `f(address)`: selector || padded-address.
+fn encode_address_call(signature: &str, addr: &[u8; 20]) -> Vec<u8> {
+    let selector = selector(signature);
+    let mut padded = [0u8; 32];
+    padded[12..].copy_from_slice(addr);
+    let mut out = Vec::with_capacity(36);
+    out.extend_from_slice(&selector);
+    out.extend_from_slice(&padded);
+    out
+}
+
+/// Build, sign, submit, wait-for-receipt for a contract call.
+/// `to_hex` is the contract, `value_wei` is the native value sent
+/// with the call (usually 0 for ERC-20 ops on Tempo), `calldata` is
+/// the encoded selector + args. Errors propagate from any leg.
+async fn sign_and_submit_call(
+    signer: &SigningKey,
+    to_hex: &str,
+    value_wei: u128,
+    calldata: &[u8],
+) -> Result<String, String> {
+    if to_hex == zero_address() {
+        return Err("target contract address is zero".into());
+    }
+    let from_bytes = wallet::address(signer);
+    let from_hex = address_to_hex(&from_bytes);
+
     let nonce = eth_get_transaction_count(&from_hex).await?;
     let gas_price = eth_gas_price().await?;
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
-    let gas_limit = eth_estimate_gas(&from_hex, BOOTSTRAP_FAUCET_ADDRESS, &calldata_hex).await?;
+    let calldata_hex = format!("0x{}", bytes_to_hex(calldata));
+    let gas_limit = eth_estimate_gas(&from_hex, to_hex, &calldata_hex).await?;
 
     let unsigned = rlp_legacy_unsigned(
-        nonce, gas_price, gas_limit, BOOTSTRAP_FAUCET_ADDRESS, 0, &calldata, CHAIN_ID,
+        nonce, gas_price, gas_limit, to_hex, value_wei, calldata, CHAIN_ID,
     )?;
     let mut hasher = Keccak256::new();
     hasher.update(&unsigned);
@@ -612,7 +686,7 @@ pub async fn bootstrap_fund_self(signer: &SigningKey) -> Result<String, String> 
     let rec_id = (sig[64] - 27) as u64;
     let v = CHAIN_ID * 2 + 35 + rec_id;
     let signed = rlp_legacy_signed(
-        nonce, gas_price, gas_limit, BOOTSTRAP_FAUCET_ADDRESS, 0, &calldata,
+        nonce, gas_price, gas_limit, to_hex, value_wei, calldata,
         v, &sig[..32], &sig[32..64],
     )?;
     let raw_hex = format!("0x{}", bytes_to_hex(&signed));
@@ -622,7 +696,58 @@ pub async fn bootstrap_fund_self(signer: &SigningKey) -> Result<String, String> 
     Ok(tx_hash)
 }
 
+fn decode_u256_as_u128(hex: &str) -> Result<u128, String> {
+    let trimmed = hex.trim_start_matches("0x");
+    if trimmed.is_empty() {
+        return Ok(0);
+    }
+    // Strip leading zeros so we fit in u128 (last 32 hex chars).
+    let tail = if trimmed.len() <= 32 {
+        trimmed
+    } else {
+        &trimmed[trimmed.len() - 32..]
+    };
+    u128::from_str_radix(tail, 16).map_err(|e| e.to_string())
+}
+
 // --- legacy / EIP-155 transaction RLP --------------------------------
+
+/// EIP-155 unsigned RLP for any legacy tx — contract call OR native
+/// transfer. Pass empty `data` for native, populated `data` for a
+/// contract call. Hash with keccak256 to get the prehash a signer
+/// commits to. The native-transfer-specific wrapper
+/// [`rlp_native_transfer_unsigned`] is built on top of this.
+pub fn rlp_call_unsigned(
+    to_hex: &str,
+    value_wei: u128,
+    data: &[u8],
+    nonce: u128,
+    gas_price: u128,
+    gas_limit: u128,
+) -> Result<Vec<u8>, String> {
+    rlp_legacy_unsigned(nonce, gas_price, gas_limit, to_hex, value_wei, data, CHAIN_ID)
+}
+
+/// Assemble a `0x`-prefixed signed raw tx hex for any legacy-style
+/// tx (contract call or native). General-purpose counterpart to
+/// [`rlp_call_unsigned`].
+pub fn rlp_call_signed(
+    to_hex: &str,
+    value_wei: u128,
+    data: &[u8],
+    nonce: u128,
+    gas_price: u128,
+    gas_limit: u128,
+    sig_65: &[u8; 65],
+) -> Result<String, String> {
+    let rec_id = (sig_65[64] - 27) as u64;
+    let v = CHAIN_ID * 2 + 35 + rec_id;
+    let signed = rlp_legacy_signed(
+        nonce, gas_price, gas_limit, to_hex, value_wei, data,
+        v, &sig_65[..32], &sig_65[32..64],
+    )?;
+    Ok(format!("0x{}", bytes_to_hex(&signed)))
+}
 
 #[allow(clippy::too_many_arguments)]
 fn rlp_legacy_unsigned(

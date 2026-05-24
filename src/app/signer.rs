@@ -159,6 +159,15 @@ fn build_tx_response(id: &str, tx: &JsValue, purpose: &str) -> Result<JsValue, S
     let gas_limit = field_u128(tx, "gas")?;
     let gas_price = field_u128(tx, "gasPrice")?;
     let chain_id = field_u128(tx, "chainId")?;
+    // `data` optional — empty for a native transfer, populated for a
+    // contract call (ERC-20 transfer, etc.). Hex string with optional
+    // `0x` prefix.
+    let data_hex = field_string(tx, "data").unwrap_or_default();
+    let data_bytes = if data_hex.is_empty() {
+        Vec::new()
+    } else {
+        decode_hex(&data_hex)?
+    };
 
     if chain_id != crate::registry::CHAIN_ID as u128 {
         return Err(format!(
@@ -173,18 +182,17 @@ fn build_tx_response(id: &str, tx: &JsValue, purpose: &str) -> Result<JsValue, S
     let (signer, address) = wallet_handle()?;
     let from_hex = hex_addr(&address);
 
-    // Consent is collected at the SUBDOMAIN before the iframe call
-    // (the user clicks a Rust-rendered pay-card knowing the price).
-    // The iframe signer trusts that — same model as `lh-sign-challenge`
-    // which auto-approves. No JS dialog here per
-    // [[feedback-no-js-alerts]]. The `purpose` field is currently
-    // unused on the signer side; logged via console for debuggability.
+    // Consent is collected at the SUBDOMAIN before the iframe call.
+    // No JS dialog here per [[feedback-no-js-alerts]]. The `purpose`
+    // field is currently unused on the signer side; logged via
+    // console for debuggability.
     web_sys::console::log_1(&JsValue::from_str(&format!(
-        "lh-sign-tx auto-approved: {purpose} ({value_wei} wei → {to_hex})"
+        "lh-sign-tx auto-approved: {purpose} (value={value_wei}, data={} bytes → {to_hex})",
+        data_bytes.len()
     )));
 
-    let unsigned = crate::registry::rlp_native_transfer_unsigned(
-        &to_hex, value_wei, nonce, gas_price, gas_limit,
+    let unsigned = crate::registry::rlp_call_unsigned(
+        &to_hex, value_wei, &data_bytes, nonce, gas_price, gas_limit,
     )?;
     let mut hasher = Keccak256::new();
     hasher.update(&unsigned);
@@ -192,8 +200,8 @@ fn build_tx_response(id: &str, tx: &JsValue, purpose: &str) -> Result<JsValue, S
     prehash.copy_from_slice(&hasher.finalize());
     let sig = wallet::sign_hash(&signer, &prehash);
 
-    let raw_hex = crate::registry::rlp_native_transfer_signed(
-        &to_hex, value_wei, nonce, gas_price, gas_limit, &sig,
+    let raw_hex = crate::registry::rlp_call_signed(
+        &to_hex, value_wei, &data_bytes, nonce, gas_price, gas_limit, &sig,
     )?;
 
     let obj = js_sys::Object::new();
@@ -202,6 +210,23 @@ fn build_tx_response(id: &str, tx: &JsValue, purpose: &str) -> Result<JsValue, S
     set(&obj, "address", JsValue::from_str(&from_hex));
     set(&obj, "raw_tx_hex", JsValue::from_str(&raw_hex));
     Ok(JsValue::from(obj))
+}
+
+fn decode_hex(hex: &str) -> Result<Vec<u8>, String> {
+    let trimmed = hex.trim().trim_start_matches("0x").trim_start_matches("0X");
+    if trimmed.len() % 2 != 0 {
+        return Err("data hex odd length".into());
+    }
+    let mut out = Vec::with_capacity(trimmed.len() / 2);
+    let bytes = trimmed.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let hi = nibble(bytes[i])?;
+        let lo = nibble(bytes[i + 1])?;
+        out.push((hi << 4) | lo);
+        i += 2;
+    }
+    Ok(out)
 }
 
 fn wallet_handle() -> Result<(k256::ecdsa::SigningKey, [u8; 20]), String> {

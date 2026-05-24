@@ -37,7 +37,7 @@ fn site_header(host: &Host) -> Markup {
             h1 {
                 a href="https://localharness.xyz/" title="go home" { "localharness" }
             }
-            span.tag { "0.10.4" } // bumped in lockstep with Cargo.toml
+            span.tag { "0.10.5" } // bumped in lockstep with Cargo.toml
             // Verify pill — present only on tenant subdomains.
             @if matches!(host, Host::Tenant(_)) {
                 (verify_pill(&VerifyState::Pending))
@@ -448,7 +448,7 @@ pub(crate) fn pricing_card_body(price_wei: u128, is_owner: bool) -> Markup {
     let display = if price_wei == 0 {
         "free".to_string()
     } else {
-        format!("{} test ETH/turn", super::format_wei_as_test_eth(price_wei))
+        format!("{} $localharness/turn", super::format_wei_as_test_eth(price_wei))
     };
     html! {
         div #pricing-body .pricing-body {
@@ -458,9 +458,9 @@ pub(crate) fn pricing_card_body(price_wei: u128, is_owner: bool) -> Markup {
                     input #pricing-input
                         type="text"
                         inputmode="decimal"
-                        placeholder="0.001"
+                        placeholder="1.0"
                         value=(if price_wei == 0 { String::new() } else { super::format_wei_as_test_eth(price_wei) }) {}
-                    span.pricing-unit { "test ETH/turn" }
+                    span.pricing-unit { "$localharness/turn" }
                     button.ghost
                         type="button"
                         data-action="pricing-save" { "save" }

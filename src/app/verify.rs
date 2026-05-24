@@ -148,6 +148,10 @@ pub(crate) struct SignTxRequest<'a> {
     pub gas_price: u128,
     pub chain_id: u64,
     pub purpose: &'a str,
+    /// Hex-encoded calldata (no `0x` prefix needed). Empty for a
+    /// native transfer; populated for a contract call (ERC-20
+    /// transfer, etc.).
+    pub data_hex: &'a str,
 }
 
 pub(crate) async fn sign_tx_via_iframe(req: SignTxRequest<'_>) -> Result<String, String> {
@@ -182,6 +186,11 @@ pub(crate) async fn sign_tx_via_iframe(req: SignTxRequest<'_>) -> Result<String,
         &tx,
         &JsValue::from_str("chainId"),
         &JsValue::from_f64(req.chain_id as f64),
+    );
+    let _ = js_sys::Reflect::set(
+        &tx,
+        &JsValue::from_str("data"),
+        &JsValue::from_str(req.data_hex),
     );
 
     let payload = js_sys::Object::new();

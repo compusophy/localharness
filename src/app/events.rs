@@ -690,30 +690,26 @@ async fn run_bootstrap_funding(
         return;
     }
 
-    // If the on-chain bootstrap faucet is deployed, top up from it for
-    // the bulk drip. Otherwise stop here — the gas drip is at least
-    // enough to read state, even if it can't cover a register() tx.
-    if super::registry::BOOTSTRAP_FAUCET_ADDRESS
-        == "0x0000000000000000000000000000000000000000"
-    {
-        return;
-    }
-
+    // Mint $localharness tokens to the new wallet via the
+    // LocalharnessToken self-faucet. This is what gives the user
+    // actual spending power for paid agents — gas alone isn't useful.
     dom::swap_inner(
         "identity-msg",
-        "<span style=\"color:var(--muted)\">topping up from bootstrap faucet…</span>",
+        "<span style=\"color:var(--muted)\">claiming starter $localharness…</span>",
     );
-    match super::registry::bootstrap_fund_self(&signer).await {
+    match super::registry::token_faucet_self(&signer).await {
         Ok(tx) => {
             web_sys::console::log_1(&JsValue::from_str(&format!(
-                "bootstrap_fund_self tx: {tx}"
+                "token_faucet_self tx: {tx}"
             )));
         }
         Err(err) => {
             web_sys::console::warn_1(&JsValue::from_str(&format!(
-                "bootstrap_fund_self: {err}"
+                "token_faucet_self: {err}"
             )));
-            // Soft-fail: keep going. User still has the gas drip.
+            // Soft-fail: identity is saved + gas drip landed. User can
+            // retry by re-creating identity (after admin reset) or wait
+            // for a future top-up affordance.
         }
     }
 }
