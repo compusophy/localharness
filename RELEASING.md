@@ -15,27 +15,34 @@ The release flow is **one command**. Read this once; then trust the script.
 | `Cargo.toml` `version` | every release | release script |
 | `Cargo.lock` | every release (auto) | cargo |
 | `CHANGELOG.md` | every release | **you** (write the entry beforehand) |
-| `UPSTREAM.md` | upstream sync only | you |
-| `README.md` upstream badge | upstream sync only | you |
+| `src/app/templates.rs` `"web demo · X.Y.Z"` tag | every release | **you** (commit before running script) |
+| `README.md` install line `localharness = "X.Y"` | breaking minor/major only | you |
 | `LICENSE` | never | upstream |
-| `PYTHON_README.md` | upstream README change | you (rare) |
 
-`README.md` install line says `localharness = "0.1"` — a caret range, so
-patch bumps don't touch it. Only bump it for breaking minor/major
-releases.
+The release script **only stages `Cargo.toml` + `Cargo.lock` +
+`CHANGELOG.md`**. Anything else that needs to ship with the version
+bump — code, templates, docs, RELEASING.md changes, web bundle —
+must be committed *before* invoking the script. Mixing the two
+breaks the "one commit per release" invariant.
 
 ## Pre-release checklist
 
-1. Confirm `main` is green: `cargo test && cargo clippy --all-targets`.
-2. Decide the next version per [SemVer](https://semver.org):
-   - **patch** (`0.1.0 → 0.1.1`): bug fixes, internal refactors, docs.
-   - **minor** (`0.1.x → 0.2.0`): backward-compatible additions.
+1. Land all the feature work as normal commits on `main`. Bump the
+   `templates.rs` version tag in the same commit as the feature work.
+2. Confirm `main` is green: `cargo test && cargo clippy --all-targets`,
+   plus `cargo check --no-default-features --features browser-app
+   --target wasm32-unknown-unknown` if anything in `src/app/` changed.
+3. Decide the next version per [SemVer](https://semver.org):
+   - **patch** (`0.10.0 → 0.10.1`): bug fixes, internal refactors, docs,
+     UX polish that doesn't move the public API.
+   - **minor** (`0.10.x → 0.11.0`): backward-compatible additions.
    - **major** (`0.x.y → 1.0.0`): breaking changes. Before 1.0, breaking
      changes go in a minor bump per cargo convention.
-3. Add a `CHANGELOG.md` entry under a new heading:
+4. Add a `CHANGELOG.md` entry under a new heading (no date — the script
+   stamps today's date in):
 
    ```markdown
-   ## [0.1.1] - 2026-05-20
+   ## [0.10.1]
 
    ### Added
    - …
@@ -50,17 +57,14 @@ releases.
    The release script extracts this section verbatim into the GitHub
    release notes.
 
-4. (Upstream sync only) Update `UPSTREAM.md` `Pinned commit`/`Pinned
-   date` and the `upstream-XXXXXXX` badge in `README.md`.
-
 ## Run the release
 
 ```sh
 # Linux / macOS / git-bash
-./scripts/release.sh 0.1.1
+./scripts/release.sh 0.10.1
 
 # Windows PowerShell
-./scripts/release.ps1 -Version 0.1.1
+./scripts/release.ps1 -Version 0.10.1
 ```
 
 The script performs:
@@ -104,17 +108,3 @@ git tag -d v<version>                   # remove tag locally
 
 A yanked crate is still downloadable for anyone with `<version>` in
 their `Cargo.lock` — yanking is "discourage", not "delete".
-
-## Upstream sync release flow
-
-When promoting the pinned upstream commit:
-
-1. Run `./scripts/sync-upstream.sh` and review the diff.
-2. Port the relevant Rust changes.
-3. Update `UPSTREAM.md` `Pinned commit` + `Pinned date`.
-4. Update the `upstream-XXXXXXX` badge in `README.md`.
-5. Add a `## [<version>]` entry to `CHANGELOG.md` noting the sync.
-6. Run the release script as normal.
-
-The version bump for an upstream sync is usually **minor** (0.x → 0.x+1)
-because new harness behavior almost always means new SDK surface.

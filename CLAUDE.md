@@ -107,15 +107,17 @@ scripts/
 ├── build-web.{ps1,sh}     wasm-pack build → web/pkg/
 └── probe-gemini.ps1       isolate request-shape vs. response-parse bugs
 
-DESIGN.md                  0.2.x phase plan (historical; SDK runtime)
-DESIGN_M5_PLUS.md          platform layer plan (subdomains / wallet /
-                           registry / iframe-signer / ERC-6551 / what's next)
 RELEASING.md               step-by-step + recovery table
 CHANGELOG.md               per-version changes (Keep-a-Changelog)
-UPSTREAM.md                history with the Python repo
 vercel.json                static-deploy config (no build step)
 .vercelignore              keep target/ + Cargo.* out of the upload
 ```
+
+The historical design docs (`DESIGN.md` 0.2.x SDK plan,
+`DESIGN_M5_PLUS.md` M5+ platform plan, `UPSTREAM.md` Python upstream
+history) were dropped from the tree at 0.10.1 — every layer they
+sketched shipped. Anything you need from them is preserved under git
+tags `v0.1.0`–`v0.10.0`.
 
 ## Build / test / run
 
@@ -234,10 +236,19 @@ Mount-time routing in `mod.rs::mount`:
 
 1. If `?signer=1` → render minimal signer chrome, install
    postMessage listener (`signer::install_signer_listener`), return.
-   The tab is now a cross-origin signing service.
+   The tab is now a cross-origin signing service. If no wallet has
+   been created at the apex origin yet, `paint_signer` renders the
+   `signer_no_identity` chrome and `signer::build_response` errors
+   on every challenge — we never silently generate a wallet here.
 2. Else, classify hostname via `tenant::current()`:
-   - `Host::Apex` (`localharness.xyz`) → marketing chrome with
-     wallet panel + "claim a subdomain" form + "your agents" list.
+   - `Host::Apex` (`localharness.xyz`) → identity-gated apex chrome.
+     `paint_apex` calls `wallet_store::load()` (never creates) — fresh
+     visitors see the `identity_sidecar` with `[Create identity]` +
+     `[Import existing seed]`, and the claim form is rendered with
+     `disabled` input + submit. Wallet creation only happens via the
+     explicit `Action::CreateIdentity` or `Action::ImportSeed`
+     dispatch paths, both of which re-run `paint_apex` so the form
+     unlocks and the "your agents" list fetches in the background.
    - `Host::Tenant(name)` → check `.lh_owner` marker:
      - Missing + `?claim=1` → auto-claim, paint full app.
      - Missing + no hint → paint "claim this name" prompt.
@@ -249,6 +260,13 @@ Mount-time routing in `mod.rs::mount`:
      read-only banner. Also fetches `tba_of_name` for the 💰 pill.
    - `Host::Other` (Vercel preview, localhost) → paint full chat
      app, no verification.
+
+**Identity-gate invariant.** `wallet_store::load_or_create` no longer
+exists. The two callers are `wallet_store::load()` (pure read,
+returns `Option<MasterWallet>`) and `wallet_store::create_and_persist()`
+(generates + writes, only invoked from `Action::CreateIdentity`).
+Don't reintroduce a load-or-create helper — silent wallet generation
+on a marketing-page visit was the bug the gate fixes.
 
 Build: `wasm-pack build . --target web --out-dir web/pkg --release
 --no-default-features --features browser-app`. wasm-opt is disabled in

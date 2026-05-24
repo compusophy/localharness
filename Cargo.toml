@@ -11,13 +11,12 @@ keywords = ["agent", "ai", "gemini", "llm", "sdk"]
 categories = ["api-bindings", "asynchronous"]
 rust-version = "1.85"
 exclude = [
-    "UPSTREAM.md",
-    "DESIGN.md",
     "RELEASING.md",
     "CHANGELOG.md",
     "scripts/**",
     ".github/**",
     "web/**",
+    "contracts/**",
     "vercel.json",
     ".vercelignore",
     ".env",

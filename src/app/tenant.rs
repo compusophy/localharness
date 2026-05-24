@@ -53,9 +53,9 @@ pub(crate) fn current() -> Host {
 }
 
 /// Normalise a user-typed subdomain candidate to the same character
-/// set the registry will (eventually) enforce: lowercase ASCII
-/// alphanumeric + dash. Matches the contract sketch in
-/// `DESIGN_M5_PLUS.md` and `self.tools`' `[^a-z0-9-]` filter.
+/// set the on-chain registry enforces: lowercase ASCII alphanumeric +
+/// dash. Mirrors the `[^a-z0-9-]` filter the contract applies before
+/// minting.
 pub(crate) fn sanitize(input: &str) -> String {
     input
         .trim()

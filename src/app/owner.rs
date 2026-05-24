@@ -7,9 +7,9 @@
 //!
 //! **Limitation by design:** a different device visiting the same
 //! subdomain has its own OPFS, so it sees the subdomain as unclaimed.
-//! That's the price of zero-backend v1. Multi-device claim
-//! enforcement needs the central registry sketched in
-//! `DESIGN_M5_PLUS.md` (M7).
+//! That's the price of zero-backend v1 — cross-device ownership is
+//! handled by the on-chain registry path in [`super::registry`],
+//! which this module is the legacy fallback to.
 
 use crate::filesystem::Filesystem;
 

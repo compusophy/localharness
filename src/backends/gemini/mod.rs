@@ -1,15 +1,9 @@
 //! Rust-native Gemini agent backend.
 //!
-//! Replaces the 0.1.x `LocalConnection` (which proxied to Google's Go
-//! `localharness` binary). The runtime hits the Gemini REST API
-//! directly — zero external processes.
-//!
-//! See `DESIGN.md` for the phased roadmap.
-//!
-//! Phase 2 (this module today) adds tool calling. The agent loop
-//! dispatches function calls inline through the registered hooks +
-//! policies + `ToolRunner`, appends the response to history, and
-//! continues until the model produces no further function calls.
+//! Hits the Gemini REST API directly — zero external processes. The
+//! agent loop dispatches function calls inline through the registered
+//! hooks + policies + `ToolRunner`, appends the response to history,
+//! and continues until the model produces no further function calls.
 
 pub mod api;
 pub mod compaction;

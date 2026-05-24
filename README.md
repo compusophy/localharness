@@ -462,9 +462,12 @@ a self-sovereign identity layer:
 - **Wildcard subdomain per user** (`<name>.localharness.xyz`). Each
   one is a separate origin → separate OPFS → separate working state,
   for free.
-- **Master wallet** auto-generated in the apex's OPFS on first visit
-  (secp256k1 + BIP-39, via the new `wallet` feature). Importable on
-  any device via the 12-word seed phrase.
+- **Master wallet** created on explicit user action (Create identity
+  or Import seed) and persisted in the apex's OPFS — secp256k1 +
+  BIP-39 via the `wallet` feature. The apex page hard-gates the claim
+  form until an identity exists so visitors never end up with a
+  silently-generated wallet they didn't ask for. Importable on any
+  device via the 12-word seed phrase.
 - **On-chain registry** — `LocalharnessRegistry` as an EIP-2535
   Diamond on Tempo Moderato testnet
   ([`0xed7a2d…c656d`](https://moderato.tempo.xyz/address/0xed7a2d170ab2d41721c9bd7368adbff6df0c656d)).
@@ -481,9 +484,9 @@ The on-chain stack lives behind the `wallet` feature and is exposed
 via `pub mod registry` for off-bundle consumers (CLI tools, indexers,
 back-ends). Contract source + Foundry deploy scripts live in
 [`contracts/`](contracts/); architecture write-up in
-[`contracts/README.md`](contracts/README.md). Roadmap for the next
-layers (MPP/x402 payments, ERC-8004 reputation) is in
-[`DESIGN_M5_PLUS.md`](DESIGN_M5_PLUS.md).
+[`contracts/README.md`](contracts/README.md). The next layers on the
+frontier (MPP/x402 payment hooks, ERC-8004 reputation, a second
+non-Gemini backend) are tracked in `CLAUDE.md`.
 
 ---
 
@@ -540,15 +543,8 @@ Add `with_policies(vec![allow_all()])` to opt in, or
 tracing_subscriber::fmt().with_env_filter("localharness=debug").init();
 ```
 
-**What about the 0.1.x `start_local` / Go binary?** Still works in
-0.2.x but marked `#[deprecated]`; removed in 0.3.0. Migrate to
-`start_gemini`. See [`UPSTREAM.md`](UPSTREAM.md) and
-[`DESIGN.md`](DESIGN.md) for the historical context.
-
 ---
 
 ## License
 
 [Apache-2.0](LICENSE).
-
-[upstream]: https://github.com/google-antigravity/antigravity-sdk-python
