@@ -40,7 +40,7 @@ fn site_header(host: &Host) -> Markup {
             h1 {
                 a href="https://localharness.xyz/" title="go home" { "localharness" }
             }
-            span.tag { "web demo · 0.7.2" }
+            span.tag { "web demo · 0.8.0" }
             span class={ "tag tenant-tag tenant-" (tenant_class) }
                 title=(host.label()) { (tenant_label) }
         }
