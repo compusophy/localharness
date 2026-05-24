@@ -5,6 +5,82 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.5] - 2026-05-24
+
+**$localharness ERC-20 ships.** Replaces 0.10.4's
+native-ETH-based BootstrapFaucet (dormant — Tempo Moderato
+forbids EOA↔contract native value transfers, so neither the
+faucet nor the 0.10.3 payment loop could actually move value).
+Everything flows through `LocalharnessToken.transfer` /
+`.faucet` from here on. Verified end-to-end on-chain.
+
+### Added (contracts)
+
+- **`contracts/src/LocalharnessToken.sol`** — hand-rolled ERC-20
+  (name = symbol = "localharness", 18 decimals). Adds a public
+  `faucet(recipient)` that mints `faucetAmount` (default 1000 LH)
+  out of thin air, one claim per recipient ever. Owner-only
+  `mint(to, amount)` for arbitrary distribution; owner-only
+  `setFaucetAmount` + `transferOwnership`. No pre-funding needed —
+  the contract mints, doesn't redistribute.
+- **`contracts/script/DeployLocalharnessToken.s.sol`** — single
+  no-arg deploy.
+- **Live deploy on Tempo Moderato:**
+  `0xcC8A300658dC8d0648D984A5066Af3F8E75e0936`, owner
+  `0x81E9c327…`, faucetAmount 1000 LH. Smoke-tested with a fresh
+  address — `faucet()` mints, `balanceOf` reflects.
+
+### Added (Rust SDK)
+
+- **`registry::LOCALHARNESS_TOKEN_ADDRESS`** const (live address).
+- **`registry::token_balance_of(holder)`** — ERC-20 `balanceOf` view.
+- **`registry::token_faucet_self(signer)`** — calls
+  `faucet(signer.address)` on the token. Caller pays gas.
+- **`registry::token_transfer(signer, to, amount)`** — calls
+  `transfer(to, amount)` on the token. The payment loop's
+  substrate now.
+- **`registry::rlp_call_unsigned(...)`** + **`registry::rlp_call_signed(...)`**
+  — general EIP-155 RLP builders for any legacy tx (with or
+  without calldata). The previously-shipped `rlp_native_transfer_*`
+  pair are still exported as the no-data convenience case.
+
+### Changed (browser app)
+
+- **Identity creation now mints starter $localharness.** Sequence:
+  `tempo_fundAddress` (gas) → poll balance → `token.faucet(self)`
+  → done. New wallet ends up with 1000 LH ready to spend on a
+  paid agent.
+- **Payment loop switched to ERC-20.** `chat::collect_payment_if_required`
+  now builds `transfer(tba, price_wei)` calldata, sends it through
+  the (extended) iframe signer, and submits. No more
+  `rlp_native_transfer` to the TBA — that was a dead path on Tempo.
+- **Iframe signer extended to handle contract calls.** `lh-sign-tx`
+  payload accepts an optional `data` hex field; empty for native,
+  populated for ERC-20-style calls. Same `purpose` logging,
+  same auto-approve (consent collected at the subdomain).
+- **Pricing UI copy:** "test ETH/turn" → "$localharness/turn".
+  Default placeholder shifted from `0.001` to `1.0` (LH tokens
+  are denominated in much smaller units than ETH).
+
+### Deprecated
+
+- **`registry::bootstrap_fund_self`** — removed (was unreachable
+  anyway; `BOOTSTRAP_FAUCET_ADDRESS` stays at zero for safety).
+- **`BootstrapFaucet` contract** at `0xA439…` remains deployed
+  but unreferenced. Holds 0 balance. Owner can self-destruct it
+  via a future cleanup if desired.
+
+### Tempo Moderato findings (carried into memory)
+
+- The chain rejects EOA→contract and contract→EOA native ETH
+  value transfers ("value transfer not allowed"). All economic
+  activity must go through ERC-20-style contract calls.
+- Every account reads as having a sentinel `4242424242…` wei
+  balance via `cast balance` / `eth_getBalance` regardless of
+  actual on-chain reality. Don't trust this number for spending
+  capacity; only `transfer` reverts ("balance" / "drained") tell
+  you what's real.
+
 ## [0.10.4] - 2026-05-24
 
 Ultra-minimal apex onboarding pass plus a `BootstrapFaucet` contract
