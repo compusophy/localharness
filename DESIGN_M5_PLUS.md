@@ -354,15 +354,16 @@ no-email constraint.
 | M | Surface | Effort | Blocker | Notes |
 |---|---------|--------|---------|-------|
 | ~~**M5**~~ | ~~DNS + subdomain self-awareness in the app~~ | done | — | Shipped 2026-05-23. `tenant.rs` + apex chrome + per-device claim. |
-| **M5.1** | Apex→subdomain query-param hand-off so claim is one click | tiny | — | Shipped 2026-05-23 — `?claim=1`. |
-| **M6 spike** | Compile `alloy` (`signer-local` only) to wasm32 in this crate | small | none | Probe whether the wallet can live in the bundle without a JS bridge. Half-day. If it fails, evaluate `k256` + hand-rolled. |
-| **M6** | Master wallet at apex: gen, persist `.lh_wallet.json` in apex's OPFS, export seed phrase | medium | M6 spike | One wallet per device-at-apex. Pattern-1 UX (each subdomain still independent). |
-| **M7 contract** | Write `LocalharnessRegistry.sol` (ERC-8122 surface + name index), Foundry deploy script, you `forge create` once on Tempo testnet | medium | foundry available locally | I write, you sign + send. Address baked into the wasm bundle as a const. |
-| **M7 read-side** | Bundle reads registry via JSON-RPC on mount. "is this name taken" check on apex finally works. | small | M7 contract | `alloy::provider` against Tempo public RPC. Read-only — no wallet needed. |
-| **M7 write-side** | Bundle writes claim tx, signed by master wallet, via RPC | medium | M6 + M7 read-side | Bootstrap: how does a new user get testnet gas? Either a built-in faucet endpoint we hit on first claim, or a "fund this address via the testnet faucet" interstitial. |
-| **M8 iframe-signer** | `/signer.html` at apex: a tiny page holding the wallet, exposing a `postMessage`-based signing API to subdomains | medium | M7 | Pattern 3 UX. Subdomains never see the private key. |
-| **M8 verify** | Subdomains verify signed nonce on mount, lock writes when wallet doesn't match owner | small | M8 iframe-signer | True owner-gated UX. |
-| **M9** | ERC-6551 token-bound account exposed on every registered name → that's the agent's wallet | small (just reads the singleton 6551 registry) | M7 | Agents can hold funds, sign txs, interact with x402/MPP. No contract changes — 6551 is permissionless. |
+| ~~**M5.1**~~ | ~~Apex→subdomain query-param hand-off so claim is one click~~ | done | — | Shipped 2026-05-23 — `?claim=1`. |
+| ~~**M6 spike**~~ | ~~Compile `alloy` to wasm32~~ | done | — | Pivoted to `k256 + sha3` because alloy-consensus 1.0.22 trips on `serde::__private`. Same primitives under the hood, smaller dep tree. |
+| ~~**M6**~~ | ~~Master wallet at apex, BIP-39 seed export~~ | done | — | Shipped 2026-05-23 in 0.8.0. `src/app/wallet_store.rs`. |
+| ~~**M7 contract**~~ | ~~`LocalharnessRegistry.sol`~~ | done | — | Deployed 2026-05-23 at `0x42c8D4EaF99bA80F6B6FCA8E163E077D9FC2F9db` on Tempo Moderato. |
+| ~~**M7 read-side**~~ | ~~Bundle reads registry via JSON-RPC~~ | done | — | `registry::check_name` + `registry::owner_of_name`. Hand-rolled ABI encoding + JSON-RPC over reqwest. |
+| ~~**M7 write-side**~~ | ~~Bundle writes claim tx, signed by master wallet~~ | done | — | `registry::claim_name` with hand-rolled RLP + EIP-155 legacy tx envelope. Faucet bootstrap via `tempo_fundAddress` before first claim. |
+| ~~**M8 iframe-signer**~~ | ~~`?signer=1` at apex hosting the wallet~~ | done | — | Shipped 2026-05-23 post-0.8.0 (Vercel only, no crates.io bump). `src/app/signer.rs`. Trusted-origin check `*.localharness.xyz` + `localhost`. Domain-separated digest `localharness-auth-v0:` + nonce. |
+| ~~**M8 verify**~~ | ~~Subdomains verify via iframe~~ | done | — | `src/app/verify.rs` creates hidden iframe, postMessage sign-challenge with 5s timeout. `kick_verification` runs after `paint_tenant` and updates the chrome's verify pill. |
+| ~~**M8 visitor lockdown**~~ | ~~Hide write affordances for non-owners~~ | done | — | `templates::visitor_banner` swapped into `#input-region` when verify resolves to Visitor. |
+| **M9** | ERC-6551 token-bound account exposed on every registered name → that's the agent's wallet | **needs ERC-721 upgrade** | M7 (deployed) | Current registry is **not** ERC-721 — 6551 expects ERC-721 NFTs. Either (a) upgrade the registry to ERC-721 + redeploy + migrate, or (b) deploy a custom token-bound-account derivation. (a) is more standards-aligned. Either way it invalidates the names currently registered against the existing contract. |
 | **M10** | x402 or MPP payment hooks: pre-tool-call gate that requires payment | large | M9 + real demand | Whatever the user-tier story turns out to be. |
 | **M11** | ERC-8004 expansion: reputation + validation registries on top of M7's identity registry | large | M9 + multi-party usage | When agents start consuming each other's services. |
 | **M12** | At-rest encryption (wallet-derived sym key over OPFS contents) | medium | M8 + real threat | Don't ship until OPFS visibility matters. |
