@@ -5,6 +5,54 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] - 2026-05-24
+
+UX polish on the apex onboarding flow plus a repo cleanup pass.
+No public SDK API changes.
+
+### Changed (browser app)
+
+- **Apex page is identity-gated.** A first-time visitor to
+  `localharness.xyz` no longer has a master wallet silently
+  generated in their OPFS just for landing. The apex renders an
+  identity sidecar with `[Create identity]` + `[Import existing
+  seed]` buttons and a *disabled* claim form; the form unlocks
+  only after explicit consent. Returning visitors with an existing
+  wallet see the address + agents list above a live claim form.
+- **Signer iframe no longer auto-creates.** `?signer=1` loads
+  render a "no identity" chrome and reject every postMessage
+  challenge when the apex origin has no wallet, instead of
+  conjuring one to sign with (which would never match the on-chain
+  owner anyway).
+- `wallet_store::load_or_create` is split into a pure `load() ->
+  Option<MasterWallet>` and an explicit `create_and_persist()`.
+  `pub(crate)` API only — no external impact.
+
+### Changed (repo hygiene)
+
+- Dropped three historical docs at the repo root: `DESIGN.md`
+  (0.2.x SDK runtime plan, fully shipped), `DESIGN_M5_PLUS.md`
+  (M5+ platform plan, shipped through 0.10.0), `UPSTREAM.md`
+  (Python upstream tracking, project hasn't been a port since
+  0.2.x). Anything you need from them is preserved under git
+  tags `v0.1.0`–`v0.10.0`.
+- `Cargo.toml` exclude list updated — `contracts/**` is now
+  excluded from the published crate (it was leaking into
+  `target/package/` previously).
+- `RELEASING.md` refreshed: dropped stale Python-upstream-sync
+  section + dead `PYTHON_README.md` / `sync-upstream.sh`
+  references; added a row noting that
+  `src/app/templates.rs` carries a hardcoded `"web demo · X.Y.Z"`
+  tag the user has to bump before running the release script.
+
+### Fixed
+
+- The PowerShell 5.1 stderr trap noted in CLAUDE.md is still
+  triggered by `build-web.ps1` (cargo's progress lines turn into
+  ErrorRecords). The wasm bundle build succeeds anyway because the
+  script captures `$LASTEXITCODE` — this is documented as a known
+  cosmetic; not a regression.
+
 ## [0.10.0] - 2026-05-23
 
 The on-chain story landed in 0.9.0; this release exposes the
