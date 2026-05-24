@@ -5,6 +5,95 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.4] - 2026-05-24
+
+Ultra-minimal apex onboarding pass plus a `BootstrapFaucet` contract
+that decouples first-wallet funding from the public testnet faucet.
+Also kills every remaining `window.confirm()` in the bundle —
+confirmation flows are now HTML-template + inline `data-action`
+buttons end to end.
+
+### Changed (browser app)
+
+- **Stepped apex.** The apex page now renders exactly one of two
+  screens at a time: no-identity → just `[create identity]` and
+  `[import seed]` buttons; identity-exists → owned-agents list +
+  `[name].localharness.xyz [create]` form, with a small wallet
+  footer at the bottom. No more tagline, no more "Open source · …"
+  footer, no more identity+claim panels stacked together.
+- **Header strip.** Header shows `localharness 0.10.4`. No "web demo"
+  prefix, no `apex` / `tenant · name` tag chip. Admin button moved
+  to top-right and opens a dropdown panel.
+- **Admin dropdown.** Single home for seed reveal + seed import +
+  reset-local-state. Replaces the old footer admin link and the
+  identity-sidecar disclosures.
+- **`create →` → `create`.** Button label is just the word; no
+  arrow glyph.
+- **Tenant chrome trim.** No "Streaming Gemini chat…" preamble.
+  Inputs use minimal placeholders. "send" / "new" actions only.
+  OPFS panel title is just `files`.
+- **Wipe-button consent moves inline.** Click `wipe` in the OPFS
+  panel → button swaps to `wipe? / no`. Confirm runs the wipe.
+
+### Added (browser app + SDK)
+
+- **`BootstrapFaucet.sol`** — admin-pre-funded distribution contract
+  at `contracts/src/BootstrapFaucet.sol`. `fund(address)` callable
+  by anyone, one drip per recipient, owner controls drip size +
+  withdraw. `contracts/script/DeployBootstrapFaucet.s.sol` deploys
+  with `forge script ... --rpc-url tempo_moderato --private-key
+  $EVM_PRIVATE_KEY --broadcast`.
+- **Auto-funding on identity creation.** `Action::CreateIdentity`
+  now: generate wallet → `tempo_fundAddress` (gas drip) → poll
+  `eth_getBalance` until non-zero → call `BootstrapFaucet.fund(self)`
+  if `BOOTSTRAP_FAUCET_ADDRESS` is set → re-paint. Fixes the
+  prior "have 0 want N" error visitors hit when claiming a name
+  immediately after creating an identity.
+- **`pub fn registry::balance_of(address_hex)`** — `eth_getBalance`
+  wrapper.
+- **`pub fn registry::wait_for_min_balance(...)`** — poll until
+  the address has at least N wei, with 1s cadence + timeout.
+- **`pub fn registry::bootstrap_fund_self(signer)`** — sign + send
+  + confirm a `BootstrapFaucet.fund(self_address)` call.
+- **`pub const registry::BOOTSTRAP_FAUCET_ADDRESS`** — initially
+  zero (contract not deployed yet). Update this constant after
+  running `DeployBootstrapFaucet.s.sol`; the bundle then activates
+  the on-chain top-up automatically.
+
+### Fixed
+
+- **No more JS dialogs.** Every `window.confirm()` is gone:
+  - OPFS wipe → inline arm-then-confirm in the panel header.
+  - Admin reset → inline `[reset…] → [yes, wipe] / [cancel]` in the
+    header admin dropdown.
+  - Tx-signing consent → moved to the subdomain side as a
+    user-facing pay-card click (the iframe signer auto-signs once
+    the subdomain has collected consent; same model as challenges).
+- The `agents-list` border-top no longer renders at the top of an
+  otherwise-empty section — empty list collapses to display: none.
+
+### Deploy step (manual)
+
+The new `BootstrapFaucet.sol` is **written and compiled but not yet
+deployed** — the deploy needs the admin key in env, which only the
+operator has. To activate:
+
+```sh
+EVM_PRIVATE_KEY=<admin-key> \
+forge script script/DeployBootstrapFaucet.s.sol \
+  --rpc-url tempo_moderato \
+  --root contracts \
+  --broadcast \
+  --sig "run(uint256,uint256)" \
+  10000000000000000 \  # 0.01 ETH per drip
+  1000000000000000000  # 1 ETH prefund
+```
+
+Take the printed address and update
+`src/registry.rs::BOOTSTRAP_FAUCET_ADDRESS`. Rebuild wasm + redeploy
+to vercel. Until then, identity creation funds via `tempo_fundAddress`
+only.
+
 ## [0.10.3] - 2026-05-24
 
 Phase 1 of the payment-hooks frontier: **visitor-pays-agent
