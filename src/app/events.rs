@@ -226,6 +226,119 @@ fn on_apex_input() {
     });
 }
 
+/// Full apex claim flow: faucet → registration tx → confirm → redirect.
+/// Splits out of `dispatch` so the spawn_local future stays readable.
+async fn run_apex_claim(name: String) {
+    let msg_id = "apex-msg";
+
+    // 1. Confirm the name is still available right before sending.
+    //    The live-check on input runs against `latest`, but a slow
+    //    user might have been overtaken; cheap to re-query.
+    dom::swap_inner(
+        msg_id,
+        "<span style=\"color:var(--muted)\">checking availability…</span>",
+    );
+    match super::registry::check_name(&name).await {
+        Ok(super::registry::Status::Taken { agent_id }) => {
+            dom::swap_inner(
+                msg_id,
+                &format!(
+                    "<span style=\"color:var(--error)\">✗ {name} was just registered (agentId {agent_id})</span>"
+                ),
+            );
+            return;
+        }
+        Ok(super::registry::Status::Unknown) => {
+            dom::swap_inner(
+                msg_id,
+                "<span style=\"color:var(--error)\">registry not deployed — claim impossible</span>",
+            );
+            return;
+        }
+        Err(err) => {
+            dom::swap_inner(
+                msg_id,
+                &format!("<span style=\"color:var(--error)\">availability check failed: {err}</span>"),
+            );
+            return;
+        }
+        Ok(super::registry::Status::Available) => {}
+    }
+
+    // 2. Pull the wallet out of App state. paint_apex loaded it at mount.
+    let wallet_address = super::APP
+        .with(|cell| cell.borrow().wallet.as_ref().map(|w| (w.signer.clone(), wallet_address_hex(&w.address))));
+    let (signer, addr_hex) = match wallet_address {
+        Some(pair) => pair,
+        None => {
+            dom::swap_inner(
+                msg_id,
+                "<span style=\"color:var(--error)\">wallet not loaded — refresh and try again</span>",
+            );
+            return;
+        }
+    };
+
+    // 3. Faucet first. Idempotent enough for testnet; if the wallet
+    //    is already funded, the call still succeeds (or rate-limits,
+    //    which we treat as warning-not-fatal).
+    dom::swap_inner(
+        msg_id,
+        "<span style=\"color:var(--muted)\">funding wallet from faucet…</span>",
+    );
+    if let Err(err) = super::registry::request_faucet_funds(&addr_hex).await {
+        // Don't bail — the wallet might already have funds. Show but proceed.
+        web_sys::console::warn_1(&JsValue::from_str(&format!("faucet: {err}")));
+    }
+
+    // 4. Build, sign, send, wait.
+    dom::swap_inner(
+        msg_id,
+        "<span style=\"color:var(--muted)\">submitting registration on-chain…</span>",
+    );
+    match super::registry::claim_name(&signer, &name).await {
+        Ok(tx_hash) => {
+            dom::swap_inner(
+                msg_id,
+                &format!(
+                    "<span style=\"color:var(--accent)\">✓ claimed (tx {})</span>",
+                    short_hash(&tx_hash)
+                ),
+            );
+            // 5. Hand off intent to the subdomain so it claims locally too.
+            let target = format!("https://{name}.localharness.xyz/?claim=1");
+            if let Ok(window) = dom::window() {
+                let _ = window.location().assign(&target);
+            }
+        }
+        Err(err) => {
+            dom::swap_inner(
+                msg_id,
+                &format!(
+                    "<span style=\"color:var(--error)\">claim failed: {err}</span>"
+                ),
+            );
+        }
+    }
+}
+
+fn wallet_address_hex(addr: &[u8; 20]) -> String {
+    let mut s = String::with_capacity(42);
+    s.push_str("0x");
+    for b in addr {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+fn short_hash(tx_hash: &str) -> String {
+    let stripped = tx_hash.trim_start_matches("0x");
+    if stripped.len() < 12 {
+        return tx_hash.to_string();
+    }
+    format!("{}…{}", &stripped[..6], &stripped[stripped.len() - 4..])
+}
+
 /// Recompute the "(N chars)" hint next to the key input. Called from
 /// both the input listener and the mount restore path, so it lives
 /// here.
@@ -274,9 +387,8 @@ fn dispatch(action: Action) {
             });
         }
         Action::ApexClaim => {
-            // Read the apex form's input, sanitize, redirect with a
-            // ?claim=1 hint so the destination subdomain auto-claims
-            // on arrival (rather than re-prompting the user).
+            // Read + validate name, then run the full on-chain claim
+            // flow async: faucet -> registry::claim_name -> redirect.
             let raw = dom::input_by_id("apex-input")
                 .map(|i| i.value())
                 .unwrap_or_default();
@@ -288,13 +400,9 @@ fn dispatch(action: Action) {
                 );
                 return;
             }
-            // Apex and subdomain are different origins — we cannot
-            // write to the subdomain's OPFS from here. Hand off intent
-            // via the URL.
-            let target = format!("https://{cleaned}.localharness.xyz/?claim=1");
-            if let Ok(window) = dom::window() {
-                let _ = window.location().assign(&target);
-            }
+            wasm_bindgen_futures::spawn_local(async move {
+                run_apex_claim(cleaned).await;
+            });
         }
         Action::ClaimHere => {
             wasm_bindgen_futures::spawn_local(async move {

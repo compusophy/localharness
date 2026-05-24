@@ -167,6 +167,64 @@ fn finalize(signer: SigningKey) -> GeneratedWallet {
     }
 }
 
+// --- minimal RLP (Ethereum's serialization format for tx envelopes) --
+
+/// RLP-encode a byte string. Used for tx fields and for wrapping the
+/// final encoded list.
+pub fn rlp_bytes(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len() + 9);
+    if input.len() == 1 && input[0] < 0x80 {
+        out.push(input[0]);
+    } else if input.len() <= 55 {
+        out.push(0x80 + input.len() as u8);
+        out.extend_from_slice(input);
+    } else {
+        let len_bytes = be_bytes_no_leading_zero(input.len() as u128);
+        out.push(0xb7 + len_bytes.len() as u8);
+        out.extend_from_slice(&len_bytes);
+        out.extend_from_slice(input);
+    }
+    out
+}
+
+/// RLP-encode a list. `items` is each item already RLP-encoded.
+pub fn rlp_list(items: &[Vec<u8>]) -> Vec<u8> {
+    let body_len: usize = items.iter().map(|i| i.len()).sum();
+    let mut out = Vec::with_capacity(body_len + 9);
+    if body_len <= 55 {
+        out.push(0xc0 + body_len as u8);
+    } else {
+        let len_bytes = be_bytes_no_leading_zero(body_len as u128);
+        out.push(0xf7 + len_bytes.len() as u8);
+        out.extend_from_slice(&len_bytes);
+    }
+    for item in items {
+        out.extend_from_slice(item);
+    }
+    out
+}
+
+/// Minimal big-endian encoding of a u128: drop leading zero bytes,
+/// but if the value is 0 return a single 0 byte. RLP convention is
+/// "empty" for zero quantities in some contexts; callers usually
+/// wrap via `rlp_uint` which returns `[]` for zero.
+fn be_bytes_no_leading_zero(value: u128) -> Vec<u8> {
+    let bytes = value.to_be_bytes();
+    let first_non_zero = bytes.iter().position(|b| *b != 0).unwrap_or(bytes.len() - 1);
+    bytes[first_non_zero..].to_vec()
+}
+
+/// RLP-encode a uint: empty bytes for zero, minimal big-endian
+/// otherwise. This is the convention legacy/EIP-155 txs use for
+/// quantity fields (nonce, gasPrice, gasLimit, value, v, r, s).
+pub fn rlp_uint(value: u128) -> Vec<u8> {
+    if value == 0 {
+        rlp_bytes(&[])
+    } else {
+        rlp_bytes(&be_bytes_no_leading_zero(value))
+    }
+}
+
 // --- minimal hex helpers (avoids pulling in the `hex` crate) ---------
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -269,6 +327,51 @@ mod tests {
         let restored = mnemonic_from_phrase(&phrase).unwrap();
         let k2 = signer_from_mnemonic(&restored);
         assert_eq!(address(&k1), address(&k2));
+    }
+
+    #[test]
+    fn rlp_short_string_round_trip() {
+        // Known vectors from the RLP spec.
+        // empty string -> 0x80
+        assert_eq!(rlp_bytes(&[]), vec![0x80]);
+        // single byte < 0x80 -> itself
+        assert_eq!(rlp_bytes(&[0x7f]), vec![0x7f]);
+        // "dog" -> 0x83 'd' 'o' 'g'
+        assert_eq!(rlp_bytes(b"dog"), vec![0x83, b'd', b'o', b'g']);
+    }
+
+    #[test]
+    fn rlp_long_string_uses_length_prefix() {
+        let s = vec![0xaa; 100];
+        let enc = rlp_bytes(&s);
+        assert_eq!(enc[0], 0xb8); // 0xb7 + 1 byte for length
+        assert_eq!(enc[1], 100);
+        assert_eq!(&enc[2..], &s[..]);
+    }
+
+    #[test]
+    fn rlp_uint_zero_is_empty_string() {
+        assert_eq!(rlp_uint(0), vec![0x80]);
+    }
+
+    #[test]
+    fn rlp_uint_small_minimal() {
+        // 15 -> single byte
+        assert_eq!(rlp_uint(15), vec![0x0f]);
+        // 256 -> 0x82 0x01 0x00
+        assert_eq!(rlp_uint(256), vec![0x82, 0x01, 0x00]);
+    }
+
+    #[test]
+    fn rlp_list_known_vector() {
+        // ["cat", "dog"] -> 0xc8 0x83 'c' 'a' 't' 0x83 'd' 'o' 'g'
+        let cat = rlp_bytes(b"cat");
+        let dog = rlp_bytes(b"dog");
+        let enc = rlp_list(&[cat, dog]);
+        assert_eq!(
+            enc,
+            vec![0xc8, 0x83, b'c', b'a', b't', 0x83, b'd', b'o', b'g']
+        );
     }
 
     #[test]
