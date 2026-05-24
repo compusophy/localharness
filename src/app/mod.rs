@@ -29,6 +29,7 @@ mod history;
 mod key_store;
 mod opfs;
 mod owner;
+mod registry;
 mod templates;
 mod tenant;
 mod wallet_store;

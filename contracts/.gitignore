@@ -1,0 +1,5 @@
+# Foundry build artefacts and installed libs (re-fetched via `forge install`)
+out/
+cache/
+broadcast/
+lib/

@@ -94,23 +94,16 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
     doc.add_event_listener_with_callback("click", click.as_ref().unchecked_ref())?;
     click.forget(); // listener lives for the lifetime of the document
 
-    // Key input mirroring: input → sessionStorage + OPFS + keymeta
-    // refresh. sessionStorage is the synchronous backstop; OPFS lets
-    // the key survive a tab close. Both writes are best-effort.
+    // Delegated input handler — routes per-element. The matrix is
+    // small enough to dispatch by id; if it grows further, switch to
+    // a `data-input` attribute pattern matching the click handler.
     let input_handler = Closure::<dyn FnMut(_)>::new(move |event: web_sys::Event| {
         let Some(target) = event.target() else { return };
         let Ok(el) = target.dyn_into::<Element>() else { return };
-        if el.id() == "key" {
-            if let Some(input) = dom::input_by_id("key") {
-                let value = input.value();
-                if let Ok(Some(storage)) = dom::session_storage() {
-                    let _ = storage.set_item("gemini_api_key", &value);
-                }
-                refresh_keymeta();
-                wasm_bindgen_futures::spawn_local(async move {
-                    super::key_store::save(&value).await;
-                });
-            }
+        match el.id().as_str() {
+            "key" => on_key_input(),
+            "apex-input" => on_apex_input(),
+            _ => {}
         }
     });
     doc.add_event_listener_with_callback("input", input_handler.as_ref().unchecked_ref())?;
@@ -150,6 +143,87 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
     keydown.forget();
 
     Ok(())
+}
+
+/// Persist the Gemini key from the input field to sessionStorage +
+/// OPFS, and refresh the "(N chars)" hint.
+fn on_key_input() {
+    if let Some(input) = dom::input_by_id("key") {
+        let value = input.value();
+        if let Ok(Some(storage)) = dom::session_storage() {
+            let _ = storage.set_item("gemini_api_key", &value);
+        }
+        refresh_keymeta();
+        wasm_bindgen_futures::spawn_local(async move {
+            super::key_store::save(&value).await;
+        });
+    }
+}
+
+/// Live registry check as the user types a subdomain name. Sanitises
+/// to the same charset the contract enforces, short-circuits on
+/// too-short input, and queries `LocalharnessRegistry::idOfName` for
+/// anything 3 chars or longer.
+fn on_apex_input() {
+    let Some(input) = dom::input_by_id("apex-input") else { return };
+    let raw = input.value();
+    let cleaned = super::tenant::sanitize(&raw);
+    if cleaned != raw {
+        // Reflect the canonical form so the user sees the live filter.
+        input.set_value(&cleaned);
+    }
+
+    if cleaned.is_empty() {
+        dom::swap_inner("apex-msg", "");
+        return;
+    }
+    if cleaned.len() < 3 {
+        dom::swap_inner(
+            "apex-msg",
+            "<span style=\"color:var(--muted)\">need at least 3 chars</span>",
+        );
+        return;
+    }
+    if cleaned.len() > 32 {
+        dom::swap_inner(
+            "apex-msg",
+            "<span style=\"color:var(--error)\">max 32 chars</span>",
+        );
+        return;
+    }
+
+    // Stash this query string and compare again after the RPC returns —
+    // if the user typed more characters meanwhile, drop the stale result.
+    dom::swap_inner(
+        "apex-msg",
+        "<span style=\"color:var(--muted)\">checking registry…</span>",
+    );
+    let pending = cleaned.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        let result = super::registry::check_name(&pending).await;
+        // Only render if the field still matches what we checked.
+        let still_pending = dom::input_by_id("apex-input")
+            .map(|i| super::tenant::sanitize(&i.value()) == pending)
+            .unwrap_or(false);
+        if !still_pending {
+            return;
+        }
+        let html = match result {
+            Ok(super::registry::Status::Unknown) => {
+                "<span style=\"color:var(--muted)\">registry pending deploy</span>".to_string()
+            }
+            Ok(super::registry::Status::Available) => format!(
+                "<span style=\"color:var(--accent)\">✓ {pending} is available</span>"
+            ),
+            Ok(super::registry::Status::Taken { agent_id }) => format!(
+                "<span style=\"color:var(--error)\">✗ {pending} is already registered (agentId {agent_id})</span>"
+            ),
+            Err(err) => format!(
+                "<span style=\"color:var(--muted)\">registry error: {err}</span>"
+            ),
+        };
+        dom::swap_inner("apex-msg", &html);
+    });
 }
 
 /// Recompute the "(N chars)" hint next to the key input. Called from
