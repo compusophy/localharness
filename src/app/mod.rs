@@ -29,12 +29,15 @@ mod history;
 mod key_store;
 mod opfs;
 mod owner;
-mod registry;
 mod signer;
 mod templates;
 mod tenant;
 mod verify;
 mod wallet_store;
+
+// Re-export the crate-level public registry module as `app::registry`
+// so the existing intra-app imports keep working unchanged.
+pub(crate) use crate::registry;
 
 /// Per-tab state. One instance lives in [`APP`] for the lifetime of the
 /// page. Nothing here is `Send`/`Sync` — wasm32 is single-threaded.

@@ -67,6 +67,16 @@ mod app;
 #[cfg(feature = "wallet")]
 pub mod wallet;
 
+// JSON-RPC client for the `LocalharnessRegistry` diamond on Tempo
+// Moderato. Read-only views (`check_name`, `owner_of_name`,
+// `tba_of_name`, `list_owned_tokens`) work on every target;
+// `claim_name` signs with a `k256` key (needs the wallet feature)
+// and uses `tokio::time::sleep` on native / `setTimeout` on wasm to
+// poll the receipt. The diamond's address is baked in as
+// `registry::REGISTRY_ADDRESS`; the RPC URL is `registry::RPC_URL`.
+#[cfg(feature = "wallet")]
+pub mod registry;
+
 pub use agent::{Agent, AgentConfig, GeminiAgentConfig};
 pub use backends::gemini::{
     decode_transcript_bytes, GeminiBackendConfig, GeminiConnection, GeminiConnectionStrategy,
