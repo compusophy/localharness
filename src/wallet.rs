@@ -8,13 +8,13 @@
 //! the hood for the local signer anyway.
 //!
 //! Surface (intentionally small):
-//! - `generate()`            — new random keypair
-//! - `from_private_key_hex`  — restore from a saved hex string
-//! - `address(signer)`       — derive the 20-byte EVM address
-//! - `sign_hash(signer, h)`  — produce a 65-byte ECDSA signature
-//!                              (r ‖ s ‖ v) over a 32-byte prehash
-//! - `recover_address`       — recover the signer's address from a
-//!                              signature + prehash (verification)
+//! - `generate()` — new random keypair
+//! - `from_private_key_hex` — restore from a saved hex string
+//! - `address(signer)` — derive the 20-byte EVM address
+//! - `sign_hash(signer, h)` — produce a 65-byte ECDSA signature
+//!   (r ‖ s ‖ v) over a 32-byte prehash
+//! - `recover_address` — recover the signer's address from a
+//!   signature + prehash (verification)
 //!
 //! No HTTP, no JS bindings — pure compute. Compiles on every target.
 
