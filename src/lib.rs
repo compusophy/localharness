@@ -62,6 +62,11 @@ pub mod types;
 #[cfg(all(feature = "browser-app", target_arch = "wasm32"))]
 mod app;
 
+// M6 spike: in-browser secp256k1 keypair via alloy's local signer.
+// Pure-compute (no HTTP, no JS deps), so it builds on every target.
+#[cfg(feature = "wallet")]
+pub mod wallet;
+
 pub use agent::{Agent, AgentConfig, GeminiAgentConfig};
 pub use backends::gemini::{
     decode_transcript_bytes, GeminiBackendConfig, GeminiConnection, GeminiConnectionStrategy,

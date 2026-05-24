@@ -54,6 +54,13 @@ native = [
 # `--no-default-features --target wasm32-unknown-unknown` via wasm-pack
 # to build the shipping browser bundle. Has no effect on a native build.
 browser-app = ["dep:maud", "dep:console_error_panic_hook", "dep:pulldown-cmark"]
+# `wallet` is the M6 in-browser keypair. Uses k256 + sha3 directly
+# rather than alloy's split crates — alloy's TransactionEnvelope
+# proc-macro currently trips on `serde::__private` symbol resolution
+# (1.0.22 vs serde 1.0.228), and we don't need EIP-1559 envelope
+# encoding for an identity wallet. k256 alone is wasm-clean and
+# what alloy uses under the hood anyway.
+wallet = ["dep:k256", "dep:sha3", "dep:rand_core"]
 
 [dependencies]
 tokio = { version = "1.42", default-features = false, features = [
@@ -91,6 +98,17 @@ console_error_panic_hook = { version = "0.1", optional = true }
 # highlighting, no html-on-the-wire: we hand pulldown-cmark a string,
 # get HTML back, swap it into the segment via maud's PreEscaped.
 pulldown-cmark = { version = "0.10", optional = true, default-features = false, features = ["html"] }
+# In-browser wallet primitives (M6 spike).
+# k256: secp256k1 keypair + sign. ecdsa + arithmetic features are
+# the minimum for "generate, sign, verify" without dragging in
+# elliptic-curve traits we don't use.
+# sha3: keccak256 for Ethereum address derivation
+#   (last 20 bytes of keccak256(uncompressed_pubkey[1..])).
+# rand_core: trait used by k256's `random()`; wasm gets entropy via
+# our existing getrandom/js feature.
+k256 = { version = "0.13", optional = true, default-features = false, features = ["ecdsa", "arithmetic", "std"] }
+sha3 = { version = "0.10", optional = true, default-features = false }
+rand_core = { version = "0.6", optional = true, default-features = false, features = ["getrandom"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { version = "1", features = ["js"] }
