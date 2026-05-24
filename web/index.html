@@ -24,7 +24,14 @@
       font: 14px/1.55 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
       min-height: 100vh;
     }
-    body {
+    /* #root is the wasm-bundle mount point and the actual flex
+       container for the header/main/footer triplet. Body would have
+       been the natural choice but the bundle nests everything inside
+       this single div, so the column layout has to live here for
+       margin-top:auto on the footer to push it to the viewport bottom
+       instead of just to the bottom of root's intrinsic content. */
+    #root {
+      min-height: 100vh;
       display: flex;
       flex-direction: column;
     }
