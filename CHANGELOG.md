@@ -5,6 +5,33 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.8] - 2026-05-24
+
+Two bugs found by tailing the actual console output during a
+verify-failed reproduction.
+
+### Fixed
+
+- **Signer's `source.dyn_into::<Window>()` failed for cross-origin
+  parents.** A cross-origin parent shows up in `MessageEvent.source`
+  as a `WindowProxy` (opaque proxy), which fails wasm-bindgen's
+  strict `instanceof Window` check even though it has a working
+  `postMessage`. The signer was erroring out at this dyn-into and
+  silently dropping the response — the parent then timed out
+  waiting for it. Fix: hold `event.source()` as a generic `JsValue`
+  and post the reply via `Reflect.get(source, "postMessage").call(...)`.
+- **Noise from incidental message events.** Pages run lots of
+  unrelated postMessage chatter (Vercel's lockdown script,
+  browser extensions, dev tooling). The signer was extracting
+  `source` for every message before checking the type, so each
+  third-party message logged a spurious "source is not a Window"
+  warning. Fix: early-return for unrecognized `msg_type` BEFORE
+  any source/origin work.
+
+Together these mean the verify roundtrip should now actually
+complete instead of timing out twice and falling back to "verify
+failed".
+
 ## [0.10.7] - 2026-05-24
 
 Chrome alignment + a real fix for the verify timeout that 0.10.6
