@@ -42,7 +42,7 @@ fn site_header(host: &Host) -> Markup {
             h1 {
                 a href="https://localharness.xyz/" title="go home" { "localharness" }
             }
-            span.tag { "web demo · 0.9.0" }
+            span.tag { "web demo · 0.10.0" }
             span class={ "tag tenant-tag tenant-" (tenant_class) }
                 title=(host.label()) { (tenant_label) }
             // Verify pill — present only on tenant subdomains.
