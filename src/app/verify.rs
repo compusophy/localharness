@@ -232,11 +232,19 @@ pub(crate) async fn sign_tx_via_iframe(req: SignTxRequest<'_>) -> Result<String,
 
 const TX_TIMEOUT_MS: u32 = 90_000;
 
+/// How long to wait for the signer iframe's `lh-signer-ready` ping
+/// before posting the challenge anyway. The wasm bundle in a cold
+/// iframe can take a couple of seconds to compile + install its
+/// postMessage listener; this window covers that. If the ready ping
+/// never arrives we post anyway as best-effort.
+const READY_TIMEOUT_MS: u32 = 15_000;
+
 /// Shared iframe-lifecycle dance — load the apex signer in a hidden
-/// iframe, attach a correlation-id-filtered listener, post `payload`,
-/// race the reply against `timeout_ms`, tear down. Returns the raw
-/// response `JsValue` (a `{type:"lh-sign-response", id, ...}` object);
-/// callers parse the variant-specific fields.
+/// iframe, attach a correlation-id-filtered listener, wait for the
+/// `lh-signer-ready` ping, post `payload`, race the reply against
+/// `timeout_ms`, tear down. Returns the raw response `JsValue` (a
+/// `{type:"lh-sign-response", id, ...}` object); callers parse the
+/// variant-specific fields.
 async fn signer_iframe_request(
     expected_id: &str,
     payload: &JsValue,
@@ -261,9 +269,16 @@ async fn signer_iframe_request(
     let result_slot: Rc<RefCell<Option<Result<JsValue, String>>>> =
         Rc::new(RefCell::new(None));
     let waker_slot: Rc<RefCell<Option<js_sys::Function>>> = Rc::new(RefCell::new(None));
+    // Separate ready slot: signer posts `{type:"lh-signer-ready"}` once
+    // its postMessage listener is installed. Verify-side gates on this
+    // instead of a fixed sleep, so a slow wasm-compile doesn't race.
+    let ready_slot: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+    let ready_waker: Rc<RefCell<Option<js_sys::Function>>> = Rc::new(RefCell::new(None));
 
     let result_for_handler = result_slot.clone();
     let waker_for_handler = waker_slot.clone();
+    let ready_for_handler = ready_slot.clone();
+    let ready_waker_for_handler = ready_waker.clone();
     let id_for_handler = expected_id.to_string();
     let handler = Closure::<dyn FnMut(_)>::new(move |event: MessageEvent| {
         let data = event.data();
@@ -277,6 +292,15 @@ async fn signer_iframe_request(
             .ok()
             .and_then(|v| v.as_string())
             .unwrap_or_default();
+
+        if msg_type == "lh-signer-ready" {
+            *ready_for_handler.borrow_mut() = true;
+            if let Some(waker) = ready_waker_for_handler.borrow_mut().take() {
+                let _ = waker.call0(&JsValue::NULL);
+            }
+            return;
+        }
+
         if msg_type != "lh-sign-response" {
             return;
         }
@@ -317,11 +341,24 @@ async fn signer_iframe_request(
     let target = content_window
         .ok_or_else(|| "iframe content window never available".to_string())?;
 
-    // 500ms is a comfortable margin for the apex signer's async
-    // wallet-load (which races our challenge if it's still in flight).
-    // Combined with the higher-level retry in verify_owner this should
-    // make race-condition failures vanishingly rare.
-    sleep_ms(500).await;
+    // Wait for the signer to send its `lh-signer-ready` ping (set by
+    // paint_signer once the wasm bundle has compiled + the listener
+    // is installed + the wallet is loaded-or-known-absent). Falls back
+    // to posting anyway after READY_TIMEOUT_MS so a missing ping
+    // doesn't deadlock — though every shipped signer paints one.
+    if !*ready_slot.borrow() {
+        let ready_promise = js_sys::Promise::new(&mut |resolve, _reject| {
+            *ready_waker.borrow_mut() = Some(resolve.clone());
+            if let Some(window) = web_sys::window() {
+                let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                    &resolve,
+                    READY_TIMEOUT_MS as i32,
+                );
+            }
+        });
+        let _ = JsFuture::from(ready_promise).await;
+    }
+
     target
         .post_message(payload, SIGNER_ORIGIN)
         .map_err(|e| format!("postMessage: {e:?}"))?;

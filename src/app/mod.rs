@@ -487,6 +487,29 @@ pub(crate) async fn paint_signer() {
             root.set_inner_html(&templates::signer_no_identity().into_string());
         }
     }
+
+    // Tell the parent we're ready to receive sign requests.
+    // The verify-side waits for this ping before posting the challenge
+    // — avoids the race where parent posted before the wasm bundle
+    // had finished loading + installed its postMessage listener.
+    // Sent regardless of wallet presence so the parent can detect
+    // "no identity" via the challenge's response error instead of
+    // a generic timeout.
+    if let Ok(window) = dom::window() {
+        if let Ok(Some(parent)) = window.parent() {
+            let ready = js_sys::Object::new();
+            let _ = js_sys::Reflect::set(
+                &ready,
+                &JsValue::from_str("type"),
+                &JsValue::from_str("lh-signer-ready"),
+            );
+            // Target "*" — the message carries no sensitive data, only
+            // a presence ping. The PARENT enforces origin matching on
+            // its receive side (it only accepts replies from
+            // SIGNER_ORIGIN).
+            let _ = parent.post_message(&ready.into(), "*");
+        }
+    }
 }
 
 /// Format a wei value as a human-readable test-ETH string with up to
