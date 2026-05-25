@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.15] - 2026-05-24
+
+Follow-up minimalism. Three small things caught in live testing.
+
+### Changed
+
+- **All "ready · …" status writes deleted.** History restore was
+  still writing `ready · restored prior session · N messages` —
+  caught now (history.rs:55, mod.rs ×2, events.rs ×1). The
+  terminal status renders empty until something actually needs
+  reporting.
+- **Chat box has a container again.** `.terminal-row` gets back
+  its border + background + padding so the input reads as a real
+  input field. Focus colors the border accent.
+- **Files-list hover softened.** Was a full-width background
+  highlight; now just colors the row text accent on hover, no
+  background fill.
+- **Pricing UI removed from the agent card.** User: "i have NO
+  idea what the PRICING window does on the AGENT thing." The
+  pricing data + payment loop are still wired (`.lh_pricing.json`
+  + `chat::run_send` payment gate); just no chrome surface for
+  setting / showing it. Comes back when there's a clearer UX.
+
 ## [0.10.14] - 2026-05-24
 
 Minimalism pass. Bloat out, structure cleaner, header rebuilt.
