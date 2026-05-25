@@ -5,6 +5,68 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.10] - 2026-05-24
+
+Major chrome refactor toward the terminal-style AI-OS vision. The
+footer becomes the primary input surface (a terminal prompt). A
+right-side **agent** column mirrors the left files column, both
+collapsible via edge rails. API key moves to admin. Pricing card
+absorbed into the new financial column.
+
+### Changed (browser app)
+
+- **Footer is now the terminal.** The footer hosts the prompt
+  textarea + send button. `>` glyph prefix. Plain Enter sends;
+  Shift+Enter inserts a newline. Status line sits above the
+  prompt row. Removed the dummy `feedback` button — too valuable
+  a position to spend on something that doesn't do anything yet.
+- **Five-column tenant layout:** `[files-rail] [col-fs] [col-chat]
+  [col-financial] [agent-rail]`. Rails always visible, panels
+  collapse via class flips on `#layout` (no DOM re-render). Right
+  rail is labeled "agent".
+- **Financial column** ships the agent's ERC-6551 TBA address
+  (linked to the explorer), the agent's **$localharness balance**
+  (`token_balance_of(tba)`), and (for the owner) inline pricing
+  edit; visitors see read-only `<N> $LH/turn`. Plus a "coming"
+  section listing the future surface area (allowance, streaming,
+  agent-to-agent payments).
+- **Chat column is just the transcript** — input region moved out
+  to the terminal footer. Transcript hugs the bottom (`margin-top:
+  auto`) so newest messages land right above the prompt the user
+  is typing into.
+- **API key moved to admin dropdown.** Was sitting at the top of
+  the chat column; now lives in the admin section alongside reset.
+  Pre-fills from sessionStorage + OPFS when admin opens. `run_send`
+  reads via a new `read_api_key` fallback chain so a closed admin
+  doesn't block sending.
+- **Enter sends** in the prompt textarea (Shift+Enter for newline).
+  Cmd/Ctrl+Enter still works as before.
+
+### Added (browser app)
+
+- **`templates::financial_card(tba, lh_balance, price_wei, is_owner)`**
+- **`templates::terminal_input()`** — the prompt + status surface
+  hosted in the footer.
+- **`templates::pricing_readonly_line(price_wei)`** — visitor's
+  read-only price line inside the financial card.
+- **`Action::ToggleFinancial`** — mirrors `ToggleFiles`; flips
+  `financial-collapsed` on `#layout`.
+
+### Removed
+
+- **`Action::Feedback`** (and the feedback button it was wired to).
+- Old separate `#pricing-slot` in the left column — pricing now
+  belongs to the financial column.
+
+### Note on the bigger vision
+
+User flagged the AI-OS direction: agents owning agents (TBA-of-TBA),
+subdomain composability without iframes (recursion-limit constraint),
+in-app IDE for differentiating subdomains, marketplace subdomain,
+$LH token gating with per-user daily allowance, headless agent
+API routes. None of that landed in 0.10.10 — it's noted in memory
+for the next planning conversation.
+
 ## [0.10.9] - 2026-05-24
 
 ### Changed (browser app)
