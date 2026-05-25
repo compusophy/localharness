@@ -210,21 +210,41 @@ fn on_key_input() {
     }
 }
 
-/// Toggle the submit button's `disabled` attribute. Silent visual
-/// feedback — no explanatory text per [[feedback-no-explanatory-validation]].
-fn set_create_button_enabled(enabled: bool) {
+/// Three states for the submit button. `Disabled` = grey, not
+/// clickable (length out of range, registry check pending, name
+/// taken, error). `Ready` = accent-green, clickable, the name passed
+/// every check. There is no fourth state — no status text anywhere.
+enum CreateBtnState {
+    Disabled,
+    Ready,
+}
+
+fn set_create_button_state(state: CreateBtnState) {
     let Some(btn) = dom::by_id("create-btn") else { return };
-    if enabled {
-        let _ = btn.remove_attribute("disabled");
-    } else {
-        let _ = btn.set_attribute("disabled", "");
+    match state {
+        CreateBtnState::Disabled => {
+            let _ = btn.set_attribute("disabled", "");
+            let mut cls = btn.class_name();
+            if cls.contains("ready") {
+                cls = cls.split_whitespace().filter(|c| *c != "ready").collect::<Vec<_>>().join(" ");
+                btn.set_class_name(&cls);
+            }
+        }
+        CreateBtnState::Ready => {
+            let _ = btn.remove_attribute("disabled");
+            let cls = btn.class_name();
+            if !cls.split_whitespace().any(|c| c == "ready") {
+                btn.set_class_name(&format!("{cls} ready"));
+            }
+        }
     }
 }
 
 /// Live registry check as the user types a subdomain name. Sanitises
-/// to the same charset the contract enforces, short-circuits on
-/// too-short input, and queries `LocalharnessRegistry::idOfName` for
-/// anything 3 chars or longer.
+/// to the same charset the contract enforces. The ONLY visible output
+/// is the submit button's state — disabled (default) or ready (the
+/// accent-green CTA). No status text under the input, no error
+/// messages. Per [[feedback-no-explanatory-validation]].
 fn on_apex_input() {
     let Some(input) = dom::input_by_id("apex-input") else { return };
     let raw = input.value();
@@ -234,162 +254,129 @@ fn on_apex_input() {
         input.set_value(&cleaned);
     }
 
-    // Toggle the submit button's disabled state based on length —
-    // visual feedback that the input isn't yet usable, no nag text.
-    // Per [[feedback-no-explanatory-validation]].
-    set_create_button_enabled(cleaned.len() >= 3 && cleaned.len() <= 32);
-
+    // Length check first — short-circuit before hitting the registry
+    // for input we already know won't pass on-chain validation.
     if cleaned.len() < 3 || cleaned.len() > 32 {
-        dom::swap_inner("apex-msg", "");
+        set_create_button_state(CreateBtnState::Disabled);
         return;
     }
 
-    // Stash this query string and compare again after the RPC returns —
-    // if the user typed more characters meanwhile, drop the stale result.
-    dom::swap_inner(
-        "apex-msg",
-        "<span style=\"color:var(--muted)\">checking registry…</span>",
-    );
+    // Disable while the registry roundtrip is in flight, then enable
+    // (with the .ready style) only on Status::Available.
+    set_create_button_state(CreateBtnState::Disabled);
     let pending = cleaned.clone();
     wasm_bindgen_futures::spawn_local(async move {
         let result = super::registry::check_name(&pending).await;
-        // Only render if the field still matches what we checked.
+        // Only act on the result if the input still matches what we
+        // queried — otherwise the user typed more chars and a fresh
+        // check is already in flight.
         let still_pending = dom::input_by_id("apex-input")
             .map(|i| super::tenant::sanitize(&i.value()) == pending)
             .unwrap_or(false);
         if !still_pending {
             return;
         }
-        let html = match result {
-            Ok(super::registry::Status::Unknown) => {
-                "<span style=\"color:var(--muted)\">registry pending deploy</span>".to_string()
+        match result {
+            Ok(super::registry::Status::Available) => {
+                set_create_button_state(CreateBtnState::Ready);
             }
-            Ok(super::registry::Status::Available) => format!(
-                "<span style=\"color:var(--accent)\">✓ {pending} is available</span>"
-            ),
-            Ok(super::registry::Status::Taken { agent_id }) => format!(
-                "<span style=\"color:var(--error)\">✗ {pending} is already registered (agentId {agent_id})</span>"
-            ),
-            Err(err) => format!(
-                "<span style=\"color:var(--muted)\">registry error: {err}</span>"
-            ),
-        };
-        dom::swap_inner("apex-msg", &html);
+            _ => {
+                // Taken, registry-not-deployed, or RPC error all map to
+                // "not currently claimable" — no text, just keep
+                // the button disabled.
+                set_create_button_state(CreateBtnState::Disabled);
+            }
+        }
     });
 }
 
 /// Full apex claim flow: faucet → registration tx → confirm → redirect.
-/// Splits out of `dispatch` so the spawn_local future stays readable.
+/// Silent except for the button itself — disabled with text "creating…"
+/// while in flight, redirects on success, reverts to the input-driven
+/// state on failure. All status/error chatter goes to `console.warn`
+/// for debuggability. Per [[feedback-no-explanatory-validation]].
 async fn run_apex_claim(name: String) {
-    let msg_id = "apex-msg";
+    set_create_button_busy(true);
 
-    // 1. Confirm the name is still available right before sending.
-    //    The live-check on input runs against `latest`, but a slow
-    //    user might have been overtaken; cheap to re-query.
-    dom::swap_inner(
-        msg_id,
-        "<span style=\"color:var(--muted)\">checking availability…</span>",
-    );
-    match super::registry::check_name(&name).await {
-        Ok(super::registry::Status::Taken { agent_id }) => {
-            dom::swap_inner(
-                msg_id,
-                &format!(
-                    "<span style=\"color:var(--error)\">✗ {name} was just registered (agentId {agent_id})</span>"
-                ),
-            );
-            return;
+    let result: Result<String, String> = async {
+        // 1. Re-confirm availability — the user might have been
+        //    overtaken between live-check and submit.
+        match super::registry::check_name(&name).await {
+            Ok(super::registry::Status::Available) => {}
+            Ok(other) => return Err(format!("name not available: {other:?}")),
+            Err(err) => return Err(format!("check_name: {err}")),
         }
-        Ok(super::registry::Status::Unknown) => {
-            dom::swap_inner(
-                msg_id,
-                "<span style=\"color:var(--error)\">registry not deployed — claim impossible</span>",
-            );
-            return;
-        }
-        Err(err) => {
-            dom::swap_inner(
-                msg_id,
-                &format!("<span style=\"color:var(--error)\">availability check failed: {err}</span>"),
-            );
-            return;
-        }
-        Ok(super::registry::Status::Available) => {}
-    }
 
-    // 2. Pull the wallet out of App state — or generate one in place.
-    //    The subdomain IS the identity primitive: a visitor arriving at
-    //    apex without a wallet is just one who hasn't claimed yet. Roll
-    //    wallet creation into this submit so we never end up with a
-    //    wallet that doesn't own anything on-chain.
-    let cached = super::APP
-        .with(|cell| cell.borrow().wallet.as_ref().map(|w| (w.signer.clone(), wallet_address_hex(&w.address))));
-    let (signer, addr_hex) = match cached {
-        Some(pair) => pair,
-        None => {
-            dom::swap_inner(
-                msg_id,
-                "<span style=\"color:var(--muted)\">generating wallet…</span>",
-            );
-            match super::wallet_store::create_and_persist().await {
+        // 2. Pull the wallet out of App state — or generate one in
+        //    place. The subdomain IS the identity primitive: a visitor
+        //    arriving at apex without a wallet is just one who hasn't
+        //    claimed yet. Roll wallet creation into this submit so we
+        //    never end up with a wallet that doesn't own anything
+        //    on-chain.
+        let cached = super::APP.with(|cell| {
+            cell.borrow()
+                .wallet
+                .as_ref()
+                .map(|w| (w.signer.clone(), wallet_address_hex(&w.address)))
+        });
+        let (signer, addr_hex) = match cached {
+            Some(pair) => pair,
+            None => match super::wallet_store::create_and_persist().await {
                 Ok(wallet) => {
                     let pair = (wallet.signer.clone(), wallet.address_hex());
                     super::APP.with(|cell| cell.borrow_mut().wallet = Some(wallet));
                     pair
                 }
-                Err(err) => {
-                    dom::swap_inner(
-                        msg_id,
-                        &format!(
-                            "<span style=\"color:var(--error)\">wallet generation failed: {err}</span>"
-                        ),
-                    );
-                    return;
-                }
-            }
+                Err(err) => return Err(format!("wallet: {err}")),
+            },
+        };
+
+        // 3. Faucet (best-effort — wallet may already be funded).
+        if let Err(err) = super::registry::request_faucet_funds(&addr_hex).await {
+            web_sys::console::warn_1(&JsValue::from_str(&format!("faucet: {err}")));
         }
-    };
 
-    // 3. Faucet first. Idempotent enough for testnet; if the wallet
-    //    is already funded, the call still succeeds (or rate-limits,
-    //    which we treat as warning-not-fatal).
-    dom::swap_inner(
-        msg_id,
-        "<span style=\"color:var(--muted)\">funding wallet from faucet…</span>",
-    );
-    if let Err(err) = super::registry::request_faucet_funds(&addr_hex).await {
-        // Don't bail — the wallet might already have funds. Show but proceed.
-        web_sys::console::warn_1(&JsValue::from_str(&format!("faucet: {err}")));
+        // 4. Build, sign, send, wait.
+        super::registry::claim_name(&signer, &name)
+            .await
+            .map_err(|e| format!("claim_name: {e}"))
     }
+    .await;
 
-    // 4. Build, sign, send, wait.
-    dom::swap_inner(
-        msg_id,
-        "<span style=\"color:var(--muted)\">submitting registration on-chain…</span>",
-    );
-    match super::registry::claim_name(&signer, &name).await {
+    match result {
         Ok(tx_hash) => {
-            dom::swap_inner(
-                msg_id,
-                &format!(
-                    "<span style=\"color:var(--accent)\">✓ claimed (tx {})</span>",
-                    short_hash(&tx_hash)
-                ),
-            );
-            // 5. Hand off intent to the subdomain so it claims locally too.
+            web_sys::console::log_1(&JsValue::from_str(&format!(
+                "claimed {name} (tx {})",
+                short_hash(&tx_hash)
+            )));
             let target = format!("https://{name}.localharness.xyz/?claim=1");
             if let Ok(window) = dom::window() {
                 let _ = window.location().assign(&target);
             }
         }
         Err(err) => {
-            dom::swap_inner(
-                msg_id,
-                &format!(
-                    "<span style=\"color:var(--error)\">claim failed: {err}</span>"
-                ),
-            );
+            web_sys::console::warn_1(&JsValue::from_str(&format!("apex claim failed: {err}")));
+            // Re-arm the button so the user can retry. on_apex_input
+            // will fire next time they touch the field; for now, just
+            // disable since we can't reliably re-check from here.
+            set_create_button_busy(false);
+            set_create_button_state(CreateBtnState::Disabled);
         }
+    }
+}
+
+/// Swap the create button between its idle state (whatever `.ready` /
+/// `disabled` it had) and the in-flight "creating…" state. The
+/// in-flight state is always disabled + label-swapped so the user
+/// can't double-submit and can see something is happening without a
+/// separate status string.
+fn set_create_button_busy(busy: bool) {
+    let Some(btn) = dom::by_id("create-btn") else { return };
+    if busy {
+        btn.set_inner_html("creating…");
+        let _ = btn.set_attribute("disabled", "");
+    } else {
+        btn.set_inner_html("create");
     }
 }
 

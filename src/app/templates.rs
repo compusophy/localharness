@@ -350,11 +350,10 @@ pub(crate) fn apex(host: &Host, _wallet_address_hex: Option<&str>) -> Markup {
 }
 
 /// Apex claim — the only step. Agents list above (empty for fresh
-/// visitors), claim form below. Submit triggers `Action::ApexClaim`,
-/// which auto-creates the master wallet if one doesn't exist yet
-/// before running the on-chain register. Button starts `disabled` —
-/// `on_apex_input` enables it once the typed name passes the silent
-/// length check. No explanatory error text per
+/// visitors), claim form below. The submit button is the ONLY feedback
+/// surface: disabled while the input is too short or the name is taken,
+/// `.ready` (accent-coloured) when the live registry check confirms
+/// the name is available. No status text under the input. Per
 /// [[feedback-no-explanatory-validation]].
 fn apex_claim() -> Markup {
     html! {
@@ -370,7 +369,6 @@ fn apex_claim() -> Markup {
                     maxlength="32"
                     required {}
                 button #create-btn type="submit" .create-button disabled { "create" }
-                div #apex-msg .step-msg {}
             }
         }
     }

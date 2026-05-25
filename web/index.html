@@ -749,6 +749,23 @@
     button:disabled { opacity: 0.4; cursor: not-allowed; }
     button.ghost { /* legacy alias — same as base now */ }
 
+    /* `.ready` — applied by JS when an action is fully valid and the
+       user should click. Used by the apex claim flow: the create
+       button stays disabled while name length is wrong or the
+       on-chain availability check is pending/false, and flips to
+       this accent-green state once the name is confirmed available.
+       Replaces the previous practice of writing "✓ available" text
+       under the input — the button colour IS the feedback. */
+    button.ready {
+      background: var(--accent);
+      color: #0b0d12;
+      border-color: var(--accent);
+    }
+    button.ready:hover {
+      color: #0b0d12;
+      border-color: var(--fg);
+    }
+
     .transcript {
       margin-top: 24px;
       display: flex; flex-direction: column; gap: 16px;
