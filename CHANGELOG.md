@@ -5,6 +5,58 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.21] - 2026-05-25
+
+Agents grow teeth: `create_subdomain` + `spawn_recursive_subagent`,
+plus a system prompt rewrite so the model stops gaslighting users
+about what it can do.
+
+### Added (browser app)
+
+- **`create_subdomain(name)` agent tool** — closure tool registered
+  in `chat.rs::start_session`. The agent itself can register a new
+  `<name>.localharness.xyz` on-chain via the apex signer iframe. The
+  apex claim flow, exposed as an agent capability. Returns
+  `{ name, url, owner, tx_hash }`.
+- **`spawn_recursive_subagent(system_instructions, prompt)` agent
+  tool** — closure tool that spins up a full `Agent::start_gemini`
+  with the same key + filesystem + tool surface as the parent
+  (including itself). Drives the subagent through `chat()` until
+  completion and returns the final text response. Coexists with the
+  existing one-shot `start_subagent`; pick recursive when the
+  subagent needs tools, one-shot for pure text reasoning.
+
+### Changed (browser app)
+
+- **System prompt rewrite** at `chat.rs:235`. Switched from a
+  paragraph blob to a structured catalogue with explicit
+  affirmation ("you DO have these tools") for `delete_file` and
+  every other builtin. Lists `create_subdomain`,
+  `spawn_recursive_subagent`, and `start_subagent` under
+  "Platform". Fixes the prior agent habit of saying "I cannot
+  delete files" when the tool was registered all along —
+  `gemini-2.5-flash` hallucinates tool availability if the
+  prompt isn't authoritative.
+
+### Added (research)
+
+- **`design/main-identity.md`** — design note for sybil-resistant
+  "MAIN" identity. Frames the problem (the 0.10.20 first-claim-is-
+  primary inversion makes parallel MAINs trivially cheap), surveys
+  candidate mechanisms (cost-locked MAIN, reputation-bound MAIN,
+  social-graph anchoring, third-party PoP, accept parallel MAINs),
+  proposes a hybrid for 1.0.0. No implementation; document the
+  design space before shipping any MAIN flag on chain.
+
+### Note on what's still incomplete
+
+- Recursion-depth control on `spawn_recursive_subagent` is implicit
+  (each call costs Gemini tokens; deeper trees fail organically).
+  An explicit `max_depth` arg or ToolContext-based counter would
+  be safer for adversarial prompts.
+- Cross-device pairing tested only in concept — paste-seed-on-mobile
+  flow needs a live two-device run.
+
 ## [0.10.20] - 2026-05-25
 
 Self-sovereign tenant chrome + inline first-claim + $LH transfer UI.
