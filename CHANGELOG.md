@@ -5,6 +5,73 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.20] - 2026-05-25
+
+Self-sovereign tenant chrome + inline first-claim + $LH transfer UI.
+
+The big shift: tenants no longer bounce to the apex page for anything.
+Seed reveal, seed import, identity creation, name registration, token
+transfers — all run inline from the subdomain via an extended signer-
+iframe protocol. The first subdomain a fresh visitor claims becomes
+their primary identity; subsequent claims on other names reuse the
+same wallet across the family.
+
+### Added (browser app)
+
+- **Extended apex signer protocol** (`src/app/signer.rs`) with four new
+  message types: `lh-reveal-seed`, `lh-create-wallet` (ensure-semantic
+  by default; pass `overwrite=true` to force regenerate),
+  `lh-import-seed`, `lh-claim-name`. Runs at apex origin so OPFS reads
+  / writes / claim flow stay on the apex side; replies go back via
+  postMessage to the tenant subdomain.
+- **`verify::reveal_seed_via_iframe` / `create_wallet_via_iframe` /
+  `import_seed_via_iframe` / `claim_name_via_iframe`** — client-side
+  wrappers around the new signer messages. Reuse the existing
+  `signer_iframe_request` lifecycle (`lh-signer-ready` ping +
+  correlation-id-filtered listener).
+- **`Action::ClaimOnChain`** — tenant-side first-claim. Ensures the
+  apex wallet exists (without overwriting an existing one), then
+  registers the name on-chain via the iframe, then sets the local
+  OPFS marker, then re-paints as owner. Replaces the previous
+  "claim on apex" bounce link.
+- **$localharness transfer UI** in the financial card.
+  `lh_transfer_form` template + `Action::LhTransfer` handler — types
+  in a recipient (default to the agent's TBA) + an amount, signs
+  `transfer(address,uint256)` via the iframe signer, submits via
+  `submit_and_wait_receipt`. Refreshes the card balance on success.
+
+### Changed (browser app)
+
+- **`admin_dropdown_tenant` is self-contained** — seed reveal + seed
+  import sit inside the tenant admin alongside the API key + reset.
+  No more "manage at apex →" copout. Identity actions still run at
+  the apex origin under the hood (via the iframe), but the user never
+  has to navigate there.
+- **`unclaimed` template** now shows a `[claim <name>]` button that
+  fires `Action::ClaimOnChain` instead of linking to apex. The
+  inline-claim flow handles wallet creation automatically when the
+  visitor has no apex identity yet.
+- **`Action::RevealSeed` / `ImportSeed` / `CreateIdentity` are
+  context-aware** — apex: direct OPFS access (existing path). Tenant:
+  routes through the signer iframe so the wallet stays at apex.
+  Cross-device pairing falls out of import-on-tenant: paste your
+  desktop seed in mobile's tenant admin, the wallet lands at apex
+  origin on the mobile device.
+
+### Note on what's still incomplete
+
+- The transfer form is bare HTML — no dedicated CSS, picks up the
+  inherited form styles. Visual polish landed at a later pass.
+- TIP-20 spec validation: the contract at
+  `0xcC8A300658dC8d0648D984A5066Af3F8E75e0936` accepts ERC-20-style
+  `transfer(address,uint256)` calldata (the bundle has been using
+  `balanceOf(address)` against the same selector since 0.10.x).
+  Calling it "TIP-20" reflects the chain it runs on; the wire
+  surface is ERC-20-compatible.
+- Owner's own $LH balance isn't displayed yet — the financial card
+  still shows only the agent's TBA balance. Send-from-owner works;
+  see-your-own-balance is a one-line addition next pass.
+
 ## [0.10.19] - 2026-05-24
 
 Mobile rebuild + permanent feedback footer.
