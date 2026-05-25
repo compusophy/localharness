@@ -58,7 +58,7 @@ pub(crate) fn site_header(host: &Host) -> Markup {
 
 /// Version string, used in the admin dropdown bottom. Bumped in
 /// lockstep with Cargo.toml.
-pub(crate) const APP_VERSION: &str = "0.10.15";
+pub(crate) const APP_VERSION: &str = "0.10.16";
 
 /// Terminal input — just `>` prompt + textarea + → send. Status line
 /// stays in the DOM (id="status") for dispatcher messages but renders
@@ -145,38 +145,35 @@ pub(crate) fn chrome(host: &Host) -> Markup {
     html! {
         (site_header(host))
         main #layout .layout.view-collapsed {
-            // Files (left) and agent (right) rails span FULL height —
-            // they wrap the center column. Center column owns its own
-            // top view rail + bottom terminal rail, so the inset
-            // terminal/view live strictly between files and agent.
+            // Files (left) — files-rail wraps a col-side panel.
             button type="button" data-action="toggle-files"
                 .side-rail.files-rail {
                 span.rail-label { "files" }
             }
-
-            aside.col-fs {
-                div.fs-panel {
-                    div.fs-header {
-                        div.fs-title { "files" }
-                        div.fs-actions {
-                            button data-action="opfs-refresh" { "refresh" }
-                            (opfs_wipe_armed_inline())
-                        }
+            (col_side(
+                html! {
+                    div.panel-title { "files" }
+                    div.panel-actions {
+                        button data-action="opfs-refresh" .panel-button { "refresh" }
+                        (opfs_wipe_armed_inline())
                     }
+                },
+                html! {
                     div #fs-breadcrumb .fs-breadcrumb { "/" }
                     ul #fs-list .fs-list {}
-                }
-            }
+                },
+                "col-fs",
+            ))
 
             // Center column — vertical stack:
-            //   [view-rail][view-panel?][transcript][terminal-panel?][terminal-rail]
-            // Rails always visible, panels collapse via class flips on
-            // #layout. Default: view collapsed (no file open yet),
-            // terminal expanded.
+            //   [edit-rail][edit-panel?][transcript][terminal-panel?][terminal-rail]
+            // Clicking terminal-rail collapses transcript + terminal
+            // (so the editor can take the whole center). Clicking
+            // edit-rail collapses just the editor panel.
             div.col-chat {
                 button type="button" data-action="toggle-view"
                     .top-rail.view-rail {
-                    span.rail-label { "view" }
+                    span.rail-label { "edit" }
                 }
                 section.view-panel {
                     div #view-content .view-content {}
@@ -191,14 +188,38 @@ pub(crate) fn chrome(host: &Host) -> Markup {
                 }
             }
 
-            aside.col-financial {
-                div #financial-slot .financial-placeholder { "(financial · loading…)" }
-            }
-
+            // Agent (right) — financial-rail wraps a col-side panel
+            // whose body is the financial-slot injected by
+            // kick_verification.
+            (col_side(
+                html! {
+                    div.panel-title { "agent" }
+                },
+                html! {
+                    div #financial-slot .financial-placeholder { "—" }
+                },
+                "col-financial",
+            ))
             button type="button" data-action="toggle-financial"
                 .side-rail.financial-rail {
                 span.rail-label { "agent" }
             }
+        }
+    }
+}
+
+/// SSOT side-panel archetype — used by both `col-fs` (files) and
+/// `col-financial` (agent). `extra_class` tags the panel for
+/// position-specific styling (border-left vs border-right, the
+/// per-column collapse selector). Both columns now look identical
+/// because their visual treatment lives entirely in CSS via
+/// `.col-side` (and `.panel-header` / `.panel-body` inside).
+fn col_side(header: Markup, body: Markup, extra_class: &str) -> Markup {
+    let cls = format!("col-side {extra_class}");
+    html! {
+        aside class=(cls) {
+            header.panel-header { (header) }
+            div.panel-body { (body) }
         }
     }
 }
@@ -751,8 +772,8 @@ pub(crate) fn opfs_error(message: &str) -> Markup {
     }
 }
 
-/// The viewer pane swapped into `#fs-viewer-wrap` when a file is open.
-/// `name` is the leaf filename (used by the "edit" data-arg).
+/// Retired in 0.10.16 — every file open is now the editor directly.
+#[allow(dead_code)]
 pub(crate) fn opfs_viewer(display_path: &str, name: &str, text: &str) -> Markup {
     html! {
         div #fs-viewer-wrap {
@@ -779,22 +800,20 @@ pub(crate) fn opfs_viewer(display_path: &str, name: &str, text: &str) -> Markup 
 /// data-arg so a single delegated dispatcher works.
 pub(crate) fn opfs_editor(display_path: &str, name: &str, text: &str) -> Markup {
     html! {
-        div #fs-viewer-wrap {
-            div.fs-viewer-header {
-                span #fs-viewer-name { (display_path) " · editing" }
-                span.fs-viewer-actions {
-                    button.close-viewer
+        div.editor {
+            div.editor-header {
+                span.editor-path { (display_path) }
+                div.editor-actions {
+                    button.panel-button
                         type="button"
                         data-action="opfs-save"
                         data-arg=(name) { "save" }
-                    " "
-                    button.close-viewer
+                    button.panel-button
                         type="button"
-                        data-action="opfs-open"
-                        data-arg=(name) { "cancel" }
+                        data-action="opfs-close-viewer" { "close" }
                 }
             }
-            textarea #fs-editor .fs-viewer .fs-editor { (text) }
+            textarea #fs-editor .editor-textarea { (text) }
         }
     }
 }

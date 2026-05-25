@@ -73,25 +73,10 @@ pub(crate) async fn navigate(target: &str) {
 /// Open the named file (relative to cwd) in the preview pane. Reads at
 /// most 256 KiB to match the view_file builtin's cap.
 pub(crate) async fn open_file(name: &str) {
-    let (path, display_path) = resolve_path(name);
-    let fs = super::shared_opfs();
-
-    let viewer_html = match fs.read(&path).await {
-        Ok(bytes) => {
-            let truncated = bytes.len() > 256 * 1024;
-            let slice = if truncated { &bytes[..256 * 1024] } else { &bytes[..] };
-            let mut text = String::from_utf8_lossy(slice).into_owned();
-            if truncated {
-                text.push_str("\n\n… (truncated)");
-            }
-            templates::opfs_viewer(&display_path, name, &text).into_string()
-        }
-        Err(err) => templates::opfs_viewer(&display_path, name, &format!("error: {err}"))
-            .into_string(),
-    };
-    // Render into the top-center view panel and auto-expand it.
-    dom::swap_inner("view-content", &viewer_html);
-    set_view_collapsed(false);
+    // Renamed conceptually to "edit" — the top-center panel IS the
+    // text editor now. Always opens in editable mode; no separate
+    // read-only viewer.
+    edit_file(name).await
 }
 
 /// Open the named file in editor mode. Reads up to 1 MiB (larger than
