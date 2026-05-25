@@ -69,43 +69,70 @@
       flex: 1;
       width: 100%;
     }
-    /* Tenant chrome layout — five-column stretch:
-       [files-rail] [col-fs] [col-chat] [col-financial] [financial-rail]
-       Rails always visible; panels collapse via class flips on #layout. */
+    /* Tenant chrome — main is a flex column:
+         [main-row] (five-column horizontal stretch, takes available height)
+         [terminal-panel] (shown when not collapsed)
+         [terminal-rail] (always visible, horizontal, full-width, click toggles)
+       Rails (.side-rail / .bottom-rail) ARE buttons — the whole strip
+       is the click target. No nested button-inside-div. */
     main.layout {
       padding: 0;
       max-width: none;
       display: flex;
+      flex-direction: column;
       align-items: stretch;
       gap: 0;
     }
-    main.layout .side-rail {
-      flex-shrink: 0;
-      width: 32px;
+    main.layout .main-row {
+      flex: 1;
       display: flex;
-      justify-content: center;
-      padding: 12px 0;
+      align-items: stretch;
+      min-height: 0; /* allow children's overflow:auto to work */
     }
-    main.layout .files-rail { border-right: 1px solid var(--border); }
-    main.layout .financial-rail { border-left: 1px solid var(--border); }
-    main.layout .rail-toggle {
+
+    /* Rails — shared styles for both side rails and the bottom rail.
+       Each is a full <button>, transparent until hover. */
+    main.layout .side-rail,
+    main.layout .bottom-rail {
       background: transparent;
       color: var(--muted);
       border: 0;
       padding: 0;
       cursor: pointer;
       font: inherit;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
-    main.layout .rail-toggle:hover { color: var(--fg); }
+    main.layout .side-rail:hover,
+    main.layout .bottom-rail:hover {
+      background: var(--panel);
+      color: var(--fg);
+    }
     main.layout .rail-label {
-      writing-mode: vertical-rl;
-      transform: rotate(180deg);
       font-size: 10px;
       text-transform: uppercase;
       letter-spacing: 0.12em;
-      color: var(--muted);
     }
-    main.layout .rail-toggle:hover .rail-label { color: var(--fg); }
+
+    main.layout .side-rail {
+      flex-shrink: 0;
+      width: 32px;
+    }
+    main.layout .side-rail .rail-label {
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
+    }
+    main.layout .files-rail { border-right: 1px solid var(--border); }
+    main.layout .financial-rail { border-left: 1px solid var(--border); }
+
+    main.layout .bottom-rail {
+      flex-shrink: 0;
+      width: 100%;
+      height: 32px;
+      border-top: 1px solid var(--border);
+    }
+
     main.layout .col-fs,
     main.layout .col-financial {
       flex-shrink: 0;
@@ -126,11 +153,8 @@
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      gap: 0;
     }
-    /* Transcript scrolls; newest at bottom (margin-top:auto on the
-       flex children pushes them to the bottom of the scroll area
-       so the latest message is always adjacent to the terminal). */
+    /* Transcript scrolls; newest pinned to the bottom near the terminal. */
     main.layout .transcript {
       flex: 1;
       overflow-y: auto;
@@ -142,13 +166,12 @@
     main.layout .transcript > * { flex-shrink: 0; }
     main.layout .transcript::before {
       content: "";
-      flex: 1; /* pushes turns to the bottom of the scroll area */
+      flex: 1;
     }
     @media (max-width: 900px) {
-      main.layout { flex-direction: column; }
+      main.layout .main-row { flex-direction: column; }
       main.layout .side-rail {
         width: 100%; height: 32px;
-        padding: 0;
       }
       main.layout .files-rail {
         border-right: 0; border-bottom: 1px solid var(--border);
@@ -156,7 +179,7 @@
       main.layout .financial-rail {
         border-left: 0; border-top: 1px solid var(--border);
       }
-      main.layout .rail-label {
+      main.layout .side-rail .rail-label {
         writing-mode: horizontal-tb;
         transform: none;
       }
@@ -170,44 +193,19 @@
     .apex-main { display: block; padding: 32px 24px; max-width: 1180px; }
     .apex-main > .col-chat { max-width: 600px; margin: 0 auto; }
 
-    /* Terminal — inset at the bottom of col-chat between the files
-       and agent columns. Always visible; collapses to just the title
-       bar via `terminal-collapsed` on `#layout`. */
-    .terminal {
+    /* Terminal panel — sits above the .terminal-rail at the bottom of
+       #layout. Collapsing the rail (clicking it) hides the panel. */
+    main.layout .terminal-panel {
       flex-shrink: 0;
       border-top: 1px solid var(--border);
-      background: var(--panel);
+    }
+    main.layout.terminal-collapsed .terminal-panel { display: none; }
+    .terminal-body {
+      padding: 10px 16px;
       display: flex;
       flex-direction: column;
+      gap: 6px;
     }
-    .terminal-bar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 6px 12px;
-      border-bottom: 1px solid var(--border);
-      background: var(--panel-2);
-    }
-    .terminal-bar-title {
-      font-size: 10px;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-    }
-    .terminal-toggle {
-      background: transparent;
-      color: var(--muted);
-      border: 0;
-      padding: 0 4px;
-      font-size: 14px;
-      line-height: 1;
-      cursor: pointer;
-      font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
-    }
-    .terminal-toggle:hover { color: var(--fg); }
-    .terminal-body { padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; }
-    main.layout.terminal-collapsed .terminal-body { display: none; }
-    main.layout.terminal-collapsed .terminal-bar { border-bottom: 0; }
     .terminal-status {
       font-size: 11px;
       color: var(--muted);

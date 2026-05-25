@@ -38,7 +38,7 @@ pub(crate) fn site_header(host: &Host) -> Markup {
                 h1 {
                     a href="https://localharness.xyz/" title="go home" { "localharness" }
                 }
-                span.tag { "0.10.11" } // bumped in lockstep with Cargo.toml
+                span.tag { "0.10.12" } // bumped in lockstep with Cargo.toml
                 @if matches!(host, Host::Tenant(_)) {
                     (verify_pill(&VerifyState::Pending))
                     // TBA pill placeholder — filled in by kick_verification
@@ -56,28 +56,20 @@ pub(crate) fn site_header(host: &Host) -> Markup {
     }
 }
 
-/// Terminal-style input region. Lives at the BOTTOM of `col-chat`
-/// (between the files + agents columns) — there's no global footer
-/// anymore. Collapsible via the bar at its top.
+/// Terminal input — status line + prompt + send. Lives inside
+/// `.terminal-panel` which sits just above the `.terminal-rail`
+/// at the bottom of `#layout`. No title bar or minimize button —
+/// the rail below IS the toggle, same pattern as the side rails.
 pub(crate) fn terminal_input() -> Markup {
     html! {
-        section.terminal {
-            div.terminal-bar {
-                div.terminal-bar-title { "terminal" }
-                button type="button"
-                    data-action="toggle-terminal"
-                    .terminal-toggle
-                    title="collapse / expand terminal" { "—" }
-            }
-            div.terminal-body {
-                div #status .terminal-status { "ready" }
-                div.terminal-row {
-                    span.terminal-prompt { ">" }
-                    textarea #prompt
-                        rows="1"
-                        placeholder="message · enter to send · shift+enter for newline" {}
-                    button.terminal-send data-action="send" { "send" }
-                }
+        div.terminal-body {
+            div #status .terminal-status { "ready" }
+            div.terminal-row {
+                span.terminal-prompt { ">" }
+                textarea #prompt
+                    rows="1"
+                    placeholder="message · enter to send · shift+enter for newline" {}
+                button.terminal-send data-action="send" { "send" }
             }
         }
     }
@@ -151,60 +143,63 @@ pub(crate) fn chrome(host: &Host) -> Markup {
     html! {
         (site_header(host))
         main #layout .layout {
-            // Left files rail — always visible. Toggling adds/removes
-            // `files-collapsed` on `#layout` to hide the file panel
-            // without re-rendering its DOM (so an open file viewer
-            // survives a collapse + expand).
-            div.side-rail.files-rail {
-                button type="button" data-action="toggle-files" .rail-toggle {
+            // Five-column content row. Rails are <button>s — the
+            // WHOLE rail is the click target (not a tiny button
+            // nested inside).
+            div.main-row {
+                button type="button" data-action="toggle-files"
+                    .side-rail.files-rail {
                     span.rail-label { "files" }
                 }
-            }
 
-            aside.col-fs {
-                div.fs-panel {
-                    div.fs-header {
-                        div.fs-title { "files" }
-                        div.fs-actions {
-                            button data-action="opfs-refresh" { "refresh" }
-                            (opfs_wipe_armed_inline())
+                aside.col-fs {
+                    div.fs-panel {
+                        div.fs-header {
+                            div.fs-title { "files" }
+                            div.fs-actions {
+                                button data-action="opfs-refresh" { "refresh" }
+                                (opfs_wipe_armed_inline())
+                            }
+                        }
+                        div #fs-breadcrumb .fs-breadcrumb { "/" }
+                        ul #fs-list .fs-list {}
+                        div #fs-viewer-wrap hidden? {
+                            div.fs-viewer-header {
+                                span #fs-viewer-name {}
+                                button.close-viewer
+                                    type="button"
+                                    data-action="opfs-close-viewer" { "close" }
+                            }
+                            pre #fs-viewer .fs-viewer {}
                         }
                     }
-                    div #fs-breadcrumb .fs-breadcrumb { "/" }
-                    ul #fs-list .fs-list {}
-                    div #fs-viewer-wrap hidden? {
-                        div.fs-viewer-header {
-                            span #fs-viewer-name {}
-                            button.close-viewer
-                                type="button"
-                                data-action="opfs-close-viewer" { "close" }
-                        }
-                        pre #fs-viewer .fs-viewer {}
-                    }
+                }
+
+                div.col-chat {
+                    div #transcript .transcript {}
+                }
+
+                aside.col-financial {
+                    div #financial-slot .financial-placeholder { "(financial · loading…)" }
+                }
+
+                button type="button" data-action="toggle-financial"
+                    .side-rail.financial-rail {
+                    span.rail-label { "agent" }
                 }
             }
 
-            // Chat column — transcript (top, flexes) + terminal (bottom,
-            // fixed height, collapsible). No global footer; the terminal
-            // IS the bottom-of-page surface, inset between files + agents.
-            div.col-chat {
-                div #transcript .transcript {}
+            // Terminal panel — shown above the rail when expanded.
+            // CSS hides this when #layout has `terminal-collapsed`.
+            section.terminal-panel {
                 (terminal_input())
             }
 
-            // Right financial column — agent TBA + $localharness
-            // balance + (owner-only) pricing edit. Injected by
-            // kick_verification once verify settles + TBA is known.
-            aside.col-financial {
-                div #financial-slot .financial-placeholder { "(financial · loading…)" }
-            }
-
-            // Right rail — mirror of files rail; toggles
-            // `financial-collapsed` on `#layout`.
-            div.side-rail.financial-rail {
-                button type="button" data-action="toggle-financial" .rail-toggle {
-                    span.rail-label { "agent" }
-                }
+            // Bottom rail — full-width, click toggles the panel
+            // above. Same pattern as the side rails.
+            button type="button" data-action="toggle-terminal"
+                .bottom-rail.terminal-rail {
+                span.rail-label { "terminal" }
             }
         }
     }
