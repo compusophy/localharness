@@ -38,7 +38,7 @@ pub(crate) fn site_header(host: &Host) -> Markup {
                 h1 {
                     a href="https://localharness.xyz/" title="go home" { "localharness" }
                 }
-                span.tag { "0.10.8" } // bumped in lockstep with Cargo.toml
+                span.tag { "0.10.9" } // bumped in lockstep with Cargo.toml
                 @if matches!(host, Host::Tenant(_)) {
                     (verify_pill(&VerifyState::Pending))
                     // TBA pill placeholder — filled in by kick_verification
@@ -135,7 +135,45 @@ fn short_addr(addr: &str) -> String {
 pub(crate) fn chrome(host: &Host) -> Markup {
     html! {
         (site_header(host))
-        main {
+        main #layout .layout {
+            // Vertical "files" rail — always visible below the header.
+            // Toggling adds/removes `files-collapsed` on `#layout` to
+            // hide the panel without re-rendering its DOM (so an open
+            // file in the viewer survives a collapse + expand).
+            div.files-rail {
+                button type="button" data-action="toggle-files" .files-toggle {
+                    span.files-toggle-label { "files" }
+                }
+            }
+
+            aside.col-fs {
+                // Pricing card is injected by kick_verification only
+                // when the visitor is the owner (so they can edit) —
+                // visitors see price embedded in the send button label
+                // instead of a permanent column card.
+                div #pricing-slot {}
+                div.fs-panel {
+                    div.fs-header {
+                        div.fs-title { "files" }
+                        div.fs-actions {
+                            button data-action="opfs-refresh" { "refresh" }
+                            (opfs_wipe_armed_inline())
+                        }
+                    }
+                    div #fs-breadcrumb .fs-breadcrumb { "/" }
+                    ul #fs-list .fs-list {}
+                    div #fs-viewer-wrap hidden? {
+                        div.fs-viewer-header {
+                            span #fs-viewer-name {}
+                            button.close-viewer
+                                type="button"
+                                data-action="opfs-close-viewer" { "close" }
+                        }
+                        pre #fs-viewer .fs-viewer {}
+                    }
+                }
+            }
+
             div.col-chat {
                 div #input-region {
                     div.row {
@@ -164,35 +202,6 @@ pub(crate) fn chrome(host: &Host) -> Markup {
 
                 div #status .status { "loading…" }
                 div #transcript .transcript {}
-
-            }
-
-            aside.col-fs {
-                // Pricing card is injected by kick_verification only
-                // when the visitor is the owner (so they can edit) —
-                // visitors see price embedded in the send button label
-                // instead of a permanent right-column card.
-                div #pricing-slot {}
-                div.fs-panel {
-                    div.fs-header {
-                        div.fs-title { "files" }
-                        div.fs-actions {
-                            button data-action="opfs-refresh" { "refresh" }
-                            (opfs_wipe_armed_inline())
-                        }
-                    }
-                    div #fs-breadcrumb .fs-breadcrumb { "/" }
-                    ul #fs-list .fs-list {}
-                    div #fs-viewer-wrap hidden? {
-                        div.fs-viewer-header {
-                            span #fs-viewer-name {}
-                            button.close-viewer
-                                type="button"
-                                data-action="opfs-close-viewer" { "close" }
-                        }
-                        pre #fs-viewer .fs-viewer {}
-                    }
-                }
             }
         }
         (site_footer())

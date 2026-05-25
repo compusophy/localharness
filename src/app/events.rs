@@ -53,6 +53,7 @@ enum Action {
     ResetCancel,
     PricingSave,
     Feedback,
+    ToggleFiles,
 }
 
 impl Action {
@@ -86,6 +87,7 @@ impl Action {
             "reset-cancel" => Action::ResetCancel,
             "pricing-save" => Action::PricingSave,
             "feedback" => Action::Feedback,
+            "toggle-files" => Action::ToggleFiles,
             _ => return None,
         })
     }
@@ -622,6 +624,27 @@ fn dispatch(action: Action) {
         Action::Feedback => {
             // Dummy for now — wire up a real feedback channel later.
             web_sys::console::log_1(&JsValue::from_str("feedback button clicked"));
+        }
+        Action::ToggleFiles => {
+            // Pure DOM class flip — no Rust state involved. The file
+            // panel's content (any open viewer, breadcrumb position)
+            // persists across collapse/expand because we never re-render
+            // it.
+            if let Some(layout) = dom::by_id("layout") {
+                let cls = layout.class_name();
+                let cls = cls.trim();
+                let new_cls: String = if cls.split_whitespace().any(|c| c == "files-collapsed") {
+                    cls.split_whitespace()
+                        .filter(|c| *c != "files-collapsed")
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                } else if cls.is_empty() {
+                    "files-collapsed".to_string()
+                } else {
+                    format!("{cls} files-collapsed")
+                };
+                layout.set_class_name(&new_cls);
+            }
         }
     }
 }
