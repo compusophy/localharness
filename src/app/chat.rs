@@ -21,22 +21,27 @@ use super::APP;
 /// Driven by the `send` data-action. Reads the prompt + key, lazily
 /// (re)starts the session, then streams a turn through the Agent.
 pub(crate) async fn run_send() {
-    let Some(key_input) = dom::input_by_id("key") else {
-        dom::set_status("internal: #key input missing", true);
-        return;
-    };
     let Some(prompt_area) = dom::textarea_by_id("prompt") else {
         dom::set_status("internal: #prompt textarea missing", true);
         return;
     };
 
-    let key = key_input.value().trim().to_string();
-    let prompt = prompt_area.value().trim().to_string();
+    // The api key input lives in the admin dropdown — only present in
+    // the DOM when admin is open. Fall back to sessionStorage (sync)
+    // and then OPFS (async) so the user can send without keeping
+    // admin open just to host the input field.
+    let key = match read_api_key().await {
+        Some(k) => k,
+        None => {
+            dom::set_status(
+                "no api key — open admin (top right) and paste your gemini key",
+                true,
+            );
+            return;
+        }
+    };
 
-    if key.is_empty() {
-        dom::set_status("enter an API key first.", true);
-        return;
-    }
+    let prompt = prompt_area.value().trim().to_string();
     if prompt.is_empty() {
         dom::set_status("enter a prompt first.", true);
         return;
@@ -369,6 +374,33 @@ async fn collect_payment_if_required() -> Result<Option<String>, String> {
         .map_err(|e| format!("submit: {e}"))?;
 
     Ok(Some(tx_hash))
+}
+
+/// Read the api key with graceful fallback. Tries the live `#key`
+/// input first (if admin is open), then sessionStorage, then OPFS.
+/// Returns `None` only if every layer is empty.
+async fn read_api_key() -> Option<String> {
+    if let Some(input) = dom::input_by_id("key") {
+        let v = input.value().trim().to_string();
+        if !v.is_empty() {
+            return Some(v);
+        }
+    }
+    if let Ok(Some(storage)) = dom::session_storage() {
+        if let Ok(Some(cached)) = storage.get_item("gemini_api_key") {
+            let trimmed = cached.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    if let Some(persisted) = super::key_store::load().await {
+        let trimmed = persisted.trim().to_string();
+        if !trimmed.is_empty() {
+            return Some(trimmed);
+        }
+    }
+    None
 }
 
 fn parse_address(hex: &str) -> Result<[u8; 20], String> {

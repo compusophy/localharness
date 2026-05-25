@@ -367,51 +367,60 @@ async fn kick_verification(name: String) {
         )));
     }
 
-    // Pricing is per-tenant OPFS, same-origin readable regardless of
-    // verification outcome. Load once and stash so `chat::run_send`
-    // can consult it before each turn — and so the visitor-banner
-    // logic below can decide whether to lock down the input region.
+    // Pricing — per-tenant OPFS, loaded once + stashed for chat send.
     let price = pricing::load().await.unwrap_or(0);
     APP.with(|cell| cell.borrow_mut().pricing_wei = Some(price));
-
-    // Inject the pricing card only when the visitor is the verified
-    // owner — that's the only person who needs the editing surface.
-    // Visitors see the price embedded in chat-flow status messages
-    // (and eventually the send button label) instead of a permanent
-    // right-column card.
     let is_owner = matches!(outcome, VerifyState::Verified { .. });
-    if is_owner {
-        let html = templates::pricing_card(price).into_string();
-        dom::swap_outer("pricing-slot", &html);
-    }
 
-    // Visitor mode: replace the input region with a read-only banner
-    // ONLY when no payment-gate is set. Payment-gated agents keep the
-    // input live so the visitor can pay-to-send; the chat dispatcher
-    // owns the payment flow.
-    if let VerifyState::Visitor { owner_address, .. } = &outcome {
-        if price == 0 {
-            let html = templates::visitor_banner(owner_address).into_string();
-            dom::swap_outer("input-region", &html);
-        }
-    }
-
-    // When the name is on-chain (Verified or Visitor), look up its
-    // ERC-6551 token-bound account and surface it as a TBA pill in
-    // the header. This is the agent's wallet — receives funds,
-    // signs messages, settles payments. Counterfactual; address
-    // exists whether the account has been deployed yet or not.
+    // TBA lookup — needed for the financial card AND the header pill.
     let on_chain = matches!(
         outcome,
         VerifyState::Verified { .. } | VerifyState::Visitor { .. }
     );
+    let mut tba_opt: Option<String> = None;
     if on_chain {
         if let Ok(Some(tba)) = registry::tba_of_name(&name).await {
             let html = templates::tba_pill(&tba).into_string();
             dom::swap_outer("tba-pill", &html);
-            APP.with(|cell| cell.borrow_mut().tba_address = Some(tba));
+            APP.with(|cell| cell.borrow_mut().tba_address = Some(tba.clone()));
+            tba_opt = Some(tba);
         }
     }
+
+    // Financial card: agent TBA + $localharness balance + pricing.
+    // Injected into #financial-slot in the right column. Owner sees
+    // editable pricing; visitors see read-only price line.
+    if let Some(tba) = &tba_opt {
+        let lh_balance = registry::token_balance_of(tba).await.unwrap_or(0);
+        let html = templates::financial_card(tba, lh_balance, price, is_owner).into_string();
+        dom::swap_outer("financial-slot", &html);
+    } else {
+        // No on-chain owner (Unregistered / Failed / Pending) — leave
+        // the slot empty so the column gives no false reassurance.
+        dom::swap_outer(
+            "financial-slot",
+            r#"<div id="financial-slot" class="financial-empty"></div>"#,
+        );
+    }
+
+    // Visitor mode — surface ownership context in the terminal
+    // status so they know whose agent they're looking at. They can
+    // still try to send; chat::collect_payment_if_required gates on
+    // pricing for non-owners separately.
+    if let VerifyState::Visitor { owner_address, .. } = &outcome {
+        dom::set_status(
+            &format!("visitor · owner {}", short_owner(owner_address)),
+            false,
+        );
+    }
+}
+
+fn short_owner(addr: &str) -> String {
+    let stripped = addr.trim_start_matches("0x");
+    if stripped.len() < 8 {
+        return addr.to_string();
+    }
+    format!("0x{}…{}", &stripped[..4], &stripped[stripped.len() - 4..])
 }
 
 /// Paint the apex chrome. Reads (never creates) the master wallet —

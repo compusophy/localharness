@@ -52,8 +52,8 @@ enum Action {
     ResetConfirm,
     ResetCancel,
     PricingSave,
-    Feedback,
     ToggleFiles,
+    ToggleFinancial,
 }
 
 impl Action {
@@ -86,8 +86,8 @@ impl Action {
             "reset-confirm" => Action::ResetConfirm,
             "reset-cancel" => Action::ResetCancel,
             "pricing-save" => Action::PricingSave,
-            "feedback" => Action::Feedback,
             "toggle-files" => Action::ToggleFiles,
+            "toggle-financial" => Action::ToggleFinancial,
             _ => return None,
         })
     }
@@ -151,18 +151,24 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
     doc.add_event_listener_with_callback("submit", submit_handler.as_ref().unchecked_ref())?;
     submit_handler.forget();
 
-    // Cmd/Ctrl+Enter inside the prompt textarea triggers send.
+    // Enter inside the prompt textarea sends; Shift+Enter inserts a
+    // newline (default browser behavior — we only intercept the bare
+    // Enter case). Cmd/Ctrl+Enter still sends as a convention some
+    // users have muscle-memory for.
     let keydown = Closure::<dyn FnMut(_)>::new(move |event: KeyboardEvent| {
-        if event.key() == "Enter" && (event.meta_key() || event.ctrl_key()) {
-            // Only when focus is on the prompt — avoid hijacking globally.
-            if let Some(target) = event.target() {
-                if let Ok(el) = target.dyn_into::<Element>() {
-                    if el.id() == "prompt" {
-                        event.prevent_default();
-                        dispatch(Action::Send);
-                    }
-                }
-            }
+        if event.key() != "Enter" {
+            return;
+        }
+        let Some(target) = event.target() else { return };
+        let Ok(el) = target.dyn_into::<Element>() else { return };
+        if el.id() != "prompt" {
+            return;
+        }
+        let mod_held = event.meta_key() || event.ctrl_key();
+        let allow_newline = event.shift_key();
+        if mod_held || !allow_newline {
+            event.prevent_default();
+            dispatch(Action::Send);
         }
     });
     doc.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref())?;
@@ -621,51 +627,48 @@ fn dispatch(action: Action) {
         }
         Action::ResetConfirm => reset_confirm_pressed(),
         Action::PricingSave => pricing_save_pressed(),
-        Action::Feedback => {
-            // Dummy for now — wire up a real feedback channel later.
-            web_sys::console::log_1(&JsValue::from_str("feedback button clicked"));
-        }
-        Action::ToggleFiles => {
-            // Pure DOM class flip — no Rust state involved. The file
-            // panel's content (any open viewer, breadcrumb position)
-            // persists across collapse/expand because we never re-render
-            // it.
-            if let Some(layout) = dom::by_id("layout") {
-                let cls = layout.class_name();
-                let cls = cls.trim();
-                let new_cls: String = if cls.split_whitespace().any(|c| c == "files-collapsed") {
-                    cls.split_whitespace()
-                        .filter(|c| *c != "files-collapsed")
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                } else if cls.is_empty() {
-                    "files-collapsed".to_string()
-                } else {
-                    format!("{cls} files-collapsed")
-                };
-                layout.set_class_name(&new_cls);
-            }
-        }
+        Action::ToggleFiles => toggle_layout_class("files-collapsed"),
+        Action::ToggleFinancial => toggle_layout_class("financial-collapsed"),
     }
 }
 
 /// Toggle the header admin dropdown. Origin determines content —
-/// apex shows seed reveal + import + reset, tenant just shows reset.
+/// apex shows seed reveal + import + reset, tenant has the gemini
+/// api key input + reset. After opening, pre-fill the api key from
+/// sessionStorage / OPFS so the user sees their existing key
+/// (admin opens and closes constantly; the input is fresh DOM each time).
 fn header_admin_toggle() {
-    // Already open? Close it.
-    let is_open = super::dom::by_id("header-admin-panel")
-        .and_then(|el| el.get_attribute("hidden").map(|_| false).or(Some(true)))
-        .unwrap_or(false);
-    // The 'hidden' attribute is *present* when the panel is closed
-    // (placeholder), and absent when it's the populated open variant.
-    // Above is inverted on purpose; simplify by always re-rendering.
-    let _ = is_open; // silence unused
     let body = match super::tenant::current() {
         super::tenant::Host::Apex => templates::admin_dropdown_apex().into_string(),
-        super::tenant::Host::Tenant(_) => templates::admin_dropdown_tenant().into_string(),
-        super::tenant::Host::Other(_) => templates::admin_dropdown_tenant().into_string(),
+        super::tenant::Host::Tenant(_) | super::tenant::Host::Other(_) => {
+            templates::admin_dropdown_tenant().into_string()
+        }
     };
     dom::swap_outer("header-admin-panel", &body);
+
+    // Pre-fill api key from sessionStorage (sync) then refresh from
+    // OPFS (async). Same pattern as the old in-chrome key restore.
+    if matches!(
+        super::tenant::current(),
+        super::tenant::Host::Tenant(_) | super::tenant::Host::Other(_)
+    ) {
+        if let Ok(Some(storage)) = dom::session_storage() {
+            if let Ok(Some(cached)) = storage.get_item("gemini_api_key") {
+                if let Some(input) = dom::input_by_id("key") {
+                    input.set_value(&cached);
+                    refresh_keymeta();
+                }
+            }
+        }
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Some(persisted) = super::key_store::load().await {
+                if let Some(input) = dom::input_by_id("key") {
+                    input.set_value(&persisted);
+                    refresh_keymeta();
+                }
+            }
+        });
+    }
 }
 
 fn header_admin_close() {
@@ -673,6 +676,25 @@ fn header_admin_close() {
         "header-admin-panel",
         r#"<div id="header-admin-panel" hidden></div>"#,
     );
+}
+
+/// Pure DOM class flip on `#layout` — used by the panel toggles
+/// (files-collapsed, financial-collapsed) so a collapse + expand
+/// doesn't lose any panel state (open file viewer, pricing edit
+/// in-flight, etc.). CSS handles the actual hide/show.
+fn toggle_layout_class(class: &str) {
+    let Some(layout) = dom::by_id("layout") else { return };
+    let current = layout.class_name();
+    let trimmed = current.trim();
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    let new_cls = if parts.iter().any(|c| *c == class) {
+        parts.iter().filter(|c| **c != class).copied().collect::<Vec<_>>().join(" ")
+    } else if parts.is_empty() {
+        class.to_string()
+    } else {
+        format!("{} {class}", parts.join(" "))
+    };
+    layout.set_class_name(&new_cls);
 }
 
 /// Full bootstrap-funding sequence for a freshly-created wallet:

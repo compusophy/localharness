@@ -38,7 +38,7 @@ pub(crate) fn site_header(host: &Host) -> Markup {
                 h1 {
                     a href="https://localharness.xyz/" title="go home" { "localharness" }
                 }
-                span.tag { "0.10.9" } // bumped in lockstep with Cargo.toml
+                span.tag { "0.10.10" } // bumped in lockstep with Cargo.toml
                 @if matches!(host, Host::Tenant(_)) {
                     (verify_pill(&VerifyState::Pending))
                     // TBA pill placeholder — filled in by kick_verification
@@ -56,13 +56,34 @@ pub(crate) fn site_header(host: &Host) -> Markup {
     }
 }
 
-/// Global sticky footer — same on every page. Currently just a dummy
-/// `feedback` button; will host real surface area later (status, links).
-pub(crate) fn site_footer() -> Markup {
+/// Global sticky footer — wraps whatever content the page wants to
+/// host at the bottom. On tenant chrome this carries the terminal
+/// prompt (the primary input surface). On apex it's a thin border
+/// with no content; on signer iframe it stays out of sight entirely.
+pub(crate) fn site_footer(content: Markup) -> Markup {
     html! {
         footer.site-footer {
             div.footer-inner {
-                button type="button" data-action="feedback" .ghost { "feedback" }
+                (content)
+            }
+        }
+    }
+}
+
+/// Terminal-style input region. Lives in the footer on tenant chrome.
+/// `>` prefix glyph, single textarea that auto-expands, Enter sends
+/// (Shift+Enter for newline), `new` clears the conversation.
+pub(crate) fn terminal_input() -> Markup {
+    html! {
+        div.terminal {
+            div #status .terminal-status { "ready" }
+            div.terminal-row {
+                span.terminal-prompt { ">" }
+                textarea #prompt
+                    rows="1"
+                    placeholder="message · Enter to send · Shift+Enter for newline" {}
+                button.terminal-send data-action="send" { "send" }
+                button.terminal-new.ghost data-action="reset" { "new" }
             }
         }
     }
@@ -136,22 +157,17 @@ pub(crate) fn chrome(host: &Host) -> Markup {
     html! {
         (site_header(host))
         main #layout .layout {
-            // Vertical "files" rail — always visible below the header.
-            // Toggling adds/removes `files-collapsed` on `#layout` to
-            // hide the panel without re-rendering its DOM (so an open
-            // file in the viewer survives a collapse + expand).
-            div.files-rail {
-                button type="button" data-action="toggle-files" .files-toggle {
-                    span.files-toggle-label { "files" }
+            // Left files rail — always visible. Toggling adds/removes
+            // `files-collapsed` on `#layout` to hide the file panel
+            // without re-rendering its DOM (so an open file viewer
+            // survives a collapse + expand).
+            div.side-rail.files-rail {
+                button type="button" data-action="toggle-files" .rail-toggle {
+                    span.rail-label { "files" }
                 }
             }
 
             aside.col-fs {
-                // Pricing card is injected by kick_verification only
-                // when the visitor is the owner (so they can edit) —
-                // visitors see price embedded in the send button label
-                // instead of a permanent column card.
-                div #pricing-slot {}
                 div.fs-panel {
                     div.fs-header {
                         div.fs-title { "files" }
@@ -174,37 +190,28 @@ pub(crate) fn chrome(host: &Host) -> Markup {
                 }
             }
 
+            // Chat column — transcript only. Input region moved to the
+            // footer (terminal). Status moved into the terminal too.
             div.col-chat {
-                div #input-region {
-                    div.row {
-                        div.key-row {
-                            input #key
-                                type="password"
-                                autocomplete="off"
-                                placeholder="gemini api key" {}
-                            button.ghost
-                                type="button"
-                                data-action="clear-key" { "clear" }
-                            span #keymeta {}
-                        }
-                    }
-
-                    div.row {
-                        textarea #prompt
-                            placeholder="prompt · ⌘/Ctrl+Enter" {}
-                    }
-
-                    div.actions {
-                        button data-action="send" { "send" }
-                        button.ghost data-action="reset" { "new" }
-                    }
-                }
-
-                div #status .status { "loading…" }
                 div #transcript .transcript {}
             }
+
+            // Right financial column — agent TBA + $localharness
+            // balance + (owner-only) pricing edit. Injected by
+            // kick_verification once verify settles + TBA is known.
+            aside.col-financial {
+                div #financial-slot .financial-placeholder { "(financial · loading…)" }
+            }
+
+            // Right rail — mirror of files rail; toggles
+            // `financial-collapsed` on `#layout`.
+            div.side-rail.financial-rail {
+                button type="button" data-action="toggle-financial" .rail-toggle {
+                    span.rail-label { "agent" }
+                }
+            }
         }
-        (site_footer())
+        (site_footer(terminal_input()))
     }
 }
 
@@ -296,7 +303,7 @@ pub(crate) fn apex(host: &Host, wallet_address_hex: Option<&str>) -> Markup {
                 }
             }
         }
-        (site_footer())
+        (site_footer(html! {}))
     }
 }
 
@@ -388,12 +395,24 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
     }
 }
 
-/// Tenant-variant of the admin dropdown — reset wipes per-subdomain
-/// state (owner, history, key, files) and surfaces that copy. No
-/// seed/import section because the wallet lives at apex, not here.
+/// Tenant-variant of the admin dropdown — gemini api key (the chat
+/// surface only works when this is set), then reset-local-state.
+/// No seed/import section because the wallet lives at apex, not here.
 pub(crate) fn admin_dropdown_tenant() -> Markup {
     html! {
         div #header-admin-panel .header-admin-panel {
+            div.admin-section {
+                div.admin-section-title { "gemini api key " span #keymeta {} }
+                div.key-row {
+                    input #key
+                        type="password"
+                        autocomplete="off"
+                        placeholder="paste key" {}
+                    button.ghost
+                        type="button"
+                        data-action="clear-key" { "clear" }
+                }
+            }
             div.admin-section {
                 div.admin-section-title { "reset local state" }
                 p.admin-blurb {
@@ -457,16 +476,75 @@ pub(crate) fn opfs_wipe_confirm_inline() -> Markup {
     }
 }
 
-/// Full pricing card — injected into `#pricing-slot` by
-/// `kick_verification` only when the visitor is the verified owner.
-/// (Visitors don't get a card; their price shows up in chat status.)
+/// Full pricing card — used inside the financial column. Injected
+/// by `kick_verification` when the visitor is the owner; visitors
+/// get a read-only price line via [`pricing_readonly_line`] instead.
 pub(crate) fn pricing_card(price_wei: u128) -> Markup {
     html! {
-        section #pricing-slot .pricing-card {
+        section .pricing-card {
             div.pricing-header {
                 div.pricing-title { "pricing" }
             }
             (pricing_card_body(price_wei, true))
+        }
+    }
+}
+
+/// Single-line read-only pricing display for visitors (non-owners).
+pub(crate) fn pricing_readonly_line(price_wei: u128) -> Markup {
+    let display = if price_wei == 0 {
+        "free".to_string()
+    } else {
+        format!("{} $LH/turn", super::format_wei_as_test_eth(price_wei))
+    };
+    html! {
+        div.financial-line {
+            span.financial-label { "pricing" }
+            span.financial-value { (display) }
+        }
+    }
+}
+
+/// Right-column financial card. Injected by `kick_verification` once
+/// the agent's TBA + balance are known. Shows the agent's wallet
+/// address (linked to the explorer), $localharness balance, and
+/// pricing (editable for owner, read-only for visitors). Placeholders
+/// for future credits / allowance / streaming live here too.
+pub(crate) fn financial_card(
+    tba_hex: &str,
+    lh_balance_wei: u128,
+    price_wei: u128,
+    is_owner: bool,
+) -> Markup {
+    let tba_url = format!("https://moderato.tempo.xyz/address/{tba_hex}");
+    let balance_display = super::format_wei_as_test_eth(lh_balance_wei);
+    html! {
+        section #financial-slot .financial-card {
+            div.financial-header {
+                div.financial-title { "agent" }
+            }
+            div.financial-line {
+                span.financial-label { "wallet" }
+                a.financial-tba href=(tba_url) target="_blank" rel="noopener"
+                    title=(format!("ERC-6551 TBA: {tba_hex}")) {
+                    (short_addr(tba_hex))
+                }
+            }
+            div.financial-line {
+                span.financial-label { "$LH" }
+                span.financial-value.financial-balance { (balance_display) }
+            }
+            @if is_owner {
+                (pricing_card(price_wei))
+            } @else {
+                (pricing_readonly_line(price_wei))
+            }
+            div.financial-future {
+                div.financial-future-title { "coming" }
+                div.financial-future-line { "· daily allowance" }
+                div.financial-future-line { "· token streaming" }
+                div.financial-future-line { "· agent-to-agent payments" }
+            }
         }
     }
 }
@@ -567,10 +645,10 @@ pub(crate) fn seed_phrase(words: &str) -> Markup {
     }
 }
 
-/// Visitor-mode replacement for `#input-region` on a tenant subdomain
-/// when the verifier confirms the visitor isn't the on-chain owner.
-/// Hides every write affordance; the transcript + OPFS panel still
-/// render because they live outside `#input-region`.
+/// (Retired in 0.10.10 — visitor context now lives in the terminal
+/// status line via `dom::set_status`. Kept for now in case we want
+/// a richer banner later.)
+#[allow(dead_code)]
 pub(crate) fn visitor_banner(owner_address: &str) -> Markup {
     html! {
         div #input-region .visitor-banner {
@@ -578,14 +656,7 @@ pub(crate) fn visitor_banner(owner_address: &str) -> Markup {
             p {
                 "this subdomain is owned by "
                 code { (owner_address) }
-                " on the Tempo Moderato registry. you can read the public "
-                "transcript and any OPFS files the owner has made visible, "
-                "but you can't send messages or write state."
-            }
-            p.apex-fine {
-                "want your own space? "
-                a href="https://localharness.xyz/" { "go to apex" }
-                " and claim a name."
+                "."
             }
         }
     }
@@ -660,7 +731,7 @@ pub(crate) fn unclaimed(host: &Host, name: &str) -> Markup {
                 }
             }
         }
-        (site_footer())
+        (site_footer(html! {}))
     }
 }
 

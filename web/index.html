@@ -86,22 +86,26 @@
       flex: 1;
       width: 100%;
     }
-    /* Tenant chrome layout: vertical files rail | files panel | chat */
+    /* Tenant chrome layout — five-column stretch:
+       [files-rail] [col-fs] [col-chat] [col-financial] [financial-rail]
+       Rails always visible; panels collapse via class flips on #layout. */
     main.layout {
       padding: 0;
+      max-width: none;
       display: flex;
       align-items: stretch;
       gap: 0;
     }
-    main.layout .files-rail {
+    main.layout .side-rail {
       flex-shrink: 0;
       width: 32px;
-      border-right: 1px solid var(--border);
       display: flex;
       justify-content: center;
       padding: 12px 0;
     }
-    main.layout .files-toggle {
+    main.layout .files-rail { border-right: 1px solid var(--border); }
+    main.layout .financial-rail { border-left: 1px solid var(--border); }
+    main.layout .rail-toggle {
       background: transparent;
       color: var(--muted);
       border: 0;
@@ -109,8 +113,8 @@
       cursor: pointer;
       font: inherit;
     }
-    main.layout .files-toggle:hover { color: var(--fg); }
-    main.layout .files-toggle-label {
+    main.layout .rail-toggle:hover { color: var(--fg); }
+    main.layout .rail-label {
       writing-mode: vertical-rl;
       transform: rotate(180deg);
       font-size: 10px;
@@ -118,40 +122,150 @@
       letter-spacing: 0.12em;
       color: var(--muted);
     }
-    main.layout .files-toggle:hover .files-toggle-label { color: var(--fg); }
-    main.layout .col-fs {
+    main.layout .rail-toggle:hover .rail-label { color: var(--fg); }
+    main.layout .col-fs,
+    main.layout .col-financial {
       flex-shrink: 0;
-      width: 280px;
-      border-right: 1px solid var(--border);
-      padding: 24px 20px;
+      width: 260px;
+      padding: 20px;
       display: flex;
       flex-direction: column;
       gap: 16px;
+      overflow-y: auto;
     }
+    main.layout .col-fs { border-right: 1px solid var(--border); }
+    main.layout .col-financial { border-left: 1px solid var(--border); }
     main.layout.files-collapsed .col-fs { display: none; }
+    main.layout.financial-collapsed .col-financial { display: none; }
     main.layout .col-chat {
       flex: 1;
       min-width: 0;
-      padding: 32px 24px;
+      padding: 24px 32px;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+    /* Transcript fills available vertical space, newest at bottom. */
+    main.layout .transcript {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      margin-top: auto; /* push content to bottom near terminal */
     }
     @media (max-width: 900px) {
       main.layout { flex-direction: column; }
-      main.layout .files-rail {
+      main.layout .side-rail {
         width: 100%; height: 32px;
-        border-right: 0; border-bottom: 1px solid var(--border);
         padding: 0;
       }
-      main.layout .files-toggle-label {
+      main.layout .files-rail {
+        border-right: 0; border-bottom: 1px solid var(--border);
+      }
+      main.layout .financial-rail {
+        border-left: 0; border-top: 1px solid var(--border);
+      }
+      main.layout .rail-label {
         writing-mode: horizontal-tb;
         transform: none;
       }
-      main.layout .col-fs {
-        width: 100%; border-right: 0;
+      main.layout .col-fs,
+      main.layout .col-financial {
+        width: 100%;
+        border-right: 0; border-left: 0;
         border-bottom: 1px solid var(--border);
       }
     }
-    .apex-main { display: block; padding: 32px 24px; }
+    .apex-main { display: block; padding: 32px 24px; max-width: 1180px; }
     .apex-main > .col-chat { max-width: 600px; margin: 0 auto; }
+
+    /* Terminal-in-footer — the primary input surface on tenant chrome */
+    .terminal {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .terminal-status {
+      font-size: 11px;
+      color: var(--muted);
+      min-height: 14px;
+      padding: 0 8px;
+    }
+    .terminal-status.err { color: var(--error); }
+    .terminal-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 10px;
+    }
+    .terminal-row:focus-within { border-color: var(--accent); }
+    .terminal-prompt {
+      color: var(--accent);
+      font-weight: 600;
+      user-select: none;
+    }
+    .terminal-row textarea {
+      flex: 1;
+      background: transparent;
+      border: 0;
+      outline: none;
+      resize: none;
+      color: var(--fg);
+      font: inherit;
+      padding: 4px 0;
+      min-height: 22px;
+      max-height: 200px;
+      line-height: 1.4;
+    }
+    .terminal-row textarea::placeholder { color: var(--muted); }
+    .terminal-send, .terminal-new {
+      padding: 4px 12px;
+      font-size: 12px;
+      flex-shrink: 0;
+    }
+
+    /* Financial column visuals */
+    .financial-card,
+    .financial-empty,
+    .financial-placeholder {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .financial-placeholder { color: var(--muted); font-size: 11px; }
+    .financial-empty { min-height: 0; }
+    .financial-header { padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+    .financial-title {
+      font-size: 11px; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.06em;
+    }
+    .financial-line {
+      display: flex; justify-content: space-between; align-items: baseline;
+      gap: 12px;
+    }
+    .financial-label {
+      font-size: 11px; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.06em;
+    }
+    .financial-value { font-size: 12px; color: var(--fg); }
+    .financial-balance { color: var(--accent); font-variant-numeric: tabular-nums; }
+    .financial-tba {
+      font-size: 12px; color: #f4c47e; text-decoration: none;
+      font-variant-numeric: tabular-nums;
+    }
+    .financial-tba:hover { text-decoration: underline; }
+    .financial-future {
+      margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border);
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .financial-future-title {
+      font-size: 10px; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.08em;
+    }
+    .financial-future-line { font-size: 11px; color: var(--muted); }
     header { /* old in-flow header still used in unrelated templates */
       display: flex; align-items: baseline; gap: 12px;
       margin-bottom: 4px;
