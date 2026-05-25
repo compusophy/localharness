@@ -5,6 +5,38 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.13] - 2026-05-24
+
+### Fixed
+
+- **Page no longer grows with chat length.** The transcript now
+  scrolls internally instead of expanding `main` → expanding `#root`
+  → forcing the whole page to grow. Added `min-height: 0` to the
+  flex chain (`main.layout` + `.col-chat`) and `overflow: hidden`
+  on `main.layout` so the transcript's `overflow-y: auto` actually
+  kicks in.
+
+### Changed (browser app)
+
+- **Terminal + view tabs are inset between files and agent
+  columns.** Previously the terminal panel + rail sat OUTSIDE the
+  five-column row, spanning full width. Now the center `col-chat`
+  owns its own vertical stack — `[view-rail][view-panel?]
+  [transcript][terminal-panel?][terminal-rail]` — and the files
+  + agent rails extend the full viewport height around it. The
+  rails frame the center; the center owns its own top/bottom rails.
+- **New `view` top rail and panel** mirroring the terminal at the
+  bottom. The file viewer no longer lives inside the file
+  explorer column — clicking a file in the file list opens it in
+  the top-center view panel (auto-expands if collapsed). Click
+  the `view` rail to toggle.
+- **Terminal styling softer / less boxy.** Removed the top border
+  on `.terminal-panel` so the input flows continuously out of the
+  transcript above instead of feeling like a separate walled
+  surface. "The terminal input is part of the conversation" —
+  first pass at this; the input still has its own row but no
+  longer reads as a different container.
+
 ## [0.10.12] - 2026-05-24
 
 ### Changed (browser app)
