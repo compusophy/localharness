@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.12] - 2026-05-24
+
+### Changed (browser app)
+
+- **All three rails are now consistent.** Files (left), agent
+  (right), and terminal (bottom) all share the same pattern: the
+  rail IS a `<button>`, the whole strip is the click target. No
+  nested button-inside-div, no special title bar with a minimize
+  glyph. Hover lights up the full rail.
+- **Terminal rail moved to bottom-most position.** Lives below the
+  terminal panel, full-width, mirrors the side-rail visual treatment
+  but rotated horizontal. Click anywhere on the rail to toggle the
+  panel above. The previous title-bar + `—` toggle pattern is gone.
+- **`main` is a flex column now:** `[main-row]` (five-col stretch) +
+  `[terminal-panel]` (shown when not collapsed) + `[terminal-rail]`
+  (always visible, bottom-most). Matches the "the outermost
+  elements ARE the tabs" mental model.
+
 ## [0.10.11] - 2026-05-24
 
 Three real bugs + UX cleanup. The agent was returning 400s on
