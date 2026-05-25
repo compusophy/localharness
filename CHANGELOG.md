@@ -5,6 +5,73 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.17] - 2026-05-24
+
+Big polish pass: ALL chatty status text dead, button + font
+unification, panel headers de-duped, mobile terminal-as-sticky-
+footer, subdomain identity moved to the agent tab, owner address
+exposed in admin. Plus apex declutter.
+
+### Changed (apex)
+
+- **Agents list reduced to bare names.** No token id (`#3`), no 💰
+  emoji, no TBA address, no `.localharness.xyz` suffix. Just the
+  subdomain name as a link, centered, top-aligned. Hover colors
+  accent.
+- **Create form: input + button stacked centered.** Equal 24px
+  spacing above + below the input. Button is a wide CTA
+  (min-width 200px, 12/32 padding). Centered horizontally.
+- **No "3–32 chars" hint, no `.localharness.xyz` suffix chip.**
+  The button rejects invalid input directly; no bloat copy.
+- **Input centered text** so the typed name reads as the visual
+  focal point.
+
+### Changed (browser app)
+
+- **Header strips to brand + admin only.** Subdomain name moved
+  off the header into the agent tab's first line. Header is now
+  `[localharness]` left, `[admin]` right, nothing in the middle.
+- **Panel headers de-duped.** Files + agent columns no longer have
+  their own internal `panel-title` (`files` / `agent`) — the rail
+  label outside the panel IS the title. The `col_side` helper
+  returns body-only.
+- **`refresh` + `wipe` buttons removed from the files header.**
+  Admin reset already handles wipe; the file list auto-refreshes
+  after navigation + saves.
+- **Agent tab gets `name` row** at the top showing the subdomain
+  (which the header lost). Plus `owner`, `wallet`, `balance` as
+  before.
+- **Admin (tenant) shows the owner address** (recovered from
+  verify state) + a `manage at apex →` link so seed reveal /
+  import is reachable from a subdomain.
+- **Terminal is a sticky footer on mobile.** Below 900px the page
+  scrolls freely, but the terminal panel + rail are
+  `position: fixed` at the bottom of the viewport, always
+  reachable. Side panels (files / agent) get a 40vh max-height
+  so they stop overflowing the page.
+
+### Fixed
+
+- **No more "thinking…" / "starting session…" / "done · ttft N
+  ms" status writes.** The terminal status stays empty in normal
+  use; only fills on errors or payment-flow events.
+- **Terminal pinned to bottom on desktop** via `margin-top: auto`
+  so it never floats up when the edit panel is closed.
+
+### Style
+
+- **Single button archetype across the whole app.** Transparent
+  bg, `--border` border, `--muted` text, 11px uppercase,
+  letter-spacing 0.06em. Hover lights up to `--fg`. All
+  per-component button overrides (admin-button, panel-button,
+  pricing-edit button, identity-actions button, …) deleted.
+  `button.ghost` is now a legacy alias that means nothing —
+  same as base.
+- **Two font sizes everywhere:** 13px mono body + 11px uppercase
+  chrome. The previous 10/11/12/13/14/16px scatter is gone.
+- **`button.danger`** is just a colour swap (`--error`) of the
+  base, not a different geometry.
+
 ## [0.10.16] - 2026-05-24
 
 Side-panel SSOT + clicking terminal now collapses the whole chat
