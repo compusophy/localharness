@@ -18,10 +18,9 @@
       --error: #ff8b8b;
     }
     * { box-sizing: border-box; }
-    /* Desktop-app frame: html/body/#root all clamp to exactly the
-       viewport with `overflow: hidden`. The page itself never scrolls;
-       any panel that needs to scroll handles its own overflow. This
-       is the "always viewport-bound" model the user asked for. */
+    /* Desktop-app frame: viewport-bound, no page scroll. Border-
+       radius is zero everywhere — the user wants the ultra-minimal
+       look not the rounded chrome. */
     html, body {
       margin: 0; padding: 0;
       background: var(--bg); color: var(--fg);
@@ -35,13 +34,34 @@
       flex-direction: column;
     }
 
-    /* Sticky header — only chrome that wraps every page now. There is
-       no global footer; the terminal lives inside the chat column and
-       acts as the bottom-of-page surface on its own. */
+    /* Global no-radius — wipes all the rounded corners across the
+       app. Each component sets its own border-radius:0 explicitly
+       too but this is the kill switch. */
+    button, input, textarea, select, .tag, code,
+    .fs-panel, .pricing-card, .financial-card, .header-admin-panel,
+    .terminal-row, .key-row, .admin-address, .seed-words,
+    .button-link, .turn, .tool-call, .visitor-banner {
+      border-radius: 0 !important;
+    }
+
+    /* Custom monochrome scrollbar — thin, no rounding, blends with
+       the panel background. Chromium + Firefox both styled. */
+    * { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+    *::-webkit-scrollbar { width: 8px; height: 8px; }
+    *::-webkit-scrollbar-track { background: transparent; }
+    *::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border: 2px solid var(--bg);
+    }
+    *::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+    *::-webkit-scrollbar-corner { background: transparent; }
+
+    /* Sticky header — three zones via CSS grid:
+       [brand left][subdomain center][admin right]. Each zone is its
+       own column so the center stays centered even when the side
+       widths differ. */
     .site-header {
-      position: sticky;
-      top: 0;
-      z-index: 100;
+      flex-shrink: 0;
       background: var(--bg);
       padding: 0;
       min-height: 40px;
@@ -50,16 +70,22 @@
       border-bottom: 1px solid var(--border);
     }
     .header-inner {
-      max-width: 1180px;
       width: 100%;
-      margin: 0 auto;
-      padding: 4px 24px;
-      display: flex;
+      padding: 4px 16px;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
       align-items: center;
       gap: 12px;
-      flex-wrap: wrap;
     }
-    .header-admin { margin-left: auto; }
+    .header-brand { justify-self: start; }
+    .header-center {
+      justify-self: center;
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: lowercase;
+      letter-spacing: 0.04em;
+    }
+    .header-admin { justify-self: end; position: relative; }
 
     main {
       max-width: 1180px;
@@ -226,30 +252,29 @@
     .apex-main { display: block; padding: 32px 24px; max-width: 1180px; }
     .apex-main > .col-chat { max-width: 600px; margin: 0 auto; }
 
-    /* Terminal interior — matches the 16px padding used by the
-       other panels (files / agent / view / transcript). */
+    /* Terminal interior — bare prompt, no chrome. Status renders
+       empty by default; only fills when there's something to say. */
     .terminal-body {
-      padding: 16px;
+      padding: 12px 16px;
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 4px;
     }
     .terminal-status {
       font-size: 11px;
       color: var(--muted);
-      min-height: 14px;
+      min-height: 0;
     }
+    .terminal-status:empty { display: none; }
     .terminal-status.err { color: var(--error); }
     .terminal-row {
       display: flex;
       align-items: center;
       gap: 8px;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      padding: 6px 10px;
+      background: transparent;
+      border: 0;
+      padding: 0;
     }
-    .terminal-row:focus-within { border-color: var(--accent); }
     .terminal-prompt {
       color: var(--accent);
       font-weight: 600;
@@ -269,12 +294,17 @@
       max-height: 240px;
       line-height: 1.4;
     }
-    .terminal-row textarea::placeholder { color: var(--muted); }
     .terminal-send {
-      padding: 4px 12px;
-      font-size: 12px;
+      padding: 0 8px;
+      font-size: 16px;
+      line-height: 1;
       flex-shrink: 0;
+      background: transparent;
+      color: var(--muted);
+      border: 0;
+      cursor: pointer;
     }
+    .terminal-send:hover { color: var(--accent); }
 
     /* Financial column visuals */
     .financial-card,
@@ -673,6 +703,15 @@
     }
     .admin-blurb { margin: 0 0 8px; color: var(--muted); font-size: 12px; line-height: 1.5; }
     .admin-actions { display: flex; justify-content: flex-end; gap: 6px; }
+    .admin-footer {
+      display: flex; justify-content: space-between; align-items: center;
+      gap: 8px; padding-top: 10px; margin-top: 6px;
+      border-top: 1px solid var(--border);
+    }
+    .admin-version {
+      font-size: 10px; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.06em;
+    }
     .admin-address {
       display: block; padding: 8px 10px;
       background: var(--bg); border: 1px solid var(--border); border-radius: 4px;

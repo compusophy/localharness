@@ -372,55 +372,36 @@ async fn kick_verification(name: String) {
     APP.with(|cell| cell.borrow_mut().pricing_wei = Some(price));
     let is_owner = matches!(outcome, VerifyState::Verified { .. });
 
-    // TBA lookup — needed for the financial card AND the header pill.
+    // TBA + owner address — both needed for the agent tab.
     let on_chain = matches!(
         outcome,
         VerifyState::Verified { .. } | VerifyState::Visitor { .. }
     );
+    let owner_addr: Option<String> = match &outcome {
+        VerifyState::Verified { address } => Some(address.clone()),
+        VerifyState::Visitor { owner_address, .. } => Some(owner_address.clone()),
+        _ => None,
+    };
     let mut tba_opt: Option<String> = None;
     if on_chain {
         if let Ok(Some(tba)) = registry::tba_of_name(&name).await {
-            let html = templates::tba_pill(&tba).into_string();
-            dom::swap_outer("tba-pill", &html);
             APP.with(|cell| cell.borrow_mut().tba_address = Some(tba.clone()));
             tba_opt = Some(tba);
         }
     }
 
-    // Financial card: agent TBA + $localharness balance + pricing.
-    // Injected into #financial-slot in the right column. Owner sees
-    // editable pricing; visitors see read-only price line.
-    if let Some(tba) = &tba_opt {
+    // Agent tab: owner + TBA + $LH balance + pricing.
+    if let (Some(tba), Some(owner)) = (&tba_opt, &owner_addr) {
         let lh_balance = registry::token_balance_of(tba).await.unwrap_or(0);
-        let html = templates::financial_card(tba, lh_balance, price, is_owner).into_string();
+        let html =
+            templates::financial_card(tba, owner, lh_balance, price, is_owner).into_string();
         dom::swap_outer("financial-slot", &html);
     } else {
-        // No on-chain owner (Unregistered / Failed / Pending) — leave
-        // the slot empty so the column gives no false reassurance.
         dom::swap_outer(
             "financial-slot",
             r#"<div id="financial-slot" class="financial-empty"></div>"#,
         );
     }
-
-    // Visitor mode — surface ownership context in the terminal
-    // status so they know whose agent they're looking at. They can
-    // still try to send; chat::collect_payment_if_required gates on
-    // pricing for non-owners separately.
-    if let VerifyState::Visitor { owner_address, .. } = &outcome {
-        dom::set_status(
-            &format!("visitor · owner {}", short_owner(owner_address)),
-            false,
-        );
-    }
-}
-
-fn short_owner(addr: &str) -> String {
-    let stripped = addr.trim_start_matches("0x");
-    if stripped.len() < 8 {
-        return addr.to_string();
-    }
-    format!("0x{}…{}", &stripped[..4], &stripped[stripped.len() - 4..])
 }
 
 /// Paint the apex chrome. Reads (never creates) the master wallet —

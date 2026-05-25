@@ -28,23 +28,23 @@ pub(crate) fn rendered_markdown(raw: &str) -> Markup {
     html! { (PreEscaped(out)) }
 }
 
-/// Global sticky header — same on apex + tenant + other. Brand +
-/// version + (tenant-only) verify/TBA pills + admin button at the
-/// right. `.site-header` CSS class makes it `position: sticky` at top.
+/// Three-zone sticky header — brand left, subdomain center, admin
+/// right. Version, verify-pill, TBA-pill all moved off the header
+/// per the ultra-minimal direction; owner / TBA / balance live in
+/// the agent tab now and the version lives at the bottom of the
+/// admin dropdown.
 pub(crate) fn site_header(host: &Host) -> Markup {
+    let center = match host {
+        Host::Tenant(name) => name.clone(),
+        _ => String::new(),
+    };
     html! {
         header.site-header {
             div.header-inner {
-                h1 {
+                h1.header-brand {
                     a href="https://localharness.xyz/" title="go home" { "localharness" }
                 }
-                span.tag { "0.10.13" } // bumped in lockstep with Cargo.toml
-                @if matches!(host, Host::Tenant(_)) {
-                    (verify_pill(&VerifyState::Pending))
-                    // TBA pill placeholder — filled in by kick_verification
-                    // once the address is fetched from the registry.
-                    span #tba-pill {}
-                }
+                div.header-center { (center) }
                 div #header-admin .header-admin {
                     button type="button"
                         data-action="header-admin-toggle"
@@ -56,20 +56,21 @@ pub(crate) fn site_header(host: &Host) -> Markup {
     }
 }
 
-/// Terminal input — status line + prompt + send. Lives inside
-/// `.terminal-panel` which sits just above the `.terminal-rail`
-/// at the bottom of `#layout`. No title bar or minimize button —
-/// the rail below IS the toggle, same pattern as the side rails.
+/// Version string, used in the admin dropdown bottom. Bumped in
+/// lockstep with Cargo.toml.
+pub(crate) const APP_VERSION: &str = "0.10.14";
+
+/// Terminal input — just `>` prompt + textarea + → send. Status line
+/// stays in the DOM (id="status") for dispatcher messages but renders
+/// empty by default so it doesn't add visual noise.
 pub(crate) fn terminal_input() -> Markup {
     html! {
         div.terminal-body {
-            div #status .terminal-status { "ready" }
+            div #status .terminal-status {}
             div.terminal-row {
                 span.terminal-prompt { ">" }
-                textarea #prompt
-                    rows="1"
-                    placeholder="message · enter to send · shift+enter for newline" {}
-                button.terminal-send data-action="send" { "send" }
+                textarea #prompt rows="1" {}
+                button.terminal-send data-action="send" title="send" { "→" }
             }
         }
     }
@@ -77,6 +78,7 @@ pub(crate) fn terminal_input() -> Markup {
 
 /// ERC-6551 token-bound account pill — the agent's wallet address.
 /// Lives in the header next to verify-pill on tenant subdomains.
+#[allow(dead_code)] // retired in 0.10.14 — TBA shows in the agent tab
 pub(crate) fn tba_pill(address: &str) -> Markup {
     let short = short_addr(address);
     let title = format!("agent wallet (ERC-6551): {address}");
@@ -340,19 +342,8 @@ fn apex_step_agents() -> Markup {
 /// reset-local-state on apex; tenant chrome reuses the same dropdown
 /// but show different reset copy via [`admin_dropdown_tenant`].
 pub(crate) fn admin_dropdown_apex() -> Markup {
-    // Pull the cached wallet address out of App state so the panel
-    // can show it without an OPFS round-trip.
-    let wallet_addr = super::APP.with(|cell| {
-        cell.borrow().wallet.as_ref().map(|w| w.address_hex())
-    });
     html! {
         div #header-admin-panel .header-admin-panel {
-            @if let Some(addr) = wallet_addr {
-                div.admin-section {
-                    div.admin-section-title { "wallet" }
-                    code.admin-address { (addr) }
-                }
-            }
             div.admin-section {
                 div.admin-section-title { "seed phrase" }
                 div #seed-reveal .seed-reveal {
@@ -364,17 +355,14 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
                 (import_seed_inline())
             }
             div.admin-section {
-                div.admin-section-title { "reset local state" }
-                p.admin-blurb {
-                    "wipes your master wallet from this origin's OPFS. "
-                    "back up the seed first or lose the identity."
-                }
+                div.admin-section-title { "reset" }
                 div #reset-confirm-slot {
                     button type="button" data-action="reset-arm" .ghost { "reset…" }
                 }
             }
-            div.admin-actions {
+            div.admin-footer {
                 button type="button" data-action="header-admin-close" .ghost { "close" }
+                span.admin-version { (APP_VERSION) }
             }
         }
     }
@@ -388,12 +376,6 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
         div #header-admin-panel .header-admin-panel {
             div.admin-section {
                 div.admin-section-title { "gemini api key " span #keymeta {} }
-                // Wrap the password input in a form so browsers stop
-                // logging "Password field is not contained in a form".
-                // onsubmit handler is preventDefault'd by the delegated
-                // submit listener for any data-action; this form has
-                // none so plain Enter inside the key just submits +
-                // does nothing visible.
                 form.key-form onsubmit="return false" {
                     div.key-row {
                         input #key
@@ -407,18 +389,14 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                 }
             }
             div.admin-section {
-                div.admin-section-title { "reset local state" }
-                p.admin-blurb {
-                    "wipes the owner marker, conversation history, API key, "
-                    "and every file in this subdomain's OPFS. your master "
-                    "wallet at the apex origin is untouched."
-                }
+                div.admin-section-title { "reset" }
                 div #reset-confirm-slot {
                     button type="button" data-action="reset-arm" .ghost { "reset…" }
                 }
             }
-            div.admin-actions {
+            div.admin-footer {
                 button type="button" data-action="header-admin-close" .ghost { "close" }
+                span.admin-version { (APP_VERSION) }
             }
         }
     }
@@ -499,44 +477,44 @@ pub(crate) fn pricing_readonly_line(price_wei: u128) -> Markup {
 }
 
 /// Right-column financial card. Injected by `kick_verification` once
-/// the agent's TBA + balance are known. Shows the agent's wallet
-/// address (linked to the explorer), $localharness balance, and
-/// pricing (editable for owner, read-only for visitors). Placeholders
-/// for future credits / allowance / streaming live here too.
+/// the agent's TBA + balance + owner are known. Shows the agent's
+/// wallet address (linked to the explorer), $localharness balance,
+/// owner address, and pricing (editable for owner, read-only for
+/// visitors).
 pub(crate) fn financial_card(
     tba_hex: &str,
+    owner_hex: &str,
     lh_balance_wei: u128,
     price_wei: u128,
     is_owner: bool,
 ) -> Markup {
     let tba_url = format!("https://moderato.tempo.xyz/address/{tba_hex}");
+    let owner_url = format!("https://moderato.tempo.xyz/address/{owner_hex}");
     let balance_display = super::format_wei_as_test_eth(lh_balance_wei);
     html! {
         section #financial-slot .financial-card {
-            div.financial-header {
-                div.financial-title { "agent" }
+            div.financial-line {
+                span.financial-label { "owner" }
+                a.financial-tba href=(owner_url) target="_blank" rel="noopener"
+                    title=(owner_hex) {
+                    (short_addr(owner_hex))
+                }
             }
             div.financial-line {
                 span.financial-label { "wallet" }
                 a.financial-tba href=(tba_url) target="_blank" rel="noopener"
-                    title=(format!("ERC-6551 TBA: {tba_hex}")) {
+                    title=(tba_hex) {
                     (short_addr(tba_hex))
                 }
             }
             div.financial-line {
-                span.financial-label { "$LH" }
+                span.financial-label { "balance" }
                 span.financial-value.financial-balance { (balance_display) }
             }
             @if is_owner {
                 (pricing_card(price_wei))
             } @else {
                 (pricing_readonly_line(price_wei))
-            }
-            div.financial-future {
-                div.financial-future-title { "coming" }
-                div.financial-future-line { "· daily allowance" }
-                div.financial-future-line { "· token streaming" }
-                div.financial-future-line { "· agent-to-agent payments" }
             }
         }
     }
