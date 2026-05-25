@@ -5,6 +5,45 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.14] - 2026-05-24
+
+Minimalism pass. Bloat out, structure cleaner, header rebuilt.
+
+### Changed (browser app)
+
+- **Header is a three-zone grid:** `[localharness] [<subdomain>]
+  [admin]`. Brand left, subdomain center (just the name — e.g.
+  `rty`), admin button top-right. The version tag + verify-pill
+  + TBA-pill that used to live in the header are all gone from
+  it.
+- **Version moves to admin dropdown bottom.** `0.10.14` shows
+  in a small uppercase line at the bottom of the admin footer.
+- **TBA pill 💰 retired** from the header. The agent's TBA now
+  appears only in the agent tab. (No emoji either way.)
+- **Owner address moves to the agent tab.** New `owner` row at
+  the top of the agent card showing the on-chain owner of this
+  subdomain (linked to explorer). Was in the verify pill tooltip
+  before — now first-class.
+- **Agent tab `coming` section removed** — was AI-slop filler.
+- **Terminal stripped to bare prompt.** No placeholder text in
+  the textarea (no `message · enter to send · shift+enter for
+  newline`), no `ready` baseline status, no `new` button. Just
+  `>` + textarea + `→`. Status only shows when there's something
+  to say.
+- **Send button is now `→`** instead of the word "send".
+
+### Style
+
+- **Zero border-radius across the entire app.** Buttons, inputs,
+  cards, panels, pills, code blocks — all squared corners.
+  Wholesale `border-radius: 0 !important` rule kills any
+  per-component rounding.
+- **Custom monochrome scrollbar.** Thin (8px), no rounding, uses
+  `--border` for the thumb with a `--bg` "border" to give the
+  illusion of inset. Hover bumps to `--muted`. Styled for both
+  Chromium (`::-webkit-scrollbar`) and Firefox (`scrollbar-color`).
+- **Uniform 16px panel padding** carried over from 0.10.13.
+
 ## [0.10.13] - 2026-05-24
 
 ### Fixed
