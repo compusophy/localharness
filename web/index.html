@@ -83,28 +83,25 @@
       align-items: center;
       gap: 12px;
     }
-    .header-brand { margin-right: auto; }   /* pushes admin to right */
+    .header-brand { margin-right: auto; }   /* pushes utility buttons right */
     .header-admin { position: relative; }
 
-    /* Sticky bottom site-footer — same height pattern as header.
-       FEEDBACK button centered. Permanent on every page on every
-       viewport. */
-    .site-footer {
-      flex-shrink: 0;
-      background: var(--bg);
-      padding: 0;
-      min-height: 40px;
-      display: flex;
-      align-items: center;
-      border-top: 1px solid var(--border);
+    /* Header utility buttons — feedback + admin sit side by side at
+       the right of the header. Fixed min-width so the pair reads as
+       a uniform row regardless of label length, and a gap between
+       them matching the header's own padding so they don't crowd. */
+    .header-button {
+      min-width: 96px;
     }
-    .footer-inner {
-      width: 100%;
-      padding: 16px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+    .header-inner > .header-button + .header-admin,
+    .header-inner > .header-brand + .header-button {
+      margin-left: 8px;
     }
+
+    /* Footer styles retained as a no-op — `site_footer()` returns an
+       empty markup now and `chrome` doesn't call it, but legacy CSS
+       references can compile away cleanly here. */
+    .site-footer { display: none; }
     .feedback-button { letter-spacing: 0.12em; }
 
     /* Mobile tab bar — shown only under 900px. Switches which
@@ -200,6 +197,7 @@
     main.layout {
       padding: 0;
       max-width: none;
+      flex: 1;                /* claim the rest of the viewport after the header */
       display: flex;
       flex-direction: row;
       align-items: stretch;

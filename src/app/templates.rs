@@ -28,9 +28,12 @@ pub(crate) fn rendered_markdown(raw: &str) -> Markup {
     html! { (PreEscaped(out)) }
 }
 
-/// Sticky header — brand left, admin right. That's it. The
-/// subdomain moved into the agent tab; everything else moved long
-/// ago. Header stays as compact chrome.
+/// Sticky header — brand left, two utility buttons right (feedback,
+/// admin). Footer is gone; the feedback button moved into the header
+/// so the bottom of the viewport can be claimed by the terminal /
+/// active panel. Both header buttons share a fixed min-width via
+/// `.header-button` so they read as a uniform pair regardless of
+/// label length.
 pub(crate) fn site_header(_host: &Host) -> Markup {
     html! {
         header.site-header {
@@ -38,10 +41,13 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
                 h1.header-brand {
                     a href="https://localharness.xyz/" title="go home" { "localharness" }
                 }
+                button type="button"
+                    data-action="feedback-open"
+                    .header-button.feedback-button { "feedback" }
                 div #header-admin .header-admin {
                     button type="button"
                         data-action="header-admin-toggle"
-                        .admin-button { "admin" }
+                        .header-button.admin-button { "admin" }
                     div #header-admin-panel hidden {}
                 }
             }
@@ -189,7 +195,6 @@ pub(crate) fn chrome(host: &Host) -> Markup {
                 span.rail-label { "agent" }
             }
         }
-        (site_footer())
     }
 }
 
@@ -207,17 +212,10 @@ pub(crate) fn mobile_tabs() -> Markup {
     }
 }
 
-/// Sticky-bottom site footer — permanent on every page, same
-/// height as the header, FEEDBACK button centered.
-pub(crate) fn site_footer() -> Markup {
-    html! {
-        footer.site-footer {
-            div.footer-inner {
-                button type="button" data-action="feedback-open" .feedback-button { "feedback" }
-            }
-        }
-    }
-}
+// site_footer() retired — the feedback button moved into site_header,
+// the footer node is gone from the DOM, and the matching CSS is a
+// `display: none` shim. If a footer ever comes back, reintroduce
+// here with a meaningful purpose.
 
 /// Feedback modal — opened from the footer button. Inline confirm
 /// pattern (no JS dialog). Submit appends to `.lh_feedback.txt`

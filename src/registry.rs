@@ -899,7 +899,30 @@ async fn eth_estimate_gas(from: &str, to: &str, data_hex: &str) -> Result<u128, 
 }
 
 async fn eth_send_raw_transaction(raw_hex: &str) -> Result<String, String> {
-    rpc("eth_sendRawTransaction", serde_json::json!([raw_hex])).await
+    match rpc("eth_sendRawTransaction", serde_json::json!([raw_hex])).await {
+        Ok(hash) => Ok(hash),
+        Err(err) => {
+            // "already known" / "ALREADY_EXISTS" / "nonce too low" all
+            // mean a previous submit of the same signed bytes (or
+            // same-nonce sibling) is already in the mempool. Compute
+            // the tx hash locally and let the caller's receipt poll
+            // pick it up. Avoids spurious failures when the user
+            // double-clicks `create` or retries after a UI hiccup.
+            let lower = err.to_lowercase();
+            let is_duplicate = lower.contains("already known")
+                || lower.contains("already exists")
+                || lower.contains("nonce too low");
+            if is_duplicate {
+                let bytes = hex_to_bytes(raw_hex)?;
+                let mut hasher = Keccak256::new();
+                hasher.update(&bytes);
+                let digest = hasher.finalize();
+                Ok(format!("0x{}", bytes_to_hex(&digest)))
+            } else {
+                Err(err)
+            }
+        }
+    }
 }
 
 /// Poll `eth_getTransactionReceipt` until the receipt resolves. Errors
