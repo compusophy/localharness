@@ -77,7 +77,6 @@ pub(crate) async fn run_send() {
         app.agent.is_none() || app.session_key.as_deref() != Some(key.as_str())
     });
     if session_needs_start {
-        dom::set_status("starting session…", false);
         if let Err(err) = start_session(&key).await {
             dom::set_status(&format!("session start failed: {err:?}"), true);
             return;
@@ -116,7 +115,9 @@ pub(crate) async fn run_send() {
     // Clear the prompt, keep focus.
     prompt_area.set_value("");
     let _ = prompt_area.focus();
-    dom::set_status("thinking…", false);
+    // No "thinking…" — the assistant turn renders with the .streaming
+    // class while in flight, which adds its own "· streaming" suffix
+    // to the role line. That's enough feedback.
 
     // FIFO of pending tool-block ids. The Gemini backend emits
     // ToolCall/ToolResult pairs sequentially (one result per call,
@@ -209,16 +210,11 @@ pub(crate) async fn run_send() {
     APP.with(|cell| cell.borrow_mut().turn_count += 1);
     let turn_count = APP.with(|cell| cell.borrow().turn_count);
 
-    let t_end = js_sys::Date::now();
-    let total_ms = (t_end - t0) as i64;
-    let ttft_ms = t_first_chunk.map(|t| (t - t0) as i64).unwrap_or(total_ms);
-    dom::set_status(
-        &format!(
-            "done · ttft {ttft_ms} ms · total {total_ms} ms · {turn_count} turn{}",
-            if turn_count == 1 { "" } else { "s" }
-        ),
-        false,
-    );
+    // No status write on success — keep the terminal silent. (Per
+    // the minimalism pass; ttft/total metrics still computed for
+    // anyone who wants to grep the wasm but not surfaced in chrome.)
+    let _t_end = js_sys::Date::now();
+    let _ = (t0, t_first_chunk, turn_count);
 
     // Persist the new history snapshot, then refresh the panel so
     // any tool-created files (and the history marker itself) show up.

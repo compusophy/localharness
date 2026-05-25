@@ -394,7 +394,8 @@ async fn kick_verification(name: String) {
     if let (Some(tba), Some(owner)) = (&tba_opt, &owner_addr) {
         let lh_balance = registry::token_balance_of(tba).await.unwrap_or(0);
         let html =
-            templates::financial_card(tba, owner, lh_balance, price, is_owner).into_string();
+            templates::financial_card(&name, tba, owner, lh_balance, price, is_owner)
+                .into_string();
         dom::swap_outer("financial-slot", &html);
     } else {
         dom::swap_outer(

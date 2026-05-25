@@ -28,23 +28,16 @@ pub(crate) fn rendered_markdown(raw: &str) -> Markup {
     html! { (PreEscaped(out)) }
 }
 
-/// Three-zone sticky header — brand left, subdomain center, admin
-/// right. Version, verify-pill, TBA-pill all moved off the header
-/// per the ultra-minimal direction; owner / TBA / balance live in
-/// the agent tab now and the version lives at the bottom of the
-/// admin dropdown.
-pub(crate) fn site_header(host: &Host) -> Markup {
-    let center = match host {
-        Host::Tenant(name) => name.clone(),
-        _ => String::new(),
-    };
+/// Sticky header — brand left, admin right. That's it. The
+/// subdomain moved into the agent tab; everything else moved long
+/// ago. Header stays as compact chrome.
+pub(crate) fn site_header(_host: &Host) -> Markup {
     html! {
         header.site-header {
             div.header-inner {
                 h1.header-brand {
                     a href="https://localharness.xyz/" title="go home" { "localharness" }
                 }
-                div.header-center { (center) }
                 div #header-admin .header-admin {
                     button type="button"
                         data-action="header-admin-toggle"
@@ -58,7 +51,7 @@ pub(crate) fn site_header(host: &Host) -> Markup {
 
 /// Version string, used in the admin dropdown bottom. Bumped in
 /// lockstep with Cargo.toml.
-pub(crate) const APP_VERSION: &str = "0.10.16";
+pub(crate) const APP_VERSION: &str = "0.10.17";
 
 /// Terminal input — just `>` prompt + textarea + → send. Status line
 /// stays in the DOM (id="status") for dispatcher messages but renders
@@ -146,18 +139,12 @@ pub(crate) fn chrome(host: &Host) -> Markup {
         (site_header(host))
         main #layout .layout.view-collapsed {
             // Files (left) — files-rail wraps a col-side panel.
+            // No inner header: the rail label IS the panel title.
             button type="button" data-action="toggle-files"
                 .side-rail.files-rail {
                 span.rail-label { "files" }
             }
             (col_side(
-                html! {
-                    div.panel-title { "files" }
-                    div.panel-actions {
-                        button data-action="opfs-refresh" .panel-button { "refresh" }
-                        (opfs_wipe_armed_inline())
-                    }
-                },
                 html! {
                     div #fs-breadcrumb .fs-breadcrumb { "/" }
                     ul #fs-list .fs-list {}
@@ -188,13 +175,9 @@ pub(crate) fn chrome(host: &Host) -> Markup {
                 }
             }
 
-            // Agent (right) — financial-rail wraps a col-side panel
-            // whose body is the financial-slot injected by
-            // kick_verification.
+            // Agent (right) — same archetype, no inner header.
+            // Body is the financial-slot injected by kick_verification.
             (col_side(
-                html! {
-                    div.panel-title { "agent" }
-                },
                 html! {
                     div #financial-slot .financial-placeholder { "—" }
                 },
@@ -209,16 +192,12 @@ pub(crate) fn chrome(host: &Host) -> Markup {
 }
 
 /// SSOT side-panel archetype — used by both `col-fs` (files) and
-/// `col-financial` (agent). `extra_class` tags the panel for
-/// position-specific styling (border-left vs border-right, the
-/// per-column collapse selector). Both columns now look identical
-/// because their visual treatment lives entirely in CSS via
-/// `.col-side` (and `.panel-header` / `.panel-body` inside).
-fn col_side(header: Markup, body: Markup, extra_class: &str) -> Markup {
+/// `col-financial` (agent). Just a body container; the rail label
+/// outside the panel is the SSOT name for the panel.
+fn col_side(body: Markup, extra_class: &str) -> Markup {
     let cls = format!("col-side {extra_class}");
     html! {
         aside class=(cls) {
-            header.panel-header { (header) }
             div.panel-body { (body) }
         }
     }
@@ -329,29 +308,23 @@ fn apex_step_identity() -> Markup {
     }
 }
 
-/// Step 2 — identity exists. Agents list (async, may be empty) plus
-/// the create-agent input. Wallet address is NOT shown here — it
-/// lives in the admin dropdown to keep the main flow uncluttered.
+/// Step 2 — identity exists. Top: agents list (just the name of each
+/// subdomain the user owns). Center: a wide create-CTA form with an
+/// input above and a wide button below, equally spaced.
 fn apex_step_agents() -> Markup {
     html! {
         section.step.step-agents {
-            div #agents-list .agents-list {
-                p.step-msg { "(loading your agents…)" }
-            }
-
+            div #agents-list .agents-list {}
             form.create-form data-action="apex-claim" {
-                div.create-input-row {
-                    input #apex-input
-                        type="text"
-                        placeholder="my-agent"
-                        autocomplete="off"
-                        spellcheck="false"
-                        maxlength="32"
-                        required {}
-                    span.create-suffix { ".localharness.xyz" }
-                }
+                input #apex-input
+                    .create-input
+                    type="text"
+                    placeholder="my-agent"
+                    autocomplete="off"
+                    spellcheck="false"
+                    maxlength="32"
+                    required {}
                 button type="submit" .create-button { "create" }
-                p.create-hint { "3–32 chars, a–z 0–9 dash." }
                 div #apex-msg .step-msg {}
             }
         }
@@ -389,12 +362,38 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
     }
 }
 
-/// Tenant-variant of the admin dropdown — gemini api key (the chat
-/// surface only works when this is set), then reset-local-state.
-/// No seed/import section because the wallet lives at apex, not here.
+/// Tenant-variant of the admin dropdown. Shows owner address (read
+/// from verify state) + a "manage at apex" link so the user can get
+/// to seed/import even though the wallet lives at the apex origin.
+/// Then the per-subdomain api key + reset.
 pub(crate) fn admin_dropdown_tenant() -> Markup {
+    // Pull recovered owner address out of App state — kick_verification
+    // stashes it after iframe-sign completes. None if not yet known.
+    let owner_hex = super::APP.with(|cell| {
+        use super::VerifyState;
+        match &cell.borrow().verify_state {
+            VerifyState::Verified { address } => Some(address.clone()),
+            VerifyState::Visitor { visitor_address, .. } => Some(visitor_address.clone()),
+            _ => None,
+        }
+    });
     html! {
         div #header-admin-panel .header-admin-panel {
+            div.admin-section {
+                div.admin-section-title { "wallet" }
+                @if let Some(addr) = owner_hex {
+                    code.admin-address { (addr) }
+                } @else {
+                    p.admin-blurb { "verifying…" }
+                }
+                p.admin-blurb {
+                    "your seed phrase + identity import live at the apex "
+                    "origin. "
+                    a href="https://localharness.xyz/" target="_blank" rel="noopener" {
+                        "manage at apex →"
+                    }
+                }
+            }
             div.admin-section {
                 div.admin-section-title { "gemini api key " span #keymeta {} }
                 form.key-form onsubmit="return false" {
@@ -468,9 +467,10 @@ pub(crate) fn opfs_wipe_confirm_inline() -> Markup {
     }
 }
 
-/// Full pricing card — used inside the financial column. Injected
-/// by `kick_verification` when the visitor is the owner; visitors
-/// get a read-only price line via [`pricing_readonly_line`] instead.
+/// Full pricing card — currently unused (pricing UI removed from
+/// the agent card in 0.10.15). Comes back when the visitor-pays UX
+/// gets a clearer surface; kept compiled so call sites are warm.
+#[allow(dead_code)]
 pub(crate) fn pricing_card(price_wei: u128) -> Markup {
     html! {
         section .pricing-card {
@@ -505,6 +505,7 @@ pub(crate) fn pricing_readonly_line(price_wei: u128) -> Markup {
 /// payment loop are still wired (`.lh_pricing.json` + chat send),
 /// just not surfaced in the chrome until we have a clearer UX.
 pub(crate) fn financial_card(
+    name: &str,
     tba_hex: &str,
     owner_hex: &str,
     lh_balance_wei: u128,
@@ -516,6 +517,10 @@ pub(crate) fn financial_card(
     let balance_display = super::format_wei_as_test_eth(lh_balance_wei);
     html! {
         section #financial-slot .financial-card {
+            div.financial-line {
+                span.financial-label { "name" }
+                span.financial-value { (name) }
+            }
             div.financial-line {
                 span.financial-label { "owner" }
                 a.financial-tba href=(owner_url) target="_blank" rel="noopener"
@@ -595,6 +600,8 @@ pub(crate) fn agents_list(agents: &[crate::app::registry::OwnedToken]) -> Markup
             div #agents-list .agents-list .agents-empty {}
         };
     }
+    // Bare list: just the subdomain name as a link. No token id, no
+    // wallet emoji, no address, no `.localharness.xyz` suffix.
     html! {
         div #agents-list .agents-list {
             ul.agents-rows {
@@ -602,17 +609,7 @@ pub(crate) fn agents_list(agents: &[crate::app::registry::OwnedToken]) -> Markup
                     li.agent-row {
                         a.agent-name
                             href=(format!("https://{}.localharness.xyz/", agent.name)) {
-                            (agent.name) ".localharness.xyz"
-                        }
-                        span.agent-id { "#" (agent.token_id) }
-                        @if let Some(tba) = &agent.tba {
-                            a.agent-tba
-                                href=(format!("https://moderato.tempo.xyz/address/{tba}"))
-                                target="_blank"
-                                rel="noopener"
-                                title=(format!("agent wallet (ERC-6551): {tba}")) {
-                                "💰 " (short_addr(tba))
-                            }
+                            (agent.name)
                         }
                     }
                 }
