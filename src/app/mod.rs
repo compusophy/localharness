@@ -249,7 +249,7 @@ fn mount() -> Result<(), JsValue> {
         }
     }
 
-    dom::set_status("ready · type a prompt", false);
+    // (no baseline status — terminal stays empty until something happens)
 
     // Initial OPFS panel paint + history restore + key restore. All
     // async; the key loader populates the input field if a persisted
@@ -315,7 +315,7 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
             }
         }
     }
-    dom::set_status("ready · type a prompt", false);
+    // (no baseline status — terminal stays empty until something happens)
 
     if let Some(persisted_key) = key_store::load().await {
         if let Some(input) = dom::input_by_id("key") {

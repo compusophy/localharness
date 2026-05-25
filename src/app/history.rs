@@ -52,10 +52,9 @@ pub(crate) async fn load_into_pending() {
                     templates::turn(turn_id, role, body, false).into_string();
                 dom::append_html("transcript", &html_str);
             }
-            dom::set_status(
-                &format!("ready · restored prior session · {} messages", entries.len()),
-                false,
-            );
+            // No status write — restoring the transcript is silent
+            // per the minimalism pass; the terminal stays empty until
+            // the user actually triggers something.
         }
         Ok(_) => {
             // Empty transcript — bytes existed but no user-visible content.

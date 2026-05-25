@@ -896,7 +896,7 @@ fn reset_pressed() {
         app.pending_history = None;
     });
     dom::swap_inner("transcript", "");
-    dom::set_status("ready · new conversation", false);
+    // No status text — clearing is silent.
     // Drop the persisted history too — a reload after reset starts
     // fresh, matching the user's expectation of "new conversation."
     wasm_bindgen_futures::spawn_local(async move {

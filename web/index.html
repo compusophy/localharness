@@ -271,10 +271,11 @@
       display: flex;
       align-items: center;
       gap: 8px;
-      background: transparent;
-      border: 0;
-      padding: 0;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      padding: 8px 12px;
     }
+    .terminal-row:focus-within { border-color: var(--accent); }
     .terminal-prompt {
       color: var(--accent);
       font-weight: 600;
@@ -879,7 +880,9 @@
       align-items: center;
       gap: 8px;
     }
-    .fs-list li:hover { background: var(--panel-2); }
+    .fs-list li:hover { background: transparent; }
+    .fs-list li:hover .name,
+    .fs-list li:hover .size { color: var(--accent); }
     .fs-list .name { color: var(--fg); }
     .fs-list .dir .name::before { content: "▸ "; color: var(--accent); }
     .fs-list .file .name::before { content: "· "; color: var(--muted); }

@@ -58,7 +58,7 @@ pub(crate) fn site_header(host: &Host) -> Markup {
 
 /// Version string, used in the admin dropdown bottom. Bumped in
 /// lockstep with Cargo.toml.
-pub(crate) const APP_VERSION: &str = "0.10.14";
+pub(crate) const APP_VERSION: &str = "0.10.15";
 
 /// Terminal input — just `>` prompt + textarea + → send. Status line
 /// stays in the DOM (id="status") for dispatcher messages but renders
@@ -462,6 +462,7 @@ pub(crate) fn pricing_card(price_wei: u128) -> Markup {
 }
 
 /// Single-line read-only pricing display for visitors (non-owners).
+#[allow(dead_code)] // pricing UI hidden from agent card in 0.10.15
 pub(crate) fn pricing_readonly_line(price_wei: u128) -> Markup {
     let display = if price_wei == 0 {
         "free".to_string()
@@ -477,16 +478,17 @@ pub(crate) fn pricing_readonly_line(price_wei: u128) -> Markup {
 }
 
 /// Right-column financial card. Injected by `kick_verification` once
-/// the agent's TBA + balance + owner are known. Shows the agent's
-/// wallet address (linked to the explorer), $localharness balance,
-/// owner address, and pricing (editable for owner, read-only for
-/// visitors).
+/// the agent's TBA + balance + owner are known. Just the addresses
+/// and balance for now — pricing UI removed per "i have NO idea what
+/// the PRICING window does on the AGENT thing". The pricing data +
+/// payment loop are still wired (`.lh_pricing.json` + chat send),
+/// just not surfaced in the chrome until we have a clearer UX.
 pub(crate) fn financial_card(
     tba_hex: &str,
     owner_hex: &str,
     lh_balance_wei: u128,
-    price_wei: u128,
-    is_owner: bool,
+    _price_wei: u128,
+    _is_owner: bool,
 ) -> Markup {
     let tba_url = format!("https://moderato.tempo.xyz/address/{tba_hex}");
     let owner_url = format!("https://moderato.tempo.xyz/address/{owner_hex}");
@@ -510,11 +512,6 @@ pub(crate) fn financial_card(
             div.financial-line {
                 span.financial-label { "balance" }
                 span.financial-value.financial-balance { (balance_display) }
-            }
-            @if is_owner {
-                (pricing_card(price_wei))
-            } @else {
-                (pricing_readonly_line(price_wei))
             }
         }
     }
