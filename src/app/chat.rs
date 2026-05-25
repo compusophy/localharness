@@ -583,9 +583,7 @@ fn create_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
             let cleaned = super::tenant::sanitize(name);
             if cleaned.len() < 3 || cleaned.len() > 32 {
-                return Err(crate::error::Error::other(
-                    "name must be 3-32 chars, a-z 0-9 -",
-                ));
+                return Err(crate::error::Error::other("invalid name"));
             }
             match super::verify::claim_name_via_iframe(&cleaned).await {
                 Ok((owner, tx_hash)) => Ok(serde_json::json!({

@@ -210,6 +210,17 @@ fn on_key_input() {
     }
 }
 
+/// Toggle the submit button's `disabled` attribute. Silent visual
+/// feedback — no explanatory text per [[feedback-no-explanatory-validation]].
+fn set_create_button_enabled(enabled: bool) {
+    let Some(btn) = dom::by_id("create-btn") else { return };
+    if enabled {
+        let _ = btn.remove_attribute("disabled");
+    } else {
+        let _ = btn.set_attribute("disabled", "");
+    }
+}
+
 /// Live registry check as the user types a subdomain name. Sanitises
 /// to the same charset the contract enforces, short-circuits on
 /// too-short input, and queries `LocalharnessRegistry::idOfName` for
@@ -223,22 +234,13 @@ fn on_apex_input() {
         input.set_value(&cleaned);
     }
 
-    if cleaned.is_empty() {
+    // Toggle the submit button's disabled state based on length —
+    // visual feedback that the input isn't yet usable, no nag text.
+    // Per [[feedback-no-explanatory-validation]].
+    set_create_button_enabled(cleaned.len() >= 3 && cleaned.len() <= 32);
+
+    if cleaned.len() < 3 || cleaned.len() > 32 {
         dom::swap_inner("apex-msg", "");
-        return;
-    }
-    if cleaned.len() < 3 {
-        dom::swap_inner(
-            "apex-msg",
-            "<span style=\"color:var(--muted)\">need at least 3 chars</span>",
-        );
-        return;
-    }
-    if cleaned.len() > 32 {
-        dom::swap_inner(
-            "apex-msg",
-            "<span style=\"color:var(--error)\">max 32 chars</span>",
-        );
         return;
     }
 
@@ -456,17 +458,15 @@ fn dispatch(action: Action) {
             });
         }
         Action::ApexClaim => {
-            // Read + validate name, then run the full on-chain claim
-            // flow async: faucet -> registry::claim_name -> redirect.
+            // Silent no-op on invalid input — the create button is
+            // disabled by `on_apex_input` when length is out of range,
+            // so this branch only ever fires for valid names. Per
+            // [[feedback-no-explanatory-validation]].
             let raw = dom::input_by_id("apex-input")
                 .map(|i| i.value())
                 .unwrap_or_default();
             let cleaned = super::tenant::sanitize(&raw);
             if cleaned.len() < 3 || cleaned.len() > 32 {
-                dom::swap_inner(
-                    "apex-msg",
-                    "<span style=\"color:var(--error)\">name must be 3-32 chars, a-z 0-9 -</span>",
-                );
                 return;
             }
             wasm_bindgen_futures::spawn_local(async move {
