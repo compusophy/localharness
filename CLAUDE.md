@@ -302,6 +302,11 @@ Currently cut in:
   `tokenBoundAccountByName(name)` return the deterministic
   counterfactual account address. `createTokenBoundAccount(id)`
   actually deploys it (anyone can call, idempotent).
+- **FeedbackFacet** — `submitFeedback(string text)` emits
+  `FeedbackSubmitted(address sender, uint256 timestamp, string text)`.
+  No storage, just events; harvest off-chain via `cast logs` (see
+  `scripts/harvest-feedback.{sh,ps1}`). Anyone can submit; gas IS the
+  spam filter. 2048-byte upper bound on text.
 
 ERC-6551 reference contracts (separate addresses, configured via
 `TbaFacet::setTbaConfig`):

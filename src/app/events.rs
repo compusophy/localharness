@@ -1142,53 +1142,149 @@ fn feedback_submit() {
     };
     let text = textarea.value().trim().to_string();
     if text.is_empty() {
+        return; // silent no-op per [[feedback-no-explanatory-validation]]
+    }
+    if text.len() > 2048 {
         dom::swap_inner(
             "feedback-msg",
-            "<span style=\"color:var(--muted)\">type something first.</span>",
+            "<span style=\"color:var(--error)\">too long</span>",
         );
         return;
     }
+
+    // Need an apex wallet to sign. The visitor address from verify
+    // state is what the iframe signer controls.
+    let from_hex = super::APP.with(|cell| {
+        use super::VerifyState;
+        match &cell.borrow().verify_state {
+            VerifyState::Verified { address } => Some(address.clone()),
+            VerifyState::Visitor { visitor_address, .. } => Some(visitor_address.clone()),
+            _ => cell.borrow().wallet.as_ref().map(|w| w.address_hex()),
+        }
+    });
+    let Some(from_hex) = from_hex else {
+        dom::swap_inner(
+            "feedback-msg",
+            "<span style=\"color:var(--error)\">claim an identity first</span>",
+        );
+        return;
+    };
+
     dom::swap_inner(
         "feedback-msg",
-        "<span style=\"color:var(--muted)\">saving…</span>",
+        "<span style=\"color:var(--muted)\">signing…</span>",
     );
     wasm_bindgen_futures::spawn_local(async move {
-        match append_feedback(&text).await {
-            Ok(()) => {
+        // Mirror to local OPFS first so the user always has a copy
+        // even if the on-chain leg fails. Best-effort — log and
+        // continue on error.
+        if let Err(err) = append_feedback_local(&text).await {
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "feedback local copy: {err}"
+            )));
+        }
+        match submit_feedback_onchain(&from_hex, &text).await {
+            Ok(tx_hash) => {
+                let short = tx_short_hash(&tx_hash);
                 dom::swap_inner(
                     "feedback-msg",
-                    "<span style=\"color:var(--accent)\">saved to .lh_feedback.txt</span>",
+                    &format!(
+                        "<span style=\"color:var(--accent)\">✓ on-chain (tx {short})</span>"
+                    ),
                 );
-                // Auto-close after a short beat so the user gets confirmation.
                 if let Some(window) = web_sys::window() {
                     let cb = Closure::<dyn FnMut()>::new(|| {
                         feedback_close();
                     });
                     let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
                         cb.as_ref().unchecked_ref(),
-                        900,
+                        1200,
                     );
                     cb.forget();
                 }
             }
             Err(err) => {
+                web_sys::console::warn_1(&JsValue::from_str(&format!(
+                    "feedback on-chain: {err}"
+                )));
                 dom::swap_inner(
                     "feedback-msg",
-                    &format!(
-                        "<span style=\"color:var(--error)\">save failed: {err}</span>"
-                    ),
+                    "<span style=\"color:var(--error)\">on-chain submit failed (saved locally)</span>",
                 );
             }
         }
     });
 }
 
-/// Append a feedback entry to `.lh_feedback.txt` in this origin's
-/// OPFS. Each entry is one line: `ISO-timestamp\\tTEXT\\n`. Caller
-/// (the operator) can read the file off any device via the file
-/// browser; eventually this routes to an on-chain `FeedbackFacet`
-/// so devs can scrape events without per-device access.
-async fn append_feedback(text: &str) -> Result<(), String> {
+/// Sign + submit `FeedbackFacet.submitFeedback(text)` on the diamond
+/// via the apex iframe signer. The event log on the registry is the
+/// canonical store; the developer harvests via `eth_getLogs`. Caller's
+/// gas paid by the apex wallet — Tempo allows contract calls.
+async fn submit_feedback_onchain(from_hex: &str, text: &str) -> Result<String, String> {
+    let calldata = encode_submit_feedback_calldata(text);
+    let calldata_hex = bytes_to_hex_str(&calldata);
+
+    let nonce = super::registry::next_nonce(from_hex).await
+        .map_err(|e| format!("nonce: {e}"))?;
+    let gas_price = super::registry::current_gas_price().await
+        .map_err(|e| format!("gas price: {e}"))?;
+    // Generous — string-emitting events scale with bytes. 2048-byte
+    // upper bound + base cost lands well under 200k.
+    let gas_limit = 250_000u128;
+
+    let raw_tx = super::verify::sign_tx_via_iframe(super::verify::SignTxRequest {
+        to_hex: super::registry::REGISTRY_ADDRESS,
+        value_wei: 0,
+        nonce,
+        gas_limit,
+        gas_price,
+        chain_id: super::registry::CHAIN_ID,
+        purpose: "submit feedback",
+        data_hex: &calldata_hex,
+    })
+    .await
+    .map_err(|e| format!("signer: {e}"))?;
+
+    super::registry::submit_and_wait_receipt(&raw_tx).await
+        .map_err(|e| format!("submit: {e}"))
+}
+
+/// ABI-encode `submitFeedback(string)`. Layout: selector + offset(0x20)
+/// + length + bytes (right-padded to 32-byte multiple).
+fn encode_submit_feedback_calldata(text: &str) -> Vec<u8> {
+    use sha3::{Digest, Keccak256};
+    let mut hasher = Keccak256::new();
+    hasher.update(b"submitFeedback(string)");
+    let digest = hasher.finalize();
+    let mut selector = [0u8; 4];
+    selector.copy_from_slice(&digest[..4]);
+
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let padded_len = len.div_ceil(32) * 32;
+
+    let mut out = Vec::with_capacity(4 + 32 + 32 + padded_len);
+    out.extend_from_slice(&selector);
+    // offset to dynamic head — 0x20 (one dynamic arg after a 32-byte slot)
+    let mut offset = [0u8; 32];
+    offset[31] = 0x20;
+    out.extend_from_slice(&offset);
+    // length
+    let mut len_bytes = [0u8; 32];
+    len_bytes[24..].copy_from_slice(&(len as u64).to_be_bytes());
+    out.extend_from_slice(&len_bytes);
+    // payload + zero-pad
+    out.extend_from_slice(bytes);
+    out.resize(4 + 32 + 32 + padded_len, 0);
+    out
+}
+
+/// Append a feedback entry to `.lh_feedback.txt` in this origin's OPFS
+/// as a local-first mirror. The canonical store is the on-chain event
+/// log; this file is a per-device safety net for when the on-chain leg
+/// is unreachable (offline, rate-limited, etc.). One line per entry:
+/// `ISO-timestamp\tTEXT\n`.
+async fn append_feedback_local(text: &str) -> Result<(), String> {
     use crate::filesystem::Filesystem;
     let fs = super::shared_opfs();
     let existing = fs.read(".lh_feedback.txt").await.unwrap_or_default();
