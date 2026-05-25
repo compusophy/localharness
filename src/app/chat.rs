@@ -227,6 +227,29 @@ pub(crate) async fn run_send() {
 }
 
 async fn start_session(key: &str) -> Result<(), JsValue> {
+    // System instruction — the agent needs to know what it's running
+    // inside and what its filesystem looks like. Without this, prompts
+    // like "what is pricing" produce blind tool calls because the
+    // model has no priors about the localharness environment.
+    let host = super::tenant::current();
+    let agent_name = match &host {
+        super::tenant::Host::Tenant(name) => name.clone(),
+        _ => "this agent".to_string(),
+    };
+    let system_instructions = format!(
+        "You are {agent_name}, a browser-resident assistant running inside \
+         the localharness platform. You are speaking to your owner, who is \
+         the person who minted this subdomain. You have access to a \
+         per-origin OPFS file system through your tools (list_directory, \
+         view_file, find_file, search_directory, create_file, edit_file). \
+         The user's files are at the OPFS root. Dotfiles starting with \
+         `.lh_*` are internal state (api key, conversation history, owner \
+         marker) — read them only if the user asks. Keep responses concise \
+         and conversational unless asked for detail. Don't speculate about \
+         filesystem contents — use list_directory first when relevant. \
+         Don't blindly call tools when the user is just chatting."
+    );
+
     // Unrestricted capabilities turn on the write tools; the Agent
     // constructor refuses to start without a policy gate. OPFS is
     // sandboxed per-origin (no path-escape risk) and this is the
@@ -236,7 +259,8 @@ async fn start_session(key: &str) -> Result<(), JsValue> {
     let mut cfg = GeminiAgentConfig::new(key.to_string())
         .with_capabilities(CapabilitiesConfig::unrestricted())
         .with_policies(vec![policy::allow_all()])
-        .with_filesystem(super::shared_opfs());
+        .with_filesystem(super::shared_opfs())
+        .with_system_instructions(system_instructions);
     // If a previous session left history on OPFS, restore it into the
     // new connection. Consumed once — subsequent key changes start
     // fresh from the in-memory agent's history.

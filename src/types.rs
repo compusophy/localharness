@@ -9,8 +9,11 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_MODEL: &str = "gemini-3.5-flash";
-pub const DEFAULT_IMAGE_GENERATION_MODEL: &str = "gemini-3.1-flash-image-preview";
+// Google's chat model. `gemini-3.x` doesn't exist on the public API
+// yet — using a model id the API actually accepts. Bump this when
+// Google publishes newer ids (and re-test 400s).
+pub const DEFAULT_MODEL: &str = "gemini-2.5-flash";
+pub const DEFAULT_IMAGE_GENERATION_MODEL: &str = "gemini-2.0-flash-exp-image-generation";
 
 // =============================================================================
 // Model configuration

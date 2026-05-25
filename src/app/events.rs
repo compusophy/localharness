@@ -54,6 +54,7 @@ enum Action {
     PricingSave,
     ToggleFiles,
     ToggleFinancial,
+    ToggleTerminal,
 }
 
 impl Action {
@@ -88,6 +89,7 @@ impl Action {
             "pricing-save" => Action::PricingSave,
             "toggle-files" => Action::ToggleFiles,
             "toggle-financial" => Action::ToggleFinancial,
+            "toggle-terminal" => Action::ToggleTerminal,
             _ => return None,
         })
     }
@@ -629,6 +631,7 @@ fn dispatch(action: Action) {
         Action::PricingSave => pricing_save_pressed(),
         Action::ToggleFiles => toggle_layout_class("files-collapsed"),
         Action::ToggleFinancial => toggle_layout_class("financial-collapsed"),
+        Action::ToggleTerminal => toggle_layout_class("terminal-collapsed"),
     }
 }
 

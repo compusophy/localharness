@@ -38,7 +38,7 @@ pub(crate) fn site_header(host: &Host) -> Markup {
                 h1 {
                     a href="https://localharness.xyz/" title="go home" { "localharness" }
                 }
-                span.tag { "0.10.10" } // bumped in lockstep with Cargo.toml
+                span.tag { "0.10.11" } // bumped in lockstep with Cargo.toml
                 @if matches!(host, Host::Tenant(_)) {
                     (verify_pill(&VerifyState::Pending))
                     // TBA pill placeholder — filled in by kick_verification
@@ -56,34 +56,28 @@ pub(crate) fn site_header(host: &Host) -> Markup {
     }
 }
 
-/// Global sticky footer — wraps whatever content the page wants to
-/// host at the bottom. On tenant chrome this carries the terminal
-/// prompt (the primary input surface). On apex it's a thin border
-/// with no content; on signer iframe it stays out of sight entirely.
-pub(crate) fn site_footer(content: Markup) -> Markup {
-    html! {
-        footer.site-footer {
-            div.footer-inner {
-                (content)
-            }
-        }
-    }
-}
-
-/// Terminal-style input region. Lives in the footer on tenant chrome.
-/// `>` prefix glyph, single textarea that auto-expands, Enter sends
-/// (Shift+Enter for newline), `new` clears the conversation.
+/// Terminal-style input region. Lives at the BOTTOM of `col-chat`
+/// (between the files + agents columns) — there's no global footer
+/// anymore. Collapsible via the bar at its top.
 pub(crate) fn terminal_input() -> Markup {
     html! {
-        div.terminal {
-            div #status .terminal-status { "ready" }
-            div.terminal-row {
-                span.terminal-prompt { ">" }
-                textarea #prompt
-                    rows="1"
-                    placeholder="message · Enter to send · Shift+Enter for newline" {}
-                button.terminal-send data-action="send" { "send" }
-                button.terminal-new.ghost data-action="reset" { "new" }
+        section.terminal {
+            div.terminal-bar {
+                div.terminal-bar-title { "terminal" }
+                button type="button"
+                    data-action="toggle-terminal"
+                    .terminal-toggle
+                    title="collapse / expand terminal" { "—" }
+            }
+            div.terminal-body {
+                div #status .terminal-status { "ready" }
+                div.terminal-row {
+                    span.terminal-prompt { ">" }
+                    textarea #prompt
+                        rows="1"
+                        placeholder="message · enter to send · shift+enter for newline" {}
+                    button.terminal-send data-action="send" { "send" }
+                }
             }
         }
     }
@@ -190,10 +184,12 @@ pub(crate) fn chrome(host: &Host) -> Markup {
                 }
             }
 
-            // Chat column — transcript only. Input region moved to the
-            // footer (terminal). Status moved into the terminal too.
+            // Chat column — transcript (top, flexes) + terminal (bottom,
+            // fixed height, collapsible). No global footer; the terminal
+            // IS the bottom-of-page surface, inset between files + agents.
             div.col-chat {
                 div #transcript .transcript {}
+                (terminal_input())
             }
 
             // Right financial column — agent TBA + $localharness
@@ -211,7 +207,6 @@ pub(crate) fn chrome(host: &Host) -> Markup {
                 }
             }
         }
-        (site_footer(terminal_input()))
     }
 }
 
@@ -303,7 +298,6 @@ pub(crate) fn apex(host: &Host, wallet_address_hex: Option<&str>) -> Markup {
                 }
             }
         }
-        (site_footer(html! {}))
     }
 }
 
@@ -403,14 +397,22 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
         div #header-admin-panel .header-admin-panel {
             div.admin-section {
                 div.admin-section-title { "gemini api key " span #keymeta {} }
-                div.key-row {
-                    input #key
-                        type="password"
-                        autocomplete="off"
-                        placeholder="paste key" {}
-                    button.ghost
-                        type="button"
-                        data-action="clear-key" { "clear" }
+                // Wrap the password input in a form so browsers stop
+                // logging "Password field is not contained in a form".
+                // onsubmit handler is preventDefault'd by the delegated
+                // submit listener for any data-action; this form has
+                // none so plain Enter inside the key just submits +
+                // does nothing visible.
+                form.key-form onsubmit="return false" {
+                    div.key-row {
+                        input #key
+                            type="password"
+                            autocomplete="off"
+                            placeholder="paste key" {}
+                        button.ghost
+                            type="button"
+                            data-action="clear-key" { "clear" }
+                    }
                 }
             }
             div.admin-section {
@@ -731,7 +733,6 @@ pub(crate) fn unclaimed(host: &Host, name: &str) -> Markup {
                 }
             }
         }
-        (site_footer(html! {}))
     }
 }
 
