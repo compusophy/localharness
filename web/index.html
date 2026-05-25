@@ -28,11 +28,15 @@
          buttons) uses 11px uppercase via class-specific rules. No
          third or fourth size anywhere. */
       font: 13px/1.5 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
-      height: 100vh;
+      /* `100dvh` (dynamic viewport height) accounts for mobile
+         browser chrome that resizes the viewport — Safari address bar
+         growing/shrinking on scroll, Android navigation gesture
+         affordances. Plain 100vh cuts off the bottom on mobile. */
+      height: 100dvh;
       overflow: hidden;
     }
     #root {
-      height: 100vh;
+      height: 100dvh;
       display: flex;
       flex-direction: column;
     }
@@ -81,6 +85,103 @@
     }
     .header-brand { margin-right: auto; }   /* pushes admin to right */
     .header-admin { position: relative; }
+
+    /* Sticky bottom site-footer — same height pattern as header.
+       FEEDBACK button centered. Permanent on every page on every
+       viewport. */
+    .site-footer {
+      flex-shrink: 0;
+      background: var(--bg);
+      padding: 0;
+      min-height: 40px;
+      display: flex;
+      align-items: center;
+      border-top: 1px solid var(--border);
+    }
+    .footer-inner {
+      width: 100%;
+      padding: 4px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .feedback-button { letter-spacing: 0.12em; }
+
+    /* Mobile tab bar — shown only under 900px. Switches which
+       panel is visible via `tab-<name>` class on #layout. */
+    .mobile-tabs {
+      flex-shrink: 0;
+      display: none;   /* desktop hides this entirely */
+      border-bottom: 1px solid var(--border);
+    }
+    .mobile-tabs .tab-button {
+      flex: 1;
+      border: 0;
+      border-right: 1px solid var(--border);
+      padding: 10px 0;
+    }
+    .mobile-tabs .tab-button:last-child { border-right: 0; }
+    .mobile-tabs .tab-button.active {
+      color: var(--fg);
+      background: var(--panel);
+    }
+
+    /* Feedback modal — overlays everything at z-index:200 with a
+       dimmed backdrop. Click outside the card to dismiss (handled
+       client-side via .feedback-close). */
+    .feedback-modal {
+      position: fixed; inset: 0;
+      z-index: 200;
+      background: rgba(0, 0, 0, 0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .feedback-card {
+      width: 100%;
+      max-width: 480px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .feedback-title {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .feedback-blurb {
+      margin: 0;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .feedback-blurb code {
+      font-size: 11px;
+      color: var(--accent);
+    }
+    .feedback-textarea {
+      width: 100%;
+      min-height: 120px;
+      background: var(--bg);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      padding: 10px 12px;
+      font: inherit;
+      outline: none;
+      resize: vertical;
+    }
+    .feedback-textarea:focus { border-color: var(--accent); }
+    .feedback-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .feedback-msg { font-size: 11px; min-height: 14px; }
 
     main {
       max-width: 1180px;
@@ -268,75 +369,67 @@
       padding: 12px 16px;
     }
 
-    /* Mobile (<900px) — vertical stack. The page itself scrolls;
-       terminal panel pins to the viewport bottom via position:fixed
-       so it stays reachable no matter how long the content above is.
-       Page gets bottom padding to keep the last content above the
-       fixed terminal. */
+    /* Mobile (<900px) — single-pane with a tab bar at the top.
+       The `tab-<name>` class on #layout selects which panel is
+       visible; everything else gets display:none. Rails are hidden
+       (the tab bar replaces them on mobile). Chat tab shows
+       transcript + terminal together. */
     @media (max-width: 900px) {
-      html, body { height: auto; overflow: auto; }
-      #root { height: auto; min-height: 100vh; }
+      .mobile-tabs { display: flex; }
       main.layout {
         flex-direction: column;
-        overflow: visible;
-        min-height: 0;
-        padding-bottom: 96px;   /* clearance for fixed terminal */
+        overflow: hidden;       /* still viewport-locked */
       }
-      main.layout .side-rail {
-        width: 100%; height: 32px;
-      }
-      main.layout .files-rail {
-        border-right: 0; border-bottom: 1px solid var(--border);
-      }
-      main.layout .financial-rail {
-        border-left: 0; border-top: 1px solid var(--border);
-      }
-      main.layout .side-rail .rail-label {
-        writing-mode: horizontal-tb;
-        transform: none;
-      }
-      main.layout .col-side {
-        width: 100%;
-        max-height: 40vh;
-        overflow-y: auto;
-      }
+      /* Hide the desktop rails entirely on mobile — tab bar handles
+         panel switching, no need for the strip toggles. */
+      main.layout .side-rail,
+      main.layout .top-rail,
+      main.layout .bottom-rail { display: none; }
+
+      /* By default everything inside main is hidden; the active
+         tab-<name> class enables exactly one panel. */
+      main.layout .col-fs,
+      main.layout .col-financial,
+      main.layout .view-panel,
+      main.layout .transcript,
+      main.layout .terminal-panel { display: none; }
+
       main.layout .col-fs,
       main.layout .col-financial {
-        border-right: 0; border-left: 0;
-        border-bottom: 1px solid var(--border);
+        width: 100%;
+        border: 0;
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
       }
       main.layout .col-chat {
-        overflow: visible;
-        min-height: auto;
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+        width: 100%;
+        display: flex;
+        flex-direction: column;
       }
-      main.layout .transcript {
+
+      /* tab-files: just the file list. */
+      main.layout.tab-files .col-fs { display: flex; }
+
+      /* tab-edit: just the editor (view-panel). */
+      main.layout.tab-edit .col-chat { display: flex; }
+      main.layout.tab-edit .view-panel {
+        display: block;
+        flex: 1;
         max-height: none;
-        overflow: visible;
-        padding-bottom: 32px;
-      }
-      /* Terminal panel + rail = sticky footer pinned to viewport
-         bottom. Rail at the very bottom, panel sits above it when
-         expanded. Page gets padding-bottom (above) so content
-         doesn't slide under them. */
-      main.layout .terminal-rail {
-        position: fixed;
-        bottom: 0; left: 0; right: 0;
-        height: 32px;
-        z-index: 51;
-        background: var(--bg);
-        border-top: 1px solid var(--border);
-      }
-      main.layout .terminal-panel {
-        position: fixed;
-        bottom: 32px; left: 0; right: 0;
-        z-index: 50;
-        background: var(--bg);
-        border-top: 1px solid var(--border);
-        max-height: 50vh;
         overflow-y: auto;
-        margin-top: 0;
       }
-      main.layout.terminal-collapsed .terminal-panel { display: none; }
+
+      /* tab-chat: transcript + terminal stacked, transcript scrolls. */
+      main.layout.tab-chat .col-chat { display: flex; }
+      main.layout.tab-chat .transcript { display: flex; flex: 1; min-height: 0; }
+      main.layout.tab-chat .terminal-panel { display: block; }
+
+      /* tab-agent: just the agent card. */
+      main.layout.tab-agent .col-financial { display: flex; }
     }
     .apex-main { display: block; padding: 32px 24px; max-width: 1180px; }
     .apex-main > .col-chat { max-width: 600px; margin: 0 auto; }

@@ -57,6 +57,10 @@ enum Action {
     ToggleFinancial,
     ToggleTerminal,
     ToggleView,
+    ShowTab(String),
+    FeedbackOpen,
+    FeedbackClose,
+    FeedbackSubmit,
 }
 
 impl Action {
@@ -94,6 +98,10 @@ impl Action {
             "toggle-financial" => Action::ToggleFinancial,
             "toggle-terminal" => Action::ToggleTerminal,
             "toggle-view" => Action::ToggleView,
+            "show-tab" => Action::ShowTab(arg.unwrap_or_default()),
+            "feedback-open" => Action::FeedbackOpen,
+            "feedback-close" => Action::FeedbackClose,
+            "feedback-submit" => Action::FeedbackSubmit,
             _ => return None,
         })
     }
@@ -651,6 +659,10 @@ fn dispatch(action: Action) {
         Action::ToggleFinancial => toggle_layout_class("financial-collapsed"),
         Action::ToggleTerminal => toggle_layout_class("terminal-collapsed"),
         Action::ToggleView => toggle_layout_class("view-collapsed"),
+        Action::ShowTab(name) => show_mobile_tab(&name),
+        Action::FeedbackOpen => feedback_open(),
+        Action::FeedbackClose => feedback_close(),
+        Action::FeedbackSubmit => feedback_submit(),
     }
 }
 
@@ -698,6 +710,133 @@ fn header_admin_close() {
         "header-admin-panel",
         r#"<div id="header-admin-panel" hidden></div>"#,
     );
+}
+
+/// Mobile-only: swap which `tab-<name>` class is on `#layout`.
+/// CSS uses it to show exactly one panel at a time on narrow
+/// viewports. Tab button styling syncs by toggling `.active`.
+fn show_mobile_tab(name: &str) {
+    let Some(layout) = dom::by_id("layout") else { return };
+    let parts: Vec<String> = layout
+        .class_name()
+        .split_whitespace()
+        .filter(|c| !c.starts_with("tab-"))
+        .map(String::from)
+        .collect();
+    let mut new_cls = parts.join(" ");
+    if !new_cls.is_empty() {
+        new_cls.push(' ');
+    }
+    new_cls.push_str(&format!("tab-{name}"));
+    layout.set_class_name(&new_cls);
+
+    // Reflect active state on each tab button by id — small fixed
+    // set of tabs, no need for query_selector_all (which needs the
+    // NodeList web-sys feature we don't enable).
+    for tab in ["files", "edit", "chat", "agent"] {
+        let id = format!("tab-btn-{tab}");
+        let Some(el) = dom::by_id(&id) else { continue };
+        let cls = el.class_name();
+        let mut classes: Vec<&str> =
+            cls.split_whitespace().filter(|c| *c != "active").collect();
+        if tab == name {
+            classes.push("active");
+        }
+        el.set_class_name(&classes.join(" "));
+    }
+}
+
+/// Inject the feedback modal into the body (overlays everything).
+fn feedback_open() {
+    let Ok(doc) = dom::document() else { return };
+    let Some(body) = doc.body() else { return };
+    // If a modal already exists, focus the textarea instead of stacking.
+    if let Some(_existing) = doc.get_element_by_id("feedback-modal") {
+        if let Some(t) = dom::textarea_by_id("feedback-text") {
+            let _ = t.focus();
+        }
+        return;
+    }
+    let _ = body.insert_adjacent_html(
+        "beforeend",
+        &templates::feedback_modal().into_string(),
+    );
+    if let Some(t) = dom::textarea_by_id("feedback-text") {
+        let _ = t.focus();
+    }
+}
+
+fn feedback_close() {
+    if let Some(el) = dom::by_id("feedback-modal") {
+        if let Some(parent) = el.parent_element() {
+            let _ = parent.remove_child(&el);
+        }
+    }
+}
+
+fn feedback_submit() {
+    let Some(textarea) = dom::textarea_by_id("feedback-text") else {
+        return;
+    };
+    let text = textarea.value().trim().to_string();
+    if text.is_empty() {
+        dom::swap_inner(
+            "feedback-msg",
+            "<span style=\"color:var(--muted)\">type something first.</span>",
+        );
+        return;
+    }
+    dom::swap_inner(
+        "feedback-msg",
+        "<span style=\"color:var(--muted)\">saving…</span>",
+    );
+    wasm_bindgen_futures::spawn_local(async move {
+        match append_feedback(&text).await {
+            Ok(()) => {
+                dom::swap_inner(
+                    "feedback-msg",
+                    "<span style=\"color:var(--accent)\">saved to .lh_feedback.txt</span>",
+                );
+                // Auto-close after a short beat so the user gets confirmation.
+                if let Some(window) = web_sys::window() {
+                    let cb = Closure::<dyn FnMut()>::new(|| {
+                        feedback_close();
+                    });
+                    let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                        cb.as_ref().unchecked_ref(),
+                        900,
+                    );
+                    cb.forget();
+                }
+            }
+            Err(err) => {
+                dom::swap_inner(
+                    "feedback-msg",
+                    &format!(
+                        "<span style=\"color:var(--error)\">save failed: {err}</span>"
+                    ),
+                );
+            }
+        }
+    });
+}
+
+/// Append a feedback entry to `.lh_feedback.txt` in this origin's
+/// OPFS. Each entry is one line: `ISO-timestamp\\tTEXT\\n`. Caller
+/// (the operator) can read the file off any device via the file
+/// browser; eventually this routes to an on-chain `FeedbackFacet`
+/// so devs can scrape events without per-device access.
+async fn append_feedback(text: &str) -> Result<(), String> {
+    use crate::filesystem::Filesystem;
+    let fs = super::shared_opfs();
+    let existing = fs.read(".lh_feedback.txt").await.unwrap_or_default();
+    let now = js_sys::Date::new_0().to_iso_string().as_string().unwrap_or_default();
+    let entry = format!("{now}\t{text}\n");
+    let mut combined = existing;
+    combined.extend_from_slice(entry.as_bytes());
+    fs.write_atomic(".lh_feedback.txt", &combined)
+        .await
+        .map_err(|e| format!("{e}"))
 }
 
 /// Pure DOM class flip on `#layout` — used by the panel toggles

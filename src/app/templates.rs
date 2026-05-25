@@ -51,7 +51,7 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
 
 /// Version string, used in the admin dropdown bottom. Bumped in
 /// lockstep with Cargo.toml.
-pub(crate) const APP_VERSION: &str = "0.10.18";
+pub(crate) const APP_VERSION: &str = "0.10.19";
 
 /// Terminal input — just `>` prompt + textarea + → send. Status line
 /// stays in the DOM (id="status") for dispatcher messages but renders
@@ -137,7 +137,8 @@ fn short_addr(addr: &str) -> String {
 pub(crate) fn chrome(host: &Host) -> Markup {
     html! {
         (site_header(host))
-        main #layout .layout.view-collapsed {
+        (mobile_tabs())
+        main #layout .layout.view-collapsed.tab-chat {
             // Files (left) — files-rail wraps a col-side panel.
             // No inner header: the rail label IS the panel title.
             button type="button" data-action="toggle-files"
@@ -186,6 +187,61 @@ pub(crate) fn chrome(host: &Host) -> Markup {
             button type="button" data-action="toggle-financial"
                 .side-rail.financial-rail {
                 span.rail-label { "agent" }
+            }
+        }
+        (site_footer())
+    }
+}
+
+/// Mobile-only tab bar shown above main on narrow viewports.
+/// Switches the `tab-<name>` class on `#layout` so CSS shows
+/// exactly one panel at a time. Hidden on desktop.
+pub(crate) fn mobile_tabs() -> Markup {
+    html! {
+        nav.mobile-tabs {
+            button #tab-btn-files type="button" data-action="show-tab" data-arg="files" .tab-button { "files" }
+            button #tab-btn-edit type="button" data-action="show-tab" data-arg="edit" .tab-button { "edit" }
+            button #tab-btn-chat type="button" data-action="show-tab" data-arg="chat" .tab-button.active { "chat" }
+            button #tab-btn-agent type="button" data-action="show-tab" data-arg="agent" .tab-button { "agent" }
+        }
+    }
+}
+
+/// Sticky-bottom site footer — permanent on every page, same
+/// height as the header, FEEDBACK button centered.
+pub(crate) fn site_footer() -> Markup {
+    html! {
+        footer.site-footer {
+            div.footer-inner {
+                button type="button" data-action="feedback-open" .feedback-button { "feedback" }
+            }
+        }
+    }
+}
+
+/// Feedback modal — opened from the footer button. Inline confirm
+/// pattern (no JS dialog). Submit appends to `.lh_feedback.txt`
+/// in OPFS for now; an on-chain FeedbackFacet submission lands
+/// next (requires a contract + bundle wiring).
+pub(crate) fn feedback_modal() -> Markup {
+    html! {
+        div #feedback-modal .feedback-modal {
+            div.feedback-card {
+                div.feedback-title { "feedback" }
+                p.feedback-blurb {
+                    "what's broken, missing, or wrong. saved to "
+                    code { ".lh_feedback.txt" }
+                    " for now; on-chain submission lands soon."
+                }
+                textarea #feedback-text
+                    .feedback-textarea
+                    rows="6"
+                    placeholder="type here…" {}
+                div.feedback-actions {
+                    button type="button" data-action="feedback-submit" { "submit" }
+                    button type="button" data-action="feedback-close" .ghost { "cancel" }
+                }
+                div #feedback-msg .feedback-msg {}
             }
         }
     }
