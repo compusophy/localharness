@@ -5,6 +5,40 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.24] - 2026-05-25
+
+UX cleanup: silent validation + uniform header padding.
+
+### Removed (browser app)
+
+- **All explanatory validation strings.** "name must be 3-32 chars,
+  a-z 0-9 -" deleted from `Action::ApexClaim`. "need at least 3
+  chars" / "max 32 chars" deleted from `on_apex_input`. The
+  `create_subdomain` agent tool's error message no longer recites
+  the rule either. The user has asked for this cleanup multiple
+  times — captured durably as feedback-no-explanatory-validation
+  so it won't get reintroduced.
+
+### Added (browser app)
+
+- **Submit-button gating.** Apex's `<button#create-btn>` renders
+  `disabled` initially; `on_apex_input` flips the attribute via a
+  new `set_create_button_enabled` helper based on the silent length
+  check. The button BEING disabled IS the validation feedback —
+  no text needed.
+
+### Changed (style)
+
+- **Header + footer get uniform 16px padding** (`.header-inner` /
+  `.footer-inner` were `4px 16px` → now `16px`). The admin button
+  now sits with equal breathing room on all four sides instead of
+  pressing against the top/bottom border. Same for the feedback
+  button in the footer.
+- **Button padding `5px 12px` → `10px 12px`.** Closer to balanced
+  proportions — the SSOT button is less "portrait-aspect" rectangle.
+  Affects every button in the app (admin, create, send, reset,
+  feedback, etc.).
+
 ## [0.10.23] - 2026-05-25
 
 Fresh diamond, fresh start. New deployer key, new diamond address,
