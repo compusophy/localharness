@@ -5,6 +5,41 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.18] - 2026-05-24
+
+File delete + rename — both as agent tools and as an in-list
+delete affordance. The agent now actually has the tools the user
+expected when they said "we can't even delete files can we??"
+
+### Added (SDK)
+
+- **`Filesystem::rename(from, to)`** trait method. Default impl is
+  read + write_atomic + delete (works for any backend, no atomicity
+  but safe). `NativeFilesystem` overrides with `tokio::fs::rename`
+  for true atomic moves on the same filesystem.
+- **`BuiltinTool::DeleteFile`** + **`BuiltinTool::RenameFile`**
+  variants. Both wired into `register_builtins` via the existing
+  `fs_tool!` macro — works on every backend that supplies a
+  filesystem (native, OPFS).
+- **`backends::gemini::tools::DeleteFile`** — wraps
+  `Filesystem::delete`. Recursive for directories. Tested
+  (deletes existing file; errors on missing path).
+- **`backends::gemini::tools::RenameFile`** — wraps
+  `Filesystem::rename`. Rejects identical from/to. Tested
+  (renames file; rejects same-path).
+
+### Added (browser app)
+
+- **In-list file delete affordance.** Hovering a row in the file
+  list reveals a small × button on the right. Click deletes the
+  file in one shot — no per-row confirm dialog (mistakes can be
+  re-created; the wipe button is the heavyweight "everything"
+  confirm flow if you want to nuke the whole origin).
+- **System prompt updated** to mention `delete_file` and
+  `rename_file` as available tools — and to NEVER delete the
+  internal `.lh_*` dotfiles + confirm before deletes unless
+  explicitly asked.
+
 ## [0.10.17] - 2026-05-24
 
 Big polish pass: ALL chatty status text dead, button + font
