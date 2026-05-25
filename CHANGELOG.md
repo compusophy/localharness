@@ -5,6 +5,50 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.11] - 2026-05-24
+
+Three real bugs + UX cleanup. The agent was returning 400s on
+every send — discovered while diagnosing why the user couldn't get
+a reply.
+
+### Fixed
+
+- **`gemini-3.5-flash` doesn't exist on the public Gemini API.**
+  Was returning 400 Bad Request on every `streamGenerateContent`
+  call. Switched `DEFAULT_MODEL` to `gemini-2.5-flash` which the API
+  actually serves. Image model swap too:
+  `gemini-2.0-flash-exp-image-generation`.
+- **Agent had no system instructions.** Bare `with_capabilities` +
+  no system prompt meant the model had no priors about the
+  localharness environment — prompts like "what is pricing" produced
+  blind tool calls. `start_session` now passes a per-agent
+  system instruction telling it what subdomain it's running as,
+  what the OPFS surface looks like, and that it's talking to its
+  owner. Conversational replies should now happen instead of every
+  message triggering `list_directory`.
+- **Password-field-not-in-form warning** in console silenced —
+  wrapped the gemini key input in `<form onsubmit="return false">`.
+
+### Changed (browser app)
+
+- **No global footer.** Removed it entirely. The terminal moved
+  out of the footer and now lives inside `col-chat` at the bottom,
+  inset between the files (left) and agents (right) columns —
+  the user's requested layout.
+- **Terminal is collapsible.** New title bar at the top of the
+  terminal with a `—` toggle button that flips `terminal-collapsed`
+  on `#layout`; CSS hides the input row, leaving just the bar.
+  Mirrors the `files` / `agent` collapse pattern.
+- **Removed the `new` button.** Conversation reset wasn't earning
+  its space in the terminal row. Will come back somewhere more
+  appropriate if needed (likely admin dropdown).
+- **Terminal margins tightened.** Status line above the input row,
+  prompt glyph `>` followed by the textarea, send button on the
+  right. Padding 8/12 instead of the previous mismatched stretch.
+- **Transcript uses a `::before { flex: 1 }` spacer** to push turns
+  to the bottom of the scroll area. Newest message always sits
+  directly above the terminal prompt the user is typing in.
+
 ## [0.10.10] - 2026-05-24
 
 Major chrome refactor toward the terminal-style AI-OS vision. The
