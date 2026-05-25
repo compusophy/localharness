@@ -26,6 +26,30 @@
 //!                       }, purpose }
 //!   signer → parent:  { type: "lh-sign-response", id, address, raw_tx_hex }
 //!                or:  { type: "lh-sign-response", id, error }
+//!
+//! Identity management (auto-approved — same trust model as sign-tx):
+//!   parent  → signer: { type: "lh-create-wallet", id, overwrite: bool? }
+//!   signer → parent:  { type: "lh-sign-response", id, address }
+//!                or:  { type: "lh-sign-response", id, error }
+//!   Default semantics: ENSURE — returns existing wallet's address if
+//!   one is present, only generates fresh on a wallet-less origin. Pass
+//!   overwrite=true to force regeneration (the apex "create identity"
+//!   button uses this; tenant first-claim uses default ensure).
+//!
+//!   parent  → signer: { type: "lh-reveal-seed", id }
+//!   signer → parent:  { type: "lh-sign-response", id, phrase }
+//!                or:  { type: "lh-sign-response", id, error }
+//!
+//!   parent  → signer: { type: "lh-import-seed", id, phrase }
+//!   signer → parent:  { type: "lh-sign-response", id, address }
+//!                or:  { type: "lh-sign-response", id, error }
+//!
+//!   parent  → signer: { type: "lh-claim-name", id, name }
+//!   signer → parent:  { type: "lh-sign-response", id, address, tx_hash }
+//!                or:  { type: "lh-sign-response", id, error }
+//!   Runs the full apex claim flow (faucet → register → wait receipt)
+//!   from apex origin. Long-running — callers should set a generous
+//!   timeout (60s+).
 //! ```
 //! `nonce` (challenge) is a hex-encoded 32-byte challenge. The signer
 //! signs `keccak256("localharness-auth-v0:" || nonce_bytes)` (domain-
@@ -76,7 +100,15 @@ fn handle_message(event: &MessageEvent) -> Result<(), String> {
     // source/origin work. Pages run lots of incidental postMessage
     // chatter (Vercel's lockdown.js, browser extensions, dev tooling)
     // and we don't want to log "source is not a Window" for any of it.
-    if !matches!(msg_type.as_str(), "lh-sign-challenge" | "lh-sign-tx") {
+    if !matches!(
+        msg_type.as_str(),
+        "lh-sign-challenge"
+            | "lh-sign-tx"
+            | "lh-create-wallet"
+            | "lh-reveal-seed"
+            | "lh-import-seed"
+            | "lh-claim-name"
+    ) {
         return Ok(());
     }
 
@@ -123,21 +155,183 @@ fn handle_message(event: &MessageEvent) -> Result<(), String> {
                 Err(err) => error_response(&id, &err),
             }
         }
+        "lh-reveal-seed" => match build_reveal_seed_response(&id) {
+            Ok(obj) => obj,
+            Err(err) => error_response(&id, &err),
+        },
+        "lh-create-wallet" => {
+            // Default semantics: ENSURE (return existing if any, else
+            // generate). Explicit overwrite=true requests regeneration.
+            let overwrite = js_sys::Reflect::get(&data, &JsValue::from_str("overwrite"))
+                .ok()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            spawn_create_wallet(
+                id.clone(),
+                overwrite,
+                source_jsval.clone(),
+                origin.clone(),
+            );
+            return Ok(());
+        }
+        "lh-import-seed" => {
+            let phrase = js_sys::Reflect::get(&data, &JsValue::from_str("phrase"))
+                .ok()
+                .and_then(|v| v.as_string())
+                .ok_or_else(|| "phrase not a string".to_string())?;
+            spawn_import_seed(id.clone(), phrase, source_jsval.clone(), origin.clone());
+            return Ok(());
+        }
+        "lh-claim-name" => {
+            let name = js_sys::Reflect::get(&data, &JsValue::from_str("name"))
+                .ok()
+                .and_then(|v| v.as_string())
+                .ok_or_else(|| "name not a string".to_string())?;
+            spawn_claim_name(id.clone(), name, source_jsval.clone(), origin.clone());
+            return Ok(());
+        }
         _ => return Ok(()), // not for us
     };
 
-    // Reflect-based postMessage on the source (which may be a
-    // cross-origin WindowProxy, not a strict Window). Equivalent to
-    // `source.postMessage(reply, origin)` in JS.
-    let post_msg = js_sys::Reflect::get(&source_jsval, &JsValue::from_str("postMessage"))
+    post_reply(&source_jsval, &reply, &origin)?;
+    Ok(())
+}
+
+/// Reflect-based postMessage on the source (which may be a cross-origin
+/// WindowProxy, not a strict Window). Equivalent to
+/// `source.postMessage(reply, origin)` in JS. Shared by the sync reply
+/// path and the spawn_local async reply paths.
+fn post_reply(source: &JsValue, reply: &JsValue, origin: &str) -> Result<(), String> {
+    let post_msg = js_sys::Reflect::get(source, &JsValue::from_str("postMessage"))
         .map_err(|_| "source has no postMessage".to_string())?;
     let post_fn: js_sys::Function = post_msg
         .dyn_into()
         .map_err(|_| "source.postMessage isn't a function".to_string())?;
     post_fn
-        .call2(&source_jsval, &reply, &JsValue::from_str(&origin))
+        .call2(source, reply, &JsValue::from_str(origin))
         .map_err(|e| format!("postMessage call: {e:?}"))?;
     Ok(())
+}
+
+fn build_reveal_seed_response(id: &str) -> Result<JsValue, String> {
+    let phrase = super::APP
+        .with(|cell| {
+            cell.borrow()
+                .wallet
+                .as_ref()
+                .map(|w| w.mnemonic.to_string())
+        })
+        .ok_or_else(|| "no identity on this device".to_string())?;
+    let obj = js_sys::Object::new();
+    set(&obj, "type", JsValue::from_str("lh-sign-response"));
+    set(&obj, "id", JsValue::from_str(id));
+    set(&obj, "phrase", JsValue::from_str(&phrase));
+    Ok(JsValue::from(obj))
+}
+
+fn spawn_create_wallet(id: String, overwrite: bool, source: JsValue, origin: String) {
+    wasm_bindgen_futures::spawn_local(async move {
+        // Ensure-semantic when overwrite is false: if a wallet already
+        // exists at apex, return its address without regenerating.
+        // Protects users from accidentally nuking the master wallet
+        // (and all the NFT ownership it tracks) during a tenant-side
+        // first-claim flow.
+        if !overwrite {
+            let existing = super::APP
+                .with(|cell| cell.borrow().wallet.as_ref().map(|w| w.address_hex()));
+            if let Some(addr) = existing {
+                let obj = js_sys::Object::new();
+                set(&obj, "type", JsValue::from_str("lh-sign-response"));
+                set(&obj, "id", JsValue::from_str(&id));
+                set(&obj, "address", JsValue::from_str(&addr));
+                let reply = JsValue::from(obj);
+                if let Err(err) = post_reply(&source, &reply, &origin) {
+                    web_sys::console::warn_1(&JsValue::from_str(&format!(
+                        "signer: create-wallet (cached) reply: {err}"
+                    )));
+                }
+                return;
+            }
+        }
+        let reply = match super::wallet_store::create_and_persist().await {
+            Ok(wallet) => {
+                let addr = wallet.address_hex();
+                super::APP.with(|cell| cell.borrow_mut().wallet = Some(wallet));
+                let obj = js_sys::Object::new();
+                set(&obj, "type", JsValue::from_str("lh-sign-response"));
+                set(&obj, "id", JsValue::from_str(&id));
+                set(&obj, "address", JsValue::from_str(&addr));
+                JsValue::from(obj)
+            }
+            Err(err) => error_response(&id, &err),
+        };
+        if let Err(err) = post_reply(&source, &reply, &origin) {
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "signer: create-wallet reply: {err}"
+            )));
+        }
+    });
+}
+
+/// Long-running: faucet-fund the apex wallet, then `register(name)` on
+/// the registry, then wait for the receipt. Posts a single reply at the
+/// end with the tx hash. Tenant first-claim sets this off and shows a
+/// progress placeholder until the reply lands.
+fn spawn_claim_name(id: String, name: String, source: JsValue, origin: String) {
+    wasm_bindgen_futures::spawn_local(async move {
+        let reply = match run_claim_name(&name).await {
+            Ok((address, tx_hash)) => {
+                let obj = js_sys::Object::new();
+                set(&obj, "type", JsValue::from_str("lh-sign-response"));
+                set(&obj, "id", JsValue::from_str(&id));
+                set(&obj, "address", JsValue::from_str(&address));
+                set(&obj, "tx_hash", JsValue::from_str(&tx_hash));
+                JsValue::from(obj)
+            }
+            Err(err) => error_response(&id, &err),
+        };
+        if let Err(err) = post_reply(&source, &reply, &origin) {
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "signer: claim-name reply: {err}"
+            )));
+        }
+    });
+}
+
+async fn run_claim_name(name: &str) -> Result<(String, String), String> {
+    let (signer, address) = wallet_handle()?;
+    let address_hex = hex_addr(&address);
+    // Faucet drip is idempotent enough for testnet; warn if it errors,
+    // proceed regardless (the wallet may already be funded).
+    if let Err(err) = crate::registry::request_faucet_funds(&address_hex).await {
+        web_sys::console::warn_1(&JsValue::from_str(&format!(
+            "signer claim: faucet: {err}"
+        )));
+    }
+    let tx_hash = crate::registry::claim_name(&signer, name).await?;
+    Ok((address_hex, tx_hash))
+}
+
+fn spawn_import_seed(id: String, phrase: String, source: JsValue, origin: String) {
+    wasm_bindgen_futures::spawn_local(async move {
+        let reply = match super::wallet_store::import(&phrase).await {
+            Ok(wallet) => {
+                let addr = wallet.address_hex();
+                super::APP.with(|cell| cell.borrow_mut().wallet = Some(wallet));
+                let obj = js_sys::Object::new();
+                set(&obj, "type", JsValue::from_str("lh-sign-response"));
+                set(&obj, "id", JsValue::from_str(&id));
+                set(&obj, "address", JsValue::from_str(&addr));
+                JsValue::from(obj)
+            }
+            Err(err) => error_response(&id, &err),
+        };
+        if let Err(err) = post_reply(&source, &reply, &origin) {
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "signer: import-seed reply: {err}"
+            )));
+        }
+    });
 }
 
 fn build_challenge_response(id: &str, nonce_hex: &str) -> Result<JsValue, String> {

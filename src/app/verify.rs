@@ -232,6 +232,125 @@ pub(crate) async fn sign_tx_via_iframe(req: SignTxRequest<'_>) -> Result<String,
 
 const TX_TIMEOUT_MS: u32 = 90_000;
 
+/// Generous timeout for OPFS-touching ops at apex (create wallet,
+/// import seed). The actual work is a single file write; the budget
+/// is generous to absorb wasm-bundle cold-load and a slow disk.
+const IDENTITY_TIMEOUT_MS: u32 = 20_000;
+
+/// Ask the apex signer for the cached mnemonic. Returns the 12-word
+/// phrase on success, or an error if no identity exists at apex.
+pub(crate) async fn reveal_seed_via_iframe() -> Result<String, String> {
+    let id = format!("reveal-{}", random_id_hex());
+    let payload = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &payload,
+        &JsValue::from_str("type"),
+        &JsValue::from_str("lh-reveal-seed"),
+    );
+    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("id"), &JsValue::from_str(&id));
+    let data = signer_iframe_request(&id, &payload.into(), TIMEOUT_MS).await?;
+    let phrase = js_sys::Reflect::get(&data, &JsValue::from_str("phrase"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
+    if phrase.is_empty() {
+        return Err("signer reply missing phrase".into());
+    }
+    Ok(phrase)
+}
+
+/// Ensure the apex origin has a master wallet, returning its address.
+/// If `overwrite` is false (the default in tenant-side flows), an
+/// existing wallet is preserved — only a brand-new origin gets a fresh
+/// keypair. Pass `overwrite=true` from the explicit apex "create
+/// identity" path where the user is asking for a fresh wallet.
+pub(crate) async fn create_wallet_via_iframe(overwrite: bool) -> Result<String, String> {
+    let id = format!("create-{}", random_id_hex());
+    let payload = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &payload,
+        &JsValue::from_str("type"),
+        &JsValue::from_str("lh-create-wallet"),
+    );
+    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("id"), &JsValue::from_str(&id));
+    let _ = js_sys::Reflect::set(
+        &payload,
+        &JsValue::from_str("overwrite"),
+        &JsValue::from_bool(overwrite),
+    );
+    let data = signer_iframe_request(&id, &payload.into(), IDENTITY_TIMEOUT_MS).await?;
+    let address = js_sys::Reflect::get(&data, &JsValue::from_str("address"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
+    if address.is_empty() {
+        return Err("signer reply missing address".into());
+    }
+    Ok(address)
+}
+
+/// Run the full apex claim flow (faucet → register → wait receipt) from
+/// the apex signer iframe. Long timeout because waiting for a receipt
+/// can take ~10s and the faucet drip adds another ~5s. Returns
+/// `(owner_address, tx_hash)`.
+pub(crate) async fn claim_name_via_iframe(name: &str) -> Result<(String, String), String> {
+    let id = format!("claim-{}", random_id_hex());
+    let payload = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &payload,
+        &JsValue::from_str("type"),
+        &JsValue::from_str("lh-claim-name"),
+    );
+    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("id"), &JsValue::from_str(&id));
+    let _ = js_sys::Reflect::set(
+        &payload,
+        &JsValue::from_str("name"),
+        &JsValue::from_str(name),
+    );
+    let data = signer_iframe_request(&id, &payload.into(), CLAIM_TIMEOUT_MS).await?;
+    let address = js_sys::Reflect::get(&data, &JsValue::from_str("address"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
+    let tx_hash = js_sys::Reflect::get(&data, &JsValue::from_str("tx_hash"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
+    if address.is_empty() || tx_hash.is_empty() {
+        return Err("signer reply missing address or tx_hash".into());
+    }
+    Ok((address, tx_hash))
+}
+
+const CLAIM_TIMEOUT_MS: u32 = 90_000;
+
+/// Ask the apex signer to import a user-supplied seed phrase and
+/// persist it. Returns the new address. Overwrites any existing wallet.
+pub(crate) async fn import_seed_via_iframe(phrase: &str) -> Result<String, String> {
+    let id = format!("import-{}", random_id_hex());
+    let payload = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &payload,
+        &JsValue::from_str("type"),
+        &JsValue::from_str("lh-import-seed"),
+    );
+    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("id"), &JsValue::from_str(&id));
+    let _ = js_sys::Reflect::set(
+        &payload,
+        &JsValue::from_str("phrase"),
+        &JsValue::from_str(phrase),
+    );
+    let data = signer_iframe_request(&id, &payload.into(), IDENTITY_TIMEOUT_MS).await?;
+    let address = js_sys::Reflect::get(&data, &JsValue::from_str("address"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
+    if address.is_empty() {
+        return Err("signer reply missing address".into());
+    }
+    Ok(address)
+}
+
 /// How long to wait for the signer iframe's `lh-signer-ready` ping
 /// before posting the challenge anyway. The wasm bundle in a cold
 /// iframe can take a couple of seconds to compile + install its

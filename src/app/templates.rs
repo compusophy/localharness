@@ -418,10 +418,11 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
     }
 }
 
-/// Tenant-variant of the admin dropdown. Shows owner address (read
-/// from verify state) + a "manage at apex" link so the user can get
-/// to seed/import even though the wallet lives at the apex origin.
-/// Then the per-subdomain api key + reset.
+/// Tenant-variant of the admin dropdown. Self-contained — seed reveal,
+/// seed import, and reset all run through the apex signer iframe so the
+/// user never has to bounce to the apex origin to manage their identity.
+/// The "wallet" section shows the visitor's recovered address (read from
+/// verify state) so the user can see whose identity is active right here.
 pub(crate) fn admin_dropdown_tenant() -> Markup {
     // Pull recovered owner address out of App state — kick_verification
     // stashes it after iframe-sign completes. None if not yet known.
@@ -442,13 +443,16 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                 } @else {
                     p.admin-blurb { "verifying…" }
                 }
-                p.admin-blurb {
-                    "your seed phrase + identity import live at the apex "
-                    "origin. "
-                    a href="https://localharness.xyz/" target="_blank" rel="noopener" {
-                        "manage at apex →"
-                    }
+            }
+            div.admin-section {
+                div.admin-section-title { "seed phrase" }
+                div #seed-reveal .seed-reveal {
+                    button type="button" data-action="reveal-seed" .ghost { "reveal" }
                 }
+            }
+            div.admin-section {
+                div.admin-section-title { "import a different seed" }
+                (import_seed_inline())
             }
             div.admin-section {
                 div.admin-section-title { "gemini api key " span #keymeta {} }
@@ -595,6 +599,38 @@ pub(crate) fn financial_card(
                 span.financial-label { "balance" }
                 span.financial-value.financial-balance { (balance_display) }
             }
+            (lh_transfer_form(tba_hex))
+        }
+    }
+}
+
+/// $localharness transfer form, embedded in the financial card. Sends
+/// from the visitor's apex wallet (signed via the iframe signer) to
+/// whatever recipient the user types. Default recipient is the agent's
+/// TBA so "support this agent" is the one-click path; the user can
+/// overwrite to send anywhere.
+pub(crate) fn lh_transfer_form(default_recipient: &str) -> Markup {
+    html! {
+        form #lh-transfer-form .lh-transfer data-action="lh-transfer" {
+            div.lh-transfer-title { "send $localharness" }
+            div.lh-transfer-row {
+                input #lh-transfer-to
+                    type="text"
+                    autocomplete="off"
+                    spellcheck="false"
+                    placeholder="0x… recipient"
+                    value=(default_recipient) {}
+            }
+            div.lh-transfer-row {
+                input #lh-transfer-amount
+                    type="text"
+                    inputmode="decimal"
+                    autocomplete="off"
+                    spellcheck="false"
+                    placeholder="amount" {}
+                button type="submit" .lh-transfer-send { "send" }
+            }
+            div #lh-transfer-msg .lh-transfer-msg {}
         }
     }
 }
@@ -756,20 +792,25 @@ pub(crate) fn signer_chrome(address_hex: &str) -> Markup {
 }
 
 /// Tenant subdomain that no one on this device has claimed yet —
-/// "unclaimed mode". M8 update: the recommended path is now a
-/// cross-device-portable on-chain claim via apex; the original local
-/// UUID flow stays as a "just save it on this device" fallback so
-/// existing users aren't broken.
+/// "unclaimed mode". Claims happen inline: the button ensures an apex
+/// identity exists (creating one only if absent) and registers the name
+/// on-chain via the signer iframe. The first subdomain a fresh visitor
+/// claims becomes their primary identity; subsequent claims on other
+/// names reuse the same wallet across the family of subdomains.
 pub(crate) fn unclaimed(host: &Host, name: &str) -> Markup {
-    let apex_claim_url = format!("https://localharness.xyz/?prefill={name}");
     html! {
         (site_header(host))
         main.apex-main {
             div.col-chat {
                 section.step.step-unclaimed {
                     h2.unclaimed-name { (name) ".localharness.xyz" }
-                    p.step-msg { "this name is open. claim it from the apex." }
-                    a.button-link href=(apex_claim_url) { "claim on apex" }
+                    p.step-msg {
+                        "this name is open. claim it to make it the home of an agent you own."
+                    }
+                    button type="button" data-action="claim-on-chain" .button-link {
+                        "claim " (name)
+                    }
+                    div #claim-msg .step-msg {}
                 }
             }
         }

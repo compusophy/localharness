@@ -40,6 +40,7 @@ enum Action {
     OpfsSave(String),
     ApexClaim,
     ClaimHere,
+    ClaimOnChain,
     ImportOwner,
     RevealSeed,
     HideSeed,
@@ -61,6 +62,7 @@ enum Action {
     FeedbackOpen,
     FeedbackClose,
     FeedbackSubmit,
+    LhTransfer,
 }
 
 impl Action {
@@ -81,6 +83,7 @@ impl Action {
             "opfs-save" => Action::OpfsSave(arg.unwrap_or_default()),
             "apex-claim" => Action::ApexClaim,
             "claim-here" => Action::ClaimHere,
+            "claim-on-chain" => Action::ClaimOnChain,
             "import-owner" => Action::ImportOwner,
             "reveal-seed" => Action::RevealSeed,
             "hide-seed" => Action::HideSeed,
@@ -102,6 +105,7 @@ impl Action {
             "feedback-open" => Action::FeedbackOpen,
             "feedback-close" => Action::FeedbackClose,
             "feedback-submit" => Action::FeedbackSubmit,
+            "lh-transfer" => Action::LhTransfer,
             _ => return None,
         })
     }
@@ -474,6 +478,56 @@ fn dispatch(action: Action) {
                 }
             });
         }
+        Action::ClaimOnChain => {
+            // Tenant-side first-claim: ensure apex wallet exists (without
+            // overwriting an existing one — that would nuke other NFTs),
+            // run the on-chain register tx via the signer iframe, then
+            // set the local OPFS marker + re-paint as owner. This kills
+            // the previous "bounce to apex first" interstitial.
+            let Some(name) = (match super::tenant::current() {
+                super::tenant::Host::Tenant(n) => Some(n),
+                _ => None,
+            }) else {
+                return;
+            };
+            dom::swap_inner(
+                "claim-msg",
+                "<span style=\"color:var(--muted)\">ensuring identity at apex…</span>",
+            );
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Err(err) = super::verify::create_wallet_via_iframe(false).await {
+                    dom::swap_inner(
+                        "claim-msg",
+                        &format!(
+                            "<span style=\"color:var(--error)\">identity setup failed: {err}</span>"
+                        ),
+                    );
+                    return;
+                }
+                dom::swap_inner(
+                    "claim-msg",
+                    "<span style=\"color:var(--muted)\">claiming on-chain…</span>",
+                );
+                match super::verify::claim_name_via_iframe(&name).await {
+                    Ok((_owner, _tx)) => {
+                        let _ = super::owner::claim().await;
+                        super::paint_tenant(
+                            super::tenant::Host::Tenant(name.clone()),
+                            name,
+                        )
+                        .await;
+                    }
+                    Err(err) => {
+                        dom::swap_inner(
+                            "claim-msg",
+                            &format!(
+                                "<span style=\"color:var(--error)\">claim failed: {err}</span>"
+                            ),
+                        );
+                    }
+                }
+            });
+        }
         Action::ImportOwner => {
             let raw = dom::input_by_id("import-uuid")
                 .map(|i| i.value().trim().to_string())
@@ -502,20 +556,45 @@ fn dispatch(action: Action) {
             });
         }
         Action::RevealSeed => {
-            // Read the mnemonic out of the cached wallet (loaded in
-            // paint_apex) and swap it into the reveal slot. No async
-            // I/O needed — the wallet is in App state.
-            let phrase = super::APP.with(|cell| {
-                cell.borrow()
-                    .wallet
-                    .as_ref()
-                    .map(|w| w.mnemonic.to_string())
-            });
-            if let Some(p) = phrase {
-                dom::swap_inner(
-                    "seed-reveal",
-                    &super::templates::seed_phrase(&p).into_string(),
-                );
+            // Apex: read mnemonic directly from cached wallet (sync).
+            // Tenant: round-trip through the apex signer iframe so the
+            // seed never leaves apex OPFS unannounced.
+            match super::tenant::current() {
+                super::tenant::Host::Apex => {
+                    let phrase = super::APP.with(|cell| {
+                        cell.borrow()
+                            .wallet
+                            .as_ref()
+                            .map(|w| w.mnemonic.to_string())
+                    });
+                    if let Some(p) = phrase {
+                        dom::swap_inner(
+                            "seed-reveal",
+                            &super::templates::seed_phrase(&p).into_string(),
+                        );
+                    }
+                }
+                _ => {
+                    dom::swap_inner(
+                        "seed-reveal",
+                        "<span style=\"color:var(--muted)\">fetching…</span>",
+                    );
+                    wasm_bindgen_futures::spawn_local(async move {
+                        match super::verify::reveal_seed_via_iframe().await {
+                            Ok(phrase) => dom::swap_inner(
+                                "seed-reveal",
+                                &super::templates::seed_phrase(&phrase).into_string(),
+                            ),
+                            Err(err) => dom::swap_inner(
+                                "seed-reveal",
+                                &format!(
+                                    "<span style=\"color:var(--error)\">reveal failed: {err}</span>\
+                                     <button type=\"button\" data-action=\"reveal-seed\" class=\"ghost\">retry</button>"
+                                ),
+                            ),
+                        }
+                    });
+                }
             }
         }
         Action::HideSeed => {
@@ -525,33 +604,56 @@ fn dispatch(action: Action) {
             );
         }
         Action::CreateIdentity => {
-            // Generate the wallet, then run the full bootstrap-funding
-            // sequence so the user lands on a wallet with enough gas
-            // to claim a name immediately — instead of hitting the old
-            // "have 0 want N" error from the claim flow.
+            // Apex: generate locally + bootstrap-fund + re-paint.
+            // Tenant: route through the apex signer iframe so the wallet
+            // lands at apex OPFS, then re-paint tenant chrome so
+            // verification picks up the new owner.
             dom::swap_inner(
                 "identity-msg",
                 "<span style=\"color:var(--muted)\">generating identity…</span>",
             );
-            wasm_bindgen_futures::spawn_local(async move {
-                let wallet = match super::wallet_store::create_and_persist().await {
-                    Ok(w) => w,
-                    Err(err) => {
-                        dom::swap_inner(
-                            "identity-msg",
-                            &format!(
-                                "<span style=\"color:var(--error)\">create failed: {err}</span>"
-                            ),
-                        );
-                        return;
-                    }
-                };
-                run_bootstrap_funding(wallet.signer.clone(), wallet.address_hex()).await;
-                let host = super::tenant::current();
-                if matches!(host, super::tenant::Host::Apex) {
-                    super::paint_apex(host).await;
+            match super::tenant::current() {
+                super::tenant::Host::Apex => {
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let wallet = match super::wallet_store::create_and_persist().await {
+                            Ok(w) => w,
+                            Err(err) => {
+                                dom::swap_inner(
+                                    "identity-msg",
+                                    &format!(
+                                        "<span style=\"color:var(--error)\">create failed: {err}</span>"
+                                    ),
+                                );
+                                return;
+                            }
+                        };
+                        run_bootstrap_funding(wallet.signer.clone(), wallet.address_hex()).await;
+                        super::paint_apex(super::tenant::Host::Apex).await;
+                    });
                 }
-            });
+                host => {
+                    // Explicit "create" button from tenant admin: pass
+                    // overwrite=true because the user has clicked the
+                    // create action with intent (just like at apex).
+                    wasm_bindgen_futures::spawn_local(async move {
+                        match super::verify::create_wallet_via_iframe(true).await {
+                            Ok(_addr) => {
+                                if let super::tenant::Host::Tenant(name) = &host {
+                                    super::paint_tenant(host.clone(), name.clone()).await;
+                                }
+                            }
+                            Err(err) => {
+                                dom::swap_inner(
+                                    "identity-msg",
+                                    &format!(
+                                        "<span style=\"color:var(--error)\">create failed: {err}</span>"
+                                    ),
+                                );
+                            }
+                        }
+                    });
+                }
+            }
         }
         Action::ShowImport => {
             // Reveal the import textarea in place of the secondary
@@ -576,26 +678,49 @@ fn dispatch(action: Action) {
                 );
                 return;
             }
-            wasm_bindgen_futures::spawn_local(async move {
-                match super::wallet_store::import(&phrase).await {
-                    Ok(_) => {
-                        // Refresh the apex chrome — wallet field will
-                        // show the imported address.
-                        let host = super::tenant::current();
-                        if matches!(host, super::tenant::Host::Apex) {
-                            super::paint_apex(host).await;
+            // Apex: write directly to apex OPFS, re-paint apex.
+            // Tenant: route through signer iframe so the seed lands at
+            // apex OPFS even though we're on a subdomain origin. This is
+            // how cross-device pairing works — paste your desktop seed on
+            // mobile and the master identity now lives on both devices.
+            match super::tenant::current() {
+                super::tenant::Host::Apex => {
+                    wasm_bindgen_futures::spawn_local(async move {
+                        match super::wallet_store::import(&phrase).await {
+                            Ok(_) => {
+                                super::paint_apex(super::tenant::Host::Apex).await;
+                            }
+                            Err(err) => {
+                                dom::swap_inner(
+                                    "seed-msg",
+                                    &format!(
+                                        "<span style=\"color:var(--error)\">import failed: {err}</span>"
+                                    ),
+                                );
+                            }
                         }
-                    }
-                    Err(err) => {
-                        dom::swap_inner(
-                            "seed-msg",
-                            &format!(
-                                "<span style=\"color:var(--error)\">import failed: {err}</span>"
-                            ),
-                        );
-                    }
+                    });
                 }
-            });
+                host => {
+                    wasm_bindgen_futures::spawn_local(async move {
+                        match super::verify::import_seed_via_iframe(&phrase).await {
+                            Ok(_addr) => {
+                                if let super::tenant::Host::Tenant(name) = &host {
+                                    super::paint_tenant(host.clone(), name.clone()).await;
+                                }
+                            }
+                            Err(err) => {
+                                dom::swap_inner(
+                                    "seed-msg",
+                                    &format!(
+                                        "<span style=\"color:var(--error)\">import failed: {err}</span>"
+                                    ),
+                                );
+                            }
+                        }
+                    });
+                }
+            }
         }
         Action::OpfsDelete(name) => {
             // Direct delete — no per-row confirm. Mistakes can be
@@ -663,7 +788,222 @@ fn dispatch(action: Action) {
         Action::FeedbackOpen => feedback_open(),
         Action::FeedbackClose => feedback_close(),
         Action::FeedbackSubmit => feedback_submit(),
+        Action::LhTransfer => lh_transfer_pressed(),
     }
+}
+
+/// $localharness transfer from the visitor's apex wallet to a recipient.
+/// Reads the recipient + amount from the financial-card form, builds
+/// `transfer(address,uint256)` calldata, signs via the apex signer
+/// iframe, submits to Tempo Moderato. Caller's gas paid by the apex
+/// wallet (visitor) — Tempo allows contract calls, so no native-transfer
+/// ban hits this path.
+fn lh_transfer_pressed() {
+    let to_raw = dom::input_by_id("lh-transfer-to")
+        .map(|i| i.value().trim().to_string())
+        .unwrap_or_default();
+    let amount_raw = dom::input_by_id("lh-transfer-amount")
+        .map(|i| i.value().trim().to_string())
+        .unwrap_or_default();
+    if !is_address_hex(&to_raw) {
+        dom::swap_inner(
+            "lh-transfer-msg",
+            "<span style=\"color:var(--error)\">recipient must be a 0x… address</span>",
+        );
+        return;
+    }
+    let Some(amount_wei) = parse_token_amount(&amount_raw) else {
+        dom::swap_inner(
+            "lh-transfer-msg",
+            "<span style=\"color:var(--error)\">amount: positive number, up to 18 decimals</span>",
+        );
+        return;
+    };
+    if amount_wei == 0 {
+        dom::swap_inner(
+            "lh-transfer-msg",
+            "<span style=\"color:var(--error)\">amount must be greater than zero</span>",
+        );
+        return;
+    }
+
+    // Visitor's apex address. The verify state's address (verified or
+    // visitor) is the master wallet that the iframe signer controls.
+    let from_hex = super::APP.with(|cell| {
+        use super::VerifyState;
+        match &cell.borrow().verify_state {
+            VerifyState::Verified { address } => Some(address.clone()),
+            VerifyState::Visitor { visitor_address, .. } => Some(visitor_address.clone()),
+            _ => None,
+        }
+    });
+    let Some(from_hex) = from_hex else {
+        dom::swap_inner(
+            "lh-transfer-msg",
+            "<span style=\"color:var(--error)\">no apex identity yet — open admin to create one</span>",
+        );
+        return;
+    };
+
+    dom::swap_inner(
+        "lh-transfer-msg",
+        "<span style=\"color:var(--muted)\">signing + submitting…</span>",
+    );
+    wasm_bindgen_futures::spawn_local(async move {
+        if let Err(err) = run_lh_transfer(from_hex, to_raw, amount_wei).await {
+            dom::swap_inner(
+                "lh-transfer-msg",
+                &format!("<span style=\"color:var(--error)\">{err}</span>"),
+            );
+        }
+    });
+}
+
+async fn run_lh_transfer(
+    from_hex: String,
+    to_hex: String,
+    amount_wei: u128,
+) -> Result<(), String> {
+    let calldata = encode_transfer_calldata(&to_hex, amount_wei)?;
+    let calldata_hex = bytes_to_hex_str(&calldata);
+
+    let nonce = super::registry::next_nonce(&from_hex).await
+        .map_err(|e| format!("nonce: {e}"))?;
+    let gas_price = super::registry::current_gas_price().await
+        .map_err(|e| format!("gas price: {e}"))?;
+    let gas_limit = 100_000u128; // ERC-20 transfer is ~50k; double for safety.
+
+    let raw_tx = super::verify::sign_tx_via_iframe(super::verify::SignTxRequest {
+        to_hex: super::registry::LOCALHARNESS_TOKEN_ADDRESS,
+        value_wei: 0,
+        nonce,
+        gas_limit,
+        gas_price,
+        chain_id: super::registry::CHAIN_ID,
+        purpose: "send $localharness",
+        data_hex: &calldata_hex,
+    })
+    .await
+    .map_err(|e| format!("signer: {e}"))?;
+
+    let tx_hash = super::registry::submit_and_wait_receipt(&raw_tx).await
+        .map_err(|e| format!("submit: {e}"))?;
+
+    let short = tx_short_hash(&tx_hash);
+    dom::swap_inner(
+        "lh-transfer-msg",
+        &format!("<span style=\"color:var(--accent)\">✓ sent (tx {short})</span>"),
+    );
+    if let Some(input) = dom::input_by_id("lh-transfer-amount") {
+        input.set_value("");
+    }
+    // Refresh balance shown in the card. Cheap re-read; if it fails,
+    // the next paint_tenant will pick it up. Don't bubble errors.
+    if let super::tenant::Host::Tenant(name) = super::tenant::current() {
+        super::paint_tenant(super::tenant::Host::Tenant(name.clone()), name).await;
+    }
+    Ok(())
+}
+
+fn is_address_hex(s: &str) -> bool {
+    let stripped = s.trim_start_matches("0x").trim_start_matches("0X");
+    stripped.len() == 40 && stripped.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Parse a human-typed amount like `1.5` or `0.000001` into 18-decimal
+/// token wei. Returns None on garbage input. Accepts up to 18 fractional
+/// digits; truncates anything finer.
+fn parse_token_amount(raw: &str) -> Option<u128> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let (whole_s, frac_s) = match raw.split_once('.') {
+        Some((w, f)) => (w, f),
+        None => (raw, ""),
+    };
+    let whole: u128 = if whole_s.is_empty() {
+        0
+    } else {
+        whole_s.parse().ok()?
+    };
+    if frac_s.bytes().any(|b| !b.is_ascii_digit()) {
+        return None;
+    }
+    let mut frac: u128 = 0;
+    let mut scale: u128 = 1_000_000_000_000_000_000;
+    for ch in frac_s.chars().take(18) {
+        let d = ch.to_digit(10)? as u128;
+        scale /= 10;
+        frac = frac.checked_add(d.checked_mul(scale)?)?;
+    }
+    let whole_wei = whole.checked_mul(1_000_000_000_000_000_000)?;
+    whole_wei.checked_add(frac)
+}
+
+/// ABI-encode `transfer(address,uint256)` — selector + padded address +
+/// padded amount. Keccak the signature here so we don't depend on a
+/// constant elsewhere.
+fn encode_transfer_calldata(to_hex: &str, amount_wei: u128) -> Result<Vec<u8>, String> {
+    use sha3::{Digest, Keccak256};
+    let mut hasher = Keccak256::new();
+    hasher.update(b"transfer(address,uint256)");
+    let digest = hasher.finalize();
+    let mut selector = [0u8; 4];
+    selector.copy_from_slice(&digest[..4]);
+
+    let to_bytes = parse_address(to_hex)?;
+    let mut to_padded = [0u8; 32];
+    to_padded[12..].copy_from_slice(&to_bytes);
+    let mut amount_padded = [0u8; 32];
+    amount_padded[16..].copy_from_slice(&amount_wei.to_be_bytes());
+
+    let mut out = Vec::with_capacity(4 + 32 + 32);
+    out.extend_from_slice(&selector);
+    out.extend_from_slice(&to_padded);
+    out.extend_from_slice(&amount_padded);
+    Ok(out)
+}
+
+fn parse_address(hex: &str) -> Result<[u8; 20], String> {
+    let stripped = hex.trim_start_matches("0x").trim_start_matches("0X");
+    if stripped.len() != 40 {
+        return Err(format!("address must be 40 hex chars, got {}", stripped.len()));
+    }
+    let mut out = [0u8; 20];
+    let bytes = stripped.as_bytes();
+    for i in 0..20 {
+        let hi = hex_nibble(bytes[i * 2])?;
+        let lo = hex_nibble(bytes[i * 2 + 1])?;
+        out[i] = (hi << 4) | lo;
+    }
+    Ok(out)
+}
+
+fn hex_nibble(b: u8) -> Result<u8, String> {
+    match b {
+        b'0'..=b'9' => Ok(b - b'0'),
+        b'a'..=b'f' => Ok(b - b'a' + 10),
+        b'A'..=b'F' => Ok(b - b'A' + 10),
+        _ => Err(format!("non-hex byte {b}")),
+    }
+}
+
+fn bytes_to_hex_str(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(2 + bytes.len() * 2);
+    s.push_str("0x");
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+fn tx_short_hash(tx_hash: &str) -> String {
+    let stripped = tx_hash.trim_start_matches("0x");
+    if stripped.len() < 12 {
+        return tx_hash.to_string();
+    }
+    format!("{}…{}", &stripped[..6], &stripped[stripped.len() - 4..])
 }
 
 /// Toggle the header admin dropdown. Origin determines content —
