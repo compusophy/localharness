@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.9] - 2026-05-24
+
+### Changed (browser app)
+
+- **File panel moved to left side, collapsible via toggle rail.**
+  Tenant chrome now lays out as: a narrow vertical `files` rail
+  (left, always visible below the header) | the file panel itself
+  (left of chat, default expanded) | chat column (right, takes
+  remaining space). Clicking the rail toggles a
+  `files-collapsed` class on `#layout`; CSS hides the panel
+  without re-rendering its DOM, so any open file viewer or
+  breadcrumb position survives collapse + expand.
+- **Mobile chrome stacks vertically.** Under 900px viewport the
+  rail becomes a horizontal strip at the top with the label
+  un-rotated, and the file panel sits below it (above chat)
+  instead of beside.
+- **`Action::ToggleFiles`** — wired to the rail button. Pure DOM
+  class flip; no Rust state involved.
+- Also re-shifts apex `main.apex-main` padding so it doesn't
+  fight the new layout-class rule.
+
 ## [0.10.8] - 2026-05-24
 
 Two bugs found by tailing the actual console output during a
