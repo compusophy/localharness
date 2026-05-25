@@ -12,6 +12,7 @@ use maud::html;
 use wasm_bindgen::JsValue;
 
 use crate::policy;
+use crate::tools::ClosureTool;
 use crate::{Agent, CapabilitiesConfig, GeminiAgentConfig, StreamChunk};
 
 use super::dom;
@@ -234,19 +235,50 @@ async fn start_session(key: &str) -> Result<(), JsValue> {
     };
     let system_instructions = format!(
         "You are {agent_name}, a browser-resident assistant running inside \
-         the localharness platform. You are speaking to your owner, who is \
-         the person who minted this subdomain. You have access to a \
-         per-origin OPFS file system through these tools: list_directory, \
-         view_file, find_file, search_directory, create_file, edit_file, \
-         delete_file, rename_file. \
-         The user's files are at the OPFS root. Dotfiles starting with \
-         `.lh_*` are internal state (api key, conversation history, owner \
-         marker) — read them only if the user asks; NEVER delete them. \
-         Keep responses concise and conversational unless asked for detail. \
-         Don't speculate about filesystem contents — use list_directory \
-         first when relevant. Don't blindly call tools when the user is \
-         just chatting. delete_file is irreversible — confirm before \
-         calling unless the user explicitly asked to delete."
+         the localharness platform — a Rust SDK that compiles to wasm and runs \
+         in the user's browser tab. You are speaking to your owner, who minted \
+         this subdomain as an ERC-721 NFT on Tempo Moderato.\n\n\
+         \
+         === Your tools (you DO have all of these) ===\n\
+         Filesystem (per-origin OPFS sandbox):\n\
+           • list_directory(path) — list files in a directory.\n\
+           • view_file(path, range?) — read a file's contents.\n\
+           • find_file(pattern) — glob search by name.\n\
+           • search_directory(pattern, path?) — regex search of file contents.\n\
+           • create_file(path, content) — write a new file.\n\
+           • edit_file(path, old, new) — exact-string replace in a file.\n\
+           • delete_file(path) — DELETE a file. You CAN do this; do not say \
+             otherwise. Irreversible — confirm intent first unless the user \
+             explicitly told you to delete.\n\
+           • rename_file(from, to) — move or rename.\n\n\
+         \
+         Platform:\n\
+           • create_subdomain(name) — register a new <name>.localharness.xyz \
+             on-chain, owned by your owner's master wallet. Returns the tx \
+             hash. Each subdomain is its own agent tab.\n\
+           • start_subagent(system_instructions, prompt) — spawn a one-shot \
+             text-only subagent with no tool access. Use for self-contained \
+             reasoning / writing tasks you want isolated from your context.\n\
+           • spawn_recursive_subagent(system_instructions, prompt) — spawn a \
+             full subagent with the same tool surface YOU have (filesystem, \
+             create_subdomain, start_subagent, etc.). Use for delegation that \
+             needs tools. Recursion depth is implicit (each subagent has its \
+             own context; cost grows with depth — don't chain more than 3 \
+             levels unless the user asked).\n\
+           • generate_image(prompt) — produce an image from a text prompt.\n\n\
+         \
+         === Conventions ===\n\
+         • Files at the OPFS root are the user's. Dotfiles starting with `.lh_*` \
+           are internal state (api key, conversation history, owner marker, \
+           feedback log) — read only if the user asks, NEVER write or delete.\n\
+         • Keep responses concise and conversational. The user is on the same \
+           page; they don't need you restating what you just did.\n\
+         • Don't speculate about filesystem contents — call list_directory first \
+           when you actually need to know.\n\
+         • Don't blindly call tools when the user is just chatting. \"hi\" / \
+           \"what can you do?\" don't need a tool call.\n\
+         • When you do call a tool, the call AND its result are visible to the \
+           user in the transcript — no need to re-narrate either."
     );
 
     // Unrestricted capabilities turn on the write tools; the Agent
@@ -255,11 +287,14 @@ async fn start_session(key: &str) -> Result<(), JsValue> {
     // user's own tab, so allow_all is the right policy for the demo —
     // anyone running the SDK as a library in less trusted contexts
     // should pick a tighter one (e.g. workspace_only / per-tool allow).
+    let captured_key = key.to_string();
     let mut cfg = GeminiAgentConfig::new(key.to_string())
         .with_capabilities(CapabilitiesConfig::unrestricted())
         .with_policies(vec![policy::allow_all()])
         .with_filesystem(super::shared_opfs())
-        .with_system_instructions(system_instructions);
+        .with_system_instructions(system_instructions)
+        .with_tool(create_subdomain_tool())
+        .with_tool(spawn_recursive_subagent_tool(captured_key));
     // If a previous session left history on OPFS, restore it into the
     // new connection. Consumed once — subsequent key changes start
     // fresh from the in-memory agent's history.
@@ -516,4 +551,133 @@ fn short_hash(hash: &str) -> String {
         return hash.to_string();
     }
     format!("0x{}…{}", &stripped[..6], &stripped[stripped.len() - 4..])
+}
+
+// =============================================================================
+// Platform-level closure tools (browser-specific; not in the SDK builtins).
+// =============================================================================
+
+/// `create_subdomain(name)` — register `<name>.localharness.xyz` on the
+/// LocalharnessRegistry diamond, signed by the owner's apex wallet via
+/// the iframe signer. Returns the tx hash. Sanitises the input the same
+/// way `tenant::sanitize` does for the apex claim form.
+fn create_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Subdomain to register, e.g. \"alice\" \
+                    becomes alice.localharness.xyz. 3-32 chars; lowercase \
+                    letters, digits, and hyphens only."
+            }
+        },
+        "required": ["name"]
+    });
+    ClosureTool::new(
+        "create_subdomain",
+        "Register a new <name>.localharness.xyz subdomain on-chain. The owner's master \
+         wallet pays gas and ends up holding the resulting ERC-721 NFT. Returns the tx hash.",
+        schema,
+        |args: serde_json::Value, _ctx| async move {
+            let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let cleaned = super::tenant::sanitize(name);
+            if cleaned.len() < 3 || cleaned.len() > 32 {
+                return Err(crate::error::Error::other(
+                    "name must be 3-32 chars, a-z 0-9 -",
+                ));
+            }
+            match super::verify::claim_name_via_iframe(&cleaned).await {
+                Ok((owner, tx_hash)) => Ok(serde_json::json!({
+                    "name": cleaned,
+                    "url": format!("https://{cleaned}.localharness.xyz/"),
+                    "owner": owner,
+                    "tx_hash": tx_hash,
+                })),
+                Err(e) => Err(crate::error::Error::other(format!("claim failed: {e}"))),
+            }
+        },
+    )
+}
+
+/// `spawn_recursive_subagent(system_instructions, prompt)` — full subagent
+/// with the same tool surface as the parent (filesystem, create_subdomain,
+/// itself). Runs the supplied prompt as a single conversation, drives it
+/// to completion via streaming chunks, returns the assistant's final text.
+///
+/// Implementation: builds a fresh `Agent::start_gemini` with the SAME
+/// api key + filesystem + closure tools. The subagent has its own
+/// conversation context (no shared history with the parent), so recursion
+/// is bounded by the user's wallet (Gemini cost grows with depth, that's
+/// the natural limiter).
+fn spawn_recursive_subagent_tool(api_key: String) -> std::sync::Arc<dyn crate::tools::Tool> {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "system_instructions": {
+                "type": "string",
+                "description": "System prompt for the subagent — describes its persona, \
+                    scope, and any constraints. Often \"you are a focused worker \
+                    that does X and returns just the result\"."
+            },
+            "prompt": {
+                "type": "string",
+                "description": "The user message to send to the subagent."
+            }
+        },
+        "required": ["system_instructions", "prompt"]
+    });
+    ClosureTool::new(
+        "spawn_recursive_subagent",
+        "Spawn a subagent with the SAME tool surface as you (filesystem, \
+         create_subdomain, start_subagent, spawn_recursive_subagent itself). \
+         The subagent has its own conversation context — it cannot see your \
+         history. Drives the subagent through one full conversation turn (which \
+         may itself involve internal tool calls) and returns the subagent's final \
+         text response.",
+        schema,
+        move |args: serde_json::Value, _ctx| {
+            let api_key = api_key.clone();
+            async move {
+                let system = args
+                    .get("system_instructions")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let prompt = args.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+                if prompt.is_empty() {
+                    return Err(crate::error::Error::other(
+                        "spawn_recursive_subagent: prompt cannot be empty",
+                    ));
+                }
+                let cfg = GeminiAgentConfig::new(api_key.clone())
+                    .with_capabilities(CapabilitiesConfig::unrestricted())
+                    .with_policies(vec![policy::allow_all()])
+                    .with_filesystem(super::shared_opfs())
+                    .with_system_instructions(system.to_string())
+                    .with_tool(create_subdomain_tool())
+                    .with_tool(spawn_recursive_subagent_tool(api_key.clone()));
+                let sub = Agent::start_gemini(cfg)
+                    .await
+                    .map_err(|e| crate::error::Error::other(format!("start_gemini: {e}")))?;
+                let response = sub
+                    .chat(prompt.to_string())
+                    .await
+                    .map_err(|e| crate::error::Error::other(format!("subagent chat: {e}")))?;
+                let mut cursor = response.chunks();
+                let mut text = String::new();
+                while let Some(item) = cursor.next().await {
+                    match item {
+                        Ok(StreamChunk::Text { text: t, .. }) => text.push_str(&t),
+                        Ok(_) => {} // ToolCall / ToolResult / Thought ignored — only the final text matters.
+                        Err(e) => {
+                            return Err(crate::error::Error::other(format!(
+                                "subagent chunk: {e}"
+                            )))
+                        }
+                    }
+                }
+                Ok(serde_json::json!({ "final_response": text }))
+            }
+        },
+    )
 }
