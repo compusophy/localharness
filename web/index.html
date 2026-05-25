@@ -75,20 +75,12 @@
     .header-inner {
       width: 100%;
       padding: 4px 16px;
-      display: grid;
-      grid-template-columns: 1fr auto 1fr;
+      display: flex;
       align-items: center;
       gap: 12px;
     }
-    .header-brand { justify-self: start; }
-    .header-center {
-      justify-self: center;
-      font-size: 12px;
-      color: var(--muted);
-      text-transform: lowercase;
-      letter-spacing: 0.04em;
-    }
-    .header-admin { justify-self: end; position: relative; }
+    .header-brand { margin-right: auto; }   /* pushes admin to right */
+    .header-admin { position: relative; }
 
     main {
       max-width: 1180px;
