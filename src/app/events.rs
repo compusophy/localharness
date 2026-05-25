@@ -50,6 +50,8 @@ enum Action {
     CancelImport,
     HeaderAdminToggle,
     HeaderAdminClose,
+    RevealSecurity,
+    HideSecurity,
     ResetArm,
     ResetConfirm,
     ResetCancel,
@@ -93,6 +95,8 @@ impl Action {
             "cancel-import" => Action::CancelImport,
             "header-admin-toggle" => Action::HeaderAdminToggle,
             "header-admin-close" => Action::HeaderAdminClose,
+            "reveal-security" => Action::RevealSecurity,
+            "hide-security" => Action::HideSecurity,
             "reset-arm" => Action::ResetArm,
             "reset-confirm" => Action::ResetConfirm,
             "reset-cancel" => Action::ResetCancel,
@@ -772,6 +776,18 @@ fn dispatch(action: Action) {
         }
         Action::HeaderAdminToggle => header_admin_toggle(),
         Action::HeaderAdminClose => header_admin_close(),
+        Action::RevealSecurity => {
+            dom::swap_outer(
+                "security-slot",
+                &templates::admin_security_expanded().into_string(),
+            );
+        }
+        Action::HideSecurity => {
+            dom::swap_outer(
+                "security-slot",
+                &templates::admin_security_collapsed().into_string(),
+            );
+        }
         Action::ResetArm => {
             dom::swap_outer(
                 "reset-confirm-slot",

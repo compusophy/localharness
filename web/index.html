@@ -178,7 +178,11 @@
       justify-content: flex-end;
       gap: 8px;
     }
-    .feedback-msg { font-size: 11px; min-height: 14px; }
+    /* Inline result message — only takes space when populated,
+       so the bottom of the card sits flush against the action row
+       most of the time. */
+    .feedback-msg { font-size: 11px; }
+    .feedback-msg:empty { display: none; }
 
     main {
       max-width: 1180px;
@@ -910,6 +914,47 @@
       display: block; padding: 8px 10px;
       background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
       font-size: 11px; color: var(--muted); word-break: break-all;
+    }
+    /* Identity rows — same shape on every admin dropdown:
+       [label]  [short-address link]. Same archetype the agent
+       tab uses in the financial card; mirroring it inside admin
+       so the user sees what identity is active without digging. */
+    .admin-identity-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 4px 0;
+      font-size: 12px;
+    }
+    .admin-identity-label {
+      color: var(--muted);
+      text-transform: uppercase;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+    }
+    .admin-identity-value {
+      color: var(--fg);
+      font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+      font-size: 12px;
+      text-decoration: none;
+    }
+    a.admin-identity-value:hover { color: var(--accent); }
+
+    /* Subsections inside the [security] expanded view — tighter
+       than top-level sections so the hierarchy reads as one
+       collapsible group instead of three independent rows. */
+    .admin-subsection {
+      margin-bottom: 10px;
+      padding-left: 12px;
+      border-left: 1px solid var(--border);
+    }
+    .admin-subsection-title {
+      font-size: 10px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 6px;
     }
     /* Danger variant only changes the colour — geometry stays the
        global button style. */

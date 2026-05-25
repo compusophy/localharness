@@ -372,29 +372,18 @@ fn apex_claim() -> Markup {
     }
 }
 
-/// Header admin dropdown — toggled by the "admin" button in the
-/// header. Single source of truth for seed reveal, seed import, and
-/// reset-local-state on apex; tenant chrome reuses the same dropdown
-/// but show different reset copy via [`admin_dropdown_tenant`].
+/// Apex admin dropdown — single global header admin, same archetype
+/// as the tenant variant. Shows the apex wallet's address (the visitor's
+/// master identity), with seed phrase + reset buried under a
+/// `[security]` toggle so they're not lying around in plain view.
 pub(crate) fn admin_dropdown_apex() -> Markup {
+    let owner_hex = super::APP.with(|cell| {
+        cell.borrow().wallet.as_ref().map(|w| w.address_hex())
+    });
     html! {
         div #header-admin-panel .header-admin-panel {
-            div.admin-section {
-                div.admin-section-title { "seed phrase" }
-                div #seed-reveal .seed-reveal {
-                    button type="button" data-action="reveal-seed" .ghost { "reveal" }
-                }
-            }
-            div.admin-section {
-                div.admin-section-title { "import a different seed" }
-                (import_seed_inline())
-            }
-            div.admin-section {
-                div.admin-section-title { "reset" }
-                div #reset-confirm-slot {
-                    button type="button" data-action="reset-arm" .ghost { "reset…" }
-                }
-            }
+            (admin_identity_section(None, owner_hex.as_deref(), None))
+            (admin_security_collapsed())
             div.admin-footer {
                 button type="button" data-action="header-admin-close" .ghost { "close" }
                 span.admin-version { (APP_VERSION) }
@@ -403,42 +392,28 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
     }
 }
 
-/// Tenant-variant of the admin dropdown. Self-contained — seed reveal,
-/// seed import, and reset all run through the apex signer iframe so the
-/// user never has to bounce to the apex origin to manage their identity.
-/// The "wallet" section shows the visitor's recovered address (read from
-/// verify state) so the user can see whose identity is active right here.
+/// Tenant admin dropdown — same archetype as apex. Adds the subdomain
+/// name + TBA wallet line, plus the gemini api key (only the tenant
+/// runs the agent, so the key lives here). Seed phrase + reset are
+/// buried under `[security]` the same way as apex.
 pub(crate) fn admin_dropdown_tenant() -> Markup {
-    // Pull recovered owner address out of App state — kick_verification
-    // stashes it after iframe-sign completes. None if not yet known.
-    let owner_hex = super::APP.with(|cell| {
+    let name = match super::tenant::current() {
+        super::tenant::Host::Tenant(n) => Some(n),
+        _ => None,
+    };
+    let (owner_hex, tba_hex) = super::APP.with(|cell| {
         use super::VerifyState;
-        match &cell.borrow().verify_state {
+        let app = cell.borrow();
+        let owner = match &app.verify_state {
             VerifyState::Verified { address } => Some(address.clone()),
             VerifyState::Visitor { visitor_address, .. } => Some(visitor_address.clone()),
             _ => None,
-        }
+        };
+        (owner, app.tba_address.clone())
     });
     html! {
         div #header-admin-panel .header-admin-panel {
-            div.admin-section {
-                div.admin-section-title { "wallet" }
-                @if let Some(addr) = owner_hex {
-                    code.admin-address { (addr) }
-                } @else {
-                    p.admin-blurb { "verifying…" }
-                }
-            }
-            div.admin-section {
-                div.admin-section-title { "seed phrase" }
-                div #seed-reveal .seed-reveal {
-                    button type="button" data-action="reveal-seed" .ghost { "reveal" }
-                }
-            }
-            div.admin-section {
-                div.admin-section-title { "import a different seed" }
-                (import_seed_inline())
-            }
+            (admin_identity_section(name.as_deref(), owner_hex.as_deref(), tba_hex.as_deref()))
             div.admin-section {
                 div.admin-section-title { "gemini api key " span #keymeta {} }
                 form.key-form onsubmit="return false" {
@@ -453,16 +428,102 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                     }
                 }
             }
-            div.admin-section {
-                div.admin-section-title { "reset" }
-                div #reset-confirm-slot {
-                    button type="button" data-action="reset-arm" .ghost { "reset…" }
-                }
-            }
+            (admin_security_collapsed())
             div.admin-footer {
                 button type="button" data-action="header-admin-close" .ghost { "close" }
                 span.admin-version { (APP_VERSION) }
             }
+        }
+    }
+}
+
+/// `name / owner / wallet` block — the same rows the agent tab's
+/// financial card shows, mirrored at the top of every admin dropdown
+/// so the user always sees what identity is active without digging.
+/// All fields optional so the layout works on apex (no name, no TBA)
+/// and pre-verify states (no owner yet).
+fn admin_identity_section(
+    name: Option<&str>,
+    owner_hex: Option<&str>,
+    tba_hex: Option<&str>,
+) -> Markup {
+    html! {
+        div.admin-section {
+            @if let Some(n) = name {
+                div.admin-identity-row {
+                    span.admin-identity-label { "name" }
+                    code.admin-identity-value { (n) }
+                }
+            }
+            @if let Some(addr) = owner_hex {
+                div.admin-identity-row {
+                    span.admin-identity-label { "owner" }
+                    a.admin-identity-value
+                        href=(format!("https://moderato.tempo.xyz/address/{addr}"))
+                        target="_blank" rel="noopener"
+                        title=(addr) {
+                        (short_addr(addr))
+                    }
+                }
+            } @else {
+                p.admin-blurb { "verifying…" }
+            }
+            @if let Some(addr) = tba_hex {
+                div.admin-identity-row {
+                    span.admin-identity-label { "wallet" }
+                    a.admin-identity-value
+                        href=(format!("https://moderato.tempo.xyz/address/{addr}"))
+                        target="_blank" rel="noopener"
+                        title=(addr) {
+                        (short_addr(addr))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Collapsed `[security]` section — the entry point the user has to
+/// click before seed phrase / import / reset show up. Buries the
+/// dangerous affordances one menu deeper so they don't sit in plain
+/// view inside the admin dropdown.
+pub(crate) fn admin_security_collapsed() -> Markup {
+    html! {
+        div #security-slot .admin-section {
+            div.admin-section-title { "security" }
+            button type="button" data-action="reveal-security" .ghost {
+                "seed phrase, import, reset"
+            }
+        }
+    }
+}
+
+/// Expanded `[security]` section — swapped into `#security-slot`
+/// when the user clicks the collapsed entry point. Contains the
+/// seed-reveal slot (driven by `Action::RevealSeed`), the import
+/// form, and the reset button. A `[hide]` button at the bottom
+/// flips back to the collapsed view.
+pub(crate) fn admin_security_expanded() -> Markup {
+    html! {
+        div #security-slot .admin-section {
+            div.admin-section-title { "security" }
+            div.admin-subsection {
+                div.admin-subsection-title { "seed phrase" }
+                div #seed-reveal .seed-reveal {
+                    button type="button" data-action="reveal-seed" .ghost { "reveal" }
+                }
+            }
+            div.admin-subsection {
+                div.admin-subsection-title { "import a different seed" }
+                (import_seed_inline())
+            }
+            div.admin-subsection {
+                div.admin-subsection-title { "reset this device" }
+                div #reset-confirm-slot {
+                    button type="button" data-action="reset-arm" .ghost { "reset…" }
+                }
+            }
+            button type="button" data-action="hide-security" .ghost { "hide" }
         }
     }
 }
