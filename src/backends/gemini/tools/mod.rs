@@ -14,11 +14,13 @@ use crate::types::{BuiltinTool, CapabilitiesConfig};
 
 mod ask_question;
 mod create_file;
+mod delete_file;
 mod edit_file;
 mod find_file;
 mod finish;
 mod generate_image;
 mod list_directory;
+mod rename_file;
 #[cfg(feature = "native")]
 mod run_command;
 mod search_directory;
@@ -27,11 +29,13 @@ mod view_file;
 
 pub use ask_question::AskQuestion;
 pub use create_file::CreateFile;
+pub use delete_file::DeleteFile;
 pub use edit_file::EditFile;
 pub use find_file::FindFile;
 pub use finish::{Finish, FINISH_TOOL_NAME};
 pub use generate_image::GenerateImage;
 pub use list_directory::ListDirectory;
+pub use rename_file::RenameFile;
 #[cfg(feature = "native")]
 pub use run_command::RunCommand;
 pub use search_directory::SearchDirectory;
@@ -94,6 +98,8 @@ pub fn register_builtins(
             BuiltinTool::SearchDirectory => fs_tool!(deps, SearchDirectory),
             BuiltinTool::CreateFile => fs_tool!(deps, CreateFile),
             BuiltinTool::EditFile => fs_tool!(deps, EditFile),
+            BuiltinTool::DeleteFile => fs_tool!(deps, DeleteFile),
+            BuiltinTool::RenameFile => fs_tool!(deps, RenameFile),
             BuiltinTool::RunCommand => instantiate_run_command(),
         };
         if let Some(t) = boxed {

@@ -151,6 +151,8 @@ pub enum BuiltinTool {
     ViewFile,
     CreateFile,
     EditFile,
+    DeleteFile,
+    RenameFile,
     RunCommand,
     AskQuestion,
     StartSubagent,
@@ -166,6 +168,8 @@ impl BuiltinTool {
         Self::ViewFile,
         Self::CreateFile,
         Self::EditFile,
+        Self::DeleteFile,
+        Self::RenameFile,
         Self::RunCommand,
         Self::AskQuestion,
         Self::StartSubagent,
@@ -181,8 +185,13 @@ impl BuiltinTool {
         Self::Finish,
     ];
 
-    pub const FILE_TOOLS: &'static [BuiltinTool] =
-        &[Self::ViewFile, Self::CreateFile, Self::EditFile];
+    pub const FILE_TOOLS: &'static [BuiltinTool] = &[
+        Self::ViewFile,
+        Self::CreateFile,
+        Self::EditFile,
+        Self::DeleteFile,
+        Self::RenameFile,
+    ];
 
     pub fn wire_name(self) -> &'static str {
         match self {
@@ -192,6 +201,8 @@ impl BuiltinTool {
             Self::ViewFile => "view_file",
             Self::CreateFile => "create_file",
             Self::EditFile => "edit_file",
+            Self::DeleteFile => "delete_file",
+            Self::RenameFile => "rename_file",
             Self::RunCommand => "run_command",
             Self::AskQuestion => "ask_question",
             Self::StartSubagent => "start_subagent",

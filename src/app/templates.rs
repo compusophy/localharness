@@ -51,7 +51,7 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
 
 /// Version string, used in the admin dropdown bottom. Bumped in
 /// lockstep with Cargo.toml.
-pub(crate) const APP_VERSION: &str = "0.10.17";
+pub(crate) const APP_VERSION: &str = "0.10.18";
 
 /// Terminal input — just `>` prompt + textarea + → send. Status line
 /// stays in the DOM (id="status") for dispatcher messages but renders
@@ -750,11 +750,18 @@ pub(crate) fn opfs_list(cwd: &[String], entries: &[DirEntry]) -> Markup {
                         }
                     }
                     _ => {
-                        li.file data-action="opfs-open" data-arg=(entry.name) {
-                            span.name { (entry.name) }
+                        li.file {
+                            span.name data-action="opfs-open" data-arg=(entry.name) {
+                                (entry.name)
+                            }
                             @if let Some(size) = entry.size {
                                 span.size { (format_bytes(size)) }
                             }
+                            button.file-delete
+                                type="button"
+                                data-action="opfs-delete"
+                                data-arg=(entry.name)
+                                title=(format!("delete {}", entry.name)) { "×" }
                         }
                     }
                 }

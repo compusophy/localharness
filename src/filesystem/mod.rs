@@ -172,6 +172,21 @@ pub trait Filesystem: MaybeSendSync + std::fmt::Debug {
     /// all its contents are removed (recursive). If `path` does not
     /// exist, returns `Err`. Symlinks are removed, not followed.
     async fn delete(&self, path: &str) -> Result<()>;
+
+    /// Rename / move `from` to `to`. Both arguments are relative paths
+    /// in the backend's address space. If `to` already exists, the
+    /// behaviour is backend-defined (native uses platform default;
+    /// OPFS errors out).
+    ///
+    /// Default impl is read + write_atomic + delete — works for any
+    /// backend but doesn't preserve metadata. Backends with a native
+    /// rename should override (NativeFilesystem does).
+    async fn rename(&self, from: &str, to: &str) -> Result<()> {
+        let bytes = self.read(from).await?;
+        self.write_atomic(to, &bytes).await?;
+        self.delete(from).await?;
+        Ok(())
+    }
 }
 
 /// Type alias for a shared filesystem handle.

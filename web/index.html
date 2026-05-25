@@ -937,15 +937,27 @@
     .fs-list li {
       padding: 6px 4px;
       border-bottom: 1px solid var(--border);
-      cursor: pointer;
       display: flex;
       justify-content: space-between;
       align-items: center;
       gap: 8px;
     }
-    .fs-list li:hover { background: transparent; }
+    .fs-list li.dir { cursor: pointer; }
+    .fs-list li .name { cursor: pointer; flex: 1; }
     .fs-list li:hover .name,
     .fs-list li:hover .size { color: var(--accent); }
+    .file-delete {
+      background: transparent;
+      color: var(--muted);
+      border: 0;
+      padding: 0 6px;
+      font-size: 14px;
+      line-height: 1;
+      cursor: pointer;
+      visibility: hidden;
+    }
+    .fs-list li:hover .file-delete { visibility: visible; }
+    .file-delete:hover { color: var(--error); }
     .fs-list .name { color: var(--fg); }
     .fs-list .dir .name::before { content: "▸ "; color: var(--accent); }
     .fs-list .file .name::before { content: "· "; color: var(--muted); }

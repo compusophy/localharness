@@ -32,6 +32,7 @@ enum Action {
     OpfsWipe,
     OpfsWipeConfirm,
     OpfsWipeCancel,
+    OpfsDelete(String),
     OpfsCloseViewer,
     OpfsNav(String),
     OpfsOpen(String),
@@ -68,6 +69,7 @@ impl Action {
             "opfs-wipe" => Action::OpfsWipe,
             "opfs-wipe-confirm" => Action::OpfsWipeConfirm,
             "opfs-wipe-cancel" => Action::OpfsWipeCancel,
+            "opfs-delete" => Action::OpfsDelete(arg.unwrap_or_default()),
             "opfs-close-viewer" => Action::OpfsCloseViewer,
             "opfs-nav" => Action::OpfsNav(arg.unwrap_or_default()),
             "opfs-open" => Action::OpfsOpen(arg.unwrap_or_default()),
@@ -585,6 +587,20 @@ fn dispatch(action: Action) {
                         );
                     }
                 }
+            });
+        }
+        Action::OpfsDelete(name) => {
+            // Direct delete — no per-row confirm. Mistakes can be
+            // recovered by re-creating the file; the wipe button is
+            // the heavyweight "everything" confirm flow.
+            wasm_bindgen_futures::spawn_local(async move {
+                let fs = super::shared_opfs();
+                if let Err(err) = fs.delete(&name).await {
+                    web_sys::console::warn_1(&JsValue::from_str(&format!(
+                        "delete({name}): {err}"
+                    )));
+                }
+                super::opfs::refresh().await;
             });
         }
         Action::OpfsWipe => {

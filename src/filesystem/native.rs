@@ -185,6 +185,15 @@ impl Filesystem for NativeFilesystem {
         }
         Ok(())
     }
+
+    /// Native rename uses `std::fs::rename` (atomic on the same
+    /// filesystem). Overrides the default copy+delete fallback for
+    /// efficiency and atomicity.
+    async fn rename(&self, from: &str, to: &str) -> Result<()> {
+        tokio::fs::rename(from, to)
+            .await
+            .map_err(|e| Error::other(format!("rename({from} -> {to}): {e}")))
+    }
 }
 
 #[cfg(test)]
