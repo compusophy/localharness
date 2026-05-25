@@ -732,14 +732,17 @@ pub(crate) fn import_seed_inline() -> Markup {
 
 /// Render the "your agents" table on apex. `agents` is what the
 /// registry's `list_owned_tokens(wallet_address)` returned.
-pub(crate) fn agents_list(agents: &[crate::app::registry::OwnedToken]) -> Markup {
+pub(crate) fn agents_list(
+    agents: &[crate::app::registry::OwnedToken],
+    main_token_id: u64,
+) -> Markup {
     if agents.is_empty() {
         return html! {
             div #agents-list .agents-list .agents-empty {}
         };
     }
-    // Bare list: just the subdomain name as a link. No token id, no
-    // wallet emoji, no address, no `.localharness.xyz` suffix.
+    // Bare list: subdomain name as a link, plus a small `main` chip on
+    // the row whose token id matches the holder's registered MAIN.
     html! {
         div #agents-list .agents-list {
             ul.agents-rows {
@@ -748,6 +751,9 @@ pub(crate) fn agents_list(agents: &[crate::app::registry::OwnedToken]) -> Markup
                         a.agent-name
                             href=(format!("https://{}.localharness.xyz/", agent.name)) {
                             (agent.name)
+                        }
+                        @if main_token_id != 0 && agent.token_id == main_token_id {
+                            span.main-badge title="primary identity" { "main" }
                         }
                     }
                 }

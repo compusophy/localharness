@@ -713,6 +713,79 @@ fn decode_u256_as_u128(hex: &str) -> Result<u128, String> {
     u128::from_str_radix(tail, 16).map_err(|e| e.to_string())
 }
 
+// --- MAIN identity helpers -------------------------------------------
+
+/// `eth_call mainOf(holder)` — returns the tokenId the holder has
+/// registered as their MAIN, or 0 if none. Used by the bundle to
+/// decide whether to auto-register on first claim and to badge the
+/// MAIN entry in the apex agents list.
+pub async fn main_of(holder_hex: &str) -> Result<u64, String> {
+    if REGISTRY_ADDRESS == zero_address() {
+        return Ok(0);
+    }
+    let selector = selector("mainOf(address)");
+    let holder_bytes = hex_to_bytes(holder_hex)?;
+    if holder_bytes.len() != 20 {
+        return Err(format!("holder must be 20 bytes, got {}", holder_bytes.len()));
+    }
+    let mut padded = [0u8; 32];
+    padded[12..].copy_from_slice(&holder_bytes);
+    let mut calldata = Vec::with_capacity(36);
+    calldata.extend_from_slice(&selector);
+    calldata.extend_from_slice(&padded);
+    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
+    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    decode_u256_as_u64(&result)
+}
+
+/// Sign + submit `MainIdentityFacet.registerMain(tokenId)`. Caller pays
+/// gas. Idempotent on-chain if the caller already has this tokenId as
+/// their MAIN; switches MAIN if they declare a different owned tokenId.
+pub async fn register_main(signer: &SigningKey, token_id: u64) -> Result<String, String> {
+    let mut data = Vec::with_capacity(4 + 32);
+    data.extend_from_slice(&selector("registerMain(uint256)"));
+    data.extend_from_slice(&u256_be(token_id as u128));
+    sign_and_submit_call(signer, REGISTRY_ADDRESS, 0, &data).await
+}
+
+/// Convenience for the first-claim flow: register `name` on-chain, then
+/// IF the caller has no MAIN registered yet, set the newly-minted token
+/// as their MAIN in a second tx. Idempotent on the MAIN side — re-runs
+/// after the user already has a MAIN are a no-op. Errors on the MAIN
+/// leg are logged and swallowed (the name claim is what matters for
+/// correctness; the MAIN flag is an enhancement).
+pub async fn claim_and_maybe_set_main(
+    signer: &SigningKey,
+    name: &str,
+) -> Result<String, String> {
+    let tx_hash = claim_name(signer, name).await?;
+    let addr_hex = address_to_hex(&wallet::address(signer));
+    match main_of(&addr_hex).await {
+        Ok(0) => {
+            // No MAIN yet — find the freshly-minted token id and set it.
+            if let Ok(Status::Taken { agent_id }) = check_name(name).await {
+                if let Err(err) = register_main(signer, agent_id).await {
+                    log_main_warning(&err);
+                }
+            }
+        }
+        Ok(_) => {} // already has a MAIN; leave it alone
+        Err(err) => log_main_warning(&err),
+    }
+    Ok(tx_hash)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn log_main_warning(err: &str) {
+    use wasm_bindgen::JsValue;
+    web_sys::console::warn_1(&JsValue::from_str(&format!("auto-set MAIN: {err}")));
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn log_main_warning(_err: &str) {
+    // Native path doesn't have a console; silent — callers can check
+    // mainOf themselves after the fact if they need to verify.
+}
+
 // --- legacy / EIP-155 transaction RLP --------------------------------
 
 /// EIP-155 unsigned RLP for any legacy tx — contract call OR native

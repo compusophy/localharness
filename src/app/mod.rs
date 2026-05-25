@@ -445,7 +445,11 @@ pub(crate) async fn paint_apex(host: tenant::Host) {
         wasm_bindgen_futures::spawn_local(async move {
             match registry::list_owned_tokens(&owner_addr).await {
                 Ok(agents) => {
-                    let html = templates::agents_list(&agents).into_string();
+                    // MAIN lookup is best-effort — facet might not be
+                    // cut on a given diamond, in which case the badge
+                    // simply doesn't appear.
+                    let main_id = registry::main_of(&owner_addr).await.unwrap_or(0);
+                    let html = templates::agents_list(&agents, main_id).into_string();
                     dom::swap_outer("agents-list", &html);
                 }
                 Err(err) => {

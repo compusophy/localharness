@@ -308,7 +308,9 @@ async fn run_claim_name(name: &str) -> Result<(String, String), String> {
             "signer claim: faucet: {err}"
         )));
     }
-    let tx_hash = crate::registry::claim_name(&signer, name).await?;
+    // Auto-set MAIN on first-time claim — the helper no-ops if the
+    // caller already has a MAIN. See [[main-identity]] design.
+    let tx_hash = crate::registry::claim_and_maybe_set_main(&signer, name).await?;
     Ok((address_hex, tx_hash))
 }
 

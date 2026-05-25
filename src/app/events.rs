@@ -340,8 +340,9 @@ async fn run_apex_claim(name: String) {
             web_sys::console::warn_1(&JsValue::from_str(&format!("faucet: {err}")));
         }
 
-        // 4. Build, sign, send, wait.
-        super::registry::claim_name(&signer, &name)
+        // 4. Build, sign, send, wait. Uses the convenience that also
+        //    auto-sets the new token as MAIN if the user has none.
+        super::registry::claim_and_maybe_set_main(&signer, &name)
             .await
             .map_err(|e| format!("claim_name: {e}"))
     }

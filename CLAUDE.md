@@ -307,6 +307,11 @@ Currently cut in:
   No storage, just events; harvest off-chain via `cast logs` (see
   `scripts/harvest-feedback.{sh,ps1}`). Anyone can submit; gas IS the
   spam filter. 2048-byte upper bound on text.
+- **MainIdentityFacet** — `registerMain(uint256) / clearMain() /
+  mainOf(address) / mainNameOf(address) / isMain(uint256)`. Records
+  which of a holder's subdomain NFTs is their primary identity. No
+  fee yet (sybil-resistance layer is later). Auto-set by the bundle
+  on first-claim. See `design/main-identity.md`.
 
 ERC-6551 reference contracts (separate addresses, configured via
 `TbaFacet::setTbaConfig`):

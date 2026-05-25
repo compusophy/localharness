@@ -213,12 +213,36 @@ No enforcement; let downstream consumers decide. Lowest friction
 but doesn't solve the user's stated worry. Falls out of the design
 as the no-op baseline.
 
+## What landed in this commit (2026-05-25 / v0.10.24)
+
+- ✅ **`MainIdentityFacet.sol`** cut into the diamond. Surface:
+  `registerMain(uint256) / clearMain() / mainOf(address) /
+  mainNameOf(address) / isMain(uint256)`. NO fee/lock yet — sybil
+  resistance is a later layer; this just establishes the primitive.
+- ✅ **`registry::main_of`** / **`registry::register_main`** /
+  **`registry::claim_and_maybe_set_main`** added to the bundle.
+- ✅ **Auto-MAIN on first claim**: `run_apex_claim` and the signer
+  iframe's `run_claim_name` both use the convenience helper so the
+  user's very first subdomain becomes their MAIN automatically. No
+  user action required.
+- ✅ **MAIN badge in agents list**: `agents_list` template now takes
+  a `main_token_id` and renders a small `[main]` chip on the row
+  matching the holder's registered MAIN.
+- ⏳ Custom multi-signer ERC-6551 account impl + add-device flow
+  + paymaster integration: next commits. See `design/paymaster.md`
+  for the paymaster thread.
+
 ## Concrete next steps
 
-1. **Write `MainIdentityFacet.sol`** — `registerMain(uint256 tokenId)`
-   (payable, locks $LH), `releaseMain`, `mainOf(address)`, plus an
-   `addSigner / removeSigner` API on a custom ERC-6551 account
-   implementation that the MAIN's TBA delegates to.
+1. **Write `MultiSignerAccount.sol`** — a custom ERC-6551 account
+   with `addSigner / removeSigner / isAuthorizedSigner`. Replaces
+   the vanilla account impl currently configured on the diamond.
+   Switching the impl will change the deterministic TBA address for
+   future mints; existing TBAs would need to be migrated explicitly
+   (testnet: acceptable; mainnet: design an address-stable proxy).
+2. **`Sybil`-resistant MAIN** — add a `lockedFor` field to MAIN
+   storage and start charging $LH on `registerMain`. Knob lives on
+   the facet, owner-tunable.
 2. **Custom ERC-6551 account impl** with `authorizedSigners` map and
    multi-signer `isValidSignature`. Replaces the vanilla
    `ERC6551Account` currently configured on the diamond. Migration:
