@@ -5,6 +5,35 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.16] - 2026-05-24
+
+Side-panel SSOT + clicking terminal now collapses the whole chat
+column + `view` rebrands as `edit` (files always open in the editor).
+
+### Changed (browser app)
+
+- **New `col_side(header, body, extra_class)` template** — the
+  SSOT for both files (left) and agent (right) side panels.
+  Same structure end-to-end: `[panel-header][panel-body]`,
+  same padding, same header treatment, same scroll behavior.
+  Files no longer has its own special highlighted container —
+  it matches agent exactly.
+- **Old `.fs-panel` wrapper deleted.** That's what was giving the
+  files column a separately-styled inset box with its own border
+  + background while agent column had nothing. Both panels now
+  share `.col-side` chrome.
+- **Terminal rail collapses the whole chat.** Click `terminal` and
+  both the transcript AND the input row disappear — leaving the
+  editor (if expanded) to take the whole center column. Was only
+  hiding the input box before.
+- **`view` rail renamed to `edit`.** The top-center panel is the
+  editor. Clicking a file in the file list now opens it directly
+  in editable mode (no read-only viewer step). `open_file`
+  delegates to `edit_file`.
+- **Editor template rebuilt** (`opfs_editor`) — own header with
+  file path + save/close, full-height textarea, no nested
+  `fs-viewer-wrap`. Reads as a real text editor surface.
+
 ## [0.10.15] - 2026-05-24
 
 Follow-up minimalism. Three small things caught in live testing.
