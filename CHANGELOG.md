@@ -5,6 +5,48 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.23] - 2026-05-25
+
+Fresh diamond, fresh start. New deployer key, new diamond address,
+zero test registrations carried over.
+
+### Changed (on-chain)
+
+- **New registry diamond** at
+  `0x6f2858b4b10bf8d4ea372a446e69bea8fbce2930` on Tempo Moderato.
+  Deployed via `DeployDiamond.s.sol` + `AddErc721Fresh.s.sol` +
+  `AddTbaFacet.s.sol`. Fresh `nextId=1`, no inherited state.
+  Owner is a fresh testnet key
+  (`0x313b1659F5037080aA0C113D386C5954F348EF1e`) generated for
+  this redeploy; old admin EOA `0x81E9c327…` retains ownership of
+  the abandoned previous diamond at `0xed7a2d…c656d` but the
+  bundle no longer references it.
+- **New ERC-6551 registry + account impl** redeployed alongside
+  the TBA facet, wired via `TbaFacet.setTbaConfig`. The bundle
+  reads them through `tbaRegistry()` / `tbaAccountImpl()` — no
+  bundle-side address constants to maintain.
+
+### Changed (bundle)
+
+- **`src/registry.rs::REGISTRY_ADDRESS`** points at the new diamond.
+- **`CLAUDE.md` header + diamond section** updated with the new
+  address + history note about the predecessor.
+
+### Removed
+
+- **`WipeFacet.sol` + `AddWipeFacet.s.sol`** dropped. Were added
+  in 0.10.22 to nuke the old diamond's storage, but a fresh
+  redeploy makes them moot. If we ever need a wipe again, restore
+  from `git show v0.10.22`.
+
+### Added (contracts)
+
+- **`contracts/script/AddErc721Fresh.s.sol`** — variant of the
+  existing `AddErc721Facet.s.sol` migration script that skips the
+  "remove old selectors" step. Use for cutting ERC-721 onto a
+  freshly-deployed diamond (no migration needed). Kept for the
+  next time a fresh deploy is required.
+
 ## [0.10.22] - 2026-05-25
 
 Subdomain IS the identity primitive. No more "create wallet first,
