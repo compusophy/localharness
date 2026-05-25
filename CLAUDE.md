@@ -19,7 +19,9 @@ you also get the live IDE at `<name>.localharness.xyz`.
 - Live demo: [`localharness.xyz`](https://localharness.xyz/) —
   marketing apex + wildcard `*.localharness.xyz` for per-user agents
 - On-chain registry: EIP-2535 Diamond on Tempo Moderato testnet at
-  [`0xed7a2d…c656d`](https://moderato.tempo.xyz/address/0xed7a2d170ab2d41721c9bd7368adbff6df0c656d)
+  [`0x6f2858…2930`](https://moderato.tempo.xyz/address/0x6f2858b4b10bf8d4ea372a446e69bea8fbce2930)
+  (fresh deploy 2026-05-25; supersedes the previous diamond at
+  `0xed7a2d…c656d` which carried abandoned test registrations)
 
 ## Repo layout
 
@@ -278,8 +280,10 @@ bundled wasm-opt rejects post-MVP features that modern rustc emits.
 ## The on-chain stack
 
 The registry lives at one address forever — the diamond proxy at
-`0xed7a2d170ab2d41721c9bd7368adbff6df0c656d` on Tempo Moderato
+`0x6f2858b4b10bf8d4ea372a446e69bea8fbce2930` on Tempo Moderato
 testnet (chain id 42431, RPC `https://rpc.moderato.tempo.xyz`).
+(Predecessor diamond at `0xed7a2d…c656d` carried abandoned test
+registrations and is no longer referenced by the bundle.)
 Facets are added/removed via `diamondCut`; the wasm bundle's
 `registry::REGISTRY_ADDRESS` constant doesn't change.
 
