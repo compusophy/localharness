@@ -62,7 +62,7 @@ src/                       library crate
     │   ├── wire.rs        REST request/response types
     │   ├── loop.rs        run_turn — the inner agent loop
     │   ├── compaction.rs  history summarisation
-    │   ├── tools/         11 built-in tools
+    │   ├── tools/         13 built-in tools
     │   └── mod.rs         GeminiConnectionStrategy + GeminiConnection
     └── mcp/               stdio MCP client (native-only)
 
@@ -133,8 +133,10 @@ vercel deploy --prod --yes                                    # deploy web/
 
 - `native` (default): enables `tokio` multi-thread + process + fs +
   io-util, plus the `walkdir` and `tempfile` deps. Required for
-  `run_command` and the MCP stdio bridge, and is what lets the 6 fs
-  builtins register a `NativeFilesystem` by default.
+  `run_command` and the MCP stdio bridge, and is what lets the 8 fs
+  builtins (list_directory, view_file, find_file, search_directory,
+  create_file, edit_file, delete_file, rename_file) register a
+  `NativeFilesystem` by default.
 - `wallet` (off by default): exposes `pub mod wallet` (secp256k1 +
   BIP-39 + RLP) and `pub mod registry` (JSON-RPC client for the
   Diamond). Pulls in `k256 + sha3 + rand_core + bip39`. Works on
@@ -171,9 +173,9 @@ The crate compiles to `wasm32-unknown-unknown` because:
 - `JoinHandle` storage and abort logic is cfg-gated; on wasm we
   fire-and-forget via `spawn_local`.
 - Tools that need OS primitives are gated behind `feature = "native"`:
-  6 fs builtins, `run_command`, MCP. The 4 portable ones
-  (`ask_question`, `finish`, `generate_image`, `start_subagent`) work
-  on both targets.
+  the 8 fs builtins (list/view/find/search/create/edit/delete/rename),
+  `run_command`, MCP. The 4 portable ones (`ask_question`, `finish`,
+  `generate_image`, `start_subagent`) work on both targets.
 
 When adding new traits or `tokio::spawn` calls, mirror these patterns
 or wasm will break silently (the gated modules don't trip in a default
@@ -341,12 +343,14 @@ signer + visitor lockdown) shipped through 0.10.0. What's next:
 
 ## Filesystem trait
 
-The 6 fs-shaped builtins (`list_directory`, `view_file`, `find_file`,
-`search_directory`, `create_file`, `edit_file`) call into
-`crate::filesystem::Filesystem` instead of `tokio::fs` directly. The
-trait surface:
+The 8 fs-shaped builtins (`list_directory`, `view_file`, `find_file`,
+`search_directory`, `create_file`, `edit_file`, `delete_file`,
+`rename_file`) call into `crate::filesystem::Filesystem` instead of
+`tokio::fs` directly. The trait surface:
 
-- `read`, `write_atomic`, `metadata`, `read_dir`, `walk`, `delete`
+- `read`, `write_atomic`, `metadata`, `read_dir`, `walk`, `delete`,
+  `rename` (default impl is read + write + delete; NativeFilesystem
+  overrides with `tokio::fs::rename` for atomicity)
 
 Two implementations ship:
 

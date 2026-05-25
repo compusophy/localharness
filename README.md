@@ -341,7 +341,7 @@ let agent = Agent::start_gemini(
 
 ## Built-in tools
 
-The Gemini backend ships **10 of 11** tools enabled by `BuiltinTool`,
+The Gemini backend ships **13 tools** enabled by `BuiltinTool`,
 auto-registered into the `ToolRunner` per `CapabilitiesConfig`. The
 default `CapabilitiesConfig` exposes the read-only safety subset; call
 `CapabilitiesConfig::unrestricted()` to enable everything.
@@ -355,6 +355,8 @@ default `CapabilitiesConfig` exposes the read-only safety subset; call
 | `finish` | term | Terminate turn + capture structured output. |
 | `create_file` | W | Atomic write via tempfile + rename; refuses to overwrite. |
 | `edit_file` | W | Exact-once substring replace (or `replace_all`); atomic write. |
+| `delete_file` | W | Remove a file or directory (recursive). Irreversible. |
+| `rename_file` | W | Rename/move from → to. Atomic on Native when same filesystem; OPFS does read + write + delete. |
 | `run_command` | W | Shell exec with timeout (default 30s / max 600s), 256 KiB output cap. |
 | `generate_image` | W | Call the image model; returns base64 + MIME. |
 | `ask_question` | I/O | Default no-op (returns `skipped: true`); register a custom `ask_question` tool for interactive UI. |
@@ -430,10 +432,12 @@ python -m http.server 8765 -d web
 ```
 
 **What works on wasm:** the full `Agent → Conversation → Connection
-→ ToolRunner` chain, plus 10 of 11 built-in tools — the 4 portable
+→ ToolRunner` chain, plus 12 of 13 built-in tools — the 4 portable
 ones (`ask_question`, `finish`, `generate_image`, `start_subagent`)
-and the 6 filesystem ones backed by OPFS (Origin Private File System;
-per-origin sandbox, atomic writes).
+and the 8 filesystem ones backed by OPFS (Origin Private File System;
+per-origin sandbox, atomic writes): `list_directory`, `view_file`,
+`find_file`, `search_directory`, `create_file`, `edit_file`,
+`delete_file`, `rename_file`.
 
 **What doesn't:** `run_command` and the MCP stdio bridge stay
 native-only — the browser has no subprocess primitives.
