@@ -315,17 +315,36 @@ async fn run_apex_claim(name: String) {
         Ok(super::registry::Status::Available) => {}
     }
 
-    // 2. Pull the wallet out of App state. paint_apex loaded it at mount.
-    let wallet_address = super::APP
+    // 2. Pull the wallet out of App state — or generate one in place.
+    //    The subdomain IS the identity primitive: a visitor arriving at
+    //    apex without a wallet is just one who hasn't claimed yet. Roll
+    //    wallet creation into this submit so we never end up with a
+    //    wallet that doesn't own anything on-chain.
+    let cached = super::APP
         .with(|cell| cell.borrow().wallet.as_ref().map(|w| (w.signer.clone(), wallet_address_hex(&w.address))));
-    let (signer, addr_hex) = match wallet_address {
+    let (signer, addr_hex) = match cached {
         Some(pair) => pair,
         None => {
             dom::swap_inner(
                 msg_id,
-                "<span style=\"color:var(--error)\">wallet not loaded — refresh and try again</span>",
+                "<span style=\"color:var(--muted)\">generating wallet…</span>",
             );
-            return;
+            match super::wallet_store::create_and_persist().await {
+                Ok(wallet) => {
+                    let pair = (wallet.signer.clone(), wallet.address_hex());
+                    super::APP.with(|cell| cell.borrow_mut().wallet = Some(wallet));
+                    pair
+                }
+                Err(err) => {
+                    dom::swap_inner(
+                        msg_id,
+                        &format!(
+                            "<span style=\"color:var(--error)\">wallet generation failed: {err}</span>"
+                        ),
+                    );
+                    return;
+                }
+            }
         }
     };
 

@@ -405,11 +405,11 @@ async fn kick_verification(name: String) {
     }
 }
 
-/// Paint the apex chrome. Reads (never creates) the master wallet —
-/// fresh visitors see a slim "create or import an identity" sidecar
-/// with the claim form gated until they do. Returning visitors see
-/// their address, agents list, and a live claim form. Called once on
-/// mount and again after create/import/forget actions.
+/// Paint the apex chrome. Reads (never creates) the master wallet,
+/// then renders the unified claim flow. Fresh visitors and returning
+/// visitors see the same surface — a name input + create button. The
+/// wallet, if it doesn't exist yet, gets generated as a side effect of
+/// the user's first claim submit (handled in `run_apex_claim`).
 pub(crate) async fn paint_apex(host: tenant::Host) {
     let Ok(doc) = dom::document() else { return };
     let Some(root) = doc.get_element_by_id("root") else { return };
@@ -424,8 +424,7 @@ pub(crate) async fn paint_apex(host: tenant::Host) {
 
     // Pre-fill the claim input + trigger the live-check if the user
     // landed here via `?prefill=<name>` (e.g. from a tenant subdomain's
-    // "claim on-chain" CTA). Works even when the form is gated — the
-    // value persists across the re-paint after create-identity lands.
+    // "claim on-chain" CTA, or any external link).
     if let Some(prefill) = read_query_param("prefill") {
         let cleaned = tenant::sanitize(&prefill);
         if !cleaned.is_empty() {
@@ -439,8 +438,9 @@ pub(crate) async fn paint_apex(host: tenant::Host) {
         }
     }
 
-    // Only fetch the "your agents" list when there's an identity to
-    // fetch for — saves a roundtrip on first-visit.
+    // Fetch the "your agents" list only when there's an identity to
+    // fetch for. On fresh visits the list stays empty — that's expected
+    // and the placeholder div in the template covers it.
     if let Some(owner_addr) = addr_hex {
         wasm_bindgen_futures::spawn_local(async move {
             match registry::list_owned_tokens(&owner_addr).await {

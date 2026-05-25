@@ -333,41 +333,27 @@ pub(crate) fn tool_call_result(result: &ToolResult) -> Markup {
 
 // --- Apex / claim templates --------------------------------------------
 
-/// Apex page — `localharness.xyz/`. Renders exactly one of two
-/// states at a time. Header carries the admin dropdown for seed
-/// reveal / import / reset; main body shows only the current step.
-pub(crate) fn apex(host: &Host, wallet_address_hex: Option<&str>) -> Markup {
+/// Apex page — `localharness.xyz/`. The subdomain IS the identity:
+/// a visitor without a wallet still sees the claim form, and submit
+/// auto-creates the wallet inside the same flow. No more "create
+/// identity first, then claim a name" two-step. Seed import lives in
+/// the admin dropdown for the recovery / cross-device case.
+pub(crate) fn apex(host: &Host, _wallet_address_hex: Option<&str>) -> Markup {
     html! {
         (site_header(host))
         main.apex-main {
             div.col-chat {
-                @match wallet_address_hex {
-                    None => (apex_step_identity()),
-                    Some(_) => (apex_step_agents()),
-                }
+                (apex_claim())
             }
         }
     }
 }
 
-/// Step 1 — no identity yet. Only thing on the page.
-fn apex_step_identity() -> Markup {
-    html! {
-        section.step.step-identity {
-            div.identity-actions {
-                button type="button" data-action="create-identity" { "create identity" }
-                button type="button" data-action="show-import" .ghost { "import seed" }
-            }
-            div #identity-msg .step-msg {}
-            div #import-slot {}
-        }
-    }
-}
-
-/// Step 2 — identity exists. Top: agents list (just the name of each
-/// subdomain the user owns). Center: a wide create-CTA form with an
-/// input above and a wide button below, equally spaced.
-fn apex_step_agents() -> Markup {
+/// Apex claim — the only step. Agents list above (empty for fresh
+/// visitors), claim form below. Submit triggers `Action::ApexClaim`,
+/// which auto-creates the master wallet if one doesn't exist yet
+/// before running the on-chain register.
+fn apex_claim() -> Markup {
     html! {
         section.step.step-agents {
             div #agents-list .agents-list {}
@@ -375,7 +361,7 @@ fn apex_step_agents() -> Markup {
                 input #apex-input
                     .create-input
                     type="text"
-                    placeholder="my-agent"
+                    placeholder="pick a name"
                     autocomplete="off"
                     spellcheck="false"
                     maxlength="32"
