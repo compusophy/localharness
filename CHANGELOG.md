@@ -5,6 +5,62 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.22] - 2026-05-25
+
+Subdomain IS the identity primitive. No more "create wallet first,
+then claim a name" pre-step. Wallets without subdomains shouldn't
+exist; the apex claim form now folds wallet generation into the
+same submit.
+
+### Changed (browser app)
+
+- **Apex chrome is one step, not two.** `apex_step_identity` and
+  the `[Create identity] / [Import seed]` button pair are gone. The
+  apex page renders the claim form unconditionally — fresh visitors
+  and returning visitors see the same surface. `apex_step_agents`
+  renamed to `apex_claim`. Seed import lives in the admin dropdown
+  for the recovery / cross-device case (already shipped in 0.10.20).
+- **`run_apex_claim` auto-generates a wallet on first submit.** If
+  no wallet exists when the user hits create, the flow generates
+  one (`wallet_store::create_and_persist`), stashes it in App
+  state, faucet-funds it, and registers the name — all inside the
+  same async future. Removes the previous "wallet not loaded —
+  refresh" dead-end where a partial create-identity sequence left
+  the user stuck.
+
+### Added (contracts)
+
+- **`WipeFacet.sol`** at `contracts/src/facets/`. Owner-only
+  `wipeRegistry(uint256 maxIds)` iterates `1..nextId`, deletes
+  per-token mappings (ownerOfId, nameOfId, idOfName, tokenApprovals),
+  decrements balanceOf for each previous owner, and resets nextId
+  to 1 when the wipe covers everything. Pass `maxIds=0` to nuke all;
+  non-zero for chunked wipes if the block gas limit comes up.
+  Emits `RegistryWiped(from, to)`. Testnet-only nuke button.
+- **`AddWipeFacet.s.sol`** cut script — follows the `AddTbaFacet.s.sol`
+  template. Deploys the facet, cuts `wipeRegistry.selector` onto the
+  existing diamond at `$DIAMOND`. Run with:
+
+  ```
+  DIAMOND=0xed7a2d170ab2d41721c9bd7368adbff6df0c656d \
+  EVM_PRIVATE_KEY=0x... \
+  forge script script/AddWipeFacet.s.sol \
+      --rpc-url tempo_moderato --broadcast
+  ```
+
+  Then call `wipeRegistry(0)` from the same key.
+
+### Note on what's still incomplete
+
+- The wipe doesn't iterate `metadata[tokenId][key]` (Solidity can't
+  enumerate map keys without a key index). Metadata for nuked tokens
+  is orphaned in storage; reads return empty bytes per default. No
+  user-visible impact.
+- After a wipe, existing client devices with a `.lh_wallet` and a
+  `.lh_owner` marker pointing at a now-extinct token will show stale
+  state until the user resets local OPFS via admin → reset. Acceptable
+  for testnet but flagged.
+
 ## [0.10.21] - 2026-05-25
 
 Agents grow teeth: `create_subdomain` + `spawn_recursive_subagent`,
