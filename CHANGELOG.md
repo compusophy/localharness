@@ -5,6 +5,51 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.19] - 2026-05-24
+
+Mobile rebuild + permanent feedback footer.
+
+### Changed (browser app)
+
+- **Sticky permanent footer is back** with a centered `feedback`
+  button. Same min-height + padding pattern as the header. Lives
+  on every page (apex, tenant, unclaimed).
+- **Mobile is now single-pane with a tab bar.** Below 900px the
+  vertical-stack rails are replaced by a `[files][edit][chat]
+  [agent]` tab bar at the top of main. Exactly one panel shows
+  at a time; CSS uses a `tab-<name>` class on `#layout` to
+  switch. `chat` (default) shows transcript + terminal stacked.
+- **Mobile viewport cutoff fixed.** `html` / `body` / `#root`
+  use `100dvh` (dynamic viewport height) instead of `100vh` so
+  the bottom doesn't get hidden under Safari's resizing address
+  bar or Android's gesture affordances.
+- **Terminal stays inside the chat tab** on mobile (no more
+  `position: fixed` overlay hack). Always reachable when the
+  user picks the chat tab.
+
+### Added (browser app)
+
+- **`Action::FeedbackOpen` / `FeedbackClose` / `FeedbackSubmit`**
+  — feedback button opens an inline modal (no JS dialog) with a
+  textarea + submit. Submit appends `{ISO-timestamp}\t{TEXT}` as
+  a line to `.lh_feedback.txt` in this origin's OPFS. User can
+  copy it off later. **On-chain `FeedbackFacet` submission is
+  the next step** — needs a contract deploy + bundle wiring;
+  parked here for the next session.
+- **`Action::ShowTab(name)`** — mobile tab switcher. Pure DOM
+  class flip on `#layout` (`tab-files` / `tab-edit` / `tab-chat`
+  / `tab-agent`) + toggles `.active` on the matching tab button.
+
+### Note on what's still incomplete
+
+- Antigravity-style top-right icon toggles (replacing the four
+  full-strip rails with small icon buttons) — separate session;
+  needs SVG icons + a redesign of how the panels signal their
+  state when "off."
+- On-chain feedback contract (`FeedbackFacet.sol`) — needs a
+  deploy + bundle wiring. For now feedback just lives in
+  per-origin OPFS.
+
 ## [0.10.18] - 2026-05-24
 
 File delete + rename — both as agent tools and as an in-list
