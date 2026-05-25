@@ -38,7 +38,7 @@ pub(crate) fn site_header(host: &Host) -> Markup {
                 h1 {
                     a href="https://localharness.xyz/" title="go home" { "localharness" }
                 }
-                span.tag { "0.10.12" } // bumped in lockstep with Cargo.toml
+                span.tag { "0.10.13" } // bumped in lockstep with Cargo.toml
                 @if matches!(host, Host::Tenant(_)) {
                     (verify_pill(&VerifyState::Pending))
                     // TBA pill placeholder — filled in by kick_verification
@@ -142,64 +142,60 @@ fn short_addr(addr: &str) -> String {
 pub(crate) fn chrome(host: &Host) -> Markup {
     html! {
         (site_header(host))
-        main #layout .layout {
-            // Five-column content row. Rails are <button>s — the
-            // WHOLE rail is the click target (not a tiny button
-            // nested inside).
-            div.main-row {
-                button type="button" data-action="toggle-files"
-                    .side-rail.files-rail {
-                    span.rail-label { "files" }
-                }
+        main #layout .layout.view-collapsed {
+            // Files (left) and agent (right) rails span FULL height —
+            // they wrap the center column. Center column owns its own
+            // top view rail + bottom terminal rail, so the inset
+            // terminal/view live strictly between files and agent.
+            button type="button" data-action="toggle-files"
+                .side-rail.files-rail {
+                span.rail-label { "files" }
+            }
 
-                aside.col-fs {
-                    div.fs-panel {
-                        div.fs-header {
-                            div.fs-title { "files" }
-                            div.fs-actions {
-                                button data-action="opfs-refresh" { "refresh" }
-                                (opfs_wipe_armed_inline())
-                            }
-                        }
-                        div #fs-breadcrumb .fs-breadcrumb { "/" }
-                        ul #fs-list .fs-list {}
-                        div #fs-viewer-wrap hidden? {
-                            div.fs-viewer-header {
-                                span #fs-viewer-name {}
-                                button.close-viewer
-                                    type="button"
-                                    data-action="opfs-close-viewer" { "close" }
-                            }
-                            pre #fs-viewer .fs-viewer {}
+            aside.col-fs {
+                div.fs-panel {
+                    div.fs-header {
+                        div.fs-title { "files" }
+                        div.fs-actions {
+                            button data-action="opfs-refresh" { "refresh" }
+                            (opfs_wipe_armed_inline())
                         }
                     }
-                }
-
-                div.col-chat {
-                    div #transcript .transcript {}
-                }
-
-                aside.col-financial {
-                    div #financial-slot .financial-placeholder { "(financial · loading…)" }
-                }
-
-                button type="button" data-action="toggle-financial"
-                    .side-rail.financial-rail {
-                    span.rail-label { "agent" }
+                    div #fs-breadcrumb .fs-breadcrumb { "/" }
+                    ul #fs-list .fs-list {}
                 }
             }
 
-            // Terminal panel — shown above the rail when expanded.
-            // CSS hides this when #layout has `terminal-collapsed`.
-            section.terminal-panel {
-                (terminal_input())
+            // Center column — vertical stack:
+            //   [view-rail][view-panel?][transcript][terminal-panel?][terminal-rail]
+            // Rails always visible, panels collapse via class flips on
+            // #layout. Default: view collapsed (no file open yet),
+            // terminal expanded.
+            div.col-chat {
+                button type="button" data-action="toggle-view"
+                    .top-rail.view-rail {
+                    span.rail-label { "view" }
+                }
+                section.view-panel {
+                    div #view-content .view-content {}
+                }
+                div #transcript .transcript {}
+                section.terminal-panel {
+                    (terminal_input())
+                }
+                button type="button" data-action="toggle-terminal"
+                    .bottom-rail.terminal-rail {
+                    span.rail-label { "terminal" }
+                }
             }
 
-            // Bottom rail — full-width, click toggles the panel
-            // above. Same pattern as the side rails.
-            button type="button" data-action="toggle-terminal"
-                .bottom-rail.terminal-rail {
-                span.rail-label { "terminal" }
+            aside.col-financial {
+                div #financial-slot .financial-placeholder { "(financial · loading…)" }
+            }
+
+            button type="button" data-action="toggle-financial"
+                .side-rail.financial-rail {
+                span.rail-label { "agent" }
             }
         }
     }
@@ -828,8 +824,10 @@ pub(crate) fn opfs_editor(display_path: &str, name: &str, text: &str) -> Markup 
     }
 }
 
-/// The hidden placeholder shape — restored when the viewer closes so a
-/// later open can swap-outer it again.
+/// Retired in 0.10.13 — the view panel is now collapsed via a CSS
+/// class flip on `#layout` rather than swapping a placeholder DOM
+/// node back in. Kept allow-dead-code so older call sites compile.
+#[allow(dead_code)]
 pub(crate) fn opfs_viewer_placeholder() -> Markup {
     html! {
         div #fs-viewer-wrap hidden {

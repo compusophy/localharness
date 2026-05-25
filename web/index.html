@@ -69,31 +69,28 @@
       flex: 1;
       width: 100%;
     }
-    /* Tenant chrome — main is a flex column:
-         [main-row] (five-column horizontal stretch, takes available height)
-         [terminal-panel] (shown when not collapsed)
-         [terminal-rail] (always visible, horizontal, full-width, click toggles)
-       Rails (.side-rail / .bottom-rail) ARE buttons — the whole strip
-       is the click target. No nested button-inside-div. */
+    /* Tenant chrome — main is a horizontal row:
+         [files-rail][col-fs][col-chat][col-financial][financial-rail]
+       Files and agent rails span the FULL height of main. The center
+       col-chat is itself a vertical stack of its own [view-rail][view-panel]
+       [transcript][terminal-panel][terminal-rail] — so the view and
+       terminal stay strictly inset between the files and agent columns.
+       All four rails are <button>s; the whole strip is the click target. */
     main.layout {
       padding: 0;
       max-width: none;
       display: flex;
-      flex-direction: column;
+      flex-direction: row;
       align-items: stretch;
       gap: 0;
-    }
-    main.layout .main-row {
-      flex: 1;
-      display: flex;
-      align-items: stretch;
-      min-height: 0; /* allow children's overflow:auto to work */
+      min-height: 0;          /* let children's overflow:auto kick in  */
+      overflow: hidden;       /* prevent the page from growing with chat */
     }
 
-    /* Rails — shared styles for both side rails and the bottom rail.
-       Each is a full <button>, transparent until hover. */
+    /* Rails — shared visual treatment for side + top + bottom rails. */
     main.layout .side-rail,
-    main.layout .bottom-rail {
+    main.layout .bottom-rail,
+    main.layout .top-rail {
       background: transparent;
       color: var(--muted);
       border: 0;
@@ -103,9 +100,11 @@
       display: flex;
       align-items: center;
       justify-content: center;
+      flex-shrink: 0;
     }
     main.layout .side-rail:hover,
-    main.layout .bottom-rail:hover {
+    main.layout .bottom-rail:hover,
+    main.layout .top-rail:hover {
       background: var(--panel);
       color: var(--fg);
     }
@@ -114,9 +113,7 @@
       text-transform: uppercase;
       letter-spacing: 0.12em;
     }
-
     main.layout .side-rail {
-      flex-shrink: 0;
       width: 32px;
     }
     main.layout .side-rail .rail-label {
@@ -125,13 +122,13 @@
     }
     main.layout .files-rail { border-right: 1px solid var(--border); }
     main.layout .financial-rail { border-left: 1px solid var(--border); }
-
-    main.layout .bottom-rail {
-      flex-shrink: 0;
+    main.layout .bottom-rail,
+    main.layout .top-rail {
       width: 100%;
-      height: 32px;
-      border-top: 1px solid var(--border);
+      height: 26px;
     }
+    main.layout .top-rail { border-bottom: 1px solid var(--border); }
+    main.layout .bottom-rail { border-top: 1px solid var(--border); }
 
     main.layout .col-fs,
     main.layout .col-financial {
@@ -147,16 +144,40 @@
     main.layout .col-financial { border-left: 1px solid var(--border); }
     main.layout.files-collapsed .col-fs { display: none; }
     main.layout.financial-collapsed .col-financial { display: none; }
+
+    /* Center column — vertical stack: view-rail / view-panel /
+       transcript / terminal-panel / terminal-rail. Each panel
+       collapses via a class flip on #layout. */
     main.layout .col-chat {
       flex: 1;
       min-width: 0;
+      min-height: 0;
       display: flex;
       flex-direction: column;
       overflow: hidden;
     }
-    /* Transcript scrolls; newest pinned to the bottom near the terminal. */
+    main.layout .view-panel {
+      flex-shrink: 0;
+      max-height: 50%;
+      overflow-y: auto;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    main.layout.view-collapsed .view-panel { display: none; }
+    main.layout .terminal-panel {
+      flex-shrink: 0;
+      /* No top border — the terminal flows continuously from the
+         transcript above (the user wants the input to feel like
+         part of the conversation, not a separate panel). */
+    }
+    main.layout.terminal-collapsed .terminal-panel { display: none; }
+
+    /* Transcript fills available vertical space; scrolls internally.
+       Newest pinned to bottom via the ::before flex spacer so the
+       last message is always adjacent to the terminal prompt. */
     main.layout .transcript {
       flex: 1;
+      min-height: 0;
       overflow-y: auto;
       padding: 24px 32px;
       display: flex;
@@ -168,8 +189,18 @@
       content: "";
       flex: 1;
     }
+
+    /* View panel content (file viewer / editor when a file is open) */
+    .view-content { padding: 16px 20px; }
+    .view-content #fs-viewer-wrap { display: block; }
+    .view-content .fs-viewer-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 10px; font-size: 11px; color: var(--muted);
+    }
+    .view-content .fs-viewer { max-height: none; }
+
     @media (max-width: 900px) {
-      main.layout .main-row { flex-direction: column; }
+      main.layout { flex-direction: column; overflow: visible; }
       main.layout .side-rail {
         width: 100%; height: 32px;
       }

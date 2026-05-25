@@ -76,7 +76,7 @@ pub(crate) async fn open_file(name: &str) {
     let (path, display_path) = resolve_path(name);
     let fs = super::shared_opfs();
 
-    match fs.read(&path).await {
+    let viewer_html = match fs.read(&path).await {
         Ok(bytes) => {
             let truncated = bytes.len() > 256 * 1024;
             let slice = if truncated { &bytes[..256 * 1024] } else { &bytes[..] };
@@ -84,19 +84,14 @@ pub(crate) async fn open_file(name: &str) {
             if truncated {
                 text.push_str("\n\n… (truncated)");
             }
-            dom::swap_outer(
-                "fs-viewer-wrap",
-                &templates::opfs_viewer(&display_path, name, &text).into_string(),
-            );
+            templates::opfs_viewer(&display_path, name, &text).into_string()
         }
-        Err(err) => {
-            dom::swap_outer(
-                "fs-viewer-wrap",
-                &templates::opfs_viewer(&display_path, name, &format!("error: {err}"))
-                    .into_string(),
-            );
-        }
-    }
+        Err(err) => templates::opfs_viewer(&display_path, name, &format!("error: {err}"))
+            .into_string(),
+    };
+    // Render into the top-center view panel and auto-expand it.
+    dom::swap_inner("view-content", &viewer_html);
+    set_view_collapsed(false);
 }
 
 /// Open the named file in editor mode. Reads up to 1 MiB (larger than
@@ -120,10 +115,11 @@ pub(crate) async fn edit_file(name: &str) {
         }
         Ok(bytes) => {
             let text = String::from_utf8_lossy(&bytes).into_owned();
-            dom::swap_outer(
-                "fs-viewer-wrap",
+            dom::swap_inner(
+                "view-content",
                 &templates::opfs_editor(&display_path, name, &text).into_string(),
             );
+            set_view_collapsed(false);
             // Focus the textarea so the user can start typing immediately.
             if let Some(ta) = dom::textarea_by_id("fs-editor") {
                 let _ = ta.focus();
@@ -203,11 +199,32 @@ pub(crate) async fn wipe() {
 }
 
 pub(crate) fn close_viewer() {
-    // Restore the empty placeholder shape so a later open swaps it back.
-    dom::swap_outer(
-        "fs-viewer-wrap",
-        &templates::opfs_viewer_placeholder().into_string(),
-    );
+    // Collapse the view panel and clear its content — opening a file
+    // again re-renders fresh.
+    dom::swap_inner("view-content", "");
+    set_view_collapsed(true);
+}
+
+/// Toggle the `view-collapsed` class on `#layout`. CSS hides
+/// `.view-panel` when this class is present.
+pub(crate) fn set_view_collapsed(collapsed: bool) {
+    let Some(layout) = dom::by_id("layout") else { return };
+    let cls = layout.class_name();
+    let parts: Vec<&str> = cls.split_whitespace().collect();
+    let has = parts.iter().any(|c| *c == "view-collapsed");
+    if has == collapsed {
+        return;
+    }
+    let new_cls = if collapsed {
+        if parts.is_empty() {
+            "view-collapsed".to_string()
+        } else {
+            format!("{} view-collapsed", parts.join(" "))
+        }
+    } else {
+        parts.iter().filter(|c| **c != "view-collapsed").copied().collect::<Vec<_>>().join(" ")
+    };
+    layout.set_class_name(&new_cls);
 }
 
 fn cwd_path(cwd: &[String]) -> String {
