@@ -172,6 +172,15 @@ impl TempoTx {
             items.push(rlp_fee_token(self.fee_token.as_ref())); // real or 0x80
             items.push(wallet::rlp_bytes(&[]));   // fee_payer_sig → 0x80 (empty)
         }
+        // Include aa_authorization_list + key_authorization in the
+        // sender's commitment so the chain's recovery hash matches
+        // (otherwise ecrecover returns a phantom address). The
+        // public spec page was ambiguous; trying the full-tx-minus-
+        // sender-sig form per how EIP-1559 / 7702 typically work.
+        items.push(rlp_authorization_list(&self.aa_authorization_list));
+        if self.key_authorization.is_some() {
+            items.push(rlp_key_authorization(self.key_authorization.as_ref()));
+        }
         let body = wallet::rlp_list(&items);
         let mut payload = Vec::with_capacity(1 + body.len());
         payload.push(SENDER_DOMAIN);
@@ -179,17 +188,27 @@ impl TempoTx {
         keccak(&payload)
     }
 
-    /// Compute the fee_payer's signing digest. Includes the
-    /// `fee_token`, the recovered `sender_address`, and the
-    /// `key_authorization` so the fee payer authorizes exactly this
-    /// (sender, intent, token) triple.
+    /// Compute the fee_payer's signing digest. Per the spec, the
+    /// fee_payer pre-image is:
+    ///
+    /// ```text
+    /// 0x78 || rlp([
+    ///     chain_id, mpfpg, mfpg, gas_limit,
+    ///     calls, access_list, nonce_key, nonce,
+    ///     valid_before, valid_after,
+    ///     fee_token,           // ALWAYS the real token
+    ///     sender_address,      // 20 bytes (recovered from sender sig)
+    ///     key_authorization    // 0x80 when None
+    /// ])
+    /// ```
+    ///
+    /// Notably DIFFERENT from sender_hash: no `aa_authorization_list`
+    /// here (the spec leaves it out of the fee_payer commitment).
     pub fn fee_payer_hash(&self, sender_address: &[u8; 20]) -> [u8; 32] {
         let mut items = self.common_rlp_items();
-        // fee_token always included for the fee payer (they're
-        // committing to the choice of token).
         items.push(rlp_fee_token(self.fee_token.as_ref()));
         items.push(wallet::rlp_bytes(sender_address));
-        // key_authorization slot — 0x80 (empty) if None.
+        // key_authorization — always included; 0x80 when None.
         items.push(rlp_key_authorization(self.key_authorization.as_ref()));
         let body = wallet::rlp_list(&items);
         let mut payload = Vec::with_capacity(1 + body.len());
@@ -202,6 +221,13 @@ impl TempoTx {
     /// `eth_sendRawTransaction`. `sender_sig` is the 65-byte (r‖s‖v
     /// where v∈{27,28}) sig produced by `wallet::sign_hash`. If
     /// sponsored, pass `Some(fee_payer_sig)`; otherwise `None`.
+    ///
+    /// Note: sender_signature is encoded as flat 65 bytes (the
+    /// "TempoSignature" wire format — secp256k1 needs no type prefix).
+    /// fee_payer_signature is encoded as `rlp([v, r, s])` per the
+    /// spec's split for fee_payer (different from sender). Confirmed
+    /// experimentally — sender as flat bytes decodes; fee_payer as
+    /// flat bytes does NOT.
     pub fn serialize_signed(
         &self,
         sender_sig: &[u8; 65],
@@ -211,9 +237,9 @@ impl TempoTx {
         // Field 11: fee_token (real, regardless of sponsorship — the
         // sender hash hid it but the serialized tx reveals it).
         items.push(rlp_fee_token(self.fee_token.as_ref()));
-        // Field 12: fee_payer_signature.
+        // Field 12: fee_payer_signature as rlp([v, r, s]) when set.
         match fee_payer_sig {
-            Some(sig) => items.push(rlp_compact_signature(sig)),
+            Some(sig) => items.push(rlp_vrs_signature(sig)),
             None => items.push(wallet::rlp_bytes(&[])), // 0x80
         }
         // Field 13: aa_authorization_list (empty list for us).
@@ -222,7 +248,7 @@ impl TempoTx {
         if let Some(_ka) = self.key_authorization.as_ref() {
             items.push(rlp_key_authorization(self.key_authorization.as_ref()));
         }
-        // Field 15: sender_signature.
+        // Field 15: sender_signature as flat 65 bytes wrapped in RLP.
         items.push(rlp_compact_signature(sender_sig));
 
         let body = wallet::rlp_list(&items);
@@ -399,10 +425,25 @@ fn rlp_access_list(list: &[AccessListItem]) -> Vec<u8> {
     wallet::rlp_list(&items)
 }
 
-/// Encode a 65-byte (r ‖ s ‖ v with v∈{27,28}) signature as the
-/// 3-element list `[v_recovery_id, r, s]` Tempo expects (v is 0/1).
+/// Encode a 65-byte (r ‖ s ‖ v) signature in Tempo's `TempoSignature`
+/// format. For secp256k1: 65 raw bytes (r 32 ‖ s 32 ‖ v 1) with NO
+/// type prefix, packed into a single RLP byte string. `v` is
+/// normalized to the recovery id 0 or 1 (NOT Ethereum's 27/28).
+/// Used for the SENDER signature field.
 fn rlp_compact_signature(sig: &[u8; 65]) -> Vec<u8> {
-    let v = sig[64].saturating_sub(27); // -> 0 or 1
+    let mut packed = [0u8; 65];
+    packed.copy_from_slice(sig);
+    packed[64] = packed[64].saturating_sub(27); // 27/28 → 0/1
+    wallet::rlp_bytes(&packed)
+}
+
+/// Encode a fee_payer signature as `rlp([v, r, s])` — the 3-element
+/// list form Tempo expects in the fee_payer slot specifically.
+/// Different from `rlp_compact_signature` (which is used for the
+/// sender slot). Empirically: fee_payer expects the list form,
+/// sender expects the flat form.
+fn rlp_vrs_signature(sig: &[u8; 65]) -> Vec<u8> {
+    let v = sig[64].saturating_sub(27); // 27/28 → 0/1
     wallet::rlp_list(&[
         wallet::rlp_uint(v as u128),
         wallet::rlp_bytes(&sig[..32]),
