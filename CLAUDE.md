@@ -43,7 +43,15 @@ src/                       library crate
 ├── wallet.rs              secp256k1 keypair + BIP-39 + RLP encoding
 │                          (feature = "wallet"; works on every target)
 ├── registry.rs            JSON-RPC client for the on-chain Diamond
-│                          (feature = "wallet"; works on every target)
+│                          (feature = "wallet"; works on every target).
+│                          Includes Tempo Tx submission helpers:
+│                          `submit_tempo_self_paid` / `_sponsored`
+│                          + `claim_and_maybe_set_main_sponsored`.
+├── tempo_tx.rs            Tempo Transaction (tx type 0x76) encoder —
+│                          native AA with fee_token + fee_payer fields.
+│                          Sign self-paid or sponsored; submit via
+│                          standard `eth_sendRawTransaction`. See
+│                          `[[tempo-tx-findings]]` for wire details.
 ├── app/                   browser-resident IDE — gated on
 │   ├── mod.rs             `browser-app` feature + wasm32 target
 │   ├── templates.rs       all maud HTML
@@ -57,6 +65,9 @@ src/                       library crate
 │   ├── tenant.rs          hostname classifier (apex / tenant / other)
 │   ├── wallet_store.rs    master wallet persisted to apex OPFS
 │   ├── signer.rs          postMessage signer service at apex/?signer=1
+│   ├── sponsor.rs         embedded sponsor private key for fee_payer
+│   │                      signing on user-facing Tempo txs (testnet
+│   │                      only — see security notes inside)
 │   └── verify.rs          subdomain-side iframe owner verification
 └── backends/
     ├── gemini/
@@ -83,7 +94,9 @@ contracts/                 Foundry project for the on-chain registry
 │   │   ├── OwnershipFacet.sol            EIP-173 owner()/transfer
 │   │   ├── LocalharnessRegistryFacet.sol register / ownerOfName / ...
 │   │   ├── ERC721Facet.sol               ERC-721 + Metadata surface
-│   │   └── TbaFacet.sol                  ERC-6551 token-bound accounts
+│   │   ├── TbaFacet.sol                  ERC-6551 token-bound accounts
+│   │   ├── FeedbackFacet.sol             submitFeedback(string) → event
+│   │   └── MainIdentityFacet.sol         registerMain/clearMain/mainOf
 │   ├── erc6551/                          vendored EIP-6551 reference
 │   │   ├── IERC6551Registry.sol
 │   │   ├── ERC6551Registry.sol
@@ -93,8 +106,11 @@ contracts/                 Foundry project for the on-chain registry
 │   └── LocalharnessRegistry.sol          legacy flat contract (archived)
 ├── script/
 │   ├── DeployDiamond.s.sol               from-scratch diamond deploy
-│   ├── AddErc721Facet.s.sol              cut ERC-721 surface
+│   ├── AddErc721Facet.s.sol              cut ERC-721 surface (migration)
+│   ├── AddErc721Fresh.s.sol              cut ERC-721 (fresh diamond)
 │   ├── AddTbaFacet.s.sol                 cut 6551 + helper
+│   ├── AddFeedbackFacet.s.sol            cut submitFeedback(string)
+│   ├── AddMainIdentityFacet.s.sol        cut MAIN identity surface
 │   └── Deploy.s.sol                      legacy flat deploy (archived)
 └── README.md                             architecture write-up
 
@@ -107,7 +123,19 @@ web/                       static site for Vercel
 scripts/
 ├── release.{ps1,sh}       atomic release tool (see RELEASING.md)
 ├── build-web.{ps1,sh}     wasm-pack build → web/pkg/
-└── probe-gemini.ps1       isolate request-shape vs. response-parse bugs
+├── probe-gemini.ps1       isolate request-shape vs. response-parse bugs
+└── harvest-feedback.{ps1,sh}  cast logs wrapper for FeedbackSubmitted events
+
+examples/
+└── tempo_tx_live.rs       end-to-end live harness against Moderato — runs
+                           self-paid native / self-paid TIP-20 / sponsored
+                           scenarios with the deployer key from .env.
+                           Source of truth for verifying tempo_tx encoding.
+
+design/
+├── main-identity.md       MAIN identity + multi-device linking design
+└── paymaster.md           paymaster architecture (superseded by Tempo
+                           native AA — see Update section at the bottom)
 
 RELEASING.md               step-by-step + recovery table
 CHANGELOG.md               per-version changes (Keep-a-Changelog)
@@ -326,12 +354,83 @@ forge build, write a one-off cut script following `AddTbaFacet.s.sol`
 as a template, deploy. See `contracts/README.md` for the full
 walkthrough.
 
+## Tempo Transactions + sponsorship (post-0.10.24)
+
+The user-facing claim flow uses Tempo's **native** account-abstraction
+tx type (`0x76`) so users hold ZERO of anything — no native gas, no
+TIP-20 stablecoin, nothing. The bundle's `src/app/sponsor.rs`
+signs as `fee_payer` and pays fees in AlphaUSD on every user tx.
+
+### Wire format (live-verified — see `[[tempo-tx-findings]]`)
+
+```text
+0x76 || rlp([
+    chain_id, mpfpg, mfpg, gas_limit,
+    calls,                // [[to, value, input], ...]
+    access_list,          // EIP-2930
+    nonce_key, nonce,     // Tempo's 2D nonce
+    valid_before, valid_after,
+    fee_token,            // 0x80 (empty) in sender hash if sponsored
+    fee_payer_signature,  // 0x00 placeholder in sender hash; 0x80 or
+                          // rlp([v,r,s]) in serialized tx
+    aa_authorization_list,
+    key_authorization?,   // truly optional; omit when None
+    sender_signature      // flat 65 bytes (r||s||v with v=0/1)
+])
+```
+
+Sender hash: `keccak256(0x76 || rlp([1..14_without_sender_sig]))`.
+Fee-payer hash: `keccak256(0x78 || rlp([1..10, fee_token,
+sender_address, aa_authorization_list, key_authorization?]))`. The
+spec page is missing `aa_authorization_list` at position 13 of the
+fee_payer hash — discovered by diffing against `wevm/ox`'s
+`TxEnvelopeTempo`. Captured in memory so we don't relearn.
+
+### $LH is NOT TIP-20
+
+Tempo's `fee_token` validation requires TIP-20 compliance. Our
+`LocalharnessToken.sol` at `0xcC8A300658…` is a vanilla ERC-20; the
+chain rejects it with `FeeTokenNotTip20Error`. **AlphaUSD**
+(`0x20c0000000000000000000000000000000000001`) is the fee_token we
+use today; the deployer holds plenty (auto-faucet'd via
+`tempo_fundAddress`). `$LH` stays as the in-app economy token —
+agent-to-agent payments, tipping, future reputation staking — not
+for paying gas.
+
+### Sponsor key
+
+Lives in `src/app/sponsor.rs` as a const. Same address as the
+deployer for now (testnet acceptable). **Rotate before mainnet** —
+either to a dedicated low-budget sponsor wallet (small extraction
+blast radius) or to a different key-management scheme entirely
+(WebAuthn passkey per user, Stripe-backed top-up, etc.). Tempo
+access keys CANNOT sign as `fee_payer` — confirmed by reading
+their open-source SDK, see `[[access-key-fee-payer-finding]]`. The
+fee_payer signature must come from the root key directly.
+
+### Migration status
+
+| Flow | Path | State |
+|------|------|-------|
+| Apex first-claim (`run_apex_claim`) | sponsored tempo tx | ✅ |
+| Tenant first-claim (`signer.rs::run_claim_name`) | sponsored tempo tx via iframe | ✅ |
+| `claim_and_maybe_set_main_sponsored` | tempo tx batch | ✅ |
+| `lh_transfer` | legacy iframe `lh-sign-tx` (EIP-155) | ⏳ |
+| `submit_feedback` | legacy iframe `lh-sign-tx` (EIP-155) | ⏳ |
+| `register_main` (standalone) | legacy via `sign_and_submit_call` | ⏳ |
+
+Migrating the last three needs the iframe signer to gain a new
+message type that returns just the sender_hash signature (so the
+tenant-side wasm can construct the full Tempo tx + add the sponsor
+fee_payer signature locally + submit). Pending work.
+
 ## What's planned
 
 The SDK runtime (0.2.x–0.6.x) and the in-tree browser IDE (0.7.x)
 shipped. The platform layer (subdomains + master wallet + on-chain
 registry + ERC-721 NFTs + ERC-6551 token-bound wallets + iframe
-signer + visitor lockdown) shipped through 0.10.0. What's next:
+signer + visitor lockdown) shipped through 0.10.0. The Tempo native
+AA migration shipped post-0.10.24. What's next:
 
 - **MPP / x402 payment hooks.** A pre-tool-call hook that requires
   a payment to the agent's TBA before the LLM call executes, or an
