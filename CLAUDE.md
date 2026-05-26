@@ -344,9 +344,15 @@ Currently cut in:
 ERC-6551 reference contracts (separate addresses, configured via
 `TbaFacet::setTbaConfig`):
 - Registry: `0xc7cadc487eeb06fe8807104443b2f76b45c041d6`
-- Account impl: `0x8ad49e86b2da342a20c49538ef727eeab304d7f4`
-  (CALL-only — DELEGATECALL is explicitly disabled to avoid the
-  self-destruct footgun).
+- Account impl: `0x100967d751C97265F3ee93244fAeE8caf29cB48D`
+  (`MultiSignerAccount` — CALL-only; adds an `authorizedSigners`
+  mapping + EIP-1271 `isValidSignature` on top of the vanilla 6551
+  surface so a MAIN can be controlled by multiple device EOAs
+  without sharing the seed. Swapped in via
+  `script/SwapTbaImplToMultiSigner.s.sol` on 2026-05-25; previous
+  `ERC6551Account` impl at `0x8ad49e86b2da342a20c49538ef727eeab304d7f4`
+  is no longer referenced by the diamond — TBAs minted under it
+  resolve to different counterfactual addresses than current mints).
 
 Adding a new facet: write `LibXyzStorage` at a fresh
 `keccak256("localharness.xyz.storage.v1")` slot, write the facet,

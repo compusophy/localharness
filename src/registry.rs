@@ -158,6 +158,37 @@ async fn name_of_id(id: u64) -> Result<String, String> {
     String::from_utf8(raw[64..64 + len].to_vec()).map_err(|e| e.to_string())
 }
 
+/// `eth_call tokenBoundAccount(tokenId)` and return the ERC-6551
+/// account address. None when the token isn't registered. The address
+/// is deterministic — counterfactual even before deployment.
+pub async fn tba_of_token_id(token_id: u64) -> Result<Option<String>, String> {
+    if REGISTRY_ADDRESS == zero_address() {
+        return Ok(None);
+    }
+    let mut data = Vec::with_capacity(4 + 32);
+    data.extend_from_slice(&selector("tokenBoundAccount(uint256)"));
+    data.extend_from_slice(&u256_be(token_id as u128));
+    let calldata = format!("0x{}", bytes_to_hex(&data));
+    let result_hex = match eth_call(REGISTRY_ADDRESS, &calldata).await {
+        Ok(h) => h,
+        Err(err) => {
+            if err.contains("nonexistent token") || err.contains("registry unset") {
+                return Ok(None);
+            }
+            return Err(err);
+        }
+    };
+    let trimmed = result_hex.trim().trim_start_matches("0x");
+    if trimmed.len() < 64 {
+        return Err(format!("tokenBoundAccount: short response {trimmed}"));
+    }
+    let addr_hex = &trimmed[trimmed.len() - 40..];
+    if addr_hex.chars().all(|c| c == '0') {
+        return Ok(None);
+    }
+    Ok(Some(format!("0x{}", addr_hex.to_lowercase())))
+}
+
 /// `eth_call tokenBoundAccountByName(name)` and return the ERC-6551
 /// account address. None when the name is unregistered. The address
 /// is deterministic — it exists counterfactually even if the account
@@ -850,6 +881,118 @@ fn encode_register_main(token_id: u64) -> Vec<u8> {
     data.extend_from_slice(&selector("registerMain(uint256)"));
     data.extend_from_slice(&u256_be(token_id as u128));
     data
+}
+
+// --- MultiSignerAccount (TBA add/remove device signer) ---------------
+
+/// `eth_call isAuthorizedSigner(signer)` on a TBA. Returns true if
+/// `signer` is recognized by the TBA's MultiSignerAccount impl —
+/// either as the NFT holder (implicit) or as a previously-added device.
+pub async fn is_authorized_signer(tba_address: &str, signer_hex: &str) -> Result<bool, String> {
+    let mut data = Vec::with_capacity(4 + 32);
+    data.extend_from_slice(&selector("isAuthorizedSigner(address)"));
+    let signer_bytes = hex_to_bytes(signer_hex)?;
+    if signer_bytes.len() != 20 {
+        return Err(format!("signer must be 20 bytes, got {}", signer_bytes.len()));
+    }
+    let mut padded = [0u8; 32];
+    padded[12..].copy_from_slice(&signer_bytes);
+    data.extend_from_slice(&padded);
+    let calldata = format!("0x{}", bytes_to_hex(&data));
+    let result_hex = eth_call(tba_address, &calldata).await?;
+    let trimmed = result_hex.trim().trim_start_matches("0x");
+    Ok(trimmed.chars().last().map(|c| c == '1').unwrap_or(false))
+}
+
+/// Sponsored TBA add-signer. The TBA must exist on-chain (have
+/// bytecode) before `addSigner` will work — counterfactual addresses
+/// have no code. We always batch `createTokenBoundAccount(tokenId)`
+/// before the `addSigner` call; `createTokenBoundAccount` is
+/// idempotent, so this is safe whether the TBA is already deployed
+/// or not.
+///
+/// `sender` must be the NFT holder (or an already-authorized signer)
+/// of the MAIN; `fee_payer` is the bundle sponsor.
+pub async fn add_signer_sponsored(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    token_id: u64,
+    tba_address: &str,
+    new_signer_hex: &str,
+    fee_token: &str,
+) -> Result<String, String> {
+    let new_signer = parse_eth_address(new_signer_hex)?;
+    let tba_addr = parse_eth_address(tba_address)?;
+    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
+
+    let create_call = crate::tempo_tx::TempoCall {
+        to: diamond_addr,
+        value_wei: 0,
+        input: encode_create_tba(token_id),
+    };
+    let add_call = crate::tempo_tx::TempoCall {
+        to: tba_addr,
+        value_wei: 0,
+        input: encode_add_signer(&new_signer),
+    };
+    // createTokenBoundAccount ~250k inner (CREATE2 + storage) when
+    // first-deploying; near-zero on idempotent reruns. addSigner is
+    // a single SSTORE + event (~50k). Plus ~275k Tempo sponsorship.
+    submit_tempo_sponsored(
+        sender,
+        fee_payer,
+        vec![create_call, add_call],
+        fee_token,
+        1_000_000,
+    )
+    .await
+}
+
+/// Sponsored TBA remove-signer. TBA must already be deployed (it is,
+/// if any signer was ever added). `sender` must be an authorized
+/// signer of the MAIN.
+pub async fn remove_signer_sponsored(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    tba_address: &str,
+    signer_hex: &str,
+    fee_token: &str,
+) -> Result<String, String> {
+    let signer_addr = parse_eth_address(signer_hex)?;
+    let tba_addr = parse_eth_address(tba_address)?;
+    let call = crate::tempo_tx::TempoCall {
+        to: tba_addr,
+        value_wei: 0,
+        input: encode_remove_signer(&signer_addr),
+    };
+    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 500_000).await
+}
+
+fn encode_create_tba(token_id: u64) -> Vec<u8> {
+    let mut data = Vec::with_capacity(4 + 32);
+    data.extend_from_slice(&selector("createTokenBoundAccount(uint256)"));
+    data.extend_from_slice(&u256_be(token_id as u128));
+    data
+}
+
+fn encode_add_signer(addr: &[u8; 20]) -> Vec<u8> {
+    let sel = selector("addSigner(address)");
+    let mut padded = [0u8; 32];
+    padded[12..].copy_from_slice(addr);
+    let mut out = Vec::with_capacity(4 + 32);
+    out.extend_from_slice(&sel);
+    out.extend_from_slice(&padded);
+    out
+}
+
+fn encode_remove_signer(addr: &[u8; 20]) -> Vec<u8> {
+    let sel = selector("removeSigner(address)");
+    let mut padded = [0u8; 32];
+    padded[12..].copy_from_slice(addr);
+    let mut out = Vec::with_capacity(4 + 32);
+    out.extend_from_slice(&sel);
+    out.extend_from_slice(&padded);
+    out
 }
 
 /// Convenience for the first-claim flow: register `name` on-chain, then

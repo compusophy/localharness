@@ -380,9 +380,13 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
     let owner_hex = super::APP.with(|cell| {
         cell.borrow().wallet.as_ref().map(|w| w.address_hex())
     });
+    let has_wallet = owner_hex.is_some();
     html! {
         div #header-admin-panel .header-admin-panel {
             (admin_identity_section(None, owner_hex.as_deref(), None))
+            @if has_wallet {
+                (admin_devices_section())
+            }
             (admin_security_collapsed())
             div.admin-footer {
                 button type="button" data-action="header-admin-close" .ghost { "close" }
@@ -479,6 +483,30 @@ fn admin_identity_section(
                     }
                 }
             }
+        }
+    }
+}
+
+/// Linked-devices section — surfaces add-this-device-to-my-MAIN
+/// directly under identity so the cross-device flow is one click in
+/// from the apex admin button. Input + add button + result slot. No
+/// list of current signers yet (would need an `eth_getLogs` pass over
+/// the TBA's `SignerAdded`/`SignerRemoved` events); add later.
+pub(crate) fn admin_devices_section() -> Markup {
+    html! {
+        div.admin-section {
+            div.admin-section-title { "linked devices" }
+            form #add-device-form .add-device-form
+                data-action="add-device" {
+                input #add-device-input
+                    type="text"
+                    placeholder="another device's 0x…"
+                    autocomplete="off"
+                    spellcheck="false"
+                    maxlength="42" {}
+                button #add-device-btn type="submit" .ghost { "add" }
+            }
+            div #add-device-msg .admin-msg-slot {}
         }
     }
 }

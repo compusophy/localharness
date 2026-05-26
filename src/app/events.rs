@@ -65,6 +65,7 @@ enum Action {
     FeedbackClose,
     FeedbackSubmit,
     LhTransfer,
+    AddDevice,
 }
 
 impl Action {
@@ -110,6 +111,7 @@ impl Action {
             "feedback-close" => Action::FeedbackClose,
             "feedback-submit" => Action::FeedbackSubmit,
             "lh-transfer" => Action::LhTransfer,
+            "add-device" => Action::AddDevice,
             _ => return None,
         })
     }
@@ -829,7 +831,100 @@ fn dispatch(action: Action) {
         Action::FeedbackClose => feedback_close(),
         Action::FeedbackSubmit => feedback_submit(),
         Action::LhTransfer => lh_transfer_pressed(),
+        Action::AddDevice => add_device_pressed(),
     }
+}
+
+/// Link another device's EOA to the current user's MAIN. The clicked
+/// device is the "authorizer" (its wallet IS the NFT holder of the
+/// MAIN, or has been authorized previously); the pasted address is
+/// the new device's wallet. One sponsored Tempo tx batches
+/// `createTokenBoundAccount` (idempotent) + `addSigner`. User pays
+/// nothing — sponsor pays AlphaUSD.
+fn add_device_pressed() {
+    let raw = dom::input_by_id("add-device-input")
+        .map(|i| i.value().trim().to_string())
+        .unwrap_or_default();
+    if !is_address_hex(&raw) {
+        // Silent no-op on bad input — per [[feedback-no-explanatory-validation]].
+        return;
+    }
+    dom::swap_inner(
+        "add-device-msg",
+        "<span style=\"color:var(--muted)\">signing + submitting…</span>",
+    );
+    wasm_bindgen_futures::spawn_local(async move {
+        match run_add_device(raw.clone()).await {
+            Ok(tx_hash) => {
+                let short = tx_short_hash(&tx_hash);
+                dom::swap_inner(
+                    "add-device-msg",
+                    &format!(
+                        "<span style=\"color:var(--accent)\">✓ added {} (tx {short})</span>",
+                        short_addr(&raw)
+                    ),
+                );
+                if let Some(input) = dom::input_by_id("add-device-input") {
+                    input.set_value("");
+                }
+            }
+            Err(err) => {
+                dom::swap_inner(
+                    "add-device-msg",
+                    &format!("<span style=\"color:var(--error)\">{err}</span>"),
+                );
+            }
+        }
+    });
+}
+
+/// Resolve the current user's MAIN's TBA address, then submit a
+/// sponsored Tempo tx that creates the TBA (if needed) + adds the new
+/// device as an authorized signer.
+async fn run_add_device(new_signer_hex: String) -> Result<String, String> {
+    // Apex wallet — must be present (the button is only rendered when
+    // the apex has a wallet, so failing here is an unusual race).
+    let (signer, owner_hex) = super::APP
+        .with(|cell| {
+            cell.borrow()
+                .wallet
+                .as_ref()
+                .map(|w| (w.signer.clone(), w.address_hex()))
+        })
+        .ok_or_else(|| "no apex identity".to_string())?;
+
+    // Identify the user's MAIN. `mainOf` returns the tokenId or 0.
+    let token_id = super::registry::main_of(&owner_hex)
+        .await
+        .map_err(|e| format!("mainOf: {e}"))?;
+    if token_id == 0 {
+        return Err("claim a subdomain first — it becomes your MAIN".into());
+    }
+
+    // Derive the MAIN's TBA address (counterfactual or already-deployed).
+    let tba_addr = super::registry::tba_of_token_id(token_id)
+        .await
+        .map_err(|e| format!("tba lookup: {e}"))?
+        .ok_or_else(|| "no TBA for MAIN".to_string())?;
+
+    let fee_payer = super::sponsor::signer()?;
+    super::registry::add_signer_sponsored(
+        &signer,
+        &fee_payer,
+        token_id,
+        &tba_addr,
+        &new_signer_hex,
+        super::registry::ALPHA_USD_ADDRESS,
+    )
+    .await
+}
+
+fn short_addr(addr: &str) -> String {
+    let stripped = addr.trim_start_matches("0x");
+    if stripped.len() < 8 {
+        return addr.to_string();
+    }
+    format!("0x{}…{}", &stripped[..4], &stripped[stripped.len() - 4..])
 }
 
 /// $localharness transfer from the visitor's apex wallet to a recipient.
