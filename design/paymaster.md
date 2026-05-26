@@ -186,3 +186,49 @@ is the actual answer; C is just an accounting/monetization layer.
 If true zero-native operation is the goal, the path is A → B over
 two commits: build the meta-tx relayer (off-chain piece on Vercel),
 then graduate to 4337 once `MultiSignerAccount` lands.
+
+## Update 2026-05-25 — Tempo native AA supersedes options A/B/C
+
+The above analysis predated reading Tempo's actual docs. Tempo has
+**native** fee_payer support at the chain layer — no EIP-2771, no
+4337 bundler, no relayer infra needed. A Tempo Transaction (tx type
+`0x76`) has explicit `fee_token` and `fee_payer_signature` fields
+that the chain validates inline. See `[[tempo-tx-findings]]`.
+
+The actual architecture we shipped:
+
+- `src/tempo_tx.rs` — Rust encoder for tx type 0x76 (sender-hash,
+  fee_payer-hash, dual-sign + RLP serialization, all per the spec
+  + corrections found via live testing).
+- `src/app/sponsor.rs` — sponsor key in the wasm bundle. Same
+  address as the deployer for now (testnet acceptable; rotate to
+  a dedicated low-budget wallet later).
+- `registry::claim_and_maybe_set_main_sponsored` — first-claim
+  flow; submits a sponsored Tempo tx with `fee_token = AlphaUSD`,
+  `fee_payer = sponsor wallet`. User holds zero of everything,
+  signs as sender, the chain debits sponsor's AlphaUSD for gas.
+
+### The honest catch: access keys can't sign fee_payer
+
+Confirmed by reading `wevm/ox` + `tempoxyz/accounts` source —
+Tempo's scoped delegation mechanism (KeyAuthorization / access keys)
+**can only sign the sender_signature, not the fee_payer_signature**.
+See `[[access-key-fee-payer-finding]]`.
+
+That means: the fee_payer signature must come from the root sponsor
+key. With our no-server constraint, the root key must live in the
+wasm bundle. Anyone running the site can extract it.
+
+For testnet this is fine — sponsor balance is small + refillable.
+For mainnet, we need a key-management policy:
+
+1. Dedicated low-budget sponsor wallet, refilled out-of-band (the
+   refill process happens off-chain — currently rejected). Or:
+2. Users hold their own AlphaUSD (acquired via Stripe top-up etc.)
+   and self-pay. No sponsorship, no embedded keys, but the user
+   has to acquire AlphaUSD first.
+3. A 4337 paymaster with an off-chain bundler (rejected).
+
+Options A/B/C from the earlier analysis (relayer / 2771 /
+reimbursement) are all moot — Tempo's native AA does what they
+would have done, cleaner.
