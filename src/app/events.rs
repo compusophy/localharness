@@ -323,7 +323,7 @@ async fn run_apex_claim(name: String) {
                 .as_ref()
                 .map(|w| (w.signer.clone(), wallet_address_hex(&w.address)))
         });
-        let (signer, addr_hex) = match cached {
+        let (signer, _addr_hex) = match cached {
             Some(pair) => pair,
             None => match super::wallet_store::create_and_persist().await {
                 Ok(wallet) => {
@@ -335,16 +335,20 @@ async fn run_apex_claim(name: String) {
             },
         };
 
-        // 3. Faucet (best-effort — wallet may already be funded).
-        if let Err(err) = super::registry::request_faucet_funds(&addr_hex).await {
-            web_sys::console::warn_1(&JsValue::from_str(&format!("faucet: {err}")));
-        }
-
-        // 4. Build, sign, send, wait. Uses the convenience that also
-        //    auto-sets the new token as MAIN if the user has none.
-        super::registry::claim_and_maybe_set_main(&signer, &name)
-            .await
-            .map_err(|e| format!("claim_name: {e}"))
+        // 3. Submit the claim as a sponsored Tempo tx. The bundle's
+        //    sponsor wallet pays the fees in AlphaUSD; the user's
+        //    fresh apex wallet signs as sender and never needs any
+        //    native gas or any TIP-20 stablecoin. No faucet step.
+        let fee_payer = super::sponsor::signer()
+            .map_err(|e| format!("sponsor key: {e}"))?;
+        super::registry::claim_and_maybe_set_main_sponsored(
+            &signer,
+            &fee_payer,
+            &name,
+            super::registry::ALPHA_USD_ADDRESS,
+        )
+        .await
+        .map_err(|e| format!("claim_name: {e}"))
     }
     .await;
 

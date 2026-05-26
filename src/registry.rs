@@ -713,6 +713,85 @@ fn decode_u256_as_u128(hex: &str) -> Result<u128, String> {
     u128::from_str_radix(tail, 16).map_err(|e| e.to_string())
 }
 
+// --- Tempo tx submission ---------------------------------------------
+
+/// Native TIP-20 stablecoins on Tempo Moderato. These ARE eligible as
+/// `fee_token` on a Tempo Transaction; our $LH is not (TIP-20-compliance
+/// check fails). Pick one as the default fee_token for user-facing txs.
+pub const ALPHA_USD_ADDRESS: &str = "0x20c0000000000000000000000000000000000001";
+
+/// Sign and submit a SELF-PAID Tempo tx. Sender pays fees in
+/// `fee_token` (`None` = native). Returns the tx hash once mined.
+pub async fn submit_tempo_self_paid(
+    sender: &SigningKey,
+    calls: Vec<crate::tempo_tx::TempoCall>,
+    fee_token: Option<&str>,
+    gas_limit: u128,
+) -> Result<String, String> {
+    use crate::tempo_tx::{sign_self_paid, TempoTxBuilder};
+    let sender_addr = wallet::address(sender);
+    let sender_hex = address_to_hex(&sender_addr);
+    let nonce = eth_get_transaction_count(&sender_hex).await?;
+    let gas_price = eth_gas_price().await?;
+    let mut builder = TempoTxBuilder::new(CHAIN_ID)
+        .max_priority_fee_per_gas(gas_price)
+        .max_fee_per_gas(gas_price)
+        .gas_limit(gas_limit)
+        .nonce(nonce)
+        .calls(calls);
+    if let Some(token) = fee_token {
+        builder = builder.fee_token(parse_eth_address(token)?);
+    }
+    let tx = builder.build();
+    let raw = sign_self_paid(tx, sender);
+    let raw_hex = format!("0x{}", bytes_to_hex(&raw));
+    let tx_hash = eth_send_raw_transaction(&raw_hex).await?;
+    wait_for_receipt(&tx_hash).await?;
+    Ok(tx_hash)
+}
+
+/// Sign and submit a SPONSORED Tempo tx. `sender` signs the intent
+/// (and needs no balance); `fee_payer` signs as the gas payer (needs
+/// `fee_token` balance). The chain debits `fee_payer`'s `fee_token`
+/// balance for the cost; `sender` pays nothing.
+pub async fn submit_tempo_sponsored(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    calls: Vec<crate::tempo_tx::TempoCall>,
+    fee_token: &str,
+    gas_limit: u128,
+) -> Result<String, String> {
+    use crate::tempo_tx::{sign_sponsored, TempoTxBuilder};
+    let sender_addr = wallet::address(sender);
+    let sender_hex = address_to_hex(&sender_addr);
+    let nonce = eth_get_transaction_count(&sender_hex).await?;
+    let gas_price = eth_gas_price().await?;
+    let tx = TempoTxBuilder::new(CHAIN_ID)
+        .max_priority_fee_per_gas(gas_price)
+        .max_fee_per_gas(gas_price)
+        .gas_limit(gas_limit)
+        .nonce(nonce)
+        .calls(calls)
+        .fee_token(parse_eth_address(fee_token)?)
+        .sponsored()
+        .build();
+    let raw = sign_sponsored(tx, sender, fee_payer);
+    let raw_hex = format!("0x{}", bytes_to_hex(&raw));
+    let tx_hash = eth_send_raw_transaction(&raw_hex).await?;
+    wait_for_receipt(&tx_hash).await?;
+    Ok(tx_hash)
+}
+
+fn parse_eth_address(hex_str: &str) -> Result<[u8; 20], String> {
+    let bytes = hex_to_bytes(hex_str)?;
+    if bytes.len() != 20 {
+        return Err(format!("address must be 20 bytes, got {}", bytes.len()));
+    }
+    let mut out = [0u8; 20];
+    out.copy_from_slice(&bytes);
+    Ok(out)
+}
+
 // --- MAIN identity helpers -------------------------------------------
 
 /// `eth_call mainOf(holder)` — returns the tokenId the holder has
@@ -771,6 +850,59 @@ pub async fn claim_and_maybe_set_main(
         }
         Ok(_) => {} // already has a MAIN; leave it alone
         Err(err) => log_main_warning(&err),
+    }
+    Ok(tx_hash)
+}
+
+/// Same as `claim_and_maybe_set_main` but uses Tempo's sponsored-tx
+/// flow: the `sender` signs the intent (and needs zero balance);
+/// `fee_payer` signs to cover gas in `fee_token` (typically AlphaUSD).
+/// This is what the bundle uses for first-claim onboarding — the user
+/// who just visited the page can claim a subdomain without holding
+/// any tokens.
+pub async fn claim_and_maybe_set_main_sponsored(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    name: &str,
+    fee_token: &str,
+) -> Result<String, String> {
+    let register_calldata = hex_to_bytes(&encode_register(name))?;
+    let register_call = crate::tempo_tx::TempoCall {
+        to: parse_eth_address(REGISTRY_ADDRESS)?,
+        value_wei: 0,
+        input: register_calldata,
+    };
+    let tx_hash = submit_tempo_sponsored(
+        sender,
+        fee_payer,
+        vec![register_call],
+        fee_token,
+        // register() + ERC-721 mint + TBA deployment is gas-heavy;
+        // sponsorship adds ~70k for fee_payer signature recovery.
+        500_000,
+    )
+    .await?;
+
+    // After register, fetch the new tokenId and set MAIN if none.
+    let sender_addr = address_to_hex(&wallet::address(sender));
+    if let Ok(0) = main_of(&sender_addr).await {
+        if let Ok(Status::Taken { agent_id }) = check_name(name).await {
+            let mut data = Vec::with_capacity(4 + 32);
+            data.extend_from_slice(&selector("registerMain(uint256)"));
+            data.extend_from_slice(&u256_be(agent_id as u128));
+            let main_call = crate::tempo_tx::TempoCall {
+                to: parse_eth_address(REGISTRY_ADDRESS)?,
+                value_wei: 0,
+                input: data,
+            };
+            if let Err(err) = submit_tempo_sponsored(
+                sender, fee_payer, vec![main_call], fee_token, 200_000,
+            )
+            .await
+            {
+                log_main_warning(&err);
+            }
+        }
     }
     Ok(tx_hash)
 }

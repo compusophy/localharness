@@ -359,6 +359,43 @@ impl TempoTxBuilder {
     }
 }
 
+// =============================================================================
+// High-level helpers: sign + serialize a Tempo tx in one call.
+// =============================================================================
+
+/// Sign and serialize a SELF-PAID tempo tx. Sender pays fees in
+/// `fee_token` (None = native). Returns the 0x76-prefixed raw bytes
+/// ready for `eth_sendRawTransaction`.
+pub fn sign_self_paid(tx: TempoTx, sender: &k256::ecdsa::SigningKey) -> Vec<u8> {
+    let sender_hash = tx.sender_hash();
+    let sig = crate::wallet::sign_hash(sender, &sender_hash);
+    tx.serialize_signed(&sig, None)
+}
+
+/// Sign and serialize a SPONSORED tempo tx. `sender` signs the
+/// intent; `fee_payer` signs the payment commitment. Fees are
+/// deducted from `fee_payer`'s `fee_token` balance.
+///
+/// The `tx` MUST have been built with `.sponsored()` so the sender
+/// hash uses the empty-fee_token + 0x00-placeholder layout.
+pub fn sign_sponsored(
+    tx: TempoTx,
+    sender: &k256::ecdsa::SigningKey,
+    fee_payer: &k256::ecdsa::SigningKey,
+) -> Vec<u8> {
+    debug_assert!(
+        tx.sponsored,
+        "sign_sponsored called on a non-sponsored TempoTx — \
+         use TempoTxBuilder::sponsored()"
+    );
+    let sender_addr = crate::wallet::address(sender);
+    let sender_hash = tx.sender_hash();
+    let fp_hash = tx.fee_payer_hash(&sender_addr);
+    let sender_sig = crate::wallet::sign_hash(sender, &sender_hash);
+    let fp_sig = crate::wallet::sign_hash(fee_payer, &fp_hash);
+    tx.serialize_signed(&sender_sig, Some(&fp_sig))
+}
+
 // Stash the sponsorship flag inside TempoTx so the hash code can
 // branch on it. Field is `pub(crate)` so the builder can set it but
 // outside callers go through `TempoTxBuilder::sponsored()`.

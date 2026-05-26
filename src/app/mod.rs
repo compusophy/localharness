@@ -31,6 +31,7 @@ mod opfs;
 mod owner;
 mod pricing;
 mod signer;
+mod sponsor;
 mod templates;
 mod tenant;
 mod verify;

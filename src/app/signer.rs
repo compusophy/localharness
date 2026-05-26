@@ -301,16 +301,17 @@ fn spawn_claim_name(id: String, name: String, source: JsValue, origin: String) {
 async fn run_claim_name(name: &str) -> Result<(String, String), String> {
     let (signer, address) = wallet_handle()?;
     let address_hex = hex_addr(&address);
-    // Faucet drip is idempotent enough for testnet; warn if it errors,
-    // proceed regardless (the wallet may already be funded).
-    if let Err(err) = crate::registry::request_faucet_funds(&address_hex).await {
-        web_sys::console::warn_1(&JsValue::from_str(&format!(
-            "signer claim: faucet: {err}"
-        )));
-    }
-    // Auto-set MAIN on first-time claim — the helper no-ops if the
-    // caller already has a MAIN. See [[main-identity]] design.
-    let tx_hash = crate::registry::claim_and_maybe_set_main(&signer, name).await?;
+    // Sponsored path: sender (user's wallet) holds zero, fee_payer
+    // (bundle's sponsor) pays gas in AlphaUSD. No faucet drip
+    // required — users get on-chain in one click with no native gas.
+    let fee_payer = super::sponsor::signer()?;
+    let tx_hash = crate::registry::claim_and_maybe_set_main_sponsored(
+        &signer,
+        &fee_payer,
+        name,
+        crate::registry::ALPHA_USD_ADDRESS,
+    )
+    .await?;
     Ok((address_hex, tx_hash))
 }
 
