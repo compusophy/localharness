@@ -840,7 +840,9 @@ pub async fn register_main_sponsored(
         value_wei: 0,
         input: encode_register_main(token_id),
     };
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 200_000).await
+    // register_main is a single SSTORE + event emit (~50k inner).
+    // Add ~275k Tempo sponsorship overhead + buffer.
+    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 600_000).await
 }
 
 fn encode_register_main(token_id: u64) -> Vec<u8> {
@@ -900,9 +902,13 @@ pub async fn claim_and_maybe_set_main_sponsored(
         fee_payer,
         vec![register_call],
         fee_token,
-        // register() + ERC-721 mint + TBA deployment is gas-heavy;
-        // sponsorship adds ~70k for fee_payer signature recovery.
-        500_000,
+        // `eth_estimateGas` on `register(name)` against the live diamond
+        // reports ~1.32M gas for the inner call (ERC-721 mint + storage
+        // writes + counterfactual TBA address derivation). Sponsorship
+        // (fee_payer recovery + AlphaUSD transfer) adds ~275k. Budget
+        // 2.0M to give comfortable headroom; sponsor pays in AlphaUSD
+        // and only consumed gas is debited, so over-budgeting is free.
+        2_000_000,
     )
     .await?;
 

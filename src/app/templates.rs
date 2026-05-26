@@ -361,7 +361,7 @@ fn apex_claim() -> Markup {
                 input #apex-input
                     .create-input
                     type="text"
-                    placeholder="pick a name"
+                    placeholder="choose a name"
                     autocomplete="off"
                     spellcheck="false"
                     maxlength="32"

@@ -214,32 +214,42 @@ fn on_key_input() {
     }
 }
 
-/// Three states for the submit button. `Disabled` = grey, not
-/// clickable (length out of range, registry check pending, name
-/// taken, error). `Ready` = accent-green, clickable, the name passed
-/// every check. There is no fourth state — no status text anywhere.
+/// States for the submit button. `Disabled` = grey, not clickable
+/// (length out of range, registry check pending, name taken).
+/// `Ready` = accent-green, clickable. `Failed` = red, disabled,
+/// label swapped to "✗ failed" so a chain-reverted claim doesn't
+/// silently look like nothing happened. The next keystroke into the
+/// input clears the failed state via `on_apex_input`.
 enum CreateBtnState {
     Disabled,
     Ready,
+    Failed,
 }
 
 fn set_create_button_state(state: CreateBtnState) {
     let Some(btn) = dom::by_id("create-btn") else { return };
+    // Strip both state classes; the match arm re-adds whichever applies.
+    let stripped: String = btn
+        .class_name()
+        .split_whitespace()
+        .filter(|c| *c != "ready" && *c != "failed")
+        .collect::<Vec<_>>()
+        .join(" ");
     match state {
         CreateBtnState::Disabled => {
             let _ = btn.set_attribute("disabled", "");
-            let mut cls = btn.class_name();
-            if cls.contains("ready") {
-                cls = cls.split_whitespace().filter(|c| *c != "ready").collect::<Vec<_>>().join(" ");
-                btn.set_class_name(&cls);
-            }
+            btn.set_class_name(&stripped);
+            btn.set_inner_html("create");
         }
         CreateBtnState::Ready => {
             let _ = btn.remove_attribute("disabled");
-            let cls = btn.class_name();
-            if !cls.split_whitespace().any(|c| c == "ready") {
-                btn.set_class_name(&format!("{cls} ready"));
-            }
+            btn.set_class_name(&format!("{stripped} ready"));
+            btn.set_inner_html("create");
+        }
+        CreateBtnState::Failed => {
+            let _ = btn.set_attribute("disabled", "");
+            btn.set_class_name(&format!("{stripped} failed"));
+            btn.set_inner_html("✗ failed");
         }
     }
 }
@@ -365,11 +375,14 @@ async fn run_apex_claim(name: String) {
         }
         Err(err) => {
             web_sys::console::warn_1(&JsValue::from_str(&format!("apex claim failed: {err}")));
-            // Re-arm the button so the user can retry. on_apex_input
-            // will fire next time they touch the field; for now, just
-            // disable since we can't reliably re-check from here.
-            set_create_button_busy(false);
-            set_create_button_state(CreateBtnState::Disabled);
+            // Surface failure on the button itself so the user knows
+            // the click had an effect — a silent reset to disabled
+            // looks indistinguishable from "nothing happened" and
+            // invites frustrated re-clicking. `on_apex_input` clears
+            // the failed state on the next keystroke (user typing a
+            // different name re-runs availability + flips back to
+            // Disabled/Ready as appropriate).
+            set_create_button_state(CreateBtnState::Failed);
         }
     }
 }
@@ -898,8 +911,11 @@ async fn run_lh_transfer(
         value_wei: 0,
         input: calldata,
     };
-    // ERC-20 transfer ~50k; double for safety + sponsorship overhead.
-    let tx_hash = run_sponsored_tempo_call(&from_hex, vec![call], 150_000, "send $localharness")
+    // ERC-20 `transfer` inner ~52k; Tempo sponsorship overhead is
+    // ~275k (fee_payer signature recovery + AlphaUSD fee transfer).
+    // 500k is generous headroom — sponsor pays in AlphaUSD and only
+    // consumed gas is debited, so over-budgeting costs nothing.
+    let tx_hash = run_sponsored_tempo_call(&from_hex, vec![call], 500_000, "send $localharness")
         .await?;
 
     let short = tx_short_hash(&tx_hash);
@@ -1278,10 +1294,11 @@ async fn submit_feedback_onchain(from_hex: &str, text: &str) -> Result<String, S
         value_wei: 0,
         input: calldata,
     };
-    // Generous — string-emitting events scale with bytes. 2048-byte
-    // upper bound + base cost lands well under 250k; +50k for
-    // sponsorship overhead.
-    run_sponsored_tempo_call(from_hex, vec![call], 300_000, "submit feedback").await
+    // String-emitting events scale with byte length (~12k base +
+    // ~200 gas/byte log data). 2048-byte upper bound + base ~150k
+    // for the inner call. Tempo sponsorship overhead adds ~275k.
+    // 800k is generous headroom for any reasonable feedback length.
+    run_sponsored_tempo_call(from_hex, vec![call], 800_000, "submit feedback").await
 }
 
 /// ABI-encode `submitFeedback(string)`. Layout: selector + offset(0x20)
