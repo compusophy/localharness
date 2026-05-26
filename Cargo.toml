@@ -158,6 +158,14 @@ web-sys = { version = "0.3", features = [
 [dev-dependencies]
 tokio = { version = "1.42", features = ["macros", "rt-multi-thread", "test-util"] }
 
+# Live-only Tempo Moderato harness. Depends on the `wallet` feature
+# (k256 + sha3 + registry/tempo_tx/wallet modules) and an `EVM_PRIVATE_KEY`
+# env var. Gated so a default `cargo test` doesn't try to compile it
+# without the feature wired up.
+[[example]]
+name = "tempo_tx_live"
+required-features = ["wallet"]
+
 [profile.release]
 opt-level = 3
 lto = "thin"
