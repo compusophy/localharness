@@ -280,7 +280,7 @@ mod tests {
     #[test]
     fn lex_float() {
         let tokens = lex("3.14f32").unwrap();
-        assert_eq!(tokens[0].kind, TokenKind::FloatLit(3.14));
+        assert_eq!(tokens[0].kind, TokenKind::FloatLit(3.14_f64));
     }
 
     #[test]

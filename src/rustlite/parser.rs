@@ -493,12 +493,10 @@ impl<'a> Parser<'a> {
         let start = self.span();
         match self.peek().clone() {
             TokenKind::IntLit(n) => {
-                let n = n;
                 self.advance();
                 Ok(Expr { kind: ExprKind::IntLit(n), span: Span { start: start.start, end: self.tokens[self.pos - 1].span.end } })
             }
             TokenKind::FloatLit(n) => {
-                let n = n;
                 self.advance();
                 Ok(Expr { kind: ExprKind::FloatLit(n), span: Span { start: start.start, end: self.tokens[self.pos - 1].span.end } })
             }
