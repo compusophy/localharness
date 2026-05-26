@@ -385,6 +385,7 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
         div #header-admin-panel .header-admin-panel {
             (admin_identity_section(None, owner_hex.as_deref(), None))
             @if has_wallet {
+                (admin_credits_section())
                 (admin_devices_section())
             }
             (admin_security_collapsed())
@@ -483,6 +484,28 @@ fn admin_identity_section(
                     }
                 }
             }
+        }
+    }
+}
+
+/// Credit balance + daily claim. Balance pill on the left is filled
+/// async by `refresh_credits_pill`; the claim button on the right
+/// fires `Action::ClaimCredits` and is a no-op if the user already
+/// claimed today (the chain reverts; the bundle surfaces the revert
+/// inline). Both `#credits-balance` and `#claim-credits-btn` are
+/// addressable so events.rs can swap them independently.
+pub(crate) fn admin_credits_section() -> Markup {
+    html! {
+        div.admin-section {
+            div.admin-section-title { "credits" }
+            div.admin-credits-row {
+                code #credits-balance .admin-identity-value { "…" }
+                button #claim-credits-btn
+                    type="button"
+                    data-action="claim-credits"
+                    .ghost { "claim daily" }
+            }
+            div #claim-credits-msg .admin-msg-slot {}
         }
     }
 }

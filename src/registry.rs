@@ -47,17 +47,19 @@ pub const CHAIN_ID: u64 = 42431;
 /// [`LOCALHARNESS_TOKEN_ADDRESS`] now.
 pub const BOOTSTRAP_FAUCET_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
 
-/// `LocalharnessToken.sol` — the $localharness ERC-20 with a
-/// once-per-address `faucet(recipient)` that mints `faucetAmount`
-/// fresh tokens. Replaces BootstrapFaucet — works on Tempo Moderato
-/// because every move is a contract call, not a native transfer.
+/// `LocalharnessCredits` — TIP-20-shaped credit token (currency =
+/// "credits", explicitly NOT USD so it's NOT fee-token-eligible).
+/// Replaces the standalone `LocalharnessToken.sol` at
+/// `0xcC8A300658…` (orphaned — old balances do not migrate; testnet
+/// reset).
 ///
-/// Deployed 2026-05-24 from an ephemeral key; ownership transferred
-/// to the admin EOA (`0x81E9c327…`) immediately after deploy.
+/// Deployed 2026-05-26 alongside `CreditsFacet` on the diamond. The
+/// diamond holds ISSUER_ROLE on this token, so the only path to
+/// fresh supply is through the facet's `claimDaily()`. Owner can
+/// tune the per-day allowance via `setDailyAllowance` on the diamond.
 ///
-/// name: "localharness", symbol: "localharness", decimals: 18,
-/// faucetAmount: 1000 LH.
-pub const LOCALHARNESS_TOKEN_ADDRESS: &str = "0xcC8A300658dC8d0648D984A5066Af3F8E75e0936";
+/// name: "localharness credits", symbol: "LH", decimals: 18.
+pub const LOCALHARNESS_TOKEN_ADDRESS: &str = "0xC1FC0452670049953ED64f2B177beBed4090A5bc";
 
 /// What we can learn about a name without touching the wallet.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -643,15 +645,9 @@ pub async fn token_balance_of(holder_hex: &str) -> Result<u128, String> {
     decode_u256_as_u128(&result)
 }
 
-/// Sign + submit `LocalharnessToken.faucet(signer.address)`. Mints
-/// `faucetAmount` fresh tokens to the signer (one claim per address
-/// ever). Caller pays gas. Used by the identity-creation flow so a
-/// fresh wallet ends up with a starter $localharness balance.
-pub async fn token_faucet_self(signer: &SigningKey) -> Result<String, String> {
-    let from_bytes = wallet::address(signer);
-    let calldata = encode_address_call("faucet(address)", &from_bytes);
-    sign_and_submit_call(signer, LOCALHARNESS_TOKEN_ADDRESS, 0, &calldata).await
-}
+// `token_faucet_self` removed in 2026-05-26 token migration — the
+// new credit token has no `faucet(address)` method. Use
+// `claim_daily_sponsored` against the diamond instead.
 
 /// Sign + submit `LocalharnessToken.transfer(to, amount)`. The
 /// payment loop's substitute for `rlp_native_transfer` —
@@ -674,17 +670,6 @@ pub async fn token_transfer(
     calldata.extend_from_slice(&to_padded);
     calldata.extend_from_slice(&amount_bytes);
     sign_and_submit_call(signer, LOCALHARNESS_TOKEN_ADDRESS, 0, &calldata).await
-}
-
-/// Build calldata for `f(address)`: selector || padded-address.
-fn encode_address_call(signature: &str, addr: &[u8; 20]) -> Vec<u8> {
-    let selector = selector(signature);
-    let mut padded = [0u8; 32];
-    padded[12..].copy_from_slice(addr);
-    let mut out = Vec::with_capacity(36);
-    out.extend_from_slice(&selector);
-    out.extend_from_slice(&padded);
-    out
 }
 
 /// Build, sign, submit, wait-for-receipt for a contract call.
@@ -966,6 +951,61 @@ pub async fn remove_signer_sponsored(
         input: encode_remove_signer(&signer_addr),
     };
     submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 500_000).await
+}
+
+// --- Credits / daily allowance (CreditsFacet on the diamond) ---------
+
+/// Sign + submit `CreditsFacet.claimDaily()` as a sponsored Tempo tx.
+/// User holds zero of anything; sponsor pays AlphaUSD. The on-chain
+/// `msg.sender` is the user (the diamond mints credits TO `msg.sender`),
+/// so the sponsorship channel only covers the fee — never the issuance.
+/// Reverts on-chain if the caller has already claimed this UTC day.
+pub async fn claim_daily_sponsored(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    fee_token: &str,
+) -> Result<String, String> {
+    let call = crate::tempo_tx::TempoCall {
+        to: parse_eth_address(REGISTRY_ADDRESS)?,
+        value_wei: 0,
+        input: selector("claimDaily()").to_vec(),
+    };
+    // claimDaily inner: a single SSTORE + mint (token Transfer event +
+    // memo event) — ~120k. Plus ~275k Tempo sponsorship overhead.
+    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 600_000).await
+}
+
+/// `eth_call canClaim(account)` — true iff `account` is eligible to
+/// call `claimDaily()` right now (token configured, allowance > 0,
+/// not yet claimed this UTC day).
+pub async fn can_claim_credits(account_hex: &str) -> Result<bool, String> {
+    if REGISTRY_ADDRESS == zero_address() {
+        return Ok(false);
+    }
+    let mut data = Vec::with_capacity(4 + 32);
+    data.extend_from_slice(&selector("canClaim(address)"));
+    let account_bytes = hex_to_bytes(account_hex)?;
+    if account_bytes.len() != 20 {
+        return Err(format!("account must be 20 bytes, got {}", account_bytes.len()));
+    }
+    let mut padded = [0u8; 32];
+    padded[12..].copy_from_slice(&account_bytes);
+    data.extend_from_slice(&padded);
+    let calldata = format!("0x{}", bytes_to_hex(&data));
+    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let trimmed = result_hex.trim().trim_start_matches("0x");
+    Ok(trimmed.chars().last().map(|c| c == '1').unwrap_or(false))
+}
+
+/// `eth_call dailyAllowance()` — the current per-claim amount in
+/// 18-decimal token wei.
+pub async fn daily_allowance() -> Result<u128, String> {
+    if REGISTRY_ADDRESS == zero_address() {
+        return Ok(0);
+    }
+    let calldata = format!("0x{}", bytes_to_hex(&selector("dailyAllowance()")));
+    let result = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    decode_u256_as_u128(&result)
 }
 
 fn encode_create_tba(token_id: u64) -> Vec<u8> {

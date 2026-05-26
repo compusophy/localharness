@@ -66,6 +66,7 @@ enum Action {
     FeedbackSubmit,
     LhTransfer,
     AddDevice,
+    ClaimCredits,
 }
 
 impl Action {
@@ -112,6 +113,7 @@ impl Action {
             "feedback-submit" => Action::FeedbackSubmit,
             "lh-transfer" => Action::LhTransfer,
             "add-device" => Action::AddDevice,
+            "claim-credits" => Action::ClaimCredits,
             _ => return None,
         })
     }
@@ -657,7 +659,7 @@ fn dispatch(action: Action) {
                                 return;
                             }
                         };
-                        run_bootstrap_funding(wallet.signer.clone(), wallet.address_hex()).await;
+                        run_initial_credit_claim(wallet.signer.clone()).await;
                         super::paint_apex(super::tenant::Host::Apex).await;
                     });
                 }
@@ -832,7 +834,86 @@ fn dispatch(action: Action) {
         Action::FeedbackSubmit => feedback_submit(),
         Action::LhTransfer => lh_transfer_pressed(),
         Action::AddDevice => add_device_pressed(),
+        Action::ClaimCredits => claim_credits_pressed(),
     }
+}
+
+/// User-initiated daily credit claim from the admin dropdown.
+/// Sponsored Tempo tx; reverts on-chain if already claimed today
+/// (chain emits `AlreadyClaimedToday` error). On success, refreshes
+/// the balance pill.
+fn claim_credits_pressed() {
+    let signer = super::APP.with(|cell| {
+        cell.borrow().wallet.as_ref().map(|w| w.signer.clone())
+    });
+    let Some(signer) = signer else { return };
+
+    dom::swap_inner(
+        "claim-credits-msg",
+        "<span style=\"color:var(--muted)\">signing + submitting…</span>",
+    );
+    if let Some(btn) = dom::by_id("claim-credits-btn") {
+        let _ = btn.set_attribute("disabled", "");
+    }
+    wasm_bindgen_futures::spawn_local(async move {
+        let fee_payer = match super::sponsor::signer() {
+            Ok(k) => k,
+            Err(err) => {
+                dom::swap_inner(
+                    "claim-credits-msg",
+                    &format!("<span style=\"color:var(--error)\">sponsor: {err}</span>"),
+                );
+                return;
+            }
+        };
+        match super::registry::claim_daily_sponsored(
+            &signer,
+            &fee_payer,
+            super::registry::ALPHA_USD_ADDRESS,
+        )
+        .await
+        {
+            Ok(tx_hash) => {
+                let short = tx_short_hash(&tx_hash);
+                dom::swap_inner(
+                    "claim-credits-msg",
+                    &format!(
+                        "<span style=\"color:var(--accent)\">✓ claimed (tx {short})</span>"
+                    ),
+                );
+                refresh_credits_pill().await;
+            }
+            Err(err) => {
+                let pretty = if err.contains("AlreadyClaimedToday")
+                    || err.to_lowercase().contains("already claimed")
+                {
+                    "already claimed today".to_string()
+                } else {
+                    err
+                };
+                dom::swap_inner(
+                    "claim-credits-msg",
+                    &format!("<span style=\"color:var(--error)\">{pretty}</span>"),
+                );
+                if let Some(btn) = dom::by_id("claim-credits-btn") {
+                    let _ = btn.remove_attribute("disabled");
+                }
+            }
+        }
+    });
+}
+
+/// Fetch the credit balance for the apex wallet and write it into
+/// `#credits-balance`. Called on admin-open and after a successful
+/// claim. Soft-fail — leaves the placeholder on error so UI stays clean.
+pub(crate) async fn refresh_credits_pill() {
+    let addr = super::APP.with(|cell| {
+        cell.borrow().wallet.as_ref().map(|w| w.address_hex())
+    });
+    let Some(addr) = addr else { return };
+    let Ok(balance_wei) = super::registry::token_balance_of(&addr).await else { return };
+    let lh = balance_wei / 1_000_000_000_000_000_000u128;
+    dom::swap_inner("credits-balance", &format!("{lh} LH"));
 }
 
 /// Link another device's EOA to the current user's MAIN. The clicked
@@ -1203,6 +1284,15 @@ fn header_admin_toggle() {
     };
     dom::swap_outer("header-admin-panel", &body);
 
+    // Apex shows a credit balance pill. Fire-and-forget the on-chain
+    // read so the rest of the dropdown paints immediately; the pill
+    // updates from "…" to "N LH" when the call resolves.
+    if matches!(super::tenant::current(), super::tenant::Host::Apex) {
+        wasm_bindgen_futures::spawn_local(async move {
+            refresh_credits_pill().await;
+        });
+    }
+
     // Pre-fill api key from sessionStorage (sync) then refresh from
     // OPFS (async). Same pattern as the old in-chrome key restore.
     if matches!(
@@ -1463,70 +1553,41 @@ fn toggle_layout_class(class: &str) {
     layout.set_class_name(&new_cls);
 }
 
-/// Full bootstrap-funding sequence for a freshly-created wallet:
-/// 1. `tempo_fundAddress` for the gas drip (so subsequent contract
-///    calls can pay their own gas).
-/// 2. Poll `eth_getBalance` until the gas lands (or timeout).
-/// 3. If [`super::registry::BOOTSTRAP_FAUCET_ADDRESS`] is set (non-zero),
-///    call `BootstrapFaucet.fund(self)` for the bigger drip so the
-///    user can register a name + transact without re-hitting the public
-///    faucet.
-///
-/// Status messages flow into `#identity-msg` so the user sees what's
-/// happening. Errors short-circuit the rest of the sequence but the
-/// identity itself is already saved — the user can retry funding
-/// later via a (future) "top up" affordance, or just live with the
-/// gas drip until the BootstrapFaucet is reachable.
-async fn run_bootstrap_funding(
-    signer: k256::ecdsa::SigningKey,
-    addr_hex: String,
-) {
+/// One-shot first-day credit claim, fired right after a fresh apex
+/// wallet is created so the user lands with a starter balance. The
+/// call is sponsored — the user holds nothing, and the chain still
+/// mints credits to the user's address because they're the
+/// `msg.sender` of the inner `claimDaily()`. Soft-fail: if the chain
+/// or sponsor hiccups, identity is still saved and the user can
+/// retry from the admin "claim credits" button.
+async fn run_initial_credit_claim(signer: k256::ecdsa::SigningKey) {
     dom::swap_inner(
         "identity-msg",
-        "<span style=\"color:var(--muted)\">funding wallet (gas drip)…</span>",
+        "<span style=\"color:var(--muted)\">claiming starter credits…</span>",
     );
-    if let Err(err) = super::registry::request_faucet_funds(&addr_hex).await {
-        // Faucet rate-limited or down — show but proceed; balance poll
-        // below will catch the "actually 0" case and bail.
-        web_sys::console::warn_1(&JsValue::from_str(&format!("faucet: {err}")));
-    }
-
-    dom::swap_inner(
-        "identity-msg",
-        "<span style=\"color:var(--muted)\">waiting for gas to land…</span>",
-    );
-    // 15-second window. Tempo blocks are ~1s.
-    if let Err(err) = super::registry::wait_for_min_balance(&addr_hex, 1, 15).await {
-        dom::swap_inner(
-            "identity-msg",
-            &format!(
-                "<span style=\"color:var(--error)\">funding stalled: {err}. \
-                 identity saved; try again later.</span>"
-            ),
-        );
-        return;
-    }
-
-    // Mint $localharness tokens to the new wallet via the
-    // LocalharnessToken self-faucet. This is what gives the user
-    // actual spending power for paid agents — gas alone isn't useful.
-    dom::swap_inner(
-        "identity-msg",
-        "<span style=\"color:var(--muted)\">claiming starter $localharness…</span>",
-    );
-    match super::registry::token_faucet_self(&signer).await {
+    let fee_payer = match super::sponsor::signer() {
+        Ok(k) => k,
+        Err(err) => {
+            web_sys::console::warn_1(&JsValue::from_str(&format!("sponsor: {err}")));
+            return;
+        }
+    };
+    match super::registry::claim_daily_sponsored(
+        &signer,
+        &fee_payer,
+        super::registry::ALPHA_USD_ADDRESS,
+    )
+    .await
+    {
         Ok(tx) => {
             web_sys::console::log_1(&JsValue::from_str(&format!(
-                "token_faucet_self tx: {tx}"
+                "initial claimDaily tx: {tx}"
             )));
         }
         Err(err) => {
             web_sys::console::warn_1(&JsValue::from_str(&format!(
-                "token_faucet_self: {err}"
+                "initial claimDaily: {err}"
             )));
-            // Soft-fail: identity is saved + gas drip landed. User can
-            // retry by re-creating identity (after admin reset) or wait
-            // for a future top-up affordance.
         }
     }
 }

@@ -340,6 +340,15 @@ Currently cut in:
   which of a holder's subdomain NFTs is their primary identity. No
   fee yet (sybil-resistance layer is later). Auto-set by the bundle
   on first-claim. See `design/main-identity.md`.
+- **CreditsFacet** — distribution layer for the `LocalharnessCredits`
+  TIP-20-shaped credit token. Surface: `claimDaily() / canClaim(addr)
+  / dailyAllowance() / lastClaimDay(addr) / creditsToken()`. Owner-
+  only setters: `setCreditsToken(addr) / setDailyAllowance(amount)`.
+  Diamond holds `ISSUER_ROLE` on the token, so `claimDaily` is the
+  only path to fresh supply. Day boundary = `block.timestamp / 86400`
+  (UTC-aligned, no cron). See `contracts/src/LocalharnessCredits.sol`
+  for the token's TIP-20 surface (currency = "credits", not USD —
+  explicitly NOT fee-token-eligible).
 
 ERC-6551 reference contracts (separate addresses, configured via
 `TbaFacet::setTbaConfig`):
@@ -392,16 +401,21 @@ spec page is missing `aa_authorization_list` at position 13 of the
 fee_payer hash — discovered by diffing against `wevm/ox`'s
 `TxEnvelopeTempo`. Captured in memory so we don't relearn.
 
-### $LH is NOT TIP-20
+### $LH is TIP-20-shaped credit, NOT fee-token-eligible
 
-Tempo's `fee_token` validation requires TIP-20 compliance. Our
-`LocalharnessToken.sol` at `0xcC8A300658…` is a vanilla ERC-20; the
-chain rejects it with `FeeTokenNotTip20Error`. **AlphaUSD**
-(`0x20c0000000000000000000000000000000000001`) is the fee_token we
-use today; the deployer holds plenty (auto-faucet'd via
-`tempo_fundAddress`). `$LH` stays as the in-app economy token —
-agent-to-agent payments, tipping, future reputation staking — not
-for paying gas.
+Tempo's `fee_token` validation requires TIP-20 compliance AND
+`currency() == "USD"`. Our `LocalharnessCredits` at
+`0xC1FC0452670049953ED64f2B177beBed4090A5bc` (deployed 2026-05-26,
+replaces the old vanilla ERC-20 at `0xcC8A300658…`) implements the
+TIP-20 surface — memo transfers, supply cap, roles — but returns
+`currency() == "credits"`, so the chain explicitly rejects it as a
+fee_token. That's intentional: $LH is in-system credits, not gas.
+**AlphaUSD** (`0x20c0000000000000000000000000000000000001`) remains
+the sponsor's fee_token. $LH supply is controlled — the diamond
+holds `ISSUER_ROLE`, and the only mint path is
+`CreditsFacet.claimDaily()` (one claim per address per UTC day,
+amount set by `setDailyAllowance` owner-only). Old token at
+`0xcC8A300658…` is orphaned; balances do not migrate.
 
 ### Sponsor key
 
