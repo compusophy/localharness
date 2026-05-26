@@ -36,16 +36,23 @@
 
 use k256::ecdsa::SigningKey;
 
-/// Testnet sponsor key (Tempo Moderato). Same address as the deployer
-/// for now — `0x313b1659F5037080aA0C113D386C5954F348EF1e`. Replace
-/// with a dedicated low-budget sponsor wallet once we're past
-/// fast-iteration mode (smaller blast-radius on extraction).
+/// Testnet sponsor key (Tempo Moderato). Dedicated low-budget sponsor —
+/// `0x0AFf88Ad13eF24caC5BeFD0F9Dc3A05DF79a922C`. Holds only the AlphaUSD
+/// needed to pay user fees + a small native buffer. If the bundle is
+/// extracted (XSS, mass scrape, etc.) the loss is capped at this
+/// wallet's balance — neither the deployer nor any other admin key is
+/// reachable from here. Top up via `tempo_fundAddress` (drips all four
+/// TIP-20 stablecoins + native) when the balance drops.
+///
+/// Previous sponsor (rotated 2026-05-25): same address as the deployer,
+/// `0x313b1659F5037080aA0C113D386C5954F348EF1e`. Funds remain there
+/// untouched; they can be reclaimed by the deployer key.
 ///
 /// The key lives here so the build is self-contained — no env-var or
 /// runtime fetch needed. **Do not commit a mainnet key here.** Use
 /// a build-time env mechanism for that.
 const SPONSOR_PRIVATE_KEY_HEX: &str =
-    "0x0d89c3ca85958a0b7d0ce1514fda625b9c3fe3ab494601f0e5ca7369c6de40b0";
+    "0x046a830b5203d1d2c0a205a1432746e4381d0874711b2de7f575a973644b9d43";
 
 /// Return the sponsor's `SigningKey` for `fee_payer` signing on
 /// Tempo txs. Cheap to call repeatedly — k256 keys clone cheaply.

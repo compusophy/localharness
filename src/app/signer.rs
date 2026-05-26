@@ -8,10 +8,9 @@
 //!
 //! Challenge-signing auto-approves for v1 (verification is read-only,
 //! the trust boundary is "you have JS access to the apex origin").
-//! Transaction-signing **always asks consent** via a synchronous
-//! `window.confirm()` dialog — txs move real value and we don't want
-//! a captured-from-XSS subdomain draining the wallet without the user
-//! seeing it.
+//! Transaction-signing auto-approves at the iframe — consent is
+//! collected at the tenant origin before the iframe call. The trust
+//! boundary is "you have JS access to the apex origin".
 //!
 //! **Message protocol:**
 //! ```text
@@ -20,12 +19,20 @@
 //!   signer → parent:  { type: "lh-sign-response",  id, address, signature }
 //!                or:  { type: "lh-sign-response",  id, error }
 //!
-//! Payments (consent-prompted):
+//! Payments (legacy EIP-155):
 //!   parent  → signer: { type: "lh-sign-tx", id, tx: {
 //!                         to, value, nonce, gas, gasPrice, chainId
 //!                       }, purpose }
 //!   signer → parent:  { type: "lh-sign-response", id, address, raw_tx_hex }
 //!                or:  { type: "lh-sign-response", id, error }
+//!
+//! Raw-digest signing (for sponsored Tempo txs — sender hash computed
+//! at the tenant, fee_payer hash signed by the bundle sponsor):
+//!   parent  → signer: { type: "lh-sign-digest", id, digest, purpose }
+//!   signer → parent:  { type: "lh-sign-response", id, address, signature }
+//!                or:  { type: "lh-sign-response", id, error }
+//!   `digest` is a 32-byte (64-hex-char, `0x`-optional) prehash;
+//!   `signature` is 65 bytes hex (r ‖ s ‖ v with v ∈ {27,28}).
 //!
 //! Identity management (auto-approved — same trust model as sign-tx):
 //!   parent  → signer: { type: "lh-create-wallet", id, overwrite: bool? }
@@ -104,6 +111,7 @@ fn handle_message(event: &MessageEvent) -> Result<(), String> {
         msg_type.as_str(),
         "lh-sign-challenge"
             | "lh-sign-tx"
+            | "lh-sign-digest"
             | "lh-create-wallet"
             | "lh-reveal-seed"
             | "lh-import-seed"
@@ -151,6 +159,20 @@ fn handle_message(event: &MessageEvent) -> Result<(), String> {
             let tx = js_sys::Reflect::get(&data, &JsValue::from_str("tx"))
                 .map_err(|_| "tx field missing".to_string())?;
             match build_tx_response(&id, &tx, &purpose) {
+                Ok(obj) => obj,
+                Err(err) => error_response(&id, &err),
+            }
+        }
+        "lh-sign-digest" => {
+            let purpose = js_sys::Reflect::get(&data, &JsValue::from_str("purpose"))
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_else(|| "sign digest".into());
+            let digest_hex = js_sys::Reflect::get(&data, &JsValue::from_str("digest"))
+                .ok()
+                .and_then(|v| v.as_string())
+                .ok_or_else(|| "digest not a string".to_string())?;
+            match build_digest_response(&id, &digest_hex, &purpose) {
                 Ok(obj) => obj,
                 Err(err) => error_response(&id, &err),
             }
@@ -419,6 +441,41 @@ fn build_tx_response(id: &str, tx: &JsValue, purpose: &str) -> Result<JsValue, S
     set(&obj, "id", JsValue::from_str(id));
     set(&obj, "address", JsValue::from_str(&from_hex));
     set(&obj, "raw_tx_hex", JsValue::from_str(&raw_hex));
+    Ok(JsValue::from(obj))
+}
+
+/// Sign an arbitrary 32-byte digest with the apex wallet. The caller
+/// (a tenant origin) is responsible for verifying the digest matches a
+/// transaction they actually want to authorize — the iframe just signs.
+/// Used by the sponsored-Tempo-tx flows where the tenant computes the
+/// sender_hash locally (encoding lives in `tempo_tx.rs`) and only needs
+/// the apex wallet's signature on it.
+fn build_digest_response(id: &str, digest_hex: &str, purpose: &str) -> Result<JsValue, String> {
+    let digest_bytes = decode_hex(digest_hex)?;
+    if digest_bytes.len() != 32 {
+        return Err(format!(
+            "digest must be 32 bytes, got {}",
+            digest_bytes.len()
+        ));
+    }
+    let mut digest = [0u8; 32];
+    digest.copy_from_slice(&digest_bytes);
+
+    let (signer, address) = wallet_handle()?;
+    let from_hex = hex_addr(&address);
+
+    web_sys::console::log_1(&JsValue::from_str(&format!(
+        "lh-sign-digest auto-approved: {purpose} (digest=0x{})",
+        digest_hex.trim_start_matches("0x"),
+    )));
+
+    let sig = wallet::sign_hash(&signer, &digest);
+
+    let obj = js_sys::Object::new();
+    set(&obj, "type", JsValue::from_str("lh-sign-response"));
+    set(&obj, "id", JsValue::from_str(id));
+    set(&obj, "address", JsValue::from_str(&from_hex));
+    set(&obj, "signature", JsValue::from_str(&hex_bytes(&sig)));
     Ok(JsValue::from(obj))
 }
 

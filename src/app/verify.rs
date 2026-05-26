@@ -232,6 +232,60 @@ pub(crate) async fn sign_tx_via_iframe(req: SignTxRequest<'_>) -> Result<String,
 
 const TX_TIMEOUT_MS: u32 = 90_000;
 
+/// Ask the apex signer to sign a raw 32-byte digest with the master
+/// wallet. Returns `(signer_address, 65-byte signature)`. Used by the
+/// sponsored-Tempo-tx flow: the tenant builds the Tempo tx, computes the
+/// sender_hash, hands it here for the apex wallet's signature, then
+/// combines with a locally-signed fee_payer signature to produce the
+/// final raw tx. `purpose` is a human-readable description (logged on
+/// the apex side; no consent dialog in this flow — same auto-approve
+/// semantics as `lh-sign-tx`).
+pub(crate) async fn sign_digest_via_iframe(
+    digest: &[u8; 32],
+    purpose: &str,
+) -> Result<(String, [u8; 65]), String> {
+    let id = format!("digest-{}", random_id_hex());
+    let digest_hex = format!("0x{}", bytes_to_hex(digest));
+
+    let payload = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &payload,
+        &JsValue::from_str("type"),
+        &JsValue::from_str("lh-sign-digest"),
+    );
+    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("id"), &JsValue::from_str(&id));
+    let _ = js_sys::Reflect::set(
+        &payload,
+        &JsValue::from_str("digest"),
+        &JsValue::from_str(&digest_hex),
+    );
+    let _ = js_sys::Reflect::set(
+        &payload,
+        &JsValue::from_str("purpose"),
+        &JsValue::from_str(purpose),
+    );
+
+    let data = signer_iframe_request(&id, &payload.into(), TX_TIMEOUT_MS).await?;
+    let address = js_sys::Reflect::get(&data, &JsValue::from_str("address"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
+    let sig_hex = js_sys::Reflect::get(&data, &JsValue::from_str("signature"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
+    if address.is_empty() || sig_hex.is_empty() {
+        return Err("signer reply missing address or signature".into());
+    }
+    let sig_bytes = hex_to_bytes(&sig_hex)?;
+    if sig_bytes.len() != 65 {
+        return Err(format!("signature must be 65 bytes, got {}", sig_bytes.len()));
+    }
+    let mut sig = [0u8; 65];
+    sig.copy_from_slice(&sig_bytes);
+    Ok((address, sig))
+}
+
 /// Generous timeout for OPFS-touching ops at apex (create wallet,
 /// import seed). The actual work is a single file write; the budget
 /// is generous to absorb wasm-bundle cold-load and a slow disk.

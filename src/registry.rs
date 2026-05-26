@@ -821,10 +821,33 @@ pub async fn main_of(holder_hex: &str) -> Result<u64, String> {
 /// gas. Idempotent on-chain if the caller already has this tokenId as
 /// their MAIN; switches MAIN if they declare a different owned tokenId.
 pub async fn register_main(signer: &SigningKey, token_id: u64) -> Result<String, String> {
+    sign_and_submit_call(signer, REGISTRY_ADDRESS, 0, &encode_register_main(token_id)).await
+}
+
+/// Sponsored counterpart to [`register_main`]. `sender` (the holder
+/// authorizing the MAIN change) signs the intent and needs zero balance;
+/// `fee_payer` pays the gas in `fee_token` (typically AlphaUSD). Use this
+/// from bundle paths where the user shouldn't need to hold native gas
+/// to update their MAIN.
+pub async fn register_main_sponsored(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    token_id: u64,
+    fee_token: &str,
+) -> Result<String, String> {
+    let call = crate::tempo_tx::TempoCall {
+        to: parse_eth_address(REGISTRY_ADDRESS)?,
+        value_wei: 0,
+        input: encode_register_main(token_id),
+    };
+    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 200_000).await
+}
+
+fn encode_register_main(token_id: u64) -> Vec<u8> {
     let mut data = Vec::with_capacity(4 + 32);
     data.extend_from_slice(&selector("registerMain(uint256)"));
     data.extend_from_slice(&u256_be(token_id as u128));
-    sign_and_submit_call(signer, REGISTRY_ADDRESS, 0, &data).await
+    data
 }
 
 /// Convenience for the first-claim flow: register `name` on-chain, then
@@ -887,18 +910,8 @@ pub async fn claim_and_maybe_set_main_sponsored(
     let sender_addr = address_to_hex(&wallet::address(sender));
     if let Ok(0) = main_of(&sender_addr).await {
         if let Ok(Status::Taken { agent_id }) = check_name(name).await {
-            let mut data = Vec::with_capacity(4 + 32);
-            data.extend_from_slice(&selector("registerMain(uint256)"));
-            data.extend_from_slice(&u256_be(agent_id as u128));
-            let main_call = crate::tempo_tx::TempoCall {
-                to: parse_eth_address(REGISTRY_ADDRESS)?,
-                value_wei: 0,
-                input: data,
-            };
-            if let Err(err) = submit_tempo_sponsored(
-                sender, fee_payer, vec![main_call], fee_token, 200_000,
-            )
-            .await
+            if let Err(err) =
+                register_main_sponsored(sender, fee_payer, agent_id, fee_token).await
             {
                 log_main_warning(&err);
             }

@@ -892,29 +892,15 @@ async fn run_lh_transfer(
     amount_wei: u128,
 ) -> Result<(), String> {
     let calldata = encode_transfer_calldata(&to_hex, amount_wei)?;
-    let calldata_hex = bytes_to_hex_str(&calldata);
-
-    let nonce = super::registry::next_nonce(&from_hex).await
-        .map_err(|e| format!("nonce: {e}"))?;
-    let gas_price = super::registry::current_gas_price().await
-        .map_err(|e| format!("gas price: {e}"))?;
-    let gas_limit = 100_000u128; // ERC-20 transfer is ~50k; double for safety.
-
-    let raw_tx = super::verify::sign_tx_via_iframe(super::verify::SignTxRequest {
-        to_hex: super::registry::LOCALHARNESS_TOKEN_ADDRESS,
+    let token_addr = parse_address(super::registry::LOCALHARNESS_TOKEN_ADDRESS)?;
+    let call = crate::tempo_tx::TempoCall {
+        to: token_addr,
         value_wei: 0,
-        nonce,
-        gas_limit,
-        gas_price,
-        chain_id: super::registry::CHAIN_ID,
-        purpose: "send $localharness",
-        data_hex: &calldata_hex,
-    })
-    .await
-    .map_err(|e| format!("signer: {e}"))?;
-
-    let tx_hash = super::registry::submit_and_wait_receipt(&raw_tx).await
-        .map_err(|e| format!("submit: {e}"))?;
+        input: calldata,
+    };
+    // ERC-20 transfer ~50k; double for safety + sponsorship overhead.
+    let tx_hash = run_sponsored_tempo_call(&from_hex, vec![call], 150_000, "send $localharness")
+        .await?;
 
     let short = tx_short_hash(&tx_hash);
     dom::swap_inner(
@@ -930,6 +916,65 @@ async fn run_lh_transfer(
         super::paint_tenant(super::tenant::Host::Tenant(name.clone()), name).await;
     }
     Ok(())
+}
+
+/// Sponsored Tempo tx orchestrator. Apex iframe signs `sender_hash`,
+/// the bundle sponsor key signs `fee_payer_hash`, raw tx assembled
+/// locally and submitted. User holds zero of anything — `fee_payer`
+/// pays fees in AlphaUSD.
+///
+/// `from_hex` is the sender's EOA — it must own whatever balance the
+/// calls touch (e.g. $LH for a `transfer`), but does NOT need native
+/// gas or the fee_token.
+async fn run_sponsored_tempo_call(
+    from_hex: &str,
+    calls: Vec<crate::tempo_tx::TempoCall>,
+    gas_limit: u128,
+    purpose: &str,
+) -> Result<String, String> {
+    let sender_address = parse_address(from_hex)?;
+    let fee_token_addr = parse_address(super::registry::ALPHA_USD_ADDRESS)?;
+    let nonce = super::registry::next_nonce(from_hex).await
+        .map_err(|e| format!("nonce: {e}"))?;
+    let gas_price = super::registry::current_gas_price().await
+        .map_err(|e| format!("gas price: {e}"))?;
+
+    let tx = crate::tempo_tx::TempoTxBuilder::new(super::registry::CHAIN_ID)
+        .max_priority_fee_per_gas(gas_price)
+        .max_fee_per_gas(gas_price)
+        .gas_limit(gas_limit)
+        .nonce(nonce)
+        .calls(calls)
+        .fee_token(fee_token_addr)
+        .sponsored()
+        .build();
+
+    let sender_hash = tx.sender_hash();
+    let (claimed_addr, sender_sig) =
+        super::verify::sign_digest_via_iframe(&sender_hash, purpose)
+            .await
+            .map_err(|e| format!("signer: {e}"))?;
+
+    // Defensive: the recovered address must match the expected sender
+    // EOA. If it doesn't, the iframe signed with a different wallet
+    // (XSS, race with a wallet swap, etc.) and submitting would burn
+    // sponsor funds on a tx that doesn't even authorize the call.
+    let recovered = crate::wallet::recover_address(&sender_sig, &sender_hash)
+        .map_err(|e| format!("recover: {e}"))?;
+    if recovered != sender_address {
+        return Err(format!(
+            "sender sig recovered 0x{} but expected {claimed_addr} ({from_hex})",
+            recovered.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+        ));
+    }
+
+    let fee_payer = super::sponsor::signer()?;
+    let fp_hash = tx.fee_payer_hash(&sender_address);
+    let fp_sig = crate::wallet::sign_hash(&fee_payer, &fp_hash);
+    let raw = tx.serialize_signed(&sender_sig, Some(&fp_sig));
+    let raw_hex = bytes_to_hex_str(&raw);
+    super::registry::submit_and_wait_receipt(&raw_hex).await
+        .map_err(|e| format!("submit: {e}"))
 }
 
 fn is_address_hex(s: &str) -> bool {
@@ -1227,31 +1272,16 @@ fn feedback_submit() {
 /// gas paid by the apex wallet — Tempo allows contract calls.
 async fn submit_feedback_onchain(from_hex: &str, text: &str) -> Result<String, String> {
     let calldata = encode_submit_feedback_calldata(text);
-    let calldata_hex = bytes_to_hex_str(&calldata);
-
-    let nonce = super::registry::next_nonce(from_hex).await
-        .map_err(|e| format!("nonce: {e}"))?;
-    let gas_price = super::registry::current_gas_price().await
-        .map_err(|e| format!("gas price: {e}"))?;
-    // Generous — string-emitting events scale with bytes. 2048-byte
-    // upper bound + base cost lands well under 200k.
-    let gas_limit = 250_000u128;
-
-    let raw_tx = super::verify::sign_tx_via_iframe(super::verify::SignTxRequest {
-        to_hex: super::registry::REGISTRY_ADDRESS,
+    let registry_addr = parse_address(super::registry::REGISTRY_ADDRESS)?;
+    let call = crate::tempo_tx::TempoCall {
+        to: registry_addr,
         value_wei: 0,
-        nonce,
-        gas_limit,
-        gas_price,
-        chain_id: super::registry::CHAIN_ID,
-        purpose: "submit feedback",
-        data_hex: &calldata_hex,
-    })
-    .await
-    .map_err(|e| format!("signer: {e}"))?;
-
-    super::registry::submit_and_wait_receipt(&raw_tx).await
-        .map_err(|e| format!("submit: {e}"))
+        input: calldata,
+    };
+    // Generous — string-emitting events scale with bytes. 2048-byte
+    // upper bound + base cost lands well under 250k; +50k for
+    // sponsorship overhead.
+    run_sponsored_tempo_call(from_hex, vec![call], 300_000, "submit feedback").await
 }
 
 /// ABI-encode `submitFeedback(string)`. Layout: selector + offset(0x20)

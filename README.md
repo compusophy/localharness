@@ -474,10 +474,16 @@ a self-sovereign identity layer:
   device via the 12-word seed phrase.
 - **On-chain registry** — `LocalharnessRegistry` as an EIP-2535
   Diamond on Tempo Moderato testnet
-  ([`0xed7a2d…c656d`](https://moderato.tempo.xyz/address/0xed7a2d170ab2d41721c9bd7368adbff6df0c656d)).
+  ([`0x6f2858…2930`](https://moderato.tempo.xyz/address/0x6f2858b4b10bf8d4ea372a446e69bea8fbce2930)).
   Names are claimed by signing a registration transaction with the
   master wallet. Every name is an ERC-721 NFT; every NFT has an
   ERC-6551 token-bound account (the agent's wallet).
+- **Gasless onboarding.** First-claim, `$LH` transfers, and on-chain
+  feedback all run as **sponsored Tempo Transactions** (tx type
+  `0x76` — Tempo's native account-abstraction format). A bundle-side
+  sponsor wallet signs as `fee_payer` and pays fees in AlphaUSD on
+  behalf of every user, so a fresh visitor can claim a subdomain
+  without first acquiring native gas or any TIP-20 stablecoin.
 - **Cross-origin owner verification.** Tenant subdomains embed
   `apex/?signer=1` in a hidden iframe, send a postMessage sign
   challenge, recover the address from the signature, compare it to
