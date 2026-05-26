@@ -478,12 +478,37 @@ a self-sovereign identity layer:
   Names are claimed by signing a registration transaction with the
   master wallet. Every name is an ERC-721 NFT; every NFT has an
   ERC-6551 token-bound account (the agent's wallet).
-- **Gasless onboarding.** First-claim, `$LH` transfers, and on-chain
-  feedback all run as **sponsored Tempo Transactions** (tx type
-  `0x76` — Tempo's native account-abstraction format). A bundle-side
-  sponsor wallet signs as `fee_payer` and pays fees in AlphaUSD on
-  behalf of every user, so a fresh visitor can claim a subdomain
-  without first acquiring native gas or any TIP-20 stablecoin.
+- **Gasless onboarding.** Every user-initiated on-chain call —
+  first-claim, `$LH` transfers, on-chain feedback, MAIN updates,
+  add-device, send-from-TBA, per-turn payments — runs as a
+  **sponsored Tempo Transaction** (tx type `0x76` — Tempo's native
+  account-abstraction format). A bundle-side sponsor wallet signs
+  as `fee_payer` and pays fees in AlphaUSD, so users hold zero of
+  anything on day one.
+- **Multi-device identity.** The diamond's TBA implementation is
+  `MultiSignerAccount` — an ERC-6551 account with an
+  `authorizedSigners` mapping + EIP-1271 `isValidSignature` on top
+  of the standard surface. Add another device's EOA from apex
+  admin; both devices sign for the same MAIN without sharing the
+  seed.
+- **In-system credits.** `$LH` is a TIP-20-shaped credit token with
+  `currency() == "credits"` — explicitly NOT fee-token-eligible.
+  Per-address daily allowance via the `CreditsFacet.claimDaily()`
+  (one claim per UTC day). Claiming a subdomain costs 50 LH from
+  the daily allowance; per-turn agent usage burns LH too. Owner-
+  tunable cost knobs at every gate (`setRegistrationCost`,
+  `setMainCost`, `setDailyAllowance`).
+- **Composable subdomains.** Any subdomain renders as a module via
+  `?embed=1`; any origin can host a grid of modules via
+  `?compose=a,b,c`. Each module stays in its own origin (own OPFS,
+  own signer iframe to apex) — composition via depth-1 sibling
+  iframes, not nested ones, so the browser recursion limit is a
+  non-issue.
+- **Studio MVP — every subdomain can differentiate itself.** Tenant
+  admin grows an "agent prompt" textarea; the contents append under
+  an `=== Owner instructions ===` header on session start. First
+  agent-differentiation primitive — future layers (tool allowlists,
+  model picks, custom layouts) land the same way.
 - **Cross-origin owner verification.** Tenant subdomains embed
   `apex/?signer=1` in a hidden iframe, send a postMessage sign
   challenge, recover the address from the signature, compare it to
