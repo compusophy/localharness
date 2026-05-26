@@ -5,6 +5,49 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.25] - 2026-05-25
+
+Sponsored Tempo tx is now the default for every user-initiated
+on-chain call from the bundle. Users hold zero of anything — no
+native gas, no TIP-20 stablecoin — and still transfer `$LH`,
+submit feedback, and change their MAIN identity.
+
+### Added (browser app)
+
+- **`lh-sign-digest` iframe-signer message.** The apex iframe now
+  signs raw 32-byte digests with the master wallet. The tenant
+  builds a Tempo Transaction locally (sender_hash via
+  `tempo_tx::TempoTx::sender_hash`), hands the digest to the
+  iframe, gets back a 65-byte signature, signs the fee_payer hash
+  with the bundle sponsor key, and submits — no encoding
+  duplication on the iframe side. Auto-approve at the iframe;
+  consent is collected at the tenant origin per the existing
+  trust model.
+- **`run_sponsored_tempo_call`** in `src/app/events.rs` — the
+  shared orchestrator that `lh_transfer` and `submit_feedback`
+  now route through. Verifies the iframe signature recovers to
+  the expected sender address before letting the sponsor pay.
+- **`register_main_sponsored`** in `src/registry.rs`. Pair with
+  `register_main` for the legacy self-paid case;
+  `claim_and_maybe_set_main_sponsored` now delegates to the
+  shared helper.
+
+### Changed (browser app)
+
+- **`run_lh_transfer` migrated** off the legacy EIP-155 iframe
+  path onto sponsored Tempo tx. Sending `$LH` to another address
+  no longer requires the sender to hold native gas — fees are
+  paid in AlphaUSD by the bundle sponsor.
+- **`submit_feedback_onchain` migrated** the same way. On-chain
+  feedback is free to the user.
+- **Sponsor key rotated** off the deployer wallet onto a
+  dedicated low-budget testnet wallet
+  (`0x0AFf88Ad13eF24caC5BeFD0F9Dc3A05DF79a922C`). The new wallet
+  is funded with ~1M AlphaUSD via `tempo_fundAddress`; extraction
+  blast radius is now bounded to that balance rather than the
+  deployer's full holdings. Old sponsor funds remain claimable
+  from the deployer key.
+
 ## [0.10.24] - 2026-05-25
 
 UX cleanup: silent validation + uniform header padding.
