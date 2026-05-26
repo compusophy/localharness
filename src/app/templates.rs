@@ -137,6 +137,91 @@ fn short_addr(addr: &str) -> String {
     format!("0x{}…{}", &stripped[..4], &stripped[stripped.len() - 4..])
 }
 
+/// Embed-mode card — the minimal identity surface a subdomain exposes
+/// when loaded as `name.localharness.xyz/?embed=1`. Fields lazy-load:
+/// initial paint passes None for everything except `name`; the second
+/// paint after the on-chain reads passes the resolved values. Always
+/// renders inside `#root` with the rest of the page chrome stripped
+/// out so it composes cleanly in a parent iframe.
+pub(crate) fn embed_card(
+    name: &str,
+    owner_hex: Option<&str>,
+    tba_hex: Option<&str>,
+    lh_balance_wei: Option<u128>,
+    is_main: Option<bool>,
+) -> Markup {
+    let lh_whole = lh_balance_wei.map(|w| w / 1_000_000_000_000_000_000u128);
+    html! {
+        section.embed-card {
+            div.embed-card-header {
+                a.embed-card-name
+                    href=(format!("https://{name}.localharness.xyz/"))
+                    target="_top"
+                    rel="noopener" {
+                    (name)
+                }
+                @if let Some(true) = is_main {
+                    span.embed-card-badge { "main" }
+                }
+            }
+            div.embed-card-rows {
+                @if let Some(addr) = owner_hex {
+                    div.embed-card-row {
+                        span.embed-card-label { "owner" }
+                        code.embed-card-value title=(addr) { (short_addr(addr)) }
+                    }
+                } @else if owner_hex.is_some() {
+                    // empty branch — unreachable; here for symmetry
+                } @else {
+                    div.embed-card-row {
+                        span.embed-card-label { "owner" }
+                        code.embed-card-value.embed-card-muted { "…" }
+                    }
+                }
+                @if let Some(addr) = tba_hex {
+                    div.embed-card-row {
+                        span.embed-card-label { "wallet" }
+                        code.embed-card-value title=(addr) { (short_addr(addr)) }
+                    }
+                }
+                @if let Some(lh) = lh_whole {
+                    div.embed-card-row {
+                        span.embed-card-label { "balance" }
+                        code.embed-card-value { (lh) " LH" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Compose-mode chrome — the host shell that includes one iframe per
+/// named module. Each iframe carries `data-embed-name=<name>` so the
+/// resize listener can target it. Iframe `src` is the embed-mode URL;
+/// initial height defaults to a small placeholder until the module
+/// posts `lh-embed-ready` and we resize.
+pub(crate) fn compose_chrome(names: &[String]) -> Markup {
+    html! {
+        main.compose-shell {
+            header.compose-header {
+                h1.compose-title { "compose" }
+                p.compose-sub { (names.len()) " module" @if names.len() != 1 { "s" } }
+            }
+            div.compose-grid {
+                @for name in names {
+                    div.compose-cell {
+                        iframe.compose-iframe
+                            src=(format!("https://{name}.localharness.xyz/?embed=1"))
+                            data-embed-name=(name)
+                            loading="lazy"
+                            referrerpolicy="no-referrer" {}
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The full app chrome (key + prompt + transcript + OPFS panel). Used
 /// when we're on a claimed tenant subdomain or any fallback
 /// (localhost, vercel preview).

@@ -746,6 +746,83 @@
       display: flex; justify-content: space-between; align-items: center;
       gap: 12px;
     }
+
+    /* --- Composable subdomain: embed mode (rendered inside parent iframe) --- */
+    /* The card sits on a transparent background so the host can put it
+       on whatever surface it wants. No margin on body — the host's
+       iframe IS the bounding box. */
+    .embed-card {
+      display: block;
+      padding: 16px 18px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      font-size: 13px;
+      color: var(--fg);
+      box-sizing: border-box;
+    }
+    .embed-card-header {
+      display: flex; justify-content: space-between; align-items: baseline;
+      gap: 12px; margin-bottom: 10px;
+    }
+    .embed-card-name {
+      font-size: 15px; font-weight: 600;
+      color: var(--accent);
+      text-decoration: none;
+      letter-spacing: 0.01em;
+    }
+    .embed-card-name:hover { text-decoration: underline; }
+    .embed-card-badge {
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      padding: 2px 6px;
+    }
+    .embed-card-rows {
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    .embed-card-row {
+      display: flex; justify-content: space-between; align-items: baseline;
+      gap: 12px;
+    }
+    .embed-card-label {
+      font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em;
+      color: var(--muted);
+    }
+    .embed-card-value {
+      font-size: 12px;
+    }
+    .embed-card-muted { color: var(--muted); }
+
+    /* --- Compose mode: the host shell --- */
+    .compose-shell {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 32px 24px;
+    }
+    .compose-header { margin-bottom: 20px; }
+    .compose-title {
+      font-size: 18px; font-weight: 600; margin: 0; letter-spacing: 0.01em;
+    }
+    .compose-sub {
+      font-size: 11px; color: var(--muted); margin: 4px 0 0;
+      text-transform: uppercase; letter-spacing: 0.07em;
+    }
+    .compose-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 12px;
+    }
+    .compose-cell {
+      display: block;
+      min-height: 80px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+    }
+    .compose-iframe {
+      width: 100%; height: 80px; border: 0; display: block; background: transparent;
+    }
     #keymeta { color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; margin-left: 6px; }
     input:focus, textarea:focus { border-color: var(--accent); }
     textarea { min-height: 72px; resize: vertical; }

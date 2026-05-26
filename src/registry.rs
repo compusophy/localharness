@@ -142,7 +142,7 @@ async fn owner_of_id(id: u64) -> Result<Option<String>, String> {
     Ok(Some(format!("0x{}", addr_hex.to_lowercase())))
 }
 
-async fn name_of_id(id: u64) -> Result<String, String> {
+pub async fn name_of_id(id: u64) -> Result<String, String> {
     let mut data = Vec::with_capacity(4 + 32);
     data.extend_from_slice(&selector("nameOfId(uint256)"));
     data.extend_from_slice(&u256_be(id as u128));

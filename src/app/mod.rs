@@ -23,7 +23,9 @@ use crate::filesystem::OpfsFilesystem;
 use crate::Agent;
 
 mod chat;
+mod compose;
 mod dom;
+mod embed;
 mod events;
 mod history;
 mod key_store;
@@ -185,6 +187,29 @@ fn mount() -> Result<(), JsValue> {
     // Delegated listeners are installed first so the apex / unclaimed
     // templates' buttons work even before we hit the async branches.
     events::install_delegated_listeners(&doc)?;
+
+    // Compose mode short-circuit (?compose=name1,name2,...). Renders a
+    // grid of embed-mode iframes — the minimal host harness for the
+    // composable-subdomain primitive. Works on any origin.
+    if let Some(names) = compose::compose_names() {
+        compose::paint_compose(names)?;
+        return Ok(());
+    }
+
+    // Embed mode short-circuit (?embed=1). Paints just the identity
+    // card sized for inclusion in a parent iframe. Activated on any
+    // host so apex and tenants alike can present themselves as
+    // modules.
+    if embed::has_embed_hint() {
+        root.set_inner_html(
+            "<main style=\"padding:24px;color:#7a8493;font:14px ui-monospace,Menlo,Consolas,monospace\">embed · loading…</main>",
+        );
+        let host_for_embed = host.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            embed::paint_embed(host_for_embed).await;
+        });
+        return Ok(());
+    }
 
     // Signer mode short-circuit. When apex is loaded with ?signer=1
     // (typically in a hidden iframe from a subdomain doing owner
@@ -542,7 +567,7 @@ fn read_query_param(key: &str) -> Option<String> {
     None
 }
 
-fn decode_uri_component(s: &str) -> String {
+pub(crate) fn decode_uri_component(s: &str) -> String {
     js_sys::decode_uri_component(s)
         .map(|js| js.as_string().unwrap_or_else(|| s.to_string()))
         .unwrap_or_else(|_| s.to_string())
