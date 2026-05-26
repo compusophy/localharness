@@ -77,6 +77,14 @@ pub mod wallet;
 #[cfg(feature = "wallet")]
 pub mod registry;
 
+// Tempo Transaction encoder (tx type 0x76). Implements Tempo's native
+// account-abstraction tx format so users can pay fees in $LH instead
+// of native and so a project-controlled fee_payer can sponsor user
+// txs without users holding any balance. Wire format per
+// docs.tempo.xyz/protocol/transactions/spec-tempo-transaction.
+#[cfg(feature = "wallet")]
+pub mod tempo_tx;
+
 pub use agent::{Agent, AgentConfig, GeminiAgentConfig};
 pub use backends::gemini::{
     decode_transcript_bytes, GeminiBackendConfig, GeminiConnection, GeminiConnectionStrategy,
