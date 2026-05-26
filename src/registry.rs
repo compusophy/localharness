@@ -845,20 +845,43 @@ pub async fn register_main(signer: &SigningKey, token_id: u64) -> Result<String,
 /// `fee_payer` pays the gas in `fee_token` (typically AlphaUSD). Use this
 /// from bundle paths where the user shouldn't need to hold native gas
 /// to update their MAIN.
+///
+/// When `main_cost()` is non-zero on-chain, prepends a
+/// `credits.approve(diamond, cost)` call so `registerMain`'s internal
+/// `transferFrom` has the allowance it needs. User pays the cost in
+/// LH from their balance; the credits land at the diamond's treasury.
 pub async fn register_main_sponsored(
     sender: &SigningKey,
     fee_payer: &SigningKey,
     token_id: u64,
     fee_token: &str,
 ) -> Result<String, String> {
-    let call = crate::tempo_tx::TempoCall {
-        to: parse_eth_address(REGISTRY_ADDRESS)?,
+    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
+    let token_addr = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
+
+    let cost = main_cost().await.unwrap_or(0);
+
+    let main_call = crate::tempo_tx::TempoCall {
+        to: diamond_addr,
         value_wei: 0,
         input: encode_register_main(token_id),
     };
-    // register_main is a single SSTORE + event emit (~50k inner).
-    // Add ~275k Tempo sponsorship overhead + buffer.
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 600_000).await
+
+    let calls = if cost > 0 {
+        let approve_call = crate::tempo_tx::TempoCall {
+            to: token_addr,
+            value_wei: 0,
+            input: encode_approve(&diamond_addr, cost),
+        };
+        vec![approve_call, main_call]
+    } else {
+        vec![main_call]
+    };
+
+    // registerMain inner: storage write + event (~50k). +approve
+    // (~50k) + transferFrom (~30k) when cost > 0. + ~275k Tempo
+    // sponsorship. 700k gives headroom either way.
+    submit_tempo_sponsored(sender, fee_payer, calls, fee_token, 700_000).await
 }
 
 fn encode_register_main(token_id: u64) -> Vec<u8> {
@@ -954,6 +977,30 @@ pub async fn remove_signer_sponsored(
 }
 
 // --- Registration cost (LocalharnessRegistryFacet on the diamond) ---
+
+/// `eth_call mainCost()` — the LH amount the diamond's `registerMain`
+/// pulls from the caller via transferFrom on every MAIN change. Zero
+/// means the gate is off.
+pub async fn main_cost() -> Result<u128, String> {
+    if REGISTRY_ADDRESS == zero_address() {
+        return Ok(0);
+    }
+    let calldata = format!("0x{}", bytes_to_hex(&selector("mainCost()")));
+    let result = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    decode_u256_as_u128(&result)
+}
+
+/// `eth_call treasuryBalance()` — total LH the diamond holds. Reads
+/// the credits token's `balanceOf(diamond)`. Useful for surfacing
+/// "X LH collected from registrations" in admin UIs.
+pub async fn treasury_balance() -> Result<u128, String> {
+    if REGISTRY_ADDRESS == zero_address() {
+        return Ok(0);
+    }
+    let calldata = format!("0x{}", bytes_to_hex(&selector("treasuryBalance()")));
+    let result = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    decode_u256_as_u128(&result)
+}
 
 /// `eth_call registrationCost()` — the LH amount (in token wei, 18
 /// decimals) the diamond's `register(name)` will pull from the sender

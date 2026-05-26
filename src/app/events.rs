@@ -69,6 +69,7 @@ enum Action {
     ClaimCredits,
     AgentActToggle(String),
     AgentSendLh(String),
+    SavePrompt,
 }
 
 impl Action {
@@ -118,6 +119,7 @@ impl Action {
             "claim-credits" => Action::ClaimCredits,
             "agent-act-toggle" => Action::AgentActToggle(arg.unwrap_or_default()),
             "agent-send-lh" => Action::AgentSendLh(arg.unwrap_or_default()),
+            "save-prompt" => Action::SavePrompt,
             _ => return None,
         })
     }
@@ -875,7 +877,43 @@ fn dispatch(action: Action) {
         Action::ClaimCredits => claim_credits_pressed(),
         Action::AgentActToggle(token_id) => agent_act_toggle_pressed(token_id),
         Action::AgentSendLh(token_id) => agent_send_lh_pressed(token_id),
+        Action::SavePrompt => save_prompt_pressed(),
     }
+}
+
+/// Persist the textarea content as the per-origin custom system
+/// prompt. Empty/whitespace-only content deletes the file, reverting
+/// to the bundle's default. The change takes effect on the next
+/// session start — surfaced inline so the user knows what to expect.
+fn save_prompt_pressed() {
+    let Some(textarea) = dom::textarea_by_id("prompt-input") else { return };
+    let content = textarea.value();
+    dom::swap_inner(
+        "prompt-msg",
+        "<span style=\"color:var(--muted)\">saving…</span>",
+    );
+    wasm_bindgen_futures::spawn_local(async move {
+        match super::system_prompt::save(&content).await {
+            Ok(()) => {
+                let trimmed = content.trim();
+                let summary = if trimmed.is_empty() {
+                    "✓ saved · using default on next session"
+                } else {
+                    "✓ saved · takes effect on next session"
+                };
+                dom::swap_inner(
+                    "prompt-msg",
+                    &format!("<span style=\"color:var(--accent)\">{summary}</span>"),
+                );
+            }
+            Err(err) => {
+                dom::swap_inner(
+                    "prompt-msg",
+                    &format!("<span style=\"color:var(--error)\">{err}</span>"),
+                );
+            }
+        }
+    });
 }
 
 /// Expand or collapse the inline act-panel under an agent row.
@@ -1273,7 +1311,7 @@ async fn run_lh_transfer(
 /// `from_hex` is the sender's EOA — it must own whatever balance the
 /// calls touch (e.g. $LH for a `transfer`), but does NOT need native
 /// gas or the fee_token.
-async fn run_sponsored_tempo_call(
+pub(crate) async fn run_sponsored_tempo_call(
     from_hex: &str,
     calls: Vec<crate::tempo_tx::TempoCall>,
     gas_limit: u128,
@@ -1467,6 +1505,13 @@ fn header_admin_toggle() {
                 if let Some(input) = dom::input_by_id("key") {
                     input.set_value(&persisted);
                     refresh_keymeta();
+                }
+            }
+            // Restore the saved custom prompt into the textarea so the
+            // user can edit instead of re-typing.
+            if let Some(prompt) = super::system_prompt::load().await {
+                if let Some(textarea) = dom::textarea_by_id("prompt-input") {
+                    textarea.set_value(&prompt);
                 }
             }
         });

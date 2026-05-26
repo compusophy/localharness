@@ -19,13 +19,6 @@
 //!   signer → parent:  { type: "lh-sign-response",  id, address, signature }
 //!                or:  { type: "lh-sign-response",  id, error }
 //!
-//! Payments (legacy EIP-155):
-//!   parent  → signer: { type: "lh-sign-tx", id, tx: {
-//!                         to, value, nonce, gas, gasPrice, chainId
-//!                       }, purpose }
-//!   signer → parent:  { type: "lh-sign-response", id, address, raw_tx_hex }
-//!                or:  { type: "lh-sign-response", id, error }
-//!
 //! Raw-digest signing (for sponsored Tempo txs — sender hash computed
 //! at the tenant, fee_payer hash signed by the bundle sponsor):
 //!   parent  → signer: { type: "lh-sign-digest", id, digest, purpose }
@@ -110,7 +103,6 @@ fn handle_message(event: &MessageEvent) -> Result<(), String> {
     if !matches!(
         msg_type.as_str(),
         "lh-sign-challenge"
-            | "lh-sign-tx"
             | "lh-sign-digest"
             | "lh-create-wallet"
             | "lh-reveal-seed"
@@ -147,18 +139,6 @@ fn handle_message(event: &MessageEvent) -> Result<(), String> {
                 .and_then(|v| v.as_string())
                 .ok_or_else(|| "nonce not a string".to_string())?;
             match build_challenge_response(&id, &nonce_hex) {
-                Ok(obj) => obj,
-                Err(err) => error_response(&id, &err),
-            }
-        }
-        "lh-sign-tx" => {
-            let purpose = js_sys::Reflect::get(&data, &JsValue::from_str("purpose"))
-                .ok()
-                .and_then(|v| v.as_string())
-                .unwrap_or_else(|| "sign transaction".into());
-            let tx = js_sys::Reflect::get(&data, &JsValue::from_str("tx"))
-                .map_err(|_| "tx field missing".to_string())?;
-            match build_tx_response(&id, &tx, &purpose) {
                 Ok(obj) => obj,
                 Err(err) => error_response(&id, &err),
             }
@@ -379,71 +359,6 @@ fn build_challenge_response(id: &str, nonce_hex: &str) -> Result<JsValue, String
     Ok(JsValue::from(obj))
 }
 
-/// Sign an EIP-155 native-ETH transfer after explicit user consent.
-/// The consent dialog spells out the recipient, value (in test ETH),
-/// and the human-readable purpose so the user knows what they're
-/// authorizing — postMessage from a compromised subdomain can't move
-/// funds without this.
-fn build_tx_response(id: &str, tx: &JsValue, purpose: &str) -> Result<JsValue, String> {
-    let to_hex = field_string(tx, "to")?;
-    let value_wei = field_u128(tx, "value")?;
-    let nonce = field_u128(tx, "nonce")?;
-    let gas_limit = field_u128(tx, "gas")?;
-    let gas_price = field_u128(tx, "gasPrice")?;
-    let chain_id = field_u128(tx, "chainId")?;
-    // `data` optional — empty for a native transfer, populated for a
-    // contract call (ERC-20 transfer, etc.). Hex string with optional
-    // `0x` prefix.
-    let data_hex = field_string(tx, "data").unwrap_or_default();
-    let data_bytes = if data_hex.is_empty() {
-        Vec::new()
-    } else {
-        decode_hex(&data_hex)?
-    };
-
-    if chain_id != crate::registry::CHAIN_ID as u128 {
-        return Err(format!(
-            "chainId mismatch: tx wants {chain_id}, signer is locked to {}",
-            crate::registry::CHAIN_ID
-        ));
-    }
-    if !is_address_shape(&to_hex) {
-        return Err(format!("`to` doesn't look like a 20-byte address: {to_hex}"));
-    }
-
-    let (signer, address) = wallet_handle()?;
-    let from_hex = hex_addr(&address);
-
-    // Consent is collected at the SUBDOMAIN before the iframe call.
-    // No JS dialog here per [[feedback-no-js-alerts]]. The `purpose`
-    // field is currently unused on the signer side; logged via
-    // console for debuggability.
-    web_sys::console::log_1(&JsValue::from_str(&format!(
-        "lh-sign-tx auto-approved: {purpose} (value={value_wei}, data={} bytes → {to_hex})",
-        data_bytes.len()
-    )));
-
-    let unsigned = crate::registry::rlp_call_unsigned(
-        &to_hex, value_wei, &data_bytes, nonce, gas_price, gas_limit,
-    )?;
-    let mut hasher = Keccak256::new();
-    hasher.update(&unsigned);
-    let mut prehash = [0u8; 32];
-    prehash.copy_from_slice(&hasher.finalize());
-    let sig = wallet::sign_hash(&signer, &prehash);
-
-    let raw_hex = crate::registry::rlp_call_signed(
-        &to_hex, value_wei, &data_bytes, nonce, gas_price, gas_limit, &sig,
-    )?;
-
-    let obj = js_sys::Object::new();
-    set(&obj, "type", JsValue::from_str("lh-sign-response"));
-    set(&obj, "id", JsValue::from_str(id));
-    set(&obj, "address", JsValue::from_str(&from_hex));
-    set(&obj, "raw_tx_hex", JsValue::from_str(&raw_hex));
-    Ok(JsValue::from(obj))
-}
-
 /// Sign an arbitrary 32-byte digest with the apex wallet. The caller
 /// (a tenant origin) is responsible for verifying the digest matches a
 /// transaction they actually want to authorize — the iframe just signs.
@@ -506,42 +421,6 @@ fn wallet_handle() -> Result<(k256::ecdsa::SigningKey, [u8; 20]), String> {
         })
         .ok_or_else(|| "no identity on this device — create one at the apex".to_string())
 }
-
-fn field_string(obj: &JsValue, key: &str) -> Result<String, String> {
-    js_sys::Reflect::get(obj, &JsValue::from_str(key))
-        .ok()
-        .and_then(|v| v.as_string())
-        .ok_or_else(|| format!("tx.{key} not a string"))
-}
-
-/// Read a numeric tx field that may arrive as either a hex string
-/// (`"0x..."`) or a JS number. JSON-from-JS objects often serialize
-/// small ints as numbers; hex strings are the canonical eth-RPC form.
-fn field_u128(obj: &JsValue, key: &str) -> Result<u128, String> {
-    let raw = js_sys::Reflect::get(obj, &JsValue::from_str(key))
-        .map_err(|_| format!("tx.{key} missing"))?;
-    if let Some(n) = raw.as_f64() {
-        if n.is_finite() && n >= 0.0 {
-            return Ok(n as u128);
-        }
-        return Err(format!("tx.{key} non-finite or negative: {n}"));
-    }
-    if let Some(s) = raw.as_string() {
-        let trimmed = s.trim_start_matches("0x").trim_start_matches("0X");
-        if trimmed.is_empty() {
-            return Ok(0);
-        }
-        return u128::from_str_radix(trimmed, 16)
-            .map_err(|e| format!("tx.{key} bad hex: {e}"));
-    }
-    Err(format!("tx.{key} must be hex string or number"))
-}
-
-fn is_address_shape(hex: &str) -> bool {
-    let stripped = hex.trim_start_matches("0x").trim_start_matches("0X");
-    stripped.len() == 40 && stripped.bytes().all(|b| b.is_ascii_hexdigit())
-}
-
 
 fn error_response(id: &str, err: &str) -> JsValue {
     let obj = js_sys::Object::new();

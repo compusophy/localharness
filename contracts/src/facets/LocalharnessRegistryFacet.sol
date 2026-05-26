@@ -90,6 +90,40 @@ contract LocalharnessRegistryFacet {
         return LibRegistrationCostStorage.load().costWei;
     }
 
+    // --- Treasury (LH accumulated from `register` fees) ----------------
+
+    event TreasuryWithdrawn(address indexed to, uint256 amount);
+
+    /// LH balance the diamond holds. Reads the credits token's
+    /// `balanceOf(address(this))` directly so the value stays accurate
+    /// without needing a separate accumulator field.
+    function treasuryBalance() external view returns (uint256) {
+        address creditsToken = LibCreditsStorage.load().creditsToken;
+        if (creditsToken == address(0)) return 0;
+        // Inline balanceOf call — avoids importing a full IERC20 just
+        // for this single selector.
+        (bool ok, bytes memory ret) =
+            creditsToken.staticcall(abi.encodeWithSignature("balanceOf(address)", address(this)));
+        if (!ok || ret.length < 32) return 0;
+        return abi.decode(ret, (uint256));
+    }
+
+    /// Owner-only treasury withdrawal. The diamond IS the holder, so a
+    /// plain `transfer(to, amount)` against the credits token sends
+    /// from `_balances[diamond]` directly — no allowance ceremony.
+    /// Used to recycle accumulated registration fees: owner can
+    /// redistribute, refund users, or burn (transfer to a sink).
+    function withdrawTreasury(address to, uint256 amount) external {
+        LibDiamond.enforceIsContractOwner();
+        require(to != address(0), "treasury: zero recipient");
+        address creditsToken = LibCreditsStorage.load().creditsToken;
+        require(creditsToken != address(0), "treasury: token unset");
+        (bool ok, bytes memory ret) =
+            creditsToken.call(abi.encodeWithSignature("transfer(address,uint256)", to, amount));
+        require(ok && (ret.length == 0 || abi.decode(ret, (bool))), "treasury: transfer failed");
+        emit TreasuryWithdrawn(to, amount);
+    }
+
     function setMetadata(uint256 agentId, bytes32 key, bytes calldata value) external {
         LibRegistryStorage.Storage storage s = LibRegistryStorage.load();
         require(s.ownerOfId[agentId] == msg.sender, "not owner");

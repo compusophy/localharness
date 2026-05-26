@@ -281,6 +281,18 @@ async fn start_session(key: &str) -> Result<(), JsValue> {
            user in the transcript — no need to re-narrate either."
     );
 
+    // Owner customization: append the contents of `.lh_system_prompt.txt`
+    // (if any) under a clear header so the model sees the baked-in
+    // tooling docs first, then the owner's overrides on top. This is
+    // the studio-MVP hook — owners differentiate their agent's
+    // personality / role / constraints without forking the bundle.
+    let system_instructions = match super::system_prompt::load().await {
+        Some(custom) => {
+            format!("{system_instructions}\n\n=== Owner instructions ===\n{custom}")
+        }
+        None => system_instructions,
+    };
+
     // Unrestricted capabilities turn on the write tools; the Agent
     // constructor refuses to start without a policy gate. OPFS is
     // sandboxed per-origin (no path-escape risk) and this is the
@@ -374,22 +386,14 @@ async fn collect_payment_if_required() -> Result<Option<String>, String> {
     };
 
     let purpose = format!(
-        "pay {} $localharness per turn to this agent",
-        super::format_wei_as_test_eth(price_wei),
+        "pay {} LH per turn to this agent",
+        price_wei / 1_000_000_000_000_000_000u128,
     );
 
-    dom::set_status("payment: reading nonce + gas…", false);
-    let nonce = crate::registry::next_nonce(&visitor_address)
-        .await
-        .map_err(|e| format!("nonce: {e}"))?;
-    let gas_price = crate::registry::current_gas_price()
-        .await
-        .map_err(|e| format!("gas price: {e}"))?;
-
-    // Build ERC-20 transfer(tba, price_wei) calldata. We do this
-    // here in the subdomain bundle (it's all pure Rust + the
-    // registry helpers) so the iframe signer just signs whatever
-    // calldata we hand it.
+    // Build ERC-20 transfer(tba, price_wei) calldata against the
+    // credits token. Sponsored Tempo tx: visitor's wallet (at apex)
+    // signs the sender_hash, the bundle sponsor pays gas in AlphaUSD.
+    // Visitor holds zero of anything except the LH they're spending.
     let tba_bytes = parse_address(&tba)?;
     let mut tba_padded = [0u8; 32];
     tba_padded[12..].copy_from_slice(&tba_bytes);
@@ -399,37 +403,23 @@ async fn collect_payment_if_required() -> Result<Option<String>, String> {
     calldata.extend_from_slice(&selector);
     calldata.extend_from_slice(&tba_padded);
     calldata.extend_from_slice(&amount_bytes);
-    let data_hex = bytes_to_hex(&calldata);
 
-    // Estimate gas for the ERC-20 transfer. Tempo gas accounting
-    // can be twitchy; a buffer here saves a "out of gas" surprise.
-    dom::set_status("payment: estimating gas…", false);
-    let gas_limit = match estimate_call_gas(
-        &visitor_address,
-        crate::registry::LOCALHARNESS_TOKEN_ADDRESS,
-        &data_hex,
-    ).await {
-        Ok(g) => g,
-        Err(_) => 120_000, // safe fallback for an ERC-20 transfer
+    let token_addr = parse_address(crate::registry::LOCALHARNESS_TOKEN_ADDRESS)?;
+    let call = crate::tempo_tx::TempoCall {
+        to: token_addr,
+        value_wei: 0,
+        input: calldata,
     };
 
     dom::set_status("payment: signing via apex…", false);
-    let raw_tx = super::verify::sign_tx_via_iframe(super::verify::SignTxRequest {
-        to_hex: crate::registry::LOCALHARNESS_TOKEN_ADDRESS,
-        value_wei: 0,
-        nonce,
-        gas_limit,
-        gas_price,
-        chain_id: crate::registry::CHAIN_ID,
-        purpose: &purpose,
-        data_hex: &data_hex,
-    })
-    .await?;
-
-    dom::set_status("payment: submitting + waiting for receipt…", false);
-    let tx_hash = crate::registry::submit_and_wait_receipt(&raw_tx)
-        .await
-        .map_err(|e| format!("submit: {e}"))?;
+    let tx_hash = super::events::run_sponsored_tempo_call(
+        &visitor_address,
+        vec![call],
+        500_000,
+        &purpose,
+    )
+    .await
+    .map_err(|e| format!("payment: {e}"))?;
 
     Ok(Some(tx_hash))
 }

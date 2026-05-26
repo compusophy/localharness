@@ -34,6 +34,7 @@ mod owner;
 mod pricing;
 mod signer;
 mod sponsor;
+mod system_prompt;
 mod templates;
 mod tenant;
 mod verify;

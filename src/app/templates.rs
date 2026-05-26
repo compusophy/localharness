@@ -518,11 +518,35 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                     }
                 }
             }
+            (admin_prompt_section())
             (admin_security_collapsed())
             div.admin-footer {
                 button type="button" data-action="header-admin-close" .ghost { "close" }
                 span.admin-version { (APP_VERSION) }
             }
+        }
+    }
+}
+
+/// Custom system prompt section — the studio MVP. Tenant-only.
+/// Textarea pre-filled from `.lh_system_prompt.txt`, save button
+/// writes it back. Empty save reverts to the bundle's default prompt
+/// (deletes the OPFS file). Takes effect on the next session start
+/// (i.e. next api-key change / page reload / tab restart).
+pub(crate) fn admin_prompt_section() -> Markup {
+    html! {
+        div.admin-section {
+            div.admin-section-title { "agent prompt" }
+            form.prompt-form data-action="save-prompt" onsubmit="return false" {
+                textarea #prompt-input
+                    .prompt-input
+                    rows="5"
+                    placeholder="optional — empty uses the default" {}
+                div.prompt-actions {
+                    button type="submit" .ghost { "save" }
+                }
+            }
+            div #prompt-msg .admin-msg-slot {}
         }
     }
 }

@@ -143,93 +143,6 @@ async fn sign_via_iframe(nonce_hex: &str) -> Result<(String, String), String> {
     Ok((address, signature))
 }
 
-/// Payment-flow companion: build an `lh-sign-tx` payload, hand it to
-/// the iframe signer, return the signed raw tx hex on success. The
-/// signer prompts the user for explicit consent before returning;
-/// callers should expect either the raw hex back or a "user denied"
-/// error.
-///
-/// The timeout is generous (90s) because the user has to click through
-/// the browser confirm() dialog at the apex origin — that's not bounded
-/// by network latency.
-pub(crate) struct SignTxRequest<'a> {
-    pub to_hex: &'a str,
-    pub value_wei: u128,
-    pub nonce: u128,
-    pub gas_limit: u128,
-    pub gas_price: u128,
-    pub chain_id: u64,
-    pub purpose: &'a str,
-    /// Hex-encoded calldata (no `0x` prefix needed). Empty for a
-    /// native transfer; populated for a contract call (ERC-20
-    /// transfer, etc.).
-    pub data_hex: &'a str,
-}
-
-pub(crate) async fn sign_tx_via_iframe(req: SignTxRequest<'_>) -> Result<String, String> {
-    let id = format!("tx-{}", random_id_hex());
-    let tx = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &tx,
-        &JsValue::from_str("to"),
-        &JsValue::from_str(req.to_hex),
-    );
-    let _ = js_sys::Reflect::set(
-        &tx,
-        &JsValue::from_str("value"),
-        &JsValue::from_str(&format!("0x{:x}", req.value_wei)),
-    );
-    let _ = js_sys::Reflect::set(
-        &tx,
-        &JsValue::from_str("nonce"),
-        &JsValue::from_str(&format!("0x{:x}", req.nonce)),
-    );
-    let _ = js_sys::Reflect::set(
-        &tx,
-        &JsValue::from_str("gas"),
-        &JsValue::from_str(&format!("0x{:x}", req.gas_limit)),
-    );
-    let _ = js_sys::Reflect::set(
-        &tx,
-        &JsValue::from_str("gasPrice"),
-        &JsValue::from_str(&format!("0x{:x}", req.gas_price)),
-    );
-    let _ = js_sys::Reflect::set(
-        &tx,
-        &JsValue::from_str("chainId"),
-        &JsValue::from_f64(req.chain_id as f64),
-    );
-    let _ = js_sys::Reflect::set(
-        &tx,
-        &JsValue::from_str("data"),
-        &JsValue::from_str(req.data_hex),
-    );
-
-    let payload = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("type"),
-        &JsValue::from_str("lh-sign-tx"),
-    );
-    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("id"), &JsValue::from_str(&id));
-    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("tx"), &tx);
-    let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("purpose"),
-        &JsValue::from_str(req.purpose),
-    );
-
-    let data = signer_iframe_request(&id, &payload.into(), TX_TIMEOUT_MS).await?;
-    let raw = js_sys::Reflect::get(&data, &JsValue::from_str("raw_tx_hex"))
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_default();
-    if raw.is_empty() {
-        return Err("signer reply missing raw_tx_hex".into());
-    }
-    Ok(raw)
-}
-
 const TX_TIMEOUT_MS: u32 = 90_000;
 
 /// Ask the apex signer to sign a raw 32-byte digest with the master
@@ -238,8 +151,8 @@ const TX_TIMEOUT_MS: u32 = 90_000;
 /// sender_hash, hands it here for the apex wallet's signature, then
 /// combines with a locally-signed fee_payer signature to produce the
 /// final raw tx. `purpose` is a human-readable description (logged on
-/// the apex side; no consent dialog in this flow — same auto-approve
-/// semantics as `lh-sign-tx`).
+/// the apex side; no consent dialog in this flow — the trust boundary
+/// is "you have JS access to the apex origin").
 pub(crate) async fn sign_digest_via_iframe(
     digest: &[u8; 32],
     purpose: &str,
