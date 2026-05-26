@@ -205,11 +205,20 @@ impl TempoTx {
     /// Notably DIFFERENT from sender_hash: no `aa_authorization_list`
     /// here (the spec leaves it out of the fee_payer commitment).
     pub fn fee_payer_hash(&self, sender_address: &[u8; 20]) -> [u8; 32] {
+        // Confirmed against wevm/ox `TxEnvelopeTempo.serialize` with
+        // `format: 'feePayer'`. Field order:
+        //   1-10: common (chain_id ... valid_after)
+        //   11: feeToken
+        //   12: sender_address (replaces feePayerSignatureOrSender)
+        //   13: authorizationList
+        //   14: keyAuthorization (conditional — included only when set)
         let mut items = self.common_rlp_items();
         items.push(rlp_fee_token(self.fee_token.as_ref()));
         items.push(wallet::rlp_bytes(sender_address));
-        // key_authorization — always included; 0x80 when None.
-        items.push(rlp_key_authorization(self.key_authorization.as_ref()));
+        items.push(rlp_authorization_list(&self.aa_authorization_list));
+        if self.key_authorization.is_some() {
+            items.push(rlp_key_authorization(self.key_authorization.as_ref()));
+        }
         let body = wallet::rlp_list(&items);
         let mut payload = Vec::with_capacity(1 + body.len());
         payload.push(FEE_PAYER_DOMAIN);
