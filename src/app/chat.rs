@@ -293,15 +293,18 @@ async fn start_session(key: &str) -> Result<(), JsValue> {
         None => system_instructions,
     };
 
-    // Unrestricted capabilities turn on the write tools; the Agent
-    // constructor refuses to start without a policy gate. OPFS is
-    // sandboxed per-origin (no path-escape risk) and this is the
-    // user's own tab, so allow_all is the right policy for the demo —
-    // anyone running the SDK as a library in less trusted contexts
-    // should pick a tighter one (e.g. workspace_only / per-tool allow).
+    let capabilities = match super::tool_allowlist::load().await {
+        Some(tools) => {
+            let mut caps = CapabilitiesConfig::unrestricted();
+            caps.enabled_tools = Some(tools);
+            caps
+        }
+        None => CapabilitiesConfig::unrestricted(),
+    };
+
     let captured_key = key.to_string();
     let mut cfg = GeminiAgentConfig::new(key.to_string())
-        .with_capabilities(CapabilitiesConfig::unrestricted())
+        .with_capabilities(capabilities)
         .with_policies(vec![policy::allow_all()])
         .with_filesystem(super::shared_opfs())
         .with_system_instructions(system_instructions)

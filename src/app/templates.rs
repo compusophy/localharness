@@ -8,7 +8,7 @@
 use maud::{html, Markup, PreEscaped};
 
 use crate::filesystem::{DirEntry, EntryKind};
-use crate::types::{ToolCall, ToolResult};
+use crate::types::{BuiltinTool, ToolCall, ToolResult};
 
 use super::tenant::Host;
 use super::VerifyState;
@@ -57,7 +57,7 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
 
 /// Version string, used in the admin dropdown bottom. Bumped in
 /// lockstep with Cargo.toml.
-pub(crate) const APP_VERSION: &str = "0.10.26";
+pub(crate) const APP_VERSION: &str = "0.10.27";
 
 /// Terminal input — just `>` prompt + textarea + → send. Status line
 /// stays in the DOM (id="status") for dispatcher messages but renders
@@ -519,6 +519,7 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                 }
             }
             (admin_prompt_section())
+            (admin_tool_allowlist_section())
             (admin_security_collapsed())
             div.admin-footer {
                 button type="button" data-action="header-admin-close" .ghost { "close" }
@@ -547,6 +548,35 @@ pub(crate) fn admin_prompt_section() -> Markup {
                 }
             }
             div #prompt-msg .admin-msg-slot {}
+        }
+    }
+}
+
+pub(crate) fn admin_tool_allowlist_section() -> Markup {
+    html! {
+        div.admin-section {
+            div.admin-section-title { "tool allowlist" }
+            div #tool-allowlist-status .admin-msg-slot { "loading…" }
+            div.tool-allowlist-grid {
+                @for tool in BuiltinTool::ALL {
+                    label.tool-checkbox-label {
+                        input.tool-checkbox
+                            type="checkbox"
+                            data-tool=(tool.wire_name())
+                            checked {}
+                        " " (tool.wire_name())
+                    }
+                }
+            }
+            div.prompt-actions {
+                button type="button"
+                    data-action="save-tool-allowlist"
+                    .ghost { "save" }
+                button type="button"
+                    data-action="reset-tool-allowlist"
+                    .ghost { "reset (all)" }
+            }
+            div #tool-allowlist-msg .admin-msg-slot {}
         }
     }
 }

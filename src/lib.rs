@@ -57,6 +57,8 @@ pub mod tools;
 pub mod triggers;
 pub mod types;
 
+pub mod rustlite;
+
 // The browser-resident IDE. Gated on the `browser-app` feature AND a
 // wasm target, so a native `cargo add localharness` never compiles it.
 #[cfg(all(feature = "browser-app", target_arch = "wasm32"))]

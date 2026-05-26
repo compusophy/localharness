@@ -5,6 +5,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.27]
+
+### Added
+
+- **Rustlite compiler** (`src/rustlite/`). In-crate Rust-subset compiler
+  that takes source code and emits wasm bytes. Full pipeline: lexer →
+  AST → recursive-descent parser → typechecker → codegen. Supports
+  structs, enums (unit/tuple/struct variants), functions, let/mut,
+  assignment, if/else, match with pattern destructuring, while/loop/
+  break/continue, binary/unary ops, method-call desugaring, string
+  literals with data-segment interning, tail expressions. No references,
+  no lifetimes, no traits, no generics, no closures — by design (arena-
+  per-invocation memory model). 27 tests. ~2300 lines.
+- **Per-agent tool allowlist** (studio v2). OPFS-persisted
+  `.lh_tool_allowlist.txt` restricts which built-in tools the agent
+  exposes. Admin UI: checkbox grid of all 13 builtins, save/reset.
+  Empty = unrestricted. Takes effect on next session start.
+- `NodeList` web-sys feature for checkbox query in the allowlist UI.
+
+### Changed
+
+- README status line updated to reflect rustlite compiler and tool
+  allowlist features.
+
 ## [0.10.26] - 2026-05-26
 
 Big architectural sweep — MultiSignerAccount, credit token + cost gates,

@@ -70,6 +70,8 @@ enum Action {
     AgentActToggle(String),
     AgentSendLh(String),
     SavePrompt,
+    SaveToolAllowlist,
+    ResetToolAllowlist,
 }
 
 impl Action {
@@ -120,6 +122,8 @@ impl Action {
             "agent-act-toggle" => Action::AgentActToggle(arg.unwrap_or_default()),
             "agent-send-lh" => Action::AgentSendLh(arg.unwrap_or_default()),
             "save-prompt" => Action::SavePrompt,
+            "save-tool-allowlist" => Action::SaveToolAllowlist,
+            "reset-tool-allowlist" => Action::ResetToolAllowlist,
             _ => return None,
         })
     }
@@ -878,6 +882,8 @@ fn dispatch(action: Action) {
         Action::AgentActToggle(token_id) => agent_act_toggle_pressed(token_id),
         Action::AgentSendLh(token_id) => agent_send_lh_pressed(token_id),
         Action::SavePrompt => save_prompt_pressed(),
+        Action::SaveToolAllowlist => save_tool_allowlist_pressed(),
+        Action::ResetToolAllowlist => reset_tool_allowlist_pressed(),
     }
 }
 
@@ -909,6 +915,81 @@ fn save_prompt_pressed() {
             Err(err) => {
                 dom::swap_inner(
                     "prompt-msg",
+                    &format!("<span style=\"color:var(--error)\">{err}</span>"),
+                );
+            }
+        }
+    });
+}
+
+fn save_tool_allowlist_pressed() {
+    use crate::types::BuiltinTool;
+    let mut enabled = Vec::new();
+    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+        if let Ok(checkboxes) = doc.query_selector_all(".tool-checkbox") {
+            for i in 0..checkboxes.length() {
+                if let Some(el) = checkboxes.get(i) {
+                    let input: web_sys::HtmlInputElement = JsCast::unchecked_into(el);
+                    if input.checked() {
+                        if let Some(name) = input.get_attribute("data-tool") {
+                            if let Some(tool) = BuiltinTool::ALL.iter().find(|t| t.wire_name() == name) {
+                                enabled.push(*tool);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    dom::swap_inner(
+        "tool-allowlist-msg",
+        "<span style=\"color:var(--muted)\">saving…</span>",
+    );
+    wasm_bindgen_futures::spawn_local(async move {
+        match super::tool_allowlist::save(&enabled).await {
+            Ok(()) => {
+                let summary = super::tool_allowlist::summary(&enabled);
+                dom::swap_inner(
+                    "tool-allowlist-msg",
+                    &format!("<span style=\"color:var(--accent)\">✓ saved · {summary} · takes effect on next session</span>"),
+                );
+            }
+            Err(err) => {
+                dom::swap_inner(
+                    "tool-allowlist-msg",
+                    &format!("<span style=\"color:var(--error)\">{err}</span>"),
+                );
+            }
+        }
+    });
+}
+
+fn reset_tool_allowlist_pressed() {
+    dom::swap_inner(
+        "tool-allowlist-msg",
+        "<span style=\"color:var(--muted)\">resetting…</span>",
+    );
+    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+        if let Ok(checkboxes) = doc.query_selector_all(".tool-checkbox") {
+            for i in 0..checkboxes.length() {
+                if let Some(el) = checkboxes.get(i) {
+                    let input: web_sys::HtmlInputElement = JsCast::unchecked_into(el);
+                    input.set_checked(true);
+                }
+            }
+        }
+    }
+    wasm_bindgen_futures::spawn_local(async move {
+        match super::tool_allowlist::save(&[]).await {
+            Ok(()) => {
+                dom::swap_inner(
+                    "tool-allowlist-msg",
+                    "<span style=\"color:var(--accent)\">✓ reset · all tools enabled · takes effect on next session</span>",
+                );
+            }
+            Err(err) => {
+                dom::swap_inner(
+                    "tool-allowlist-msg",
                     &format!("<span style=\"color:var(--error)\">{err}</span>"),
                 );
             }
@@ -1513,6 +1594,25 @@ fn header_admin_toggle() {
                 if let Some(textarea) = dom::textarea_by_id("prompt-input") {
                     textarea.set_value(&prompt);
                 }
+            }
+            if let Some(allowed) = super::tool_allowlist::load().await {
+                if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                    if let Ok(checkboxes) = doc.query_selector_all(".tool-checkbox") {
+                        for i in 0..checkboxes.length() {
+                            if let Some(el) = checkboxes.get(i) {
+                                let input: web_sys::HtmlInputElement = JsCast::unchecked_into(el);
+                                if let Some(name) = input.get_attribute("data-tool") {
+                                    let is_allowed = allowed.iter().any(|t| t.wire_name() == name);
+                                    input.set_checked(is_allowed);
+                                }
+                            }
+                        }
+                    }
+                }
+                let summary = super::tool_allowlist::summary(&allowed);
+                dom::swap_inner("tool-allowlist-status", &summary);
+            } else {
+                dom::swap_inner("tool-allowlist-status", "all tools enabled");
             }
         });
     }

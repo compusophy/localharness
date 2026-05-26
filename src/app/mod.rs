@@ -36,6 +36,7 @@ mod signer;
 mod sponsor;
 mod system_prompt;
 mod templates;
+mod tool_allowlist;
 mod tenant;
 mod verify;
 mod wallet_store;

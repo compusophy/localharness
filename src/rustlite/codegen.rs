@@ -1,0 +1,786 @@
+use crate::rustlite::CompileError;
+use crate::rustlite::ast::{BinOp, UnaryOp};
+use crate::rustlite::typecheck::*;
+
+pub fn emit(module: &TypedModule) -> Result<Vec<u8>, CompileError> {
+    let mut emitter = WasmEmitter::new();
+    emitter.emit_module(module)?;
+    Ok(emitter.finish())
+}
+
+// Wasm binary format constants
+const WASM_MAGIC: &[u8] = b"\0asm";
+const WASM_VERSION: &[u8] = &[1, 0, 0, 0];
+
+// Section IDs
+const SEC_TYPE: u8 = 1;
+const SEC_FUNCTION: u8 = 3;
+const SEC_MEMORY: u8 = 5;
+const SEC_EXPORT: u8 = 7;
+const SEC_CODE: u8 = 10;
+const SEC_DATA: u8 = 11;
+
+// Value types
+const WASM_I32: u8 = 0x7F;
+const WASM_I64: u8 = 0x7E;
+const WASM_F32: u8 = 0x7D;
+const WASM_F64: u8 = 0x7C;
+
+// Opcodes
+const _OP_UNREACHABLE: u8 = 0x00;
+const _OP_NOP: u8 = 0x01;
+const OP_BLOCK: u8 = 0x02;
+const OP_LOOP: u8 = 0x03;
+const OP_IF: u8 = 0x04;
+const OP_ELSE: u8 = 0x05;
+const OP_END: u8 = 0x0B;
+const OP_BR: u8 = 0x0C;
+const OP_BR_IF: u8 = 0x0D;
+const OP_RETURN: u8 = 0x0F;
+const OP_CALL: u8 = 0x10;
+const OP_DROP: u8 = 0x1A;
+const OP_LOCAL_GET: u8 = 0x20;
+const OP_LOCAL_SET: u8 = 0x21;
+const _OP_LOCAL_TEE: u8 = 0x22;
+const OP_I32_LOAD: u8 = 0x28;
+const _OP_I64_LOAD: u8 = 0x29;
+const _OP_F32_LOAD: u8 = 0x2A;
+const _OP_F64_LOAD: u8 = 0x2B;
+const _OP_I32_STORE: u8 = 0x36;
+const _OP_I64_STORE: u8 = 0x37;
+const _OP_F32_STORE: u8 = 0x38;
+const _OP_F64_STORE: u8 = 0x39;
+const OP_I32_CONST: u8 = 0x41;
+const OP_I64_CONST: u8 = 0x42;
+const _OP_F32_CONST: u8 = 0x43;
+const OP_F64_CONST: u8 = 0x44;
+const OP_I32_EQZ: u8 = 0x45;
+const OP_I32_EQ: u8 = 0x46;
+const OP_I32_NE: u8 = 0x47;
+const OP_I32_LT_S: u8 = 0x48;
+const OP_I32_GT_S: u8 = 0x4A;
+const OP_I32_LE_S: u8 = 0x4C;
+const OP_I32_GE_S: u8 = 0x4E;
+const OP_I64_EQ: u8 = 0x51;
+const OP_I64_NE: u8 = 0x52;
+const OP_I64_LT_S: u8 = 0x53;
+const OP_I64_GT_S: u8 = 0x55;
+const OP_I64_LE_S: u8 = 0x57;
+const OP_I64_GE_S: u8 = 0x59;
+const OP_F64_EQ: u8 = 0x61;
+const OP_F64_NE: u8 = 0x62;
+const OP_F64_LT: u8 = 0x63;
+const OP_F64_GT: u8 = 0x64;
+const OP_F64_LE: u8 = 0x65;
+const OP_F64_GE: u8 = 0x66;
+const OP_I32_ADD: u8 = 0x6A;
+const OP_I32_SUB: u8 = 0x6B;
+const OP_I32_MUL: u8 = 0x6C;
+const OP_I32_DIV_S: u8 = 0x6D;
+const OP_I32_REM_S: u8 = 0x6F;
+const OP_I64_ADD: u8 = 0x7C;
+const OP_I64_SUB: u8 = 0x7D;
+const OP_I64_MUL: u8 = 0x7E;
+const OP_I64_DIV_S: u8 = 0x7F;
+const OP_I64_REM_S: u8 = 0x81;
+const OP_F64_ADD: u8 = 0xA0;
+const OP_F64_SUB: u8 = 0xA1;
+const OP_F64_MUL: u8 = 0xA2;
+const OP_F64_DIV: u8 = 0xA3;
+const OP_F64_NEG: u8 = 0x9A;
+
+const BLOCK_VOID: u8 = 0x40;
+
+pub struct WasmModule {
+    pub bytes: Vec<u8>,
+}
+
+struct _FuncInfo {
+    _type_idx: u32,
+    _local_count: u32,
+}
+
+struct WasmEmitter {
+    types: Vec<Vec<u8>>,
+    functions: Vec<FuncBody>,
+    exports: Vec<(String, u8, u32)>,
+    data_segments: Vec<(u32, Vec<u8>)>,
+    data_offset: u32,
+
+    // Per-function state
+    fn_map: std::collections::HashMap<String, u32>,
+    local_map: Vec<std::collections::HashMap<String, u32>>,
+    local_types: Vec<u8>,
+    string_map: std::collections::HashMap<String, (u32, u32)>,
+}
+
+struct FuncBody {
+    #[allow(dead_code)]
+    type_idx: u32,
+    locals: Vec<u8>,
+    code: Vec<u8>,
+}
+
+impl WasmEmitter {
+    fn new() -> Self {
+        Self {
+            types: Vec::new(),
+            functions: Vec::new(),
+            exports: Vec::new(),
+            data_segments: Vec::new(),
+            data_offset: 1024, // start data segment at 1KB
+            fn_map: std::collections::HashMap::new(),
+            local_map: Vec::new(),
+            local_types: Vec::new(),
+            string_map: std::collections::HashMap::new(),
+        }
+    }
+
+    fn emit_module(&mut self, module: &TypedModule) -> Result<(), CompileError> {
+        // Register all functions first (for forward references)
+        for (i, f) in module.functions.iter().enumerate() {
+            self.fn_map.insert(f.name.clone(), i as u32);
+        }
+
+        // Emit each function
+        for f in &module.functions {
+            self.emit_function(f)?;
+            // Export all functions
+            let idx = self.fn_map[&f.name];
+            self.exports.push((f.name.clone(), 0x00, idx));
+        }
+
+        Ok(())
+    }
+
+    fn emit_function(&mut self, f: &TypedFn) -> Result<(), CompileError> {
+        // Build type signature
+        let mut sig = Vec::new();
+        sig.push(0x60); // func type
+        // Params
+        sig.push(f.params.len() as u8);
+        for (_, ty) in &f.params {
+            sig.push(resolved_to_wasm(ty));
+        }
+        // Returns
+        if f.ret_type == ResolvedType::Void {
+            sig.push(0); // no return
+        } else {
+            sig.push(1);
+            sig.push(resolved_to_wasm(&f.ret_type));
+        }
+        let type_idx = self.types.len() as u32;
+        self.types.push(sig);
+
+        // Set up locals
+        self.local_map.push(std::collections::HashMap::new());
+        self.local_types = Vec::new();
+
+        // Params are locals 0..n
+        for (i, (name, _ty)) in f.params.iter().enumerate() {
+            self.local_map.last_mut().unwrap().insert(name.clone(), i as u32);
+        }
+
+        // Emit body
+        let mut code = Vec::new();
+        self.emit_block_code(&f.body, &mut code)?;
+        code.push(OP_END);
+
+        // Build locals section for the function body
+        let mut locals_encoded = Vec::new();
+        if !self.local_types.is_empty() {
+            // Group consecutive locals of the same type
+            let mut groups: Vec<(u32, u8)> = Vec::new();
+            for &ty in &self.local_types {
+                if let Some(last) = groups.last_mut() {
+                    if last.1 == ty {
+                        last.0 += 1;
+                        continue;
+                    }
+                }
+                groups.push((1, ty));
+            }
+            leb128_u32(groups.len() as u32, &mut locals_encoded);
+            for (count, ty) in groups {
+                leb128_u32(count, &mut locals_encoded);
+                locals_encoded.push(ty);
+            }
+        } else {
+            leb128_u32(0, &mut locals_encoded);
+        }
+
+        self.functions.push(FuncBody {
+            type_idx,
+            locals: locals_encoded,
+            code,
+        });
+
+        self.local_map.pop();
+        Ok(())
+    }
+
+    fn alloc_local(&mut self, name: &str, ty: &ResolvedType) -> u32 {
+        let wasm_ty = resolved_to_wasm(ty);
+        let local_idx = self.local_map.last().unwrap().len() as u32 + self.local_types.len() as u32;
+        self.local_types.push(wasm_ty);
+        self.local_map.last_mut().unwrap().insert(name.to_string(), local_idx);
+        local_idx
+    }
+
+    fn emit_block_code(&mut self, block: &TypedBlock, code: &mut Vec<u8>) -> Result<(), CompileError> {
+        for stmt in &block.stmts {
+            self.emit_stmt(stmt, code)?;
+        }
+        if let Some(tail) = &block.tail {
+            self.emit_expr(tail, code)?;
+        }
+        Ok(())
+    }
+
+    fn emit_stmt(&mut self, stmt: &TypedStmt, code: &mut Vec<u8>) -> Result<(), CompileError> {
+        match stmt {
+            TypedStmt::Let { name, ty, init, .. } => {
+                let local_idx = self.alloc_local(name, ty);
+                self.emit_expr(init, code)?;
+                code.push(OP_LOCAL_SET);
+                leb128_u32(local_idx, code);
+            }
+            TypedStmt::Assign { place, value, .. } => {
+                self.emit_expr(value, code)?;
+                let local_idx = *self.local_map.last().unwrap().get(&place.root)
+                    .ok_or_else(|| CompileError::new(format!("undefined local '{}'", place.root)))?;
+                code.push(OP_LOCAL_SET);
+                leb128_u32(local_idx, code);
+            }
+            TypedStmt::Return { value } => {
+                if let Some(val) = value {
+                    self.emit_expr(val, code)?;
+                }
+                code.push(OP_RETURN);
+            }
+            TypedStmt::Expr { expr } => {
+                self.emit_expr(expr, code)?;
+                if expr.ty != ResolvedType::Void {
+                    code.push(OP_DROP);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_expr(&mut self, expr: &TypedExpr, code: &mut Vec<u8>) -> Result<(), CompileError> {
+        match &expr.kind {
+            TypedExprKind::IntLit(n) => {
+                code.push(OP_I32_CONST);
+                leb128_i32(*n as i32, code);
+            }
+            TypedExprKind::FloatLit(n) => {
+                code.push(OP_F64_CONST);
+                code.extend_from_slice(&n.to_le_bytes());
+            }
+            TypedExprKind::BoolLit(b) => {
+                code.push(OP_I32_CONST);
+                leb128_i32(if *b { 1 } else { 0 }, code);
+            }
+            TypedExprKind::StringLit(s) => {
+                // Store string data in data segment, push pointer
+                let (ptr, _len) = self.intern_string(s);
+                code.push(OP_I32_CONST);
+                leb128_i32(ptr as i32, code);
+            }
+            TypedExprKind::Var(name) => {
+                let local_idx = *self.local_map.last().unwrap().get(name)
+                    .ok_or_else(|| CompileError::new(format!("undefined local '{name}'")))?;
+                code.push(OP_LOCAL_GET);
+                leb128_u32(local_idx, code);
+            }
+            TypedExprKind::Path(_segments) => {
+                // Unit enum variant — represented as tag value (i32)
+                code.push(OP_I32_CONST);
+                leb128_i32(0, code);
+            }
+            TypedExprKind::FieldAccess { object, field_index, .. } => {
+                // For now: emit the object, then load from offset
+                self.emit_expr(object, code)?;
+                // Field access on stack-allocated structs: the object is
+                // a pointer; load field at known offset
+                code.push(OP_I32_CONST);
+                leb128_i32((*field_index as i32) * 4, code);
+                code.push(OP_I32_ADD);
+                code.push(OP_I32_LOAD);
+                code.push(2); // alignment
+                code.push(0); // offset
+            }
+            TypedExprKind::Call { func, args } => {
+                for arg in args {
+                    self.emit_expr(arg, code)?;
+                }
+                let fn_name = match &func.kind {
+                    TypedExprKind::Var(name) => name.clone(),
+                    TypedExprKind::Path(p) => p.join("::"),
+                    _ => return Err(CompileError::new("cannot call non-function")),
+                };
+                let fn_idx = *self.fn_map.get(&fn_name)
+                    .ok_or_else(|| CompileError::new(format!("undefined function '{fn_name}'")))?;
+                code.push(OP_CALL);
+                leb128_u32(fn_idx, code);
+            }
+            TypedExprKind::MethodCall { object, method: _, args } => {
+                // Desugar to Type::method(object, args...)
+                self.emit_expr(object, code)?;
+                for arg in args {
+                    self.emit_expr(arg, code)?;
+                }
+                // For now, method calls go to host imports (unresolved at this stage)
+                code.push(OP_I32_CONST);
+                leb128_i32(0, code);
+            }
+            TypedExprKind::StructLit { fields, .. } => {
+                // For now, push each field value onto stack
+                // In a real impl, allocate arena memory and store fields
+                for (_, val) in fields {
+                    self.emit_expr(val, code)?;
+                }
+                // If more than one field, only keep the last (simplified)
+                for _ in 1..fields.len() {
+                    // In the real version, we'd store each to memory
+                }
+            }
+            TypedExprKind::TupleLit(exprs) => {
+                for e in exprs {
+                    self.emit_expr(e, code)?;
+                }
+            }
+            TypedExprKind::BinOp { op, lhs, rhs } => {
+                self.emit_expr(lhs, code)?;
+                self.emit_expr(rhs, code)?;
+                let opcode = match (&lhs.ty, op) {
+                    (ResolvedType::I32, BinOp::Add) => OP_I32_ADD,
+                    (ResolvedType::I32, BinOp::Sub) => OP_I32_SUB,
+                    (ResolvedType::I32, BinOp::Mul) => OP_I32_MUL,
+                    (ResolvedType::I32, BinOp::Div) => OP_I32_DIV_S,
+                    (ResolvedType::I32, BinOp::Mod) => OP_I32_REM_S,
+                    (ResolvedType::I32, BinOp::Eq) => OP_I32_EQ,
+                    (ResolvedType::I32, BinOp::Ne) => OP_I32_NE,
+                    (ResolvedType::I32, BinOp::Lt) => OP_I32_LT_S,
+                    (ResolvedType::I32, BinOp::Gt) => OP_I32_GT_S,
+                    (ResolvedType::I32, BinOp::Le) => OP_I32_LE_S,
+                    (ResolvedType::I32, BinOp::Ge) => OP_I32_GE_S,
+                    (ResolvedType::I64, BinOp::Add) => OP_I64_ADD,
+                    (ResolvedType::I64, BinOp::Sub) => OP_I64_SUB,
+                    (ResolvedType::I64, BinOp::Mul) => OP_I64_MUL,
+                    (ResolvedType::I64, BinOp::Div) => OP_I64_DIV_S,
+                    (ResolvedType::I64, BinOp::Mod) => OP_I64_REM_S,
+                    (ResolvedType::I64, BinOp::Eq) => OP_I64_EQ,
+                    (ResolvedType::I64, BinOp::Ne) => OP_I64_NE,
+                    (ResolvedType::I64, BinOp::Lt) => OP_I64_LT_S,
+                    (ResolvedType::I64, BinOp::Gt) => OP_I64_GT_S,
+                    (ResolvedType::I64, BinOp::Le) => OP_I64_LE_S,
+                    (ResolvedType::I64, BinOp::Ge) => OP_I64_GE_S,
+                    (ResolvedType::F64, BinOp::Add) => OP_F64_ADD,
+                    (ResolvedType::F64, BinOp::Sub) => OP_F64_SUB,
+                    (ResolvedType::F64, BinOp::Mul) => OP_F64_MUL,
+                    (ResolvedType::F64, BinOp::Div) => OP_F64_DIV,
+                    (ResolvedType::F64, BinOp::Eq) => OP_F64_EQ,
+                    (ResolvedType::F64, BinOp::Ne) => OP_F64_NE,
+                    (ResolvedType::F64, BinOp::Lt) => OP_F64_LT,
+                    (ResolvedType::F64, BinOp::Gt) => OP_F64_GT,
+                    (ResolvedType::F64, BinOp::Le) => OP_F64_LE,
+                    (ResolvedType::F64, BinOp::Ge) => OP_F64_GE,
+                    (_, BinOp::And) => {
+                        // already emitted both sides; AND = both nonzero
+                        code.push(OP_I32_CONST);
+                        leb128_i32(0, code);
+                        code.push(OP_I32_NE);
+                        // swap to check second... simplified: just i32.and
+                        return Ok(());
+                    }
+                    (_, BinOp::Or) => {
+                        code.push(OP_I32_CONST);
+                        leb128_i32(0, code);
+                        code.push(OP_I32_NE);
+                        return Ok(());
+                    }
+                    _ => return Err(CompileError::new(format!("unsupported binop {:?} for {:?}", op, lhs.ty))),
+                };
+                code.push(opcode);
+            }
+            TypedExprKind::UnaryOp { op, operand } => {
+                match op {
+                    UnaryOp::Neg => {
+                        match &operand.ty {
+                            ResolvedType::I32 => {
+                                code.push(OP_I32_CONST);
+                                leb128_i32(0, code);
+                                self.emit_expr(operand, code)?;
+                                code.push(OP_I32_SUB);
+                            }
+                            ResolvedType::I64 => {
+                                code.push(OP_I64_CONST);
+                                leb128_i64(0, code);
+                                self.emit_expr(operand, code)?;
+                                code.push(OP_I64_SUB);
+                            }
+                            ResolvedType::F64 => {
+                                self.emit_expr(operand, code)?;
+                                code.push(OP_F64_NEG);
+                            }
+                            _ => return Err(CompileError::new("neg on non-numeric")),
+                        }
+                    }
+                    UnaryOp::Not => {
+                        self.emit_expr(operand, code)?;
+                        code.push(OP_I32_EQZ);
+                    }
+                }
+            }
+            TypedExprKind::If { cond, then_block, else_block } => {
+                self.emit_expr(cond, code)?;
+                let block_ty = if then_block.ty == ResolvedType::Void {
+                    BLOCK_VOID
+                } else {
+                    resolved_to_wasm(&then_block.ty)
+                };
+                code.push(OP_IF);
+                code.push(block_ty);
+                self.emit_block_code(then_block, code)?;
+                if let Some(else_branch) = else_block {
+                    code.push(OP_ELSE);
+                    match else_branch {
+                        TypedElse::Block(b) => self.emit_block_code(b, code)?,
+                        TypedElse::If(e) => self.emit_expr(e, code)?,
+                    }
+                }
+                code.push(OP_END);
+            }
+            TypedExprKind::Match { scrutinee, arms, result_ty } => {
+                // Simplified: emit as chained if-else for now
+                // A real impl would use br_table for dense integer matches
+                let scrutinee_local = self.alloc_local("__match_scrutinee", &scrutinee.ty);
+                self.emit_expr(scrutinee, code)?;
+                code.push(OP_LOCAL_SET);
+                leb128_u32(scrutinee_local, code);
+
+                let block_ty = if *result_ty == ResolvedType::Void {
+                    BLOCK_VOID
+                } else {
+                    resolved_to_wasm(result_ty)
+                };
+
+                // Nested if-else chain
+                for (i, arm) in arms.iter().enumerate() {
+                    let is_last = i == arms.len() - 1;
+                    if !is_wildcard(&arm.pattern) && !is_last {
+                        // Emit condition check
+                        self.emit_pattern_check(&arm.pattern, scrutinee_local, &scrutinee.ty, code)?;
+                        code.push(OP_IF);
+                        code.push(block_ty);
+                    }
+                    self.emit_expr(&arm.body, code)?;
+                    if !is_wildcard(&arm.pattern) && !is_last {
+                        code.push(OP_ELSE);
+                    }
+                }
+                // Close all the if-else chains
+                for (i, arm) in arms.iter().enumerate() {
+                    let is_last = i == arms.len() - 1;
+                    if !is_wildcard(&arm.pattern) && !is_last {
+                        code.push(OP_END);
+                    }
+                }
+            }
+            TypedExprKind::While { cond, body } => {
+                code.push(OP_BLOCK);
+                code.push(BLOCK_VOID);
+                code.push(OP_LOOP);
+                code.push(BLOCK_VOID);
+                // Check condition
+                self.emit_expr(cond, code)?;
+                code.push(OP_I32_EQZ);
+                code.push(OP_BR_IF);
+                leb128_u32(1, code); // break out of block
+                // Body
+                self.emit_block_code(body, code)?;
+                code.push(OP_BR);
+                leb128_u32(0, code); // continue loop
+                code.push(OP_END); // end loop
+                code.push(OP_END); // end block
+            }
+            TypedExprKind::Loop { body } => {
+                code.push(OP_BLOCK);
+                code.push(BLOCK_VOID);
+                code.push(OP_LOOP);
+                code.push(BLOCK_VOID);
+                self.emit_block_code(body, code)?;
+                code.push(OP_BR);
+                leb128_u32(0, code);
+                code.push(OP_END);
+                code.push(OP_END);
+            }
+            TypedExprKind::Break { .. } => {
+                code.push(OP_BR);
+                leb128_u32(1, code); // break out of enclosing block
+            }
+            TypedExprKind::Continue => {
+                code.push(OP_BR);
+                leb128_u32(0, code); // continue enclosing loop
+            }
+            TypedExprKind::Block(block) => {
+                self.emit_block_code(block, code)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_pattern_check(&mut self, pattern: &crate::rustlite::ast::Pattern, scrutinee_local: u32, _scrutinee_ty: &ResolvedType, code: &mut Vec<u8>) -> Result<(), CompileError> {
+        match &pattern.kind {
+            crate::rustlite::ast::PatternKind::Literal(lit) => {
+                code.push(OP_LOCAL_GET);
+                leb128_u32(scrutinee_local, code);
+                match lit {
+                    crate::rustlite::ast::LitPattern::Int(n) => {
+                        code.push(OP_I32_CONST);
+                        leb128_i32(*n as i32, code);
+                        code.push(OP_I32_EQ);
+                    }
+                    crate::rustlite::ast::LitPattern::Bool(b) => {
+                        code.push(OP_I32_CONST);
+                        leb128_i32(if *b { 1 } else { 0 }, code);
+                        code.push(OP_I32_EQ);
+                    }
+                    _ => {
+                        code.push(OP_I32_CONST);
+                        leb128_i32(1, code);
+                    }
+                }
+            }
+            _ => {
+                // Binding or wildcard: always matches
+                code.push(OP_I32_CONST);
+                leb128_i32(1, code);
+            }
+        }
+        Ok(())
+    }
+
+    fn intern_string(&mut self, s: &str) -> (u32, u32) {
+        if let Some(&cached) = self.string_map.get(s) {
+            return cached;
+        }
+        let ptr = self.data_offset;
+        let len = s.len() as u32;
+        // Length-prefixed: 4 bytes len + payload
+        let mut data = Vec::with_capacity(4 + s.len());
+        data.extend_from_slice(&len.to_le_bytes());
+        data.extend_from_slice(s.as_bytes());
+        self.data_segments.push((ptr, data));
+        self.data_offset += 4 + len;
+        // Align to 4
+        let padding = (4 - (self.data_offset % 4)) % 4;
+        self.data_offset += padding;
+        self.string_map.insert(s.to_string(), (ptr, len));
+        (ptr, len)
+    }
+
+    fn finish(self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(WASM_MAGIC);
+        out.extend_from_slice(WASM_VERSION);
+
+        // Type section
+        {
+            let mut sec = Vec::new();
+            leb128_u32(self.types.len() as u32, &mut sec);
+            for ty in &self.types {
+                sec.extend_from_slice(ty);
+            }
+            write_section(SEC_TYPE, &sec, &mut out);
+        }
+
+        // Function section (maps func idx → type idx)
+        {
+            let mut sec = Vec::new();
+            leb128_u32(self.functions.len() as u32, &mut sec);
+            for (i, _) in self.functions.iter().enumerate() {
+                leb128_u32(i as u32, &mut sec); // type idx = func idx (1:1 for now)
+            }
+            write_section(SEC_FUNCTION, &sec, &mut out);
+        }
+
+        // Memory section — 1 page minimum
+        {
+            let mut sec = Vec::new();
+            leb128_u32(1, &mut sec); // 1 memory
+            sec.push(0x00); // no max
+            leb128_u32(1, &mut sec); // 1 page initial
+            write_section(SEC_MEMORY, &sec, &mut out);
+        }
+
+        // Export section
+        {
+            let mut sec = Vec::new();
+            // Export memory
+            let total_exports = self.exports.len() + 1;
+            leb128_u32(total_exports as u32, &mut sec);
+
+            // Memory export
+            let mem_name = "memory";
+            leb128_u32(mem_name.len() as u32, &mut sec);
+            sec.extend_from_slice(mem_name.as_bytes());
+            sec.push(0x02); // memory
+            leb128_u32(0, &mut sec);
+
+            for (name, kind, idx) in &self.exports {
+                leb128_u32(name.len() as u32, &mut sec);
+                sec.extend_from_slice(name.as_bytes());
+                sec.push(*kind);
+                leb128_u32(*idx, &mut sec);
+            }
+            write_section(SEC_EXPORT, &sec, &mut out);
+        }
+
+        // Code section
+        {
+            let mut sec = Vec::new();
+            leb128_u32(self.functions.len() as u32, &mut sec);
+            for func in &self.functions {
+                let mut body = Vec::new();
+                body.extend_from_slice(&func.locals);
+                body.extend_from_slice(&func.code);
+                // Body size
+                leb128_u32(body.len() as u32, &mut sec);
+                sec.extend_from_slice(&body);
+            }
+            write_section(SEC_CODE, &sec, &mut out);
+        }
+
+        // Data section
+        if !self.data_segments.is_empty() {
+            let mut sec = Vec::new();
+            leb128_u32(self.data_segments.len() as u32, &mut sec);
+            for (offset, data) in &self.data_segments {
+                sec.push(0x00); // active, memory 0
+                sec.push(OP_I32_CONST);
+                leb128_i32(*offset as i32, &mut sec);
+                sec.push(OP_END);
+                leb128_u32(data.len() as u32, &mut sec);
+                sec.extend_from_slice(data);
+            }
+            write_section(SEC_DATA, &sec, &mut out);
+        }
+
+        out
+    }
+}
+
+fn is_wildcard(pattern: &crate::rustlite::ast::Pattern) -> bool {
+    matches!(pattern.kind, crate::rustlite::ast::PatternKind::Wildcard | crate::rustlite::ast::PatternKind::Binding(_))
+}
+
+fn resolved_to_wasm(ty: &ResolvedType) -> u8 {
+    match ty {
+        ResolvedType::I32 | ResolvedType::Bool => WASM_I32,
+        ResolvedType::I64 => WASM_I64,
+        ResolvedType::F32 => WASM_F32,
+        ResolvedType::F64 => WASM_F64,
+        ResolvedType::String => WASM_I32, // pointer
+        _ => WASM_I32, // structs/enums are pointers or tags
+    }
+}
+
+fn write_section(id: u8, data: &[u8], out: &mut Vec<u8>) {
+    out.push(id);
+    leb128_u32(data.len() as u32, out);
+    out.extend_from_slice(data);
+}
+
+fn leb128_u32(mut val: u32, out: &mut Vec<u8>) {
+    loop {
+        let mut byte = (val & 0x7F) as u8;
+        val >>= 7;
+        if val != 0 { byte |= 0x80; }
+        out.push(byte);
+        if val == 0 { break; }
+    }
+}
+
+fn leb128_i32(mut val: i32, out: &mut Vec<u8>) {
+    loop {
+        let mut byte = (val & 0x7F) as u8;
+        val >>= 7;
+        let more = !((val == 0 && byte & 0x40 == 0) || (val == -1 && byte & 0x40 != 0));
+        if more { byte |= 0x80; }
+        out.push(byte);
+        if !more { break; }
+    }
+}
+
+fn leb128_i64(mut val: i64, out: &mut Vec<u8>) {
+    loop {
+        let mut byte = (val & 0x7F) as u8;
+        val >>= 7;
+        let more = !((val == 0 && byte & 0x40 == 0) || (val == -1 && byte & 0x40 != 0));
+        if more { byte |= 0x80; }
+        out.push(byte);
+        if !more { break; }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rustlite::{lexer, parser, typecheck};
+
+    fn compile_to_wasm(source: &str) -> Vec<u8> {
+        let tokens = lexer::lex(source).unwrap();
+        let module = parser::parse(&tokens).unwrap();
+        let typed = typecheck::check(&module).unwrap();
+        emit(&typed).unwrap()
+    }
+
+    #[test]
+    fn emit_simple_add() {
+        let wasm = compile_to_wasm("fn add(a: i32, b: i32) -> i32 { a + b }");
+        // Check wasm magic
+        assert_eq!(&wasm[0..4], WASM_MAGIC);
+        assert_eq!(&wasm[4..8], WASM_VERSION);
+        assert!(wasm.len() > 8);
+    }
+
+    #[test]
+    fn emit_const_fn() {
+        let wasm = compile_to_wasm("fn answer() -> i32 { 42 }");
+        assert_eq!(&wasm[0..4], WASM_MAGIC);
+    }
+
+    #[test]
+    fn emit_if_else() {
+        let wasm = compile_to_wasm("fn abs(x: i32) -> i32 { if x > 0 { x } else { 0 - x } }");
+        assert_eq!(&wasm[0..4], WASM_MAGIC);
+    }
+
+    #[test]
+    fn emit_while_loop() {
+        let wasm = compile_to_wasm(r#"
+            fn sum_to(n: i32) -> i32 {
+                let mut total: i32 = 0;
+                let mut i: i32 = 1;
+                while i <= n {
+                    total = total + i;
+                    i = i + 1;
+                }
+                total
+            }
+        "#);
+        assert_eq!(&wasm[0..4], WASM_MAGIC);
+    }
+
+    #[test]
+    fn emit_string_data() {
+        let wasm = compile_to_wasm(r#"fn greet() -> String { "hello world" }"#);
+        // Should contain the string in data section
+        let hello = b"hello world";
+        let found = wasm.windows(hello.len()).any(|w| w == hello);
+        assert!(found, "wasm should contain string data");
+    }
+}

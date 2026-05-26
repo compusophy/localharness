@@ -31,11 +31,12 @@ async fn main() -> localharness::Result<()> {
 }
 ```
 
-> **Status:** 0.10.x · stable Rust-native runtime · 11/11 built-in
+> **Status:** 0.10.x · stable Rust-native runtime · 13 built-in
 > tools · MCP bridge · context-window compaction · **wasm32 + browser
 > IDE** · **on-chain identity** (EIP-2535 Diamond registry on Tempo
 > Moderato; every claimed name is an ERC-721 NFT with an ERC-6551
-> token-bound wallet).
+> token-bound wallet) · **rustlite compiler** (Rust subset → wasm,
+> in-crate) · **per-agent tool allowlist**.
 
 **Try it in your browser:** [`localharness.xyz`](https://localharness.xyz/)
 — pick a name, claim a subdomain. The same `Agent` loop you'd embed
