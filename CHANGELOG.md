@@ -5,6 +5,108 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.26] - 2026-05-26
+
+Big architectural sweep — MultiSignerAccount, credit token + cost gates,
+composable subdomains, the first agent-differentiation hook. Everything
+ships through the same diamond at `0x6f2858…2930`; bundle still runs
+zero-gas / zero-stablecoin from the user's perspective via sponsored
+Tempo txs.
+
+### Added (contracts)
+
+- **MultiSignerAccount.sol** at `0x100967d751C97265F3ee93244fAeE8caf29cB48D`.
+  Replaces the vanilla ERC-6551 account impl via
+  `TbaFacet.setTbaConfig`. Adds an `authorizedSigners` mapping +
+  EIP-1271 `isValidSignature` on top of the standard execute / token
+  / owner surface. NFT holder is always implicit signer; extra signers
+  added via `addSigner` from any already-authorized address. Same TBA
+  can be controlled from multiple device EOAs without sharing the
+  seed.
+- **LocalharnessCredits.sol** at `0xC1FC0452670049953ED64f2B177beBed4090A5bc`.
+  TIP-20-shaped in-system credit token. `currency() == "credits"`
+  (NOT "USD") — explicitly NOT fee-token-eligible by design; AlphaUSD
+  stays as the sponsor's fee channel. Full ERC-20 + memo variants
+  (`transferWithMemo` / `mintWithMemo` / `burnWithMemo`) + supplyCap
+  + ISSUER_ROLE. Replaces the orphaned standalone ERC-20 at
+  `0xcC8A300658…`.
+- **CreditsFacet** cut into the diamond. Diamond holds ISSUER_ROLE
+  on the token; `claimDaily()` is the only path to fresh supply. One
+  claim per address per UTC day (`block.timestamp / 86400`). Default
+  100 LH/day, owner-tunable via `setDailyAllowance`.
+- **LocalharnessRegistryFacet** re-cut with cost gate + treasury:
+  `setRegistrationCost` / `registrationCost` (default 50 LH per
+  register), `_chargeRegistrationCost` pulls via `transferFrom` into
+  the diamond's own balance, plus owner-only `withdrawTreasury` +
+  `treasuryBalance` for recycling accumulated fees.
+- **MainIdentityFacet** re-cut with optional cost gate:
+  `setMainCost` / `mainCost` (default 0 — sybil deterrent layer
+  available when owner wants to ramp).
+
+### Added (browser app)
+
+- **Composable subdomains.** `?embed=1` paints any subdomain as a
+  minimal identity card (own origin, own OPFS, own signer iframe);
+  `?compose=a,b,c` renders a host shell of sibling iframes at depth
+  1, auto-resized via postMessage. Try
+  `localharness.xyz/?compose=name1,name2,name3` against real names.
+- **Linked devices** section in apex admin: paste a phone-side
+  address, click add, sponsored `tba.addSigner` fires. Brother test
+  ready.
+- **Daily credits** section in apex admin: live balance pill + claim
+  button. Identity creation auto-claims first-day credits.
+- **Agent act panel** in the apex agents list: click [act] on any
+  owned agent, open inline send-LH form. Submits sponsored
+  `tba.execute(credits, 0, transfer(...), 0)` — proves "agents own
+  wallets" end-to-end.
+- **Custom system prompt** per agent (studio MVP). Tenant admin grows
+  an "agent prompt" textarea; `chat::start_session` appends the
+  saved content under an `=== Owner instructions ===` header.
+  First real agent-differentiation hook.
+
+### Changed
+
+- **Every user-initiated chain call is sponsored Tempo tx.** The
+  per-turn payment in `chat.rs::collect_payment_if_required`
+  migrated off the legacy `lh-sign-tx` iframe path onto sponsored
+  Tempo. Visitor still spends their own LH; sponsor pays the gas in
+  AlphaUSD.
+- **Gas budgets recalibrated** on every sponsored flow after
+  observing live `out of gas` reverts. `register` 500k → 2M
+  (eth_estimateGas reports ~1.32M inner). Proportional bumps on
+  `register_main_sponsored`, `lh_transfer`, `submit_feedback`.
+- **Create button surfaces failure visibly** — red `✗ failed` /
+  `need N more LH` label cleared on next keystroke. Silent reset
+  to disabled invited frustrated re-clicks; now every click has a
+  visible outcome.
+- **Apex placeholder** copy `pick a name` → `choose a name`.
+
+### Removed
+
+- **Legacy `lh-sign-tx` iframe path.** No remaining callers after
+  the per-turn payment migration. Deleted from both
+  `signer.rs::build_tx_response` (and the `field_string` /
+  `field_u128` / `is_address_shape` helpers) and
+  `verify.rs::sign_tx_via_iframe` + `SignTxRequest`. The
+  `lh-sign-digest` raw-32-byte path (sponsored Tempo) is the sole
+  tx-signing channel through the apex iframe.
+- **`run_bootstrap_funding`** in events.rs — `tempo_fundAddress`
+  gas drip + old `LocalharnessToken.faucet` were both made obsolete
+  by sponsored Tempo + CreditsFacet. Replaced with
+  `run_initial_credit_claim` which fires one sponsored
+  `claimDaily()` on identity creation.
+- **`token_faucet_self`** in registry.rs — the new credit token
+  has no `faucet(address)` method; SDK callers use
+  `claim_daily_sponsored` against the diamond instead.
+
+### Fixed
+
+- **wasm bundle hosts examples without breaking `cargo test`** —
+  `examples/tempo_tx_live.rs` now declares
+  `required-features = ["wallet"]` in Cargo.toml. Surfaced by the
+  release script running plain `cargo test` (no `--features
+  wallet`) during its verify step.
+
 ## [0.10.25] - 2026-05-25
 
 Sponsored Tempo tx is now the default for every user-initiated
