@@ -340,6 +340,14 @@ Currently cut in:
   which of a holder's subdomain NFTs is their primary identity. No
   fee yet (sybil-resistance layer is later). Auto-set by the bundle
   on first-claim. See `design/main-identity.md`.
+- **LocalharnessRegistryFacet (cost-gated)** — `register(name)` now
+  pulls `registrationCost()` LH from the caller into the diamond via
+  `transferFrom` (caller must approve the diamond first; bundle
+  batches `approve` + `register` in one Tempo tx). Owner-only
+  `setRegistrationCost(uint256)` knob; zero disables. Default 50 LH
+  (half of daily allowance). Re-cut on 2026-05-26 via
+  `script/SwapRegistryFacetAddCost.s.sol`; cost-gate storage at
+  `keccak256("localharness.registration_cost.storage.v1")`.
 - **CreditsFacet** — distribution layer for the `LocalharnessCredits`
   TIP-20-shaped credit token. Surface: `claimDaily() / canClaim(addr)
   / dailyAllowance() / lastClaimDay(addr) / creditsToken()`. Owner-

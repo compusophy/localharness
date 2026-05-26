@@ -953,6 +953,33 @@ pub async fn remove_signer_sponsored(
     submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 500_000).await
 }
 
+// --- Registration cost (LocalharnessRegistryFacet on the diamond) ---
+
+/// `eth_call registrationCost()` — the LH amount (in token wei, 18
+/// decimals) the diamond's `register(name)` will pull from the sender
+/// via transferFrom. Zero means the cost gate is disabled.
+pub async fn registration_cost() -> Result<u128, String> {
+    if REGISTRY_ADDRESS == zero_address() {
+        return Ok(0);
+    }
+    let calldata = format!("0x{}", bytes_to_hex(&selector("registrationCost()")));
+    let result = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    decode_u256_as_u128(&result)
+}
+
+/// Encode `approve(spender, amount)` calldata for an ERC-20 token.
+fn encode_approve(spender: &[u8; 20], amount_wei: u128) -> Vec<u8> {
+    let sel = selector("approve(address,uint256)");
+    let mut spender_padded = [0u8; 32];
+    spender_padded[12..].copy_from_slice(spender);
+    let amount_padded = u256_be(amount_wei);
+    let mut out = Vec::with_capacity(4 + 32 + 32);
+    out.extend_from_slice(&sel);
+    out.extend_from_slice(&spender_padded);
+    out.extend_from_slice(&amount_padded);
+    out
+}
+
 // --- Credits / daily allowance (CreditsFacet on the diamond) ---------
 
 /// Sign + submit `CreditsFacet.claimDaily()` as a sponsored Tempo tx.
@@ -1068,30 +1095,54 @@ pub async fn claim_and_maybe_set_main(
 /// This is what the bundle uses for first-claim onboarding — the user
 /// who just visited the page can claim a subdomain without holding
 /// any tokens.
+///
+/// If the diamond's `registrationCost()` is non-zero, this batches a
+/// `LocalharnessCredits.approve(diamond, cost)` call BEFORE register
+/// in the same Tempo tx — register then pulls the credits via
+/// `transferFrom` inside its own body. User pays the cost in LH from
+/// their balance; the credits accumulate at the diamond's address.
 pub async fn claim_and_maybe_set_main_sponsored(
     sender: &SigningKey,
     fee_payer: &SigningKey,
     name: &str,
     fee_token: &str,
 ) -> Result<String, String> {
+    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
+    let token_addr = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
+
+    let cost = registration_cost().await.unwrap_or(0);
+
     let register_calldata = hex_to_bytes(&encode_register(name))?;
     let register_call = crate::tempo_tx::TempoCall {
-        to: parse_eth_address(REGISTRY_ADDRESS)?,
+        to: diamond_addr,
         value_wei: 0,
         input: register_calldata,
     };
+
+    let calls = if cost > 0 {
+        let approve_call = crate::tempo_tx::TempoCall {
+            to: token_addr,
+            value_wei: 0,
+            input: encode_approve(&diamond_addr, cost),
+        };
+        vec![approve_call, register_call]
+    } else {
+        vec![register_call]
+    };
+
     let tx_hash = submit_tempo_sponsored(
         sender,
         fee_payer,
-        vec![register_call],
+        calls,
         fee_token,
         // `eth_estimateGas` on `register(name)` against the live diamond
         // reports ~1.32M gas for the inner call (ERC-721 mint + storage
         // writes + counterfactual TBA address derivation). Sponsorship
-        // (fee_payer recovery + AlphaUSD transfer) adds ~275k. Budget
-        // 2.0M to give comfortable headroom; sponsor pays in AlphaUSD
-        // and only consumed gas is debited, so over-budgeting is free.
-        2_000_000,
+        // (fee_payer recovery + AlphaUSD transfer) adds ~275k. The
+        // approve+transferFrom pair adds ~80k. Budget 2.2M for
+        // headroom; sponsor pays in AlphaUSD and only consumed gas is
+        // debited, so over-budgeting is free.
+        2_200_000,
     )
     .await?;
 

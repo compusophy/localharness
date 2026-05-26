@@ -231,31 +231,43 @@ enum CreateBtnState {
 }
 
 fn set_create_button_state(state: CreateBtnState) {
+    match state {
+        CreateBtnState::Disabled => set_create_button_classes(false, false, "create"),
+        CreateBtnState::Ready => set_create_button_classes(true, false, "create"),
+        CreateBtnState::Failed => set_create_button_classes(false, true, "✗ failed"),
+    }
+}
+
+/// Set the create button to the failed state with a custom label
+/// (e.g., "need 30 more LH"). Same red styling + disabled attribute
+/// as `CreateBtnState::Failed`, but a more specific message.
+/// Cleared on the next keystroke by `on_apex_input`.
+fn set_create_button_failed_with(label: &str) {
+    set_create_button_classes(false, true, label);
+}
+
+fn set_create_button_classes(enabled: bool, failed: bool, label: &str) {
     let Some(btn) = dom::by_id("create-btn") else { return };
-    // Strip both state classes; the match arm re-adds whichever applies.
     let stripped: String = btn
         .class_name()
         .split_whitespace()
         .filter(|c| *c != "ready" && *c != "failed")
         .collect::<Vec<_>>()
         .join(" ");
-    match state {
-        CreateBtnState::Disabled => {
-            let _ = btn.set_attribute("disabled", "");
-            btn.set_class_name(&stripped);
-            btn.set_inner_html("create");
-        }
-        CreateBtnState::Ready => {
-            let _ = btn.remove_attribute("disabled");
-            btn.set_class_name(&format!("{stripped} ready"));
-            btn.set_inner_html("create");
-        }
-        CreateBtnState::Failed => {
-            let _ = btn.set_attribute("disabled", "");
-            btn.set_class_name(&format!("{stripped} failed"));
-            btn.set_inner_html("✗ failed");
-        }
+    if enabled {
+        let _ = btn.remove_attribute("disabled");
+    } else {
+        let _ = btn.set_attribute("disabled", "");
     }
+    let class = if enabled {
+        format!("{stripped} ready")
+    } else if failed {
+        format!("{stripped} failed")
+    } else {
+        stripped
+    };
+    btn.set_class_name(&class);
+    btn.set_inner_html(label);
 }
 
 /// Live registry check as the user types a subdomain name. Sanitises
@@ -337,7 +349,7 @@ async fn run_apex_claim(name: String) {
                 .as_ref()
                 .map(|w| (w.signer.clone(), wallet_address_hex(&w.address)))
         });
-        let (signer, _addr_hex) = match cached {
+        let (signer, addr_hex) = match cached {
             Some(pair) => pair,
             None => match super::wallet_store::create_and_persist().await {
                 Ok(wallet) => {
@@ -348,6 +360,21 @@ async fn run_apex_claim(name: String) {
                 Err(err) => return Err(format!("wallet: {err}")),
             },
         };
+
+        // 2.5. Cost-gate pre-check. If the registry charges LH for
+        //      `register(name)` and the user can't cover it, bail
+        //      before burning sponsor gas on a guaranteed revert.
+        //      A fresh identity auto-claims daily credits in the
+        //      background; the user may need to wait for that to
+        //      land, or hit the "claim daily" button.
+        let cost = super::registry::registration_cost().await.unwrap_or(0);
+        if cost > 0 {
+            let bal = super::registry::token_balance_of(&addr_hex).await.unwrap_or(0);
+            if bal < cost {
+                let deficit_lh = (cost - bal) / 1_000_000_000_000_000_000u128;
+                return Err(format!("__NEED_LH__{deficit_lh}"));
+            }
+        }
 
         // 3. Submit the claim as a sponsored Tempo tx. The bundle's
         //    sponsor wallet pays the fees in AlphaUSD; the user's
@@ -383,10 +410,17 @@ async fn run_apex_claim(name: String) {
             // the click had an effect — a silent reset to disabled
             // looks indistinguishable from "nothing happened" and
             // invites frustrated re-clicking. `on_apex_input` clears
-            // the failed state on the next keystroke (user typing a
-            // different name re-runs availability + flips back to
-            // Disabled/Ready as appropriate).
-            set_create_button_state(CreateBtnState::Failed);
+            // the failed state on the next keystroke.
+            //
+            // Specific case: insufficient credits. Pre-check encodes
+            // the deficit in the error string with a sentinel prefix
+            // so we can show "need N more LH" instead of a generic
+            // "✗ failed".
+            if let Some(rest) = err.strip_prefix("__NEED_LH__") {
+                set_create_button_failed_with(&format!("need {rest} more LH"));
+            } else {
+                set_create_button_state(CreateBtnState::Failed);
+            }
         }
     }
 }
