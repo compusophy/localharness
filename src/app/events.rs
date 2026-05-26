@@ -67,6 +67,8 @@ enum Action {
     LhTransfer,
     AddDevice,
     ClaimCredits,
+    AgentActToggle(String),
+    AgentSendLh(String),
 }
 
 impl Action {
@@ -114,6 +116,8 @@ impl Action {
             "lh-transfer" => Action::LhTransfer,
             "add-device" => Action::AddDevice,
             "claim-credits" => Action::ClaimCredits,
+            "agent-act-toggle" => Action::AgentActToggle(arg.unwrap_or_default()),
+            "agent-send-lh" => Action::AgentSendLh(arg.unwrap_or_default()),
             _ => return None,
         })
     }
@@ -869,7 +873,124 @@ fn dispatch(action: Action) {
         Action::LhTransfer => lh_transfer_pressed(),
         Action::AddDevice => add_device_pressed(),
         Action::ClaimCredits => claim_credits_pressed(),
+        Action::AgentActToggle(token_id) => agent_act_toggle_pressed(token_id),
+        Action::AgentSendLh(token_id) => agent_send_lh_pressed(token_id),
     }
+}
+
+/// Expand or collapse the inline act-panel under an agent row.
+/// First open fetches TBA balance + paints the panel; subsequent
+/// toggles just flip the `hidden` attribute on the existing DOM.
+fn agent_act_toggle_pressed(token_id_str: String) {
+    let Ok(token_id) = token_id_str.parse::<u64>() else { return };
+    let panel_id = format!("agent-act-{token_id}");
+    let Some(panel) = dom::by_id(&panel_id) else { return };
+    let was_hidden = panel.has_attribute("hidden");
+    if was_hidden {
+        // First-paint flow: fetch TBA + balance, render the form.
+        panel.set_inner_html(
+            "<div class=\"admin-msg-slot\"><span style=\"color:var(--muted)\">loading…</span></div>",
+        );
+        let _ = panel.remove_attribute("hidden");
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Err(err) = paint_agent_act_panel(token_id).await {
+                let panel_id = format!("agent-act-{token_id}");
+                dom::swap_inner(
+                    &panel_id,
+                    &format!("<div class=\"admin-msg-slot\"><span style=\"color:var(--error)\">{err}</span></div>"),
+                );
+            }
+        });
+    } else {
+        let _ = panel.set_attribute("hidden", "");
+    }
+}
+
+async fn paint_agent_act_panel(token_id: u64) -> Result<(), String> {
+    let tba = super::registry::tba_of_token_id(token_id)
+        .await
+        .map_err(|e| format!("tba: {e}"))?
+        .ok_or_else(|| "no TBA".to_string())?;
+    let balance = super::registry::token_balance_of(&tba).await.unwrap_or(0);
+    let html = templates::agent_act_panel(token_id, &tba, balance).into_string();
+    let panel_id = format!("agent-act-{token_id}");
+    dom::swap_inner(&panel_id, &html);
+    Ok(())
+}
+
+/// User clicked "send" in an inline act-panel. Reads the recipient
+/// and amount inputs scoped to this token_id, fires a sponsored
+/// `tba.execute(credits, 0, transfer(...), 0)` tempo tx. The user's
+/// apex wallet signs as one of the TBA's authorized signers (it IS
+/// the NFT owner). Sponsor pays AlphaUSD.
+fn agent_send_lh_pressed(token_id_str: String) {
+    let Ok(token_id) = token_id_str.parse::<u64>() else { return };
+    let msg_id = format!("agent-act-msg-{token_id}");
+
+    let to_raw = dom::input_by_id(&format!("agent-send-to-{token_id}"))
+        .map(|i| i.value().trim().to_string())
+        .unwrap_or_default();
+    let amt_raw = dom::input_by_id(&format!("agent-send-amt-{token_id}"))
+        .map(|i| i.value().trim().to_string())
+        .unwrap_or_default();
+    if !is_address_hex(&to_raw) {
+        return; // silent no-op per [[feedback-no-explanatory-validation]]
+    }
+    let Some(amount_wei) = parse_token_amount(&amt_raw) else { return };
+    if amount_wei == 0 {
+        return;
+    }
+
+    let signer = super::APP.with(|cell| {
+        cell.borrow().wallet.as_ref().map(|w| w.signer.clone())
+    });
+    let Some(signer) = signer else { return };
+
+    dom::swap_inner(
+        &msg_id,
+        "<span style=\"color:var(--muted)\">signing + submitting…</span>",
+    );
+
+    wasm_bindgen_futures::spawn_local(async move {
+        let msg_id = format!("agent-act-msg-{token_id}");
+        let result = async {
+            let tba = super::registry::tba_of_token_id(token_id)
+                .await
+                .map_err(|e| format!("tba: {e}"))?
+                .ok_or_else(|| "no TBA".to_string())?;
+            let fee_payer = super::sponsor::signer()?;
+            super::registry::tba_transfer_lh_sponsored(
+                &signer,
+                &fee_payer,
+                token_id,
+                &tba,
+                &to_raw,
+                amount_wei,
+                super::registry::ALPHA_USD_ADDRESS,
+            )
+            .await
+        }
+        .await;
+        match result {
+            Ok(tx_hash) => {
+                let short = tx_short_hash(&tx_hash);
+                dom::swap_inner(
+                    &msg_id,
+                    &format!(
+                        "<span style=\"color:var(--accent)\">✓ sent (tx {short})</span>"
+                    ),
+                );
+                // Re-paint to refresh the balance line.
+                let _ = paint_agent_act_panel(token_id).await;
+            }
+            Err(err) => {
+                dom::swap_inner(
+                    &msg_id,
+                    &format!("<span style=\"color:var(--error)\">{err}</span>"),
+                );
+            }
+        }
+    });
 }
 
 /// User-initiated daily credit claim from the admin dropdown.

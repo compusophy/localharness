@@ -1035,6 +1035,110 @@ pub async fn daily_allowance() -> Result<u128, String> {
     decode_u256_as_u128(&result)
 }
 
+/// Sponsored Tempo tx that calls `tba.execute(target, value, data, 0)`
+/// on a `MultiSignerAccount` TBA. The TBA must be deployed; we batch
+/// `createTokenBoundAccount(token_id)` first so the call is safe on
+/// counterfactual TBAs too (createTokenBoundAccount is idempotent).
+///
+/// `sender` must be one of the TBA's authorized signers: the NFT
+/// holder of the owning token, or an EOA previously added via
+/// `addSigner`. The TBA's `execute` revert "not authorised" otherwise.
+pub async fn tba_execute_sponsored(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    token_id: u64,
+    tba_address: &str,
+    target_hex: &str,
+    value_wei: u128,
+    inner_data: Vec<u8>,
+    fee_token: &str,
+    gas_limit: u128,
+) -> Result<String, String> {
+    let tba_addr = parse_eth_address(tba_address)?;
+    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
+    let target = parse_eth_address(target_hex)?;
+
+    let create_call = crate::tempo_tx::TempoCall {
+        to: diamond_addr,
+        value_wei: 0,
+        input: encode_create_tba(token_id),
+    };
+    let execute_call = crate::tempo_tx::TempoCall {
+        to: tba_addr,
+        value_wei: 0,
+        input: encode_tba_execute(&target, value_wei, &inner_data),
+    };
+    submit_tempo_sponsored(
+        sender,
+        fee_payer,
+        vec![create_call, execute_call],
+        fee_token,
+        gas_limit,
+    )
+    .await
+}
+
+/// Convenience: send LH from `token_id`'s TBA to a recipient. Wraps
+/// `tba_execute_sponsored` with credits.transfer calldata pre-built.
+/// The TBA must hold enough LH to cover `amount_wei`.
+pub async fn tba_transfer_lh_sponsored(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    token_id: u64,
+    tba_address: &str,
+    recipient_hex: &str,
+    amount_wei: u128,
+    fee_token: &str,
+) -> Result<String, String> {
+    let recipient = parse_eth_address(recipient_hex)?;
+    let mut transfer_data = Vec::with_capacity(4 + 32 + 32);
+    transfer_data.extend_from_slice(&selector("transfer(address,uint256)"));
+    let mut padded = [0u8; 32];
+    padded[12..].copy_from_slice(&recipient);
+    transfer_data.extend_from_slice(&padded);
+    transfer_data.extend_from_slice(&u256_be(amount_wei));
+
+    tba_execute_sponsored(
+        sender,
+        fee_payer,
+        token_id,
+        tba_address,
+        LOCALHARNESS_TOKEN_ADDRESS,
+        0,
+        transfer_data,
+        fee_token,
+        // create TBA (~250k idempotent) + execute (~30k) + inner
+        // ERC-20 transfer (~52k) + Tempo sponsorship (~275k). 800k
+        // comfortable.
+        800_000,
+    )
+    .await
+}
+
+fn encode_tba_execute(target: &[u8; 20], value_wei: u128, data: &[u8]) -> Vec<u8> {
+    // execute(address,uint256,bytes,uint8) — ABI:
+    //   selector(4) | target(32) | value(32) | dataOffset(32, =0x80) |
+    //   operation(32, =0) | dataLength(32) | dataPadded
+    let sel = selector("execute(address,uint256,bytes,uint8)");
+    let mut target_padded = [0u8; 32];
+    target_padded[12..].copy_from_slice(target);
+    let data_len = data.len();
+    let padded_len = data_len.div_ceil(32) * 32;
+    // Static head = target(32) + value(32) + offset(32) + operation(32) = 128
+    let data_offset: u128 = 0x80;
+
+    let mut out = Vec::with_capacity(4 + 128 + 32 + padded_len);
+    out.extend_from_slice(&sel);
+    out.extend_from_slice(&target_padded);
+    out.extend_from_slice(&u256_be(value_wei));
+    out.extend_from_slice(&u256_be(data_offset));
+    out.extend_from_slice(&u256_be(0)); // operation = 0 (CALL)
+    out.extend_from_slice(&u256_be(data_len as u128));
+    out.extend_from_slice(data);
+    out.resize(out.len() + (padded_len - data_len), 0);
+    out
+}
+
 fn encode_create_tba(token_id: u64) -> Vec<u8> {
     let mut data = Vec::with_capacity(4 + 32);
     data.extend_from_slice(&selector("createTokenBoundAccount(uint256)"));
