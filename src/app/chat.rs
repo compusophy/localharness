@@ -493,14 +493,6 @@ fn u256_be(value: u128) -> [u8; 32] {
     out
 }
 
-fn bytes_to_hex(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
-
 fn transfer_selector() -> [u8; 4] {
     use sha3::{Digest, Keccak256};
     let mut hasher = Keccak256::new();
@@ -508,43 +500,6 @@ fn transfer_selector() -> [u8; 4] {
     let mut out = [0u8; 4];
     out.copy_from_slice(&hasher.finalize()[..4]);
     out
-}
-
-async fn estimate_call_gas(
-    from_hex: &str,
-    to_hex: &str,
-    data_hex: &str,
-) -> Result<u128, String> {
-    // Direct RPC because we don't have eth_estimateGas exposed from
-    // registry. Mirror its 25% buffer pattern.
-    let payload = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "eth_estimateGas",
-        "params": [{
-            "from": from_hex,
-            "to": to_hex,
-            "data": format!("0x{data_hex}"),
-        }],
-    });
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(crate::registry::RPC_URL)
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|e| format!("estimateGas: {e}"))?;
-    let json: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("estimateGas parse: {e}"))?;
-    let hex = json
-        .get("result")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| format!("estimateGas: {json}"))?;
-    let raw = u128::from_str_radix(hex.trim_start_matches("0x"), 16)
-        .map_err(|e| format!("estimateGas hex: {e}"))?;
-    Ok(raw + raw / 4)
 }
 
 fn short_hash(hash: &str) -> String {
