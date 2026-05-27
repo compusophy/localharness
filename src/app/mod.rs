@@ -35,6 +35,7 @@ mod pricing;
 mod signer;
 mod sponsor;
 mod agent_rpc;
+mod encryption;
 mod system_prompt;
 mod templates;
 mod tool_allowlist;

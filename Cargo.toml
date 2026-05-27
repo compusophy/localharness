@@ -153,6 +153,10 @@ web-sys = { version = "0.3", features = [
     "Storage",
     "HtmlIFrameElement",
     "NodeList",
+    "Crypto",
+    "SubtleCrypto",
+    "CryptoKey",
+    "AesGcmParams",
     "console",
 ] }
 
