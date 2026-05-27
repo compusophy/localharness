@@ -652,14 +652,24 @@ impl TranscriptRole {
 
 /// One turn-or-message in a flattened, user-visible transcript.
 ///
-/// Produced by [`Agent::transcript`] — text-only summary of the
-/// internal Gemini history, useful for repainting a UI after a session
-/// resume. Tool-call activity is intentionally dropped: this is a
-/// human-readable view, not a fidelity-preserving snapshot.
+/// Produced by [`Agent::transcript`] — includes tool-call activity
+/// so restored sessions show what the agent did, not just what it said.
 ///
 /// [`Agent::transcript`]: crate::Agent::transcript
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TranscriptEntry {
     pub role: TranscriptRole,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<TranscriptToolCall>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TranscriptToolCall {
+    pub name: String,
+    pub args: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }

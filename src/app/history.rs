@@ -40,17 +40,51 @@ pub(crate) async fn load_into_pending() {
     match decode_transcript_bytes(&bytes) {
         Ok(entries) if !entries.is_empty() => {
             for entry in &entries {
-                let turn_id = APP.with(|cell| cell.borrow_mut().alloc_id());
-                let role = entry.role.as_str();
-                let body = match entry.role {
-                    TranscriptRole::User => html! { (entry.text) },
-                    TranscriptRole::Assistant => templates::rendered_markdown(&entry.text),
-                };
-                // `streaming = false` so the replayed turns don't show
-                // the "· streaming" suffix.
-                let html_str =
-                    templates::turn(turn_id, role, body, false).into_string();
-                dom::append_html("transcript", &html_str);
+                // Render tool calls before the assistant text (they
+                // happened during the turn, so showing them first
+                // matches the live order).
+                for tc in &entry.tool_calls {
+                    let seg_id = APP.with(|cell| cell.borrow_mut().alloc_id());
+                    let call = crate::types::ToolCall {
+                        name: tc.name.clone(),
+                        id: None,
+                        args: tc.args.clone(),
+                        canonical_path: None,
+                    };
+                    let mut block = templates::tool_call_block(seg_id, &call).into_string();
+                    // Inject the result inline if we have one
+                    if tc.result.is_some() || tc.error.is_some() {
+                        let result = crate::types::ToolResult {
+                            name: tc.name.clone(),
+                            id: None,
+                            result: tc.result.clone(),
+                            error: tc.error.clone(),
+                        };
+                        let result_html = templates::tool_call_result(&result).into_string();
+                        let result_slot = format!("id=\"tool-{seg_id}-result\"");
+                        block = block.replace(
+                            &format!("{result_slot}></div>"),
+                            &format!("{result_slot}>{result_html}</div>"),
+                        );
+                        // Mark status as done
+                        block = block.replace("tc-status running", "tc-status done");
+                    }
+                    dom::append_html("transcript", &block);
+                }
+
+                // Render the text turn (skip empty text-only entries
+                // that were tool-call-only turns).
+                if !entry.text.is_empty() {
+                    let turn_id = APP.with(|cell| cell.borrow_mut().alloc_id());
+                    let role = entry.role.as_str();
+                    let body = match entry.role {
+                        TranscriptRole::User => html! { (entry.text) },
+                        TranscriptRole::Assistant => templates::rendered_markdown(&entry.text),
+                    };
+                    let html_str =
+                        templates::turn(turn_id, role, body, false).into_string();
+                    dom::append_html("transcript", &html_str);
+                }
             }
             // No status write — restoring the transcript is silent
             // per the minimalism pass; the terminal stays empty until

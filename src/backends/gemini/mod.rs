@@ -340,34 +340,58 @@ pub fn decode_transcript_bytes(bytes: &[u8]) -> Result<Vec<crate::types::Transcr
 }
 
 fn project_history(history: &[wire::Content]) -> Vec<crate::types::TranscriptEntry> {
-    use crate::types::{TranscriptEntry, TranscriptRole};
+    use crate::types::{TranscriptEntry, TranscriptRole, TranscriptToolCall};
     use wire::{ContentRole, Part};
     let mut out = Vec::with_capacity(history.len());
+    let mut pending_calls: Vec<TranscriptToolCall> = Vec::new();
+
     for content in history {
         let role = match content.role {
             ContentRole::User => TranscriptRole::User,
             ContentRole::Model => TranscriptRole::Assistant,
         };
         let mut buf = String::new();
+        let mut calls_this_turn: Vec<TranscriptToolCall> = Vec::new();
+
         for part in &content.parts {
             match part {
                 Part::Text { text } => buf.push_str(text),
-                // Gemini 3.x stamps every text part with a `thought`
-                // field; `thought: false` is normal output text. Skip
-                // `thought: true` (model reasoning) from the
-                // user-visible transcript.
                 Part::Thought {
                     thought: false,
                     text: Some(text),
                     ..
                 } => buf.push_str(text),
+                Part::FunctionCall { function_call } => {
+                    calls_this_turn.push(TranscriptToolCall {
+                        name: function_call.name.clone(),
+                        args: function_call.args.clone(),
+                        result: None,
+                        error: None,
+                    });
+                }
+                Part::FunctionResponse { function_response } => {
+                    // Match response to a pending call by name
+                    if let Some(call) = pending_calls.iter_mut().find(|c| c.name == function_response.name && c.result.is_none()) {
+                        call.result = Some(function_response.response.clone());
+                    }
+                }
                 _ => {}
             }
         }
-        if buf.is_empty() {
-            continue;
+
+        if !calls_this_turn.is_empty() {
+            pending_calls.extend(calls_this_turn.clone());
         }
-        out.push(TranscriptEntry { role, text: buf.clone() });
+
+        if !buf.is_empty() || !calls_this_turn.is_empty() {
+            // Attach any completed tool calls to this entry
+            let attached = if role == TranscriptRole::Assistant {
+                std::mem::take(&mut pending_calls)
+            } else {
+                Vec::new()
+            };
+            out.push(TranscriptEntry { role, text: buf, tool_calls: attached });
+        }
     }
     out
 }
