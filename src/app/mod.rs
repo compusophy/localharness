@@ -34,6 +34,7 @@ mod owner;
 mod pricing;
 mod signer;
 mod sponsor;
+mod agent_rpc;
 mod system_prompt;
 mod templates;
 mod tool_allowlist;
@@ -224,6 +225,19 @@ fn mount() -> Result<(), JsValue> {
             // Loading the wallet warms it into App state so the
             // postMessage handler can pull it synchronously.
             paint_signer().await;
+        });
+        return Ok(());
+    }
+
+    // RPC endpoint mode. Any subdomain loaded with ?rpc=1 becomes a
+    // headless agent that accepts lh-agent-call postMessages from other
+    // agents. Starts the same agent session as the chat UI but renders
+    // no transcript — inter-agent communication only.
+    if agent_rpc::has_rpc_hint() {
+        root.set_inner_html("<main style=\"padding:24px;color:#7a8493;font:14px ui-monospace,Menlo,Consolas,monospace\">rpc · loading…</main>");
+        agent_rpc::install_rpc_listener()?;
+        wasm_bindgen_futures::spawn_local(async move {
+            agent_rpc::paint_rpc().await;
         });
         return Ok(());
     }

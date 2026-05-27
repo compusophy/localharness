@@ -223,7 +223,7 @@ pub(crate) async fn run_send() {
     super::opfs::refresh().await;
 }
 
-async fn start_session(key: &str) -> Result<(), JsValue> {
+pub(crate) async fn start_session(key: &str) -> Result<(), JsValue> {
     // System instruction — the agent needs to know what it's running
     // inside and what its filesystem looks like. Without this, prompts
     // like "what is pricing" produce blind tool calls because the

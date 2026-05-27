@@ -157,6 +157,8 @@ pub enum BuiltinTool {
     AskQuestion,
     StartSubagent,
     GenerateImage,
+    CallAgent,
+    CompileRustlite,
     Finish,
 }
 
@@ -174,6 +176,8 @@ impl BuiltinTool {
         Self::AskQuestion,
         Self::StartSubagent,
         Self::GenerateImage,
+        Self::CallAgent,
+        Self::CompileRustlite,
         Self::Finish,
     ];
 
@@ -207,6 +211,8 @@ impl BuiltinTool {
             Self::AskQuestion => "ask_question",
             Self::StartSubagent => "start_subagent",
             Self::GenerateImage => "generate_image",
+            Self::CallAgent => "call_agent",
+            Self::CompileRustlite => "compile_rustlite",
             Self::Finish => "finish",
         }
     }

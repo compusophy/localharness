@@ -13,6 +13,8 @@ use crate::tools::{Tool, ToolRunner};
 use crate::types::{BuiltinTool, CapabilitiesConfig};
 
 mod ask_question;
+mod call_agent;
+mod compile_rustlite;
 mod create_file;
 mod delete_file;
 mod edit_file;
@@ -100,6 +102,8 @@ pub fn register_builtins(
             BuiltinTool::EditFile => fs_tool!(deps, EditFile),
             BuiltinTool::DeleteFile => fs_tool!(deps, DeleteFile),
             BuiltinTool::RenameFile => fs_tool!(deps, RenameFile),
+            BuiltinTool::CallAgent => Some(Arc::new(call_agent::CallAgent) as Arc<dyn Tool>),
+            BuiltinTool::CompileRustlite => Some(Arc::new(compile_rustlite::CompileRustlite) as Arc<dyn Tool>),
             BuiltinTool::RunCommand => instantiate_run_command(),
         };
         if let Some(t) = boxed {

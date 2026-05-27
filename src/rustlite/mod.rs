@@ -4,6 +4,7 @@ pub mod ast;
 pub mod parser;
 pub mod typecheck;
 pub mod codegen;
+pub mod loader;
 
 pub fn compile(source: &str) -> Result<Vec<u8>, CompileError> {
     let tokens = lexer::lex(source)?;
