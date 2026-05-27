@@ -265,7 +265,16 @@ pub(crate) async fn start_session(key: &str) -> Result<(), JsValue> {
              needs tools. Recursion depth is implicit (each subagent has its \
              own context; cost grows with depth — don't chain more than 3 \
              levels unless the user asked).\n\
-           • generate_image(prompt) — produce an image from a text prompt.\n\n\
+           • call_agent(name, message) — send a message to another agent by \
+             subdomain name and receive its text response. The target agent \
+             must have an API key configured. Use this for inter-agent \
+             collaboration, delegation, or multi-agent workflows.\n\
+           • compile_rustlite(source, function?, args?) — compile Rust-subset \
+             source code to wasm and execute a function. Supports structs, \
+             enums, fns, match, if/else, while/loop, let mut. No traits, \
+             no generics, no references. Returns the i32 result.\n\
+           • generate_image(prompt) — produce an image from a text prompt.\n\
+           • finish(result?) — signal that the task is complete.\n\n\
          \
          === Conventions ===\n\
          • Files at the OPFS root are the user's. Dotfiles starting with `.lh_*` \

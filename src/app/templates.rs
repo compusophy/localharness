@@ -811,6 +811,8 @@ pub(crate) fn financial_card(
     let tba_url = format!("https://moderato.tempo.xyz/address/{tba_hex}");
     let owner_url = format!("https://moderato.tempo.xyz/address/{owner_hex}");
     let balance_display = super::format_wei_as_test_eth(lh_balance_wei);
+    let rpc_url = format!("https://{name}.localharness.xyz/?rpc=1");
+    let tool_count = BuiltinTool::ALL.len();
     html! {
         section #financial-slot .financial-card {
             div.financial-line {
@@ -834,6 +836,17 @@ pub(crate) fn financial_card(
             div.financial-line {
                 span.financial-label { "balance" }
                 span.financial-value.financial-balance { (balance_display) }
+            }
+            div.financial-line {
+                span.financial-label { "tools" }
+                span #tools-count .financial-value { (tool_count) }
+            }
+            div.financial-line {
+                span.financial-label { "rpc" }
+                a.financial-tba href=(rpc_url) target="_blank" rel="noopener"
+                    title="inter-agent RPC endpoint" {
+                    "?rpc=1"
+                }
             }
             (lh_transfer_form(tba_hex))
         }
