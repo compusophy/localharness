@@ -1082,6 +1082,27 @@ pub async fn daily_allowance() -> Result<u128, String> {
     decode_u256_as_u128(&result)
 }
 
+/// `eth_call lastClaimDay(account)` — the UTC day number (block.timestamp / 86400)
+/// of the account's most recent claimDaily(). Returns 0 if never claimed.
+pub async fn last_claim_day(account_hex: &str) -> Result<u64, String> {
+    if REGISTRY_ADDRESS == zero_address() {
+        return Ok(0);
+    }
+    let mut data = Vec::with_capacity(4 + 32);
+    data.extend_from_slice(&selector("lastClaimDay(address)"));
+    let account_bytes = hex_to_bytes(account_hex)?;
+    if account_bytes.len() != 20 {
+        return Err(format!("account must be 20 bytes, got {}", account_bytes.len()));
+    }
+    let mut padded = [0u8; 32];
+    padded[12..].copy_from_slice(&account_bytes);
+    data.extend_from_slice(&padded);
+    let calldata = format!("0x{}", bytes_to_hex(&data));
+    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let val = decode_u256_as_u128(&result_hex)?;
+    Ok(val as u64)
+}
+
 /// Sponsored Tempo tx that calls `tba.execute(target, value, data, 0)`
 /// on a `MultiSignerAccount` TBA. The TBA must be deployed; we batch
 /// `createTokenBoundAccount(token_id)` first so the call is safe on
@@ -1480,6 +1501,75 @@ async fn eth_call(to: &str, data_hex: &str) -> Result<String, String> {
         serde_json::json!([{ "to": to, "data": data_hex }, "latest"]),
     )
     .await
+}
+
+async fn eth_get_logs(
+    address: &str,
+    topics: Vec<serde_json::Value>,
+    from_block: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    let result = rpc(
+        "eth_getLogs",
+        serde_json::json!([{
+            "address": address,
+            "topics": topics,
+            "fromBlock": from_block,
+            "toBlock": "latest"
+        }]),
+    )
+    .await?;
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(
+        &serde_json::to_string(&result).unwrap_or_default()
+    ).unwrap_or_default();
+    Ok(parsed)
+}
+
+/// Get the list of authorized signers for a TBA by reading
+/// SignerAdded / SignerRemoved events and computing the current set.
+pub async fn tba_signers(tba_hex: &str) -> Result<Vec<String>, String> {
+    use sha3::{Digest, Keccak256};
+
+    let added_topic = format!("0x{}", bytes_to_hex(
+        &Keccak256::digest(b"SignerAdded(address,address)")
+    ));
+    let removed_topic = format!("0x{}", bytes_to_hex(
+        &Keccak256::digest(b"SignerRemoved(address,address)")
+    ));
+
+    let added_logs = eth_get_logs(
+        tba_hex,
+        vec![serde_json::json!(added_topic)],
+        "0x0",
+    ).await.unwrap_or_default();
+
+    let removed_logs = eth_get_logs(
+        tba_hex,
+        vec![serde_json::json!(removed_topic)],
+        "0x0",
+    ).await.unwrap_or_default();
+
+    let mut signers = std::collections::HashSet::new();
+
+    for log in &added_logs {
+        if let Some(topics) = log.get("topics").and_then(|t| t.as_array()) {
+            // topic[1] = indexed signer address (32 bytes, address in last 20)
+            if let Some(topic) = topics.get(1).and_then(|t| t.as_str()) {
+                let addr = format!("0x{}", &topic.trim_start_matches("0x")[24..]);
+                signers.insert(addr.to_lowercase());
+            }
+        }
+    }
+
+    for log in &removed_logs {
+        if let Some(topics) = log.get("topics").and_then(|t| t.as_array()) {
+            if let Some(topic) = topics.get(1).and_then(|t| t.as_str()) {
+                let addr = format!("0x{}", &topic.trim_start_matches("0x")[24..]);
+                signers.remove(&addr.to_lowercase());
+            }
+        }
+    }
+
+    Ok(signers.into_iter().collect())
 }
 
 async fn eth_get_transaction_count(addr: &str) -> Result<u128, String> {

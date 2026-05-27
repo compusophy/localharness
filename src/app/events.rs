@@ -1156,6 +1156,7 @@ fn claim_credits_pressed() {
                     ),
                 );
                 refresh_credits_pill().await;
+                refresh_claim_status().await;
             }
             Err(err) => {
                 let pretty = if err.contains("AlreadyClaimedToday")
@@ -1188,6 +1189,102 @@ pub(crate) async fn refresh_credits_pill() {
     let Ok(balance_wei) = super::registry::token_balance_of(&addr).await else { return };
     let lh = balance_wei / 1_000_000_000_000_000_000u128;
     dom::swap_inner("credits-balance", &format!("{lh} LH"));
+}
+
+/// Show claim status: "ready to claim" or "next claim in Xh Ym".
+async fn refresh_claim_status() {
+    let addr = super::APP.with(|cell| {
+        cell.borrow().wallet.as_ref().map(|w| w.address_hex())
+    });
+    let Some(addr) = addr else { return };
+
+    let can_claim = super::registry::can_claim_credits(&addr).await.unwrap_or(false);
+    if can_claim {
+        dom::swap_inner(
+            "claim-status",
+            "<span style=\"color:var(--accent)\">ready to claim</span>",
+        );
+        if let Some(btn) = dom::by_id("claim-credits-btn") {
+            let _ = btn.remove_attribute("disabled");
+        }
+    } else {
+        // Calculate time until next UTC midnight
+        let now_ms = js_sys::Date::now() as u64;
+        let now_secs = now_ms / 1000;
+        let current_day = now_secs / 86400;
+        let next_day_start = (current_day + 1) * 86400;
+        let remaining_secs = next_day_start.saturating_sub(now_secs);
+        let hours = remaining_secs / 3600;
+        let minutes = (remaining_secs % 3600) / 60;
+        let hint = if hours > 0 {
+            format!("next claim in {hours}h {minutes}m")
+        } else {
+            format!("next claim in {minutes}m")
+        };
+        dom::swap_inner(
+            "claim-status",
+            &format!("<span style=\"color:var(--muted)\">{hint}</span>"),
+        );
+        if let Some(btn) = dom::by_id("claim-credits-btn") {
+            let _ = btn.set_attribute("disabled", "");
+        }
+    }
+}
+
+async fn refresh_signer_list() {
+    let addr = super::APP.with(|cell| {
+        cell.borrow().wallet.as_ref().map(|w| w.address_hex())
+    });
+    let Some(addr) = addr else { return };
+
+    let main_id = match super::registry::main_of(&addr).await {
+        Ok(id) if id > 0 => id,
+        _ => {
+            dom::swap_inner("signer-list", "no MAIN set");
+            return;
+        }
+    };
+
+    let main_name = match super::registry::name_of_id(main_id).await {
+        Ok(name) if !name.is_empty() => name,
+        _ => {
+            dom::swap_inner("signer-list", "");
+            return;
+        }
+    };
+
+    let tba = match super::registry::tba_of_name(&main_name).await {
+        Ok(Some(tba)) => tba,
+        _ => {
+            dom::swap_inner("signer-list", "no TBA");
+            return;
+        }
+    };
+
+    // Fetch signers
+    match super::registry::tba_signers(&tba).await {
+        Ok(signers) if signers.is_empty() => {
+            dom::swap_inner("signer-list", "owner only (no extra signers)");
+        }
+        Ok(signers) => {
+            let mut html = String::new();
+            for s in &signers {
+                let short = if s.len() > 10 {
+                    format!("{}…{}", &s[..6], &s[s.len()-4..])
+                } else {
+                    s.clone()
+                };
+                html.push_str(&format!(
+                    "<div style=\"color:var(--fg);font-size:11px;margin:2px 0\">\
+                     <code>{short}</code></div>"
+                ));
+            }
+            dom::swap_inner("signer-list", &html);
+        }
+        Err(_) => {
+            dom::swap_inner("signer-list", "");
+        }
+    }
 }
 
 /// Link another device's EOA to the current user's MAIN. The clicked
@@ -1564,6 +1661,8 @@ fn header_admin_toggle() {
     if matches!(super::tenant::current(), super::tenant::Host::Apex) {
         wasm_bindgen_futures::spawn_local(async move {
             refresh_credits_pill().await;
+            refresh_claim_status().await;
+            refresh_signer_list().await;
         });
     }
 

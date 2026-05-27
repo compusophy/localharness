@@ -74,7 +74,7 @@ impl Cartridge {
 
 #[cfg(target_arch = "wasm32")]
 async fn load_wasm(wasm_bytes: &[u8]) -> Result<Cartridge, CompileError> {
-    use js_sys::{Object, Reflect, Uint8Array, WebAssembly};
+    use js_sys::{Reflect, WebAssembly};
     use wasm_bindgen::JsValue;
     use wasm_bindgen_futures::JsFuture;
 
@@ -98,7 +98,7 @@ async fn load_wasm(wasm_bytes: &[u8]) -> Result<Cartridge, CompileError> {
 
 #[cfg(target_arch = "wasm32")]
 fn build_host_imports() -> Result<js_sys::Object, CompileError> {
-    use js_sys::{Function, Object, Reflect};
+    use js_sys::{Object, Reflect};
     use wasm_bindgen::prelude::*;
 
     let imports = Object::new();

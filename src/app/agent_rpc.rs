@@ -20,9 +20,6 @@
 //! Origin validation: only accepts messages from `*.localharness.xyz`
 //! or `localhost` origins.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::MessageEvent;

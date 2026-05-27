@@ -644,20 +644,17 @@ pub(crate) fn admin_credits_section() -> Markup {
                     data-action="claim-credits"
                     .ghost { "claim daily" }
             }
+            div #claim-status .admin-msg-slot {}
             div #claim-credits-msg .admin-msg-slot {}
         }
     }
 }
 
-/// Linked-devices section — surfaces add-this-device-to-my-MAIN
-/// directly under identity so the cross-device flow is one click in
-/// from the apex admin button. Input + add button + result slot. No
-/// list of current signers yet (would need an `eth_getLogs` pass over
-/// the TBA's `SignerAdded`/`SignerRemoved` events); add later.
 pub(crate) fn admin_devices_section() -> Markup {
     html! {
         div.admin-section {
             div.admin-section-title { "linked devices" }
+            div #signer-list .admin-msg-slot { "loading…" }
             form #add-device-form .add-device-form
                 data-action="add-device" {
                 input #add-device-input
