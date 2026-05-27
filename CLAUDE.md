@@ -52,19 +52,32 @@ src/                       library crate
 │                          Sign self-paid or sponsored; submit via
 │                          standard `eth_sendRawTransaction`. See
 │                          `[[tempo-tx-findings]]` for wire details.
+├── rustlite/              Rust-subset → wasm compiler (in-crate)
+│   ├── mod.rs             compile(source) → wasm bytes top-level API
+│   ├── token.rs           token types (keywords, operators, literals)
+│   ├── lexer.rs           byte-level lexer with string escapes
+│   ├── ast.rs             full AST (structs, enums, fns, match, etc.)
+│   ├── parser.rs          recursive descent with precedence climbing
+│   ├── typecheck.rs       scope-based type resolution + mutability
+│   ├── codegen.rs         wasm binary emitter (sections, opcodes, LEB128)
+│   └── loader.rs          wasm32-only cartridge instantiation via WebAssembly
 ├── app/                   browser-resident IDE — gated on
 │   ├── mod.rs             `browser-app` feature + wasm32 target
 │   ├── templates.rs       all maud HTML
 │   ├── dom.rs             web-sys helpers (swap_inner, …)
 │   ├── events.rs          delegated click/keydown/submit/input dispatch
 │   ├── chat.rs            chat-turn streaming
-│   ├── history.rs         OPFS-persisted conversation
+│   ├── history.rs         OPFS-persisted conversation (with tool-call replay)
 │   ├── opfs.rs            file browser + inline editor
 │   ├── key_store.rs       Gemini API key in OPFS
 │   ├── owner.rs           legacy local-UUID owner marker
 │   ├── tenant.rs          hostname classifier (apex / tenant / other)
 │   ├── wallet_store.rs    master wallet persisted to apex OPFS
 │   ├── signer.rs          postMessage signer service at apex/?signer=1
+│   ├── agent_rpc.rs       inter-agent RPC endpoint (?rpc=1 URL mode)
+│   ├── encryption.rs      AES-256-GCM at-rest encryption via WebCrypto
+│   ├── system_prompt.rs   per-tenant custom system prompt (.lh_system_prompt.txt)
+│   ├── tool_allowlist.rs  per-agent tool restriction (.lh_tool_allowlist.txt)
 │   ├── sponsor.rs         embedded sponsor private key for fee_payer
 │   │                      signing on user-facing Tempo txs (testnet
 │   │                      only — see security notes inside)
@@ -75,6 +88,8 @@ src/                       library crate
     │   ├── wire.rs        REST request/response types
     │   ├── loop.rs        run_turn — the inner agent loop
     │   ├── compaction.rs  history summarisation
+│   │                  15 built-in tools including call_agent (inter-agent
+│   │                  RPC) and compile_rustlite (compile + run rustlite)
     │   ├── tools/         13 built-in tools
     │   └── mod.rs         GeminiConnectionStrategy + GeminiConnection
     └── mcp/               stdio MCP client (native-only)
@@ -134,6 +149,7 @@ examples/
 
 design/
 ├── main-identity.md       MAIN identity + multi-device linking design
+├── agent-writes-rust.md   rustlite compiler design: grammar EBNF, cartridge ABI
 └── paymaster.md           paymaster architecture (superseded by Tempo
                            native AA — see Update section at the bottom)
 
