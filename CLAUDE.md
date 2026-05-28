@@ -68,7 +68,10 @@ src/                       library crate
 │   ├── events.rs          delegated click/keydown/submit/input dispatch
 │   ├── chat.rs            chat-turn streaming
 │   ├── history.rs         OPFS-persisted conversation (with tool-call replay)
-│   ├── opfs.rs            file browser + inline editor
+│   ├── opfs.rs            file browser + inline editor (.wasm → DISPLAY)
+│   ├── display.rs         framebuffer surface — runs wasm cartridges
+│   │                      into a <canvas> via host_display.present
+│   │                      (Orbital-style compositor; see Redox vision)
 │   ├── key_store.rs       Gemini API key in OPFS
 │   ├── owner.rs           legacy local-UUID owner marker
 │   ├── tenant.rs          hostname classifier (apex / tenant / other)

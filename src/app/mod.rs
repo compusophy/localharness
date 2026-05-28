@@ -24,6 +24,7 @@ use crate::Agent;
 
 mod chat;
 mod compose;
+mod display;
 mod dom;
 mod embed;
 mod events;

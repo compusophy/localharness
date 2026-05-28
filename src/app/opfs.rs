@@ -70,13 +70,32 @@ pub(crate) async fn navigate(target: &str) {
     refresh().await;
 }
 
-/// Open the named file (relative to cwd) in the preview pane. Reads at
-/// most 256 KiB to match the view_file builtin's cap.
+/// Open the named file (relative to cwd). A `.wasm` file is a display
+/// cartridge — hand it to the framebuffer loader. Everything else opens
+/// in the text editor.
 pub(crate) async fn open_file(name: &str) {
-    // Renamed conceptually to "edit" — the top-center panel IS the
-    // text editor now. Always opens in editable mode; no separate
-    // read-only viewer.
-    edit_file(name).await
+    if name.ends_with(".wasm") {
+        display_file(name).await
+    } else {
+        edit_file(name).await
+    }
+}
+
+/// Read a `.wasm` file from OPFS and run it as a display cartridge in
+/// the framebuffer surface.
+pub(crate) async fn display_file(name: &str) {
+    let (path, display_path) = resolve_path(name);
+    let fs = super::shared_opfs();
+    match fs.read(&path).await {
+        Ok(bytes) => {
+            if let Err(err) = super::display::run_wasm(&bytes).await {
+                super::dom::set_status(&format!("display {display_path}: {err:?}"), true);
+            }
+        }
+        Err(err) => {
+            super::dom::set_status(&format!("display {display_path}: {err}"), true);
+        }
+    }
 }
 
 /// Open the named file in editor mode. Reads up to 1 MiB (larger than

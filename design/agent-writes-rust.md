@@ -1049,6 +1049,65 @@ itself a substantial design surface.
 
 ---
 
+## 2026-05-27 — `host::display` ABI v0 + framebuffer (IMPLEMENTED)
+
+**Why now:** the user's north star for where cartridges *run* is Redox
+OS's **Orbital** display server. A cartridge is an Orbital-style client
+app: it draws pixels into its own linear memory and hands them to the
+compositor to present. This is the first piece of the cartridge story
+that is actually landed code, not design — `src/app/display.rs`.
+
+### The constraint that shapes everything
+
+A wasm module can't touch the canvas, GPU, or DOM. It has linear memory
+and the imports we grant it. So the graphics path is necessarily:
+
+```text
+cartridge writes RGBA into its own memory
+  → calls imported present(ptr, w, h)
+  → host reads that memory range, builds ImageData, putImageData on <canvas>
+```
+
+That blit *is* the framebuffer. No DOM render tree, no iframe, no Shadow
+DOM. The canvas is the "scanout"; `display.rs` is the compositor; the
+`host_display` import module is the Orbclient analog.
+
+### v0 ABI (landed)
+
+```text
+(import "host_display" "present" (func (param i32 i32 i32)))
+  ;; present(ptr, w, h): blit w*h RGBA8888 bytes at `ptr` to the screen
+```
+
+A cartridge must export `memory` and a no-arg `render`. That's the
+entire v0 contract. `render` fills the buffer and calls `present` once.
+
+### Proven end to end
+
+`display.rs::gradient_cartridge()` hand-assembles a 168-byte wasm module
+(no `wasm-encoder` dep — same hand-rolled discipline as the rustlite
+codegen) that fills a 256×144 buffer with `r=x, g=y, b=128, a=255` and
+calls `present(0, 256, 144)`. The "display" button in the terminal
+action row runs it; a `.wasm` file opened from the OPFS panel runs as a
+cartridge too.
+
+### What's next on this surface
+
+- **Input events** — a poll-model API (`host_display.poll_event`) so
+  cartridges react to pointer/keyboard, like Orbclient's event queue.
+- **A frame loop** — `render` once → `tick`/`frame` driven by
+  `requestAnimationFrame`, with the cartridge owning an animation.
+- **Windows + compositing** — multiple cartridges, each a window, the
+  loader composites. This is the real "Orbital desktop" milestone.
+- **rustlite can't draw yet** — the codegen emits no imports and no
+  store opcodes (`_OP_I32_STORE` is unused). Wiring memory stores + the
+  `host_display` import into codegen is the bridge that lets an
+  *agent-written* rustlite cartridge draw, instead of hand-assembled
+  wasm. Tracked alongside the stdlib/codegen work.
+- **Loader registry (the VLC layer)** — dispatch by content type:
+  `.wasm` → cartridge; later `.png` → image loader, HTML → an
+  HTML→pixels loader. All draw into the same framebuffer.
+
 ## Iteration log
 
 - **2026-05-26** — End-to-end strawman walked through.
