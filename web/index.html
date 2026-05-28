@@ -186,6 +186,44 @@
        most of the time. */
     .feedback-msg { font-size: 11px; }
     .feedback-msg:empty { display: none; }
+    /* Submitted-feedback viewer inside the modal */
+    .feedback-recent-title {
+      font-size: 10px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-top: 4px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+    .feedback-list {
+      max-height: 220px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .feedback-empty { color: var(--muted); font-style: italic; }
+    .feedback-item {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .feedback-item:last-child { border-bottom: 0; }
+    .feedback-item-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 10px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .feedback-item-text { color: var(--fg); line-height: 1.5; word-break: break-word; }
 
     main {
       max-width: 1180px;
@@ -257,6 +295,13 @@
     main.layout .financial-rail { border-left: 1px solid var(--border); }
     main.layout .top-rail { border-bottom: 1px solid var(--border); }
     main.layout .bottom-rail { border-top: 1px solid var(--border); }
+    /* The terminal rail always sits at the bottom of the center column.
+       `margin-top:auto` absorbs free space above it, so when the
+       terminal (and/or view) panel collapses the rail stays pinned to
+       the bottom instead of floating up to the top. When the panels are
+       open the transcript's `flex:1` eats the free space, so this auto
+       margin is a no-op and the rail hugs the terminal as before. */
+    main.layout .terminal-rail { margin-top: auto; }
 
     /* SSOT side-panel archetype — both files (col-fs) and agent
        (col-financial) share .col-side. Same width, same padding,

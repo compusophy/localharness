@@ -68,6 +68,24 @@ pub(crate) fn scroll_to_bottom(id: &str) {
     }
 }
 
+/// Scroll to the bottom now AND again shortly after, so content that
+/// grows post-append still ends pinned to the latest entry. On first
+/// load the transcript is restored before layout/font swap settles, so
+/// a single synchronous scroll lands at the wrong offset; the delayed
+/// passes (one quick, one after the web-font swaps in) correct it.
+pub(crate) fn scroll_to_bottom_soon(id: &str) {
+    scroll_to_bottom(id);
+    let Ok(win) = window() else { return };
+    for delay in [60, 350] {
+        let id = id.to_string();
+        let cb = Closure::once_into_js(move || scroll_to_bottom(&id));
+        let _ = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+            cb.unchecked_ref(),
+            delay,
+        );
+    }
+}
+
 pub(crate) fn set_status(message: &str, is_error: bool) {
     if let Some(el) = by_id("status") {
         el.set_text_content(Some(message));

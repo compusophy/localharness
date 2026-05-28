@@ -349,8 +349,47 @@ pub(crate) fn feedback_modal() -> Markup {
                     button type="button" data-action="feedback-close" .ghost { "cancel" }
                 }
                 div #feedback-msg .feedback-msg {}
+                div.feedback-recent-title { "recent" }
+                div #feedback-list .feedback-list { "loading…" }
             }
         }
+    }
+}
+
+/// Render the harvested on-chain feedback as a scrollable list, newest
+/// first. Each row: relative time + short submitter + the text.
+pub(crate) fn feedback_list(entries: &[crate::registry::FeedbackEntry]) -> Markup {
+    if entries.is_empty() {
+        return html! { div #feedback-list .feedback-list .feedback-empty { "no feedback yet" } };
+    }
+    html! {
+        div #feedback-list .feedback-list {
+            @for e in entries {
+                div.feedback-item {
+                    div.feedback-item-meta {
+                        span.feedback-item-when { (fmt_unix_ago(e.timestamp)) }
+                        span.feedback-item-who title=(e.sender) { (short_addr(&e.sender)) }
+                    }
+                    div.feedback-item-text { (e.text) }
+                }
+            }
+        }
+    }
+}
+
+/// Format a unix timestamp (seconds) as a short relative age like
+/// "3h ago" / "5d ago", falling back to the day count for older items.
+fn fmt_unix_ago(unix_secs: u64) -> String {
+    let now_secs = (js_sys::Date::now() / 1000.0) as u64;
+    let delta = now_secs.saturating_sub(unix_secs);
+    if delta < 60 {
+        "just now".to_string()
+    } else if delta < 3600 {
+        format!("{}m ago", delta / 60)
+    } else if delta < 86400 {
+        format!("{}h ago", delta / 3600)
+    } else {
+        format!("{}d ago", delta / 86400)
     }
 }
 

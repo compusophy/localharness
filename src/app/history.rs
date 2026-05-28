@@ -98,8 +98,9 @@ pub(crate) async fn load_into_pending() {
                 }
             }
             // Scroll so the user sees the most recent turn, not the
-            // top of a long prior conversation.
-            dom::scroll_to_bottom("transcript");
+            // top of a long prior conversation. Deferred because the
+            // restore happens before first layout/font-swap settles.
+            dom::scroll_to_bottom_soon("transcript");
         }
         Ok(_) => {
             // Empty transcript — bytes existed but no user-visible content.

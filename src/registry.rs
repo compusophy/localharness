@@ -1572,6 +1572,79 @@ pub async fn tba_signers(tba_hex: &str) -> Result<Vec<String>, String> {
     Ok(signers.into_iter().collect())
 }
 
+/// One harvested `FeedbackSubmitted` event from the registry diamond.
+#[derive(Debug, Clone)]
+pub struct FeedbackEntry {
+    /// Submitter address (`0x…`, lowercase).
+    pub sender: String,
+    /// Unix seconds the contract stamped at submission.
+    pub timestamp: u64,
+    /// The feedback text.
+    pub text: String,
+}
+
+/// Read recent `FeedbackSubmitted(address indexed sender, uint256
+/// timestamp, string text)` events from the diamond, newest first.
+///
+/// Tempo caps `eth_getLogs` to a 100k-block window, so we scan the most
+/// recent ~99k blocks (same bound as `scripts/harvest-feedback.sh`).
+/// The non-indexed `(timestamp, text)` payload is ABI-decoded from the
+/// log `data`; `sender` comes from the indexed topic.
+pub async fn list_feedback() -> Result<Vec<FeedbackEntry>, String> {
+    use sha3::{Digest, Keccak256};
+    let topic0 = format!(
+        "0x{}",
+        bytes_to_hex(&Keccak256::digest(b"FeedbackSubmitted(address,uint256,string)"))
+    );
+
+    let latest_hex = rpc("eth_blockNumber", serde_json::json!([])).await?;
+    let latest = parse_hex_quantity(&latest_hex)? as u64;
+    let from = latest.saturating_sub(99_000);
+    let from_hex = format!("0x{from:x}");
+
+    let logs = eth_get_logs(REGISTRY_ADDRESS, vec![serde_json::json!(topic0)], &from_hex).await?;
+
+    let mut out = Vec::new();
+    for log in &logs {
+        let sender = log
+            .get("topics")
+            .and_then(|t| t.as_array())
+            .and_then(|t| t.get(1))
+            .and_then(|t| t.as_str())
+            .map(|t| format!("0x{}", &t.trim_start_matches("0x")[24..]).to_lowercase())
+            .unwrap_or_default();
+        let Some(data_hex) = log.get("data").and_then(|d| d.as_str()) else {
+            continue;
+        };
+        let Ok(bytes) = hex_to_bytes(data_hex) else { continue };
+        if let Some(entry) = decode_feedback_data(&bytes, sender) {
+            out.push(entry);
+        }
+    }
+    out.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    Ok(out)
+}
+
+/// Decode a `(uint256 timestamp, string text)` ABI payload. Layout:
+/// word0 = timestamp, word1 = offset (0x40), word2 = string length,
+/// then the UTF-8 bytes.
+fn decode_feedback_data(bytes: &[u8], sender: String) -> Option<FeedbackEntry> {
+    if bytes.len() < 96 {
+        return None;
+    }
+    let mut ts = [0u8; 8];
+    ts.copy_from_slice(&bytes[24..32]); // low 8 bytes of the uint256
+    let timestamp = u64::from_be_bytes(ts);
+
+    let mut len_buf = [0u8; 8];
+    len_buf.copy_from_slice(&bytes[88..96]); // low 8 bytes of the length word
+    let len = u64::from_be_bytes(len_buf) as usize;
+
+    let text_bytes = bytes.get(96..96 + len)?;
+    let text = String::from_utf8_lossy(text_bytes).into_owned();
+    Some(FeedbackEntry { sender, timestamp, text })
+}
+
 async fn eth_get_transaction_count(addr: &str) -> Result<u128, String> {
     let hex = rpc(
         "eth_getTransactionCount",

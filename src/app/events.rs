@@ -1847,6 +1847,24 @@ fn feedback_open() {
     if let Some(t) = dom::textarea_by_id("feedback-text") {
         let _ = t.focus();
     }
+    // Load the on-chain feedback list in the background; swap it in when
+    // it resolves. The modal is usable for submitting meanwhile.
+    wasm_bindgen_futures::spawn_local(async move {
+        match super::registry::list_feedback().await {
+            Ok(entries) => {
+                // The modal may have been closed before the RPC returned.
+                if dom::by_id("feedback-list").is_some() {
+                    dom::swap_outer("feedback-list", &templates::feedback_list(&entries).into_string());
+                }
+            }
+            Err(err) => {
+                dom::swap_inner(
+                    "feedback-list",
+                    &format!("<span style=\"color:var(--muted)\">couldn't load feedback: {err}</span>"),
+                );
+            }
+        }
+    });
 }
 
 fn feedback_close() {
