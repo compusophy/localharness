@@ -600,6 +600,7 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                     }
                 }
                 (admin_prompt_section())
+                (admin_app_section())
                 (admin_tool_allowlist_section())
                 (admin_security_collapsed())
                 div.admin-footer {
@@ -630,6 +631,19 @@ pub(crate) fn admin_prompt_section() -> Markup {
                 }
             }
             div #prompt-msg .admin-msg-slot {}
+        }
+    }
+}
+
+/// Publish-app section — pushes the device's local `app.rl` on-chain so
+/// every visitor (not just this device) boots into the subdomain's app.
+/// Owner-only; the button no-ops to an error if not verified as owner.
+pub(crate) fn admin_app_section() -> Markup {
+    html! {
+        div.admin-section {
+            div.admin-section-title { "app" }
+            button type="button" data-action="publish-app" .ghost { "publish app on-chain" }
+            div #publish-app-msg .admin-msg-slot {}
         }
     }
 }

@@ -287,7 +287,9 @@ fn mount() -> Result<(), JsValue> {
         "<main style=\"padding:48px;text-align:center;color:#7a8493;font:14px ui-monospace,Menlo,Consolas,monospace\">localharness · loading…</main>",
     );
     wasm_bindgen_futures::spawn_local(async move {
-        if try_paint_app().await {
+        // `Other` hosts (localhost / preview) have no on-chain name, so
+        // only the local `app.rl` path applies.
+        if try_paint_app(None).await {
             return;
         }
         paint_workshop(&host).await;
@@ -356,9 +358,9 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
         // Fall through to chrome paint as visitor.
     }
 
-    // App mode: if this device published an `app.rl` here, boot straight
-    // into the cartridge fullscreen instead of the workshop chrome.
-    if try_paint_app().await {
+    // App mode: local `app.rl` (owner's device) or the on-chain
+    // published wasm (any visitor) → boot fullscreen into the cartridge.
+    if try_paint_app(Some(&name)).await {
         return;
     }
 
@@ -643,24 +645,43 @@ fn has_edit_hint() -> bool {
 /// A compile error falls through to the workshop (so the owner can fix
 /// the source); per-origin OPFS means the app is the owner's device's
 /// copy — cross-visitor publishing comes later (shared cartridge store).
-async fn try_paint_app() -> bool {
+async fn try_paint_app(name: Option<&str>) -> bool {
     if has_edit_hint() {
         return false;
     }
+
+    // 1. Local `app.rl` source (the owner's working copy on this device)
+    //    takes precedence — compile + run it.
     let fs = shared_opfs();
-    let src = match fs.read("app.rl").await {
-        Ok(bytes) if !bytes.is_empty() => String::from_utf8_lossy(&bytes).into_owned(),
-        _ => return false,
-    };
-    let wasm = match crate::rustlite::compile(&src) {
-        Ok(w) => w,
-        Err(err) => {
-            web_sys::console::warn_1(&JsValue::from_str(&format!(
-                "app.rl compile failed, falling back to workshop: {err}"
-            )));
-            return false;
+    let wasm: Option<Vec<u8>> = match fs.read("app.rl").await {
+        Ok(bytes) if !bytes.is_empty() => {
+            let src = String::from_utf8_lossy(&bytes).into_owned();
+            match crate::rustlite::compile(&src) {
+                Ok(w) => Some(w),
+                Err(err) => {
+                    web_sys::console::warn_1(&JsValue::from_str(&format!(
+                        "app.rl compile failed, falling back to workshop: {err}"
+                    )));
+                    return false;
+                }
+            }
         }
+        // 2. No local app — a visitor (or a device without the source).
+        //    Fall back to the on-chain published wasm so anyone visiting
+        //    the subdomain sees the owner's app.
+        _ => match name {
+            Some(name) => match registry::id_of_name(name).await {
+                Ok(id) if id != 0 => {
+                    registry::app_wasm_of(id).await.ok().flatten()
+                }
+                _ => None,
+            },
+            None => None,
+        },
     };
+
+    let Some(wasm) = wasm else { return false };
+
     let Ok(doc) = dom::document() else { return false };
     let Some(root) = doc.get_element_by_id("root") else { return false };
     root.set_inner_html(&templates::app_fullscreen().into_string());

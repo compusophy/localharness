@@ -76,6 +76,7 @@ enum Action {
     SaveApiKey,
     DisplayStop,
     StopTurn,
+    PublishApp,
 }
 
 impl Action {
@@ -132,6 +133,7 @@ impl Action {
             "save-api-key" => Action::SaveApiKey,
             "display-stop" => Action::DisplayStop,
             "stop-turn" => Action::StopTurn,
+            "publish-app" => Action::PublishApp,
             _ => return None,
         })
     }
@@ -542,6 +544,11 @@ fn dispatch(action: Action) {
         Action::OpfsCloseViewer => super::opfs::close_viewer(),
         Action::DisplayStop => super::opfs::close_viewer(),
         Action::StopTurn => super::chat::request_stop_turn(),
+        Action::PublishApp => {
+            wasm_bindgen_futures::spawn_local(async move {
+                run_publish_app().await;
+            });
+        }
         Action::OpfsNav(target) => {
             wasm_bindgen_futures::spawn_local(async move {
                 super::opfs::navigate(&target).await;
@@ -1968,6 +1975,94 @@ fn feedback_submit() {
             }
         }
     });
+}
+
+/// Publish the device's local `app.rl` as the subdomain's on-chain app:
+/// compile it to wasm and store the bytes under the app metadata key via
+/// a sponsored `setMetadata` call (owner-signed through the apex iframe).
+/// Once published, ANY visitor to the subdomain boots into the app.
+async fn run_publish_app() {
+    let msg = "publish-app-msg";
+    let set_err = |m: &str| {
+        dom::swap_inner(msg, &format!("<span style=\"color:var(--error)\">{m}</span>"));
+    };
+
+    let name = match super::tenant::current() {
+        super::tenant::Host::Tenant(n) => n,
+        _ => {
+            set_err("only on a subdomain");
+            return;
+        }
+    };
+
+    // Only the verified owner can write metadata on-chain.
+    let owner_hex = super::APP.with(|cell| {
+        use super::VerifyState;
+        match &cell.borrow().verify_state {
+            VerifyState::Verified { address } => Some(address.clone()),
+            _ => None,
+        }
+    });
+    let Some(owner_hex) = owner_hex else {
+        set_err("verify as owner first");
+        return;
+    };
+
+    let fs = super::shared_opfs();
+    let src = match fs.read("app.rl").await {
+        Ok(b) if !b.is_empty() => String::from_utf8_lossy(&b).into_owned(),
+        _ => {
+            set_err("no app.rl to publish");
+            return;
+        }
+    };
+    let wasm = match crate::rustlite::compile(&src) {
+        Ok(w) => w,
+        Err(e) => {
+            set_err(&format!("compile: {e}"));
+            return;
+        }
+    };
+    if wasm.len() > 16_384 {
+        set_err("app wasm too large to publish (max 16 KB)");
+        return;
+    }
+
+    let id = match super::registry::id_of_name(&name).await {
+        Ok(id) if id != 0 => id,
+        _ => {
+            set_err("name isn't registered on-chain");
+            return;
+        }
+    };
+
+    dom::swap_inner(msg, "<span style=\"color:var(--muted)\">publishing…</span>");
+    let registry_addr = match parse_address(super::registry::REGISTRY_ADDRESS) {
+        Ok(a) => a,
+        Err(e) => {
+            set_err(&e);
+            return;
+        }
+    };
+    let call = crate::tempo_tx::TempoCall {
+        to: registry_addr,
+        value_wei: 0,
+        input: super::registry::encode_set_app_wasm(id, &wasm),
+    };
+    // Storing `bytes` costs ~20k gas per 32-byte word (cold SSTORE) on
+    // top of the ~275k Tempo sponsorship + base call.
+    let words = (wasm.len() / 32 + 1) as u128;
+    let gas = 1_200_000 + words * 40_000;
+    match run_sponsored_tempo_call(&owner_hex, vec![call], gas, "publish app").await {
+        Ok(tx) => dom::swap_inner(
+            msg,
+            &format!(
+                "<span style=\"color:var(--fg)\">published ✓ {}</span>",
+                tx_short_hash(&tx)
+            ),
+        ),
+        Err(e) => set_err(&format!("publish failed: {e}")),
+    }
 }
 
 /// Sign + submit `FeedbackFacet.submitFeedback(text)` on the diamond

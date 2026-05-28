@@ -319,11 +319,22 @@ Mount-time routing in `mod.rs::mount`:
    fullscreen cartridge (`templates::app_fullscreen` + a `<canvas>` run
    via `display::run_in_root_canvas`) — no tabs/terminal/files. A faint
    `[edit]` link (→ `?edit=1`) is the owner's escape back to the
-   workshop. A compile error falls through to the workshop. Per-origin
-   OPFS means the app is the owner-device's copy; cross-visitor
-   publishing (shared cartridge store) is a later layer. The agent
+   workshop. A compile error falls through to the workshop. The agent
    makes a subdomain "become" an app by writing the same source it
    passes to `run_cartridge` to `app.rl` via `create_file`.
+
+   **Cross-visitor publishing (on-chain).** Local `app.rl` is the
+   owner-device copy; for *visitors* `try_paint_app` falls back to the
+   on-chain published wasm. The compiled cartridge bytes are stored in
+   the registry diamond under `metadata(tokenId, keccak256(
+   "localharness.app.wasm"))` — no new facet, the existing owner-gated
+   `setMetadata(uint256,bytes32,bytes)` holds it. The owner publishes
+   via the **admin → app → "publish app on-chain"** button
+   (`events::run_publish_app`), which compiles the local `app.rl` and
+   submits a sponsored `setMetadata` Tempo tx (owner signs the
+   sender_hash through the apex iframe; sponsor pays). `registry::
+   app_wasm_of` reads it back. So once published, every visitor boots
+   into the cartridge, not just the owner's device.
 
 **Identity-gate invariant.** `wallet_store::load_or_create` no longer
 exists. The two callers are `wallet_store::load()` (pure read,

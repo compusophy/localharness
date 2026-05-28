@@ -287,6 +287,76 @@ pub async fn check_name(name: &str) -> Result<Status, String> {
     })
 }
 
+/// `eth_call idOfName(name)` → the token id (0 if unregistered).
+pub async fn id_of_name(name: &str) -> Result<u64, String> {
+    if REGISTRY_ADDRESS == zero_address() {
+        return Ok(0);
+    }
+    let calldata = encode_id_of_name(name);
+    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    decode_u256_as_u64(&result_hex)
+}
+
+// --- Published app cartridge (cross-visitor) -------------------------
+//
+// A subdomain's app is the compiled wasm cartridge stored on-chain under
+// a fixed metadata key, so ANY visitor (not just the owner's device)
+// boots into it. We store the wasm, not the source — it's smaller (less
+// gas) and the visitor runs it without recompiling. The owner publishes
+// via a sponsored `setMetadata` call (see `events::publish_app`).
+
+/// Storage key for the published app wasm: `keccak256("localharness.app.wasm")`.
+fn app_metadata_key() -> [u8; 32] {
+    use sha3::{Digest, Keccak256};
+    let digest = Keccak256::digest(b"localharness.app.wasm");
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
+/// Read a subdomain's published app wasm from on-chain metadata, if any.
+pub async fn app_wasm_of(token_id: u64) -> Result<Option<Vec<u8>>, String> {
+    let key = app_metadata_key();
+    let mut data = Vec::with_capacity(4 + 64);
+    data.extend_from_slice(&selector("metadata(uint256,bytes32)"));
+    data.extend_from_slice(&u256_be(token_id as u128));
+    data.extend_from_slice(&key);
+    let calldata = format!("0x{}", bytes_to_hex(&data));
+    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let bytes = hex_to_bytes(&result_hex)?;
+    // ABI-encoded `bytes`: [offset(32)][length(32)][payload...].
+    if bytes.len() < 64 {
+        return Ok(None);
+    }
+    let mut len_buf = [0u8; 8];
+    len_buf.copy_from_slice(&bytes[56..64]);
+    let len = u64::from_be_bytes(len_buf) as usize;
+    if len == 0 {
+        return Ok(None);
+    }
+    let payload = bytes
+        .get(64..64 + len)
+        .ok_or_else(|| "app wasm truncated".to_string())?;
+    Ok(Some(payload.to_vec()))
+}
+
+/// Encode `setMetadata(tokenId, appKey, wasm)` calldata for a sponsored
+/// publish tx.
+pub fn encode_set_app_wasm(token_id: u64, wasm: &[u8]) -> Vec<u8> {
+    let key = app_metadata_key();
+    let len = wasm.len();
+    let padded = len.div_ceil(32) * 32;
+    let mut buf = Vec::with_capacity(4 + 96 + 32 + padded);
+    buf.extend_from_slice(&selector("setMetadata(uint256,bytes32,bytes)"));
+    buf.extend_from_slice(&u256_be(token_id as u128)); // agentId
+    buf.extend_from_slice(&key); // bytes32 key (static, inline)
+    buf.extend_from_slice(&u256_be(0x60)); // offset to the bytes arg
+    buf.extend_from_slice(&u256_be(len as u128)); // bytes length
+    buf.extend_from_slice(wasm);
+    buf.resize(4 + 96 + 32 + padded, 0); // zero-pad payload to 32
+    buf
+}
+
 /// Register `name` on the contract under the given signer's address.
 /// Returns the transaction hash once it's been included in a block.
 /// The wallet needs testnet TMP for gas — the apex page is expected
