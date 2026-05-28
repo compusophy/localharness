@@ -81,7 +81,7 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
 
 /// Version string, used in the admin dropdown bottom. Bumped in
 /// lockstep with Cargo.toml.
-pub(crate) const APP_VERSION: &str = "0.10.28";
+pub(crate) const APP_VERSION: &str = "0.11.0";
 
 /// Terminal input — just `>` prompt + textarea + → send. Status line
 /// stays in the DOM (id="status") for dispatcher messages but renders
