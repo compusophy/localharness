@@ -1081,13 +1081,31 @@ v0.1 doesn't have. Integer host calls, by contrast, are exactly what
 rustlite *can* emit — so an agent-written cartridge can draw.
 
 ```text
-(import "host_display" "clear"     (func (param i32)))               ;; clear(0xRRGGBB)
-(import "host_display" "set_pixel" (func (param i32 i32 i32)))        ;; (x, y, rgb)
-(import "host_display" "fill_rect" (func (param i32 i32 i32 i32 i32)));; (x, y, w, h, rgb)
-(import "host_display" "present"   (func))                           ;; flush to screen
-(import "host_display" "width"     (func (result i32)))
-(import "host_display" "height"    (func (result i32)))
+(import "host_display" "clear"       (func (param i32)))                  ;; clear(0xRRGGBB)
+(import "host_display" "set_pixel"   (func (param i32 i32 i32)))           ;; (x, y, rgb)
+(import "host_display" "fill_rect"   (func (param i32 i32 i32 i32 i32)))   ;; (x, y, w, h, rgb)
+(import "host_display" "draw_char"   (func (param i32 i32 i32 i32 i32)))   ;; (x, y, codepoint, rgb, scale)
+(import "host_display" "draw_number" (func (param i32 i32 i32 i32 i32)))   ;; (x, y, value, rgb, scale)
+(import "host_display" "present"     (func))                              ;; flush to screen
+(import "host_display" "width"       (func (result i32)))
+(import "host_display" "height"      (func (result i32)))
+(import "host_display" "pointer_x"   (func (result i32)))                 ;; cursor x (poll model)
+(import "host_display" "pointer_y"   (func (result i32)))
+(import "host_display" "pointer_down" (func (result i32)))                ;; 1 while pressed
+(import "host_display" "state_get"   (func (param i32) (result i32)))     ;; 64-slot register file
+(import "host_display" "state_set"   (func (param i32 i32)))              ;; persists across frames
 ```
+
+`draw_char`/`draw_number` use a hand-encoded 5x7 font (0-9, A-Z, space,
+`+ - * / = . ( )`). `state_*` is the persistence mechanism since rustlite
+has no globals — a cartridge keeps app state (e.g. a calculator's
+accumulator) in the 64 integer slots, zeroed on load. Together with the
+pointer poll API this makes interactive, stateful apps buildable.
+
+**Parser note (2026-05-27):** rustlite now accepts `if`/`match`/block
+expressions as statements without a trailing `;` (like Rust); previously
+only `while`/`loop` could, so any `if cond { ... }` between statements
+failed to parse. `while`/`loop` remain statement-only (never a tail).
 
 A cartridge exports `memory` and either an animated `frame(t: i32)`
 (driven by `requestAnimationFrame`, `t` = elapsed ms) or a one-shot
