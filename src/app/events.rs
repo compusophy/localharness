@@ -1098,15 +1098,42 @@ fn save_api_key_pressed() {
     if let Ok(Some(storage)) = dom::session_storage() {
         let _ = storage.set_item("gemini_api_key", &value);
     }
+    dom::swap_inner(
+        "api-key-msg",
+        "<span style=\"color:var(--muted)\">checking…</span>",
+    );
     wasm_bindgen_futures::spawn_local(async move {
         super::key_store::save(&value).await;
+        super::opfs::refresh().await;
+        // Validate against Gemini so a bad key is caught here, not
+        // mid-turn. A definitive rejection keeps the modal open; a valid
+        // key OR an inconclusive check (network/CORS) closes it — we
+        // never block the user on a flaky probe.
+        if let Some(false) = gemini_key_is_valid(&value).await {
+            dom::swap_inner(
+                "api-key-msg",
+                "<span style=\"color:var(--error)\">key rejected — check it</span>",
+            );
+            return;
+        }
         if let Some(el) = dom::by_id("api-key-modal") {
             if let Some(parent) = el.parent_element() {
                 let _ = parent.remove_child(&el);
             }
         }
-        super::opfs::refresh().await;
     });
+}
+
+/// Probe whether a Gemini API key works via a cheap `models.list` GET
+/// (no token cost). `Some(true/false)` is definitive; `None` means the
+/// check was inconclusive (network/CORS) and the caller should not block
+/// on it. Browser→Gemini CORS is already proven by the chat path.
+async fn gemini_key_is_valid(key: &str) -> Option<bool> {
+    let url = format!("https://generativelanguage.googleapis.com/v1beta/models?key={key}");
+    match reqwest::Client::new().get(&url).send().await {
+        Ok(resp) => Some(resp.status().is_success()),
+        Err(_) => None,
+    }
 }
 
 /// Expand or collapse the inline act-panel under an agent row.
@@ -2089,11 +2116,13 @@ async fn run_publish_app() {
     let words = (wasm.len() / 32 + 1) as u128;
     let gas = 1_200_000 + words * 40_000;
     match run_sponsored_tempo_call(&owner_hex, vec![call], gas, "publish app").await {
-        Ok(tx) => dom::swap_inner(
+        Ok(_tx) => dom::swap_inner(
             msg,
             &format!(
-                "<span style=\"color:var(--fg)\">published ✓ {}</span>",
-                tx_short_hash(&tx)
+                "<span style=\"color:var(--fg)\">published ✓ — live at \
+                 <a href=\"https://{name}.localharness.xyz/\" target=\"_blank\" \
+                 rel=\"noopener\" style=\"color:var(--accent)\">{name}.localharness.xyz →</a> \
+                 (share it — anyone can open the app)</span>"
             ),
         ),
         Err(e) => set_err(&format!("publish failed: {e}")),
