@@ -41,16 +41,54 @@ pub(crate) fn api_key_modal() -> Markup {
     }
 }
 
-/// Render assistant markdown to HTML and wrap as `Markup` so callers
-/// can swap it straight into the DOM. pulldown-cmark sanitises by
-/// default (no raw HTML pass-through), so `PreEscaped` is safe.
+/// Render assistant markdown to HTML and wrap as `Markup` for direct DOM
+/// insertion.
+///
+/// **Security:** pulldown-cmark does NOT sanitise — it passes raw HTML
+/// in the source straight through, and emits `<a href>` verbatim
+/// (including `javascript:` schemes). Since this renders model output
+/// and restored history — which a prompt injection (a malicious file,
+/// an inter-agent message, fetched web content) can influence — that
+/// would be an XSS into the wallet origin. So we neutralise raw HTML
+/// (render it as escaped text) and strip dangerous link schemes before
+/// `push_html`. Markdown formatting still renders normally.
 pub(crate) fn rendered_markdown(raw: &str) -> Markup {
-    use pulldown_cmark::{html, Options, Parser};
+    use pulldown_cmark::{html, CowStr, Event, Options, Parser, Tag};
+
+    fn safe_url(url: CowStr) -> CowStr {
+        let probe = url.trim_start().to_ascii_lowercase();
+        let dangerous = probe.starts_with("javascript:")
+            || probe.starts_with("vbscript:")
+            || probe.starts_with("data:");
+        if dangerous {
+            CowStr::Borrowed("#")
+        } else {
+            url
+        }
+    }
+
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_TABLES);
     opts.insert(Options::ENABLE_TASKLISTS);
-    let parser = Parser::new_ext(raw, opts);
+    let parser = Parser::new_ext(raw, opts).map(|event| match event {
+        // Raw HTML → escaped text, so `<img onerror=…>` can't execute.
+        Event::Html(h) | Event::InlineHtml(h) => Event::Text(h),
+        // Strip javascript:/vbscript:/data: from link + image targets.
+        Event::Start(Tag::Link { link_type, dest_url, title, id }) => Event::Start(Tag::Link {
+            link_type,
+            dest_url: safe_url(dest_url),
+            title,
+            id,
+        }),
+        Event::Start(Tag::Image { link_type, dest_url, title, id }) => Event::Start(Tag::Image {
+            link_type,
+            dest_url: safe_url(dest_url),
+            title,
+            id,
+        }),
+        other => other,
+    });
     let mut out = String::with_capacity(raw.len());
     html::push_html(&mut out, parser);
     html! { (PreEscaped(out)) }

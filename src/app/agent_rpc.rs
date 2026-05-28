@@ -34,10 +34,10 @@ pub(crate) fn has_rpc_hint() -> bool {
 }
 
 fn is_trusted_origin(origin: &str) -> bool {
-    origin.ends_with(".localharness.xyz")
-        || origin == "https://localharness.xyz"
-        || origin.starts_with("http://localhost")
-        || origin.starts_with("http://127.0.0.1")
+    // Was `starts_with("http://localhost")`, which also trusted
+    // `http://localhost.evil.com`. Centralised host-exact check now;
+    // localhost honoured only in dev.
+    super::tenant::is_trusted_lh_origin(origin)
 }
 
 pub(crate) fn install_rpc_listener() -> Result<(), JsValue> {

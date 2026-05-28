@@ -10,6 +10,58 @@
 
 const ROOT_DOMAIN: &str = "localharness.xyz";
 
+/// Whether a browser-supplied `origin` (`scheme://host[:port]`) is a
+/// trusted localharness origin. Used to gate the cross-origin signer,
+/// the inter-agent RPC endpoint, and compose — all of which act on
+/// postMessages, so a loose check here is a wallet-compromise vector.
+///
+/// Rules: any `localharness.xyz` / `*.localharness.xyz` origin is always
+/// trusted; `localhost` / `127.0.0.1` is trusted **only when this page
+/// is itself served from localhost** (dev), so a production deployment
+/// never honours a malicious local page. Host comparison is exact /
+/// suffix on the parsed host — never `starts_with`/`contains`, which
+/// would let `localhost.evil.com` or `localharness.xyz.evil.com` slip
+/// through.
+pub(crate) fn is_trusted_lh_origin(origin: &str) -> bool {
+    let Some(host) = origin_host(origin) else { return false };
+    if host == ROOT_DOMAIN || host.ends_with(&format!(".{ROOT_DOMAIN}")) {
+        return true;
+    }
+    if self_is_localhost() && is_localhost_host(&host) {
+        return true;
+    }
+    false
+}
+
+/// Parse the lowercase host out of an `origin`. Requires an explicit
+/// `http(s)://` scheme (so `null` / `file:` origins are rejected) and
+/// strips any path and port.
+fn origin_host(origin: &str) -> Option<String> {
+    let rest = origin
+        .strip_prefix("https://")
+        .or_else(|| origin.strip_prefix("http://"))?;
+    let host = rest.split('/').next().unwrap_or(rest);
+    let host = host.split(':').next().unwrap_or(host);
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_ascii_lowercase())
+    }
+}
+
+fn is_localhost_host(host: &str) -> bool {
+    host == "localhost" || host.ends_with(".localhost") || host == "127.0.0.1"
+}
+
+/// True when the current page is served from a localhost dev origin.
+fn self_is_localhost() -> bool {
+    super::dom::window()
+        .ok()
+        .and_then(|w| w.location().hostname().ok())
+        .map(|h| is_localhost_host(&h.to_ascii_lowercase()))
+        .unwrap_or(false)
+}
+
 /// What kind of host we're currently being served from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Host {

@@ -27,10 +27,6 @@ use web_sys::MessageEvent;
 use super::dom;
 use super::templates;
 
-/// Origin suffix that compose accepts ready pings from. Iframes that
-/// don't match this suffix are ignored — keeps third-party noise out.
-const TRUSTED_SUFFIX: &str = "localharness.xyz";
-
 /// `Some(names)` iff `?compose=...` is in the URL with at least one
 /// comma-separated entry. Names are sanitized — only lowercase
 /// alphanumerics + hyphen are allowed, matching the registry's name
@@ -135,10 +131,5 @@ fn resize_iframe(name: &str, height: i32) {
 }
 
 fn is_trusted_origin(origin: &str) -> bool {
-    let stripped = origin
-        .strip_prefix("https://")
-        .or_else(|| origin.strip_prefix("http://"))
-        .unwrap_or(origin);
-    let host = stripped.split(':').next().unwrap_or(stripped);
-    host == TRUSTED_SUFFIX || host.ends_with(&format!(".{TRUSTED_SUFFIX}")) || host == "localhost"
+    super::tenant::is_trusted_lh_origin(origin)
 }

@@ -437,15 +437,10 @@ fn set(obj: &js_sys::Object, key: &str, value: JsValue) {
 /// Accept requests only from origins we control (apex + any subdomain).
 /// `localhost` is allowed too so the local-server smoke flow works.
 fn is_trusted_origin(origin: &str) -> bool {
-    let stripped = origin
-        .strip_prefix("https://")
-        .or_else(|| origin.strip_prefix("http://"))
-        .unwrap_or(origin);
-    let host = stripped.split(':').next().unwrap_or(stripped);
-    host == "localharness.xyz"
-        || host.ends_with(".localharness.xyz")
-        || host == "localhost"
-        || host.ends_with(".localhost")
+    // Centralised, hardened check (see tenant::is_trusted_lh_origin):
+    // localhost is honoured only in dev, and matching is host-exact so a
+    // page like localharness.xyz.evil.com can't request a signature.
+    super::tenant::is_trusted_lh_origin(origin)
 }
 
 fn parse_nonce(hex: &str) -> Result<Vec<u8>, String> {
