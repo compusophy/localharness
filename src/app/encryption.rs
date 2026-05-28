@@ -6,6 +6,12 @@
 //! before writing and decrypted on read.
 //!
 //! Format: `[12 bytes IV][ciphertext + 16 bytes GCM tag]`.
+//!
+//! NOTE: this module is built but **not yet wired** into the OPFS read/
+//! write paths — that's a tracked 1.0 hardening item (see the launch
+//! plan + the security-audit memory). The `allow(dead_code)` keeps the
+//! ready-to-use surface compiled without warning noise until then.
+#![allow(dead_code)]
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -57,8 +63,8 @@ pub(crate) async fn encrypt(key: &web_sys::CryptoKey, plaintext: &[u8]) -> Resul
     let crypto = window.crypto().map_err(|_| "no crypto")?;
     let subtle = crypto.subtle();
 
-    let mut iv_bytes = [0u8; IV_LEN];
-    let iv_view = unsafe { js_sys::Uint8Array::view(&mut iv_bytes) };
+    let iv_bytes = [0u8; IV_LEN];
+    let iv_view = unsafe { js_sys::Uint8Array::view(&iv_bytes) };
     crypto.get_random_values_with_array_buffer_view(&iv_view)
         .map_err(|_| "getRandomValues failed")?;
 
@@ -66,9 +72,9 @@ pub(crate) async fn encrypt(key: &web_sys::CryptoKey, plaintext: &[u8]) -> Resul
     let _ = js_sys::Reflect::set(&algo, &JsValue::from_str("name"), &JsValue::from_str("AES-GCM"));
     let _ = js_sys::Reflect::set(&algo, &JsValue::from_str("iv"), &iv_view);
 
-    let mut data = plaintext.to_vec();
+    let data = plaintext.to_vec();
     let promise = subtle.encrypt_with_object_and_u8_array(
-        &algo, key, &mut data,
+        &algo, key, &data,
     ).map_err(|e| format!("encrypt: {e:?}"))?;
 
     let result = JsFuture::from(promise)
@@ -100,9 +106,9 @@ pub(crate) async fn decrypt(key: &web_sys::CryptoKey, encrypted: &[u8]) -> Resul
     let _ = js_sys::Reflect::set(&algo, &JsValue::from_str("name"), &JsValue::from_str("AES-GCM"));
     let _ = js_sys::Reflect::set(&algo, &JsValue::from_str("iv"), &iv);
 
-    let mut ct = encrypted[IV_LEN..].to_vec();
+    let ct = encrypted[IV_LEN..].to_vec();
     let promise = subtle.decrypt_with_object_and_u8_array(
-        &algo, key, &mut ct,
+        &algo, key, &ct,
     ).map_err(|e| format!("decrypt: {e:?}"))?;
 
     let result = JsFuture::from(promise)

@@ -59,6 +59,11 @@ const FB_BYTES: usize = (FB_W * FB_H * 4) as usize;
 /// Shared host-owned framebuffer: `FB_W * FB_H` RGBA8888 pixels.
 type Framebuffer = Rc<RefCell<Vec<u8>>>;
 
+/// Self-referential holder for the rAF tick closure: the closure needs a
+/// handle to itself to reschedule, so it lives behind a shared `Option`
+/// that it clears to stop the loop.
+type FrameLoopHolder = Rc<RefCell<Option<Closure<dyn FnMut()>>>>;
+
 thread_local! {
     /// Generation counter for the animation loop. Each `run_wasm` bumps
     /// it; an in-flight rAF loop self-cancels when the global generation
@@ -287,13 +292,13 @@ fn build_host_display(
     let pointer_y = Closure::<dyn FnMut() -> i32>::new(move || POINTER.with(|p| p.get().1));
     let pointer_down = Closure::<dyn FnMut() -> i32>::new(move || POINTER_DOWN.with(|d| d.get()));
     let state_get = Closure::<dyn FnMut(i32) -> i32>::new(move |slot: i32| {
-        if slot < 0 || slot >= 64 {
+        if !(0..64).contains(&slot) {
             return 0;
         }
         STATE.with(|s| s.borrow()[slot as usize])
     });
     let state_set = Closure::<dyn FnMut(i32, i32)>::new(move |slot: i32, value: i32| {
-        if slot < 0 || slot >= 64 {
+        if !(0..64).contains(&slot) {
             return;
         }
         STATE.with(|s| s.borrow_mut()[slot as usize] = value);
@@ -467,7 +472,7 @@ fn export_fn(exports: &JsValue, name: &str) -> Option<Function> {
 /// global generation moves past `generation`.
 fn start_frame_loop(frame: Function, generation: u32) {
     let start = js_sys::Date::now();
-    let holder: Rc<RefCell<Option<Closure<dyn FnMut()>>>> = Rc::new(RefCell::new(None));
+    let holder: FrameLoopHolder = Rc::new(RefCell::new(None));
     let holder2 = holder.clone();
 
     *holder.borrow_mut() = Some(Closure::wrap(Box::new(move || {

@@ -77,7 +77,7 @@ pub(crate) async fn verify_owner(name: &str) -> Result<VerifyResult, String> {
         use sha3::{Digest, Keccak256};
         let mut hasher = Keccak256::new();
         hasher.update(b"localharness-auth-v0:");
-        hasher.update(&nonce);
+        hasher.update(nonce);
         let mut out = [0u8; 32];
         out.copy_from_slice(&hasher.finalize());
         out
@@ -88,7 +88,7 @@ pub(crate) async fn verify_owner(name: &str) -> Result<VerifyResult, String> {
     }
     let mut sig_arr = [0u8; 65];
     sig_arr.copy_from_slice(&sig_bytes);
-    let recovered = wallet::recover_address(&sig_arr, &prehash).map_err(|e| e)?;
+    let recovered = wallet::recover_address(&sig_arr, &prehash)?;
     let recovered_hex = format!("0x{}", bytes_to_hex(&recovered));
 
     if recovered_hex.to_lowercase() != signer_address.to_lowercase() {

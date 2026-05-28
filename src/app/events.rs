@@ -837,7 +837,7 @@ fn dispatch(action: Action) {
             let phrase = dom::textarea_by_id("import-seed")
                 .map(|t| t.value())
                 .unwrap_or_default();
-            if phrase.trim().split_whitespace().count() != 12 {
+            if phrase.split_whitespace().count() != 12 {
                 dom::swap_inner(
                     "seed-msg",
                     "<span style=\"color:var(--error)\">expected exactly 12 words</span>",
@@ -2205,7 +2205,7 @@ fn toggle_layout_class(class: &str) {
     let current = layout.class_name();
     let trimmed = current.trim();
     let parts: Vec<&str> = trimmed.split_whitespace().collect();
-    let new_cls = if parts.iter().any(|c| *c == class) {
+    let new_cls = if parts.contains(&class) {
         parts.iter().filter(|c| **c != class).copied().collect::<Vec<_>>().join(" ")
     } else if parts.is_empty() {
         class.to_string()

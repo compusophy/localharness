@@ -218,7 +218,7 @@ pub(crate) fn set_view_collapsed(collapsed: bool) {
     let Some(layout) = dom::by_id("layout") else { return };
     let cls = layout.class_name();
     let parts: Vec<&str> = cls.split_whitespace().collect();
-    let has = parts.iter().any(|c| *c == "view-collapsed");
+    let has = parts.contains(&"view-collapsed");
     if has == collapsed {
         return;
     }

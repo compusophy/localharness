@@ -18,7 +18,7 @@ pub(crate) fn document() -> Result<Document, JsValue> {
 }
 
 pub(crate) fn session_storage() -> Result<Option<Storage>, JsValue> {
-    Ok(window()?.session_storage()?)
+    window()?.session_storage()
 }
 
 pub(crate) fn by_id(id: &str) -> Option<Element> {

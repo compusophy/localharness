@@ -432,13 +432,12 @@ fn rlp_authorization_list(list: &[SignedAuthorization]) -> Vec<u8> {
     let items: Vec<Vec<u8>> = list
         .iter()
         .map(|a| {
-            let inner = wallet::rlp_list(&[
+            wallet::rlp_list(&[
                 wallet::rlp_uint(a.chain_id as u128),
                 wallet::rlp_bytes(&a.address),
                 wallet::rlp_uint(a.nonce as u128),
                 wallet::rlp_bytes(&a.signature),
-            ]);
-            inner
+            ])
         })
         .collect();
     wallet::rlp_list(&items)

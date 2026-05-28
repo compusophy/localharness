@@ -36,6 +36,13 @@
 //! [`connections::Connection`]: connections::Connection
 //! [`Filesystem`]: filesystem::Filesystem
 
+// On wasm32 the crate is single-threaded (browser) and intentionally
+// uses `Arc` over non-Send/Sync values via the `MaybeSendSync` marker
+// (see `runtime.rs`). Clippy's `arc_with_non_send_sync` fires on every
+// such use; it's by design on this target, so silence it crate-wide for
+// wasm rather than peppering `#[allow]` across the modules.
+#![cfg_attr(target_arch = "wasm32", allow(clippy::arc_with_non_send_sync))]
+
 // On wasm32 the upper architecture (Agent → Conversation → Connection)
 // is temporarily gated behind `native` because its trait bounds require
 // `Send` futures, which reqwest's browser fetch can't satisfy. The wasm

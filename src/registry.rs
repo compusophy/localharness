@@ -1208,6 +1208,10 @@ pub async fn last_claim_day(account_hex: &str) -> Result<u64, String> {
 /// `sender` must be one of the TBA's authorized signers: the NFT
 /// holder of the owning token, or an EOA previously added via
 /// `addSigner`. The TBA's `execute` revert "not authorised" otherwise.
+// Discrete params are the TBA-execute tx fields (signers, token, target,
+// value, calldata, fee token, gas); bundling them into a struct would
+// just move the noise. Kept flat as a low-level wire helper.
+#[allow(clippy::too_many_arguments)]
 pub async fn tba_execute_sponsored(
     sender: &SigningKey,
     fee_payer: &SigningKey,

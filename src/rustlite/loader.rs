@@ -213,8 +213,8 @@ fn read_string_from_memory(
 
     let ptr = ptr as u32;
     let mut len_bytes = [0u8; 4];
-    for i in 0..4 {
-        len_bytes[i] = array.get_index(ptr + i as u32) as u8;
+    for (i, b) in len_bytes.iter_mut().enumerate() {
+        *b = array.get_index(ptr + i as u32) as u8;
     }
     let len = u32::from_le_bytes(len_bytes);
     if len > 65536 {
