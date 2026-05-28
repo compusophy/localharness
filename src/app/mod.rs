@@ -218,6 +218,17 @@ fn mount() -> Result<(), JsValue> {
         return Ok(());
     }
 
+    // Explore mode short-circuit (?explore=1). A public directory of
+    // every agent on the registry — works on any host.
+    if has_explore_hint() {
+        let host_for_explore = host.clone();
+        root.set_inner_html(&templates::explore_chrome(&host_for_explore).into_string());
+        wasm_bindgen_futures::spawn_local(async move {
+            paint_explore().await;
+        });
+        return Ok(());
+    }
+
     // Signer mode short-circuit. When apex is loaded with ?signer=1
     // (typically in a hidden iframe from a subdomain doing owner
     // verification), skip the marketing chrome entirely and just turn
@@ -627,6 +638,28 @@ fn has_signer_hint() -> bool {
     let Ok(window) = dom::window() else { return false };
     let Ok(search) = window.location().search() else { return false };
     search.contains("signer=1")
+}
+
+/// `true` iff `?explore=1` is in the URL — the public agent directory.
+fn has_explore_hint() -> bool {
+    let Ok(window) = dom::window() else { return false };
+    let Ok(search) = window.location().search() else { return false };
+    search.contains("explore=1")
+}
+
+/// Fetch the recent agents and swap them into the directory grid.
+async fn paint_explore() {
+    match registry::list_recent_agents(60).await {
+        Ok(agents) => {
+            dom::swap_outer("explore-grid", &templates::explore_grid(&agents).into_string());
+        }
+        Err(err) => {
+            dom::swap_inner(
+                "explore-grid",
+                &format!("<span style=\"color:var(--muted)\">couldn't load agents: {err}</span>"),
+            );
+        }
+    }
 }
 
 /// `true` iff `?edit=1` is in the URL — forces the workshop chrome even

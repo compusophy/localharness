@@ -562,6 +562,34 @@
     }
     .apex-main { display: block; padding: 32px 24px; max-width: 1180px; }
     .apex-main > .col-chat { max-width: 600px; margin: 0 auto; }
+    .apex-explore-link { text-align: center; margin-top: 32px; }
+    .apex-explore-link a { color: var(--muted); text-decoration: none; font-size: 12px; }
+    .apex-explore-link a:hover { color: var(--fg); }
+
+    /* Public agent directory (?explore=1) */
+    .explore-main { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+    .explore-header { margin-bottom: 24px; }
+    .explore-title {
+      font-size: 18px; font-weight: 600; margin: 0;
+      text-transform: uppercase; letter-spacing: 0.1em; color: var(--fg);
+    }
+    .explore-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 12px;
+    }
+    .explore-empty { color: var(--muted); font-size: 13px; }
+    .explore-empty a { color: var(--accent); }
+    .explore-card {
+      display: flex; flex-direction: column; gap: 4px;
+      padding: 16px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      text-decoration: none;
+    }
+    .explore-card:hover { border-color: var(--fg); }
+    .explore-card-name { color: var(--fg); font-size: 15px; font-weight: 600; }
+    .explore-card-host { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 
     /* Terminal interior — bare prompt, no chrome. Status renders
        empty by default; only fills when there's something to say. */

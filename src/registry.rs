@@ -297,6 +297,33 @@ pub async fn id_of_name(name: &str) -> Result<u64, String> {
     decode_u256_as_u64(&result_hex)
 }
 
+/// List the most recently registered agents (newest id first), up to
+/// `limit`. Each entry is `(token_id, name)`. Used by the public
+/// directory (`?explore=1`). One `nameOfId` read per agent — fine at
+/// launch scale; revisit with an event index if the registry grows large.
+pub async fn list_recent_agents(limit: u64) -> Result<Vec<(u64, String)>, String> {
+    let next = next_id().await?;
+    if next <= 1 {
+        return Ok(Vec::new());
+    }
+    let max_id = next - 1;
+    let start = max_id.saturating_sub(limit.saturating_sub(1)).max(1);
+    let mut out = Vec::new();
+    let mut id = max_id;
+    loop {
+        if let Ok(name) = name_of_id(id).await {
+            if !name.is_empty() {
+                out.push((id, name));
+            }
+        }
+        if id <= start {
+            break;
+        }
+        id -= 1;
+    }
+    Ok(out)
+}
+
 // --- Published app cartridge (cross-visitor) -------------------------
 //
 // A subdomain's app is the compiled wasm cartridge stored on-chain under

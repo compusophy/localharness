@@ -271,6 +271,46 @@ pub(crate) fn compose_chrome(names: &[String]) -> Markup {
     }
 }
 
+/// Public agent directory (`?explore=1`) — a browsable gallery of every
+/// agent claimed on the registry. The grid is filled async by
+/// `paint_explore`; this renders the header + a loading placeholder.
+pub(crate) fn explore_chrome(host: &Host) -> Markup {
+    html! {
+        (site_header(host))
+        main.explore-main {
+            div.explore-header {
+                h1.explore-title { "agents" }
+            }
+            div #explore-grid .explore-grid { "loading…" }
+        }
+    }
+}
+
+/// Render the directory grid: one card per agent, linking to its
+/// subdomain. Newest first.
+pub(crate) fn explore_grid(agents: &[(u64, String)]) -> Markup {
+    if agents.is_empty() {
+        return html! {
+            div #explore-grid .explore-grid .explore-empty {
+                "no agents yet — "
+                a href="https://localharness.xyz/" { "claim the first one" }
+            }
+        };
+    }
+    html! {
+        div #explore-grid .explore-grid {
+            @for (_, name) in agents {
+                a.explore-card
+                    href=(format!("https://{name}.localharness.xyz/"))
+                    rel="noopener" {
+                    span.explore-card-name { (name) }
+                    span.explore-card-host { (name) ".localharness.xyz" }
+                }
+            }
+        }
+    }
+}
+
 /// The full app chrome (key + prompt + transcript + OPFS panel). Used
 /// when we're on a claimed tenant subdomain or any fallback
 /// (localhost, vercel preview).
@@ -509,6 +549,9 @@ pub(crate) fn apex(host: &Host, _wallet_address_hex: Option<&str>) -> Markup {
         main.apex-main {
             div.col-chat {
                 (apex_claim())
+                div.apex-explore-link {
+                    a href="?explore=1" { "explore all agents →" }
+                }
             }
         }
     }
