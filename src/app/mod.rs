@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use wasm_bindgen::prelude::*;
 
-use crate::filesystem::OpfsFilesystem;
+use crate::filesystem::{Filesystem, OpfsFilesystem};
 use crate::Agent;
 
 mod chat;
@@ -280,31 +280,44 @@ fn mount() -> Result<(), JsValue> {
         }
     }
 
-    // Full-app chrome (localhost, Vercel preview, etc.).
-    root.set_inner_html(&templates::chrome(&host).into_string());
-
-    // (no baseline status — terminal stays empty until something happens)
-
-    // Initial OPFS panel paint + history restore + key check. Show the
-    // API key modal if no key is found.
+    // Full-app chrome (localhost, Vercel preview, etc.). Defer so the
+    // async app-mode check (OPFS read) can take over before we paint the
+    // workshop.
+    root.set_inner_html(
+        "<main style=\"padding:48px;text-align:center;color:#7a8493;font:14px ui-monospace,Menlo,Consolas,monospace\">localharness · loading…</main>",
+    );
     wasm_bindgen_futures::spawn_local(async move {
-        let has_key = if let Some(persisted_key) = key_store::load().await {
-            if let Ok(Some(storage)) = dom::session_storage() {
-                let _ = storage.set_item("gemini_api_key", &persisted_key);
-            }
-            true
-        } else if let Ok(Some(storage)) = dom::session_storage() {
-            storage.get_item("gemini_api_key").ok().flatten().is_some()
-        } else {
-            false
-        };
-        history::load_into_pending().await;
-        opfs::refresh().await;
-        if !has_key {
-            show_api_key_modal();
+        if try_paint_app().await {
+            return;
         }
+        paint_workshop(&host).await;
     });
     Ok(())
+}
+
+/// Paint the full workshop chrome and run the usual key/history setup.
+/// Shared by the `Other` host path (and any fallback that wants the IDE
+/// without tenant verification).
+async fn paint_workshop(host: &tenant::Host) {
+    let Ok(doc) = dom::document() else { return };
+    let Some(root) = doc.get_element_by_id("root") else { return };
+    root.set_inner_html(&templates::chrome(host).into_string());
+
+    let has_key = if let Some(persisted_key) = key_store::load().await {
+        if let Ok(Some(storage)) = dom::session_storage() {
+            let _ = storage.set_item("gemini_api_key", &persisted_key);
+        }
+        true
+    } else if let Ok(Some(storage)) = dom::session_storage() {
+        storage.get_item("gemini_api_key").ok().flatten().is_some()
+    } else {
+        false
+    };
+    history::load_into_pending().await;
+    opfs::refresh().await;
+    if !has_key {
+        show_api_key_modal();
+    }
 }
 
 /// Render a tenant subdomain. Three branches:
@@ -341,6 +354,12 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
             return;
         }
         // Fall through to chrome paint as visitor.
+    }
+
+    // App mode: if this device published an `app.rl` here, boot straight
+    // into the cartridge fullscreen instead of the workshop chrome.
+    if try_paint_app().await {
+        return;
     }
 
     // Paint the full app — either we own it on this device or someone
@@ -606,6 +625,49 @@ fn has_signer_hint() -> bool {
     let Ok(window) = dom::window() else { return false };
     let Ok(search) = window.location().search() else { return false };
     search.contains("signer=1")
+}
+
+/// `true` iff `?edit=1` is in the URL — forces the workshop chrome even
+/// when an `app.rl` exists, so the owner can always get back to editing.
+fn has_edit_hint() -> bool {
+    let Ok(window) = dom::window() else { return false };
+    let Ok(search) = window.location().search() else { return false };
+    search.contains("edit=1")
+}
+
+/// Chrome-less "app mode": if this origin's OPFS has an `app.rl`
+/// (rustlite source) and `?edit=1` isn't set, compile it and boot the
+/// subdomain straight into a fullscreen cartridge instead of the IDE
+/// workshop. Returns `true` if it took over the page.
+///
+/// A compile error falls through to the workshop (so the owner can fix
+/// the source); per-origin OPFS means the app is the owner's device's
+/// copy — cross-visitor publishing comes later (shared cartridge store).
+async fn try_paint_app() -> bool {
+    if has_edit_hint() {
+        return false;
+    }
+    let fs = shared_opfs();
+    let src = match fs.read("app.rl").await {
+        Ok(bytes) if !bytes.is_empty() => String::from_utf8_lossy(&bytes).into_owned(),
+        _ => return false,
+    };
+    let wasm = match crate::rustlite::compile(&src) {
+        Ok(w) => w,
+        Err(err) => {
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "app.rl compile failed, falling back to workshop: {err}"
+            )));
+            return false;
+        }
+    };
+    let Ok(doc) = dom::document() else { return false };
+    let Some(root) = doc.get_element_by_id("root") else { return false };
+    root.set_inner_html(&templates::app_fullscreen().into_string());
+    if let Err(err) = display::run_in_root_canvas(&wasm).await {
+        web_sys::console::warn_1(&JsValue::from_str(&format!("app run failed: {err:?}")));
+    }
+    true
 }
 
 /// `true` iff `?claim=1` (or `?claim=anything`) is in the URL.

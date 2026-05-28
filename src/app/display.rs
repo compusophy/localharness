@@ -101,9 +101,29 @@ struct CartridgeRuntime {
     state_set: Closure<dyn FnMut(i32, i32)>,
 }
 
-/// Instantiate `wasm_bytes` as a display cartridge and run it. See the
-/// module docs for the ABI.
+/// Instantiate `wasm_bytes` as a display cartridge in the workshop's
+/// center view panel (swaps in the surface template). Used by the
+/// `run_cartridge` tool and opening a `.wasm` from the files panel.
 pub(crate) async fn run_wasm(wasm_bytes: &[u8]) -> Result<(), JsValue> {
+    let ctx = mount_canvas()?;
+    run_with_ctx(wasm_bytes, ctx).await
+}
+
+/// Instantiate `wasm_bytes` against an existing `#display-canvas`
+/// already in the DOM (app mode — the subdomain booted straight into a
+/// fullscreen cartridge, no view-panel swap).
+pub(crate) async fn run_in_root_canvas(wasm_bytes: &[u8]) -> Result<(), JsValue> {
+    let ctx = size_and_get_ctx()?;
+    run_with_ctx(wasm_bytes, ctx).await
+}
+
+/// Shared core: wire the host imports over a fresh framebuffer, reset
+/// per-cartridge input/state, instantiate, and start the frame loop (or
+/// one-shot render).
+async fn run_with_ctx(
+    wasm_bytes: &[u8],
+    ctx: CanvasRenderingContext2d,
+) -> Result<(), JsValue> {
     // Bump the generation first so any previous cartridge's frame loop
     // stops on its next tick.
     let generation = FRAME_GEN.with(|g| {
@@ -112,7 +132,6 @@ pub(crate) async fn run_wasm(wasm_bytes: &[u8]) -> Result<(), JsValue> {
         n
     });
 
-    let ctx = mount_canvas()?;
     let fb: Framebuffer = Rc::new(RefCell::new(black_framebuffer()));
 
     // Fresh cartridge starts with cleared input + state.
@@ -478,12 +497,18 @@ pub(crate) fn stop() {
     RUNTIME.with(|cell| *cell.borrow_mut() = None);
 }
 
-/// Render the canvas template into the center view-panel, size its
-/// backing store to the logical framebuffer, and return its 2D context.
+/// Render the workshop canvas template into the center view-panel, then
+/// size + grab its 2D context.
 fn mount_canvas() -> Result<CanvasRenderingContext2d, JsValue> {
     dom::swap_inner("view-content", &templates::display_surface().into_string());
     super::opfs::set_view_collapsed(false);
+    size_and_get_ctx()
+}
 
+/// Size the existing `#display-canvas` backing store to the logical
+/// framebuffer and return its 2D context. Assumes the canvas is already
+/// in the DOM.
+fn size_and_get_ctx() -> Result<CanvasRenderingContext2d, JsValue> {
     let canvas = dom::by_id("display-canvas")
         .ok_or_else(|| JsValue::from_str("display-canvas missing"))?
         .dyn_into::<HtmlCanvasElement>()?;

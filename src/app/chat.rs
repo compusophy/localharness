@@ -338,7 +338,10 @@ pub(crate) async fn start_session(key: &str) -> Result<(), JsValue> {
              + - * / = . ( ). You CAN build real interactive apps now — a \
              clickable button is a fill_rect + label, hit-tested against \
              pointer_down() + pointer position, with state in the slots. \
-             Use this whenever the user asks for something visual or an app.\n\
+             Use this whenever the user asks for something visual or an app. \
+             To make a cartridge this subdomain's PERMANENT app (boots \
+             fullscreen on every page load, no IDE chrome), save the same \
+             source to a file named `app.rl` via create_file.\n\
            • submit_feedback(text) — submit feedback on-chain via the \
              FeedbackFacet. Emits a FeedbackSubmitted event on the registry \
              diamond. Use when the user asks to leave feedback or to report \

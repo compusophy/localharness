@@ -1334,6 +1334,22 @@ pub(crate) fn display_surface() -> Markup {
     }
 }
 
+/// Chrome-less "app mode" page — the subdomain booted straight into its
+/// cartridge (an `app.rl` exists in OPFS). Just the framebuffer canvas
+/// filling the viewport, plus a tiny owner escape hatch back to the
+/// workshop (`?edit=1`). No tabs/terminal/files — the cartridge IS the
+/// page. See [[project-ai-os-vision]].
+pub(crate) fn app_fullscreen() -> Markup {
+    html! {
+        div.app-fullscreen {
+            div.app-stage {
+                canvas #display-canvas .display-canvas {}
+            }
+            a.app-edit href="?edit=1" title="edit this app" { "edit" }
+        }
+    }
+}
+
 /// Retired in 0.10.13 — the view panel is now collapsed via a CSS
 /// class flip on `#layout` rather than swapping a placeholder DOM
 /// node back in. Kept allow-dead-code so older call sites compile.

@@ -312,6 +312,19 @@ Mount-time routing in `mod.rs::mount`:
    - `Host::Other` (Vercel preview, localhost) → paint full chat
      app, no verification.
 
+   **App mode (chrome-less subdomain).** Before painting the workshop
+   chrome (both `Tenant` and `Other` paths), `try_paint_app()` checks
+   OPFS for an `app.rl` (rustlite source). If present and `?edit=1` is
+   not set, it compiles the source and boots the page straight into a
+   fullscreen cartridge (`templates::app_fullscreen` + a `<canvas>` run
+   via `display::run_in_root_canvas`) — no tabs/terminal/files. A faint
+   `[edit]` link (→ `?edit=1`) is the owner's escape back to the
+   workshop. A compile error falls through to the workshop. Per-origin
+   OPFS means the app is the owner-device's copy; cross-visitor
+   publishing (shared cartridge store) is a later layer. The agent
+   makes a subdomain "become" an app by writing the same source it
+   passes to `run_cartridge` to `app.rl` via `create_file`.
+
 **Identity-gate invariant.** `wallet_store::load_or_create` no longer
 exists. The two callers are `wallet_store::load()` (pure read,
 returns `Option<MasterWallet>`) and `wallet_store::create_and_persist()`

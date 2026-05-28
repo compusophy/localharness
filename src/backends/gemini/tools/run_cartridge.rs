@@ -42,7 +42,10 @@ impl Tool for RunCartridge {
          Fonts cover 0-9, A-Z, space, and + - * / = . ( ). To build a \
          clickable button: fill_rect for the box, draw_char/draw_number \
          for the label, and each frame check if pointer_down() and the \
-         pointer is inside the box."
+         pointer is inside the box. To make a cartridge the subdomain's \
+         PERMANENT app (so the page boots straight into it fullscreen on \
+         every load, no IDE chrome), also save the exact same source to a \
+         file named `app.rl` with create_file."
     }
 
     fn input_schema(&self) -> Value {
