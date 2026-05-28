@@ -3,19 +3,22 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>localharness · web demo</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <title>localharness</title>
   <style>
     :root {
-      color-scheme: dark light;
-      --bg: #0b0d12;
-      --panel: #14181f;
-      --panel-2: #1a1f29;
-      --border: #232a36;
-      --fg: #e6e9ee;
-      --muted: #7a8493;
-      --accent: #76d9b9;
-      --user: #6aa7ff;
-      --error: #ff8b8b;
+      color-scheme: dark;
+      --bg: #080808;
+      --panel: #0f0f0f;
+      --panel-2: #161616;
+      --border: #1e1e1e;
+      --fg: #c8c8c8;
+      --muted: #555;
+      --accent: #fff;
+      --user: #777;
+      --error: #a05050;
     }
     * { box-sizing: border-box; }
     /* Desktop-app frame: viewport-bound, no page scroll. Border-
@@ -27,7 +30,7 @@
       /* Single body size — 13px mono. Chrome (rails, panel-titles,
          buttons) uses 11px uppercase via class-specific rules. No
          third or fourth size anywhere. */
-      font: 13px/1.5 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+      font: 13px/1.5 'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
       /* `100dvh` (dynamic viewport height) accounts for mobile
          browser chrome that resizes the viewport — Safari address bar
          growing/shrinking on scroll, Android navigation gesture
@@ -194,7 +197,7 @@
     /* Tenant chrome — main is a horizontal row:
          [files-rail][col-fs][col-chat][col-financial][financial-rail]
        Files and agent rails span the FULL height of main. The center
-       col-chat is itself a vertical stack of its own [view-rail][view-panel]
+       col-chat is itself a vertical stack of its own [view-panel]
        [transcript][terminal-panel][terminal-rail] — so the view and
        terminal stay strictly inset between the files and agent columns.
        All four rails are <button>s; the whole strip is the click target. */
@@ -299,7 +302,7 @@
       gap: 8px;
     }
 
-    /* Center column — vertical stack: view-rail / view-panel /
+    /* Center column — vertical stack: view-panel /
        transcript / terminal-panel / terminal-rail. Each panel
        collapses via a class flip on #layout. */
     main.layout .col-chat {
@@ -367,7 +370,7 @@
       background: var(--bg);
       border: 0; outline: none; resize: none;
       color: var(--fg);
-      font: 13px/1.5 ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+      font: 13px/1.5 'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
       padding: 12px 16px;
     }
 
@@ -416,15 +419,6 @@
       /* tab-files: just the file list. */
       main.layout.tab-files .col-fs { display: flex; }
 
-      /* tab-edit: just the editor (view-panel). */
-      main.layout.tab-edit .col-chat { display: flex; }
-      main.layout.tab-edit .view-panel {
-        display: block;
-        flex: 1;
-        max-height: none;
-        overflow-y: auto;
-      }
-
       /* tab-chat: transcript + terminal stacked, transcript scrolls. */
       main.layout.tab-chat .col-chat { display: flex; }
       main.layout.tab-chat .transcript { display: flex; flex: 1; min-height: 0; }
@@ -432,6 +426,10 @@
 
       /* tab-agent: just the agent card. */
       main.layout.tab-agent .col-financial { display: flex; }
+
+      /* Fix agent tab top spacing on mobile — col-financial should
+         start at the top of the remaining viewport, not pushed down. */
+      main.layout .col-financial { padding-top: 0; }
     }
     .apex-main { display: block; padding: 32px 24px; max-width: 1180px; }
     .apex-main > .col-chat { max-width: 600px; margin: 0 auto; }
@@ -491,6 +489,21 @@
       cursor: pointer;
     }
     .terminal-send:hover { color: var(--accent); }
+    .terminal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding-top: 4px;
+    }
+    .terminal-action {
+      font-size: 10px;
+      padding: 2px 8px;
+      border: 0;
+      color: var(--muted);
+      text-transform: lowercase;
+      letter-spacing: 0;
+    }
+    .terminal-action:hover { color: var(--fg); border: 0; }
 
     /* Financial column visuals */
     .financial-card,
@@ -516,9 +529,9 @@
       text-transform: uppercase; letter-spacing: 0.06em;
     }
     .financial-value { font-size: 12px; color: var(--fg); }
-    .financial-balance { color: var(--accent); font-variant-numeric: tabular-nums; }
+    .financial-balance { color: var(--fg); font-variant-numeric: tabular-nums; }
     .financial-tba {
-      font-size: 12px; color: #f4c47e; text-decoration: none;
+      font-size: 12px; color: var(--fg); text-decoration: none;
       font-variant-numeric: tabular-nums;
     }
     .financial-tba:hover { text-decoration: underline; }
@@ -545,17 +558,17 @@
       border: 1px solid var(--accent);
       padding: 1px 6px; border-radius: 3px;
     }
-    .tenant-tag.tenant-tenant { color: #ffa86a; border-color: #ffa86a; }
+    .tenant-tag.tenant-tenant { color: var(--fg); border-color: var(--fg); }
     .tenant-tag.tenant-apex   { color: var(--muted); border-color: var(--border); }
     .tenant-tag.tenant-other  { color: var(--muted); border-color: var(--border); }
 
     .verify-pill.verify-pending      { color: var(--muted);  border-color: var(--border); }
-    .verify-pill.verify-ok           { color: var(--accent); border-color: var(--accent); }
-    .verify-pill.verify-visitor      { color: #6aa7ff; border-color: #6aa7ff; }
+    .verify-pill.verify-ok           { color: var(--fg); border-color: var(--fg); }
+    .verify-pill.verify-visitor      { color: var(--muted); border-color: var(--muted); }
     .verify-pill.verify-unregistered { color: var(--muted);  border-color: var(--border); }
     .verify-pill.verify-failed       { color: var(--error);  border-color: var(--error); }
-    .tba-pill { color: #f4c47e; border-color: #f4c47e; text-decoration: none; font-variant-numeric: tabular-nums; }
-    .tba-pill:hover { background: rgba(244, 196, 126, 0.08); }
+    .tba-pill { color: var(--fg); border-color: var(--fg); text-decoration: none; font-variant-numeric: tabular-nums; }
+    .tba-pill:hover { background: rgba(255, 255, 255, 0.05); }
 
     /* Bare agents list — just subdomain names, no border / row chrome.
        Top-aligned on apex (margin handled by .step). */
@@ -579,8 +592,8 @@
       font-size: 10px;
       letter-spacing: 0.08em;
       text-transform: uppercase;
-      color: #0b0d12;
-      background: var(--accent);
+      color: var(--bg);
+      background: var(--fg);
       vertical-align: middle;
     }
 
@@ -617,13 +630,12 @@
 
     .visitor-banner {
       background: var(--panel);
-      border: 1px solid #6aa7ff;
-      border-radius: 6px;
+      border: 1px solid var(--border);
       padding: 16px 18px;
       margin-bottom: 16px;
     }
     .visitor-banner h3 {
-      margin: 0 0 8px; color: #6aa7ff;
+      margin: 0 0 8px; color: var(--fg);
       font-size: 14px; font-weight: 600;
     }
     .visitor-banner p { margin: 0 0 8px; color: var(--fg); }
@@ -716,7 +728,7 @@
     .seed-words {
       padding: 16px; margin: 8px 0;
       background: var(--bg); border: 1px solid var(--accent); border-radius: 6px;
-      font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+      font-family: 'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
       font-size: 14px; color: var(--accent); line-height: 1.8;
       word-spacing: 0.5em; user-select: all;
     }
@@ -913,34 +925,22 @@
 
     .transcript {
       margin-top: 24px;
-      display: flex; flex-direction: column; gap: 16px;
+      display: flex; flex-direction: column; gap: 4px;
     }
     .turn {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 14px 16px;
+      background: transparent;
+      border: 0;
+      border-left: 2px solid var(--border);
+      padding: 4px 0 4px 12px;
     }
-    .turn.user { background: var(--panel-2); border-left: 2px solid var(--user); }
-    .turn.assistant { border-left: 2px solid var(--accent); }
-    .turn .role {
-      color: var(--muted);
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      margin-bottom: 6px;
-    }
-    .turn.user .role { color: var(--user); }
-    .turn.assistant .role { color: var(--accent); }
+    .turn.user { border-left-color: var(--muted); }
+    .turn.assistant { border-left-color: var(--fg); }
+    .turn .role { display: none; }
     .turn .body {
       word-break: break-word;
     }
-    .turn.user .body { white-space: pre-wrap; }
+    .turn.user .body { white-space: pre-wrap; color: var(--muted); }
     .turn.assistant .body .text-segment { white-space: pre-wrap; }
-    .turn.streaming .role::after {
-      content: " · streaming";
-      color: var(--muted);
-    }
 
     /* Inline tool-call blocks inside an assistant turn. */
     .tool-call {
@@ -1021,17 +1021,23 @@
     .header-admin { position: relative; }
     /* .admin-button inherits the global button style now */
     .header-admin-panel {
-      position: absolute;
-      top: calc(100% + 6px);
-      right: 0;
-      min-width: 320px;
-      max-width: 420px;
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: rgba(0, 0, 0, 0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .admin-dialog {
+      width: 100%;
+      max-width: 560px;
+      max-height: 80vh;
+      overflow-y: auto;
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 14px 16px;
-      z-index: 10;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+      padding: 20px;
     }
     .admin-section { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
     .admin-section:last-of-type { border-bottom: 0; padding-bottom: 0; margin-bottom: 8px; }
@@ -1078,7 +1084,7 @@
     }
     .admin-identity-value {
       color: var(--fg);
-      font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+      font-family: 'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
       font-size: 12px;
       text-decoration: none;
     }
@@ -1185,7 +1191,7 @@
       letter-spacing: 0.06em;
     }
     .pricing-value {
-      color: #f4c47e;
+      color: var(--fg);
       font-size: 14px;
       font-variant-numeric: tabular-nums;
       margin-bottom: 10px;
@@ -1299,10 +1305,62 @@
       max-height: 480px;
       resize: vertical;
       width: 100%;
-      border-color: var(--accent);
+      border-color: var(--fg);
       background: var(--bg);
       color: var(--fg);
-      font: 12px ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+      font: 12px 'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
+    }
+
+    /* Tool allowlist — compact grid */
+    .tool-allowlist-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 2px 12px;
+      margin: 8px 0;
+    }
+    .tool-checkbox-label {
+      font-size: 11px;
+      color: var(--fg);
+      cursor: pointer;
+      padding: 2px 0;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    /* API key modal — centered overlay */
+    .api-key-modal {
+      position: fixed; inset: 0;
+      z-index: 150;
+      background: rgba(0, 0, 0, 0.7);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .api-key-card {
+      width: 100%;
+      max-width: 420px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .api-key-title {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .api-key-row {
+      display: flex;
+      gap: 8px;
+    }
+    .api-key-row input {
+      flex: 1;
+      min-width: 0;
     }
   </style>
 </head>

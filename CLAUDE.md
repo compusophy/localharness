@@ -522,3 +522,47 @@ Two implementations ship:
 expected to supply OPFS — the browser app does so). Plug-in impls
 (mocks for tests, custom backends) implement the trait and hand a
 `SharedFilesystem = Arc<dyn Filesystem>` via the builder.
+
+## Documentation SOP
+
+Five documentation surfaces; keep them in sync on every change.
+
+| Surface | File | Audience | What it covers |
+|---------|------|----------|----------------|
+| **docs.rs** | `///` comments in source | SDK consumers | Public API: every `pub` item needs a one-liner |
+| **README.md** | repo root | GitHub visitors, crates.io | Quick start, features, architecture, links |
+| **CLAUDE.md** | repo root | Claude Code sessions | Full internal context: repo layout, gotchas, plans |
+| **llms.txt** | `web/llms.txt` | External agents, LLMs | Agent capabilities, RPC format, on-chain registry |
+| **CHANGELOG.md** | repo root | Users tracking releases | Per-version changes (Keep-a-Changelog) |
+
+### When to update what
+
+- **New pub API item** → add `///` doc comment (one-liner) + update
+  README if it changes the feature surface.
+- **New file or module** → update CLAUDE.md repo layout tree.
+- **New agent capability / tool** → update `llms.txt` tool list +
+  `chat.rs::start_session` system prompt.
+- **New on-chain facet or contract** → update CLAUDE.md on-chain
+  section + `llms.txt` registry section.
+- **Browser app UX change** → update CLAUDE.md browser app section.
+- **Release** → CHANGELOG.md entry (the release script stamps the
+  date). README version badge auto-updates from crates.io.
+
+### Single source of truth rules
+
+- **Code comments** are truth for API behaviour → docs.rs renders
+  them. Don't duplicate API docs in README.
+- **CLAUDE.md** is truth for internal architecture → don't duplicate
+  in README or llms.txt.
+- **llms.txt** is truth for agent-facing capabilities → keep it
+  concise, machine-readable, no marketing.
+- **System prompt** in `chat.rs::start_session` is truth for what
+  the agent knows about itself → update when tools change.
+
+### Verification
+
+Before any release:
+```sh
+cargo doc --no-deps 2>&1 | grep "warning.*missing"  # catch undocumented pub items
+curl -s https://localharness.xyz/llms.txt | head -5  # verify llms.txt deployed
+```

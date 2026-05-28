@@ -52,8 +52,8 @@ pub(crate) async fn load_into_pending() {
                         canonical_path: None,
                     };
                     let mut block = templates::tool_call_block(seg_id, &call).into_string();
-                    // Inject the result inline if we have one
                     if tc.result.is_some() || tc.error.is_some() {
+                        // Inject the result inline
                         let result = crate::types::ToolResult {
                             name: tc.name.clone(),
                             id: None,
@@ -66,8 +66,19 @@ pub(crate) async fn load_into_pending() {
                             &format!("{result_slot}></div>"),
                             &format!("{result_slot}>{result_html}</div>"),
                         );
-                        // Mark status as done
-                        block = block.replace("tc-status running", "tc-status done");
+                        // Mark status with the correct pill class:
+                        // "ok" (green checkmark) or "err" (red cross),
+                        // matching the CSS pseudo-elements in index.html.
+                        let final_class = if tc.error.is_none() {
+                            "tc-status ok"
+                        } else {
+                            "tc-status err"
+                        };
+                        block = block.replace("tc-status running", final_class);
+                    } else {
+                        // Tool was in-flight when the session ended —
+                        // don't leave it as "running" on replay.
+                        block = block.replace("tc-status running", "tc-status err");
                     }
                     dom::append_html("transcript", &block);
                 }
@@ -86,9 +97,9 @@ pub(crate) async fn load_into_pending() {
                     dom::append_html("transcript", &html_str);
                 }
             }
-            // No status write — restoring the transcript is silent
-            // per the minimalism pass; the terminal stays empty until
-            // the user actually triggers something.
+            // Scroll so the user sees the most recent turn, not the
+            // top of a long prior conversation.
+            dom::scroll_to_bottom("transcript");
         }
         Ok(_) => {
             // Empty transcript — bytes existed but no user-visible content.

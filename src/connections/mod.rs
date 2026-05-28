@@ -74,5 +74,6 @@ pub trait Connection: MaybeSendSync {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait ConnectionStrategy: MaybeSendSync {
+    /// Open a new connection to the backend.
     async fn connect(&self) -> Result<Arc<dyn Connection>>;
 }

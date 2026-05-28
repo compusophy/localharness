@@ -34,10 +34,7 @@ pub(crate) async fn run_send() {
     let key = match read_api_key().await {
         Some(k) => k,
         None => {
-            dom::set_status(
-                "no api key — open admin (top right) and paste your gemini key",
-                true,
-            );
+            super::show_api_key_modal();
             return;
         }
     };
@@ -110,6 +107,7 @@ pub(crate) async fn run_send() {
         )
         .into_string(),
     );
+    dom::scroll_to_bottom("transcript");
 
     let assistant_body_id = format!("turn-body-{assistant_turn_id}");
 
@@ -155,6 +153,7 @@ pub(crate) async fn run_send() {
                     cur_text.push_str(&text);
                     let inner = html! { (cur_text) }.into_string();
                     dom::swap_inner(&format!("seg-{cur_id}"), &inner);
+                    dom::scroll_to_bottom("transcript");
                 }
             }
             Ok(StreamChunk::ToolCall(call)) => {
@@ -273,6 +272,10 @@ pub(crate) async fn start_session(key: &str) -> Result<(), JsValue> {
              source code to wasm and execute a function. Supports structs, \
              enums, fns, match, if/else, while/loop, let mut. No traits, \
              no generics, no references. Returns the i32 result.\n\
+           • submit_feedback(text) — submit feedback on-chain via the \
+             FeedbackFacet. Emits a FeedbackSubmitted event on the registry \
+             diamond. Use when the user asks to leave feedback or to report \
+             issues about another agent. Max 2048 bytes.\n\
            • generate_image(prompt) — produce an image from a text prompt.\n\
            • finish(result?) — signal that the task is complete.\n\n\
          \
@@ -318,6 +321,7 @@ pub(crate) async fn start_session(key: &str) -> Result<(), JsValue> {
         .with_filesystem(super::shared_opfs())
         .with_system_instructions(system_instructions)
         .with_tool(create_subdomain_tool())
+        .with_tool(submit_feedback_tool())
         .with_tool(spawn_recursive_subagent_tool(captured_key));
     // If a previous session left history on OPFS, restore it into the
     // new connection. Consumed once — subsequent key changes start
@@ -550,6 +554,54 @@ fn create_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                     "tx_hash": tx_hash,
                 })),
                 Err(e) => Err(crate::error::Error::other(format!("claim failed: {e}"))),
+            }
+        },
+    )
+}
+
+/// `submit_feedback(text)` — submit feedback on-chain via the FeedbackFacet.
+fn submit_feedback_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "text": {
+                "type": "string",
+                "description": "Feedback text to submit on-chain. Max 2048 bytes."
+            }
+        },
+        "required": ["text"]
+    });
+    ClosureTool::new(
+        "submit_feedback",
+        "Submit feedback on-chain via the FeedbackFacet on the localharness registry. \
+         Emits a FeedbackSubmitted event. Use this when the user asks to leave feedback \
+         or when you want to report an issue about another agent.",
+        schema,
+        |args: serde_json::Value, _ctx| async move {
+            let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if text.is_empty() {
+                return Err(crate::error::Error::other("feedback text cannot be empty"));
+            }
+            if text.len() > 2048 {
+                return Err(crate::error::Error::other("feedback text exceeds 2048 bytes"));
+            }
+            let from_hex = super::APP.with(|cell| {
+                use super::VerifyState;
+                match &cell.borrow().verify_state {
+                    VerifyState::Verified { address } => Some(address.clone()),
+                    VerifyState::Visitor { visitor_address, .. } => Some(visitor_address.clone()),
+                    _ => cell.borrow().wallet.as_ref().map(|w| w.address_hex()),
+                }
+            });
+            let from_hex = from_hex.ok_or_else(|| {
+                crate::error::Error::other("no identity — claim a subdomain first")
+            })?;
+            match super::events::submit_feedback_onchain(&from_hex, text).await {
+                Ok(tx_hash) => Ok(serde_json::json!({
+                    "status": "submitted",
+                    "tx_hash": tx_hash,
+                })),
+                Err(e) => Err(crate::error::Error::other(format!("feedback failed: {e}"))),
             }
         },
     )

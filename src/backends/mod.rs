@@ -4,10 +4,10 @@
 //! responses. The Connection trait is the abstraction boundary; backends
 //! never leak into Agent/Conversation code.
 //!
-//! | Backend  | Status | Path       | Notes                                |
-//! |----------|--------|------------|--------------------------------------|
-//! | `gemini` | stable | [`gemini`] | Rust-native; hits the Gemini REST API |
-//! | `mcp`    | native | [`mcp`]    | stdio bridge to MCP servers          |
+//! | Backend  | Status | Notes                                |
+//! |----------|--------|--------------------------------------|
+//! | `gemini` | stable | Rust-native; hits the Gemini REST API |
+//! | `mcp`    | native | stdio bridge to MCP servers          |
 //!
 //! [`Connection`]: crate::connections::Connection
 

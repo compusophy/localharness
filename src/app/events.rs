@@ -26,6 +26,7 @@ use super::templates;
 #[derive(Debug, Clone)]
 enum Action {
     Send,
+    Compact,
     Reset,
     ClearKey,
     OpfsRefresh,
@@ -72,12 +73,14 @@ enum Action {
     SavePrompt,
     SaveToolAllowlist,
     ResetToolAllowlist,
+    SaveApiKey,
 }
 
 impl Action {
     fn parse(name: &str, arg: Option<String>) -> Option<Action> {
         Some(match name {
             "send" => Action::Send,
+            "compact" => Action::Compact,
             "reset" => Action::Reset,
             "clear-key" => Action::ClearKey,
             "opfs-refresh" => Action::OpfsRefresh,
@@ -124,6 +127,7 @@ impl Action {
             "save-prompt" => Action::SavePrompt,
             "save-tool-allowlist" => Action::SaveToolAllowlist,
             "reset-tool-allowlist" => Action::ResetToolAllowlist,
+            "save-api-key" => Action::SaveApiKey,
             _ => return None,
         })
     }
@@ -484,6 +488,11 @@ fn dispatch(action: Action) {
             // click handler returns immediately.
             wasm_bindgen_futures::spawn_local(async move {
                 super::chat::run_send().await;
+            });
+        }
+        Action::Compact => {
+            wasm_bindgen_futures::spawn_local(async move {
+                compact_pressed().await;
             });
         }
         Action::Reset => reset_pressed(),
@@ -884,6 +893,7 @@ fn dispatch(action: Action) {
         Action::SavePrompt => save_prompt_pressed(),
         Action::SaveToolAllowlist => save_tool_allowlist_pressed(),
         Action::ResetToolAllowlist => reset_tool_allowlist_pressed(),
+        Action::SaveApiKey => save_api_key_pressed(),
     }
 }
 
@@ -994,6 +1004,27 @@ fn reset_tool_allowlist_pressed() {
                 );
             }
         }
+    });
+}
+
+/// Save the API key from the centered modal, then dismiss the modal.
+fn save_api_key_pressed() {
+    let Some(input) = dom::input_by_id("api-key-input") else { return };
+    let value = input.value().trim().to_string();
+    if value.is_empty() {
+        return;
+    }
+    if let Ok(Some(storage)) = dom::session_storage() {
+        let _ = storage.set_item("gemini_api_key", &value);
+    }
+    wasm_bindgen_futures::spawn_local(async move {
+        super::key_store::save(&value).await;
+        if let Some(el) = dom::by_id("api-key-modal") {
+            if let Some(parent) = el.parent_element() {
+                let _ = parent.remove_child(&el);
+            }
+        }
+        super::opfs::refresh().await;
     });
 }
 
@@ -1745,7 +1776,7 @@ fn show_mobile_tab(name: &str) {
     // Reflect active state on each tab button by id — small fixed
     // set of tabs, no need for query_selector_all (which needs the
     // NodeList web-sys feature we don't enable).
-    for tab in ["files", "edit", "chat", "agent"] {
+    for tab in ["files", "chat", "agent"] {
         let id = format!("tab-btn-{tab}");
         let Some(el) = dom::by_id(&id) else { continue };
         let cls = el.class_name();
@@ -1801,6 +1832,22 @@ fn feedback_submit() {
         );
         return;
     }
+
+    // Client-side rate limit: one submission per 60 seconds.
+    thread_local! {
+        static LAST_FEEDBACK_MS: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+    }
+    let now = js_sys::Date::now();
+    let elapsed = LAST_FEEDBACK_MS.with(|c| now - c.get());
+    if elapsed < 60_000.0 {
+        let remaining = ((60_000.0 - elapsed) / 1000.0).ceil() as u32;
+        dom::swap_inner(
+            "feedback-msg",
+            &format!("<span style=\"color:var(--muted)\">wait {remaining}s</span>"),
+        );
+        return;
+    }
+    LAST_FEEDBACK_MS.with(|c| c.set(now));
 
     // Need an apex wallet to sign. The visitor address from verify
     // state is what the iframe signer controls.
@@ -1870,7 +1917,7 @@ fn feedback_submit() {
 /// via the apex iframe signer. The event log on the registry is the
 /// canonical store; the developer harvests via `eth_getLogs`. Caller's
 /// gas paid by the apex wallet — Tempo allows contract calls.
-async fn submit_feedback_onchain(from_hex: &str, text: &str) -> Result<String, String> {
+pub(crate) async fn submit_feedback_onchain(from_hex: &str, text: &str) -> Result<String, String> {
     let calldata = encode_submit_feedback_calldata(text);
     let registry_addr = parse_address(super::registry::REGISTRY_ADDRESS)?;
     let call = crate::tempo_tx::TempoCall {
@@ -2125,6 +2172,24 @@ fn reset_pressed() {
     if let Some(prompt) = dom::textarea_by_id("prompt") {
         prompt.focus().ok();
     }
+}
+
+async fn compact_pressed() {
+    let agent = super::APP.with(|cell| cell.borrow().agent.clone());
+    let Some(agent) = agent else {
+        dom::set_status("no active session to compact", true);
+        return;
+    };
+    dom::set_status("compacting...", false);
+    let changed = agent.compact().await;
+    if changed {
+        dom::set_status("compacted", false);
+        // Persist the compacted history so a reload picks it up.
+        super::history::save_from_agent().await;
+    } else {
+        dom::set_status("nothing to compact", false);
+    }
+    dom::scroll_to_bottom("transcript");
 }
 
 fn clear_key_pressed() {

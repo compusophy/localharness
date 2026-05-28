@@ -13,6 +13,30 @@ use crate::types::{BuiltinTool, ToolCall, ToolResult};
 use super::tenant::Host;
 use super::VerifyState;
 
+/// API key modal — shown on tenant subdomains when no Gemini API key
+/// is stored. Centered overlay with a single input + save button.
+/// Dismisses itself on save; the key file appears in the OPFS panel.
+pub(crate) fn api_key_modal() -> Markup {
+    html! {
+        div #api-key-modal .api-key-modal {
+            div.api-key-card {
+                div.api-key-title { "gemini api key" }
+                form onsubmit="return false" {
+                    div.api-key-row {
+                        input #api-key-input
+                            type="password"
+                            autocomplete="off"
+                            placeholder="paste key" {}
+                        button type="button"
+                            data-action="save-api-key" { "save" }
+                    }
+                }
+                div #api-key-msg .feedback-msg {}
+            }
+        }
+    }
+}
+
 /// Render assistant markdown to HTML and wrap as `Markup` so callers
 /// can swap it straight into the DOM. pulldown-cmark sanitises by
 /// default (no raw HTML pass-through), so `PreEscaped` is safe.
@@ -57,7 +81,7 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
 
 /// Version string, used in the admin dropdown bottom. Bumped in
 /// lockstep with Cargo.toml.
-pub(crate) const APP_VERSION: &str = "0.10.27";
+pub(crate) const APP_VERSION: &str = "0.10.28";
 
 /// Terminal input — just `>` prompt + textarea + → send. Status line
 /// stays in the DOM (id="status") for dispatcher messages but renders
@@ -70,6 +94,10 @@ pub(crate) fn terminal_input() -> Markup {
                 span.terminal-prompt { ">" }
                 textarea #prompt rows="1" {}
                 button.terminal-send data-action="send" title="send" { "→" }
+            }
+            div.terminal-actions {
+                button type="button" data-action="compact" .terminal-action title="compact conversation context" { "compact" }
+                button type="button" data-action="reset" .terminal-action title="clear conversation" { "clear" }
             }
         }
     }
@@ -229,7 +257,7 @@ pub(crate) fn chrome(host: &Host) -> Markup {
     html! {
         (site_header(host))
         (mobile_tabs())
-        main #layout .layout.view-collapsed.tab-chat {
+        main #layout .layout.view-collapsed.files-collapsed.financial-collapsed.tab-chat {
             // Files (left) — files-rail wraps a col-side panel.
             // No inner header: the rail label IS the panel title.
             button type="button" data-action="toggle-files"
@@ -245,15 +273,12 @@ pub(crate) fn chrome(host: &Host) -> Markup {
             ))
 
             // Center column — vertical stack:
-            //   [edit-rail][edit-panel?][transcript][terminal-panel?][terminal-rail]
+            //   [view-panel?][transcript][terminal-panel?][terminal-rail]
             // Clicking terminal-rail collapses transcript + terminal
-            // (so the editor can take the whole center). Clicking
-            // edit-rail collapses just the editor panel.
+            // (so the editor can take the whole center). The view-panel
+            // is hidden by default and opens when a file is opened from
+            // the files panel.
             div.col-chat {
-                button type="button" data-action="toggle-view"
-                    .top-rail.view-rail {
-                    span.rail-label { "edit" }
-                }
                 section.view-panel {
                     div #view-content .view-content {}
                 }
@@ -290,7 +315,6 @@ pub(crate) fn mobile_tabs() -> Markup {
     html! {
         nav.mobile-tabs {
             button #tab-btn-files type="button" data-action="show-tab" data-arg="files" .tab-button { "files" }
-            button #tab-btn-edit type="button" data-action="show-tab" data-arg="edit" .tab-button { "edit" }
             button #tab-btn-chat type="button" data-action="show-tab" data-arg="chat" .tab-button.active { "chat" }
             button #tab-btn-agent type="button" data-action="show-tab" data-arg="agent" .tab-button { "agent" }
         }
@@ -312,9 +336,8 @@ pub(crate) fn feedback_modal() -> Markup {
             div.feedback-card {
                 div.feedback-title { "feedback" }
                 p.feedback-blurb {
-                    "what's broken, missing, or wrong. saved to "
-                    code { ".lh_feedback.txt" }
-                    " for now; on-chain submission lands soon."
+                    "what's broken, missing, or wrong. submitted on-chain "
+                    "and saved locally."
                 }
                 textarea #feedback-text
                     .feedback-textarea
@@ -357,7 +380,6 @@ pub(crate) fn turn(turn_id: u32, role: &str, body: Markup, streaming: bool) -> M
     };
     html! {
         div id=(id_str) class=(cls) {
-            div.role { (role) }
             div id=(body_id) .body { (body) }
         }
     }
@@ -468,15 +490,17 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
     let has_wallet = owner_hex.is_some();
     html! {
         div #header-admin-panel .header-admin-panel {
-            (admin_identity_section(None, owner_hex.as_deref(), None))
-            @if has_wallet {
-                (admin_credits_section())
-                (admin_devices_section())
-            }
-            (admin_security_collapsed())
-            div.admin-footer {
-                button type="button" data-action="header-admin-close" .ghost { "close" }
-                span.admin-version { (APP_VERSION) }
+            div.admin-dialog {
+                (admin_identity_section(None, owner_hex.as_deref(), None))
+                @if has_wallet {
+                    (admin_credits_section())
+                    (admin_devices_section())
+                }
+                (admin_security_collapsed())
+                div.admin-footer {
+                    button type="button" data-action="header-admin-close" .ghost { "close" }
+                    span.admin-version { (APP_VERSION) }
+                }
             }
         }
     }
@@ -503,27 +527,29 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
     });
     html! {
         div #header-admin-panel .header-admin-panel {
-            (admin_identity_section(name.as_deref(), owner_hex.as_deref(), tba_hex.as_deref()))
-            div.admin-section {
-                div.admin-section-title { "gemini api key " span #keymeta {} }
-                form.key-form onsubmit="return false" {
-                    div.key-row {
-                        input #key
-                            type="password"
-                            autocomplete="off"
-                            placeholder="paste key" {}
-                        button.ghost
-                            type="button"
-                            data-action="clear-key" { "clear" }
+            div.admin-dialog {
+                (admin_identity_section(name.as_deref(), owner_hex.as_deref(), tba_hex.as_deref()))
+                div.admin-section {
+                    div.admin-section-title { "gemini api key " span #keymeta {} }
+                    form.key-form onsubmit="return false" {
+                        div.key-row {
+                            input #key
+                                type="password"
+                                autocomplete="off"
+                                placeholder="paste key" {}
+                            button.ghost
+                                type="button"
+                                data-action="clear-key" { "clear" }
+                        }
                     }
                 }
-            }
-            (admin_prompt_section())
-            (admin_tool_allowlist_section())
-            (admin_security_collapsed())
-            div.admin-footer {
-                button type="button" data-action="header-admin-close" .ghost { "close" }
-                span.admin-version { (APP_VERSION) }
+                (admin_prompt_section())
+                (admin_tool_allowlist_section())
+                (admin_security_collapsed())
+                div.admin-footer {
+                    button type="button" data-action="header-admin-close" .ghost { "close" }
+                    span.admin-version { (APP_VERSION) }
+                }
             }
         }
     }

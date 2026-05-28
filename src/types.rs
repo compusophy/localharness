@@ -12,38 +12,52 @@ use serde::{Deserialize, Serialize};
 // Google's chat model. `gemini-3.x` doesn't exist on the public API
 // yet — using a model id the API actually accepts. Bump this when
 // Google publishes newer ids (and re-test 400s).
+/// Default chat model ID.
 pub const DEFAULT_MODEL: &str = "gemini-2.5-flash";
+/// Default image generation model ID.
 pub const DEFAULT_IMAGE_GENERATION_MODEL: &str = "gemini-2.0-flash-exp-image-generation";
 
 // =============================================================================
 // Model configuration
 // =============================================================================
 
+/// How much "thinking" (chain-of-thought reasoning) the model produces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThinkingLevel {
+    /// Least reasoning output.
     Minimal,
+    /// Low reasoning output.
     Low,
+    /// Moderate reasoning output.
     Medium,
+    /// Maximum reasoning output.
     High,
 }
 
+/// Model generation parameters.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GenerationConfig {
+    /// Optional thinking level override.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_level: Option<ThinkingLevel>,
 }
 
+/// A named model with optional per-model API key and generation settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelEntry {
+    /// Model identifier (e.g. `"gemini-2.5-flash"`).
     pub name: String,
+    /// Per-model API key override.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
+    /// Generation parameters for this model.
     #[serde(default)]
     pub generation: GenerationConfig,
 }
 
 impl ModelEntry {
+    /// Create a model entry with the given name and default settings.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -59,9 +73,12 @@ impl Default for ModelEntry {
     }
 }
 
+/// Paired model entries for chat and image generation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelConfig {
+    /// The primary chat model.
     pub default: ModelEntry,
+    /// The model used for image generation.
     pub image_generation: ModelEntry,
 }
 
@@ -74,10 +91,13 @@ impl Default for ModelConfig {
     }
 }
 
+/// Gemini-specific configuration embedded in [`AgentConfig`](crate::AgentConfig).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GeminiConfig {
+    /// Gemini API key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
+    /// Chat and image generation model entries.
     #[serde(default)]
     pub models: ModelConfig,
 }
@@ -86,9 +106,12 @@ pub struct GeminiConfig {
 // System instructions
 // =============================================================================
 
+/// One titled section within templated system instructions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SystemInstructionSection {
+    /// The instruction text.
     pub content: String,
+    /// Section title shown to the model.
     #[serde(default = "default_section_title")]
     pub title: String,
 }
@@ -106,23 +129,31 @@ impl Default for SystemInstructionSection {
     }
 }
 
+/// Plain-text system instructions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CustomSystemInstructions {
+    /// The raw instruction text.
     pub text: String,
 }
 
+/// Structured system instructions with identity and titled sections.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TemplatedSystemInstructions {
+    /// Optional identity string for the agent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub identity: Option<String>,
+    /// Ordered instruction sections.
     #[serde(default)]
     pub sections: Vec<SystemInstructionSection>,
 }
 
+/// System instructions: either a plain string or structured sections.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SystemInstructions {
+    /// Free-form text instructions.
     Custom(CustomSystemInstructions),
+    /// Structured instructions with identity and sections.
     Templated(TemplatedSystemInstructions),
 }
 
@@ -142,27 +173,44 @@ impl From<String> for SystemInstructions {
 // Builtin tools + capability flags
 // =============================================================================
 
+/// Identifiers for the SDK's built-in tools.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BuiltinTool {
+    /// List a directory's contents.
     ListDirectory,
+    /// Regex search within files.
     SearchDirectory,
+    /// Find files by glob pattern.
     FindFile,
+    /// Read a file's contents.
     ViewFile,
+    /// Create a new file.
     CreateFile,
+    /// Apply edits to an existing file.
     EditFile,
+    /// Delete a file or directory.
     DeleteFile,
+    /// Rename or move a file.
     RenameFile,
+    /// Execute a shell command.
     RunCommand,
+    /// Prompt the user with a question.
     AskQuestion,
+    /// Spawn a sub-agent.
     StartSubagent,
+    /// Generate an image via the image model.
     GenerateImage,
+    /// Call another agent via inter-agent RPC.
     CallAgent,
+    /// Compile and run a rustlite program.
     CompileRustlite,
+    /// Signal that the agent's turn is complete.
     Finish,
 }
 
 impl BuiltinTool {
+    /// Every built-in tool variant.
     pub const ALL: &'static [BuiltinTool] = &[
         Self::ListDirectory,
         Self::SearchDirectory,
@@ -181,6 +229,7 @@ impl BuiltinTool {
         Self::Finish,
     ];
 
+    /// Tools that only read state (no side effects).
     pub const READ_ONLY: &'static [BuiltinTool] = &[
         Self::ListDirectory,
         Self::SearchDirectory,
@@ -189,6 +238,7 @@ impl BuiltinTool {
         Self::Finish,
     ];
 
+    /// Tools that operate on individual files.
     pub const FILE_TOOLS: &'static [BuiltinTool] = &[
         Self::ViewFile,
         Self::CreateFile,
@@ -197,6 +247,7 @@ impl BuiltinTool {
         Self::RenameFile,
     ];
 
+    /// The snake_case wire name the model uses to invoke this tool.
     pub fn wire_name(self) -> &'static str {
         match self {
             Self::ListDirectory => "list_directory",
@@ -218,16 +269,23 @@ impl BuiltinTool {
     }
 }
 
+/// Controls which built-in tools are exposed to the model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapabilitiesConfig {
+    /// Whether sub-agent spawning is allowed.
     pub enable_subagents: bool,
+    /// Explicit allowlist (mutually exclusive with `disabled_tools`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled_tools: Option<Vec<BuiltinTool>>,
+    /// Explicit denylist (mutually exclusive with `enabled_tools`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub disabled_tools: Option<Vec<BuiltinTool>>,
+    /// History-entry count that triggers auto-compaction.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compaction_threshold: Option<u32>,
+    /// Model ID used for image generation.
     pub image_model: String,
+    /// JSON schema for the `finish` tool's structured output.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finish_tool_schema_json: Option<String>,
 }
@@ -277,6 +335,7 @@ impl CapabilitiesConfig {
         }
     }
 
+    /// Verify that `enabled_tools` and `disabled_tools` are not both set.
     pub fn validate(&self) -> Result<(), crate::error::Error> {
         if self.enabled_tools.is_some() && self.disabled_tools.is_some() {
             return Err(crate::error::Error::config(
@@ -291,27 +350,40 @@ impl CapabilitiesConfig {
 // MCP server configuration
 // =============================================================================
 
+/// How to connect to an MCP server.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum McpServerConfig {
+    /// Launch a child process and communicate over stdin/stdout.
     Stdio {
+        /// Command to spawn.
         command: String,
+        /// Command-line arguments.
         #[serde(default)]
         args: Vec<String>,
     },
+    /// Connect to an SSE-based MCP server (not yet implemented).
     Sse {
+        /// Server URL.
         url: String,
+        /// Optional HTTP headers.
         #[serde(skip_serializing_if = "Option::is_none")]
         headers: Option<std::collections::BTreeMap<String, String>>,
     },
+    /// Connect to an HTTP-based MCP server (not yet implemented).
     Http {
+        /// Server URL.
         url: String,
+        /// Optional HTTP headers.
         #[serde(skip_serializing_if = "Option::is_none")]
         headers: Option<std::collections::BTreeMap<String, String>>,
+        /// Per-call timeout in seconds.
         #[serde(default = "default_http_timeout")]
         timeout_secs: f64,
+        /// SSE read timeout in seconds.
         #[serde(default = "default_sse_read_timeout")]
         sse_read_timeout_secs: f64,
+        /// Whether to kill the server when the client closes.
         #[serde(default = "default_terminate_on_close")]
         terminate_on_close: bool,
     },
@@ -331,29 +403,40 @@ fn default_terminate_on_close() -> bool {
 // Tool calls + results
 // =============================================================================
 
+/// A tool invocation requested by the model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {
+    /// Wire name of the tool.
     pub name: String,
+    /// JSON arguments the model supplied.
     #[serde(default)]
     pub args: serde_json::Value,
+    /// Backend-assigned call ID for correlating results.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub id: Option<String>,
+    /// Resolved filesystem path (set by file tools for policy evaluation).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub canonical_path: Option<String>,
 }
 
+/// The outcome of executing a [`ToolCall`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolResult {
+    /// Wire name of the tool that was called.
     pub name: String,
+    /// Call ID this result corresponds to.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub id: Option<String>,
+    /// JSON value on success.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub result: Option<serde_json::Value>,
+    /// Error message on failure.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub error: Option<String>,
 }
 
 impl ToolResult {
+    /// Build a successful tool result.
     pub fn ok(name: impl Into<String>, id: Option<String>, value: serde_json::Value) -> Self {
         Self {
             name: name.into(),
@@ -363,6 +446,7 @@ impl ToolResult {
         }
     }
 
+    /// Build a failed tool result with an error message.
     pub fn err(name: impl Into<String>, id: Option<String>, message: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -377,16 +461,22 @@ impl ToolResult {
 // Usage metadata
 // =============================================================================
 
+/// Token usage statistics from the backend.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsageMetadata {
+    /// Tokens in the prompt.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub prompt_token_count: Option<i32>,
+    /// Tokens served from cache.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub cached_content_token_count: Option<i32>,
+    /// Tokens in the model's response.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub candidates_token_count: Option<i32>,
+    /// Tokens used for chain-of-thought reasoning.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub thoughts_token_count: Option<i32>,
+    /// Total tokens (prompt + response + thoughts).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub total_token_count: Option<i32>,
 }
@@ -418,92 +508,132 @@ impl UsageMetadata {
 // Steps
 // =============================================================================
 
+/// The kind of event a step represents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StepType {
+    /// Model-generated text response.
     #[serde(rename = "TEXT_RESPONSE")]
     TextResponse,
+    /// Model requesting a tool call.
     #[serde(rename = "TOOL_CALL")]
     ToolCall,
+    /// System-generated message.
     #[serde(rename = "SYSTEM_MESSAGE")]
     SystemMessage,
+    /// History compaction event.
     #[serde(rename = "COMPACTION")]
     Compaction,
+    /// Agent signaling completion.
     #[serde(rename = "FINISH")]
     Finish,
+    /// Unrecognized step type.
     #[serde(rename = "UNKNOWN")]
     Unknown,
 }
 
+/// Who produced a step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StepSource {
+    /// Generated by the system/SDK.
     #[serde(rename = "SYSTEM")]
     System,
+    /// Originated from the user.
     #[serde(rename = "USER")]
     User,
+    /// Produced by the model.
     #[serde(rename = "MODEL")]
     Model,
+    /// Unknown origin.
     #[serde(rename = "UNKNOWN")]
     Unknown,
 }
 
+/// Intended audience of a step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StepTarget {
+    /// Addressed to the user.
     #[serde(rename = "TARGET_USER")]
     User,
+    /// Addressed to the environment (tools).
     #[serde(rename = "TARGET_ENVIRONMENT")]
     Environment,
+    /// No specific target.
     #[serde(rename = "TARGET_UNSPECIFIED")]
     Unspecified,
+    /// Unknown target.
     #[serde(rename = "UNKNOWN")]
     Unknown,
 }
 
+/// Lifecycle state of a step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StepStatus {
+    /// Turn is still in progress.
     #[serde(rename = "ACTIVE")]
     Active,
+    /// Turn completed successfully.
     #[serde(rename = "DONE")]
     Done,
+    /// Waiting for user input.
     #[serde(rename = "WAITING_FOR_USER")]
     WaitingForUser,
+    /// Turn ended with an error.
     #[serde(rename = "ERROR")]
     Error,
+    /// Turn was canceled.
     #[serde(rename = "CANCELED")]
     Canceled,
+    /// Unknown status.
     #[serde(rename = "UNKNOWN")]
     Unknown,
 }
 
+/// One event in the agent's response stream.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Step {
+    /// Backend-assigned step identifier.
     #[serde(default)]
     pub id: String,
+    /// Zero-based index within the current turn.
     #[serde(default)]
     pub step_index: u32,
+    /// What kind of event this step represents.
     #[serde(rename = "type", default = "Step::default_type")]
     pub kind: StepType,
+    /// Who produced this step.
     #[serde(default = "Step::default_source")]
     pub source: StepSource,
+    /// Intended audience.
     #[serde(default = "Step::default_target")]
     pub target: StepTarget,
+    /// Lifecycle state.
     #[serde(default = "Step::default_status")]
     pub status: StepStatus,
+    /// Accumulated text content.
     #[serde(default)]
     pub content: String,
+    /// Incremental text delta since the last step.
     #[serde(default)]
     pub content_delta: String,
+    /// Accumulated thinking (reasoning) text.
     #[serde(default)]
     pub thinking: String,
+    /// Incremental thinking delta.
     #[serde(default)]
     pub thinking_delta: String,
+    /// Tool calls the model is requesting.
     #[serde(default)]
     pub tool_calls: Vec<ToolCall>,
+    /// Error message, if any.
     #[serde(default)]
     pub error: String,
+    /// Explicit flag that this step ends the turn.
     #[serde(default)]
     pub is_complete_response: Option<bool>,
+    /// Structured JSON output from the `finish` tool.
     #[serde(default)]
     pub structured_output: Option<serde_json::Value>,
+    /// Token usage for this step.
     #[serde(default)]
     pub usage_metadata: Option<UsageMetadata>,
 }
@@ -537,14 +667,18 @@ impl Step {
 // Hooks
 // =============================================================================
 
+/// The decision from a decide-hook: allow or deny, with a reason.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HookResult {
+    /// `true` to proceed, `false` to block.
     pub allow: bool,
+    /// Human-readable reason for the decision.
     #[serde(default)]
     pub message: String,
 }
 
 impl HookResult {
+    /// Allow with no message.
     pub fn allow() -> Self {
         Self {
             allow: true,
@@ -552,6 +686,7 @@ impl HookResult {
         }
     }
 
+    /// Allow with a diagnostic message.
     pub fn allow_with(message: impl Into<String>) -> Self {
         Self {
             allow: true,
@@ -559,6 +694,7 @@ impl HookResult {
         }
     }
 
+    /// Deny with a reason message.
     pub fn deny(message: impl Into<String>) -> Self {
         Self {
             allow: false,
@@ -571,31 +707,44 @@ impl HookResult {
 // Ask-question (interactive) primitives
 // =============================================================================
 
+/// One selectable option in an interactive question.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AskQuestionOption {
+    /// Machine-readable identifier.
     pub id: String,
+    /// Display text.
     pub text: String,
 }
 
+/// A single question with a set of options.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AskQuestionEntry {
+    /// The question text.
     pub question: String,
+    /// Available answer choices.
     pub options: Vec<AskQuestionOption>,
+    /// Whether multiple options can be selected.
     #[serde(default)]
     pub is_multi_select: bool,
 }
 
+/// A batch of interactive questions for the user.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AskQuestionInteractionSpec {
+    /// The questions to present.
     pub questions: Vec<AskQuestionEntry>,
 }
 
+/// The user's answer to an interactive question.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuestionResponse {
+    /// IDs of the selected options.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub selected_option_ids: Option<Vec<String>>,
+    /// Free-text answer.
     #[serde(default)]
     pub freeform_response: String,
+    /// Whether the user skipped the question.
     #[serde(default)]
     pub skipped: bool,
 }
@@ -604,10 +753,13 @@ pub struct QuestionResponse {
 // Trigger delivery semantics
 // =============================================================================
 
+/// When a trigger's message is delivered to the agent.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerDelivery {
+    /// Deliver immediately, even mid-turn.
     SendImmediately,
+    /// Wait until the agent is idle before delivering.
     #[default]
     WaitIdle,
 }
@@ -623,9 +775,23 @@ pub enum TriggerDelivery {
 /// dispatches so consumers can render spinners without parsing JSON.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamChunk {
-    Text { step_index: u32, text: String },
-    Thought { step_index: u32, text: String },
+    /// Incremental conversational text delta.
+    Text {
+        /// Index of the step that produced this chunk.
+        step_index: u32,
+        /// The text fragment.
+        text: String,
+    },
+    /// Incremental reasoning/thinking delta.
+    Thought {
+        /// Index of the step that produced this chunk.
+        step_index: u32,
+        /// The thinking fragment.
+        text: String,
+    },
+    /// The model is requesting a tool call.
     ToolCall(ToolCall),
+    /// A tool call completed with a result.
     ToolResult(ToolResult),
 }
 
@@ -637,11 +803,14 @@ pub enum StreamChunk {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TranscriptRole {
+    /// Message from the user.
     User,
+    /// Message from the model.
     Assistant,
 }
 
 impl TranscriptRole {
+    /// Lowercase string representation (`"user"` or `"assistant"`).
     pub fn as_str(&self) -> &'static str {
         match self {
             TranscriptRole::User => "user",
@@ -658,18 +827,26 @@ impl TranscriptRole {
 /// [`Agent::transcript`]: crate::Agent::transcript
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TranscriptEntry {
+    /// Who sent this message.
     pub role: TranscriptRole,
+    /// The textual content of the message.
     pub text: String,
+    /// Tool calls made during this turn (assistant only).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<TranscriptToolCall>,
 }
 
+/// A tool call as recorded in the transcript.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TranscriptToolCall {
+    /// Tool name.
     pub name: String,
+    /// Arguments the model supplied.
     pub args: serde_json::Value,
+    /// Result value, if the call succeeded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
+    /// Error message, if the call failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }

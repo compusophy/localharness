@@ -20,37 +20,51 @@ use crate::types::TriggerDelivery;
 // Context + trait
 // =============================================================================
 
+/// Runtime context available to triggers for sending messages.
 #[derive(Clone)]
 pub struct TriggerContext {
     connection: Arc<dyn Connection>,
 }
 
 impl TriggerContext {
+    /// Create a trigger context bound to the given connection.
     pub fn new(connection: Arc<dyn Connection>) -> Self {
         Self { connection }
     }
 
+    /// Send a trigger message into the agent immediately.
     pub async fn send(&self, content: impl Into<String>) -> Result<()> {
         self.connection.send_trigger(content.into()).await
     }
 
+    /// Wait until the agent is idle, then send the message.
     pub async fn send_when_idle(&self, content: impl Into<String>) -> Result<()> {
         self.connection.wait_for_idle().await?;
         self.send(content).await
     }
 
+    /// Whether the agent is currently idle.
     pub fn is_idle(&self) -> bool {
         self.connection.is_idle()
     }
 }
 
+/// A background task that pushes messages into the agent.
+///
+/// Implement this trait and register via [`AgentConfig::with_trigger`]
+/// to run periodic or event-driven logic alongside the agent loop.
+///
+/// [`AgentConfig::with_trigger`]: crate::AgentConfig::with_trigger
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait Trigger: MaybeSendSync {
+    /// Unique name for diagnostics.
     fn name(&self) -> &str;
+    /// Whether messages are sent immediately or after the agent idles.
     fn delivery(&self) -> TriggerDelivery {
         TriggerDelivery::WaitIdle
     }
+    /// The trigger's main loop. Runs in its own task until it returns or is aborted.
     async fn run(&self, ctx: TriggerContext) -> Result<()>;
 }
 
@@ -58,6 +72,7 @@ pub trait Trigger: MaybeSendSync {
 // Runner
 // =============================================================================
 
+/// Owns trigger tasks and manages their lifecycle.
 pub struct TriggerRunner {
     triggers: Vec<Arc<dyn Trigger>>,
     connection: Arc<dyn Connection>,
@@ -70,6 +85,7 @@ pub struct TriggerRunner {
 }
 
 impl TriggerRunner {
+    /// Create a runner with the given triggers bound to a connection.
     pub fn new(triggers: Vec<Arc<dyn Trigger>>, connection: Arc<dyn Connection>) -> Self {
         Self {
             triggers,
@@ -81,6 +97,7 @@ impl TriggerRunner {
         }
     }
 
+    /// Spawn all trigger tasks. Returns `AlreadyStarted` if called twice.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn start(&self) -> Result<()> {
         let mut guard = self.tasks.lock();
@@ -102,6 +119,7 @@ impl TriggerRunner {
         Ok(())
     }
 
+    /// Spawn all trigger tasks (wasm variant, fire-and-forget).
     #[cfg(target_arch = "wasm32")]
     pub fn start(&self) -> Result<()> {
         let mut guard = self.started.lock();
@@ -122,6 +140,7 @@ impl TriggerRunner {
         Ok(())
     }
 
+    /// Abort all running trigger tasks and wait for them to finish.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn stop(&self) {
         let handles = self.tasks.lock().take();
@@ -135,6 +154,7 @@ impl TriggerRunner {
         }
     }
 
+    /// Mark triggers as stopped (wasm: best-effort, no abort handle).
     #[cfg(target_arch = "wasm32")]
     pub async fn stop(&self) {
         // spawn_local has no abort handle; rely on page lifecycle.

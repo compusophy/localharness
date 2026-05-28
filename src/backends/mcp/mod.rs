@@ -59,7 +59,9 @@ pub struct McpClient {
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Response>>>>,
     next_id: AtomicU64,
     dispatcher: ParkingMutex<Option<JoinHandle<()>>>,
+    /// The server's self-reported name.
     pub server_name: String,
+    /// Tools discovered during the handshake.
     pub tools: Vec<McpToolDecl>,
 }
 
@@ -130,6 +132,7 @@ impl McpClient {
         }))
     }
 
+    /// Invoke a tool on the remote MCP server.
     pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<Value> {
         let params = serde_json::to_value(ToolCallParams {
             name,
@@ -151,6 +154,7 @@ impl McpClient {
         request_via(&self.transport, &self.pending, &self.next_id, method, params).await
     }
 
+    /// Kill the child process and clean up. Idempotent.
     pub async fn shutdown(&self) {
         let h = self.dispatcher.lock().take();
         if let Some(h) = h {
@@ -277,6 +281,7 @@ pub struct McpBridge {
 }
 
 impl McpBridge {
+    /// Create an empty bridge with no connected servers.
     pub fn new() -> Self {
         Self::default()
     }
@@ -326,6 +331,7 @@ impl McpBridge {
         registered
     }
 
+    /// Shut down all connected MCP servers.
     pub async fn shutdown(&self) {
         for c in &self.clients {
             c.shutdown().await;

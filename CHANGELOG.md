@@ -5,6 +5,52 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.28]
+
+### Added
+
+- **API key modal.** Centered overlay appears on mount when no Gemini
+  API key is stored. Dismisses on save; no page refresh needed.
+- **Compact button** in terminal. Triggers Gemini context compaction —
+  summarizes old history, keeps recent 6 turns verbatim. Wired via
+  `Agent::compact()` → `GeminiConnection::compact()`.
+- **Clear button** in terminal. Resets transcript + agent state +
+  deletes `.lh_history.json`.
+- **`submit_feedback` tool.** Agents can submit feedback on-chain via
+  the FeedbackFacet programmatically. Max 2048 bytes.
+- **`llms.txt`** served at `localharness.xyz/llms.txt`. Agent-facing
+  context: capabilities, RPC format, on-chain registry, conventions.
+- **Documentation SOP** in CLAUDE.md — five surfaces, when to update
+  what, single-source-of-truth rules.
+- **Doc comments** on all ~190 public API items. Zero `missing_docs`
+  warnings. 6 doctests (up from 2).
+
+### Changed
+
+- **Full monochrome palette.** No colored accents — pure black/white/
+  grey scale with muted red for errors only. IBM Plex Mono font.
+- **Chat turns** redesigned. Removed role labels ("USER"/"ASSISTANT"),
+  stripped card backgrounds. 2px left border only (white=assistant,
+  grey=user). 4px gap between messages. Terminal-like.
+- **Admin panel** converted from position-absolute dropdown to centered
+  fixed modal (560px, 80vh, scrollable). No more overflow/clipping.
+- **Edit tab removed.** File editing still works from the files panel;
+  the dedicated tab is gone from both desktop and mobile.
+- **All panels collapsed by default.** Terminal + transcript is the
+  primary UI. Files and agent rails expand on click.
+- **Feedback modal** text updated ("submitted on-chain and saved
+  locally" instead of "coming soon"). 60s client-side rate limit.
+- **README overhauled.** 587→200 lines, user-facing, accurate tool
+  count (15), architecture table, cargo features table.
+
+### Fixed
+
+- Transcript not scrolling to bottom on page load with restored
+  conversation history.
+- Tool-call blocks showing permanent "⋯ running" status after session
+  restore (now show ✓ done or ✗ error).
+- Auto-scroll during streaming — transcript follows new content.
+
 ## [0.10.27] - 2026-05-26
 
 ### Added

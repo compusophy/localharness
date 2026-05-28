@@ -22,12 +22,22 @@ use crate::types::{ToolCall, ToolResult};
 // Tool trait
 // =============================================================================
 
+/// A named, schema-described function the model can call.
+///
+/// Implement this trait to expose custom logic to the agent. Register
+/// instances via [`ToolRunner::register`] or [`AgentConfig::with_tool`].
+///
+/// [`AgentConfig::with_tool`]: crate::AgentConfig::with_tool
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait Tool: MaybeSendSync {
+    /// Unique wire name the model uses to invoke this tool.
     fn name(&self) -> &str;
+    /// Human-readable description shown to the model.
     fn description(&self) -> &str;
+    /// JSON Schema describing the expected arguments.
     fn input_schema(&self) -> Value;
+    /// Run the tool with the given arguments and return a JSON result.
     async fn execute(&self, args: Value, ctx: Option<Arc<ToolContext>>) -> Result<Value>;
 }
 
@@ -35,12 +45,17 @@ pub trait Tool: MaybeSendSync {
 // Tool context
 // =============================================================================
 
+/// Runtime context available to tools during execution.
+///
+/// Provides access to the live connection (for sending out-of-band messages)
+/// and a per-session key-value store for cross-tool state.
 pub struct ToolContext {
     connection: Arc<dyn Connection>,
     state: RwLock<HashMap<String, Value>>,
 }
 
 impl ToolContext {
+    /// Create a new context bound to the given connection.
     pub fn new(connection: Arc<dyn Connection>) -> Self {
         Self {
             connection,
@@ -48,22 +63,27 @@ impl ToolContext {
         }
     }
 
+    /// The backend-assigned conversation identifier.
     pub fn conversation_id(&self) -> &str {
         self.connection.conversation_id()
     }
 
+    /// Whether the agent is currently idle (no turn in flight).
     pub fn is_idle(&self) -> bool {
         self.connection.is_idle()
     }
 
+    /// Send an out-of-band trigger message into the agent.
     pub async fn send(&self, message: impl Into<String>) -> Result<()> {
         self.connection.send_trigger(message.into()).await
     }
 
+    /// Read a value from the per-session state store.
     pub fn get_state(&self, key: &str) -> Option<Value> {
         self.state.read().get(key).cloned()
     }
 
+    /// Write a value into the per-session state store.
     pub fn set_state(&self, key: impl Into<String>, value: Value) {
         self.state.write().insert(key.into(), value);
     }
@@ -73,6 +93,7 @@ impl ToolContext {
 // Runner
 // =============================================================================
 
+/// Registry that maps tool names to implementations and dispatches calls.
 pub struct ToolRunner {
     tools: RwLock<HashMap<String, Arc<dyn Tool>>>,
     context: ArcSwapOption<ToolContext>,
@@ -88,23 +109,28 @@ impl Default for ToolRunner {
 }
 
 impl ToolRunner {
+    /// Create an empty tool runner with no registered tools.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Register a tool by name. Overwrites any existing tool with the same name.
     pub fn register(&self, tool: Arc<dyn Tool>) {
         let name = tool.name().to_string();
         self.tools.write().insert(name, tool);
     }
 
+    /// Set the shared context passed to tools on each execution.
     pub fn set_context(&self, ctx: Arc<ToolContext>) {
         self.context.store(Some(ctx));
     }
 
+    /// Remove the shared context (tools will receive `None`).
     pub fn clear_context(&self) {
         self.context.store(None);
     }
 
+    /// List the names of all registered tools.
     pub fn names(&self) -> Vec<String> {
         self.tools.read().keys().cloned().collect()
     }
@@ -115,6 +141,7 @@ impl ToolRunner {
         self.tools.read().values().cloned().collect()
     }
 
+    /// Execute a tool by name with the given JSON arguments.
     pub async fn execute(&self, name: &str, args: Value) -> Result<Value> {
         let tool = self
             .tools
@@ -128,6 +155,7 @@ impl ToolRunner {
         tool.execute(args, ctx).await
     }
 
+    /// Execute a batch of tool calls and collect their results.
     pub async fn process_tool_calls(&self, calls: Vec<ToolCall>) -> Vec<ToolResult> {
         let mut results = Vec::with_capacity(calls.len());
         for call in calls {
@@ -165,6 +193,24 @@ pub struct ClosureTool {
 }
 
 impl ClosureTool {
+    /// Build a closure-based tool from a name, description, JSON schema, and async handler.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use localharness::ClosureTool;
+    /// use serde_json::json;
+    ///
+    /// let tool = ClosureTool::new(
+    ///     "greet",
+    ///     "Say hello to someone",
+    ///     json!({"type": "object", "properties": {"name": {"type": "string"}}}),
+    ///     |args, _ctx| async move {
+    ///         let name = args["name"].as_str().unwrap_or("world");
+    ///         Ok(json!({"greeting": format!("Hello, {name}!")}))
+    ///     },
+    /// );
+    /// ```
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new<F, Fut>(
         name: impl Into<String>,

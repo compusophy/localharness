@@ -80,9 +80,13 @@ pub use opfs::OpfsFilesystem;
 /// What a directory entry is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
+    /// A regular file.
     File,
+    /// A directory.
     Directory,
+    /// A symbolic link.
     Symlink,
+    /// Anything else (device, pipe, etc.).
     Other,
 }
 
@@ -113,14 +117,18 @@ pub struct DirEntry {
 pub struct WalkEntry {
     /// Full path joined with the walk root.
     pub path: String,
+    /// File, directory, or other.
     pub kind: EntryKind,
+    /// File size in bytes; `None` for non-files.
     pub size: Option<u64>,
 }
 
 /// Lightweight stat result.
 #[derive(Debug, Clone)]
 pub struct Metadata {
+    /// Whether this path is a file, directory, symlink, etc.
     pub kind: EntryKind,
+    /// Size in bytes.
     pub size: u64,
 }
 

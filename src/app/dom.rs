@@ -60,6 +60,14 @@ pub(crate) fn append_html(id: &str, html: &str) {
     }
 }
 
+/// Scroll an element to the bottom. Used by the chat to keep the
+/// latest content in view as the assistant streams.
+pub(crate) fn scroll_to_bottom(id: &str) {
+    if let Some(el) = by_id(id) {
+        el.set_scroll_top(el.scroll_height());
+    }
+}
+
 pub(crate) fn set_status(message: &str, is_error: bool) {
     if let Some(el) = by_id("status") {
         el.set_text_content(Some(message));

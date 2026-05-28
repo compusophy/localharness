@@ -27,25 +27,38 @@ use crate::error::Result;
 use crate::hooks::{OperationContext, PreToolCallDecideHook};
 use crate::types::{HookResult, ToolCall};
 
+/// What a policy decides about a tool call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
+    /// Allow the tool call to proceed.
     Approve,
+    /// Block the tool call.
     Deny,
+    /// Prompt the user for confirmation.
     AskUser,
 }
 
+/// A closure that tests whether a policy applies to a given tool call.
 pub type Predicate = Arc<dyn Fn(&ToolCall) -> bool + Send + Sync>;
+/// A closure that prompts the user and returns `true` if approved.
 pub type AskUserHandler = Arc<dyn Fn(&ToolCall) -> bool + Send + Sync>;
 
+/// A declarative rule governing whether a tool call is allowed.
 pub struct Policy {
+    /// Tool name this policy targets, or `"*"` for wildcard.
     pub tool: String,
+    /// What to do when the policy matches.
     pub decision: Decision,
+    /// Optional predicate; when `None` the policy always matches.
     pub when: Option<Predicate>,
+    /// Handler called when `decision` is `AskUser`.
     pub ask_user: Option<AskUserHandler>,
+    /// Human-readable policy name for diagnostics.
     pub name: String,
 }
 
 impl Policy {
+    /// Create an approval policy for a specific tool.
     pub fn allow(tool: impl Into<String>) -> Self {
         Self {
             tool: tool.into(),
@@ -56,6 +69,7 @@ impl Policy {
         }
     }
 
+    /// Create a denial policy for a specific tool.
     pub fn deny(tool: impl Into<String>) -> Self {
         Self {
             tool: tool.into(),
@@ -66,6 +80,7 @@ impl Policy {
         }
     }
 
+    /// Create an ask-user policy with a confirmation handler.
     pub fn ask(tool: impl Into<String>, handler: AskUserHandler) -> Self {
         Self {
             tool: tool.into(),
@@ -76,25 +91,30 @@ impl Policy {
         }
     }
 
+    /// Attach a predicate that narrows when this policy fires.
     pub fn with_predicate(mut self, predicate: Predicate) -> Self {
         self.when = Some(predicate);
         self
     }
 
+    /// Set the diagnostic name for this policy.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
     }
 
+    /// True if this policy targets all tools (`"*"`).
     pub fn is_wildcard(&self) -> bool {
         self.tool == "*"
     }
 }
 
+/// Wildcard policy that approves every tool call.
 pub fn allow_all() -> Policy {
     Policy::allow("*").with_name("allow_all")
 }
 
+/// Wildcard policy that denies every tool call.
 pub fn deny_all() -> Policy {
     Policy::deny("*").with_name("deny_all")
 }
@@ -189,6 +209,7 @@ pub fn workspace_only(workspaces: Vec<PathBuf>) -> Vec<Policy> {
 // Evaluation
 // =============================================================================
 
+/// Evaluate `policies` against `call` using the precedence table. Returns the decision.
 pub fn evaluate(policies: &[Policy], call: &ToolCall) -> HookResult {
     if policies.is_empty() {
         return HookResult::allow_with("no policies configured");

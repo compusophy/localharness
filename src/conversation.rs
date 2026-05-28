@@ -30,6 +30,10 @@ use crate::types::{Step, StreamChunk, ToolCall, UsageMetadata};
 // Conversation
 // =============================================================================
 
+/// Stateful conversation session wrapping a [`Connection`].
+///
+/// Provides `chat()` for turn-level semantics and `send()` / `receive_steps()`
+/// for lower-level streaming. Tracks history, usage, and structured output.
 pub struct Conversation {
     connection: Arc<dyn Connection>,
     state: Arc<Mutex<ConversationState>>,
@@ -46,6 +50,7 @@ struct ConversationState {
 }
 
 impl Conversation {
+    /// Wrap a connection in a conversation session.
     pub fn new(connection: Arc<dyn Connection>) -> Self {
         Self {
             connection,
@@ -53,34 +58,42 @@ impl Conversation {
         }
     }
 
+    /// Clone of the underlying connection handle.
     pub fn connection(&self) -> Arc<dyn Connection> {
         self.connection.clone()
     }
 
+    /// The backend-assigned conversation identifier.
     pub fn conversation_id(&self) -> String {
         self.connection.conversation_id().to_string()
     }
 
+    /// All steps received so far, in order.
     pub fn history(&self) -> Vec<Step> {
         self.state.lock().history.clone()
     }
 
+    /// Number of user turns sent in this session.
     pub fn turn_count(&self) -> u64 {
         self.state.lock().turn_count
     }
 
+    /// Token usage accumulated across all turns.
     pub fn cumulative_usage(&self) -> UsageMetadata {
         self.state.lock().cumulative_usage.clone()
     }
 
+    /// Token usage from the most recent turn only.
     pub fn last_turn_usage(&self) -> Option<UsageMetadata> {
         self.state.lock().last_turn_usage.clone()
     }
 
+    /// The model's last textual response, if any.
     pub fn last_response(&self) -> Option<String> {
         self.state.lock().last_response.clone()
     }
 
+    /// The model's last structured output (JSON), if any.
     pub fn last_structured_output(&self) -> Option<serde_json::Value> {
         self.state.lock().last_structured_output.clone()
     }
@@ -154,6 +167,10 @@ impl Conversation {
 // ChatResponse
 // =============================================================================
 
+/// A streaming response from a single chat turn.
+///
+/// Multi-cursor: each call to [`ChatResponse::chunks`] returns an independent
+/// cursor that replays from chunk zero. The upstream pull happens once.
 pub struct ChatResponse {
     inner: Arc<ChatInner>,
 }
@@ -309,6 +326,10 @@ impl ChatResponse {
 // Cursor
 // =============================================================================
 
+/// An independent cursor over a [`ChatResponse`]'s chunk buffer.
+///
+/// Implements [`Stream`] of `Result<StreamChunk>`. Multiple cursors
+/// can be live concurrently and advance at different rates.
 pub struct ChatCursor {
     inner: Arc<ChatInner>,
     pos: usize,

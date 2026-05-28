@@ -48,66 +48,87 @@ use crate::types::{
 // Configuration
 // =============================================================================
 
+/// Backend-agnostic agent configuration (tools, policies, triggers, workspaces).
 #[derive(Default)]
 pub struct AgentConfig {
+    /// Optional system-level instructions for the model.
     pub system_instructions: Option<SystemInstructions>,
+    /// Which built-in tools are enabled or disabled.
     pub capabilities: CapabilitiesConfig,
+    /// Custom tools registered into the agent.
     pub tools: Vec<Arc<dyn Tool>>,
+    /// Safety policies governing tool execution.
     pub policies: Vec<Policy>,
+    /// Background triggers that fire messages into the agent.
     pub triggers: Vec<Arc<dyn Trigger>>,
+    /// Filesystem workspace roots for path-containment policies.
     pub workspaces: Vec<PathBuf>,
+    /// MCP server configurations (native only).
     #[cfg(feature = "native")]
     pub mcp_servers: Vec<McpServerConfig>,
+    /// Resume an existing conversation by ID.
     pub conversation_id: Option<String>,
+    /// Gemini-specific model and API key settings.
     pub gemini: GeminiConfig,
+    /// JSON schema string for structured output via the `finish` tool.
     pub response_schema: Option<String>,
 }
 
 impl AgentConfig {
+    /// Create an empty agent configuration with defaults.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Set the system instructions for the model.
     pub fn with_system_instructions(mut self, instr: impl Into<SystemInstructions>) -> Self {
         self.system_instructions = Some(instr.into());
         self
     }
 
+    /// Configure which built-in tools are enabled.
     pub fn with_capabilities(mut self, cap: CapabilitiesConfig) -> Self {
         self.capabilities = cap;
         self
     }
 
+    /// Register a custom tool.
     pub fn with_tool(mut self, tool: Arc<dyn Tool>) -> Self {
         self.tools.push(tool);
         self
     }
 
+    /// Set the safety policies for tool execution.
     pub fn with_policies(mut self, policies: Vec<Policy>) -> Self {
         self.policies = policies;
         self
     }
 
+    /// Add a workspace root for path-containment enforcement.
     pub fn with_workspace(mut self, ws: impl Into<PathBuf>) -> Self {
         self.workspaces.push(ws.into());
         self
     }
 
+    /// Register a background trigger.
     pub fn with_trigger(mut self, trigger: Arc<dyn Trigger>) -> Self {
         self.triggers.push(trigger);
         self
     }
 
+    /// Set Gemini-specific configuration (model, API key).
     pub fn with_gemini(mut self, gemini: GeminiConfig) -> Self {
         self.gemini = gemini;
         self
     }
 
+    /// Set the Gemini API key.
     pub fn with_api_key(mut self, key: impl Into<String>) -> Self {
         self.gemini.api_key = Some(key.into());
         self
     }
 
+    /// Add an MCP server to connect at startup (native only).
     #[cfg(feature = "native")]
     pub fn with_mcp_server(mut self, server: McpServerConfig) -> Self {
         self.mcp_servers.push(server);
@@ -120,7 +141,9 @@ impl AgentConfig {
 /// Pairs the generic `AgentConfig` (hooks, tools, policies, triggers)
 /// with `GeminiBackendConfig` (model, API key, thinking, etc.).
 pub struct GeminiAgentConfig {
+    /// Backend-agnostic settings (tools, policies, triggers).
     pub agent: AgentConfig,
+    /// Gemini-specific settings (model, API key, thinking).
     pub gemini: GeminiBackendConfig,
     /// Opaque history bytes from a previous session, as returned by
     /// `Agent::history_bytes()`. Applied to the new connection
@@ -129,6 +152,16 @@ pub struct GeminiAgentConfig {
 }
 
 impl GeminiAgentConfig {
+    /// Create a new Gemini agent configuration with the given API key.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use localharness::GeminiAgentConfig;
+    ///
+    /// let cfg = GeminiAgentConfig::new("my-api-key")
+    ///     .with_system_instructions("You are helpful.");
+    /// ```
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
             agent: AgentConfig::default(),
@@ -145,11 +178,13 @@ impl GeminiAgentConfig {
         self
     }
 
+    /// Override the default Gemini model ID.
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.gemini = self.gemini.with_model(model);
         self
     }
 
+    /// Set the system instructions for the model.
     pub fn with_system_instructions(mut self, instr: impl Into<SystemInstructions>) -> Self {
         let instr = instr.into();
         self.gemini = self.gemini.with_system_instructions(instr.clone());
@@ -157,11 +192,13 @@ impl GeminiAgentConfig {
         self
     }
 
+    /// Enable extended thinking at the given level.
     pub fn with_thinking(mut self, level: crate::types::ThinkingLevel) -> Self {
         self.gemini = self.gemini.with_thinking(level);
         self
     }
 
+    /// Set a JSON schema for structured output via the `finish` tool.
     pub fn with_response_schema(mut self, schema: impl Into<String>) -> Self {
         let s = schema.into();
         self.gemini = self.gemini.with_response_schema(s.clone());
@@ -169,6 +206,7 @@ impl GeminiAgentConfig {
         self
     }
 
+    /// Configure which built-in tools are enabled.
     pub fn with_capabilities(mut self, cap: CapabilitiesConfig) -> Self {
         self.agent = self.agent.with_capabilities(cap);
         self
@@ -184,32 +222,38 @@ impl GeminiAgentConfig {
         self
     }
 
+    /// Register a custom tool.
     pub fn with_tool(mut self, tool: Arc<dyn Tool>) -> Self {
         self.agent = self.agent.with_tool(tool);
         self
     }
 
+    /// Set the safety policies for tool execution.
     pub fn with_policies(mut self, policies: Vec<Policy>) -> Self {
         self.agent = self.agent.with_policies(policies);
         self
     }
 
+    /// Add a workspace root for path-containment enforcement.
     pub fn with_workspace(mut self, ws: impl Into<PathBuf>) -> Self {
         self.agent = self.agent.with_workspace(ws);
         self
     }
 
+    /// Register a background trigger.
     pub fn with_trigger(mut self, trigger: Arc<dyn Trigger>) -> Self {
         self.agent = self.agent.with_trigger(trigger);
         self
     }
 
+    /// Add an MCP server to connect at startup (native only).
     #[cfg(feature = "native")]
     pub fn with_mcp_server(mut self, server: McpServerConfig) -> Self {
         self.agent = self.agent.with_mcp_server(server);
         self
     }
 
+    /// Resume an existing conversation by its ID.
     pub fn resume(mut self, conversation_id: impl Into<String>) -> Self {
         let id = conversation_id.into();
         self.gemini.conversation_id = Some(id.clone());
@@ -222,6 +266,27 @@ impl GeminiAgentConfig {
 // Agent
 // =============================================================================
 
+/// High-level agent handle: connect, chat, shutdown.
+///
+/// Owns the connection, runners, and background dispatcher. Drop aborts
+/// background tasks; call [`Agent::shutdown`] for a clean teardown.
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use localharness::{Agent, GeminiAgentConfig};
+///
+/// # async fn run() -> localharness::Result<()> {
+/// let agent = Agent::start_gemini(
+///     GeminiAgentConfig::new("key")
+///         .with_system_instructions("Be concise."),
+/// ).await?;
+/// let resp = agent.chat("Hello").await?;
+/// println!("{}", resp.text().await?);
+/// agent.shutdown().await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct Agent {
     conversation: Conversation,
     connection: Arc<dyn Connection>,
@@ -285,6 +350,18 @@ impl Agent {
         match self.gemini_connection.as_ref() {
             Some(gc) => gc.history_bytes().map(Some),
             None => Ok(None),
+        }
+    }
+
+    /// Manually trigger context compaction. Summarises older history
+    /// entries and replaces them with a single synthetic turn, freeing
+    /// context-window budget. Returns `true` if compaction changed the
+    /// history, `false` if it was too short or not applicable.
+    /// Returns `false` for non-Gemini backends (no-op).
+    pub async fn compact(&self) -> bool {
+        match self.gemini_connection.as_ref() {
+            Some(gc) => gc.compact().await,
+            None => false,
         }
     }
 
@@ -418,26 +495,43 @@ impl Agent {
         }
     }
 
+    /// The underlying conversation session.
     pub fn conversation(&self) -> &Conversation {
         &self.conversation
     }
 
+    /// The backend-assigned conversation identifier.
     pub fn conversation_id(&self) -> String {
         self.connection.conversation_id().to_string()
     }
 
+    /// The hook runner; use to register additional hooks after start.
     pub fn hooks(&self) -> &HookRunner {
         &self.hook_runner
     }
 
+    /// The tool runner; use to register additional tools after start.
     pub fn tools(&self) -> &ToolRunner {
         &self.tool_runner
     }
 
+    /// Send a prompt and return a streaming [`ChatResponse`].
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// # use localharness::Agent;
+    /// # async fn run(agent: &Agent) -> localharness::Result<()> {
+    /// let response = agent.chat("What is Rust?").await?;
+    /// println!("{}", response.text().await?);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn chat(&self, content: impl Into<Content>) -> Result<ChatResponse> {
         self.conversation.chat(content).await
     }
 
+    /// Cleanly shut down the agent, aborting triggers and dispatchers.
     pub async fn shutdown(self) -> Result<()> {
         self.shutdown_flag.store(true, Ordering::Release);
         #[cfg(not(target_arch = "wasm32"))]

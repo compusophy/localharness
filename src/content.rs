@@ -49,11 +49,16 @@ const SUPPORTED_VIDEO: &[&str] = &[
     "video/x-flv",
 ];
 
+/// The category of a binary media attachment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaKind {
+    /// Raster image (BMP, JPEG, PNG, WebP).
     Image,
+    /// Text document (PDF, JSON, HTML, CSV, etc.).
     Document,
+    /// Audio clip (WAV, MP3, AAC, OGG, etc.).
     Audio,
+    /// Video file (MP4, WebM, AVI, etc.).
     Video,
 }
 
@@ -88,13 +93,18 @@ impl MediaKind {
 /// frames is reference-counted — a multi-megabyte PDF is never copied.
 #[derive(Debug, Clone)]
 pub struct Media {
+    /// Category (image, document, audio, video).
     pub kind: MediaKind,
+    /// MIME type string (e.g. `"image/png"`).
     pub mime_type: String,
+    /// Optional human-readable description for the model.
     pub description: Option<String>,
+    /// Raw binary content (reference-counted; cloning is cheap).
     pub data: Bytes,
 }
 
 impl Media {
+    /// Create a media attachment, validating the MIME type against the kind.
     pub fn new(
         kind: MediaKind,
         mime_type: impl Into<String>,
@@ -115,6 +125,7 @@ impl Media {
         })
     }
 
+    /// Attach a human-readable description for the model.
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = Some(description.into());
         self
@@ -180,7 +191,9 @@ fn guess_mime_from_extension(path: &Path) -> Option<String> {
 /// A single textual or media part of a prompt.
 #[derive(Debug, Clone)]
 pub enum Part {
+    /// Plain text content.
     Text(String),
+    /// Binary media attachment.
     Media(Media),
 }
 
@@ -209,20 +222,24 @@ impl From<Media> for Part {
 /// `Content` explicitly.
 #[derive(Debug, Clone, Default)]
 pub struct Content {
+    /// The ordered parts composing this prompt.
     pub parts: Vec<Part>,
 }
 
 impl Content {
+    /// Build a text-only prompt from a single string.
     pub fn text(text: impl Into<String>) -> Self {
         Self {
             parts: vec![Part::Text(text.into())],
         }
     }
 
+    /// Build an empty prompt with no parts.
     pub fn empty() -> Self {
         Self { parts: Vec::new() }
     }
 
+    /// Append a part (text or media) to this prompt.
     pub fn push(&mut self, part: impl Into<Part>) {
         self.parts.push(part.into());
     }

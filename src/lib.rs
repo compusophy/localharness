@@ -43,20 +43,33 @@
 // `backends::gemini::api::GeminiClient` so a web demo can drive the
 // Gemini REST API directly. Lifting the gate is M2.5: thread a
 // `MaybeSend` shim through the Tool/Connection/Hook traits.
+/// Layer-1 agent facade: connect, chat, shutdown.
 pub mod agent;
+/// Backend implementations (Gemini, MCP).
 pub mod backends;
+/// Transport abstraction traits.
 pub mod connections;
+/// Multimodal input primitives (text, images, documents, audio, video).
 pub mod content;
+/// Stateful conversation session with multi-cursor streaming.
 pub mod conversation;
+/// Typed error hierarchy.
 pub mod error;
+/// Filesystem abstraction for built-in fs tools.
 pub mod filesystem;
 pub(crate) mod runtime;
+/// Hook traits for observing and gating agent events.
 pub mod hooks;
+/// Declarative tool-execution policy engine.
 pub mod policy;
+/// Custom tool registration and dispatch.
 pub mod tools;
+/// Background triggers that push messages into the agent.
 pub mod triggers;
+/// Public boundary types (steps, tool calls, usage, config, etc.).
 pub mod types;
 
+/// Rust-subset to wasm compiler.
 pub mod rustlite;
 
 // The browser-resident IDE. Gated on the `browser-app` feature AND a
@@ -66,6 +79,7 @@ mod app;
 
 // M6 spike: in-browser secp256k1 keypair via alloy's local signer.
 // Pure-compute (no HTTP, no JS deps), so it builds on every target.
+/// Secp256k1 keypair, BIP-39 mnemonics, and RLP encoding.
 #[cfg(feature = "wallet")]
 pub mod wallet;
 
@@ -76,6 +90,7 @@ pub mod wallet;
 // and uses `tokio::time::sleep` on native / `setTimeout` on wasm to
 // poll the receipt. The diamond's address is baked in as
 // `registry::REGISTRY_ADDRESS`; the RPC URL is `registry::RPC_URL`.
+/// JSON-RPC client for the on-chain registry diamond.
 #[cfg(feature = "wallet")]
 pub mod registry;
 
@@ -84,6 +99,7 @@ pub mod registry;
 // of native and so a project-controlled fee_payer can sponsor user
 // txs without users holding any balance. Wire format per
 // docs.tempo.xyz/protocol/transactions/spec-tempo-transaction.
+/// Tempo Transaction (tx type 0x76) encoder for native account abstraction.
 #[cfg(feature = "wallet")]
 pub mod tempo_tx;
 

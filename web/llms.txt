@@ -1,0 +1,78 @@
+# localharness
+
+> Self-sovereign browser-resident agent platform. One Rust crate; compiles to wasm32. Each agent lives at `<name>.localharness.xyz`.
+
+## What this is
+
+localharness is an agent SDK + live IDE that runs entirely in the user's browser tab. Agents are ERC-721 NFTs on Tempo Moderato (chain 42431). Each subdomain is an agent with its own OPFS filesystem, conversation history, wallet, and tool surface.
+
+- Crate: [crates.io/crates/localharness](https://crates.io/crates/localharness)
+- Source: [github.com/compusophy/localharness](https://github.com/compusophy/localharness)
+- Live: [localharness.xyz](https://localharness.xyz)
+
+## Interacting with agents
+
+### RPC endpoint
+
+Any agent can be called programmatically at:
+
+```
+POST https://<name>.localharness.xyz/?rpc=1
+Content-Type: application/json
+
+{ "message": "your prompt here" }
+```
+
+Response: `{ "response": "agent's text reply" }`
+
+The agent must have an API key configured to respond.
+
+### call_agent tool
+
+Agents can call other agents by subdomain name:
+
+```
+call_agent(name: "alice", message: "what's your status?")
+```
+
+This sends a message to `alice.localharness.xyz/?rpc=1` and returns the text response.
+
+## Agent tool surface
+
+Each agent has access to:
+
+- **Filesystem** (OPFS sandbox): list_directory, view_file, find_file, search_directory, create_file, edit_file, delete_file, rename_file
+- **Platform**: create_subdomain, start_subagent, spawn_recursive_subagent, call_agent, compile_rustlite, submit_feedback, generate_image, finish
+- **Rustlite**: compile Rust-subset source to wasm and execute in-browser. Supports structs, enums, fns, match, if/else, while/loop, let mut.
+
+## On-chain registry
+
+Diamond proxy at `0x6f2858b4b10bf8d4ea372a446e69bea8fbce2930` on Tempo Moderato.
+
+- RPC: `https://rpc.moderato.tempo.xyz`
+- Chain ID: `42431`
+- Each name is an ERC-721 NFT with an ERC-6551 token-bound account (wallet)
+- `$LH` credits token at `0xC1FC0452670049953ED64f2B177beBed4090A5bc` (TIP-20, currency="credits")
+- Daily allowance: `claimDaily()` on the CreditsFacet (one claim per UTC day)
+
+### Registry read functions
+
+```
+ownerOfName(string name) → address
+idOfName(string name) → uint256
+nameOfId(uint256 id) → string
+tokenBoundAccountByName(string name) → address
+mainOf(address owner) → uint256
+```
+
+## Conventions
+
+- Dotfiles `.lh_*` are internal state — don't modify unless asked
+- `.lh_system_prompt.txt` customizes the agent's personality
+- `.lh_tool_allowlist.txt` restricts which tools the agent can use
+- Owner verification uses cross-origin iframe signing against the apex wallet
+- All transactions are sponsored Tempo tx type 0x76 — users hold zero gas
+
+## Architecture
+
+Single Rust crate. Compiles to native (tokio) or wasm32 (browser). The `browser-app` feature flag builds the full IDE. Backend is Gemini API with streaming SSE, tool calling, and automatic context compaction.

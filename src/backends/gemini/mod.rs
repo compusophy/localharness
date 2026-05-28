@@ -42,12 +42,18 @@ const STEP_BROADCAST_CAPACITY: usize = 256;
 // Configuration
 // =============================================================================
 
+/// Configuration for the Gemini REST backend.
 #[derive(Debug, Clone)]
 pub struct GeminiBackendConfig {
+    /// Gemini API key.
     pub api_key: String,
+    /// Chat model ID.
     pub model: String,
+    /// Image generation model ID.
     pub image_model: String,
+    /// Optional system instructions for the model.
     pub system_instructions: Option<SystemInstructions>,
+    /// Optional thinking (chain-of-thought) level.
     pub thinking: Option<ThinkingLevel>,
     /// JSON-string response schema; opt-in to structured output.
     pub response_schema: Option<String>,
@@ -68,6 +74,7 @@ pub struct GeminiBackendConfig {
 }
 
 impl GeminiBackendConfig {
+    /// Create a new config with the given API key and default model.
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
             api_key: api_key.into(),
@@ -94,26 +101,31 @@ impl GeminiBackendConfig {
         self
     }
 
+    /// Override the default chat model ID.
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
         self
     }
 
+    /// Set system instructions.
     pub fn with_system_instructions(mut self, s: impl Into<SystemInstructions>) -> Self {
         self.system_instructions = Some(s.into());
         self
     }
 
+    /// Enable extended thinking at the given level.
     pub fn with_thinking(mut self, level: ThinkingLevel) -> Self {
         self.thinking = Some(level);
         self
     }
 
+    /// Set a JSON schema for structured output.
     pub fn with_response_schema(mut self, schema: impl Into<String>) -> Self {
         self.response_schema = Some(schema.into());
         self
     }
 
+    /// Configure which built-in tools are enabled.
     pub fn with_capabilities(mut self, c: CapabilitiesConfig) -> Self {
         self.capabilities = c;
         self
@@ -125,14 +137,18 @@ impl GeminiBackendConfig {
 // =============================================================================
 
 
+/// Injected runners for inline tool dispatch in the Gemini backend.
 #[derive(Default)]
 pub struct GeminiRunners {
+    /// Tool runner for custom + built-in tool execution.
     pub tool_runner: Option<Arc<ToolRunner>>,
+    /// Hook runner for pre/post tool-call hooks.
     pub hook_runner: Option<Arc<HookRunner>>,
+    /// Session context for hook dispatch.
     pub session_ctx: Option<SessionContext>,
 }
 
-
+/// Factory that opens a [`GeminiConnection`].
 pub struct GeminiConnectionStrategy {
     config: GeminiBackendConfig,
     runners: GeminiRunners,
@@ -145,6 +161,7 @@ pub struct GeminiConnectionStrategy {
 
 
 impl GeminiConnectionStrategy {
+    /// Create a strategy from a backend config.
     pub fn new(config: GeminiBackendConfig) -> Self {
         Self {
             config,
@@ -287,6 +304,7 @@ fn build_tool_declarations(runner: &ToolRunner) -> Vec<wire::FunctionDeclaration
 // =============================================================================
 
 
+/// A live Gemini session that implements [`Connection`].
 pub struct GeminiConnection {
     deps_template: TurnDeps,
     state: Arc<LoopState>,
@@ -314,6 +332,20 @@ impl GeminiConnection {
             .map_err(|e| Error::other(format!("set_history_bytes: {e}")))?;
         *self.state.history.lock() = restored;
         Ok(())
+    }
+
+    /// Manually trigger context compaction. Summarises older history
+    /// entries and replaces them with a single synthetic turn, freeing
+    /// context-window budget. Returns `true` if compaction changed the
+    /// history, `false` if it was too short or the summarisation was a
+    /// no-op. Never errors — failures are logged and silently skipped.
+    pub async fn compact(&self) -> bool {
+        compaction::try_compact(
+            &self.state.history,
+            &self.deps_template.client,
+            &self.deps_template.config.model,
+        )
+        .await
     }
 
     /// Project the wire history into a flat, text-only sequence of

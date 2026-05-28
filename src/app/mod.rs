@@ -280,32 +280,26 @@ fn mount() -> Result<(), JsValue> {
     // Full-app chrome (localhost, Vercel preview, etc.).
     root.set_inner_html(&templates::chrome(&host).into_string());
 
-    // sessionStorage is the synchronous fallback for the input field's
-    // initial value. The OPFS-stored key (async) takes over once it
-    // resolves; if both exist, OPFS wins.
-    if let Some(storage) = dom::session_storage()? {
-        if let Ok(Some(cached)) = storage.get_item("gemini_api_key") {
-            if let Some(input) = dom::input_by_id("key") {
-                input.set_value(&cached);
-                events::refresh_keymeta();
-            }
-        }
-    }
-
     // (no baseline status — terminal stays empty until something happens)
 
-    // Initial OPFS panel paint + history restore + key restore. All
-    // async; the key loader populates the input field if a persisted
-    // key exists (overriding sessionStorage).
+    // Initial OPFS panel paint + history restore + key check. Show the
+    // API key modal if no key is found.
     wasm_bindgen_futures::spawn_local(async move {
-        if let Some(persisted_key) = key_store::load().await {
-            if let Some(input) = dom::input_by_id("key") {
-                input.set_value(&persisted_key);
-                events::refresh_keymeta();
+        let has_key = if let Some(persisted_key) = key_store::load().await {
+            if let Ok(Some(storage)) = dom::session_storage() {
+                let _ = storage.set_item("gemini_api_key", &persisted_key);
             }
-        }
+            true
+        } else if let Ok(Some(storage)) = dom::session_storage() {
+            storage.get_item("gemini_api_key").ok().flatten().is_some()
+        } else {
+            false
+        };
         history::load_into_pending().await;
         opfs::refresh().await;
+        if !has_key {
+            show_api_key_modal();
+        }
     });
     Ok(())
 }
@@ -350,24 +344,22 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
     // else owns it on-chain and we're visiting.
     root.set_inner_html(&templates::chrome(&host).into_string());
 
-    if let Ok(Some(storage)) = dom::session_storage() {
-        if let Ok(Some(cached)) = storage.get_item("gemini_api_key") {
-            if let Some(input) = dom::input_by_id("key") {
-                input.set_value(&cached);
-                events::refresh_keymeta();
-            }
+    let has_key = if let Some(persisted_key) = key_store::load().await {
+        if let Ok(Some(storage)) = dom::session_storage() {
+            let _ = storage.set_item("gemini_api_key", &persisted_key);
         }
-    }
-    // (no baseline status — terminal stays empty until something happens)
-
-    if let Some(persisted_key) = key_store::load().await {
-        if let Some(input) = dom::input_by_id("key") {
-            input.set_value(&persisted_key);
-            events::refresh_keymeta();
-        }
-    }
+        true
+    } else if let Ok(Some(storage)) = dom::session_storage() {
+        storage.get_item("gemini_api_key").ok().flatten().is_some()
+    } else {
+        false
+    };
     history::load_into_pending().await;
     opfs::refresh().await;
+
+    if !has_key {
+        show_api_key_modal();
+    }
 
     // Background: try to verify the visitor against the on-chain
     // owner via the apex iframe signer. Fire-and-forget so the
@@ -547,6 +539,22 @@ pub(crate) async fn paint_signer() {
             // SIGNER_ORIGIN).
             let _ = parent.post_message(&ready.into(), "*");
         }
+    }
+}
+
+/// Show the API key modal if it isn't already in the DOM.
+pub(crate) fn show_api_key_modal() {
+    let Ok(doc) = dom::document() else { return };
+    if doc.get_element_by_id("api-key-modal").is_some() {
+        return;
+    }
+    let Some(body) = doc.body() else { return };
+    let _ = body.insert_adjacent_html(
+        "beforeend",
+        &templates::api_key_modal().into_string(),
+    );
+    if let Some(input) = dom::input_by_id("api-key-input") {
+        let _ = input.focus();
     }
 }
 
