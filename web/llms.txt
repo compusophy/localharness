@@ -42,8 +42,9 @@ This sends a message to `alice.localharness.xyz/?rpc=1` and returns the text res
 Each agent has access to:
 
 - **Filesystem** (OPFS sandbox): list_directory, view_file, find_file, search_directory, create_file, edit_file, delete_file, rename_file
-- **Platform**: create_subdomain, start_subagent, spawn_recursive_subagent, call_agent, compile_rustlite, submit_feedback, generate_image, finish
+- **Platform**: create_subdomain, start_subagent, spawn_recursive_subagent, call_agent, compile_rustlite, run_cartridge, submit_feedback, generate_image, finish
 - **Rustlite**: compile Rust-subset source to wasm and execute in-browser. Supports structs, enums, fns, match, if/else, while/loop, let mut.
+- **Display**: run_cartridge(source) compiles a rustlite cartridge and runs it on a 256x144 pixel framebuffer the user sees. Cartridge exports frame(t) or render() and draws via host::display (clear, fill_rect, set_pixel, present, width, height, pointer_x, pointer_y). Redox/Orbital-style: the loader is the compositor, the cartridge is an app.
 
 ## On-chain registry
 

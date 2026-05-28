@@ -24,7 +24,9 @@ use crate::Agent;
 
 mod chat;
 mod compose;
-mod display;
+// pub(crate) so the `run_cartridge` builtin tool can hand a compiled
+// cartridge to the framebuffer (the agent→display loop).
+pub(crate) mod display;
 mod dom;
 mod embed;
 mod events;

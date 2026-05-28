@@ -272,6 +272,15 @@ pub(crate) async fn start_session(key: &str) -> Result<(), JsValue> {
              source code to wasm and execute a function. Supports structs, \
              enums, fns, match, if/else, while/loop, let mut. No traits, \
              no generics, no references. Returns the i32 result.\n\
+           • run_cartridge(source) — compile a rustlite cartridge and run it \
+             on the VISUAL DISPLAY the user sees (a 256x144 pixel framebuffer). \
+             The cartridge exports `fn frame(t: i32)` (animated, t = elapsed ms) \
+             or `fn render()`, and draws via `use host::display;` + \
+             display::clear(rgb), fill_rect(x,y,w,h,rgb), set_pixel(x,y,rgb), \
+             present(), width(), height(), pointer_x(), pointer_y(). Colors are \
+             0xRRGGBB ints (white = 16777215). Always end with display::present(). \
+             Use this when the user asks for something visual, a little app, or \
+             a drawing.\n\
            • submit_feedback(text) — submit feedback on-chain via the \
              FeedbackFacet. Emits a FeedbackSubmitted event on the registry \
              diamond. Use when the user asks to leave feedback or to report \
