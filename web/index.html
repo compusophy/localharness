@@ -442,6 +442,9 @@
       background: #000;
       image-rendering: pixelated;
       object-fit: contain;
+      /* Touch drags draw into the cartridge instead of scrolling/zooming
+         the page — required for drawing apps to work on phones. */
+      touch-action: none;
     }
 
     /* App mode — the subdomain booted straight into its cartridge. The
@@ -1491,6 +1494,9 @@
       flex: 1;
       min-width: 0;
     }
+    .api-key-hint { font-size: 11px; }
+    .api-key-hint a { color: var(--accent); text-decoration: none; }
+    .api-key-hint a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>

@@ -31,6 +31,10 @@ pub(crate) fn api_key_modal() -> Markup {
                             data-action="save-api-key" { "save" }
                     }
                 }
+                div.api-key-hint {
+                    a href="https://aistudio.google.com/apikey"
+                        target="_blank" rel="noopener" { "get a free key →" }
+                }
                 div #api-key-msg .feedback-msg {}
             }
         }

@@ -253,6 +253,41 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
     doc.add_event_listener_with_callback("mouseup", mouseup.as_ref().unchecked_ref())?;
     mouseup.forget();
 
+    // Touch input — map the first touch to the same display pointer state
+    // as the mouse, so drag-based cartridges (drawing) work on phones.
+    // The canvas sets `touch-action: none` in CSS, so these don't need
+    // non-passive preventDefault to stop the page scrolling under a draw.
+    let touchstart = Closure::<dyn FnMut(_)>::new(move |event: web_sys::TouchEvent| {
+        if let Some(target) = event.target() {
+            if let Ok(el) = target.dyn_into::<Element>() {
+                if el.id() == "display-canvas" {
+                    if let Some(t) = event.touches().get(0) {
+                        super::display::set_pointer(t.client_x() as f64, t.client_y() as f64);
+                        super::display::set_pointer_down(true);
+                    }
+                }
+            }
+        }
+    });
+    doc.add_event_listener_with_callback("touchstart", touchstart.as_ref().unchecked_ref())?;
+    touchstart.forget();
+
+    let touchmove = Closure::<dyn FnMut(_)>::new(move |event: web_sys::TouchEvent| {
+        if dom::by_id("display-canvas").is_some() {
+            if let Some(t) = event.touches().get(0) {
+                super::display::set_pointer(t.client_x() as f64, t.client_y() as f64);
+            }
+        }
+    });
+    doc.add_event_listener_with_callback("touchmove", touchmove.as_ref().unchecked_ref())?;
+    touchmove.forget();
+
+    let touchend = Closure::<dyn FnMut(_)>::new(move |_event: web_sys::TouchEvent| {
+        super::display::set_pointer_down(false);
+    });
+    doc.add_event_listener_with_callback("touchend", touchend.as_ref().unchecked_ref())?;
+    touchend.forget();
+
     Ok(())
 }
 
