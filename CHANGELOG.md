@@ -5,6 +5,57 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-05-28
+
+Security + beta-readiness. A security audit closed a real XSS→wallet
+vector and hardened cross-origin trust; sensitive OPFS files are now
+encrypted at rest; and the beta golden path got the polish a first-time
+user needs (phone support, onboarding, recoverable errors) plus a public
+agent directory.
+
+### Security
+
+- **Markdown XSS fixed.** `rendered_markdown` passed raw HTML straight
+  through and emitted `javascript:`/`data:` link targets verbatim. It
+  renders model output + restored history, which a prompt injection can
+  influence — an XSS into the wallet origin that chained to seed theft
+  via the signer. Raw HTML now renders as escaped text and dangerous
+  link/image schemes are stripped.
+- **Cross-origin trust hardened.** The RPC endpoint trusted
+  `starts_with("http://localhost")` (so `http://localhost.evil.com`
+  passed), and signer/RPC/compose trusted localhost in production.
+  Unified into a host-exact `is_trusted_lh_origin` (localhost honoured
+  only in dev).
+- **At-rest encryption.** `.lh_api_key` and `.lh_history.json` are
+  encrypted with a per-origin AES-256-GCM key kept in localStorage
+  (separate store from OPFS). Legacy plaintext is read transparently and
+  re-encrypted on save. (Defense-in-depth for copy/export/disk channels;
+  does not stop XSS. The wallet seed is intentionally left unencrypted
+  pending a recovery design.)
+
+### Added
+
+- **Public agent directory** at `?explore=1` — a browsable gallery of
+  every claimed agent, linked from the apex.
+- **Touch input** for the display, so drag-based cartridges (drawing)
+  work on phones/tablets.
+- **Onboarding:** a "get a free key" link in the API key modal, and the
+  key is validated on save (so a bad key is caught there, not mid-turn).
+- **Publish payoff:** publishing an app on-chain now shows the live
+  shareable subdomain link.
+- **`design/launch-1.0.md`** — the grand plan for the 1.0 launch.
+
+### Fixed
+
+- A bad/expired Gemini key now reopens the key modal with a clear
+  message instead of failing cryptically mid-turn.
+
+### Internal
+
+- Lint-clean on both native and browser-app/wasm targets (0 clippy
+  warnings); removed retired dead templates; corrected the stale Tempo
+  sponsorship-migration table in CLAUDE.md.
+
 ## [0.11.0] - 2026-05-28
 
 The display release: a subdomain can now *be* an app. A pixel
