@@ -153,6 +153,9 @@ examples/
 design/
 ├── main-identity.md       MAIN identity + multi-device linking design
 ├── agent-writes-rust.md   rustlite compiler design: grammar EBNF, cartridge ABI
+├── launch-1.0.md          grand plan for the 1.0.0 public launch:
+│                          phases, workstreams, the 4 gating decisions,
+│                          roadmap, definition-of-done, risks
 └── paymaster.md           paymaster architecture (superseded by Tempo
                            native AA — see Update section at the bottom)
 
