@@ -74,7 +74,7 @@ enum Action {
     SaveToolAllowlist,
     ResetToolAllowlist,
     SaveApiKey,
-    DisplayDemo,
+    DisplayStop,
 }
 
 impl Action {
@@ -129,7 +129,7 @@ impl Action {
             "save-tool-allowlist" => Action::SaveToolAllowlist,
             "reset-tool-allowlist" => Action::ResetToolAllowlist,
             "save-api-key" => Action::SaveApiKey,
-            "display-demo" => Action::DisplayDemo,
+            "display-stop" => Action::DisplayStop,
             _ => return None,
         })
     }
@@ -538,11 +538,7 @@ fn dispatch(action: Action) {
             });
         }
         Action::OpfsCloseViewer => super::opfs::close_viewer(),
-        Action::DisplayDemo => {
-            wasm_bindgen_futures::spawn_local(async move {
-                super::display::run_demo().await;
-            });
-        }
+        Action::DisplayStop => super::opfs::close_viewer(),
         Action::OpfsNav(target) => {
             wasm_bindgen_futures::spawn_local(async move {
                 super::opfs::navigate(&target).await;

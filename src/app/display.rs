@@ -101,32 +101,6 @@ struct CartridgeRuntime {
     state_set: Closure<dyn FnMut(i32, i32)>,
 }
 
-/// Run the built-in demo: a rustlite cartridge compiled in-browser.
-/// Proves the whole loop — Rust source → wasm → host draw calls → pixels.
-pub(crate) async fn run_demo() {
-    const SRC: &str = r#"
-use host::display;
-fn frame(t: i32) {
-    display::clear(1118481);
-    display::draw_char(8, 8, 76, 16777215, 4);
-    display::draw_char(40, 8, 72, 16777215, 4);
-    display::draw_number(8, 56, t / 100, 8947848, 3);
-    let px: i32 = display::pointer_x();
-    let py: i32 = display::pointer_y();
-    display::fill_rect(px - 8, py - 8, 16, 16, 16777215);
-    display::present();
-}
-"#;
-    match crate::rustlite::compile(SRC) {
-        Ok(wasm) => {
-            if let Err(err) = run_wasm(&wasm).await {
-                dom::set_status(&format!("display: {err:?}"), true);
-            }
-        }
-        Err(e) => dom::set_status(&format!("display compile: {e}"), true),
-    }
-}
-
 /// Instantiate `wasm_bytes` as a display cartridge and run it. See the
 /// module docs for the ABI.
 pub(crate) async fn run_wasm(wasm_bytes: &[u8]) -> Result<(), JsValue> {

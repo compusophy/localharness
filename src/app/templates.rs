@@ -96,7 +96,6 @@ pub(crate) fn terminal_input() -> Markup {
                 button.terminal-send data-action="send" title="send" { "→" }
             }
             div.terminal-actions {
-                button type="button" data-action="display-demo" .terminal-action title="run the display framebuffer demo cartridge" { "display" }
                 button type="button" data-action="compact" .terminal-action title="compact conversation context" { "compact" }
                 button type="button" data-action="reset" .terminal-action title="clear conversation" { "clear" }
             }
@@ -1299,13 +1298,21 @@ pub(crate) fn opfs_editor(display_path: &str, name: &str, text: &str) -> Markup 
 }
 
 /// DISPLAY surface — the framebuffer the cartridge loader blits into.
-/// Just a stage wrapper + a single `<canvas>`; the canvas backing store
-/// is sized in `display::mount_canvas` and CSS letterboxes it 16:9.
-/// This is the "screen" half of the Orbital-style compositor.
+/// A small toolbar with a STOP button (kills the running cartridge's
+/// frame loop and closes the surface) sits above a single `<canvas>`;
+/// the canvas backing store is sized in `display::mount_canvas` and CSS
+/// letterboxes it 16:9. This is the "screen" half of the Orbital-style
+/// compositor.
 pub(crate) fn display_surface() -> Markup {
     html! {
-        div.display-stage {
-            canvas #display-canvas .display-canvas {}
+        div.display-wrap {
+            div.display-toolbar {
+                button type="button" data-action="display-stop" .display-stop
+                    title="stop the running cartridge" { "stop" }
+            }
+            div.display-stage {
+                canvas #display-canvas .display-canvas {}
+            }
         }
     }
 }
