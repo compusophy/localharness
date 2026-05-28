@@ -173,8 +173,7 @@ pub(crate) async fn run_send() {
     let response = match agent.chat(prompt).await {
         Ok(r) => r,
         Err(err) => {
-            dom::set_status(&format!("agent.chat: {err}"), true);
-            mark_turn_done(assistant_turn_id);
+            report_turn_error("agent.chat", &format!("{err}"), assistant_turn_id);
             return;
         }
     };
@@ -237,8 +236,7 @@ pub(crate) async fn run_send() {
                 // Thoughts intentionally not surfaced (yet).
             }
             Err(err) => {
-                dom::set_status(&format!("chunk: {err}"), true);
-                mark_turn_done(assistant_turn_id);
+                report_turn_error("stream", &format!("{err}"), assistant_turn_id);
                 return;
             }
         }
@@ -272,6 +270,26 @@ pub(crate) async fn run_send() {
     // any tool-created files (and the history marker itself) show up.
     super::history::save_from_agent().await;
     super::opfs::refresh().await;
+}
+
+/// Surface a turn failure. If it looks like an auth / API-key problem
+/// (the most common first-run failure), reopen the key modal so the user
+/// can fix it, rather than leaving a cryptic error in the status line.
+fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
+    mark_turn_done(assistant_turn_id);
+    let lower = err.to_lowercase();
+    let looks_like_auth = lower.contains("api key")
+        || lower.contains("api_key")
+        || lower.contains("401")
+        || lower.contains("403")
+        || lower.contains("permission_denied")
+        || lower.contains("unauthenticated");
+    if looks_like_auth {
+        dom::set_status("API key rejected — check your Gemini key.", true);
+        super::show_api_key_modal();
+    } else {
+        dom::set_status(&format!("{context}: {err}"), true);
+    }
 }
 
 pub(crate) async fn start_session(key: &str) -> Result<(), JsValue> {
