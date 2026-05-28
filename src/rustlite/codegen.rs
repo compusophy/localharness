@@ -14,6 +14,7 @@ const WASM_VERSION: &[u8] = &[1, 0, 0, 0];
 
 // Section IDs
 const SEC_TYPE: u8 = 1;
+const SEC_IMPORT: u8 = 2;
 const SEC_FUNCTION: u8 = 3;
 const SEC_MEMORY: u8 = 5;
 const SEC_EXPORT: u8 = 7;
@@ -107,6 +108,14 @@ struct WasmEmitter {
     data_segments: Vec<(u32, Vec<u8>)>,
     data_offset: u32,
 
+    // Host imports. Wasm puts imported functions at function indices
+    // 0..import_count, so every local function index (calls, exports)
+    // is offset by `import_count`. `host_import_map` keys are the
+    // resolved "module::func" name (e.g. "display::clear").
+    imports: Vec<ImportEntry>,
+    host_import_map: std::collections::HashMap<String, u32>,
+    import_count: u32,
+
     // Per-function state
     fn_map: std::collections::HashMap<String, u32>,
     local_map: Vec<std::collections::HashMap<String, u32>>,
@@ -114,8 +123,13 @@ struct WasmEmitter {
     string_map: std::collections::HashMap<String, (u32, u32)>,
 }
 
+struct ImportEntry {
+    module: String,
+    field: String,
+    type_idx: u32,
+}
+
 struct FuncBody {
-    #[allow(dead_code)]
     type_idx: u32,
     locals: Vec<u8>,
     code: Vec<u8>,
@@ -129,6 +143,9 @@ impl WasmEmitter {
             exports: Vec::new(),
             data_segments: Vec::new(),
             data_offset: 1024, // start data segment at 1KB
+            imports: Vec::new(),
+            host_import_map: std::collections::HashMap::new(),
+            import_count: 0,
             fn_map: std::collections::HashMap::new(),
             local_map: Vec::new(),
             local_types: Vec::new(),
@@ -142,15 +159,149 @@ impl WasmEmitter {
             self.fn_map.insert(f.name.clone(), i as u32);
         }
 
-        // Emit each function
+        // Collect host imports up front. Their wasm function indices are
+        // 0..import_count, and their types occupy the low type indices,
+        // so this must run before any local function emits its type.
+        for f in &module.functions {
+            self.scan_block_imports(&f.body);
+        }
+        self.import_count = self.imports.len() as u32;
+
+        // Emit each function. Local function index = import_count + its
+        // position in the module, so exports point past the imports.
         for f in &module.functions {
             self.emit_function(f)?;
-            // Export all functions
-            let idx = self.fn_map[&f.name];
-            self.exports.push((f.name.clone(), 0x00, idx));
+            let local_pos = self.fn_map[&f.name];
+            self.exports.push((f.name.clone(), 0x00, self.import_count + local_pos));
         }
 
         Ok(())
+    }
+
+    /// Register a host import (idempotent) and intern its wasm type.
+    /// The wasm import module name is `host_<module>` to match the
+    /// loader's import object (see `src/app/display.rs`).
+    fn register_import(&mut self, module: &str, func: &str, params: &[ResolvedType], ret: &ResolvedType) {
+        let key = format!("{module}::{func}");
+        if self.host_import_map.contains_key(&key) {
+            return;
+        }
+        let type_idx = self.intern_functype(params, ret);
+        let import_idx = self.imports.len() as u32;
+        self.imports.push(ImportEntry {
+            module: format!("host_{module}"),
+            field: func.to_string(),
+            type_idx,
+        });
+        self.host_import_map.insert(key, import_idx);
+    }
+
+    fn intern_functype(&mut self, params: &[ResolvedType], ret: &ResolvedType) -> u32 {
+        let mut sig = vec![0x60];
+        sig.push(params.len() as u8);
+        for p in params {
+            sig.push(resolved_to_wasm(p));
+        }
+        if *ret == ResolvedType::Void {
+            sig.push(0);
+        } else {
+            sig.push(1);
+            sig.push(resolved_to_wasm(ret));
+        }
+        let idx = self.types.len() as u32;
+        self.types.push(sig);
+        idx
+    }
+
+    fn scan_block_imports(&mut self, block: &TypedBlock) {
+        for stmt in &block.stmts {
+            match stmt {
+                TypedStmt::Let { init, .. } => self.scan_expr_imports(init),
+                TypedStmt::Assign { value, .. } => self.scan_expr_imports(value),
+                TypedStmt::Return { value } => {
+                    if let Some(v) = value {
+                        self.scan_expr_imports(v);
+                    }
+                }
+                TypedStmt::Expr { expr } => self.scan_expr_imports(expr),
+            }
+        }
+        if let Some(tail) = &block.tail {
+            self.scan_expr_imports(tail);
+        }
+    }
+
+    fn scan_expr_imports(&mut self, expr: &TypedExpr) {
+        match &expr.kind {
+            TypedExprKind::HostCall { module, func, args, ret_ty } => {
+                let param_tys: Vec<ResolvedType> = args.iter().map(|a| a.ty.clone()).collect();
+                self.register_import(module, func, &param_tys, ret_ty);
+                for a in args {
+                    self.scan_expr_imports(a);
+                }
+            }
+            TypedExprKind::Call { func, args } => {
+                self.scan_expr_imports(func);
+                for a in args {
+                    self.scan_expr_imports(a);
+                }
+            }
+            TypedExprKind::MethodCall { object, args, .. } => {
+                self.scan_expr_imports(object);
+                for a in args {
+                    self.scan_expr_imports(a);
+                }
+            }
+            TypedExprKind::FieldAccess { object, .. } => self.scan_expr_imports(object),
+            TypedExprKind::StructLit { fields, .. } => {
+                for (_, v) in fields {
+                    self.scan_expr_imports(v);
+                }
+            }
+            TypedExprKind::TupleLit(exprs) => {
+                for e in exprs {
+                    self.scan_expr_imports(e);
+                }
+            }
+            TypedExprKind::BinOp { lhs, rhs, .. } => {
+                self.scan_expr_imports(lhs);
+                self.scan_expr_imports(rhs);
+            }
+            TypedExprKind::UnaryOp { operand, .. } => self.scan_expr_imports(operand),
+            TypedExprKind::If { cond, then_block, else_block } => {
+                self.scan_expr_imports(cond);
+                self.scan_block_imports(then_block);
+                match else_block {
+                    Some(TypedElse::Block(b)) => self.scan_block_imports(b),
+                    Some(TypedElse::If(e)) => self.scan_expr_imports(e),
+                    None => {}
+                }
+            }
+            TypedExprKind::Match { scrutinee, arms, .. } => {
+                self.scan_expr_imports(scrutinee);
+                for arm in arms {
+                    self.scan_expr_imports(&arm.body);
+                }
+            }
+            TypedExprKind::While { cond, body } => {
+                self.scan_expr_imports(cond);
+                self.scan_block_imports(body);
+            }
+            TypedExprKind::Loop { body } => self.scan_block_imports(body),
+            TypedExprKind::Break { value } => {
+                if let Some(v) = value {
+                    self.scan_expr_imports(v);
+                }
+            }
+            TypedExprKind::Block(block) => self.scan_block_imports(block),
+            TypedExprKind::IntLit(_)
+            | TypedExprKind::FloatLit(_)
+            | TypedExprKind::StringLit(_)
+            | TypedExprKind::BoolLit(_)
+            | TypedExprKind::Var(_)
+            | TypedExprKind::Path(_)
+            | TypedExprKind::Continue => {}
+        }
     }
 
     fn emit_function(&mut self, f: &TypedFn) -> Result<(), CompileError> {
@@ -323,7 +474,17 @@ impl WasmEmitter {
                 let fn_idx = *self.fn_map.get(&fn_name)
                     .ok_or_else(|| CompileError::new(format!("undefined function '{fn_name}'")))?;
                 code.push(OP_CALL);
-                leb128_u32(fn_idx, code);
+                leb128_u32(self.import_count + fn_idx, code);
+            }
+            TypedExprKind::HostCall { module, func, args, .. } => {
+                for arg in args {
+                    self.emit_expr(arg, code)?;
+                }
+                let key = format!("{module}::{func}");
+                let import_idx = *self.host_import_map.get(&key)
+                    .ok_or_else(|| CompileError::new(format!("unregistered host import '{key}'")))?;
+                code.push(OP_CALL);
+                leb128_u32(import_idx, code);
             }
             TypedExprKind::MethodCall { object, method: _, args } => {
                 // Desugar to Type::method(object, args...)
@@ -597,12 +758,28 @@ impl WasmEmitter {
             write_section(SEC_TYPE, &sec, &mut out);
         }
 
-        // Function section (maps func idx → type idx)
+        // Import section — host functions occupy function indices
+        // 0..import_count, ahead of all local functions.
+        if !self.imports.is_empty() {
+            let mut sec = Vec::new();
+            leb128_u32(self.imports.len() as u32, &mut sec);
+            for imp in &self.imports {
+                leb128_u32(imp.module.len() as u32, &mut sec);
+                sec.extend_from_slice(imp.module.as_bytes());
+                leb128_u32(imp.field.len() as u32, &mut sec);
+                sec.extend_from_slice(imp.field.as_bytes());
+                sec.push(0x00); // import kind: func
+                leb128_u32(imp.type_idx, &mut sec);
+            }
+            write_section(SEC_IMPORT, &sec, &mut out);
+        }
+
+        // Function section (maps each local func to its type index)
         {
             let mut sec = Vec::new();
             leb128_u32(self.functions.len() as u32, &mut sec);
-            for (i, _) in self.functions.iter().enumerate() {
-                leb128_u32(i as u32, &mut sec); // type idx = func idx (1:1 for now)
+            for func in &self.functions {
+                leb128_u32(func.type_idx, &mut sec);
             }
             write_section(SEC_FUNCTION, &sec, &mut out);
         }
@@ -782,5 +959,64 @@ mod tests {
         let hello = b"hello world";
         let found = wasm.windows(hello.len()).any(|w| w == hello);
         assert!(found, "wasm should contain string data");
+    }
+
+    /// Walk a wasm module's top-level sections, returning their ids in
+    /// order. Reliable presence check (vs. scanning for a raw byte,
+    /// which collides with leb/opcode bytes).
+    fn section_ids(wasm: &[u8]) -> Vec<u8> {
+        let mut ids = Vec::new();
+        let mut i = 8; // skip magic + version
+        while i < wasm.len() {
+            let id = wasm[i];
+            i += 1;
+            // decode unsigned LEB128 size
+            let mut size = 0u32;
+            let mut shift = 0;
+            loop {
+                let byte = wasm[i];
+                i += 1;
+                size |= ((byte & 0x7f) as u32) << shift;
+                if byte & 0x80 == 0 {
+                    break;
+                }
+                shift += 7;
+            }
+            ids.push(id);
+            i += size as usize;
+        }
+        ids
+    }
+
+    #[test]
+    fn emit_host_display_import() {
+        let wasm = compile_to_wasm(
+            r#"
+            use host::display;
+            fn frame(t: i32) {
+                display::clear(0);
+                display::fill_rect(t, 0, 10, 10, 16777215);
+                display::present();
+            }
+        "#,
+        );
+        assert_eq!(&wasm[0..4], WASM_MAGIC);
+        assert!(section_ids(&wasm).contains(&SEC_IMPORT), "expected an import section");
+        // The wasm import module name + fields the loader provides.
+        for needle in [&b"host_display"[..], b"clear", b"fill_rect", b"present"] {
+            assert!(
+                wasm.windows(needle.len()).any(|w| w == needle),
+                "wasm should reference {:?}",
+                std::str::from_utf8(needle).unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn no_imports_when_no_host_calls() {
+        let wasm = compile_to_wasm("fn add(a: i32, b: i32) -> i32 { a + b }");
+        // Backward-compat: a module with no host calls has no import
+        // section, so function indices are unshifted.
+        assert!(!section_ids(&wasm).contains(&SEC_IMPORT), "no host calls => no import section");
     }
 }

@@ -1072,38 +1072,64 @@ That blit *is* the framebuffer. No DOM render tree, no iframe, no Shadow
 DOM. The canvas is the "scanout"; `display.rs` is the compositor; the
 `host_display` import module is the Orbclient analog.
 
-### v0 ABI (landed)
+### ABI (landed): host-owned framebuffer + draw commands
+
+The model is **host owns the framebuffer, cartridge issues draw
+commands** — chosen over "cartridge owns a pixel buffer it blits"
+because the latter needs arrays / raw memory writes, which rustlite
+v0.1 doesn't have. Integer host calls, by contrast, are exactly what
+rustlite *can* emit — so an agent-written cartridge can draw.
 
 ```text
-(import "host_display" "present" (func (param i32 i32 i32)))
-  ;; present(ptr, w, h): blit w*h RGBA8888 bytes at `ptr` to the screen
+(import "host_display" "clear"     (func (param i32)))               ;; clear(0xRRGGBB)
+(import "host_display" "set_pixel" (func (param i32 i32 i32)))        ;; (x, y, rgb)
+(import "host_display" "fill_rect" (func (param i32 i32 i32 i32 i32)));; (x, y, w, h, rgb)
+(import "host_display" "present"   (func))                           ;; flush to screen
+(import "host_display" "width"     (func (result i32)))
+(import "host_display" "height"    (func (result i32)))
 ```
 
-A cartridge must export `memory` and a no-arg `render`. That's the
-entire v0 contract. `render` fills the buffer and calls `present` once.
+A cartridge exports `memory` and either an animated `frame(t: i32)`
+(driven by `requestAnimationFrame`, `t` = elapsed ms) or a one-shot
+`render()`. Colours are `0xRRGGBB`, opaque (fits in an i32 literal).
 
-### Proven end to end
+### The rustlite → display bridge (the real unlock)
 
-`display.rs::gradient_cartridge()` hand-assembles a 168-byte wasm module
-(no `wasm-encoder` dep — same hand-rolled discipline as the rustlite
-codegen) that fills a 256×144 buffer with `r=x, g=y, b=128, a=255` and
-calls `present(0, 256, 144)`. The "display" button in the terminal
-action row runs it; a `.wasm` file opened from the OPFS panel runs as a
-cartridge too.
+The compiler now emits **host-import calls**: `typecheck` resolves
+`display::*` against a host-function table (`resolve_host_fn`) and
+produces a `HostCall` node; `codegen` collects those into a wasm import
+section (host functions occupy function indices `0..import_count`, so
+every local call/export index is offset past them) and emits `call
+<import_idx>`. A module with no host calls emits no import section
+(unchanged output — backward compatible).
+
+So an agent writes:
+
+```rust
+use host::display;
+fn frame(t: i32) {
+    display::clear(0);
+    let x: i32 = t / 8 % 216;
+    display::fill_rect(x, 52, 40, 40, 16777215);
+    display::present();
+}
+```
+
+…and it compiles in-browser to wasm and runs on the canvas. The
+"display" button in the terminal action row compiles + runs exactly
+this; a `.wasm` opened from the OPFS panel runs as a cartridge too.
 
 ### What's next on this surface
 
-- **Input events** — a poll-model API (`host_display.poll_event`) so
-  cartridges react to pointer/keyboard, like Orbclient's event queue.
-- **A frame loop** — `render` once → `tick`/`frame` driven by
-  `requestAnimationFrame`, with the cartridge owning an animation.
+- **Input events** — a poll-model API (`host_display.pointer_x()` etc.)
+  so cartridges react to pointer/keyboard, like Orbclient's event queue.
+  Poll fits rustlite (plain i32-returning calls).
+- **More draw ops** — `line`, `text`/glyph blitting, `blit_image`.
 - **Windows + compositing** — multiple cartridges, each a window, the
   loader composites. This is the real "Orbital desktop" milestone.
-- **rustlite can't draw yet** — the codegen emits no imports and no
-  store opcodes (`_OP_I32_STORE` is unused). Wiring memory stores + the
-  `host_display` import into codegen is the bridge that lets an
-  *agent-written* rustlite cartridge draw, instead of hand-assembled
-  wasm. Tracked alongside the stdlib/codegen work.
+- **rustlite arrays / raw framebuffer** — a `cartridge-owns-buffer`
+  path (`blit(ptr,w,h)`) for max per-pixel control once rustlite gains
+  array/memory primitives; needed for an image/HTML loader anyway.
 - **Loader registry (the VLC layer)** — dispatch by content type:
   `.wasm` → cartridge; later `.png` → image loader, HTML → an
   HTML→pixels loader. All draw into the same framebuffer.

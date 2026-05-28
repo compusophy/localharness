@@ -100,6 +100,14 @@ pub enum TypedExprKind {
     FieldAccess { object: Box<TypedExpr>, field: String, field_index: usize },
 
     Call { func: Box<TypedExpr>, args: Vec<TypedExpr> },
+    /// A call to a `host::<module>::<func>` builtin (e.g.
+    /// `display::fill_rect(...)`). Resolved against the host-function
+    /// table, not the module's own functions — codegen emits it as a
+    /// wasm import call. `module`/`func` are the resolved names
+    /// (leading `host::` stripped); `ret_ty` is the host signature's
+    /// return so codegen can declare the import type without its own
+    /// table.
+    HostCall { module: String, func: String, args: Vec<TypedExpr>, ret_ty: ResolvedType },
     MethodCall { object: Box<TypedExpr>, method: String, args: Vec<TypedExpr> },
 
     StructLit { name: String, fields: Vec<(String, TypedExpr)> },
@@ -476,6 +484,26 @@ impl TypeContext {
                         kind: TypedExprKind::Call { func: Box::new(func_typed), args: checked_args },
                         span,
                     })
+                } else if let Some((module, func_name, params, ret)) = resolve_host_fn(&fn_name) {
+                    if checked_args.len() != params.len() {
+                        return Err(CompileError::at(
+                            format!("host fn '{fn_name}' expects {} args, got {}", params.len(), checked_args.len()),
+                            span,
+                        ));
+                    }
+                    for (i, (arg, expected)) in checked_args.iter().zip(params.iter()).enumerate() {
+                        if arg.ty != *expected {
+                            return Err(CompileError::at(
+                                format!("host fn '{fn_name}' arg {i}: expected {expected:?}, got {:?}", arg.ty),
+                                span,
+                            ));
+                        }
+                    }
+                    Ok(TypedExpr {
+                        ty: ret.clone(),
+                        kind: TypedExprKind::HostCall { module, func: func_name, args: checked_args, ret_ty: ret },
+                        span,
+                    })
                 } else {
                     // Enum variant constructor call (tuple variant)
                     let func_typed = self.check_expr(func)?;
@@ -692,6 +720,31 @@ impl TypeContext {
             }
         }
     }
+}
+
+/// Resolve a `module::func` path against the host-function table.
+///
+/// `fn_name` is the call path joined with `::` (e.g. `display::clear`
+/// or `host::display::clear`); a leading `host::` is stripped. Returns
+/// `(module, func, param_types, return_type)` for known host builtins.
+///
+/// These are the **Orbclient-style** drawing primitives a cartridge
+/// uses to draw onto the host-owned framebuffer (see `src/app/display.rs`
+/// for the matching imports). Colours are `0xRRGGBB` (opaque).
+fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, ResolvedType)> {
+    use ResolvedType::*;
+    let key = fn_name.strip_prefix("host::").unwrap_or(fn_name);
+    let (params, ret): (Vec<ResolvedType>, ResolvedType) = match key {
+        "display::clear" => (vec![I32], Void),
+        "display::set_pixel" => (vec![I32, I32, I32], Void),
+        "display::fill_rect" => (vec![I32, I32, I32, I32, I32], Void),
+        "display::present" => (vec![], Void),
+        "display::width" => (vec![], I32),
+        "display::height" => (vec![], I32),
+        _ => return None,
+    };
+    let (module, func) = key.split_once("::")?;
+    Some((module.to_string(), func.to_string(), params, ret))
 }
 
 #[cfg(test)]
