@@ -5,6 +5,63 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-05-28
+
+The display release: a subdomain can now *be* an app. A pixel
+framebuffer runs wasm cartridges (Redox/Orbital-style — the loader is
+the compositor, the cartridge is the app), the rustlite compiler gained
+host-import calls so agent-written Rust can draw, and a subdomain boots
+straight into its published cartridge fullscreen.
+
+### Added
+
+- **DISPLAY framebuffer.** A `<canvas>` "screen" that runs wasm
+  cartridges via `host_display`: cartridges write pixels and the host
+  blits them — no DOM, no iframe. Cartridges export `frame(t)`
+  (animated, driven by `requestAnimationFrame`) or `render()` (one-shot).
+- **`host_display` ABI:** `clear`, `set_pixel`, `fill_rect`,
+  `draw_char` / `draw_number` (hand-rolled 5×7 font: 0-9, A-Z, space,
+  `+ - * / = . ( )`), `present`, `width`/`height`, pointer input
+  (`pointer_x`/`pointer_y`/`pointer_down`, poll model), and a 64-slot
+  integer `state_get`/`state_set` register file that persists across
+  frames (rustlite has no globals).
+- **rustlite → display bridge.** The compiler now emits wasm host-import
+  calls: typecheck resolves `display::*` against a host-function table;
+  codegen builds an import section and offsets local function indices.
+  Agent-written rustlite cartridges, compiled in-browser, draw on screen.
+- **`run_cartridge` tool.** The agent compiles rustlite and runs it
+  directly on the display.
+- **App mode.** A subdomain with an `app.rl` (rustlite source) in OPFS
+  boots straight into a chrome-less fullscreen cartridge; `?edit=1`
+  returns to the workshop.
+- **Cross-visitor publishing.** The compiled cartridge wasm is stored
+  on-chain in the registry diamond under
+  `metadata(tokenId, keccak256("localharness.app.wasm"))` (no new facet)
+  via a sponsored `setMetadata` tx. Every visitor — not just the owner's
+  device — boots into the published app. Owner-only "publish app
+  on-chain" button in admin.
+- **Stop buttons.** A stop control halts a running cartridge's frame
+  loop; the send arrow becomes a stop button while an agent turn streams
+  and cooperatively cancels it (guarding against concurrent turns).
+- **Feedback viewer.** The feedback modal lists recent on-chain
+  `FeedbackSubmitted` events (newest first, relative timestamps) via
+  `eth_getLogs` — previously feedback could only be submitted.
+
+### Fixed
+
+- **rustlite multi-local codegen bug.** `alloc_local` double-counted, so
+  any function with 2+ locals emitted out-of-range local indices and
+  failed to instantiate. Functions with 0-1 locals worked by luck; the
+  emit tests never caught it because they only check the wasm header.
+- **rustlite control-flow as statements.** `if`/`match`/block
+  expressions now work as statements without a trailing `;` (like Rust);
+  previously only `while`/`loop` did.
+- **Transcript scroll** now lands at the latest turn on load (deferred
+  past layout/font-swap).
+- **Terminal-collapse anchor.** The terminal rail stays pinned to the
+  bottom of the column when the terminal/view panels collapse instead of
+  floating to the top.
+
 ## [0.10.28] - 2026-05-27
 
 ### Added
