@@ -371,8 +371,13 @@ impl WasmEmitter {
     }
 
     fn alloc_local(&mut self, name: &str, ty: &ResolvedType) -> u32 {
+        // The function uses ONE flat local map (params inserted first,
+        // then every declared local), so the next wasm local index is
+        // simply the current map size. Adding `local_types.len()` here
+        // double-counts the declared locals already in the map and makes
+        // indices for the 2nd+ local invalid.
         let wasm_ty = resolved_to_wasm(ty);
-        let local_idx = self.local_map.last().unwrap().len() as u32 + self.local_types.len() as u32;
+        let local_idx = self.local_map.last().unwrap().len() as u32;
         self.local_types.push(wasm_ty);
         self.local_map.last_mut().unwrap().insert(name.to_string(), local_idx);
         local_idx

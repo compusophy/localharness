@@ -741,6 +741,8 @@ fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, 
         "display::present" => (vec![], Void),
         "display::width" => (vec![], I32),
         "display::height" => (vec![], I32),
+        "display::pointer_x" => (vec![], I32),
+        "display::pointer_y" => (vec![], I32),
         _ => return None,
     };
     let (module, func) = key.split_once("::")?;

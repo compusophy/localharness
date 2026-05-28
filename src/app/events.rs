@@ -216,6 +216,18 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
     doc.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref())?;
     keydown.forget();
 
+    // Delegated pointer tracking for the DISPLAY canvas. The display
+    // cartridge ABI is poll-model (Orbclient-style): the cartridge reads
+    // pointer_x/pointer_y each frame, so we just keep the latest cursor
+    // position fresh. No-op when the canvas isn't mounted.
+    let mousemove = Closure::<dyn FnMut(_)>::new(move |event: MouseEvent| {
+        if dom::by_id("display-canvas").is_some() {
+            super::display::set_pointer(event.client_x() as f64, event.client_y() as f64);
+        }
+    });
+    doc.add_event_listener_with_callback("mousemove", mousemove.as_ref().unchecked_ref())?;
+    mousemove.forget();
+
     Ok(())
 }
 

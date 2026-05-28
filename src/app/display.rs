@@ -19,6 +19,8 @@
 //! - `fill_rect(x, y, w, h, rgb)`
 //! - `present()` — flush the framebuffer to the canvas
 //! - `width() -> i32`, `height() -> i32`
+//! - `pointer_x() -> i32`, `pointer_y() -> i32` — cursor position in
+//!   framebuffer coordinates (poll model, like Orbclient's event queue)
 //!
 //! A cartridge exports `memory` and either an animated `frame(t: i32)`
 //! (driven by `requestAnimationFrame`, `t` = elapsed ms) or a one-shot
@@ -60,6 +62,11 @@ thread_local! {
     /// long as it runs. Replaced on the next load (dropping the prior
     /// set, whose loop is already cancelled).
     static RUNTIME: RefCell<Option<CartridgeRuntime>> = const { RefCell::new(None) };
+    /// Latest cursor position in framebuffer coordinates. Updated by the
+    /// delegated `mousemove` listener (see `events.rs`), read by the
+    /// `pointer_x`/`pointer_y` host imports. Poll model — cartridges read
+    /// it each frame rather than receiving events.
+    static POINTER: Cell<(i32, i32)> = const { Cell::new((0, 0)) };
 }
 
 /// Keeps every `host_display` import closure alive. wasm holds JS
@@ -72,6 +79,8 @@ struct CartridgeRuntime {
     present: Closure<dyn FnMut()>,
     width: Closure<dyn FnMut() -> i32>,
     height: Closure<dyn FnMut() -> i32>,
+    pointer_x: Closure<dyn FnMut() -> i32>,
+    pointer_y: Closure<dyn FnMut() -> i32>,
 }
 
 /// Run the built-in demo: a rustlite cartridge compiled in-browser.
@@ -80,9 +89,12 @@ pub(crate) async fn run_demo() {
     const SRC: &str = r#"
 use host::display;
 fn frame(t: i32) {
-    display::clear(0);
-    let x: i32 = t / 8 % 216;
-    display::fill_rect(x, 52, 40, 40, 16777215);
+    display::clear(1118481);
+    let bar: i32 = t / 16 % 256;
+    display::fill_rect(bar, 0, 4, 144, 4473924);
+    let px: i32 = display::pointer_x();
+    let py: i32 = display::pointer_y();
+    display::fill_rect(px - 16, py - 16, 32, 32, 16777215);
     display::present();
 }
 "#;
@@ -210,6 +222,8 @@ fn build_host_display(
 
     let width = Closure::<dyn FnMut() -> i32>::new(move || FB_W as i32);
     let height = Closure::<dyn FnMut() -> i32>::new(move || FB_H as i32);
+    let pointer_x = Closure::<dyn FnMut() -> i32>::new(move || POINTER.with(|p| p.get().0));
+    let pointer_y = Closure::<dyn FnMut() -> i32>::new(move || POINTER.with(|p| p.get().1));
 
     let host_display = Object::new();
     set_fn(&host_display, "clear", &clear)?;
@@ -218,14 +232,36 @@ fn build_host_display(
     set_fn(&host_display, "present", &present)?;
     set_fn(&host_display, "width", &width)?;
     set_fn(&host_display, "height", &height)?;
+    set_fn(&host_display, "pointer_x", &pointer_x)?;
+    set_fn(&host_display, "pointer_y", &pointer_y)?;
 
     let imports = Object::new();
     Reflect::set(&imports, &JsValue::from_str("host_display"), &host_display)?;
 
     Ok((
         imports,
-        CartridgeRuntime { clear, set_pixel, fill_rect, present, width, height },
+        CartridgeRuntime {
+            clear, set_pixel, fill_rect, present, width, height, pointer_x, pointer_y,
+        },
     ))
+}
+
+/// Update the cursor position from a `mousemove` over the canvas. Maps
+/// client (CSS-pixel) coordinates to framebuffer coordinates using the
+/// canvas's displayed rect, so cartridges see logical pixels regardless
+/// of how the canvas is scaled. Called from the delegated listener in
+/// `events.rs`.
+pub(crate) fn set_pointer(client_x: f64, client_y: f64) {
+    let Some(el) = dom::by_id("display-canvas") else { return };
+    let Ok(canvas) = el.dyn_into::<HtmlCanvasElement>() else { return };
+    let rect = canvas.get_bounding_client_rect();
+    let (w, h) = (rect.width(), rect.height());
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    let fx = (((client_x - rect.left()) / w) * FB_W as f64).clamp(0.0, (FB_W - 1) as f64) as i32;
+    let fy = (((client_y - rect.top()) / h) * FB_H as f64).clamp(0.0, (FB_H - 1) as f64) as i32;
+    POINTER.with(|p| p.set((fx, fy)));
 }
 
 fn set_fn<T: ?Sized>(obj: &Object, name: &str, closure: &Closure<T>) -> Result<(), JsValue> {
