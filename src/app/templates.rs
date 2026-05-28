@@ -162,24 +162,6 @@ pub(crate) fn stop_button() -> Markup {
     }
 }
 
-/// ERC-6551 token-bound account pill — the agent's wallet address.
-/// Lives in the header next to verify-pill on tenant subdomains.
-#[allow(dead_code)] // retired in 0.10.14 — TBA shows in the agent tab
-pub(crate) fn tba_pill(address: &str) -> Markup {
-    let short = short_addr(address);
-    let title = format!("agent wallet (ERC-6551): {address}");
-    html! {
-        a #tba-pill
-            class="tag tba-pill"
-            href=(format!("https://moderato.tempo.xyz/address/{address}"))
-            target="_blank"
-            rel="noopener"
-            title=(title) {
-            "💰 " (short)
-        }
-    }
-}
-
 /// The verification status pill that lives in the header on tenant
 /// subdomains. Reflects the current `VerifyState`; mounted with
 /// `#verify-pill` so background verification can swap it in place.
@@ -1217,23 +1199,6 @@ pub(crate) fn seed_phrase(words: &str) -> Markup {
     }
 }
 
-/// (Retired in 0.10.10 — visitor context now lives in the terminal
-/// status line via `dom::set_status`. Kept for now in case we want
-/// a richer banner later.)
-#[allow(dead_code)]
-pub(crate) fn visitor_banner(owner_address: &str) -> Markup {
-    html! {
-        div #input-region .visitor-banner {
-            h3 { "visitor mode · read-only" }
-            p {
-                "this subdomain is owned by "
-                code { (owner_address) }
-                "."
-            }
-        }
-    }
-}
-
 /// Chrome shown when the signer iframe loads but no identity exists
 /// at the apex origin. The postMessage handler errors on every
 /// challenge in this state — owner verification on the parent
@@ -1367,30 +1332,7 @@ pub(crate) fn opfs_error(message: &str) -> Markup {
     }
 }
 
-/// Retired in 0.10.16 — every file open is now the editor directly.
-#[allow(dead_code)]
-pub(crate) fn opfs_viewer(display_path: &str, name: &str, text: &str) -> Markup {
-    html! {
-        div #fs-viewer-wrap {
-            div.fs-viewer-header {
-                span #fs-viewer-name { (display_path) }
-                span.fs-viewer-actions {
-                    button.close-viewer
-                        type="button"
-                        data-action="opfs-edit"
-                        data-arg=(name) { "edit" }
-                    " "
-                    button.close-viewer
-                        type="button"
-                        data-action="opfs-close-viewer" { "close" }
-                }
-            }
-            pre #fs-viewer .fs-viewer { (text) }
-        }
-    }
-}
-
-/// Editable variant. The textarea has id `fs-editor` so the save
+/// The textarea has id `fs-editor` so the save
 /// handler can read its value; the buttons carry the file `name` as a
 /// data-arg so a single delegated dispatcher works.
 pub(crate) fn opfs_editor(display_path: &str, name: &str, text: &str) -> Markup {
@@ -1445,24 +1387,6 @@ pub(crate) fn app_fullscreen() -> Markup {
                 canvas #display-canvas .display-canvas {}
             }
             a.app-edit href="?edit=1" title="edit this app" { "edit" }
-        }
-    }
-}
-
-/// Retired in 0.10.13 — the view panel is now collapsed via a CSS
-/// class flip on `#layout` rather than swapping a placeholder DOM
-/// node back in. Kept allow-dead-code so older call sites compile.
-#[allow(dead_code)]
-pub(crate) fn opfs_viewer_placeholder() -> Markup {
-    html! {
-        div #fs-viewer-wrap hidden {
-            div.fs-viewer-header {
-                span #fs-viewer-name {}
-                button.close-viewer
-                    type="button"
-                    data-action="opfs-close-viewer" { "close" }
-            }
-            pre #fs-viewer .fs-viewer {}
         }
     }
 }

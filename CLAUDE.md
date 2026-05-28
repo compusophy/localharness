@@ -489,14 +489,19 @@ fee_payer signature must come from the root key directly.
 | Apex first-claim (`run_apex_claim`) | sponsored tempo tx | ✅ |
 | Tenant first-claim (`signer.rs::run_claim_name`) | sponsored tempo tx via iframe | ✅ |
 | `claim_and_maybe_set_main_sponsored` | tempo tx batch | ✅ |
-| `lh_transfer` | legacy iframe `lh-sign-tx` (EIP-155) | ⏳ |
-| `submit_feedback` | legacy iframe `lh-sign-tx` (EIP-155) | ⏳ |
-| `register_main` (standalone) | legacy via `sign_and_submit_call` | ⏳ |
+| `lh_transfer` | `run_sponsored_tempo_call` (sender_hash via iframe) | ✅ |
+| `submit_feedback` | `run_sponsored_tempo_call` | ✅ |
+| publish app (`setMetadata`) | `run_sponsored_tempo_call` | ✅ |
+| add/remove device signer | `add_/remove_signer_sponsored` | ✅ |
+| `register_main_sponsored` | sponsored tempo tx | ✅ |
 
-Migrating the last three needs the iframe signer to gain a new
-message type that returns just the sender_hash signature (so the
-tenant-side wasm can construct the full Tempo tx + add the sponsor
-fee_payer signature locally + submit). Pending work.
+The migration is complete: the iframe signer's `lh-sign-digest`
+message (the tenant computes the sender_hash, the apex wallet signs it,
+the embedded sponsor signs `fee_payer`) is the shared mechanism. Every
+user-facing write goes through `events::run_sponsored_tempo_call`, so
+users hold zero of anything. The self-paid `sign_and_submit_call` /
+standalone `register_main` paths remain in `registry.rs` for off-bundle
+/ native callers but aren't used by the browser UI.
 
 ## What's planned
 

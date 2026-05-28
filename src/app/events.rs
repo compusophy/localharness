@@ -37,7 +37,6 @@ enum Action {
     OpfsCloseViewer,
     OpfsNav(String),
     OpfsOpen(String),
-    OpfsEdit(String),
     OpfsSave(String),
     ApexClaim,
     ClaimHere,
@@ -94,7 +93,6 @@ impl Action {
             "opfs-close-viewer" => Action::OpfsCloseViewer,
             "opfs-nav" => Action::OpfsNav(arg.unwrap_or_default()),
             "opfs-open" => Action::OpfsOpen(arg.unwrap_or_default()),
-            "opfs-edit" => Action::OpfsEdit(arg.unwrap_or_default()),
             "opfs-save" => Action::OpfsSave(arg.unwrap_or_default()),
             "apex-claim" => Action::ApexClaim,
             "claim-here" => Action::ClaimHere,
@@ -592,11 +590,6 @@ fn dispatch(action: Action) {
         Action::OpfsOpen(name) => {
             wasm_bindgen_futures::spawn_local(async move {
                 super::opfs::open_file(&name).await;
-            });
-        }
-        Action::OpfsEdit(name) => {
-            wasm_bindgen_futures::spawn_local(async move {
-                super::opfs::edit_file(&name).await;
             });
         }
         Action::OpfsSave(name) => {
