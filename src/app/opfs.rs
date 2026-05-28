@@ -203,6 +203,9 @@ pub(crate) async fn wipe() {
 }
 
 pub(crate) fn close_viewer() {
+    // Stop any running display cartridge loop before tearing down the
+    // surface, so an orphaned rAF tick can't keep blitting.
+    super::display::stop();
     // Collapse the view panel and clear its content — opening a file
     // again re-renders fresh.
     dom::swap_inner("view-content", "");
