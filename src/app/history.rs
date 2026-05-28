@@ -35,6 +35,8 @@ pub(crate) async fn load_into_pending() {
         // Empty or missing — fresh session.
         _ => return,
     };
+    // Decrypt at-rest history; legacy plaintext falls through unchanged.
+    let bytes = super::encryption::open(&bytes).await.unwrap_or(bytes);
 
     // Project the bytes into a transcript and paint each entry.
     match decode_transcript_bytes(&bytes) {
@@ -129,7 +131,10 @@ pub(crate) async fn save_from_agent() {
     });
     let Some(bytes) = bytes else { return };
     let fs = super::shared_opfs();
-    if let Err(err) = fs.write_atomic(HISTORY_FILE, &bytes).await {
+    // Encrypt at rest; fall back to plaintext if sealing fails so we
+    // never drop a snapshot.
+    let data = super::encryption::seal(&bytes).await.unwrap_or(bytes);
+    if let Err(err) = fs.write_atomic(HISTORY_FILE, &data).await {
         web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
             "history save: {err}"
         )));

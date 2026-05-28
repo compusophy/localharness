@@ -1,39 +1,85 @@
-//! At-rest encryption for OPFS contents.
+//! At-rest encryption for sensitive OPFS files (the Gemini API key and
+//! conversation history).
 //!
-//! Derives an AES-256-GCM key from the wallet's private key via
-//! `keccak256(privkey || "localharness-opfs-encrypt-v1")`. Sensitive
-//! files (API key, wallet seed, conversation history) are encrypted
-//! before writing and decrypted on read.
+//! ## Threat model — read this before assuming too much
+//! The encryption key is a per-origin random AES-256-GCM key kept in
+//! **localStorage**, a separate store from OPFS. So a copy of the OPFS
+//! files *alone* (a future export feature, some extension scopes, casual
+//! inspection) yields only ciphertext. It does **NOT** defend against
+//! XSS / untrusted JS in the origin — the page can read the localStorage
+//! key, so any code running here can decrypt. (The active XSS path was
+//! closed separately in the security audit.) It's defense-in-depth that
+//! removes plaintext secrets from OPFS at rest, nothing more.
 //!
-//! Format: `[12 bytes IV][ciphertext + 16 bytes GCM tag]`.
+//! The **wallet seed is deliberately NOT encrypted here**: losing the
+//! localStorage key would then risk locking the user out of their
+//! identity. Seed protection needs its own recovery design.
 //!
-//! NOTE: this module is built but **not yet wired** into the OPFS read/
-//! write paths — that's a tracked 1.0 hardening item (see the launch
-//! plan + the security-audit memory). The `allow(dead_code)` keeps the
-//! ready-to-use surface compiled without warning noise until then.
-#![allow(dead_code)]
+//! Format: `[12-byte IV][ciphertext + 16-byte GCM tag]`.
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
-const DOMAIN_TAG: &[u8] = b"localharness-opfs-encrypt-v1";
 const IV_LEN: usize = 12;
+/// localStorage slot holding the hex-encoded per-origin AES key.
+const STORAGE_KEY: &str = "lh_enc_key_v1";
 
-/// Derive an AES-256-GCM CryptoKey from wallet private key bytes.
-pub(crate) async fn derive_key(privkey_bytes: &[u8; 32]) -> Result<web_sys::CryptoKey, String> {
-    use sha3::{Digest, Keccak256};
+/// Encrypt bytes for at-rest storage with the per-origin device key.
+/// Returns `None` on any failure so the caller can fall back to writing
+/// plaintext rather than losing data.
+pub(crate) async fn seal(plaintext: &[u8]) -> Option<Vec<u8>> {
+    let key = device_key().await.ok()?;
+    encrypt(&key, plaintext).await.ok()
+}
 
-    let mut hasher = Keccak256::new();
-    hasher.update(privkey_bytes);
-    hasher.update(DOMAIN_TAG);
-    let key_material = hasher.finalize();
+/// Decrypt at-rest bytes. Returns `None` if they aren't our ciphertext
+/// (legacy plaintext, or a wrong/lost key) — the caller treats `None`
+/// as "use the raw bytes / re-prompt", which also auto-migrates old
+/// plaintext files (they re-encrypt on the next write).
+pub(crate) async fn open(data: &[u8]) -> Option<Vec<u8>> {
+    let key = device_key().await.ok()?;
+    decrypt(&key, data).await.ok()
+}
 
+/// Load (or generate + persist) the per-origin AES key and import it as
+/// a non-extractable WebCrypto `CryptoKey`.
+async fn device_key() -> Result<web_sys::CryptoKey, String> {
+    let raw = load_or_create_key_bytes()?;
+    import_aes_key(&raw).await
+}
+
+fn load_or_create_key_bytes() -> Result<[u8; 32], String> {
+    let window = web_sys::window().ok_or("no window")?;
+    let storage = window
+        .local_storage()
+        .map_err(|_| "no localStorage")?
+        .ok_or("no localStorage")?;
+
+    if let Ok(Some(hex)) = storage.get_item(STORAGE_KEY) {
+        if let Some(bytes) = hex_to_32(&hex) {
+            return Ok(bytes);
+        }
+    }
+
+    // First use on this origin — generate a fresh key and persist it.
+    let crypto = window.crypto().map_err(|_| "no crypto")?;
+    let bytes = [0u8; 32];
+    let view = unsafe { js_sys::Uint8Array::view(&bytes) };
+    crypto
+        .get_random_values_with_array_buffer_view(&view)
+        .map_err(|_| "getRandomValues failed")?;
+    drop(view);
+    let _ = storage.set_item(STORAGE_KEY, &hex32(&bytes));
+    Ok(bytes)
+}
+
+async fn import_aes_key(raw: &[u8]) -> Result<web_sys::CryptoKey, String> {
     let window = web_sys::window().ok_or("no window")?;
     let crypto = window.crypto().map_err(|_| "no crypto")?;
     let subtle = crypto.subtle();
 
-    let key_data = js_sys::Uint8Array::from(&key_material[..]);
+    let key_data = js_sys::Uint8Array::from(raw);
     let algo = js_sys::Object::new();
     let _ = js_sys::Reflect::set(&algo, &JsValue::from_str("name"), &JsValue::from_str("AES-GCM"));
 
@@ -41,31 +87,27 @@ pub(crate) async fn derive_key(privkey_bytes: &[u8; 32]) -> Result<web_sys::Cryp
     usages.push(&JsValue::from_str("encrypt"));
     usages.push(&JsValue::from_str("decrypt"));
 
-    let promise = subtle.import_key_with_object(
-        "raw",
-        &key_data.buffer(),
-        &algo,
-        false,
-        &usages,
-    ).map_err(|e| format!("importKey: {e:?}"))?;
-
+    let promise = subtle
+        .import_key_with_object("raw", &key_data.buffer(), &algo, false, &usages)
+        .map_err(|e| format!("importKey: {e:?}"))?;
     let result = JsFuture::from(promise)
         .await
         .map_err(|e| format!("importKey await: {e:?}"))?;
-
-    result.dyn_into::<web_sys::CryptoKey>()
+    result
+        .dyn_into::<web_sys::CryptoKey>()
         .map_err(|_| "importKey did not return CryptoKey".into())
 }
 
 /// Encrypt plaintext bytes. Returns `IV || ciphertext || tag`.
-pub(crate) async fn encrypt(key: &web_sys::CryptoKey, plaintext: &[u8]) -> Result<Vec<u8>, String> {
+async fn encrypt(key: &web_sys::CryptoKey, plaintext: &[u8]) -> Result<Vec<u8>, String> {
     let window = web_sys::window().ok_or("no window")?;
     let crypto = window.crypto().map_err(|_| "no crypto")?;
     let subtle = crypto.subtle();
 
     let iv_bytes = [0u8; IV_LEN];
     let iv_view = unsafe { js_sys::Uint8Array::view(&iv_bytes) };
-    crypto.get_random_values_with_array_buffer_view(&iv_view)
+    crypto
+        .get_random_values_with_array_buffer_view(&iv_view)
         .map_err(|_| "getRandomValues failed")?;
 
     let algo = js_sys::Object::new();
@@ -73,10 +115,9 @@ pub(crate) async fn encrypt(key: &web_sys::CryptoKey, plaintext: &[u8]) -> Resul
     let _ = js_sys::Reflect::set(&algo, &JsValue::from_str("iv"), &iv_view);
 
     let data = plaintext.to_vec();
-    let promise = subtle.encrypt_with_object_and_u8_array(
-        &algo, key, &data,
-    ).map_err(|e| format!("encrypt: {e:?}"))?;
-
+    let promise = subtle
+        .encrypt_with_object_and_u8_array(&algo, key, &data)
+        .map_err(|e| format!("encrypt: {e:?}"))?;
     let result = JsFuture::from(promise)
         .await
         .map_err(|e| format!("encrypt await: {e:?}"))?;
@@ -91,7 +132,7 @@ pub(crate) async fn encrypt(key: &web_sys::CryptoKey, plaintext: &[u8]) -> Resul
 }
 
 /// Decrypt `IV || ciphertext || tag` back to plaintext.
-pub(crate) async fn decrypt(key: &web_sys::CryptoKey, encrypted: &[u8]) -> Result<Vec<u8>, String> {
+async fn decrypt(key: &web_sys::CryptoKey, encrypted: &[u8]) -> Result<Vec<u8>, String> {
     if encrypted.len() < IV_LEN + 16 {
         return Err("ciphertext too short".into());
     }
@@ -107,14 +148,32 @@ pub(crate) async fn decrypt(key: &web_sys::CryptoKey, encrypted: &[u8]) -> Resul
     let _ = js_sys::Reflect::set(&algo, &JsValue::from_str("iv"), &iv);
 
     let ct = encrypted[IV_LEN..].to_vec();
-    let promise = subtle.decrypt_with_object_and_u8_array(
-        &algo, key, &ct,
-    ).map_err(|e| format!("decrypt: {e:?}"))?;
-
+    let promise = subtle
+        .decrypt_with_object_and_u8_array(&algo, key, &ct)
+        .map_err(|e| format!("decrypt: {e:?}"))?;
     let result = JsFuture::from(promise)
         .await
         .map_err(|e| format!("decrypt await: {e:?}"))?;
 
     let plaintext = js_sys::Uint8Array::new(&result);
     Ok(plaintext.to_vec())
+}
+
+fn hex32(b: &[u8; 32]) -> String {
+    let mut s = String::with_capacity(64);
+    for x in b {
+        s.push_str(&format!("{x:02x}"));
+    }
+    s
+}
+
+fn hex_to_32(s: &str) -> Option<[u8; 32]> {
+    if s.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(s.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    }
+    Some(out)
 }
