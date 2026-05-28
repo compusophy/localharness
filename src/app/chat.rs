@@ -19,6 +19,35 @@ use super::dom;
 use super::templates;
 use super::APP;
 
+thread_local! {
+    /// True while a turn is streaming — guards against starting a second
+    /// turn (e.g. pressing Enter again mid-turn).
+    static TURN_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set by the stop button; the stream loop checks it each chunk and
+    /// breaks, cooperatively ending the turn.
+    static TURN_CANCEL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Request cooperative cancellation of the running turn (the stop
+/// button). Honored at the next streamed chunk.
+pub(crate) fn request_stop_turn() {
+    TURN_CANCEL.with(|c| c.set(true));
+}
+
+/// RAII cleanup for a turn: clears the active/cancel flags and restores
+/// the send button (if the stop button is currently shown) on every
+/// exit path, including early returns and future cancellation.
+struct TurnGuard;
+impl Drop for TurnGuard {
+    fn drop(&mut self) {
+        TURN_ACTIVE.with(|c| c.set(false));
+        TURN_CANCEL.with(|c| c.set(false));
+        if dom::by_id("terminal-stop").is_some() {
+            dom::swap_outer("terminal-stop", &templates::send_button().into_string());
+        }
+    }
+}
+
 /// Driven by the `send` data-action. Reads the prompt + key, lazily
 /// (re)starts the session, then streams a turn through the Agent.
 pub(crate) async fn run_send() {
@@ -44,6 +73,17 @@ pub(crate) async fn run_send() {
         dom::set_status("enter a prompt first.", true);
         return;
     }
+
+    // One turn at a time. A second send (e.g. Enter pressed again mid-
+    // turn) is ignored rather than racing a concurrent stream.
+    if TURN_ACTIVE.with(|c| c.get()) {
+        return;
+    }
+    TURN_ACTIVE.with(|c| c.set(true));
+    TURN_CANCEL.with(|c| c.set(false));
+    // From here, every return path resets the flags + restores the
+    // send button via Drop.
+    let _turn_guard = TurnGuard;
 
     // Payment gate. If the agent's owner has set a per-turn price AND
     // we know this visitor is *not* the owner, collect payment via
@@ -140,7 +180,15 @@ pub(crate) async fn run_send() {
     };
     let mut cursor = response.chunks();
 
+    // Swap the send arrow for a stop button now that we're streaming.
+    dom::swap_outer("terminal-send", &templates::stop_button().into_string());
+
     while let Some(item) = cursor.next().await {
+        // Honor a stop request (checked per chunk — cooperative).
+        if TURN_CANCEL.with(|c| c.get()) {
+            dom::set_status("stopped.", false);
+            break;
+        }
         if t_first_chunk.is_none() {
             t_first_chunk = Some(js_sys::Date::now());
         }
@@ -195,6 +243,10 @@ pub(crate) async fn run_send() {
             }
         }
     }
+
+    // Streaming finished (or was stopped) — flip the stop button back
+    // to send now, rather than waiting for the post-turn save/refresh.
+    dom::swap_outer("terminal-stop", &templates::send_button().into_string());
 
     // Stream done — re-render each text segment as markdown so the
     // user sees formatted output instead of raw md syntax.

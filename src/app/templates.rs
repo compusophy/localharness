@@ -93,13 +93,30 @@ pub(crate) fn terminal_input() -> Markup {
             div.terminal-row {
                 span.terminal-prompt { ">" }
                 textarea #prompt rows="1" {}
-                button.terminal-send data-action="send" title="send" { "→" }
+                (send_button())
             }
             div.terminal-actions {
                 button type="button" data-action="compact" .terminal-action title="compact conversation context" { "compact" }
                 button type="button" data-action="reset" .terminal-action title="clear conversation" { "clear" }
             }
         }
+    }
+}
+
+/// The terminal send button (`→`). Swapped out for [`stop_button`]
+/// while a turn is streaming so the same slot becomes the kill switch.
+pub(crate) fn send_button() -> Markup {
+    html! {
+        button #terminal-send .terminal-send data-action="send" title="send" { "→" }
+    }
+}
+
+/// The stop button (`■`) shown in place of the send button while a turn
+/// is in flight. Clicking it requests cooperative cancellation of the
+/// running turn.
+pub(crate) fn stop_button() -> Markup {
+    html! {
+        button #terminal-stop .terminal-send.terminal-stop data-action="stop-turn" title="stop" { "■" }
     }
 }
 

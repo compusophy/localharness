@@ -75,6 +75,7 @@ enum Action {
     ResetToolAllowlist,
     SaveApiKey,
     DisplayStop,
+    StopTurn,
 }
 
 impl Action {
@@ -130,6 +131,7 @@ impl Action {
             "reset-tool-allowlist" => Action::ResetToolAllowlist,
             "save-api-key" => Action::SaveApiKey,
             "display-stop" => Action::DisplayStop,
+            "stop-turn" => Action::StopTurn,
             _ => return None,
         })
     }
@@ -539,6 +541,7 @@ fn dispatch(action: Action) {
         }
         Action::OpfsCloseViewer => super::opfs::close_viewer(),
         Action::DisplayStop => super::opfs::close_viewer(),
+        Action::StopTurn => super::chat::request_stop_turn(),
         Action::OpfsNav(target) => {
             wasm_bindgen_futures::spawn_local(async move {
                 super::opfs::navigate(&target).await;
