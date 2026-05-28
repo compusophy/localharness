@@ -305,8 +305,14 @@ impl<'a> Parser<'a> {
                         }
                     }
 
-                    if is_block_expr(&expr) {
-                        // while/loop are void — always statements, no `;` needed
+                    let is_void_loop =
+                        matches!(expr.kind, ExprKind::While { .. } | ExprKind::Loop { .. });
+                    if is_void_loop {
+                        // Loops have no value — always a statement, with an
+                        // optional trailing `;`. Never the block tail.
+                        if matches!(self.peek(), TokenKind::Semi) {
+                            self.advance();
+                        }
                         let span = expr.span;
                         stmts.push(Stmt::Expr { expr, span });
                     } else if matches!(self.peek(), TokenKind::Semi) {
@@ -314,7 +320,18 @@ impl<'a> Parser<'a> {
                         self.advance();
                         stmts.push(Stmt::Expr { expr, span });
                     } else if matches!(self.peek(), TokenKind::RBrace) {
+                        // Last expr in the block with no `;` — the tail
+                        // (block value). `if`/`match` can return a value
+                        // here, e.g. `{ if c { a } else { b } }`.
                         tail = Some(Box::new(expr));
+                    } else if is_block_expr(&expr) {
+                        // A block-like expression (if/match/block) not at
+                        // the end and not followed by `;` is a statement;
+                        // its value (if any) is discarded. This lets
+                        // `if c { ... }` sit between other statements
+                        // without a trailing semicolon, like in Rust.
+                        let span = expr.span;
+                        stmts.push(Stmt::Expr { expr, span });
                     } else {
                         return Err(CompileError::at(
                             format!("expected ';' or '}}' after expression, got {:?}", self.peek()),
@@ -789,7 +806,14 @@ impl<'a> Parser<'a> {
 }
 
 fn is_block_expr(expr: &Expr) -> bool {
-    matches!(expr.kind, ExprKind::While { .. } | ExprKind::Loop { .. })
+    matches!(
+        expr.kind,
+        ExprKind::While { .. }
+            | ExprKind::Loop { .. }
+            | ExprKind::If { .. }
+            | ExprKind::Match { .. }
+            | ExprKind::Block(_)
+    )
 }
 
 fn expr_to_place(expr: &Expr) -> Result<Place, CompileError> {
@@ -813,6 +837,39 @@ mod tests {
     fn parse_str(s: &str) -> Module {
         let tokens = lexer::lex(s).unwrap();
         parse(&tokens).unwrap()
+    }
+
+    #[test]
+    fn parse_if_statement_then_more() {
+        // An `if` used as a statement (no trailing `;`, more code after)
+        // must parse — agents write control flow this way constantly.
+        let m = parse_str(
+            "fn f(x: i32) -> i32 { let mut a: i32 = 0; if x > 0 { a = 1; } a }",
+        );
+        match &m.items[0] {
+            Item::Fn(f) => {
+                // let, if-as-statement, and the tail `a`
+                assert_eq!(f.body.stmts.len(), 2);
+                assert!(f.body.tail.is_some());
+            }
+            _ => panic!("expected fn"),
+        }
+    }
+
+    #[test]
+    fn parse_if_as_tail_value() {
+        // `if`/`else` as the block tail still returns a value.
+        let m = parse_str("fn abs(x: i32) -> i32 { if x > 0 { x } else { 0 - x } }");
+        match &m.items[0] {
+            Item::Fn(f) => {
+                assert!(f.body.stmts.is_empty());
+                assert!(matches!(
+                    f.body.tail.as_deref().map(|e| &e.kind),
+                    Some(ExprKind::If { .. })
+                ));
+            }
+            _ => panic!("expected fn"),
+        }
     }
 
     #[test]

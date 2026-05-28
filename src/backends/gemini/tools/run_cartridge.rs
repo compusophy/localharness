@@ -24,17 +24,25 @@ impl Tool for RunCartridge {
 
     fn description(&self) -> &str {
         "Compile rustlite source into a display cartridge and run it on \
-         the visual display (a pixel framebuffer the user sees). The \
-         cartridge must export `fn frame(t: i32)` (animated; `t` is \
-         elapsed milliseconds, driven each frame) or `fn render()` \
-         (one-shot), and draw using the host::display API: \
-         `use host::display;` then `display::clear(rgb)`, \
-         `display::fill_rect(x, y, w, h, rgb)`, `display::set_pixel(x, y, rgb)`, \
-         `display::present()` (flush to screen), `display::width()`, \
-         `display::height()`, `display::pointer_x()`, `display::pointer_y()` \
-         (cursor in framebuffer coords). Colors are 0xRRGGBB integers \
-         (e.g. 16777215 = white, 0 = black). The framebuffer is 256x144. \
-         Always call display::present() at the end of frame/render."
+         the visual display (a 256x144 pixel framebuffer the user sees). \
+         The cartridge must export `fn frame(t: i32)` (animated; `t` is \
+         elapsed milliseconds, driven every frame) or `fn render()` \
+         (one-shot). Start with `use host::display;`. Drawing: \
+         clear(rgb), fill_rect(x,y,w,h,rgb), set_pixel(x,y,rgb), \
+         draw_char(x,y,codepoint,rgb,scale) (one 5x7 glyph; codepoint is \
+         an ASCII code like 65 for 'A'; scale 1..n), \
+         draw_number(x,y,value,rgb,scale) (renders a decimal integer), \
+         present() (flush to screen — call last). Layout/info: width(), \
+         height(). Input (poll each frame): pointer_x(), pointer_y() \
+         (cursor in framebuffer coords), pointer_down() (1 while pressed). \
+         State across frames (rustlite has no globals): state_get(slot) \
+         and state_set(slot,value) give 64 integer slots that persist — \
+         use these to hold app state like a calculator's accumulator. \
+         Colors are 0xRRGGBB integers (16777215 = white, 0 = black). \
+         Fonts cover 0-9, A-Z, space, and + - * / = . ( ). To build a \
+         clickable button: fill_rect for the box, draw_char/draw_number \
+         for the label, and each frame check if pointer_down() and the \
+         pointer is inside the box."
     }
 
     fn input_schema(&self) -> Value {

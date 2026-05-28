@@ -17,10 +17,16 @@
 //! - `clear(rgb)` — fill the whole framebuffer (`0xRRGGBB`, opaque)
 //! - `set_pixel(x, y, rgb)`
 //! - `fill_rect(x, y, w, h, rgb)`
+//! - `draw_char(x, y, codepoint, rgb, scale)` — one 5x7 glyph, scaled
+//! - `draw_number(x, y, value, rgb, scale)` — a decimal integer
 //! - `present()` — flush the framebuffer to the canvas
 //! - `width() -> i32`, `height() -> i32`
 //! - `pointer_x() -> i32`, `pointer_y() -> i32` — cursor position in
 //!   framebuffer coordinates (poll model, like Orbclient's event queue)
+//! - `pointer_down() -> i32` — 1 while the primary button is pressed
+//! - `state_get(slot) -> i32`, `state_set(slot, value)` — a 64-slot
+//!   integer register file that persists across `frame` calls (rustlite
+//!   has no globals, so this is how a cartridge keeps state)
 //!
 //! A cartridge exports `memory` and either an animated `frame(t: i32)`
 //! (driven by `requestAnimationFrame`, `t` = elapsed ms) or a one-shot
@@ -67,6 +73,13 @@ thread_local! {
     /// `pointer_x`/`pointer_y` host imports. Poll model — cartridges read
     /// it each frame rather than receiving events.
     static POINTER: Cell<(i32, i32)> = const { Cell::new((0, 0)) };
+    /// 1 while the primary mouse button is down over the canvas. Updated
+    /// by the delegated mousedown/mouseup listeners, read by `pointer_down`.
+    static POINTER_DOWN: Cell<i32> = const { Cell::new(0) };
+    /// A 64-slot integer register file the cartridge can read/write to
+    /// keep state across frames (rustlite has no globals). Zeroed when a
+    /// new cartridge loads.
+    static STATE: RefCell<[i32; 64]> = const { RefCell::new([0; 64]) };
 }
 
 /// Keeps every `host_display` import closure alive. wasm holds JS
@@ -76,11 +89,16 @@ struct CartridgeRuntime {
     clear: Closure<dyn FnMut(i32)>,
     set_pixel: Closure<dyn FnMut(i32, i32, i32)>,
     fill_rect: Closure<dyn FnMut(i32, i32, i32, i32, i32)>,
+    draw_char: Closure<dyn FnMut(i32, i32, i32, i32, i32)>,
+    draw_number: Closure<dyn FnMut(i32, i32, i32, i32, i32)>,
     present: Closure<dyn FnMut()>,
     width: Closure<dyn FnMut() -> i32>,
     height: Closure<dyn FnMut() -> i32>,
     pointer_x: Closure<dyn FnMut() -> i32>,
     pointer_y: Closure<dyn FnMut() -> i32>,
+    pointer_down: Closure<dyn FnMut() -> i32>,
+    state_get: Closure<dyn FnMut(i32) -> i32>,
+    state_set: Closure<dyn FnMut(i32, i32)>,
 }
 
 /// Run the built-in demo: a rustlite cartridge compiled in-browser.
@@ -90,11 +108,12 @@ pub(crate) async fn run_demo() {
 use host::display;
 fn frame(t: i32) {
     display::clear(1118481);
-    let bar: i32 = t / 16 % 256;
-    display::fill_rect(bar, 0, 4, 144, 4473924);
+    display::draw_char(8, 8, 76, 16777215, 4);
+    display::draw_char(40, 8, 72, 16777215, 4);
+    display::draw_number(8, 56, t / 100, 8947848, 3);
     let px: i32 = display::pointer_x();
     let py: i32 = display::pointer_y();
-    display::fill_rect(px - 16, py - 16, 32, 32, 16777215);
+    display::fill_rect(px - 8, py - 8, 16, 16, 16777215);
     display::present();
 }
 "#;
@@ -121,6 +140,10 @@ pub(crate) async fn run_wasm(wasm_bytes: &[u8]) -> Result<(), JsValue> {
 
     let ctx = mount_canvas()?;
     let fb: Framebuffer = Rc::new(RefCell::new(black_framebuffer()));
+
+    // Fresh cartridge starts with cleared input + state.
+    POINTER_DOWN.with(|d| d.set(0));
+    STATE.with(|s| *s.borrow_mut() = [0; 64]);
 
     let (imports, runtime) = build_host_display(&fb, &ctx)?;
     // Hold the closures alive (drops the previous cartridge's set).
@@ -220,20 +243,83 @@ fn build_host_display(
         })
     };
 
+    let draw_char = {
+        let fb = fb.clone();
+        Closure::<dyn FnMut(i32, i32, i32, i32, i32)>::new(
+            move |x: i32, y: i32, code: i32, rgb: i32, scale: i32| {
+                let mut buf = fb.borrow_mut();
+                blit_glyph(&mut buf, x, y, code as u32, rgb_components(rgb), scale.max(1));
+            },
+        )
+    };
+
+    let draw_number = {
+        let fb = fb.clone();
+        Closure::<dyn FnMut(i32, i32, i32, i32, i32)>::new(
+            move |x: i32, y: i32, value: i32, rgb: i32, scale: i32| {
+                let color = rgb_components(rgb);
+                let s = scale.max(1);
+                let advance = 6 * s; // 5px glyph + 1px gap, scaled
+                let mut buf = fb.borrow_mut();
+                let mut cx = x;
+                let mut n = (value as i64).unsigned_abs();
+                if value < 0 {
+                    blit_glyph(&mut buf, cx, y, '-' as u32, color, s);
+                    cx += advance;
+                }
+                // Collect digits (least-significant first), then draw reversed.
+                let mut digits = [0u8; 20];
+                let mut count = 0;
+                if n == 0 {
+                    digits[0] = b'0';
+                    count = 1;
+                } else {
+                    while n > 0 {
+                        digits[count] = b'0' + (n % 10) as u8;
+                        n /= 10;
+                        count += 1;
+                    }
+                }
+                for i in (0..count).rev() {
+                    blit_glyph(&mut buf, cx, y, digits[i] as u32, color, s);
+                    cx += advance;
+                }
+            },
+        )
+    };
+
     let width = Closure::<dyn FnMut() -> i32>::new(move || FB_W as i32);
     let height = Closure::<dyn FnMut() -> i32>::new(move || FB_H as i32);
     let pointer_x = Closure::<dyn FnMut() -> i32>::new(move || POINTER.with(|p| p.get().0));
     let pointer_y = Closure::<dyn FnMut() -> i32>::new(move || POINTER.with(|p| p.get().1));
+    let pointer_down = Closure::<dyn FnMut() -> i32>::new(move || POINTER_DOWN.with(|d| d.get()));
+    let state_get = Closure::<dyn FnMut(i32) -> i32>::new(move |slot: i32| {
+        if slot < 0 || slot >= 64 {
+            return 0;
+        }
+        STATE.with(|s| s.borrow()[slot as usize])
+    });
+    let state_set = Closure::<dyn FnMut(i32, i32)>::new(move |slot: i32, value: i32| {
+        if slot < 0 || slot >= 64 {
+            return;
+        }
+        STATE.with(|s| s.borrow_mut()[slot as usize] = value);
+    });
 
     let host_display = Object::new();
     set_fn(&host_display, "clear", &clear)?;
     set_fn(&host_display, "set_pixel", &set_pixel)?;
     set_fn(&host_display, "fill_rect", &fill_rect)?;
+    set_fn(&host_display, "draw_char", &draw_char)?;
+    set_fn(&host_display, "draw_number", &draw_number)?;
     set_fn(&host_display, "present", &present)?;
     set_fn(&host_display, "width", &width)?;
     set_fn(&host_display, "height", &height)?;
     set_fn(&host_display, "pointer_x", &pointer_x)?;
     set_fn(&host_display, "pointer_y", &pointer_y)?;
+    set_fn(&host_display, "pointer_down", &pointer_down)?;
+    set_fn(&host_display, "state_get", &state_get)?;
+    set_fn(&host_display, "state_set", &state_set)?;
 
     let imports = Object::new();
     Reflect::set(&imports, &JsValue::from_str("host_display"), &host_display)?;
@@ -241,9 +327,99 @@ fn build_host_display(
     Ok((
         imports,
         CartridgeRuntime {
-            clear, set_pixel, fill_rect, present, width, height, pointer_x, pointer_y,
+            clear, set_pixel, fill_rect, draw_char, draw_number, present, width, height,
+            pointer_x, pointer_y, pointer_down, state_get, state_set,
         },
     ))
+}
+
+/// Draw one 5x7 glyph into `buf` at `(x, y)`, each source pixel expanded
+/// to a `scale`x`scale` block. Out-of-bounds pixels are clipped.
+fn blit_glyph(buf: &mut [u8], x: i32, y: i32, code: u32, color: (u8, u8, u8), scale: i32) {
+    let glyph = glyph_5x7(code);
+    let (r, g, b) = color;
+    for (row, bits) in glyph.iter().enumerate() {
+        for col in 0..5 {
+            if (bits >> (4 - col)) & 1 == 0 {
+                continue;
+            }
+            for dy in 0..scale {
+                for dx in 0..scale {
+                    let px = x + col * scale + dx;
+                    let py = y + row as i32 * scale + dy;
+                    if px < 0 || py < 0 || px >= FB_W as i32 || py >= FB_H as i32 {
+                        continue;
+                    }
+                    let idx = ((py as usize) * (FB_W as usize) + (px as usize)) * 4;
+                    buf[idx] = r;
+                    buf[idx + 1] = g;
+                    buf[idx + 2] = b;
+                    buf[idx + 3] = 255;
+                }
+            }
+        }
+    }
+}
+
+/// 5x7 bitmap font. Each row's low 5 bits are pixels (bit 4 = leftmost).
+/// Covers digits, A-Z, space, and the operators a calculator/label app
+/// needs; unknown codes render as a hollow box. Hand-encoded (no font
+/// dep) and verified by rendering every glyph to ASCII art.
+fn glyph_5x7(c: u32) -> [u8; 7] {
+    match c {
+        0x20 => [0, 0, 0, 0, 0, 0, 0],                       // space
+        0x30 => [0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E],  // 0
+        0x31 => [0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E],  // 1
+        0x32 => [0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F],  // 2
+        0x33 => [0x1E, 0x01, 0x01, 0x0E, 0x01, 0x01, 0x1E],  // 3
+        0x34 => [0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02],  // 4
+        0x35 => [0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E],  // 5
+        0x36 => [0x0E, 0x10, 0x10, 0x1E, 0x11, 0x11, 0x0E],  // 6
+        0x37 => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08],  // 7
+        0x38 => [0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E],  // 8
+        0x39 => [0x0E, 0x11, 0x11, 0x0F, 0x01, 0x01, 0x0E],  // 9
+        0x2B => [0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00],  // +
+        0x2D => [0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00],  // -
+        0x2A => [0x00, 0x04, 0x15, 0x0E, 0x15, 0x04, 0x00],  // *
+        0x2F => [0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10],  // /
+        0x3D => [0x00, 0x00, 0x1F, 0x00, 0x1F, 0x00, 0x00],  // =
+        0x2E => [0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x06],  // .
+        0x28 => [0x04, 0x08, 0x10, 0x10, 0x10, 0x08, 0x04],  // (
+        0x29 => [0x04, 0x02, 0x01, 0x01, 0x01, 0x02, 0x04],  // )
+        0x41 => [0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],  // A
+        0x42 => [0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E],  // B
+        0x43 => [0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E],  // C
+        0x44 => [0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E],  // D
+        0x45 => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F],  // E
+        0x46 => [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10],  // F
+        0x47 => [0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0E],  // G
+        0x48 => [0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],  // H
+        0x49 => [0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E],  // I
+        0x4A => [0x07, 0x02, 0x02, 0x02, 0x12, 0x12, 0x0C],  // J
+        0x4B => [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],  // K
+        0x4C => [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F],  // L
+        0x4D => [0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11],  // M
+        0x4E => [0x11, 0x11, 0x19, 0x15, 0x13, 0x11, 0x11],  // N
+        0x4F => [0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],  // O
+        0x50 => [0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10],  // P
+        0x51 => [0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D],  // Q
+        0x52 => [0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11],  // R
+        0x53 => [0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E],  // S
+        0x54 => [0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],  // T
+        0x55 => [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E],  // U
+        0x56 => [0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04],  // V
+        0x57 => [0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11],  // W
+        0x58 => [0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11],  // X
+        0x59 => [0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04],  // Y
+        0x5A => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F],  // Z
+        _ => [0x1F, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1F],     // unknown -> box
+    }
+}
+
+/// Update the primary-button state from mousedown/mouseup over the
+/// canvas. Called from the delegated listeners in `events.rs`.
+pub(crate) fn set_pointer_down(down: bool) {
+    POINTER_DOWN.with(|d| d.set(if down { 1 } else { 0 }));
 }
 
 /// Update the cursor position from a `mousemove` over the canvas. Maps

@@ -228,6 +228,27 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
     doc.add_event_listener_with_callback("mousemove", mousemove.as_ref().unchecked_ref())?;
     mousemove.forget();
 
+    // Primary-button state for the display. Press counts only when it
+    // starts on the canvas; release clears regardless of where it lands.
+    let mousedown = Closure::<dyn FnMut(_)>::new(move |event: MouseEvent| {
+        if let Some(target) = event.target() {
+            if let Ok(el) = target.dyn_into::<Element>() {
+                if el.id() == "display-canvas" {
+                    super::display::set_pointer(event.client_x() as f64, event.client_y() as f64);
+                    super::display::set_pointer_down(true);
+                }
+            }
+        }
+    });
+    doc.add_event_listener_with_callback("mousedown", mousedown.as_ref().unchecked_ref())?;
+    mousedown.forget();
+
+    let mouseup = Closure::<dyn FnMut(_)>::new(move |_event: MouseEvent| {
+        super::display::set_pointer_down(false);
+    });
+    doc.add_event_listener_with_callback("mouseup", mouseup.as_ref().unchecked_ref())?;
+    mouseup.forget();
+
     Ok(())
 }
 

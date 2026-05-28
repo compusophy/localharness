@@ -275,12 +275,18 @@ pub(crate) async fn start_session(key: &str) -> Result<(), JsValue> {
            • run_cartridge(source) — compile a rustlite cartridge and run it \
              on the VISUAL DISPLAY the user sees (a 256x144 pixel framebuffer). \
              The cartridge exports `fn frame(t: i32)` (animated, t = elapsed ms) \
-             or `fn render()`, and draws via `use host::display;` + \
-             display::clear(rgb), fill_rect(x,y,w,h,rgb), set_pixel(x,y,rgb), \
-             present(), width(), height(), pointer_x(), pointer_y(). Colors are \
-             0xRRGGBB ints (white = 16777215). Always end with display::present(). \
-             Use this when the user asks for something visual, a little app, or \
-             a drawing.\n\
+             or `fn render()`, and draws via `use host::display;`. Drawing: \
+             clear(rgb), fill_rect(x,y,w,h,rgb), set_pixel(x,y,rgb), \
+             draw_char(x,y,code,rgb,scale) (ASCII code, e.g. 65='A'), \
+             draw_number(x,y,value,rgb,scale) (decimal int), present() (call \
+             last). Input polled each frame: pointer_x(), pointer_y(), \
+             pointer_down() (1 while pressed). State across frames (no globals \
+             in rustlite): state_get(slot)/state_set(slot,value), 64 int slots. \
+             Colors 0xRRGGBB (white = 16777215). Font covers 0-9, A-Z, space, \
+             + - * / = . ( ). You CAN build real interactive apps now — a \
+             clickable button is a fill_rect + label, hit-tested against \
+             pointer_down() + pointer position, with state in the slots. \
+             Use this whenever the user asks for something visual or an app.\n\
            • submit_feedback(text) — submit feedback on-chain via the \
              FeedbackFacet. Emits a FeedbackSubmitted event on the registry \
              diamond. Use when the user asks to leave feedback or to report \
