@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 // yet — using a model id the API actually accepts. Bump this when
 // Google publishes newer ids (and re-test 400s).
 /// Default chat model ID.
-pub const DEFAULT_MODEL: &str = "gemini-2.5-flash";
+pub const DEFAULT_MODEL: &str = "gemini-3.5-flash";
 /// Default image generation model ID.
 pub const DEFAULT_IMAGE_GENERATION_MODEL: &str = "gemini-2.0-flash-exp-image-generation";
 
