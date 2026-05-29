@@ -377,18 +377,9 @@ pub(crate) fn chrome(host: &Host) -> Markup {
                 }
             }
 
-            // Agent (right) — same archetype, no inner header.
-            // Body is the financial-slot injected by kick_verification.
-            (col_side(
-                html! {
-                    div #financial-slot .financial-placeholder { "—" }
-                },
-                "col-financial",
-            ))
-            button type="button" data-action="toggle-financial"
-                .side-rail.financial-rail {
-                span.rail-label { "agents" }
-            }
+            // The agent card moved into the admin Account tab (folded in
+            // from the old right rail), so there's no financial column or
+            // "agents" rail here anymore.
         }
     }
 }
@@ -402,7 +393,6 @@ pub(crate) fn mobile_tabs() -> Markup {
             button #tab-btn-files type="button" data-action="show-tab" data-arg="files" .tab-button { "files" }
             button #tab-btn-chat type="button" data-action="show-tab" data-arg="chat" .tab-button.active { "chat" }
             button #tab-btn-display type="button" data-action="show-tab" data-arg="display" .tab-button { "display" }
-            button #tab-btn-agent type="button" data-action="show-tab" data-arg="agent" .tab-button { "agents" }
         }
     }
 }
@@ -620,20 +610,6 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
 /// runs the agent, so the key lives here). Seed phrase + reset are
 /// buried under `[security]` the same way as apex.
 pub(crate) fn admin_dropdown_tenant() -> Markup {
-    let name = match super::tenant::current() {
-        super::tenant::Host::Tenant(n) => Some(n),
-        _ => None,
-    };
-    let (owner_hex, tba_hex) = super::APP.with(|cell| {
-        use super::VerifyState;
-        let app = cell.borrow();
-        let owner = match &app.verify_state {
-            VerifyState::Verified { address } => Some(address.clone()),
-            VerifyState::Visitor { visitor_address, .. } => Some(visitor_address.clone()),
-            _ => None,
-        };
-        (owner, app.tba_address.clone())
-    });
     html! {
         div #header-admin-panel .header-admin-panel {
             // Full-page tabbed admin: Agent (configure this agent) /
@@ -660,7 +636,10 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                     (admin_app_section())
                 }
                 div.admin-tab-panel.panel-account {
-                    (admin_identity_section(name.as_deref(), owner_hex.as_deref(), tba_hex.as_deref()))
+                    // Agent card (name/owner/wallet/balance/tools/rpc/
+                    // pricing), folded in from the retired right rail.
+                    // Injected from App state by header_admin_toggle.
+                    div #financial-slot .financial-placeholder { "—" }
                     div.admin-section {
                         div.admin-section-title { "gemini api key " span #keymeta {} }
                         form.key-form onsubmit="return false" {
@@ -674,6 +653,14 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                                     data-action="clear-key" { "clear" }
                             }
                         }
+                        // On-chain key sync (#18): seal with a seed-derived
+                        // key (via the apex iframe) + store on-chain so a new
+                        // device that imports your seed auto-restores it.
+                        div.key-row {
+                            button.ghost type="button" data-action="sync-key" { "sync to seed" }
+                            button.ghost type="button" data-action="restore-key" { "restore" }
+                        }
+                        div #key-sync-msg .admin-msg-slot {}
                     }
                     (admin_security_collapsed())
                 }
@@ -697,6 +684,10 @@ pub(crate) fn admin_usage_section() -> Markup {
             div.admin-identity-row {
                 span.admin-identity-label { "subdomains" }
                 code #usage-subdomains .admin-identity-value { "…" }
+            }
+            div.admin-identity-row {
+                span.admin-identity-label { "tokens (session)" }
+                code #usage-tokens .admin-identity-value { "0" }
             }
         }
     }

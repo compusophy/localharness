@@ -343,6 +343,12 @@ impl Agent {
         Ok(agent)
     }
 
+    /// Token usage accumulated across every turn in this agent's
+    /// conversation. Surfaced in the browser app's Usage tab.
+    pub fn cumulative_usage(&self) -> crate::types::UsageMetadata {
+        self.conversation.cumulative_usage()
+    }
+
     /// Opaque snapshot of the current Gemini conversation history.
     /// Returns `None` for non-Gemini backends. Round-trips through
     /// [`GeminiAgentConfig::with_history_bytes`] for session resume.

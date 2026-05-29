@@ -257,6 +257,11 @@ pub(crate) async fn run_send() {
 
     mark_turn_done(assistant_turn_id);
 
+    // Stash cumulative token usage for the admin Usage tab.
+    if let Some(total) = agent.cumulative_usage().total_token_count {
+        APP.with(|cell| cell.borrow_mut().total_tokens = total.max(0) as u64);
+    }
+
     // If the user hit stop, append a short redirect prompt so the turn
     // ends on a question rather than a half-finished thought.
     if TURN_CANCEL.with(|c| c.get()) {

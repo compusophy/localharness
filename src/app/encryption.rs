@@ -42,6 +42,20 @@ pub(crate) async fn open(data: &[u8]) -> Option<Vec<u8>> {
     decrypt(&key, data).await.ok()
 }
 
+/// Seal with an explicit 32-byte key (e.g. a wallet-seed-derived key)
+/// rather than the per-origin device key. Used by the on-chain API-key
+/// sync flow so the ciphertext follows the seed, not the device.
+pub(crate) async fn seal_with_raw_key(raw: &[u8; 32], plaintext: &[u8]) -> Option<Vec<u8>> {
+    let key = import_aes_key(raw).await.ok()?;
+    encrypt(&key, plaintext).await.ok()
+}
+
+/// Open bytes sealed by [`seal_with_raw_key`] with the same 32-byte key.
+pub(crate) async fn open_with_raw_key(raw: &[u8; 32], data: &[u8]) -> Option<Vec<u8>> {
+    let key = import_aes_key(raw).await.ok()?;
+    decrypt(&key, data).await.ok()
+}
+
 /// Load (or generate + persist) the per-origin AES key and import it as
 /// a non-extractable WebCrypto `CryptoKey`.
 async fn device_key() -> Result<web_sys::CryptoKey, String> {

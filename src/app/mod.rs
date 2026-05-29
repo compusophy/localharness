@@ -91,6 +91,14 @@ pub(crate) struct App {
     /// `chat::run_send` to decide whether to gate the next turn.
     /// `None` means "haven't checked yet"; `Some(0)` means "free".
     pub(crate) pricing_wei: Option<u128>,
+    /// The agent's on-chain card (name/owner/wallet/balance/…) rendered by
+    /// `kick_verification`. Stashed here because the card now lives in the
+    /// admin Account tab (folded in from the old right rail), which isn't
+    /// in the DOM until the admin opens — `header_admin_toggle` injects it.
+    pub(crate) financial_card_html: Option<String>,
+    /// Total Gemini tokens used this session (cumulative across turns),
+    /// updated by `chat::run_send` after each turn; shown in the Usage tab.
+    pub(crate) total_tokens: u64,
 }
 
 /// Surface-level summary of the cross-origin verification flow,
@@ -137,6 +145,8 @@ impl App {
             verify_state: VerifyState::Pending,
             tba_address: None,
             pricing_wei: None,
+            financial_card_html: None,
+            total_tokens: 0,
         }
     }
 
@@ -461,18 +471,20 @@ async fn kick_verification(name: String) {
         }
     }
 
-    // Agent tab: owner + TBA + $LH balance + pricing.
-    if let (Some(tba), Some(owner)) = (&tba_opt, &owner_addr) {
+    // Agent card: owner + TBA + $LH balance + pricing. Lives in the admin
+    // Account tab now (folded in from the retired right rail), so stash the
+    // HTML in App state and only swap the live DOM if the slot happens to
+    // be present (admin already open). `header_admin_toggle` injects the
+    // stash when the admin opens later.
+    let card_html = if let (Some(tba), Some(owner)) = (&tba_opt, &owner_addr) {
         let lh_balance = registry::token_balance_of(tba).await.unwrap_or(0);
-        let html =
-            templates::financial_card(&name, tba, owner, lh_balance, price, is_owner)
-                .into_string();
-        dom::swap_outer("financial-slot", &html);
+        templates::financial_card(&name, tba, owner, lh_balance, price, is_owner).into_string()
     } else {
-        dom::swap_outer(
-            "financial-slot",
-            r#"<div id="financial-slot" class="financial-empty"></div>"#,
-        );
+        r#"<div id="financial-slot" class="financial-empty"></div>"#.to_string()
+    };
+    APP.with(|cell| cell.borrow_mut().financial_card_html = Some(card_html.clone()));
+    if dom::by_id("financial-slot").is_some() {
+        dom::swap_outer("financial-slot", &card_html);
     }
 }
 

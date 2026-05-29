@@ -390,6 +390,58 @@ pub fn encode_set_app_wasm(token_id: u64, wasm: &[u8]) -> Vec<u8> {
     buf
 }
 
+/// Storage key for the seed-encrypted Gemini API key:
+/// `keccak256("localharness.gemini_key.enc")`.
+fn gemini_key_metadata_key() -> [u8; 32] {
+    use sha3::{Digest, Keccak256};
+    let digest = Keccak256::digest(b"localharness.gemini_key.enc");
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
+/// Read a subdomain's on-chain seed-encrypted Gemini key ciphertext, if
+/// any. Same ABI-`bytes` decode as `app_wasm_of`.
+pub async fn gemini_key_of(token_id: u64) -> Result<Option<Vec<u8>>, String> {
+    let mut data = Vec::with_capacity(4 + 64);
+    data.extend_from_slice(&selector("metadata(uint256,bytes32)"));
+    data.extend_from_slice(&u256_be(token_id as u128));
+    data.extend_from_slice(&gemini_key_metadata_key());
+    let calldata = format!("0x{}", bytes_to_hex(&data));
+    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let bytes = hex_to_bytes(&result_hex)?;
+    if bytes.len() < 64 {
+        return Ok(None);
+    }
+    let mut len_buf = [0u8; 8];
+    len_buf.copy_from_slice(&bytes[56..64]);
+    let len = u64::from_be_bytes(len_buf) as usize;
+    if len == 0 {
+        return Ok(None);
+    }
+    let payload = bytes
+        .get(64..64 + len)
+        .ok_or_else(|| "gemini key ciphertext truncated".to_string())?;
+    Ok(Some(payload.to_vec()))
+}
+
+/// Encode `setMetadata(tokenId, geminiKeyKey, ciphertext)` calldata for a
+/// sponsored on-chain key-sync tx.
+pub fn encode_set_gemini_key(token_id: u64, ciphertext: &[u8]) -> Vec<u8> {
+    let key = gemini_key_metadata_key();
+    let len = ciphertext.len();
+    let padded = len.div_ceil(32) * 32;
+    let mut buf = Vec::with_capacity(4 + 96 + 32 + padded);
+    buf.extend_from_slice(&selector("setMetadata(uint256,bytes32,bytes)"));
+    buf.extend_from_slice(&u256_be(token_id as u128));
+    buf.extend_from_slice(&key);
+    buf.extend_from_slice(&u256_be(0x60));
+    buf.extend_from_slice(&u256_be(len as u128));
+    buf.extend_from_slice(ciphertext);
+    buf.resize(4 + 96 + 32 + padded, 0);
+    buf
+}
+
 /// Register `name` on the contract under the given signer's address.
 /// Returns the transaction hash once it's been included in a block.
 /// The wallet needs testnet TMP for gas — the apex page is expected

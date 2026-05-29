@@ -340,6 +340,53 @@ pub(crate) async fn claim_name_via_iframe(name: &str) -> Result<(String, String)
 
 const CLAIM_TIMEOUT_MS: u32 = 90_000;
 
+/// Ask the apex signer to seal `plaintext` (the Gemini key) with the
+/// seed-derived key. Returns ciphertext hex for on-chain storage.
+pub(crate) async fn seal_key_via_iframe(plaintext: &str) -> Result<String, String> {
+    let id = format!("seal-{}", random_id_hex());
+    let payload = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &payload,
+        &JsValue::from_str("type"),
+        &JsValue::from_str("lh-seal-key"),
+    );
+    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("id"), &JsValue::from_str(&id));
+    let _ = js_sys::Reflect::set(
+        &payload,
+        &JsValue::from_str("plaintext"),
+        &JsValue::from_str(plaintext),
+    );
+    let data = signer_iframe_request(&id, &payload.into(), IDENTITY_TIMEOUT_MS).await?;
+    js_sys::Reflect::get(&data, &JsValue::from_str("ciphertext"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "signer reply missing ciphertext".to_string())
+}
+
+/// Ask the apex signer to open seed-sealed `ciphertext_hex` → plaintext.
+pub(crate) async fn open_key_via_iframe(ciphertext_hex: &str) -> Result<String, String> {
+    let id = format!("open-{}", random_id_hex());
+    let payload = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &payload,
+        &JsValue::from_str("type"),
+        &JsValue::from_str("lh-open-key"),
+    );
+    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("id"), &JsValue::from_str(&id));
+    let _ = js_sys::Reflect::set(
+        &payload,
+        &JsValue::from_str("ciphertext"),
+        &JsValue::from_str(ciphertext_hex),
+    );
+    let data = signer_iframe_request(&id, &payload.into(), IDENTITY_TIMEOUT_MS).await?;
+    js_sys::Reflect::get(&data, &JsValue::from_str("plaintext"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "signer reply missing plaintext".to_string())
+}
+
 /// Ask the apex signer to import a user-supplied seed phrase and
 /// persist it. Returns the new address. Overwrites any existing wallet.
 pub(crate) async fn import_seed_via_iframe(phrase: &str) -> Result<String, String> {

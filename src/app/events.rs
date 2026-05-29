@@ -50,6 +50,8 @@ enum Action {
     HeaderAdminToggle,
     HeaderAdminClose,
     ShowAdminTab(String),
+    SyncKey,
+    RestoreKey,
     RevealSecurity,
     HideSecurity,
     ResetArm,
@@ -104,6 +106,8 @@ impl Action {
             "header-admin-toggle" => Action::HeaderAdminToggle,
             "header-admin-close" => Action::HeaderAdminClose,
             "show-admin-tab" => Action::ShowAdminTab(arg.unwrap_or_default()),
+            "sync-key" => Action::SyncKey,
+            "restore-key" => Action::RestoreKey,
             "reveal-security" => Action::RevealSecurity,
             "hide-security" => Action::HideSecurity,
             "reset-arm" => Action::ResetArm,
@@ -902,6 +906,12 @@ fn dispatch(action: Action) {
         Action::HeaderAdminToggle => header_admin_toggle(),
         Action::HeaderAdminClose => header_admin_close(),
         Action::ShowAdminTab(name) => show_admin_tab(&name),
+        Action::SyncKey => {
+            wasm_bindgen_futures::spawn_local(async move { run_sync_key().await });
+        }
+        Action::RestoreKey => {
+            wasm_bindgen_futures::spawn_local(async move { run_restore_key().await });
+        }
         Action::RevealSecurity => {
             dom::swap_outer(
                 "security-slot",
@@ -1533,8 +1543,16 @@ fn header_admin_toggle() {
     };
     dom::swap_outer("header-admin-panel", &body);
 
-    // Fill the Usage tab's subdomain count (both apex + tenant). No-ops if
-    // the slot isn't there.
+    // Inject the stashed agent card (folded in from the retired right rail)
+    // into the Account tab's #financial-slot. Built by kick_verification.
+    if let Some(card) = super::APP.with(|c| c.borrow().financial_card_html.clone()) {
+        if dom::by_id("financial-slot").is_some() {
+            dom::swap_outer("financial-slot", &card);
+        }
+    }
+
+    // Fill the Usage tab's subdomain count + token total. No-ops if the
+    // slots aren't there.
     wasm_bindgen_futures::spawn_local(async move {
         refresh_usage_slot().await;
     });
@@ -1636,6 +1654,11 @@ fn show_admin_tab(name: &str) {
 /// registered-subdomain count. Soft-fail (leaves a dash). No-op if the
 /// slot isn't present.
 pub(crate) async fn refresh_usage_slot() {
+    // Tokens — synchronous read from App state (updated after each turn).
+    if dom::by_id("usage-tokens").is_some() {
+        let total = super::APP.with(|c| c.borrow().total_tokens);
+        dom::swap_inner("usage-tokens", &format!("{total}"));
+    }
     if dom::by_id("usage-subdomains").is_none() {
         return;
     }
@@ -1815,6 +1838,147 @@ fn feedback_submit() {
             }
         }
     });
+}
+
+fn decode_hex_local(s: &str) -> Option<Vec<u8>> {
+    let t = s.trim().trim_start_matches("0x").trim_start_matches("0X");
+    if t.len() % 2 != 0 {
+        return None;
+    }
+    (0..t.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(t.get(i..i + 2)?, 16).ok())
+        .collect()
+}
+
+/// #18: seal the current Gemini key with the seed-derived key (via the
+/// apex iframe) and store the ciphertext on-chain under the gemini-key
+/// metadata key (owner-signed, sponsored). A device that imports the seed
+/// can then `restore` it without re-pasting.
+async fn run_sync_key() {
+    let msg = "key-sync-msg";
+    let set_err = |m: &str| dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, &format!("{m}")));
+
+    let name = match super::tenant::current() {
+        super::tenant::Host::Tenant(n) => n,
+        _ => {
+            set_err("only on a subdomain");
+            return;
+        }
+    };
+    let owner_hex = super::APP.with(|cell| {
+        use super::VerifyState;
+        match &cell.borrow().verify_state {
+            VerifyState::Verified { address } => Some(address.clone()),
+            _ => None,
+        }
+    });
+    let Some(owner_hex) = owner_hex else {
+        set_err("verify as owner first");
+        return;
+    };
+    let key = dom::input_by_id("key").map(|i| i.value()).unwrap_or_default();
+    if key.trim().is_empty() {
+        set_err("enter your key first");
+        return;
+    }
+
+    dom::swap_inner(msg, "<span style=\"color:var(--muted)\">sealing…</span>");
+    let ct_hex = match super::verify::seal_key_via_iframe(&key).await {
+        Ok(h) => h,
+        Err(e) => {
+            set_err(&format!("seal: {e}"));
+            return;
+        }
+    };
+    let Some(ct) = decode_hex_local(&ct_hex) else {
+        set_err("bad ciphertext from signer");
+        return;
+    };
+    let id = match super::registry::id_of_name(&name).await {
+        Ok(id) if id != 0 => id,
+        _ => {
+            set_err("name isn't registered on-chain");
+            return;
+        }
+    };
+    let registry_addr = match parse_address(super::registry::REGISTRY_ADDRESS) {
+        Ok(a) => a,
+        Err(e) => {
+            set_err(&e);
+            return;
+        }
+    };
+    let call = crate::tempo_tx::TempoCall {
+        to: registry_addr,
+        value_wei: 0,
+        input: super::registry::encode_set_gemini_key(id, &ct),
+    };
+    let words = (ct.len() / 32 + 1) as u128;
+    let gas = 1_200_000 + words * 40_000;
+    dom::swap_inner(msg, "<span style=\"color:var(--muted)\">syncing on-chain…</span>");
+    match run_sponsored_tempo_call(&owner_hex, vec![call], gas, "sync key").await {
+        Ok(_) => dom::swap_inner(
+            msg,
+            &dom::msg_span(dom::Msg::Accent, "synced ✓ — import your seed on another device to restore"),
+        ),
+        Err(e) => set_err(&format!("sync failed: {e}")),
+    }
+}
+
+/// #18: fetch this subdomain's on-chain key ciphertext, decrypt it with
+/// the seed-derived key (via the apex iframe — requires the seed to be
+/// present on this device), and set it as the active Gemini key.
+async fn run_restore_key() {
+    let msg = "key-sync-msg";
+    let set_err = |m: &str| dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, &format!("{m}")));
+
+    let name = match super::tenant::current() {
+        super::tenant::Host::Tenant(n) => n,
+        _ => {
+            set_err("only on a subdomain");
+            return;
+        }
+    };
+    let id = match super::registry::id_of_name(&name).await {
+        Ok(id) if id != 0 => id,
+        _ => {
+            set_err("name isn't registered on-chain");
+            return;
+        }
+    };
+    dom::swap_inner(msg, "<span style=\"color:var(--muted)\">fetching…</span>");
+    let ct = match super::registry::gemini_key_of(id).await {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+            set_err("no synced key on-chain yet");
+            return;
+        }
+        Err(e) => {
+            set_err(&format!("read: {e}"));
+            return;
+        }
+    };
+    let ct_hex = format!(
+        "0x{}",
+        ct.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    );
+    let plaintext = match super::verify::open_key_via_iframe(&ct_hex).await {
+        Ok(p) => p,
+        Err(e) => {
+            set_err(&format!("open: {e} — import your seed on this device first"));
+            return;
+        }
+    };
+    if let Some(input) = dom::input_by_id("key") {
+        input.set_value(&plaintext);
+    }
+    super::key_store::save(&plaintext).await;
+    refresh_keymeta();
+    dom::swap_inner(
+        msg,
+        &dom::msg_span(dom::Msg::Accent, "restored ✓ — applies on next session"),
+    );
 }
 
 /// Publish the device's local `app.rl` as the subdomain's on-chain app:

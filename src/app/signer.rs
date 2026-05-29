@@ -122,6 +122,8 @@ fn handle_message(event: &MessageEvent) -> Result<(), String> {
             | "lh-reveal-seed"
             | "lh-import-seed"
             | "lh-claim-name"
+            | "lh-seal-key"
+            | "lh-open-key"
     ) {
         return Ok(());
     }
@@ -248,6 +250,26 @@ fn handle_message(event: &MessageEvent) -> Result<(), String> {
             spawn_claim_name(id.clone(), name, source_jsval.clone(), origin.clone());
             return Ok(());
         }
+        "lh-seal-key" => {
+            // Encrypt a value (the tenant's Gemini key) with a key derived
+            // from the master seed, so the ciphertext can be stored on-chain
+            // and any seed-linked device can decrypt it. See note in
+            // `seed_sync_key`.
+            let plaintext = js_sys::Reflect::get(&data, &JsValue::from_str("plaintext"))
+                .ok()
+                .and_then(|v| v.as_string())
+                .ok_or_else(|| "plaintext not a string".to_string())?;
+            spawn_seal_key(id.clone(), plaintext, source_jsval.clone(), origin.clone());
+            return Ok(());
+        }
+        "lh-open-key" => {
+            let ciphertext = js_sys::Reflect::get(&data, &JsValue::from_str("ciphertext"))
+                .ok()
+                .and_then(|v| v.as_string())
+                .ok_or_else(|| "ciphertext not a string".to_string())?;
+            spawn_open_key(id.clone(), ciphertext, source_jsval.clone(), origin.clone());
+            return Ok(());
+        }
         _ => return Ok(()), // not for us
     };
 
@@ -327,6 +349,80 @@ fn spawn_create_wallet(id: String, overwrite: bool, source: JsValue, origin: Str
             web_sys::console::warn_1(&JsValue::from_str(&format!(
                 "signer: create-wallet reply: {err}"
             )));
+        }
+    });
+}
+
+/// Derive the 32-byte AES key used to seal/open the on-chain Gemini key,
+/// from the master wallet's BIP-39 entropy. Deterministic from the seed,
+/// so any device that imports the seed derives the same key and can
+/// decrypt the on-chain ciphertext.
+///
+/// SECURITY: this is honored for any trusted (`*.localharness.xyz`)
+/// origin, so a malicious subdomain could in principle ask to `lh-open-key`
+/// a victim's (public, on-chain) ciphertext and learn their Gemini key.
+/// Accepted for testnet — Gemini keys are free + revocable (small blast
+/// radius), and this matches the existing cross-origin signer model.
+/// Revisit before mainnet (e.g. per-origin scoping / explicit consent).
+fn seed_sync_key() -> Result<[u8; 32], String> {
+    let entropy = super::APP
+        .with(|cell| cell.borrow().wallet.as_ref().map(|w| w.mnemonic.to_entropy()))
+        .ok_or_else(|| "no identity on this device".to_string())?;
+    let mut hasher = Keccak256::new();
+    hasher.update(b"localharness/v0/keysync");
+    hasher.update(&entropy);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&hasher.finalize());
+    Ok(out)
+}
+
+/// Seal a plaintext (the tenant's Gemini key) with the seed-derived key
+/// and return the ciphertext hex.
+fn spawn_seal_key(id: String, plaintext: String, source: JsValue, origin: String) {
+    wasm_bindgen_futures::spawn_local(async move {
+        let reply = match seed_sync_key() {
+            Ok(key) => {
+                match super::encryption::seal_with_raw_key(&key, plaintext.as_bytes()).await {
+                    Some(ct) => {
+                        let obj = js_sys::Object::new();
+                        set(&obj, "type", JsValue::from_str("lh-sign-response"));
+                        set(&obj, "id", JsValue::from_str(&id));
+                        set(&obj, "ciphertext", JsValue::from_str(&hex_bytes(&ct)));
+                        JsValue::from(obj)
+                    }
+                    None => error_response(&id, "seal failed"),
+                }
+            }
+            Err(e) => error_response(&id, &e),
+        };
+        if let Err(err) = post_reply(&source, &reply, &origin) {
+            web_sys::console::warn_1(&JsValue::from_str(&format!("signer: seal-key reply: {err}")));
+        }
+    });
+}
+
+/// Open seed-sealed ciphertext and return the plaintext (the Gemini key).
+fn spawn_open_key(id: String, ciphertext_hex: String, source: JsValue, origin: String) {
+    wasm_bindgen_futures::spawn_local(async move {
+        let reply = match (seed_sync_key(), decode_hex(&ciphertext_hex)) {
+            (Ok(key), Ok(ct)) => match super::encryption::open_with_raw_key(&key, &ct).await {
+                Some(pt) => match String::from_utf8(pt) {
+                    Ok(s) => {
+                        let obj = js_sys::Object::new();
+                        set(&obj, "type", JsValue::from_str("lh-sign-response"));
+                        set(&obj, "id", JsValue::from_str(&id));
+                        set(&obj, "plaintext", JsValue::from_str(&s));
+                        JsValue::from(obj)
+                    }
+                    Err(_) => error_response(&id, "decrypted value not utf-8"),
+                },
+                None => error_response(&id, "open failed (wrong seed?)"),
+            },
+            (Err(e), _) => error_response(&id, &e),
+            (_, Err(e)) => error_response(&id, &e),
+        };
+        if let Err(err) = post_reply(&source, &reply, &origin) {
+            web_sys::console::warn_1(&JsValue::from_str(&format!("signer: open-key reply: {err}")));
         }
     });
 }
