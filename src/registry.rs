@@ -125,6 +125,12 @@ async fn next_id() -> Result<u64, String> {
     decode_u256_as_u64(&result_hex)
 }
 
+/// Total registered subdomains. Token ids start at 1, so the count is
+/// `nextId - 1`. Used by the admin Usage tab.
+pub async fn subdomain_count() -> Result<u64, String> {
+    Ok(next_id().await?.saturating_sub(1))
+}
+
 async fn owner_of_id(id: u64) -> Result<Option<String>, String> {
     let mut data = Vec::with_capacity(4 + 32);
     data.extend_from_slice(&selector("ownerOfId(uint256)"));

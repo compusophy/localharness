@@ -49,6 +49,7 @@ enum Action {
     CancelImport,
     HeaderAdminToggle,
     HeaderAdminClose,
+    ShowAdminTab(String),
     RevealSecurity,
     HideSecurity,
     ResetArm,
@@ -102,6 +103,7 @@ impl Action {
             "cancel-import" => Action::CancelImport,
             "header-admin-toggle" => Action::HeaderAdminToggle,
             "header-admin-close" => Action::HeaderAdminClose,
+            "show-admin-tab" => Action::ShowAdminTab(arg.unwrap_or_default()),
             "reveal-security" => Action::RevealSecurity,
             "hide-security" => Action::HideSecurity,
             "reset-arm" => Action::ResetArm,
@@ -899,6 +901,7 @@ fn dispatch(action: Action) {
         }
         Action::HeaderAdminToggle => header_admin_toggle(),
         Action::HeaderAdminClose => header_admin_close(),
+        Action::ShowAdminTab(name) => show_admin_tab(&name),
         Action::RevealSecurity => {
             dom::swap_outer(
                 "security-slot",
@@ -1530,6 +1533,12 @@ fn header_admin_toggle() {
     };
     dom::swap_outer("header-admin-panel", &body);
 
+    // Fill the Usage tab's subdomain count (both apex + tenant). No-ops if
+    // the slot isn't there.
+    wasm_bindgen_futures::spawn_local(async move {
+        refresh_usage_slot().await;
+    });
+
     // Apex shows a credit balance pill. Fire-and-forget the on-chain
     // read so the rest of the dropdown paints immediately; the pill
     // updates from "…" to "N LH" when the call resolves.
@@ -1598,6 +1607,44 @@ fn header_admin_close() {
     );
 }
 
+/// Switch the active admin tab by flipping the `tab-<name>` class on
+/// `#admin-dialog` (CSS shows the matching `.panel-<name>`), and sync the
+/// `.active` state on the tab buttons. Mirrors `show_mobile_tab`.
+fn show_admin_tab(name: &str) {
+    let Some(dialog) = dom::by_id("admin-dialog") else { return };
+    let mut cls: Vec<String> = dialog
+        .class_name()
+        .split_whitespace()
+        .filter(|c| !c.starts_with("tab-"))
+        .map(String::from)
+        .collect();
+    cls.push(format!("tab-{name}"));
+    dialog.set_class_name(&cls.join(" "));
+
+    for tab in ["agent", "account", "usage"] {
+        let Some(el) = dom::by_id(&format!("admin-tab-btn-{tab}")) else { continue };
+        let c = el.class_name();
+        let mut classes: Vec<&str> = c.split_whitespace().filter(|x| *x != "active").collect();
+        if tab == name {
+            classes.push("active");
+        }
+        el.set_class_name(&classes.join(" "));
+    }
+}
+
+/// Fill the admin Usage tab's `#usage-subdomains` slot with the on-chain
+/// registered-subdomain count. Soft-fail (leaves a dash). No-op if the
+/// slot isn't present.
+pub(crate) async fn refresh_usage_slot() {
+    if dom::by_id("usage-subdomains").is_none() {
+        return;
+    }
+    match super::registry::subdomain_count().await {
+        Ok(n) => dom::swap_inner("usage-subdomains", &format!("{n}")),
+        Err(_) => dom::swap_inner("usage-subdomains", "—"),
+    }
+}
+
 /// Mobile-only: swap which `tab-<name>` class is on `#layout`.
 /// CSS uses it to show exactly one panel at a time on narrow
 /// viewports. Tab button styling syncs by toggling `.active`.
@@ -1659,24 +1706,10 @@ fn feedback_open() {
     if let Some(t) = dom::textarea_by_id("feedback-text") {
         let _ = t.focus();
     }
-    // Load the on-chain feedback list in the background; swap it in when
-    // it resolves. The modal is usable for submitting meanwhile.
-    wasm_bindgen_futures::spawn_local(async move {
-        match super::registry::list_feedback().await {
-            Ok(entries) => {
-                // The modal may have been closed before the RPC returned.
-                if dom::by_id("feedback-list").is_some() {
-                    dom::swap_outer("feedback-list", &templates::feedback_list(&entries).into_string());
-                }
-            }
-            Err(err) => {
-                dom::swap_inner(
-                    "feedback-list",
-                    &dom::msg_span(dom::Msg::Muted, &format!("couldn't load feedback: {err}")),
-                );
-            }
-        }
-    });
+    // Feedback is write-only: we submit on-chain but don't show a list of
+    // everyone's submissions (it's a public, ever-growing log — surfacing
+    // the whole thing to every visitor isn't wanted). Harvest off-chain
+    // via scripts/harvest-feedback when triaging.
 }
 
 fn feedback_close() {

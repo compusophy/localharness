@@ -422,8 +422,7 @@ pub(crate) fn feedback_modal() -> Markup {
             div.feedback-card {
                 div.feedback-title { "feedback" }
                 p.feedback-blurb {
-                    "what's broken, missing, or wrong. submitted on-chain "
-                    "and saved locally."
+                    "what's broken, missing, or wrong. submitted on-chain."
                 }
                 textarea #feedback-text
                     .feedback-textarea
@@ -434,49 +433,14 @@ pub(crate) fn feedback_modal() -> Markup {
                     button type="button" data-action="feedback-close" .ghost { "cancel" }
                 }
                 div #feedback-msg .feedback-msg {}
-                div.feedback-recent-title { "recent" }
-                div #feedback-list .feedback-list { "loading…" }
             }
         }
     }
 }
 
-/// Render the harvested on-chain feedback as a scrollable list, newest
-/// first. Each row: relative time + short submitter + the text.
-pub(crate) fn feedback_list(entries: &[crate::registry::FeedbackEntry]) -> Markup {
-    if entries.is_empty() {
-        return html! { div #feedback-list .feedback-list .feedback-empty { "no feedback yet" } };
-    }
-    html! {
-        div #feedback-list .feedback-list {
-            @for e in entries {
-                div.feedback-item {
-                    div.feedback-item-meta {
-                        span.feedback-item-when { (fmt_unix_ago(e.timestamp)) }
-                        span.feedback-item-who title=(e.sender) { (short_addr(&e.sender)) }
-                    }
-                    div.feedback-item-text { (e.text) }
-                }
-            }
-        }
-    }
-}
-
-/// Format a unix timestamp (seconds) as a short relative age like
-/// "3h ago" / "5d ago", falling back to the day count for older items.
-fn fmt_unix_ago(unix_secs: u64) -> String {
-    let now_secs = (js_sys::Date::now() / 1000.0) as u64;
-    let delta = now_secs.saturating_sub(unix_secs);
-    if delta < 60 {
-        "just now".to_string()
-    } else if delta < 3600 {
-        format!("{}m ago", delta / 60)
-    } else if delta < 86400 {
-        format!("{}h ago", delta / 3600)
-    } else {
-        format!("{}d ago", delta / 86400)
-    }
-}
+// feedback_list() removed — feedback is write-only in the UI now. The
+// on-chain log is still public; triage it off-chain via
+// scripts/harvest-feedback.
 
 /// SSOT side-panel archetype — used by both `col-fs` (files) and
 /// `col-financial` (agent). Just a body container; the rail label
@@ -619,15 +583,31 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
     let has_wallet = owner_hex.is_some();
     html! {
         div #header-admin-panel .header-admin-panel {
-            div.admin-dialog {
-                (admin_identity_section(None, owner_hex.as_deref(), None))
-                @if has_wallet {
-                    (admin_credits_section())
-                    (admin_devices_section())
-                }
-                (admin_security_collapsed())
-                div.admin-footer {
+            // Full-page tabbed admin. Apex is the identity hub — no agent
+            // config lives here — so it has Account + Usage tabs only.
+            div #admin-dialog .admin-dialog.admin-tabbed.tab-account {
+                div.admin-tabs {
+                    button #admin-tab-btn-account type="button"
+                        data-action="show-admin-tab" data-arg="account"
+                        .admin-tab-button.active { "account" }
+                    button #admin-tab-btn-usage type="button"
+                        data-action="show-admin-tab" data-arg="usage"
+                        .admin-tab-button { "usage" }
+                    span.admin-tabs-spacer {}
                     button type="button" data-action="header-admin-close" .ghost { "close" }
+                }
+                div.admin-tab-panel.panel-account {
+                    (admin_identity_section(None, owner_hex.as_deref(), None))
+                    @if has_wallet {
+                        (admin_devices_section())
+                    }
+                    (admin_security_collapsed())
+                }
+                div.admin-tab-panel.panel-usage {
+                    @if has_wallet { (admin_credits_section()) }
+                    (admin_usage_section())
+                }
+                div.admin-footer {
                     span.admin-version { (APP_VERSION) }
                 }
             }
@@ -656,30 +636,67 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
     });
     html! {
         div #header-admin-panel .header-admin-panel {
-            div.admin-dialog {
-                (admin_identity_section(name.as_deref(), owner_hex.as_deref(), tba_hex.as_deref()))
-                div.admin-section {
-                    div.admin-section-title { "gemini api key " span #keymeta {} }
-                    form.key-form onsubmit="return false" {
-                        div.key-row {
-                            input #key
-                                type="password"
-                                autocomplete="off"
-                                placeholder="paste key" {}
-                            button.ghost
-                                type="button"
-                                data-action="clear-key" { "clear" }
+            // Full-page tabbed admin: Agent (configure this agent) /
+            // Account (identity + key + security) / Usage. Tab switch is a
+            // class-flip on #admin-dialog (Action::ShowAdminTab), mirroring
+            // the mobile tab bar.
+            div #admin-dialog .admin-dialog.admin-tabbed.tab-agent {
+                div.admin-tabs {
+                    button #admin-tab-btn-agent type="button"
+                        data-action="show-admin-tab" data-arg="agent"
+                        .admin-tab-button.active { "agent" }
+                    button #admin-tab-btn-account type="button"
+                        data-action="show-admin-tab" data-arg="account"
+                        .admin-tab-button { "account" }
+                    button #admin-tab-btn-usage type="button"
+                        data-action="show-admin-tab" data-arg="usage"
+                        .admin-tab-button { "usage" }
+                    span.admin-tabs-spacer {}
+                    button type="button" data-action="header-admin-close" .ghost { "close" }
+                }
+                div.admin-tab-panel.panel-agent {
+                    (admin_prompt_section())
+                    (admin_tool_allowlist_section())
+                    (admin_app_section())
+                }
+                div.admin-tab-panel.panel-account {
+                    (admin_identity_section(name.as_deref(), owner_hex.as_deref(), tba_hex.as_deref()))
+                    div.admin-section {
+                        div.admin-section-title { "gemini api key " span #keymeta {} }
+                        form.key-form onsubmit="return false" {
+                            div.key-row {
+                                input #key
+                                    type="password"
+                                    autocomplete="off"
+                                    placeholder="paste key" {}
+                                button.ghost
+                                    type="button"
+                                    data-action="clear-key" { "clear" }
+                            }
                         }
                     }
+                    (admin_security_collapsed())
                 }
-                (admin_prompt_section())
-                (admin_app_section())
-                (admin_tool_allowlist_section())
-                (admin_security_collapsed())
+                div.admin-tab-panel.panel-usage {
+                    (admin_usage_section())
+                }
                 div.admin-footer {
-                    button type="button" data-action="header-admin-close" .ghost { "close" }
                     span.admin-version { (APP_VERSION) }
                 }
+            }
+        }
+    }
+}
+
+/// Usage tab body — registered-subdomain count, filled async on admin
+/// open by `events::refresh_usage_slot` (mirrors the credits pill).
+pub(crate) fn admin_usage_section() -> Markup {
+    html! {
+        div.admin-section {
+            div.admin-section-title { "usage" }
+            div.admin-identity-row {
+                span.admin-identity-label { "subdomains" }
+                code #usage-subdomains .admin-identity-value { "…" }
             }
         }
     }
@@ -1085,17 +1102,15 @@ pub(crate) fn agents_list(
                                 href=(format!("https://{}.localharness.xyz/", agent.name)) {
                                 (agent.name)
                             }
+                            span.agent-row-spacer {}
+                            // Per on-chain feedback: no per-row "act" button
+                            // on the apex homepage — just a main/alt label.
                             @if main_token_id != 0 && agent.token_id == main_token_id {
                                 span.main-badge title="primary identity" { "main" }
+                            } @else {
+                                span.alt-badge title="secondary identity" { "alt" }
                             }
-                            span.agent-row-spacer {}
-                            button type="button"
-                                data-action="agent-act-toggle"
-                                data-arg=(agent.token_id)
-                                .ghost.agent-act-btn { "act" }
                         }
-                        div #(format!("agent-act-{}", agent.token_id))
-                            .agent-act-panel hidden {}
                     }
                 }
             }
