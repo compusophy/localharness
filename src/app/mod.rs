@@ -525,6 +525,14 @@ pub(crate) async fn paint_apex(host: tenant::Host) {
     // fetch for. On fresh visits the list stays empty — that's expected
     // and the placeholder div in the template covers it.
     if let Some(owner_addr) = addr_hex {
+        // Show a loading placeholder while the on-chain list resolves —
+        // the lookup can take a beat and an empty gap above the claim form
+        // looked broken (per feedback). Only identity-having visitors hit
+        // this path, so fresh visitors still see nothing.
+        dom::swap_outer(
+            "agents-list",
+            r#"<div id="agents-list" class="agents-list"><p class="apex-fine">loading agents…</p></div>"#,
+        );
         wasm_bindgen_futures::spawn_local(async move {
             match registry::list_owned_tokens(&owner_addr).await {
                 Ok(agents) => {
