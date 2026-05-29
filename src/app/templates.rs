@@ -519,17 +519,18 @@ pub(crate) fn text_segment(seg_id: u32, text: &str) -> Markup {
     }
 }
 
-/// A tool-call block in its initial "running" state.
+/// A tool-call block. No status pill — the streaming spinner already
+/// signals "working", and the per-tool running/done text was both
+/// redundant and prone to sticking on "running". The result (including
+/// errors) is visible by expanding the block.
 pub(crate) fn tool_call_block(seg_id: u32, call: &ToolCall) -> Markup {
     let block_id = format!("tool-{seg_id}");
-    let status_id = format!("tool-{seg_id}-status");
     let result_id = format!("tool-{seg_id}-result");
     let args_pretty = serde_json::to_string_pretty(&call.args).unwrap_or_else(|_| "{}".into());
     html! {
         details id=(block_id) .tool-call {
             summary {
                 span.tc-name { (call.name) }
-                span id=(status_id) .tc-status.running {}
             }
             div.tc-body {
                 div.tc-section-label { "args" }
@@ -1006,38 +1007,6 @@ pub(crate) fn financial_card(
                     "?rpc=1"
                 }
             }
-            (lh_transfer_form(tba_hex))
-        }
-    }
-}
-
-/// $localharness transfer form, embedded in the financial card. Sends
-/// from the visitor's apex wallet (signed via the iframe signer) to
-/// whatever recipient the user types. Default recipient is the agent's
-/// TBA so "support this agent" is the one-click path; the user can
-/// overwrite to send anywhere.
-pub(crate) fn lh_transfer_form(default_recipient: &str) -> Markup {
-    html! {
-        form #lh-transfer-form .lh-transfer data-action="lh-transfer" {
-            div.lh-transfer-title { "send $localharness" }
-            div.lh-transfer-row {
-                input #lh-transfer-to
-                    type="text"
-                    autocomplete="off"
-                    spellcheck="false"
-                    placeholder="0x… recipient"
-                    value=(default_recipient) {}
-            }
-            div.lh-transfer-row {
-                input #lh-transfer-amount
-                    type="text"
-                    inputmode="decimal"
-                    autocomplete="off"
-                    spellcheck="false"
-                    placeholder="amount" {}
-                button type="submit" .lh-transfer-send { "send" }
-            }
-            div #lh-transfer-msg .lh-transfer-msg {}
         }
     }
 }

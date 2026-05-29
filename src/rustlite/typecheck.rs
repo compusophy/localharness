@@ -733,8 +733,21 @@ impl TypeContext {
 /// for the matching imports). Colours are `0xRRGGBB` (opaque).
 fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, ResolvedType)> {
     use ResolvedType::*;
-    let key = fn_name.strip_prefix("host::").unwrap_or(fn_name);
-    let (params, ret): (Vec<ResolvedType>, ResolvedType) = match key {
+    let stripped = fn_name.strip_prefix("host::").unwrap_or(fn_name);
+    // Every host builtin lives in the `display` module today. Accept the
+    // module-elided spellings — `state_get`, `host::state_get`, or (after
+    // `use host::display;`) a bare `state_get` — by defaulting the module
+    // to `display`. Without this, `host::state_get` resolved to nothing,
+    // fell through to the enum-variant branch, and got typed `Void` — the
+    // "declared I32, got Void" bug that blocked all stateful cartridges.
+    // NB: `use ResolvedType::*` above shadows the std `String` type with
+    // the `String` variant, so don't annotate this `let` with `String`.
+    let key = if stripped.contains("::") {
+        stripped.to_string()
+    } else {
+        format!("display::{stripped}")
+    };
+    let (params, ret): (Vec<ResolvedType>, ResolvedType) = match key.as_str() {
         "display::clear" => (vec![I32], Void),
         "display::set_pixel" => (vec![I32, I32, I32], Void),
         "display::fill_rect" => (vec![I32, I32, I32, I32, I32], Void),
@@ -752,6 +765,28 @@ fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, 
     };
     let (module, func) = key.split_once("::")?;
     Some((module.to_string(), func.to_string(), params, ret))
+}
+
+#[cfg(test)]
+mod host_fn_tests {
+    use super::*;
+
+    #[test]
+    fn state_get_resolves_to_i32_in_every_spelling() {
+        for name in [
+            "state_get",
+            "host::state_get",
+            "display::state_get",
+            "host::display::state_get",
+        ] {
+            let (module, func, params, ret) =
+                resolve_host_fn(name).unwrap_or_else(|| panic!("{name} did not resolve"));
+            assert_eq!(module, "display");
+            assert_eq!(func, "state_get");
+            assert_eq!(params, vec![ResolvedType::I32]);
+            assert_eq!(ret, ResolvedType::I32, "{name} must return i32, not Void");
+        }
+    }
 }
 
 #[cfg(test)]

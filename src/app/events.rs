@@ -63,7 +63,6 @@ enum Action {
     FeedbackOpen,
     FeedbackClose,
     FeedbackSubmit,
-    LhTransfer,
     AddDevice,
     AgentActToggle(String),
     AgentSendLh(String),
@@ -117,7 +116,6 @@ impl Action {
             "feedback-open" => Action::FeedbackOpen,
             "feedback-close" => Action::FeedbackClose,
             "feedback-submit" => Action::FeedbackSubmit,
-            "lh-transfer" => Action::LhTransfer,
             "add-device" => Action::AddDevice,
             "agent-act-toggle" => Action::AgentActToggle(arg.unwrap_or_default()),
             "agent-send-lh" => Action::AgentSendLh(arg.unwrap_or_default()),
@@ -950,7 +948,6 @@ fn dispatch(action: Action) {
         Action::FeedbackOpen => feedback_open(),
         Action::FeedbackClose => feedback_close(),
         Action::FeedbackSubmit => feedback_submit(),
-        Action::LhTransfer => lh_transfer_pressed(),
         Action::AddDevice => add_device_pressed(),
         Action::AgentActToggle(token_id) => agent_act_toggle_pressed(token_id),
         Action::AgentSendLh(token_id) => agent_send_lh_pressed(token_id),
@@ -1395,108 +1392,6 @@ fn short_addr(addr: &str) -> String {
     format!("0x{}…{}", &stripped[..4], &stripped[stripped.len() - 4..])
 }
 
-/// $localharness transfer from the visitor's apex wallet to a recipient.
-/// Reads the recipient + amount from the financial-card form, builds
-/// `transfer(address,uint256)` calldata, signs via the apex signer
-/// iframe, submits to Tempo Moderato. Caller's gas paid by the apex
-/// wallet (visitor) — Tempo allows contract calls, so no native-transfer
-/// ban hits this path.
-fn lh_transfer_pressed() {
-    let to_raw = dom::input_by_id("lh-transfer-to")
-        .map(|i| i.value().trim().to_string())
-        .unwrap_or_default();
-    let amount_raw = dom::input_by_id("lh-transfer-amount")
-        .map(|i| i.value().trim().to_string())
-        .unwrap_or_default();
-    if !is_address_hex(&to_raw) {
-        dom::swap_inner(
-            "lh-transfer-msg",
-            "<span style=\"color:var(--error)\">recipient must be a 0x… address</span>",
-        );
-        return;
-    }
-    let Some(amount_wei) = parse_token_amount(&amount_raw) else {
-        dom::swap_inner(
-            "lh-transfer-msg",
-            "<span style=\"color:var(--error)\">amount: positive number, up to 18 decimals</span>",
-        );
-        return;
-    };
-    if amount_wei == 0 {
-        dom::swap_inner(
-            "lh-transfer-msg",
-            "<span style=\"color:var(--error)\">amount must be greater than zero</span>",
-        );
-        return;
-    }
-
-    // Visitor's apex address. The verify state's address (verified or
-    // visitor) is the master wallet that the iframe signer controls.
-    let from_hex = super::APP.with(|cell| {
-        use super::VerifyState;
-        match &cell.borrow().verify_state {
-            VerifyState::Verified { address } => Some(address.clone()),
-            VerifyState::Visitor { visitor_address, .. } => Some(visitor_address.clone()),
-            _ => None,
-        }
-    });
-    let Some(from_hex) = from_hex else {
-        dom::swap_inner(
-            "lh-transfer-msg",
-            "<span style=\"color:var(--error)\">no apex identity yet — open admin to create one</span>",
-        );
-        return;
-    };
-
-    dom::swap_inner(
-        "lh-transfer-msg",
-        "<span style=\"color:var(--muted)\">signing + submitting…</span>",
-    );
-    wasm_bindgen_futures::spawn_local(async move {
-        if let Err(err) = run_lh_transfer(from_hex, to_raw, amount_wei).await {
-            dom::swap_inner(
-                "lh-transfer-msg",
-                &format!("<span style=\"color:var(--error)\">{err}</span>"),
-            );
-        }
-    });
-}
-
-async fn run_lh_transfer(
-    from_hex: String,
-    to_hex: String,
-    amount_wei: u128,
-) -> Result<(), String> {
-    let calldata = encode_transfer_calldata(&to_hex, amount_wei)?;
-    let token_addr = parse_address(super::registry::LOCALHARNESS_TOKEN_ADDRESS)?;
-    let call = crate::tempo_tx::TempoCall {
-        to: token_addr,
-        value_wei: 0,
-        input: calldata,
-    };
-    // ERC-20 `transfer` inner ~52k; Tempo sponsorship overhead is
-    // ~275k (fee_payer signature recovery + AlphaUSD fee transfer).
-    // 500k is generous headroom — sponsor pays in AlphaUSD and only
-    // consumed gas is debited, so over-budgeting costs nothing.
-    let tx_hash = run_sponsored_tempo_call(&from_hex, vec![call], 500_000, "send $localharness")
-        .await?;
-
-    let short = tx_short_hash(&tx_hash);
-    dom::swap_inner(
-        "lh-transfer-msg",
-        &format!("<span style=\"color:var(--accent)\">✓ sent (tx {short})</span>"),
-    );
-    if let Some(input) = dom::input_by_id("lh-transfer-amount") {
-        input.set_value("");
-    }
-    // Refresh balance shown in the card. Cheap re-read; if it fails,
-    // the next paint_tenant will pick it up. Don't bubble errors.
-    if let super::tenant::Host::Tenant(name) = super::tenant::current() {
-        super::paint_tenant(super::tenant::Host::Tenant(name.clone()), name).await;
-    }
-    Ok(())
-}
-
 /// Sponsored Tempo tx orchestrator. Apex iframe signs `sender_hash`,
 /// the bundle sponsor key signs `fee_payer_hash`, raw tx assembled
 /// locally and submitted. User holds zero of anything — `fee_payer`
@@ -1590,30 +1485,6 @@ fn parse_token_amount(raw: &str) -> Option<u128> {
     }
     let whole_wei = whole.checked_mul(1_000_000_000_000_000_000)?;
     whole_wei.checked_add(frac)
-}
-
-/// ABI-encode `transfer(address,uint256)` — selector + padded address +
-/// padded amount. Keccak the signature here so we don't depend on a
-/// constant elsewhere.
-fn encode_transfer_calldata(to_hex: &str, amount_wei: u128) -> Result<Vec<u8>, String> {
-    use sha3::{Digest, Keccak256};
-    let mut hasher = Keccak256::new();
-    hasher.update(b"transfer(address,uint256)");
-    let digest = hasher.finalize();
-    let mut selector = [0u8; 4];
-    selector.copy_from_slice(&digest[..4]);
-
-    let to_bytes = parse_address(to_hex)?;
-    let mut to_padded = [0u8; 32];
-    to_padded[12..].copy_from_slice(&to_bytes);
-    let mut amount_padded = [0u8; 32];
-    amount_padded[16..].copy_from_slice(&amount_wei.to_be_bytes());
-
-    let mut out = Vec::with_capacity(4 + 32 + 32);
-    out.extend_from_slice(&selector);
-    out.extend_from_slice(&to_padded);
-    out.extend_from_slice(&amount_padded);
-    Ok(out)
 }
 
 fn parse_address(hex: &str) -> Result<[u8; 20], String> {

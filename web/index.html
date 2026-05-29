@@ -1117,13 +1117,8 @@
       color: var(--fg);
       font-weight: 600;
     }
-    .tool-call .tc-status {
-      margin-left: auto;
-      font-size: 11px;
-      color: var(--muted);
-    }
-    /* Braille spinner cycled via keyframed `content`. Used by the
-       tool-call running pill and the streaming-turn indicator. */
+    /* Braille spinner cycled via keyframed `content` — the streaming-turn
+       working indicator. */
     @keyframes lh-spin {
       0%   { content: "⠋"; }
       10%  { content: "⠙"; }
@@ -1137,13 +1132,6 @@
       90%  { content: "⠏"; }
       100% { content: "⠋"; }
     }
-    .tool-call .tc-status.running::before {
-      content: "⠋";
-      animation: lh-spin 800ms steps(1) infinite;
-    }
-    .tool-call .tc-status.running::after { content: " running"; }
-    .tool-call .tc-status.ok::before { content: "✓ done"; color: var(--accent); }
-    .tool-call .tc-status.err::before { content: "✗ error"; color: var(--error); }
     /* Streaming assistant turn shows a trailing spinner while in flight.
        (The role line is hidden, so this is the only "working" cue.) */
     .turn.assistant.streaming .body::after {

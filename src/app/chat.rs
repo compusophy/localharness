@@ -229,7 +229,6 @@ pub(crate) async fn run_send() {
                         &result_target,
                         &templates::tool_call_result(&result).into_string(),
                     );
-                    update_tool_status(tool_seg_id, result.error.is_none());
                 }
             }
             Ok(StreamChunk::Thought { .. }) => {
@@ -465,20 +464,6 @@ fn mark_turn_done(turn_id: u32) {
             cls.split_whitespace().filter(|c| *c != "streaming").collect();
         el.set_class_name(&new_cls.join(" "));
     }
-}
-
-/// Replace the running pill inside a tool block with an ok / err
-/// pill. The block template stamps the running pill with
-/// `id="tool-{seg_id}-status"`; we swap-outer it so the new span
-/// keeps the same id for any future result swap.
-fn update_tool_status(tool_seg_id: u32, ok: bool) {
-    let target = format!("tool-{tool_seg_id}-status");
-    let pill_class = if ok { "tc-status ok" } else { "tc-status err" };
-    let new_html = html! {
-        span id=(target) class=(pill_class) {}
-    }
-    .into_string();
-    dom::swap_outer(&target, &new_html);
 }
 
 /// Returns `Ok(Some(tx_hash))` if a payment was collected, `Ok(None)`
