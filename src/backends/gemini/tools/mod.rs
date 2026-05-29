@@ -133,3 +133,67 @@ fn instantiate_run_command() -> Option<Arc<dyn Tool>> {
 fn instantiate_run_command() -> Option<Arc<dyn Tool>> {
     None
 }
+
+#[cfg(test)]
+mod schema_lint_tests {
+    use super::*;
+    use crate::filesystem::NativeFilesystem;
+
+    /// Recursively assert no JSON-Schema node uses an ARRAY-valued `type`
+    /// (a nullable union like `["string","null"]`). Gemini's function-
+    /// declaration schema rejects union types with a 400 Bad Request —
+    /// which silently bricked EVERY chat turn when `configure_agent` shipped
+    /// with `"type": ["string","null"]`. This test catches that class of bug
+    /// locally, in `cargo test`, instead of in production.
+    fn assert_single_type(v: &serde_json::Value, tool: &str, path: &str) {
+        match v {
+            serde_json::Value::Object(map) => {
+                if let Some(t) = map.get("type") {
+                    assert!(
+                        !t.is_array(),
+                        "tool `{tool}` schema at `{path}.type` = {t} is an array — \
+                         Gemini 400s on union types; use a single `type` string",
+                    );
+                }
+                for (k, val) in map {
+                    assert_single_type(val, tool, &format!("{path}.{k}"));
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                for (i, val) in arr.iter().enumerate() {
+                    assert_single_type(val, tool, &format!("{path}[{i}]"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Every builtin tool's `input_schema` (sent verbatim as the wire
+    /// `parameters`) must be a Gemini-compatible schema. Covers all tools
+    /// constructible without a live API client (i.e. everything except
+    /// generate_image / start_subagent, which need a client).
+    #[test]
+    fn builtin_tool_schemas_have_no_union_types() {
+        let fs: SharedFilesystem = Arc::new(NativeFilesystem::new());
+        let tools: Vec<Arc<dyn Tool>> = vec![
+            Arc::new(Finish),
+            Arc::new(AskQuestion),
+            Arc::new(configure_agent::ConfigureAgent),
+            Arc::new(call_agent::CallAgent),
+            Arc::new(compile_rustlite::CompileRustlite),
+            Arc::new(run_cartridge::RunCartridge),
+            Arc::new(render_html::RenderHtml),
+            Arc::new(ListDirectory::new(fs.clone())),
+            Arc::new(ViewFile::new(fs.clone())),
+            Arc::new(FindFile::new(fs.clone())),
+            Arc::new(SearchDirectory::new(fs.clone())),
+            Arc::new(CreateFile::new(fs.clone())),
+            Arc::new(EditFile::new(fs.clone())),
+            Arc::new(DeleteFile::new(fs.clone())),
+            Arc::new(RenameFile::new(fs.clone())),
+        ];
+        for t in &tools {
+            assert_single_type(&t.input_schema(), t.name(), "parameters");
+        }
+    }
+}
