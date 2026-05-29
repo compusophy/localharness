@@ -624,7 +624,9 @@
       line-height: 1.4;
     }
     .terminal-send {
-      padding: 0 8px;
+      /* No right padding — the row's own 12px right padding gives the
+         edge gap, so the glyph squares up symmetric with the left ">". */
+      padding: 0 0 0 8px;
       font-size: 13px;
       line-height: 1;
       flex-shrink: 0;
