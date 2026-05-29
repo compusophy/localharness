@@ -121,9 +121,10 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
     }
 }
 
-/// Version string, used in the admin dropdown bottom. Bumped in
-/// lockstep with Cargo.toml.
-pub(crate) const APP_VERSION: &str = "0.13.0";
+/// Version string, used in the admin dropdown bottom. Auto-tracks the
+/// crate version (`Cargo.toml`) at compile time so the footer can't drift
+/// from the published release — no separate manual bump step.
+pub(crate) const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Terminal input — just `>` prompt + textarea + → send. Status line
 /// stays in the DOM (id="status") for dispatcher messages but renders
