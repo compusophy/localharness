@@ -65,7 +65,6 @@ enum Action {
     FeedbackSubmit,
     LhTransfer,
     AddDevice,
-    ClaimCredits,
     AgentActToggle(String),
     AgentSendLh(String),
     SavePrompt,
@@ -120,7 +119,6 @@ impl Action {
             "feedback-submit" => Action::FeedbackSubmit,
             "lh-transfer" => Action::LhTransfer,
             "add-device" => Action::AddDevice,
-            "claim-credits" => Action::ClaimCredits,
             "agent-act-toggle" => Action::AgentActToggle(arg.unwrap_or_default()),
             "agent-send-lh" => Action::AgentSendLh(arg.unwrap_or_default()),
             "save-prompt" => Action::SavePrompt,
@@ -445,12 +443,12 @@ async fn run_apex_claim(name: String) {
             },
         };
 
-        // 2.5. Cost-gate pre-check. If the registry charges LH for
-        //      `register(name)` and the user can't cover it, bail
-        //      before burning sponsor gas on a guaranteed revert.
-        //      A fresh identity auto-claims daily credits in the
-        //      background; the user may need to wait for that to
-        //      land, or hit the "claim daily" button.
+        // 2.5. Cost-gate pre-check. Registration is currently free
+        //      (on-chain `registrationCost` is 0), so this is a no-op
+        //      today. It stays as a guard in case the cost gate is ever
+        //      re-enabled: if the registry charges LH and the user can't
+        //      cover it, bail before burning sponsor gas on a guaranteed
+        //      revert.
         let cost = super::registry::registration_cost().await.unwrap_or(0);
         if cost > 0 {
             let bal = super::registry::token_balance_of(&addr_hex).await.unwrap_or(0);
@@ -771,19 +769,15 @@ fn dispatch(action: Action) {
             match super::tenant::current() {
                 super::tenant::Host::Apex => {
                     wasm_bindgen_futures::spawn_local(async move {
-                        let wallet = match super::wallet_store::create_and_persist().await {
-                            Ok(w) => w,
-                            Err(err) => {
-                                dom::swap_inner(
-                                    "identity-msg",
-                                    &format!(
-                                        "<span style=\"color:var(--error)\">create failed: {err}</span>"
-                                    ),
-                                );
-                                return;
-                            }
-                        };
-                        run_initial_credit_claim(wallet.signer.clone()).await;
+                        if let Err(err) = super::wallet_store::create_and_persist().await {
+                            dom::swap_inner(
+                                "identity-msg",
+                                &format!(
+                                    "<span style=\"color:var(--error)\">create failed: {err}</span>"
+                                ),
+                            );
+                            return;
+                        }
                         super::paint_apex(super::tenant::Host::Apex).await;
                     });
                 }
@@ -958,7 +952,6 @@ fn dispatch(action: Action) {
         Action::FeedbackSubmit => feedback_submit(),
         Action::LhTransfer => lh_transfer_pressed(),
         Action::AddDevice => add_device_pressed(),
-        Action::ClaimCredits => claim_credits_pressed(),
         Action::AgentActToggle(token_id) => agent_act_toggle_pressed(token_id),
         Action::AgentSendLh(token_id) => agent_send_lh_pressed(token_id),
         Action::SavePrompt => save_prompt_pressed(),
@@ -1241,75 +1234,9 @@ fn agent_send_lh_pressed(token_id_str: String) {
     });
 }
 
-/// User-initiated daily credit claim from the admin dropdown.
-/// Sponsored Tempo tx; reverts on-chain if already claimed today
-/// (chain emits `AlreadyClaimedToday` error). On success, refreshes
-/// the balance pill.
-fn claim_credits_pressed() {
-    let signer = super::APP.with(|cell| {
-        cell.borrow().wallet.as_ref().map(|w| w.signer.clone())
-    });
-    let Some(signer) = signer else { return };
-
-    dom::swap_inner(
-        "claim-credits-msg",
-        "<span style=\"color:var(--muted)\">signing + submitting…</span>",
-    );
-    if let Some(btn) = dom::by_id("claim-credits-btn") {
-        let _ = btn.set_attribute("disabled", "");
-    }
-    wasm_bindgen_futures::spawn_local(async move {
-        let fee_payer = match super::sponsor::signer() {
-            Ok(k) => k,
-            Err(err) => {
-                dom::swap_inner(
-                    "claim-credits-msg",
-                    &format!("<span style=\"color:var(--error)\">sponsor: {err}</span>"),
-                );
-                return;
-            }
-        };
-        match super::registry::claim_daily_sponsored(
-            &signer,
-            &fee_payer,
-            super::registry::ALPHA_USD_ADDRESS,
-        )
-        .await
-        {
-            Ok(tx_hash) => {
-                let short = tx_short_hash(&tx_hash);
-                dom::swap_inner(
-                    "claim-credits-msg",
-                    &format!(
-                        "<span style=\"color:var(--accent)\">✓ claimed (tx {short})</span>"
-                    ),
-                );
-                refresh_credits_pill().await;
-                refresh_claim_status().await;
-            }
-            Err(err) => {
-                let pretty = if err.contains("AlreadyClaimedToday")
-                    || err.to_lowercase().contains("already claimed")
-                {
-                    "already claimed today".to_string()
-                } else {
-                    err
-                };
-                dom::swap_inner(
-                    "claim-credits-msg",
-                    &format!("<span style=\"color:var(--error)\">{pretty}</span>"),
-                );
-                if let Some(btn) = dom::by_id("claim-credits-btn") {
-                    let _ = btn.remove_attribute("disabled");
-                }
-            }
-        }
-    });
-}
-
 /// Fetch the credit balance for the apex wallet and write it into
-/// `#credits-balance`. Called on admin-open and after a successful
-/// claim. Soft-fail — leaves the placeholder on error so UI stays clean.
+/// `#credits-balance`. Called on admin-open. Soft-fail — leaves the
+/// placeholder on error so the UI stays clean.
 pub(crate) async fn refresh_credits_pill() {
     let addr = super::APP.with(|cell| {
         cell.borrow().wallet.as_ref().map(|w| w.address_hex())
@@ -1318,46 +1245,6 @@ pub(crate) async fn refresh_credits_pill() {
     let Ok(balance_wei) = super::registry::token_balance_of(&addr).await else { return };
     let lh = balance_wei / 1_000_000_000_000_000_000u128;
     dom::swap_inner("credits-balance", &format!("{lh} LH"));
-}
-
-/// Show claim status: "ready to claim" or "next claim in Xh Ym".
-async fn refresh_claim_status() {
-    let addr = super::APP.with(|cell| {
-        cell.borrow().wallet.as_ref().map(|w| w.address_hex())
-    });
-    let Some(addr) = addr else { return };
-
-    let can_claim = super::registry::can_claim_credits(&addr).await.unwrap_or(false);
-    if can_claim {
-        dom::swap_inner(
-            "claim-status",
-            "<span style=\"color:var(--accent)\">ready to claim</span>",
-        );
-        if let Some(btn) = dom::by_id("claim-credits-btn") {
-            let _ = btn.remove_attribute("disabled");
-        }
-    } else {
-        // Calculate time until next UTC midnight
-        let now_ms = js_sys::Date::now() as u64;
-        let now_secs = now_ms / 1000;
-        let current_day = now_secs / 86400;
-        let next_day_start = (current_day + 1) * 86400;
-        let remaining_secs = next_day_start.saturating_sub(now_secs);
-        let hours = remaining_secs / 3600;
-        let minutes = (remaining_secs % 3600) / 60;
-        let hint = if hours > 0 {
-            format!("next claim in {hours}h {minutes}m")
-        } else {
-            format!("next claim in {minutes}m")
-        };
-        dom::swap_inner(
-            "claim-status",
-            &format!("<span style=\"color:var(--muted)\">{hint}</span>"),
-        );
-        if let Some(btn) = dom::by_id("claim-credits-btn") {
-            let _ = btn.set_attribute("disabled", "");
-        }
-    }
 }
 
 async fn refresh_signer_list() {
@@ -1790,7 +1677,6 @@ fn header_admin_toggle() {
     if matches!(super::tenant::current(), super::tenant::Host::Apex) {
         wasm_bindgen_futures::spawn_local(async move {
             refresh_credits_pill().await;
-            refresh_claim_status().await;
             refresh_signer_list().await;
         });
     }
@@ -2212,45 +2098,6 @@ fn toggle_layout_class(class: &str) {
         format!("{} {class}", parts.join(" "))
     };
     layout.set_class_name(&new_cls);
-}
-
-/// One-shot first-day credit claim, fired right after a fresh apex
-/// wallet is created so the user lands with a starter balance. The
-/// call is sponsored — the user holds nothing, and the chain still
-/// mints credits to the user's address because they're the
-/// `msg.sender` of the inner `claimDaily()`. Soft-fail: if the chain
-/// or sponsor hiccups, identity is still saved and the user can
-/// retry from the admin "claim credits" button.
-async fn run_initial_credit_claim(signer: k256::ecdsa::SigningKey) {
-    dom::swap_inner(
-        "identity-msg",
-        "<span style=\"color:var(--muted)\">claiming starter credits…</span>",
-    );
-    let fee_payer = match super::sponsor::signer() {
-        Ok(k) => k,
-        Err(err) => {
-            web_sys::console::warn_1(&JsValue::from_str(&format!("sponsor: {err}")));
-            return;
-        }
-    };
-    match super::registry::claim_daily_sponsored(
-        &signer,
-        &fee_payer,
-        super::registry::ALPHA_USD_ADDRESS,
-    )
-    .await
-    {
-        Ok(tx) => {
-            web_sys::console::log_1(&JsValue::from_str(&format!(
-                "initial claimDaily tx: {tx}"
-            )));
-        }
-        Err(err) => {
-            web_sys::console::warn_1(&JsValue::from_str(&format!(
-                "initial claimDaily: {err}"
-            )));
-        }
-    }
 }
 
 /// Inline-confirmed reset: nuke every entry at OPFS root, reload.

@@ -794,25 +794,19 @@ fn admin_identity_section(
     }
 }
 
-/// Credit balance + daily claim. Balance pill on the left is filled
-/// async by `refresh_credits_pill`; the claim button on the right
-/// fires `Action::ClaimCredits` and is a no-op if the user already
-/// claimed today (the chain reverts; the bundle surfaces the revert
-/// inline). Both `#credits-balance` and `#claim-credits-btn` are
-/// addressable so events.rs can swap them independently.
+/// Credit balance display. Filled async by `refresh_credits_pill`. The
+/// daily-claim mechanism was removed: registration is free (the on-chain
+/// `registrationCost` is 0), so credits aren't gating anything right now —
+/// the balance is informational while the credit model is reworked (the
+/// future direction is continuous streaming + a subscription, not a manual
+/// daily claim).
 pub(crate) fn admin_credits_section() -> Markup {
     html! {
         div.admin-section {
             div.admin-section-title { "credits" }
             div.admin-credits-row {
                 code #credits-balance .admin-identity-value { "…" }
-                button #claim-credits-btn
-                    type="button"
-                    data-action="claim-credits"
-                    .ghost { "claim daily" }
             }
-            div #claim-status .admin-msg-slot {}
-            div #claim-credits-msg .admin-msg-slot {}
         }
     }
 }
