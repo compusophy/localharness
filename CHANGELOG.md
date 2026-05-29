@@ -5,6 +5,58 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-05-29
+
+Security & quality-assurance pass ahead of v1, from a full multi-subsystem
+audit. The crate's `workspace_only` sandbox is now actually complete, the
+browser app's cross-origin signer is hardened, and several DoS / XSS
+vectors are closed. Some items are landed-but-need-live-verification
+(noted) and the contract changes are in-tree but NOT yet deployed on-chain.
+
+### Security
+
+- **`workspace_only` policy now covers every filesystem tool.** It
+  previously denied out-of-workspace access for only `view_file` /
+  `create_file` / `edit_file` — `delete_file`, `rename_file`, and the
+  traversal tools (`list_directory` / `find_file` / `search_directory`)
+  were unsandboxed, and the predicate failed *open* on a missing path.
+  All eight tools are now covered, `rename_file` is checked on both
+  `from` and `to`, and resolution fails *closed*. `secure_normalize_path`
+  no longer falls back to a path with unresolved `..` traversal.
+- **Cross-origin signer hardening (browser app).** Seed reveal / import /
+  wallet-overwrite are now apex-origin only (a tenant subdomain can no
+  longer exfiltrate or replace the master seed). `lh-sign-digest` no
+  longer signs an opaque caller digest — it reconstructs the Tempo
+  sender-hash from structured fields, enforces a call-target allowlist,
+  and signs only its own reconstruction. The owner-verification challenge
+  is now bound to the subdomain name (no cross-name replay).
+- **XSS hardening.** Error/status messages that interpolate dynamic or
+  RPC-sourced text are HTML-escaped (no raw-HTML interpolation sinks
+  remain in the app). Added a `Content-Security-Policy` (shipping
+  Report-Only for validation) plus `X-Content-Type-Options` and
+  `Referrer-Policy` headers; the bootstrap script moved external.
+- **Secret zeroization.** Private-key hex, BIP-39 entropy, and the key
+  digest are wiped from memory on drop (`zeroize`).
+- **DoS caps.** `view_file` refuses files over 16 MiB before reading them
+  into memory; directory walks are capped; the rustlite parser rejects
+  pathologically nested input with a `CompileError` instead of
+  overflowing the stack; `call_agent` validates the target name.
+
+### Fixed
+
+- **rustlite `&&` / `||` miscompiled.** They emitted stack-imbalanced,
+  invalid wasm; they now compile to correct short-circuit branches
+  (validated by executing the output).
+
+### Changed
+
+- The browser shell's CSS and bootstrap script were extracted from
+  `index.html` into `styles.css` and `boot.js`.
+- Contracts (in-tree, **not yet deployed**): `register` can no longer
+  mint token id 0 (a name-takeover footgun on an uninitialised diamond);
+  `MultiSignerAccount` restricts signer management to the NFT holder and
+  invalidates a previous holder's device signers on transfer.
+
 ## [0.13.0] - 2026-05-28
 
 Onboarding unblocked, the DISPLAY became a universal loader, and the
