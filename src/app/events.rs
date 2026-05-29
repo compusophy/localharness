@@ -26,8 +26,6 @@ use super::templates;
 #[derive(Debug, Clone)]
 enum Action {
     Send,
-    Compact,
-    Reset,
     ClearKey,
     OpfsRefresh,
     OpfsWipe,
@@ -37,6 +35,7 @@ enum Action {
     OpfsCloseViewer,
     OpfsNav(String),
     OpfsOpen(String),
+    OpfsEdit(String),
     OpfsSave(String),
     ApexClaim,
     ClaimHere,
@@ -73,7 +72,7 @@ enum Action {
     SaveToolAllowlist,
     ResetToolAllowlist,
     SaveApiKey,
-    DisplayStop,
+    ToggleDisplay,
     StopTurn,
     PublishApp,
 }
@@ -82,8 +81,6 @@ impl Action {
     fn parse(name: &str, arg: Option<String>) -> Option<Action> {
         Some(match name {
             "send" => Action::Send,
-            "compact" => Action::Compact,
-            "reset" => Action::Reset,
             "clear-key" => Action::ClearKey,
             "opfs-refresh" => Action::OpfsRefresh,
             "opfs-wipe" => Action::OpfsWipe,
@@ -93,6 +90,7 @@ impl Action {
             "opfs-close-viewer" => Action::OpfsCloseViewer,
             "opfs-nav" => Action::OpfsNav(arg.unwrap_or_default()),
             "opfs-open" => Action::OpfsOpen(arg.unwrap_or_default()),
+            "opfs-edit" => Action::OpfsEdit(arg.unwrap_or_default()),
             "opfs-save" => Action::OpfsSave(arg.unwrap_or_default()),
             "apex-claim" => Action::ApexClaim,
             "claim-here" => Action::ClaimHere,
@@ -129,7 +127,7 @@ impl Action {
             "save-tool-allowlist" => Action::SaveToolAllowlist,
             "reset-tool-allowlist" => Action::ResetToolAllowlist,
             "save-api-key" => Action::SaveApiKey,
-            "display-stop" => Action::DisplayStop,
+            "toggle-display" => Action::ToggleDisplay,
             "stop-turn" => Action::StopTurn,
             "publish-app" => Action::PublishApp,
             _ => return None,
@@ -562,12 +560,6 @@ fn dispatch(action: Action) {
                 super::chat::run_send().await;
             });
         }
-        Action::Compact => {
-            wasm_bindgen_futures::spawn_local(async move {
-                compact_pressed().await;
-            });
-        }
-        Action::Reset => reset_pressed(),
         Action::ClearKey => clear_key_pressed(),
         Action::OpfsRefresh => {
             wasm_bindgen_futures::spawn_local(async move {
@@ -575,7 +567,7 @@ fn dispatch(action: Action) {
             });
         }
         Action::OpfsCloseViewer => super::opfs::close_viewer(),
-        Action::DisplayStop => super::opfs::close_viewer(),
+        Action::ToggleDisplay => super::opfs::toggle_display(),
         Action::StopTurn => super::chat::request_stop_turn(),
         Action::PublishApp => {
             wasm_bindgen_futures::spawn_local(async move {
@@ -590,6 +582,11 @@ fn dispatch(action: Action) {
         Action::OpfsOpen(name) => {
             wasm_bindgen_futures::spawn_local(async move {
                 super::opfs::open_file(&name).await;
+            });
+        }
+        Action::OpfsEdit(name) => {
+            wasm_bindgen_futures::spawn_local(async move {
+                super::opfs::edit_file(&name).await;
             });
         }
         Action::OpfsSave(name) => {
@@ -1874,10 +1871,19 @@ fn show_mobile_tab(name: &str) {
     new_cls.push_str(&format!("tab-{name}"));
     layout.set_class_name(&new_cls);
 
+    // The display tab shows the framebuffer; mount an idle surface if
+    // nothing is already on it so the canvas exists when the tab opens.
+    if name == "display" && dom::by_id("display-canvas").is_none() {
+        dom::swap_inner(
+            "view-content",
+            &super::templates::display_surface().into_string(),
+        );
+    }
+
     // Reflect active state on each tab button by id — small fixed
     // set of tabs, no need for query_selector_all (which needs the
     // NodeList web-sys feature we don't enable).
-    for tab in ["files", "chat", "agent"] {
+    for tab in ["files", "chat", "display", "agent"] {
         let id = format!("tab-btn-{tab}");
         let Some(el) = dom::by_id(&id) else { continue };
         let cls = el.class_name();
@@ -2362,44 +2368,6 @@ fn parse_eth_to_wei(s: &str) -> Result<u128, String> {
 
 
 // --- Action handlers ---------------------------------------------------
-
-fn reset_pressed() {
-    super::APP.with(|cell| {
-        let mut app = cell.borrow_mut();
-        app.agent = None;
-        app.session_key = None;
-        app.turn_count = 0;
-        app.pending_history = None;
-    });
-    dom::swap_inner("transcript", "");
-    // No status text — clearing is silent.
-    // Drop the persisted history too — a reload after reset starts
-    // fresh, matching the user's expectation of "new conversation."
-    wasm_bindgen_futures::spawn_local(async move {
-        super::history::clear().await;
-    });
-    if let Some(prompt) = dom::textarea_by_id("prompt") {
-        prompt.focus().ok();
-    }
-}
-
-async fn compact_pressed() {
-    let agent = super::APP.with(|cell| cell.borrow().agent.clone());
-    let Some(agent) = agent else {
-        dom::set_status("no active session to compact", true);
-        return;
-    };
-    dom::set_status("compacting...", false);
-    let changed = agent.compact().await;
-    if changed {
-        dom::set_status("compacted", false);
-        // Persist the compacted history so a reload picks it up.
-        super::history::save_from_agent().await;
-    } else {
-        dom::set_status("nothing to compact", false);
-    }
-    dom::scroll_to_bottom("transcript");
-}
 
 fn clear_key_pressed() {
     if let Some(input) = dom::input_by_id("key") {

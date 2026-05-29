@@ -42,7 +42,9 @@ impl Tool for RunCartridge {
          Fonts cover 0-9, A-Z, space, and + - * / = . ( ). To build a \
          clickable button: fill_rect for the box, draw_char/draw_number \
          for the label, and each frame check if pointer_down() and the \
-         pointer is inside the box. To make a cartridge the subdomain's \
+         pointer is inside the box. Each run is auto-saved to `cartridge.rl` \
+         so it shows up in the files panel and survives a reload (re-open it \
+         from files to run it again). To make a cartridge the subdomain's \
          PERMANENT app (so the page boots straight into it fullscreen on \
          every load, no IDE chrome), also save the exact same source to a \
          file named `app.rl` with create_file."
@@ -79,9 +81,18 @@ impl Tool for RunCartridge {
 
         #[cfg(all(target_arch = "wasm32", feature = "browser-app"))]
         {
+            // Persist the source so the run is visible in the files panel
+            // and survives a reload. Best-effort — a write failure must not
+            // block the run itself.
+            let saved = {
+                use crate::filesystem::Filesystem;
+                let fs = crate::app::shared_opfs();
+                fs.write_atomic("cartridge.rl", source.as_bytes()).await.is_ok()
+            };
             match crate::app::display::run_wasm(&wasm_bytes).await {
                 Ok(()) => Ok(json!({
                     "status": "running on display",
+                    "saved": if saved { "cartridge.rl" } else { "" },
                     "wasm_size": wasm_bytes.len()
                 })),
                 Err(err) => Ok(json!({

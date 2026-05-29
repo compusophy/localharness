@@ -183,9 +183,9 @@ pub(crate) async fn run_send() {
     dom::swap_outer("terminal-send", &templates::stop_button().into_string());
 
     while let Some(item) = cursor.next().await {
-        // Honor a stop request (checked per chunk — cooperative).
+        // Honor a stop request (checked per chunk — cooperative). The
+        // post-turn block appends a redirect prompt once the loop exits.
         if TURN_CANCEL.with(|c| c.get()) {
-            dom::set_status("stopped.", false);
             break;
         }
         if t_first_chunk.is_none() {
@@ -257,6 +257,24 @@ pub(crate) async fn run_send() {
     }
 
     mark_turn_done(assistant_turn_id);
+
+    // If the user hit stop, append a short redirect prompt so the turn
+    // ends on a question rather than a half-finished thought.
+    if TURN_CANCEL.with(|c| c.get()) {
+        let note_id = APP.with(|cell| cell.borrow_mut().alloc_id());
+        dom::append_html(
+            "transcript",
+            &templates::turn(
+                note_id,
+                "assistant",
+                templates::text_segment(note_id, "Stopped. What should I do instead?"),
+                false,
+            )
+            .into_string(),
+        );
+        dom::scroll_to_bottom("transcript");
+    }
+
     APP.with(|cell| cell.borrow_mut().turn_count += 1);
     let turn_count = APP.with(|cell| cell.borrow().turn_count);
 
@@ -352,14 +370,24 @@ pub(crate) async fn start_session(key: &str) -> Result<(), JsValue> {
              last). Input polled each frame: pointer_x(), pointer_y(), \
              pointer_down() (1 while pressed). State across frames (no globals \
              in rustlite): state_get(slot)/state_set(slot,value), 64 int slots. \
-             Colors 0xRRGGBB (white = 16777215). Font covers 0-9, A-Z, space, \
-             + - * / = . ( ). You CAN build real interactive apps now — a \
+             Colors 0xRRGGBB (white = 16777215). Font covers 0-9, A-Z, a-z, \
+             space, and common punctuation (! ? , : ; ' \" . - + / = etc.). \
+             You CAN build real interactive apps now — a \
              clickable button is a fill_rect + label, hit-tested against \
              pointer_down() + pointer position, with state in the slots. \
              Use this whenever the user asks for something visual or an app. \
-             To make a cartridge this subdomain's PERMANENT app (boots \
-             fullscreen on every page load, no IDE chrome), save the same \
-             source to a file named `app.rl` via create_file.\n\
+             Each run is auto-saved to `cartridge.rl` (visible in files, \
+             survives reload). To make a cartridge this subdomain's PERMANENT \
+             app (boots fullscreen on every page load, no IDE chrome), save \
+             the same source to a file named `app.rl` via create_file.\n\
+           • render_html(source) — render an HTML document onto the VISUAL \
+             DISPLAY. The display CAN show HTML: this lays out block-level \
+             text (h1-h6, p, ul/li, blockquote, br) word-wrapped in the \
+             bitmap font, monochrome. It is a snapshot — no JavaScript, no \
+             CSS, no images (headings just render bigger). For interactive or \
+             animated apps use run_cartridge. Pair with create_file to also \
+             save the HTML as `index.html`. (Opening an .html file from the \
+             files panel renders it here too.)\n\
            • submit_feedback(text) — submit feedback on-chain via the \
              FeedbackFacet. Emits a FeedbackSubmitted event on the registry \
              diamond. Use when the user asks to leave feedback or to report \

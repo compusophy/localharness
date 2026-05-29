@@ -137,10 +137,6 @@ pub(crate) fn terminal_input() -> Markup {
                 textarea #prompt rows="1" {}
                 (send_button())
             }
-            div.terminal-actions {
-                button type="button" data-action="compact" .terminal-action title="compact conversation context" { "compact" }
-                button type="button" data-action="reset" .terminal-action title="clear conversation" { "clear" }
-            }
         }
     }
 }
@@ -149,7 +145,7 @@ pub(crate) fn terminal_input() -> Markup {
 /// while a turn is streaming so the same slot becomes the kill switch.
 pub(crate) fn send_button() -> Markup {
     html! {
-        button #terminal-send .terminal-send data-action="send" title="send" { "→" }
+        button #terminal-send .terminal-send data-action="send" title="send" { "▶" }
     }
 }
 
@@ -360,6 +356,13 @@ pub(crate) fn chrome(host: &Host) -> Markup {
             // is hidden by default and opens when a file is opened from
             // the files panel.
             div.col-chat {
+                // Display rail pinned to the top of the center column —
+                // always present, so the user can open the framebuffer
+                // any time, not only when the agent runs a cartridge.
+                button type="button" data-action="toggle-display"
+                    .top-rail.display-rail {
+                    span.rail-label { "display" }
+                }
                 section.view-panel {
                     div #view-content .view-content {}
                 }
@@ -383,7 +386,7 @@ pub(crate) fn chrome(host: &Host) -> Markup {
             ))
             button type="button" data-action="toggle-financial"
                 .side-rail.financial-rail {
-                span.rail-label { "agent" }
+                span.rail-label { "agents" }
             }
         }
     }
@@ -397,7 +400,8 @@ pub(crate) fn mobile_tabs() -> Markup {
         nav.mobile-tabs {
             button #tab-btn-files type="button" data-action="show-tab" data-arg="files" .tab-button { "files" }
             button #tab-btn-chat type="button" data-action="show-tab" data-arg="chat" .tab-button.active { "chat" }
-            button #tab-btn-agent type="button" data-action="show-tab" data-arg="agent" .tab-button { "agent" }
+            button #tab-btn-display type="button" data-action="show-tab" data-arg="display" .tab-button { "display" }
+            button #tab-btn-agent type="button" data-action="show-tab" data-arg="agent" .tab-button { "agents" }
         }
     }
 }
@@ -1306,12 +1310,25 @@ pub(crate) fn opfs_list(cwd: &[String], entries: &[DirEntry]) -> Markup {
                         }
                     }
                     _ => {
+                        @let lname = entry.name.to_ascii_lowercase();
+                        @let opens_display = lname.ends_with(".html")
+                            || lname.ends_with(".htm")
+                            || lname.ends_with(".rl");
                         li.file {
                             span.name data-action="opfs-open" data-arg=(entry.name) {
                                 (entry.name)
                             }
                             @if let Some(size) = entry.size {
                                 span.size { (format_bytes(size)) }
+                            }
+                            // .html/.rl open in DISPLAY on click; this keeps
+                            // the source reachable for editing.
+                            @if opens_display {
+                                button.file-edit
+                                    type="button"
+                                    data-action="opfs-edit"
+                                    data-arg=(entry.name)
+                                    title=(format!("edit {}", entry.name)) { "edit" }
                             }
                             button.file-delete
                                 type="button"
@@ -1356,18 +1373,14 @@ pub(crate) fn opfs_editor(display_path: &str, name: &str, text: &str) -> Markup 
 }
 
 /// DISPLAY surface — the framebuffer the cartridge loader blits into.
-/// A small toolbar with a STOP button (kills the running cartridge's
-/// frame loop and closes the surface) sits above a single `<canvas>`;
-/// the canvas backing store is sized in `display::mount_canvas` and CSS
-/// letterboxes it 16:9. This is the "screen" half of the Orbital-style
-/// compositor.
+/// Just a single `<canvas>` in a letterboxed stage; no toolbar. The
+/// canvas backing store is sized in `display::mount_canvas` and CSS
+/// letterboxes it 16:9. Toggling the DISPLAY rail closed tears the
+/// surface down (and stops any running cartridge). This is the "screen"
+/// half of the Orbital-style compositor.
 pub(crate) fn display_surface() -> Markup {
     html! {
         div.display-wrap {
-            div.display-toolbar {
-                button type="button" data-action="display-stop" .display-stop
-                    title="stop the running cartridge" { "stop" }
-            }
             div.display-stage {
                 canvas #display-canvas .display-canvas {}
             }

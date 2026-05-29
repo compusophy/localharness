@@ -146,10 +146,3 @@ pub(crate) async fn save_from_agent() {
 pub(crate) fn take_pending() -> Option<Vec<u8>> {
     APP.with(|cell| cell.borrow_mut().pending_history.take())
 }
-
-/// Delete the history file from OPFS. Used by the "reset" action so a
-/// new conversation doesn't auto-restore the old one on reload.
-pub(crate) async fn clear() {
-    let fs = super::shared_opfs();
-    let _ = fs.delete(HISTORY_FILE).await;
-}

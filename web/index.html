@@ -399,7 +399,7 @@
        blits into. Black letterbox stage; the canvas is sized 16:9 and
        scaled with crisp (pixelated) edges so individual framebuffer
        pixels stay sharp instead of being smoothed by the browser. */
-    /* Wrapper stacks a small stop-toolbar above the canvas stage. */
+    /* Just the canvas stage — no toolbar. */
     .display-wrap {
       display: flex;
       flex-direction: column;
@@ -407,22 +407,6 @@
       height: 100%;
       min-height: 200px;
     }
-    .display-toolbar {
-      flex-shrink: 0;
-      display: flex;
-      justify-content: flex-end;
-      padding: 6px 8px;
-      border-bottom: 1px solid var(--border);
-      background: var(--panel);
-    }
-    .display-stop {
-      font-size: 10px;
-      padding: 4px 14px;
-      color: var(--fg);
-      border-color: var(--fg);
-      letter-spacing: 0.1em;
-    }
-    .display-stop:hover { color: var(--bg); background: var(--fg); border-color: var(--fg); }
     .display-stage {
       flex: 1;
       display: flex;
@@ -553,6 +537,10 @@
       main.layout.tab-chat .transcript { display: flex; flex: 1; min-height: 0; }
       main.layout.tab-chat .terminal-panel { display: block; }
 
+      /* tab-display: just the framebuffer surface, full height. */
+      main.layout.tab-display .col-chat { display: flex; }
+      main.layout.tab-display .view-panel { display: block; flex: 1; max-height: none; }
+
       /* tab-agent: just the agent card. */
       main.layout.tab-agent .col-financial { display: flex; }
 
@@ -637,7 +625,7 @@
     }
     .terminal-send {
       padding: 0 8px;
-      font-size: 16px;
+      font-size: 13px;
       line-height: 1;
       flex-shrink: 0;
       background: transparent;
@@ -646,24 +634,9 @@
       cursor: pointer;
     }
     .terminal-send:hover { color: var(--accent); }
-    /* Stop button occupies the send slot while a turn streams. */
+    /* Stop button (■) occupies the play slot (▶) while a turn streams. */
     .terminal-stop { color: var(--error); font-size: 13px; }
     .terminal-stop:hover { color: var(--error); }
-    .terminal-actions {
-      display: flex;
-      justify-content: flex-end;
-      gap: 8px;
-      padding-top: 4px;
-    }
-    .terminal-action {
-      font-size: 10px;
-      padding: 2px 8px;
-      border: 0;
-      color: var(--muted);
-      text-transform: lowercase;
-      letter-spacing: 0;
-    }
-    .terminal-action:hover { color: var(--fg); border: 0; }
 
     /* Financial column visuals */
     .financial-card,
@@ -1101,6 +1074,15 @@
     }
     .turn.user .body { white-space: pre-wrap; color: var(--muted); }
     .turn.assistant .body .text-segment { white-space: pre-wrap; }
+    /* Empty segments (opened after a tool call but never written to)
+       must not reserve vertical space. */
+    .turn.assistant .body .text-segment:empty { display: none; }
+    /* Markdown wraps short replies in <p>; drop the outer margins so a
+       one-line answer doesn't carry a blank line above/below it. */
+    .turn .body > p:first-child,
+    .turn .body .text-segment > p:first-child { margin-top: 0; }
+    .turn .body > p:last-child,
+    .turn .body .text-segment > p:last-child { margin-bottom: 0; }
 
     /* Inline tool-call blocks inside an assistant turn. */
     .tool-call {
@@ -1138,9 +1120,37 @@
       font-size: 11px;
       color: var(--muted);
     }
-    .tool-call .tc-status.running::before { content: "⋯ running"; }
+    /* Braille spinner cycled via keyframed `content`. Used by the
+       tool-call running pill and the streaming-turn indicator. */
+    @keyframes lh-spin {
+      0%   { content: "⠋"; }
+      10%  { content: "⠙"; }
+      20%  { content: "⠹"; }
+      30%  { content: "⠸"; }
+      40%  { content: "⠼"; }
+      50%  { content: "⠴"; }
+      60%  { content: "⠦"; }
+      70%  { content: "⠧"; }
+      80%  { content: "⠇"; }
+      90%  { content: "⠏"; }
+      100% { content: "⠋"; }
+    }
+    .tool-call .tc-status.running::before {
+      content: "⠋";
+      animation: lh-spin 800ms steps(1) infinite;
+    }
+    .tool-call .tc-status.running::after { content: " running"; }
     .tool-call .tc-status.ok::before { content: "✓ done"; color: var(--accent); }
     .tool-call .tc-status.err::before { content: "✗ error"; color: var(--error); }
+    /* Streaming assistant turn shows a trailing spinner while in flight.
+       (The role line is hidden, so this is the only "working" cue.) */
+    .turn.assistant.streaming .body::after {
+      content: "⠋";
+      display: inline-block;
+      margin-left: 6px;
+      color: var(--muted);
+      animation: lh-spin 800ms steps(1) infinite;
+    }
     .tool-call .tc-body {
       padding: 8px 10px 10px;
       border-top: 1px solid var(--border);
@@ -1419,6 +1429,20 @@
     }
     .fs-list li:hover .file-delete { visibility: visible; }
     .file-delete:hover { color: var(--error); }
+    .file-edit {
+      background: transparent;
+      color: var(--muted);
+      border: 0;
+      padding: 0 6px;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      line-height: 1;
+      cursor: pointer;
+      visibility: hidden;
+    }
+    .fs-list li:hover .file-edit { visibility: visible; }
+    .file-edit:hover { color: var(--fg); }
     .fs-list .name { color: var(--fg); }
     .fs-list .dir .name::before { content: "▸ "; color: var(--accent); }
     .fs-list .file .name::before { content: "· "; color: var(--muted); }

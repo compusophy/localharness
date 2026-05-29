@@ -1558,7 +1558,7 @@ struct RpcRequest<'a> {
 #[derive(Deserialize)]
 struct RpcResponse {
     #[serde(default)]
-    result: Option<String>,
+    result: Option<serde_json::Value>,
     #[serde(default)]
     error: Option<RpcError>,
 }
@@ -1570,7 +1570,11 @@ struct RpcError {
     message: String,
 }
 
-async fn rpc(method: &str, params: serde_json::Value) -> Result<String, String> {
+/// Raw JSON-RPC call returning the `result` field verbatim. Methods like
+/// `eth_getLogs` return arrays, so the result type must stay a `Value`
+/// rather than being forced into a `String` (which silently broke log
+/// decoding — the in-app feedback list).
+async fn rpc_value(method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
     let body = RpcRequest {
         jsonrpc: "2.0",
         id: 1,
@@ -1596,6 +1600,15 @@ async fn rpc(method: &str, params: serde_json::Value) -> Result<String, String> 
         .ok_or_else(|| format!("{method} returned no result"))
 }
 
+/// JSON-RPC call whose result is a string (hex quantity, tx hash, etc.).
+async fn rpc(method: &str, params: serde_json::Value) -> Result<String, String> {
+    let value = rpc_value(method, params).await?;
+    value
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| format!("{method}: expected string result"))
+}
+
 async fn eth_call(to: &str, data_hex: &str) -> Result<String, String> {
     rpc(
         "eth_call",
@@ -1609,7 +1622,7 @@ async fn eth_get_logs(
     topics: Vec<serde_json::Value>,
     from_block: &str,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let result = rpc(
+    let result = rpc_value(
         "eth_getLogs",
         serde_json::json!([{
             "address": address,
@@ -1619,10 +1632,10 @@ async fn eth_get_logs(
         }]),
     )
     .await?;
-    let parsed: Vec<serde_json::Value> = serde_json::from_str(
-        &serde_json::to_string(&result).unwrap_or_default()
-    ).unwrap_or_default();
-    Ok(parsed)
+    match result {
+        serde_json::Value::Array(logs) => Ok(logs),
+        _ => Ok(Vec::new()),
+    }
 }
 
 /// Get the list of authorized signers for a TBA by reading

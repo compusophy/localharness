@@ -122,6 +122,22 @@ pub(crate) async fn run_in_root_canvas(wasm_bytes: &[u8]) -> Result<(), JsValue>
     run_with_ctx(wasm_bytes, ctx).await
 }
 
+/// Render an HTML document into the framebuffer as pixels (no DOM, no
+/// iframe) — the loader's "universal" path alongside `.wasm` cartridges.
+/// A block-level subset (headings, paragraphs, lists, breaks) is laid out
+/// with word-wrap and blitted via the bitmap font, monochrome. This is a
+/// *snapshot* render: no CSS box model, images, colors, or scripts. Stops
+/// any running cartridge first so its frame loop can't blit over the page.
+pub(crate) fn render_html(source: &str) -> Result<(), JsValue> {
+    stop();
+    let ctx = mount_canvas()?;
+    let blocks = html_to_blocks(source);
+    let buf = paint_html_fb(&blocks);
+    let img = ImageData::new_with_u8_clamped_array_and_sh(Clamped(&buf[..]), FB_W, FB_H)?;
+    ctx.put_image_data(&img, 0.0, 0.0)?;
+    Ok(())
+}
+
 /// Shared core: wire the host imports over a fresh framebuffer, reset
 /// per-cartridge input/state, instantiate, and start the frame loop (or
 /// one-shot render).
@@ -360,9 +376,10 @@ fn blit_glyph(buf: &mut [u8], x: i32, y: i32, code: u32, color: (u8, u8, u8), sc
 }
 
 /// 5x7 bitmap font. Each row's low 5 bits are pixels (bit 4 = leftmost).
-/// Covers digits, A-Z, space, and the operators a calculator/label app
-/// needs; unknown codes render as a hollow box. Hand-encoded (no font
-/// dep) and verified by rendering every glyph to ASCII art.
+/// Covers digits, A-Z, a-z, space, and common punctuation; unknown codes
+/// render as a hollow box. Hand-encoded (no font dep) and verified by
+/// rendering every glyph to ASCII art. Lowercase + punctuation were added
+/// so the HTML renderer (and text-heavy cartridges) read cleanly.
 fn glyph_5x7(c: u32) -> [u8; 7] {
     match c {
         0x20 => [0, 0, 0, 0, 0, 0, 0],                       // space
@@ -376,14 +393,32 @@ fn glyph_5x7(c: u32) -> [u8; 7] {
         0x37 => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08],  // 7
         0x38 => [0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E],  // 8
         0x39 => [0x0E, 0x11, 0x11, 0x0F, 0x01, 0x01, 0x0E],  // 9
-        0x2B => [0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00],  // +
-        0x2D => [0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00],  // -
-        0x2A => [0x00, 0x04, 0x15, 0x0E, 0x15, 0x04, 0x00],  // *
-        0x2F => [0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10],  // /
-        0x3D => [0x00, 0x00, 0x1F, 0x00, 0x1F, 0x00, 0x00],  // =
-        0x2E => [0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x06],  // .
+        // Punctuation / symbols.
+        0x21 => [0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04],  // !
+        0x22 => [0x0A, 0x0A, 0x0A, 0x00, 0x00, 0x00, 0x00],  // "
+        0x23 => [0x0A, 0x0A, 0x1F, 0x0A, 0x1F, 0x0A, 0x0A],  // #
+        0x25 => [0x18, 0x19, 0x02, 0x04, 0x08, 0x13, 0x03],  // %
+        0x26 => [0x0C, 0x12, 0x14, 0x08, 0x15, 0x12, 0x0D],  // &
+        0x27 => [0x04, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00],  // '
         0x28 => [0x04, 0x08, 0x10, 0x10, 0x10, 0x08, 0x04],  // (
         0x29 => [0x04, 0x02, 0x01, 0x01, 0x01, 0x02, 0x04],  // )
+        0x2A => [0x00, 0x04, 0x15, 0x0E, 0x15, 0x04, 0x00],  // *
+        0x2B => [0x00, 0x04, 0x04, 0x1F, 0x04, 0x04, 0x00],  // +
+        0x2C => [0x00, 0x00, 0x00, 0x00, 0x06, 0x04, 0x08],  // ,
+        0x2D => [0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00],  // -
+        0x2E => [0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x06],  // .
+        0x2F => [0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10],  // /
+        0x3A => [0x00, 0x06, 0x06, 0x00, 0x06, 0x06, 0x00],  // :
+        0x3B => [0x00, 0x06, 0x06, 0x00, 0x06, 0x04, 0x08],  // ;
+        0x3C => [0x02, 0x04, 0x08, 0x10, 0x08, 0x04, 0x02],  // <
+        0x3D => [0x00, 0x00, 0x1F, 0x00, 0x1F, 0x00, 0x00],  // =
+        0x3E => [0x08, 0x04, 0x02, 0x01, 0x02, 0x04, 0x08],  // >
+        0x3F => [0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04],  // ?
+        0x40 => [0x0E, 0x11, 0x17, 0x15, 0x17, 0x10, 0x0E],  // @
+        0x5B => [0x0E, 0x08, 0x08, 0x08, 0x08, 0x08, 0x0E],  // [
+        0x5D => [0x0E, 0x02, 0x02, 0x02, 0x02, 0x02, 0x0E],  // ]
+        0x5F => [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1F],  // _
+        // Uppercase A-Z.
         0x41 => [0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11],  // A
         0x42 => [0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E],  // B
         0x43 => [0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E],  // C
@@ -410,6 +445,33 @@ fn glyph_5x7(c: u32) -> [u8; 7] {
         0x58 => [0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11],  // X
         0x59 => [0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04],  // Y
         0x5A => [0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F],  // Z
+        // Lowercase a-z.
+        0x61 => [0x00, 0x00, 0x0E, 0x01, 0x0F, 0x11, 0x0F],  // a
+        0x62 => [0x10, 0x10, 0x16, 0x19, 0x11, 0x11, 0x1E],  // b
+        0x63 => [0x00, 0x00, 0x0E, 0x10, 0x10, 0x11, 0x0E],  // c
+        0x64 => [0x01, 0x01, 0x0D, 0x13, 0x11, 0x11, 0x0F],  // d
+        0x65 => [0x00, 0x00, 0x0E, 0x11, 0x1F, 0x10, 0x0E],  // e
+        0x66 => [0x06, 0x09, 0x08, 0x1C, 0x08, 0x08, 0x08],  // f
+        0x67 => [0x00, 0x0F, 0x11, 0x11, 0x0F, 0x01, 0x0E],  // g
+        0x68 => [0x10, 0x10, 0x16, 0x19, 0x11, 0x11, 0x11],  // h
+        0x69 => [0x04, 0x00, 0x0C, 0x04, 0x04, 0x04, 0x0E],  // i
+        0x6A => [0x02, 0x00, 0x06, 0x02, 0x02, 0x12, 0x0C],  // j
+        0x6B => [0x10, 0x10, 0x12, 0x14, 0x18, 0x14, 0x12],  // k
+        0x6C => [0x0C, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E],  // l
+        0x6D => [0x00, 0x00, 0x1A, 0x15, 0x15, 0x11, 0x11],  // m
+        0x6E => [0x00, 0x00, 0x16, 0x19, 0x11, 0x11, 0x11],  // n
+        0x6F => [0x00, 0x00, 0x0E, 0x11, 0x11, 0x11, 0x0E],  // o
+        0x70 => [0x00, 0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10],  // p
+        0x71 => [0x00, 0x0F, 0x11, 0x11, 0x0F, 0x01, 0x01],  // q
+        0x72 => [0x00, 0x00, 0x16, 0x19, 0x10, 0x10, 0x10],  // r
+        0x73 => [0x00, 0x00, 0x0F, 0x10, 0x0E, 0x01, 0x1E],  // s
+        0x74 => [0x08, 0x08, 0x1C, 0x08, 0x08, 0x09, 0x06],  // t
+        0x75 => [0x00, 0x00, 0x11, 0x11, 0x11, 0x13, 0x0D],  // u
+        0x76 => [0x00, 0x00, 0x11, 0x11, 0x11, 0x0A, 0x04],  // v
+        0x77 => [0x00, 0x00, 0x11, 0x11, 0x15, 0x15, 0x0A],  // w
+        0x78 => [0x00, 0x00, 0x11, 0x0A, 0x04, 0x0A, 0x11],  // x
+        0x79 => [0x00, 0x11, 0x11, 0x11, 0x0F, 0x01, 0x0E],  // y
+        0x7A => [0x00, 0x00, 0x1F, 0x02, 0x04, 0x08, 0x1F],  // z
         _ => [0x1F, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1F],     // unknown -> box
     }
 }
@@ -525,4 +587,236 @@ fn size_and_get_ctx() -> Result<CanvasRenderingContext2d, JsValue> {
         .ok_or_else(|| JsValue::from_str("no 2d context"))?
         .dyn_into::<CanvasRenderingContext2d>()?;
     Ok(ctx)
+}
+
+// --- HTML → framebuffer rendering --------------------------------------
+//
+// A deliberately tiny renderer: enough to show what an `index.html`
+// "says" on the screen, not a browser engine. We extract block-level text
+// (headings/paragraphs/lists), drop `<head>`/`<script>`/`<style>`, decode
+// the common entities, then word-wrap and blit with the bitmap font.
+
+/// One laid-out block of text. `scale` drives glyph size (headings are
+/// bigger); `bullet` prefixes a list dash.
+struct HtmlBlock {
+    text: String,
+    scale: i32,
+    bullet: bool,
+}
+
+/// Extract the lowercased tag name from the inside of a `<...>` (handles a
+/// leading `/` for close tags and trailing attributes/`/`).
+fn tag_name(inner: &str) -> String {
+    let t = inner.trim().trim_start_matches('/').trim_start();
+    let end = t
+        .find(|ch: char| ch.is_whitespace() || ch == '/')
+        .unwrap_or(t.len());
+    t[..end].to_ascii_lowercase()
+}
+
+/// Decode the handful of HTML entities that show up in plain prose.
+fn decode_entities(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&nbsp;", " ")
+        // `&amp;` last so a literal "&amp;lt;" doesn't double-decode.
+        .replace("&amp;", "&")
+}
+
+/// Collapse runs of whitespace to single spaces and trim — HTML source
+/// whitespace is not significant for our layout.
+fn collapse_ws(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_space = false;
+    for ch in s.chars() {
+        if ch.is_whitespace() {
+            if !prev_space && !out.is_empty() {
+                out.push(' ');
+            }
+            prev_space = true;
+        } else {
+            out.push(ch);
+            prev_space = false;
+        }
+    }
+    out.trim_end().to_string()
+}
+
+/// Push the accumulated text run as a block (decoded + collapsed), then
+/// clear it. No-op for an empty run.
+fn flush_block(blocks: &mut Vec<HtmlBlock>, cur: &mut String, scale: i32, bullet: bool) {
+    let text = collapse_ws(&decode_entities(cur));
+    cur.clear();
+    if !text.is_empty() {
+        blocks.push(HtmlBlock { text, scale, bullet });
+    }
+}
+
+/// Parse a subset of HTML into renderable text blocks. Inline tags
+/// (`a`, `span`, `b`, `code`, …) are ignored — their text just flows into
+/// the current block. `head`/`script`/`style` content is skipped wholesale.
+fn html_to_blocks(src: &str) -> Vec<HtmlBlock> {
+    let chars: Vec<char> = src.chars().collect();
+    let mut blocks: Vec<HtmlBlock> = Vec::new();
+    let mut cur = String::new();
+    let mut scale: i32 = 1;
+    let mut bullet = false;
+    let mut skip_tag: Option<String> = None;
+
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '<' {
+            // Read up to the closing '>'.
+            let mut j = i + 1;
+            let mut inner = String::new();
+            while j < chars.len() && chars[j] != '>' {
+                inner.push(chars[j]);
+                j += 1;
+            }
+            i = if j < chars.len() { j + 1 } else { j };
+
+            let closing = inner.trim_start().starts_with('/');
+            let name = tag_name(&inner);
+
+            // Inside a skipped region, ignore everything but its close.
+            if let Some(skip) = skip_tag.clone() {
+                if closing && name == skip {
+                    skip_tag = None;
+                }
+                continue;
+            }
+
+            match name.as_str() {
+                "script" | "style" | "head" => {
+                    if !closing {
+                        skip_tag = Some(name);
+                    }
+                }
+                "br" | "hr" => {
+                    flush_block(&mut blocks, &mut cur, scale, bullet);
+                    bullet = false;
+                }
+                "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+                    flush_block(&mut blocks, &mut cur, scale, bullet);
+                    bullet = false;
+                    scale = if closing {
+                        1
+                    } else if name == "h1" {
+                        3
+                    } else {
+                        2
+                    };
+                }
+                "li" => {
+                    flush_block(&mut blocks, &mut cur, scale, bullet);
+                    scale = 1;
+                    bullet = !closing;
+                }
+                "p" | "div" | "ul" | "ol" | "section" | "article" | "header" | "footer"
+                | "nav" | "main" | "blockquote" | "pre" | "table" | "tr" | "title" | "body"
+                | "html" | "figure" | "figcaption" => {
+                    flush_block(&mut blocks, &mut cur, scale, bullet);
+                    bullet = false;
+                    scale = 1;
+                }
+                _ => { /* inline tag — let its text flow into the block */ }
+            }
+            continue;
+        }
+
+        if skip_tag.is_some() {
+            i += 1;
+            continue;
+        }
+        cur.push(c);
+        i += 1;
+    }
+    flush_block(&mut blocks, &mut cur, scale, bullet);
+    blocks
+}
+
+/// Word-wrap `text` to at most `max_chars` per line, hard-breaking any
+/// single word longer than the line.
+fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
+    let max_chars = max_chars.max(1);
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if line.is_empty() {
+            line.push_str(word);
+        } else if line.chars().count() + 1 + word.chars().count() <= max_chars {
+            line.push(' ');
+            line.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut line));
+            line.push_str(word);
+        }
+        // Hard-break a word that overflows the line on its own.
+        while line.chars().count() > max_chars {
+            let head: String = line.chars().take(max_chars).collect();
+            let tail: String = line.chars().skip(max_chars).collect();
+            lines.push(head);
+            line = tail;
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+/// Fill a fresh framebuffer with an opaque colour.
+fn filled_framebuffer(color: (u8, u8, u8)) -> Vec<u8> {
+    let (r, g, b) = color;
+    let mut buf = vec![0u8; FB_BYTES];
+    let mut i = 0;
+    while i + 3 < buf.len() {
+        buf[i] = r;
+        buf[i + 1] = g;
+        buf[i + 2] = b;
+        buf[i + 3] = 255;
+        i += 4;
+    }
+    buf
+}
+
+/// Lay out parsed blocks into the framebuffer. Monochrome: near-black
+/// background, light text, white headings. Clips at the bottom edge (no
+/// scrolling — this is a screenshot, not a scroll view).
+fn paint_html_fb(blocks: &[HtmlBlock]) -> Vec<u8> {
+    let mut buf = filled_framebuffer((13, 13, 13));
+    let left = 6i32;
+    let right = FB_W as i32 - 6;
+    let mut y = 6i32;
+
+    for block in blocks {
+        let scale = block.scale.clamp(1, 3);
+        let advance = 6 * scale; // 5px glyph + 1px gap
+        let line_h = 8 * scale; // 7px glyph + 1px gap
+        let max_chars = (((right - left) / advance).max(1)) as usize;
+        let color = if scale > 1 { (245, 245, 245) } else { (205, 205, 205) };
+        let text = if block.bullet {
+            format!("- {}", block.text)
+        } else {
+            block.text.clone()
+        };
+
+        for line in wrap_text(&text, max_chars) {
+            if y + line_h > FB_H as i32 {
+                return buf; // out of vertical room
+            }
+            let mut x = left;
+            for ch in line.chars() {
+                blit_glyph(&mut buf, x, y, ch as u32, color, scale);
+                x += advance;
+            }
+            y += line_h;
+        }
+        y += 3; // gap between blocks
+    }
+    buf
 }

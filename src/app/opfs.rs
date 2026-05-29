@@ -71,11 +71,18 @@ pub(crate) async fn navigate(target: &str) {
 }
 
 /// Open the named file (relative to cwd). A `.wasm` file is a display
-/// cartridge — hand it to the framebuffer loader. Everything else opens
-/// in the text editor.
+/// cartridge and a `.html`/`.htm` file is rendered into the framebuffer —
+/// both hand off to the DISPLAY loader. Everything else opens in the text
+/// editor. (HTML rows also expose an explicit `edit` button so the source
+/// stays reachable.)
 pub(crate) async fn open_file(name: &str) {
-    if name.ends_with(".wasm") {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".wasm") {
         display_file(name).await
+    } else if lower.ends_with(".rl") {
+        run_cartridge_file(name).await
+    } else if lower.ends_with(".html") || lower.ends_with(".htm") {
+        render_html_file(name).await
     } else {
         edit_file(name).await
     }
@@ -89,6 +96,49 @@ pub(crate) async fn display_file(name: &str) {
     match fs.read(&path).await {
         Ok(bytes) => {
             if let Err(err) = super::display::run_wasm(&bytes).await {
+                super::dom::set_status(&format!("display {display_path}: {err:?}"), true);
+            }
+        }
+        Err(err) => {
+            super::dom::set_status(&format!("display {display_path}: {err}"), true);
+        }
+    }
+}
+
+/// Read a `.rl` rustlite source from OPFS, compile it, and run it on the
+/// DISPLAY framebuffer (the same path `run_cartridge` takes — so a saved
+/// `cartridge.rl` re-runs on click).
+pub(crate) async fn run_cartridge_file(name: &str) {
+    let (path, display_path) = resolve_path(name);
+    let fs = super::shared_opfs();
+    let bytes = match fs.read(&path).await {
+        Ok(b) => b,
+        Err(err) => {
+            super::dom::set_status(&format!("display {display_path}: {err}"), true);
+            return;
+        }
+    };
+    let source = String::from_utf8_lossy(&bytes);
+    match crate::rustlite::compile(&source) {
+        Ok(wasm) => {
+            if let Err(err) = super::display::run_wasm(&wasm).await {
+                super::dom::set_status(&format!("display {display_path}: {err:?}"), true);
+            }
+        }
+        Err(err) => {
+            super::dom::set_status(&format!("compile {display_path}: {err}"), true);
+        }
+    }
+}
+
+/// Read an `.html` file and rasterize it onto the DISPLAY framebuffer.
+pub(crate) async fn render_html_file(name: &str) {
+    let (path, display_path) = resolve_path(name);
+    let fs = super::shared_opfs();
+    match fs.read(&path).await {
+        Ok(bytes) => {
+            let source = String::from_utf8_lossy(&bytes);
+            if let Err(err) = super::display::render_html(&source) {
                 super::dom::set_status(&format!("display {display_path}: {err:?}"), true);
             }
         }
@@ -210,6 +260,28 @@ pub(crate) fn close_viewer() {
     // again re-renders fresh.
     dom::swap_inner("view-content", "");
     set_view_collapsed(true);
+}
+
+/// Toggle the DISPLAY panel from the top rail. If the display canvas is
+/// already showing, tear it down (collapse + stop the cartridge);
+/// otherwise mount an idle framebuffer surface and open the panel. This
+/// lets the user open DISPLAY any time, not only when the agent runs a
+/// cartridge.
+pub(crate) fn toggle_display() {
+    let showing = dom::by_id("display-canvas").is_some() && !view_is_collapsed();
+    if showing {
+        close_viewer();
+    } else {
+        dom::swap_inner("view-content", &templates::display_surface().into_string());
+        set_view_collapsed(false);
+    }
+}
+
+/// Whether the center view-panel is currently collapsed.
+fn view_is_collapsed() -> bool {
+    dom::by_id("layout")
+        .map(|el| el.class_name().split_whitespace().any(|c| c == "view-collapsed"))
+        .unwrap_or(true)
 }
 
 /// Toggle the `view-collapsed` class on `#layout`. CSS hides

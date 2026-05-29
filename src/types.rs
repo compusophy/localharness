@@ -207,6 +207,8 @@ pub enum BuiltinTool {
     CompileRustlite,
     /// Compile a rustlite cartridge and run it on the visual display.
     RunCartridge,
+    /// Render an HTML document onto the visual display (framebuffer).
+    RenderHtml,
     /// Signal that the agent's turn is complete.
     Finish,
 }
@@ -229,6 +231,7 @@ impl BuiltinTool {
         Self::CallAgent,
         Self::CompileRustlite,
         Self::RunCartridge,
+        Self::RenderHtml,
         Self::Finish,
     ];
 
@@ -268,6 +271,7 @@ impl BuiltinTool {
             Self::CallAgent => "call_agent",
             Self::CompileRustlite => "compile_rustlite",
             Self::RunCartridge => "run_cartridge",
+            Self::RenderHtml => "render_html",
             Self::Finish => "finish",
         }
     }

@@ -68,10 +68,16 @@ src/                       library crate
 │   ├── events.rs          delegated click/keydown/submit/input dispatch
 │   ├── chat.rs            chat-turn streaming
 │   ├── history.rs         OPFS-persisted conversation (with tool-call replay)
-│   ├── opfs.rs            file browser + inline editor (.wasm → DISPLAY)
+│   ├── opfs.rs            file browser + inline editor. Click-to-DISPLAY for
+│   │                      .wasm (run), .rl (compile+run), .html (render);
+│   │                      .rl/.html rows get an explicit [edit] button.
+│   │                      run_cartridge auto-saves source to cartridge.rl
 │   ├── display.rs         framebuffer surface — runs wasm cartridges
 │   │                      into a <canvas> via host_display.present
-│   │                      (Orbital-style compositor; see Redox vision)
+│   │                      (Orbital-style compositor; see Redox vision).
+│   │                      Also rasterizes HTML to the framebuffer
+│   │                      (render_html: block-level text, no JS/CSS) and
+│   │                      holds the 5x7 bitmap font (A-Z, a-z, 0-9, punct)
 │   ├── key_store.rs       Gemini API key in OPFS
 │   ├── owner.rs           legacy local-UUID owner marker
 │   ├── tenant.rs          hostname classifier (apex / tenant / other)
@@ -91,9 +97,11 @@ src/                       library crate
     │   ├── wire.rs        REST request/response types
     │   ├── loop.rs        run_turn — the inner agent loop
     │   ├── compaction.rs  history summarisation
-│   │                  15 built-in tools including call_agent (inter-agent
-│   │                  RPC) and compile_rustlite (compile + run rustlite)
-    │   ├── tools/         13 built-in tools
+│   │                  built-in tools including call_agent (inter-agent
+│   │                  RPC), compile_rustlite (compile + run rustlite), and
+│   │                  render_html (HTML → framebuffer snapshot)
+    │   ├── tools/         built-in Tool impls (one per BuiltinTool variant;
+    │   │                  run_cartridge + render_html drive the DISPLAY)
     │   └── mod.rs         GeminiConnectionStrategy + GeminiConnection
     └── mcp/               stdio MCP client (native-only)
 
