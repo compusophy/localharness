@@ -5,6 +5,50 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-05-28
+
+Onboarding unblocked, the DISPLAY became a universal loader, and the
+agent gained self-configuration. Driven by live mobile/desktop smoke
+testing and on-chain feedback.
+
+### Fixed
+
+- **Onboarding was fully blocked.** Registration cost was 50 LH and the
+  only way to get LH (daily claim) was reverting, so new users couldn't
+  claim a subdomain. Registration is now free (`registrationCost` set to 0
+  on-chain) and the disliked daily-claim UI was removed; the credit token
+  + facets stay on-chain for a future streaming model.
+- **Rustlite `host::state_get` typed `Void`.** Module-elided host calls
+  (`host::state_get`, or bare `state_get` after `use host::display;`) now
+  resolve to their real return type, so stateful cartridges/games compile.
+- **Tool-call "running" status stuck after completion** — removed; the
+  streaming spinner is the working indicator.
+- **In-app feedback loader** failed to decode (`eth_getLogs` returns an
+  array but the RPC result was typed `String`).
+- Mobile chat now top-aligns with consistent padding; terminal send/stop
+  button squares up on the right.
+
+### Added
+
+- **DISPLAY renders HTML.** A framebuffer HTML rasterizer (`render_html`
+  tool + click-to-render `.html` files) — block-level text, monochrome,
+  no DOM/iframe. The 5x7 font gained lowercase + punctuation.
+- **Cartridge persistence.** `run_cartridge` auto-saves to `cartridge.rl`;
+  `.rl` files compile+run on click.
+- **`agent.json` config manifest** — single source of truth for the custom
+  system prompt + tool allowlist, with a `configure_agent` tool so the
+  agent can edit its own config (reset-to-default supported). Golden tools
+  (`finish`, `ask_question`, `configure_agent`) can never be disabled.
+- Persistent DISPLAY tab; play/stop terminal button; a "Stopped — what
+  should I do instead?" prompt on cancel; loading spinner.
+
+### Changed
+
+- "agent" rail/tab renamed to "agents"; removed the send-$localharness
+  modal; `submit_feedback` keeps feedback under the 2048-byte on-chain cap
+  with a clear message; the agent knows the real internal filenames
+  (history is `.lh_history.json`).
+
 ## [0.12.0] - 2026-05-28
 
 Security + beta-readiness. A security audit closed a real XSS→wallet
