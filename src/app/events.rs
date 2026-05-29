@@ -1710,7 +1710,10 @@ fn feedback_submit() {
     if text.len() > 2048 {
         dom::swap_inner(
             "feedback-msg",
-            "<span style=\"color:var(--error)\">too long</span>",
+            &format!(
+                "<span style=\"color:var(--error)\">feedback too long: {} bytes (max 2048) — please shorten</span>",
+                text.len()
+            ),
         );
         return;
     }

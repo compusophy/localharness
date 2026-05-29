@@ -390,7 +390,10 @@ pub(crate) async fn start_session(key: &str) -> Result<(), JsValue> {
            • submit_feedback(text) — submit feedback on-chain via the \
              FeedbackFacet. Emits a FeedbackSubmitted event on the registry \
              diamond. Use when the user asks to leave feedback or to report \
-             issues about another agent. Max 2048 bytes.\n\
+             issues about another agent. Keep it SHORT — a few sentences, \
+             under ~2000 bytes. Summarize; do NOT paste long multi-paragraph \
+             reports. Text over 2048 bytes is rejected before it reaches the \
+             chain.\n\
            • generate_image(prompt) — produce an image from a text prompt.\n\
            • finish(result?) — signal that the task is complete.\n\n\
          \
@@ -667,7 +670,10 @@ fn submit_feedback_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
         "properties": {
             "text": {
                 "type": "string",
-                "description": "Feedback text to submit on-chain. Max 2048 bytes."
+                "description": "Feedback text to submit on-chain. Keep it short — a \
+                    few sentences, under ~2000 bytes. Summarize rather than pasting a \
+                    long multi-paragraph report. Hard cap is 2048 bytes; longer text \
+                    is rejected before the on-chain tx."
             }
         },
         "required": ["text"]
@@ -684,7 +690,10 @@ fn submit_feedback_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 return Err(crate::error::Error::other("feedback text cannot be empty"));
             }
             if text.len() > 2048 {
-                return Err(crate::error::Error::other("feedback text exceeds 2048 bytes"));
+                return Err(crate::error::Error::other(format!(
+                    "feedback too long: {} bytes (max 2048) — please shorten",
+                    text.len()
+                )));
             }
             let from_hex = super::APP.with(|cell| {
                 use super::VerifyState;

@@ -498,6 +498,9 @@
         flex-direction: column;
         overflow: hidden;       /* still viewport-locked */
       }
+      /* Drop the bottom-pinning flex spacer on mobile so the transcript
+         top-aligns with consistent top/bottom padding (no big top gap). */
+      main.layout .transcript::before { display: none; }
       /* Hide the desktop rails entirely on mobile — tab bar handles
          panel switching, no need for the strip toggles. */
       main.layout .side-rail,
