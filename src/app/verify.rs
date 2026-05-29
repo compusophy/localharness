@@ -60,11 +60,11 @@ pub(crate) async fn verify_owner(name: &str) -> Result<VerifyResult, String> {
     // simple race condition doesn't surface as "verify failed".
     let nonce = random_nonce();
     let nonce_hex = bytes_to_hex(&nonce);
-    let (signer_address, signature) = match sign_via_iframe(&nonce_hex).await {
+    let (signer_address, signature) = match sign_via_iframe(&nonce_hex, name).await {
         Ok(pair) => pair,
         Err(first_err) => {
             sleep_ms(1500).await;
-            sign_via_iframe(&nonce_hex).await
+            sign_via_iframe(&nonce_hex, name).await
                 .map_err(|second_err| format!(
                     "signer didn't respond — first attempt: {first_err}; retry: {second_err}"
                 ))?
@@ -72,16 +72,12 @@ pub(crate) async fn verify_owner(name: &str) -> Result<VerifyResult, String> {
     };
 
     // 3. Recover the signer address from the signature and verify it
-    //    matches what the signer claimed (basic sanity check).
-    let prehash = {
-        use sha3::{Digest, Keccak256};
-        let mut hasher = Keccak256::new();
-        hasher.update(b"localharness-auth-v0:");
-        hasher.update(nonce);
-        let mut out = [0u8; 32];
-        out.copy_from_slice(&hasher.finalize());
-        out
-    };
+    //    matches what the signer claimed (basic sanity check). The
+    //    preimage binds the subdomain `name` so a signature proving
+    //    ownership of one name can't be replayed as proof for a different
+    //    name held by the same address. MUST match `signer.rs`
+    //    `build_challenge_response` byte-for-byte.
+    let prehash = challenge_prehash(name, &nonce);
     let sig_bytes = hex_to_bytes(&signature)?;
     if sig_bytes.len() != 65 {
         return Err(format!("bad signature length {}", sig_bytes.len()));
@@ -111,9 +107,27 @@ pub(crate) async fn verify_owner(name: &str) -> Result<VerifyResult, String> {
     }
 }
 
+/// keccak256("localharness-auth-v0:" || name || ":" || nonce). Binds the
+/// owner-proof to BOTH the subdomain name and a random nonce, so a
+/// signature proving ownership of one name can't be replayed as proof for
+/// a different name held by the same address. MUST stay byte-for-byte
+/// identical to `signer.rs::build_challenge_response`.
+fn challenge_prehash(name: &str, nonce: &[u8]) -> [u8; 32] {
+    use sha3::{Digest, Keccak256};
+    let mut hasher = Keccak256::new();
+    hasher.update(b"localharness-auth-v0:");
+    hasher.update(name.as_bytes());
+    hasher.update(b":");
+    hasher.update(nonce);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&hasher.finalize());
+    out
+}
+
 /// Embed the signer iframe, send a sign challenge, wait for the
-/// reply. Cleans up the iframe before returning.
-async fn sign_via_iframe(nonce_hex: &str) -> Result<(String, String), String> {
+/// reply. Cleans up the iframe before returning. `name` is the subdomain
+/// being verified — sent so the signer binds it into the signed preimage.
+async fn sign_via_iframe(nonce_hex: &str, name: &str) -> Result<(String, String), String> {
     let id = format!("verify-{}", random_id_hex());
     let payload = js_sys::Object::new();
     let _ = js_sys::Reflect::set(
@@ -126,6 +140,11 @@ async fn sign_via_iframe(nonce_hex: &str) -> Result<(String, String), String> {
         &payload,
         &JsValue::from_str("nonce"),
         &JsValue::from_str(nonce_hex),
+    );
+    let _ = js_sys::Reflect::set(
+        &payload,
+        &JsValue::from_str("name"),
+        &JsValue::from_str(name),
     );
 
     let data = signer_iframe_request(&id, &payload.into(), TIMEOUT_MS).await?;
@@ -145,38 +164,68 @@ async fn sign_via_iframe(nonce_hex: &str) -> Result<(String, String), String> {
 
 const TX_TIMEOUT_MS: u32 = 90_000;
 
-/// Ask the apex signer to sign a raw 32-byte digest with the master
-/// wallet. Returns `(signer_address, 65-byte signature)`. Used by the
-/// sponsored-Tempo-tx flow: the tenant builds the Tempo tx, computes the
-/// sender_hash, hands it here for the apex wallet's signature, then
-/// combines with a locally-signed fee_payer signature to produce the
-/// final raw tx. `purpose` is a human-readable description (logged on
-/// the apex side; no consent dialog in this flow — the trust boundary
-/// is "you have JS access to the apex origin").
-pub(crate) async fn sign_digest_via_iframe(
-    digest: &[u8; 32],
+/// Ask the apex signer to sign a sponsored Tempo tx with the master
+/// wallet. Returns `(signer_address, 65-byte signature)` over the tx's
+/// sender_hash.
+///
+/// SECURITY: we send the tx's **structured fields** (chain id, fees,
+/// nonce, fee token, and every call's `to`/`value`/`input`), not just an
+/// opaque 32-byte digest. The apex signer reconstructs the sender_hash
+/// from these, enforces a call-target allowlist (registry diamond + $LH
+/// token, zero native value), and refuses to sign anything else — so a
+/// hostile subdomain can no longer get the master wallet to sign an
+/// arbitrary transaction (the confused-deputy fund-drain vector). The
+/// `digest` is still sent as a cross-check; the caller re-verifies the
+/// returned signature against its own `tx.sender_hash()` (fail-closed).
+pub(crate) async fn sign_tempo_tx_via_iframe(
+    tx: &crate::tempo_tx::TempoTx,
     purpose: &str,
 ) -> Result<(String, [u8; 65]), String> {
     let id = format!("digest-{}", random_id_hex());
-    let digest_hex = format!("0x{}", bytes_to_hex(digest));
+    let digest = tx.sender_hash();
+    let digest_hex = format!("0x{}", bytes_to_hex(&digest));
 
     let payload = js_sys::Object::new();
+    let set_str = |obj: &js_sys::Object, k: &str, v: &str| {
+        let _ = js_sys::Reflect::set(obj, &JsValue::from_str(k), &JsValue::from_str(v));
+    };
+    set_str(&payload, "type", "lh-sign-digest");
+    set_str(&payload, "id", &id);
+    set_str(&payload, "digest", &digest_hex);
+    set_str(&payload, "purpose", purpose);
+
+    // Structured fields the signer reconstructs + validates against.
+    let txo = js_sys::Object::new();
     let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("type"),
-        &JsValue::from_str("lh-sign-digest"),
+        &txo,
+        &JsValue::from_str("chainId"),
+        &JsValue::from_f64(tx.chain_id as f64),
     );
-    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("id"), &JsValue::from_str(&id));
+    set_str(&txo, "maxPriorityFeePerGas", &format!("0x{:x}", tx.max_priority_fee_per_gas));
+    set_str(&txo, "maxFeePerGas", &format!("0x{:x}", tx.max_fee_per_gas));
+    set_str(&txo, "gasLimit", &format!("0x{:x}", tx.gas_limit));
+    set_str(&txo, "nonce", &format!("0x{:x}", tx.nonce));
+    match tx.fee_token {
+        Some(addr) => set_str(&txo, "feeToken", &format!("0x{}", bytes_to_hex(&addr))),
+        None => {
+            let _ = js_sys::Reflect::set(&txo, &JsValue::from_str("feeToken"), &JsValue::NULL);
+        }
+    }
     let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("digest"),
-        &JsValue::from_str(&digest_hex),
+        &txo,
+        &JsValue::from_str("sponsored"),
+        &JsValue::from_bool(tx.sponsored),
     );
-    let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("purpose"),
-        &JsValue::from_str(purpose),
-    );
+    let calls = js_sys::Array::new();
+    for c in &tx.calls {
+        let co = js_sys::Object::new();
+        set_str(&co, "to", &format!("0x{}", bytes_to_hex(&c.to)));
+        set_str(&co, "value", &format!("0x{:x}", c.value_wei));
+        set_str(&co, "input", &format!("0x{}", bytes_to_hex(&c.input)));
+        calls.push(&co);
+    }
+    let _ = js_sys::Reflect::set(&txo, &JsValue::from_str("calls"), &calls);
+    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("tx"), &txo);
 
     let data = signer_iframe_request(&id, &payload.into(), TX_TIMEOUT_MS).await?;
     let address = js_sys::Reflect::get(&data, &JsValue::from_str("address"))

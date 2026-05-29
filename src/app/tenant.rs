@@ -33,6 +33,27 @@ pub(crate) fn is_trusted_lh_origin(origin: &str) -> bool {
     false
 }
 
+/// True when `origin` is the **apex identity origin itself** — never a
+/// tenant subdomain. The master wallet lives only at the apex, so
+/// privileged identity operations (seed reveal, seed import, wallet
+/// overwrite) may be requested only from here. A subdomain like
+/// `evil.localharness.xyz` is rejected even though it passes
+/// [`is_trusted_lh_origin`] — that's the fix for the confused-deputy
+/// where any free-to-claim subdomain could iframe the apex signer and
+/// silently exfiltrate or overwrite the master seed. In dev, the
+/// signer's own localhost origin counts as apex so the smoke flow works.
+pub(crate) fn is_apex_origin(origin: &str) -> bool {
+    let Some(host) = origin_host(origin) else { return false };
+    let host = host.strip_prefix("www.").unwrap_or(&host).to_string();
+    if host == ROOT_DOMAIN {
+        return true;
+    }
+    if self_is_localhost() && is_localhost_host(&host) {
+        return true;
+    }
+    false
+}
+
 /// Parse the lowercase host out of an `origin`. Requires an explicit
 /// `http(s)://` scheme (so `null` / `file:` origins are rejected) and
 /// strips any path and port.

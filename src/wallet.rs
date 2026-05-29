@@ -21,6 +21,7 @@
 use k256::ecdsa::signature::hazmat::{PrehashSigner, PrehashVerifier};
 use k256::ecdsa::{RecoveryId, Signature, SigningKey, VerifyingKey};
 use sha3::{Digest, Keccak256};
+use zeroize::Zeroize;
 
 /// A freshly-generated keypair plus its hex-encoded private key.
 pub struct GeneratedWallet {
@@ -32,6 +33,16 @@ pub struct GeneratedWallet {
 impl GeneratedWallet {
     pub fn address_hex(&self) -> String {
         format!("0x{}", hex_encode(&self.address))
+    }
+}
+
+impl Drop for GeneratedWallet {
+    fn drop(&mut self) {
+        // `private_key_hex` is a fully-formed, exportable private key in a
+        // heap `String`; wipe it so it doesn't linger in freed memory. The
+        // `SigningKey` zeroizes its own scalar on drop (k256), and a 20-byte
+        // address isn't secret.
+        self.private_key_hex.zeroize();
     }
 }
 
@@ -57,16 +68,22 @@ pub fn generate_with_mnemonic() -> (bip39::Mnemonic, SigningKey) {
 /// Derive the SigningKey from a mnemonic — same path as
 /// `generate_with_mnemonic` so the round-trip is stable.
 pub fn signer_from_mnemonic(mnemonic: &bip39::Mnemonic) -> SigningKey {
-    let entropy = mnemonic.to_entropy(); // 16 bytes for 12 words
+    let mut entropy = mnemonic.to_entropy(); // 16 bytes for 12 words
     // Stretch the entropy into 32 bytes via keccak256 — a single
     // hash is enough for "identity from mnemonic"; this isn't HD
     // derivation territory.
     let mut hasher = Keccak256::new();
     hasher.update(b"localharness/v0/identity");
     hasher.update(&entropy);
-    let digest = hasher.finalize();
-    SigningKey::from_slice(&digest)
-        .expect("keccak256 output is 32 bytes; SigningKey is infallible for valid scalars")
+    let mut digest = [0u8; 32];
+    digest.copy_from_slice(&hasher.finalize());
+    let signer = SigningKey::from_slice(&digest)
+        .expect("keccak256 output is 32 bytes; SigningKey is infallible for valid scalars");
+    // Wipe the transient secret-derived material (the raw entropy and the
+    // private-scalar digest) now that the key is built.
+    entropy.zeroize();
+    digest.zeroize();
+    signer
 }
 
 /// Parse a 12-word phrase. Whitespace is normalised, case is

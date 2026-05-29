@@ -6,11 +6,20 @@
 //! send a `lh-sign-challenge` postMessage, and recover the signer's
 //! address from the returned signature. M8 in the design doc.
 //!
-//! Challenge-signing auto-approves for v1 (verification is read-only,
-//! the trust boundary is "you have JS access to the apex origin").
-//! Transaction-signing auto-approves at the iframe — consent is
-//! collected at the tenant origin before the iframe call. The trust
-//! boundary is "you have JS access to the apex origin".
+//! Challenge-signing auto-approves for v1 (verification is read-only).
+//!
+//! **Trust model (hardened — see the per-message notes below).** A
+//! trusted origin is any `*.localharness.xyz`, but since registration is
+//! free that is NOT a sufficient boundary on its own. So:
+//!   - **Tx signing** (`lh-sign-digest`) no longer signs an opaque
+//!     digest. The tenant sends the tx's structured fields; the signer
+//!     reconstructs the sender_hash, enforces a call-target allowlist
+//!     (registry diamond + $LH token, zero native value), and refuses
+//!     anything else — a hostile subdomain can't get the master wallet
+//!     to sign an arbitrary fund-moving tx.
+//!   - **Identity ops** (`lh-reveal-seed`, `lh-import-seed`,
+//!     `lh-create-wallet{overwrite}`) are **apex-origin only** — a
+//!     subdomain iframe cannot exfiltrate or overwrite the master seed.
 //!
 //! **Message protocol:**
 //! ```text
@@ -19,15 +28,20 @@
 //!   signer → parent:  { type: "lh-sign-response",  id, address, signature }
 //!                or:  { type: "lh-sign-response",  id, error }
 //!
-//! Raw-digest signing (for sponsored Tempo txs — sender hash computed
-//! at the tenant, fee_payer hash signed by the bundle sponsor):
-//!   parent  → signer: { type: "lh-sign-digest", id, digest, purpose }
+//! Sponsored-Tempo-tx signing (structured + allowlisted — NOT opaque):
+//!   parent  → signer: { type: "lh-sign-digest", id, purpose, digest,
+//!                       tx: { chainId, maxPriorityFeePerGas, maxFeePerGas,
+//!                             gasLimit, nonce, feeToken, sponsored,
+//!                             calls: [{ to, value, input }, ...] } }
 //!   signer → parent:  { type: "lh-sign-response", id, address, signature }
 //!                or:  { type: "lh-sign-response", id, error }
-//!   `digest` is a 32-byte (64-hex-char, `0x`-optional) prehash;
+//!   The signer reconstructs the sender_hash from `tx`, requires every
+//!   `call.to` ∈ {registry diamond, $LH token} with value 0, cross-checks
+//!   against `digest`, and signs only its own reconstruction.
 //!   `signature` is 65 bytes hex (r ‖ s ‖ v with v ∈ {27,28}).
 //!
-//! Identity management (auto-approved — same trust model as sign-tx):
+//! Identity management (lh-reveal-seed / lh-import-seed are APEX-ORIGIN
+//! ONLY; lh-create-wallet overwrite=true is apex-only, ensure is open):
 //!   parent  → signer: { type: "lh-create-wallet", id, overwrite: bool? }
 //!   signer → parent:  { type: "lh-sign-response", id, address }
 //!                or:  { type: "lh-sign-response", id, error }
@@ -138,7 +152,16 @@ fn handle_message(event: &MessageEvent) -> Result<(), String> {
                 .ok()
                 .and_then(|v| v.as_string())
                 .ok_or_else(|| "nonce not a string".to_string())?;
-            match build_challenge_response(&id, &nonce_hex) {
+            // The subdomain being verified. Bound into the signed preimage
+            // so an owner-proof can't be replayed across names (verify.rs
+            // sends it). Default empty for resilience if an old client
+            // omits it — that client also omits it on the verify side, so
+            // the two still agree.
+            let name = js_sys::Reflect::get(&data, &JsValue::from_str("name"))
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_default();
+            match build_challenge_response(&id, &nonce_hex, &name) {
                 Ok(obj) => obj,
                 Err(err) => error_response(&id, &err),
             }
@@ -148,19 +171,27 @@ fn handle_message(event: &MessageEvent) -> Result<(), String> {
                 .ok()
                 .and_then(|v| v.as_string())
                 .unwrap_or_else(|| "sign digest".into());
-            let digest_hex = js_sys::Reflect::get(&data, &JsValue::from_str("digest"))
-                .ok()
-                .and_then(|v| v.as_string())
-                .ok_or_else(|| "digest not a string".to_string())?;
-            match build_digest_response(&id, &digest_hex, &purpose) {
+            match build_sponsored_tx_response(&id, &data, &purpose) {
                 Ok(obj) => obj,
                 Err(err) => error_response(&id, &err),
             }
         }
-        "lh-reveal-seed" => match build_reveal_seed_response(&id) {
-            Ok(obj) => obj,
-            Err(err) => error_response(&id, &err),
-        },
+        "lh-reveal-seed" => {
+            // APEX-ONLY. Revealing the master mnemonic to a tenant
+            // subdomain iframe is the confused-deputy seed-exfiltration
+            // vector — any free-to-claim subdomain could request it
+            // silently. Seed reveal happens only on the apex page itself
+            // (which reads the wallet from local state directly, never
+            // through this iframe), so gating here breaks no legit flow.
+            if !super::tenant::is_apex_origin(&origin) {
+                error_response(&id, "seed reveal is only available at localharness.xyz")
+            } else {
+                match build_reveal_seed_response(&id) {
+                    Ok(obj) => obj,
+                    Err(err) => error_response(&id, &err),
+                }
+            }
+        }
         "lh-create-wallet" => {
             // Default semantics: ENSURE (return existing if any, else
             // generate). Explicit overwrite=true requests regeneration.
@@ -168,6 +199,19 @@ fn handle_message(event: &MessageEvent) -> Result<(), String> {
                 .ok()
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            // ENSURE (overwrite=false) is safe cross-origin — it's how a
+            // tenant first-claim makes sure a master wallet exists. But
+            // OVERWRITE regenerates (destroys) the master wallet, so it's
+            // apex-only; a subdomain must not be able to brick the
+            // identity.
+            if overwrite && !super::tenant::is_apex_origin(&origin) {
+                let reply = error_response(
+                    &id,
+                    "creating a fresh identity is only available at localharness.xyz",
+                );
+                post_reply(&source_jsval, &reply, &origin)?;
+                return Ok(());
+            }
             spawn_create_wallet(
                 id.clone(),
                 overwrite,
@@ -177,6 +221,18 @@ fn handle_message(event: &MessageEvent) -> Result<(), String> {
             return Ok(());
         }
         "lh-import-seed" => {
+            // APEX-ONLY. Importing overwrites the master wallet; honoring
+            // it cross-origin lets a subdomain silently replace the user's
+            // identity with an attacker-controlled key. Import is done on
+            // the apex page (writes local state directly).
+            if !super::tenant::is_apex_origin(&origin) {
+                let reply = error_response(
+                    &id,
+                    "seed import is only available at localharness.xyz",
+                );
+                post_reply(&source_jsval, &reply, &origin)?;
+                return Ok(());
+            }
             let phrase = js_sys::Reflect::get(&data, &JsValue::from_str("phrase"))
                 .ok()
                 .and_then(|v| v.as_string())
@@ -339,11 +395,17 @@ fn spawn_import_seed(id: String, phrase: String, source: JsValue, origin: String
     });
 }
 
-fn build_challenge_response(id: &str, nonce_hex: &str) -> Result<JsValue, String> {
+fn build_challenge_response(id: &str, nonce_hex: &str, name: &str) -> Result<JsValue, String> {
     let nonce = parse_nonce(nonce_hex)?;
-    // Domain-separated digest the signer commits to.
+    // Domain-separated digest the signer commits to. Binds the subdomain
+    // `name` (and a random nonce) so a captured owner-proof for one name
+    // can't be replayed as proof for another name held by the same
+    // address. MUST stay byte-for-byte identical to `verify.rs`
+    // `challenge_prehash`: DOMAIN_TAG || name || ":" || nonce.
     let mut hasher = Keccak256::new();
     hasher.update(DOMAIN_TAG);
+    hasher.update(name.as_bytes());
+    hasher.update(b":");
     hasher.update(&nonce);
     let mut prehash = [0u8; 32];
     prehash.copy_from_slice(&hasher.finalize());
@@ -359,39 +421,155 @@ fn build_challenge_response(id: &str, nonce_hex: &str) -> Result<JsValue, String
     Ok(JsValue::from(obj))
 }
 
-/// Sign an arbitrary 32-byte digest with the apex wallet. The caller
-/// (a tenant origin) is responsible for verifying the digest matches a
-/// transaction they actually want to authorize — the iframe just signs.
-/// Used by the sponsored-Tempo-tx flows where the tenant computes the
-/// sender_hash locally (encoding lives in `tempo_tx.rs`) and only needs
-/// the apex wallet's signature on it.
-fn build_digest_response(id: &str, digest_hex: &str, purpose: &str) -> Result<JsValue, String> {
-    let digest_bytes = decode_hex(digest_hex)?;
-    if digest_bytes.len() != 32 {
-        return Err(format!(
-            "digest must be 32 bytes, got {}",
-            digest_bytes.len()
-        ));
+/// Sign a sponsored Tempo tx for a tenant. SECURITY-CRITICAL: we do NOT
+/// sign an opaque caller-supplied digest (that let any subdomain get the
+/// master wallet to sign an arbitrary transaction — e.g. drain a
+/// token-bound account). Instead the tenant sends the tx's structured
+/// fields; we independently reconstruct the sender_hash, enforce that
+/// every call targets an allowlisted contract (the registry diamond or
+/// the $LH credits token) with zero native value, cross-check the
+/// reconstruction against the claimed digest, and only then sign. The
+/// cross-origin sponsored path is only ever used for register /
+/// setMetadata / submitFeedback (diamond) and approve / transfer ($LH);
+/// TBA-touching flows run apex-side with the wallet directly, never here.
+fn build_sponsored_tx_response(id: &str, data: &JsValue, purpose: &str) -> Result<JsValue, String> {
+    let tx_obj = js_sys::Reflect::get(data, &JsValue::from_str("tx"))
+        .ok()
+        .filter(|v| !v.is_undefined() && !v.is_null())
+        .ok_or_else(|| "refusing to sign: missing structured tx fields".to_string())?;
+    let get = |k: &str| js_sys::Reflect::get(&tx_obj, &JsValue::from_str(k)).ok();
+    let get_str = |k: &str| get(k).and_then(|v| v.as_string());
+
+    // chain_id must match — no cross-chain replay.
+    let chain_id = get("chainId")
+        .and_then(|v| v.as_f64())
+        .map(|f| f as u64)
+        .ok_or_else(|| "tx.chainId missing".to_string())?;
+    if chain_id != crate::registry::CHAIN_ID {
+        return Err(format!("chainId {chain_id} != {}", crate::registry::CHAIN_ID));
     }
-    let mut digest = [0u8; 32];
-    digest.copy_from_slice(&digest_bytes);
+
+    let fee_priority =
+        parse_u128_hex(&get_str("maxPriorityFeePerGas").ok_or("maxPriorityFeePerGas missing")?)?;
+    let fee_max = parse_u128_hex(&get_str("maxFeePerGas").ok_or("maxFeePerGas missing")?)?;
+    let gas_limit = parse_u128_hex(&get_str("gasLimit").ok_or("gasLimit missing")?)?;
+    let nonce = parse_u128_hex(&get_str("nonce").ok_or("nonce missing")?)?;
+    let fee_token = match get_str("feeToken") {
+        Some(s) if !s.trim().trim_start_matches("0x").is_empty() => Some(parse_addr20(&s)?),
+        _ => None,
+    };
+    let sponsored = get("sponsored").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    // Call-target allowlist — the heart of the fix.
+    let registry_addr = parse_addr20(crate::registry::REGISTRY_ADDRESS)?;
+    let token_addr = parse_addr20(crate::registry::LOCALHARNESS_TOKEN_ADDRESS)?;
+
+    let calls_val = get("calls").ok_or_else(|| "tx.calls missing".to_string())?;
+    let calls_arr: js_sys::Array = calls_val
+        .dyn_into()
+        .map_err(|_| "tx.calls not an array".to_string())?;
+    if calls_arr.length() == 0 {
+        return Err("tx.calls empty".into());
+    }
+    let mut calls = Vec::with_capacity(calls_arr.length() as usize);
+    for i in 0..calls_arr.length() {
+        let c = calls_arr.get(i);
+        let cto = js_sys::Reflect::get(&c, &JsValue::from_str("to"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .ok_or_else(|| "call.to missing".to_string())?;
+        let cval = js_sys::Reflect::get(&c, &JsValue::from_str("value"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_else(|| "0x0".into());
+        let cinput = js_sys::Reflect::get(&c, &JsValue::from_str("input"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_default();
+        let to = parse_addr20(&cto)?;
+        if to != registry_addr && to != token_addr {
+            return Err(format!(
+                "refusing to sign: call target {} is not allowlisted",
+                hex_addr(&to)
+            ));
+        }
+        let value_wei = parse_u128_hex(&cval)?;
+        if value_wei != 0 {
+            return Err("refusing to sign: native value transfer not permitted".into());
+        }
+        let input = if cinput.trim().trim_start_matches("0x").is_empty() {
+            Vec::new()
+        } else {
+            decode_hex(&cinput)?
+        };
+        calls.push(crate::tempo_tx::TempoCall { to, value_wei, input });
+    }
+
+    // Rebuild the tx EXACTLY as `events::run_sponsored_tempo_call` does so
+    // our reconstructed sender_hash matches the tenant's (whose recover-
+    // check fails closed on any mismatch). Mirror any builder change there.
+    let mut builder = crate::tempo_tx::TempoTxBuilder::new(chain_id)
+        .max_priority_fee_per_gas(fee_priority)
+        .max_fee_per_gas(fee_max)
+        .gas_limit(gas_limit)
+        .nonce(nonce)
+        .calls(calls);
+    if let Some(ft) = fee_token {
+        builder = builder.fee_token(ft);
+    }
+    if sponsored {
+        builder = builder.sponsored();
+    }
+    let rebuilt = builder.build();
+    let sender_hash = rebuilt.sender_hash();
+
+    // Cross-check: the digest the tenant claims must equal our independent
+    // reconstruction. A mismatch means the structured fields and the
+    // digest disagree — refuse rather than sign the unknown one.
+    if let Some(claimed) = js_sys::Reflect::get(data, &JsValue::from_str("digest"))
+        .ok()
+        .and_then(|v| v.as_string())
+    {
+        if let Ok(claimed_bytes) = decode_hex(&claimed) {
+            if claimed_bytes.as_slice() != sender_hash {
+                return Err("provided digest does not match reconstructed sender_hash".into());
+            }
+        }
+    }
 
     let (signer, address) = wallet_handle()?;
-    let from_hex = hex_addr(&address);
-
     web_sys::console::log_1(&JsValue::from_str(&format!(
-        "lh-sign-digest auto-approved: {purpose} (digest=0x{})",
-        digest_hex.trim_start_matches("0x"),
+        "lh-sign-digest: signed reconstructed sponsored tx ({purpose}, {} allowlisted call(s))",
+        rebuilt.calls.len(),
     )));
-
-    let sig = wallet::sign_hash(&signer, &digest);
+    let sig = wallet::sign_hash(&signer, &sender_hash);
 
     let obj = js_sys::Object::new();
     set(&obj, "type", JsValue::from_str("lh-sign-response"));
     set(&obj, "id", JsValue::from_str(id));
-    set(&obj, "address", JsValue::from_str(&from_hex));
+    set(&obj, "address", JsValue::from_str(&hex_addr(&address)));
     set(&obj, "signature", JsValue::from_str(&hex_bytes(&sig)));
     Ok(JsValue::from(obj))
+}
+
+/// Parse a `0x`-optional hex string into a `u128`. Empty ⇒ 0.
+fn parse_u128_hex(s: &str) -> Result<u128, String> {
+    let t = s.trim().trim_start_matches("0x").trim_start_matches("0X");
+    if t.is_empty() {
+        return Ok(0);
+    }
+    u128::from_str_radix(t, 16).map_err(|e| format!("bad u128 hex '{s}': {e}"))
+}
+
+/// Parse a `0x`-optional 20-byte hex address.
+fn parse_addr20(s: &str) -> Result<[u8; 20], String> {
+    let bytes = decode_hex(s)?;
+    if bytes.len() != 20 {
+        return Err(format!("address must be 20 bytes, got {}", bytes.len()));
+    }
+    let mut a = [0u8; 20];
+    a.copy_from_slice(&bytes);
+    Ok(a)
 }
 
 fn decode_hex(hex: &str) -> Result<Vec<u8>, String> {

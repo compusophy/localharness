@@ -60,7 +60,7 @@ browser-app = ["dep:maud", "dep:console_error_panic_hook", "dep:pulldown-cmark",
 # encoding for an identity wallet. k256 alone is wasm-clean and
 # what alloy uses under the hood anyway. bip39 gives us the
 # 12-word seed phrase for human-friendly backup.
-wallet = ["dep:k256", "dep:sha3", "dep:rand_core", "dep:bip39"]
+wallet = ["dep:k256", "dep:sha3", "dep:rand_core", "dep:bip39", "dep:zeroize"]
 
 [dependencies]
 tokio = { version = "1.42", default-features = false, features = [
@@ -110,6 +110,13 @@ k256 = { version = "0.13", optional = true, default-features = false, features =
 sha3 = { version = "0.10", optional = true, default-features = false }
 rand_core = { version = "0.6", optional = true, default-features = false, features = ["getrandom"] }
 bip39 = { version = "2", optional = true, default-features = false, features = ["std", "rand"] }
+# zeroize: wipe secret-derived material (private-key hex, BIP-39 entropy,
+# the keccak digest) from memory on drop. The crate's own threat model is
+# "same-origin memory is reachable after a compromise", so don't leave
+# long-lived plaintext key copies in freed heap. Already in the tree via
+# k256/elliptic-curve; pinned here as a direct dep so we can derive on our
+# own types.
+zeroize = { version = "1", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { version = "1", features = ["js"] }

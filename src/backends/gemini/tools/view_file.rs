@@ -14,6 +14,12 @@ use crate::tools::{Tool, ToolContext};
 /// the tool truncates and the model is told there's more.
 const MAX_BYTES_RETURNED: usize = 256 * 1024;
 
+/// Hard cap on the on-disk file size we'll read into memory at all. The
+/// tool reads the whole file before slicing to a line range, so without
+/// this a model pointing at a multi-GB file (or an unbounded pseudo-file)
+/// could exhaust memory. 16 MiB is far above any real source file.
+const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
+
 pub struct ViewFile {
     fs: SharedFilesystem,
 }
@@ -60,6 +66,19 @@ impl Tool for ViewFile {
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
         let args: Args = serde_json::from_value(args)
             .map_err(|e| Error::other(format!("view_file args: {e}")))?;
+
+        // Refuse to read a huge file into memory. (metadata() may be None
+        // on backends that don't implement it — then we fall through to the
+        // read, same as before.)
+        if let Some(meta) = self.fs.metadata(&args.path).await? {
+            if meta.size > MAX_FILE_BYTES {
+                return Err(Error::other(format!(
+                    "file is {} bytes, over the {MAX_FILE_BYTES}-byte view cap; \
+                     pass start_line/end_line to read a range",
+                    meta.size
+                )));
+            }
+        }
 
         let bytes = self.fs.read(&args.path).await?;
 

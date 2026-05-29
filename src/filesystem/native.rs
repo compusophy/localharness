@@ -139,8 +139,16 @@ impl Filesystem for NativeFilesystem {
             if let Some(d) = max_depth {
                 walker = walker.max_depth(d);
             }
+            // Hard cap on entries collected. find_file/search_directory
+            // cap their own RESULTS, but they collect the whole walk first,
+            // so without this a walk over a multi-million-entry tree would
+            // exhaust memory. 200k is far beyond any real workspace search.
+            const MAX_WALK_ENTRIES: usize = 200_000;
             let mut out = Vec::new();
             for entry in walker.into_iter().filter_map(|e| e.ok()) {
+                if out.len() >= MAX_WALK_ENTRIES {
+                    break;
+                }
                 let ft = entry.file_type();
                 let kind = if ft.is_symlink() {
                     EntryKind::Symlink

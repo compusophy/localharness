@@ -33,6 +33,37 @@ pub(crate) fn textarea_by_id(id: &str) -> Option<HtmlTextAreaElement> {
     by_id(id)?.dyn_into::<HtmlTextAreaElement>().ok()
 }
 
+/// Semantic colour for a status / result message span.
+#[derive(Clone, Copy)]
+pub(crate) enum Msg {
+    Error,
+    Muted,
+    Accent,
+}
+
+impl Msg {
+    fn css_var(self) -> &'static str {
+        match self {
+            Msg::Error => "--error",
+            Msg::Muted => "--muted",
+            Msg::Accent => "--accent",
+        }
+    }
+}
+
+/// Build a coloured status `<span>` whose body is HTML-escaped by maud.
+/// Use this for ANY message that interpolates dynamic or externally-
+/// sourced text — error strings, JSON-RPC node `err.message`, agent
+/// summaries — instead of `format!("<span …>{err}</span>")`. Escaping
+/// stops a hostile error message from injecting live markup into a
+/// wallet-bearing origin (any localharness origin can iframe the apex
+/// signer, so XSS there == full wallet compromise). Returns the span as
+/// a string so it composes with `swap_inner` / `set_inner_html` / maud.
+pub(crate) fn msg_span(kind: Msg, text: &str) -> String {
+    let style = format!("color:var({})", kind.css_var());
+    maud::html! { span style=(style) { (text) } }.into_string()
+}
+
 /// HTMX-style "swap inner". Replaces the entire inside of `#id` with
 /// the supplied HTML string. No-op if the element doesn't exist.
 pub(crate) fn swap_inner(id: &str, html: &str) {

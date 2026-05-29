@@ -31,28 +31,46 @@ interface IERC1271 {
 /// @title MultiSignerAccount
 /// @notice ERC-6551 account impl with an authorized-signer set on top
 ///         of the NFT holder. The NFT holder is ALWAYS implicitly
-///         authorized; additional signers (device EOAs) can be added
-///         via `addSigner` from any already-authorized address. Lets
-///         a user link multiple devices to the same on-chain identity
-///         without sharing the master seed — each device holds its own
-///         key, and the MAIN's TBA recognises all of them.
+///         authorized. Additional signers (device EOAs) let a user link
+///         multiple devices to the same on-chain identity without
+///         sharing the master seed — each device holds its own key and
+///         the MAIN's TBA recognises all of them.
+///
+///         SECURITY — additional signers are bound to the holder that
+///         enrolled them. Signer management (`addSigner` / `removeSigner`)
+///         is restricted to the current NFT holder (`owner()`), and a
+///         signer is authorized ONLY while its enroller still holds the
+///         NFT. So when the NFT changes hands the previous holder's device
+///         signers go dormant automatically (no cleanup call, no storage
+///         iteration), and they can't re-enroll themselves — only the new
+///         holder can. This closes the "stale signers survive NFT
+///         transfer" and "any signer can add signers" holes.
 ///
 ///         The "owner" returned by `owner()` is still the NFT holder
 ///         (per the ERC-6551 contract); the extra signers are surfaced
 ///         via `isAuthorizedSigner` / `isValidSigner` / `isValidSignature`.
-///         `execute` and signer-management ops accept any authorized
-///         signer as `msg.sender`.
+///         `execute` accepts any currently-authorized signer.
 ///
 ///         CALL-only — DELEGATECALL is explicitly disabled to avoid
 ///         the self-destruct footgun (same as the vanilla impl). Storage
 ///         lives in the clone's slots, not the impl's, so each TBA
 ///         maintains its own independent signer set.
-///
-///         Caveat — NFT transfer does NOT clear additional signers.
-///         Acceptable on testnet; revisit before mainnet.
 contract MultiSignerAccount is IERC6551Account, IERC6551Executable, IERC1271 {
+    /// secp256k1 group order / 2 — the EIP-2 low-s ceiling. Signatures
+    /// with `s` above this are malleable and rejected by `isValidSignature`.
+    uint256 private constant _HALF_ORDER =
+        0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0;
+
     uint256 private _state;
-    mapping(address => bool) private _authorizedSigners;
+    /// The NFT holder that enrolled each additional signer. A signer is
+    /// authorized ONLY while its enroller is still the current `owner()`,
+    /// so an NFT transfer transparently invalidates the previous holder's
+    /// device signers (no storage iteration, no cleanup call) — and the
+    /// new holder must enroll their own. A signer enrolled by holder X
+    /// becomes dormant the moment X stops holding the NFT and is only ever
+    /// live again if X re-acquires it (i.e. it always tracks the current
+    /// holder's own enrollments, never a former holder's).
+    mapping(address => address) private _signerEnroller;
 
     event SignerAdded(address indexed signer, address indexed addedBy);
     event SignerRemoved(address indexed signer, address indexed removedBy);
@@ -78,27 +96,28 @@ contract MultiSignerAccount is IERC6551Account, IERC6551Executable, IERC1271 {
         }
     }
 
-    /// Add `signer` to the authorized set. Callable by any already-
-    /// authorized address (NFT owner or an existing additional signer).
-    /// Idempotent — re-adding is a no-op.
+    /// Add `signer` to the authorized set. Restricted to the current NFT
+    /// holder — a linked device cannot enroll further devices, and a past
+    /// holder can't act after transfer. Idempotent.
     function addSigner(address signer) external {
-        require(_isAuthorized(msg.sender), "MultiSigner: not authorised");
+        address holder = owner();
+        require(msg.sender == holder, "MultiSigner: only owner");
         require(signer != address(0), "MultiSigner: zero address");
-        if (!_authorizedSigners[signer]) {
-            _authorizedSigners[signer] = true;
+        if (_signerEnroller[signer] != holder) {
+            _signerEnroller[signer] = holder;
             _state++;
             emit SignerAdded(signer, msg.sender);
         }
     }
 
-    /// Remove `signer` from the additional-signer set. The NFT holder
-    /// CANNOT be removed via this path (they're authorized implicitly
-    /// by holding the NFT — transfer the NFT to revoke). Callable by
-    /// any authorized address.
+    /// Remove `signer` enrolled by the current holder. Restricted to the
+    /// current NFT holder. The holder themselves can't be removed (they're
+    /// authorized implicitly by holding the NFT — transfer it to revoke).
     function removeSigner(address signer) external {
-        require(_isAuthorized(msg.sender), "MultiSigner: not authorised");
-        if (_authorizedSigners[signer]) {
-            _authorizedSigners[signer] = false;
+        address holder = owner();
+        require(msg.sender == holder, "MultiSigner: only owner");
+        if (_signerEnroller[signer] == holder) {
+            _signerEnroller[signer] = address(0);
             _state++;
             emit SignerRemoved(signer, msg.sender);
         }
@@ -110,7 +129,12 @@ contract MultiSignerAccount is IERC6551Account, IERC6551Executable, IERC1271 {
 
     function _isAuthorized(address signer) internal view returns (bool) {
         if (signer == address(0)) return false;
-        return signer == owner() || _authorizedSigners[signer];
+        address holder = owner();
+        if (signer == holder) return true;
+        // An additional signer is authorized only while the holder who
+        // enrolled it still holds the NFT — so a transfer silently revokes
+        // the previous holder's signers.
+        return _signerEnroller[signer] == holder;
     }
 
     function token()
@@ -126,7 +150,7 @@ contract MultiSignerAccount is IERC6551Account, IERC6551Executable, IERC1271 {
         (chainId, tokenContract, tokenId) = abi.decode(footer, (uint256, address, uint256));
     }
 
-    function owner() public view override returns (address) {
+    function owner() public view virtual override returns (address) {
         (uint256 chainId, address tokenContract, uint256 tokenId) = token();
         if (chainId != block.chainid) {
             return address(0);
@@ -173,8 +197,15 @@ contract MultiSignerAccount is IERC6551Account, IERC6551Executable, IERC1271 {
             s := mload(add(signature, 0x40))
             v := byte(0, mload(add(signature, 0x60)))
         }
+        // Reject malleable (high-s) signatures — EIP-2.
+        if (uint256(s) > _HALF_ORDER) {
+            return 0xffffffff;
+        }
         if (v < 27) {
             v += 27;
+        }
+        if (v != 27 && v != 28) {
+            return 0xffffffff;
         }
         address recovered = ecrecover(hash, v, r, s);
         if (recovered != address(0) && _isAuthorized(recovered)) {

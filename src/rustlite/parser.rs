@@ -7,14 +7,47 @@ pub fn parse(tokens: &[Token]) -> Result<Module, CompileError> {
     p.parse_module()
 }
 
+/// Hard cap on recursive-descent nesting depth. The compiler runs in the
+/// user's browser on agent/LLM-authored source; without this, deeply
+/// nested input (`((((…))))`, `-!-!-!…`, `{{{…}}}`) recurses one stack
+/// frame per token and overflows the wasm stack — an UNCATCHABLE abort
+/// that kills the whole tab rather than returning a `CompileError`.
+///
+/// The cap is in "guard entries", not source nesting levels: one paren
+/// level costs ~2 entries (parse_expr + parse_unary) and ~10 actual stack
+/// frames (the precedence ladder), so the cap must stay well under
+/// stack_size / frames_per_entry. 96 entries ≈ 48 paren levels ≈ a few
+/// hundred frames — comfortably inside the browser's wasm stack while far
+/// beyond anything a real rustlite cartridge nests.
+const MAX_RECURSION_DEPTH: usize = 96;
+
 struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
     fn new(tokens: &'a [Token]) -> Self {
-        Self { tokens, pos: 0 }
+        Self { tokens, pos: 0, depth: 0 }
+    }
+
+    /// Enter one recursion level; error (don't overflow) past the cap.
+    /// Paired with [`leave`](Self::leave) on every return path of the
+    /// guarded function.
+    fn enter(&mut self) -> Result<(), CompileError> {
+        self.depth += 1;
+        if self.depth > MAX_RECURSION_DEPTH {
+            return Err(CompileError::at(
+                "nesting too deep".to_string(),
+                self.span(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn leave(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
     }
 
     fn peek(&self) -> &TokenKind {
@@ -270,6 +303,13 @@ impl<'a> Parser<'a> {
     // ── Blocks ──────────────────────────────────────────────────────
 
     fn parse_block(&mut self) -> Result<Block, CompileError> {
+        self.enter()?;
+        let r = self.parse_block_inner();
+        self.leave();
+        r
+    }
+
+    fn parse_block_inner(&mut self) -> Result<Block, CompileError> {
         let start = self.span();
         self.expect(&TokenKind::LBrace)?;
 
@@ -383,7 +423,10 @@ impl<'a> Parser<'a> {
     // ── Expressions (precedence climbing) ───────────────────────────
 
     fn parse_expr(&mut self) -> Result<Expr, CompileError> {
-        self.parse_or()
+        self.enter()?;
+        let r = self.parse_or();
+        self.leave();
+        r
     }
 
     fn parse_or(&mut self) -> Result<Expr, CompileError> {
@@ -454,6 +497,13 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, CompileError> {
+        self.enter()?;
+        let r = self.parse_unary_inner();
+        self.leave();
+        r
+    }
+
+    fn parse_unary_inner(&mut self) -> Result<Expr, CompileError> {
         match self.peek() {
             TokenKind::Minus => {
                 let start = self.span();
@@ -1004,5 +1054,40 @@ mod tests {
             }
             _ => panic!("expected fn"),
         }
+    }
+
+    fn try_parse(s: &str) -> Result<Module, CompileError> {
+        let tokens = lexer::lex(s).unwrap();
+        parse(&tokens)
+    }
+
+    // ── Recursion-depth guard (DoS) ─────────────────────────────────
+    // These must return a CompileError, NOT overflow the stack. A
+    // regression here aborts the test process (uncatchable) instead of
+    // failing — which is itself the signal that the guard is gone.
+
+    #[test]
+    fn deeply_nested_parens_error_not_overflow() {
+        let n = MAX_RECURSION_DEPTH + 5_000;
+        let src = format!(
+            "fn f() -> i32 {{ {}1{} }}",
+            "(".repeat(n),
+            ")".repeat(n)
+        );
+        assert!(try_parse(&src).is_err(), "deep paren nesting must error, not overflow");
+    }
+
+    #[test]
+    fn deeply_nested_unary_error_not_overflow() {
+        let n = MAX_RECURSION_DEPTH + 5_000;
+        let src = format!("fn f() -> i32 {{ {}1 }}", "-".repeat(n));
+        assert!(try_parse(&src).is_err(), "deep unary chain must error, not overflow");
+    }
+
+    #[test]
+    fn modest_nesting_still_parses() {
+        // Well under the cap — must still compile fine.
+        let src = "fn f() -> i32 { (((((1)))))  }";
+        assert!(try_parse(src).is_ok(), "modest nesting must still parse");
     }
 }

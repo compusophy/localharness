@@ -91,6 +91,21 @@ async fn call_agent_impl(name: &str, message: &str) -> std::result::Result<Strin
     use wasm_bindgen_futures::JsFuture;
     use web_sys::{HtmlIFrameElement, MessageEvent};
 
+    // The name is model-supplied and interpolated into the RPC URL host.
+    // Restrict it to the registry's DNS-label charset so a crafted value
+    // (`.`, `/`, `@`, `:`…) can't reshape the host and aim the iframe at an
+    // unintended origin.
+    if name.is_empty()
+        || name.len() > 63
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return Err(format!(
+            "invalid agent name '{name}' — must be lowercase a-z, 0-9, '-'"
+        ));
+    }
+
     let rpc_url = format!("https://{name}.localharness.xyz/?rpc=1");
     let rpc_origin = format!("https://{name}.localharness.xyz");
 

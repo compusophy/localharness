@@ -23,7 +23,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use parking_lot::RwLock;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::hooks::{OperationContext, PreToolCallDecideHook};
 use crate::types::{HookResult, ToolCall};
 
@@ -136,11 +136,33 @@ pub fn secure_normalize_path(path: impl AsRef<Path>) -> Result<PathBuf> {
             .map(|cwd| cwd.join(path))
             .unwrap_or_else(|_| path.to_path_buf())
     };
-    let canonical = match dunce::canonicalize(&absolute) {
-        Ok(p) => p,
-        Err(_) => absolute,
-    };
-    Ok(canonical)
+    if let Ok(p) = dunce::canonicalize(&absolute) {
+        return Ok(p);
+    }
+    // Target can't be canonicalized (e.g. a not-yet-created file). Resolve
+    // the PARENT instead — that collapses `..` and follows symlinks — and
+    // re-join the final component, so containment always compares a
+    // canonical path against a canonical workspace (and `<ws>/../../etc`
+    // resolves to its real, outside location rather than slipping past the
+    // component check).
+    if let (Some(parent), Some(file)) = (absolute.parent(), absolute.file_name()) {
+        if let Ok(canon_parent) = dunce::canonicalize(parent) {
+            return Ok(canon_parent.join(file));
+        }
+    }
+    // Even the parent doesn't resolve. Refuse to fall back to a path that
+    // still carries `..` / `.` traversal components — fail closed.
+    if absolute.components().any(|c| {
+        matches!(
+            c,
+            std::path::Component::ParentDir | std::path::Component::CurDir
+        )
+    }) {
+        return Err(Error::other(
+            "path contains unresolved `..`/`.` traversal components",
+        ));
+    }
+    Ok(absolute)
 }
 
 /// Returns `true` if `target` is under `workspace`. Component-wise comparison
@@ -178,31 +200,65 @@ fn component_eq(
     }
 }
 
-/// Builds policies that deny file-tool calls outside the given workspaces.
+/// Every built-in filesystem tool that takes a path the model controls.
+/// `workspace_only` must attach a containment deny to ALL of them —
+/// missing one (historically `delete_file` / `rename_file` and the
+/// traversal tools) leaves a full escape hatch.
+const FS_TOOLS: &[&str] = &[
+    "view_file",
+    "create_file",
+    "edit_file",
+    "delete_file",
+    "rename_file",
+    "list_directory",
+    "find_file",
+    "search_directory",
+];
+
+/// Extract every filesystem path a built-in fs tool call operates on, so
+/// containment can check ALL of them — notably `rename_file`'s `from`
+/// AND `to`, both of which must stay inside the workspace. Reads the raw
+/// arg strings; canonicalisation + containment are
+/// [`is_path_in_workspace`]'s job.
+fn fs_paths_from_args(tool: &str, args: &serde_json::Value) -> Vec<String> {
+    let get = |k: &str| args.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    match tool {
+        "rename_file" => get("from").into_iter().chain(get("to")).collect(),
+        // All other fs tools operate on a single `path` (a file for
+        // view/create/edit/delete, a directory for list/find/search).
+        _ => get("path").into_iter().collect(),
+    }
+}
+
+/// Builds policies that deny file-tool calls outside the given
+/// workspaces. Covers every tool in [`FS_TOOLS`] and fails **closed**:
+/// an fs tool call whose paths can't be resolved, or that touches any
+/// path outside every workspace, is denied. `rename_file` is checked on
+/// both `from` and `to`.
 pub fn workspace_only(workspaces: Vec<PathBuf>) -> Vec<Policy> {
     let workspaces = Arc::new(workspaces);
-    let predicate: Predicate = {
-        let workspaces = workspaces.clone();
-        Arc::new(move |tc: &ToolCall| {
-            let Some(p) = tc.canonical_path.as_ref() else {
-                // No path: caller can't be claiming a workspace violation.
-                return false;
-            };
-            !workspaces.iter().any(|w| is_path_in_workspace(p, w))
+    FS_TOOLS
+        .iter()
+        .map(|tool| {
+            let workspaces = workspaces.clone();
+            let predicate: Predicate = Arc::new(move |tc: &ToolCall| {
+                let paths = fs_paths_from_args(&tc.name, &tc.args);
+                if paths.is_empty() {
+                    // A path-bearing fs tool with no usable path arg is
+                    // malformed — fail closed (deny) rather than waving it
+                    // through as the old `canonical_path: None` branch did.
+                    return true;
+                }
+                // Deny if ANY operand escapes every configured workspace.
+                paths
+                    .iter()
+                    .any(|p| !workspaces.iter().any(|w| is_path_in_workspace(p, w)))
+            });
+            Policy::deny(*tool)
+                .with_predicate(predicate)
+                .with_name(format!("workspace_only:{tool}"))
         })
-    };
-
-    vec![
-        Policy::deny("view_file")
-            .with_predicate(predicate.clone())
-            .with_name("workspace_only:view_file"),
-        Policy::deny("create_file")
-            .with_predicate(predicate.clone())
-            .with_name("workspace_only:create_file"),
-        Policy::deny("edit_file")
-            .with_predicate(predicate)
-            .with_name("workspace_only:edit_file"),
-    ]
+        .collect()
 }
 
 // =============================================================================
@@ -307,6 +363,15 @@ mod tests {
         }
     }
 
+    fn call_args(name: &str, args: serde_json::Value) -> ToolCall {
+        ToolCall {
+            name: name.to_string(),
+            args,
+            id: None,
+            canonical_path: None,
+        }
+    }
+
     #[test]
     fn specific_deny_beats_wildcard_allow() {
         let policies = vec![
@@ -323,14 +388,82 @@ mod tests {
         assert!(evaluate(&policies, &call("anything")).allow);
     }
 
+    // Realistic composition: a base allow + workspace containment denies.
+    // `workspace_only` is deny-only, so on its own every non-matching call
+    // hits the default-deny; in practice it's paired with an allow/approve
+    // (the specific-deny still beats the wildcard-approve, bucket 0 < 5).
+    fn ws_policies(cwd: PathBuf) -> Vec<Policy> {
+        let mut v = vec![allow_all()];
+        v.extend(workspace_only(vec![cwd]));
+        v
+    }
+
     #[test]
-    fn workspace_predicate_blocks_outside() {
+    fn workspace_allows_inside() {
         let cwd = std::env::current_dir().unwrap();
-        let ws = vec![cwd.clone()];
-        let policies = workspace_only(ws);
-        let mut outside = call("view_file");
-        outside.canonical_path = Some("/totally/elsewhere/file.txt".to_string());
-        let result = evaluate(&policies, &outside);
-        assert!(!result.allow, "outside path should be denied: {:?}", result);
+        let policies = ws_policies(cwd);
+        // A relative path resolves under cwd → inside the workspace.
+        let inside = call_args("view_file", serde_json::json!({ "path": "some_file.txt" }));
+        assert!(evaluate(&policies, &inside).allow);
+    }
+
+    #[test]
+    fn workspace_blocks_outside() {
+        let cwd = std::env::current_dir().unwrap();
+        let policies = ws_policies(cwd);
+        let outside = call_args(
+            "view_file",
+            serde_json::json!({ "path": "/totally/elsewhere/file.txt" }),
+        );
+        assert!(!evaluate(&policies, &outside).allow);
+    }
+
+    #[test]
+    fn workspace_covers_delete_file() {
+        // Regression: delete_file used to have NO containment policy.
+        let cwd = std::env::current_dir().unwrap();
+        let policies = ws_policies(cwd);
+        let del = call_args("delete_file", serde_json::json!({ "path": "/etc/shadow" }));
+        assert!(!evaluate(&policies, &del).allow, "delete outside must be denied");
+    }
+
+    #[test]
+    fn workspace_checks_both_rename_operands() {
+        // Regression: rename_file (from/to) had no containment, and the
+        // single-`path` extraction never saw its args.
+        let cwd = std::env::current_dir().unwrap();
+        let policies = ws_policies(cwd);
+
+        let escape_dst = call_args(
+            "rename_file",
+            serde_json::json!({ "from": "a.txt", "to": "/etc/evil" }),
+        );
+        assert!(!evaluate(&policies, &escape_dst).allow, "rename to outside must be denied");
+
+        let both_inside = call_args(
+            "rename_file",
+            serde_json::json!({ "from": "a.txt", "to": "b.txt" }),
+        );
+        assert!(evaluate(&policies, &both_inside).allow, "rename within ws should be allowed");
+    }
+
+    #[test]
+    fn workspace_blocks_dotdot_traversal() {
+        let cwd = std::env::current_dir().unwrap();
+        let policies = ws_policies(cwd);
+        let trav = call_args(
+            "create_file",
+            serde_json::json!({ "path": "../../../../etc/passwd" }),
+        );
+        assert!(!evaluate(&policies, &trav).allow, "`..` traversal must be denied");
+    }
+
+    #[test]
+    fn workspace_fails_closed_on_missing_path() {
+        // An fs tool call with no usable path arg is denied, not allowed —
+        // even with a base allow present, the containment deny fires.
+        let cwd = std::env::current_dir().unwrap();
+        let policies = ws_policies(cwd);
+        assert!(!evaluate(&policies, &call("delete_file")).allow);
     }
 }

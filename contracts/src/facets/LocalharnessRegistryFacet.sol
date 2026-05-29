@@ -49,6 +49,13 @@ contract LocalharnessRegistryFacet {
         LibRegistryStorage.Storage storage s = LibRegistryStorage.load();
         require(s.idOfName[name] == 0, "name taken");
         require(_isValidName(name), "invalid name");
+        // Token IDs MUST start at 1. `idOfName[name] == 0` is the "name is
+        // free" sentinel, so a token with id 0 would make its own name read
+        // as unclaimed — anyone could re-register it and overwrite
+        // ownerOfId[0], stealing the name/NFT. DiamondInit seeds nextId=1,
+        // but lazy-init here too so a facet cut / redeploy that forgets the
+        // initializer can never mint token 0.
+        if (s.nextId == 0) s.nextId = 1;
         agentId = s.nextId++;
         s.ownerOfId[agentId] = msg.sender;
         s.idOfName[name] = agentId;

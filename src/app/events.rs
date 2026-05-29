@@ -622,9 +622,7 @@ fn dispatch(action: Action) {
                     Err(err) => {
                         dom::swap_inner(
                             "claim-msg",
-                            &format!(
-                                "<span style=\"color:var(--error)\">claim failed: {err}</span>"
-                            ),
+                            &dom::msg_span(dom::Msg::Error, &format!("claim failed: {err}")),
                         );
                     }
                 }
@@ -650,9 +648,7 @@ fn dispatch(action: Action) {
                 if let Err(err) = super::verify::create_wallet_via_iframe(false).await {
                     dom::swap_inner(
                         "claim-msg",
-                        &format!(
-                            "<span style=\"color:var(--error)\">identity setup failed: {err}</span>"
-                        ),
+                        &dom::msg_span(dom::Msg::Error, &format!("identity setup failed: {err}")),
                     );
                     return;
                 }
@@ -672,9 +668,7 @@ fn dispatch(action: Action) {
                     Err(err) => {
                         dom::swap_inner(
                             "claim-msg",
-                            &format!(
-                                "<span style=\"color:var(--error)\">claim failed: {err}</span>"
-                            ),
+                            &dom::msg_span(dom::Msg::Error, &format!("claim failed: {err}")),
                         );
                     }
                 }
@@ -696,9 +690,7 @@ fn dispatch(action: Action) {
                 if let Err(err) = fs.write_atomic(".lh_owner", raw.as_bytes()).await {
                     dom::swap_inner(
                         "claim-msg",
-                        &format!(
-                            "<span style=\"color:var(--error)\">import failed: {err}</span>"
-                        ),
+                        &dom::msg_span(dom::Msg::Error, &format!("import failed: {err}")),
                     );
                     return;
                 }
@@ -739,10 +731,11 @@ fn dispatch(action: Action) {
                             ),
                             Err(err) => dom::swap_inner(
                                 "seed-reveal",
-                                &format!(
-                                    "<span style=\"color:var(--error)\">reveal failed: {err}</span>\
-                                     <button type=\"button\" data-action=\"reveal-seed\" class=\"ghost\">retry</button>"
-                                ),
+                                &maud::html! {
+                                    span style="color:var(--error)" { "reveal failed: " (err) }
+                                    button type="button" data-action="reveal-seed" class="ghost" { "retry" }
+                                }
+                                .into_string(),
                             ),
                         }
                     });
@@ -770,9 +763,7 @@ fn dispatch(action: Action) {
                         if let Err(err) = super::wallet_store::create_and_persist().await {
                             dom::swap_inner(
                                 "identity-msg",
-                                &format!(
-                                    "<span style=\"color:var(--error)\">create failed: {err}</span>"
-                                ),
+                                &dom::msg_span(dom::Msg::Error, &format!("create failed: {err}")),
                             );
                             return;
                         }
@@ -793,9 +784,7 @@ fn dispatch(action: Action) {
                             Err(err) => {
                                 dom::swap_inner(
                                     "identity-msg",
-                                    &format!(
-                                        "<span style=\"color:var(--error)\">create failed: {err}</span>"
-                                    ),
+                                    &dom::msg_span(dom::Msg::Error, &format!("create failed: {err}")),
                                 );
                             }
                         }
@@ -841,9 +830,7 @@ fn dispatch(action: Action) {
                             Err(err) => {
                                 dom::swap_inner(
                                     "seed-msg",
-                                    &format!(
-                                        "<span style=\"color:var(--error)\">import failed: {err}</span>"
-                                    ),
+                                    &dom::msg_span(dom::Msg::Error, &format!("import failed: {err}")),
                                 );
                             }
                         }
@@ -860,9 +847,7 @@ fn dispatch(action: Action) {
                             Err(err) => {
                                 dom::swap_inner(
                                     "seed-msg",
-                                    &format!(
-                                        "<span style=\"color:var(--error)\">import failed: {err}</span>"
-                                    ),
+                                    &dom::msg_span(dom::Msg::Error, &format!("import failed: {err}")),
                                 );
                             }
                         }
@@ -980,13 +965,13 @@ fn save_prompt_pressed() {
                 };
                 dom::swap_inner(
                     "prompt-msg",
-                    &format!("<span style=\"color:var(--accent)\">{summary}</span>"),
+                    &dom::msg_span(dom::Msg::Accent, &format!("{summary}")),
                 );
             }
             Err(err) => {
                 dom::swap_inner(
                     "prompt-msg",
-                    &format!("<span style=\"color:var(--error)\">{err}</span>"),
+                    &dom::msg_span(dom::Msg::Error, &format!("{err}")),
                 );
             }
         }
@@ -1022,13 +1007,13 @@ fn save_tool_allowlist_pressed() {
                 let summary = super::tool_allowlist::summary(&enabled);
                 dom::swap_inner(
                     "tool-allowlist-msg",
-                    &format!("<span style=\"color:var(--accent)\">✓ saved · {summary} · takes effect on next session</span>"),
+                    &dom::msg_span(dom::Msg::Accent, &format!("✓ saved · {summary} · takes effect on next session")),
                 );
             }
             Err(err) => {
                 dom::swap_inner(
                     "tool-allowlist-msg",
-                    &format!("<span style=\"color:var(--error)\">{err}</span>"),
+                    &dom::msg_span(dom::Msg::Error, &format!("{err}")),
                 );
             }
         }
@@ -1061,7 +1046,7 @@ fn reset_tool_allowlist_pressed() {
             Err(err) => {
                 dom::swap_inner(
                     "tool-allowlist-msg",
-                    &format!("<span style=\"color:var(--error)\">{err}</span>"),
+                    &dom::msg_span(dom::Msg::Error, &format!("{err}")),
                 );
             }
         }
@@ -1135,7 +1120,12 @@ fn agent_act_toggle_pressed(token_id_str: String) {
                 let panel_id = format!("agent-act-{token_id}");
                 dom::swap_inner(
                     &panel_id,
-                    &format!("<div class=\"admin-msg-slot\"><span style=\"color:var(--error)\">{err}</span></div>"),
+                    &maud::html! {
+                        div class="admin-msg-slot" {
+                            span style="color:var(--error)" { (err) }
+                        }
+                    }
+                    .into_string(),
                 );
             }
         });
@@ -1214,9 +1204,7 @@ fn agent_send_lh_pressed(token_id_str: String) {
                 let short = tx_short_hash(&tx_hash);
                 dom::swap_inner(
                     &msg_id,
-                    &format!(
-                        "<span style=\"color:var(--accent)\">✓ sent (tx {short})</span>"
-                    ),
+                    &dom::msg_span(dom::Msg::Accent, &format!("✓ sent (tx {short})")),
                 );
                 // Re-paint to refresh the balance line.
                 let _ = paint_agent_act_panel(token_id).await;
@@ -1224,7 +1212,7 @@ fn agent_send_lh_pressed(token_id_str: String) {
             Err(err) => {
                 dom::swap_inner(
                     &msg_id,
-                    &format!("<span style=\"color:var(--error)\">{err}</span>"),
+                    &dom::msg_span(dom::Msg::Error, &format!("{err}")),
                 );
             }
         }
@@ -1324,9 +1312,9 @@ fn add_device_pressed() {
                 let short = tx_short_hash(&tx_hash);
                 dom::swap_inner(
                     "add-device-msg",
-                    &format!(
-                        "<span style=\"color:var(--accent)\">✓ added {} (tx {short})</span>",
-                        short_addr(&raw)
+                    &dom::msg_span(
+                        dom::Msg::Accent,
+                        &format!("✓ added {} (tx {short})", short_addr(&raw)),
                     ),
                 );
                 if let Some(input) = dom::input_by_id("add-device-input") {
@@ -1336,7 +1324,7 @@ fn add_device_pressed() {
             Err(err) => {
                 dom::swap_inner(
                     "add-device-msg",
-                    &format!("<span style=\"color:var(--error)\">{err}</span>"),
+                    &dom::msg_span(dom::Msg::Error, &format!("{err}")),
                 );
             }
         }
@@ -1425,7 +1413,7 @@ pub(crate) async fn run_sponsored_tempo_call(
 
     let sender_hash = tx.sender_hash();
     let (claimed_addr, sender_sig) =
-        super::verify::sign_digest_via_iframe(&sender_hash, purpose)
+        super::verify::sign_tempo_tx_via_iframe(&tx, purpose)
             .await
             .map_err(|e| format!("signer: {e}"))?;
 
@@ -1684,7 +1672,7 @@ fn feedback_open() {
             Err(err) => {
                 dom::swap_inner(
                     "feedback-list",
-                    &format!("<span style=\"color:var(--muted)\">couldn't load feedback: {err}</span>"),
+                    &dom::msg_span(dom::Msg::Muted, &format!("couldn't load feedback: {err}")),
                 );
             }
         }
@@ -1728,7 +1716,7 @@ fn feedback_submit() {
         let remaining = ((60_000.0 - elapsed) / 1000.0).ceil() as u32;
         dom::swap_inner(
             "feedback-msg",
-            &format!("<span style=\"color:var(--muted)\">wait {remaining}s</span>"),
+            &dom::msg_span(dom::Msg::Muted, &format!("wait {remaining}s")),
         );
         return;
     }
@@ -1770,9 +1758,7 @@ fn feedback_submit() {
                 let short = tx_short_hash(&tx_hash);
                 dom::swap_inner(
                     "feedback-msg",
-                    &format!(
-                        "<span style=\"color:var(--accent)\">✓ on-chain (tx {short})</span>"
-                    ),
+                    &dom::msg_span(dom::Msg::Accent, &format!("✓ on-chain (tx {short})")),
                 );
                 if let Some(window) = web_sys::window() {
                     let cb = Closure::<dyn FnMut()>::new(|| {
@@ -1805,7 +1791,7 @@ fn feedback_submit() {
 async fn run_publish_app() {
     let msg = "publish-app-msg";
     let set_err = |m: &str| {
-        dom::swap_inner(msg, &format!("<span style=\"color:var(--error)\">{m}</span>"));
+        dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, &format!("{m}")));
     };
 
     let name = match super::tenant::current() {
@@ -1877,12 +1863,17 @@ async fn run_publish_app() {
     match run_sponsored_tempo_call(&owner_hex, vec![call], gas, "publish app").await {
         Ok(_tx) => dom::swap_inner(
             msg,
-            &format!(
-                "<span style=\"color:var(--fg)\">published ✓ — live at \
-                 <a href=\"https://{name}.localharness.xyz/\" target=\"_blank\" \
-                 rel=\"noopener\" style=\"color:var(--accent)\">{name}.localharness.xyz →</a> \
-                 (share it — anyone can open the app)</span>"
-            ),
+            &maud::html! {
+                span style="color:var(--fg)" {
+                    "published ✓ — live at "
+                    a href=(format!("https://{name}.localharness.xyz/"))
+                      target="_blank" rel="noopener" style="color:var(--accent)" {
+                        (format!("{name}.localharness.xyz →"))
+                    }
+                    " (share it — anyone can open the app)"
+                }
+            }
+            .into_string(),
         ),
         Err(e) => set_err(&format!("publish failed: {e}")),
     }
@@ -2006,9 +1997,7 @@ fn pricing_save_pressed() {
         Err(err) => {
             dom::swap_inner(
                 "pricing-msg",
-                &format!(
-                    "<span style=\"color:var(--error)\">{err}</span>"
-                ),
+                &dom::msg_span(dom::Msg::Error, &format!("{err}")),
             );
             return;
         }
@@ -2040,9 +2029,7 @@ fn pricing_save_pressed() {
             Err(err) => {
                 dom::swap_inner(
                     "pricing-msg",
-                    &format!(
-                        "<span style=\"color:var(--error)\">save failed: {err}</span>"
-                    ),
+                    &dom::msg_span(dom::Msg::Error, &format!("save failed: {err}")),
                 );
             }
         }

@@ -517,6 +517,34 @@ impl WasmEmitter {
                     self.emit_expr(e, code)?;
                 }
             }
+            TypedExprKind::BinOp { op: op @ (BinOp::And | BinOp::Or), lhs, rhs } => {
+                // Short-circuit boolean ops. Operands are bool (i32 0/1).
+                // `a && b` ≡ `if a { b } else { 0 }`; `a || b` ≡
+                // `if a { 1 } else { b }`. Emitting an `if (result i32)`
+                // block means `rhs` only runs when needed — matching Rust
+                // semantics (so e.g. `i != 0 && 100/i > 1` can't divide by
+                // zero). The previous codegen left the stack imbalanced and
+                // ignored `lhs`, producing invalid wasm.
+                self.emit_expr(lhs, code)?;
+                code.push(OP_IF);
+                code.push(resolved_to_wasm(&ResolvedType::I32));
+                match op {
+                    BinOp::And => {
+                        self.emit_expr(rhs, code)?;
+                        code.push(OP_ELSE);
+                        code.push(OP_I32_CONST);
+                        leb128_i32(0, code);
+                    }
+                    BinOp::Or => {
+                        code.push(OP_I32_CONST);
+                        leb128_i32(1, code);
+                        code.push(OP_ELSE);
+                        self.emit_expr(rhs, code)?;
+                    }
+                    _ => unreachable!(),
+                }
+                code.push(OP_END);
+            }
             TypedExprKind::BinOp { op, lhs, rhs } => {
                 self.emit_expr(lhs, code)?;
                 self.emit_expr(rhs, code)?;
@@ -553,20 +581,7 @@ impl WasmEmitter {
                     (ResolvedType::F64, BinOp::Gt) => OP_F64_GT,
                     (ResolvedType::F64, BinOp::Le) => OP_F64_LE,
                     (ResolvedType::F64, BinOp::Ge) => OP_F64_GE,
-                    (_, BinOp::And) => {
-                        // already emitted both sides; AND = both nonzero
-                        code.push(OP_I32_CONST);
-                        leb128_i32(0, code);
-                        code.push(OP_I32_NE);
-                        // swap to check second... simplified: just i32.and
-                        return Ok(());
-                    }
-                    (_, BinOp::Or) => {
-                        code.push(OP_I32_CONST);
-                        leb128_i32(0, code);
-                        code.push(OP_I32_NE);
-                        return Ok(());
-                    }
+                    // And/Or are handled by the short-circuit arm above.
                     _ => return Err(CompileError::new(format!("unsupported binop {:?} for {:?}", op, lhs.ty))),
                 };
                 code.push(opcode);
@@ -939,6 +954,20 @@ mod tests {
     fn emit_if_else() {
         let wasm = compile_to_wasm("fn abs(x: i32) -> i32 { if x > 0 { x } else { 0 - x } }");
         assert_eq!(&wasm[0..4], WASM_MAGIC);
+    }
+
+    #[test]
+    fn emit_short_circuit_bool() {
+        // `&&` / `||` previously emitted stack-imbalanced (invalid) wasm.
+        // They now compile to short-circuit `if`-blocks. This guards the
+        // compile path; correct *execution* (incl. div-by-zero short-
+        // circuit) was validated by instantiating the output in node.
+        let wasm = compile_to_wasm(
+            "fn t(a: i32, b: i32) -> i32 { if a > 0 && b > 0 { 1 } else { 0 } }\n\
+             fn u(a: i32, b: i32) -> i32 { if a > 0 || b > 0 { 1 } else { 0 } }",
+        );
+        assert_eq!(&wasm[0..4], WASM_MAGIC);
+        assert!(wasm.len() > 16);
     }
 
     #[test]

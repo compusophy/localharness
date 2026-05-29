@@ -183,11 +183,17 @@ pub(crate) async fn paint_rpc() {
     };
 
     if let Some(root) = dom::by_id("root") {
-        root.set_inner_html(&format!(
-            "<main style=\"padding:24px;color:#7a8493;font:14px ui-monospace,Menlo,Consolas,monospace\">\
-             {name} · rpc endpoint · listening\
-             </main>"
-        ));
+        // maud escapes `name` (a hostname-derived subdomain). DNS labels
+        // can't contain HTML metacharacters, but keep the escaped path so
+        // no raw-HTML-with-interpolation sink exists anywhere in the app.
+        root.set_inner_html(
+            &maud::html! {
+                main style="padding:24px;color:#7a8493;font:14px ui-monospace,Menlo,Consolas,monospace" {
+                    (name) " · rpc endpoint · listening"
+                }
+            }
+            .into_string(),
+        );
     }
 
     // Start a headless agent session if we have an API key
