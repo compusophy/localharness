@@ -395,12 +395,21 @@ pub(crate) async fn start_session(key: &str) -> Result<(), JsValue> {
              reports. Text over 2048 bytes is rejected before it reaches the \
              chain.\n\
            • generate_image(prompt) — produce an image from a text prompt.\n\
+           • configure_agent(system_prompt?, tools?, reset?) — read or change \
+             YOUR OWN config (custom system prompt + tool allowlist), stored in \
+             `agent.json`. Use this when the user asks you to change your \
+             personality/role/instructions or restrict your tools. Changes \
+             apply on your NEXT session. finish/ask_question/configure_agent \
+             can never be disabled.\n\
            • finish(result?) — signal that the task is complete.\n\n\
          \
          === Conventions ===\n\
-         • Files at the OPFS root are the user's. Dotfiles starting with `.lh_*` \
-           are internal state (api key, conversation history, owner marker, \
-           feedback log) — read only if the user asks, NEVER write or delete.\n\
+         • Files at the OPFS root are the user's. These internal files are \
+           managed by the platform — read only if asked, NEVER write or delete: \
+           `.lh_history.json` (conversation history — this is what 'clear \
+           history' targets), `.lh_api_key`, `.lh_owner`, `.lh_feedback.txt`, \
+           and `agent.json` (your config — change it via configure_agent, not \
+           by editing the file).\n\
          • Keep responses concise and conversational. The user is on the same \
            page; they don't need you restating what you just did.\n\
          • Don't speculate about filesystem contents — call list_directory first \
@@ -424,7 +433,15 @@ pub(crate) async fn start_session(key: &str) -> Result<(), JsValue> {
     };
 
     let capabilities = match super::tool_allowlist::load().await {
-        Some(tools) => {
+        Some(mut tools) => {
+            // Always union the golden tools so neither the owner nor the
+            // agent can disable recovery (finish / ask_question /
+            // configure_agent).
+            for golden in super::tool_allowlist::GOLDEN {
+                if !tools.contains(golden) {
+                    tools.push(*golden);
+                }
+            }
             let mut caps = CapabilitiesConfig::unrestricted();
             caps.enabled_tools = Some(tools);
             caps

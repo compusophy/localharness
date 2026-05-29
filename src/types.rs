@@ -209,6 +209,9 @@ pub enum BuiltinTool {
     RunCartridge,
     /// Render an HTML document onto the visual display (framebuffer).
     RenderHtml,
+    /// Read/update this agent's own config manifest (system prompt + tool
+    /// allowlist), or reset it to defaults.
+    ConfigureAgent,
     /// Signal that the agent's turn is complete.
     Finish,
 }
@@ -232,6 +235,7 @@ impl BuiltinTool {
         Self::CompileRustlite,
         Self::RunCartridge,
         Self::RenderHtml,
+        Self::ConfigureAgent,
         Self::Finish,
     ];
 
@@ -272,6 +276,7 @@ impl BuiltinTool {
             Self::CompileRustlite => "compile_rustlite",
             Self::RunCartridge => "run_cartridge",
             Self::RenderHtml => "render_html",
+            Self::ConfigureAgent => "configure_agent",
             Self::Finish => "finish",
         }
     }

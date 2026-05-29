@@ -25,6 +25,7 @@ mod list_directory;
 mod rename_file;
 mod run_cartridge;
 mod render_html;
+mod configure_agent;
 #[cfg(feature = "native")]
 mod run_command;
 mod search_directory;
@@ -108,6 +109,7 @@ pub fn register_builtins(
             BuiltinTool::CompileRustlite => Some(Arc::new(compile_rustlite::CompileRustlite) as Arc<dyn Tool>),
             BuiltinTool::RunCartridge => Some(Arc::new(run_cartridge::RunCartridge) as Arc<dyn Tool>),
             BuiltinTool::RenderHtml => Some(Arc::new(render_html::RenderHtml) as Arc<dyn Tool>),
+            BuiltinTool::ConfigureAgent => Some(Arc::new(configure_agent::ConfigureAgent) as Arc<dyn Tool>),
             BuiltinTool::RunCommand => instantiate_run_command(),
         };
         if let Some(t) = boxed {

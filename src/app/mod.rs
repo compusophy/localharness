@@ -27,6 +27,7 @@ mod compose;
 // pub(crate) so the `run_cartridge` builtin tool can hand a compiled
 // cartridge to the framebuffer (the agent→display loop).
 pub(crate) mod display;
+pub(crate) mod agent_config;
 mod dom;
 mod embed;
 mod events;

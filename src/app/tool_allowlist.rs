@@ -9,55 +9,35 @@
 //!
 //! Follows the same OPFS file pattern as `system_prompt.rs`.
 
-use crate::filesystem::Filesystem;
+//! Now a thin wrapper over [`super::agent_config`] — the allowlist lives
+//! in the `agent.json` manifest (with one-time migration from the legacy
+//! `.lh_tool_allowlist.txt`). Golden tools that can never be disabled are
+//! defined in [`GOLDEN`] and enforced at session start.
+
 use crate::types::BuiltinTool;
 
-const ALLOWLIST_PATH: &str = ".lh_tool_allowlist.txt";
+/// Tools that are always available regardless of the allowlist, so the
+/// owner (or the agent) can never lock themselves out of recovery:
+/// `finish` (end a turn), `ask_question` (talk to the user), and
+/// `configure_agent` (change/reset the config). Enforced in
+/// `chat::start_session` by unioning these into the effective set.
+pub(crate) const GOLDEN: &[BuiltinTool] = &[
+    BuiltinTool::Finish,
+    BuiltinTool::AskQuestion,
+    BuiltinTool::ConfigureAgent,
+];
 
-/// Load the tool allowlist for this origin. Returns `None` when the
-/// file doesn't exist or is empty (meaning: unrestricted).
+/// Load the tool allowlist for this origin. Returns `None` when
+/// unrestricted (all tools enabled).
 pub(crate) async fn load() -> Option<Vec<BuiltinTool>> {
-    let fs = super::shared_opfs();
-    let bytes = fs.read(ALLOWLIST_PATH).await.ok()?;
-    if bytes.is_empty() {
-        return None;
-    }
-    let text = String::from_utf8(bytes).ok()?;
-    let tools: Vec<BuiltinTool> = text
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                return None;
-            }
-            BuiltinTool::ALL.iter().find(|t| t.wire_name() == trimmed).copied()
-        })
-        .collect();
-    if tools.is_empty() {
-        return None;
-    }
-    Some(tools)
+    super::agent_config::tool_allowlist().await
 }
 
-/// Persist `tools` as the new allowlist. An empty slice deletes the
-/// file (reverts to unrestricted). `finish` is always implicitly
-/// included even if the caller omits it.
+/// Persist `tools` as the new allowlist. An empty slice reverts to
+/// unrestricted.
 pub(crate) async fn save(tools: &[BuiltinTool]) -> Result<(), String> {
-    let fs = super::shared_opfs();
-    if tools.is_empty() {
-        let _ = fs.delete(ALLOWLIST_PATH).await;
-        return Ok(());
-    }
-    let mut lines: Vec<&str> = tools.iter().map(|t| t.wire_name()).collect();
-    if !lines.contains(&"finish") {
-        lines.push("finish");
-    }
-    lines.sort();
-    lines.dedup();
-    let content = lines.join("\n");
-    fs.write_atomic(ALLOWLIST_PATH, content.as_bytes())
-        .await
-        .map_err(|e| format!("write: {e}"))
+    let arg = if tools.is_empty() { None } else { Some(tools) };
+    super::agent_config::set_tools(arg).await
 }
 
 /// Return a human-readable summary for the admin UI.
