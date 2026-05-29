@@ -41,14 +41,19 @@ impl Tool for ConfigureAgent {
         json!({
             "type": "object",
             "properties": {
+                // NOTE: Gemini's function-declaration schema rejects
+                // array-valued (union) `type` like ["string","null"] with a
+                // 400 — it must be a single type. Nullability is conveyed in
+                // the description + the `reset` flag; the model can still
+                // omit the field or pass null at the value level.
                 "system_prompt": {
-                    "type": ["string", "null"],
-                    "description": "New custom system prompt; null clears it."
+                    "type": "string",
+                    "description": "New custom system prompt; null/empty clears it."
                 },
                 "tools": {
-                    "type": ["array", "null"],
+                    "type": "array",
                     "items": { "type": "string" },
-                    "description": "Allowlisted tool wire-names; null allows all."
+                    "description": "Allowlisted tool wire-names; omit or null allows all."
                 },
                 "reset": {
                     "type": "boolean",
