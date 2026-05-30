@@ -3,3 +3,8 @@ out/
 cache/
 broadcast/
 lib/
+
+# Foundry run artifacts (may contain sensitive values / keys)
+broadcast/
+cache/
+out/
