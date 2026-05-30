@@ -70,7 +70,7 @@ pub(crate) async fn run_send() {
 
     let prompt = prompt_area.value().trim().to_string();
     if prompt.is_empty() {
-        dom::set_status("enter a prompt first.", true);
+        // Silent no-op — no explanatory validation text. (on-chain feedback)
         return;
     }
 
@@ -425,8 +425,10 @@ pub(crate) async fn start_session(key: &str) -> Result<(), JsValue> {
            when you actually need to know.\n\
          • Don't blindly call tools when the user is just chatting. \"hi\" / \
            \"what can you do?\" don't need a tool call.\n\
-         • When you do call a tool, the call AND its result are visible to the \
-           user in the transcript — no need to re-narrate either."
+         • When you do call a tool, lead with a short one-line note on what \
+           you're about to do (e.g. \"checking your files…\") so the turn is \
+           never silent — but don't re-narrate the call's args or dump its \
+           result afterward; both are already visible in the transcript."
     );
 
     // Owner customization: append the contents of `.lh_system_prompt.txt`

@@ -872,6 +872,11 @@ fn dispatch(action: Action) {
                         "delete({name}): {err}"
                     )));
                 }
+                // Deleting the conversation history wipes the on-screen
+                // transcript instantly — no page refresh. (on-chain feedback)
+                if name == ".lh_history.json" {
+                    dom::swap_inner("transcript", "");
+                }
                 super::opfs::refresh().await;
             });
         }

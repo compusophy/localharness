@@ -1088,11 +1088,12 @@ pub(crate) fn agents_list(
             ul.agents-rows {
                 @for agent in agents {
                     li.agent-row {
-                        div.agent-row-line {
-                            a.agent-name
-                                href=(format!("https://{}.localharness.xyz/", agent.name)) {
-                                (agent.name)
-                            }
+                        // Whole row is one clickable link — not just the name
+                        // text. The horizontal line (name + spacer + badge) is
+                        // the hit target.
+                        a.agent-row-line
+                            href=(format!("https://{}.localharness.xyz/", agent.name)) {
+                            span.agent-name { (agent.name) }
                             span.agent-row-spacer {}
                             // Per on-chain feedback: no per-row "act" button
                             // on the apex homepage — just a main/alt label.

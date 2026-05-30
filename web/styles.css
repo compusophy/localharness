@@ -670,7 +670,6 @@ h1 {
 .agent-name {
   color: var(--fg);
   text-decoration: none;
-  padding: 4px 8px;
   display: inline-block;
 }
 .agent-name:hover { color: var(--accent); }
@@ -854,10 +853,20 @@ input, textarea {
 }
 
 /* --- Agent row act panel (apex agents list) --- */
-.agent-row { display: block; padding: 6px 0; text-align: center; }
+.agent-row { display: block; }
+/* The whole row is one anchor (templates::agents_list) — give it the
+   padding + hover so the entire horizontal strip is the hit target,
+   not just the name text. */
 .agent-row-line {
   display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px;
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+  border: 1px solid transparent;
 }
+.agent-row-line:hover { background: rgba(255, 255, 255, 0.05); border-color: var(--border); }
+.agent-row-line:hover .agent-name { color: var(--accent); }
 .agent-row-spacer { flex: 1; }
 .agent-act-btn { font-size: 10px; padding: 4px 8px; }
 .agent-act-panel {
