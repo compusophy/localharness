@@ -826,17 +826,60 @@ pub(crate) fn admin_devices_section() -> Markup {
         div.admin-section {
             div.admin-section-title { "linked devices" }
             div #signer-list .admin-msg-slot { "loading…" }
-            form #add-device-form .add-device-form
-                data-action="add-device" {
-                input #add-device-input
-                    type="text"
-                    placeholder="another device's 0x…"
-                    autocomplete="off"
-                    spellcheck="false"
-                    maxlength="42" {}
-                button #add-device-btn type="submit" .ghost { "add" }
+            // No 0x copying. Click "link a device" → a one-time code +
+            // a URL appears. Open it on the other device (scan the link
+            // / type the short code into your own subdomain) and it
+            // self-enrolls over the on-chain pairing rendezvous.
+            div #pair-slot .pair-slot {
+                button #pair-btn type="button" data-action="pair-start" .ghost {
+                    "link a device"
+                }
             }
-            div #add-device-msg .admin-msg-slot {}
+            div #pair-msg .admin-msg-slot {}
+        }
+    }
+}
+
+/// The active-pairing panel — shown after the desktop presses "link a
+/// device". Renders the one-time code big + the deep link to open on
+/// the phone, and a cancel. The desktop is polling on-chain while this
+/// is up; success swaps `#pair-msg`.
+pub(crate) fn pair_panel(code: &str, pair_url: &str) -> Markup {
+    html! {
+        div #pair-slot .pair-slot.pair-active {
+            div.pair-instructions {
+                "on your other device, open:"
+            }
+            a.pair-url href=(pair_url) target="_blank" rel="noopener" { (pair_url) }
+            div.pair-code-row {
+                span.pair-code-label { "code" }
+                code.pair-code { (code) }
+            }
+            div.pair-waiting { "waiting for the other device…" }
+            button type="button" data-action="pair-cancel" .ghost { "cancel" }
+        }
+    }
+}
+
+/// The phone-side pairing chrome (`<name>.localharness.xyz/?pair=CODE`).
+/// One button: generate a device key + announce on-chain. No identity,
+/// no seed, no chat — just the enroll step.
+pub(crate) fn pair_join(name: &str) -> Markup {
+    html! {
+        main.apex-main {
+            div.col-chat {
+                section.step.step-unclaimed {
+                    h2.unclaimed-name { (name) ".localharness.xyz" }
+                    p.step-msg {
+                        "link this device to " (name) "? it'll be able to act \
+                         as " (name) " without copying any keys."
+                    }
+                    button type="button" data-action="pair-join" .button-link {
+                        "link this device"
+                    }
+                    div #pair-join-msg .step-msg {}
+                }
+            }
         }
     }
 }

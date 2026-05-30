@@ -283,6 +283,13 @@ fn mount() -> Result<(), JsValue> {
             return Ok(());
         }
         tenant::Host::Tenant(name) => {
+            // Device-pairing short-circuit: `?pair=CODE` means a second
+            // device is enrolling itself as a signer for this subdomain.
+            // Paint the minimal join chrome — no identity, no chat.
+            if read_query_param("pair").is_some() {
+                root.set_inner_html(&templates::pair_join(name).into_string());
+                return Ok(());
+            }
             // Tenant subdomain — defer the chrome choice until we've
             // peeked at the ownership marker (async).
             let placeholder = format!(
@@ -634,7 +641,7 @@ pub(crate) fn format_wei_as_test_eth(wei: u128) -> String {
 /// Read a `?key=value` query parameter from the current URL, naive
 /// implementation that avoids pulling a URL crate. Returns `None` if
 /// the param is missing or empty.
-fn read_query_param(key: &str) -> Option<String> {
+pub(crate) fn read_query_param(key: &str) -> Option<String> {
     let window = dom::window().ok()?;
     let search = window.location().search().ok()?;
     let stripped = search.trim_start_matches('?');

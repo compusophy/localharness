@@ -852,6 +852,25 @@ input, textarea {
   width: 100%; height: 80px; border: 0; display: block; background: transparent;
 }
 
+/* --- Device pairing (admin → linked devices) --- */
+.pair-slot { margin-top: 8px; }
+.pair-slot.pair-active {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px; border: 1px solid var(--border); background: var(--panel);
+}
+.pair-instructions { color: var(--muted); font-size: 12px; }
+.pair-url {
+  color: var(--fg); font-size: 12px; word-break: break-all;
+  text-decoration: underline;
+}
+.pair-code-row { display: flex; align-items: baseline; gap: 8px; }
+.pair-code-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+.pair-code {
+  font-size: 24px; letter-spacing: 0.25em; color: var(--fg);
+  font-weight: 600;
+}
+.pair-waiting { color: var(--muted); font-size: 11px; }
+
 /* --- Agent row act panel (apex agents list) --- */
 .agent-row { display: block; }
 /* The whole row is one anchor (templates::agents_list) — give it the

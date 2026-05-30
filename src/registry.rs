@@ -1131,6 +1131,86 @@ pub async fn remove_signer_sponsored(
     submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 500_000).await
 }
 
+// --- Device pairing (PairingFacet on the diamond) --------------------
+
+/// keccak256 of a one-time pairing code, used as the rendezvous key.
+/// The desktop shows the raw code; both sides hash it to the same
+/// `bytes32` topic so the phone never has to transmit a 0x address.
+pub fn pairing_code_hash(code: &str) -> [u8; 32] {
+    use sha3::{Digest, Keccak256};
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&Keccak256::digest(code.trim().as_bytes()));
+    out
+}
+
+/// Phone side. Announce that `device` wants to pair, keyed by
+/// `code_hash`. Submitted as a SPONSORED Tempo tx: the fresh device key
+/// signs the sender intent (proving control of the device address that
+/// gets enrolled) and the bundle `fee_payer` pays — the phone holds zero
+/// of anything. The device address is recoverable from the on-chain
+/// `PairingAnnounced(codeHash, device, …)` log by the desktop.
+pub async fn announce_pairing_sponsored(
+    device: &SigningKey,
+    fee_payer: &SigningKey,
+    code_hash: &[u8; 32],
+    fee_token: &str,
+) -> Result<String, String> {
+    let mut input = Vec::with_capacity(4 + 32);
+    input.extend_from_slice(&selector("announcePairing(bytes32)"));
+    input.extend_from_slice(code_hash);
+    let call = crate::tempo_tx::TempoCall {
+        to: parse_eth_address(REGISTRY_ADDRESS)?,
+        value_wei: 0,
+        input,
+    };
+    // announcePairing inner is one event emit (~25k). Plus ~275k Tempo
+    // sponsorship overhead.
+    submit_tempo_sponsored(device, fee_payer, vec![call], fee_token, 400_000).await
+}
+
+/// Desktop side. Poll for a `PairingAnnounced` log matching `code_hash`
+/// and return the announcing device's address (`0x…`, lowercase), or
+/// `None` if no device has announced yet. Scans the recent ~99k-block
+/// window (Tempo's `eth_getLogs` cap).
+pub async fn find_pairing_device(code_hash: &[u8; 32]) -> Result<Option<String>, String> {
+    if REGISTRY_ADDRESS == zero_address() {
+        return Ok(None);
+    }
+    use sha3::{Digest, Keccak256};
+    let topic0 = format!(
+        "0x{}",
+        bytes_to_hex(&Keccak256::digest(b"PairingAnnounced(bytes32,address,uint256)"))
+    );
+    let code_topic = format!("0x{}", bytes_to_hex(code_hash));
+
+    let latest_hex = rpc("eth_blockNumber", serde_json::json!([])).await?;
+    let latest = parse_hex_quantity(&latest_hex)? as u64;
+    let from = latest.saturating_sub(99_000);
+    let from_hex = format!("0x{from:x}");
+
+    // Filter by topic0 (event sig) AND topic1 (indexed codeHash) so only
+    // an announcement for THIS code comes back.
+    let logs = eth_get_logs(
+        REGISTRY_ADDRESS,
+        vec![serde_json::json!(topic0), serde_json::json!(code_topic)],
+        &from_hex,
+    )
+    .await?;
+
+    for log in &logs {
+        if let Some(topics) = log.get("topics").and_then(|t| t.as_array()) {
+            // topic[2] = indexed device address (32 bytes, address in last 20)
+            if let Some(topic) = topics.get(2).and_then(|t| t.as_str()) {
+                let stripped = topic.trim_start_matches("0x");
+                if stripped.len() >= 64 {
+                    return Ok(Some(format!("0x{}", &stripped[24..]).to_lowercase()));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
 // --- Registration cost (LocalharnessRegistryFacet on the diamond) ---
 
 /// `eth_call mainCost()` — the LH amount the diamond's `registerMain`
@@ -1916,12 +1996,12 @@ async fn wait_for_receipt(tx_hash: &str) -> Result<(), String> {
 /// around `setTimeout` on wasm. Used by `claim_name` to poll the
 /// transaction receipt every second.
 #[cfg(not(target_arch = "wasm32"))]
-async fn sleep_ms(ms: u32) {
+pub async fn sleep_ms(ms: u32) {
     tokio::time::sleep(std::time::Duration::from_millis(ms as u64)).await;
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn sleep_ms(ms: u32) {
+pub async fn sleep_ms(ms: u32) {
     use wasm_bindgen_futures::JsFuture;
     let promise = js_sys::Promise::new(&mut |resolve, _| {
         if let Some(window) = web_sys::window() {

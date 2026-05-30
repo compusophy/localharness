@@ -398,6 +398,20 @@ Currently cut in:
   `tokenBoundAccountByName(name)` return the deterministic
   counterfactual account address. `createTokenBoundAccount(id)`
   actually deploys it (anyone can call, idempotent).
+- **PairingFacet** — `announcePairing(bytes32 codeHash)` emits
+  `PairingAnnounced(bytes32 indexed codeHash, address indexed device,
+  uint256 timestamp)`. Event-only, no storage (like Feedback). Powers
+  zero-copy device linking: the desktop (master wallet) shows a one-time
+  code; the phone opens `<name>.localharness.xyz/?pair=CODE`, generates a
+  fresh device key, and calls `announcePairing(keccak256(code))` as a
+  SPONSORED tempo tx (so its device key is `msg.sender`, pays nothing).
+  The desktop filters logs by that codeHash topic, learns the device
+  address from the indexed `device` topic, and enrolls it via
+  `addSigner` on the TBA — no 0x ever copied between machines. Two-way
+  challenge: the Tempo sender sig proves device-key control; knowing the
+  code proves co-presence. Facet at `0x316a80b6eeCd0797a89f6D16c03C0ce260d2A64d`
+  (cut 2026-05-29 via `script/AddPairingFacet.s.sol`); device key stored
+  per-tenant-origin in `.lh_device_key` (raw hex, NOT the master seed).
 - **FeedbackFacet** — `submitFeedback(string text)` emits
   `FeedbackSubmitted(address sender, uint256 timestamp, string text)`.
   No storage, just events; harvest off-chain via `cast logs` (see

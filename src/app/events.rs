@@ -66,7 +66,9 @@ enum Action {
     FeedbackOpen,
     FeedbackClose,
     FeedbackSubmit,
-    AddDevice,
+    PairStart,
+    PairCancel,
+    PairJoin,
     AgentActToggle(String),
     AgentSendLh(String),
     SavePrompt,
@@ -122,7 +124,9 @@ impl Action {
             "feedback-open" => Action::FeedbackOpen,
             "feedback-close" => Action::FeedbackClose,
             "feedback-submit" => Action::FeedbackSubmit,
-            "add-device" => Action::AddDevice,
+            "pair-start" => Action::PairStart,
+            "pair-cancel" => Action::PairCancel,
+            "pair-join" => Action::PairJoin,
             "agent-act-toggle" => Action::AgentActToggle(arg.unwrap_or_default()),
             "agent-send-lh" => Action::AgentSendLh(arg.unwrap_or_default()),
             "save-prompt" => Action::SavePrompt,
@@ -951,7 +955,13 @@ fn dispatch(action: Action) {
         Action::FeedbackOpen => feedback_open(),
         Action::FeedbackClose => feedback_close(),
         Action::FeedbackSubmit => feedback_submit(),
-        Action::AddDevice => add_device_pressed(),
+        Action::PairStart => pair_start_pressed(),
+        Action::PairCancel => pair_cancel_pressed(),
+        Action::PairJoin => {
+            if let Some(code) = super::read_query_param("pair") {
+                pair_join_pressed(code);
+            }
+        }
         Action::AgentActToggle(token_id) => agent_act_toggle_pressed(token_id),
         Action::AgentSendLh(token_id) => agent_send_lh_pressed(token_id),
         Action::SavePrompt => save_prompt_pressed(),
@@ -1306,47 +1316,186 @@ async fn refresh_signer_list() {
     }
 }
 
-/// Link another device's EOA to the current user's MAIN. The clicked
-/// device is the "authorizer" (its wallet IS the NFT holder of the
-/// MAIN, or has been authorized previously); the pasted address is
-/// the new device's wallet. One sponsored Tempo tx batches
-/// `createTokenBoundAccount` (idempotent) + `addSigner`. User pays
-/// nothing — sponsor pays AlphaUSD.
-fn add_device_pressed() {
-    let raw = dom::input_by_id("add-device-input")
-        .map(|i| i.value().trim().to_string())
-        .unwrap_or_default();
-    if !is_address_hex(&raw) {
-        // Silent no-op on bad input — per [[feedback-no-explanatory-validation]].
-        return;
-    }
-    dom::swap_inner(
-        "add-device-msg",
-        "<span style=\"color:var(--muted)\">signing + submitting…</span>",
-    );
+/// Desktop side of device pairing. Generate a one-time code, show it +
+/// the deep link to open on the other device, then poll the on-chain
+/// pairing rendezvous. When the phone announces (its fresh device key as
+/// `msg.sender` of a sponsored tx), we learn its address from the log
+/// and enroll it via `addSigner` — no 0x ever copied between machines.
+fn pair_start_pressed() {
+    // The user's MAIN name is what the phone will open (its own
+    // subdomain). Resolve it from the apex wallet's MAIN.
     wasm_bindgen_futures::spawn_local(async move {
-        match run_add_device(raw.clone()).await {
+        let owner_hex = super::APP
+            .with(|cell| cell.borrow().wallet.as_ref().map(|w| w.address_hex()));
+        let Some(owner_hex) = owner_hex else {
+            dom::swap_inner("pair-msg", &dom::msg_span(dom::Msg::Error, "no identity"));
+            return;
+        };
+        let token_id = match super::registry::main_of(&owner_hex).await {
+            Ok(id) if id != 0 => id,
+            _ => {
+                dom::swap_inner(
+                    "pair-msg",
+                    &dom::msg_span(dom::Msg::Error, "claim a subdomain first"),
+                );
+                return;
+            }
+        };
+        let name = match super::registry::name_of_id(token_id).await {
+            Ok(n) if !n.is_empty() => n,
+            _ => {
+                dom::swap_inner("pair-msg", &dom::msg_span(dom::Msg::Error, "no MAIN name"));
+                return;
+            }
+        };
+
+        // One-time code: 6 uppercase base32-ish chars from CSPRNG.
+        let code = generate_pair_code();
+        let pair_url = format!("https://{name}.localharness.xyz/?pair={code}");
+        dom::swap_outer(
+            "pair-slot",
+            &templates::pair_panel(&code, &pair_url).into_string(),
+        );
+        dom::swap_inner("pair-msg", "");
+
+        // Poll the rendezvous: ~5 min at 3s intervals.
+        let code_hash = super::registry::pairing_code_hash(&code);
+        let mut device: Option<String> = None;
+        for _ in 0..100 {
+            // Stop if the user cancelled (panel swapped away).
+            if dom::by_id("pair-slot")
+                .map(|el| !el.class_name().contains("pair-active"))
+                .unwrap_or(true)
+            {
+                return;
+            }
+            match super::registry::find_pairing_device(&code_hash).await {
+                Ok(Some(addr)) => {
+                    device = Some(addr);
+                    break;
+                }
+                _ => {}
+            }
+            super::registry::sleep_ms(3000).await;
+        }
+
+        let Some(device) = device else {
+            dom::swap_inner(
+                "pair-msg",
+                &dom::msg_span(dom::Msg::Error, "timed out — try again"),
+            );
+            dom::swap_outer(
+                "pair-slot",
+                &r#"<div id="pair-slot" class="pair-slot"><button id="pair-btn" type="button" data-action="pair-start" class="ghost">link a device</button></div>"#,
+            );
+            return;
+        };
+
+        dom::swap_inner(
+            "pair-msg",
+            &dom::msg_span(dom::Msg::Accent, "device found — enrolling…"),
+        );
+        match run_add_device(device.clone()).await {
             Ok(tx_hash) => {
                 let short = tx_short_hash(&tx_hash);
                 dom::swap_inner(
-                    "add-device-msg",
+                    "pair-msg",
                     &dom::msg_span(
                         dom::Msg::Accent,
-                        &format!("✓ added {} (tx {short})", short_addr(&raw)),
+                        &format!("✓ linked {} (tx {short})", short_addr(&device)),
                     ),
                 );
-                if let Some(input) = dom::input_by_id("add-device-input") {
-                    input.set_value("");
-                }
+                dom::swap_outer(
+                    "pair-slot",
+                    &r#"<div id="pair-slot" class="pair-slot"><button id="pair-btn" type="button" data-action="pair-start" class="ghost">link another device</button></div>"#,
+                );
+                refresh_signer_list().await;
+            }
+            Err(err) => {
+                dom::swap_inner("pair-msg", &dom::msg_span(dom::Msg::Error, &format!("{err}")));
+            }
+        }
+    });
+}
+
+/// Cancel an in-progress pairing — swap the panel back to the button.
+/// The poll loop notices the missing `.pair-active` class and exits.
+fn pair_cancel_pressed() {
+    dom::swap_outer(
+        "pair-slot",
+        &r#"<div id="pair-slot" class="pair-slot"><button id="pair-btn" type="button" data-action="pair-start" class="ghost">link a device</button></div>"#,
+    );
+    dom::swap_inner("pair-msg", "");
+}
+
+/// Phone side. The device opened `<name>.localharness.xyz/?pair=CODE`.
+/// Generate a fresh device keypair, persist it as this origin's wallet,
+/// and announce on-chain (sponsored) so the desktop can enroll it.
+pub(crate) fn pair_join_pressed(code: String) {
+    dom::swap_inner(
+        "pair-join-msg",
+        "<span style=\"color:var(--muted)\">generating device key + announcing…</span>",
+    );
+    wasm_bindgen_futures::spawn_local(async move {
+        match run_pair_join(&code).await {
+            Ok(addr) => {
+                dom::swap_inner(
+                    "pair-join-msg",
+                    &dom::msg_span(
+                        dom::Msg::Accent,
+                        &format!(
+                            "✓ announced {} — finish on your other device.",
+                            short_addr(&addr)
+                        ),
+                    ),
+                );
             }
             Err(err) => {
                 dom::swap_inner(
-                    "add-device-msg",
+                    "pair-join-msg",
                     &dom::msg_span(dom::Msg::Error, &format!("{err}")),
                 );
             }
         }
     });
+}
+
+/// Generate the device key, persist it to this origin's OPFS so the
+/// device can keep acting as a signer, and announce `keccak(code)`
+/// on-chain via a sponsored tx.
+async fn run_pair_join(code: &str) -> Result<String, String> {
+    // A fresh device identity for THIS subdomain origin. Persist it so
+    // future visits reuse the same enrolled key (the apex flow stores a
+    // mnemonic; here a per-device random key is enough — it's a signer,
+    // not the master seed).
+    let wallet = crate::wallet::generate();
+    let device_hex = wallet.address_hex();
+    super::wallet_store::persist_device_key(&wallet.private_key_hex)
+        .await
+        .map_err(|e| format!("save device key: {e}"))?;
+
+    let code_hash = super::registry::pairing_code_hash(code);
+    let fee_payer = super::sponsor::signer()?;
+    super::registry::announce_pairing_sponsored(
+        &wallet.signer,
+        &fee_payer,
+        &code_hash,
+        super::registry::ALPHA_USD_ADDRESS,
+    )
+    .await?;
+    Ok(device_hex)
+}
+
+/// 6-char one-time pairing code (Crockford-ish base32, no ambiguous
+/// chars) from the browser CSPRNG. Short enough to read aloud / type.
+fn generate_pair_code() -> String {
+    const ALPHABET: &[u8] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+    let mut bytes = [0u8; 6];
+    let _ = getrandom::getrandom(&mut bytes);
+    bytes
+        .iter()
+        .map(|b| ALPHABET[(*b as usize) % ALPHABET.len()] as char)
+        .collect()
 }
 
 /// Resolve the current user's MAIN's TBA address, then submit a
