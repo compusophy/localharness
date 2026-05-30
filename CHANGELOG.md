@@ -5,6 +5,48 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2026-05-29
+
+Admin restructure, cross-device key sync, and a critical chat fix. Driven
+by live mobile testing.
+
+### Fixed
+
+- **All chat requests were 400-ing.** The `configure_agent` tool's
+  function-declaration schema used an array-valued (union) `type`
+  (`["string","null"]`), which Gemini rejects with a 400 — and since the
+  tool ships on every request, it broke every chat turn. Switched to single
+  types. Added `cargo test builtin_tool_schemas_have_no_union_types`, a
+  network-free lint over every builtin tool schema so this can't recur.
+- **`DEFAULT_MODEL` → `gemini-3.5-flash`.** `gemini-2.5-flash` now 400s;
+  3.5-flash is the current model (verified against the live API).
+- **Tool-call blocks now auto-scroll** the transcript like text does (they
+  previously appended below the fold).
+- `APP_VERSION` auto-tracks the crate version (`env!("CARGO_PKG_VERSION")`),
+  so the admin footer can't drift from the release.
+
+### Changed
+
+- **Admin is now a full-page tabbed panel** — Agent (prompt · tools ·
+  publish) / Account (identity · API key · linked devices · security) /
+  Usage (registered-subdomain count · session token total). The agent card
+  was folded in from the old right rail (rail + mobile "agents" tab
+  removed).
+- **Feedback is write-only** — the public "recent" list is gone (it exposed
+  everyone's submissions on a permanent on-chain log); submit still goes
+  on-chain. Apex agents list shows main/alt labels instead of an "act"
+  button; the apex shows "loading agents…" while the list resolves; the
+  boot "loading" text is centered.
+
+### Added
+
+- **On-chain encrypted API-key sync (cross-device).** "Sync to seed" seals
+  the Gemini key with a wallet-seed-derived key (via the apex signer) and
+  stores the ciphertext on-chain (sponsored `setMetadata`); "restore" pulls
+  + decrypts it on any device that has imported the seed — no re-paste.
+  Note (accepted testnet tradeoff): the decrypt op is honored for any
+  localharness origin; Gemini keys are free/revocable.
+
 ## [0.14.0] - 2026-05-29
 
 Security & quality-assurance pass ahead of v1, from a full multi-subsystem
