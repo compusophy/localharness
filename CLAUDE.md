@@ -243,6 +243,20 @@ or wasm will break silently (the gated modules don't trip in a default
 
 ## Common gotchas
 
+- **Gemini model IDs flip — verify against the live API, never trust
+  memory.** `DEFAULT_MODEL` is `gemini-3.5-flash` (as of 2026-05-29).
+  `gemini-2.5-flash` now 400s; in the 0.10.x era it was the reverse.
+  Before changing/defending a model constant, `curl` the live
+  `:generateContent` endpoint. If the user says a model is wrong, TEST
+  THEIRS FIRST.
+- **Gemini rejects union-type tool schemas with a 400 — it bricks ALL
+  chat.** Function-declaration `input_schema` must use a single `type`
+  (NOT `["string","null"]`), and no `additionalProperties` / `$schema` /
+  `$ref` / `oneOf`/`anyOf`/`allOf`. `configure_agent` shipped a union
+  type and 400'd every turn. Guard: `cargo test
+  builtin_tool_schemas_have_no_union_types` (backends/gemini/tools/mod.rs)
+  lints every builtin schema, network-free. `minimum`/`maximum`/nested
+  objects+arrays are fine.
 - **PowerShell 5.1 stderr trap.** `release.ps1` wraps native commands
   in `Invoke-Native` because PS5 turns every cargo stderr line into a
   terminating error. Don't call `cargo`/`git`/`gh` directly inside

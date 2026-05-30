@@ -221,6 +221,9 @@ pub(crate) async fn run_send() {
                     &assistant_body_id,
                     &templates::text_segment(seg_id, "").into_string(),
                 );
+                // Keep the newest content in view — tool-call blocks used to
+                // append below the fold without scrolling (text chunks did).
+                dom::scroll_to_bottom("transcript");
             }
             Ok(StreamChunk::ToolResult(result)) => {
                 if let Some(tool_seg_id) = pending_tools.pop_front() {
@@ -229,6 +232,7 @@ pub(crate) async fn run_send() {
                         &result_target,
                         &templates::tool_call_result(&result).into_string(),
                     );
+                    dom::scroll_to_bottom("transcript");
                 }
             }
             Ok(StreamChunk::Thought { .. }) => {
