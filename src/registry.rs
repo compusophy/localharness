@@ -1153,33 +1153,46 @@ pub async fn announce_pairing_sponsored(
     device: &SigningKey,
     fee_payer: &SigningKey,
     code_hash: &[u8; 32],
+    pubkey: &[u8],
     fee_token: &str,
 ) -> Result<String, String> {
-    let mut input = Vec::with_capacity(4 + 32);
-    input.extend_from_slice(&selector("announcePairing(bytes32)"));
+    // ABI: announcePairing(bytes32 codeHash, bytes pubkey).
+    // head = [codeHash, offset=0x40]; tail at 0x40 = [len][data(padded)].
+    let padded = pubkey.len().div_ceil(32) * 32;
+    let mut input = Vec::with_capacity(4 + 32 + 32 + 32 + padded);
+    input.extend_from_slice(&selector("announcePairing(bytes32,bytes)"));
     input.extend_from_slice(code_hash);
+    input.extend_from_slice(&u256_be(0x40));
+    input.extend_from_slice(&u256_be(pubkey.len() as u128));
+    input.extend_from_slice(pubkey);
+    input.resize(4 + 32 + 32 + 32 + padded, 0);
     let call = crate::tempo_tx::TempoCall {
         to: parse_eth_address(REGISTRY_ADDRESS)?,
         value_wei: 0,
         input,
     };
-    // announcePairing inner is one event emit (~25k). Plus ~275k Tempo
+    // announcePairing inner is one event emit (~30k). Plus ~275k Tempo
     // sponsorship overhead.
-    submit_tempo_sponsored(device, fee_payer, vec![call], fee_token, 400_000).await
+    submit_tempo_sponsored(device, fee_payer, vec![call], fee_token, 450_000).await
 }
 
 /// Desktop side. Poll for a `PairingAnnounced` log matching `code_hash`
-/// and return the announcing device's address (`0x…`, lowercase), or
-/// `None` if no device has announced yet. Scans the recent ~99k-block
-/// window (Tempo's `eth_getLogs` cap).
-pub async fn find_pairing_device(code_hash: &[u8; 32]) -> Result<Option<String>, String> {
+/// and return the announcing device's `(address, compressed_pubkey)`, or
+/// `None` if no device has announced yet. The pubkey lets the desktop
+/// ECIES-wrap the Gemini key directly to the device. Scans the recent
+/// ~99k-block window (Tempo's `eth_getLogs` cap).
+pub async fn find_pairing_device(
+    code_hash: &[u8; 32],
+) -> Result<Option<(String, Vec<u8>)>, String> {
     if REGISTRY_ADDRESS == zero_address() {
         return Ok(None);
     }
     use sha3::{Digest, Keccak256};
     let topic0 = format!(
         "0x{}",
-        bytes_to_hex(&Keccak256::digest(b"PairingAnnounced(bytes32,address,uint256)"))
+        bytes_to_hex(&Keccak256::digest(
+            b"PairingAnnounced(bytes32,address,bytes,uint256)"
+        ))
     );
     let code_topic = format!("0x{}", bytes_to_hex(code_hash));
 
@@ -1198,17 +1211,106 @@ pub async fn find_pairing_device(code_hash: &[u8; 32]) -> Result<Option<String>,
     .await?;
 
     for log in &logs {
-        if let Some(topics) = log.get("topics").and_then(|t| t.as_array()) {
-            // topic[2] = indexed device address (32 bytes, address in last 20)
-            if let Some(topic) = topics.get(2).and_then(|t| t.as_str()) {
-                let stripped = topic.trim_start_matches("0x");
-                if stripped.len() >= 64 {
-                    return Ok(Some(format!("0x{}", &stripped[24..]).to_lowercase()));
-                }
-            }
-        }
+        let topics = log.get("topics").and_then(|t| t.as_array());
+        let device = topics
+            .and_then(|t| t.get(2))
+            .and_then(|t| t.as_str())
+            .map(|s| s.trim_start_matches("0x"))
+            .filter(|s| s.len() >= 64)
+            .map(|s| format!("0x{}", &s[24..]).to_lowercase());
+        let Some(device) = device else { continue };
+
+        // data = [offset(0x40)][timestamp][pubkey_len][pubkey…].
+        let data_hex = log.get("data").and_then(|d| d.as_str()).unwrap_or("0x");
+        let data = hex_to_bytes(data_hex).unwrap_or_default();
+        let pubkey = if data.len() >= 96 {
+            let mut len_buf = [0u8; 8];
+            len_buf.copy_from_slice(&data[88..96]);
+            let len = u64::from_be_bytes(len_buf) as usize;
+            data.get(96..96 + len).map(|s| s.to_vec()).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        return Ok(Some((device, pubkey)));
     }
     Ok(None)
+}
+
+/// Per-device metadata slot for a Gemini key ECIES-wrapped to one device:
+/// `keccak256("localharness.gemini_key.dev." || device_address)`. Each
+/// linked device gets its own slot under the MAIN tokenId, so the desktop
+/// can wrap the key to each device independently.
+fn gemini_key_dev_metadata_key(device_addr: &[u8; 20]) -> [u8; 32] {
+    use sha3::{Digest, Keccak256};
+    let mut hasher = Keccak256::new();
+    hasher.update(b"localharness.gemini_key.dev.");
+    hasher.update(device_addr);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&hasher.finalize());
+    out
+}
+
+/// Read the ECIES-wrapped Gemini key blob a desktop posted for one
+/// device, if any. The device decrypts it with its own signing key.
+pub async fn wrapped_device_key_of(
+    token_id: u64,
+    device_addr_hex: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    let device_addr = parse_eth_address(device_addr_hex)?;
+    let mut data = Vec::with_capacity(4 + 64);
+    data.extend_from_slice(&selector("metadata(uint256,bytes32)"));
+    data.extend_from_slice(&u256_be(token_id as u128));
+    data.extend_from_slice(&gemini_key_dev_metadata_key(&device_addr));
+    let calldata = format!("0x{}", bytes_to_hex(&data));
+    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let bytes = hex_to_bytes(&result_hex)?;
+    if bytes.len() < 64 {
+        return Ok(None);
+    }
+    let mut len_buf = [0u8; 8];
+    len_buf.copy_from_slice(&bytes[56..64]);
+    let len = u64::from_be_bytes(len_buf) as usize;
+    if len == 0 {
+        return Ok(None);
+    }
+    let payload = bytes
+        .get(64..64 + len)
+        .ok_or_else(|| "wrapped key truncated".to_string())?;
+    Ok(Some(payload.to_vec()))
+}
+
+/// Desktop side. Post an ECIES-wrapped Gemini key blob for one device
+/// under its per-device MAIN metadata slot. `sender` is the MAIN's NFT
+/// holder (the apex master wallet — only the owner can setMetadata);
+/// `fee_payer` is the bundle sponsor. The phone reads it back via
+/// [`wrapped_device_key_of`] and decrypts with its device key.
+pub async fn set_device_wrapped_key_sponsored(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    token_id: u64,
+    device_addr_hex: &str,
+    blob: &[u8],
+    fee_token: &str,
+) -> Result<String, String> {
+    let device_addr = parse_eth_address(device_addr_hex)?;
+    let key = gemini_key_dev_metadata_key(&device_addr);
+    let len = blob.len();
+    let padded = len.div_ceil(32) * 32;
+    let mut input = Vec::with_capacity(4 + 96 + 32 + padded);
+    input.extend_from_slice(&selector("setMetadata(uint256,bytes32,bytes)"));
+    input.extend_from_slice(&u256_be(token_id as u128));
+    input.extend_from_slice(&key);
+    input.extend_from_slice(&u256_be(0x60));
+    input.extend_from_slice(&u256_be(len as u128));
+    input.extend_from_slice(blob);
+    input.resize(4 + 96 + 32 + padded, 0);
+    let call = crate::tempo_tx::TempoCall {
+        to: parse_eth_address(REGISTRY_ADDRESS)?,
+        value_wei: 0,
+        input,
+    };
+    let words = (padded / 32 + 4) as u128;
+    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 1_200_000 + words * 40_000).await
 }
 
 // --- Registration cost (LocalharnessRegistryFacet on the diamond) ---

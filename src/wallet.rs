@@ -174,6 +174,41 @@ pub fn verify_hash(
     verifying.verify_prehash(hash, &sig).map_err(|e| e.to_string())
 }
 
+/// Compressed SEC1 public key (33 bytes, 0x02/0x03 prefix) for a signing
+/// key. Used as the recipient identifier in ECIES key-wrapping — the
+/// device announces this so the desktop can encrypt to it.
+pub fn pubkey_compressed(signer: &SigningKey) -> Vec<u8> {
+    let verifying = VerifyingKey::from(signer);
+    verifying.to_encoded_point(true).as_bytes().to_vec()
+}
+
+/// Generate an ephemeral keypair for one ECIES wrap. Returns
+/// `(compressed_pubkey, ephemeral_signer)`.
+pub fn ephemeral_keypair() -> (Vec<u8>, SigningKey) {
+    let signer = SigningKey::random(&mut rand_core::OsRng);
+    (pubkey_compressed(&signer), signer)
+}
+
+/// ECDH → a 32-byte symmetric key shared between `my` private key and
+/// `their` SEC1 public key. Domain-separated through keccak so the raw
+/// curve point never becomes the AES key directly. Both sides derive the
+/// same bytes: sealer uses (ephemeral_priv, recipient_pub); opener uses
+/// (recipient_priv, ephemeral_pub).
+pub fn ecdh_shared_key(my: &SigningKey, their_pubkey_sec1: &[u8]) -> Result<[u8; 32], String> {
+    use k256::{PublicKey, SecretKey};
+    let their = PublicKey::from_sec1_bytes(their_pubkey_sec1)
+        .map_err(|e| format!("bad recipient pubkey: {e}"))?;
+    let secret =
+        SecretKey::from_bytes(&my.to_bytes()).map_err(|e| format!("bad scalar: {e}"))?;
+    let shared = k256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), their.as_affine());
+    let mut hasher = Keccak256::new();
+    hasher.update(b"localharness/v0/ecies");
+    hasher.update(shared.raw_secret_bytes());
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&hasher.finalize());
+    Ok(out)
+}
+
 fn finalize(signer: SigningKey) -> GeneratedWallet {
     let address = address(&signer);
     let private_key_hex = format!("0x{}", hex_encode(&signer.to_bytes()));

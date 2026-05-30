@@ -1366,7 +1366,7 @@ fn pair_start_pressed() {
 
         // Poll the rendezvous: ~5 min at 3s intervals.
         let code_hash = super::registry::pairing_code_hash(&code);
-        let mut device: Option<String> = None;
+        let mut found: Option<(String, Vec<u8>)> = None;
         for _ in 0..100 {
             // Stop if the user cancelled (panel swapped away).
             if dom::by_id("pair-slot")
@@ -1376,8 +1376,8 @@ fn pair_start_pressed() {
                 return;
             }
             match super::registry::find_pairing_device(&code_hash).await {
-                Ok(Some(addr)) => {
-                    device = Some(addr);
+                Ok(Some(pair)) => {
+                    found = Some(pair);
                     break;
                 }
                 _ => {}
@@ -1385,7 +1385,7 @@ fn pair_start_pressed() {
             super::registry::sleep_ms(3000).await;
         }
 
-        let Some(device) = device else {
+        let Some((device, device_pubkey)) = found else {
             dom::swap_inner(
                 "pair-msg",
                 &dom::msg_span(dom::Msg::Error, "timed out — try again"),
@@ -1415,6 +1415,27 @@ fn pair_start_pressed() {
                     "pair-slot",
                     &r#"<div id="pair-slot" class="pair-slot"><button id="pair-btn" type="button" data-action="pair-start" class="ghost">link another device</button></div>"#,
                 );
+                // ECIES-wrap the MAIN Gemini key to this device's pubkey and
+                // post it on-chain, so the phone gets the key WITHOUT ever
+                // importing the seed. Best-effort: silently skipped if no key
+                // is synced or the seed isn't on this device.
+                if !device_pubkey.is_empty() {
+                    if wrap_and_post_key_to_device(token_id, &owner_hex, &device, &device_pubkey)
+                        .await
+                        .is_ok()
+                    {
+                        dom::swap_inner(
+                            "pair-msg",
+                            &dom::msg_span(
+                                dom::Msg::Accent,
+                                &format!(
+                                    "✓ linked {} + shared your key — it's ready to use",
+                                    short_addr(&device)
+                                ),
+                            ),
+                        );
+                    }
+                }
                 refresh_signer_list().await;
             }
             Err(err) => {
@@ -1481,15 +1502,118 @@ async fn run_pair_join(code: &str) -> Result<String, String> {
         .map_err(|e| format!("save device key: {e}"))?;
 
     let code_hash = super::registry::pairing_code_hash(code);
+    // Announce our compressed pubkey so the desktop can ECIES-wrap the
+    // Gemini key directly to us — we never need the master seed.
+    let pubkey = crate::wallet::pubkey_compressed(&wallet.signer);
     let fee_payer = super::sponsor::signer()?;
     super::registry::announce_pairing_sponsored(
         &wallet.signer,
         &fee_payer,
         &code_hash,
+        &pubkey,
         super::registry::ALPHA_USD_ADDRESS,
     )
     .await?;
+
+    // Background: poll for the desktop's ECIES-wrapped Gemini key, decrypt
+    // it with our device key, and save it locally — so this device never
+    // prompts for an API key. Best-effort; the device still works as a
+    // signer even if the desktop has no key to share.
+    let device_signer = wallet.signer.clone();
+    let device_addr = device_hex.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        let name = match super::tenant::current() {
+            super::tenant::Host::Tenant(n) => n,
+            _ => return,
+        };
+        let slot_id = match gemini_key_slot_id(&name).await {
+            Ok(id) => id,
+            Err(_) => return,
+        };
+        for _ in 0..40 {
+            if let Ok(Some(blob)) =
+                super::registry::wrapped_device_key_of(slot_id, &device_addr).await
+            {
+                if let Some(pt) = super::encryption::ecies_open(&device_signer, &blob).await {
+                    if let Ok(key) = String::from_utf8(pt) {
+                        super::key_store::save(&key).await;
+                        if let Ok(Some(storage)) = dom::session_storage() {
+                            let _ = storage.set_item("gemini_api_key", &key);
+                        }
+                        dom::swap_inner(
+                            "pair-join-msg",
+                            &dom::msg_span(
+                                dom::Msg::Accent,
+                                "✓ linked + key received — open this subdomain to use it",
+                            ),
+                        );
+                        return;
+                    }
+                }
+            }
+            super::registry::sleep_ms(3000).await;
+        }
+    });
+
     Ok(device_hex)
+}
+
+/// Derive the seed-sync AES key from the LOCAL apex master wallet (no
+/// iframe — this runs on the apex origin where the seed lives). Must
+/// match `signer::seed_sync_key` byte-for-byte so a blob sealed by the
+/// iframe path opens here. `None` if no wallet is loaded.
+fn apex_seed_sync_key() -> Option<[u8; 32]> {
+    use sha3::{Digest, Keccak256};
+    super::APP.with(|cell| {
+        let app = cell.borrow();
+        let wallet = app.wallet.as_ref()?;
+        let entropy = wallet.mnemonic.to_entropy();
+        let mut hasher = Keccak256::new();
+        hasher.update(b"localharness/v0/keysync");
+        hasher.update(&entropy);
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&hasher.finalize());
+        Some(out)
+    })
+}
+
+/// Desktop side. Read the MAIN's seed-sealed Gemini key from chain,
+/// decrypt it with the local seed, ECIES-wrap it to the freshly-paired
+/// device's pubkey, and post that blob under the device's per-device slot.
+/// Errors (no key synced, no seed here) are returned so the caller can
+/// silently skip — the device still enrolls as a signer regardless.
+async fn wrap_and_post_key_to_device(
+    main_id: u64,
+    owner_hex: &str,
+    device_hex: &str,
+    device_pubkey: &[u8],
+) -> Result<(), String> {
+    let ct = super::registry::gemini_key_of(main_id)
+        .await
+        .map_err(|e| format!("read key: {e}"))?
+        .ok_or_else(|| "no synced key".to_string())?;
+    let seed_key = apex_seed_sync_key().ok_or_else(|| "no seed on this device".to_string())?;
+    let plaintext = super::encryption::open_with_raw_key(&seed_key, &ct)
+        .await
+        .ok_or_else(|| "decrypt failed".to_string())?;
+    let blob = super::encryption::ecies_seal(device_pubkey, &plaintext)
+        .await
+        .ok_or_else(|| "wrap failed".to_string())?;
+    let signer = super::APP
+        .with(|cell| cell.borrow().wallet.as_ref().map(|w| w.signer.clone()))
+        .ok_or_else(|| "no wallet".to_string())?;
+    let fee_payer = super::sponsor::signer()?;
+    super::registry::set_device_wrapped_key_sponsored(
+        &signer,
+        &fee_payer,
+        main_id,
+        device_hex,
+        &blob,
+        super::registry::ALPHA_USD_ADDRESS,
+    )
+    .await?;
+    let _ = owner_hex; // owner is implied by the local signer
+    Ok(())
 }
 
 /// 6-char one-time pairing code (Crockford-ish base32, no ambiguous

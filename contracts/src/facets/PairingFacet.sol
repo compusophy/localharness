@@ -30,12 +30,17 @@ contract PairingFacet {
     event PairingAnnounced(
         bytes32 indexed codeHash,
         address indexed device,
+        bytes pubkey,
         uint256 timestamp
     );
 
     /// Announce that `msg.sender` is a device wishing to pair, keyed by
     /// the hash of the one-time code shown on the initiating device.
-    function announcePairing(bytes32 codeHash) external {
-        emit PairingAnnounced(codeHash, msg.sender, block.timestamp);
+    /// `pubkey` is the device's compressed SEC1 public key — public info
+    /// (recoverable from any signature), emitted so the initiating device
+    /// can ECIES-wrap secrets (e.g. the Gemini API key) directly to it
+    /// without the device ever importing the master seed.
+    function announcePairing(bytes32 codeHash, bytes calldata pubkey) external {
+        emit PairingAnnounced(codeHash, msg.sender, pubkey, block.timestamp);
     }
 }

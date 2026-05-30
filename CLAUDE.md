@@ -409,8 +409,20 @@ Currently cut in:
   (`save_api_key_pressed`) best-effort `auto_sync_gemini_key`s it to the
   MAIN slot. Slot resolver: `events::gemini_key_slot_id`. NOTE: a phone
   linked by *device key only* (pairing, no seed) can't decrypt the
-  seed-sealed blob — it must either import the seed (then auto-restore
-  works) or get an ECIES-wrapped-to-device-pubkey blob (not yet built).
+  seed-sealed blob, so it gets an **ECIES-wrapped-to-device** copy
+  instead (built): on pairing the phone announces its compressed pubkey
+  (`PairingAnnounced(bytes32,address,bytes,uint256)`), the desktop reads
+  the MAIN's seed-sealed key, decrypts with the local seed, re-wraps it
+  to the device pubkey via `encryption::ecies_seal` (ephemeral k256 ECDH
+  → keccak → AES-GCM; `wallet::{pubkey_compressed,ephemeral_keypair,
+  ecdh_shared_key}`), and posts the blob under
+  `keccak256("localharness.gemini_key.dev."||device_addr)` on the MAIN
+  tokenId (`registry::set_device_wrapped_key_sponsored`). The phone polls
+  `wrapped_device_key_of`, decrypts with its device key
+  (`ecies_open`), and saves locally — never touching the seed. Needs the
+  k256 `ecdh` feature. v2 pairing facet adds the
+  `announcePairing(bytes32,bytes)` selector (old `(bytes32)` left as a
+  harmless orphan).
 - **PairingFacet** — `announcePairing(bytes32 codeHash)` emits
   `PairingAnnounced(bytes32 indexed codeHash, address indexed device,
   uint256 timestamp)`. Event-only, no storage (like Feedback). Powers
