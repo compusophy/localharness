@@ -398,6 +398,19 @@ Currently cut in:
   `tokenBoundAccountByName(name)` return the deterministic
   counterfactual account address. `createTokenBoundAccount(id)`
   actually deploys it (anyone can call, idempotent).
+- **Gemini key sync (per-MAIN, on-chain).** The sealed Gemini API key
+  lives under the owner's **MAIN tokenId** (`mainOf(owner)`, falling back
+  to the name's own id), NOT per-subdomain — so every subdomain an owner
+  holds shares ONE key ("the subdomain IS the primary owner"). On a
+  tenant paint, `events::try_auto_restore_gemini_key` fetches that blob
+  and decrypts it via the apex iframe (`open_key_via_iframe`, seed-derived
+  key) BEFORE the api-key modal would show, so a new subdomain on any
+  seed-bearing device never re-prompts. Saving a key
+  (`save_api_key_pressed`) best-effort `auto_sync_gemini_key`s it to the
+  MAIN slot. Slot resolver: `events::gemini_key_slot_id`. NOTE: a phone
+  linked by *device key only* (pairing, no seed) can't decrypt the
+  seed-sealed blob — it must either import the seed (then auto-restore
+  works) or get an ECIES-wrapped-to-device-pubkey blob (not yet built).
 - **PairingFacet** — `announcePairing(bytes32 codeHash)` emits
   `PairingAnnounced(bytes32 indexed codeHash, address indexed device,
   uint256 timestamp)`. Event-only, no storage (like Feedback). Powers
