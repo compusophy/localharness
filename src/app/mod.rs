@@ -317,8 +317,9 @@ fn mount() -> Result<(), JsValue> {
     );
     wasm_bindgen_futures::spawn_local(async move {
         // `Other` hosts (localhost / preview) have no on-chain name, so
-        // only the local `app.rl` path applies.
-        if try_paint_app(None).await {
+        // only the local `app.rl` path applies. Dev/preview keeps the
+        // [studio] escape on the fullscreen surface.
+        if try_paint_app(None, true).await {
             return;
         }
         paint_workshop(&host).await;
@@ -387,14 +388,22 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
         // Fall through to chrome paint as visitor.
     }
 
-    // App mode: local `app.rl` (owner's device) or the on-chain
-    // published wasm (any visitor) → boot fullscreen into the cartridge.
-    if try_paint_app(Some(&name)).await {
+    // Two surfaces per subdomain:
+    //  - PUBLIC FACE (fullscreen cartridge) — the visitor surface.
+    //  - STUDIO (the workshop chrome below) — the owner surface.
+    // The owner lands in the Studio by default and previews their public
+    // face with `?view=public`; a visitor only ever sees the public face.
+    // So we only paint the public face for a visitor, OR for the owner
+    // when they explicitly asked to preview it. `owner.is_some()` is this
+    // device's local ownership claim (refined later by verification).
+    let is_owner_device = owner.is_some();
+    let show_public_face = !is_owner_device || has_view_public_hint();
+    if show_public_face && try_paint_app(Some(&name), is_owner_device).await {
         return;
     }
 
-    // Paint the full app — either we own it on this device or someone
-    // else owns it on-chain and we're visiting.
+    // Paint the Studio — either we own it on this device or someone else
+    // owns it on-chain and we're visiting (with no public face published).
     root.set_inner_html(&templates::chrome(&host).into_string());
 
     let has_key = if let Some(persisted_key) = key_store::load().await {
@@ -706,33 +715,25 @@ fn has_edit_hint() -> bool {
     search.contains("edit=1")
 }
 
-/// `true` iff this subdomain `name` is its owner's registered MAIN
-/// identity. A MAIN must always keep the workshop chrome — it can never
-/// be replaced by a fullscreen cartridge, because it's the owner's
-/// control surface. Resolves the name's tokenId, its on-chain owner, and
-/// that owner's `mainOf`, and compares. Any RPC failure → `false` (fail
-/// open to the normal app-mode behaviour rather than wedging the boot).
-async fn is_main_subdomain(name: &str) -> bool {
-    let id = match registry::id_of_name(name).await {
-        Ok(id) if id != 0 => id,
-        _ => return false,
-    };
-    let owner = match registry::owner_of_name(name).await {
-        Ok(Some(owner)) => owner,
-        _ => return false,
-    };
-    matches!(registry::main_of(&owner).await, Ok(main) if main != 0 && main == id)
+/// `true` iff `?view=public` is in the URL — the owner asking to preview
+/// their public face from the studio.
+fn has_view_public_hint() -> bool {
+    let Ok(window) = dom::window() else { return false };
+    let Ok(search) = window.location().search() else { return false };
+    search.contains("view=public")
 }
 
-/// Chrome-less "app mode": if this origin's OPFS has an `app.rl`
-/// (rustlite source) and `?edit=1` isn't set, compile it and boot the
-/// subdomain straight into a fullscreen cartridge instead of the IDE
-/// workshop. Returns `true` if it took over the page.
+/// Paint the subdomain's **public face** — the visitor-facing surface, a
+/// fullscreen cartridge (local `app.rl` working copy first, else the
+/// on-chain published wasm). Returns `true` if it took over the page.
+///
+/// This is the visitor surface; the owner lands in the Studio and only
+/// reaches it via `?view=public`. `owner_overlay` paints a `[studio]`
+/// escape link (set when the owner is previewing — never for a visitor).
 ///
 /// A compile error falls through to the workshop (so the owner can fix
-/// the source); per-origin OPFS means the app is the owner's device's
-/// copy — cross-visitor publishing comes later (shared cartridge store).
-async fn try_paint_app(name: Option<&str>) -> bool {
+/// the source).
+async fn try_paint_app(name: Option<&str>, owner_overlay: bool) -> bool {
     if has_edit_hint() {
         return false;
     }
@@ -769,25 +770,9 @@ async fn try_paint_app(name: Option<&str>) -> bool {
 
     let Some(wasm) = wasm else { return false };
 
-    // A MAIN identity subdomain is NEVER taken over by a fullscreen app.
-    // It's the owner's control surface (tools, files, admin, chat) — the
-    // "subdomain IS the primary owner" — so even if an `app.rl` or an
-    // on-chain published cartridge exists, keep the workshop chrome and
-    // fall through. (Only checked when a cartridge candidate exists, so
-    // the on-chain reads don't tax ordinary workshop loads.)
-    if let Some(name) = name {
-        if is_main_subdomain(name).await {
-            web_sys::console::warn_1(&JsValue::from_str(
-                "cartridge present but this subdomain is the MAIN identity; \
-                 refusing fullscreen takeover, painting workshop",
-            ));
-            return false;
-        }
-    }
-
     let Ok(doc) = dom::document() else { return false };
     let Some(root) = doc.get_element_by_id("root") else { return false };
-    root.set_inner_html(&templates::app_fullscreen().into_string());
+    root.set_inner_html(&templates::app_fullscreen(owner_overlay).into_string());
     if let Err(err) = display::run_in_root_canvas(&wasm).await {
         web_sys::console::warn_1(&JsValue::from_str(&format!("app run failed: {err:?}")));
     }

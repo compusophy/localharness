@@ -337,16 +337,29 @@ Mount-time routing in `mod.rs::mount`:
    - `Host::Other` (Vercel preview, localhost) → paint full chat
      app, no verification.
 
-   **App mode (chrome-less subdomain).** Before painting the workshop
-   chrome (both `Tenant` and `Other` paths), `try_paint_app()` checks
-   OPFS for an `app.rl` (rustlite source). If present and `?edit=1` is
-   not set, it compiles the source and boots the page straight into a
-   fullscreen cartridge (`templates::app_fullscreen` + a `<canvas>` run
-   via `display::run_in_root_canvas`) — no tabs/terminal/files. A faint
-   `[edit]` link (→ `?edit=1`) is the owner's escape back to the
-   workshop. A compile error falls through to the workshop. The agent
-   makes a subdomain "become" an app by writing the same source it
-   passes to `run_cartridge` to `app.rl` via `create_file`.
+   **Two surfaces per subdomain (public face vs studio).** Every
+   subdomain has a visitor-facing **public face** (a fullscreen
+   cartridge) and an owner-only **studio** (the workshop chrome). Routing
+   is role-based, keyed on `owner.is_some()` (this device's local
+   ownership claim, refined later by verification):
+   - **Owner** → lands in the **studio** by default. Never auto-hijacked
+     into a fullscreen app. Previews the public face via `?view=public`
+     (a `[view public]` link in the tenant header), which paints the
+     fullscreen cartridge with a `[studio]` escape link (→ `?edit=1`).
+   - **Visitor** → only ever sees the **public face**. No studio, no edit
+     door.
+   `try_paint_app(name, owner_overlay)` paints the public face: local
+   `app.rl` working copy first, else the on-chain published wasm
+   (`templates::app_fullscreen(owner_overlay)` + a `<canvas>` run via
+   `display::run_in_root_canvas`). `owner_overlay` gates the `[studio]`
+   link (set only when the owner is previewing). A compile error or
+   no-cartridge falls through to the studio chrome. The agent makes a
+   subdomain "become" an app by writing the same source it passes to
+   `run_cartridge` to `app.rl` via `create_file` — but only on an
+   explicit "make this my permanent app" request. (Earlier a MAIN was
+   hard-blocked from fullscreen; that special-case was dropped once the
+   owner always lands in the studio — the guarantee now comes from
+   role-based routing, not a per-name exception.)
 
    **Cross-visitor publishing (on-chain).** Local `app.rl` is the
    owner-device copy; for *visitors* `try_paint_app` falls back to the

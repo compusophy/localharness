@@ -110,6 +110,10 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
                 button type="button"
                     data-action="feedback-open"
                     .header-button.feedback-button { "feedback" }
+                @if matches!(_host, Host::Tenant(_)) {
+                    a.header-button.view-public-button href="?view=public"
+                        title="preview your public face" { "view public" }
+                }
                 div #header-admin .header-admin {
                     button type="button"
                         data-action="header-admin-toggle"
@@ -1407,13 +1411,19 @@ pub(crate) fn display_surface() -> Markup {
 /// filling the viewport, plus a tiny owner escape hatch back to the
 /// workshop (`?edit=1`). No tabs/terminal/files — the cartridge IS the
 /// page. See [[project-ai-os-vision]].
-pub(crate) fn app_fullscreen() -> Markup {
+/// The fullscreen public-face surface (a cartridge running in a canvas).
+/// `owner_overlay` controls whether the `[studio]` escape link is painted
+/// — shown only when the *owner* is previewing their own public face, so a
+/// visitor never sees an edit door they can't use.
+pub(crate) fn app_fullscreen(owner_overlay: bool) -> Markup {
     html! {
         div.app-fullscreen {
             div.app-stage {
                 canvas #display-canvas .display-canvas {}
             }
-            a.app-edit href="?edit=1" title="edit this app" { "edit" }
+            @if owner_overlay {
+                a.app-edit href="?edit=1" title="back to your studio" { "studio" }
+            }
         }
     }
 }
