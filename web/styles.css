@@ -510,6 +510,13 @@ main.layout .transcript::before {
 
 /* Public-face picker (admin → agent tab) */
 .public-face-picker { display: flex; gap: 6px; margin: 6px 0; flex-wrap: wrap; }
+.public-face-preview { margin-top: 6px; }
+.public-face-preview a {
+  font-size: 11px;
+  color: var(--muted);
+  text-decoration: none;
+}
+.public-face-preview a:hover { color: var(--fg); }
 
 /* Edit panel — the editable text surface that opens when a file
    is clicked in the file list. */

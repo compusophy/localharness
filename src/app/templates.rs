@@ -110,10 +110,6 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
                 button type="button"
                     data-action="feedback-open"
                     .header-button.feedback-button { "feedback" }
-                @if matches!(_host, Host::Tenant(_)) {
-                    a.header-button.view-public-button href="?view=public"
-                        title="preview your public face" { "view public" }
-                }
                 div #header-admin .header-admin {
                     button type="button"
                         data-action="header-admin-toggle"
@@ -738,6 +734,9 @@ pub(crate) fn admin_app_section() -> Markup {
                 button type="button" data-action="set-public-face" data-arg="html" .ghost { "publish html" }
             }
             div #publish-app-msg .admin-msg-slot {}
+            div.public-face-preview {
+                a href="?view=public" { "view public face →" }
+            }
         }
     }
 }
