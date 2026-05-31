@@ -19,6 +19,16 @@ if ! command -v wasm-pack >/dev/null 2>&1; then
     exit 1
 fi
 
+# Stamp the crate version into web/llms.txt so the deployed bundle
+# advertises its freshness (curl llms.txt | head). Keeps it from drifting
+# from Cargo.toml without a manual bump step.
+VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+if [ -n "$VERSION" ]; then
+    sed -i.bak -E "s/^\*\*version:\*\* .*/\*\*version:\*\* ${VERSION} (stamped from Cargo.toml by build-web; matches crates.io when the deployed bundle is current)/" web/llms.txt
+    rm -f web/llms.txt.bak
+    echo "→ stamped llms.txt version: ${VERSION}"
+fi
+
 echo "→ wasm-pack build (release, browser-app)..."
 wasm-pack build . \
     --target web \

@@ -1411,6 +1411,84 @@ pub(crate) fn display_surface() -> Markup {
 /// filling the viewport, plus a tiny owner escape hatch back to the
 /// workshop (`?edit=1`). No tabs/terminal/files — the cartridge IS the
 /// page. See [[project-ai-os-vision]].
+/// The **default public face** — shown to visitors of a subdomain that
+/// hasn't published a cartridge yet. A profile/directory landing: the
+/// agent's name, its owner (the MAIN name when it has one), its on-chain
+/// wallet (TBA), and a directory of the owner's other agents. This is the
+/// "anything" surface's sensible default; an owner replaces it by
+/// shipping an `app.rl` / publishing a cartridge.
+///
+/// `is_main` badges the hero when this subdomain IS the owner's primary
+/// identity. `owner_overlay` paints the `[studio]` escape (owner preview
+/// only). `siblings` should already exclude this subdomain.
+pub(crate) fn public_landing(
+    name: &str,
+    owner: Option<&str>,
+    tba: Option<&str>,
+    main_name: Option<&str>,
+    is_main: bool,
+    siblings: &[crate::app::registry::OwnedToken],
+    owner_overlay: bool,
+) -> Markup {
+    html! {
+        div.public-face {
+            @if owner_overlay {
+                a.app-edit href="?edit=1" title="back to your studio" { "studio" }
+            }
+            header.public-hero {
+                h1.public-title { (name) }
+                p.public-tagline {
+                    "agent on localharness"
+                    @if is_main { " · " span.main-badge title="primary identity" { "main" } }
+                }
+            }
+            div.public-meta {
+                @if let Some(addr) = owner {
+                    div.public-meta-row {
+                        span.public-meta-label { "owner" }
+                        @if let Some(m) = main_name {
+                            a.public-meta-value
+                                href=(format!("https://{m}.localharness.xyz/"))
+                                title=(addr) { (m) }
+                        } @else {
+                            a.public-meta-value
+                                href=(format!("https://moderato.tempo.xyz/address/{addr}"))
+                                target="_blank" rel="noopener" title=(addr) { (short_addr(addr)) }
+                        }
+                    }
+                }
+                @if let Some(t) = tba {
+                    div.public-meta-row {
+                        span.public-meta-label { "wallet" }
+                        a.public-meta-value
+                            href=(format!("https://moderato.tempo.xyz/address/{t}"))
+                            target="_blank" rel="noopener" title=(t) { (short_addr(t)) }
+                    }
+                }
+            }
+            @if !siblings.is_empty() {
+                section.public-directory {
+                    h2.public-section-title { "more agents by this owner" }
+                    ul.agents-rows {
+                        @for s in siblings {
+                            li.agent-row {
+                                a.agent-row-line
+                                    href=(format!("https://{}.localharness.xyz/", s.name)) {
+                                    span.agent-name { (s.name) }
+                                    span.agent-row-spacer {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            footer.public-footer {
+                a href="https://localharness.xyz/" title="localharness" { "localharness" }
+            }
+        }
+    }
+}
+
 /// The fullscreen public-face surface (a cartridge running in a canvas).
 /// `owner_overlay` controls whether the `[studio]` escape link is painted
 /// — shown only when the *owner* is previewing their own public face, so a

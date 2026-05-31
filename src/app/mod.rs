@@ -398,12 +398,28 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
     // device's local ownership claim (refined later by verification).
     let is_owner_device = owner.is_some();
     let show_public_face = !is_owner_device || has_view_public_hint();
-    if show_public_face && try_paint_app(Some(&name), is_owner_device).await {
+    if show_public_face {
+        // Cartridge if one exists, else the default public-face landing.
+        if !try_paint_app(Some(&name), is_owner_device).await {
+            paint_public_landing(&host, &name, is_owner_device).await;
+        }
+        // A seed-bearing owner visiting from a device without the local
+        // `.lh_owner` marker (e.g. a second device) lands on the public
+        // face like a visitor. Verify in the background and, if the apex
+        // signer proves ownership, send them to their studio (`?edit=1`).
+        // Skipped when this device already claims ownership (a deliberate
+        // `?view=public` preview must not bounce back).
+        if !is_owner_device {
+            let n = name.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                redirect_to_studio_if_owner(n).await;
+            });
+        }
         return;
     }
 
-    // Paint the Studio — either we own it on this device or someone else
-    // owns it on-chain and we're visiting (with no public face published).
+    // Paint the Studio — we own this name on this device (or a deliberate
+    // preview fell through with nothing published).
     root.set_inner_html(&templates::chrome(&host).into_string());
 
     let has_key = if let Some(persisted_key) = key_store::load().await {
@@ -713,6 +729,67 @@ fn has_edit_hint() -> bool {
     let Ok(window) = dom::window() else { return false };
     let Ok(search) = window.location().search() else { return false };
     search.contains("edit=1")
+}
+
+/// Paint the **default public-face landing** for `name` — the surface a
+/// visitor sees when no cartridge has been published. Fetches the owner,
+/// the agent's TBA, the owner's MAIN name, and the owner's other agents
+/// (siblings) from the registry, then renders `templates::public_landing`.
+/// All reads are best-effort; missing data just omits that row.
+async fn paint_public_landing(host: &tenant::Host, name: &str, owner_overlay: bool) {
+    let _ = host;
+    let owner = registry::owner_of_name(name).await.ok().flatten();
+    let tba = registry::tba_of_name(name).await.ok().flatten();
+
+    let mut main_name: Option<String> = None;
+    let mut is_main = false;
+    let mut siblings: Vec<registry::OwnedToken> = Vec::new();
+    if let Some(addr) = owner.as_deref() {
+        let main_id = registry::main_of(addr).await.unwrap_or(0);
+        if main_id != 0 {
+            if let Ok(m) = registry::name_of_id(main_id).await {
+                if !m.is_empty() {
+                    is_main = m == name;
+                    // Only surface the MAIN as the owner link when it's a
+                    // *different* subdomain — linking a name to itself is noise.
+                    if !is_main {
+                        main_name = Some(m);
+                    }
+                }
+            }
+        }
+        siblings = registry::list_owned_tokens(addr).await.unwrap_or_default();
+        siblings.retain(|t| t.name != name);
+    }
+
+    let html = templates::public_landing(
+        name,
+        owner.as_deref(),
+        tba.as_deref(),
+        main_name.as_deref(),
+        is_main,
+        &siblings,
+        owner_overlay,
+    )
+    .into_string();
+
+    if let Ok(doc) = dom::document() {
+        if let Some(root) = doc.get_element_by_id("root") {
+            root.set_inner_html(&html);
+        }
+    }
+}
+
+/// Background check: if the apex signer proves this device controls the
+/// on-chain owner of `name`, navigate to the studio (`?edit=1`). Lets a
+/// seed-bearing owner reach their workshop from a device that has no
+/// local `.lh_owner` marker, without exposing a studio door to visitors.
+async fn redirect_to_studio_if_owner(name: String) {
+    if let Ok(verify::VerifyResult::VerifiedOwner { .. }) = verify::verify_owner(&name).await {
+        if let Ok(window) = dom::window() {
+            let _ = window.location().set_search("edit=1");
+        }
+    }
 }
 
 /// `true` iff `?view=public` is in the URL — the owner asking to preview

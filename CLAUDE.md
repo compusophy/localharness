@@ -352,8 +352,21 @@ Mount-time routing in `mod.rs::mount`:
    `app.rl` working copy first, else the on-chain published wasm
    (`templates::app_fullscreen(owner_overlay)` + a `<canvas>` run via
    `display::run_in_root_canvas`). `owner_overlay` gates the `[studio]`
-   link (set only when the owner is previewing). A compile error or
-   no-cartridge falls through to the studio chrome. The agent makes a
+   link (set only when the owner is previewing). When NO cartridge is
+   published, `paint_public_landing` renders the **default public face**
+   (`templates::public_landing`): a profile/directory landing — the
+   agent's name, its owner (the MAIN name when it differs), its TBA
+   wallet, and a directory of the owner's other agents (siblings via
+   `registry::list_owned_tokens`, self excluded). A visitor never falls
+   through to the studio chrome anymore.
+
+   **Second-device owner upgrade.** A seed-bearing owner hitting their
+   own subdomain from a device WITHOUT the local `.lh_owner` marker is
+   treated as a visitor (lands on the public face). `paint_tenant` then
+   fires `redirect_to_studio_if_owner` in the background: if
+   `verify::verify_owner` proves control via the apex signer, it
+   navigates to `?edit=1` (the studio). Skipped when the device already
+   claims ownership, so a deliberate `?view=public` preview never bounces. The agent makes a
    subdomain "become" an app by writing the same source it passes to
    `run_cartridge` to `app.rl` via `create_file` — but only on an
    explicit "make this my permanent app" request. (Earlier a MAIN was
