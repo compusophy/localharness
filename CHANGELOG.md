@@ -5,6 +5,52 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0]
+
+Public-face platform pass: every subdomain now cleanly separates its
+visitor-facing page from the owner's studio, the stop button actually
+stops, device linking gets a QR code, and a batch of on-chain UI feedback
+is addressed.
+
+### Added
+
+- **Two surfaces per subdomain.** A visitor-facing **public face** and an
+  owner-only **studio** (workshop). The owner always lands in the studio
+  and is never auto-hijacked into a fullscreen app; visitors only ever see
+  the public face. A `[view public]` link (in admin → agent) previews the
+  public face with a `[studio]` escape back.
+- **Public-face picker** (admin → agent → "public face"): choose
+  **directory** (a profile/directory landing — name, owner, wallet, the
+  owner's other agents), **app** (publish the local `app.rl` cartridge), or
+  **html** (publish the local `index.html`). The choice lives on-chain
+  under `keccak256("localharness.public_face")` so every visitor honours
+  it; `app`/`html` publish content + set the choice in one sponsored tx.
+- **QR code for device linking.** The pairing panel renders a scannable QR
+  of the `?pair=<code>` deep link (pure-Rust `qrcode`, inline SVG, gated to
+  the `browser-app` feature) so a phone links by camera, no typing.
+- **Second-device owner upgrade.** An owner hitting their subdomain from a
+  device without the local marker lands on the public face, then is
+  verified via the apex signer and bounced to their studio.
+- **`llms.txt` carries a version line**, stamped from `Cargo.toml` by
+  `build-web` and the release script, so `curl llms.txt | head` reveals
+  whether the deployed bundle matches crates.io.
+
+### Fixed
+
+- **The stop button actually stops the turn.** It previously only broke the
+  UI's read loop while the detached producer task kept calling the model
+  and running tools in the background. Added cooperative cancellation
+  (`Connection::cancel_turn` → `LoopState.cancel`, checked at every loop
+  boundary in `run_turn`) so the turn ends cleanly with no further tokens
+  spent.
+- **Files panel:** removed the dot spacer that caused overflow; file sizes
+  are right-aligned and independent of filename length (names truncate).
+- **Site-header spacing** under the header is now uniform across pages (the
+  apex content block had oversized, asymmetric top padding).
+- **Agent system prompt** now states that on-chain transactions are
+  sponsored and automatic — the agent no longer tells users to approve a
+  wallet prompt or confirm a transaction (there is none).
+
 ## [0.15.0] - 2026-05-29
 
 Admin restructure, cross-device key sync, and a critical chat fix. Driven

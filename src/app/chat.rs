@@ -29,9 +29,15 @@ thread_local! {
 }
 
 /// Request cooperative cancellation of the running turn (the stop
-/// button). Honored at the next streamed chunk.
+/// button). Two layers: `TURN_CANCEL` breaks the UI's chunk loop, and
+/// `agent.cancel_turn()` stops the *producer* — the detached task driving
+/// the agent loop — so it stops calling the model and running tools
+/// instead of finishing the turn in the background while the UI moves on.
 pub(crate) fn request_stop_turn() {
     TURN_CANCEL.with(|c| c.set(true));
+    if let Some(agent) = APP.with(|cell| cell.borrow().agent.clone()) {
+        agent.cancel_turn();
+    }
 }
 
 /// RAII cleanup for a turn: clears the active/cancel flags and restores
@@ -418,6 +424,12 @@ pub(crate) async fn start_session(key: &str) -> Result<(), JsValue> {
            • finish(result?) — signal that the task is complete.\n\n\
          \
          === Conventions ===\n\
+         • On-chain actions (create_subdomain, submit_feedback, publishing \
+           a public face, etc.) are SPONSORED and signed automatically by the \
+           owner's master wallet behind the scenes — there is NO wallet popup, \
+           prompt, or modal for the user to approve. Transactions just happen, \
+           zero-click. NEVER tell the user to approve/confirm a transaction, \
+           check for a wallet prompt, or sign anything; just report the result.\n\
          • Files at the OPFS root are the user's. These internal files are \
            managed by the platform — read only if asked, NEVER write or delete: \
            `.lh_history.json` (conversation history — this is what 'clear \

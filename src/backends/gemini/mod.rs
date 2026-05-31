@@ -484,6 +484,10 @@ impl Connection for GeminiConnection {
         }
     }
 
+    fn cancel_turn(&self) {
+        self.state.cancel.store(true, Ordering::Release);
+    }
+
     async fn shutdown(&self) -> Result<()> {
         self.state.idle.store(true, Ordering::Release);
         self.state.idle_notify.notify_waiters();

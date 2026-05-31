@@ -349,6 +349,14 @@ impl Agent {
         self.conversation.cumulative_usage()
     }
 
+    /// Cooperatively cancel the in-flight turn (e.g. a UI stop button).
+    /// The backend stops at its next safe boundary — between streamed
+    /// chunks or before the next model call / tool dispatch — so no more
+    /// tokens are spent and no further tools run. No-op when idle.
+    pub fn cancel_turn(&self) {
+        self.conversation.cancel_turn();
+    }
+
     /// Opaque snapshot of the current Gemini conversation history.
     /// Returns `None` for non-Gemini backends. Round-trips through
     /// [`GeminiAgentConfig::with_history_bytes`] for session resume.

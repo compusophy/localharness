@@ -91,6 +91,12 @@ step "promote CHANGELOG.md heading date -> $TODAY"
 perl -i -pe "s|^## \[$VERSION\][^\n]*|## [$VERSION] - $TODAY|" CHANGELOG.md
 grep -q "^## \[$VERSION\] - $TODAY" CHANGELOG.md || fail "CHANGELOG promote did not stick"
 
+step "stamp web/llms.txt version -> $VERSION"
+# Keep the public llms.txt freshness line in lock-step with the release
+# (same line as scripts/build-web.sh).
+perl -i -pe "s|^\*\*version:\*\* .*|**version:** $VERSION (stamped from Cargo.toml by build-web; matches crates.io when the deployed bundle is current)|" web/llms.txt
+grep -q "^\*\*version:\*\* $VERSION " web/llms.txt || fail "llms.txt version stamp did not stick"
+
 # ---------------------------------------------------------------------------
 # Verify
 # ---------------------------------------------------------------------------
@@ -116,7 +122,7 @@ cargo publish --dry-run --allow-dirty 2>&1 | tail -3
 # ---------------------------------------------------------------------------
 
 step "git commit"
-git add Cargo.toml Cargo.lock CHANGELOG.md
+git add Cargo.toml Cargo.lock CHANGELOG.md web/llms.txt
 git commit -m "release $TAG" >/dev/null
 
 step "git tag $TAG"

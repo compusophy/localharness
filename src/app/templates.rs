@@ -852,15 +852,39 @@ pub(crate) fn admin_devices_section() -> Markup {
     }
 }
 
+/// Encode the pairing deep link as an inline SVG QR code (black modules
+/// on white, monochrome, no `image`/font deps). Returned as a raw SVG
+/// string for `PreEscaped` injection — fits the no-canvas, innerHTML-swap
+/// architecture. `None` on the (practically impossible) encode failure so
+/// the panel still renders the typeable URL + code as a fallback.
+fn pair_qr_svg(pair_url: &str) -> Option<String> {
+    use qrcode::render::svg;
+    use qrcode::QrCode;
+
+    let code = QrCode::new(pair_url.as_bytes()).ok()?;
+    Some(
+        code.render::<svg::Color>()
+            .min_dimensions(200, 200)
+            .dark_color(svg::Color("#000000"))
+            .light_color(svg::Color("#ffffff"))
+            .quiet_zone(true)
+            .build(),
+    )
+}
+
 /// The active-pairing panel — shown after the desktop presses "link a
-/// device". Renders the one-time code big + the deep link to open on
-/// the phone, and a cancel. The desktop is polling on-chain while this
+/// device". Renders a scannable QR code of the pairing deep link, the
+/// one-time code big + the deep link to open on the phone (typeable
+/// fallback), and a cancel. The desktop is polling on-chain while this
 /// is up; success swaps `#pair-msg`.
 pub(crate) fn pair_panel(code: &str, pair_url: &str) -> Markup {
     html! {
         div #pair-slot .pair-slot.pair-active {
             div.pair-instructions {
-                "on your other device, open:"
+                "scan with your phone's camera, or open:"
+            }
+            @if let Some(svg) = pair_qr_svg(pair_url) {
+                div.pair-qr { (PreEscaped(svg)) }
             }
             a.pair-url href=(pair_url) target="_blank" rel="noopener" { (pair_url) }
             div.pair-code-row {

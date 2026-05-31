@@ -66,6 +66,13 @@ pub trait Connection: MaybeSendSync {
     /// Park the caller until the backend transitions to idle.
     async fn wait_for_idle(&self) -> Result<()>;
 
+    /// Request cooperative cancellation of the in-flight turn. The backend
+    /// stops at its next safe boundary (between streamed chunks / before
+    /// the next model call or tool dispatch) and emits a terminal step, so
+    /// the turn ends cleanly. Idempotent and safe to call when idle.
+    /// Default: no-op, for backends without cancellation support.
+    fn cancel_turn(&self) {}
+
     /// Tear the connection down. Idempotent.
     async fn shutdown(&self) -> Result<()>;
 }
