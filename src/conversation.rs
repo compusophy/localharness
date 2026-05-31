@@ -68,6 +68,13 @@ impl Conversation {
         self.connection.conversation_id().to_string()
     }
 
+    /// Cooperatively cancel the in-flight turn (e.g. a UI stop button).
+    /// The backend stops at its next safe boundary and emits a terminal
+    /// step. No-op when idle or on backends without cancellation support.
+    pub fn cancel_turn(&self) {
+        self.connection.cancel_turn();
+    }
+
     /// All steps received so far, in order.
     pub fn history(&self) -> Vec<Step> {
         self.state.lock().history.clone()

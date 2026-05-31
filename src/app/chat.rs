@@ -29,9 +29,15 @@ thread_local! {
 }
 
 /// Request cooperative cancellation of the running turn (the stop
-/// button). Honored at the next streamed chunk.
+/// button). Two layers: `TURN_CANCEL` breaks the UI's chunk loop, and
+/// `agent.cancel_turn()` stops the *producer* — the detached task driving
+/// the agent loop — so it stops calling the model and running tools
+/// instead of finishing the turn in the background while the UI moves on.
 pub(crate) fn request_stop_turn() {
     TURN_CANCEL.with(|c| c.set(true));
+    if let Some(agent) = APP.with(|cell| cell.borrow().agent.clone()) {
+        agent.cancel_turn();
+    }
 }
 
 /// RAII cleanup for a turn: clears the active/cancel flags and restores

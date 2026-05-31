@@ -116,6 +116,9 @@ pub(crate) struct LoopState {
     pub history: Mutex<Vec<wire::Content>>,
     pub idle: Arc<AtomicBool>,
     pub idle_notify: Arc<Notify>,
+    /// Set by `cancel_turn` (the UI stop button). `run_turn` checks it at
+    /// every loop boundary and ends the turn cleanly. Reset at turn start.
+    pub cancel: Arc<AtomicBool>,
     pub steps: broadcast::Sender<Step>,
     pub next_step_index: AtomicU32,
     pub last_turn_usage: Mutex<Option<UsageMetadata>>,
@@ -128,6 +131,7 @@ impl LoopState {
             history: Mutex::new(Vec::new()),
             idle: Arc::new(AtomicBool::new(true)),
             idle_notify: Arc::new(Notify::new()),
+            cancel: Arc::new(AtomicBool::new(false)),
             steps,
             next_step_index: AtomicU32::new(0),
             last_turn_usage: Mutex::new(None),
@@ -181,6 +185,8 @@ pub(crate) struct TurnDeps {
 
 pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content) -> Result<()> {
     deps.state.idle.store(false, Ordering::Release);
+    // Fresh turn starts uncancelled — clear any stale stop from before.
+    deps.state.cancel.store(false, Ordering::Release);
     {
         let mut hist = deps.state.history.lock();
         hist.push(user);
@@ -205,6 +211,11 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content) -> Result<()> 
             warn!(rounds, "exceeded MAX_TOOL_ROUNDS; forcing turn end");
             break;
         }
+        // Stop requested before this round's model call — end the turn.
+        if deps.state.cancel.load(Ordering::Acquire) {
+            debug!("turn cancelled before model call");
+            break;
+        }
 
         let request = build_request(&deps.config, &deps.state.history.lock());
         let mut stream = match deps.client.stream_generate(&deps.config.model, &request).await {
@@ -225,6 +236,10 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content) -> Result<()> 
         let mut last_usage: Option<wire::WireUsage> = None;
 
         while let Some(chunk_res) = stream.next().await {
+            // Cooperative stop: drop the rest of this streamed response.
+            if deps.state.cancel.load(Ordering::Acquire) {
+                break;
+            }
             let chunk = match chunk_res {
                 Ok(c) => c,
                 Err(e) => {
@@ -310,6 +325,14 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content) -> Result<()> 
 
         // If the model didn't call any tools, the turn is over.
         if pending_calls.is_empty() {
+            break;
+        }
+
+        // Stop requested while streaming — end now instead of executing the
+        // tools the model asked for (the whole point of stop is to NOT run
+        // more work / burn more tokens).
+        if deps.state.cancel.load(Ordering::Acquire) {
+            debug!("turn cancelled before tool dispatch");
             break;
         }
 
