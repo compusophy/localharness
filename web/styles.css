@@ -947,6 +947,16 @@ input, textarea {
   font-weight: 600;
 }
 .pair-waiting { color: var(--muted); font-size: 11px; }
+.pair-qr {
+  align-self: flex-start;
+  width: 200px; height: 200px;
+  padding: 8px; background: #ffffff;
+  border: 1px solid var(--border);
+}
+.pair-qr svg {
+  display: block; width: 100%; height: 100%;
+  image-rendering: pixelated;
+}
 
 /* --- Agent row act panel (apex agents list) --- */
 .agent-row { display: block; }

@@ -52,7 +52,7 @@ native = [
 # `maud` or DOM web-sys features. Enable it together with
 # `--no-default-features --target wasm32-unknown-unknown` via wasm-pack
 # to build the shipping browser bundle. Has no effect on a native build.
-browser-app = ["dep:maud", "dep:console_error_panic_hook", "dep:pulldown-cmark", "wallet"]
+browser-app = ["dep:maud", "dep:console_error_panic_hook", "dep:pulldown-cmark", "dep:qrcode", "wallet"]
 # `wallet` is the M6 in-browser keypair. Uses k256 + sha3 directly
 # rather than alloy's split crates — alloy's TransactionEnvelope
 # proc-macro currently trips on `serde::__private` symbol resolution
@@ -98,6 +98,11 @@ console_error_panic_hook = { version = "0.1", optional = true }
 # highlighting, no html-on-the-wire: we hand pulldown-cmark a string,
 # get HTML back, swap it into the segment via maud's PreEscaped.
 pulldown-cmark = { version = "0.10", optional = true, default-features = false, features = ["html"] }
+# QR code for the device-pairing deep link. svg-only (NO `image`/`pic`
+# default features) so it pulls ZERO transitive deps and stays wasm-clean —
+# we render an inline SVG string and inject it via maud `PreEscaped`. UI-only;
+# enabled solely by the browser-app feature.
+qrcode = { version = "0.14", optional = true, default-features = false, features = ["svg"] }
 # In-browser wallet primitives (M6 spike).
 # k256: secp256k1 keypair + sign. ecdsa + arithmetic features are
 # the minimum for "generate, sign, verify" without dragging in
