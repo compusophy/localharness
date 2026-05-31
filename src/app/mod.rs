@@ -319,7 +319,7 @@ fn mount() -> Result<(), JsValue> {
         // `Other` hosts (localhost / preview) have no on-chain name, so
         // only the local `app.rl` path applies. Dev/preview keeps the
         // [studio] escape on the fullscreen surface.
-        if try_paint_app(None, true).await {
+        if try_paint_app(true).await {
             return;
         }
         paint_workshop(&host).await;
@@ -399,10 +399,10 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
     let is_owner_device = owner.is_some();
     let show_public_face = !is_owner_device || has_view_public_hint();
     if show_public_face {
-        // Cartridge if one exists, else the default public-face landing.
-        if !try_paint_app(Some(&name), is_owner_device).await {
-            paint_public_landing(&host, &name, is_owner_device).await;
-        }
+        // Resolve the on-chain public-face choice (directory / app / html)
+        // and paint it. Directory is the universal fallback, so this always
+        // takes over.
+        paint_public_face(&host, &name, is_owner_device).await;
         // A seed-bearing owner visiting from a device without the local
         // `.lh_owner` marker (e.g. a second device) lands on the public
         // face like a visitor. Verify in the background and, if the apex
@@ -800,60 +800,140 @@ fn has_view_public_hint() -> bool {
     search.contains("view=public")
 }
 
-/// Paint the subdomain's **public face** — the visitor-facing surface, a
-/// fullscreen cartridge (local `app.rl` working copy first, else the
-/// on-chain published wasm). Returns `true` if it took over the page.
-///
-/// This is the visitor surface; the owner lands in the Studio and only
-/// reaches it via `?view=public`. `owner_overlay` paints a `[studio]`
-/// escape link (set when the owner is previewing — never for a visitor).
-///
-/// A compile error falls through to the workshop (so the owner can fix
-/// the source).
-async fn try_paint_app(name: Option<&str>, owner_overlay: bool) -> bool {
-    if has_edit_hint() {
-        return false;
-    }
+/// What a subdomain's public face resolves to right now.
+enum PublicFace {
+    /// The default profile/directory landing.
+    Directory,
+    /// A rustlite cartridge (compiled wasm) run fullscreen.
+    Cartridge(Vec<u8>),
+    /// An HTML page rasterized fullscreen.
+    Html(String),
+}
 
-    // 1. Local `app.rl` source (the owner's working copy on this device)
-    //    takes precedence — compile + run it.
+/// Read the device's local `app.rl` working copy and compile it. `None`
+/// if absent/empty; logs + `None` on compile error (so the caller can
+/// fall back rather than wedge).
+async fn local_cartridge_wasm() -> Option<Vec<u8>> {
     let fs = shared_opfs();
-    let wasm: Option<Vec<u8>> = match fs.read("app.rl").await {
-        Ok(bytes) if !bytes.is_empty() => {
-            let src = String::from_utf8_lossy(&bytes).into_owned();
-            match crate::rustlite::compile(&src) {
-                Ok(w) => Some(w),
-                Err(err) => {
-                    web_sys::console::warn_1(&JsValue::from_str(&format!(
-                        "app.rl compile failed, falling back to workshop: {err}"
-                    )));
-                    return false;
+    let bytes = fs.read("app.rl").await.ok().filter(|b| !b.is_empty())?;
+    let src = String::from_utf8_lossy(&bytes).into_owned();
+    match crate::rustlite::compile(&src) {
+        Ok(w) => Some(w),
+        Err(err) => {
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "app.rl compile failed, falling back: {err}"
+            )));
+            None
+        }
+    }
+}
+
+/// Read the device's local `index.html` working copy. `None` if absent/empty.
+async fn local_public_html() -> Option<String> {
+    let fs = shared_opfs();
+    let bytes = fs.read("index.html").await.ok().filter(|b| !b.is_empty())?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Cartridge bytes for `name`: the local `app.rl` working copy first (so
+/// the owner previews unpublished edits), else the on-chain published wasm.
+async fn resolve_cartridge(id: Option<u64>) -> Option<Vec<u8>> {
+    if let Some(w) = local_cartridge_wasm().await {
+        return Some(w);
+    }
+    match id {
+        Some(i) => registry::app_wasm_of(i).await.ok().flatten(),
+        None => None,
+    }
+}
+
+/// Resolve the public face for tenant `name`. Reads the on-chain choice
+/// (`directory` / `app` / `html`) and gathers content (local working copy
+/// first, else the published copy). An explicit choice with no content
+/// available falls back to the directory; an UNSET choice infers "app if a
+/// cartridge exists, else directory" so subdomains that published a
+/// cartridge before the picker shipped keep showing it.
+async fn resolve_public_face(name: &str) -> PublicFace {
+    let id = registry::id_of_name(name).await.ok().filter(|&i| i != 0);
+    let choice = match id {
+        Some(i) => registry::public_face_of(i).await.ok().flatten(),
+        None => None,
+    };
+    match choice.as_deref() {
+        Some("directory") => PublicFace::Directory,
+        Some("html") => {
+            if let Some(h) = local_public_html().await {
+                return PublicFace::Html(h);
+            }
+            if let Some(i) = id {
+                if let Ok(Some(bytes)) = registry::public_html_of(i).await {
+                    return PublicFace::Html(String::from_utf8_lossy(&bytes).into_owned());
                 }
             }
+            PublicFace::Directory
         }
-        // 2. No local app — a visitor (or a device without the source).
-        //    Fall back to the on-chain published wasm so anyone visiting
-        //    the subdomain sees the owner's app.
-        _ => match name {
-            Some(name) => match registry::id_of_name(name).await {
-                Ok(id) if id != 0 => {
-                    registry::app_wasm_of(id).await.ok().flatten()
-                }
-                _ => None,
-            },
-            None => None,
+        // "app" or unset/legacy — prefer a cartridge, fall back to directory.
+        _ => match resolve_cartridge(id).await {
+            Some(w) => PublicFace::Cartridge(w),
+            None => PublicFace::Directory,
         },
-    };
+    }
+}
 
-    let Some(wasm) = wasm else { return false };
-
+/// Paint `app_fullscreen` chrome and run a cartridge into the root canvas.
+/// `true` once it has taken over the page.
+async fn paint_cartridge_fullscreen(wasm: &[u8], owner_overlay: bool) -> bool {
     let Ok(doc) = dom::document() else { return false };
     let Some(root) = doc.get_element_by_id("root") else { return false };
     root.set_inner_html(&templates::app_fullscreen(owner_overlay).into_string());
-    if let Err(err) = display::run_in_root_canvas(&wasm).await {
+    if let Err(err) = display::run_in_root_canvas(wasm).await {
         web_sys::console::warn_1(&JsValue::from_str(&format!("app run failed: {err:?}")));
     }
     true
+}
+
+/// Paint `app_fullscreen` chrome and rasterize an HTML page into the root
+/// canvas. `true` once it has taken over the page.
+fn paint_html_fullscreen(html: &str, owner_overlay: bool) -> bool {
+    let Ok(doc) = dom::document() else { return false };
+    let Some(root) = doc.get_element_by_id("root") else { return false };
+    root.set_inner_html(&templates::app_fullscreen(owner_overlay).into_string());
+    if let Err(err) = display::render_html_in_root_canvas(html) {
+        web_sys::console::warn_1(&JsValue::from_str(&format!("html render failed: {err:?}")));
+    }
+    true
+}
+
+/// Paint the resolved public face for tenant `name`. Always takes over the
+/// page (directory is the universal fallback). `owner_overlay` shows the
+/// `[studio]` escape (owner preview only).
+async fn paint_public_face(host: &tenant::Host, name: &str, owner_overlay: bool) {
+    match resolve_public_face(name).await {
+        PublicFace::Cartridge(w) => {
+            paint_cartridge_fullscreen(&w, owner_overlay).await;
+        }
+        PublicFace::Html(h) => {
+            paint_html_fullscreen(&h, owner_overlay);
+        }
+        PublicFace::Directory => {
+            paint_public_landing(host, name, owner_overlay).await;
+        }
+    }
+}
+
+/// Local-only fullscreen cartridge for `Host::Other` (localhost / preview),
+/// which has no on-chain name — only the device's `app.rl` working copy
+/// applies. Tenants go through `paint_public_face` (choice-aware) instead.
+/// `true` if it took over; a compile error / missing file → `false` so the
+/// caller falls through to the workshop.
+async fn try_paint_app(owner_overlay: bool) -> bool {
+    if has_edit_hint() {
+        return false;
+    }
+    let Some(wasm) = local_cartridge_wasm().await else {
+        return false;
+    };
+    paint_cartridge_fullscreen(&wasm, owner_overlay).await
 }
 
 /// `true` iff `?claim=1` (or `?claim=anything`) is in the URL.

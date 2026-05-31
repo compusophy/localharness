@@ -77,7 +77,9 @@ enum Action {
     SaveApiKey,
     ToggleDisplay,
     StopTurn,
-    PublishApp,
+    /// Set this subdomain's public face: "directory", "app", or "html".
+    /// "app"/"html" also publish the device's local app.rl/index.html.
+    SetPublicFace(String),
 }
 
 impl Action {
@@ -135,7 +137,7 @@ impl Action {
             "save-api-key" => Action::SaveApiKey,
             "toggle-display" => Action::ToggleDisplay,
             "stop-turn" => Action::StopTurn,
-            "publish-app" => Action::PublishApp,
+            "set-public-face" => Action::SetPublicFace(arg.unwrap_or_default()),
             _ => return None,
         })
     }
@@ -575,9 +577,9 @@ fn dispatch(action: Action) {
         Action::OpfsCloseViewer => super::opfs::close_viewer(),
         Action::ToggleDisplay => super::opfs::toggle_display(),
         Action::StopTurn => super::chat::request_stop_turn(),
-        Action::PublishApp => {
+        Action::SetPublicFace(choice) => {
             wasm_bindgen_futures::spawn_local(async move {
-                run_publish_app().await;
+                run_set_public_face(&choice).await;
             });
         }
         Action::OpfsNav(target) => {
@@ -1898,8 +1900,32 @@ fn header_admin_toggle() {
             } else {
                 dom::swap_inner("tool-allowlist-status", "all tools enabled");
             }
+            refresh_public_face_status().await;
         });
     }
+}
+
+/// Read the subdomain's current on-chain public-face choice and reflect it
+/// in the `#public-face-status` slot. No-op off a tenant or if the slot
+/// isn't mounted.
+async fn refresh_public_face_status() {
+    let name = match super::tenant::current() {
+        super::tenant::Host::Tenant(n) => n,
+        _ => return,
+    };
+    if dom::by_id("public-face-status").is_none() {
+        return;
+    }
+    let face = match super::registry::id_of_name(&name).await {
+        Ok(id) if id != 0 => super::registry::public_face_of(id).await.ok().flatten(),
+        _ => None,
+    };
+    let label = match face.as_deref() {
+        Some("app") => "currently: app",
+        Some("html") => "currently: html",
+        _ => "currently: directory (default)",
+    };
+    dom::swap_inner("public-face-status", label);
 }
 
 fn header_admin_close() {
@@ -2350,14 +2376,16 @@ pub(crate) async fn try_auto_restore_gemini_key(name: &str) -> bool {
     true
 }
 
-/// Publish the device's local `app.rl` as the subdomain's on-chain app:
-/// compile it to wasm and store the bytes under the app metadata key via
-/// a sponsored `setMetadata` call (owner-signed through the apex iframe).
-/// Once published, ANY visitor to the subdomain boots into the app.
-async fn run_publish_app() {
+/// Set this subdomain's public face on-chain — `"directory"`, `"app"`, or
+/// `"html"`. The choice lives under `keccak256("localharness.public_face")`
+/// so every visitor honours it. For `"app"`/`"html"` we also publish the
+/// device's local `app.rl`/`index.html` content in the SAME sponsored tx
+/// (owner-signed through the apex iframe), so the chosen face is live
+/// immediately. Owner-only.
+async fn run_set_public_face(choice: &str) {
     let msg = "publish-app-msg";
     let set_err = |m: &str| {
-        dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, &format!("{m}")));
+        dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, m));
     };
 
     let name = match super::tenant::current() {
@@ -2381,26 +2409,6 @@ async fn run_publish_app() {
         return;
     };
 
-    let fs = super::shared_opfs();
-    let src = match fs.read("app.rl").await {
-        Ok(b) if !b.is_empty() => String::from_utf8_lossy(&b).into_owned(),
-        _ => {
-            set_err("no app.rl to publish");
-            return;
-        }
-    };
-    let wasm = match crate::rustlite::compile(&src) {
-        Ok(w) => w,
-        Err(e) => {
-            set_err(&format!("compile: {e}"));
-            return;
-        }
-    };
-    if wasm.len() > 16_384 {
-        set_err("app wasm too large to publish (max 16 KB)");
-        return;
-    }
-
     let id = match super::registry::id_of_name(&name).await {
         Ok(id) if id != 0 => id,
         _ => {
@@ -2409,7 +2417,6 @@ async fn run_publish_app() {
         }
     };
 
-    dom::swap_inner(msg, "<span style=\"color:var(--muted)\">publishing…</span>");
     let registry_addr = match parse_address(super::registry::REGISTRY_ADDRESS) {
         Ok(a) => a,
         Err(e) => {
@@ -2417,31 +2424,101 @@ async fn run_publish_app() {
             return;
         }
     };
-    let call = crate::tempo_tx::TempoCall {
+    let mk = |input: Vec<u8>| crate::tempo_tx::TempoCall {
         to: registry_addr,
         value_wei: 0,
-        input: super::registry::encode_set_app_wasm(id, &wasm),
+        input,
     };
-    // Storing `bytes` costs ~20k gas per 32-byte word (cold SSTORE) on
-    // top of the ~275k Tempo sponsorship + base call.
-    let words = (wasm.len() / 32 + 1) as u128;
-    let gas = 1_200_000 + words * 40_000;
-    match run_sponsored_tempo_call(&owner_hex, vec![call], gas, "publish app").await {
-        Ok(_tx) => dom::swap_inner(
-            msg,
-            &maud::html! {
-                span style="color:var(--fg)" {
-                    "published ✓ — live at "
-                    a href=(format!("https://{name}.localharness.xyz/"))
-                      target="_blank" rel="noopener" style="color:var(--accent)" {
-                        (format!("{name}.localharness.xyz →"))
-                    }
-                    " (share it — anyone can open the app)"
-                }
-            }
-            .into_string(),
+
+    // Build the call batch + gas estimate for the chosen face. Storing
+    // `bytes` costs ~20k gas per 32-byte word (cold SSTORE) on top of the
+    // ~275k Tempo sponsorship + base call.
+    let (calls, gas): (Vec<crate::tempo_tx::TempoCall>, u128) = match choice {
+        "directory" => (
+            vec![mk(super::registry::encode_set_public_face(id, "directory"))],
+            500_000,
         ),
-        Err(e) => set_err(&format!("publish failed: {e}")),
+        "app" => {
+            let fs = super::shared_opfs();
+            let src = match fs.read("app.rl").await {
+                Ok(b) if !b.is_empty() => String::from_utf8_lossy(&b).into_owned(),
+                _ => {
+                    set_err("no app.rl on this device — build one first (run_cartridge)");
+                    return;
+                }
+            };
+            let wasm = match crate::rustlite::compile(&src) {
+                Ok(w) => w,
+                Err(e) => {
+                    set_err(&format!("compile: {e}"));
+                    return;
+                }
+            };
+            if wasm.len() > 16_384 {
+                set_err("app wasm too large to publish (max 16 KB)");
+                return;
+            }
+            let words = (wasm.len() / 32 + 1) as u128;
+            (
+                vec![
+                    mk(super::registry::encode_set_app_wasm(id, &wasm)),
+                    mk(super::registry::encode_set_public_face(id, "app")),
+                ],
+                1_300_000 + words * 40_000,
+            )
+        }
+        "html" => {
+            let fs = super::shared_opfs();
+            let html = match fs.read("index.html").await {
+                Ok(b) if !b.is_empty() => b,
+                _ => {
+                    set_err("no index.html on this device — create one first");
+                    return;
+                }
+            };
+            if html.len() > 24_576 {
+                set_err("index.html too large to publish (max 24 KB)");
+                return;
+            }
+            let words = (html.len() / 32 + 1) as u128;
+            (
+                vec![
+                    mk(super::registry::encode_set_public_html(id, &html)),
+                    mk(super::registry::encode_set_public_face(id, "html")),
+                ],
+                1_300_000 + words * 40_000,
+            )
+        }
+        _ => {
+            set_err("unknown public face");
+            return;
+        }
+    };
+
+    dom::swap_inner(msg, "<span style=\"color:var(--muted)\">saving…</span>");
+    match run_sponsored_tempo_call(&owner_hex, calls, gas, "public face").await {
+        Ok(_tx) => {
+            let head = if choice == "directory" {
+                "public face → directory ✓".to_string()
+            } else {
+                format!("published ✓ — {name}.localharness.xyz")
+            };
+            dom::swap_inner(
+                msg,
+                &maud::html! {
+                    span style="color:var(--fg)" {
+                        (head) " "
+                        a href=(format!("https://{name}.localharness.xyz/"))
+                          target="_blank" rel="noopener" style="color:var(--accent)" {
+                            "open →"
+                        }
+                    }
+                }
+                .into_string(),
+            );
+            refresh_public_face_status().await;
+        }
+        Err(e) => set_err(&format!("failed: {e}")),
     }
 }
 
