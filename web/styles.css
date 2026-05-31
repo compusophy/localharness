@@ -1422,7 +1422,14 @@ button.danger:hover { color: var(--bg); background: var(--error); }
   gap: 8px;
 }
 .fs-list li.dir { cursor: pointer; }
-.fs-list li .name { cursor: pointer; flex: 1; }
+.fs-list li .name {
+  cursor: pointer;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .fs-list li:hover .name, .fs-list li:hover .size { color: var(--accent); }
 .file-delete {
   background: transparent;
@@ -1452,8 +1459,13 @@ button.danger:hover { color: var(--bg); background: var(--error); }
 .file-edit:hover { color: var(--fg); }
 .fs-list .name { color: var(--fg); }
 .fs-list .dir .name::before { content: "▸ "; color: var(--accent); }
-.fs-list .file .name::before { content: "· "; color: var(--muted); }
-.fs-list .size { color: var(--muted); font-size: 11px; }
+.fs-list .size {
+  color: var(--muted);
+  font-size: 11px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  text-align: right;
+}
 .fs-list .empty {
   color: var(--muted);
   font-style: italic;
