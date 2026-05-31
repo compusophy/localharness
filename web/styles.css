@@ -441,6 +441,73 @@ main.layout .transcript::before {
 }
 .app-edit:hover { opacity: 1; color: var(--fg); }
 
+/* --- Default public face (no cartridge published) --- */
+.public-face {
+  position: relative;
+  flex: 1;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  padding: 48px 20px;
+  box-sizing: border-box;
+}
+.public-hero { text-align: center; }
+.public-title {
+  margin: 0;
+  font-size: 40px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--accent);
+}
+.public-tagline {
+  margin: 8px 0 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+.public-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 220px;
+}
+.public-meta-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+}
+.public-meta-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+.public-meta-value { font-size: 12px; color: var(--fg); text-decoration: none; }
+.public-meta-value:hover { color: var(--accent); text-decoration: underline; }
+.public-directory { width: 100%; max-width: 360px; }
+.public-section-title {
+  margin: 0 0 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  text-align: center;
+}
+.public-footer {
+  position: absolute;
+  bottom: 16px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.public-footer a { color: var(--muted); text-decoration: none; }
+.public-footer a:hover { color: var(--fg); }
+
 /* Edit panel — the editable text surface that opens when a file
    is clicked in the file list. */
 .view-content { height: 100%; display: flex; flex-direction: column; }
@@ -670,7 +737,6 @@ h1 {
 .agent-name {
   color: var(--fg);
   text-decoration: none;
-  padding: 4px 8px;
   display: inline-block;
 }
 .agent-name:hover { color: var(--accent); }
@@ -853,11 +919,40 @@ input, textarea {
   width: 100%; height: 80px; border: 0; display: block; background: transparent;
 }
 
+/* --- Device pairing (admin → linked devices) --- */
+.pair-slot { margin-top: 8px; }
+.pair-slot.pair-active {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px; border: 1px solid var(--border); background: var(--panel);
+}
+.pair-instructions { color: var(--muted); font-size: 12px; }
+.pair-url {
+  color: var(--fg); font-size: 12px; word-break: break-all;
+  text-decoration: underline;
+}
+.pair-code-row { display: flex; align-items: baseline; gap: 8px; }
+.pair-code-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+.pair-code {
+  font-size: 24px; letter-spacing: 0.25em; color: var(--fg);
+  font-weight: 600;
+}
+.pair-waiting { color: var(--muted); font-size: 11px; }
+
 /* --- Agent row act panel (apex agents list) --- */
-.agent-row { display: block; padding: 6px 0; text-align: center; }
+.agent-row { display: block; }
+/* The whole row is one anchor (templates::agents_list) — give it the
+   padding + hover so the entire horizontal strip is the hit target,
+   not just the name text. */
 .agent-row-line {
   display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px;
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+  border: 1px solid transparent;
 }
+.agent-row-line:hover { background: rgba(255, 255, 255, 0.05); border-color: var(--border); }
+.agent-row-line:hover .agent-name { color: var(--accent); }
 .agent-row-spacer { flex: 1; }
 .agent-act-btn { font-size: 10px; padding: 4px 8px; }
 .agent-act-panel {

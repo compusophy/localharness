@@ -66,7 +66,9 @@ enum Action {
     FeedbackOpen,
     FeedbackClose,
     FeedbackSubmit,
-    AddDevice,
+    PairStart,
+    PairCancel,
+    PairJoin,
     AgentActToggle(String),
     AgentSendLh(String),
     SavePrompt,
@@ -122,7 +124,9 @@ impl Action {
             "feedback-open" => Action::FeedbackOpen,
             "feedback-close" => Action::FeedbackClose,
             "feedback-submit" => Action::FeedbackSubmit,
-            "add-device" => Action::AddDevice,
+            "pair-start" => Action::PairStart,
+            "pair-cancel" => Action::PairCancel,
+            "pair-join" => Action::PairJoin,
             "agent-act-toggle" => Action::AgentActToggle(arg.unwrap_or_default()),
             "agent-send-lh" => Action::AgentSendLh(arg.unwrap_or_default()),
             "save-prompt" => Action::SavePrompt,
@@ -872,6 +876,11 @@ fn dispatch(action: Action) {
                         "delete({name}): {err}"
                     )));
                 }
+                // Deleting the conversation history wipes the on-screen
+                // transcript instantly — no page refresh. (on-chain feedback)
+                if name == ".lh_history.json" {
+                    dom::swap_inner("transcript", "");
+                }
                 super::opfs::refresh().await;
             });
         }
@@ -946,7 +955,13 @@ fn dispatch(action: Action) {
         Action::FeedbackOpen => feedback_open(),
         Action::FeedbackClose => feedback_close(),
         Action::FeedbackSubmit => feedback_submit(),
-        Action::AddDevice => add_device_pressed(),
+        Action::PairStart => pair_start_pressed(),
+        Action::PairCancel => pair_cancel_pressed(),
+        Action::PairJoin => {
+            if let Some(code) = super::read_query_param("pair") {
+                pair_join_pressed(code);
+            }
+        }
         Action::AgentActToggle(token_id) => agent_act_toggle_pressed(token_id),
         Action::AgentSendLh(token_id) => agent_send_lh_pressed(token_id),
         Action::SavePrompt => save_prompt_pressed(),
@@ -1098,6 +1113,12 @@ fn save_api_key_pressed() {
             if let Some(parent) = el.parent_element() {
                 let _ = parent.remove_child(&el);
             }
+        }
+        // Auto-sync to the MAIN slot on-chain (best-effort, seed-bearing
+        // devices only) so other subdomains + linked devices pick it up
+        // without re-entry. Fire-and-forget after the modal closes.
+        if let super::tenant::Host::Tenant(name) = super::tenant::current() {
+            auto_sync_gemini_key(name, value).await;
         }
     });
 }
@@ -1301,47 +1322,310 @@ async fn refresh_signer_list() {
     }
 }
 
-/// Link another device's EOA to the current user's MAIN. The clicked
-/// device is the "authorizer" (its wallet IS the NFT holder of the
-/// MAIN, or has been authorized previously); the pasted address is
-/// the new device's wallet. One sponsored Tempo tx batches
-/// `createTokenBoundAccount` (idempotent) + `addSigner`. User pays
-/// nothing — sponsor pays AlphaUSD.
-fn add_device_pressed() {
-    let raw = dom::input_by_id("add-device-input")
-        .map(|i| i.value().trim().to_string())
-        .unwrap_or_default();
-    if !is_address_hex(&raw) {
-        // Silent no-op on bad input — per [[feedback-no-explanatory-validation]].
-        return;
-    }
-    dom::swap_inner(
-        "add-device-msg",
-        "<span style=\"color:var(--muted)\">signing + submitting…</span>",
-    );
+/// Desktop side of device pairing. Generate a one-time code, show it +
+/// the deep link to open on the other device, then poll the on-chain
+/// pairing rendezvous. When the phone announces (its fresh device key as
+/// `msg.sender` of a sponsored tx), we learn its address from the log
+/// and enroll it via `addSigner` — no 0x ever copied between machines.
+fn pair_start_pressed() {
+    // The user's MAIN name is what the phone will open (its own
+    // subdomain). Resolve it from the apex wallet's MAIN.
     wasm_bindgen_futures::spawn_local(async move {
-        match run_add_device(raw.clone()).await {
+        let owner_hex = super::APP
+            .with(|cell| cell.borrow().wallet.as_ref().map(|w| w.address_hex()));
+        let Some(owner_hex) = owner_hex else {
+            dom::swap_inner("pair-msg", &dom::msg_span(dom::Msg::Error, "no identity"));
+            return;
+        };
+        let token_id = match super::registry::main_of(&owner_hex).await {
+            Ok(id) if id != 0 => id,
+            _ => {
+                dom::swap_inner(
+                    "pair-msg",
+                    &dom::msg_span(dom::Msg::Error, "claim a subdomain first"),
+                );
+                return;
+            }
+        };
+        let name = match super::registry::name_of_id(token_id).await {
+            Ok(n) if !n.is_empty() => n,
+            _ => {
+                dom::swap_inner("pair-msg", &dom::msg_span(dom::Msg::Error, "no MAIN name"));
+                return;
+            }
+        };
+
+        // One-time code: 6 uppercase base32-ish chars from CSPRNG.
+        let code = generate_pair_code();
+        let pair_url = format!("https://{name}.localharness.xyz/?pair={code}");
+        dom::swap_outer(
+            "pair-slot",
+            &templates::pair_panel(&code, &pair_url).into_string(),
+        );
+        dom::swap_inner("pair-msg", "");
+
+        // Poll the rendezvous: ~5 min at 3s intervals.
+        let code_hash = super::registry::pairing_code_hash(&code);
+        let mut found: Option<(String, Vec<u8>)> = None;
+        for _ in 0..100 {
+            // Stop if the user cancelled (panel swapped away).
+            if dom::by_id("pair-slot")
+                .map(|el| !el.class_name().contains("pair-active"))
+                .unwrap_or(true)
+            {
+                return;
+            }
+            match super::registry::find_pairing_device(&code_hash).await {
+                Ok(Some(pair)) => {
+                    found = Some(pair);
+                    break;
+                }
+                _ => {}
+            }
+            super::registry::sleep_ms(3000).await;
+        }
+
+        let Some((device, device_pubkey)) = found else {
+            dom::swap_inner(
+                "pair-msg",
+                &dom::msg_span(dom::Msg::Error, "timed out — try again"),
+            );
+            dom::swap_outer(
+                "pair-slot",
+                &r#"<div id="pair-slot" class="pair-slot"><button id="pair-btn" type="button" data-action="pair-start" class="ghost">link a device</button></div>"#,
+            );
+            return;
+        };
+
+        dom::swap_inner(
+            "pair-msg",
+            &dom::msg_span(dom::Msg::Accent, "device found — enrolling…"),
+        );
+        match run_add_device(device.clone()).await {
             Ok(tx_hash) => {
                 let short = tx_short_hash(&tx_hash);
                 dom::swap_inner(
-                    "add-device-msg",
+                    "pair-msg",
                     &dom::msg_span(
                         dom::Msg::Accent,
-                        &format!("✓ added {} (tx {short})", short_addr(&raw)),
+                        &format!("✓ linked {} (tx {short})", short_addr(&device)),
                     ),
                 );
-                if let Some(input) = dom::input_by_id("add-device-input") {
-                    input.set_value("");
+                dom::swap_outer(
+                    "pair-slot",
+                    &r#"<div id="pair-slot" class="pair-slot"><button id="pair-btn" type="button" data-action="pair-start" class="ghost">link another device</button></div>"#,
+                );
+                // ECIES-wrap the MAIN Gemini key to this device's pubkey and
+                // post it on-chain, so the phone gets the key WITHOUT ever
+                // importing the seed. Best-effort: silently skipped if no key
+                // is synced or the seed isn't on this device.
+                if !device_pubkey.is_empty() {
+                    if wrap_and_post_key_to_device(token_id, &owner_hex, &device, &device_pubkey)
+                        .await
+                        .is_ok()
+                    {
+                        dom::swap_inner(
+                            "pair-msg",
+                            &dom::msg_span(
+                                dom::Msg::Accent,
+                                &format!(
+                                    "✓ linked {} + shared your key — it's ready to use",
+                                    short_addr(&device)
+                                ),
+                            ),
+                        );
+                    }
                 }
+                refresh_signer_list().await;
+            }
+            Err(err) => {
+                dom::swap_inner("pair-msg", &dom::msg_span(dom::Msg::Error, &format!("{err}")));
+            }
+        }
+    });
+}
+
+/// Cancel an in-progress pairing — swap the panel back to the button.
+/// The poll loop notices the missing `.pair-active` class and exits.
+fn pair_cancel_pressed() {
+    dom::swap_outer(
+        "pair-slot",
+        &r#"<div id="pair-slot" class="pair-slot"><button id="pair-btn" type="button" data-action="pair-start" class="ghost">link a device</button></div>"#,
+    );
+    dom::swap_inner("pair-msg", "");
+}
+
+/// Phone side. The device opened `<name>.localharness.xyz/?pair=CODE`.
+/// Generate a fresh device keypair, persist it as this origin's wallet,
+/// and announce on-chain (sponsored) so the desktop can enroll it.
+pub(crate) fn pair_join_pressed(code: String) {
+    dom::swap_inner(
+        "pair-join-msg",
+        "<span style=\"color:var(--muted)\">generating device key + announcing…</span>",
+    );
+    wasm_bindgen_futures::spawn_local(async move {
+        match run_pair_join(&code).await {
+            Ok(addr) => {
+                dom::swap_inner(
+                    "pair-join-msg",
+                    &dom::msg_span(
+                        dom::Msg::Accent,
+                        &format!(
+                            "✓ announced {} — finish on your other device.",
+                            short_addr(&addr)
+                        ),
+                    ),
+                );
             }
             Err(err) => {
                 dom::swap_inner(
-                    "add-device-msg",
+                    "pair-join-msg",
                     &dom::msg_span(dom::Msg::Error, &format!("{err}")),
                 );
             }
         }
     });
+}
+
+/// Generate the device key, persist it to this origin's OPFS so the
+/// device can keep acting as a signer, and announce `keccak(code)`
+/// on-chain via a sponsored tx.
+async fn run_pair_join(code: &str) -> Result<String, String> {
+    // A fresh device identity for THIS subdomain origin. Persist it so
+    // future visits reuse the same enrolled key (the apex flow stores a
+    // mnemonic; here a per-device random key is enough — it's a signer,
+    // not the master seed).
+    let wallet = crate::wallet::generate();
+    let device_hex = wallet.address_hex();
+    super::wallet_store::persist_device_key(&wallet.private_key_hex)
+        .await
+        .map_err(|e| format!("save device key: {e}"))?;
+
+    let code_hash = super::registry::pairing_code_hash(code);
+    // Announce our compressed pubkey so the desktop can ECIES-wrap the
+    // Gemini key directly to us — we never need the master seed.
+    let pubkey = crate::wallet::pubkey_compressed(&wallet.signer);
+    let fee_payer = super::sponsor::signer()?;
+    super::registry::announce_pairing_sponsored(
+        &wallet.signer,
+        &fee_payer,
+        &code_hash,
+        &pubkey,
+        super::registry::ALPHA_USD_ADDRESS,
+    )
+    .await?;
+
+    // Background: poll for the desktop's ECIES-wrapped Gemini key, decrypt
+    // it with our device key, and save it locally — so this device never
+    // prompts for an API key. Best-effort; the device still works as a
+    // signer even if the desktop has no key to share.
+    let device_signer = wallet.signer.clone();
+    let device_addr = device_hex.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        let name = match super::tenant::current() {
+            super::tenant::Host::Tenant(n) => n,
+            _ => return,
+        };
+        let slot_id = match gemini_key_slot_id(&name).await {
+            Ok(id) => id,
+            Err(_) => return,
+        };
+        for _ in 0..40 {
+            if let Ok(Some(blob)) =
+                super::registry::wrapped_device_key_of(slot_id, &device_addr).await
+            {
+                if let Some(pt) = super::encryption::ecies_open(&device_signer, &blob).await {
+                    if let Ok(key) = String::from_utf8(pt) {
+                        super::key_store::save(&key).await;
+                        if let Ok(Some(storage)) = dom::session_storage() {
+                            let _ = storage.set_item("gemini_api_key", &key);
+                        }
+                        dom::swap_inner(
+                            "pair-join-msg",
+                            &dom::msg_span(
+                                dom::Msg::Accent,
+                                "✓ linked + key received — open this subdomain to use it",
+                            ),
+                        );
+                        return;
+                    }
+                }
+            }
+            super::registry::sleep_ms(3000).await;
+        }
+    });
+
+    Ok(device_hex)
+}
+
+/// Derive the seed-sync AES key from the LOCAL apex master wallet (no
+/// iframe — this runs on the apex origin where the seed lives). Must
+/// match `signer::seed_sync_key` byte-for-byte so a blob sealed by the
+/// iframe path opens here. `None` if no wallet is loaded.
+fn apex_seed_sync_key() -> Option<[u8; 32]> {
+    use sha3::{Digest, Keccak256};
+    super::APP.with(|cell| {
+        let app = cell.borrow();
+        let wallet = app.wallet.as_ref()?;
+        let entropy = wallet.mnemonic.to_entropy();
+        let mut hasher = Keccak256::new();
+        hasher.update(b"localharness/v0/keysync");
+        hasher.update(&entropy);
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&hasher.finalize());
+        Some(out)
+    })
+}
+
+/// Desktop side. Read the MAIN's seed-sealed Gemini key from chain,
+/// decrypt it with the local seed, ECIES-wrap it to the freshly-paired
+/// device's pubkey, and post that blob under the device's per-device slot.
+/// Errors (no key synced, no seed here) are returned so the caller can
+/// silently skip — the device still enrolls as a signer regardless.
+async fn wrap_and_post_key_to_device(
+    main_id: u64,
+    owner_hex: &str,
+    device_hex: &str,
+    device_pubkey: &[u8],
+) -> Result<(), String> {
+    let ct = super::registry::gemini_key_of(main_id)
+        .await
+        .map_err(|e| format!("read key: {e}"))?
+        .ok_or_else(|| "no synced key".to_string())?;
+    let seed_key = apex_seed_sync_key().ok_or_else(|| "no seed on this device".to_string())?;
+    let plaintext = super::encryption::open_with_raw_key(&seed_key, &ct)
+        .await
+        .ok_or_else(|| "decrypt failed".to_string())?;
+    let blob = super::encryption::ecies_seal(device_pubkey, &plaintext)
+        .await
+        .ok_or_else(|| "wrap failed".to_string())?;
+    let signer = super::APP
+        .with(|cell| cell.borrow().wallet.as_ref().map(|w| w.signer.clone()))
+        .ok_or_else(|| "no wallet".to_string())?;
+    let fee_payer = super::sponsor::signer()?;
+    super::registry::set_device_wrapped_key_sponsored(
+        &signer,
+        &fee_payer,
+        main_id,
+        device_hex,
+        &blob,
+        super::registry::ALPHA_USD_ADDRESS,
+    )
+    .await?;
+    let _ = owner_hex; // owner is implied by the local signer
+    Ok(())
+}
+
+/// 6-char one-time pairing code (Crockford-ish base32, no ambiguous
+/// chars) from the browser CSPRNG. Short enough to read aloud / type.
+fn generate_pair_code() -> String {
+    const ALPHABET: &[u8] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+    let mut bytes = [0u8; 6];
+    let _ = getrandom::getrandom(&mut bytes);
+    bytes
+        .iter()
+        .map(|b| ALPHABET[(*b as usize) % ALPHABET.len()] as char)
+        .collect()
 }
 
 /// Resolve the current user's MAIN's TBA address, then submit a
@@ -1895,10 +2179,10 @@ async fn run_sync_key() {
         set_err("bad ciphertext from signer");
         return;
     };
-    let id = match super::registry::id_of_name(&name).await {
-        Ok(id) if id != 0 => id,
-        _ => {
-            set_err("name isn't registered on-chain");
+    let id = match gemini_key_slot_id(&name).await {
+        Ok(id) => id,
+        Err(e) => {
+            set_err(&e);
             return;
         }
     };
@@ -1940,10 +2224,10 @@ async fn run_restore_key() {
             return;
         }
     };
-    let id = match super::registry::id_of_name(&name).await {
-        Ok(id) if id != 0 => id,
-        _ => {
-            set_err("name isn't registered on-chain");
+    let id = match gemini_key_slot_id(&name).await {
+        Ok(id) => id,
+        Err(e) => {
+            set_err(&e);
             return;
         }
     };
@@ -1979,6 +2263,91 @@ async fn run_restore_key() {
         msg,
         &dom::msg_span(dom::Msg::Accent, "restored ✓ — applies on next session"),
     );
+}
+
+/// The on-chain tokenId the Gemini-key blob lives under: the owner's
+/// MAIN, so every subdomain the owner holds shares ONE key (per the
+/// "the subdomain IS the primary owner" model — a new subdomain should
+/// reuse the MAIN's key, not prompt for a fresh one). Falls back to the
+/// current subdomain's own id if the owner has no MAIN set.
+async fn gemini_key_slot_id(name: &str) -> Result<u64, String> {
+    let owner = super::registry::owner_of_name(name)
+        .await
+        .map_err(|e| format!("owner: {e}"))?
+        .ok_or_else(|| "name not registered on-chain".to_string())?;
+    let main_id = super::registry::main_of(&owner).await.unwrap_or(0);
+    if main_id != 0 {
+        return Ok(main_id);
+    }
+    match super::registry::id_of_name(name).await {
+        Ok(id) if id != 0 => Ok(id),
+        _ => Err("no token id for name".into()),
+    }
+}
+
+/// Best-effort: seal the Gemini key with the seed-derived key (via the
+/// apex iframe) and store it on-chain under the owner's MAIN slot, so any
+/// other subdomain / seed-bearing device auto-restores it. No-op on any
+/// failure — most importantly when the seed isn't on this device (the
+/// iframe seal fails), which is fine: nothing to sync from here.
+async fn auto_sync_gemini_key(name: String, key: String) {
+    let owner = match super::registry::owner_of_name(&name).await {
+        Ok(Some(o)) => o,
+        _ => return,
+    };
+    let slot_id = match gemini_key_slot_id(&name).await {
+        Ok(id) => id,
+        Err(_) => return,
+    };
+    // Seal with the seed-derived key via the apex iframe. Fails (and we
+    // bail) on a device that doesn't hold the seed.
+    let ct_hex = match super::verify::seal_key_via_iframe(&key).await {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+    let Some(ct) = decode_hex_local(&ct_hex) else { return };
+    let Ok(registry_addr) = parse_address(super::registry::REGISTRY_ADDRESS) else { return };
+    let call = crate::tempo_tx::TempoCall {
+        to: registry_addr,
+        value_wei: 0,
+        input: super::registry::encode_set_gemini_key(slot_id, &ct),
+    };
+    let words = (ct.len() / 32 + 1) as u128;
+    let gas = 1_200_000 + words * 40_000;
+    let _ = run_sponsored_tempo_call(&owner, vec![call], gas, "auto-sync key").await;
+}
+
+/// Try to pull the owner's MAIN Gemini key from chain and decrypt it
+/// with this device's seed (via the apex iframe). On success the key is
+/// saved to this origin's OPFS + sessionStorage and `true` is returned,
+/// so the caller can skip the api-key modal. Returns `false` (silently)
+/// when there's no synced key OR this device lacks the seed (e.g. a phone
+/// linked by device key only — that path will use the wrapped-key blob).
+pub(crate) async fn try_auto_restore_gemini_key(name: &str) -> bool {
+    if super::key_store::load().await.is_some() {
+        return true;
+    }
+    let slot_id = match gemini_key_slot_id(name).await {
+        Ok(id) => id,
+        Err(_) => return false,
+    };
+    let ct = match super::registry::gemini_key_of(slot_id).await {
+        Ok(Some(b)) => b,
+        _ => return false,
+    };
+    let ct_hex = format!(
+        "0x{}",
+        ct.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    );
+    let plaintext = match super::verify::open_key_via_iframe(&ct_hex).await {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    super::key_store::save(&plaintext).await;
+    if let Ok(Some(storage)) = dom::session_storage() {
+        let _ = storage.set_item("gemini_api_key", &plaintext);
+    }
+    true
 }
 
 /// Publish the device's local `app.rl` as the subdomain's on-chain app:

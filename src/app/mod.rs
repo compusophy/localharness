@@ -283,6 +283,13 @@ fn mount() -> Result<(), JsValue> {
             return Ok(());
         }
         tenant::Host::Tenant(name) => {
+            // Device-pairing short-circuit: `?pair=CODE` means a second
+            // device is enrolling itself as a signer for this subdomain.
+            // Paint the minimal join chrome — no identity, no chat.
+            if read_query_param("pair").is_some() {
+                root.set_inner_html(&templates::pair_join(name).into_string());
+                return Ok(());
+            }
             // Tenant subdomain — defer the chrome choice until we've
             // peeked at the ownership marker (async).
             let placeholder = format!(
@@ -310,8 +317,9 @@ fn mount() -> Result<(), JsValue> {
     );
     wasm_bindgen_futures::spawn_local(async move {
         // `Other` hosts (localhost / preview) have no on-chain name, so
-        // only the local `app.rl` path applies.
-        if try_paint_app(None).await {
+        // only the local `app.rl` path applies. Dev/preview keeps the
+        // [studio] escape on the fullscreen surface.
+        if try_paint_app(None, true).await {
             return;
         }
         paint_workshop(&host).await;
@@ -380,14 +388,38 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
         // Fall through to chrome paint as visitor.
     }
 
-    // App mode: local `app.rl` (owner's device) or the on-chain
-    // published wasm (any visitor) → boot fullscreen into the cartridge.
-    if try_paint_app(Some(&name)).await {
+    // Two surfaces per subdomain:
+    //  - PUBLIC FACE (fullscreen cartridge) — the visitor surface.
+    //  - STUDIO (the workshop chrome below) — the owner surface.
+    // The owner lands in the Studio by default and previews their public
+    // face with `?view=public`; a visitor only ever sees the public face.
+    // So we only paint the public face for a visitor, OR for the owner
+    // when they explicitly asked to preview it. `owner.is_some()` is this
+    // device's local ownership claim (refined later by verification).
+    let is_owner_device = owner.is_some();
+    let show_public_face = !is_owner_device || has_view_public_hint();
+    if show_public_face {
+        // Cartridge if one exists, else the default public-face landing.
+        if !try_paint_app(Some(&name), is_owner_device).await {
+            paint_public_landing(&host, &name, is_owner_device).await;
+        }
+        // A seed-bearing owner visiting from a device without the local
+        // `.lh_owner` marker (e.g. a second device) lands on the public
+        // face like a visitor. Verify in the background and, if the apex
+        // signer proves ownership, send them to their studio (`?edit=1`).
+        // Skipped when this device already claims ownership (a deliberate
+        // `?view=public` preview must not bounce back).
+        if !is_owner_device {
+            let n = name.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                redirect_to_studio_if_owner(n).await;
+            });
+        }
         return;
     }
 
-    // Paint the full app — either we own it on this device or someone
-    // else owns it on-chain and we're visiting.
+    // Paint the Studio — we own this name on this device (or a deliberate
+    // preview fell through with nothing published).
     root.set_inner_html(&templates::chrome(&host).into_string());
 
     let has_key = if let Some(persisted_key) = key_store::load().await {
@@ -404,7 +436,15 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
     opfs::refresh().await;
 
     if !has_key {
-        show_api_key_modal();
+        // Before prompting, try to auto-restore the owner's MAIN Gemini
+        // key from chain (works on any device that holds the seed). A new
+        // subdomain on the same device reuses the MAIN's key with no
+        // prompt — "the subdomain IS the primary owner". Falls through to
+        // the modal on a device without the seed (e.g. a phone linked by
+        // device key only).
+        if !events::try_auto_restore_gemini_key(&name).await {
+            show_api_key_modal();
+        }
     }
 
     // Background: try to verify the visitor against the on-chain
@@ -634,7 +674,7 @@ pub(crate) fn format_wei_as_test_eth(wei: u128) -> String {
 /// Read a `?key=value` query parameter from the current URL, naive
 /// implementation that avoids pulling a URL crate. Returns `None` if
 /// the param is missing or empty.
-fn read_query_param(key: &str) -> Option<String> {
+pub(crate) fn read_query_param(key: &str) -> Option<String> {
     let window = dom::window().ok()?;
     let search = window.location().search().ok()?;
     let stripped = search.trim_start_matches('?');
@@ -691,15 +731,86 @@ fn has_edit_hint() -> bool {
     search.contains("edit=1")
 }
 
-/// Chrome-less "app mode": if this origin's OPFS has an `app.rl`
-/// (rustlite source) and `?edit=1` isn't set, compile it and boot the
-/// subdomain straight into a fullscreen cartridge instead of the IDE
-/// workshop. Returns `true` if it took over the page.
+/// Paint the **default public-face landing** for `name` — the surface a
+/// visitor sees when no cartridge has been published. Fetches the owner,
+/// the agent's TBA, the owner's MAIN name, and the owner's other agents
+/// (siblings) from the registry, then renders `templates::public_landing`.
+/// All reads are best-effort; missing data just omits that row.
+async fn paint_public_landing(host: &tenant::Host, name: &str, owner_overlay: bool) {
+    let _ = host;
+    let owner = registry::owner_of_name(name).await.ok().flatten();
+    let tba = registry::tba_of_name(name).await.ok().flatten();
+
+    let mut main_name: Option<String> = None;
+    let mut is_main = false;
+    let mut siblings: Vec<registry::OwnedToken> = Vec::new();
+    if let Some(addr) = owner.as_deref() {
+        let main_id = registry::main_of(addr).await.unwrap_or(0);
+        if main_id != 0 {
+            if let Ok(m) = registry::name_of_id(main_id).await {
+                if !m.is_empty() {
+                    is_main = m == name;
+                    // Only surface the MAIN as the owner link when it's a
+                    // *different* subdomain — linking a name to itself is noise.
+                    if !is_main {
+                        main_name = Some(m);
+                    }
+                }
+            }
+        }
+        siblings = registry::list_owned_tokens(addr).await.unwrap_or_default();
+        siblings.retain(|t| t.name != name);
+    }
+
+    let html = templates::public_landing(
+        name,
+        owner.as_deref(),
+        tba.as_deref(),
+        main_name.as_deref(),
+        is_main,
+        &siblings,
+        owner_overlay,
+    )
+    .into_string();
+
+    if let Ok(doc) = dom::document() {
+        if let Some(root) = doc.get_element_by_id("root") {
+            root.set_inner_html(&html);
+        }
+    }
+}
+
+/// Background check: if the apex signer proves this device controls the
+/// on-chain owner of `name`, navigate to the studio (`?edit=1`). Lets a
+/// seed-bearing owner reach their workshop from a device that has no
+/// local `.lh_owner` marker, without exposing a studio door to visitors.
+async fn redirect_to_studio_if_owner(name: String) {
+    if let Ok(verify::VerifyResult::VerifiedOwner { .. }) = verify::verify_owner(&name).await {
+        if let Ok(window) = dom::window() {
+            let _ = window.location().set_search("edit=1");
+        }
+    }
+}
+
+/// `true` iff `?view=public` is in the URL — the owner asking to preview
+/// their public face from the studio.
+fn has_view_public_hint() -> bool {
+    let Ok(window) = dom::window() else { return false };
+    let Ok(search) = window.location().search() else { return false };
+    search.contains("view=public")
+}
+
+/// Paint the subdomain's **public face** — the visitor-facing surface, a
+/// fullscreen cartridge (local `app.rl` working copy first, else the
+/// on-chain published wasm). Returns `true` if it took over the page.
+///
+/// This is the visitor surface; the owner lands in the Studio and only
+/// reaches it via `?view=public`. `owner_overlay` paints a `[studio]`
+/// escape link (set when the owner is previewing — never for a visitor).
 ///
 /// A compile error falls through to the workshop (so the owner can fix
-/// the source); per-origin OPFS means the app is the owner's device's
-/// copy — cross-visitor publishing comes later (shared cartridge store).
-async fn try_paint_app(name: Option<&str>) -> bool {
+/// the source).
+async fn try_paint_app(name: Option<&str>, owner_overlay: bool) -> bool {
     if has_edit_hint() {
         return false;
     }
@@ -738,7 +849,7 @@ async fn try_paint_app(name: Option<&str>) -> bool {
 
     let Ok(doc) = dom::document() else { return false };
     let Some(root) = doc.get_element_by_id("root") else { return false };
-    root.set_inner_html(&templates::app_fullscreen().into_string());
+    root.set_inner_html(&templates::app_fullscreen(owner_overlay).into_string());
     if let Err(err) = display::run_in_root_canvas(&wasm).await {
         web_sys::console::warn_1(&JsValue::from_str(&format!("app run failed: {err:?}")));
     }

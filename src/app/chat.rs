@@ -70,7 +70,7 @@ pub(crate) async fn run_send() {
 
     let prompt = prompt_area.value().trim().to_string();
     if prompt.is_empty() {
-        dom::set_status("enter a prompt first.", true);
+        // Silent no-op — no explanatory validation text. (on-chain feedback)
         return;
     }
 
@@ -385,9 +385,14 @@ pub(crate) async fn start_session(key: &str) -> Result<(), JsValue> {
              pointer_down() + pointer position, with state in the slots. \
              Use this whenever the user asks for something visual or an app. \
              Each run is auto-saved to `cartridge.rl` (visible in files, \
-             survives reload). To make a cartridge this subdomain's PERMANENT \
-             app (boots fullscreen on every page load, no IDE chrome), save \
-             the same source to a file named `app.rl` via create_file.\n\
+             survives reload). This is what 'build/run/show me an app' means \
+             — run_cartridge launches it live on the DISPLAY, non-fullscreen, \
+             no reload. ONLY when the user EXPLICITLY asks to make this \
+             subdomain PERMANENTLY BECOME the app (fullscreen on every load, \
+             no IDE chrome) should you ALSO save the same source to `app.rl` \
+             via create_file. Never write `app.rl` for an ordinary app \
+             request — it forces a fullscreen takeover the user didn't ask \
+             for and doesn't even run until the next reload.\n\
            • render_html(source) — render an HTML document onto the VISUAL \
              DISPLAY. The display CAN show HTML: this lays out block-level \
              text (h1-h6, p, ul/li, blockquote, br) word-wrapped in the \
@@ -425,8 +430,10 @@ pub(crate) async fn start_session(key: &str) -> Result<(), JsValue> {
            when you actually need to know.\n\
          • Don't blindly call tools when the user is just chatting. \"hi\" / \
            \"what can you do?\" don't need a tool call.\n\
-         • When you do call a tool, the call AND its result are visible to the \
-           user in the transcript — no need to re-narrate either."
+         • When you do call a tool, lead with a short one-line note on what \
+           you're about to do (e.g. \"checking your files…\") so the turn is \
+           never silent — but don't re-narrate the call's args or dump its \
+           result afterward; both are already visible in the transcript."
     );
 
     // Owner customization: append the contents of `.lh_system_prompt.txt`

@@ -94,6 +94,34 @@ pub(crate) async fn forget() {
     let _ = fs.delete(WALLET_FILE).await;
 }
 
+/// Per-device signer key, used by the device-pairing flow. This lives at
+/// the TENANT origin (the phone opened `<name>.localharness.xyz/?pair=…`)
+/// and is NOT the master seed — it's a fresh random key enrolled as an
+/// additional signer on the MAIN's TBA, so the device can act as the
+/// agent without ever importing the 12-word seed. Stored as a raw hex
+/// private key (no mnemonic; it's not meant for human backup).
+const DEVICE_KEY_FILE: &str = ".lh_device_key";
+
+/// Persist a device signer's private key (hex) to this origin's OPFS.
+pub(crate) async fn persist_device_key(private_key_hex: &str) -> Result<(), String> {
+    let fs = super::shared_opfs();
+    fs.write_atomic(DEVICE_KEY_FILE, private_key_hex.as_bytes())
+        .await
+        .map_err(|e| format!("device key save: {e}"))
+}
+
+/// Load this origin's device signer key, if one was enrolled here.
+#[allow(dead_code)]
+pub(crate) async fn load_device_key() -> Option<k256::ecdsa::SigningKey> {
+    let fs = super::shared_opfs();
+    let bytes = fs.read(DEVICE_KEY_FILE).await.ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    let hex = String::from_utf8(bytes).ok()?;
+    wallet::from_private_key_hex(hex.trim()).ok()
+}
+
 fn restore_from_phrase(phrase: &str) -> Result<MasterWallet, String> {
     let mnemonic = wallet::mnemonic_from_phrase(phrase)?;
     let signer = wallet::signer_from_mnemonic(&mnemonic);

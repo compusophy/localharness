@@ -110,6 +110,10 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
                 button type="button"
                     data-action="feedback-open"
                     .header-button.feedback-button { "feedback" }
+                @if matches!(_host, Host::Tenant(_)) {
+                    a.header-button.view-public-button href="?view=public"
+                        title="preview your public face" { "view public" }
+                }
                 div #header-admin .header-admin {
                     button type="button"
                         data-action="header-admin-toggle"
@@ -826,17 +830,60 @@ pub(crate) fn admin_devices_section() -> Markup {
         div.admin-section {
             div.admin-section-title { "linked devices" }
             div #signer-list .admin-msg-slot { "loading…" }
-            form #add-device-form .add-device-form
-                data-action="add-device" {
-                input #add-device-input
-                    type="text"
-                    placeholder="another device's 0x…"
-                    autocomplete="off"
-                    spellcheck="false"
-                    maxlength="42" {}
-                button #add-device-btn type="submit" .ghost { "add" }
+            // No 0x copying. Click "link a device" → a one-time code +
+            // a URL appears. Open it on the other device (scan the link
+            // / type the short code into your own subdomain) and it
+            // self-enrolls over the on-chain pairing rendezvous.
+            div #pair-slot .pair-slot {
+                button #pair-btn type="button" data-action="pair-start" .ghost {
+                    "link a device"
+                }
             }
-            div #add-device-msg .admin-msg-slot {}
+            div #pair-msg .admin-msg-slot {}
+        }
+    }
+}
+
+/// The active-pairing panel — shown after the desktop presses "link a
+/// device". Renders the one-time code big + the deep link to open on
+/// the phone, and a cancel. The desktop is polling on-chain while this
+/// is up; success swaps `#pair-msg`.
+pub(crate) fn pair_panel(code: &str, pair_url: &str) -> Markup {
+    html! {
+        div #pair-slot .pair-slot.pair-active {
+            div.pair-instructions {
+                "on your other device, open:"
+            }
+            a.pair-url href=(pair_url) target="_blank" rel="noopener" { (pair_url) }
+            div.pair-code-row {
+                span.pair-code-label { "code" }
+                code.pair-code { (code) }
+            }
+            div.pair-waiting { "waiting for the other device…" }
+            button type="button" data-action="pair-cancel" .ghost { "cancel" }
+        }
+    }
+}
+
+/// The phone-side pairing chrome (`<name>.localharness.xyz/?pair=CODE`).
+/// One button: generate a device key + announce on-chain. No identity,
+/// no seed, no chat — just the enroll step.
+pub(crate) fn pair_join(name: &str) -> Markup {
+    html! {
+        main.apex-main {
+            div.col-chat {
+                section.step.step-unclaimed {
+                    h2.unclaimed-name { (name) ".localharness.xyz" }
+                    p.step-msg {
+                        "link this device to " (name) "? it'll be able to act \
+                         as " (name) " without copying any keys."
+                    }
+                    button type="button" data-action="pair-join" .button-link {
+                        "link this device"
+                    }
+                    div #pair-join-msg .step-msg {}
+                }
+            }
         }
     }
 }
@@ -1088,11 +1135,12 @@ pub(crate) fn agents_list(
             ul.agents-rows {
                 @for agent in agents {
                     li.agent-row {
-                        div.agent-row-line {
-                            a.agent-name
-                                href=(format!("https://{}.localharness.xyz/", agent.name)) {
-                                (agent.name)
-                            }
+                        // Whole row is one clickable link — not just the name
+                        // text. The horizontal line (name + spacer + badge) is
+                        // the hit target.
+                        a.agent-row-line
+                            href=(format!("https://{}.localharness.xyz/", agent.name)) {
+                            span.agent-name { (agent.name) }
                             span.agent-row-spacer {}
                             // Per on-chain feedback: no per-row "act" button
                             // on the apex homepage — just a main/alt label.
@@ -1363,13 +1411,97 @@ pub(crate) fn display_surface() -> Markup {
 /// filling the viewport, plus a tiny owner escape hatch back to the
 /// workshop (`?edit=1`). No tabs/terminal/files — the cartridge IS the
 /// page. See [[project-ai-os-vision]].
-pub(crate) fn app_fullscreen() -> Markup {
+/// The **default public face** — shown to visitors of a subdomain that
+/// hasn't published a cartridge yet. A profile/directory landing: the
+/// agent's name, its owner (the MAIN name when it has one), its on-chain
+/// wallet (TBA), and a directory of the owner's other agents. This is the
+/// "anything" surface's sensible default; an owner replaces it by
+/// shipping an `app.rl` / publishing a cartridge.
+///
+/// `is_main` badges the hero when this subdomain IS the owner's primary
+/// identity. `owner_overlay` paints the `[studio]` escape (owner preview
+/// only). `siblings` should already exclude this subdomain.
+pub(crate) fn public_landing(
+    name: &str,
+    owner: Option<&str>,
+    tba: Option<&str>,
+    main_name: Option<&str>,
+    is_main: bool,
+    siblings: &[crate::app::registry::OwnedToken],
+    owner_overlay: bool,
+) -> Markup {
+    html! {
+        div.public-face {
+            @if owner_overlay {
+                a.app-edit href="?edit=1" title="back to your studio" { "studio" }
+            }
+            header.public-hero {
+                h1.public-title { (name) }
+                p.public-tagline {
+                    "agent on localharness"
+                    @if is_main { " · " span.main-badge title="primary identity" { "main" } }
+                }
+            }
+            div.public-meta {
+                @if let Some(addr) = owner {
+                    div.public-meta-row {
+                        span.public-meta-label { "owner" }
+                        @if let Some(m) = main_name {
+                            a.public-meta-value
+                                href=(format!("https://{m}.localharness.xyz/"))
+                                title=(addr) { (m) }
+                        } @else {
+                            a.public-meta-value
+                                href=(format!("https://moderato.tempo.xyz/address/{addr}"))
+                                target="_blank" rel="noopener" title=(addr) { (short_addr(addr)) }
+                        }
+                    }
+                }
+                @if let Some(t) = tba {
+                    div.public-meta-row {
+                        span.public-meta-label { "wallet" }
+                        a.public-meta-value
+                            href=(format!("https://moderato.tempo.xyz/address/{t}"))
+                            target="_blank" rel="noopener" title=(t) { (short_addr(t)) }
+                    }
+                }
+            }
+            @if !siblings.is_empty() {
+                section.public-directory {
+                    h2.public-section-title { "more agents by this owner" }
+                    ul.agents-rows {
+                        @for s in siblings {
+                            li.agent-row {
+                                a.agent-row-line
+                                    href=(format!("https://{}.localharness.xyz/", s.name)) {
+                                    span.agent-name { (s.name) }
+                                    span.agent-row-spacer {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            footer.public-footer {
+                a href="https://localharness.xyz/" title="localharness" { "localharness" }
+            }
+        }
+    }
+}
+
+/// The fullscreen public-face surface (a cartridge running in a canvas).
+/// `owner_overlay` controls whether the `[studio]` escape link is painted
+/// — shown only when the *owner* is previewing their own public face, so a
+/// visitor never sees an edit door they can't use.
+pub(crate) fn app_fullscreen(owner_overlay: bool) -> Markup {
     html! {
         div.app-fullscreen {
             div.app-stage {
                 canvas #display-canvas .display-canvas {}
             }
-            a.app-edit href="?edit=1" title="edit this app" { "edit" }
+            @if owner_overlay {
+                a.app-edit href="?edit=1" title="back to your studio" { "studio" }
+            }
         }
     }
 }

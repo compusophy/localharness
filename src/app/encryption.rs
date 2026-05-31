@@ -56,6 +56,40 @@ pub(crate) async fn open_with_raw_key(raw: &[u8; 32], data: &[u8]) -> Option<Vec
     decrypt(&key, data).await.ok()
 }
 
+/// ECIES seal: wrap `plaintext` to a recipient's compressed SEC1 public
+/// key. Output is `ephemeral_pubkey(33) || AES-GCM(IV||ct||tag)`. The
+/// recipient recovers the AES key via ECDH(their_priv, ephemeral_pub),
+/// so the plaintext is readable ONLY by the holder of that device key —
+/// never the desktop's seed. Used to hand a freshly-paired phone the
+/// Gemini key without it ever seeing the master seed.
+pub(crate) async fn ecies_seal(
+    recipient_pubkey_sec1: &[u8],
+    plaintext: &[u8],
+) -> Option<Vec<u8>> {
+    let (eph_pub, eph_signer) = crate::wallet::ephemeral_keypair();
+    let key = crate::wallet::ecdh_shared_key(&eph_signer, recipient_pubkey_sec1).ok()?;
+    let blob = seal_with_raw_key(&key, plaintext).await?;
+    let mut out = Vec::with_capacity(eph_pub.len() + blob.len());
+    out.extend_from_slice(&eph_pub);
+    out.extend_from_slice(&blob);
+    Some(out)
+}
+
+/// ECIES open: recover the plaintext sealed by [`ecies_seal`] using the
+/// recipient's device signing key. Expects `ephemeral_pub(33) || aes_blob`.
+pub(crate) async fn ecies_open(
+    device: &k256::ecdsa::SigningKey,
+    data: &[u8],
+) -> Option<Vec<u8>> {
+    // 33 (ephemeral compressed pubkey) + 12 (IV) + 16 (GCM tag) minimum.
+    if data.len() < 33 + IV_LEN + 16 {
+        return None;
+    }
+    let (eph_pub, blob) = data.split_at(33);
+    let key = crate::wallet::ecdh_shared_key(device, eph_pub).ok()?;
+    open_with_raw_key(&key, blob).await
+}
+
 /// Load (or generate + persist) the per-origin AES key and import it as
 /// a non-extractable WebCrypto `CryptoKey`.
 async fn device_key() -> Result<web_sys::CryptoKey, String> {

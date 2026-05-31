@@ -337,16 +337,42 @@ Mount-time routing in `mod.rs::mount`:
    - `Host::Other` (Vercel preview, localhost) → paint full chat
      app, no verification.
 
-   **App mode (chrome-less subdomain).** Before painting the workshop
-   chrome (both `Tenant` and `Other` paths), `try_paint_app()` checks
-   OPFS for an `app.rl` (rustlite source). If present and `?edit=1` is
-   not set, it compiles the source and boots the page straight into a
-   fullscreen cartridge (`templates::app_fullscreen` + a `<canvas>` run
-   via `display::run_in_root_canvas`) — no tabs/terminal/files. A faint
-   `[edit]` link (→ `?edit=1`) is the owner's escape back to the
-   workshop. A compile error falls through to the workshop. The agent
-   makes a subdomain "become" an app by writing the same source it
-   passes to `run_cartridge` to `app.rl` via `create_file`.
+   **Two surfaces per subdomain (public face vs studio).** Every
+   subdomain has a visitor-facing **public face** (a fullscreen
+   cartridge) and an owner-only **studio** (the workshop chrome). Routing
+   is role-based, keyed on `owner.is_some()` (this device's local
+   ownership claim, refined later by verification):
+   - **Owner** → lands in the **studio** by default. Never auto-hijacked
+     into a fullscreen app. Previews the public face via `?view=public`
+     (a `[view public]` link in the tenant header), which paints the
+     fullscreen cartridge with a `[studio]` escape link (→ `?edit=1`).
+   - **Visitor** → only ever sees the **public face**. No studio, no edit
+     door.
+   `try_paint_app(name, owner_overlay)` paints the public face: local
+   `app.rl` working copy first, else the on-chain published wasm
+   (`templates::app_fullscreen(owner_overlay)` + a `<canvas>` run via
+   `display::run_in_root_canvas`). `owner_overlay` gates the `[studio]`
+   link (set only when the owner is previewing). When NO cartridge is
+   published, `paint_public_landing` renders the **default public face**
+   (`templates::public_landing`): a profile/directory landing — the
+   agent's name, its owner (the MAIN name when it differs), its TBA
+   wallet, and a directory of the owner's other agents (siblings via
+   `registry::list_owned_tokens`, self excluded). A visitor never falls
+   through to the studio chrome anymore.
+
+   **Second-device owner upgrade.** A seed-bearing owner hitting their
+   own subdomain from a device WITHOUT the local `.lh_owner` marker is
+   treated as a visitor (lands on the public face). `paint_tenant` then
+   fires `redirect_to_studio_if_owner` in the background: if
+   `verify::verify_owner` proves control via the apex signer, it
+   navigates to `?edit=1` (the studio). Skipped when the device already
+   claims ownership, so a deliberate `?view=public` preview never bounces. The agent makes a
+   subdomain "become" an app by writing the same source it passes to
+   `run_cartridge` to `app.rl` via `create_file` — but only on an
+   explicit "make this my permanent app" request. (Earlier a MAIN was
+   hard-blocked from fullscreen; that special-case was dropped once the
+   owner always lands in the studio — the guarantee now comes from
+   role-based routing, not a per-name exception.)
 
    **Cross-visitor publishing (on-chain).** Local `app.rl` is the
    owner-device copy; for *visitors* `try_paint_app` falls back to the
@@ -398,6 +424,45 @@ Currently cut in:
   `tokenBoundAccountByName(name)` return the deterministic
   counterfactual account address. `createTokenBoundAccount(id)`
   actually deploys it (anyone can call, idempotent).
+- **Gemini key sync (per-MAIN, on-chain).** The sealed Gemini API key
+  lives under the owner's **MAIN tokenId** (`mainOf(owner)`, falling back
+  to the name's own id), NOT per-subdomain — so every subdomain an owner
+  holds shares ONE key ("the subdomain IS the primary owner"). On a
+  tenant paint, `events::try_auto_restore_gemini_key` fetches that blob
+  and decrypts it via the apex iframe (`open_key_via_iframe`, seed-derived
+  key) BEFORE the api-key modal would show, so a new subdomain on any
+  seed-bearing device never re-prompts. Saving a key
+  (`save_api_key_pressed`) best-effort `auto_sync_gemini_key`s it to the
+  MAIN slot. Slot resolver: `events::gemini_key_slot_id`. NOTE: a phone
+  linked by *device key only* (pairing, no seed) can't decrypt the
+  seed-sealed blob, so it gets an **ECIES-wrapped-to-device** copy
+  instead (built): on pairing the phone announces its compressed pubkey
+  (`PairingAnnounced(bytes32,address,bytes,uint256)`), the desktop reads
+  the MAIN's seed-sealed key, decrypts with the local seed, re-wraps it
+  to the device pubkey via `encryption::ecies_seal` (ephemeral k256 ECDH
+  → keccak → AES-GCM; `wallet::{pubkey_compressed,ephemeral_keypair,
+  ecdh_shared_key}`), and posts the blob under
+  `keccak256("localharness.gemini_key.dev."||device_addr)` on the MAIN
+  tokenId (`registry::set_device_wrapped_key_sponsored`). The phone polls
+  `wrapped_device_key_of`, decrypts with its device key
+  (`ecies_open`), and saves locally — never touching the seed. Needs the
+  k256 `ecdh` feature. v2 pairing facet adds the
+  `announcePairing(bytes32,bytes)` selector (old `(bytes32)` left as a
+  harmless orphan).
+- **PairingFacet** — `announcePairing(bytes32 codeHash)` emits
+  `PairingAnnounced(bytes32 indexed codeHash, address indexed device,
+  uint256 timestamp)`. Event-only, no storage (like Feedback). Powers
+  zero-copy device linking: the desktop (master wallet) shows a one-time
+  code; the phone opens `<name>.localharness.xyz/?pair=CODE`, generates a
+  fresh device key, and calls `announcePairing(keccak256(code))` as a
+  SPONSORED tempo tx (so its device key is `msg.sender`, pays nothing).
+  The desktop filters logs by that codeHash topic, learns the device
+  address from the indexed `device` topic, and enrolls it via
+  `addSigner` on the TBA — no 0x ever copied between machines. Two-way
+  challenge: the Tempo sender sig proves device-key control; knowing the
+  code proves co-presence. Facet at `0x316a80b6eeCd0797a89f6D16c03C0ce260d2A64d`
+  (cut 2026-05-29 via `script/AddPairingFacet.s.sol`); device key stored
+  per-tenant-origin in `.lh_device_key` (raw hex, NOT the master seed).
 - **FeedbackFacet** — `submitFeedback(string text)` emits
   `FeedbackSubmitted(address sender, uint256 timestamp, string text)`.
   No storage, just events; harvest off-chain via `cast logs` (see

@@ -106,7 +106,7 @@ pulldown-cmark = { version = "0.10", optional = true, default-features = false, 
 #   (last 20 bytes of keccak256(uncompressed_pubkey[1..])).
 # rand_core: trait used by k256's `random()`; wasm gets entropy via
 # our existing getrandom/js feature.
-k256 = { version = "0.13", optional = true, default-features = false, features = ["ecdsa", "arithmetic", "std"] }
+k256 = { version = "0.13", optional = true, default-features = false, features = ["ecdsa", "arithmetic", "ecdh", "std"] }
 sha3 = { version = "0.10", optional = true, default-features = false }
 rand_core = { version = "0.6", optional = true, default-features = false, features = ["getrandom"] }
 bip39 = { version = "2", optional = true, default-features = false, features = ["std", "rand"] }

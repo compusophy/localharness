@@ -17,6 +17,18 @@ try {
         Write-Error "wasm-pack not on PATH. Install: cargo install wasm-pack"
     }
 
+    # Stamp the crate version into web/llms.txt so the deployed bundle
+    # advertises its freshness (curl llms.txt | head). Keeps it from
+    # drifting from Cargo.toml without a manual bump step.
+    $verMatch = Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
+    if ($verMatch) {
+        $ver = $verMatch.Matches.Groups[1].Value
+        $line = '**version:** ' + $ver + ' (stamped from Cargo.toml by build-web; matches crates.io when the deployed bundle is current)'
+        (Get-Content web/llms.txt -Raw) -replace '(?m)^\*\*version:\*\* .*$', $line |
+            Set-Content web/llms.txt -Encoding utf8 -NoNewline
+        Write-Host "stamped llms.txt version: $ver" -ForegroundColor Cyan
+    }
+
     Write-Host "→ wasm-pack build (release, browser-app)..." -ForegroundColor Cyan
     wasm-pack build . `
         --target web `
