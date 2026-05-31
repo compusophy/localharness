@@ -44,10 +44,16 @@ impl Tool for RunCartridge {
          for the label, and each frame check if pointer_down() and the \
          pointer is inside the box. Each run is auto-saved to `cartridge.rl` \
          so it shows up in the files panel and survives a reload (re-open it \
-         from files to run it again). To make a cartridge the subdomain's \
-         PERMANENT app (so the page boots straight into it fullscreen on \
-         every load, no IDE chrome), also save the exact same source to a \
-         file named `app.rl` with create_file."
+         from files to run it again). This is the tool to use whenever the \
+         user wants to build, run, or see a visual app — it launches live \
+         on the DISPLAY, no reload and no fullscreen takeover. ONLY when the \
+         user EXPLICITLY asks to make this subdomain PERMANENTLY BECOME the \
+         app (boot straight into it fullscreen on every load, no IDE chrome) \
+         should you ALSO save the exact same source to a file named `app.rl` \
+         with create_file. Do not write `app.rl` for an ordinary \
+         'build/show me an app' request — that opts the user into a \
+         fullscreen takeover they didn't ask for, and it won't run until the \
+         next page reload anyway."
     }
 
     fn input_schema(&self) -> Value {

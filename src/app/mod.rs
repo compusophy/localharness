@@ -706,6 +706,24 @@ fn has_edit_hint() -> bool {
     search.contains("edit=1")
 }
 
+/// `true` iff this subdomain `name` is its owner's registered MAIN
+/// identity. A MAIN must always keep the workshop chrome — it can never
+/// be replaced by a fullscreen cartridge, because it's the owner's
+/// control surface. Resolves the name's tokenId, its on-chain owner, and
+/// that owner's `mainOf`, and compares. Any RPC failure → `false` (fail
+/// open to the normal app-mode behaviour rather than wedging the boot).
+async fn is_main_subdomain(name: &str) -> bool {
+    let id = match registry::id_of_name(name).await {
+        Ok(id) if id != 0 => id,
+        _ => return false,
+    };
+    let owner = match registry::owner_of_name(name).await {
+        Ok(Some(owner)) => owner,
+        _ => return false,
+    };
+    matches!(registry::main_of(&owner).await, Ok(main) if main != 0 && main == id)
+}
+
 /// Chrome-less "app mode": if this origin's OPFS has an `app.rl`
 /// (rustlite source) and `?edit=1` isn't set, compile it and boot the
 /// subdomain straight into a fullscreen cartridge instead of the IDE
@@ -750,6 +768,22 @@ async fn try_paint_app(name: Option<&str>) -> bool {
     };
 
     let Some(wasm) = wasm else { return false };
+
+    // A MAIN identity subdomain is NEVER taken over by a fullscreen app.
+    // It's the owner's control surface (tools, files, admin, chat) — the
+    // "subdomain IS the primary owner" — so even if an `app.rl` or an
+    // on-chain published cartridge exists, keep the workshop chrome and
+    // fall through. (Only checked when a cartridge candidate exists, so
+    // the on-chain reads don't tax ordinary workshop loads.)
+    if let Some(name) = name {
+        if is_main_subdomain(name).await {
+            web_sys::console::warn_1(&JsValue::from_str(
+                "cartridge present but this subdomain is the MAIN identity; \
+                 refusing fullscreen takeover, painting workshop",
+            ));
+            return false;
+        }
+    }
 
     let Ok(doc) = dom::document() else { return false };
     let Some(root) = doc.get_element_by_id("root") else { return false };

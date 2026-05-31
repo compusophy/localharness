@@ -385,9 +385,14 @@ pub(crate) async fn start_session(key: &str) -> Result<(), JsValue> {
              pointer_down() + pointer position, with state in the slots. \
              Use this whenever the user asks for something visual or an app. \
              Each run is auto-saved to `cartridge.rl` (visible in files, \
-             survives reload). To make a cartridge this subdomain's PERMANENT \
-             app (boots fullscreen on every page load, no IDE chrome), save \
-             the same source to a file named `app.rl` via create_file.\n\
+             survives reload). This is what 'build/run/show me an app' means \
+             — run_cartridge launches it live on the DISPLAY, non-fullscreen, \
+             no reload. ONLY when the user EXPLICITLY asks to make this \
+             subdomain PERMANENTLY BECOME the app (fullscreen on every load, \
+             no IDE chrome) should you ALSO save the same source to `app.rl` \
+             via create_file. Never write `app.rl` for an ordinary app \
+             request — it forces a fullscreen takeover the user didn't ask \
+             for and doesn't even run until the next reload.\n\
            • render_html(source) — render an HTML document onto the VISUAL \
              DISPLAY. The display CAN show HTML: this lays out block-level \
              text (h1-h6, p, ul/li, blockquote, br) word-wrapped in the \
