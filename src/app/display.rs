@@ -138,6 +138,21 @@ pub(crate) fn render_html(source: &str) -> Result<(), JsValue> {
     Ok(())
 }
 
+/// Render an HTML document into the **root** `#display-canvas` (app mode
+/// — the subdomain booted straight into a fullscreen public face), the
+/// HTML counterpart of [`run_in_root_canvas`]. Same block-level snapshot
+/// render as [`render_html`], just targeting the already-mounted canvas
+/// instead of swapping in the workshop view panel.
+pub(crate) fn render_html_in_root_canvas(source: &str) -> Result<(), JsValue> {
+    stop();
+    let ctx = size_and_get_ctx()?;
+    let blocks = html_to_blocks(source);
+    let buf = paint_html_fb(&blocks);
+    let img = ImageData::new_with_u8_clamped_array_and_sh(Clamped(&buf[..]), FB_W, FB_H)?;
+    ctx.put_image_data(&img, 0.0, 0.0)?;
+    Ok(())
+}
+
 /// Shared core: wire the host imports over a fresh framebuffer, reset
 /// per-cartridge input/state, instantiate, and start the frame loop (or
 /// one-shot render).

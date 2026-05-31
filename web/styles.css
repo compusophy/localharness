@@ -508,6 +508,9 @@ main.layout .transcript::before {
 .public-footer a { color: var(--muted); text-decoration: none; }
 .public-footer a:hover { color: var(--fg); }
 
+/* Public-face picker (admin → agent tab) */
+.public-face-picker { display: flex; gap: 6px; margin: 6px 0; flex-wrap: wrap; }
+
 /* Edit panel — the editable text surface that opens when a file
    is clicked in the file list. */
 .view-content { height: 100%; display: flex; flex-direction: column; }

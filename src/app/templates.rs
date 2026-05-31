@@ -720,14 +720,23 @@ pub(crate) fn admin_prompt_section() -> Markup {
     }
 }
 
-/// Publish-app section — pushes the device's local `app.rl` on-chain so
-/// every visitor (not just this device) boots into the subdomain's app.
-/// Owner-only; the button no-ops to an error if not verified as owner.
+/// Public-face section — choose what VISITORS see at this subdomain. The
+/// choice (and content) live on-chain via sponsored `setMetadata`, so every
+/// visitor honours it, not just this device. Owner-only; the buttons no-op
+/// to an error if not verified as owner.
+/// - **directory**: the default profile/directory landing.
+/// - **app**: publishes this device's local `app.rl` (compiled) + selects it.
+/// - **html**: publishes this device's local `index.html` + selects it.
 pub(crate) fn admin_app_section() -> Markup {
     html! {
         div.admin-section {
-            div.admin-section-title { "app" }
-            button type="button" data-action="publish-app" .ghost { "publish app on-chain" }
+            div.admin-section-title { "public face" }
+            div #public-face-status .admin-msg-slot { "what visitors see at this subdomain" }
+            div.public-face-picker {
+                button type="button" data-action="set-public-face" data-arg="directory" .ghost { "directory" }
+                button type="button" data-action="set-public-face" data-arg="app" .ghost { "publish app" }
+                button type="button" data-action="set-public-face" data-arg="html" .ghost { "publish html" }
+            }
             div #publish-app-msg .admin-msg-slot {}
         }
     }

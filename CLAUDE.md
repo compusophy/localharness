@@ -348,17 +348,37 @@ Mount-time routing in `mod.rs::mount`:
      fullscreen cartridge with a `[studio]` escape link (→ `?edit=1`).
    - **Visitor** → only ever sees the **public face**. No studio, no edit
      door.
-   `try_paint_app(name, owner_overlay)` paints the public face: local
-   `app.rl` working copy first, else the on-chain published wasm
-   (`templates::app_fullscreen(owner_overlay)` + a `<canvas>` run via
-   `display::run_in_root_canvas`). `owner_overlay` gates the `[studio]`
-   link (set only when the owner is previewing). When NO cartridge is
-   published, `paint_public_landing` renders the **default public face**
-   (`templates::public_landing`): a profile/directory landing — the
-   agent's name, its owner (the MAIN name when it differs), its TBA
-   wallet, and a directory of the owner's other agents (siblings via
-   `registry::list_owned_tokens`, self excluded). A visitor never falls
-   through to the studio chrome anymore.
+   `paint_public_face` paints the resolved face for a tenant.
+   `resolve_public_face(name)` reads the **on-chain choice** under
+   `keccak256("localharness.public_face")` (`registry::public_face_of`) —
+   one of `directory` / `app` / `html` — and gathers content (local
+   working copy first so the owner previews unpublished edits, else the
+   published copy). It returns a `PublicFace` enum:
+   - **`Cartridge(wasm)`** — `app.rl` (local) or published wasm
+     (`app_wasm_of`); `paint_cartridge_fullscreen` → `app_fullscreen` +
+     `display::run_in_root_canvas`.
+   - **`Html(src)`** — `index.html` (local) or published HTML
+     (`public_html_of`, key `keccak256("localharness.public.html")`);
+     `paint_html_fullscreen` → `app_fullscreen` +
+     `display::render_html_in_root_canvas`.
+   - **`Directory`** — `paint_public_landing` (`templates::public_landing`):
+     a profile/directory landing — name, owner (MAIN name when it differs),
+     TBA wallet, and a directory of the owner's other agents (siblings via
+     `registry::list_owned_tokens`, self excluded).
+   An UNSET choice infers "cartridge if one exists, else directory" so
+   subdomains that published a cartridge before the picker shipped keep
+   showing it. `owner_overlay` gates the `[studio]` link (set only when
+   the owner is previewing). `Host::Other` (localhost/preview) uses
+   `try_paint_app` — the local `app.rl` only, no on-chain resolution.
+
+   **Picker (admin → agent → "public face").** The owner chooses the face
+   from `templates::admin_app_section`: `[directory] [publish app]
+   [publish html]` → `Action::SetPublicFace(choice)` →
+   `events::run_set_public_face`. `directory` sets the choice only;
+   `app`/`html` compile/read the local `app.rl`/`index.html` and publish it
+   **plus** set the choice in ONE sponsored Tempo tx (two `setMetadata`
+   calls). `refresh_public_face_status` reflects the current choice on
+   admin open.
 
    **Second-device owner upgrade.** A seed-bearing owner hitting their
    own subdomain from a device WITHOUT the local `.lh_owner` marker is
@@ -374,18 +394,18 @@ Mount-time routing in `mod.rs::mount`:
    owner always lands in the studio — the guarantee now comes from
    role-based routing, not a per-name exception.)
 
-   **Cross-visitor publishing (on-chain).** Local `app.rl` is the
-   owner-device copy; for *visitors* `try_paint_app` falls back to the
-   on-chain published wasm. The compiled cartridge bytes are stored in
-   the registry diamond under `metadata(tokenId, keccak256(
-   "localharness.app.wasm"))` — no new facet, the existing owner-gated
-   `setMetadata(uint256,bytes32,bytes)` holds it. The owner publishes
-   via the **admin → app → "publish app on-chain"** button
-   (`events::run_publish_app`), which compiles the local `app.rl` and
-   submits a sponsored `setMetadata` Tempo tx (owner signs the
-   sender_hash through the apex iframe; sponsor pays). `registry::
-   app_wasm_of` reads it back. So once published, every visitor boots
-   into the cartridge, not just the owner's device.
+   **Cross-visitor publishing (on-chain).** Local `app.rl`/`index.html`
+   are the owner-device working copies; *visitors* see the published
+   bytes. Stored in the registry diamond under `metadata(tokenId, key)` —
+   no new facet, the existing owner-gated `setMetadata(uint256,bytes32,
+   bytes)` holds them. Keys: `keccak256("localharness.app.wasm")`
+   (cartridge), `keccak256("localharness.public.html")` (HTML),
+   `keccak256("localharness.public_face")` (the choice string). Generic
+   `registry::{metadata_bytes_of, encode_set_metadata_bytes}` back the
+   typed `{app_wasm_of, public_html_of, public_face_of}` +
+   `encode_set_*`. The owner publishes via the **admin → agent → "public
+   face"** picker (`events::run_set_public_face`), a sponsored Tempo tx
+   (owner signs the sender_hash through the apex iframe; sponsor pays).
 
 **Identity-gate invariant.** `wallet_store::load_or_create` no longer
 exists. The two callers are `wallet_store::load()` (pure read,

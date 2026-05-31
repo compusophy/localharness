@@ -442,6 +442,95 @@ pub fn encode_set_gemini_key(token_id: u64, ciphertext: &[u8]) -> Vec<u8> {
     buf
 }
 
+// --- Public-face selection (on-chain, visitor-readable) --------------
+//
+// A subdomain's public face (what visitors see) is one of: a directory
+// landing (default), a cartridge app, or an HTML page. The CHOICE lives
+// on-chain under `keccak256("localharness.public_face")` so every visitor
+// honours it — not just the owner's device. HTML content lives under
+// `keccak256("localharness.public.html")` (cartridge wasm reuses the
+// existing `localharness.app.wasm` slot). All written via the same
+// owner-gated `setMetadata` as the published wasm.
+
+fn keccak_key(label: &[u8]) -> [u8; 32] {
+    use sha3::{Digest, Keccak256};
+    let digest = Keccak256::digest(label);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
+/// Read raw `bytes` metadata stored under `key` for `token_id`. `None`
+/// when the slot is empty. Shared ABI-`bytes` decode (offset+len+payload).
+async fn metadata_bytes_of(token_id: u64, key: [u8; 32]) -> Result<Option<Vec<u8>>, String> {
+    let mut data = Vec::with_capacity(4 + 64);
+    data.extend_from_slice(&selector("metadata(uint256,bytes32)"));
+    data.extend_from_slice(&u256_be(token_id as u128));
+    data.extend_from_slice(&key);
+    let calldata = format!("0x{}", bytes_to_hex(&data));
+    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let bytes = hex_to_bytes(&result_hex)?;
+    if bytes.len() < 64 {
+        return Ok(None);
+    }
+    let mut len_buf = [0u8; 8];
+    len_buf.copy_from_slice(&bytes[56..64]);
+    let len = u64::from_be_bytes(len_buf) as usize;
+    if len == 0 {
+        return Ok(None);
+    }
+    let payload = bytes
+        .get(64..64 + len)
+        .ok_or_else(|| "metadata truncated".to_string())?;
+    Ok(Some(payload.to_vec()))
+}
+
+/// Encode `setMetadata(tokenId, key, payload)` calldata for a sponsored tx.
+fn encode_set_metadata_bytes(token_id: u64, key: [u8; 32], payload: &[u8]) -> Vec<u8> {
+    let len = payload.len();
+    let padded = len.div_ceil(32) * 32;
+    let mut buf = Vec::with_capacity(4 + 96 + 32 + padded);
+    buf.extend_from_slice(&selector("setMetadata(uint256,bytes32,bytes)"));
+    buf.extend_from_slice(&u256_be(token_id as u128));
+    buf.extend_from_slice(&key);
+    buf.extend_from_slice(&u256_be(0x60));
+    buf.extend_from_slice(&u256_be(len as u128));
+    buf.extend_from_slice(payload);
+    buf.resize(4 + 96 + 32 + padded, 0);
+    buf
+}
+
+const PUBLIC_FACE_LABEL: &[u8] = b"localharness.public_face";
+const PUBLIC_HTML_LABEL: &[u8] = b"localharness.public.html";
+
+/// The subdomain's chosen public face: `"directory"`, `"app"`, `"html"`,
+/// or `None` if never set (legacy/default — callers infer from whether a
+/// cartridge is published).
+pub async fn public_face_of(token_id: u64) -> Result<Option<String>, String> {
+    match metadata_bytes_of(token_id, keccak_key(PUBLIC_FACE_LABEL)).await? {
+        Some(b) => Ok(String::from_utf8(b)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())),
+        None => Ok(None),
+    }
+}
+
+/// Encode `setMetadata` for the public-face choice (a short string).
+pub fn encode_set_public_face(token_id: u64, choice: &str) -> Vec<u8> {
+    encode_set_metadata_bytes(token_id, keccak_key(PUBLIC_FACE_LABEL), choice.as_bytes())
+}
+
+/// Read a subdomain's published public-face HTML, if any.
+pub async fn public_html_of(token_id: u64) -> Result<Option<Vec<u8>>, String> {
+    metadata_bytes_of(token_id, keccak_key(PUBLIC_HTML_LABEL)).await
+}
+
+/// Encode `setMetadata` for the published public-face HTML.
+pub fn encode_set_public_html(token_id: u64, html: &[u8]) -> Vec<u8> {
+    encode_set_metadata_bytes(token_id, keccak_key(PUBLIC_HTML_LABEL), html)
+}
+
 /// Register `name` on the contract under the given signer's address.
 /// Returns the transaction hash once it's been included in a block.
 /// The wallet needs testnet TMP for gas — the apex page is expected
