@@ -599,8 +599,20 @@ main.layout .transcript::before {
      start at the top of the remaining viewport, not pushed down. */
   main.layout .col-financial { padding-top: 0; }
 }
-.apex-main { display: block; padding: 64px 24px 32px; max-width: 1180px; }
+/* Uniform top gap under the site-header — matches the base `main`
+   rule and `.explore-main` (32px). The old asymmetric 64px top made
+   the apex-family pages (apex/claim/landing) sit visibly lower than
+   every other page, the "uneven spacing under the header" report. */
+.apex-main { display: block; padding: 32px 24px; max-width: 1180px; }
 .apex-main > .col-chat { max-width: 600px; margin: 0 auto; }
+/* The gap under the site-header is the `main` top padding alone (32px).
+   The first content block inside an apex-family page must not stack its
+   own top margin on top of that padding, or the gap reads larger than
+   on every other page — the "uneven spacing under the header" report.
+   `.step`/`.apex-hero` keep their margins for SEPARATION between blocks;
+   we only zero the FIRST one. */
+.apex-main > .col-chat > :first-child,
+.apex-main > :first-child { margin-top: 0; }
 .apex-explore-link { text-align: center; margin-top: 32px; }
 .apex-explore-link a { color: var(--muted); text-decoration: none; font-size: 12px; }
 .apex-explore-link a:hover { color: var(--fg); }
@@ -947,6 +959,16 @@ input, textarea {
   font-weight: 600;
 }
 .pair-waiting { color: var(--muted); font-size: 11px; }
+.pair-qr {
+  align-self: flex-start;
+  width: 200px; height: 200px;
+  padding: 8px; background: #ffffff;
+  border: 1px solid var(--border);
+}
+.pair-qr svg {
+  display: block; width: 100%; height: 100%;
+  image-rendering: pixelated;
+}
 
 /* --- Agent row act panel (apex agents list) --- */
 .agent-row { display: block; }
@@ -1422,7 +1444,14 @@ button.danger:hover { color: var(--bg); background: var(--error); }
   gap: 8px;
 }
 .fs-list li.dir { cursor: pointer; }
-.fs-list li .name { cursor: pointer; flex: 1; }
+.fs-list li .name {
+  cursor: pointer;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .fs-list li:hover .name, .fs-list li:hover .size { color: var(--accent); }
 .file-delete {
   background: transparent;
@@ -1452,8 +1481,13 @@ button.danger:hover { color: var(--bg); background: var(--error); }
 .file-edit:hover { color: var(--fg); }
 .fs-list .name { color: var(--fg); }
 .fs-list .dir .name::before { content: "▸ "; color: var(--accent); }
-.fs-list .file .name::before { content: "· "; color: var(--muted); }
-.fs-list .size { color: var(--muted); font-size: 11px; }
+.fs-list .size {
+  color: var(--muted);
+  font-size: 11px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  text-align: right;
+}
 .fs-list .empty {
   color: var(--muted);
   font-style: italic;
