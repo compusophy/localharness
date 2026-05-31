@@ -112,6 +112,16 @@ if (-not (Select-String -Path CHANGELOG.md -Pattern "^## \[$([regex]::Escape($Ve
     Fail "CHANGELOG promote did not stick"
 }
 
+Step "stamp web/llms.txt version -> $Version"
+# Keep the public llms.txt freshness line in lock-step with the release.
+# Same method as scripts/build-web.ps1 so the two never fight over format.
+$llmsLine = '**version:** ' + $Version + ' (stamped from Cargo.toml by build-web; matches crates.io when the deployed bundle is current)'
+(Get-Content web/llms.txt -Raw) -replace '(?m)^\*\*version:\*\* .*$', $llmsLine |
+    Set-Content web/llms.txt -Encoding utf8 -NoNewline
+if (-not (Select-String -Path web/llms.txt -Pattern "^\*\*version:\*\* $([regex]::Escape($Version)) " -Quiet)) {
+    Fail "llms.txt version stamp did not stick"
+}
+
 # ---------------------------------------------------------------------------
 # Verify
 # ---------------------------------------------------------------------------
@@ -133,7 +143,7 @@ Invoke-Native "cargo publish --dry-run" { cargo publish --dry-run --allow-dirty 
 # ---------------------------------------------------------------------------
 
 Step "git commit"
-Invoke-Native "git add"    { git add Cargo.toml Cargo.lock CHANGELOG.md }
+Invoke-Native "git add"    { git add Cargo.toml Cargo.lock CHANGELOG.md web/llms.txt }
 Invoke-Native "git commit" { git commit -m "release $Tag" }
 
 Step "git tag $Tag"
