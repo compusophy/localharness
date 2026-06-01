@@ -34,7 +34,7 @@ pub const RPC_URL: &str = "https://rpc.moderato.tempo.xyz";
 ///
 /// Owner (deployer / admin): 0x313b1659F5037080aA0C113D386C5954F348EF1e
 /// Predecessor (diamond v1): 0xed7a2d170ab2d41721c9bd7368adbff6df0c656d
-pub const REGISTRY_ADDRESS: &str = "0x6f2858b4b10bf8d4ea372a446e69bea8fbce2930";
+pub const REGISTRY_ADDRESS: &str = "0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c";
 
 /// Tempo Moderato chain id — used in EIP-155 v computation.
 pub const CHAIN_ID: u64 = 42431;
@@ -59,7 +59,7 @@ pub const BOOTSTRAP_FAUCET_ADDRESS: &str = "0x0000000000000000000000000000000000
 /// tune the per-day allowance via `setDailyAllowance` on the diamond.
 ///
 /// name: "localharness credits", symbol: "LH", decimals: 18.
-pub const LOCALHARNESS_TOKEN_ADDRESS: &str = "0xC1FC0452670049953ED64f2B177beBed4090A5bc";
+pub const LOCALHARNESS_TOKEN_ADDRESS: &str = "0x90B84c7234Aae89BadA7f69160B9901B9bc37B17";
 
 /// What we can learn about a name without touching the wallet.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2315,7 +2315,7 @@ mod x402_tests {
         // Pinned to the deployed X402Facet's `x402DomainSeparator()` on the
         // diamond — guards the Rust EIP-712 encoding against the contract.
         let expected =
-            "7d8edaacb63589083763f5861d8d35fd6a53ec3de38a80574c44d033e8a0309f";
+            "54530933a67f96286ac528dbff39d00c0ea49f4c6bd0f034343a0c78927f0b7a";
         let got = x402_domain_separator().unwrap();
         assert_eq!(bytes_to_hex(&got), expected);
     }

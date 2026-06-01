@@ -42,7 +42,7 @@ export const config = { runtime: 'edge' };
 // ---- constants -------------------------------------------------------------
 
 const TEMPO_RPC = 'https://rpc.moderato.tempo.xyz';
-const REGISTRY = '0x6f2858b4b10bf8d4ea372a446e69bea8fbce2930';
+const REGISTRY = '0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
 const CHAIN_ID = 42431;
 // `$LH` (18-decimal wei) debited per request in per-request mode.
