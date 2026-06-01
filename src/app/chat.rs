@@ -373,6 +373,9 @@ pub(crate) async fn start_session(
              only pass that after the OWNER has TYPED the exact name in \
              chat. Never invent or auto-fill the confirmation. Refuses your \
              MAIN.\n\
+           • list_subdomains() — list every subdomain your owner holds \
+             (their identity's holdings). Read-only; use when asked what \
+             subdomains/agents they have.\n\
            • start_subagent(system_instructions, prompt) — spawn a one-shot \
              text-only subagent with no tool access. Use for self-contained \
              reasoning / writing tasks you want isolated from your context.\n\
@@ -511,6 +514,7 @@ pub(crate) async fn start_session(
         .with_system_instructions(system_instructions)
         .with_tool(create_subdomain_tool())
         .with_tool(release_subdomain_tool())
+        .with_tool(list_subdomains_tool())
         .with_tool(submit_feedback_tool())
         .with_tool(spawn_recursive_subagent_tool(captured_key, base_url.clone()));
     // Credits mode: route the whole agent through the credit proxy. BYOK
@@ -885,6 +889,45 @@ fn release_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 Ok(tx) => Ok(serde_json::json!({ "released": name, "tx_hash": tx })),
                 Err(e) => Err(crate::error::Error::other(format!("release failed: {e}"))),
             }
+        },
+    )
+}
+
+/// `list_subdomains()` — enumerate every subdomain this agent's owner
+/// holds (their identity's holdings). Read-only.
+fn list_subdomains_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    ClosureTool::new(
+        "list_subdomains",
+        "List every subdomain owned by this agent's owner (their identity's holdings on \
+         the registry). Read-only. Use when the user asks what subdomains/agents they have.",
+        serde_json::json!({ "type": "object", "properties": {} }),
+        |_args: serde_json::Value, _ctx| async move {
+            let name = match super::tenant::current() {
+                super::tenant::Host::Tenant(n) => n,
+                _ => return Err(crate::error::Error::other("not running on a subdomain")),
+            };
+            let owner = super::registry::owner_of_name(&name)
+                .await
+                .map_err(crate::error::Error::other)?
+                .ok_or_else(|| crate::error::Error::other("no on-chain owner"))?;
+            let tokens = super::registry::list_owned_tokens(&owner)
+                .await
+                .map_err(crate::error::Error::other)?;
+            let subdomains: Vec<_> = tokens
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "name": t.name,
+                        "url": format!("https://{}.localharness.xyz/", t.name),
+                        "token_id": t.token_id,
+                    })
+                })
+                .collect();
+            Ok(serde_json::json!({
+                "owner": owner,
+                "count": subdomains.len(),
+                "subdomains": subdomains,
+            }))
         },
     )
 }

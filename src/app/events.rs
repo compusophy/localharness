@@ -3069,6 +3069,18 @@ fn toggle_layout_class(class: &str) {
 /// Inline-confirmed reset: nuke every entry at OPFS root, reload.
 /// Replaces the old `window.confirm()` flow per [[feedback-no-js-alerts]].
 fn reset_confirm_pressed() {
+    // Typed confirmation — a wipe destroys the seed/identity on this
+    // device, so require the literal word, not just a second click.
+    let typed = dom::input_by_id("reset-confirm-text")
+        .map(|i| i.value().trim().to_string())
+        .unwrap_or_default();
+    if !typed.eq_ignore_ascii_case("RESET") {
+        dom::swap_inner(
+            "reset-confirm-msg",
+            "<span style=\"color:var(--error)\">type RESET to confirm</span>",
+        );
+        return;
+    }
     wasm_bindgen_futures::spawn_local(async move {
         let fs = super::shared_opfs();
         if let Ok(entries) = fs.read_dir("").await {

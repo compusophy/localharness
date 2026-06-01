@@ -1023,11 +1023,13 @@ pub(crate) fn admin_security_expanded() -> Markup {
 pub(crate) fn reset_confirm_inline() -> Markup {
     html! {
         div #reset-confirm-slot .reset-confirm {
-            span.reset-confirm-prompt { "are you sure?" }
+            span.reset-confirm-prompt { "type RESET to wipe this device" }
+            input #reset-confirm-text .redeem-input type="text" placeholder="RESET";
             div.reset-confirm-actions {
-                button type="button" data-action="reset-confirm" .danger { "yes, wipe" }
+                button type="button" data-action="reset-confirm" .danger { "wipe" }
                 button type="button" data-action="reset-cancel" .ghost { "cancel" }
             }
+            div #reset-confirm-msg .admin-msg-slot {}
         }
     }
 }
