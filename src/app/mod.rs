@@ -312,6 +312,30 @@ fn mount() -> Result<(), JsValue> {
             // Paint the minimal join chrome — no identity, no chat.
             if read_query_param("pair").is_some() {
                 root.set_inner_html(&templates::pair_join(name).into_string());
+                // Single source of truth, read ONCE on load: if this device
+                // already has a key AND it's in this subdomain's MAIN device
+                // index, say so — no reliance on having caught a live poll.
+                let n = name.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Some(sk) = wallet_store::load_device_key().await {
+                        let addr = format!(
+                            "0x{}",
+                            crate::wallet::address(&sk).iter().map(|b| format!("{b:02x}")).collect::<String>()
+                        );
+                        if let Ok(Some(owner)) = registry::owner_of_name(&n).await {
+                            if let Ok(main_id) = registry::main_of(&owner).await {
+                                if main_id != 0
+                                    && registry::is_device_linked(main_id, &addr).await.unwrap_or(false)
+                                {
+                                    dom::swap_inner(
+                                        "pair-join-msg",
+                                        "<span style=\"color:var(--accent)\">✓ this device is already linked</span>",
+                                    );
+                                }
+                            }
+                        }
+                    }
+                });
                 return Ok(());
             }
             // Tenant subdomain — defer the chrome choice until we've
