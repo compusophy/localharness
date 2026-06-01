@@ -90,6 +90,10 @@ enum Action {
     DepositCredits,
     /// Save this agent's per-call x402 price (`.lh_x402_price`).
     SaveX402Price,
+    /// Consolidate this identity's subdomains into its MAIN's TBA.
+    Consolidate,
+    /// Unlink a device (remove its signer + index entry).
+    UnlinkDevice(String),
 }
 
 impl Action {
@@ -153,6 +157,8 @@ impl Action {
             "redeem-code" => Action::RedeemCode,
             "deposit-credits" => Action::DepositCredits,
             "save-x402-price" => Action::SaveX402Price,
+            "consolidate" => Action::Consolidate,
+            "unlink-device" => Action::UnlinkDevice(arg.unwrap_or_default()),
             _ => return None,
         })
     }
@@ -990,6 +996,8 @@ fn dispatch(action: Action) {
         Action::RedeemCode => redeem_code_pressed(),
         Action::DepositCredits => deposit_credits_pressed(),
         Action::SaveX402Price => save_x402_price_pressed(),
+        Action::Consolidate => consolidate_pressed(),
+        Action::UnlinkDevice(addr) => unlink_device_pressed(addr),
     }
 }
 
@@ -1589,8 +1597,11 @@ async fn refresh_signer_list() {
                     s.clone()
                 };
                 html.push_str(&format!(
-                    "<div style=\"color:var(--fg);font-size:11px;margin:2px 0\">\
-                     <code>{short}</code></div>"
+                    "<div style=\"display:flex;justify-content:center;align-items:center;\
+                     gap:8px;color:var(--fg);font-size:11px;margin:2px 0\">\
+                     <code>{short}</code>\
+                     <button type=\"button\" class=\"modal-close\" data-action=\"unlink-device\" \
+                     data-arg=\"{s}\" title=\"unlink\">×</button></div>"
                 ));
             }
             dom::swap_inner("signer-list", &html);
@@ -1979,6 +1990,106 @@ async fn run_add_device(new_signer_hex: String) -> Result<String, String> {
         super::registry::ALPHA_USD_ADDRESS,
     )
     .await
+}
+
+/// Resolve (local owner signer, owner hex, MAIN id, MAIN TBA). The
+/// shared preamble for consolidate/unlink — both act on the MAIN's TBA.
+async fn owner_main_tba() -> Result<(k256::ecdsa::SigningKey, String, u64, String), String> {
+    let (signer, owner_hex) = super::APP
+        .with(|c| {
+            c.borrow()
+                .wallet
+                .as_ref()
+                .map(|w| (w.signer.clone(), w.address_hex()))
+        })
+        .ok_or_else(|| "no identity".to_string())?;
+    let main_id = super::registry::main_of(&owner_hex)
+        .await
+        .map_err(|e| format!("mainOf: {e}"))?;
+    if main_id == 0 {
+        return Err("set a MAIN first".into());
+    }
+    let main_name = super::registry::name_of_id(main_id)
+        .await
+        .map_err(|e| format!("name: {e}"))?;
+    let main_tba = super::registry::tba_of_name(&main_name)
+        .await
+        .map_err(|e| format!("tba: {e}"))?
+        .ok_or_else(|| "no MAIN TBA".to_string())?;
+    Ok((signer, owner_hex, main_id, main_tba))
+}
+
+/// Consolidate this identity's OTHER subdomains into its MAIN's TBA — one
+/// account owns them all, every linked device controls them. Moves NFTs,
+/// so it's an explicit user action.
+fn consolidate_pressed() {
+    dom::swap_inner(
+        "consolidate-msg",
+        "<span style=\"color:var(--muted)\">consolidating…</span>",
+    );
+    wasm_bindgen_futures::spawn_local(async move {
+        let result = async {
+            let (signer, owner_hex, main_id, main_tba) = owner_main_tba().await?;
+            let tokens = super::registry::list_owned_tokens(&owner_hex)
+                .await
+                .map_err(|e| format!("list: {e}"))?;
+            let ids: Vec<u64> = tokens
+                .iter()
+                .map(|t| t.token_id)
+                .filter(|id| *id != main_id)
+                .collect();
+            if ids.is_empty() {
+                return Err("nothing to consolidate — only your MAIN".into());
+            }
+            let fee_payer = super::sponsor::signer()?;
+            super::registry::consolidate_into_main_sponsored(
+                &signer,
+                &fee_payer,
+                &main_tba,
+                &ids,
+                super::registry::ALPHA_USD_ADDRESS,
+            )
+            .await
+        }
+        .await;
+        match result {
+            Ok(_) => dom::swap_inner(
+                "consolidate-msg",
+                "<span style=\"color:var(--muted)\">✓ subdomains consolidated under your MAIN</span>",
+            ),
+            Err(e) => {
+                web_sys::console::warn_1(&JsValue::from_str(&format!("consolidate: {e}")));
+                dom::swap_inner(
+                    "consolidate-msg",
+                    "<span style=\"color:var(--error)\">consolidate failed</span>",
+                );
+            }
+        }
+    });
+}
+
+/// Unlink a device — remove its signer authority + drop it from the index.
+fn unlink_device_pressed(device_hex: String) {
+    wasm_bindgen_futures::spawn_local(async move {
+        let result = async {
+            let (signer, _owner, main_id, main_tba) = owner_main_tba().await?;
+            let fee_payer = super::sponsor::signer()?;
+            super::registry::remove_signer_sponsored(
+                &signer,
+                &fee_payer,
+                main_id,
+                &main_tba,
+                &device_hex,
+                super::registry::ALPHA_USD_ADDRESS,
+            )
+            .await
+        }
+        .await;
+        match result {
+            Ok(_) => refresh_signer_list().await,
+            Err(e) => web_sys::console::warn_1(&JsValue::from_str(&format!("unlink: {e}"))),
+        }
+    });
 }
 
 fn short_addr(addr: &str) -> String {

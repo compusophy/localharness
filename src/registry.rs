@@ -1274,24 +1274,96 @@ pub async fn devices_of(main_id: u64) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// Sponsored TBA remove-signer. TBA must already be deployed (it is,
-/// if any signer was ever added). `sender` must be an authorized
-/// signer of the MAIN.
+/// Single-read link check — `isDeviceLinked(mainId, addr)` on the index.
+/// THE source of truth a device reads on load (no polling, no scraping).
+pub async fn is_device_linked(main_id: u64, addr_hex: &str) -> Result<bool, String> {
+    if REGISTRY_ADDRESS == zero_address() {
+        return Ok(false);
+    }
+    let addr = parse_eth_address(addr_hex)?;
+    let mut calldata = selector("isDeviceLinked(uint256,address)").to_vec();
+    calldata.extend_from_slice(&u256_be(main_id as u128));
+    calldata.extend_from_slice(&addr_word(&addr));
+    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
+    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    decode_u256_as_u64(&result).map(|v| v != 0)
+}
+
+fn encode_unlink_device(main_id: u64, device: &[u8; 20]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + 64);
+    out.extend_from_slice(&selector("unlinkDevice(uint256,address)"));
+    out.extend_from_slice(&u256_be(main_id as u128));
+    let mut padded = [0u8; 32];
+    padded[12..].copy_from_slice(device);
+    out.extend_from_slice(&padded);
+    out
+}
+
+fn encode_erc721_transfer_from(from: &[u8; 20], to: &[u8; 20], token_id: u64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + 96);
+    out.extend_from_slice(&selector("transferFrom(address,address,uint256)"));
+    out.extend_from_slice(&addr_word(from));
+    out.extend_from_slice(&addr_word(to));
+    out.extend_from_slice(&u256_be(token_id as u128));
+    out
+}
+
+/// CONSOLIDATION: transfer every `token_id` (subdomains owned by `owner`)
+/// into the MAIN's TBA, so one account owns them all and every linked
+/// device controls them. `owner` signs (it currently holds the NFTs);
+/// sponsored. One-way by design — move back later via TBA.execute.
+pub async fn consolidate_into_main_sponsored(
+    owner: &SigningKey,
+    fee_payer: &SigningKey,
+    main_tba_hex: &str,
+    token_ids: &[u64],
+    fee_token: &str,
+) -> Result<String, String> {
+    if token_ids.is_empty() {
+        return Err("no subdomains to consolidate".into());
+    }
+    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
+    let to = parse_eth_address(main_tba_hex)?;
+    let from = wallet::address(owner);
+    let calls: Vec<_> = token_ids
+        .iter()
+        .map(|&tid| crate::tempo_tx::TempoCall {
+            to: diamond_addr,
+            value_wei: 0,
+            input: encode_erc721_transfer_from(&from, &to, tid),
+        })
+        .collect();
+    // ~60k per ERC-721 transfer + ~275k sponsorship.
+    let gas = 300_000 + token_ids.len() as u128 * 90_000;
+    submit_tempo_sponsored(owner, fee_payer, calls, fee_token, gas).await
+}
+
+/// Sponsored TBA remove-signer + index unlink (the unlink half of the
+/// device lifecycle). `sender` must be an authorized signer of the MAIN.
 pub async fn remove_signer_sponsored(
     sender: &SigningKey,
     fee_payer: &SigningKey,
+    token_id: u64,
     tba_address: &str,
     signer_hex: &str,
     fee_token: &str,
 ) -> Result<String, String> {
     let signer_addr = parse_eth_address(signer_hex)?;
     let tba_addr = parse_eth_address(tba_address)?;
-    let call = crate::tempo_tx::TempoCall {
+    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
+    let remove_call = crate::tempo_tx::TempoCall {
         to: tba_addr,
         value_wei: 0,
         input: encode_remove_signer(&signer_addr),
     };
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 500_000).await
+    // Also drop it from the on-chain index so the UI stops showing it.
+    let unlink_call = crate::tempo_tx::TempoCall {
+        to: diamond_addr,
+        value_wei: 0,
+        input: encode_unlink_device(token_id, &signer_addr),
+    };
+    submit_tempo_sponsored(sender, fee_payer, vec![remove_call, unlink_call], fee_token, 600_000)
+        .await
 }
 
 // --- Device pairing (PairingFacet on the diamond) --------------------
