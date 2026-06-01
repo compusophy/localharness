@@ -1805,29 +1805,62 @@ async fn run_pair_join(code: &str) -> Result<String, String> {
             super::tenant::Host::Tenant(n) => n,
             _ => return,
         };
-        let slot_id = match gemini_key_slot_id(&name).await {
-            Ok(id) => id,
-            Err(_) => return,
+        // The identity (MAIN) this subdomain belongs to — so we can detect
+        // when the desktop enrolls us into its on-chain device index.
+        let main_id = match super::registry::owner_of_name(&name).await {
+            Ok(Some(owner)) => super::registry::main_of(&owner).await.unwrap_or(0),
+            _ => 0,
         };
-        for _ in 0..40 {
-            if let Ok(Some(blob)) =
-                super::registry::wrapped_device_key_of(slot_id, &device_addr).await
-            {
-                if let Some(pt) = super::encryption::ecies_open(&device_signer, &blob).await {
-                    if let Ok(key) = String::from_utf8(pt) {
-                        super::key_store::save(&key).await;
-                        if let Ok(Some(storage)) = dom::session_storage() {
-                            let _ = storage.set_item("gemini_api_key", &key);
-                        }
+        let slot_id = gemini_key_slot_id(&name).await.ok();
+        let mut enrolled = false;
+        let mut got_key = false;
+        for _ in 0..60 {
+            // 1) Enrollment confirmation: are we in the MAIN's device index
+            //    yet? (The desktop writes it via linkDevice on enroll.) This
+            //    is what tells the phone the link actually landed — instead
+            //    of sitting forever on "finish on your other device".
+            if !enrolled && main_id != 0 {
+                if let Ok(devs) = super::registry::devices_of(main_id).await {
+                    if devs.iter().any(|d| d.eq_ignore_ascii_case(&device_addr)) {
+                        enrolled = true;
                         dom::swap_inner(
                             "pair-join-msg",
-                            &dom::msg_span(
-                                dom::Msg::Accent,
-                                "✓ linked + key received — open this subdomain to use it",
-                            ),
+                            &dom::msg_span(dom::Msg::Accent, "✓ this device is now linked"),
                         );
-                        return;
                     }
+                }
+            }
+            // 2) ECIES-wrapped Gemini key (best-effort — never required).
+            if !got_key {
+                if let Some(slot_id) = slot_id {
+                    if let Ok(Some(blob)) =
+                        super::registry::wrapped_device_key_of(slot_id, &device_addr).await
+                    {
+                        if let Some(pt) =
+                            super::encryption::ecies_open(&device_signer, &blob).await
+                        {
+                            if let Ok(key) = String::from_utf8(pt) {
+                                super::key_store::save(&key).await;
+                                if let Ok(Some(storage)) = dom::session_storage() {
+                                    let _ = storage.set_item("gemini_api_key", &key);
+                                }
+                                got_key = true;
+                            }
+                        }
+                    }
+                }
+            }
+            if enrolled {
+                let tail = if got_key { " + key received" } else { "" };
+                dom::swap_inner(
+                    "pair-join-msg",
+                    &dom::msg_span(
+                        dom::Msg::Accent,
+                        &format!("✓ this device is linked{tail} — open this subdomain"),
+                    ),
+                );
+                if got_key {
+                    return;
                 }
             }
             super::registry::sleep_ms(3000).await;
