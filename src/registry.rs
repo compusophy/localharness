@@ -2286,6 +2286,51 @@ mod x402_tests {
         let recovered = crate::wallet::recover_address(&sig, &digest).unwrap();
         assert_eq!(recovered, from);
     }
+
+    // --- Calldata-encoder layout guards (network-free). A wrong ABI offset
+    // here would send $LH / NFTs to the wrong place, so pin the layout. ---
+
+    #[test]
+    fn erc721_transfer_from_calldata_layout() {
+        let from = [0xAAu8; 20];
+        let to = [0xBBu8; 20];
+        let cd = encode_erc721_transfer_from(&from, &to, 0x1234);
+        // Canonical ERC-721/20 transferFrom(address,address,uint256) selector.
+        assert_eq!(&cd[0..4], &[0x23, 0xb8, 0x72, 0xdd]);
+        assert_eq!(cd.len(), 4 + 96);
+        assert_eq!(&cd[4 + 12..4 + 32], &from); // from in word 0
+        assert_eq!(&cd[4 + 44..4 + 64], &to); // to in word 1
+        assert_eq!(u64::from_be_bytes(cd[4 + 88..4 + 96].try_into().unwrap()), 0x1234);
+    }
+
+    #[test]
+    fn release_name_calldata_layout() {
+        let cd = encode_release_name(7);
+        assert_eq!(&cd[0..4], &selector("releaseName(uint256)"));
+        assert_eq!(cd.len(), 36);
+        assert_eq!(u64::from_be_bytes(cd[28..36].try_into().unwrap()), 7);
+    }
+
+    #[test]
+    fn link_unlink_device_calldata_layout() {
+        let dev = [0xCDu8; 20];
+        let link = encode_link_device(3, &dev);
+        assert_eq!(&link[0..4], &selector("linkDevice(uint256,address)"));
+        assert_eq!(link.len(), 68);
+        assert_eq!(u64::from_be_bytes(link[28..36].try_into().unwrap()), 3); // mainId
+        assert_eq!(&link[36 + 12..36 + 32], &dev); // device in word 2
+        let unlink = encode_unlink_device(3, &dev);
+        assert_eq!(&unlink[0..4], &selector("unlinkDevice(uint256,address)"));
+        assert_eq!(unlink.len(), 68);
+        assert_eq!(&unlink[36 + 12..36 + 32], &dev);
+    }
+
+    #[test]
+    fn deposit_credits_calldata_layout() {
+        let cd = encode_deposit_credits(1_000_000_000_000_000_000);
+        assert_eq!(&cd[0..4], &selector("depositCredits(uint256)"));
+        assert_eq!(cd.len(), 36);
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
