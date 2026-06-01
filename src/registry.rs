@@ -1205,6 +1205,15 @@ pub async fn add_signer_sponsored(
         value_wei: 0,
         input: encode_add_signer(&new_signer),
     };
+    // Also record the device in the on-chain enumerable index
+    // (DeviceRegistryFacet) so the UI reads the linked set in ONE call —
+    // no log scraping. Authority (addSigner) + index (linkDevice) written
+    // together in this one sponsored tx.
+    let link_call = crate::tempo_tx::TempoCall {
+        to: diamond_addr,
+        value_wei: 0,
+        input: encode_link_device(token_id, &new_signer),
+    };
     // createTokenBoundAccount first-deploys the MultiSignerAccount via
     // CREATE2 — live-measured at ~742k gas (full contract bytecode +
     // storage), NOT the ~250k an earlier note assumed; near-zero on
@@ -1217,11 +1226,52 @@ pub async fn add_signer_sponsored(
     submit_tempo_sponsored(
         sender,
         fee_payer,
-        vec![create_call, add_call],
+        vec![create_call, add_call, link_call],
         fee_token,
-        2_000_000,
+        2_200_000,
     )
     .await
+}
+
+/// Encode `linkDevice(uint256,address)` for DeviceRegistryFacet.
+fn encode_link_device(main_id: u64, device: &[u8; 20]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + 64);
+    out.extend_from_slice(&selector("linkDevice(uint256,address)"));
+    out.extend_from_slice(&u256_be(main_id as u128));
+    let mut padded = [0u8; 32];
+    padded[12..].copy_from_slice(device);
+    out.extend_from_slice(&padded);
+    out
+}
+
+/// Read `devicesOf(mainId)` — the identity's linked devices, from the
+/// on-chain enumerable index in ONE call (no log scraping). Returns
+/// lowercase `0x…` addresses.
+pub async fn devices_of(main_id: u64) -> Result<Vec<String>, String> {
+    if REGISTRY_ADDRESS == zero_address() {
+        return Ok(Vec::new());
+    }
+    let mut calldata = selector("devicesOf(uint256)").to_vec();
+    calldata.extend_from_slice(&u256_be(main_id as u128));
+    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
+    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    let bytes = hex_to_bytes(&result)?;
+    // ABI dynamic address[]: [offset(32)][len(32)][addr0(32)]...
+    if bytes.len() < 64 {
+        return Ok(Vec::new());
+    }
+    let mut len_buf = [0u8; 8];
+    len_buf.copy_from_slice(&bytes[56..64]); // low 8 bytes of the length word
+    let len = u64::from_be_bytes(len_buf) as usize;
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
+        let start = 64 + i * 32;
+        if start + 32 > bytes.len() {
+            break;
+        }
+        out.push(format!("0x{}", bytes_to_hex(&bytes[start + 12..start + 32])));
+    }
+    Ok(out)
 }
 
 /// Sponsored TBA remove-signer. TBA must already be deployed (it is,
@@ -2351,6 +2401,9 @@ pub async fn tba_signers(tba_hex: &str) -> Result<Vec<String>, String> {
         &Keccak256::digest(b"SignerRemoved(address,address)")
     ));
 
+    // DEPRECATED: log-scraping signers is wrong (and Tempo caps
+    // eth_getLogs at 100k blocks anyway). Use `devices_of` — the on-chain
+    // enumerable index in DeviceRegistryFacet — read in a single call.
     let added_logs = eth_get_logs(
         tba_hex,
         vec![serde_json::json!(added_topic)],

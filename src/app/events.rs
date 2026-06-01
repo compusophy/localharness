@@ -1575,26 +1575,10 @@ async fn refresh_signer_list() {
         }
     };
 
-    let main_name = match super::registry::name_of_id(main_id).await {
-        Ok(name) if !name.is_empty() => name,
-        _ => {
-            dom::swap_inner("signer-list", "");
-            return;
-        }
-    };
-
-    let tba = match super::registry::tba_of_name(&main_name).await {
-        Ok(Some(tba)) => tba,
-        _ => {
-            dom::swap_inner("signer-list", "no TBA");
-            return;
-        }
-    };
-
-    // Fetch signers
-    match super::registry::tba_signers(&tba).await {
+    // Read the on-chain enumerable index in ONE call — no log scraping.
+    match super::registry::devices_of(main_id).await {
         Ok(signers) if signers.is_empty() => {
-            dom::swap_inner("signer-list", "owner only (no extra signers)");
+            dom::swap_inner("signer-list", "owner only (no linked devices)");
         }
         Ok(signers) => {
             let mut html = String::new();
