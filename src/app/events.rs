@@ -2092,6 +2092,28 @@ fn unlink_device_pressed(device_hex: String) {
     });
 }
 
+/// Release (recycle) a subdomain on-chain via the iframe-signed sponsored
+/// path (the owner signs the sender hash through the apex signer). The
+/// CALLER (tool / UI) MUST do the typed-confirmation gate BEFORE calling
+/// this — this only performs the on-chain release.
+pub(crate) async fn run_release_subdomain(name: &str) -> Result<String, String> {
+    let token_id = match super::registry::check_name(name).await? {
+        super::registry::Status::Taken { agent_id } => agent_id,
+        _ => return Err(format!("'{name}' is not registered")),
+    };
+    let owner = super::registry::owner_of_name(name)
+        .await
+        .map_err(|e| format!("owner: {e}"))?
+        .ok_or_else(|| "no on-chain owner".to_string())?;
+    let diamond = parse_address(super::registry::REGISTRY_ADDRESS)?;
+    let call = crate::tempo_tx::TempoCall {
+        to: diamond,
+        value_wei: 0,
+        input: super::registry::release_name_calldata(token_id),
+    };
+    run_sponsored_tempo_call(&owner, vec![call], 400_000, "release subdomain").await
+}
+
 fn short_addr(addr: &str) -> String {
     let stripped = addr.trim_start_matches("0x");
     if stripped.len() < 8 {

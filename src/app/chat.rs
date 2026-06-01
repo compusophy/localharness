@@ -367,6 +367,12 @@ pub(crate) async fn start_session(
            • create_subdomain(name) — register a new <name>.localharness.xyz \
              on-chain, owned by your owner's master wallet. Returns the tx \
              hash. Each subdomain is its own agent tab.\n\
+           • release_subdomain(name, confirmation) — DESTRUCTIVE + \
+             IRREVERSIBLE: burns the subdomain NFT and frees the name. \
+             Requires `confirmation` to EXACTLY equal `name` — and you must \
+             only pass that after the OWNER has TYPED the exact name in \
+             chat. Never invent or auto-fill the confirmation. Refuses your \
+             MAIN.\n\
            • start_subagent(system_instructions, prompt) — spawn a one-shot \
              text-only subagent with no tool access. Use for self-contained \
              reasoning / writing tasks you want isolated from your context.\n\
@@ -440,6 +446,16 @@ pub(crate) async fn start_session(
            prompt, or modal for the user to approve. Transactions just happen, \
            zero-click. NEVER tell the user to approve/confirm a transaction, \
            check for a wallet prompt, or sign anything; just report the result.\n\
+         • DESTRUCTIVE / IRREVERSIBLE actions are the EXCEPTION to zero-click \
+           and the ONE thing you must never do casually: releasing/burning a \
+           subdomain (release_subdomain), deleting files, or anything that \
+           destroys an asset, NFT, wallet, or identity. NEVER perform one \
+           unless, in THIS conversation, the owner has TYPED an explicit \
+           confirmation — for release_subdomain, the exact subdomain name. A \
+           vague \"yes\", \"do it\", or merely mentioning the thing is NOT \
+           consent; require the typed phrase, and if it's absent, ask for it \
+           and STOP. NEVER invent or auto-fill a confirmation argument. When \
+           unsure whether something is destructive, treat it as destructive.\n\
          • Files at the OPFS root are the user's. These internal files are \
            managed by the platform — read only if asked, NEVER write or delete: \
            `.lh_history.json` (conversation history — this is what 'clear \
@@ -494,6 +510,7 @@ pub(crate) async fn start_session(
         .with_filesystem(super::shared_opfs())
         .with_system_instructions(system_instructions)
         .with_tool(create_subdomain_tool())
+        .with_tool(release_subdomain_tool())
         .with_tool(submit_feedback_tool())
         .with_tool(spawn_recursive_subagent_tool(captured_key, base_url.clone()));
     // Credits mode: route the whole agent through the credit proxy. BYOK
@@ -816,6 +833,57 @@ fn create_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                     "tx_hash": tx_hash,
                 })),
                 Err(e) => Err(crate::error::Error::other(format!("claim failed: {e}"))),
+            }
+        },
+    )
+}
+
+/// `release_subdomain(name, confirmation)` — DESTRUCTIVE: burn the NFT +
+/// free the name. Gated: `confirmation` must EXACTLY equal `name`, which
+/// forces a typed confirmation in chat (the owner types the name). The
+/// system prompt also forbids auto-filling it.
+fn release_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Subdomain to release/recycle — burns the NFT, frees the name."
+            },
+            "confirmation": {
+                "type": "string",
+                "description": "Must EXACTLY equal `name`. Pass ONLY after the owner has \
+                    TYPED the exact name in this chat. Never auto-fill or invent it."
+            }
+        },
+        "required": ["name", "confirmation"]
+    });
+    ClosureTool::new(
+        "release_subdomain",
+        "DESTRUCTIVE + IRREVERSIBLE: burn a subdomain NFT and free its name. Requires \
+         `confirmation` to exactly equal `name` (the owner must type the name). Refuses \
+         your MAIN. Returns the tx hash.",
+        schema,
+        |args: serde_json::Value, _ctx| async move {
+            let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let confirmation = args
+                .get("confirmation")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if name.is_empty() {
+                return Err(crate::error::Error::other("name is required"));
+            }
+            if confirmation != name {
+                return Err(crate::error::Error::other(format!(
+                    "release_subdomain NOT executed — confirmation must exactly equal \"{name}\". \
+                     Ask the owner to TYPE \"{name}\" to confirm, then retry. Do not auto-fill it."
+                )));
+            }
+            match super::events::run_release_subdomain(&name).await {
+                Ok(tx) => Ok(serde_json::json!({ "released": name, "tx_hash": tx })),
+                Err(e) => Err(crate::error::Error::other(format!("release failed: {e}"))),
             }
         },
     )

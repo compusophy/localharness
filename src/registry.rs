@@ -1338,6 +1338,38 @@ pub async fn consolidate_into_main_sponsored(
     submit_tempo_sponsored(owner, fee_payer, calls, fee_token, gas).await
 }
 
+fn encode_release_name(token_id: u64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + 32);
+    out.extend_from_slice(&selector("releaseName(uint256)"));
+    out.extend_from_slice(&u256_be(token_id as u128));
+    out
+}
+
+/// Public `releaseName(tokenId)` calldata — for the iframe-signed agent
+/// path (the owner signs the sender hash via the apex signer).
+pub fn release_name_calldata(token_id: u64) -> Vec<u8> {
+    encode_release_name(token_id)
+}
+
+/// Release (recycle) a subdomain — burn the NFT + free the name — via a
+/// sponsored tx. `sender` must own the token. DESTRUCTIVE: the UI/tool
+/// MUST require typed confirmation before calling this. Refuses the MAIN
+/// on-chain.
+pub async fn release_name_sponsored(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    token_id: u64,
+    fee_token: &str,
+) -> Result<String, String> {
+    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
+    let call = crate::tempo_tx::TempoCall {
+        to: diamond_addr,
+        value_wei: 0,
+        input: encode_release_name(token_id),
+    };
+    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 400_000).await
+}
+
 /// Sponsored TBA remove-signer + index unlink (the unlink half of the
 /// device lifecycle). `sender` must be an authorized signer of the MAIN.
 pub async fn remove_signer_sponsored(
