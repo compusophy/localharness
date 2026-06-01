@@ -410,17 +410,13 @@ pub(crate) fn feedback_modal() -> Markup {
     html! {
         div #feedback-modal .feedback-modal {
             div.feedback-card {
+                button type="button" data-action="feedback-close" .modal-close { "×" }
                 div.feedback-title { "feedback" }
-                p.feedback-blurb {
-                    "what's broken, missing, or wrong. submitted on-chain."
-                }
                 textarea #feedback-text
                     .feedback-textarea
-                    rows="6"
-                    placeholder="type here…" {}
+                    rows="6" {}
                 div.feedback-actions {
                     button type="button" data-action="feedback-submit" { "submit" }
-                    button type="button" data-action="feedback-close" .ghost { "cancel" }
                 }
                 div #feedback-msg .feedback-msg {}
             }
@@ -584,7 +580,7 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
                         data-action="show-admin-tab" data-arg="usage"
                         .admin-tab-button { "usage" }
                     span.admin-tabs-spacer {}
-                    button type="button" data-action="header-admin-close" .ghost { "close" }
+                    button type="button" data-action="header-admin-close" .modal-close { "×" }
                 }
                 div.admin-tab-panel.panel-account {
                     (admin_identity_section(None, owner_hex.as_deref(), None))
@@ -628,7 +624,7 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                         data-action="show-admin-tab" data-arg="usage"
                         .admin-tab-button { "usage" }
                     span.admin-tabs-spacer {}
-                    button type="button" data-action="header-admin-close" .ghost { "close" }
+                    button type="button" data-action="header-admin-close" .modal-close { "×" }
                 }
                 div.admin-tab-panel.panel-agent {
                     (admin_prompt_section())

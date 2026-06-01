@@ -138,6 +138,7 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
   padding: 20px;
 }
 .feedback-card {
+  position: relative;
   width: 100%;
   max-width: 480px;
   background: var(--panel);
@@ -146,6 +147,23 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+/* Borderless top-right close — unified across the feedback + admin
+   modals (no bounding box; a plain glyph). */
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+.modal-close:hover { color: var(--fg); }
+.feedback-card > .modal-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
 }
 .feedback-title {
   font-size: 11px;
@@ -177,7 +195,7 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
 .feedback-textarea:focus { border-color: var(--accent); }
 .feedback-actions {
   display: flex;
-  justify-content: flex-end;
+  justify-content: center;
   gap: 8px;
 }
 /* Inline result message — only takes space when populated,
@@ -509,7 +527,7 @@ main.layout .transcript::before {
 .public-footer a:hover { color: var(--fg); }
 
 /* Public-face picker (admin → agent tab) */
-.public-face-picker { display: flex; gap: 6px; margin: 6px 0; flex-wrap: wrap; }
+.public-face-picker { display: flex; justify-content: center; gap: 6px; margin: 6px 0; flex-wrap: wrap; }
 .public-face-preview { margin-top: 6px; }
 .public-face-preview a {
   font-size: 11px;
@@ -942,7 +960,12 @@ input, textarea {
 }
 
 /* --- Device pairing (admin → linked devices) --- */
-.pair-slot { margin-top: 8px; }
+.pair-slot { margin-top: 8px; display: flex; justify-content: center; }
+/* Standalone action buttons in admin sections sit centered (per design
+   feedback — horizontal-center buttons like the home-screen button). */
+.admin-section > button { display: block; margin: 8px auto 0; }
+.admin-credits-row, #model-access-row { justify-content: center; }
+.redeem-row { justify-content: center; }
 .pair-slot.pair-active {
   display: flex; flex-direction: column; gap: 8px;
   padding: 12px; border: 1px solid var(--border); background: var(--panel);
