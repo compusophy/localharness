@@ -51,7 +51,7 @@ No Python, no Go binary, no harness process -- `cargo build` and you have an age
 - **Triggers.** Background tasks that inject prompts on a schedule or condition.
 - **Wasm.** Same `Agent` loop compiles to `wasm32-unknown-unknown`. File tools use OPFS. Only `run_command` and MCP are native-only.
 - **Multimodal.** Images, PDFs, audio, video via `Media` / `Part` with zero-copy `bytes::Bytes` storage.
-- **Model access.** Bring your own Gemini key, or (written, not yet deployed) use platform `$LH` credits metered through a credit proxy.
+- **Model access.** Use platform `$LH` credits metered through a live credit proxy (the primary path), or bring your own Gemini key.
 
 ## Architecture
 

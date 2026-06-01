@@ -47,10 +47,21 @@ src/                       library crate
 │                          Includes Tempo Tx submission helpers:
 │                          `submit_tempo_self_paid` / `_sponsored`
 │                          + `claim_and_maybe_set_main_sponsored`.
-│                          Also credit-proxy helpers: `redeem_sponsored`,
-│                          `open_session_sponsored`, `session_expiry_of`,
-│                          `session_price` (RedeemFacet + SessionFacet —
-│                          written, NOT yet cut).
+│                          Also credit/session/x402/device helpers:
+│                          `redeem_sponsored`, `open_session_sponsored`,
+│                          `session_expiry_of`, `session_price`,
+│                          `credit_balance_of`, `deposit_credits_sponsored`,
+│                          `x402_domain_separator`/`x402_digest`/`sign_x402`/
+│                          `settle_x402_sponsored`/`x402_authorization_state`,
+│                          `devices_of`/`is_device_linked`,
+│                          `consolidate_into_main_sponsored`,
+│                          `release_name_sponsored`/`release_name_calldata`,
+│                          `erc20_balance_of`, `remove_signer_sponsored`
+│                          (now also unlinks the DeviceRegistry index).
+├── x402_hook.rs           app-injected x402 signer for `call_agent` —
+│                          signs the EIP-712 "exact" authorization so an
+│                          agent-to-agent call settles in $LH (feature
+│                          = "wallet").
 ├── tempo_tx.rs            Tempo Transaction (tx type 0x76) encoder —
 │                          native AA with fee_token + fee_payer fields.
 │                          Sign self-paid or sponsored; submit via
@@ -119,9 +130,13 @@ contracts/                 Foundry project for the on-chain registry
 │   │   ├── LibRegistryStorage.sol        registry state (slot v1)
 │   │   ├── LibTbaConfigStorage.sol       TBA config (slot v1)
 │   │   ├── LibRedeemStorage.sol          redeem-code → $LH amount (slot v1)
-│   │   │                                 (written, NOT yet cut)
-│   │   └── LibSessionStorage.sol         credit-session price/duration/expiry
-│   │                                     (slot v1) (written, NOT yet cut)
+│   │   ├── LibSessionStorage.sol         credit-session price/duration/expiry
+│   │   ├── LibCreditMeterStorage.sol     per-request $LH meter balances +
+│   │   │                                 meter key (slot v1)
+│   │   ├── LibX402Storage.sol            x402 EIP-712 domain + nonce state
+│   │   │                                 (slot v1)
+│   │   └── LibDeviceRegistryStorage.sol  enumerable linked-device index
+│   │                                     (slot v1)
 │   ├── facets/
 │   │   ├── DiamondCutFacet.sol           owner-only upgrade
 │   │   ├── DiamondLoupeFacet.sol         introspection + supportsInterface
@@ -133,10 +148,20 @@ contracts/                 Foundry project for the on-chain registry
 │   │   ├── MainIdentityFacet.sol         registerMain/clearMain/mainOf
 │   │   ├── RedeemFacet.sol               addRedeemCodes / redeem(string) →
 │   │   │                                 mints $LH via ISSUER_ROLE
-│   │   │                                 (written, NOT yet cut)
-│   │   └── SessionFacet.sol              openSession / sessionExpiryOf /
-│   │                                     setSessionPrice/Duration — credit
-│   │                                     sessions (written, NOT yet cut)
+│   │   ├── SessionFacet.sol              openSession / sessionExpiryOf /
+│   │   │                                 setSessionPrice/Duration — credit
+│   │   │                                 sessions
+│   │   ├── CreditMeterFacet.sol          depositCredits / meter[meter-only] /
+│   │   │                                 creditOf / setMeter — per-request
+│   │   │                                 $LH metering
+│   │   ├── X402Facet.sol                 settle / authorizationState /
+│   │   │                                 x402DomainSeparator — x402 "exact"
+│   │   │                                 settlement in $LH (agent-to-agent)
+│   │   ├── DeviceRegistryFacet.sol       linkDevice / unlinkDevice /
+│   │   │                                 devicesOf / isDeviceLinked —
+│   │   │                                 enumerable linked-device index
+│   │   └── ReleaseFacet.sol              releaseName(tokenId) — owner-only
+│   │                                     burn + free a name (refuses MAIN)
 │   ├── erc6551/                          vendored EIP-6551 reference
 │   │   ├── IERC6551Registry.sol
 │   │   ├── ERC6551Registry.sol
@@ -151,8 +176,12 @@ contracts/                 Foundry project for the on-chain registry
 │   ├── AddTbaFacet.s.sol                 cut 6551 + helper
 │   ├── AddFeedbackFacet.s.sol            cut submitFeedback(string)
 │   ├── AddMainIdentityFacet.s.sol        cut MAIN identity surface
-│   ├── AddRedeemFacet.s.sol              cut RedeemFacet (NOT yet run)
-│   ├── AddSessionFacet.s.sol             cut SessionFacet (NOT yet run)
+│   ├── AddRedeemFacet.s.sol              cut RedeemFacet
+│   ├── AddSessionFacet.s.sol             cut SessionFacet
+│   ├── AddCreditMeterFacet.s.sol         cut CreditMeterFacet
+│   ├── AddX402Facet.s.sol                cut X402Facet
+│   ├── AddDeviceRegistryFacet.s.sol      cut DeviceRegistryFacet
+│   ├── AddReleaseFacet.s.sol             cut ReleaseFacet
 │   └── Deploy.s.sol                      legacy flat deploy (archived)
 └── README.md                             architecture write-up
 
@@ -162,15 +191,18 @@ web/                       static site for Vercel
                            and uploaded by `vercel deploy`):
                            localharness.js + localharness_bg.wasm
 
-proxy/                     credit proxy — a SEPARATE Vercel project
-│                          (TypeScript Edge Function). The ONE accepted
-│                          off-chain component; everything else is
-│                          Tempo + browser. (written, NOT yet deployed)
-├── api/gemini.ts          Vercel Edge Function: holds the platform Gemini
-│                          key in its env, authenticates the caller via an
-│                          Ethereum personal-sign, reads the caller's
-│                          on-chain credit session (sessionExpiryOf), then
-│                          forwards/streams to Gemini if the session is live
+proxy/                     $LH credit proxy — a SEPARATE Vercel project
+│                          ("proxy") deployed at
+│                          https://proxy-tau-ten-15.vercel.app . The ONE
+│                          accepted off-chain component; everything else is
+│                          Tempo + browser. LIVE.
+├── api/gemini.ts          Vercel Edge Function: transparent Gemini
+│                          passthrough holding the platform GEMINI_API_KEY
+│                          in env. Auth = an Ethereum personal-sign in the
+│                          x-goog-api-key header (address:timestamp:
+│                          signature); gates on an active SessionFacet
+│                          session OR a CreditMeterFacet balance; per-request
+│                          mode debits via the meter key (viem EIP-1559)
 ├── package.json           proxy deps + build
 ├── vercel.json            edge runtime config
 ├── README.md              proxy setup + env vars
@@ -545,24 +577,54 @@ Currently cut in:
   (UTC-aligned, no cron). See `contracts/src/LocalharnessCredits.sol`
   for the token's TIP-20 surface (currency = "credits", not USD —
   explicitly NOT fee-token-eligible).
-- **RedeemFacet** *(written, NOT yet cut — no on-chain address yet)* —
-  bootstraps $LH into a fresh wallet via one-time codes. Owner loads
-  `keccak256(code) -> $LH amount` via `addRedeemCodes(bytes32[],
+- **RedeemFacet** — `0xE64c36553D611fC6a4d625Ebb2b58004Cde4becD` (cut,
+  live). Bootstraps $LH into a fresh wallet via one-time codes. Owner
+  loads `keccak256(code) -> $LH amount` via `addRedeemCodes(bytes32[],
   uint256)`; a holder calls `redeem(string code)`, which mints the
   mapped amount of $LH to the caller through the diamond's `ISSUER_ROLE`
-  and burns the code. Storage at
+  and burns the code; owner-only `disableRedeemCodes`. Storage at
   `keccak256("localharness.redeem.storage.v1")` (`LibRedeemStorage`).
-  Cut script `script/AddRedeemFacet.s.sol` (NOT yet run).
-- **SessionFacet** *(written, NOT yet cut — no on-chain address yet)* —
-  meters $LH into time-boxed credit sessions for the proxy. `openSession()`
-  pulls `sessionPrice()` $LH from the caller into the diamond via
-  `transferFrom` (caller approves the diamond first) and sets
+  Cut via `script/AddRedeemFacet.s.sol`.
+- **SessionFacet** — `0x758d18dC054D77F48A5e9CBC81E313Acd86a7E82` (cut,
+  live). Coarse, time-boxed $LH credit sessions for the proxy.
+  `openSession()` pulls `sessionPrice()` $LH from the caller into the
+  diamond via `transferFrom` (caller approves first) and sets
   `expiry = block.timestamp + sessionDuration()`. View
   `sessionExpiryOf(address)` is what the credit proxy reads to gate
-  access. Owner-tunable `setSessionPrice(uint256)` /
-  `setSessionDuration(uint256)`. Storage at
-  `keccak256("localharness.session.storage.v1")` (`LibSessionStorage`).
-  Cut script `script/AddSessionFacet.s.sol` (NOT yet run).
+  access. Owner-tunable `setSessionPrice` / `setSessionDuration`.
+  **Currently `sessionDuration = 3600`, `sessionPrice = 0`** (free in
+  beta). Storage at `keccak256("localharness.session.storage.v1")`
+  (`LibSessionStorage`). Cut via `script/AddSessionFacet.s.sol`.
+- **CreditMeterFacet** — `0x925e128139EF1d5e7590C160910822dDcBf3747F`
+  (cut, live). Per-request $LH metering, the fine-grained alternative
+  to coarse sessions. `depositCredits(uint256)` pulls $LH into the
+  diamond and credits the caller's balance; `creditOf(address)` reads
+  it; `meter(address,uint256)` debits a balance and is callable ONLY by
+  the configured meter key; owner-only `setMeter(address)`. Meter key
+  `0xE4E8edB2e0ebbcedCb8D96AA9a62284F873A43B9` is `setMeter`'d + funded.
+  Storage at `keccak256("localharness.credit_meter.storage.v1")`
+  (`LibCreditMeterStorage`). Cut via `script/AddCreditMeterFacet.s.sol`.
+- **X402Facet** — `0xc280bC48dd275bAAd409ea274e6D23A07181EBC9` (cut,
+  live). True x402 (EIP-712 "exact" scheme) payment SETTLEMENT in $LH
+  for agent-to-agent flows. `settle(...)` verifies an EIP-712
+  authorization (EOA `ecrecover` + EIP-1271 `isValidSignature`,
+  one-shot nonce) and moves $LH from payer to payee; `authorizationState`
+  reports nonce usage; `x402DomainSeparator()` exposes the domain.
+  domainSeparator
+  `0x7d8edaacb63589083763f5861d8d35fd6a53ec3de38a80574c44d033e8a0309f`.
+  Storage at `keccak256("localharness.x402.storage.v1")`
+  (`LibX402Storage`). Cut via `script/AddX402Facet.s.sol`.
+- **DeviceRegistryFacet** — `0xeAF3F7d356646C4E01125ca06fc5Dc2A07D40830`
+  (cut, live). Enumerable linked-device index, read in ONE call:
+  `linkDevice / unlinkDevice / devicesOf(address) / isDeviceLinked`.
+  Replaces scraping `SignerAdded` logs, which Tempo's RPC caps at 100k
+  blocks. Storage at `keccak256("localharness.device_registry.storage.v1")`
+  (`LibDeviceRegistryStorage`). Cut via
+  `script/AddDeviceRegistryFacet.s.sol`.
+- **ReleaseFacet** — `0xC9290Cd668f3720d27b5AEd3bb77d96693e0659A` (cut,
+  live). `releaseName(uint256 tokenId)` — owner-only burn that frees a
+  name for re-registration; **refuses the caller's MAIN**. Cut via
+  `script/AddReleaseFacet.s.sol`.
 
 ERC-6551 reference contracts (separate addresses, configured via
 `TbaFacet::setTbaConfig`):
@@ -590,45 +652,100 @@ forge build, write a one-off cut script following `AddTbaFacet.s.sol`
 as a template, deploy. See `contracts/README.md` for the full
 walkthrough.
 
-## Credit proxy + $LH sessions (written, NOT yet deployed)
+## Credit proxy + $LH sessions / metering (LIVE)
 
-**Status: code is written and compiling; NOTHING is deployed.** The
-proxy is not live, and the RedeemFacet/SessionFacet are not yet cut
-into the diamond — so there are no on-chain addresses for them yet.
+**Status: deployed and live.** The proxy runs at
+`https://proxy-tau-ten-15.vercel.app` and the RedeemFacet,
+SessionFacet, and CreditMeterFacet are cut into the diamond (addresses
+in the on-chain section above).
 
-The credit proxy makes platform `$LH` credits the **primary** usage
-path, with **BYOK** (bring-your-own Gemini key) as the second option.
-It deliberately introduces exactly **one** off-chain component — a
-single Vercel Edge Function — and is the **only server in the system**;
+Platform `$LH` credits are the **primary** usage path; **BYOK**
+(bring-your-own Gemini key) is the second option. The proxy is the ONE
+accepted off-chain component and the **only server in the system**;
 everything else stays Tempo + the user's browser.
 
 Pieces:
 
-- **`proxy/`** — a separate Vercel project (TypeScript Edge Function,
-  `proxy/api/gemini.ts`). It holds the platform Gemini key in its env,
-  authenticates the caller (an Ethereum personal-sign proving control of
-  the caller's wallet, supplied as a request header), reads the caller's
-  on-chain credit session via `sessionExpiryOf(address)`, and — if the
-  session is live — meters and forwards/streams the request to Gemini.
-  It is being revised to be a transparent passthrough: same path and
-  request shape as Gemini, auth carried in a header, so the exact wire
-  format is not pinned here.
-- **RedeemFacet** (on-chain, not yet cut) — bootstraps $LH via one-time
-  `redeem(code)` codes the owner pre-loads with `addRedeemCodes`. This is
-  how a fresh wallet gets its first credits with zero off-chain payment
-  rails.
-- **SessionFacet** (on-chain, not yet cut) — `openSession()` spends
-  `sessionPrice()` $LH for a time-boxed session (`expiry = now +
-  sessionDuration()`); the proxy gates access on `sessionExpiryOf`.
+- **`proxy/`** — a separate Vercel project ("proxy", TypeScript Edge
+  Function `proxy/api/gemini.ts`) at `https://proxy-tau-ten-15.vercel.app`.
+  A transparent Gemini passthrough: same path/request shape as Gemini,
+  the platform `GEMINI_API_KEY` held in env only. Auth is an Ethereum
+  personal-sign carried in the `x-goog-api-key` header as
+  `address:timestamp:signature`. The proxy verifies the signature, then
+  gates on EITHER an active SessionFacet session (`sessionExpiryOf`) OR a
+  CreditMeterFacet balance (`creditOf`). In per-request mode it debits
+  via the meter key (viem, EIP-1559) before streaming Gemini back.
+- **RedeemFacet** (cut, live) — bootstraps $LH via one-time
+  `redeem(code)` codes the owner pre-loads with `addRedeemCodes`. How a
+  fresh wallet gets its first credits with zero off-chain payment rails.
+- **SessionFacet** (cut, live) — `openSession()` spends `sessionPrice()`
+  $LH for a coarse time-boxed window (`expiry = now + sessionDuration()`);
+  the proxy gates on `sessionExpiryOf`. Currently free in beta
+  (`sessionPrice = 0`, `sessionDuration = 3600`).
+- **CreditMeterFacet** (cut, live) — fine-grained per-request metering:
+  `depositCredits` tops up a $LH balance, the proxy's meter key debits
+  it per request via `meter(...)`, `creditOf` reads the balance.
 - **`src/registry.rs`** — sponsored client helpers the bundle uses to
   drive the above: `redeem_sponsored`, `open_session_sponsored`,
-  `session_expiry_of`, `session_price`.
+  `session_expiry_of`, `session_price`, `deposit_credits_sponsored`,
+  `credit_balance_of`.
 
-End-to-end flow (once deployed): redeem a code → `$LH` in wallet →
-`openSession()` spends `$LH` for a window → bundle calls the proxy with a
-signed header → proxy verifies the signature, checks `sessionExpiryOf`,
-and streams Gemini. BYOK skips the proxy entirely and talks to Gemini
-directly with the user's own key.
+End-to-end flow: redeem a code → `$LH` in wallet → either `openSession()`
+(coarse window) or `depositCredits()` (per-request meter) → bundle calls
+the proxy with a signed `x-goog-api-key` header → proxy verifies the
+signature, checks session OR meter balance, and streams Gemini. BYOK
+skips the proxy entirely and talks to Gemini directly with the user's
+own key.
+
+## x402 agent-to-agent settlement (LIVE)
+
+The **X402Facet** (cut, live) settles agent-to-agent payments in `$LH`
+using the x402 "exact" scheme over EIP-712. A paying agent signs an
+authorization; the payee (or anyone) calls `settle(...)`, which verifies
+the signature (EOA `ecrecover` + EIP-1271 for contract/TBA signers),
+consumes a one-shot nonce, and moves `$LH` from payer to payee.
+`authorizationState` reports nonce usage; `x402DomainSeparator()` exposes
+the domain (separator
+`0x7d8edaacb63589083763f5861d8d35fd6a53ec3de38a80574c44d033e8a0309f`).
+
+In the bundle, **`src/x402_hook.rs`** is an app-injected signer wired
+into `call_agent`: when one agent calls another, the hook signs the
+EIP-712 authorization so the inter-agent call can settle in `$LH`.
+Client helpers in `registry.rs`: `x402_domain_separator`, `x402_digest`,
+`sign_x402`, `settle_x402_sponsored`, `x402_authorization_state`.
+
+## Device index + name release (LIVE)
+
+- **DeviceRegistryFacet** (cut, live) gives the bundle an enumerable
+  linked-device list read in ONE call (`devicesOf` / `isDeviceLinked`),
+  replacing `SignerAdded` log scraping that Tempo's RPC caps at 100k
+  blocks. Linking/unlinking is `linkDevice` / `unlinkDevice`;
+  `registry::remove_signer_sponsored` now also unlinks the index.
+  Client reads: `registry::devices_of`, `registry::is_device_linked`.
+- **ReleaseFacet** (cut, live) frees a name: `releaseName(tokenId)` is
+  an owner-only burn that returns the name to the available pool. It
+  **refuses the caller's MAIN** (you can't release your primary
+  identity). Client helpers: `registry::release_name_sponsored`,
+  `registry::release_name_calldata`. `registry::consolidate_into_main_sponsored`
+  releases an owner's non-MAIN holdings in one sponsored batch.
+
+## New agent tools + destructive-action convention
+
+Two subdomain-management tools were added to the agent surface (declared
+in `chat.rs::start_session`):
+
+- **`list_subdomains()`** — read-only; enumerates the owner's holdings.
+- **`release_subdomain(name, confirmation)`** — DESTRUCTIVE. Burns the
+  name (calls ReleaseFacet `releaseName`). It requires
+  `confirmation == name` (a typed confirmation the user must type in
+  chat), **refuses the caller's MAIN**, and is **not granted to
+  subagents**.
+
+The system prompt now carries a hard convention: **destructive /
+irreversible actions require a typed confirmation that is never
+auto-filled** — the agent must ask the user to type the exact value
+(e.g. the subdomain name) before proceeding. Mirror this for any future
+destructive tool.
 
 ## Tempo Transactions + sponsorship (post-0.10.24)
 

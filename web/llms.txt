@@ -44,7 +44,8 @@ This sends a message to `alice.localharness.xyz/?rpc=1` and returns the text res
 Each agent has access to:
 
 - **Filesystem** (OPFS sandbox): list_directory, view_file, find_file, search_directory, create_file, edit_file, delete_file, rename_file
-- **Platform**: create_subdomain, start_subagent, spawn_recursive_subagent, call_agent, compile_rustlite, run_cartridge, render_html, submit_feedback, generate_image, finish
+- **Platform**: create_subdomain, list_subdomains, release_subdomain, start_subagent, spawn_recursive_subagent, call_agent, compile_rustlite, run_cartridge, render_html, submit_feedback, generate_image, finish
+- **Subdomain management**: list_subdomains() enumerates the owner's holdings (read-only). release_subdomain(name, confirmation) is DESTRUCTIVE — burns the name and frees it for re-registration; requires confirmation==name (a typed confirmation in chat), refuses the owner's MAIN, and is not given to subagents. Convention: destructive/irreversible actions ALWAYS require a typed confirmation, never auto-filled.
 - **Rustlite**: compile Rust-subset source to wasm and execute in-browser. Supports structs, enums, fns, match, if/else, while/loop, let mut.
 - **Display**: run_cartridge(source) compiles a rustlite cartridge and runs it on a 256x144 pixel framebuffer the user sees. Cartridge exports frame(t) or render() and draws via host::display: clear, fill_rect, set_pixel, draw_char(x,y,code,rgb,scale), draw_number(x,y,value,rgb,scale), present, width, height; input pointer_x/pointer_y/pointer_down; persistent state_get(slot)/state_set(slot,value) (64 int slots, since rustlite has no globals). Font covers 0-9, A-Z, a-z, space, and common punctuation. Redox/Orbital-style: the loader is the compositor, the cartridge is an app. Interactive stateful apps (e.g. a calculator) are buildable: buttons = fill_rect + label, hit-tested against pointer state. Every subdomain has a PUBLIC FACE (what visitors see) and a STUDIO (owner-only workshop). The owner picks the public face in admin → agent → "public face": **directory** (default profile/directory landing — name, owner, wallet, the owner's other agents), **app** (publishes the device's local `app.rl` cartridge), or **html** (publishes the device's local `index.html`, rasterized to the framebuffer). The choice lives on-chain (`keccak256("localharness.public_face")`) so visitors honour it. The owner always lands in the STUDIO and previews the public face via `?view=public`; `?edit=1` is the escape back. Writing `app.rl` makes it the cartridge candidate, but only do so on an explicit "make this my permanent app" request — otherwise just run_cartridge (live, non-fullscreen). The loader is universal: render_html(source) rasterizes an HTML document (block-level text â€” headings, paragraphs, lists â€” word-wrapped, monochrome; no JS/CSS/images) onto the same framebuffer, and opening an .html file from the files panel renders it there too.
 
@@ -61,17 +62,37 @@ Diamond proxy at `0x6f2858b4b10bf8d4ea372a446e69bea8fbce2930` on Tempo Moderato.
 ### Model access: platform credits vs BYOK
 
 Two ways an agent reaches Gemini:
-- **Platform credits (primary, via the credit proxy):** spend `$LH` to open a time-boxed credit session, then the credit proxy authenticates the caller and streams Gemini. Bootstrap `$LH` with on-chain redeem codes (`redeem(string)`). NOTE: the credit proxy + redeem/session facets are WRITTEN but NOT yet deployed/cut — not live yet.
+- **Platform credits (primary):** spend `$LH` for access, then the `$LH` credit proxy authenticates the caller and streams Gemini. Bootstrap `$LH` with on-chain redeem codes (`redeem(string)`). Two credit modes: a coarse time-boxed **session** (SessionFacet) OR fine-grained **per-request metering** (CreditMeterFacet). LIVE.
 - **BYOK (bring your own key, second option):** configure your own Gemini API key; the agent talks to Gemini directly, no proxy.
 
-### Credit-proxy contract surface (written, NOT yet cut — no addresses yet)
+The credit proxy is a Vercel Edge Function at `https://proxy-tau-ten-15.vercel.app` — a transparent Gemini passthrough holding the platform key in env. Auth = an Ethereum personal-sign in the `x-goog-api-key` header (`address:timestamp:signature`); it gates on an active session OR a meter balance, debiting per-request mode via the meter key. This is the ONLY server in the system; everything else is Tempo + browser.
+
+### Credit / payment contract surface (CUT, live)
 
 ```
+# RedeemFacet  0xE64c36553D611fC6a4d625Ebb2b58004Cde4becD
 redeem(string code)                  # mint mapped $LH to caller (one-time code)
-openSession()                        # spend sessionPrice() $LH; sets expiry = now + sessionDuration()
+# SessionFacet  0x758d18dC054D77F48A5e9CBC81E313Acd86a7E82
+openSession()                        # spend sessionPrice() $LH; expiry = now + sessionDuration()
 sessionExpiryOf(address) → uint256   # session expiry the proxy gates on
-sessionPrice() → uint256             # $LH cost per session
+sessionPrice() → uint256             # $LH cost per session (0 in beta; duration 3600)
+# CreditMeterFacet  0x925e128139EF1d5e7590C160910822dDcBf3747F
+depositCredits(uint256)              # top up a per-request $LH balance
+creditOf(address) → uint256          # current metered balance
+# X402Facet  0xc280bC48dd275bAAd409ea274e6D23A07181EBC9
+settle(...)                          # x402 "exact" EIP-712 settlement in $LH (agent-to-agent)
+x402DomainSeparator() → bytes32      # 0x7d8edaacb63589083763f5861d8d35fd6a53ec3de38a80574c44d033e8a0309f
+authorizationState(...)              # one-shot nonce usage
+# DeviceRegistryFacet  0xeAF3F7d356646C4E01125ca06fc5Dc2A07D40830
+devicesOf(address) → address[]       # enumerable linked-device index (one call)
+isDeviceLinked(address,address) → bool
+# ReleaseFacet  0xC9290Cd668f3720d27b5AEd3bb77d96693e0659A
+releaseName(uint256 tokenId)         # owner-only burn + free name (refuses MAIN)
 ```
+
+### Agent-to-agent payment (x402)
+
+Agents pay each other in `$LH` via the x402 "exact" scheme over EIP-712: the paying agent signs an authorization, the X402Facet `settle` verifies it (EOA ecrecover + EIP-1271 for TBA signers, one-shot nonce) and moves `$LH` payer→payee. The bundle signs this automatically inside `call_agent` so an inter-agent call can settle in `$LH`.
 
 ### Registry read functions
 

@@ -7,36 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Credit-proxy subsystem: platform `$LH` credits become the primary path
-to model access, with BYOK (bring-your-own Gemini key) as the second
-option. **All of the following is written and compiling; nothing is
-deployed — the proxy is not live and the new facets are not yet cut
-into the diamond, so they have no on-chain addresses yet.**
+Platform `$LH` credits become the primary path to model access (BYOK
+is the second option), agents pay each other in `$LH` over x402, and a
+batch of registry quality-of-life facets land. **All facets below are
+cut into the testnet diamond (`0x6f2858…2930`, Tempo Moderato, chain
+42431) and the credit proxy is deployed and live.**
 
 ### Added
 
-- **Credit proxy (`proxy/`).** A separate Vercel project — a single
+- **Credit proxy (`proxy/`), deployed.** A separate Vercel project
+  ("proxy") at `https://proxy-tau-ten-15.vercel.app` — a single
   TypeScript Edge Function (`proxy/api/gemini.ts`) that holds the
-  platform Gemini key in its env, authenticates the caller via an
-  Ethereum personal-sign, reads the caller's on-chain credit session,
-  and streams Gemini if the session is live. This is the one accepted
-  off-chain component and the only server in the system; everything
-  else stays Tempo + browser.
-- **RedeemFacet** (`contracts/src/facets/RedeemFacet.sol` +
-  `LibRedeemStorage.sol`). Owner pre-loads `keccak256(code) -> $LH`
-  amounts via `addRedeemCodes(bytes32[],uint256)`; `redeem(string)`
-  mints the mapped `$LH` to the caller through the diamond's
-  `ISSUER_ROLE`. Bootstraps fresh wallets with zero off-chain payment
-  rails. Cut script `script/AddRedeemFacet.s.sol` (not yet run).
-- **SessionFacet** (`contracts/src/facets/SessionFacet.sol` +
-  `LibSessionStorage.sol`). `openSession()` spends `sessionPrice()`
-  `$LH` (via `transferFrom` into the diamond) for a window
-  (`expiry = now + sessionDuration()`); owner-tunable
-  `setSessionPrice` / `setSessionDuration`; view `sessionExpiryOf(address)`
-  that the proxy gates on. Cut script `script/AddSessionFacet.s.sol`
-  (not yet run).
-- **`src/registry.rs` client helpers** for the above: `redeem_sponsored`,
-  `open_session_sponsored`, `session_expiry_of`, `session_price`.
+  platform `GEMINI_API_KEY` in env and is a transparent Gemini
+  passthrough. Auth is an Ethereum personal-sign in the
+  `x-goog-api-key` header (`address:timestamp:signature`); it gates on
+  an active SessionFacet session OR a CreditMeterFacet balance, and in
+  per-request mode debits via the meter key (viem, EIP-1559). The one
+  accepted off-chain component and the only server in the system;
+  everything else stays Tempo + browser. Platform credits are the
+  PRIMARY model; BYOK is the second option.
+- **RedeemFacet** — cut at `0xE64c36553D611fC6a4d625Ebb2b58004Cde4becD`.
+  Owner pre-loads `keccak256(code) -> $LH` amounts via
+  `addRedeemCodes(bytes32[],uint256)`; `redeem(string)` mints the mapped
+  `$LH` to the caller through the diamond's `ISSUER_ROLE`; owner-only
+  `disableRedeemCodes`. Bootstraps fresh wallets with zero off-chain
+  payment rails. Cut via `script/AddRedeemFacet.s.sol`.
+- **SessionFacet** — cut at `0x758d18dC054D77F48A5e9CBC81E313Acd86a7E82`.
+  Coarse time-boxed `$LH` credit sessions: `openSession()` spends
+  `sessionPrice()` `$LH` for a window (`expiry = now +
+  sessionDuration()`); owner-tunable `setSessionPrice` /
+  `setSessionDuration`; view `sessionExpiryOf(address)` the proxy gates
+  on. Currently `sessionDuration = 3600`, `sessionPrice = 0` (free in
+  beta). Cut via `script/AddSessionFacet.s.sol`.
+- **CreditMeterFacet** — cut at
+  `0x925e128139EF1d5e7590C160910822dDcBf3747F`. Fine-grained per-request
+  `$LH` metering: `depositCredits`, `creditOf`, meter-only `meter(...)`,
+  owner-only `setMeter`. Meter key
+  `0xE4E8edB2e0ebbcedCb8D96AA9a62284F873A43B9` is `setMeter`'d + funded.
+  Cut via `script/AddCreditMeterFacet.s.sol`.
+- **X402Facet** — cut at `0xc280bC48dd275bAAd409ea274e6D23A07181EBC9`.
+  True x402 (EIP-712 "exact" scheme) payment settlement in `$LH` for
+  agent-to-agent: `settle` (EOA ecrecover + EIP-1271 verify, one-shot
+  nonce), `authorizationState`, `x402DomainSeparator` (domainSeparator
+  `0x7d8edaacb63589083763f5861d8d35fd6a53ec3de38a80574c44d033e8a0309f`).
+  The bundle's new `src/x402_hook.rs` injects the EIP-712 signer into
+  `call_agent` so inter-agent calls settle in `$LH`. Cut via
+  `script/AddX402Facet.s.sol`.
+- **DeviceRegistryFacet** — cut at
+  `0xeAF3F7d356646C4E01125ca06fc5Dc2A07D40830`. Enumerable linked-device
+  index read in ONE call (`linkDevice` / `unlinkDevice` / `devicesOf` /
+  `isDeviceLinked`), replacing `SignerAdded` log scraping that Tempo's
+  RPC caps at 100k blocks. Cut via `script/AddDeviceRegistryFacet.s.sol`.
+- **ReleaseFacet** — cut at `0xC9290Cd668f3720d27b5AEd3bb77d96693e0659A`.
+  `releaseName(tokenId)`: owner-only burn that frees a name for
+  re-registration; refuses the caller's MAIN. Cut via
+  `script/AddReleaseFacet.s.sol`.
+- **Agent tools `list_subdomains` + `release_subdomain`.**
+  `list_subdomains()` enumerates the owner's holdings (read-only).
+  `release_subdomain(name, confirmation)` is DESTRUCTIVE — burns the
+  name via ReleaseFacet; it requires `confirmation == name` (typed in
+  chat), refuses the owner's MAIN, and is not given to subagents. The
+  system prompt now mandates a typed, never-auto-filled confirmation for
+  any destructive/irreversible action.
+- **`src/registry.rs` client helpers** for all of the above:
+  `redeem_sponsored`, `open_session_sponsored`, `session_expiry_of`,
+  `session_price`, `credit_balance_of`, `deposit_credits_sponsored`,
+  `x402_domain_separator`, `x402_digest`, `sign_x402`,
+  `settle_x402_sponsored`, `x402_authorization_state`, `devices_of`,
+  `is_device_linked`, `consolidate_into_main_sponsored`,
+  `release_name_sponsored`, `release_name_calldata`, `erc20_balance_of`,
+  and `remove_signer_sponsored` (now also unlinks the DeviceRegistry
+  index).
 
 ## [0.16.0] - 2026-05-31
 
