@@ -2817,6 +2817,16 @@ async fn auto_sync_gemini_key(name: String, key: String) {
     let _ = run_sponsored_tempo_call(&owner, vec![call], gas, "auto-sync key").await;
 }
 
+/// Proactively push THIS device's Gemini key to the owner's MAIN slot
+/// on-chain so a just-created subdomain (and every other) inherits it
+/// with no manual re-save. Best-effort + no-op without a local key or the
+/// seed (the seal happens via the apex iframe). Called after a claim.
+pub(crate) async fn sync_local_key_to_main(name: &str) {
+    if let Some(key) = super::key_store::load().await {
+        auto_sync_gemini_key(name.to_string(), key).await;
+    }
+}
+
 /// Try to pull the owner's MAIN Gemini key from chain and decrypt it
 /// with this device's seed (via the apex iframe). On success the key is
 /// saved to this origin's OPFS + sessionStorage and `true` is returned,

@@ -830,12 +830,20 @@ fn create_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 return Err(crate::error::Error::other("invalid name"));
             }
             match super::verify::claim_name_via_iframe(&cleaned).await {
-                Ok((owner, tx_hash)) => Ok(serde_json::json!({
-                    "name": cleaned,
-                    "url": format!("https://{cleaned}.localharness.xyz/"),
-                    "owner": owner,
-                    "tx_hash": tx_hash,
-                })),
+                Ok((owner, tx_hash)) => {
+                    // Proactively push this device's Gemini key to the MAIN
+                    // slot so the new subdomain inherits it (no re-save).
+                    let n = cleaned.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        super::events::sync_local_key_to_main(&n).await;
+                    });
+                    Ok(serde_json::json!({
+                        "name": cleaned,
+                        "url": format!("https://{cleaned}.localharness.xyz/"),
+                        "owner": owner,
+                        "tx_hash": tx_hash,
+                    }))
+                }
                 Err(e) => Err(crate::error::Error::other(format!("claim failed: {e}"))),
             }
         },
