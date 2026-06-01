@@ -66,13 +66,16 @@ pub(crate) async fn run_send() {
     // the DOM when admin is open. Fall back to sessionStorage (sync)
     // and then OPFS (async) so the user can send without keeping
     // admin open just to host the input field.
-    let key = match read_api_key().await {
-        Some(k) => k,
+    // Resolve how this turn reaches the model: platform credits (proxy
+    // auth token + proxy base URL) or BYOK (the stored Gemini key).
+    let access = match resolve_credit_access().await {
+        Some(a) => a,
         None => {
             super::show_api_key_modal();
             return;
         }
     };
+    let key = access.cfg_auth;
 
     let prompt = prompt_area.value().trim().to_string();
     if prompt.is_empty() {
@@ -110,18 +113,21 @@ pub(crate) async fn run_send() {
         }
     }
 
-    // Cache the key in sessionStorage so a refresh doesn't lose it.
-    if let Ok(Some(storage)) = dom::session_storage() {
-        let _ = storage.set_item("gemini_api_key", &key);
+    // Cache the BYOK key so a refresh doesn't lose it. Credits tokens
+    // rotate per resolve and carry nothing worth caching.
+    if access.base_url.is_none() {
+        if let Ok(Some(storage)) = dom::session_storage() {
+            let _ = storage.set_item("gemini_api_key", &key);
+        }
     }
 
-    // Lazily start the session if we have none, or the key changed.
+    // Lazily start the session if we have none, or the identity changed.
     let session_needs_start = APP.with(|cell| {
         let app = cell.borrow();
-        app.agent.is_none() || app.session_key.as_deref() != Some(key.as_str())
+        app.agent.is_none() || app.session_key.as_deref() != Some(access.identity.as_str())
     });
     if session_needs_start {
-        if let Err(err) = start_session(&key).await {
+        if let Err(err) = start_session(&key, access.base_url.clone(), &access.identity).await {
             dom::set_status(&format!("session start failed: {err:?}"), true);
             return;
         }
@@ -324,7 +330,11 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
     }
 }
 
-pub(crate) async fn start_session(key: &str) -> Result<(), JsValue> {
+pub(crate) async fn start_session(
+    key: &str,
+    base_url: Option<url::Url>,
+    identity: &str,
+) -> Result<(), JsValue> {
     // System instruction — the agent needs to know what it's running
     // inside and what its filesystem looks like. Without this, prompts
     // like "what is pricing" produce blind tool calls because the
@@ -485,7 +495,12 @@ pub(crate) async fn start_session(key: &str) -> Result<(), JsValue> {
         .with_system_instructions(system_instructions)
         .with_tool(create_subdomain_tool())
         .with_tool(submit_feedback_tool())
-        .with_tool(spawn_recursive_subagent_tool(captured_key));
+        .with_tool(spawn_recursive_subagent_tool(captured_key, base_url.clone()));
+    // Credits mode: route the whole agent through the credit proxy. BYOK
+    // leaves base_url None → direct to generativelanguage.googleapis.com.
+    if let Some(b) = &base_url {
+        cfg = cfg.with_base_url(b.clone());
+    }
     // If a previous session left history on OPFS, restore it into the
     // new connection. Consumed once — subsequent key changes start
     // fresh from the in-memory agent's history.
@@ -498,7 +513,9 @@ pub(crate) async fn start_session(key: &str) -> Result<(), JsValue> {
     APP.with(|cell| {
         let mut app = cell.borrow_mut();
         app.agent = Some(Rc::new(agent));
-        app.session_key = Some(key.to_string());
+        // Stable identity (address in credits mode, key in BYOK) — NOT the
+        // rotating credits token, so the session isn't restarted per turn.
+        app.session_key = Some(identity.to_string());
         app.turn_count = 0;
     });
     Ok(())
@@ -587,6 +604,102 @@ async fn collect_payment_if_required() -> Result<Option<String>, String> {
     .map_err(|e| format!("payment: {e}"))?;
 
     Ok(Some(tx_hash))
+}
+
+/// The localharness credit proxy origin — a drop-in Gemini base URL
+/// (its `vercel.json` rewrites `/v1beta/*` onto the edge fn). PLACEHOLDER:
+/// point this at the deployed proxy project before credits mode works.
+const CREDIT_PROXY_URL: &str = "https://proxy-tau-ten-15.vercel.app/";
+
+/// True when the user has opted into platform `$LH` credits (via the
+/// proxy). Persisted in localStorage; defaults to BYOK so nothing
+/// changes until the user flips it.
+pub(crate) fn model_access_is_credits() -> bool {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|s| s.get_item("lh_model_access").ok().flatten())
+        .map(|v| v == "credits")
+        .unwrap_or(false)
+}
+
+/// Resolved model access for a chat session.
+struct ModelAccess {
+    /// Goes in the GeminiClient api-key slot: a Gemini key (BYOK) or the
+    /// credit-proxy auth token (credits).
+    cfg_auth: String,
+    /// Proxy base URL in credits mode; `None` for BYOK (direct to Google).
+    base_url: Option<url::Url>,
+    /// STABLE restart-detection identity — never the rotating credits
+    /// token (which changes every resolve).
+    identity: String,
+}
+
+/// Lowercase 0x-hex of bytes.
+fn hex_of(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(2 + bytes.len() * 2);
+    s.push_str("0x");
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// The LOCAL signing key for the credit path — master wallet on the
+/// apex / seed-bearing origin, else a local per-origin key (loaded or
+/// generated + persisted on first use). NEVER the cross-origin iframe
+/// signer: the whole credit path is iframe-free.
+pub(crate) async fn credit_signer() -> Option<(k256::ecdsa::SigningKey, [u8; 20])> {
+    if let Some(pair) =
+        APP.with(|c| c.borrow().wallet.as_ref().map(|w| (w.signer.clone(), w.address)))
+    {
+        return Some(pair);
+    }
+    if let Some(sk) = super::wallet_store::load_device_key().await {
+        let addr = crate::wallet::address(&sk);
+        return Some((sk, addr));
+    }
+    let w = crate::wallet::generate();
+    super::wallet_store::persist_device_key(&w.private_key_hex)
+        .await
+        .ok()?;
+    // `w` is Drop (zeroizes its hex) — clone the signer, copy the address.
+    Some((w.signer.clone(), w.address))
+}
+
+/// The credit identity's 0x address if one already exists locally —
+/// does NOT generate (so status refreshes don't mint a key). master
+/// wallet, else a persisted device key, else None.
+pub(crate) async fn credit_address_existing() -> Option<String> {
+    if let Some(a) = APP.with(|c| c.borrow().wallet.as_ref().map(|w| w.address_hex())) {
+        return Some(a);
+    }
+    let sk = super::wallet_store::load_device_key().await?;
+    Some(hex_of(&crate::wallet::address(&sk)))
+}
+
+/// Resolve how this turn reaches the model. Credits mode mints a fresh
+/// proxy auth token `address:timestamp:signature` (personal-signed by
+/// the local key); BYOK falls back to the stored Gemini key. `None`
+/// only when BYOK has no key (caller then shows the key modal).
+async fn resolve_credit_access() -> Option<ModelAccess> {
+    if model_access_is_credits() {
+        let (signer, addr) = credit_signer().await?;
+        let addr_hex = hex_of(&addr); // lowercase 0x — matches the proxy
+        let ts = (js_sys::Date::now() / 1000.0) as u64;
+        let msg = format!("localharness-proxy:{addr_hex}:{ts}");
+        let sig = crate::wallet::personal_sign(&signer, msg.as_bytes());
+        return Some(ModelAccess {
+            cfg_auth: format!("{addr_hex}:{ts}:{}", hex_of(&sig)),
+            base_url: url::Url::parse(CREDIT_PROXY_URL).ok(),
+            identity: format!("credits:{addr_hex}"),
+        });
+    }
+    let key = read_api_key().await?;
+    Some(ModelAccess {
+        cfg_auth: key.clone(),
+        base_url: None,
+        identity: key,
+    })
 }
 
 /// Read the api key with graceful fallback. Tries the live `#key`
@@ -772,7 +885,10 @@ fn submit_feedback_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// conversation context (no shared history with the parent), so recursion
 /// is bounded by the user's wallet (Gemini cost grows with depth, that's
 /// the natural limiter).
-fn spawn_recursive_subagent_tool(api_key: String) -> std::sync::Arc<dyn crate::tools::Tool> {
+fn spawn_recursive_subagent_tool(
+    api_key: String,
+    base_url: Option<url::Url>,
+) -> std::sync::Arc<dyn crate::tools::Tool> {
     let schema = serde_json::json!({
         "type": "object",
         "properties": {
@@ -800,6 +916,7 @@ fn spawn_recursive_subagent_tool(api_key: String) -> std::sync::Arc<dyn crate::t
         schema,
         move |args: serde_json::Value, _ctx| {
             let api_key = api_key.clone();
+            let base_url = base_url.clone();
             async move {
                 let system = args
                     .get("system_instructions")
@@ -811,13 +928,17 @@ fn spawn_recursive_subagent_tool(api_key: String) -> std::sync::Arc<dyn crate::t
                         "spawn_recursive_subagent: prompt cannot be empty",
                     ));
                 }
-                let cfg = GeminiAgentConfig::new(api_key.clone())
+                let mut cfg = GeminiAgentConfig::new(api_key.clone())
                     .with_capabilities(CapabilitiesConfig::unrestricted())
                     .with_policies(vec![policy::allow_all()])
                     .with_filesystem(super::shared_opfs())
                     .with_system_instructions(system.to_string())
                     .with_tool(create_subdomain_tool())
-                    .with_tool(spawn_recursive_subagent_tool(api_key.clone()));
+                    .with_tool(spawn_recursive_subagent_tool(api_key.clone(), base_url.clone()));
+                // Credits mode: subagents reach Gemini through the same proxy.
+                if let Some(b) = &base_url {
+                    cfg = cfg.with_base_url(b.clone());
+                }
                 let sub = Agent::start_gemini(cfg)
                     .await
                     .map_err(|e| crate::error::Error::other(format!("start_gemini: {e}")))?;

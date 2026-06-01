@@ -5,6 +5,39 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Credit-proxy subsystem: platform `$LH` credits become the primary path
+to model access, with BYOK (bring-your-own Gemini key) as the second
+option. **All of the following is written and compiling; nothing is
+deployed — the proxy is not live and the new facets are not yet cut
+into the diamond, so they have no on-chain addresses yet.**
+
+### Added
+
+- **Credit proxy (`proxy/`).** A separate Vercel project — a single
+  TypeScript Edge Function (`proxy/api/gemini.ts`) that holds the
+  platform Gemini key in its env, authenticates the caller via an
+  Ethereum personal-sign, reads the caller's on-chain credit session,
+  and streams Gemini if the session is live. This is the one accepted
+  off-chain component and the only server in the system; everything
+  else stays Tempo + browser.
+- **RedeemFacet** (`contracts/src/facets/RedeemFacet.sol` +
+  `LibRedeemStorage.sol`). Owner pre-loads `keccak256(code) -> $LH`
+  amounts via `addRedeemCodes(bytes32[],uint256)`; `redeem(string)`
+  mints the mapped `$LH` to the caller through the diamond's
+  `ISSUER_ROLE`. Bootstraps fresh wallets with zero off-chain payment
+  rails. Cut script `script/AddRedeemFacet.s.sol` (not yet run).
+- **SessionFacet** (`contracts/src/facets/SessionFacet.sol` +
+  `LibSessionStorage.sol`). `openSession()` spends `sessionPrice()`
+  `$LH` (via `transferFrom` into the diamond) for a window
+  (`expiry = now + sessionDuration()`); owner-tunable
+  `setSessionPrice` / `setSessionDuration`; view `sessionExpiryOf(address)`
+  that the proxy gates on. Cut script `script/AddSessionFacet.s.sol`
+  (not yet run).
+- **`src/registry.rs` client helpers** for the above: `redeem_sponsored`,
+  `open_session_sponsored`, `session_expiry_of`, `session_price`.
+
 ## [0.16.0] - 2026-05-31
 
 Public-face platform pass: every subdomain now cleanly separates its

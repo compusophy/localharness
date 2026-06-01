@@ -80,6 +80,14 @@ enum Action {
     /// Set this subdomain's public face: "directory", "app", or "html".
     /// "app"/"html" also publish the device's local app.rl/index.html.
     SetPublicFace(String),
+    /// Choose how the agent reaches the model: "credits" or "byok".
+    SetModelAccess(String),
+    /// Open (or renew) the caller's on-chain credit session.
+    OpenSession,
+    /// Redeem a one-time code for `$LH` credits.
+    RedeemCode,
+    /// Prepay `$LH` into the per-request credit meter.
+    DepositCredits,
 }
 
 impl Action {
@@ -138,6 +146,10 @@ impl Action {
             "toggle-display" => Action::ToggleDisplay,
             "stop-turn" => Action::StopTurn,
             "set-public-face" => Action::SetPublicFace(arg.unwrap_or_default()),
+            "set-model-access" => Action::SetModelAccess(arg.unwrap_or_default()),
+            "open-session" => Action::OpenSession,
+            "redeem-code" => Action::RedeemCode,
+            "deposit-credits" => Action::DepositCredits,
             _ => return None,
         })
     }
@@ -970,6 +982,10 @@ fn dispatch(action: Action) {
         Action::SaveToolAllowlist => save_tool_allowlist_pressed(),
         Action::ResetToolAllowlist => reset_tool_allowlist_pressed(),
         Action::SaveApiKey => save_api_key_pressed(),
+        Action::SetModelAccess(mode) => run_set_model_access(mode),
+        Action::OpenSession => open_session_pressed(),
+        Action::RedeemCode => redeem_code_pressed(),
+        Action::DepositCredits => deposit_credits_pressed(),
     }
 }
 
@@ -1259,13 +1275,246 @@ fn agent_send_lh_pressed(token_id_str: String) {
 /// `#credits-balance`. Called on admin-open. Soft-fail — leaves the
 /// placeholder on error so the UI stays clean.
 pub(crate) async fn refresh_credits_pill() {
-    let addr = super::APP.with(|cell| {
-        cell.borrow().wallet.as_ref().map(|w| w.address_hex())
+    // Use the credit identity (master wallet, else local device key) so
+    // the balance + session reflect what the proxy will actually see.
+    let Some(addr) = super::chat::credit_address_existing().await else { return };
+    if let Ok(balance_wei) = super::registry::token_balance_of(&addr).await {
+        let lh = balance_wei / 1_000_000_000_000_000_000u128;
+        dom::swap_inner("credits-balance", &format!("{lh} LH"));
+    }
+    // Credit-session window the proxy gates on.
+    if let Ok(expiry) = super::registry::session_expiry_of(&addr).await {
+        let now = (js_sys::Date::now() / 1000.0) as u64;
+        let msg = if expiry > now {
+            format!("session active · ~{} min left", (expiry - now) / 60)
+        } else {
+            "no active session".to_string()
+        };
+        dom::swap_inner("session-status", &msg);
+    }
+    // Per-request metered balance (CreditMeterFacet).
+    if let Ok(meter) = super::registry::credit_balance_of(&addr).await {
+        let lh = meter / 1_000_000_000_000_000_000u128;
+        dom::swap_inner("meter-balance", &format!("{lh} LH metered"));
+    }
+    warn_if_sponsor_low().await;
+}
+
+/// Soft per-origin sponsored-tx rate cap — a testnet abuse guard. Rolling
+/// window kept in localStorage; bypassable (clear storage) but bounds
+/// runaway loops + casual drain. The real mainnet fix is the sponsor-key
+/// rewrite. Returns Err when the window is saturated.
+const SPONSOR_RL_WINDOW_SECS: u64 = 3600;
+const SPONSOR_RL_MAX: usize = 60;
+
+fn sponsor_rate_guard() -> Result<(), String> {
+    let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) else {
+        return Ok(()); // no storage available → don't block the user
+    };
+    let now = (js_sys::Date::now() / 1000.0) as u64;
+    let prev = storage
+        .get_item("lh_sponsor_rl")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let mut stamps: Vec<u64> = prev
+        .split(',')
+        .filter_map(|s| s.trim().parse::<u64>().ok())
+        .filter(|t| now.saturating_sub(*t) < SPONSOR_RL_WINDOW_SECS)
+        .collect();
+    if stamps.len() >= SPONSOR_RL_MAX {
+        return Err("too many sponsored actions in a short window — wait a bit".into());
+    }
+    stamps.push(now);
+    let joined = stamps
+        .iter()
+        .map(|t| t.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let _ = storage.set_item("lh_sponsor_rl", &joined);
+    Ok(())
+}
+
+/// Best-effort sponsor fee-token balance monitor — warns in the console
+/// when the shared sponsor wallet runs low so the operator can refill.
+/// Cheap single eth_call; never blocks.
+pub(crate) async fn warn_if_sponsor_low() {
+    const LOW_THRESHOLD_WEI: u128 = 5_000_000_000_000_000_000; // ~5 AlphaUSD
+    let Ok(signer) = super::sponsor::signer() else {
+        return;
+    };
+    let addr = crate::wallet::address(&signer);
+    let addr_hex = format!(
+        "0x{}",
+        addr.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    );
+    if let Ok(bal) =
+        super::registry::erc20_balance_of(super::registry::ALPHA_USD_ADDRESS, &addr_hex).await
+    {
+        if bal < LOW_THRESHOLD_WEI {
+            let whole = bal / 1_000_000_000_000_000_000u128;
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "sponsor fee-token LOW: ~{whole} AlphaUSD at {addr_hex} — refill soon"
+            )));
+        }
+    }
+}
+
+/// Flip platform-credits vs BYOK, persist it, and repaint the section.
+fn run_set_model_access(mode: String) {
+    if let Some(storage) =
+        web_sys::window().and_then(|w| w.local_storage().ok().flatten())
+    {
+        let _ = storage.set_item("lh_model_access", &mode);
+    }
+    dom::swap_outer(
+        "credits-section",
+        &super::templates::admin_credits_section().into_string(),
+    );
+    wasm_bindgen_futures::spawn_local(async {
+        refresh_credits_pill().await;
     });
-    let Some(addr) = addr else { return };
-    let Ok(balance_wei) = super::registry::token_balance_of(&addr).await else { return };
-    let lh = balance_wei / 1_000_000_000_000_000_000u128;
-    dom::swap_inner("credits-balance", &format!("{lh} LH"));
+}
+
+/// Open (or renew) the caller's credit session — local key signs the
+/// sponsored tx (no iframe), sponsor pays fees.
+fn open_session_pressed() {
+    dom::swap_inner(
+        "credits-msg",
+        "<span style=\"color:var(--muted)\">opening session…</span>",
+    );
+    wasm_bindgen_futures::spawn_local(async move {
+        let result = async {
+            sponsor_rate_guard()?;
+            let (signer, _) = super::chat::credit_signer()
+                .await
+                .ok_or_else(|| "no identity".to_string())?;
+            let fee_payer = super::sponsor::signer()?;
+            super::registry::open_session_sponsored(
+                &signer,
+                &fee_payer,
+                super::registry::ALPHA_USD_ADDRESS,
+            )
+            .await
+        }
+        .await;
+        match result {
+            Ok(_) => {
+                dom::swap_inner(
+                    "credits-msg",
+                    "<span style=\"color:var(--muted)\">session opened</span>",
+                );
+                refresh_credits_pill().await;
+            }
+            Err(e) => {
+                web_sys::console::warn_1(&JsValue::from_str(&format!("open session: {e}")));
+                dom::swap_inner(
+                    "credits-msg",
+                    "<span style=\"color:var(--error)\">couldn't open session</span>",
+                );
+            }
+        }
+    });
+}
+
+/// Redeem a one-time code for `$LH` — local key signs, sponsor pays.
+fn redeem_code_pressed() {
+    let Some(input) = dom::input_by_id("redeem-code") else { return };
+    let code = input.value().trim().to_string();
+    if code.is_empty() {
+        return;
+    }
+    dom::swap_inner(
+        "credits-msg",
+        "<span style=\"color:var(--muted)\">redeeming…</span>",
+    );
+    wasm_bindgen_futures::spawn_local(async move {
+        let result = async {
+            sponsor_rate_guard()?;
+            let (signer, _) = super::chat::credit_signer()
+                .await
+                .ok_or_else(|| "no identity".to_string())?;
+            let fee_payer = super::sponsor::signer()?;
+            super::registry::redeem_sponsored(
+                &signer,
+                &fee_payer,
+                &code,
+                super::registry::ALPHA_USD_ADDRESS,
+            )
+            .await
+        }
+        .await;
+        match result {
+            Ok(_) => {
+                dom::swap_inner(
+                    "credits-msg",
+                    "<span style=\"color:var(--muted)\">redeemed</span>",
+                );
+                refresh_credits_pill().await;
+            }
+            Err(e) => {
+                web_sys::console::warn_1(&JsValue::from_str(&format!("redeem: {e}")));
+                dom::swap_inner(
+                    "credits-msg",
+                    "<span style=\"color:var(--error)\">redeem failed</span>",
+                );
+            }
+        }
+    });
+}
+
+/// Prepay `$LH` into the per-request credit meter (whole-LH amount).
+fn deposit_credits_pressed() {
+    let Some(input) = dom::input_by_id("deposit-amount") else {
+        return;
+    };
+    // Silent no-op on empty/invalid (no explanatory-validation text).
+    let Ok(whole) = input.value().trim().parse::<u128>() else {
+        return;
+    };
+    if whole == 0 {
+        return;
+    }
+    let Some(amount_wei) = whole.checked_mul(1_000_000_000_000_000_000u128) else {
+        return;
+    };
+    dom::swap_inner(
+        "credits-msg",
+        "<span style=\"color:var(--muted)\">depositing…</span>",
+    );
+    wasm_bindgen_futures::spawn_local(async move {
+        let result = async {
+            sponsor_rate_guard()?;
+            let (signer, _) = super::chat::credit_signer()
+                .await
+                .ok_or_else(|| "no identity".to_string())?;
+            let fee_payer = super::sponsor::signer()?;
+            super::registry::deposit_credits_sponsored(
+                &signer,
+                &fee_payer,
+                amount_wei,
+                super::registry::ALPHA_USD_ADDRESS,
+            )
+            .await
+        }
+        .await;
+        match result {
+            Ok(_) => {
+                dom::swap_inner(
+                    "credits-msg",
+                    "<span style=\"color:var(--muted)\">credits added</span>",
+                );
+                refresh_credits_pill().await;
+            }
+            Err(e) => {
+                web_sys::console::warn_1(&JsValue::from_str(&format!("deposit: {e}")));
+                dom::swap_inner(
+                    "credits-msg",
+                    "<span style=\"color:var(--error)\">deposit failed</span>",
+                );
+            }
+        }
+    });
 }
 
 async fn refresh_signer_list() {
@@ -1693,6 +1942,7 @@ pub(crate) async fn run_sponsored_tempo_call(
     gas_limit: u128,
     purpose: &str,
 ) -> Result<String, String> {
+    sponsor_rate_guard()?;
     let sender_address = parse_address(from_hex)?;
     let fee_token_addr = parse_address(super::registry::ALPHA_USD_ADDRESS)?;
     let nonce = super::registry::next_nonce(from_hex).await

@@ -889,6 +889,24 @@ pub async fn token_balance_of(holder_hex: &str) -> Result<u128, String> {
     decode_u256_as_u128(&result)
 }
 
+/// `balanceOf(holder)` on an arbitrary ERC-20/TIP-20 token. Used by the
+/// sponsor balance monitor to read the sponsor's fee-token (AlphaUSD)
+/// balance and warn when it runs low.
+pub async fn erc20_balance_of(token_hex: &str, holder_hex: &str) -> Result<u128, String> {
+    let holder_bytes = hex_to_bytes(holder_hex)?;
+    if holder_bytes.len() != 20 {
+        return Err(format!("holder must be 20 bytes, got {}", holder_bytes.len()));
+    }
+    let mut padded = [0u8; 32];
+    padded[12..].copy_from_slice(&holder_bytes);
+    let mut calldata = Vec::with_capacity(36);
+    calldata.extend_from_slice(&selector("balanceOf(address)"));
+    calldata.extend_from_slice(&padded);
+    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
+    let result = eth_call(token_hex, &calldata_hex).await?;
+    decode_u256_as_u128(&result)
+}
+
 // `token_faucet_self` removed in 2026-05-26 token migration — the
 // new credit token has no `faucet(address)` method. Use
 // `claim_daily_sponsored` against the diamond instead.
@@ -1187,15 +1205,21 @@ pub async fn add_signer_sponsored(
         value_wei: 0,
         input: encode_add_signer(&new_signer),
     };
-    // createTokenBoundAccount ~250k inner (CREATE2 + storage) when
-    // first-deploying; near-zero on idempotent reruns. addSigner is
-    // a single SSTORE + event (~50k). Plus ~275k Tempo sponsorship.
+    // createTokenBoundAccount first-deploys the MultiSignerAccount via
+    // CREATE2 — live-measured at ~742k gas (full contract bytecode +
+    // storage), NOT the ~250k an earlier note assumed; near-zero on
+    // idempotent reruns. addSigner is a single SSTORE + event (~50k).
+    // Plus ~275k Tempo sponsorship. First-time pairing therefore needs
+    // ~1.07M, which overflowed the old 1M limit and reverted out-of-gas
+    // (the TBA never deployed). 2M gives comfortable headroom; the
+    // sponsor is billed on gas USED, not the limit, so the ceiling is
+    // free on the cheap idempotent path.
     submit_tempo_sponsored(
         sender,
         fee_payer,
         vec![create_call, add_call],
         fee_token,
-        1_000_000,
+        2_000_000,
     )
     .await
 }
@@ -1605,10 +1629,14 @@ pub async fn tba_transfer_lh_sponsored(
         0,
         transfer_data,
         fee_token,
-        // create TBA (~250k idempotent) + execute (~30k) + inner
-        // ERC-20 transfer (~52k) + Tempo sponsorship (~275k). 800k
-        // comfortable.
-        800_000,
+        // create TBA — ~742k live-measured on a COLD first deploy
+        // (CREATE2 of the full MultiSignerAccount), near-zero idempotent
+        // thereafter — + execute (~30k) + inner ERC-20 transfer (~52k) +
+        // Tempo sponsorship (~275k). A first transfer from an
+        // undeployed TBA needs ~1.1M, so 800k would revert out-of-gas;
+        // 2M covers the cold path and is free on the warm one (sponsor
+        // billed on gas USED, not the limit).
+        2_000_000,
     )
     .await
 }
@@ -1760,6 +1788,168 @@ pub async fn claim_and_maybe_set_main_sponsored(
         }
     }
     Ok(tx_hash)
+}
+
+// --- Redeem codes + credit sessions ----------------------------------
+//
+// These back the `$LH` credit-proxy bootstrap: `redeem` mints credits
+// from a one-time code (RedeemFacet), `open_session` spends credits to
+// open a time-bounded usage session the Vercel Edge proxy reads via
+// `session_expiry_of` on every request (SessionFacet). See
+// `[[project-credit-proxy-monetization]]`.
+
+/// Encode `redeem(string)` calldata. Same dynamic-string ABI shape as
+/// `encode_register`.
+fn encode_redeem(code: &str) -> Vec<u8> {
+    let sel = selector("redeem(string)");
+    let bytes = code.as_bytes();
+    let len = bytes.len();
+    let padded_len = len.div_ceil(32) * 32;
+
+    let mut buf = Vec::with_capacity(4 + 32 + 32 + padded_len);
+    buf.extend_from_slice(&sel);
+    buf.extend_from_slice(&u256_be(0x20));
+    buf.extend_from_slice(&u256_be(len as u128));
+    buf.extend_from_slice(bytes);
+    buf.resize(4 + 32 + 32 + padded_len, 0);
+    buf
+}
+
+/// Redeem a one-time code for `$LH`, via a sponsored Tempo tx so the
+/// caller needs zero balance. The plaintext `code` is hashed on-chain
+/// (`keccak256`) and matched against the owner-loaded set; the credits
+/// are minted to `sender`.
+pub async fn redeem_sponsored(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    code: &str,
+    fee_token: &str,
+) -> Result<String, String> {
+    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
+    let call = crate::tempo_tx::TempoCall {
+        to: diamond_addr,
+        value_wei: 0,
+        input: encode_redeem(code),
+    };
+    // redeem is a single SSTORE (claimed flag) + a mint on the credits
+    // token + an event; ~120k inner. Plus ~275k sponsorship. 600k is
+    // comfortable; sponsor is billed on gas used, not the limit.
+    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 600_000).await
+}
+
+/// Read `sessionExpiryOf(address)` — unix-seconds expiry of the
+/// account's current credit session (0 / past = none). The credit
+/// proxy makes this same call on every request.
+pub async fn session_expiry_of(account_hex: &str) -> Result<u64, String> {
+    if REGISTRY_ADDRESS == zero_address() {
+        return Ok(0);
+    }
+    let account = parse_eth_address(account_hex)?;
+    let mut padded = [0u8; 32];
+    padded[12..].copy_from_slice(&account);
+    let mut calldata = Vec::with_capacity(4 + 32);
+    calldata.extend_from_slice(&selector("sessionExpiryOf(address)"));
+    calldata.extend_from_slice(&padded);
+    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
+    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    decode_u256_as_u64(&result)
+}
+
+/// Read `sessionPrice()` — `$LH` (wei) required to open one session.
+pub async fn session_price() -> Result<u128, String> {
+    if REGISTRY_ADDRESS == zero_address() {
+        return Ok(0);
+    }
+    let calldata = format!("0x{}", bytes_to_hex(&selector("sessionPrice()")));
+    let result = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    decode_u256_as_u128(&result)
+}
+
+/// Open (or renew) the caller's credit session via a sponsored Tempo
+/// tx. When `sessionPrice()` is non-zero, batches a
+/// `LocalharnessCredits.approve(diamond, price)` call BEFORE
+/// `openSession()` in the same tx — `openSession` then pulls the
+/// credits via `transferFrom` inside its own body (same cost-gate
+/// pattern as `register`).
+pub async fn open_session_sponsored(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    fee_token: &str,
+) -> Result<String, String> {
+    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
+    let token_addr = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
+
+    let price = session_price().await.unwrap_or(0);
+
+    let open_call = crate::tempo_tx::TempoCall {
+        to: diamond_addr,
+        value_wei: 0,
+        input: selector("openSession()").to_vec(),
+    };
+
+    let calls = if price > 0 {
+        let approve_call = crate::tempo_tx::TempoCall {
+            to: token_addr,
+            value_wei: 0,
+            input: encode_approve(&diamond_addr, price),
+        };
+        vec![approve_call, open_call]
+    } else {
+        vec![open_call]
+    };
+
+    // approve (~46k) + openSession (transferFrom + 1 SSTORE + event,
+    // ~90k) + ~275k sponsorship. 600k headroom.
+    submit_tempo_sponsored(sender, fee_payer, calls, fee_token, 600_000).await
+}
+
+fn encode_deposit_credits(amount_wei: u128) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + 32);
+    out.extend_from_slice(&selector("depositCredits(uint256)"));
+    out.extend_from_slice(&u256_be(amount_wei));
+    out
+}
+
+/// Read `creditOf(address)` — the user's prepaid per-request `$LH`
+/// balance in the credit meter (the proxy reads this to gate a call).
+pub async fn credit_balance_of(account_hex: &str) -> Result<u128, String> {
+    if REGISTRY_ADDRESS == zero_address() {
+        return Ok(0);
+    }
+    let account = parse_eth_address(account_hex)?;
+    let mut padded = [0u8; 32];
+    padded[12..].copy_from_slice(&account);
+    let mut calldata = Vec::with_capacity(4 + 32);
+    calldata.extend_from_slice(&selector("creditOf(address)"));
+    calldata.extend_from_slice(&padded);
+    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
+    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    decode_u256_as_u128(&result)
+}
+
+/// Prepay `$LH` into the per-request credit meter via a sponsored Tempo
+/// tx — batches `approve(diamond, amount)` + `depositCredits(amount)`
+/// (same cost-gate shape as `open_session_sponsored`).
+pub async fn deposit_credits_sponsored(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    amount_wei: u128,
+    fee_token: &str,
+) -> Result<String, String> {
+    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
+    let token_addr = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
+    let approve_call = crate::tempo_tx::TempoCall {
+        to: token_addr,
+        value_wei: 0,
+        input: encode_approve(&diamond_addr, amount_wei),
+    };
+    let deposit_call = crate::tempo_tx::TempoCall {
+        to: diamond_addr,
+        value_wei: 0,
+        input: encode_deposit_credits(amount_wei),
+    };
+    submit_tempo_sponsored(sender, fee_payer, vec![approve_call, deposit_call], fee_token, 600_000)
+        .await
 }
 
 #[cfg(target_arch = "wasm32")]

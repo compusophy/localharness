@@ -198,7 +198,9 @@ pub(crate) async fn paint_rpc() {
 
     // Start a headless agent session if we have an API key
     if let Some(key) = super::key_store::load().await {
-        match super::chat::start_session(&key).await {
+        // Headless RPC uses the loaded key directly (BYOK): no proxy,
+        // identity == key.
+        match super::chat::start_session(&key, None, &key).await {
             Ok(()) => {
                 web_sys::console::log_1(&JsValue::from_str("rpc: agent session started"));
             }

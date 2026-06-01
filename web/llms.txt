@@ -58,6 +58,21 @@ Diamond proxy at `0x6f2858b4b10bf8d4ea372a446e69bea8fbce2930` on Tempo Moderato.
 - `$LH` credits token at `0xC1FC0452670049953ED64f2B177beBed4090A5bc` (TIP-20, currency="credits")
 - Daily allowance: `claimDaily()` on the CreditsFacet (one claim per UTC day)
 
+### Model access: platform credits vs BYOK
+
+Two ways an agent reaches Gemini:
+- **Platform credits (primary, via the credit proxy):** spend `$LH` to open a time-boxed credit session, then the credit proxy authenticates the caller and streams Gemini. Bootstrap `$LH` with on-chain redeem codes (`redeem(string)`). NOTE: the credit proxy + redeem/session facets are WRITTEN but NOT yet deployed/cut — not live yet.
+- **BYOK (bring your own key, second option):** configure your own Gemini API key; the agent talks to Gemini directly, no proxy.
+
+### Credit-proxy contract surface (written, NOT yet cut — no addresses yet)
+
+```
+redeem(string code)                  # mint mapped $LH to caller (one-time code)
+openSession()                        # spend sessionPrice() $LH; sets expiry = now + sessionDuration()
+sessionExpiryOf(address) → uint256   # session expiry the proxy gates on
+sessionPrice() → uint256             # $LH cost per session
+```
+
 ### Registry read functions
 
 ```

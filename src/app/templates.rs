@@ -823,11 +823,43 @@ fn admin_identity_section(
 /// future direction is continuous streaming + a subscription, not a manual
 /// daily claim).
 pub(crate) fn admin_credits_section() -> Markup {
+    // Read the chosen mode for the active highlight. Defaults to BYOK.
+    let credits = web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|s| s.get_item("lh_model_access").ok().flatten())
+        .map(|v| v == "credits")
+        .unwrap_or(false);
     html! {
-        div.admin-section {
-            div.admin-section-title { "credits" }
-            div.admin-credits-row {
-                code #credits-balance .admin-identity-value { "…" }
+        div #credits-section .admin-section {
+            div.admin-section-title { "model access" }
+            div #model-access-row .admin-credits-row {
+                button type="button" data-action="set-model-access" data-arg="byok"
+                    class=(if credits { "ghost" } else { "ghost active" }) { "your own key" }
+                button type="button" data-action="set-model-access" data-arg="credits"
+                    class=(if credits { "ghost active" } else { "ghost" }) { "platform credits" }
+            }
+            @if credits {
+                div.admin-section-title { "credits" }
+                div.admin-credits-row {
+                    code #credits-balance .admin-identity-value { "…" }
+                }
+                div #session-status .admin-msg-slot { "…" }
+                div.pair-slot {
+                    button #open-session-btn type="button" data-action="open-session" .ghost {
+                        "open session"
+                    }
+                }
+                div.redeem-row {
+                    input #redeem-code .redeem-input type="text" placeholder="redeem code";
+                    button type="button" data-action="redeem-code" .ghost { "redeem" }
+                }
+                div.admin-section-title { "per-request" }
+                div #meter-balance .admin-msg-slot { "…" }
+                div.redeem-row {
+                    input #deposit-amount .redeem-input type="text" placeholder="amount (LH)";
+                    button type="button" data-action="deposit-credits" .ghost { "add credits" }
+                }
+                div #credits-msg .admin-msg-slot {}
             }
         }
     }

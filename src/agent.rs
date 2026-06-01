@@ -212,6 +212,14 @@ impl GeminiAgentConfig {
         self
     }
 
+    /// Route requests through an alternate base URL (e.g. the
+    /// localharness credit proxy) instead of Google's endpoint. In
+    /// credits mode the api key carries the proxy auth token.
+    pub fn with_base_url(mut self, url: url::Url) -> Self {
+        self.gemini = self.gemini.with_base_url(url);
+        self
+    }
+
     /// Plug in a custom [`Filesystem`] impl for the 6 fs built-ins.
     /// Without this, native builds use `NativeFilesystem`; wasm builds
     /// have no filesystem and the fs builtins skip registration.

@@ -103,9 +103,19 @@ pub(crate) async fn forget() {
 const DEVICE_KEY_FILE: &str = ".lh_device_key";
 
 /// Persist a device signer's private key (hex) to this origin's OPFS.
+///
+/// Encrypted at rest with the per-origin device key (see
+/// [`super::encryption`]) — same model as the API key / history: OPFS
+/// holds ciphertext, doesn't defend against XSS, and is safe to lose
+/// (re-pair / re-open a session, not an identity-loss like the seed
+/// would be — which is why the seed is deliberately left plaintext).
 pub(crate) async fn persist_device_key(private_key_hex: &str) -> Result<(), String> {
     let fs = super::shared_opfs();
-    fs.write_atomic(DEVICE_KEY_FILE, private_key_hex.as_bytes())
+    let bytes = private_key_hex.as_bytes();
+    let data = super::encryption::seal(bytes)
+        .await
+        .unwrap_or_else(|| bytes.to_vec());
+    fs.write_atomic(DEVICE_KEY_FILE, &data)
         .await
         .map_err(|e| format!("device key save: {e}"))
 }
@@ -118,7 +128,10 @@ pub(crate) async fn load_device_key() -> Option<k256::ecdsa::SigningKey> {
     if bytes.is_empty() {
         return None;
     }
-    let hex = String::from_utf8(bytes).ok()?;
+    // Decrypt if it's our ciphertext; else treat as legacy plaintext (it
+    // re-encrypts on the next persist).
+    let plain = super::encryption::open(&bytes).await.unwrap_or(bytes);
+    let hex = String::from_utf8(plain).ok()?;
     wallet::from_private_key_hex(hex.trim()).ok()
 }
 

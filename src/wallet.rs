@@ -136,6 +136,29 @@ pub fn sign_hash(signer: &SigningKey, hash: &[u8; 32]) -> [u8; 65] {
     out
 }
 
+/// Compute the Ethereum `personal_sign` digest of a message:
+/// `keccak256("\x19Ethereum Signed Message:\n" || ascii(len) || message)`.
+/// This is the digest any standard `eth_personalSign` verifier (e.g. the
+/// credit proxy's `recoverAddress`) reconstructs.
+pub fn personal_sign_digest(message: &[u8]) -> [u8; 32] {
+    let mut hasher = Keccak256::new();
+    hasher.update(b"\x19Ethereum Signed Message:\n");
+    hasher.update(message.len().to_string().as_bytes());
+    hasher.update(message);
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
+/// Sign `message` as an Ethereum `personal_sign`: the 65-byte `r‖s‖v`
+/// signature (v ∈ {27,28}) over the prefixed keccak digest. Used to mint
+/// the credit-proxy auth token; verifiable by `recover_address` against
+/// `personal_sign_digest(message)`.
+pub fn personal_sign(signer: &SigningKey, message: &[u8]) -> [u8; 65] {
+    sign_hash(signer, &personal_sign_digest(message))
+}
+
 /// Recover the signer's address from a 65-byte signature + the 32-byte
 /// prehash that was signed. Used to verify "did this address sign this?"
 /// without needing the pubkey shipped alongside.
@@ -350,6 +373,18 @@ mod tests {
         assert_eq!(sig.len(), 65);
         assert!(matches!(sig[64], 27 | 28));
         let recovered = recover_address(&sig, &hash).unwrap();
+        assert_eq!(recovered, w.address);
+    }
+
+    #[test]
+    fn personal_sign_roundtrips_through_recover() {
+        // The credit proxy recovers the signer from personal_sign_digest;
+        // this guards that our digest + signature match that verifier.
+        let w = generate();
+        let msg = b"localharness-proxy:0xabc:1717200000";
+        let sig = personal_sign(&w.signer, msg);
+        assert!(matches!(sig[64], 27 | 28));
+        let recovered = recover_address(&sig, &personal_sign_digest(msg)).unwrap();
         assert_eq!(recovered, w.address);
     }
 

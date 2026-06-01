@@ -47,6 +47,10 @@ src/                       library crate
 │                          Includes Tempo Tx submission helpers:
 │                          `submit_tempo_self_paid` / `_sponsored`
 │                          + `claim_and_maybe_set_main_sponsored`.
+│                          Also credit-proxy helpers: `redeem_sponsored`,
+│                          `open_session_sponsored`, `session_expiry_of`,
+│                          `session_price` (RedeemFacet + SessionFacet —
+│                          written, NOT yet cut).
 ├── tempo_tx.rs            Tempo Transaction (tx type 0x76) encoder —
 │                          native AA with fee_token + fee_payer fields.
 │                          Sign self-paid or sponsored; submit via
@@ -113,7 +117,11 @@ contracts/                 Foundry project for the on-chain registry
 │   ├── libraries/
 │   │   ├── LibDiamond.sol                proxy storage + cut impl
 │   │   ├── LibRegistryStorage.sol        registry state (slot v1)
-│   │   └── LibTbaConfigStorage.sol       TBA config (slot v1)
+│   │   ├── LibTbaConfigStorage.sol       TBA config (slot v1)
+│   │   ├── LibRedeemStorage.sol          redeem-code → $LH amount (slot v1)
+│   │   │                                 (written, NOT yet cut)
+│   │   └── LibSessionStorage.sol         credit-session price/duration/expiry
+│   │                                     (slot v1) (written, NOT yet cut)
 │   ├── facets/
 │   │   ├── DiamondCutFacet.sol           owner-only upgrade
 │   │   ├── DiamondLoupeFacet.sol         introspection + supportsInterface
@@ -122,7 +130,13 @@ contracts/                 Foundry project for the on-chain registry
 │   │   ├── ERC721Facet.sol               ERC-721 + Metadata surface
 │   │   ├── TbaFacet.sol                  ERC-6551 token-bound accounts
 │   │   ├── FeedbackFacet.sol             submitFeedback(string) → event
-│   │   └── MainIdentityFacet.sol         registerMain/clearMain/mainOf
+│   │   ├── MainIdentityFacet.sol         registerMain/clearMain/mainOf
+│   │   ├── RedeemFacet.sol               addRedeemCodes / redeem(string) →
+│   │   │                                 mints $LH via ISSUER_ROLE
+│   │   │                                 (written, NOT yet cut)
+│   │   └── SessionFacet.sol              openSession / sessionExpiryOf /
+│   │                                     setSessionPrice/Duration — credit
+│   │                                     sessions (written, NOT yet cut)
 │   ├── erc6551/                          vendored EIP-6551 reference
 │   │   ├── IERC6551Registry.sol
 │   │   ├── ERC6551Registry.sol
@@ -137,6 +151,8 @@ contracts/                 Foundry project for the on-chain registry
 │   ├── AddTbaFacet.s.sol                 cut 6551 + helper
 │   ├── AddFeedbackFacet.s.sol            cut submitFeedback(string)
 │   ├── AddMainIdentityFacet.s.sol        cut MAIN identity surface
+│   ├── AddRedeemFacet.s.sol              cut RedeemFacet (NOT yet run)
+│   ├── AddSessionFacet.s.sol             cut SessionFacet (NOT yet run)
 │   └── Deploy.s.sol                      legacy flat deploy (archived)
 └── README.md                             architecture write-up
 
@@ -145,6 +161,20 @@ web/                       static site for Vercel
 └── pkg/                   wasm-pack output (gitignored; built locally
                            and uploaded by `vercel deploy`):
                            localharness.js + localharness_bg.wasm
+
+proxy/                     credit proxy — a SEPARATE Vercel project
+│                          (TypeScript Edge Function). The ONE accepted
+│                          off-chain component; everything else is
+│                          Tempo + browser. (written, NOT yet deployed)
+├── api/gemini.ts          Vercel Edge Function: holds the platform Gemini
+│                          key in its env, authenticates the caller via an
+│                          Ethereum personal-sign, reads the caller's
+│                          on-chain credit session (sessionExpiryOf), then
+│                          forwards/streams to Gemini if the session is live
+├── package.json           proxy deps + build
+├── vercel.json            edge runtime config
+├── README.md              proxy setup + env vars
+└── .gitignore             node_modules + Vercel build output
 
 scripts/
 ├── release.{ps1,sh}       atomic release tool (see RELEASING.md)
@@ -515,6 +545,24 @@ Currently cut in:
   (UTC-aligned, no cron). See `contracts/src/LocalharnessCredits.sol`
   for the token's TIP-20 surface (currency = "credits", not USD —
   explicitly NOT fee-token-eligible).
+- **RedeemFacet** *(written, NOT yet cut — no on-chain address yet)* —
+  bootstraps $LH into a fresh wallet via one-time codes. Owner loads
+  `keccak256(code) -> $LH amount` via `addRedeemCodes(bytes32[],
+  uint256)`; a holder calls `redeem(string code)`, which mints the
+  mapped amount of $LH to the caller through the diamond's `ISSUER_ROLE`
+  and burns the code. Storage at
+  `keccak256("localharness.redeem.storage.v1")` (`LibRedeemStorage`).
+  Cut script `script/AddRedeemFacet.s.sol` (NOT yet run).
+- **SessionFacet** *(written, NOT yet cut — no on-chain address yet)* —
+  meters $LH into time-boxed credit sessions for the proxy. `openSession()`
+  pulls `sessionPrice()` $LH from the caller into the diamond via
+  `transferFrom` (caller approves the diamond first) and sets
+  `expiry = block.timestamp + sessionDuration()`. View
+  `sessionExpiryOf(address)` is what the credit proxy reads to gate
+  access. Owner-tunable `setSessionPrice(uint256)` /
+  `setSessionDuration(uint256)`. Storage at
+  `keccak256("localharness.session.storage.v1")` (`LibSessionStorage`).
+  Cut script `script/AddSessionFacet.s.sol` (NOT yet run).
 
 ERC-6551 reference contracts (separate addresses, configured via
 `TbaFacet::setTbaConfig`):
@@ -541,6 +589,46 @@ Adding a new facet: write `LibXyzStorage` at a fresh
 forge build, write a one-off cut script following `AddTbaFacet.s.sol`
 as a template, deploy. See `contracts/README.md` for the full
 walkthrough.
+
+## Credit proxy + $LH sessions (written, NOT yet deployed)
+
+**Status: code is written and compiling; NOTHING is deployed.** The
+proxy is not live, and the RedeemFacet/SessionFacet are not yet cut
+into the diamond — so there are no on-chain addresses for them yet.
+
+The credit proxy makes platform `$LH` credits the **primary** usage
+path, with **BYOK** (bring-your-own Gemini key) as the second option.
+It deliberately introduces exactly **one** off-chain component — a
+single Vercel Edge Function — and is the **only server in the system**;
+everything else stays Tempo + the user's browser.
+
+Pieces:
+
+- **`proxy/`** — a separate Vercel project (TypeScript Edge Function,
+  `proxy/api/gemini.ts`). It holds the platform Gemini key in its env,
+  authenticates the caller (an Ethereum personal-sign proving control of
+  the caller's wallet, supplied as a request header), reads the caller's
+  on-chain credit session via `sessionExpiryOf(address)`, and — if the
+  session is live — meters and forwards/streams the request to Gemini.
+  It is being revised to be a transparent passthrough: same path and
+  request shape as Gemini, auth carried in a header, so the exact wire
+  format is not pinned here.
+- **RedeemFacet** (on-chain, not yet cut) — bootstraps $LH via one-time
+  `redeem(code)` codes the owner pre-loads with `addRedeemCodes`. This is
+  how a fresh wallet gets its first credits with zero off-chain payment
+  rails.
+- **SessionFacet** (on-chain, not yet cut) — `openSession()` spends
+  `sessionPrice()` $LH for a time-boxed session (`expiry = now +
+  sessionDuration()`); the proxy gates access on `sessionExpiryOf`.
+- **`src/registry.rs`** — sponsored client helpers the bundle uses to
+  drive the above: `redeem_sponsored`, `open_session_sponsored`,
+  `session_expiry_of`, `session_price`.
+
+End-to-end flow (once deployed): redeem a code → `$LH` in wallet →
+`openSession()` spends `$LH` for a window → bundle calls the proxy with a
+signed header → proxy verifies the signature, checks `sessionExpiryOf`,
+and streams Gemini. BYOK skips the proxy entirely and talks to Gemini
+directly with the user's own key.
 
 ## Tempo Transactions + sponsorship (post-0.10.24)
 

@@ -130,6 +130,15 @@ impl GeminiBackendConfig {
         self.capabilities = c;
         self
     }
+
+    /// Route requests through an alternate base URL (e.g. the
+    /// localharness credit proxy) instead of
+    /// `generativelanguage.googleapis.com`. In credits mode the
+    /// `api_key` carries the proxy auth token rather than a Gemini key.
+    pub fn with_base_url(mut self, url: url::Url) -> Self {
+        self.base_url = Some(url);
+        self
+    }
 }
 
 // =============================================================================

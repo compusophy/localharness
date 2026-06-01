@@ -575,11 +575,23 @@ pub(crate) async fn paint_apex(host: tenant::Host) {
         );
         wasm_bindgen_futures::spawn_local(async move {
             match registry::list_owned_tokens(&owner_addr).await {
-                Ok(agents) => {
+                Ok(mut agents) => {
                     // MAIN lookup is best-effort — facet might not be
                     // cut on a given diamond, in which case the badge
                     // simply doesn't appear.
                     let main_id = registry::main_of(&owner_addr).await.unwrap_or(0);
+                    // Pin the MAIN to the top — it's the owner's primary
+                    // identity, so it leads the list regardless of mint
+                    // order. The rest stay newest-first (list_owned_tokens
+                    // already reverses).
+                    if main_id != 0 {
+                        if let Some(pos) =
+                            agents.iter().position(|a| a.token_id == main_id)
+                        {
+                            let main = agents.remove(pos);
+                            agents.insert(0, main);
+                        }
+                    }
                     let html = templates::agents_list(&agents, main_id).into_string();
                     dom::swap_outer("agents-list", &html);
                 }
