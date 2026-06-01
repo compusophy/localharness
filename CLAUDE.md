@@ -19,9 +19,9 @@ you also get the live IDE at `<name>.localharness.xyz`.
 - Live demo: [`localharness.xyz`](https://localharness.xyz/) —
   marketing apex + wildcard `*.localharness.xyz` for per-user agents
 - On-chain registry: EIP-2535 Diamond on Tempo Moderato testnet at
-  [`0x6f2858…2930`](https://moderato.tempo.xyz/address/0x6f2858b4b10bf8d4ea372a446e69bea8fbce2930)
-  (fresh deploy 2026-05-25; supersedes the previous diamond at
-  `0xed7a2d…c656d` which carried abandoned test registrations)
+  [`0x6c31c0…a30c`](https://moderato.tempo.xyz/address/0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c)
+  (full reset 2026-06-01 — brand-new diamond + token + 6551 infra;
+  every prior address is abandoned)
 
 ## Repo layout
 
@@ -484,12 +484,18 @@ bundled wasm-opt rejects post-MVP features that modern rustc emits.
 ## The on-chain stack
 
 The registry lives at one address forever — the diamond proxy at
-`0x6f2858b4b10bf8d4ea372a446e69bea8fbce2930` on Tempo Moderato
+`0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c` on Tempo Moderato
 testnet (chain id 42431, RPC `https://rpc.moderato.tempo.xyz`).
-(Predecessor diamond at `0xed7a2d…c656d` carried abandoned test
-registrations and is no longer referenced by the bundle.)
-Facets are added/removed via `diamondCut`; the wasm bundle's
-`registry::REGISTRY_ADDRESS` constant doesn't change.
+(The system was fully reset 2026-06-01 — a brand-new diamond, `$LH`
+token, and 6551 infra. Every prior address is abandoned and no longer
+referenced by the bundle.) Facets are added/removed via `diamondCut`;
+the wasm bundle's `registry::REGISTRY_ADDRESS` constant doesn't change.
+
+**Per-facet addresses are deliberately not pinned here.** Facet
+implementation addresses churn on every re-cut; the diamond address is
+the only durable handle. Query the live facet set via the
+DiamondLoupeFacet (`facets()` / `facetAddress(selector)`). The list
+below names what is cut in, not where each facet's code lives.
 
 Currently cut in:
 
@@ -542,8 +548,8 @@ Currently cut in:
   address from the indexed `device` topic, and enrolls it via
   `addSigner` on the TBA — no 0x ever copied between machines. Two-way
   challenge: the Tempo sender sig proves device-key control; knowing the
-  code proves co-presence. Facet at `0x316a80b6eeCd0797a89f6D16c03C0ce260d2A64d`
-  (cut 2026-05-29 via `script/AddPairingFacet.s.sol`); device key stored
+  code proves co-presence. Cut via `script/AddPairingFacet.s.sol` (v2:
+  `announcePairing(bytes32,bytes)` selector); device key stored
   per-tenant-origin in `.lh_device_key` (raw hex, NOT the master seed).
 - **FeedbackFacet** — `submitFeedback(string text)` emits
   `FeedbackSubmitted(address sender, uint256 timestamp, string text)`.
@@ -577,16 +583,16 @@ Currently cut in:
   (UTC-aligned, no cron). See `contracts/src/LocalharnessCredits.sol`
   for the token's TIP-20 surface (currency = "credits", not USD —
   explicitly NOT fee-token-eligible).
-- **RedeemFacet** — `0xE64c36553D611fC6a4d625Ebb2b58004Cde4becD` (cut,
-  live). Bootstraps $LH into a fresh wallet via one-time codes. Owner
+- **RedeemFacet** — cut, live. Bootstraps $LH into a fresh wallet via
+  one-time codes. Owner
   loads `keccak256(code) -> $LH amount` via `addRedeemCodes(bytes32[],
   uint256)`; a holder calls `redeem(string code)`, which mints the
   mapped amount of $LH to the caller through the diamond's `ISSUER_ROLE`
   and burns the code; owner-only `disableRedeemCodes`. Storage at
   `keccak256("localharness.redeem.storage.v1")` (`LibRedeemStorage`).
   Cut via `script/AddRedeemFacet.s.sol`.
-- **SessionFacet** — `0x758d18dC054D77F48A5e9CBC81E313Acd86a7E82` (cut,
-  live). Coarse, time-boxed $LH credit sessions for the proxy.
+- **SessionFacet** — cut, live. Coarse, time-boxed $LH credit sessions
+  for the proxy.
   `openSession()` pulls `sessionPrice()` $LH from the caller into the
   diamond via `transferFrom` (caller approves first) and sets
   `expiry = block.timestamp + sessionDuration()`. View
@@ -595,56 +601,49 @@ Currently cut in:
   **Currently `sessionDuration = 3600`, `sessionPrice = 0`** (free in
   beta). Storage at `keccak256("localharness.session.storage.v1")`
   (`LibSessionStorage`). Cut via `script/AddSessionFacet.s.sol`.
-- **CreditMeterFacet** — `0x925e128139EF1d5e7590C160910822dDcBf3747F`
-  (cut, live). Per-request $LH metering, the fine-grained alternative
-  to coarse sessions. `depositCredits(uint256)` pulls $LH into the
-  diamond and credits the caller's balance; `creditOf(address)` reads
-  it; `meter(address,uint256)` debits a balance and is callable ONLY by
-  the configured meter key; owner-only `setMeter(address)`. Meter key
-  `0xE4E8edB2e0ebbcedCb8D96AA9a62284F873A43B9` is `setMeter`'d + funded.
-  Storage at `keccak256("localharness.credit_meter.storage.v1")`
+- **CreditMeterFacet** — cut, live. Per-request $LH metering, the
+  fine-grained alternative to coarse sessions. `depositCredits(uint256)`
+  pulls $LH into the diamond and credits the caller's balance;
+  `creditOf(address)` reads it; `meter(address,uint256)` debits a
+  balance and is callable ONLY by the configured meter key; owner-only
+  `setMeter(address)`. The proxy's meter key EOA is `setMeter`'d +
+  funded. Storage at `keccak256("localharness.credit_meter.storage.v1")`
   (`LibCreditMeterStorage`). Cut via `script/AddCreditMeterFacet.s.sol`.
-- **X402Facet** — `0xc280bC48dd275bAAd409ea274e6D23A07181EBC9` (cut,
-  live). True x402 (EIP-712 "exact" scheme) payment SETTLEMENT in $LH
+- **X402Facet** — cut, live. True x402 (EIP-712 "exact" scheme)
+  payment SETTLEMENT in $LH
   for agent-to-agent flows. `settle(...)` verifies an EIP-712
   authorization (EOA `ecrecover` + EIP-1271 `isValidSignature`,
   one-shot nonce) and moves $LH from payer to payee; `authorizationState`
-  reports nonce usage; `x402DomainSeparator()` exposes the domain.
-  domainSeparator
-  `0x7d8edaacb63589083763f5861d8d35fd6a53ec3de38a80574c44d033e8a0309f`.
-  Storage at `keccak256("localharness.x402.storage.v1")`
+  reports nonce usage; `x402DomainSeparator()` exposes the domain (read
+  it live — the separator binds chainId + the diamond address, so the
+  reset changed it). Storage at `keccak256("localharness.x402.storage.v1")`
   (`LibX402Storage`). Cut via `script/AddX402Facet.s.sol`.
-- **DeviceRegistryFacet** — `0xeAF3F7d356646C4E01125ca06fc5Dc2A07D40830`
-  (cut, live). Enumerable linked-device index, read in ONE call:
+- **DeviceRegistryFacet** — cut, live. Enumerable linked-device index,
+  read in ONE call:
   `linkDevice / unlinkDevice / devicesOf(address) / isDeviceLinked`.
   Replaces scraping `SignerAdded` logs, which Tempo's RPC caps at 100k
   blocks. Storage at `keccak256("localharness.device_registry.storage.v1")`
   (`LibDeviceRegistryStorage`). Cut via
   `script/AddDeviceRegistryFacet.s.sol`.
-- **ReleaseFacet** — `0xC9290Cd668f3720d27b5AEd3bb77d96693e0659A` (cut,
-  live). `releaseName(uint256 tokenId)` — owner-only burn that frees a
+- **ReleaseFacet** — cut, live. `releaseName(uint256 tokenId)` —
+  owner-only burn that frees a
   name for re-registration; **refuses the caller's MAIN**. Cut via
   `script/AddReleaseFacet.s.sol`.
 
 ERC-6551 reference contracts (separate addresses, configured via
-`TbaFacet::setTbaConfig`):
-- Registry: `0xc7cadc487eeb06fe8807104443b2f76b45c041d6`
-- Account impl: `0x26947dF2029633Ee32532221CA7C6a2A56f8d1aF`
+`TbaFacet::setTbaConfig`; redeployed fresh in the 2026-06-01 reset):
+- Registry: `0x2795810e5dfC8bC92Ef7fc9557F6c0699E11c3B3`
+- Account impl: `0x86be7c44d1940F4dE53A738153A12FaAEa68B5a7`
   (`MultiSignerAccount` — CALL-only; an additional-signer set on top of
   the NFT holder + EIP-1271 `isValidSignature`, so a MAIN can be
-  controlled by multiple device EOAs without sharing the seed.
-  **Hardened 2026-05-29** (0.14.0 security pass): signer management is
-  owner-only and additional signers are bound to the enrolling holder
-  (`_signerEnroller[signer] == owner()`), so an NFT transfer silently
-  revokes the prior holder's device signers; `isValidSignature` rejects
-  high-s (EIP-2). Re-deployed + repointed via
-  `script/SwapTbaImplToMultiSigner.s.sol` on 2026-05-29; the prior
-  `MultiSignerAccount` at `0x100967d751C97265F3ee93244fAeE8caf29cB48D`
-  (and the older `ERC6551Account` at `0x8ad49e86…d7f4`) are no longer
-  referenced — TBAs minted under them resolve to different
-  counterfactual addresses than current mints. The bundle reads TBA
-  addresses via the diamond's `tokenBoundAccount`, so no bundle change
-  was needed.)
+  controlled by multiple device EOAs without sharing the seed. Signer
+  management is owner-only and additional signers are bound to the
+  enrolling holder (`_signerEnroller[signer] == owner()`), so an NFT
+  transfer silently revokes the prior holder's device signers;
+  `isValidSignature` rejects high-s (EIP-2). The bundle reads TBA
+  addresses via the diamond's `tokenBoundAccount`, so a registry/impl
+  swap needs no bundle change — but TBAs minted under prior infra
+  resolve to different counterfactual addresses than current mints.)
 
 Adding a new facet: write `LibXyzStorage` at a fresh
 `keccak256("localharness.xyz.storage.v1")` slot, write the facet,
@@ -705,8 +704,8 @@ authorization; the payee (or anyone) calls `settle(...)`, which verifies
 the signature (EOA `ecrecover` + EIP-1271 for contract/TBA signers),
 consumes a one-shot nonce, and moves `$LH` from payer to payee.
 `authorizationState` reports nonce usage; `x402DomainSeparator()` exposes
-the domain (separator
-`0x7d8edaacb63589083763f5861d8d35fd6a53ec3de38a80574c44d033e8a0309f`).
+the domain (read it live — the separator binds chainId + the diamond
+address, so the 2026-06-01 reset changed it).
 
 In the bundle, **`src/x402_hook.rs`** is an app-injected signer wired
 into `call_agent`: when one agent calls another, the hook signs the
@@ -783,17 +782,16 @@ fee_payer hash — discovered by diffing against `wevm/ox`'s
 
 Tempo's `fee_token` validation requires TIP-20 compliance AND
 `currency() == "USD"`. Our `LocalharnessCredits` at
-`0xC1FC0452670049953ED64f2B177beBed4090A5bc` (deployed 2026-05-26,
-replaces the old vanilla ERC-20 at `0xcC8A300658…`) implements the
-TIP-20 surface — memo transfers, supply cap, roles — but returns
-`currency() == "credits"`, so the chain explicitly rejects it as a
-fee_token. That's intentional: $LH is in-system credits, not gas.
-**AlphaUSD** (`0x20c0000000000000000000000000000000000001`) remains
-the sponsor's fee_token. $LH supply is controlled — the diamond
-holds `ISSUER_ROLE`, and the only mint path is
-`CreditsFacet.claimDaily()` (one claim per address per UTC day,
-amount set by `setDailyAllowance` owner-only). Old token at
-`0xcC8A300658…` is orphaned; balances do not migrate.
+`0x90B84c7234Aae89BadA7f69160B9901B9bc37B17` (fresh in the 2026-06-01
+reset) implements the TIP-20 surface — memo transfers, supply cap,
+roles — but returns `currency() == "credits"`, so the chain explicitly
+rejects it as a fee_token. That's intentional: $LH is in-system
+credits, not gas. **AlphaUSD**
+(`0x20c0000000000000000000000000000000000001`) remains the sponsor's
+fee_token. $LH supply is controlled — the diamond holds `ISSUER_ROLE`,
+and the mint paths are `CreditsFacet.claimDaily()` and
+`RedeemFacet.redeem(code)`. Tokens from any pre-reset deploy are
+orphaned; balances do not migrate.
 
 ### Sponsor key
 

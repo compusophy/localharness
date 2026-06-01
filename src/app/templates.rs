@@ -110,7 +110,16 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
         header.site-header {
             div.header-inner {
                 h1.header-brand {
-                    a href="https://localharness.xyz/" title="go home" { "localharness" }
+                    details.brand-menu {
+                        summary.brand-summary { "localharness" }
+                        nav.brand-menu-items {
+                            a href="https://localharness.xyz/" { "home" }
+                            a href="https://github.com/compusophy/localharness"
+                                target="_blank" rel="noopener" { "repo" }
+                            a href="https://crates.io/crates/localharness"
+                                target="_blank" rel="noopener" { "crate" }
+                        }
+                    }
                 }
                 button type="button"
                     data-action="feedback-open"

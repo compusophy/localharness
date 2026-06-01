@@ -89,6 +89,40 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
 .header-brand { margin-right: auto; }   /* pushes utility buttons right */
 .header-admin { position: relative; }
 
+/* Brand dropdown — the top-left "localharness" title is a native
+   <details> menu (no JS) exposing Home / Repo / Crate. Marker hidden
+   so the summary reads as plain brand text; the panel overlays below
+   so it never reflows the header. */
+.brand-menu { position: relative; }
+.brand-summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.brand-summary::-webkit-details-marker { display: none; }
+.brand-summary::marker { content: ""; }
+.brand-menu-items {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 8px;
+  min-width: 140px;
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+.brand-menu-items a {
+  padding: 8px 12px;
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+  text-transform: lowercase;
+  border-bottom: 1px solid var(--border);
+}
+.brand-menu-items a:last-child { border-bottom: none; }
+.brand-menu-items a:hover { background: var(--border); }
+
 /* Header utility buttons — feedback + admin sit side by side at
    the right of the header. Fixed min-width so the pair reads as
    a uniform row regardless of label length, and a gap between

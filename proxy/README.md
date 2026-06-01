@@ -92,7 +92,7 @@ to `*.localharness.xyz` (and `localhost` for dev).
 2. **Signature** — recover the EOA from the personal-sign and require it matches
    the token's `address`.
 3. **On-chain gate** — `eth_call` the diamond at
-   `0x6f2858b4b10bf8d4ea372a446e69bea8fbce2930` on Tempo Moderato
+   `0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c` on Tempo Moderato
    (chainId 42431, RPC `https://rpc.moderato.tempo.xyz`). Serve if EITHER a
    TIME session (`sessionExpiryOf(address) > now`) OR a funded PER-REQUEST
    balance (`creditOf(address) >= COST_PER_REQUEST_WEI`). When served on

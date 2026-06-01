@@ -9,9 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Platform `$LH` credits become the primary path to model access (BYOK
 is the second option), agents pay each other in `$LH` over x402, and a
-batch of registry quality-of-life facets land. **All facets below are
-cut into the testnet diamond (`0x6f2858…2930`, Tempo Moderato, chain
-42431) and the credit proxy is deployed and live.**
+batch of registry quality-of-life facets land.
+
+### Changed
+
+- **Full on-chain reset (2026-06-01).** A brand-new diamond, `$LH`
+  token, and ERC-6551 infra were deployed; every prior address is
+  abandoned and balances do not migrate. Canonical addresses now
+  (Tempo Moderato, chain 42431, RPC `https://rpc.moderato.tempo.xyz`):
+  - Diamond (registry): `0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c`
+  - `$LH` token (LocalharnessCredits): `0x90B84c7234Aae89BadA7f69160B9901B9bc37B17`
+  - ERC-6551 registry: `0x2795810e5dfC8bC92Ef7fc9557F6c0699E11c3B3`
+  - ERC-6551 account impl (MultiSignerAccount): `0x86be7c44d1940F4dE53A738153A12FaAEa68B5a7`
+  - Credit proxy: `https://proxy-tau-ten-15.vercel.app`
+  Facets currently cut into the diamond: DiamondCut, Loupe, Ownership,
+  LocalharnessRegistry, ERC721, Tba (MultiSigner impl), Feedback,
+  MainIdentity, Pairing (v2), Credits, Redeem, Session, CreditMeter,
+  X402, DeviceRegistry, Release. Registration is free; sessions are
+  free (duration 3600, price 0). Per-facet implementation addresses
+  are not pinned — they churn on re-cut; query the live set via the
+  DiamondLoupeFacet (`facets()` / `facetAddress(selector)`).
 
 ### Added
 
@@ -26,39 +43,36 @@ cut into the testnet diamond (`0x6f2858…2930`, Tempo Moderato, chain
   accepted off-chain component and the only server in the system;
   everything else stays Tempo + browser. Platform credits are the
   PRIMARY model; BYOK is the second option.
-- **RedeemFacet** — cut at `0xE64c36553D611fC6a4d625Ebb2b58004Cde4becD`.
+- **RedeemFacet** — cut into the diamond.
   Owner pre-loads `keccak256(code) -> $LH` amounts via
   `addRedeemCodes(bytes32[],uint256)`; `redeem(string)` mints the mapped
   `$LH` to the caller through the diamond's `ISSUER_ROLE`; owner-only
   `disableRedeemCodes`. Bootstraps fresh wallets with zero off-chain
   payment rails. Cut via `script/AddRedeemFacet.s.sol`.
-- **SessionFacet** — cut at `0x758d18dC054D77F48A5e9CBC81E313Acd86a7E82`.
+- **SessionFacet** — cut into the diamond.
   Coarse time-boxed `$LH` credit sessions: `openSession()` spends
   `sessionPrice()` `$LH` for a window (`expiry = now +
   sessionDuration()`); owner-tunable `setSessionPrice` /
   `setSessionDuration`; view `sessionExpiryOf(address)` the proxy gates
   on. Currently `sessionDuration = 3600`, `sessionPrice = 0` (free in
   beta). Cut via `script/AddSessionFacet.s.sol`.
-- **CreditMeterFacet** — cut at
-  `0x925e128139EF1d5e7590C160910822dDcBf3747F`. Fine-grained per-request
+- **CreditMeterFacet** — cut into the diamond. Fine-grained per-request
   `$LH` metering: `depositCredits`, `creditOf`, meter-only `meter(...)`,
-  owner-only `setMeter`. Meter key
-  `0xE4E8edB2e0ebbcedCb8D96AA9a62284F873A43B9` is `setMeter`'d + funded.
-  Cut via `script/AddCreditMeterFacet.s.sol`.
-- **X402Facet** — cut at `0xc280bC48dd275bAAd409ea274e6D23A07181EBC9`.
+  owner-only `setMeter`. The proxy's meter key EOA is `setMeter`'d +
+  funded. Cut via `script/AddCreditMeterFacet.s.sol`.
+- **X402Facet** — cut into the diamond.
   True x402 (EIP-712 "exact" scheme) payment settlement in `$LH` for
   agent-to-agent: `settle` (EOA ecrecover + EIP-1271 verify, one-shot
-  nonce), `authorizationState`, `x402DomainSeparator` (domainSeparator
-  `0x7d8edaacb63589083763f5861d8d35fd6a53ec3de38a80574c44d033e8a0309f`).
+  nonce), `authorizationState`, `x402DomainSeparator` (read it live —
+  the separator binds chainId + the diamond address).
   The bundle's new `src/x402_hook.rs` injects the EIP-712 signer into
   `call_agent` so inter-agent calls settle in `$LH`. Cut via
   `script/AddX402Facet.s.sol`.
-- **DeviceRegistryFacet** — cut at
-  `0xeAF3F7d356646C4E01125ca06fc5Dc2A07D40830`. Enumerable linked-device
-  index read in ONE call (`linkDevice` / `unlinkDevice` / `devicesOf` /
+- **DeviceRegistryFacet** — cut into the diamond. Enumerable
+  linked-device index read in ONE call (`linkDevice` / `unlinkDevice` / `devicesOf` /
   `isDeviceLinked`), replacing `SignerAdded` log scraping that Tempo's
   RPC caps at 100k blocks. Cut via `script/AddDeviceRegistryFacet.s.sol`.
-- **ReleaseFacet** — cut at `0xC9290Cd668f3720d27b5AEd3bb77d96693e0659A`.
+- **ReleaseFacet** — cut into the diamond.
   `releaseName(tokenId)`: owner-only burn that frees a name for
   re-registration; refuses the caller's MAIN. Cut via
   `script/AddReleaseFacet.s.sol`.

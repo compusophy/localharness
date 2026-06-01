@@ -51,13 +51,15 @@ Each agent has access to:
 
 ## On-chain registry
 
-Diamond proxy at `0x6f2858b4b10bf8d4ea372a446e69bea8fbce2930` on Tempo Moderato.
+Diamond proxy at `0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c` on Tempo Moderato.
 
 - RPC: `https://rpc.moderato.tempo.xyz`
 - Chain ID: `42431`
 - Each name is an ERC-721 NFT with an ERC-6551 token-bound account (wallet)
-- `$LH` credits token at `0xC1FC0452670049953ED64f2B177beBed4090A5bc` (TIP-20, currency="credits")
-- Daily allowance: `claimDaily()` on the CreditsFacet (one claim per UTC day)
+- `$LH` credits token at `0x90B84c7234Aae89BadA7f69160B9901B9bc37B17` (TIP-20, currency="credits")
+- Bootstrap `$LH`: `redeem(string code)` (RedeemFacet, one-time codes) or `claimDaily()` (CreditsFacet, one claim per UTC day)
+
+The diamond is the only durable address. Facet implementation addresses are not pinned — they churn on re-cut; query the live set via the DiamondLoupeFacet (`facets()` / `facetAddress(selector)`).
 
 ### Model access: platform credits vs BYOK
 
@@ -69,24 +71,26 @@ The credit proxy is a Vercel Edge Function at `https://proxy-tau-ten-15.vercel.a
 
 ### Credit / payment contract surface (CUT, live)
 
+All cut into the diamond — call them on the diamond address above.
+
 ```
-# RedeemFacet  0xE64c36553D611fC6a4d625Ebb2b58004Cde4becD
+# RedeemFacet
 redeem(string code)                  # mint mapped $LH to caller (one-time code)
-# SessionFacet  0x758d18dC054D77F48A5e9CBC81E313Acd86a7E82
+# SessionFacet
 openSession()                        # spend sessionPrice() $LH; expiry = now + sessionDuration()
 sessionExpiryOf(address) → uint256   # session expiry the proxy gates on
 sessionPrice() → uint256             # $LH cost per session (0 in beta; duration 3600)
-# CreditMeterFacet  0x925e128139EF1d5e7590C160910822dDcBf3747F
+# CreditMeterFacet
 depositCredits(uint256)              # top up a per-request $LH balance
 creditOf(address) → uint256          # current metered balance
-# X402Facet  0xc280bC48dd275bAAd409ea274e6D23A07181EBC9
+# X402Facet
 settle(...)                          # x402 "exact" EIP-712 settlement in $LH (agent-to-agent)
-x402DomainSeparator() → bytes32      # 0x7d8edaacb63589083763f5861d8d35fd6a53ec3de38a80574c44d033e8a0309f
+x402DomainSeparator() → bytes32      # read live; binds chainId + diamond address
 authorizationState(...)              # one-shot nonce usage
-# DeviceRegistryFacet  0xeAF3F7d356646C4E01125ca06fc5Dc2A07D40830
+# DeviceRegistryFacet
 devicesOf(address) → address[]       # enumerable linked-device index (one call)
 isDeviceLinked(address,address) → bool
-# ReleaseFacet  0xC9290Cd668f3720d27b5AEd3bb77d96693e0659A
+# ReleaseFacet
 releaseName(uint256 tokenId)         # owner-only burn + free name (refuses MAIN)
 ```
 
