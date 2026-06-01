@@ -83,6 +83,69 @@ impl Tool for CallAgent {
 }
 
 #[cfg(target_arch = "wasm32")]
+/// A callee's `lh-payment-required` challenge (raw strings off the wire).
+struct ChallengeParts {
+    to: String,
+    value: String,
+    valid_before: u64,
+    nonce: String,
+}
+
+#[cfg(target_arch = "wasm32")]
+fn parse_hex_n(s: &str, n: usize) -> std::result::Result<Vec<u8>, String> {
+    let t = s.trim().trim_start_matches("0x");
+    if t.len() != n * 2 {
+        return Err(format!("hex len {} != {}", t.len(), n * 2));
+    }
+    (0..n)
+        .map(|i| u8::from_str_radix(&t[i * 2..i * 2 + 2], 16).map_err(|e| e.to_string()))
+        .collect()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn hex0x(b: &[u8]) -> String {
+    let mut s = String::from("0x");
+    for x in b {
+        s.push_str(&format!("{x:02x}"));
+    }
+    s
+}
+
+/// Sign the challenge via the app-injected x402 hook and build the
+/// `payment` object to re-post.
+#[cfg(target_arch = "wasm32")]
+async fn pay_and_build(
+    ch: &ChallengeParts,
+) -> std::result::Result<js_sys::Object, String> {
+    use wasm_bindgen::JsValue;
+    let to: [u8; 20] = parse_hex_n(&ch.to, 20)?
+        .try_into()
+        .map_err(|_| "bad to".to_string())?;
+    let value_wei: u128 = ch.value.parse().map_err(|_| "bad value".to_string())?;
+    let nonce: [u8; 32] = parse_hex_n(&ch.nonce, 32)?
+        .try_into()
+        .map_err(|_| "bad nonce".to_string())?;
+    let payment = crate::x402_hook::sign(crate::x402_hook::X402Challenge {
+        to,
+        value_wei,
+        valid_before: ch.valid_before,
+        nonce,
+    })
+    .await?;
+    let obj = js_sys::Object::new();
+    let set = |k: &str, v: &str| {
+        let _ = js_sys::Reflect::set(&obj, &JsValue::from_str(k), &JsValue::from_str(v));
+    };
+    set("from", &hex0x(&payment.from));
+    set("value", &ch.value);
+    set("nonce", &ch.nonce);
+    set("signature", &hex0x(&payment.signature));
+    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("validAfter"), &JsValue::from_f64(payment.valid_after as f64));
+    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("validBefore"), &JsValue::from_f64(payment.valid_before as f64));
+    Ok(obj)
+}
+
+#[cfg(target_arch = "wasm32")]
 async fn call_agent_impl(name: &str, message: &str) -> std::result::Result<String, String> {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -134,8 +197,11 @@ async fn call_agent_impl(name: &str, message: &str) -> std::result::Result<Strin
     let waker_slot: Rc<RefCell<Option<js_sys::Function>>> = Rc::new(RefCell::new(None));
     let ready_slot: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
     let ready_waker: Rc<RefCell<Option<js_sys::Function>>> = Rc::new(RefCell::new(None));
+    // x402: a callee may answer with `lh-payment-required` before serving.
+    let payment_slot: Rc<RefCell<Option<ChallengeParts>>> = Rc::new(RefCell::new(None));
 
     let result_c = result_slot.clone();
+    let payment_c = payment_slot.clone();
     let waker_c = waker_slot.clone();
     let ready_c = ready_slot.clone();
     let ready_waker_c = ready_waker.clone();
@@ -158,6 +224,36 @@ async fn call_agent_impl(name: &str, message: &str) -> std::result::Result<Strin
         if msg_type == "lh-rpc-ready" {
             *ready_c.borrow_mut() = true;
             if let Some(w) = ready_waker_c.borrow_mut().take() {
+                let _ = w.call0(&JsValue::NULL);
+            }
+            return;
+        }
+
+        if msg_type == "lh-payment-required" {
+            let msg_id = js_sys::Reflect::get(&data, &JsValue::from_str("id"))
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_default();
+            if msg_id != id_c {
+                return;
+            }
+            let gs = |k: &str| {
+                js_sys::Reflect::get(&data, &JsValue::from_str(k))
+                    .ok()
+                    .and_then(|v| v.as_string())
+                    .unwrap_or_default()
+            };
+            let vb = js_sys::Reflect::get(&data, &JsValue::from_str("validBefore"))
+                .ok()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as u64;
+            *payment_c.borrow_mut() = Some(ChallengeParts {
+                to: gs("to"),
+                value: gs("value"),
+                valid_before: vb,
+                nonce: gs("nonce"),
+            });
+            if let Some(w) = waker_c.borrow_mut().take() {
                 let _ = w.call0(&JsValue::NULL);
             }
             return;
@@ -235,15 +331,51 @@ async fn call_agent_impl(name: &str, message: &str) -> std::result::Result<Strin
         .post_message(&payload, &rpc_origin)
         .map_err(|e| format!("postMessage: {e:?}"))?;
 
-    // Wait for response (60s timeout for LLM calls)
-    let promise = js_sys::Promise::new(&mut |resolve, _| {
-        let resolve_c = resolve.clone();
-        *waker_slot.borrow_mut() = Some(resolve_c);
-        if let Some(w) = web_sys::window() {
-            let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 60_000);
+    // Wait for the response — or, if the callee charges, pay (x402) and
+    // retry once. 60s timeout per wait (LLM calls are slow).
+    let mut paid = false;
+    loop {
+        let promise = js_sys::Promise::new(&mut |resolve, _| {
+            *waker_slot.borrow_mut() = Some(resolve.clone());
+            if let Some(w) = web_sys::window() {
+                let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 60_000);
+            }
+        });
+        let _ = JsFuture::from(promise).await;
+
+        if result_slot.borrow().is_some() {
+            break;
         }
-    });
-    let _ = JsFuture::from(promise).await;
+        let challenge = payment_slot.borrow_mut().take();
+        match challenge {
+            Some(ch) if !paid => {
+                paid = true;
+                match pay_and_build(&ch).await {
+                    Ok(payment_obj) => {
+                        let retry = js_sys::Object::new();
+                        let s = |k: &str, v: &str| {
+                            let _ = js_sys::Reflect::set(&retry, &JsValue::from_str(k), &JsValue::from_str(v));
+                        };
+                        s("type", "lh-agent-call");
+                        s("id", &id);
+                        s("message", message);
+                        s("from", &my_name);
+                        let _ = js_sys::Reflect::set(&retry, &JsValue::from_str("payment"), &payment_obj);
+                        if let Err(e) = target.post_message(&retry, &rpc_origin) {
+                            *result_slot.borrow_mut() = Some(Err(format!("retry postMessage: {e:?}")));
+                            break;
+                        }
+                        continue; // await the post-payment response
+                    }
+                    Err(e) => {
+                        *result_slot.borrow_mut() = Some(Err(format!("x402 payment: {e}")));
+                        break;
+                    }
+                }
+            }
+            _ => break, // timeout (or an unexpected second challenge)
+        }
+    }
 
     // Cleanup
     let _ = window.remove_event_listener_with_callback("message", handler.as_ref().unchecked_ref());

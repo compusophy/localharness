@@ -206,6 +206,33 @@ fn mount() -> Result<(), JsValue> {
     // templates' buttons work even before we hit the async branches.
     events::install_delegated_listeners(&doc)?;
 
+    // Install the x402 signing hook so the backend `call_agent` tool can
+    // pay a callee that demands `$LH` — signs with the local credit key
+    // (never the iframe). See [[x402_hook]].
+    crate::x402_hook::install(std::rc::Rc::new(|ch: crate::x402_hook::X402Challenge|
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<crate::x402_hook::X402Payment, String>>>> {
+        Box::pin(async move {
+            let (signer, from) = chat::credit_signer()
+                .await
+                .ok_or_else(|| "no identity to pay from".to_string())?;
+            let sig = crate::registry::sign_x402(
+                &signer,
+                &from,
+                &ch.to,
+                ch.value_wei,
+                0,
+                ch.valid_before,
+                &ch.nonce,
+            )?;
+            Ok(crate::x402_hook::X402Payment {
+                from,
+                valid_after: 0,
+                valid_before: ch.valid_before,
+                signature: sig,
+            })
+        })
+    }));
+
     // Compose mode short-circuit (?compose=name1,name2,...). Renders a
     // grid of embed-mode iframes — the minimal host harness for the
     // composable-subdomain primitive. Works on any origin.

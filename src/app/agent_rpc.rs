@@ -79,9 +79,10 @@ pub(crate) fn install_rpc_listener() -> Result<(), JsValue> {
 
         let source = event.source();
         let reply_origin = origin.clone();
+        let payment = extract_payment(&data);
 
         wasm_bindgen_futures::spawn_local(async move {
-            let response = handle_agent_call(&id, &message, &from).await;
+            let response = handle_agent_call(&id, &message, &from, payment).await;
             if let Some(source) = source {
                 let _ = js_sys::Reflect::get(&source, &JsValue::from_str("postMessage"))
                     .ok()
@@ -116,41 +117,165 @@ pub(crate) fn install_rpc_listener() -> Result<(), JsValue> {
     Ok(())
 }
 
-async fn handle_agent_call(id: &str, message: &str, from: &str) -> JsValue {
+/// An incoming x402 `payment` payload (the caller's signed authorization).
+struct PaymentParts {
+    from_hex: String,
+    value_dec: String,
+    valid_after: u64,
+    valid_before: u64,
+    nonce_hex: String,
+    sig_hex: String,
+}
+
+fn extract_payment(data: &JsValue) -> Option<PaymentParts> {
+    let p = js_sys::Reflect::get(data, &JsValue::from_str("payment")).ok()?;
+    if p.is_undefined() || p.is_null() {
+        return None;
+    }
+    let get_str = |k: &str| {
+        js_sys::Reflect::get(&p, &JsValue::from_str(k))
+            .ok()
+            .and_then(|v| v.as_string())
+    };
+    let get_num = |k: &str| {
+        js_sys::Reflect::get(&p, &JsValue::from_str(k))
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0) as u64
+    };
+    Some(PaymentParts {
+        from_hex: get_str("from")?,
+        value_dec: get_str("value")?,
+        valid_after: get_num("validAfter"),
+        valid_before: get_num("validBefore"),
+        nonce_hex: get_str("nonce")?,
+        sig_hex: get_str("signature")?,
+    })
+}
+
+/// This agent's per-call x402 price in `$LH` wei (`.lh_x402_price` in OPFS;
+/// 0 / missing = free, current behavior).
+async fn x402_price() -> u128 {
+    use crate::filesystem::Filesystem;
+    let fs = super::shared_opfs();
+    match fs.read(".lh_x402_price").await {
+        Ok(bytes) => String::from_utf8(bytes)
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0),
+        Err(_) => 0,
+    }
+}
+
+fn hex0x(b: &[u8]) -> String {
+    let mut s = String::with_capacity(2 + b.len() * 2);
+    s.push_str("0x");
+    for x in b {
+        s.push_str(&format!("{x:02x}"));
+    }
+    s
+}
+
+fn parse_hex(s: &str, n: usize) -> Result<Vec<u8>, String> {
+    let t = s.trim().trim_start_matches("0x");
+    if t.len() != n * 2 {
+        return Err(format!("expected {n} bytes, got {}", t.len() / 2));
+    }
+    (0..n)
+        .map(|i| u8::from_str_radix(&t[i * 2..i * 2 + 2], 16).map_err(|e| e.to_string()))
+        .collect()
+}
+
+fn build_response(id: &str, result: Result<String, String>) -> JsValue {
+    let response = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&response, &JsValue::from_str("type"), &JsValue::from_str("lh-agent-response"));
+    let _ = js_sys::Reflect::set(&response, &JsValue::from_str("id"), &JsValue::from_str(id));
+    match result {
+        Ok(text) => {
+            let _ = js_sys::Reflect::set(&response, &JsValue::from_str("text"), &JsValue::from_str(&text));
+        }
+        Err(err) => {
+            let _ = js_sys::Reflect::set(&response, &JsValue::from_str("error"), &JsValue::from_str(&err));
+        }
+    }
+    response.into()
+}
+
+/// Build the `lh-payment-required` challenge: pay `price` `$LH` to this
+/// agent's address, with a fresh nonce + 5-minute validity.
+async fn build_payment_required(id: &str, price: u128) -> JsValue {
+    let addr = match super::chat::credit_signer().await {
+        Some((_, a)) => a,
+        None => return build_response(id, Err("agent has no identity to bill to".into())),
+    };
+    let mut nonce = [0u8; 32];
+    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut nonce);
+    let now = (js_sys::Date::now() / 1000.0) as u64;
+    let obj = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("type"), &JsValue::from_str("lh-payment-required"));
+    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("id"), &JsValue::from_str(id));
+    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("to"), &JsValue::from_str(&hex0x(&addr)));
+    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("value"), &JsValue::from_str(&price.to_string()));
+    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("validBefore"), &JsValue::from_f64((now + 300) as f64));
+    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("nonce"), &JsValue::from_str(&hex0x(&nonce)));
+    obj.into()
+}
+
+/// Verify + settle an incoming x402 payment on-chain. The payer signed
+/// `to = this agent's address`, so we settle to that same address; a
+/// mismatched `to` makes the on-chain signature check fail.
+async fn settle_incoming(price: u128, p: &PaymentParts) -> Result<(), String> {
+    let value: u128 = p.value_dec.parse().map_err(|_| "bad value".to_string())?;
+    if value < price {
+        return Err("underpaid".into());
+    }
+    let (signer, my_addr) = super::chat::credit_signer()
+        .await
+        .ok_or_else(|| "no identity".to_string())?;
+    let fee_payer = super::sponsor::signer()?;
+    let from: [u8; 20] = parse_hex(&p.from_hex, 20)?.try_into().unwrap();
+    let nonce: [u8; 32] = parse_hex(&p.nonce_hex, 32)?.try_into().unwrap();
+    let sig: [u8; 65] = parse_hex(&p.sig_hex, 65)?.try_into().unwrap();
+    super::registry::settle_x402_sponsored(
+        &signer,
+        &fee_payer,
+        &from,
+        &my_addr,
+        value,
+        p.valid_after,
+        p.valid_before,
+        &nonce,
+        &sig,
+        super::registry::ALPHA_USD_ADDRESS,
+    )
+    .await
+    .map(|_| ())
+}
+
+async fn handle_agent_call(
+    id: &str,
+    message: &str,
+    from: &str,
+    payment: Option<PaymentParts>,
+) -> JsValue {
     web_sys::console::log_1(&JsValue::from_str(&format!(
         "rpc: call from {from}: {message}"
     )));
 
-    let result = process_message(message).await;
-
-    let response = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &response,
-        &JsValue::from_str("type"),
-        &JsValue::from_str("lh-agent-response"),
-    );
-    let _ = js_sys::Reflect::set(
-        &response,
-        &JsValue::from_str("id"),
-        &JsValue::from_str(id),
-    );
-    match result {
-        Ok(text) => {
-            let _ = js_sys::Reflect::set(
-                &response,
-                &JsValue::from_str("text"),
-                &JsValue::from_str(&text),
-            );
-        }
-        Err(err) => {
-            let _ = js_sys::Reflect::set(
-                &response,
-                &JsValue::from_str("error"),
-                &JsValue::from_str(&err),
-            );
+    // x402 gate: if this agent charges, require a settled $LH payment.
+    let price = x402_price().await;
+    if price > 0 {
+        match payment {
+            None => return build_payment_required(id, price).await,
+            Some(p) => {
+                if let Err(e) = settle_incoming(price, &p).await {
+                    return build_response(id, Err(format!("payment: {e}")));
+                }
+            }
         }
     }
-    response.into()
+
+    build_response(id, process_message(message).await)
 }
 
 async fn process_message(message: &str) -> Result<String, String> {

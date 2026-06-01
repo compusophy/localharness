@@ -110,6 +110,10 @@ pub mod registry;
 #[cfg(feature = "wallet")]
 pub mod tempo_tx;
 
+/// App-injected x402 payment-signing hook (lets the backend `call_agent`
+/// tool sign payments using the app-layer wallet).
+pub mod x402_hook;
+
 pub use agent::{Agent, AgentConfig, GeminiAgentConfig};
 pub use backends::gemini::{
     decode_transcript_bytes, GeminiBackendConfig, GeminiConnection, GeminiConnectionStrategy,
