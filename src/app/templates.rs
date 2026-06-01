@@ -20,7 +20,12 @@ pub(crate) fn api_key_modal() -> Markup {
     html! {
         div #api-key-modal .api-key-modal {
             div.api-key-card {
-                div.api-key-title { "gemini api key" }
+                div.api-key-title { "power this agent" }
+                // PRIMARY: platform credits (no Google account / card needed).
+                button type="button" data-action="set-model-access" data-arg="credits"
+                    .ghost.api-key-primary { "use platform credits" }
+                div.api-key-or { "or bring your own key" }
+                // SECONDARY: BYOK.
                 form onsubmit="return false" {
                     div.api-key-row {
                         input #api-key-input
@@ -895,16 +900,10 @@ pub(crate) fn admin_devices_section() -> Markup {
                 }
             }
             div #pair-msg .admin-msg-slot {}
-            // Fold this identity's other subdomains into the MAIN's TBA, so
-            // one account owns them all + every linked device controls them.
-            // Owner actions on consolidated subdomains route through
-            // TBA.execute, so they stay manageable.
-            div.pair-slot {
-                button type="button" data-action="consolidate" .ghost {
-                    "consolidate subdomains into MAIN"
-                }
-            }
-            div #consolidate-msg .admin-msg-slot {}
+            // No manual consolidate button: consolidation is meant to be
+            // automatic at create/link time (a fresh-reset model — no
+            // migrating legacy names). The backend + TBA.execute routing
+            // stay for that wiring.
         }
     }
 }

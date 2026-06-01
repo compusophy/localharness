@@ -1379,10 +1379,26 @@ fn run_set_model_access(mode: String) {
     {
         let _ = storage.set_item("lh_model_access", &mode);
     }
-    dom::swap_outer(
-        "credits-section",
-        &super::templates::admin_credits_section().into_string(),
-    );
+    // Repaint the admin credits section if it's open.
+    if dom::by_id("credits-section").is_some() {
+        dom::swap_outer(
+            "credits-section",
+            &super::templates::admin_credits_section().into_string(),
+        );
+    }
+    // When chosen from the first-run api-key modal (credits is the primary
+    // option there), dismiss it and point the user at the credit controls.
+    if mode == "credits" {
+        if let Some(el) = dom::by_id("api-key-modal") {
+            if let Some(parent) = el.parent_element() {
+                let _ = parent.remove_child(&el);
+            }
+        }
+        dom::set_status(
+            "platform credits on — redeem a code or open a session in admin → usage",
+            false,
+        );
+    }
     wasm_bindgen_futures::spawn_local(async {
         refresh_credits_pill().await;
     });
