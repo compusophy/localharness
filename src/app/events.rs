@@ -2854,18 +2854,16 @@ async fn run_set_public_face(choice: &str) {
         }
     };
 
-    // Only the verified owner can write metadata on-chain.
-    let owner_hex = super::APP.with(|cell| {
+    // The verified-EOA address IF this device verified as the on-chain
+    // owner directly. May be None when the owner is a TBA we sign for
+    // (consolidation) — that path is decided in the submit branch below.
+    let verified_eoa = super::APP.with(|cell| {
         use super::VerifyState;
         match &cell.borrow().verify_state {
             VerifyState::Verified { address } => Some(address.clone()),
             _ => None,
         }
     });
-    let Some(owner_hex) = owner_hex else {
-        set_err("verify as owner first");
-        return;
-    };
 
     let id = match super::registry::id_of_name(&name).await {
         Ok(id) if id != 0 => id,
@@ -2954,7 +2952,68 @@ async fn run_set_public_face(choice: &str) {
     };
 
     dom::swap_inner(msg, "<span style=\"color:var(--muted)\">saving…</span>");
-    match run_sponsored_tempo_call(&owner_hex, calls, gas, "public face").await {
+
+    // Decide the execution path from the on-chain owner:
+    //  - owner is a TBA this device signs for (consolidation) → execute
+    //    the setMetadata batch THROUGH the TBA, signed by our local key.
+    //  - owner is our verified EOA → direct sponsored call (existing).
+    let on_chain_owner = match super::registry::owner_of_name(&name).await {
+        Ok(Some(o)) => o,
+        _ => {
+            set_err("name isn't registered on-chain");
+            return;
+        }
+    };
+    let local = super::chat::credit_signer().await;
+    let is_signer = match &local {
+        Some((_, addr)) => {
+            let addr_hex = format!(
+                "0x{}",
+                addr.iter().map(|b| format!("{b:02x}")).collect::<String>()
+            );
+            super::registry::is_authorized_signer(&on_chain_owner, &addr_hex)
+                .await
+                .unwrap_or(false)
+        }
+        None => false,
+    };
+    let result = if is_signer {
+        let (signer, _) = local.unwrap();
+        let fee_payer = match super::sponsor::signer() {
+            Ok(s) => s,
+            Err(e) => {
+                set_err(&e);
+                return;
+            }
+        };
+        let token_id = match super::registry::tba_token_id_of(&on_chain_owner).await {
+            Ok(t) => t,
+            Err(e) => {
+                set_err(&e);
+                return;
+            }
+        };
+        let targets: Vec<([u8; 20], Vec<u8>)> =
+            calls.iter().map(|c| (registry_addr, c.input.clone())).collect();
+        super::registry::tba_execute_batch_sponsored(
+            &signer,
+            &fee_payer,
+            token_id,
+            &on_chain_owner,
+            &targets,
+            super::registry::ALPHA_USD_ADDRESS,
+            gas + 800_000,
+        )
+        .await
+    } else if let Some(owner_hex) =
+        verified_eoa.filter(|a| a.eq_ignore_ascii_case(&on_chain_owner))
+    {
+        run_sponsored_tempo_call(&owner_hex, calls, gas, "public face").await
+    } else {
+        set_err("verify as owner first");
+        return;
+    };
+    match result {
         Ok(_tx) => {
             let head = if choice == "directory" {
                 "public face → directory ✓".to_string()

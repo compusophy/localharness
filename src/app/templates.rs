@@ -895,10 +895,16 @@ pub(crate) fn admin_devices_section() -> Markup {
                 }
             }
             div #pair-msg .admin-msg-slot {}
-            // NOTE: the "consolidate subdomains into MAIN" button is held
-            // until owner-action TBA.execute routing lands — transferring
-            // NFTs into the TBA without it would block managing them. The
-            // backend (consolidate_into_main_sponsored) is ready.
+            // Fold this identity's other subdomains into the MAIN's TBA, so
+            // one account owns them all + every linked device controls them.
+            // Owner actions on consolidated subdomains route through
+            // TBA.execute, so they stay manageable.
+            div.pair-slot {
+                button type="button" data-action="consolidate" .ghost {
+                    "consolidate subdomains into MAIN"
+                }
+            }
+            div #consolidate-msg .admin-msg-slot {}
         }
     }
 }

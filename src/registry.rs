@@ -1174,6 +1174,52 @@ pub async fn is_authorized_signer(tba_address: &str, signer_hex: &str) -> Result
     Ok(trimmed.chars().last().map(|c| c == '1').unwrap_or(false))
 }
 
+/// Read `token()` on an ERC-6551 account → its owning tokenId (the 3rd
+/// returned word: chainId, tokenContract, tokenId). Lets us route owner
+/// actions through a TBA when we only know the TBA address.
+pub async fn tba_token_id_of(tba_hex: &str) -> Result<u64, String> {
+    let calldata = format!("0x{}", bytes_to_hex(&selector("token()")));
+    let result = eth_call(tba_hex, &calldata).await?;
+    let bytes = hex_to_bytes(&result)?;
+    if bytes.len() < 96 {
+        return Err("token(): short response".into());
+    }
+    let mut buf = [0u8; 8];
+    buf.copy_from_slice(&bytes[88..96]); // low 8 bytes of the tokenId word
+    Ok(u64::from_be_bytes(buf))
+}
+
+/// Execute a batch of calls AS the TBA (the asset owner), signed by a
+/// local key authorized on that TBA — the consolidation owner-action
+/// path. Batches `createTokenBoundAccount(token_id)` (idempotent) + one
+/// `TBA.execute(target, 0, data)` per entry. Sponsored.
+pub async fn tba_execute_batch_sponsored(
+    signer: &SigningKey,
+    fee_payer: &SigningKey,
+    token_id: u64,
+    tba_hex: &str,
+    targets: &[([u8; 20], Vec<u8>)],
+    fee_token: &str,
+    gas_limit: u128,
+) -> Result<String, String> {
+    let diamond = parse_eth_address(REGISTRY_ADDRESS)?;
+    let tba = parse_eth_address(tba_hex)?;
+    let mut calls = Vec::with_capacity(targets.len() + 1);
+    calls.push(crate::tempo_tx::TempoCall {
+        to: diamond,
+        value_wei: 0,
+        input: encode_create_tba(token_id),
+    });
+    for (target, data) in targets {
+        calls.push(crate::tempo_tx::TempoCall {
+            to: tba,
+            value_wei: 0,
+            input: encode_tba_execute(target, 0, data),
+        });
+    }
+    submit_tempo_sponsored(signer, fee_payer, calls, fee_token, gas_limit).await
+}
+
 /// Sponsored TBA add-signer. The TBA must exist on-chain (have
 /// bytecode) before `addSigner` will work — counterfactual addresses
 /// have no code. We always batch `createTokenBoundAccount(tokenId)`

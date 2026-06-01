@@ -423,28 +423,44 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
             strip_claim_hint();
         }
     }
-    if owner.is_none() {
-        // No local-device claim. Check on-chain — if someone owns this
-        // name in the registry, the visitor isn't claiming, they're
-        // browsing. Paint the chat chrome and let verification figure
-        // out whether they're the owner or a paying visitor.
-        let on_chain = registry::owner_of_name(&name).await.ok().flatten();
-        if on_chain.is_none() {
-            root.set_inner_html(&templates::unclaimed(&host, &name).into_string());
-            return;
-        }
-        // Fall through to chrome paint as visitor.
+    // Resolve the on-chain owner once — used for the unclaimed check AND
+    // the owner-by-signer check below. (Only when there's no local claim.)
+    let on_chain = if owner.is_none() {
+        registry::owner_of_name(&name).await.ok().flatten()
+    } else {
+        None
+    };
+    if owner.is_none() && on_chain.is_none() {
+        root.set_inner_html(&templates::unclaimed(&host, &name).into_string());
+        return;
     }
+
+    // Owner-by-signer (consolidation): if this device's LOCAL key is an
+    // authorized signer of the on-chain owner — i.e. the owner is a TBA
+    // (e.g. the MAIN's TBA owns this subdomain after consolidation) and
+    // this device signs for it — treat the device as an owner. ONE on-load
+    // on-chain read = the source of truth; no polling. Falls back cleanly
+    // (an EOA owner has no isAuthorizedSigner → false).
+    let signer_owner = if let (true, Some(oc)) = (owner.is_none(), on_chain.as_deref()) {
+        match chat::credit_address_existing().await {
+            Some(my_addr) => {
+                registry::is_authorized_signer(oc, &my_addr).await.unwrap_or(false)
+            }
+            None => false,
+        }
+    } else {
+        false
+    };
 
     // Two surfaces per subdomain:
     //  - PUBLIC FACE (fullscreen cartridge) — the visitor surface.
     //  - STUDIO (the workshop chrome below) — the owner surface.
     // The owner lands in the Studio by default and previews their public
     // face with `?view=public`; a visitor only ever sees the public face.
-    // So we only paint the public face for a visitor, OR for the owner
-    // when they explicitly asked to preview it. `owner.is_some()` is this
-    // device's local ownership claim (refined later by verification).
-    let is_owner_device = owner.is_some();
+    // `owner.is_some()` is this device's local claim; `signer_owner` is the
+    // on-chain consolidation case (a linked device controlling a TBA-owned
+    // subdomain).
+    let is_owner_device = owner.is_some() || signer_owner;
     let show_public_face = !is_owner_device || has_view_public_hint();
     if show_public_face {
         // Resolve the on-chain public-face choice (directory / app / html)
