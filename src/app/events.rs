@@ -88,6 +88,8 @@ enum Action {
     RedeemCode,
     /// Prepay `$LH` into the per-request credit meter.
     DepositCredits,
+    /// Save this agent's per-call x402 price (`.lh_x402_price`).
+    SaveX402Price,
 }
 
 impl Action {
@@ -150,6 +152,7 @@ impl Action {
             "open-session" => Action::OpenSession,
             "redeem-code" => Action::RedeemCode,
             "deposit-credits" => Action::DepositCredits,
+            "save-x402-price" => Action::SaveX402Price,
             _ => return None,
         })
     }
@@ -986,6 +989,7 @@ fn dispatch(action: Action) {
         Action::OpenSession => open_session_pressed(),
         Action::RedeemCode => redeem_code_pressed(),
         Action::DepositCredits => deposit_credits_pressed(),
+        Action::SaveX402Price => save_x402_price_pressed(),
     }
 }
 
@@ -1511,6 +1515,46 @@ fn deposit_credits_pressed() {
                 dom::swap_inner(
                     "credits-msg",
                     "<span style=\"color:var(--error)\">deposit failed</span>",
+                );
+            }
+        }
+    });
+}
+
+/// Save this agent's per-call x402 price (whole `$LH` → wei in
+/// `.lh_x402_price`). Empty / 0 deletes the file (free).
+fn save_x402_price_pressed() {
+    let Some(input) = dom::input_by_id("x402-price-input") else {
+        return;
+    };
+    let raw = input.value().trim().to_string();
+    wasm_bindgen_futures::spawn_local(async move {
+        use crate::filesystem::Filesystem;
+        let fs = super::shared_opfs();
+        let result: Result<(), String> = async {
+            if raw.is_empty() || raw == "0" {
+                let _ = fs.delete(".lh_x402_price").await;
+                return Ok(());
+            }
+            let whole: u128 = raw.parse().map_err(|_| "bad amount".to_string())?;
+            let wei = whole
+                .checked_mul(1_000_000_000_000_000_000u128)
+                .ok_or_else(|| "overflow".to_string())?;
+            fs.write_atomic(".lh_x402_price", wei.to_string().as_bytes())
+                .await
+                .map_err(|e| e.to_string())
+        }
+        .await;
+        match result {
+            Ok(()) => dom::swap_inner(
+                "x402-price-msg",
+                "<span style=\"color:var(--muted)\">saved</span>",
+            ),
+            Err(e) => {
+                web_sys::console::warn_1(&JsValue::from_str(&format!("x402 price: {e}")));
+                dom::swap_inner(
+                    "x402-price-msg",
+                    "<span style=\"color:var(--error)\">save failed</span>",
                 );
             }
         }
@@ -2129,6 +2173,20 @@ fn header_admin_toggle() {
             if let Some(prompt) = super::system_prompt::load().await {
                 if let Some(textarea) = dom::textarea_by_id("prompt-input") {
                     textarea.set_value(&prompt);
+                }
+            }
+            // Prefill the x402 price (stored as wei → shown as whole LH).
+            {
+                use crate::filesystem::Filesystem;
+                if let Ok(bytes) = super::shared_opfs().read(".lh_x402_price").await {
+                    if let Some(wei) = String::from_utf8(bytes)
+                        .ok()
+                        .and_then(|s| s.trim().parse::<u128>().ok())
+                    {
+                        if let Some(input) = dom::input_by_id("x402-price-input") {
+                            input.set_value(&(wei / 1_000_000_000_000_000_000u128).to_string());
+                        }
+                    }
                 }
             }
             if let Some(allowed) = super::tool_allowlist::load().await {

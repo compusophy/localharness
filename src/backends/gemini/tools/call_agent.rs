@@ -87,8 +87,8 @@ impl Tool for CallAgent {
 struct ChallengeParts {
     to: String,
     value: String,
-    valid_before: u64,
-    nonce: String,
+    // The caller deliberately does NOT use the callee's validBefore/nonce
+    // (security: it sets its own window + nonce), so they aren't stored.
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -113,35 +113,69 @@ fn hex0x(b: &[u8]) -> String {
 
 /// Sign the challenge via the app-injected x402 hook and build the
 /// `payment` object to re-post.
+/// Max `$LH` (wei) this caller will pay for a single agent call — a hard
+/// ceiling so a malicious callee can't drain the wallet (C1/H1).
+#[cfg(target_arch = "wasm32")]
+const MAX_PAY_PER_CALL_WEI: u128 = 100_000_000_000_000_000_000; // 100 LH
+
 #[cfg(target_arch = "wasm32")]
 async fn pay_and_build(
+    name: &str,
     ch: &ChallengeParts,
 ) -> std::result::Result<js_sys::Object, String> {
     use wasm_bindgen::JsValue;
     let to: [u8; 20] = parse_hex_n(&ch.to, 20)?
         .try_into()
         .map_err(|_| "bad to".to_string())?;
-    let value_wei: u128 = ch.value.parse().map_err(|_| "bad value".to_string())?;
-    let nonce: [u8; 32] = parse_hex_n(&ch.nonce, 32)?
+
+    // C1: the recipient MUST be the callee's on-chain registered payee
+    // (its TBA), NOT an arbitrary address the callee named — otherwise a
+    // malicious agent could redirect funds anywhere.
+    let payee = crate::registry::tba_of_name(name)
+        .await
+        .map_err(|e| format!("payee lookup: {e}"))?
+        .ok_or_else(|| "callee has no on-chain wallet — refusing to pay".to_string())?;
+    let payee_b: [u8; 20] = parse_hex_n(&payee, 20)?
         .try_into()
-        .map_err(|_| "bad nonce".to_string())?;
+        .map_err(|_| "bad payee".to_string())?;
+    if to != payee_b {
+        return Err("payment recipient ≠ agent's registered wallet — refusing".into());
+    }
+
+    // C1/H1: cap the per-call amount.
+    let value_wei: u128 = ch.value.parse().map_err(|_| "bad value".to_string())?;
+    if value_wei > MAX_PAY_PER_CALL_WEI {
+        return Err("requested price exceeds the per-call cap".into());
+    }
+
+    // C2/L2: WE pick a short window + fresh nonce — never trust the callee's.
+    let now = (js_sys::Date::now() / 1000.0) as u64;
+    let valid_after = now.saturating_sub(60);
+    let valid_before = now + 300;
+    let mut nonce = [0u8; 32];
+    if let Some(c) = web_sys::window().and_then(|w| w.crypto().ok()) {
+        let _ = c.get_random_values_with_u8_array(&mut nonce);
+    }
+
     let payment = crate::x402_hook::sign(crate::x402_hook::X402Challenge {
         to,
         value_wei,
-        valid_before: ch.valid_before,
+        valid_after,
+        valid_before,
         nonce,
     })
     .await?;
+
     let obj = js_sys::Object::new();
     let set = |k: &str, v: &str| {
         let _ = js_sys::Reflect::set(&obj, &JsValue::from_str(k), &JsValue::from_str(v));
     };
     set("from", &hex0x(&payment.from));
-    set("value", &ch.value);
-    set("nonce", &ch.nonce);
+    set("value", &value_wei.to_string());
+    set("nonce", &hex0x(&nonce));
     set("signature", &hex0x(&payment.signature));
-    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("validAfter"), &JsValue::from_f64(payment.valid_after as f64));
-    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("validBefore"), &JsValue::from_f64(payment.valid_before as f64));
+    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("validAfter"), &JsValue::from_f64(valid_after as f64));
+    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("validBefore"), &JsValue::from_f64(valid_before as f64));
     Ok(obj)
 }
 
@@ -243,15 +277,9 @@ async fn call_agent_impl(name: &str, message: &str) -> std::result::Result<Strin
                     .and_then(|v| v.as_string())
                     .unwrap_or_default()
             };
-            let vb = js_sys::Reflect::get(&data, &JsValue::from_str("validBefore"))
-                .ok()
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0) as u64;
             *payment_c.borrow_mut() = Some(ChallengeParts {
                 to: gs("to"),
                 value: gs("value"),
-                valid_before: vb,
-                nonce: gs("nonce"),
             });
             if let Some(w) = waker_c.borrow_mut().take() {
                 let _ = w.call0(&JsValue::NULL);
@@ -350,7 +378,7 @@ async fn call_agent_impl(name: &str, message: &str) -> std::result::Result<Strin
         match challenge {
             Some(ch) if !paid => {
                 paid = true;
-                match pay_and_build(&ch).await {
+                match pay_and_build(name, &ch).await {
                     Ok(payment_obj) => {
                         let retry = js_sys::Object::new();
                         let s = |k: &str, v: &str| {

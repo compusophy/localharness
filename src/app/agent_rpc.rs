@@ -203,10 +203,13 @@ fn build_response(id: &str, result: Result<String, String>) -> JsValue {
 
 /// Build the `lh-payment-required` challenge: pay `price` `$LH` to this
 /// agent's address, with a fresh nonce + 5-minute validity.
-async fn build_payment_required(id: &str, price: u128) -> JsValue {
-    let addr = match super::chat::credit_signer().await {
-        Some((_, a)) => a,
-        None => return build_response(id, Err("agent has no identity to bill to".into())),
+async fn build_payment_required(id: &str, price: u128, my_name: &str) -> JsValue {
+    // Bill to the agent's on-chain payee (its TBA). The caller verifies
+    // this against the registry before paying, so an honest agent's
+    // address resolves and a spoofed one is rejected caller-side.
+    let to = match super::registry::tba_of_name(my_name).await {
+        Ok(Some(a)) => a,
+        _ => return build_response(id, Err("agent has no on-chain wallet to bill to".into())),
     };
     let mut nonce = [0u8; 32];
     rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut nonce);
@@ -214,7 +217,7 @@ async fn build_payment_required(id: &str, price: u128) -> JsValue {
     let obj = js_sys::Object::new();
     let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("type"), &JsValue::from_str("lh-payment-required"));
     let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("id"), &JsValue::from_str(id));
-    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("to"), &JsValue::from_str(&hex0x(&addr)));
+    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("to"), &JsValue::from_str(&to));
     let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("value"), &JsValue::from_str(&price.to_string()));
     let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("validBefore"), &JsValue::from_f64((now + 300) as f64));
     let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("nonce"), &JsValue::from_str(&hex0x(&nonce)));
@@ -224,12 +227,20 @@ async fn build_payment_required(id: &str, price: u128) -> JsValue {
 /// Verify + settle an incoming x402 payment on-chain. The payer signed
 /// `to = this agent's address`, so we settle to that same address; a
 /// mismatched `to` makes the on-chain signature check fail.
-async fn settle_incoming(price: u128, p: &PaymentParts) -> Result<(), String> {
+async fn settle_incoming(price: u128, p: &PaymentParts, my_name: &str) -> Result<(), String> {
     let value: u128 = p.value_dec.parse().map_err(|_| "bad value".to_string())?;
     if value < price {
         return Err("underpaid".into());
     }
-    let (signer, my_addr) = super::chat::credit_signer()
+    // Settle TO this agent's registered payee (the TBA the caller signed
+    // over). A mismatch would fail the on-chain signature check anyway.
+    let payee = super::registry::tba_of_name(my_name)
+        .await
+        .map_err(|e| format!("payee: {e}"))?
+        .ok_or_else(|| "no payee".to_string())?;
+    let to: [u8; 20] = parse_hex(&payee, 20)?.try_into().unwrap();
+    // The local credit key SUBMITS the sponsored settle (it isn't the payee).
+    let (signer, _) = super::chat::credit_signer()
         .await
         .ok_or_else(|| "no identity".to_string())?;
     let fee_payer = super::sponsor::signer()?;
@@ -240,7 +251,7 @@ async fn settle_incoming(price: u128, p: &PaymentParts) -> Result<(), String> {
         &signer,
         &fee_payer,
         &from,
-        &my_addr,
+        &to,
         value,
         p.valid_after,
         p.valid_before,
@@ -248,8 +259,16 @@ async fn settle_incoming(price: u128, p: &PaymentParts) -> Result<(), String> {
         &sig,
         super::registry::ALPHA_USD_ADDRESS,
     )
-    .await
-    .map(|_| ())
+    .await?;
+    // H2: confirm the settlement actually consumed the nonce on-chain
+    // before serving — a reverted/dropped settle must NOT yield free service.
+    if !super::registry::x402_authorization_state(&p.from_hex, &nonce)
+        .await
+        .unwrap_or(false)
+    {
+        return Err("settlement not confirmed".into());
+    }
+    Ok(())
 }
 
 async fn handle_agent_call(
@@ -265,10 +284,20 @@ async fn handle_agent_call(
     // x402 gate: if this agent charges, require a settled $LH payment.
     let price = x402_price().await;
     if price > 0 {
+        // Charging needs a registered identity to bill to.
+        let my_name = match super::tenant::current() {
+            super::tenant::Host::Tenant(n) => n,
+            _ => {
+                return build_response(
+                    id,
+                    Err("agent is not a registered subdomain — cannot charge".into()),
+                )
+            }
+        };
         match payment {
-            None => return build_payment_required(id, price).await,
+            None => return build_payment_required(id, price, &my_name).await,
             Some(p) => {
-                if let Err(e) = settle_incoming(price, &p).await {
+                if let Err(e) = settle_incoming(price, &p, &my_name).await {
                     return build_response(id, Err(format!("payment: {e}")));
                 }
             }

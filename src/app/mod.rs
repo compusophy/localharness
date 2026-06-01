@@ -215,21 +215,18 @@ fn mount() -> Result<(), JsValue> {
             let (signer, from) = chat::credit_signer()
                 .await
                 .ok_or_else(|| "no identity to pay from".to_string())?;
+            // Sign exactly the caller-decided fields (to/value/window/nonce
+            // are validated + chosen by call_agent before we get here).
             let sig = crate::registry::sign_x402(
                 &signer,
                 &from,
                 &ch.to,
                 ch.value_wei,
-                0,
+                ch.valid_after,
                 ch.valid_before,
                 &ch.nonce,
             )?;
-            Ok(crate::x402_hook::X402Payment {
-                from,
-                valid_after: 0,
-                valid_before: ch.valid_before,
-                signature: sig,
-            })
+            Ok(crate::x402_hook::X402Payment { from, signature: sig })
         })
     }));
 

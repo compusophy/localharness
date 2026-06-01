@@ -632,6 +632,7 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                 }
                 div.admin-tab-panel.panel-agent {
                     (admin_prompt_section())
+                    (admin_x402_price_section())
                     (admin_tool_allowlist_section())
                     (admin_app_section())
                 }
@@ -712,6 +713,24 @@ pub(crate) fn admin_prompt_section() -> Markup {
                 }
             }
             div #prompt-msg .admin-msg-slot {}
+        }
+    }
+}
+
+/// Per-call x402 price (`$LH`) other agents pay to call this one via
+/// `call_agent`. Whole `$LH`; empty / 0 = free. Persisted to
+/// `.lh_x402_price` (wei) and read by the inter-agent RPC gate.
+pub(crate) fn admin_x402_price_section() -> Markup {
+    html! {
+        div.admin-section {
+            div.admin-section-title { "x402 price" }
+            form.prompt-form data-action="save-x402-price" onsubmit="return false" {
+                input #x402-price-input .redeem-input type="text" placeholder="price per call (LH)";
+                div.prompt-actions {
+                    button type="submit" .ghost { "save" }
+                }
+            }
+            div #x402-price-msg .admin-msg-slot {}
         }
     }
 }

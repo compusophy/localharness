@@ -11,20 +11,22 @@ use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
 
-/// What a callee demands, parsed from its `lh-payment-required` reply.
+/// A fully caller-decided authorization to sign. The CALLER (not the
+/// callee) sets every field — `to` is verified against the agent's
+/// on-chain payee, `value` is capped, and the window + nonce are the
+/// caller's own — so the hook just signs what it's given.
 pub struct X402Challenge {
-    /// Payee address (where `$LH` goes) — the value the caller signs over.
     pub to: [u8; 20],
     pub value_wei: u128,
+    pub valid_after: u64,
     pub valid_before: u64,
     pub nonce: [u8; 32],
 }
 
-/// A signed authorization the caller posts back as the `payment` field.
+/// The signed result: the payer address + the 65-byte signature. (The
+/// caller already holds the window/nonce it chose.)
 pub struct X402Payment {
     pub from: [u8; 20],
-    pub valid_after: u64,
-    pub valid_before: u64,
     pub signature: [u8; 65],
 }
 
