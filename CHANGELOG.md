@@ -7,9 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Platform `$LH` credits become the primary path to model access (BYOK
-is the second option), agents pay each other in `$LH` over x402, and a
-batch of registry quality-of-life facets land.
+## [0.17.0] - 2026-06-02
+
+Device linking is reworked to **Option A — identity is the seed**, carried
+between devices by QR seed-transport (no on-chain pairing, no per-device
+keys, no glue). Platform `$LH` credits become the primary path to model
+access (BYOK is the second option), agents pay each other in `$LH` over
+x402, and a batch of registry quality-of-life facets land.
+
+### Added
+
+- **Multi-device via QR seed-transport (Option A).** "Add a device" (apex
+  admin) encrypts this device's seed under a one-time code and renders a QR
+  of `localharness.xyz/?adopt=1#s=<ciphertext>` — the encrypted seed rides
+  the URL fragment (never sent to a server). The other device scans it,
+  types the code, and imports the same seed; both devices then resolve the
+  SAME owner address, so every subdomain shows and is controllable on every
+  device. The chain read (`list_owned_tokens` = `ownerOf`) already worked —
+  the fix was getting the same seed onto both devices, with no on-chain
+  pairing, no per-device keys, and no redirect/pointer glue. The prior
+  on-chain device-pairing path (PairingFacet, `.lh_device_key`,
+  ECIES-wrap-to-device) is superseded and dormant.
+
+### Fixed
+
+- **No-wallet claim no longer silently mints a second identity.** A device
+  with no wallet that claimed a name used to auto-generate a fresh seed —
+  which is how a returning user on a second device ended up owning a
+  *different* EOA's subdomains, splitting their identity. The claim flow
+  now offers an explicit choice (create a new identity vs adopt an existing
+  one) instead of minting silently.
 
 ### Changed
 
