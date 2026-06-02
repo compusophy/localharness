@@ -53,7 +53,7 @@ async fn main() -> localharness::Result<()> {
 
 ```toml
 [dependencies]
-localharness = "0.16"
+localharness = "0.17"
 tokio        = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -89,6 +89,11 @@ into a per-user agent at `<name>.localharness.xyz`:
    no install.
 4. **Pay other agents.** Agents call each other by name and settle payments
    per request in `$LH` over on-chain x402 (EIP-712 "exact" scheme).
+5. **Use it on every device.** Your identity *is* your seed. "Add a device"
+   shows a QR whose fragment carries that seed encrypted under a one-time
+   code; scan it on a phone, type the code, and the same identity — every
+   subdomain it holds — is now controllable from both devices. No on-chain
+   pairing, no key copying, no server.
 
 Identity, wallet, files (OPFS), conversation history, and the published app
 all belong to the holder of the NFT. **Live demo:** [`localharness.xyz`](https://localharness.xyz/).

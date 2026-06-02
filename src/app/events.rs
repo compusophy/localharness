@@ -71,6 +71,16 @@ enum Action {
     PairApprove,
     PairReject,
     PairJoin,
+    /// Option A: desktop shows a QR carrying its seed (encrypted under a
+    /// one-time code) so another device can adopt the same identity.
+    AddDevice,
+    /// Option A: phone submits the one-time code to decrypt + import the
+    /// seed that rode in the URL fragment.
+    AdoptDevice,
+    /// Trap fix: explicit "create a genuinely new identity" confirmation
+    /// from the no-wallet identity-choice interstitial, carrying the name
+    /// the user was trying to claim.
+    CreateNewClaim(String),
     AgentActToggle(String),
     AgentSendLh(String),
     SavePrompt,
@@ -146,6 +156,9 @@ impl Action {
             "feedback-close" => Action::FeedbackClose,
             "feedback-submit" => Action::FeedbackSubmit,
             "pair-start" => Action::PairStart,
+            "add-device" => Action::AddDevice,
+            "adopt-device" => Action::AdoptDevice,
+            "create-new-claim" => Action::CreateNewClaim(arg.unwrap_or_default()),
             "pair-cancel" => Action::PairCancel,
             "pair-approve" => Action::PairApprove,
             "pair-reject" => Action::PairReject,
@@ -447,8 +460,21 @@ fn on_apex_input() {
 /// while in flight, redirects on success, reverts to the input-driven
 /// state on failure. All status/error chatter goes to `console.warn`
 /// for debuggability. Per [[feedback-no-explanatory-validation]].
-async fn run_apex_claim(name: String) {
+async fn run_apex_claim(name: String, create_if_missing: bool) {
     set_create_button_busy(true);
+
+    // Trap fix: a device with NO wallet that claims a name used to silently
+    // mint a brand-new seed (see the `None` branch below) — which is how a
+    // returning user on a second device ended up owning a *different* EOA's
+    // subdomains, splitting their identity. Now we refuse to mint silently:
+    // if there's no wallet and the user hasn't explicitly chosen "create a
+    // new identity", show the choice (create new / adopt existing) instead.
+    let has_wallet = super::APP.with(|cell| cell.borrow().wallet.is_some());
+    if !has_wallet && !create_if_missing {
+        set_create_button_busy(false);
+        dom::swap_outer("agents-list", &templates::identity_choice(&name).into_string());
+        return;
+    }
 
     let result: Result<String, String> = async {
         // 1. Re-confirm availability — the user might have been
@@ -645,7 +671,16 @@ fn dispatch(action: Action) {
                 return;
             }
             wasm_bindgen_futures::spawn_local(async move {
-                run_apex_claim(cleaned).await;
+                run_apex_claim(cleaned, false).await;
+            });
+        }
+        Action::CreateNewClaim(name) => {
+            let cleaned = super::tenant::sanitize(&name);
+            if cleaned.len() < 3 || cleaned.len() > 32 {
+                return;
+            }
+            wasm_bindgen_futures::spawn_local(async move {
+                run_apex_claim(cleaned, true).await;
             });
         }
         Action::ClaimHere => {
@@ -988,6 +1023,8 @@ fn dispatch(action: Action) {
         Action::FeedbackClose => feedback_close(),
         Action::FeedbackSubmit => feedback_submit(),
         Action::PairStart => pair_start_pressed(),
+        Action::AddDevice => add_device_pressed(),
+        Action::AdoptDevice => adopt_device_pressed(),
         Action::PairCancel => pair_cancel_pressed(),
         Action::PairApprove => pair_approve_pressed(),
         Action::PairReject => pair_reject_pressed(),
@@ -1805,7 +1842,7 @@ fn pair_start_pressed() {
             );
             dom::swap_outer(
                 "pair-slot",
-                &r#"<div id="pair-slot" class="pair-slot"><button id="pair-btn" type="button" data-action="pair-start" class="ghost">link a device</button></div>"#,
+                &r#"<div id="pair-slot" class="pair-slot"><button id="pair-btn" type="button" data-action="add-device" class="ghost">add a device</button></div>"#,
             );
             return;
         };
@@ -1891,7 +1928,7 @@ fn pair_reject_pressed() {
     PENDING_PAIR.with(|p| *p.borrow_mut() = None);
     dom::swap_outer(
         "pair-slot",
-        &r#"<div id="pair-slot" class="pair-slot"><button id="pair-btn" type="button" data-action="pair-start" class="ghost">link a device</button></div>"#,
+        &r#"<div id="pair-slot" class="pair-slot"><button id="pair-btn" type="button" data-action="add-device" class="ghost">add a device</button></div>"#,
     );
     dom::swap_inner("pair-msg", &dom::msg_span(dom::Msg::Error, "rejected that device"));
 }
@@ -1901,9 +1938,97 @@ fn pair_reject_pressed() {
 fn pair_cancel_pressed() {
     dom::swap_outer(
         "pair-slot",
-        &r#"<div id="pair-slot" class="pair-slot"><button id="pair-btn" type="button" data-action="pair-start" class="ghost">link a device</button></div>"#,
+        &r#"<div id="pair-slot" class="pair-slot"><button id="pair-btn" type="button" data-action="add-device" class="ghost">add a device</button></div>"#,
     );
     dom::swap_inner("pair-msg", "");
+}
+
+/// Derive a 32-byte transport key from a one-time pairing code. Keccak256
+/// of the uppercased code — deterministic on both devices, so the desktop
+/// can `seal_with_raw_key` and the phone can `open_with_raw_key`.
+fn code_key(code: &str) -> [u8; 32] {
+    use sha3::{Digest, Keccak256};
+    let mut h = Keccak256::new();
+    h.update(b"localharness/v0/adopt");
+    h.update(code.trim().to_uppercase().as_bytes());
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&h.finalize());
+    out
+}
+
+fn hex_to_bytes(s: &str) -> Option<Vec<u8>> {
+    let s = s.trim().trim_start_matches("0x");
+    if s.is_empty() || s.len() % 2 != 0 {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+        .collect()
+}
+
+/// Desktop side of Option A "add a device". Encrypt this device's seed
+/// under a one-time code and render a QR of an apex URL whose FRAGMENT
+/// carries the ciphertext (the fragment never leaves the browser / is
+/// never sent to a server). The user reads the code off-screen and types
+/// it on the other device to decrypt + import — no on-chain pairing, no
+/// device keys, no redirect glue.
+fn add_device_pressed() {
+    let phrase = super::APP
+        .with(|cell| cell.borrow().wallet.as_ref().map(|w| w.mnemonic.to_string()));
+    let Some(phrase) = phrase else {
+        dom::swap_inner("pair-msg", &dom::msg_span(dom::Msg::Error, "no identity on this device"));
+        return;
+    };
+    wasm_bindgen_futures::spawn_local(async move {
+        let code = generate_pair_code();
+        let Some(ct) = super::encryption::seal_with_raw_key(&code_key(&code), phrase.as_bytes()).await
+        else {
+            dom::swap_inner("pair-msg", &dom::msg_span(dom::Msg::Error, "encrypt failed"));
+            return;
+        };
+        let hex: String = ct.iter().map(|b| format!("{b:02x}")).collect();
+        let url = format!("https://localharness.xyz/?adopt=1#s={hex}");
+        dom::swap_outer("pair-slot", &templates::adopt_panel(&code, &url).into_string());
+        dom::swap_inner("pair-msg", "");
+    });
+}
+
+/// Phone side of Option A "add a device". Read the one-time code the user
+/// typed + the ciphertext stashed in the hidden input (from the URL
+/// fragment), decrypt, and import the seed — this device now IS the same
+/// identity and owns every subdomain it holds. A full reload lands on the
+/// clean apex with the wallet persisted.
+fn adopt_device_pressed() {
+    let code = dom::input_by_id("adopt-code").map(|i| i.value()).unwrap_or_default();
+    let ct_hex = dom::input_by_id("adopt-ct").map(|i| i.value()).unwrap_or_default();
+    if code.trim().is_empty() {
+        return;
+    }
+    wasm_bindgen_futures::spawn_local(async move {
+        let Some(ct) = hex_to_bytes(&ct_hex) else {
+            dom::swap_inner("adopt-msg", &dom::msg_span(dom::Msg::Error, "bad link — rescan the QR"));
+            return;
+        };
+        match super::encryption::open_with_raw_key(&code_key(&code), &ct).await {
+            Some(bytes) => {
+                let phrase = String::from_utf8_lossy(&bytes).into_owned();
+                match super::wallet_store::import(phrase.trim()).await {
+                    Ok(_) => {
+                        if let Ok(window) = dom::window() {
+                            let _ = window.location().set_href("https://localharness.xyz/");
+                        }
+                    }
+                    Err(err) => {
+                        dom::swap_inner("adopt-msg", &dom::msg_span(dom::Msg::Error, &format!("import failed: {err}")));
+                    }
+                }
+            }
+            None => {
+                dom::swap_inner("adopt-msg", &dom::msg_span(dom::Msg::Error, "wrong code"));
+            }
+        }
+    });
 }
 
 /// Phone side. The device opened `<name>.localharness.xyz/?pair=CODE`.

@@ -101,20 +101,34 @@ Agents pay each other in `$LH` via the x402 "exact" scheme over EIP-712: the pay
 ### Registry read functions
 
 ```
-ownerOfName(string name) â†’ address
-idOfName(string name) â†’ uint256
-nameOfId(uint256 id) â†’ string
-tokenBoundAccountByName(string name) â†’ address
-mainOf(address owner) â†’ uint256
+ownerOfName(string name) → address
+idOfName(string name) → uint256
+nameOfId(uint256 id) → string
+tokenBoundAccountByName(string name) → address
+mainOf(address owner) → uint256
 ```
+
+## Identity & multi-device
+
+An identity is a single BIP-39 seed (the master wallet, held at the apex
+origin's OPFS). Every subdomain it claims is owned by that seed's EOA, so
+"my agents" = `ownerOf == myEOA`. To control the same identity from another
+device, that device must hold the SAME seed — there is no per-device key or
+on-chain pairing. The bundle moves the seed via QR seed-transport:
+"add a device" (apex admin) encrypts the seed under a one-time code and
+renders a QR of `localharness.xyz/?adopt=1#s=<ciphertext>` (the encrypted
+seed rides the URL fragment, never sent to a server); the other device
+scans it, types the code, and imports the same seed. A device with no
+wallet that tries to claim a name is offered "create new" vs "adopt
+existing" rather than silently minting a second identity.
 
 ## Conventions
 
-- Dotfiles `.lh_*` are internal state â€” don't modify unless asked
+- Dotfiles `.lh_*` are internal state — don't modify unless asked
 - `.lh_system_prompt.txt` customizes the agent's personality
 - `.lh_tool_allowlist.txt` restricts which tools the agent can use
 - Owner verification uses cross-origin iframe signing against the apex wallet
-- All transactions are sponsored Tempo tx type 0x76 â€” users hold zero gas
+- All transactions are sponsored Tempo tx type 0x76 — users hold zero gas
 
 ## Architecture
 

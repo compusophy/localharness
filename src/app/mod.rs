@@ -322,6 +322,18 @@ fn mount() -> Result<(), JsValue> {
                 });
                 return Ok(());
             }
+            // Option A device adoption: `localharness.xyz/?adopt=1#s=<ct>`.
+            // A device scanning the "add a device" QR lands here. Render the
+            // code-entry form; the encrypted seed rides in the URL fragment
+            // (never sent to a server) and is read back from a hidden input
+            // when the user submits the one-time code. Delegated listeners
+            // are already installed above, so the form works.
+            if read_query_param("adopt").is_some() {
+                let ct_hex = read_fragment_param("s").unwrap_or_default();
+                root.set_inner_html(&templates::adopt_join(&ct_hex).into_string());
+                return Ok(());
+            }
+
             // Wallet load is async (OPFS). Show a single-line placeholder
             // rather than the full chrome so we don't flash the
             // pre-identity sidecar before we know whether a wallet exists.
@@ -821,6 +833,24 @@ pub(crate) fn read_query_param(key: &str) -> Option<String> {
         if let Some((k, v)) = pair.split_once('=') {
             if k == key && !v.is_empty() {
                 return Some(decode_uri_component(v));
+            }
+        }
+    }
+    None
+}
+
+/// Read a `key=value` pair out of the URL fragment (`#key=value&…`). Used
+/// by Option A device adoption to recover the encrypted seed that rides in
+/// `#s=<ciphertext>` — the fragment never leaves the browser, so it's the
+/// right channel for the transport blob. No URI-decode: the value is hex.
+pub(crate) fn read_fragment_param(key: &str) -> Option<String> {
+    let window = dom::window().ok()?;
+    let hash = window.location().hash().ok()?;
+    let stripped = hash.trim_start_matches('#');
+    for pair in stripped.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            if k == key && !v.is_empty() {
+                return Some(v.to_string());
             }
         }
     }

@@ -903,22 +903,19 @@ pub(crate) fn admin_credits_section() -> Markup {
 pub(crate) fn admin_devices_section() -> Markup {
     html! {
         div.admin-section {
-            div.admin-section-title { "linked devices" }
-            div #signer-list .admin-msg-slot { "loading…" }
-            // No 0x copying. Click "link a device" → a one-time code +
-            // a URL appears. Open it on the other device (scan the link
-            // / type the short code into your own subdomain) and it
-            // self-enrolls over the on-chain pairing rendezvous.
+            div.admin-section-title { "add a device" }
+            // Option A — identity IS the seed. "Add a device" shows a QR
+            // whose fragment carries this device's seed ENCRYPTED under a
+            // one-time code; scanning it on the other device + typing the
+            // code imports the same seed there. Both devices then resolve
+            // the SAME owner address, so every subdomain shows on every
+            // device with zero on-chain pairing, no device keys, no glue.
             div #pair-slot .pair-slot {
-                button #pair-btn type="button" data-action="pair-start" .ghost {
-                    "link a device"
+                button #pair-btn type="button" data-action="add-device" .ghost {
+                    "add a device"
                 }
             }
             div #pair-msg .admin-msg-slot {}
-            // No manual consolidate button: consolidation is meant to be
-            // automatic at create/link time (a fresh-reset model — no
-            // migrating legacy names). The backend + TBA.execute routing
-            // stay for that wiring.
         }
     }
 }
@@ -1014,6 +1011,82 @@ pub(crate) fn pair_join(name: &str) -> Markup {
                     div #pair-join-msg .step-msg {}
                 }
             }
+        }
+    }
+}
+
+/// Desktop "add a device" panel (Option A seed transport). The QR encodes
+/// an apex URL whose FRAGMENT carries this device's seed encrypted under a
+/// one-time `code`; the code is shown separately and typed on the other
+/// device. Scan + type code → that device imports the same seed and now
+/// owns every subdomain this identity holds. No on-chain pairing, no
+/// device keys, no redirect glue.
+pub(crate) fn adopt_panel(code: &str, url: &str) -> Markup {
+    html! {
+        div #pair-slot .pair-slot.pair-active {
+            div.pair-instructions { "scan this on your other device" }
+            @if let Some(svg) = pair_qr_svg(url) {
+                div.pair-qr { (PreEscaped(svg)) }
+            }
+            div.pair-code-row {
+                span.pair-code-label { "code" }
+                code.pair-code { (code) }
+            }
+            div.pair-waiting { "type the code on that device to decrypt + import your seed" }
+            button type="button" data-action="pair-cancel" .ghost { "done" }
+        }
+    }
+}
+
+/// Phone side of Option A seed transport. Reached at
+/// `localharness.xyz/?adopt=1#s=<ciphertext>` — the seed lives at the apex
+/// origin, so adoption happens here, not on a subdomain. The encrypted
+/// seed rides in the URL fragment (never sent to a server); the user types
+/// the one-time code shown on the desktop to decrypt + import it. `ct_hex`
+/// is stashed in a hidden input so the submit handler can read it.
+pub(crate) fn adopt_join(ct_hex: &str) -> Markup {
+    html! {
+        (site_header(&Host::Apex))
+        main.apex-main {
+            div.col-chat {
+                section.step {
+                    div.pair-instructions { "adopt your identity on this device" }
+                    form.create-form data-action="adopt-device" {
+                        input #adopt-code .create-input type="text"
+                            placeholder="enter code" autocomplete="off"
+                            spellcheck="false" maxlength="8" required {}
+                        input #adopt-ct type="hidden" value=(ct_hex) {}
+                        button type="submit" .create-button { "adopt" }
+                    }
+                    div #adopt-msg .step-msg {}
+                }
+            }
+        }
+    }
+}
+
+/// Trap-fix interstitial. Swapped into `#agents-list` when a device with
+/// NO wallet tries to claim a name: rather than silently minting a second
+/// identity (the bug that split a user's subdomains across two EOAs), it
+/// forces an explicit choice — create a genuinely new identity, or adopt
+/// an existing one (import seed here, or scan "add a device" elsewhere).
+pub(crate) fn identity_choice(name: &str) -> Markup {
+    html! {
+        div #agents-list .agents-list {
+            div.pair-instructions { "no identity on this device yet" }
+            div.pair-slot {
+                button type="button" data-action="create-new-claim" data-arg=(name) .ghost {
+                    "create a new identity"
+                }
+            }
+            div.pair-slot {
+                button type="button" data-action="show-import" .ghost {
+                    "i already have one — import seed"
+                }
+            }
+            div #import-slot {}
+            div #seed-msg .admin-msg-slot {}
+            div.pair-waiting { "or open “add a device” on a device you already use" }
         }
     }
 }
