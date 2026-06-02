@@ -1455,7 +1455,10 @@ fn redeem_code_pressed() {
     );
     wasm_bindgen_futures::spawn_local(async move {
         let result = async {
-            sponsor_rate_guard()?;
+            // No sponsor_rate_guard here: a redeem requires a valid, unused,
+            // owner-loaded single-use code, so it's inherently un-spammable
+            // (the guard was the one thing differing from the invite-link
+            // path, which redeems fine). Keeps manual + invite identical.
             let (signer, _) = super::chat::credit_signer()
                 .await
                 .ok_or_else(|| "no identity".to_string())?;
@@ -1481,7 +1484,7 @@ fn redeem_code_pressed() {
                 web_sys::console::warn_1(&JsValue::from_str(&format!("redeem: {e}")));
                 dom::swap_inner(
                     "credits-msg",
-                    "<span style=\"color:var(--error)\">redeem failed</span>",
+                    &dom::msg_span(dom::Msg::Error, &format!("redeem failed: {e}")),
                 );
             }
         }
