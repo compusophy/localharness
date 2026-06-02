@@ -50,6 +50,37 @@ impl<'a> Lexer<'a> {
                 }
                 continue;
             }
+            // attribute: `#[...]` (outer) or `#![...]` (inner) — accepted and
+            // ignored, treated as trivia like a comment, so standard Rust
+            // attributes (`#[no_mangle]`, `#[derive(Clone)]`, …) that agent-
+            // authored source emits don't trip the lexer on the `#` byte.
+            if self.pos < self.src.len() && self.src[self.pos] == b'#' {
+                let mut i = self.pos + 1;
+                if i < self.src.len() && self.src[i] == b'!' {
+                    i += 1;
+                }
+                if i < self.src.len() && self.src[i] == b'[' {
+                    // Skip to the matching `]`, tracking `[` nesting depth.
+                    let mut depth = 0usize;
+                    self.pos = i;
+                    while self.pos < self.src.len() {
+                        match self.src[self.pos] {
+                            b'[' => depth += 1,
+                            b']' => {
+                                depth -= 1;
+                                self.pos += 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                                continue;
+                            }
+                            _ => {}
+                        }
+                        self.pos += 1;
+                    }
+                    continue;
+                }
+            }
             break;
         }
     }
@@ -311,5 +342,21 @@ mod tests {
         let tokens = lex("fn // this is a comment\nmain").unwrap();
         assert_eq!(tokens[0].kind, TokenKind::Fn);
         assert_eq!(tokens[1].kind, TokenKind::Ident("main".into()));
+    }
+
+    #[test]
+    fn lex_attribute_skip() {
+        // `#[...]` / `#![...]` are skipped as trivia; `#[derive(...)]` with a
+        // nested `(...)` group is fine, and a `[` inside the attr nests.
+        let tokens = lex("#![inner]\n#[no_mangle]\n#[derive(Clone, Copy)]\nfn main").unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Fn);
+        assert_eq!(tokens[1].kind, TokenKind::Ident("main".into()));
+    }
+
+    #[test]
+    fn lex_bare_hash_still_errors() {
+        // A lone `#` not introducing an attribute is still an error — we
+        // only treat `#[` / `#![` as trivia, nothing else.
+        assert!(lex("fn # main").is_err());
     }
 }

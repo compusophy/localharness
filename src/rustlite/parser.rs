@@ -135,7 +135,34 @@ impl<'a> Parser<'a> {
 
     // ── Items ───────────────────────────────────────────────────────
 
+    /// Consume and discard an optional `pub` / `pub(crate)` / `pub(...)`
+    /// visibility modifier. rustlite is a single flat module so visibility
+    /// is meaningless here, but agent/LLM-authored source routinely writes
+    /// `pub fn` / `pub struct` / `pub x: i32`; accept it rather than erroring.
+    fn skip_visibility(&mut self) {
+        if matches!(self.peek(), TokenKind::Ident(n) if n.as_str() == "pub") {
+            self.advance();
+            // optional restriction group: `(crate)`, `(super)`, `(in path)`
+            if self.at(&TokenKind::LParen) {
+                let mut depth = 0usize;
+                loop {
+                    match self.peek() {
+                        TokenKind::LParen => depth += 1,
+                        TokenKind::RParen => depth -= 1,
+                        TokenKind::Eof => break,
+                        _ => {}
+                    }
+                    self.advance();
+                    if depth == 0 {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     fn parse_item(&mut self) -> Result<Item, CompileError> {
+        self.skip_visibility();
         match self.peek() {
             TokenKind::Struct => Ok(Item::Struct(self.parse_struct()?)),
             TokenKind::Enum => Ok(Item::Enum(self.parse_enum()?)),
@@ -206,6 +233,7 @@ impl<'a> Parser<'a> {
     fn parse_field_list(&mut self) -> Result<Vec<Field>, CompileError> {
         let mut fields = Vec::new();
         while !matches!(self.peek(), TokenKind::RBrace) {
+            self.skip_visibility();
             let start = self.span();
             let name = self.expect_ident()?;
             self.expect(&TokenKind::Colon)?;
@@ -920,6 +948,36 @@ mod tests {
             }
             _ => panic!("expected fn"),
         }
+    }
+
+    #[test]
+    fn parse_pub_visibility_is_ignored() {
+        // `pub` / `pub(crate)` on items and struct fields is accepted and
+        // discarded — rustlite has one flat module, but agents write `pub`.
+        let m = parse_str(
+            "pub struct P { pub x: i32, y: i32 } pub(crate) fn f() -> i32 { 0 } pub const K: i32 = 1;",
+        );
+        assert_eq!(m.items.len(), 3);
+        match &m.items[0] {
+            Item::Struct(s) => {
+                assert_eq!(s.name, "P");
+                assert_eq!(s.fields.len(), 2);
+                assert_eq!(s.fields[0].name, "x");
+            }
+            _ => panic!("expected struct"),
+        }
+        assert!(matches!(&m.items[1], Item::Fn(f) if f.name == "f"));
+        assert!(matches!(&m.items[2], Item::Const(c) if c.name == "K"));
+    }
+
+    #[test]
+    fn parse_attributes_are_skipped() {
+        // `#[...]` outer and `#![...]` inner attributes are lexer trivia.
+        let m = parse_str(
+            "#![allow(dead_code)]\n#[no_mangle]\nfn frame(t: i32) -> i32 { #[allow(unused)] let mut a: i32 = t; a }",
+        );
+        assert_eq!(m.items.len(), 1);
+        assert!(matches!(&m.items[0], Item::Fn(f) if f.name == "frame"));
     }
 
     #[test]
