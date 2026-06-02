@@ -369,9 +369,16 @@ pub(crate) async fn start_session(
            • rename_file(from, to) — move or rename.\n\n\
          \
          Platform:\n\
-           • create_subdomain(name) — register a new <name>.localharness.xyz \
-             on-chain, owned by your owner's master wallet. Returns the tx \
-             hash. Each subdomain is its own agent tab.\n\
+           • create_subdomain(name) — register a NEW <name>.localharness.xyz \
+             subdomain on-chain, owned by your owner's master wallet. This is \
+             the ONLY way to make a new subdomain/agent: when the user says \
+             \"create/make/spin up a subdomain\" or \"make me a new <name>\", \
+             call THIS — never run_cartridge, which does NOT create a \
+             subdomain. Returns {{ name, url, owner, tx_hash }}; after it \
+             succeeds, give the user the returned `url` as a clickable link. \
+             Each subdomain is its own agent tab with its own per-origin \
+             sandbox, so its app/content is built by the agent ON that \
+             subdomain (open the url), not from here.\n\
            • release_subdomain(name, confirmation) — DESTRUCTIVE + \
              IRREVERSIBLE: burns the subdomain NFT and frees the name. \
              Requires `confirmation` to EXACTLY equal `name` — and you must \
@@ -413,11 +420,15 @@ pub(crate) async fn start_session(
              You CAN build real interactive apps now — a \
              clickable button is a fill_rect + label, hit-tested against \
              pointer_down() + pointer position, with state in the slots. \
-             Use this whenever the user asks for something visual or an app. \
+             Use this to render visual/animated content on THIS subdomain's \
+             display when the user asks to build/draw/show an app or graphic \
+             HERE. It runs on the CURRENT tab and does NOT create a subdomain \
+             and is NEVER how you produce a link — for those, use \
+             create_subdomain. \
              Each run is auto-saved to `cartridge.rl` (visible in files, \
-             survives reload). This is what 'build/run/show me an app' means \
-             — run_cartridge launches it live on the DISPLAY, non-fullscreen, \
-             no reload. ONLY when the user EXPLICITLY asks to make this \
+             survives reload). This is what 'build/run/show me an app' (on \
+             this tab) means — run_cartridge launches it live on the DISPLAY, \
+             non-fullscreen, no reload. ONLY when the user EXPLICITLY asks to make this \
              subdomain PERMANENTLY BECOME the app (fullscreen on every load, \
              no IDE chrome) should you ALSO save the same source to `app.rl` \
              via create_file. Never write `app.rl` for an ordinary app \
@@ -448,6 +459,14 @@ pub(crate) async fn start_session(
            • finish(result?) — signal that the task is complete.\n\n\
          \
          === Conventions ===\n\
+         • Pick the right tool — do NOT default to run_cartridge: \
+           \"create / make / spin up a new subdomain\" → create_subdomain; \
+           \"build / show / draw an app or anything visual\" on THIS tab → \
+           run_cartridge; \"give me a link / hyperlink / URL to <name>\" → \
+           just write the Markdown link [<name>](https://<name>.localharness.xyz/) \
+           as text, with NO tool call (call list_subdomains first only if you \
+           must confirm the name exists). A request for a link is NEVER a \
+           reason to run a cartridge.\n\
          • On-chain actions (create_subdomain, submit_feedback, publishing \
            a public face, etc.) are SPONSORED and signed automatically by the \
            owner's master wallet behind the scenes — there is NO wallet popup, \
