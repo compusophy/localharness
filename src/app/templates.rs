@@ -626,14 +626,14 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
             // Account (identity + key + security) / Usage. Tab switch is a
             // class-flip on #admin-dialog (Action::ShowAdminTab), mirroring
             // the mobile tab bar.
-            div #admin-dialog .admin-dialog.admin-tabbed.tab-agent {
+            div #admin-dialog .admin-dialog.admin-tabbed.tab-account {
                 div.admin-tabs {
                     button #admin-tab-btn-agent type="button"
                         data-action="show-admin-tab" data-arg="agent"
-                        .admin-tab-button.active { "agent" }
+                        .admin-tab-button { "agent" }
                     button #admin-tab-btn-account type="button"
                         data-action="show-admin-tab" data-arg="account"
-                        .admin-tab-button { "account" }
+                        .admin-tab-button.active { "account" }
                     button #admin-tab-btn-usage type="button"
                         data-action="show-admin-tab" data-arg="usage"
                         .admin-tab-button { "usage" }
@@ -651,6 +651,10 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                     // pricing), folded in from the retired right rail.
                     // Injected from App state by header_admin_toggle.
                     div #financial-slot .financial-placeholder { "—" }
+                    // Model access + credits: the toggle leads with platform
+                    // credits (the default), redeem-a-code + per-request
+                    // controls live under it. BYOK paste field is below.
+                    (admin_credits_section())
                     div.admin-section {
                         div.admin-section-title { "gemini api key " span #keymeta {} }
                         form.key-form onsubmit="return false" {
@@ -852,12 +856,14 @@ fn admin_identity_section(
 /// future direction is continuous streaming + a subscription, not a manual
 /// daily claim).
 pub(crate) fn admin_credits_section() -> Markup {
-    // Read the chosen mode for the active highlight. Defaults to BYOK.
+    // Read the chosen mode for the active highlight. Defaults to credits
+    // (matches `chat::model_access_is_credits`) — only explicit "byok" flips
+    // off, so a new account lands on platform credits with redeem visible.
     let credits = web_sys::window()
         .and_then(|w| w.local_storage().ok().flatten())
         .and_then(|s| s.get_item("lh_model_access").ok().flatten())
-        .map(|v| v == "credits")
-        .unwrap_or(false);
+        .map(|v| v != "byok")
+        .unwrap_or(true);
     html! {
         div #credits-section .admin-section {
             div.admin-section-title { "model access" }

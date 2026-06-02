@@ -395,9 +395,9 @@ async fn paint_workshop(host: &tenant::Host) {
     };
     history::load_into_pending().await;
     opfs::refresh().await;
-    if !has_key {
-        show_api_key_modal();
-    }
+    // No onboarding key prompt: new accounts default to platform credits
+    // (no Gemini key needed). BYOK is opt-in via admin → account.
+    let _ = has_key;
 }
 
 /// Render a tenant subdomain. Three branches:
@@ -500,15 +500,12 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
     opfs::refresh().await;
 
     if !has_key {
-        // Before prompting, try to auto-restore the owner's MAIN Gemini
-        // key from chain (works on any device that holds the seed). A new
-        // subdomain on the same device reuses the MAIN's key with no
-        // prompt — "the subdomain IS the primary owner". Falls through to
-        // the modal on a device without the seed (e.g. a phone linked by
-        // device key only).
-        if !events::try_auto_restore_gemini_key(&name).await {
-            show_api_key_modal();
-        }
+        // Best-effort: restore the owner's MAIN Gemini key from chain for
+        // BYOK users that hold the seed (a new subdomain on the same device
+        // reuses the MAIN's key — "the subdomain IS the primary owner").
+        // No modal on miss: new accounts default to platform credits and
+        // BYOK is opt-in via admin → account.
+        let _ = events::try_auto_restore_gemini_key(&name).await;
     }
 
     // Background: try to verify the visitor against the on-chain

@@ -75,6 +75,11 @@ pub(crate) async fn run_send() {
             return;
         }
     };
+    // Credits mode (base_url set): ensure a session is open so the proxy
+    // accepts the call. Free in beta; silent best-effort.
+    if access.base_url.is_some() {
+        ensure_credit_session().await;
+    }
     let key = access.cfg_auth;
 
     let prompt = prompt_area.value().trim().to_string();
@@ -632,15 +637,16 @@ async fn collect_payment_if_required() -> Result<Option<String>, String> {
 /// point this at the deployed proxy project before credits mode works.
 const CREDIT_PROXY_URL: &str = "https://proxy-tau-ten-15.vercel.app/";
 
-/// True when the user has opted into platform `$LH` credits (via the
-/// proxy). Persisted in localStorage; defaults to BYOK so nothing
-/// changes until the user flips it.
+/// True when the user is on platform `$LH` credits (via the proxy).
+/// Persisted in localStorage; **defaults to credits** — a new account
+/// uses platform credits with no setup, and BYOK is opt-in via admin →
+/// account. Only an explicit "byok" choice flips it off.
 pub(crate) fn model_access_is_credits() -> bool {
     web_sys::window()
         .and_then(|w| w.local_storage().ok().flatten())
         .and_then(|s| s.get_item("lh_model_access").ok().flatten())
-        .map(|v| v == "credits")
-        .unwrap_or(false)
+        .map(|v| v != "byok")
+        .unwrap_or(true)
 }
 
 /// Resolved model access for a chat session.
@@ -721,6 +727,34 @@ async fn resolve_credit_access() -> Option<ModelAccess> {
         base_url: None,
         identity: key,
     })
+}
+
+/// Credits mode only: make sure the caller has an active credit session
+/// before the proxy call, since the proxy 402s without one. Sessions are
+/// free in beta (`sessionPrice == 0`), so this opens one lazily via the
+/// sponsor — "default to platform credits" then works with zero setup.
+/// Best-effort and silent: any failure falls through to the proxy's own
+/// gating (and the admin → account controls). Only re-opens when the
+/// current session is within 60s of expiry.
+async fn ensure_credit_session() {
+    let Some((signer, addr)) = credit_signer().await else {
+        return;
+    };
+    let addr_hex = hex_of(&addr);
+    let now = (js_sys::Date::now() / 1000.0) as u64;
+    let expiry = super::registry::session_expiry_of(&addr_hex).await.unwrap_or(0);
+    if expiry > now + 60 {
+        return; // still valid
+    }
+    let Ok(fee_payer) = super::sponsor::signer() else {
+        return;
+    };
+    let _ = super::registry::open_session_sponsored(
+        &signer,
+        &fee_payer,
+        super::registry::ALPHA_USD_ADDRESS,
+    )
+    .await;
 }
 
 /// Read the api key with graceful fallback. Tries the live `#key`
