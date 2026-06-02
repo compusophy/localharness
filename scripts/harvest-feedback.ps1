@@ -8,7 +8,7 @@
 
 $ErrorActionPreference = "Stop"
 
-if (-not $env:DIAMOND) { $env:DIAMOND = "0x6f2858b4b10bf8d4ea372a446e69bea8fbce2930" }
+if (-not $env:DIAMOND) { $env:DIAMOND = "0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c" }
 if (-not $env:RPC)     { $env:RPC     = "https://rpc.moderato.tempo.xyz" }
 
 # Tempo caps eth_getLogs to a 100k-block window. Default to scanning
