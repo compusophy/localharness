@@ -135,6 +135,43 @@ pub(crate) async fn load_device_key() -> Option<k256::ecdsa::SigningKey> {
     wallet::from_private_key_hex(hex.trim()).ok()
 }
 
+/// Pointer to the on-chain OWNER address this device is linked to. A
+/// linked device (paired phone / second browser) holds only a per-origin
+/// signer key, not the seed — so the apex has no master wallet to key on.
+/// This tiny PUBLIC pointer (a plaintext 0x address) tells the apex which
+/// identity to render; everything shown is then read live on-chain
+/// (subdomains, linked devices, MAIN). Set during pairing.
+const LINKED_OWNER_FILE: &str = ".lh_linked_owner";
+
+/// Persist the on-chain owner address this device is linked to.
+pub(crate) async fn persist_linked_owner(owner_hex: &str) -> Result<(), String> {
+    let fs = super::shared_opfs();
+    fs.write_atomic(LINKED_OWNER_FILE, owner_hex.trim().as_bytes())
+        .await
+        .map_err(|e| format!("linked owner save: {e}"))
+}
+
+/// Read this origin's linked-owner pointer, if any.
+pub(crate) async fn load_linked_owner() -> Option<String> {
+    let fs = super::shared_opfs();
+    let bytes = fs.read(LINKED_OWNER_FILE).await.ok()?;
+    let s = String::from_utf8(bytes).ok()?;
+    let t = s.trim();
+    if t.is_empty() || !t.starts_with("0x") {
+        None
+    } else {
+        Some(t.to_string())
+    }
+}
+
+/// Drop the linked-owner pointer (e.g. when the user creates/imports their
+/// own seed on this origin and becomes a first-class identity).
+#[allow(dead_code)]
+pub(crate) async fn clear_linked_owner() {
+    let fs = super::shared_opfs();
+    let _ = fs.delete(LINKED_OWNER_FILE).await;
+}
+
 fn restore_from_phrase(phrase: &str) -> Result<MasterWallet, String> {
     let mnemonic = wallet::mnemonic_from_phrase(phrase)?;
     let signer = wallet::signer_from_mnemonic(&mnemonic);

@@ -94,8 +94,11 @@ enum Action {
     SaveX402Price,
     /// Consolidate this identity's subdomains into its MAIN's TBA.
     Consolidate,
-    /// Unlink a device (remove its signer + index entry).
+    /// Unlink a device (remove its signer + index entry) — the X opens a
+    /// typed confirmation; UnlinkConfirm performs it; UnlinkCancel aborts.
     UnlinkDevice(String),
+    UnlinkConfirm(String),
+    UnlinkCancel,
 }
 
 impl Action {
@@ -163,6 +166,8 @@ impl Action {
             "save-x402-price" => Action::SaveX402Price,
             "consolidate" => Action::Consolidate,
             "unlink-device" => Action::UnlinkDevice(arg.unwrap_or_default()),
+            "unlink-confirm" => Action::UnlinkConfirm(arg.unwrap_or_default()),
+            "unlink-cancel" => Action::UnlinkCancel,
             _ => return None,
         })
     }
@@ -1003,7 +1008,9 @@ fn dispatch(action: Action) {
         Action::DepositCredits => deposit_credits_pressed(),
         Action::SaveX402Price => save_x402_price_pressed(),
         Action::Consolidate => consolidate_pressed(),
-        Action::UnlinkDevice(addr) => unlink_device_pressed(addr),
+        Action::UnlinkDevice(addr) => unlink_device_prompt(addr),
+        Action::UnlinkConfirm(addr) => unlink_confirm_pressed(addr),
+        Action::UnlinkCancel => unlink_cancel_pressed(),
     }
 }
 
@@ -1665,7 +1672,16 @@ async fn refresh_signer_list() {
     let addr = super::APP.with(|cell| {
         cell.borrow().wallet.as_ref().map(|w| w.address_hex())
     });
-    let Some(addr) = addr else { return };
+    // On a linked device (no local master wallet) fall back to the
+    // linked-owner pointer, so the on-chain device list shows the same
+    // global state the seed-holding device sees.
+    let addr = match addr {
+        Some(a) => a,
+        None => match super::wallet_store::load_linked_owner().await {
+            Some(o) => o,
+            None => return,
+        },
+    };
 
     let main_id = match super::registry::main_of(&addr).await {
         Ok(id) if id > 0 => id,
@@ -1963,10 +1979,11 @@ async fn run_pair_join(code: &str) -> Result<String, String> {
             _ => return,
         };
         // The identity (MAIN) this subdomain belongs to — so we can detect
-        // when the desktop enrolls us into its on-chain device index.
-        let main_id = match super::registry::owner_of_name(&name).await {
-            Ok(Some(owner)) => super::registry::main_of(&owner).await.unwrap_or(0),
-            _ => 0,
+        // when the desktop enrolls us into its on-chain device index, and so
+        // we can hand the apex a pointer to this owner on redirect.
+        let (main_id, owner_hex) = match super::registry::owner_of_name(&name).await {
+            Ok(Some(owner)) => (super::registry::main_of(&owner).await.unwrap_or(0), owner),
+            _ => (0, String::new()),
         };
         let slot_id = gemini_key_slot_id(&name).await.ok();
         let mut enrolled = false;
@@ -2021,9 +2038,18 @@ async fn run_pair_join(code: &str) -> Result<String, String> {
                         &dom::msg_span(dom::Msg::Accent, "✓ linked — opening your subdomain…"),
                     );
                     if let Ok(window) = dom::window() {
-                        let _ = window
-                            .location()
-                            .set_href(&format!("https://{name}.localharness.xyz/"));
+                        // Route via the apex with a linked-owner pointer so the
+                        // apex on THIS device learns which identity it belongs
+                        // to (then it hops on to the subdomain). Falls back to a
+                        // direct subdomain open if we never resolved the owner.
+                        let url = if owner_hex.is_empty() {
+                            format!("https://{name}.localharness.xyz/")
+                        } else {
+                            format!(
+                                "https://localharness.xyz/?link_device={owner_hex}&then={name}"
+                            )
+                        };
+                        let _ = window.location().set_href(&url);
                     }
                     return;
                 }
@@ -2227,8 +2253,48 @@ fn consolidate_pressed() {
     });
 }
 
-/// Unlink a device — remove its signer authority + drop it from the index.
-fn unlink_device_pressed(device_hex: String) {
+/// The X on a linked device. Removing a device's access is destructive
+/// (revokes its signer authority + costs a sponsored tx + a re-pair to
+/// undo), so a single accidental click must NOT do it — show a typed
+/// confirmation in `#pair-msg` first. (Unlinking affects only THAT device;
+/// the owner / other devices keep their access.)
+fn unlink_device_prompt(device_hex: String) {
+    let short = short_addr(&device_hex);
+    dom::swap_inner(
+        "pair-msg",
+        &format!(
+            "<div class=\"unlink-confirm\">\
+               <div>remove <code>{short}</code>? type <b>yes</b> to confirm.</div>\
+               <input id=\"unlink-confirm-input\" type=\"text\" autocomplete=\"off\" \
+                 placeholder=\"yes\">\
+               <div class=\"pair-confirm-actions\">\
+                 <button type=\"button\" class=\"ghost\" data-action=\"unlink-cancel\">cancel</button>\
+                 <button type=\"button\" class=\"button-link\" data-action=\"unlink-confirm\" \
+                   data-arg=\"{device_hex}\">remove</button>\
+               </div>\
+             </div>"
+        ),
+    );
+}
+
+/// Abort an in-progress unlink — clear the confirmation prompt.
+fn unlink_cancel_pressed() {
+    dom::swap_inner("pair-msg", "");
+}
+
+/// Only unlink when the user typed `yes` in the confirmation input.
+fn unlink_confirm_pressed(device_hex: String) {
+    let typed = dom::input_by_id("unlink-confirm-input")
+        .map(|i| i.value().trim().to_lowercase())
+        .unwrap_or_default();
+    if typed != "yes" {
+        dom::swap_inner(
+            "pair-msg",
+            &dom::msg_span(dom::Msg::Error, "type yes to remove that device"),
+        );
+        return;
+    }
+    dom::swap_inner("pair-msg", &dom::msg_span(dom::Msg::Accent, "removing…"));
     wasm_bindgen_futures::spawn_local(async move {
         let result = async {
             let (signer, _owner, main_id, main_tba) = owner_main_tba().await?;
@@ -2245,8 +2311,16 @@ fn unlink_device_pressed(device_hex: String) {
         }
         .await;
         match result {
-            Ok(_) => refresh_signer_list().await,
-            Err(e) => web_sys::console::warn_1(&JsValue::from_str(&format!("unlink: {e}"))),
+            Ok(_) => {
+                dom::swap_inner("pair-msg", "");
+                refresh_signer_list().await
+            }
+            Err(e) => {
+                dom::swap_inner(
+                    "pair-msg",
+                    &dom::msg_span(dom::Msg::Error, &format!("unlink failed: {e}")),
+                );
+            }
         }
     });
 }

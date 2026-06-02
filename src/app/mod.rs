@@ -299,6 +299,29 @@ fn mount() -> Result<(), JsValue> {
 
     match &host {
         tenant::Host::Apex => {
+            // Linked-device hand-off: a device that just paired redirects here
+            // with `?link_device=<owner>` so the apex (this origin) records
+            // which identity the device belongs to — without it the apex has
+            // no master wallet to key on. Store the pointer, then continue to
+            // `?then` (the subdomain) if present.
+            if let Some(owner) = read_query_param("link_device") {
+                root.set_inner_html(
+                    "<main style=\"padding:48px;text-align:center;color:#7a8493;font:14px ui-monospace,Menlo,Consolas,monospace\">linking…</main>",
+                );
+                wasm_bindgen_futures::spawn_local(async move {
+                    let _ = wallet_store::persist_linked_owner(&owner).await;
+                    if let Some(then) = read_query_param("then") {
+                        if let Some(window) = web_sys::window() {
+                            let _ = window
+                                .location()
+                                .set_href(&format!("https://{then}.localharness.xyz/"));
+                            return;
+                        }
+                    }
+                    paint_apex(tenant::Host::Apex).await;
+                });
+                return Ok(());
+            }
             // Wallet load is async (OPFS). Show a single-line placeholder
             // rather than the full chrome so we don't flash the
             // pre-identity sidecar before we know whether a wallet exists.
@@ -334,9 +357,11 @@ fn mount() -> Result<(), JsValue> {
                                     && registry::is_device_linked(main_id, &addr).await.unwrap_or(false)
                                 {
                                     if let Ok(window) = dom::window() {
-                                        let _ = window.location().set_href(
-                                            &format!("https://{n}.localharness.xyz/"),
-                                        );
+                                        // Via the apex so it records the linked
+                                        // identity, then on to the subdomain.
+                                        let _ = window.location().set_href(&format!(
+                                            "https://localharness.xyz/?link_device={owner}&then={n}"
+                                        ));
                                     }
                                 }
                             }
@@ -628,7 +653,14 @@ pub(crate) async fn paint_apex(host: tenant::Host) {
     let Some(root) = doc.get_element_by_id("root") else { return };
 
     let wallet = wallet_store::load().await;
-    let addr_hex = wallet.as_ref().map(|w| w.address_hex());
+    // Effective identity for the read-only on-chain views (agents list,
+    // linked devices, MAIN): the master wallet if this device holds the
+    // seed, else the linked-owner pointer a paired device recorded. The
+    // claim form stays seed-gated (a linked device can't mint names).
+    let mut addr_hex = wallet.as_ref().map(|w| w.address_hex());
+    if addr_hex.is_none() {
+        addr_hex = wallet_store::load_linked_owner().await;
+    }
     APP.with(|cell| cell.borrow_mut().wallet = wallet);
 
     // Auto-redeem a pending `?invite=CODE` once an identity exists — on the
