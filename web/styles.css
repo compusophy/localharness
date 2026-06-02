@@ -995,6 +995,7 @@ input, textarea {
 
 /* --- Device pairing (admin → linked devices) --- */
 .pair-slot { margin-top: 8px; display: flex; justify-content: center; }
+.pair-confirm-actions { display: flex; gap: 8px; justify-content: center; margin-top: 10px; }
 /* Standalone action buttons in admin sections sit centered (per design
    feedback — horizontal-center buttons like the home-screen button). */
 .admin-section > button { display: block; margin: 8px auto 0; }

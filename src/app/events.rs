@@ -68,6 +68,8 @@ enum Action {
     FeedbackSubmit,
     PairStart,
     PairCancel,
+    PairApprove,
+    PairReject,
     PairJoin,
     AgentActToggle(String),
     AgentSendLh(String),
@@ -142,6 +144,8 @@ impl Action {
             "feedback-submit" => Action::FeedbackSubmit,
             "pair-start" => Action::PairStart,
             "pair-cancel" => Action::PairCancel,
+            "pair-approve" => Action::PairApprove,
+            "pair-reject" => Action::PairReject,
             "pair-join" => Action::PairJoin,
             "agent-act-toggle" => Action::AgentActToggle(arg.unwrap_or_default()),
             "agent-send-lh" => Action::AgentSendLh(arg.unwrap_or_default()),
@@ -980,6 +984,8 @@ fn dispatch(action: Action) {
         Action::FeedbackSubmit => feedback_submit(),
         Action::PairStart => pair_start_pressed(),
         Action::PairCancel => pair_cancel_pressed(),
+        Action::PairApprove => pair_approve_pressed(),
+        Action::PairReject => pair_reject_pressed(),
         Action::PairJoin => {
             if let Some(code) = super::read_query_param("pair") {
                 pair_join_pressed(code);
@@ -1698,11 +1704,26 @@ async fn refresh_signer_list() {
     }
 }
 
+/// A device that announced with the matching code, awaiting the owner's
+/// explicit approval before enrollment (see `pair_start_pressed`).
+struct PendingPair {
+    device: String,
+    device_pubkey: Vec<u8>,
+    token_id: u64,
+    owner_hex: String,
+}
+
+thread_local! {
+    static PENDING_PAIR: std::cell::RefCell<Option<PendingPair>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// Desktop side of device pairing. Generate a one-time code, show it +
 /// the deep link to open on the other device, then poll the on-chain
 /// pairing rendezvous. When the phone announces (its fresh device key as
 /// `msg.sender` of a sponsored tx), we learn its address from the log
-/// and enroll it via `addSigner` — no 0x ever copied between machines.
+/// and — after the owner confirms it matches — enroll it via `addSigner`.
+/// No 0x ever copied between machines.
 fn pair_start_pressed() {
     // The user's MAIN name is what the phone will open (its own
     // subdomain). Resolve it from the apex wallet's MAIN.
@@ -1773,10 +1794,39 @@ fn pair_start_pressed() {
             return;
         };
 
-        dom::swap_inner(
-            "pair-msg",
-            &dom::msg_span(dom::Msg::Accent, "device found — enrolling…"),
+        // SECURITY: do NOT auto-enroll. A device matching the code hash has
+        // announced, but granting it signer control over the MAIN must be an
+        // explicit owner decision — so the user can compare the address shown
+        // here against the one on the device they're holding (out-of-band
+        // verification on top of the code + the ~5-min window). Stash the
+        // pending device and ask; enrollment happens in `pair_approve_pressed`.
+        PENDING_PAIR.with(|p| {
+            *p.borrow_mut() = Some(PendingPair {
+                device: device.clone(),
+                device_pubkey,
+                token_id,
+                owner_hex,
+            });
+        });
+        dom::swap_outer(
+            "pair-slot",
+            &templates::pair_confirm_panel(&device).into_string(),
         );
+        dom::swap_inner("pair-msg", "");
+    });
+}
+
+/// Owner approved the announced device — enroll it as a signer on the
+/// MAIN's TBA (+ share the ECIES-wrapped Gemini key). The deliberate
+/// confirmation is the out-of-band check that the address matches the
+/// device the user is actually holding.
+fn pair_approve_pressed() {
+    let Some(pending) = PENDING_PAIR.with(|p| p.borrow_mut().take()) else {
+        return;
+    };
+    dom::swap_inner("pair-msg", &dom::msg_span(dom::Msg::Accent, "enrolling…"));
+    wasm_bindgen_futures::spawn_local(async move {
+        let PendingPair { device, device_pubkey, token_id, owner_hex } = pending;
         match run_add_device(device.clone()).await {
             Ok(tx_hash) => {
                 let short = tx_short_hash(&tx_hash);
@@ -1793,8 +1843,7 @@ fn pair_start_pressed() {
                 );
                 // ECIES-wrap the MAIN Gemini key to this device's pubkey and
                 // post it on-chain, so the phone gets the key WITHOUT ever
-                // importing the seed. Best-effort: silently skipped if no key
-                // is synced or the seed isn't on this device.
+                // importing the seed. Best-effort.
                 if !device_pubkey.is_empty() {
                     if wrap_and_post_key_to_device(token_id, &owner_hex, &device, &device_pubkey)
                         .await
@@ -1819,6 +1868,16 @@ fn pair_start_pressed() {
             }
         }
     });
+}
+
+/// Owner rejected the announced device — discard it and reset the panel.
+fn pair_reject_pressed() {
+    PENDING_PAIR.with(|p| *p.borrow_mut() = None);
+    dom::swap_outer(
+        "pair-slot",
+        &r#"<div id="pair-slot" class="pair-slot"><button id="pair-btn" type="button" data-action="pair-start" class="ghost">link a device</button></div>"#,
+    );
+    dom::swap_inner("pair-msg", &dom::msg_span(dom::Msg::Error, "rejected that device"));
 }
 
 /// Cancel an in-progress pairing — swap the panel back to the button.
@@ -1847,8 +1906,9 @@ pub(crate) fn pair_join_pressed(code: String) {
                     &dom::msg_span(
                         dom::Msg::Accent,
                         &format!(
-                            "✓ announced {} — finish on your other device.",
-                            short_addr(&addr)
+                            "✓ this device is {addr} — approve it on your other \
+                             device (check the address matches), and you'll be \
+                             redirected automatically."
                         ),
                     ),
                 );
@@ -1911,6 +1971,7 @@ async fn run_pair_join(code: &str) -> Result<String, String> {
         let slot_id = gemini_key_slot_id(&name).await.ok();
         let mut enrolled = false;
         let mut got_key = false;
+        let mut post_enroll = 0u32;
         for _ in 0..60 {
             // 1) Enrollment confirmation: are we in the MAIN's device index
             //    yet? (The desktop writes it via linkDevice on enroll.) This
@@ -1948,17 +2009,29 @@ async fn run_pair_join(code: &str) -> Result<String, String> {
                 }
             }
             if enrolled {
-                let tail = if got_key { " + key received" } else { "" };
-                dom::swap_inner(
-                    "pair-join-msg",
-                    &dom::msg_span(
-                        dom::Msg::Accent,
-                        &format!("✓ this device is linked{tail} — open this subdomain"),
-                    ),
-                );
-                if got_key {
+                // Linked! The device is now an authorized signer, so opening
+                // the subdomain lands it in the studio as an owner. Redirect
+                // automatically rather than dead-ending on a message. Credits
+                // are the default (no Gemini key needed to start); if the
+                // desktop shared one via ECIES we grab it first, else give a
+                // short grace window then go anyway.
+                if got_key || post_enroll >= 2 {
+                    dom::swap_inner(
+                        "pair-join-msg",
+                        &dom::msg_span(dom::Msg::Accent, "✓ linked — opening your subdomain…"),
+                    );
+                    if let Ok(window) = dom::window() {
+                        let _ = window
+                            .location()
+                            .set_href(&format!("https://{name}.localharness.xyz/"));
+                    }
                     return;
                 }
+                post_enroll += 1;
+                dom::swap_inner(
+                    "pair-join-msg",
+                    &dom::msg_span(dom::Msg::Accent, "✓ linked — opening your subdomain…"),
+                );
             }
             super::registry::sleep_ms(3000).await;
         }

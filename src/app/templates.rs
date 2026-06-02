@@ -968,11 +968,38 @@ pub(crate) fn pair_panel(code: &str, pair_url: &str) -> Markup {
     }
 }
 
+/// Desktop confirmation step — a device announced with the matching code
+/// and is waiting to be enrolled. The owner verifies the address shown
+/// here matches the one on the device they're holding before approving
+/// (the out-of-band check that gates signer access to the MAIN).
+pub(crate) fn pair_confirm_panel(device: &str) -> Markup {
+    html! {
+        div #pair-slot .pair-slot.pair-active {
+            div.pair-instructions { "a device wants to link as this identity:" }
+            div.pair-code-row {
+                span.pair-code-label { "device" }
+                code.pair-code { (device) }
+            }
+            div.pair-waiting {
+                "only approve if this address matches the one shown on the \
+                 device you're pairing."
+            }
+            div.pair-confirm-actions {
+                button type="button" data-action="pair-reject" .ghost { "reject" }
+                button type="button" data-action="pair-approve" .button-link {
+                    "yes, link this device"
+                }
+            }
+        }
+    }
+}
+
 /// The phone-side pairing chrome (`<name>.localharness.xyz/?pair=CODE`).
 /// One button: generate a device key + announce on-chain. No identity,
 /// no seed, no chat — just the enroll step.
 pub(crate) fn pair_join(name: &str) -> Markup {
     html! {
+        (site_header(&Host::Tenant(name.to_string())))
         main.apex-main {
             div.col-chat {
                 section.step.step-unclaimed {

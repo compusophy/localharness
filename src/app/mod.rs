@@ -318,8 +318,9 @@ fn mount() -> Result<(), JsValue> {
             if read_query_param("pair").is_some() {
                 root.set_inner_html(&templates::pair_join(name).into_string());
                 // Single source of truth, read ONCE on load: if this device
-                // already has a key AND it's in this subdomain's MAIN device
-                // index, say so — no reliance on having caught a live poll.
+                // is already enrolled in this subdomain's MAIN device index,
+                // there's nothing to pair — send it straight to the subdomain
+                // (where owner-by-signer lands it in the studio).
                 let n = name.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     if let Some(sk) = wallet_store::load_device_key().await {
@@ -332,10 +333,11 @@ fn mount() -> Result<(), JsValue> {
                                 if main_id != 0
                                     && registry::is_device_linked(main_id, &addr).await.unwrap_or(false)
                                 {
-                                    dom::swap_inner(
-                                        "pair-join-msg",
-                                        "<span style=\"color:var(--accent)\">✓ this device is already linked</span>",
-                                    );
+                                    if let Ok(window) = dom::window() {
+                                        let _ = window.location().set_href(
+                                            &format!("https://{n}.localharness.xyz/"),
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -446,16 +448,32 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
         return;
     }
 
-    // Owner-by-signer (consolidation): if this device's LOCAL key is an
-    // authorized signer of the on-chain owner — i.e. the owner is a TBA
-    // (e.g. the MAIN's TBA owns this subdomain after consolidation) and
-    // this device signs for it — treat the device as an owner. ONE on-load
-    // on-chain read = the source of truth; no polling. Falls back cleanly
-    // (an EOA owner has no isAuthorizedSigner → false).
-    let signer_owner = if let (true, Some(oc)) = (owner.is_none(), on_chain.as_deref()) {
+    // Owner-by-signer (linked device): if this device's LOCAL key is an
+    // authorized signer of this name's TBA, treat the device as an owner.
+    // A paired phone is enrolled as a signer on the name's MultiSigner TBA
+    // (run_add_device → addSigner on tokenBoundAccountByName), so we must
+    // check the TBA — NOT the NFT owner, which is normally an EOA with no
+    // isAuthorizedSigner (that always returned false, so paired phones were
+    // wrongly treated as visitors). Falls back to the on-chain owner for the
+    // consolidation case where the owner itself is a TBA. ONE on-load
+    // on-chain read = the source of truth; no polling.
+    let signer_owner = if owner.is_none() {
         match chat::credit_address_existing().await {
             Some(my_addr) => {
-                registry::is_authorized_signer(oc, &my_addr).await.unwrap_or(false)
+                let mut ok = false;
+                if let Ok(Some(tba)) = registry::tba_of_name(&name).await {
+                    ok = registry::is_authorized_signer(&tba, &my_addr)
+                        .await
+                        .unwrap_or(false);
+                }
+                if !ok {
+                    if let Some(oc) = on_chain.as_deref() {
+                        ok = registry::is_authorized_signer(oc, &my_addr)
+                            .await
+                            .unwrap_or(false);
+                    }
+                }
+                ok
             }
             None => false,
         }
