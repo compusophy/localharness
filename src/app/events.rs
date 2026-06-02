@@ -1488,6 +1488,76 @@ fn redeem_code_pressed() {
     });
 }
 
+/// localStorage handle (best-effort).
+fn local_storage() -> Option<web_sys::Storage> {
+    web_sys::window().and_then(|w| w.local_storage().ok().flatten())
+}
+
+/// The redeem code stashed from an `?invite=CODE` link, if any.
+fn pending_invite_code() -> Option<String> {
+    local_storage()?
+        .get_item("lh_pending_invite")
+        .ok()
+        .flatten()
+        .filter(|s| !s.is_empty())
+}
+
+/// Auto-redeem a pending invite code (captured from an `?invite=CODE`
+/// link) into the visitor's credit identity, so an invitee lands with a
+/// credited `$LH` balance instead of typing a code. This is layered ON
+/// TOP of the manual redeem flow — both share `redeem_sponsored`.
+///
+/// `allow_generate`: on the apex (identity hub) we pass `false` so we
+/// wait for the visitor to create/import their MAIN before crediting it
+/// (the code stays pending across the repaint); on tenant/other origins
+/// we pass `true` and credit the local device key. Idempotent: the code
+/// is cleared after any committed attempt so a refresh can't double-spend.
+pub(crate) async fn try_redeem_pending_invite(allow_generate: bool) {
+    let Some(code) = pending_invite_code() else {
+        return;
+    };
+    // On the apex, only redeem once an identity actually exists — don't
+    // silently mint a device key on a marketing-style visit. Leave the
+    // code pending; the post-create `paint_apex` re-fires this.
+    if !allow_generate && super::chat::credit_address_existing().await.is_none() {
+        return;
+    }
+    let Some((signer, _)) = super::chat::credit_signer().await else {
+        return;
+    };
+    let Ok(fee_payer) = super::sponsor::signer() else {
+        return;
+    };
+    // Commit: clear the pending code first so a concurrent repaint or a
+    // refresh can't fire a second (double-spend) redeem of the same code.
+    if let Some(s) = local_storage() {
+        let _ = s.remove_item("lh_pending_invite");
+    }
+    dom::set_status("redeeming invite…", false);
+    match super::registry::redeem_sponsored(
+        &signer,
+        &fee_payer,
+        &code,
+        super::registry::ALPHA_USD_ADDRESS,
+    )
+    .await
+    {
+        Ok(_) => {
+            // Land them on platform credits (the default) and refresh the
+            // balance pill so the new $LH shows immediately.
+            if let Some(s) = local_storage() {
+                let _ = s.set_item("lh_model_access", "credits");
+            }
+            dom::set_status("invite redeemed — platform credits added", false);
+            refresh_credits_pill().await;
+        }
+        Err(e) => {
+            web_sys::console::warn_1(&JsValue::from_str(&format!("invite redeem: {e}")));
+            dom::set_status("invite couldn't be redeemed (it may be used already)", true);
+        }
+    }
+}
+
 /// Prepay `$LH` into the per-request credit meter (whole-LH amount).
 fn deposit_credits_pressed() {
     let Some(input) = dom::input_by_id("deposit-amount") else {

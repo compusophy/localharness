@@ -2031,10 +2031,12 @@ pub async fn redeem_sponsored(
         value_wei: 0,
         input: encode_redeem(code),
     };
-    // redeem is a single SSTORE (claimed flag) + a mint on the credits
-    // token + an event; ~120k inner. Plus ~275k sponsorship. 600k is
-    // comfortable; sponsor is billed on gas used, not the limit.
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 600_000).await
+    // redeem mints on the credits token (cold balanceOf + totalSupply
+    // SSTOREs, AccessControl role checks, memo event) plus the claimed-flag
+    // SSTORE — empirically ~1.07M inner, NOT the ~120k first assumed (a 600k
+    // limit silently out-of-gassed every redeem). Plus ~275k sponsorship.
+    // 2M gives headroom; sponsor is billed on gas used, not the limit.
+    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 2_000_000).await
 }
 
 /// Read `sessionExpiryOf(address)` — unix-seconds expiry of the
@@ -2148,7 +2150,10 @@ pub async fn deposit_credits_sponsored(
         value_wei: 0,
         input: encode_deposit_credits(amount_wei),
     };
-    submit_tempo_sponsored(sender, fee_payer, vec![approve_call, deposit_call], fee_token, 600_000)
+    // approve + transferFrom (pull $LH into the diamond) + cold meter-
+    // balance SSTORE + event. Like redeem, comfortably more than the old
+    // 600k once cold SSTOREs are counted — 1.5M gives headroom.
+    submit_tempo_sponsored(sender, fee_payer, vec![approve_call, deposit_call], fee_token, 1_500_000)
         .await
 }
 

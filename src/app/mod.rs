@@ -292,6 +292,11 @@ fn mount() -> Result<(), JsValue> {
         return Ok(());
     }
 
+    // Invite links: stash any `?invite=CODE` now so it survives identity
+    // creation + repaints; the paint paths redeem it once an identity is
+    // resolvable. Skipped for signer/rpc modes (returned above).
+    capture_invite_code();
+
     match &host {
         tenant::Host::Apex => {
             // Wallet load is async (OPFS). Show a single-line placeholder
@@ -383,6 +388,9 @@ async fn paint_workshop(host: &tenant::Host) {
     let Some(root) = doc.get_element_by_id("root") else { return };
     root.set_inner_html(&templates::chrome(host).into_string());
 
+    // Auto-redeem a pending `?invite=CODE` into the local credit identity.
+    wasm_bindgen_futures::spawn_local(events::try_redeem_pending_invite(true));
+
     let has_key = if let Some(persisted_key) = key_store::load().await {
         if let Ok(Some(storage)) = dom::session_storage() {
             let _ = storage.set_item("gemini_api_key", &persisted_key);
@@ -411,6 +419,9 @@ async fn paint_workshop(host: &tenant::Host) {
 pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
     let Ok(doc) = dom::document() else { return };
     let Some(root) = doc.get_element_by_id("root") else { return };
+
+    // Auto-redeem a pending `?invite=CODE` into the local credit identity.
+    wasm_bindgen_futures::spawn_local(events::try_redeem_pending_invite(true));
 
     let mut owner = owner::current_owner().await;
     // Apex sends users here with ?claim=1 to skip the
@@ -602,6 +613,11 @@ pub(crate) async fn paint_apex(host: tenant::Host) {
     let addr_hex = wallet.as_ref().map(|w| w.address_hex());
     APP.with(|cell| cell.borrow_mut().wallet = wallet);
 
+    // Auto-redeem a pending `?invite=CODE` once an identity exists — on the
+    // apex we never mint a device key for it (allow_generate=false), so the
+    // post-create repaint of paint_apex is what actually credits the MAIN.
+    wasm_bindgen_futures::spawn_local(events::try_redeem_pending_invite(false));
+
     root.set_inner_html(
         &templates::apex(&host, addr_hex.as_deref()).into_string(),
     );
@@ -759,6 +775,34 @@ pub(crate) fn read_query_param(key: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Capture an `?invite=CODE` redeem code into localStorage and strip it
+/// from the URL (so a refresh can't replay it). Redemption itself fires
+/// from each paint path via `events::try_redeem_pending_invite` once a
+/// credit identity is resolvable. No-op when `?invite` is absent.
+fn capture_invite_code() {
+    let Some(code) = read_query_param("invite") else {
+        return;
+    };
+    if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = storage.set_item("lh_pending_invite", &code);
+    }
+    // Invite links are standalone (`…/?invite=CODE`), so reducing the URL
+    // to its pathname is the simplest clean-up.
+    if let Some(window) = web_sys::window() {
+        if let Ok(history) = window.history() {
+            let path = window
+                .location()
+                .pathname()
+                .unwrap_or_else(|_| "/".to_string());
+            let _ = history.replace_state_with_url(
+                &wasm_bindgen::JsValue::NULL,
+                "",
+                Some(&path),
+            );
+        }
+    }
 }
 
 pub(crate) fn decode_uri_component(s: &str) -> String {
