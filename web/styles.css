@@ -72,6 +72,14 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
    widths differ. */
 .site-header {
   flex-shrink: 0;
+  /* Pinned: in the height-locked #root flex column the body never
+     scrolls (the transcript scrolls internally), so the header already
+     stays put — sticky + z-index makes that resilient on any route
+     where an ancestor DOES scroll, so it never slides away on long
+     histories. */
+  position: sticky;
+  top: 0;
+  z-index: 30;
   background: var(--bg);
   padding: 0;
   min-height: 40px;
@@ -145,6 +153,12 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
 .mobile-tabs {
   flex-shrink: 0;
   display: none;   /* desktop hides this entirely */
+  /* Sits directly under the sticky header and stays reachable while the
+     transcript scrolls (resilient pin — see .site-header). */
+  position: sticky;
+  top: 0;
+  z-index: 29;
+  background: var(--bg);
   border-bottom: 1px solid var(--border);
 }
 .mobile-tabs .tab-button {
@@ -409,7 +423,11 @@ main.layout.terminal-collapsed .terminal-panel, main.layout.terminal-collapsed .
 main.layout.terminal-collapsed .view-panel { max-height: none; flex: 1; }
 
 /* Transcript fills available vertical space; scrolls internally.
-   Newest pinned to bottom via the ::before flex spacer. */
+   Content top-aligns; newest is kept in view by scroll_to_bottom()
+   on every append (chat.rs). No flex spacer — a `::before { flex: 1 }`
+   bottom-pin made SHORT histories sit flush on the input, so focusing
+   it (status line + autogrowing textarea) clipped the first messages
+   from the top. Mobile already dropped the spacer for the same reason. */
 main.layout .transcript {
   flex: 1;
   min-height: 0;
@@ -420,10 +438,6 @@ main.layout .transcript {
   gap: 12px;
 }
 main.layout .transcript > * { flex-shrink: 0; }
-main.layout .transcript::before {
-  content: "";
-  flex: 1;
-}
 
 /* DISPLAY surface — the framebuffer "screen" the cartridge loader
    blits into. Black letterbox stage; the canvas is sized 16:9 and
@@ -605,9 +619,6 @@ main.layout .transcript::before {
     flex-direction: column;
     overflow: hidden;       /* still viewport-locked */
   }
-  /* Drop the bottom-pinning flex spacer on mobile so the transcript
-     top-aligns with consistent top/bottom padding (no big top gap). */
-  main.layout .transcript::before { display: none; }
   /* Hide the desktop rails entirely on mobile — tab bar handles
      panel switching, no need for the strip toggles. */
   main.layout .side-rail, main.layout .top-rail, main.layout .bottom-rail { display: none; }
