@@ -369,16 +369,23 @@ pub(crate) async fn start_session(
            • rename_file(from, to) — move or rename.\n\n\
          \
          Platform:\n\
-           • create_subdomain(name) — register a NEW <name>.localharness.xyz \
-             subdomain on-chain, owned by your owner's master wallet. This is \
-             the ONLY way to make a new subdomain/agent: when the user says \
-             \"create/make/spin up a subdomain\" or \"make me a new <name>\", \
-             call THIS — never run_cartridge, which does NOT create a \
-             subdomain. Returns {{ name, url, owner, tx_hash }}; after it \
-             succeeds, give the user the returned `url` as a clickable link. \
-             Each subdomain is its own agent tab with its own per-origin \
-             sandbox, so its app/content is built by the agent ON that \
-             subdomain (open the url), not from here.\n\
+           • create_subdomain(name) — register a NEW name-only \
+             <name>.localharness.xyz subdomain on-chain, owned by your owner's \
+             master wallet. Use this to make a new subdomain/agent WITHOUT an \
+             app: when the user says \"create/make/spin up a subdomain\" or \
+             \"make me a new <name>\", call THIS — never run_cartridge, which \
+             does NOT create a subdomain. Returns {{ name, url, owner, tx_hash \
+             }}; after it succeeds, give the user the returned `url` as a \
+             clickable link. Each subdomain is its own agent tab with its own \
+             per-origin sandbox.\n\
+           • create_and_publish_app(name, source) — ONE-SHOT: register a new \
+             <name>.localharness.xyz AND publish a compiled rustlite cartridge \
+             as its fullscreen public face (compile + register + publish in a \
+             single call). Use this whenever the user wants a subdomain that \
+             IS an app — \"make me a clock/<app> subdomain\". This is how you \
+             create a subdomain with an app from here (a per-origin sandbox \
+             means you can't write another subdomain's files directly). \
+             Returns {{ name, url, tx_hash }}.\n\
            • release_subdomain(name, confirmation) — DESTRUCTIVE + \
              IRREVERSIBLE: burns the subdomain NFT and frees the name. \
              Requires `confirmation` to EXACTLY equal `name` — and you must \
@@ -537,6 +544,7 @@ pub(crate) async fn start_session(
         .with_filesystem(super::shared_opfs())
         .with_system_instructions(system_instructions)
         .with_tool(create_subdomain_tool())
+        .with_tool(create_and_publish_app_tool())
         .with_tool(release_subdomain_tool())
         .with_tool(list_subdomains_tool())
         .with_tool(submit_feedback_tool())
@@ -903,6 +911,119 @@ fn create_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     )
 }
 
+/// `create_and_publish_app(name, source)` — one-shot: register
+/// `<name>.localharness.xyz` AND publish a compiled rustlite cartridge as
+/// its public face, so "make me a clock subdomain" works in a single tool
+/// call. Compiles `source` first (so a bad cartridge fails before the
+/// on-chain register), claims the name via the iframe (master wallet ends
+/// up holding the new tokenId), resolves the tokenId, then publishes via a
+/// SPONSORED setMetadata batch (app.wasm bytes + public_face="app") in ONE
+/// Tempo tx — exactly like the admin publish-app flow. Returns
+/// `{ name, url, tx_hash }`.
+fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Subdomain to register, e.g. \"clock\" \
+                    becomes clock.localharness.xyz. 3-32 chars; lowercase \
+                    letters, digits, and hyphens only."
+            },
+            "source": {
+                "type": "string",
+                "description": "rustlite cartridge source — the SAME dialect as \
+                    run_cartridge. Exports `fn frame(t: i32)` (animated) or \
+                    `fn render()` and draws via `use host::display;`. This becomes \
+                    the subdomain's fullscreen public face."
+            }
+        },
+        "required": ["name", "source"]
+    });
+    ClosureTool::new(
+        "create_and_publish_app",
+        "One-shot: register a new <name>.localharness.xyz AND publish a compiled \
+         rustlite cartridge as its fullscreen public face, in a single call (compile \
+         + on-chain register + sponsored setMetadata publish). Use this for \"make me \
+         a clock/<app> subdomain\". create_subdomain remains for registering a \
+         name-only subdomain. Returns { name, url, tx_hash }.",
+        schema,
+        |args: serde_json::Value, _ctx| async move {
+            let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let source = args.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            let cleaned = super::tenant::sanitize(name);
+            if cleaned.len() < 3 || cleaned.len() > 32 {
+                return Err(crate::error::Error::other("invalid name"));
+            }
+            if source.trim().is_empty() {
+                return Err(crate::error::Error::other("source cannot be empty"));
+            }
+            // Compile FIRST so a bad cartridge fails before we register the
+            // name on-chain. Surface a clear error so the agent reports it.
+            let wasm = crate::rustlite::compile(source)
+                .map_err(|e| crate::error::Error::other(format!("compile failed: {e}")))?;
+            if wasm.len() > 16_384 {
+                return Err(crate::error::Error::other(format!(
+                    "app wasm too large to publish: {} bytes (max 16384)",
+                    wasm.len()
+                )));
+            }
+            // Register the name. The owner's master wallet ends up holding
+            // the new tokenId, so it's authorized to setMetadata below.
+            let (owner, _claim_tx) = super::verify::claim_name_via_iframe(&cleaned)
+                .await
+                .map_err(|e| crate::error::Error::other(format!("claim failed: {e}")))?;
+            // Inherit this device's Gemini key onto the new subdomain.
+            {
+                let n = cleaned.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    super::events::sync_local_key_to_main(&n).await;
+                });
+            }
+            // Resolve the freshly-minted tokenId.
+            let token_id = match super::registry::id_of_name(&cleaned).await {
+                Ok(id) if id != 0 => id,
+                Ok(_) => {
+                    return Err(crate::error::Error::other(
+                        "registered but tokenId not yet visible on-chain — retry publish shortly",
+                    ))
+                }
+                Err(e) => return Err(crate::error::Error::other(format!("id_of_name: {e}"))),
+            };
+            // Publish: app wasm bytes + public_face="app" in ONE sponsored
+            // Tempo tx (two setMetadata calls), exactly like the admin
+            // publish-app flow. Owner signs the sender_hash via the apex
+            // iframe; the sponsor pays gas.
+            let registry_addr = parse_address(super::registry::REGISTRY_ADDRESS)
+                .map_err(crate::error::Error::other)?;
+            let mk = |input: Vec<u8>| crate::tempo_tx::TempoCall {
+                to: registry_addr,
+                value_wei: 0,
+                input,
+            };
+            let calls = vec![
+                mk(super::registry::encode_set_app_wasm(token_id, &wasm)),
+                mk(super::registry::encode_set_public_face(token_id, "app")),
+            ];
+            let words = (wasm.len() / 32 + 1) as u128;
+            let gas = 1_300_000 + words * 40_000;
+            let tx_hash = super::events::run_sponsored_tempo_call(
+                &owner,
+                calls,
+                gas,
+                "create + publish app",
+            )
+            .await
+            .map_err(|e| crate::error::Error::other(format!("publish failed: {e}")))?;
+            Ok(serde_json::json!({
+                "name": cleaned,
+                "url": format!("https://{cleaned}.localharness.xyz/"),
+                "tx_hash": tx_hash,
+            }))
+        },
+    )
+}
+
 /// `release_subdomain(name, confirmation)` — DESTRUCTIVE: burn the NFT +
 /// free the name. Gated: `confirmation` must EXACTLY equal `name`, which
 /// forces a typed confirmation in chat (the owner types the name). The
@@ -1106,6 +1227,7 @@ fn spawn_recursive_subagent_tool(
                     .with_filesystem(super::shared_opfs())
                     .with_system_instructions(system.to_string())
                     .with_tool(create_subdomain_tool())
+                    .with_tool(create_and_publish_app_tool())
                     .with_tool(spawn_recursive_subagent_tool(api_key.clone(), base_url.clone()));
                 // Credits mode: subagents reach Gemini through the same proxy.
                 if let Some(b) = &base_url {
