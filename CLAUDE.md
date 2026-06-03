@@ -90,7 +90,8 @@ proxy/        $LH credit proxy — SEPARATE Vercel project ("proxy") at
 scripts/      release.{ps1,sh}; build-web.{ps1,sh}; probe-gemini.ps1;
               harvest-feedback.{ps1,sh}
 examples/tempo_tx_live.rs  live harness vs Moderato; source of truth for tempo_tx
-design/       main-identity.md; agent-writes-rust.md; launch-1.0.md; paymaster.md
+design/       main-identity.md; agent-writes-rust.md; launch-1.0.md (1.0 spec —
+              1.0=mainnet, betas=testnet); beta-plan.md; paymaster.md
 RELEASING.md / CHANGELOG.md / vercel.json / .vercelignore
 ```
 

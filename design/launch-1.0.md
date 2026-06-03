@@ -11,6 +11,15 @@ lives in contract state, the namespace was reset to a clean slate. The golden
 path is **not yet QA'd end-to-end on a real phone**, and **no beta has run.**
 That last sentence governs everything below.
 
+> **Decision locked (2026-06-03): 1.0.0 IS the mainnet launch.** Betas run on
+> **Tempo Moderato testnet** as ordinary version bumps (0.19, 0.20, …) whose
+> only job is to surface bugs; `1.0.0` is reserved for the **real launch on
+> Tempo mainnet** with real `$LH` value and Stripe fiat on-ramp. The 0.x → 1.0
+> boundary is the same line as "rails work" → "rails have teeth": every
+> value-dependent mechanism (staking, sybil cost, Stripe, the economy's
+> incentives) lands at 1.0, not before. See the beta plan in
+> [`design/beta-plan.md`](beta-plan.md).
+
 ---
 
 ## 0. The one idea this spec is built on
@@ -142,7 +151,9 @@ and trust actually existing.
 - High-frequency agent composition. On-chain settlement has a latency/cost floor
   (§8.3); 1.0 is coarse-grained.
 - Private payments. The ledger is public (§8.4).
-- Real money. $LH is credit, not currency, until mainnet (= 2.0).
+- Real money — *during the betas.* $LH is credit, not currency on testnet; real
+  value + Stripe arrive **at** 1.0 (mainnet), which is exactly why they define
+  the 1.0 boundary rather than sitting inside the beta runway.
 - A finished business-app builder. rustlite is the *visual wow*, not the
   workhorse (§8.2).
 
@@ -304,11 +315,13 @@ What 1.0 actually ships for trust:
 
 ## 8. The hard constraints, reckoned with (each named, none waved)
 
-**8.1 The unit is inert on testnet.** Staking/slashing/reputation-by-stake are
-null without value, so they are **out of 1.0** by design. What 1.0 proves is the
-**mechanics** — metering, x402, escrow all function with credits as a medium.
-Mainnet (2.0) supplies the value that gives the incentive layer teeth. The line is
-explicit: 1.0 = rails proven with credits; 2.0 = value makes them bite.
+**8.1 The unit is inert on testnet — and that defines the version line.** Staking/
+slashing/reputation-by-stake are null without value, so they are **out of the
+betas** by design. The betas (0.x, testnet) prove the **mechanics** — metering,
+x402, escrow all function with credits as a medium. **1.0 is mainnet:** real
+`$LH` value + Stripe supply the teeth that make the incentive layer bite. The
+line is explicit and is the release boundary itself — **0.x (testnet) = rails
+proven with credits; 1.0 (mainnet) = value makes them bite.**
 
 **8.2 rustlite ceiling.** Visual cartridges only; business apps are config +
 composition (§5.1). Grow rustlite on demand. Never sell it as the app platform.
@@ -349,8 +362,10 @@ Launch when **all** of these hold:
       an identity and be reached over HTTP without a browser.
 - [ ] The protocol surface (addressing, auth handshake, capability descriptor) is
       documented as a spec, not just an implementation.
-- [ ] Chain decision made; sponsor model appropriate to it (relay rate-cap +
-      balance breaker for testnet; the real rewrite if mainnet).
+- [ ] **Mainnet** sponsor model shipped — the *real* rewrite (not the embedded
+      testnet key): relay rate-cap + balance breaker + spend-velocity caps live.
+- [ ] **Stripe fiat on-ramp** live (buy `$LH` with a card) — the 1.0 value bridge.
+- [ ] **Sybil gate** live (real value means identity creation needs cost-to-fake).
 - [ ] At-rest encryption wired (done); a focused security pass on the relay, the
       cross-origin signer, scoped keys, and the sponsored-tx path.
 - [ ] Marketing apex landing + human quickstart + the magic-moment story live.
@@ -375,12 +390,15 @@ each is useful even if the economy never materializes:
 7. Security pass, landing + human docs, showcase.
 8. Private beta → triage → the economy pilot (read the signal).
 
-**Track B — speculative, *post-1.0*, gated on `mainnet-value AND pilot-signal`:**
-reputation markets, autonomous composition, validator/verification network for
-the verifiable subset, payment channels, private settlement, decentralized
-runtime market (the compute-cluster / MPC endgame). **Do not start Track B until
-the gate opens.** Steps A1–A6 deliberately leave every door open so starting B
-later is additive, not a rewrite.
+**Track B — speculative, *post-1.0*, gated on `value-live (= 1.0 shipped on
+mainnet) AND pilot-signal`:** reputation markets, autonomous composition,
+validator/verification network for the verifiable subset, payment channels,
+private settlement, decentralized runtime market (the compute-cluster / MPC
+endgame). Note the gate's first half is now *satisfied by 1.0 itself* (mainnet =
+value), so Track B becomes a question of pure demand: did the pilot show anyone
+cares? **Do not start Track B until that signal is real.** Steps A1–A6
+deliberately leave every door open so starting B later is additive, not a
+rewrite.
 
 The gate between A and B is the single most important sequencing decision in this
 spec: **build the wedge and the seams; let demand and value decide the economy.**
@@ -389,12 +407,16 @@ spec: **build the wedge and the seams; let demand and value decide the economy.*
 
 ## 11. The decisions you must own
 
-1. **Chain for 1.0: testnet vs mainnet.** *Recommend: launch on testnet.* It
-   keeps onboarding zero-crypto and sidesteps the embedded-key blast radius. But
-   note the shift from the old plan: because the *economy's* incentive layer is
-   value-dependent (§8.1), mainnet matters *more now* than it did when 1.0 was
-   just the magic moment. Framing: "free, no wallet funding" for 1.0; mainnet
-   ownership + a unit with teeth = 2.0.
+1. **Chain for 1.0: testnet vs mainnet. — DECIDED (2026-06-03): 1.0 = mainnet.**
+   Betas run on testnet as version bumps to surface bugs; 1.0.0 launches on Tempo
+   mainnet with real `$LH` value + Stripe. Rationale: the economy's incentive
+   layer is value-dependent (§8.1), so aligning the version boundary with the
+   value boundary is the clean line — and it honors "1.0 means the real thing."
+   The cost this accepts (vs the old testnet-1.0 idea): 1.0 is a bigger lift
+   (sponsor-key rewrite for real money, mainnet deploy, real-value security,
+   Stripe), de-risked by a long testnet-beta runway. The discipline that keeps it
+   from ballooning: **1.0 = the testnet-proven platform, now on mainnet with
+   value + Stripe — NOT the economy.** The economy stays Track B.
 2. **Runtime custody.** *Recommend: browser default + a self-host runtime option;
    NO platform custody of hot keys at 1.0.* Platform-hosted always-on = we become
    a custodian (liability, betrays the pitch). Offer it only later, with hard
@@ -404,9 +426,12 @@ spec: **build the wedge and the seams; let demand and value decide the economy.*
 4. **The canonical-vs-forkable line.** *Recommend: identity + payment + escrow +
    capability schema + reputation are on-chain canonical; all UI/runtime/templates
    are forkable.* Ratify it now; sort every future feature into a bucket.
-5. **Sybil gate.** *Recommend: defer to mainnet* (stake/cost-to-fake is
-   meaningless with credits). For 1.0, rate-limit the relay and gate the pilot to
-   a trusted cohort.
+5. **Sybil gate.** Meaningless with credits, so **none during the betas** — just
+   rate-limit the relay and gate the cohort to trusted invitees. But because 1.0
+   is now mainnet (real value), a sybil gate becomes a **1.0 requirement**: you
+   can't open real-value identity creation without cost-to-fake (stake, or a
+   Stripe-card-backed identity, or proof-of-persistence). Design it during the
+   beta runway; ship it at 1.0.
 6. **Second LLM backend.** Not a 1.0 blocker; you've consistently declined it.
    Noted, deferred — but single-vendor risk is real for an *economy* and should be
    revisited before Track B.
