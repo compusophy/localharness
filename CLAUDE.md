@@ -54,7 +54,7 @@ src/                  library crate
 │   ├── opfs.rs       file browser + inline editor; click-to-DISPLAY .wasm/.rl/.html
 │   ├── display.rs    framebuffer: runs wasm cartridges + rasterizes HTML; 5x7 font
 │   ├── key_store.rs  Gemini API key in OPFS
-│   ├── owner.rs      legacy local-UUID owner marker
+│   ├── owner.rs      self-correcting on-chain-derived owner hint (.lh_owner)
 │   ├── tenant.rs     hostname classifier (apex / tenant / other)
 │   ├── wallet_store.rs  master wallet persisted to apex OPFS
 │   ├── signer.rs     postMessage signer service at apex/?signer=1
@@ -313,8 +313,13 @@ Currently cut in:
   (id)` deploys (anyone, idempotent).
 - **MainIdentityFacet** — `registerMain / clearMain / mainOf / mainNameOf /
   isMain`. Holder's primary identity NFT; auto-set on first-claim.
-- **FeedbackFacet** — `submitFeedback(string)` emits `FeedbackSubmitted`.
-  Event-only; harvest via `cast logs`. Gas is the spam filter; 2048-byte cap.
+- **FeedbackFacet** — `submitFeedback(string)` appends to an on-chain
+  append-only `Entry[]` in `LibFeedbackStorage`
+  (`keccak256("localharness.feedback.storage.v1")`) AND emits
+  `FeedbackSubmitted`. Read via state views `feedbackCount()` /
+  `feedbackAt(i)` / `feedbackRange(start,count)` — `harvest-feedback.{sh,ps1}`
+  now reads state (no `cast logs` / 100k-block window). Gas is the spam
+  filter; 2048-byte cap.
 - **CreditsFacet** — `LocalharnessCredits` TIP-20 distribution: `claimDaily /
   canClaim / dailyAllowance / lastClaimDay / creditsToken`; owner setters.
   Diamond holds `ISSUER_ROLE`; day = `block.timestamp / 86400` (UTC). Currency =
@@ -336,8 +341,12 @@ Currently cut in:
 - **DeviceRegistryFacet** — enumerable linked-device index in ONE call:
   `linkDevice / unlinkDevice / devicesOf / isDeviceLinked`. Replaces `SignerAdded`
   log scraping (Tempo RPC caps at 100k blocks).
-- **ReleaseFacet** — `releaseName(tokenId)`: owner-only burn that frees a name;
-  **refuses the caller's MAIN**.
+- **ReleaseFacet** — `releaseName(tokenId)`: holder burn that frees a name
+  (**refuses the caller's MAIN**). Plus diamond-owner-only (EIP-173) admin
+  reset: `adminBurnNames(uint256[])` / `adminResetAll()` force-burn names
+  regardless of holder (testnet clean slate); a shared `_burn` clears exactly
+  what `register()` writes (name↔id, ownerOfId, ERC721 owner/balance/approval,
+  MAIN pointer) so names re-register cleanly.
 - **PairingFacet** (dormant — superseded by QR seed-adoption). v2 selector
   `announcePairing(bytes32,bytes)` emits `PairingAnnounced(codeHash, device, …)`.
   Event-only. Old device-key path: phone opened `?pair=CODE`, generated a device
@@ -408,11 +417,27 @@ call settles in $LH via X402Facet. Client helpers (`registry.rs`):
 
 ## Agent tools + destructive-action convention
 
-Two subdomain-management tools (declared in `chat.rs::start_session`):
+Subdomain tools (declared in `chat.rs::start_session`):
+- **`create_subdomain(name)`** — register a name-only subdomain (sponsored mint).
+- **`create_and_publish_app(name, source)`** — ONE-SHOT: compile the rustlite
+  `source`, register `name`, then publish `app.wasm` bytes + `public_face="app"`
+  to the new tokenId in ONE sponsored Tempo tx (same mechanism as the admin
+  publish-app flow). Closes the per-origin gap where the agent could register a
+  name but not populate another subdomain's app from the current tab. Compiles
+  FIRST so a bad cartridge fails before any on-chain write.
 - **`list_subdomains()`** — read-only; enumerates the owner's holdings.
 - **`release_subdomain(name, confirmation)`** — DESTRUCTIVE. Burns the name
   (ReleaseFacet `releaseName`). Requires `confirmation == name` (typed in chat),
   refuses the caller's MAIN, NOT granted to subagents.
+
+**Ownership = on-chain, not a local cache.** `.lh_owner` (owner.rs) is no
+longer a random device UUID — it stores the on-chain owner ADDRESS this device
+last *proved* it controls (written only after a `VerifyResult::VerifiedOwner`).
+The registry is the sole authority: every tenant load re-verifies; the hint
+only decides which face paints FIRST and `kick_verification` deletes it
+(`owner::forget` + repaint public face) the moment the chain disagrees — so it
+can never lie past the initial frame. `owner::remember(addr)` / `forget()` /
+`current_owner()` (claim()/release() are gone).
 
 Hard convention: **destructive / irreversible actions require a typed
 confirmation that is never auto-filled** — the agent must ask the user to type
