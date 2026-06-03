@@ -462,11 +462,16 @@ orphaned; no migration.
 
 ### Sponsor key
 
-Lives in `src/app/sponsor.rs` as a const. Same address as the deployer for now
-(testnet acceptable). **Rotate before mainnet** — dedicated low-budget sponsor
-wallet (small blast radius) or different scheme (WebAuthn passkey, Stripe top-up).
-Tempo access keys CANNOT sign as `fee_payer` (confirmed reading their open-source
-SDK — `[[access-key-fee-payer-finding]]`); fee_payer must come from the root key.
+Lives in `src/app/sponsor.rs` as a const — the **dedicated low-budget sponsor**
+`0x0AFf88Ad13eF24caC5BeFD0F9Dc3A05DF79a922C` (rotated 2026-05-25). It is NOT the
+deployer/owner: the diamond owner (EIP-173 `owner()`, the key for `diamondCut` +
+any owner-gated admin call like `adminResetAll`) is `0x313b1659F5037080aA0C113D386
+C5954F348EF1e` and is **not in the repo** — only the holder can cut/upgrade. The
+embedded sponsor only pays user fees in AlphaUSD; if the bundle is extracted, loss
+is capped at its balance. **Rotate again before mainnet** (passkey, Stripe top-up,
+etc.). Tempo access keys CANNOT sign as `fee_payer` (confirmed reading their
+open-source SDK — `[[access-key-fee-payer-finding]]`); fee_payer must come from the
+root key.
 
 ### Migration status (complete)
 
