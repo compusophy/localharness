@@ -533,23 +533,40 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
         // and paint it. Directory is the universal fallback, so this always
         // takes over.
         paint_public_face(&host, &name, is_owner_device).await;
-        // A seed-bearing owner visiting from a device without the local
-        // `.lh_owner` marker (e.g. a second device) lands on the public
-        // face like a visitor. Verify in the background and, if the apex
-        // signer proves ownership, send them to their studio (`?edit=1`).
-        // Skipped when this device already claims ownership (a deliberate
-        // `?view=public` preview must not bounce back).
+        // The ON-CHAIN registry is the source of truth for ownership — not a
+        // local `.lh_owner` file. If this device isn't already known to own
+        // the name (no local hint, not a TBA signer), ask the chain: prove
+        // control of the on-chain owner via the apex signer. If that proves
+        // we own it, swap the public face for the studio IN PLACE — no local
+        // marker write, no `?edit=1`, no reload, no resolve loop. This covers
+        // a subdomain just created from another tab and a second device.
+        // Skipped on a deliberate `?view=public` preview (owner device).
         if !is_owner_device {
             let n = name.clone();
+            let h = host.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                redirect_to_studio_if_owner(n).await;
+                if let Ok(verify::VerifyResult::VerifiedOwner { .. }) =
+                    verify::verify_owner(&n).await
+                {
+                    paint_tenant_studio(h, n).await;
+                }
             });
         }
         return;
     }
 
-    // Paint the Studio — we own this name on this device (or a deliberate
-    // preview fell through with nothing published).
+    // We control this name (local hint or on-chain signer) — paint the studio.
+    paint_tenant_studio(host, name).await;
+}
+
+/// Render the owner-facing studio chrome for `name` and kick off the
+/// background work (Gemini-key restore, OPFS refresh, on-chain verify for
+/// the pill). Invoked when this device controls the name — established by
+/// the local hint, the on-chain signer check, or the on-chain owner proof
+/// (NOT a standalone local cache).
+async fn paint_tenant_studio(host: tenant::Host, name: String) {
+    let Ok(doc) = dom::document() else { return };
+    let Some(root) = doc.get_element_by_id("root") else { return };
     root.set_inner_html(&templates::chrome(&host).into_string());
 
     let has_key = if let Some(persisted_key) = key_store::load().await {
@@ -574,10 +591,8 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
         let _ = events::try_auto_restore_gemini_key(&name).await;
     }
 
-    // Background: try to verify the visitor against the on-chain
-    // owner via the apex iframe signer. Fire-and-forget so the
-    // chrome paint doesn't block on a ~1-5s roundtrip; the pill
-    // updates when the result lands.
+    // Background: verify against the on-chain owner via the apex iframe
+    // signer; the pill updates when the ~1-5s roundtrip lands.
     wasm_bindgen_futures::spawn_local(async move {
         kick_verification(name).await;
     });
@@ -978,17 +993,6 @@ async fn paint_public_landing(host: &tenant::Host, name: &str, owner_overlay: bo
 }
 
 /// Background check: if the apex signer proves this device controls the
-/// on-chain owner of `name`, navigate to the studio (`?edit=1`). Lets a
-/// seed-bearing owner reach their workshop from a device that has no
-/// local `.lh_owner` marker, without exposing a studio door to visitors.
-async fn redirect_to_studio_if_owner(name: String) {
-    if let Ok(verify::VerifyResult::VerifiedOwner { .. }) = verify::verify_owner(&name).await {
-        if let Ok(window) = dom::window() {
-            let _ = window.location().set_search("edit=1");
-        }
-    }
-}
-
 /// `true` iff `?view=public` is in the URL — the owner asking to preview
 /// their public face from the studio.
 fn has_view_public_hint() -> bool {
