@@ -685,21 +685,29 @@ fn dispatch(action: Action) {
         }
         Action::ClaimHere => {
             wasm_bindgen_futures::spawn_local(async move {
-                match super::owner::claim().await {
-                    Ok(id) => {
-                        web_sys::console::log_1(&JsValue::from_str(&format!(
-                            "claimed with owner id {id}"
-                        )));
-                        // Re-render the tenant chrome now that we own it.
-                        if let super::tenant::Host::Tenant(name) = super::tenant::current() {
-                            super::paint_tenant(super::tenant::Host::Tenant(name.clone()), name)
-                                .await;
-                        }
+                let super::tenant::Host::Tenant(name) = super::tenant::current() else {
+                    return;
+                };
+                // The hint is the on-chain owner address this device
+                // controls. Resolve it from the chain (authoritative) and
+                // remember it so the next load paints the studio first.
+                let addr = super::registry::owner_of_name(&name)
+                    .await
+                    .ok()
+                    .flatten();
+                match addr {
+                    Some(addr) => {
+                        let _ = super::owner::remember(&addr).await;
+                        super::paint_tenant(
+                            super::tenant::Host::Tenant(name.clone()),
+                            name,
+                        )
+                        .await;
                     }
-                    Err(err) => {
+                    None => {
                         dom::swap_inner(
                             "claim-msg",
-                            &dom::msg_span(dom::Msg::Error, &format!("claim failed: {err}")),
+                            &dom::msg_span(dom::Msg::Error, "claim failed: name has no on-chain owner"),
                         );
                     }
                 }
@@ -734,8 +742,10 @@ fn dispatch(action: Action) {
                     "<span style=\"color:var(--muted)\">claiming on-chain…</span>",
                 );
                 match super::verify::claim_name_via_iframe(&name).await {
-                    Ok((_owner, _tx)) => {
-                        let _ = super::owner::claim().await;
+                    Ok((owner_addr, _tx)) => {
+                        // Remember the just-registered owner address as the
+                        // local first-paint hint (the chain stays authority).
+                        let _ = super::owner::remember(&owner_addr).await;
                         super::paint_tenant(
                             super::tenant::Host::Tenant(name.clone()),
                             name,

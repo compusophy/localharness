@@ -1,21 +1,23 @@
-//! Per-subdomain ownership marker, OPFS-only.
+//! Self-correcting, on-chain-derived ownership HINT, OPFS-only.
 //!
-//! Mirrors self.tools' device-UUID model: when you "claim" a
-//! subdomain, we write `.lh_owner` to that subdomain's OPFS root
-//! containing a UUID. Only that UUID can edit. Lives entirely in the
-//! per-origin OPFS sandbox — no central registry yet.
+//! `.lh_owner` is NOT authority — the on-chain registry is. This file is
+//! purely a first-paint flash-avoider: it stores the on-chain owner
+//! ADDRESS this device last *proved* it controls (written only after a
+//! `verify::VerifyResult::VerifiedOwner`). On the next load the presence
+//! of the hint lets `paint_tenant` paint the studio immediately instead
+//! of flashing the public face — but every load still re-verifies against
+//! the chain, and the hint is deleted ([`forget`]) the moment the chain
+//! disagrees. So the hint can never lie for more than the initial frame.
 //!
-//! **Limitation by design:** a different device visiting the same
-//! subdomain has its own OPFS, so it sees the subdomain as unclaimed.
-//! That's the price of zero-backend v1 — cross-device ownership is
-//! handled by the on-chain registry path in [`super::registry`],
-//! which this module is the legacy fallback to.
+//! It is per-origin (lives in the subdomain's OPFS sandbox). A different
+//! device starts with no hint and earns one by proving ownership.
 
 use crate::filesystem::Filesystem;
 
 const OWNER_FILE: &str = ".lh_owner";
 
-/// Read the persisted owner UUID for this origin, if any.
+/// Read the on-chain owner address this device last proved it controls,
+/// if any. Returns `None` when the hint is absent/empty.
 pub(crate) async fn current_owner() -> Option<String> {
     let fs = super::shared_opfs();
     let bytes = fs.read(OWNER_FILE).await.ok()?;
@@ -23,20 +25,21 @@ pub(crate) async fn current_owner() -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
-/// Write a fresh owner UUID to this origin's OPFS. Idempotent — if
-/// already owned, overwrites (caller is expected to check first).
-pub(crate) async fn claim() -> Result<String, String> {
-    let id = uuid::Uuid::new_v4().to_string();
+/// Record `owner_address` as the proven on-chain owner of this origin.
+/// Called only after a `VerifiedOwner` result (or a successful first
+/// claim) so the next load paints the studio without a public-face flash.
+/// Idempotent — overwrites any prior hint.
+pub(crate) async fn remember(owner_address: &str) -> Result<(), String> {
     let fs = super::shared_opfs();
-    fs.write_atomic(OWNER_FILE, id.as_bytes())
+    fs.write_atomic(OWNER_FILE, owner_address.trim().as_bytes())
         .await
-        .map_err(|e| e.to_string())?;
-    Ok(id)
+        .map_err(|e| e.to_string())
 }
 
-/// Drop the ownership marker. Used by "release" / debug flows.
-#[allow(dead_code)]
-pub(crate) async fn release() {
+/// Delete the ownership hint. Called when the chain disagrees with the
+/// optimistic studio paint (ownership lost / transferred) so the next
+/// load starts from the public face — and via "release" / debug flows.
+pub(crate) async fn forget() {
     let fs = super::shared_opfs();
     let _ = fs.delete(OWNER_FILE).await;
 }
