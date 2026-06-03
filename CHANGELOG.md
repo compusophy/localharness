@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-06-02
+
+Ownership becomes a single source of truth — the on-chain registry, with no
+divergent local cache — fixing a resolve loop on agent-created subdomains. The
+agent can now build a subdomain that *is* an app in one call, feedback lives in
+contract state instead of event logs, and the in-browser Rust compiler accepts
+more real-world syntax.
+
+### Added
+
+- **`create_and_publish_app(name, source)` — one-shot app subdomains.** The
+  agent compiles the rustlite `source` (a bad cartridge fails *before* any
+  on-chain write), registers `<name>.localharness.xyz`, and publishes the
+  compiled cartridge as the subdomain's fullscreen public face — `app.wasm`
+  bytes + `public_face="app"` to the new tokenId in ONE sponsored Tempo tx.
+  Closes the per-origin gap where the agent could register a name but couldn't
+  populate another subdomain's app from the current tab. "Make me a clock
+  subdomain" now works in a single call; `create_subdomain` remains for
+  name-only.
+- **Feedback in contract state.** `FeedbackFacet.submitFeedback` now appends to
+  an append-only on-chain `Entry[]` (in addition to the event), readable via
+  `feedbackCount()` / `feedbackAt(i)` / `feedbackRange(start,count)`.
+  `scripts/harvest-feedback.{sh,ps1}` read state instead of scraping logs, so
+  Tempo's 100k-block `eth_getLogs` window no longer hides older notes.
+- **Owner-only admin domain reset.** `ReleaseFacet.adminBurnNames(uint256[])`
+  and `adminResetAll()` (EIP-173 diamond-owner-only) force-burn names
+  regardless of holder for a testnet clean slate; a shared `_burn` clears
+  exactly what `register()` writes so names re-register cleanly.
+- **rustlite accepts `pub` and `#[...]` attributes.** The lexer skips
+  `#[no_mangle]` / `#[derive(...)]` / `#![...]` as trivia, and the parser
+  accepts-and-ignores `pub` / `pub(crate)` on items and struct fields — so
+  agent-authored source that copies idiomatic Rust no longer fails to compile.
+
+### Fixed
+
+- **Create-subdomain resolve loop / "no permission" page.** A subdomain
+  registered from chat had no local owner marker on its new origin, so
+  `paint_tenant` painted the public face, proved ownership, set `?edit=1` — but
+  the public-face path never consulted that hint, so it repainted and
+  re-verified forever. Ownership is now decided by the on-chain proof and the
+  studio renders in place.
+- **Tool selection.** The system prompt over-steered the model toward
+  `run_cartridge` for anything "visual" — so "create a subdomain" silently ran
+  a cartridge instead of registering, and "give me a hyperlink" called
+  `run_cartridge` too. Added an explicit picker: new subdomain →
+  `create_subdomain` / `create_and_publish_app`; a link → just emit the URL.
+- **Short chat histories no longer clip under the input.** The transcript
+  bottom-pin spacer made short histories sit flush against the input, so
+  focusing it covered the first messages; the transcript now top-aligns
+  (newest still pinned by scroll-to-bottom).
+
+### Changed
+
+- **`.lh_owner` is now a self-correcting, on-chain-derived hint, not a UUID
+  cache.** It stores the owner address this device last *proved* it controls
+  (written only after a `VerifiedOwner` result) and is deleted the moment the
+  chain disagrees. The registry is the sole authority; the hint only avoids a
+  first-paint flash and can't lie past the initial frame.
+- Header and navigation tabs are pinned (sticky) so they stay reachable while
+  scrolling long conversations.
+
 ## [0.17.0] - 2026-06-02
 
 Device linking is reworked to **Option A — identity is the seed**, carried
