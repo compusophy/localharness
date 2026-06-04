@@ -368,12 +368,8 @@ fn seed_sync_key() -> Result<[u8; 32], String> {
     let entropy = super::APP
         .with(|cell| cell.borrow().wallet.as_ref().map(|w| w.mnemonic.to_entropy()))
         .ok_or_else(|| "no identity on this device".to_string())?;
-    let mut hasher = Keccak256::new();
-    hasher.update(b"localharness/v0/keysync");
-    hasher.update(&entropy);
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&hasher.finalize());
-    Ok(out)
+    // Single derivation, shared with the local-first path in verify.rs.
+    Ok(super::encryption::keysync_key_from_entropy(&entropy))
 }
 
 /// Seal a plaintext (the tenant's Gemini key) with the seed-derived key

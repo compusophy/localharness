@@ -36,6 +36,7 @@ mod key_store;
 mod opfs;
 mod owner;
 mod pricing;
+mod seed_pull;
 mod signer;
 mod sponsor;
 mod agent_rpc;
@@ -322,6 +323,19 @@ fn mount() -> Result<(), JsValue> {
                 });
                 return Ok(());
             }
+            // Seed-pull (local-seed-per-origin): a subdomain with no local
+            // seed sent its top-level tab here to fetch the master seed
+            // (the iframe path is dead on mobile). Seal it to the supplied
+            // ephemeral key and navigate back. See `seed_pull`.
+            if read_query_param("seed_export").is_some() {
+                root.set_inner_html(
+                    "<main style=\"padding:48px;text-align:center;color:#7a8493;font:14px ui-monospace,Menlo,Consolas,monospace\">linking this device…</main>",
+                );
+                wasm_bindgen_futures::spawn_local(async move {
+                    seed_pull::handle_apex_export().await;
+                });
+                return Ok(());
+            }
             // Option A device adoption: `localharness.xyz/?adopt=1#s=<ct>`.
             // A device scanning the "add a device" QR lands here. Render the
             // code-entry form; the encrypted seed rides in the URL fragment
@@ -379,6 +393,24 @@ fn mount() -> Result<(), JsValue> {
                             }
                         }
                     }
+                });
+                return Ok(());
+            }
+            // Seed-pull return leg: apex sealed the master seed to this
+            // origin's ephemeral key. Import it into THIS origin's OPFS, then
+            // paint the tenant normally — now with a LOCAL seed, so every
+            // seed op runs locally and the iframe (dead on mobile) is unused.
+            if read_query_param("seed_import").is_some() {
+                root.set_inner_html(
+                    "<main style=\"padding:48px;text-align:center;color:#7a8493;\
+                     font:14px ui-monospace,Menlo,Consolas,monospace\">\
+                     setting up this device…</main>",
+                );
+                let name = name.clone();
+                let host_for_import = host_for_listeners.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    seed_pull::handle_tenant_import().await;
+                    paint_tenant(host_for_import, name).await;
                 });
                 return Ok(());
             }
@@ -461,6 +493,14 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
 
     // Auto-redeem a pending `?invite=CODE` into the local credit identity.
     wasm_bindgen_futures::spawn_local(events::try_redeem_pending_invite(true));
+
+    // Local-seed-per-origin: if this subdomain origin holds the master seed
+    // (pulled in via `seed_pull`), load it into App state. With it present,
+    // `verify.rs` runs every seed op locally and the cross-origin iframe
+    // (dead on mobile) is never touched — and `chat::credit_signer` uses the
+    // master wallet, so credits no longer fragment per origin.
+    let local_wallet = wallet_store::load().await;
+    APP.with(|cell| cell.borrow_mut().wallet = local_wallet);
 
     // The local hint = the on-chain owner address this device last PROVED
     // it controls. Authority is the chain (every load re-verifies below);
@@ -1022,17 +1062,28 @@ async fn paint_public_landing(host: &tenant::Host, name: &str, owner_overlay: bo
 /// seed-bearing owner reach their workshop from a device that has no
 /// local `.lh_owner` marker, without exposing a studio door to visitors.
 async fn redirect_to_studio_if_owner(name: String) {
-    if let Ok(verify::VerifyResult::VerifiedOwner { address }) =
-        verify::verify_owner(&name).await
-    {
-        // Proven owner on a device without the local hint (e.g. a second
-        // device): remember the proven address so the next load paints the
-        // studio first instead of flashing the public face, then bounce to
-        // the studio.
-        let _ = owner::remember(&address).await;
-        if let Ok(window) = dom::window() {
-            let _ = window.location().set_search("edit=1");
+    match verify::verify_owner(&name).await {
+        Ok(verify::VerifyResult::VerifiedOwner { address }) => {
+            // Proven owner on a device without the local hint (e.g. a second
+            // device): remember the proven address so the next load paints
+            // the studio first instead of flashing the public face, then
+            // bounce to the studio.
+            let _ = owner::remember(&address).await;
+            if let Ok(window) = dom::window() {
+                let _ = window.location().set_search("edit=1");
+            }
         }
+        // The apex iframe couldn't prove ownership. On mobile this is the
+        // PERSISTENT failure (partitioned cross-origin storage), not a
+        // transient — so if this origin has no local seed, fetch it from
+        // apex via the top-level round-trip. The apex only hands the seed
+        // back if it actually owns this name, so a genuine visitor costs at
+        // most one guarded redirect and learns nothing. A clean `Visitor`/
+        // `Unregistered` verdict (iframe worked) does NOT land here.
+        Err(_) => {
+            seed_pull::maybe_auto_kick(&name).await;
+        }
+        Ok(_) => {}
     }
 }
 

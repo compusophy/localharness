@@ -58,12 +58,18 @@ src/                  library crate
 │   ├── tenant.rs     hostname classifier (apex / tenant / other)
 │   ├── wallet_store.rs  master wallet persisted to apex OPFS
 │   ├── signer.rs     postMessage signer service at apex/?signer=1
+│   ├── seed_pull.rs  local-seed-per-origin: copy the seed into a subdomain's
+│   │                 OWN OPFS via a top-level apex round-trip (mobile fix —
+│   │                 the signer iframe is partitioned-dead on mobile)
 │   ├── agent_rpc.rs  inter-agent RPC endpoint (?rpc=1 URL mode)
 │   ├── encryption.rs AES-256-GCM at-rest + ECIES via WebCrypto
 │   ├── system_prompt.rs  per-tenant custom prompt (.lh_system_prompt.txt)
 │   ├── tool_allowlist.rs per-agent tool restriction (.lh_tool_allowlist.txt)
 │   ├── sponsor.rs    embedded sponsor private key for fee_payer (testnet only)
-│   └── verify.rs     subdomain-side iframe owner verification
+│   └── verify.rs     subdomain-side owner verification + the iframe signer
+│                     client (sign challenge / tempo-tx / seal+open key) —
+│                     each LOCAL-FIRST: runs on `APP.wallet` when the seed is
+│                     local, else falls back to the apex iframe
 └── backends/
     ├── gemini/       api.rs (GeminiClient + SSE decoder, CRLF+LF tolerant);
     │                 wire.rs (REST types); loop.rs (run_turn inner loop);
@@ -147,6 +153,21 @@ silently (gated modules don't trip a default `cargo check`).
 
 ## Common gotchas
 
+- **The signer iframe is DEAD on mobile (cross-origin storage partitioning).**
+  Every seed-derived op on a subdomain (owner verify, key seal/open, tempo-tx
+  sign) historically embedded `apex/?signer=1` in a hidden iframe and read the
+  seed from apex OPFS. Mobile browsers partition cross-origin iframe storage →
+  the embedded apex sees an EMPTY OPFS → every op fails (apex itself works,
+  being top-level). Fix: `seed_pull.rs` copies the seed into the subdomain's own
+  OPFS via a top-level apex round-trip, and `verify.rs` runs every op LOCAL-FIRST
+  off `APP.wallet`. Don't reintroduce an iframe-only path for a seed op.
+- **On-chain writes that store data are gas-HUNGRY — `cast estimate`, never
+  guess a limit.** Live: `submitFeedback` is ~1.3M gas for a short note and
+  ~17M near the 2048-byte cap (the facet stores the full string in cold
+  SSTOREs). A flat 800k cap silently out-of-gassed EVERY feedback (local mirror
+  saved, chain reverted → `feedbackCount` stuck at 0). Sponsored gas is now
+  length-scaled. Same lesson as redeem (600k OOG). Block limit is 500M, so
+  big writes fit — the bug is always an under-set client cap, not the chain.
 - **Gemini model IDs flip — verify against the live API, never trust memory.**
   `DEFAULT_MODEL` = `gemini-3.5-flash` (as of 2026-05-29). `gemini-2.5-flash`
   now 400s; in the 0.10.x era it was the reverse. Before changing/defending a

@@ -31,6 +31,22 @@ const SIGNER_ORIGIN: &str = "https://localharness.xyz";
 /// How long to wait for the signer to reply before giving up.
 const TIMEOUT_MS: u32 = 5_000;
 
+/// The local master wallet IF this origin holds the seed — apex always,
+/// or a subdomain that pulled it in via [`super::seed_pull`]. When
+/// present, seed-derived ops (owner proof, tempo-tx sign, key seal/open)
+/// run **locally** and skip the cross-origin signer iframe entirely. That
+/// iframe is the dead path on mobile, where browsers partition
+/// cross-origin iframe storage so the embedded apex sees an empty OPFS.
+/// Returns `(signer, address, bip39_entropy)`; `None` on a seedless
+/// origin → callers fall back to the iframe.
+fn local_master() -> Option<(k256::ecdsa::SigningKey, [u8; 20], Vec<u8>)> {
+    super::APP.with(|cell| {
+        cell.borrow().wallet.as_ref().map(|w| {
+            (w.signer.clone(), w.address, w.mnemonic.to_entropy())
+        })
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum VerifyResult {
     VerifiedOwner { address: String },
@@ -53,6 +69,21 @@ pub(crate) async fn verify_owner(name: &str) -> Result<VerifyResult, String> {
     let Some(expected) = on_chain_owner else {
         return Ok(VerifyResult::Unregistered);
     };
+
+    // Local-first: if this origin holds the seed, we ARE the holder of our
+    // own address — no challenge round-trip needed. Skips the iframe (dead
+    // on mobile). Compare the local address to the on-chain owner directly.
+    if let Some((_, address, _)) = local_master() {
+        let local_hex = format!("0x{}", bytes_to_hex(&address));
+        return Ok(if local_hex.eq_ignore_ascii_case(&expected) {
+            VerifyResult::VerifiedOwner { address: local_hex }
+        } else {
+            VerifyResult::Visitor {
+                owner_address: expected,
+                visitor_address: local_hex,
+            }
+        });
+    }
 
     // 2. Get a signature from the apex signer. The signer's `paint_signer`
     // is async — it might not have loaded the master wallet by the time
@@ -181,8 +212,18 @@ pub(crate) async fn sign_tempo_tx_via_iframe(
     tx: &crate::tempo_tx::TempoTx,
     purpose: &str,
 ) -> Result<(String, [u8; 65]), String> {
-    let id = format!("digest-{}", random_id_hex());
     let digest = tx.sender_hash();
+
+    // Local-first: hold the seed here → sign the sender_hash directly,
+    // skip the iframe (dead on mobile). The caller re-recovers + checks
+    // the address against the expected sender, so this stays fail-closed.
+    if let Some((signer, address, _)) = local_master() {
+        let sig = wallet::sign_hash(&signer, &digest);
+        let _ = purpose;
+        return Ok((format!("0x{}", bytes_to_hex(&address)), sig));
+    }
+
+    let id = format!("digest-{}", random_id_hex());
     let digest_hex = format!("0x{}", bytes_to_hex(&digest));
 
     let payload = js_sys::Object::new();
@@ -343,6 +384,16 @@ const CLAIM_TIMEOUT_MS: u32 = 90_000;
 /// Ask the apex signer to seal `plaintext` (the Gemini key) with the
 /// seed-derived key. Returns ciphertext hex for on-chain storage.
 pub(crate) async fn seal_key_via_iframe(plaintext: &str) -> Result<String, String> {
+    // Local-first: hold the seed here → derive the keysync key + seal
+    // locally, skip the iframe (dead on mobile). Same derivation as the
+    // signer's `seed_sync_key` (shared in encryption.rs).
+    if let Some((_, _, entropy)) = local_master() {
+        let key = super::encryption::keysync_key_from_entropy(&entropy);
+        let ct = super::encryption::seal_with_raw_key(&key, plaintext.as_bytes())
+            .await
+            .ok_or_else(|| "seal failed".to_string())?;
+        return Ok(format!("0x{}", bytes_to_hex(&ct)));
+    }
     let id = format!("seal-{}", random_id_hex());
     let payload = js_sys::Object::new();
     let _ = js_sys::Reflect::set(
@@ -366,6 +417,16 @@ pub(crate) async fn seal_key_via_iframe(plaintext: &str) -> Result<String, Strin
 
 /// Ask the apex signer to open seed-sealed `ciphertext_hex` → plaintext.
 pub(crate) async fn open_key_via_iframe(ciphertext_hex: &str) -> Result<String, String> {
+    // Local-first: hold the seed here → derive the keysync key + open
+    // locally, skip the iframe (dead on mobile).
+    if let Some((_, _, entropy)) = local_master() {
+        let key = super::encryption::keysync_key_from_entropy(&entropy);
+        let ct = hex_to_bytes(ciphertext_hex)?;
+        let pt = super::encryption::open_with_raw_key(&key, &ct)
+            .await
+            .ok_or_else(|| "open failed (wrong seed?)".to_string())?;
+        return String::from_utf8(pt).map_err(|_| "decrypted value not utf-8".to_string());
+    }
     let id = format!("open-{}", random_id_hex());
     let payload = js_sys::Object::new();
     let _ = js_sys::Reflect::set(

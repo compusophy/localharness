@@ -182,6 +182,10 @@ pub(crate) async fn run_send() {
     // (seg_id, accumulated_raw_text) for every text segment we render
     // this turn — used for markdown rendering at end-of-stream.
     let mut text_segments: Vec<(u32, String)> = vec![(seg_id, String::new())];
+    // Did this turn put ANYTHING visible on screen (text or a tool call)?
+    // A successful-but-empty stream otherwise leaves a blank bubble with no
+    // hint that anything happened — the "blank entry, no feedback" bug.
+    let mut any_visible = false;
 
     // Timing: ms since epoch is precise enough for ttft/total pills.
     let t0 = js_sys::Date::now();
@@ -211,6 +215,7 @@ pub(crate) async fn run_send() {
         match item {
             Ok(StreamChunk::Text { text, .. }) => {
                 if !text.is_empty() {
+                    any_visible = true;
                     let (cur_id, cur_text) = text_segments
                         .last_mut()
                         .expect("text_segments seeded at start of turn");
@@ -221,6 +226,7 @@ pub(crate) async fn run_send() {
                 }
             }
             Ok(StreamChunk::ToolCall(call)) => {
+                any_visible = true;
                 let tool_seg_id = APP.with(|cell| cell.borrow_mut().alloc_id());
                 dom::append_html(
                     &assistant_body_id,
@@ -278,6 +284,25 @@ pub(crate) async fn run_send() {
 
     mark_turn_done(assistant_turn_id);
 
+    // The stream completed without error but produced no visible output
+    // (no text, no tool call) — e.g. the model emitted only a thought, or
+    // the proxy returned an empty body. Say so instead of a blank bubble.
+    if !any_visible && !TURN_CANCEL.with(|c| c.get()) {
+        let body_id = format!("turn-body-{assistant_turn_id}");
+        dom::append_html(
+            &body_id,
+            &format!(
+                "<div class=\"turn-error\">{}</div>",
+                dom::msg_span(
+                    dom::Msg::Muted,
+                    "(empty response — the model returned no text. If you're on \
+                     platform credits, check your session/balance in the account tab.)"
+                )
+            ),
+        );
+        dom::scroll_to_bottom("transcript");
+    }
+
     // Stash cumulative token usage for the admin Usage tab.
     if let Some(total) = agent.cumulative_usage().total_token_count {
         APP.with(|cell| cell.borrow_mut().total_tokens = total.max(0) as u64);
@@ -315,9 +340,11 @@ pub(crate) async fn run_send() {
     super::opfs::refresh().await;
 }
 
-/// Surface a turn failure. If it looks like an auth / API-key problem
-/// (the most common first-run failure), reopen the key modal so the user
-/// can fix it, rather than leaving a cryptic error in the status line.
+/// Surface a turn failure. Renders the error INTO the assistant bubble
+/// (so a failed turn never looks like a silent blank reply) AND mirrors a
+/// short form to the status line. If it looks like a credits/quota problem
+/// or an auth / API-key problem (the most common first-run failures), the
+/// in-bubble message explains the likely cause and the next step.
 fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
     mark_turn_done(assistant_turn_id);
     let lower = err.to_lowercase();
@@ -327,9 +354,45 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
         || lower.contains("403")
         || lower.contains("permission_denied")
         || lower.contains("unauthenticated");
+    // The credit proxy 402s when there's no active session / no $LH for the
+    // signing address. On a subdomain that address is this origin's local
+    // credit key — distinct from the apex wallet — so "I redeemed credits"
+    // and "this origin has credits" are not the same thing.
+    let looks_like_credits = lower.contains("402")
+        || lower.contains("payment required")
+        || lower.contains("insufficient")
+        || lower.contains("no active session")
+        || lower.contains("quota")
+        || lower.contains("429");
+
+    // Visible, escaped message in the transcript bubble. This is the
+    // primary surface — the status line is a secondary mirror.
+    let bubble = if looks_like_credits {
+        "request rejected (no credits / session for this origin). Open the \
+         account tab → platform credits to redeem or open a session, or \
+         switch to your own Gemini key. Raw error: "
+            .to_string()
+            + err
+    } else if looks_like_auth {
+        format!("model rejected the API key — check your Gemini key. Raw error: {err}")
+    } else {
+        format!("{context} failed: {err}")
+    };
+    let body_id = format!("turn-body-{assistant_turn_id}");
+    dom::append_html(
+        &body_id,
+        &format!(
+            "<div class=\"turn-error\">{}</div>",
+            dom::msg_span(dom::Msg::Error, &bubble)
+        ),
+    );
+    dom::scroll_to_bottom("transcript");
+
     if looks_like_auth {
         dom::set_status("API key rejected — check your Gemini key.", true);
         super::show_api_key_modal();
+    } else if looks_like_credits {
+        dom::set_status("no credits / session for this origin — see the account tab.", true);
     } else {
         dom::set_status(&format!("{context}: {err}"), true);
     }

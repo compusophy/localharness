@@ -3429,11 +3429,16 @@ pub(crate) async fn submit_feedback_onchain(from_hex: &str, text: &str) -> Resul
         value_wei: 0,
         input: calldata,
     };
-    // String-emitting events scale with byte length (~12k base +
-    // ~200 gas/byte log data). 2048-byte upper bound + base ~150k
-    // for the inner call. Tempo sponsorship overhead adds ~275k.
-    // 800k is generous headroom for any reasonable feedback length.
-    run_sponsored_tempo_call(from_hex, vec![call], 800_000, "submit feedback").await
+    // FeedbackFacet APPENDS an Entry{sender,timestamp,text} to an on-chain
+    // array (storing the full string in cold SSTOREs) AND emits an event.
+    // Live estimate: ~1.3M gas for a short note, ~17M near the 2048-byte cap
+    // — the cost scales steeply with byte length, so a flat cap can't cover
+    // both. The old flat 800k out-of-gassed and reverted SILENTLY on EVERY
+    // submission (local mirror succeeded, on-chain leg failed → permanently
+    // stuck at feedbackCount=0). Size the cap to the text length with
+    // generous per-byte headroom plus ~300k Tempo sponsorship overhead.
+    let gas = 1_500_000u128 + (text.len() as u128) * 9_000;
+    run_sponsored_tempo_call(from_hex, vec![call], gas, "submit feedback").await
 }
 
 /// ABI-encode `submitFeedback(string)`. Layout: selector + offset(0x20)

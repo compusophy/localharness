@@ -42,6 +42,22 @@ pub(crate) async fn open(data: &[u8]) -> Option<Vec<u8>> {
     decrypt(&key, data).await.ok()
 }
 
+/// Derive the 32-byte AES key that seals/opens the on-chain Gemini key,
+/// from a master wallet's BIP-39 entropy. Deterministic from the seed, so
+/// any device holding it derives the same key. SHARED source of truth for
+/// both the apex signer iframe (`signer::seed_sync_key`) and the
+/// local-first path in `verify.rs` (a subdomain that pulled the seed in
+/// via `seed_pull`) — they MUST agree byte-for-byte, hence one impl here.
+pub(crate) fn keysync_key_from_entropy(entropy: &[u8]) -> [u8; 32] {
+    use sha3::{Digest, Keccak256};
+    let mut hasher = Keccak256::new();
+    hasher.update(b"localharness/v0/keysync");
+    hasher.update(entropy);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&hasher.finalize());
+    out
+}
+
 /// Seal with an explicit 32-byte key (e.g. a wallet-seed-derived key)
 /// rather than the per-origin device key. Used by the on-chain API-key
 /// sync flow so the ciphertext follows the seed, not the device.
