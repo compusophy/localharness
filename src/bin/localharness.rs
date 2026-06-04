@@ -24,7 +24,7 @@
 //!                            `--fresh` starts a new thread
 //!   threads [--as <me>]      list your saved call conversations
 //!   forget [--as <me>] <name>  drop a saved conversation (or `--all`)
-//!   whoami <name>            show the on-chain owner of <name>
+//!   whoami [--json] <name>   profile of <name>: owner, wallet, persona, face
 //!   help                     this text
 
 use localharness::registry;
@@ -52,7 +52,7 @@ USAGE:
                                          (--fresh starts over)
   localharness threads [--as <me>]       list your saved call conversations
   localharness forget [--as <me>] <name> drop a saved conversation (or --all)
-  localharness whoami <name>             print the on-chain owner of <name>
+  localharness whoami [--json] <name>    profile of <name> (owner, wallet, …)
 
 Your identity is an ERC-721 NFT on Tempo Moderato; `create` persists its
 private key to ./<name>.localharness.key — keep it, it IS your identity.
@@ -106,13 +106,21 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
         },
-        Some("whoami") => match args.get(1) {
-            Some(name) => whoami(name).await,
-            None => {
-                eprintln!("usage: localharness whoami <name>");
-                2
+        Some("whoami") => {
+            let rest = &args[1..];
+            let (json, name) = if rest.first().map(String::as_str) == Some("--json") {
+                (true, rest.get(1))
+            } else {
+                (false, rest.first())
+            };
+            match name {
+                Some(n) => whoami(n, json).await,
+                None => {
+                    eprintln!("usage: localharness whoami [--json] <name>");
+                    2
+                }
             }
-        },
+        }
         Some("help") | Some("-h") | Some("--help") | None => {
             println!("{USAGE}");
             0
@@ -808,31 +816,36 @@ fn format_whoami(info: &WhoamiInfo) -> String {
     )
 }
 
-/// Print a profile of `<name>`: owner, tokenId, token-bound wallet, and
-/// whether a persona / app face is published. All read-only RPC — no `$LH`.
-async fn whoami(name: &str) -> i32 {
-    let owner = match registry::owner_of_name(name).await {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("RPC error: {e}");
-            return 1;
-        }
-    };
+/// Render a `WhoamiInfo` as a JSON object (`whoami --json`). Stable field
+/// names so agents can script against the CLI. Pure.
+fn format_whoami_json(info: &WhoamiInfo) -> String {
+    let v = serde_json::json!({
+        "name": info.name,
+        "registered": info.owner.is_some(),
+        "owner": info.owner,
+        "tokenId": info.token_id,
+        "wallet": info.tba,
+        "persona": info.has_persona,
+        "face": info.public_face,
+    });
+    serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// Resolve the on-chain profile of `<name>`. All read-only RPC — no `$LH`.
+/// A failed sub-read (TBA / persona / face) degrades to absent rather than
+/// failing the whole lookup; only an owner-read error is fatal.
+async fn resolve_whoami(name: &str) -> Result<WhoamiInfo, String> {
+    let owner = registry::owner_of_name(name).await?;
     if owner.is_none() {
-        println!(
-            "{}",
-            format_whoami(&WhoamiInfo {
-                name: name.to_string(),
-                owner: None,
-                token_id: 0,
-                tba: None,
-                has_persona: false,
-                public_face: None,
-            })
-        );
-        return 0;
+        return Ok(WhoamiInfo {
+            name: name.to_string(),
+            owner: None,
+            token_id: 0,
+            tba: None,
+            has_persona: false,
+            public_face: None,
+        });
     }
-    // Registered: gather the rest (best-effort; a failed read shows as absent).
     let token_id = registry::id_of_name(name).await.unwrap_or(0);
     let tba = registry::tba_of_name(name).await.ok().flatten();
     let (has_persona, public_face) = if token_id != 0 {
@@ -847,18 +860,36 @@ async fn whoami(name: &str) -> i32 {
     } else {
         (false, None)
     };
-    println!(
-        "{}",
-        format_whoami(&WhoamiInfo {
-            name: name.to_string(),
-            owner,
-            token_id,
-            tba,
-            has_persona,
-            public_face,
-        })
-    );
-    0
+    Ok(WhoamiInfo {
+        name: name.to_string(),
+        owner,
+        token_id,
+        tba,
+        has_persona,
+        public_face,
+    })
+}
+
+/// Print a profile of `<name>`: owner, tokenId, token-bound wallet, and
+/// whether a persona / app face is published. `--json` for machine output.
+async fn whoami(name: &str, json: bool) -> i32 {
+    match resolve_whoami(name).await {
+        Ok(info) => {
+            println!(
+                "{}",
+                if json {
+                    format_whoami_json(&info)
+                } else {
+                    format_whoami(&info)
+                }
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("RPC error: {e}");
+            1
+        }
+    }
 }
 
 fn to_hex(bytes: &[u8]) -> String {
@@ -1077,6 +1108,44 @@ mod tests {
         assert!(out.contains("persona  none"));
         assert!(out.contains("face     unset (directory)"));
         assert!(out.contains("wallet   —"));
+    }
+
+    #[test]
+    fn format_whoami_json_registered_roundtrips() {
+        let info = WhoamiInfo {
+            name: "claude".into(),
+            owner: Some("0xabc".into()),
+            token_id: 8,
+            tba: Some("0xdef".into()),
+            has_persona: true,
+            public_face: Some("app".into()),
+        };
+        let v: serde_json::Value = serde_json::from_str(&format_whoami_json(&info)).unwrap();
+        assert_eq!(v["name"], "claude");
+        assert_eq!(v["registered"], true);
+        assert_eq!(v["owner"], "0xabc");
+        assert_eq!(v["tokenId"], 8);
+        assert_eq!(v["wallet"], "0xdef");
+        assert_eq!(v["persona"], true);
+        assert_eq!(v["face"], "app");
+    }
+
+    #[test]
+    fn format_whoami_json_unregistered_nulls() {
+        let info = WhoamiInfo {
+            name: "ghost".into(),
+            owner: None,
+            token_id: 0,
+            tba: None,
+            has_persona: false,
+            public_face: None,
+        };
+        let v: serde_json::Value = serde_json::from_str(&format_whoami_json(&info)).unwrap();
+        assert_eq!(v["registered"], false);
+        assert!(v["owner"].is_null());
+        assert!(v["wallet"].is_null());
+        assert!(v["face"].is_null());
+        assert_eq!(v["persona"], false);
     }
 
     #[test]

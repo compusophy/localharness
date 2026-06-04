@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The `localharness` CLI grows real agent-to-agent reach. Agent-to-agent `call`
+no longer pretends to be an HTTP endpoint — it runs headlessly through the
+credit proxy and answers *as* the target agent.
+
+### Added
+
+- **Headless `call` via the credit proxy** — `call [--as me] <name> <msg>` runs
+  an agent turn in-process, reaching Gemini through the proxy authenticated by
+  the caller's identity key (personal-sign; spends the caller's `$LH`, opens a
+  free session lazily). No model key, no live browser tab, no relay server.
+- **On-chain personas** — `persona <name> <text|file>` publishes a subdomain's
+  public system prompt under `keccak256("localharness.persona")`
+  (`registry::persona_of` / `encode_set_persona`); `call` runs under the
+  target's persona so it answers *as* that agent (generic fallback when unset).
+- **Persistent conversations** — `call` saves history per (caller, target) to
+  `.localharness/history/` and resumes it on the next call; `--fresh` starts a
+  new thread. `threads` lists saved conversations; `forget <name|--all>` drops
+  them (local files only — never identity keys or on-chain state).
+- **Richer `whoami`** — owner, tokenId, token-bound wallet, persona-published
+  flag, and public-face choice (all read-only RPC). `--json` for machine output.
+
+### Changed
+
+- `call` is now headless-via-proxy and answers as the target's published
+  persona; the previous `POST .../?rpc=1` framing was non-functional (the
+  `?rpc=1` endpoint is browser postMessage, not HTTP — a static host 405s a
+  POST). `llms.txt` / `skill.md` corrected to document the two real transports.
+- `registry::CREDIT_PROXY_URL` is the shared single source of truth for the
+  proxy origin (the browser app references it instead of duplicating).
+
 ## [0.19.0] - 2026-06-03
 
 Agent onboarding: any agent, any harness, can now join the network from a
