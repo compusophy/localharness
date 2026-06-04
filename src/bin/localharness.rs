@@ -22,6 +22,8 @@
 //!                            via the credit proxy (no Gemini key, no live tab);
 //!                            the conversation persists per (caller,target) —
 //!                            `--fresh` starts a new thread
+//!   threads [--as <me>]      list your saved call conversations
+//!   forget [--as <me>] <name>  drop a saved conversation (or `--all`)
 //!   whoami <name>            show the on-chain owner of <name>
 //!   help                     this text
 
@@ -48,6 +50,8 @@ USAGE:
                                          through the credit proxy (no key, no tab);
                                          the conversation continues across calls
                                          (--fresh starts over)
+  localharness threads [--as <me>]       list your saved call conversations
+  localharness forget [--as <me>] <name> drop a saved conversation (or --all)
   localharness whoami <name>             print the on-chain owner of <name>
 
 Your identity is an ERC-721 NFT on Tempo Moderato; `create` persists its
@@ -82,6 +86,26 @@ async fn run(args: &[String]) -> i32 {
             2
         }
         Some("call") => call(&args[1..]).await,
+        Some("threads") => match take_as_flag(&args[1..]) {
+            Ok((caller, _)) => threads(caller),
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
+        Some("forget") => match take_as_flag(&args[1..]) {
+            Ok((caller, rest)) => match rest.first() {
+                Some(target) => forget(caller, target),
+                None => {
+                    eprintln!("usage: localharness forget [--as <me>] <target|--all>");
+                    2
+                }
+            },
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
         Some("whoami") => match args.get(1) {
             Some(name) => whoami(name).await,
             None => {
@@ -342,12 +366,25 @@ fn parse_call_args(rest: &[String]) -> Result<ParsedCall, String> {
     }
 }
 
+/// The directory holding persisted `call` conversations.
+fn history_dir() -> std::path::PathBuf {
+    std::path::Path::new(".localharness").join("history")
+}
+
 /// Where a `call` conversation between `caller_label` and `target` is
 /// persisted, so repeated calls continue the same thread. Pure path builder.
 fn history_path(caller_label: &str, target: &str) -> std::path::PathBuf {
-    std::path::Path::new(".localharness")
-        .join("history")
-        .join(format!("{caller_label}__{target}.bin"))
+    history_dir().join(format!("{caller_label}__{target}.bin"))
+}
+
+/// Extract the target from a history filename `<caller>__<target>.bin` for the
+/// given caller label. `None` when it doesn't belong to that caller. Pure.
+fn thread_file_target(caller_label: &str, file_name: &str) -> Option<String> {
+    file_name
+        .strip_prefix(&format!("{caller_label}__"))?
+        .strip_suffix(".bin")
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
 }
 
 async fn call(rest: &[String]) -> i32 {
@@ -487,47 +524,140 @@ async fn call(rest: &[String]) -> i32 {
     code
 }
 
-/// Resolve which identity key signs a `call`. With `name`, reads
-/// `./<name>.localharness.key`. Without, auto-selects the sole
-/// `*.localharness.key` in the working directory; errors (asking for `--as`)
-/// when there are zero or several. Returns `(filename, key_hex)`.
-fn resolve_caller_key(name: Option<&str>) -> Result<(String, String), String> {
-    if let Some(n) = name {
-        let file = format!("{n}.localharness.key");
-        let key_hex = std::fs::read_to_string(&file)
-            .map_err(|_| {
-                format!("no identity key at ./{file} — run `localharness create {n}` first")
-            })?
-            .trim()
-            .to_string();
-        return Ok((file, key_hex));
-    }
+const KEY_SUFFIX: &str = ".localharness.key";
+
+/// Sorted filenames of every identity key in the working directory.
+fn identity_key_files() -> Result<Vec<String>, String> {
     let mut found: Vec<String> = std::fs::read_dir(".")
         .map_err(|e| format!("cannot read working directory: {e}"))?
         .filter_map(|e| e.ok())
         .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|f| f.ends_with(".localharness.key"))
+        .filter(|f| f.ends_with(KEY_SUFFIX))
         .collect();
     found.sort();
+    Ok(found)
+}
+
+/// The identity-key filename to act as. With `name`, it's `<name>.localharness
+/// .key`. Without, the sole key in the directory — error (asking for `--as`)
+/// on zero or several.
+fn resolve_caller_file(name: Option<&str>) -> Result<String, String> {
+    if let Some(n) = name {
+        return Ok(format!("{n}{KEY_SUFFIX}"));
+    }
+    let mut found = identity_key_files()?;
     match found.len() {
         0 => Err(
             "no identity key here — run `localharness create <yourname>` first, \
              or pass --as <name>"
                 .to_string(),
         ),
-        1 => {
-            let file = found.remove(0);
-            let key_hex = std::fs::read_to_string(&file)
-                .map_err(|e| format!("cannot read {file}: {e}"))?
-                .trim()
-                .to_string();
-            Ok((file, key_hex))
-        }
+        1 => Ok(found.remove(0)),
         _ => Err(format!(
             "multiple identities here ({}) — pick one with --as <name>",
             found.join(", ")
         )),
     }
+}
+
+/// The thread label (key-file stem) to act as — what conversation history is
+/// keyed on. Does NOT read the key, so it works for `threads` / `forget`.
+fn resolve_caller_label(name: Option<&str>) -> Result<String, String> {
+    let file = resolve_caller_file(name)?;
+    Ok(file.strip_suffix(KEY_SUFFIX).unwrap_or(&file).to_string())
+}
+
+/// Resolve which identity key signs a `call`, returning `(filename, key_hex)`.
+fn resolve_caller_key(name: Option<&str>) -> Result<(String, String), String> {
+    let file = resolve_caller_file(name)?;
+    let key_hex = std::fs::read_to_string(&file)
+        .map_err(|_| match name {
+            Some(n) => format!("no identity key at ./{file} — run `localharness create {n}` first"),
+            None => format!("cannot read {file}"),
+        })?
+        .trim()
+        .to_string();
+    Ok((file, key_hex))
+}
+
+/// Strip an optional leading `--as <name>`; returns `(caller, remaining)`.
+fn take_as_flag(args: &[String]) -> Result<(Option<&str>, &[String]), String> {
+    if args.first().map(String::as_str) == Some("--as") {
+        match args.get(1) {
+            Some(n) => Ok((Some(n.as_str()), &args[2..])),
+            None => Err("usage: --as <name> requires a name".to_string()),
+        }
+    } else {
+        Ok((None, args))
+    }
+}
+
+/// List the caller's saved conversation threads (`localharness threads`).
+fn threads(caller_name: Option<&str>) -> i32 {
+    let label = match resolve_caller_label(caller_name) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let mut found: Vec<(String, u64)> = match std::fs::read_dir(history_dir()) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let name = e.file_name().into_string().ok()?;
+                let target = thread_file_target(&label, &name)?;
+                let size = e.metadata().map(|m| m.len()).unwrap_or(0);
+                Some((target, size))
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    found.sort();
+    if found.is_empty() {
+        println!("no saved conversations for {label}");
+        return 0;
+    }
+    println!("conversations for {label}:");
+    for (target, size) in found {
+        println!("  {target}  ({size} bytes)");
+    }
+    0
+}
+
+/// Delete a saved conversation thread, or all of the caller's with `--all`
+/// (`localharness forget [--as me] <target|--all>`). Never touches identity
+/// keys or on-chain state — only local history files.
+fn forget(caller_name: Option<&str>, target: &str) -> i32 {
+    let label = match resolve_caller_label(caller_name) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    if target == "--all" {
+        let mut n = 0;
+        if let Ok(rd) = std::fs::read_dir(history_dir()) {
+            for e in rd.flatten() {
+                let Ok(name) = e.file_name().into_string() else {
+                    continue;
+                };
+                if thread_file_target(&label, &name).is_some()
+                    && std::fs::remove_file(e.path()).is_ok()
+                {
+                    n += 1;
+                }
+            }
+        }
+        println!("forgot {n} conversation(s) for {label}");
+        return 0;
+    }
+    match std::fs::remove_file(history_path(&label, target)) {
+        Ok(_) => println!("forgot conversation with {target}"),
+        Err(_) => println!("no saved conversation with {target}"),
+    }
+    0
 }
 
 /// System prompt for a target that hasn't published a persona on-chain.
@@ -774,6 +904,48 @@ mod tests {
         assert!(parse_call_args(&args(&["--as", "bob"])).is_err());
         // `--as bob alice` : target but no message → usage error.
         assert!(parse_call_args(&args(&["--as", "bob", "alice"])).is_err());
+    }
+
+    #[test]
+    fn thread_file_target_parses_own_files_only() {
+        assert_eq!(
+            thread_file_target("claude", "claude__alice.bin").as_deref(),
+            Some("alice")
+        );
+        // A target containing the separator stays intact (strip_prefix once).
+        assert_eq!(
+            thread_file_target("claude", "claude__a__b.bin").as_deref(),
+            Some("a__b")
+        );
+        // Different caller → not ours.
+        assert_eq!(thread_file_target("claude", "bob__alice.bin"), None);
+        // Wrong extension, or empty target → rejected.
+        assert_eq!(thread_file_target("claude", "claude__alice.txt"), None);
+        assert_eq!(thread_file_target("claude", "claude__.bin"), None);
+        assert_eq!(thread_file_target("claude", "unrelated.bin"), None);
+    }
+
+    #[test]
+    fn thread_file_target_roundtrips_history_path() {
+        // The parser must invert the filename half of history_path.
+        let p = history_path("claude", "alice");
+        let name = p.file_name().unwrap().to_str().unwrap();
+        assert_eq!(thread_file_target("claude", name).as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn take_as_flag_extracts_caller() {
+        let a = args(&["--as", "bob", "threads"]);
+        let (caller, rest) = take_as_flag(&a).unwrap();
+        assert_eq!(caller, Some("bob"));
+        assert_eq!(rest, &["threads".to_string()]);
+
+        let b = args(&["alice"]);
+        let (caller, rest) = take_as_flag(&b).unwrap();
+        assert_eq!(caller, None);
+        assert_eq!(rest, &["alice".to_string()]);
+
+        assert!(take_as_flag(&args(&["--as"])).is_err());
     }
 
     #[test]
