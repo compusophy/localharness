@@ -68,7 +68,7 @@ USAGE:
   localharness feedback [--as <me>] [text]   submit on-chain feedback, or read all
   localharness threads [--as <me>]       list your saved call conversations
   localharness forget [--as <me>] <name> drop a saved conversation (or --all)
-  localharness whoami [--json] <name>    profile of <name> (owner, wallet, …)
+  localharness whoami [--json] <name>    profile of <name> (owner, wallet, …; alias: lookup)
 
 Your identity is an ERC-721 NFT on Tempo Moderato; `create` persists its
 private key to ./<name>.localharness.key — keep it, it IS your identity.
@@ -147,7 +147,7 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
         },
-        Some("whoami") => {
+        Some("whoami") | Some("lookup") => {
             let rest = &args[1..];
             let (json, name) = if rest.first().map(String::as_str) == Some("--json") {
                 (true, rest.get(1))
@@ -365,6 +365,17 @@ async fn set_face(name: &str, choice: &str) -> i32 {
 /// The on-chain `setMetadata` publish cap for a compiled cartridge (bytes).
 const PUBLISH_CAP: usize = 16_384;
 
+/// Read a file, mapping common IO errors to clean, OS-agnostic messages.
+/// Addresses on-chain QA feedback: raw `std::fs` errors leaked "(os error 2)"
+/// to users instead of a readable "no such file".
+fn read_file_clean(path: &str) -> Result<String, String> {
+    std::fs::read_to_string(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => format!("no such file: {path}"),
+        std::io::ErrorKind::PermissionDenied => format!("permission denied: {path}"),
+        _ => format!("cannot read {path}: {e}"),
+    })
+}
+
 /// True if the compiled cartridge exports a `frame` or `render` function — the
 /// entry point the display loader calls. A cartridge without one compiles fine
 /// but renders nothing as a public face. Parses the wasm export section (id 7);
@@ -430,10 +441,10 @@ fn cartridge_has_entry(wasm: &[u8]) -> bool {
 /// write. Lets an author iterate before spending a sponsored publish. With
 /// `out_path`, also writes the compiled `.wasm` (handy for local validation).
 fn compile_check(source_path: &str, out_path: Option<&str>) -> i32 {
-    let src = match std::fs::read_to_string(source_path) {
+    let src = match read_file_clean(source_path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("cannot read {source_path}: {e}");
+            eprintln!("{e}");
             return 1;
         }
     };
@@ -513,10 +524,10 @@ async fn publish(name: &str, source_path: &str) -> i32 {
         }
     }
 
-    let src = match std::fs::read_to_string(source_path) {
+    let src = match read_file_clean(source_path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("cannot read {source_path}: {e}");
+            eprintln!("{e}");
             return 1;
         }
     };
@@ -1784,6 +1795,14 @@ mod tests {
         assert_eq!(v["subdomains"][0]["name"], "claude");
         assert_eq!(v["subdomains"][0]["tokenId"], 8);
         assert!(v["subdomains"][1]["wallet"].is_null());
+    }
+
+    #[test]
+    fn read_file_clean_maps_not_found_without_leaking_os_error() {
+        // Closes on-chain QA finding #1: "os error 2" must not reach the user.
+        let err = read_file_clean("definitely-nonexistent-file-xyz123.rl").unwrap_err();
+        assert!(err.contains("no such file"), "got: {err}");
+        assert!(!err.contains("os error"), "must not leak raw OS error: {err}");
     }
 
     #[test]
