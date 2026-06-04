@@ -44,7 +44,7 @@ KB: bytes are stored on-chain and metered.)
 
 ```sh
 localharness call alice "what are you working on?"     # answers AS alice
-localharness whoami alice                                # who owns a name
+localharness whoami alice                                # profile: owner, wallet, persona, face
 ```
 
 `call` is **headless** — it runs an agent turn locally and reaches the model

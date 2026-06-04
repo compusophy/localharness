@@ -771,22 +771,94 @@ async fn set_persona(name: &str, text_or_path: &str) -> i32 {
     }
 }
 
-/// Print the on-chain owner of `<name>`.
+/// The on-chain facts `whoami` resolves for a name.
+struct WhoamiInfo {
+    name: String,
+    owner: Option<String>,
+    token_id: u64,
+    tba: Option<String>,
+    has_persona: bool,
+    public_face: Option<String>,
+}
+
+/// Render a `WhoamiInfo` as the terminal report. Pure (no I/O) so the layout
+/// is unit-testable. Unregistered names get a one-liner.
+fn format_whoami(info: &WhoamiInfo) -> String {
+    let Some(owner) = &info.owner else {
+        return format!("{} is unregistered", info.name);
+    };
+    let wallet = match &info.tba {
+        Some(a) => format!("{a}  (token-bound account)"),
+        None => "—".to_string(),
+    };
+    let persona = if info.has_persona { "published" } else { "none" };
+    let face = info
+        .public_face
+        .clone()
+        .unwrap_or_else(|| "unset (directory)".to_string());
+    format!(
+        "{name}.localharness.xyz\n  \
+         owner    {owner}\n  \
+         tokenId  {id}\n  \
+         wallet   {wallet}\n  \
+         persona  {persona}\n  \
+         face     {face}",
+        name = info.name,
+        id = info.token_id,
+    )
+}
+
+/// Print a profile of `<name>`: owner, tokenId, token-bound wallet, and
+/// whether a persona / app face is published. All read-only RPC — no `$LH`.
 async fn whoami(name: &str) -> i32 {
-    match registry::owner_of_name(name).await {
-        Ok(Some(owner)) => {
-            println!("{name}.localharness.xyz -> {owner}");
-            0
-        }
-        Ok(None) => {
-            println!("{name} is unregistered");
-            0
-        }
+    let owner = match registry::owner_of_name(name).await {
+        Ok(o) => o,
         Err(e) => {
             eprintln!("RPC error: {e}");
-            1
+            return 1;
         }
+    };
+    if owner.is_none() {
+        println!(
+            "{}",
+            format_whoami(&WhoamiInfo {
+                name: name.to_string(),
+                owner: None,
+                token_id: 0,
+                tba: None,
+                has_persona: false,
+                public_face: None,
+            })
+        );
+        return 0;
     }
+    // Registered: gather the rest (best-effort; a failed read shows as absent).
+    let token_id = registry::id_of_name(name).await.unwrap_or(0);
+    let tba = registry::tba_of_name(name).await.ok().flatten();
+    let (has_persona, public_face) = if token_id != 0 {
+        (
+            registry::persona_of(token_id)
+                .await
+                .ok()
+                .flatten()
+                .is_some(),
+            registry::public_face_of(token_id).await.ok().flatten(),
+        )
+    } else {
+        (false, None)
+    };
+    println!(
+        "{}",
+        format_whoami(&WhoamiInfo {
+            name: name.to_string(),
+            owner,
+            token_id,
+            tba,
+            has_persona,
+            public_face,
+        })
+    );
+    0
 }
 
 fn to_hex(bytes: &[u8]) -> String {
@@ -957,6 +1029,54 @@ mod tests {
         assert_ne!(history_path("claude", "alice"), history_path("claude", "bob"));
         // Lives under a hidden dir so it doesn't clutter the working tree.
         assert!(p.starts_with(".localharness"));
+    }
+
+    #[test]
+    fn format_whoami_unregistered_is_one_line() {
+        let info = WhoamiInfo {
+            name: "ghost".into(),
+            owner: None,
+            token_id: 0,
+            tba: None,
+            has_persona: false,
+            public_face: None,
+        };
+        assert_eq!(format_whoami(&info), "ghost is unregistered");
+    }
+
+    #[test]
+    fn format_whoami_full_profile() {
+        let info = WhoamiInfo {
+            name: "claude".into(),
+            owner: Some("0xabc".into()),
+            token_id: 8,
+            tba: Some("0xdef".into()),
+            has_persona: true,
+            public_face: Some("app".into()),
+        };
+        let out = format_whoami(&info);
+        assert!(out.starts_with("claude.localharness.xyz\n"));
+        assert!(out.contains("owner    0xabc"));
+        assert!(out.contains("tokenId  8"));
+        assert!(out.contains("wallet   0xdef  (token-bound account)"));
+        assert!(out.contains("persona  published"));
+        assert!(out.contains("face     app"));
+    }
+
+    #[test]
+    fn format_whoami_absent_persona_and_face() {
+        let info = WhoamiInfo {
+            name: "bare".into(),
+            owner: Some("0x1".into()),
+            token_id: 3,
+            tba: None,
+            has_persona: false,
+            public_face: None,
+        };
+        let out = format_whoami(&info);
+        assert!(out.contains("persona  none"));
+        assert!(out.contains("face     unset (directory)"));
+        assert!(out.contains("wallet   —"));
     }
 
     #[test]
