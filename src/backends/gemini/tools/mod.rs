@@ -196,4 +196,48 @@ mod schema_lint_tests {
             assert_single_type(&t.input_schema(), t.name(), "parameters");
         }
     }
+
+    /// The filesystem builtins gate on a SUPPLIED `Filesystem`, not on the
+    /// `native` feature — so they register on wasm32 over OPFS just as on
+    /// native. Guards against re-introducing a `#[cfg(feature = "native")]`
+    /// on the fs tools (only `run_command` is native-only).
+    #[test]
+    fn fs_builtins_gate_on_filesystem_not_native() {
+        use crate::tools::ToolRunner;
+        let caps = CapabilitiesConfig::unrestricted();
+        let fs_names = ["list_directory", "view_file", "find_file", "search_directory",
+            "create_file", "edit_file", "delete_file", "rename_file"];
+
+        let with_fs = BuiltinDeps {
+            chat_client: None,
+            chat_model: String::new(),
+            image_client: None,
+            image_model: String::new(),
+            fs: Some(Arc::new(NativeFilesystem::new()) as SharedFilesystem),
+        };
+        let runner = ToolRunner::new();
+        let registered = register_builtins(&runner, &caps, &with_fs);
+        for t in fs_names {
+            assert!(
+                registered.iter().any(|n| n == t),
+                "`{t}` must register when a filesystem is supplied"
+            );
+        }
+
+        let no_fs = BuiltinDeps {
+            chat_client: None,
+            chat_model: String::new(),
+            image_client: None,
+            image_model: String::new(),
+            fs: None,
+        };
+        let runner2 = ToolRunner::new();
+        let registered2 = register_builtins(&runner2, &caps, &no_fs);
+        for t in fs_names {
+            assert!(
+                !registered2.iter().any(|n| n == t),
+                "`{t}` must be skipped when no filesystem is supplied"
+            );
+        }
+    }
 }

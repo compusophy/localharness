@@ -161,9 +161,13 @@ The crate compiles to `wasm32-unknown-unknown`:
 - `Connection::subscribe_steps` → `StepStream` alias = BoxStream (native) /
   LocalBoxStream (wasm). `JoinHandle` storage + abort cfg-gated; wasm
   fire-and-forgets via `spawn_local`.
-- OS-primitive tools gated behind `feature = "native"`: 8 fs builtins,
-  `run_command`, MCP. The 4 portable ones (`ask_question`, `finish`,
-  `generate_image`, `start_subagent`) work on both.
+- Only `run_command` + the MCP stdio bridge are gated behind `feature =
+  "native"`. The 8 fs builtins are NOT native-gated — they register whenever a
+  `Filesystem` is supplied (`BuiltinDeps.fs`), so they run on wasm32 over OPFS
+  (the browser app supplies `OpfsFilesystem`) exactly as on native. Guarded by
+  `fs_builtins_gate_on_filesystem_not_native` (backends/gemini/tools/mod.rs).
+  The portable client-free tools (`ask_question`, `finish`, `start_subagent`,
+  `generate_image`) work on both with no filesystem.
 
 Adding new traits or `tokio::spawn` calls? Mirror these patterns or wasm breaks
 silently (gated modules don't trip a default `cargo check`).
