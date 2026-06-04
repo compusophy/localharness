@@ -3292,13 +3292,16 @@ async fn run_set_public_face(choice: &str) {
                 set_err("app wasm too large to publish (max 16 KB)");
                 return;
             }
-            let words = (wasm.len() / 32 + 1) as u128;
             (
                 vec![
                     mk(super::registry::encode_set_app_wasm(id, &wasm)),
                     mk(super::registry::encode_set_public_face(id, "app")),
                 ],
-                1_300_000 + words * 40_000,
+                // setMetadata stores bytes on-chain at ~7.6k gas/BYTE (measured
+                // via debug_traceTransaction, 2026-06-03; same byte-storage cost
+                // as the FeedbackFacet). The old `1.3M + words*40k` (~1.25k/byte)
+                // was ~6x too low and OOG-reverted any non-trivial app publish.
+                1_200_000 + wasm.len() as u128 * 8_500,
             )
         }
         "html" => {
@@ -3314,13 +3317,13 @@ async fn run_set_public_face(choice: &str) {
                 set_err("index.html too large to publish (max 24 KB)");
                 return;
             }
-            let words = (html.len() / 32 + 1) as u128;
             (
                 vec![
                     mk(super::registry::encode_set_public_html(id, &html)),
                     mk(super::registry::encode_set_public_face(id, "html")),
                 ],
-                1_300_000 + words * 40_000,
+                // Same ~7.6k gas/byte on-chain storage cost as the app branch.
+                1_200_000 + html.len() as u128 * 8_500,
             )
         }
         _ => {

@@ -76,9 +76,11 @@ src/                  library crate
 │                     local, else falls back to the apex iframe
 ├── bin/
 │   └── localharness.rs  agent-onboarding CLI (feature wallet+native):
-│                     `create <name>` (sponsored claim, persists key) / `call`
-│                     (?rpc=1) / `whoami`. Harness-agnostic, server-free entry —
-│                     what web/skill.md tells external agents to run.
+│                     `create <name>` (sponsored claim, persists key) /
+│                     `publish <name> <src.rl>` (compile cartridge + set it as the
+│                     subdomain's on-chain public face) / `call` (?rpc=1) /
+│                     `whoami`. Harness-agnostic, server-free entry — what
+│                     web/skill.md tells external agents to run.
 └── backends/
     ├── gemini/       api.rs (GeminiClient + SSE decoder, CRLF+LF tolerant);
     │                 wire.rs (REST types); loop.rs (run_turn inner loop);
@@ -179,6 +181,12 @@ silently (gated modules don't trip a default `cargo check`).
   saved, chain reverted → `feedbackCount` stuck at 0). Sponsored gas is now
   length-scaled. Same lesson as redeem (600k OOG). Block limit is 500M, so
   big writes fit — the bug is always an under-set client cap, not the chain.
+  `setMetadata` (publish app/html) is the SAME ~7.6k gas/BYTE cost (measured
+  via `debug_traceTransaction`: a 476-byte app's storage call used 3.61M). The
+  old `1.3M + words*40k` (~1.25k/byte) was ~6x too low; now `1.2M + bytes*8500`.
+  **Trust `debug_traceTransaction` (real exec) over `cast run` (replay) for
+  gas** — `cast run` reported 364k for that call and sent a whole session
+  chasing a phantom AA-validation bug.
 - **Gemini model IDs flip — verify against the live API, never trust memory.**
   `DEFAULT_MODEL` = `gemini-3.5-flash` (as of 2026-05-29). `gemini-2.5-flash`
   now 400s; in the 0.10.x era it was the reverse. Before changing/defending a
