@@ -128,6 +128,10 @@ async fn run(args: &[String]) -> i32 {
                 }
             }
         }
+        Some("version") | Some("--version") | Some("-V") => {
+            println!("localharness {}", env!("CARGO_PKG_VERSION"));
+            0
+        }
         Some("help") | Some("-h") | Some("--help") | None => {
             println!("{USAGE}");
             0
