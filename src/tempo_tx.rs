@@ -400,7 +400,9 @@ pub fn sign_sponsored(
 // branch on it. Field is `pub(crate)` so the builder can set it but
 // outside callers go through `TempoTxBuilder::sponsored()`.
 impl TempoTx {
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    // Kept as a builder setter for completeness; native callers use
+    // `TempoTxBuilder::sponsored()`, so it reads as dead on every target.
+    #[allow(dead_code)]
     pub(crate) fn set_sponsored(mut self, sponsored: bool) -> Self {
         self.sponsored = sponsored;
         self

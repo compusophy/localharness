@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Step 2 — self-paid $LH. The deployer holds $LH (faucet'd) so
     // this should work if Tempo accepts the token as fee_token.
     println!("\n=== step 2: self-paid $LH ===");
-    let _ = step_self_paid_lh(&signer, &address_hex, nonce, gas_price).await?;
+    step_self_paid_lh(&signer, &address_hex, nonce, gas_price).await?;
     println!("[step 2 ok]");
 
     // Step 3 — sponsored: a fresh keypair (zero balance) is the
