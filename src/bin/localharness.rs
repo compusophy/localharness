@@ -1411,6 +1411,22 @@ mod tests {
     }
 
     #[test]
+    fn sponsor_key_is_valid_and_derives_documented_address() {
+        // The embedded SPONSOR_KEY pays fees for EVERY sponsored CLI op
+        // (create/publish/persona). If it's stale or mistyped, all onboarding
+        // silently fails. Guard that it parses and derives the documented
+        // sponsor address (the dedicated low-budget key, rotated 2026-05-25) —
+        // so a future rotation that forgets the bin won't ship broken.
+        let signer = wallet::from_private_key_hex(SPONSOR_KEY).expect("SPONSOR_KEY must parse");
+        let addr = format!("0x{}", to_hex(&wallet::address(&signer)));
+        assert_eq!(
+            addr.to_ascii_lowercase(),
+            "0x0aff88ad13ef24cac5befd0f9dc3a05df79a922c",
+            "SPONSOR_KEY no longer derives the documented sponsor address"
+        );
+    }
+
+    #[test]
     fn llms_txt_publishes_canonical_onchain_constants() {
         // The agent-facing spec is read by agents to orient on-chain. It must
         // not drift from the code's source of truth — stale addresses would
