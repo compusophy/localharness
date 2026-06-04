@@ -215,35 +215,25 @@ fn build_host_display(
     ctx: &CanvasRenderingContext2d,
     mem: &SharedMemory,
 ) -> Result<(Object, CartridgeRuntime), JsValue> {
+    // The single-cartridge path draws through a full-screen viewport (identity
+    // transform). The pixel math lives in `crate::raster` (pure, native-tested)
+    // so host::compose can give a child a sub-rect viewport without touching
+    // these closures' shape. See `src/raster.rs` / design/host-compose.md.
+    let vp = crate::raster::Viewport::full(FB_W as i32, FB_H as i32);
+
     let clear = {
         let fb = fb.clone();
         Closure::<dyn FnMut(i32)>::new(move |rgb: i32| {
-            let (r, g, b) = rgb_components(rgb);
             let mut buf = fb.borrow_mut();
-            let mut i = 0;
-            while i < buf.len() {
-                buf[i] = r;
-                buf[i + 1] = g;
-                buf[i + 2] = b;
-                buf[i + 3] = 255;
-                i += 4;
-            }
+            crate::raster::clear(&mut buf, FB_W as i32, &vp, rgb_components(rgb));
         })
     };
 
     let set_pixel = {
         let fb = fb.clone();
         Closure::<dyn FnMut(i32, i32, i32)>::new(move |x: i32, y: i32, rgb: i32| {
-            if x < 0 || y < 0 || x >= FB_W as i32 || y >= FB_H as i32 {
-                return;
-            }
-            let (r, g, b) = rgb_components(rgb);
             let mut buf = fb.borrow_mut();
-            let idx = ((y as usize) * (FB_W as usize) + (x as usize)) * 4;
-            buf[idx] = r;
-            buf[idx + 1] = g;
-            buf[idx + 2] = b;
-            buf[idx + 3] = 255;
+            crate::raster::set_pixel(&mut buf, FB_W as i32, &vp, x, y, rgb_components(rgb));
         })
     };
 
@@ -251,25 +241,8 @@ fn build_host_display(
         let fb = fb.clone();
         Closure::<dyn FnMut(i32, i32, i32, i32, i32)>::new(
             move |x: i32, y: i32, w: i32, h: i32, rgb: i32| {
-                let (r, g, b) = rgb_components(rgb);
-                let x0 = x.max(0);
-                let y0 = y.max(0);
-                let x1 = x.saturating_add(w).min(FB_W as i32);
-                let y1 = y.saturating_add(h).min(FB_H as i32);
                 let mut buf = fb.borrow_mut();
-                let mut yy = y0;
-                while yy < y1 {
-                    let mut xx = x0;
-                    while xx < x1 {
-                        let idx = ((yy as usize) * (FB_W as usize) + (xx as usize)) * 4;
-                        buf[idx] = r;
-                        buf[idx + 1] = g;
-                        buf[idx + 2] = b;
-                        buf[idx + 3] = 255;
-                        xx += 1;
-                    }
-                    yy += 1;
-                }
+                crate::raster::fill_rect(&mut buf, FB_W as i32, &vp, x, y, w, h, rgb_components(rgb));
             },
         )
     };
