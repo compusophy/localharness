@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-06-03
+
+A reliability pass on the browser app: failures are no longer silent, mobile
+subdomains work, and on-chain feedback actually lands. No SDK API changes.
+
+### Fixed
+
+- **Chat turns never fail silently anymore.** A failed turn (proxy 402, bad
+  key, RPC error) used to write the error to the terminal status line and leave
+  a blank assistant bubble — the "blank entry, no feedback" black hole. Errors
+  now render *inside the transcript bubble* with cause-specific guidance
+  (credits/quota → check the account tab; auth → check your Gemini key), and a
+  successful-but-empty stream prints an explicit "(empty response …)" note
+  instead of a blank bubble.
+- **Mobile subdomains are no longer dead.** Every seed-derived op on a subdomain
+  (owner verify, Gemini-key restore, sponsored-tx signing) ran through a hidden
+  cross-origin `apex/?signer=1` iframe — which mobile browsers partition, so the
+  embedded apex saw an empty OPFS and every op failed (the phone worked on the
+  apex but not on its own subdomains). New `seed_pull` module copies the seed
+  into the subdomain origin's OWN OPFS via a top-level apex round-trip (ECIES-
+  sealed, each leg first-party so it works on mobile); `verify.rs` then runs
+  every seed op LOCAL-FIRST off the local wallet and never touches the iframe.
+- **Credits stop fragmenting per origin.** With the seed local on a subdomain,
+  the credit signer uses the real master wallet instead of a throwaway
+  per-origin device key — so redeemed `$LH` and the active session apply across
+  all of a user's origins instead of each subdomain showing an empty balance.
+- **On-chain feedback submission actually lands.** The sponsored
+  `submitFeedback` tx was capped at a flat 800k gas; a short note needs
+  ~1.3M and a long one up to ~17M (the facet stores the full string in cold
+  SSTOREs), so *every* submission reverted out-of-gas — silently (the local
+  `.lh_feedback.txt` mirror succeeded, the chain leg failed, `feedbackCount`
+  stuck at 0). Gas is now scaled to the text length.
+
 ## [0.18.0] - 2026-06-02
 
 Ownership becomes a single source of truth — the on-chain registry, with no
