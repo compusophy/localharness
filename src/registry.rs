@@ -2689,6 +2689,41 @@ pub struct FeedbackEntry {
     pub text: String,
 }
 
+/// ABI-encode `submitFeedback(string)`: selector + offset(0x20) + length +
+/// the UTF-8 bytes padded to a 32-byte boundary.
+pub fn encode_submit_feedback(text: &str) -> Vec<u8> {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let padded = len.div_ceil(32) * 32;
+    let mut buf = Vec::with_capacity(4 + 64 + padded);
+    buf.extend_from_slice(&selector("submitFeedback(string)"));
+    buf.extend_from_slice(&u256_be(0x20));
+    buf.extend_from_slice(&u256_be(len as u128));
+    buf.extend_from_slice(bytes);
+    buf.resize(4 + 64 + padded, 0);
+    buf
+}
+
+/// Submit on-chain feedback via `FeedbackFacet.submitFeedback`, sponsored.
+/// Gas is LENGTH-SCALED: the facet stores the full string in cold SSTOREs
+/// (~1.3M for a short note up to ~17M near the 2048-byte cap), so a flat cap
+/// silently out-of-gasses long notes (see CLAUDE.md feedback-gas gotcha).
+pub async fn submit_feedback_sponsored(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    text: &str,
+    fee_token: &str,
+) -> Result<String, String> {
+    let diamond = parse_eth_address(REGISTRY_ADDRESS)?;
+    let call = crate::tempo_tx::TempoCall {
+        to: diamond,
+        value_wei: 0,
+        input: encode_submit_feedback(text),
+    };
+    let gas = 1_500_000u128 + (text.len() as u128) * 9_000;
+    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, gas).await
+}
+
 /// Read recent `FeedbackSubmitted(address indexed sender, uint256
 /// timestamp, string text)` events from the diamond, newest first.
 ///
@@ -2910,6 +2945,19 @@ mod tests {
         let sig: [u8; 65] = hex_to_bytes(parts[2]).unwrap().try_into().unwrap();
         let recovered = crate::wallet::recover_address(&sig, &digest).unwrap();
         assert_eq!(format!("0x{}", bytes_to_hex(&recovered)), addr);
+    }
+
+    #[test]
+    fn encode_submit_feedback_abi_layout() {
+        let cd = encode_submit_feedback("hi");
+        assert_eq!(&cd[0..4], &selector("submitFeedback(string)"));
+        assert_eq!(&cd[4..36], &u256_be(0x20), "string offset");
+        assert_eq!(&cd[36..68], &u256_be(2), "string length");
+        assert_eq!(&cd[68..70], b"hi");
+        assert_eq!(cd.len(), 4 + 64 + 32, "selector + offset + len + padded payload");
+        // A 32-byte string takes exactly one more word (no over-pad).
+        assert_eq!(encode_submit_feedback(&"x".repeat(32)).len(), 4 + 64 + 32);
+        assert_eq!(encode_submit_feedback(&"x".repeat(33)).len(), 4 + 64 + 64);
     }
 
     #[test]

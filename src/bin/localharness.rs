@@ -28,6 +28,8 @@
 //!                            the conversation persists per (caller,target) —
 //!                            `--fresh` starts a new thread
 //!   list [--as <me>]         list the subdomains you own (`--json` for machine output)
+//!   feedback [--as <me>] [text]
+//!                            submit on-chain feedback (text), or read the log (no text)
 //!   threads [--as <me>]      list your saved call conversations
 //!   forget [--as <me>] <name>  drop a saved conversation (or `--all`)
 //!   whoami [--json] <name>   profile of <name>: owner, wallet, persona, face
@@ -63,6 +65,7 @@ USAGE:
                                          the conversation continues across calls
                                          (--fresh starts over)
   localharness list [--as <me>]          list the subdomains you own (+ --json)
+  localharness feedback [--as <me>] [text]   submit on-chain feedback, or read all
   localharness threads [--as <me>]       list your saved call conversations
   localharness forget [--as <me>] <name> drop a saved conversation (or --all)
   localharness whoami [--json] <name>    profile of <name> (owner, wallet, …)
@@ -111,6 +114,14 @@ async fn run(args: &[String]) -> i32 {
         Some("call") => call(&args[1..]).await,
         Some("list") | Some("mine") => match parse_list_flags(&args[1..]) {
             Ok((caller, json)) => list_mine(caller.as_deref(), json).await,
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
+        Some("feedback") => match take_as_flag(&args[1..]) {
+            Ok((_, [])) => feedback_read().await,
+            Ok((caller, rest)) => feedback_submit(caller, &rest.join(" ")).await,
             Err(e) => {
                 eprintln!("{e}");
                 2
@@ -1288,6 +1299,86 @@ async fn list_mine(caller_name: Option<&str>, json: bool) -> i32 {
     }
 }
 
+/// Render the on-chain feedback log (newest first). Pure for testing.
+fn format_feedback(entries: &[registry::FeedbackEntry]) -> String {
+    if entries.is_empty() {
+        return "no on-chain feedback yet\n".to_string();
+    }
+    let mut out = format!("{} on-chain feedback entr(ies), newest first:\n", entries.len());
+    for e in entries {
+        out.push_str(&format!(
+            "  [{}] {}\n    {}\n",
+            e.timestamp,
+            e.sender,
+            e.text.replace('\n', " ")
+        ));
+    }
+    out
+}
+
+/// Read the on-chain feedback log (`localharness feedback`, no text).
+async fn feedback_read() -> i32 {
+    match registry::list_feedback().await {
+        Ok(entries) => {
+            print!("{}", format_feedback(&entries));
+            0
+        }
+        Err(e) => {
+            eprintln!("RPC error: {e}");
+            1
+        }
+    }
+}
+
+/// Submit on-chain feedback as the caller's identity (sponsored). This is the
+/// agent-to-platform leg of the feedback loop: a test agent reports bugs / UX
+/// friction / errors here, and `feedback` (no text) reads them back.
+async fn feedback_submit(caller_name: Option<&str>, text: &str) -> i32 {
+    let text = text.trim();
+    if text.is_empty() {
+        eprintln!("feedback text is empty");
+        return 2;
+    }
+    if text.len() > 2048 {
+        eprintln!("feedback too long: {} bytes (max 2048)", text.len());
+        return 1;
+    }
+    let (key_file, key_hex) = match resolve_caller_key(caller_name) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let signer = match wallet::from_private_key_hex(&key_hex) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("bad key in {key_file}: {e}");
+            return 1;
+        }
+    };
+    let sponsor = match wallet::from_private_key_hex(SPONSOR_KEY) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("sponsor key error: {e}");
+            return 1;
+        }
+    };
+    println!("submitting {}-byte feedback on-chain …", text.len());
+    match registry::submit_feedback_sponsored(&signer, &sponsor, text, registry::ALPHA_USD_ADDRESS)
+        .await
+    {
+        Ok(tx) => {
+            println!("✓ feedback submitted\n  tx: {tx}");
+            0
+        }
+        Err(e) => {
+            eprintln!("feedback failed: {e}");
+            1
+        }
+    }
+}
+
 fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -1654,7 +1745,7 @@ mod tests {
         // command can't ship undocumented for beta testers reading `help`.
         for cmd in [
             "create", "compile", "publish", "face", "persona", "call", "list",
-            "threads", "forget", "whoami",
+            "feedback", "threads", "forget", "whoami",
         ] {
             assert!(
                 USAGE.contains(cmd),
@@ -1693,6 +1784,23 @@ mod tests {
         assert_eq!(v["subdomains"][0]["name"], "claude");
         assert_eq!(v["subdomains"][0]["tokenId"], 8);
         assert!(v["subdomains"][1]["wallet"].is_null());
+    }
+
+    #[test]
+    fn format_feedback_empty_and_entries() {
+        assert!(format_feedback(&[]).contains("no on-chain feedback"));
+        let entries = vec![
+            registry::FeedbackEntry {
+                sender: "0xabc".into(),
+                timestamp: 1700000000,
+                text: "create flow worked\nbut whoami was slow".into(),
+            },
+        ];
+        let out = format_feedback(&entries);
+        assert!(out.contains("1 on-chain feedback"));
+        assert!(out.contains("0xabc"));
+        // Newlines collapsed so one entry stays one block.
+        assert!(out.contains("create flow worked but whoami was slow"));
     }
 
     #[test]
