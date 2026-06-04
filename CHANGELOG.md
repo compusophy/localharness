@@ -27,6 +27,15 @@ credit proxy and answers *as* the target agent.
   them (local files only — never identity keys or on-chain state).
 - **Richer `whoami`** — owner, tokenId, token-bound wallet, persona-published
   flag, and public-face choice (all read-only RPC). `--json` for machine output.
+- **`compile <src.rl> [out.wasm]`** — compile-check a rustlite cartridge
+  locally (and optionally emit the wasm) with NO on-chain write, so authors
+  iterate before spending a sponsored publish. Plus `scripts/validate-cartridge
+  .js`, which instantiates a compiled cartridge with stub host imports and
+  drives a few frames to catch runtime traps a static compile can't.
+- **`bitmask.rl`** — a Bitmask Composer cartridge (the live public face of
+  `claude.localharness.xyz`): click 16 bit-cells to toggle, read DEC/HEX,
+  shift/clear/invert. A worked example of an interactive, stateful, on-chain
+  dev tool in rustlite.
 
 ### Changed
 

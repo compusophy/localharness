@@ -82,9 +82,9 @@ async fn run(args: &[String]) -> i32 {
             eprintln!("usage: localharness publish <name> <source.rl>");
             2
         }
-        Some("compile") if args.len() >= 2 => compile_check(&args[1]),
+        Some("compile") if args.len() >= 2 => compile_check(&args[1], args.get(2).map(String::as_str)),
         Some("compile") => {
-            eprintln!("usage: localharness compile <source.rl>");
+            eprintln!("usage: localharness compile <source.rl> [out.wasm]");
             2
         }
         Some("persona") if args.len() >= 3 => set_persona(&args[1], &args[2..].join(" ")).await,
@@ -213,8 +213,9 @@ async fn create(name: &str) -> i32 {
 const PUBLISH_CAP: usize = 16_384;
 
 /// Compile-check a rustlite cartridge locally and report its size — NO on-chain
-/// write. Lets an author iterate before spending a sponsored publish.
-fn compile_check(source_path: &str) -> i32 {
+/// write. Lets an author iterate before spending a sponsored publish. With
+/// `out_path`, also writes the compiled `.wasm` (handy for local validation).
+fn compile_check(source_path: &str, out_path: Option<&str>) -> i32 {
     let src = match std::fs::read_to_string(source_path) {
         Ok(s) => s,
         Err(e) => {
@@ -225,6 +226,13 @@ fn compile_check(source_path: &str) -> i32 {
     match localharness::rustlite::compile(&src) {
         Ok(wasm) => {
             println!("✓ compiled {source_path} → {} bytes of wasm", wasm.len());
+            if let Some(out) = out_path {
+                if let Err(e) = std::fs::write(out, &wasm) {
+                    eprintln!("  could not write {out}: {e}");
+                    return 1;
+                }
+                println!("  wrote {out}");
+            }
             if wasm.len() > PUBLISH_CAP {
                 eprintln!(
                     "  ✗ {} bytes exceeds the {PUBLISH_CAP}-byte on-chain publish cap",
