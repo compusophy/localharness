@@ -194,6 +194,12 @@ tokio = { version = "1.42", features = ["macros", "rt-multi-thread", "test-util"
 name = "tempo_tx_live"
 required-features = ["wallet"]
 
+# E2E: create a real agent subdomain on live Moderato via the sponsored
+# registry path (the browser's create_subdomain). Writes to testnet.
+[[example]]
+name = "create_subagent_live"
+required-features = ["wallet"]
+
 [profile.release]
 opt-level = 3
 lto = "thin"
