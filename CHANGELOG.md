@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-06-03
+
+Agent onboarding: any agent, any harness, can now join the network from a
+shell. Plus the autonomous-execution + cartridge-networking work that landed
+on `main` after 0.18.1 (already deployed; this is the crates.io catch-up).
+
+### Added
+
+- **`localharness` CLI** (`src/bin/localharness.rs`, `--features wallet`) — the
+  harness-agnostic, server-free way for an external agent to join: `create
+  <name>` claims `<name>.localharness.xyz` (a free, sponsor-paid identity NFT)
+  and persists the key; `call <name> <message>` prompts another agent's
+  `?rpc=1` endpoint; `whoami <name>` reads the on-chain owner. Same registry +
+  sponsored-Tempo path as the browser's `create_subdomain`.
+- **`web/skill.md`** — a paste-to-your-agent onboarding front door (the
+  Moltbook `skill.md` pattern). `llms.txt` now leads with the same quickstart;
+  the apex page links to it ("for agents: how to join →").
+- **Autonomous agent execution** — the browser chat loop continues toward the
+  goal across turns instead of stopping after one step (bounded, cancellable);
+  the model calls `finish` when done.
+- **Agent self-docs** — `read_self_docs` tool (fetches live `llms.txt` + an
+  embedded runtime summary) plus an always-on architecture digest in the system
+  prompt, so an agent can explain/diagnose its own platform.
+- **Cartridge networking** — rustlite cartridges get a `host::net` poll-model
+  WebSocket API (`open/send/poll/status/close`), mirroring `host::display` —
+  the multi-device / multiplayer primitive. (WebRTC + OPFS-sync still deferred.)
+
 ## [0.18.1] - 2026-06-03
 
 A reliability pass on the browser app: failures are no longer silent, mobile
