@@ -395,6 +395,48 @@ fn thread_file_target(caller_label: &str, file_name: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Map a failed `call` error to an actionable hint, if recognisable. Pure —
+/// covers the common proxy/auth failure modes a new agent hits, so the raw
+/// transport error isn't the whole story.
+fn hint_for_call_error(err: &str) -> Option<&'static str> {
+    let e = err.to_ascii_lowercase();
+    if e.contains("402")
+        || e.contains("payment")
+        || e.contains("no session")
+        || e.contains("insufficient")
+        || e.contains("credit")
+    {
+        return Some(
+            "the credit proxy has no active $LH session or balance for your \
+             identity. Sessions are free in beta and open automatically — retry \
+             once; if it persists you may need to redeem $LH (see llms.txt).",
+        );
+    }
+    if e.contains("401")
+        || e.contains("403")
+        || e.contains("unauthorized")
+        || e.contains("forbidden")
+        || e.contains("signature")
+    {
+        return Some(
+            "the proxy rejected your auth signature — check that your identity \
+             key is the one `whoami` shows as owner.",
+        );
+    }
+    if e.contains("429") || e.contains("rate limit") {
+        return Some("rate limited by the model backend — retry in a moment.");
+    }
+    None
+}
+
+/// Print an error line plus its actionable hint, if any.
+fn report_call_error(prefix: &str, err: &str) {
+    eprintln!("{prefix}: {err}");
+    if let Some(hint) = hint_for_call_error(err) {
+        eprintln!("  hint: {hint}");
+    }
+}
+
 async fn call(rest: &[String]) -> i32 {
     let ParsedCall {
         caller,
@@ -509,12 +551,12 @@ async fn call(rest: &[String]) -> i32 {
                 0
             }
             Err(e) => {
-                eprintln!("response error: {e}");
+                report_call_error("response error", &e.to_string());
                 1
             }
         },
         Err(e) => {
-            eprintln!("call failed: {e}");
+            report_call_error("call failed", &e.to_string());
             1
         }
     };
@@ -1146,6 +1188,40 @@ mod tests {
         assert!(v["wallet"].is_null());
         assert!(v["face"].is_null());
         assert_eq!(v["persona"], false);
+    }
+
+    #[test]
+    fn hint_for_call_error_classifies_common_failures() {
+        // Payment / session / credits → the $LH hint.
+        for s in [
+            "HTTP 402 Payment Required",
+            "proxy: no session for 0xabc",
+            "insufficient credit",
+        ] {
+            assert!(
+                hint_for_call_error(s).unwrap().contains("$LH"),
+                "expected $LH hint for {s:?}"
+            );
+        }
+        // Auth → the signature hint.
+        for s in ["401 Unauthorized", "bad signature", "403 Forbidden"] {
+            assert!(
+                hint_for_call_error(s).unwrap().contains("signature"),
+                "expected auth hint for {s:?}"
+            );
+        }
+        // Rate limit.
+        assert!(hint_for_call_error("429 Too Many Requests")
+            .unwrap()
+            .contains("rate limited"));
+    }
+
+    #[test]
+    fn hint_for_call_error_is_case_insensitive_and_silent_on_unknown() {
+        assert!(hint_for_call_error("PAYMENT REQUIRED").is_some());
+        // An unrecognised error gets no hint (caller still prints the raw text).
+        assert_eq!(hint_for_call_error("connection reset by peer"), None);
+        assert_eq!(hint_for_call_error("some unrelated parse error"), None);
     }
 
     #[test]
