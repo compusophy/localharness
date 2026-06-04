@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-06-04
+
 The `localharness` CLI grows real agent-to-agent reach. Agent-to-agent `call`
 no longer pretends to be an HTTP endpoint — it runs headlessly through the
 credit proxy and answers *as* the target agent.
