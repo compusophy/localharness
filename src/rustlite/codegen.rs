@@ -1047,6 +1047,35 @@ mod tests {
     }
 
     #[test]
+    fn emit_host_net_import() {
+        // A cartridge that opens a WebSocket, sends a message, and drains
+        // its inbox each frame — the multiplayer/sync primitive. Asserts
+        // the `host_net` import module + fields the loader provides land
+        // in the wasm import section.
+        let wasm = compile_to_wasm(
+            r#"
+            fn frame(t: i32) {
+                let sock: i32 = host::net::open(0);
+                if host::net::status(sock) == 1 {
+                    host::net::send(sock, 8);
+                    let n: i32 = host::net::poll(sock, 64, 256);
+                    host::net::close(sock);
+                }
+            }
+        "#,
+        );
+        assert_eq!(&wasm[0..4], WASM_MAGIC);
+        assert!(section_ids(&wasm).contains(&SEC_IMPORT), "expected an import section");
+        for needle in [&b"host_net"[..], b"open", b"send", b"poll", b"status", b"close"] {
+            assert!(
+                wasm.windows(needle.len()).any(|w| w == needle),
+                "wasm should reference {:?}",
+                std::str::from_utf8(needle).unwrap(),
+            );
+        }
+    }
+
+    #[test]
     fn no_imports_when_no_host_calls() {
         let wasm = compile_to_wasm("fn add(a: i32, b: i32) -> i32 { a + b }");
         // Backward-compat: a module with no host calls has no import

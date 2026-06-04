@@ -52,7 +52,8 @@ src/                  library crate
 │   ├── chat.rs       chat-turn streaming + system prompt
 │   ├── history.rs    OPFS-persisted conversation (tool-call replay)
 │   ├── opfs.rs       file browser + inline editor; click-to-DISPLAY .wasm/.rl/.html
-│   ├── display.rs    framebuffer: runs wasm cartridges + rasterizes HTML; 5x7 font
+│   ├── display.rs    framebuffer: runs wasm cartridges (host_display draw API +
+│   │                 host_net WebSocket API) + rasterizes HTML; 5x7 font
 │   ├── key_store.rs  Gemini API key in OPFS
 │   ├── owner.rs      self-correcting on-chain-derived owner hint (.lh_owner)
 │   ├── tenant.rs     hostname classifier (apex / tenant / other)
