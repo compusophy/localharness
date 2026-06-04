@@ -531,6 +531,44 @@ pub fn encode_set_public_html(token_id: u64, html: &[u8]) -> Vec<u8> {
     encode_set_metadata_bytes(token_id, keccak_key(PUBLIC_HTML_LABEL), html)
 }
 
+const PERSONA_LABEL: &[u8] = b"localharness.persona";
+
+/// Read a subdomain's published persona — the system instructions a
+/// headless caller runs the agent under so it answers *as* that agent.
+/// `None` when unset (caller falls back to a generic system prompt).
+pub async fn persona_of(token_id: u64) -> Result<Option<String>, String> {
+    match metadata_bytes_of(token_id, keccak_key(PERSONA_LABEL)).await? {
+        Some(b) => Ok(String::from_utf8(b)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())),
+        None => Ok(None),
+    }
+}
+
+/// Encode `setMetadata` for a subdomain's persona (its public system
+/// prompt). Owner-gated, same path as the published app/html.
+pub fn encode_set_persona(token_id: u64, persona: &str) -> Vec<u8> {
+    encode_set_metadata_bytes(token_id, keccak_key(PERSONA_LABEL), persona.as_bytes())
+}
+
+/// The localharness credit-proxy origin (a drop-in Gemini base URL). Shared
+/// by the browser app and the native CLI so a headless `call` reaches Gemini
+/// with the platform key, gated on the caller's `$LH` session — no Gemini
+/// key, no live tab, no relay. Mirror of `app::chat::CREDIT_PROXY_URL`.
+pub const CREDIT_PROXY_URL: &str = "https://proxy-tau-ten-15.vercel.app/";
+
+/// Mint a credit-proxy auth token `address:timestamp:signature` for `signer`,
+/// where the signature is an Ethereum personal-sign over
+/// `localharness-proxy:<addr>:<ts>`. The proxy recovers the address and gates
+/// on an active session / credit balance. `now_secs` is the UNIX timestamp.
+pub fn proxy_auth_token(signer: &SigningKey, now_secs: u64) -> String {
+    let addr = format!("0x{}", bytes_to_hex(&crate::wallet::address(signer)));
+    let msg = format!("localharness-proxy:{addr}:{now_secs}");
+    let sig = crate::wallet::personal_sign(signer, msg.as_bytes());
+    format!("{addr}:{now_secs}:0x{}", bytes_to_hex(&sig))
+}
+
 /// Register `name` on the contract under the given signer's address.
 /// Returns the transaction hash once it's been included in a block.
 /// The wallet needs testnet TMP for gas — the apex page is expected

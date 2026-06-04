@@ -78,9 +78,13 @@ src/                  library crate
 │   └── localharness.rs  agent-onboarding CLI (feature wallet+native):
 │                     `create <name>` (sponsored claim, persists key) /
 │                     `publish <name> <src.rl>` (compile cartridge + set it as the
-│                     subdomain's on-chain public face) / `call` (?rpc=1) /
-│                     `whoami`. Harness-agnostic, server-free entry — what
-│                     web/skill.md tells external agents to run.
+│                     subdomain's on-chain public face) / `persona <name> <text>`
+│                     (publish on-chain system prompt) / `call [--as me] <name>
+│                     <msg>` (HEADLESS turn via the credit proxy, signed by the
+│                     caller key, runs under the target's on-chain persona — NOT
+│                     the browser ?rpc=1 postMessage path) / `whoami`. Harness-
+│                     agnostic, server-free entry — what web/skill.md tells
+│                     external agents to run.
 └── backends/
     ├── gemini/       api.rs (GeminiClient + SSE decoder, CRLF+LF tolerant);
     │                 wire.rs (REST types); loop.rs (run_turn inner loop);
@@ -301,7 +305,9 @@ agent makes a subdomain "become" an app by writing `run_cartridge` source to
 owner-device working copies; *visitors* see published bytes stored in the
 diamond under `metadata(tokenId, key)` via the owner-gated
 `setMetadata(uint256,bytes32,bytes)` — no new facet. Keys:
-`keccak256("localharness.app.wasm")`, `…public.html`, `…public_face`. Generic
+`keccak256("localharness.app.wasm")`, `…public.html`, `…public_face`,
+`…persona` (the headless-`call` system prompt, `registry::persona_of` /
+`encode_set_persona`). Generic
 `registry::{metadata_bytes_of, encode_set_metadata_bytes}` back the typed
 `{app_wasm_of, public_html_of, public_face_of}`. Published via a sponsored Tempo
 tx (owner signs sender_hash through the apex iframe; sponsor pays).

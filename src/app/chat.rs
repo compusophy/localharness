@@ -852,9 +852,10 @@ async fn collect_payment_if_required() -> Result<Option<String>, String> {
 }
 
 /// The localharness credit proxy origin — a drop-in Gemini base URL
-/// (its `vercel.json` rewrites `/v1beta/*` onto the edge fn). PLACEHOLDER:
-/// point this at the deployed proxy project before credits mode works.
-const CREDIT_PROXY_URL: &str = "https://proxy-tau-ten-15.vercel.app/";
+/// (its `vercel.json` rewrites `/v1beta/*` onto the edge fn). Single source
+/// of truth lives in `registry` so the native CLI's headless `call` and the
+/// browser share one origin.
+const CREDIT_PROXY_URL: &str = crate::registry::CREDIT_PROXY_URL;
 
 /// True when the user is on platform `$LH` credits (via the proxy).
 /// Persisted in localStorage; **defaults to credits** — a new account
