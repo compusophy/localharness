@@ -13,6 +13,8 @@ Cargo.lock
 .idea
 .vscode
 *.md
+# …except the agent-onboarding front door, which must be served at /skill.md.
+!web/skill.md
 DESIGN.md
 RELEASING.md
 CHANGELOG.md
