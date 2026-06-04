@@ -1501,6 +1501,21 @@ mod tests {
     }
 
     #[test]
+    fn usage_documents_every_command() {
+        // Every dispatchable subcommand must appear in the help text, so a new
+        // command can't ship undocumented for beta testers reading `help`.
+        for cmd in [
+            "create", "compile", "publish", "persona", "call", "list", "threads",
+            "forget", "whoami",
+        ] {
+            assert!(
+                USAGE.contains(cmd),
+                "`{cmd}` is dispatchable but missing from the help/USAGE text"
+            );
+        }
+    }
+
+    #[test]
     fn parse_list_flags_handles_as_and_json_any_order() {
         assert_eq!(parse_list_flags(&args(&[])).unwrap(), (None, false));
         assert_eq!(parse_list_flags(&args(&["--json"])).unwrap(), (None, true));

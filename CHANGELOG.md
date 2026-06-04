@@ -27,6 +27,10 @@ credit proxy and answers *as* the target agent.
   them (local files only — never identity keys or on-chain state).
 - **Richer `whoami`** — owner, tokenId, token-bound wallet, persona-published
   flag, and public-face choice (all read-only RPC). `--json` for machine output.
+- **`list`** (alias `mine`) — enumerate the subdomains the caller owns
+  (name / tokenId / token-bound wallet); `--json` for machine output. CLI
+  parity with the browser's `list_subdomains` tool.
+- **`version` / `--version`** — print the installed CLI version.
 - **`compile <src.rl> [out.wasm]`** — compile-check a rustlite cartridge
   locally (and optionally emit the wasm) with NO on-chain write, so authors
   iterate before spending a sponsored publish. Plus `scripts/validate-cartridge
