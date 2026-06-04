@@ -423,14 +423,20 @@ impl Agent {
             ws_policies.extend(active_policies);
             active_policies = ws_policies;
         }
-        let effective_tools = agent_config.capabilities.effective_tools();
-        let has_write = effective_tools
-            .iter()
-            .any(|t| !BuiltinTool::READ_ONLY.contains(t));
-        if has_write && active_policies.is_empty() && !hook_runner.has_pre_tool_call_decide() {
+        // Roadmap Phase 0b — close the custom-tool safety bypass. The old guard
+        // only inspected `effective_tools()` (the BuiltinTool set), so a config
+        // with custom `ClosureTool`s (e.g. the autonomous loop's `qa_*` tools)
+        // and no policy passed with ZERO enforcement — the safety story would be
+        // a prompt-level honor system. Now ANY custom tool also requires an
+        // explicit policy or a pre-tool-call hook, enforced at the ToolRunner.
+        let has_custom_tools = !agent_config.tools.is_empty();
+        if requires_safety_policy(&agent_config.capabilities, has_custom_tools)
+            && active_policies.is_empty()
+            && !hook_runner.has_pre_tool_call_decide()
+        {
             return Err(Error::config(
-                "write tools are enabled but no safety policies are configured. \
-                 Add policy::allow_all() to approve all calls, or \
+                "write or custom tools are enabled but no safety policies are \
+                 configured. Add policy::allow_all() to approve all calls, or \
                  [policy::deny_all(), policy::allow(\"tool_name\")] to scope.",
             ));
         }
@@ -584,6 +590,46 @@ impl Drop for Agent {
         if let Some(handle) = self.dispatcher.lock().take() {
             handle.abort();
         }
+    }
+}
+
+/// Whether the agent's safety guard must require an explicit policy or a
+/// pre-tool-call hook before start: true if any WRITE builtin OR any custom
+/// tool is enabled. Custom tools (`ClosureTool`s) bypassed the old
+/// `effective_tools()`-only check — closing that is roadmap Phase 0b, so the
+/// autonomous loop can't register `qa_*` tools and run them with zero policy.
+fn requires_safety_policy(capabilities: &CapabilitiesConfig, has_custom_tools: bool) -> bool {
+    has_custom_tools
+        || capabilities
+            .effective_tools()
+            .iter()
+            .any(|t| !BuiltinTool::READ_ONLY.contains(t))
+}
+
+#[cfg(test)]
+mod safety_guard_tests {
+    use super::*;
+
+    fn caps(enabled: Vec<BuiltinTool>) -> CapabilitiesConfig {
+        CapabilitiesConfig {
+            enabled_tools: Some(enabled),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn custom_tools_require_a_safety_policy() {
+        // No builtins, no custom tools → no policy required.
+        assert!(!requires_safety_policy(&caps(vec![]), false));
+        // A custom tool ALONE now requires a policy (the closed Phase-0b bypass).
+        assert!(requires_safety_policy(&caps(vec![]), true));
+        // A write builtin requires a policy (unchanged behavior).
+        assert!(requires_safety_policy(&caps(vec![BuiltinTool::CreateFile]), false));
+        // Read-only builtins alone do not.
+        assert!(!requires_safety_policy(
+            &caps(BuiltinTool::READ_ONLY.to_vec()),
+            false
+        ));
     }
 }
 

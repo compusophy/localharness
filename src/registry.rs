@@ -552,6 +552,46 @@ pub fn encode_set_persona(token_id: u64, persona: &str) -> Vec<u8> {
     encode_set_metadata_bytes(token_id, keccak_key(PERSONA_LABEL), persona.as_bytes())
 }
 
+const CAPABILITY_LABEL: &[u8] = b"localharness.capability";
+
+/// Roadmap Phase 0c — the capability-descriptor seam (economy foundation).
+///
+/// A capability descriptor (price, payee, the service an agent offers) is
+/// served OFF-CHAIN (it can be large / change often), but a settle path must
+/// not trust the served bytes blindly — a payee swap would drain the payer.
+/// So on-chain we store ONLY `keccak256(payload)` (a 32-byte commitment), and
+/// [`verify_descriptor`] recomputes the hash of the served bytes and checks it.
+/// Purely additive, network-free to encode; forecloses nothing.
+pub fn encode_set_capability(token_id: u64, payload: &[u8]) -> Vec<u8> {
+    let commitment = keccak_key(payload); // keccak256 of the served descriptor
+    encode_set_metadata_bytes(token_id, keccak_key(CAPABILITY_LABEL), &commitment)
+}
+
+/// Read the on-chain capability commitment (the stored `keccak256(payload)`),
+/// or `None` if unset. Exactly 32 bytes when present.
+pub async fn capability_descriptor_of(token_id: u64) -> Result<Option<[u8; 32]>, String> {
+    match metadata_bytes_of(token_id, keccak_key(CAPABILITY_LABEL)).await? {
+        Some(b) if b.len() == 32 => {
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&b);
+            Ok(Some(out))
+        }
+        Some(_) => Err("capability commitment is not 32 bytes".to_string()),
+        None => Ok(None),
+    }
+}
+
+/// Verify that `served_payload` matches `token_id`'s on-chain capability
+/// commitment. `Ok(true)` iff a commitment is set AND `keccak256(served_payload)`
+/// equals it. `Ok(false)` on mismatch OR when no commitment is set (fail
+/// closed — never trust a served descriptor an owner hasn't committed to).
+pub async fn verify_descriptor(token_id: u64, served_payload: &[u8]) -> Result<bool, String> {
+    match capability_descriptor_of(token_id).await? {
+        Some(commitment) => Ok(keccak_key(served_payload) == commitment),
+        None => Ok(false),
+    }
+}
+
 /// The localharness credit-proxy origin (a drop-in Gemini base URL). Shared
 /// by the browser app and the native CLI so a headless `call` reaches Gemini
 /// with the platform key, gated on the caller's `$LH` session — no Gemini
@@ -2974,6 +3014,31 @@ mod tests {
             4 + 96 + 32 + 32,
             "selector + 3 words + len + padded payload"
         );
+    }
+
+    #[test]
+    fn encode_set_capability_commits_to_hash_not_payload() {
+        let payload = b"price=10;payee=0xabc;service=qa";
+        let cd = encode_set_capability(7, payload);
+        // setMetadata(tokenId, key, bytes) where bytes = keccak256(payload) (32).
+        assert_eq!(&cd[0..4], &selector("setMetadata(uint256,bytes32,bytes)"));
+        assert_eq!(&cd[4..36], &u256_be(7));
+        assert_eq!(&cd[36..68], &keccak_key(CAPABILITY_LABEL));
+        assert_eq!(&cd[68..100], &u256_be(0x60), "bytes offset");
+        assert_eq!(&cd[100..132], &u256_be(32), "commitment is 32 bytes");
+        // The stored payload IS the hash — the raw descriptor never goes on-chain.
+        assert_eq!(&cd[132..164], &keccak_key(payload));
+        assert_ne!(&cd[132..164], &payload[..32.min(payload.len())]);
+        assert_eq!(cd.len(), 4 + 96 + 32 + 32);
+    }
+
+    #[test]
+    fn capability_key_distinct_from_other_metadata_keys() {
+        let cap = keccak_key(CAPABILITY_LABEL);
+        assert_ne!(cap, keccak_key(PERSONA_LABEL));
+        assert_ne!(cap, keccak_key(PUBLIC_FACE_LABEL));
+        assert_ne!(cap, keccak_key(PUBLIC_HTML_LABEL));
+        assert_ne!(cap, app_metadata_key());
     }
 
     #[test]
