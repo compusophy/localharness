@@ -23,6 +23,7 @@
 //!                            via the credit proxy (no Gemini key, no live tab);
 //!                            the conversation persists per (caller,target) —
 //!                            `--fresh` starts a new thread
+//!   list [--as <me>]         list the subdomains you own (`--json` for machine output)
 //!   threads [--as <me>]      list your saved call conversations
 //!   forget [--as <me>] <name>  drop a saved conversation (or `--all`)
 //!   whoami [--json] <name>   profile of <name>: owner, wallet, persona, face
@@ -52,6 +53,7 @@ USAGE:
                                          through the credit proxy (no key, no tab);
                                          the conversation continues across calls
                                          (--fresh starts over)
+  localharness list [--as <me>]          list the subdomains you own (+ --json)
   localharness threads [--as <me>]       list your saved call conversations
   localharness forget [--as <me>] <name> drop a saved conversation (or --all)
   localharness whoami [--json] <name>    profile of <name> (owner, wallet, …)
@@ -93,6 +95,13 @@ async fn run(args: &[String]) -> i32 {
             2
         }
         Some("call") => call(&args[1..]).await,
+        Some("list") | Some("mine") => match parse_list_flags(&args[1..]) {
+            Ok((caller, json)) => list_mine(caller.as_deref(), json).await,
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
         Some("threads") => match take_as_flag(&args[1..]) {
             Ok((caller, _)) => threads(caller),
             Err(e) => {
@@ -1069,6 +1078,87 @@ async fn whoami(name: &str, json: bool) -> i32 {
     }
 }
 
+/// Parse `list`'s optional `--as <name>` / `--json` flags (order-independent).
+/// `list` takes no positional args — anything else is an error.
+fn parse_list_flags(args: &[String]) -> Result<(Option<String>, bool), String> {
+    let (mut caller, mut json, mut i) = (None, false, 0);
+    while i < args.len() {
+        match args[i].as_str() {
+            "--as" => {
+                caller = Some(
+                    args.get(i + 1)
+                        .ok_or("usage: localharness list [--as <me>] [--json]")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            other => return Err(format!("unknown argument: {other}")),
+        }
+    }
+    Ok((caller, json))
+}
+
+/// Render the caller's owned subdomains. Pure (no I/O) so it's unit-testable.
+fn format_owned(addr: &str, tokens: &[registry::OwnedToken], json: bool) -> String {
+    if json {
+        let arr: Vec<serde_json::Value> = tokens
+            .iter()
+            .map(|t| {
+                serde_json::json!({ "name": t.name, "tokenId": t.token_id, "wallet": t.tba })
+            })
+            .collect();
+        return serde_json::to_string_pretty(&serde_json::json!({
+            "owner": addr,
+            "count": tokens.len(),
+            "subdomains": arr,
+        }))
+        .unwrap_or_else(|_| "{}".to_string());
+    }
+    if tokens.is_empty() {
+        return format!("no subdomains owned by {addr}\n");
+    }
+    let mut out = format!("{} subdomain(s) owned by {addr}:\n", tokens.len());
+    for t in tokens {
+        let wallet = t.tba.as_deref().unwrap_or("—");
+        out.push_str(&format!("  {}  (tokenId {})  {wallet}\n", t.name, t.token_id));
+    }
+    out
+}
+
+/// List the subdomains the caller's identity owns (read-only — no `$LH`).
+/// Mirrors the browser `list_subdomains` tool.
+async fn list_mine(caller_name: Option<&str>, json: bool) -> i32 {
+    let (key_file, key_hex) = match resolve_caller_key(caller_name) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let signer = match wallet::from_private_key_hex(&key_hex) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("bad key in {key_file}: {e}");
+            return 1;
+        }
+    };
+    let addr = format!("0x{}", to_hex(&wallet::address(&signer)));
+    match registry::list_owned_tokens(&addr).await {
+        Ok(tokens) => {
+            print!("{}", format_owned(&addr, &tokens, json));
+            0
+        }
+        Err(e) => {
+            eprintln!("RPC error: {e}");
+            1
+        }
+    }
+}
+
 fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -1408,6 +1498,46 @@ mod tests {
         assert!(!name_is_valid("")); // empty
         assert!(name_is_valid(&"a".repeat(63)));
         assert!(!name_is_valid(&"a".repeat(64))); // too long
+    }
+
+    #[test]
+    fn parse_list_flags_handles_as_and_json_any_order() {
+        assert_eq!(parse_list_flags(&args(&[])).unwrap(), (None, false));
+        assert_eq!(parse_list_flags(&args(&["--json"])).unwrap(), (None, true));
+        let (c, j) = parse_list_flags(&args(&["--as", "bob", "--json"])).unwrap();
+        assert_eq!((c.as_deref(), j), (Some("bob"), true));
+        let (c, j) = parse_list_flags(&args(&["--json", "--as", "bob"])).unwrap();
+        assert_eq!((c.as_deref(), j), (Some("bob"), true));
+        assert!(parse_list_flags(&args(&["--as"])).is_err()); // dangling --as
+        assert!(parse_list_flags(&args(&["alice"])).is_err()); // no positionals
+    }
+
+    #[test]
+    fn format_owned_text_and_json() {
+        let toks = vec![
+            registry::OwnedToken { token_id: 8, name: "claude".into(), tba: Some("0xabc".into()) },
+            registry::OwnedToken { token_id: 3, name: "alice".into(), tba: None },
+        ];
+        let text = format_owned("0xowner", &toks, false);
+        assert!(text.contains("2 subdomain"));
+        assert!(text.contains("claude  (tokenId 8)  0xabc"));
+        assert!(text.contains("alice  (tokenId 3)  —"));
+
+        let v: serde_json::Value =
+            serde_json::from_str(&format_owned("0xowner", &toks, true)).unwrap();
+        assert_eq!(v["count"], 2);
+        assert_eq!(v["owner"], "0xowner");
+        assert_eq!(v["subdomains"][0]["name"], "claude");
+        assert_eq!(v["subdomains"][0]["tokenId"], 8);
+        assert!(v["subdomains"][1]["wallet"].is_null());
+    }
+
+    #[test]
+    fn format_owned_empty() {
+        assert!(format_owned("0xo", &[], false).contains("no subdomains"));
+        let v: serde_json::Value = serde_json::from_str(&format_owned("0xo", &[], true)).unwrap();
+        assert_eq!(v["count"], 0);
+        assert!(v["subdomains"].as_array().unwrap().is_empty());
     }
 
     #[test]

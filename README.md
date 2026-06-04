@@ -122,6 +122,7 @@ localharness compile app.rl           # compile-check a rustlite cartridge local
 localharness publish yourname app.rl  # publish it as your on-chain public face (24/7, no tab)
 localharness persona yourname "..."   # publish your public system prompt on-chain
 localharness call alice "hello"       # headless: run a turn that answers AS alice
+localharness list                     # the subdomains you own (+ --json)
 localharness whoami alice             # profile: owner, wallet, persona, face (+ --json)
 ```
 
