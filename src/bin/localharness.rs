@@ -11,7 +11,11 @@
 //! Installed:  `cargo install localharness --features wallet`
 //!
 //! Commands:
-//!   create <name>            claim <name>.localharness.xyz (persists the key)
+//!   create <name> [--persona <text|file>]
+//!                            claim <name>.localharness.xyz (persists the key);
+//!                            --persona ships its on-chain system prompt too
+//!   face <name> <directory|app|html>
+//!                            set the subdomain's public face (visitor view)
 //!   compile <src.rl>         compile-check a rustlite cartridge locally (no write)
 //!   publish <name> <src.rl>  compile a rustlite cartridge + publish it as
 //!                            <name>'s public face on-chain (served to every
@@ -42,7 +46,12 @@ const USAGE: &str = "\
 localharness — join the agent network at <name>.localharness.xyz
 
 USAGE:
-  localharness create <name>             claim a subdomain identity (free, sponsored)
+  localharness create <name> [--persona <text|file>]
+                                         claim a subdomain identity (free, sponsored);
+                                         --persona publishes its system prompt too,
+                                         so the name ships configured in one command
+  localharness face <name> <directory|app|html>
+                                         set what visitors see (publish sets 'app')
   localharness compile <src.rl>          compile-check a cartridge locally (no write)
   localharness publish <name> <src.rl>   publish a rustlite app as <name>'s public
                                          face on-chain (served 24/7, no tab needed)
@@ -72,16 +81,21 @@ async fn main() {
 
 async fn run(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
-        Some("create") => match args.get(1) {
-            Some(name) => create(name).await,
-            None => {
-                eprintln!("usage: localharness create <name>");
+        Some("create") => match parse_create_args(&args[1..]) {
+            Ok((name, persona)) => create(&name, persona.as_deref()).await,
+            Err(e) => {
+                eprintln!("{e}");
                 2
             }
         },
         Some("publish") if args.len() >= 3 => publish(&args[1], &args[2]).await,
         Some("publish") => {
             eprintln!("usage: localharness publish <name> <source.rl>");
+            2
+        }
+        Some("face") if args.len() >= 3 => set_face(&args[1], &args[2]).await,
+        Some("face") => {
+            eprintln!("usage: localharness face <name> <directory|app|html>");
             2
         }
         Some("compile") if args.len() >= 2 => compile_check(&args[1], args.get(2).map(String::as_str)),
@@ -152,9 +166,29 @@ async fn run(args: &[String]) -> i32 {
     }
 }
 
+/// Parse `create <name> [--persona <text|file>]`. Pure/testable. One-shot
+/// actor creation: a name plus, optionally, its on-chain system prompt.
+fn parse_create_args(rest: &[String]) -> Result<(String, Option<String>), String> {
+    const USAGE: &str = "usage: localharness create <name> [--persona <text|file>]";
+    let name = rest.first().ok_or(USAGE)?.clone();
+    let persona = match rest.get(1).map(String::as_str) {
+        None => None,
+        Some("--persona") => Some(
+            rest.get(2..)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.join(" "))
+                .ok_or(USAGE)?,
+        ),
+        Some(other) => return Err(format!("unexpected argument '{other}' ({USAGE})")),
+    };
+    Ok((name, persona))
+}
+
 /// Claim `<name>.localharness.xyz` — fresh identity, sponsored register,
-/// on-chain verify, key persisted.
-async fn create(name: &str) -> i32 {
+/// on-chain verify, key persisted. With `persona`, also publishes the
+/// on-chain system prompt so the name is a configured AGENT in one command
+/// (the actor-model primitive: spawn an actor *with* its behavior).
+async fn create(name: &str, persona: Option<&str>) -> i32 {
     if !name_is_valid(name) {
         eprintln!("invalid name '{name}' — use 1-63 chars of a-z, 0-9, hyphen");
         return 2;
@@ -212,11 +246,106 @@ async fn create(name: &str) -> i32 {
             println!("✓ you are live at https://{name}.localharness.xyz/");
             println!("  tx:  {tx}");
             println!("  key: ./{key_file}  (keep this — it is your identity)");
+            // One-shot actor: publish the persona right after the claim so the
+            // name ships with its behavior, no separate edit step.
+            if let Some(p) = persona {
+                println!("  publishing persona …");
+                let code = set_persona(name, p).await;
+                if code != 0 {
+                    return code;
+                }
+            }
             println!("  next: read https://localharness.xyz/llms.txt for the full API");
             0
         }
         other => {
             eprintln!("registration didn't verify on-chain: {other:?}");
+            1
+        }
+    }
+}
+
+/// Set `<name>`'s on-chain public face choice: `directory`, `app`, or `html`.
+/// What visitors see. Owner-gated `setMetadata`, sponsored. (`publish` already
+/// sets `app`; this is how you switch back to a directory landing, etc.)
+async fn set_face(name: &str, choice: &str) -> i32 {
+    if !matches!(choice, "directory" | "app" | "html") {
+        eprintln!("face must be one of: directory, app, html (got '{choice}')");
+        return 2;
+    }
+    let key_file = format!("{name}.localharness.key");
+    let key_hex = match std::fs::read_to_string(&key_file) {
+        Ok(s) => s.trim().to_string(),
+        Err(_) => {
+            eprintln!("no identity key at ./{key_file} — run `localharness create {name}` first");
+            return 1;
+        }
+    };
+    let signer = match wallet::from_private_key_hex(&key_hex) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("bad key in {key_file}: {e}");
+            return 1;
+        }
+    };
+    let addr = format!("0x{}", to_hex(&wallet::address(&signer)));
+    let id = match registry::id_of_name(name).await {
+        Ok(i) if i != 0 => i,
+        Ok(_) => {
+            eprintln!("{name} is not registered");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("RPC error: {e}");
+            return 1;
+        }
+    };
+    match registry::owner_of_name(name).await {
+        Ok(Some(o)) if o.eq_ignore_ascii_case(&addr) => {}
+        Ok(Some(o)) => {
+            eprintln!("{name} is owned by {o}, not your key ({addr})");
+            return 1;
+        }
+        _ => {
+            eprintln!("{name} is not registered");
+            return 1;
+        }
+    }
+    let diamond = match parse_addr20(registry::REGISTRY_ADDRESS) {
+        Some(a) => a,
+        None => {
+            eprintln!("internal: bad registry address constant");
+            return 1;
+        }
+    };
+    let calls = vec![tempo_tx::TempoCall {
+        to: diamond,
+        value_wei: 0,
+        input: registry::encode_set_public_face(id, choice),
+    }];
+    let sponsor = match wallet::from_private_key_hex(SPONSOR_KEY) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("sponsor key error: {e}");
+            return 1;
+        }
+    };
+    match registry::submit_tempo_sponsored(
+        &signer,
+        &sponsor,
+        calls,
+        registry::ALPHA_USD_ADDRESS,
+        1_200_000,
+    )
+    .await
+    {
+        Ok(tx) => {
+            println!("✓ {name}.localharness.xyz public face → {choice}");
+            println!("  tx: {tx}");
+            0
+        }
+        Err(e) => {
+            eprintln!("set-face failed: {e}");
             1
         }
     }
@@ -1194,6 +1323,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_create_args_name_only_and_with_persona() {
+        let (n, p) = parse_create_args(&args(&["alice"])).unwrap();
+        assert_eq!(n, "alice");
+        assert_eq!(p, None);
+
+        let (n, p) = parse_create_args(&args(&["alice", "--persona", "you", "are", "alice"]))
+            .unwrap();
+        assert_eq!(n, "alice");
+        assert_eq!(p.as_deref(), Some("you are alice"));
+    }
+
+    #[test]
+    fn parse_create_args_rejects_bad_forms() {
+        assert!(parse_create_args(&args(&[])).is_err()); // no name
+        assert!(parse_create_args(&args(&["alice", "--persona"])).is_err()); // empty persona
+        assert!(parse_create_args(&args(&["alice", "bob"])).is_err()); // stray positional
+    }
+
+    #[test]
     fn parse_call_plain_target_and_message() {
         let p = parse_call_args(&args(&["alice", "how", "are", "you"])).unwrap();
         assert_eq!(p.caller, None);
@@ -1505,8 +1653,8 @@ mod tests {
         // Every dispatchable subcommand must appear in the help text, so a new
         // command can't ship undocumented for beta testers reading `help`.
         for cmd in [
-            "create", "compile", "publish", "persona", "call", "list", "threads",
-            "forget", "whoami",
+            "create", "compile", "publish", "face", "persona", "call", "list",
+            "threads", "forget", "whoami",
         ] {
             assert!(
                 USAGE.contains(cmd),
