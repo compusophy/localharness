@@ -74,6 +74,11 @@ src/                  library crate
 │                     client (sign challenge / tempo-tx / seal+open key) —
 │                     each LOCAL-FIRST: runs on `APP.wallet` when the seed is
 │                     local, else falls back to the apex iframe
+├── bin/
+│   └── localharness.rs  agent-onboarding CLI (feature wallet+native):
+│                     `create <name>` (sponsored claim, persists key) / `call`
+│                     (?rpc=1) / `whoami`. Harness-agnostic, server-free entry —
+│                     what web/skill.md tells external agents to run.
 └── backends/
     ├── gemini/       api.rs (GeminiClient + SSE decoder, CRLF+LF tolerant);
     │                 wire.rs (REST types); loop.rs (run_turn inner loop);
@@ -93,7 +98,9 @@ contracts/   Foundry project for the on-chain registry
 └── README.md architecture write-up
 
 web/          static site for Vercel: index.html (bootstrap shell) + pkg/
-              (wasm-pack output, gitignored, built locally, uploaded by deploy)
+              (wasm-pack output, gitignored, built locally, uploaded by deploy);
+              llms.txt (full agent spec, leads with the quickstart) + skill.md
+              (the paste-to-your-agent onboarding front door; subset of llms.txt)
 proxy/        $LH credit proxy — SEPARATE Vercel project ("proxy") at
               https://proxy-tau-ten-15.vercel.app. The ONE accepted off-chain
               component. LIVE. api/gemini.ts = Vercel Edge Gemini passthrough.

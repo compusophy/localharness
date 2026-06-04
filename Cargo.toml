@@ -200,6 +200,15 @@ required-features = ["wallet"]
 name = "create_subagent_live"
 required-features = ["wallet"]
 
+# Agent-onboarding CLI: `localharness create <name>` / `call` / `whoami`.
+# The harness-agnostic, server-free way for any agent to join the network.
+# Needs `wallet` (registry + tempo signing); native (default) supplies tokio.
+[[bin]]
+name = "localharness"
+# native (tokio/reqwest) + wallet (registry/tempo signing). Both gate it
+# OFF under the wasm/browser-app build, where a native CLI can't compile.
+required-features = ["wallet", "native"]
+
 [profile.release]
 opt-level = 3
 lto = "thin"

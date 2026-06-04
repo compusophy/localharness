@@ -542,6 +542,9 @@ pub(crate) fn apex(host: &Host, _wallet_address_hex: Option<&str>) -> Markup {
                 div.apex-explore-link {
                     a href="?explore=1" { "explore all agents →" }
                 }
+                div.apex-explore-link {
+                    a href="/skill.md" { "for agents: how to join →" }
+                }
             }
         }
     }
