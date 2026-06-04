@@ -17,9 +17,11 @@
 //!                            visitor 24/7, no browser tab required)
 //!   persona <name> <text>    publish <name>'s public system prompt on-chain so
 //!                            `call` answers AS that agent (text or a file path)
-//!   call [--as <me>] <name> <message…>
+//!   call [--as <me>] [--fresh] <name> <message…>
 //!                            run a headless agent turn that answers as <name>,
-//!                            via the credit proxy (no Gemini key, no live tab)
+//!                            via the credit proxy (no Gemini key, no live tab);
+//!                            the conversation persists per (caller,target) —
+//!                            `--fresh` starts a new thread
 //!   whoami <name>            show the on-chain owner of <name>
 //!   help                     this text
 
@@ -41,9 +43,11 @@ USAGE:
                                          face on-chain (served 24/7, no tab needed)
   localharness persona <name> <text>     publish <name>'s public system prompt so
                                          `call` answers as that agent (text or file)
-  localharness call [--as <me>] <name> <message>
+  localharness call [--as <me>] [--fresh] <name> <message>
                                          run a headless turn that answers AS <name>,
-                                         through the credit proxy (no key, no tab)
+                                         through the credit proxy (no key, no tab);
+                                         the conversation continues across calls
+                                         (--fresh starts over)
   localharness whoami <name>             print the on-chain owner of <name>
 
 Your identity is an ERC-721 NFT on Tempo Moderato; `create` persists its
@@ -293,42 +297,63 @@ async fn publish(name: &str, source_path: &str) -> i32 {
 /// `POST .../?rpc=1` path here always 405'd; the proxy is the real bridge.
 ///
 ///   localharness call [--as <yourname>] <target> <message…>
-/// Parsed `call` arguments: the optional `--as` caller, the target name, and
-/// the joined message. Pure (no I/O) so it is unit-testable; `Err` carries the
-/// usage line to print.
+/// Parsed `call` arguments: the optional `--as` caller, whether `--fresh` was
+/// given (start a new conversation, ignoring saved history), the target name,
+/// and the joined message. Pure (no I/O) so it is unit-testable; `Err` carries
+/// the usage line to print. Leading `--as`/`--fresh` flags may appear in any
+/// order before the target.
 struct ParsedCall {
     caller: Option<String>,
+    fresh: bool,
     target: String,
     message: String,
 }
 
+const CALL_USAGE: &str = "usage: localharness call [--as <yourname>] [--fresh] <target> <message>";
+
 fn parse_call_args(rest: &[String]) -> Result<ParsedCall, String> {
-    let (caller, tail): (Option<String>, &[String]) =
-        if rest.first().map(String::as_str) == Some("--as") {
-            match rest.get(1) {
-                Some(n) => (Some(n.clone()), &rest[2..]),
-                None => {
-                    return Err(
-                        "usage: localharness call --as <yourname> <target> <message>".to_string(),
-                    )
+    let mut caller = None;
+    let mut fresh = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--as" => match rest.get(i + 1) {
+                Some(n) => {
+                    caller = Some(n.clone());
+                    i += 2;
                 }
+                None => return Err(CALL_USAGE.to_string()),
+            },
+            "--fresh" => {
+                fresh = true;
+                i += 1;
             }
-        } else {
-            (None, rest)
-        };
-    match tail.split_first() {
+            _ => break,
+        }
+    }
+    match rest[i..].split_first() {
         Some((t, msg)) if !msg.is_empty() => Ok(ParsedCall {
             caller,
+            fresh,
             target: t.clone(),
             message: msg.join(" "),
         }),
-        _ => Err("usage: localharness call [--as <yourname>] <target> <message>".to_string()),
+        _ => Err(CALL_USAGE.to_string()),
     }
+}
+
+/// Where a `call` conversation between `caller_label` and `target` is
+/// persisted, so repeated calls continue the same thread. Pure path builder.
+fn history_path(caller_label: &str, target: &str) -> std::path::PathBuf {
+    std::path::Path::new(".localharness")
+        .join("history")
+        .join(format!("{caller_label}__{target}.bin"))
 }
 
 async fn call(rest: &[String]) -> i32 {
     let ParsedCall {
         caller,
+        fresh,
         target,
         message,
     } = match parse_call_args(rest) {
@@ -346,6 +371,19 @@ async fn call(rest: &[String]) -> i32 {
             eprintln!("{e}");
             return 2;
         }
+    };
+    // Conversations persist per (caller, target) so repeated calls continue the
+    // same thread; `--fresh` starts over. Label by the key-file stem.
+    let caller_label = key_file
+        .strip_suffix(".localharness.key")
+        .unwrap_or(&key_file)
+        .to_string();
+    let hist_file = history_path(&caller_label, &target);
+    let prior_history = if fresh {
+        let _ = std::fs::remove_file(&hist_file);
+        None
+    } else {
+        std::fs::read(&hist_file).ok()
     };
     let caller = match wallet::from_private_key_hex(&key_hex) {
         Ok(s) => s,
@@ -404,10 +442,13 @@ async fn call(rest: &[String]) -> i32 {
         ..Default::default()
     };
 
-    let cfg = localharness::GeminiAgentConfig::new(token)
+    let mut cfg = localharness::GeminiAgentConfig::new(token)
         .with_base_url(base)
         .with_system_instructions(system)
         .with_capabilities(caps);
+    if let Some(bytes) = prior_history {
+        cfg = cfg.with_history_bytes(bytes);
+    }
 
     let agent = match localharness::Agent::start_gemini(cfg).await {
         Ok(a) => a,
@@ -432,6 +473,16 @@ async fn call(rest: &[String]) -> i32 {
             1
         }
     };
+    // Persist the conversation so the next `call` to this target continues it.
+    // Best-effort: a save failure must not change the call's exit code.
+    if code == 0 {
+        if let Ok(Some(bytes)) = agent.history_bytes() {
+            if let Some(dir) = hist_file.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(&hist_file, bytes);
+        }
+    }
     let _ = agent.shutdown().await;
     code
 }
@@ -662,8 +713,36 @@ mod tests {
     fn parse_call_with_as_flag() {
         let p = parse_call_args(&args(&["--as", "bob", "alice", "what's", "up"])).unwrap();
         assert_eq!(p.caller.as_deref(), Some("bob"));
+        assert!(!p.fresh);
         assert_eq!(p.target, "alice");
         assert_eq!(p.message, "what's up");
+    }
+
+    #[test]
+    fn parse_call_fresh_flag() {
+        let p = parse_call_args(&args(&["--fresh", "alice", "hi"])).unwrap();
+        assert!(p.fresh);
+        assert_eq!(p.caller, None);
+        assert_eq!(p.target, "alice");
+        assert_eq!(p.message, "hi");
+    }
+
+    #[test]
+    fn parse_call_flags_order_independent() {
+        let a = parse_call_args(&args(&["--as", "bob", "--fresh", "alice", "hi"])).unwrap();
+        let b = parse_call_args(&args(&["--fresh", "--as", "bob", "alice", "hi"])).unwrap();
+        for p in [a, b] {
+            assert_eq!(p.caller.as_deref(), Some("bob"));
+            assert!(p.fresh);
+            assert_eq!(p.target, "alice");
+            assert_eq!(p.message, "hi");
+        }
+    }
+
+    #[test]
+    fn parse_call_defaults_to_not_fresh() {
+        let p = parse_call_args(&args(&["alice", "hi"])).unwrap();
+        assert!(!p.fresh);
     }
 
     #[test]
@@ -698,13 +777,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_call_target_named_like_flag_after_as() {
-        // After `--as me`, the next token is always the target, even if it
-        // looks unusual — only a leading `--as` is special.
-        let p = parse_call_args(&args(&["--as", "me", "--as", "hi"])).unwrap();
-        assert_eq!(p.caller.as_deref(), Some("me"));
-        assert_eq!(p.target, "--as");
-        assert_eq!(p.message, "hi");
+    fn history_path_keys_on_caller_and_target() {
+        let p = history_path("claude", "alice");
+        assert!(p.ends_with("claude__alice.bin"));
+        // Distinct caller or target → distinct file (no cross-thread bleed).
+        assert_ne!(history_path("claude", "alice"), history_path("bob", "alice"));
+        assert_ne!(history_path("claude", "alice"), history_path("claude", "bob"));
+        // Lives under a hidden dir so it doesn't clutter the working tree.
+        assert!(p.starts_with(".localharness"));
     }
 
     #[test]

@@ -24,3 +24,6 @@ redeem-codes.txt
 invite-links.txt
 my-agent-identity.txt
 *.localharness.key
+
+# Persisted `localharness call` conversation history (per caller/target)
+.localharness/

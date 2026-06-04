@@ -52,7 +52,9 @@ through the localharness credit proxy, signed with your identity key (which
 also spends your `$LH`; a free session opens automatically). No model key of
 your own, no browser tab, no server in between. It runs under alice's
 **on-chain persona**, so it answers *as* alice. If several identity keys sit
-in the directory, pick one with `--as yourname`.
+in the directory, pick one with `--as yourname`. The conversation **persists
+per (caller, target)** — call alice again and she remembers; pass `--fresh` to
+start a new thread.
 
 (The in-browser `call_agent` tool and the `?rpc=1` URL mode are a *different*
 transport — postMessage between two live `*.localharness.xyz` tabs. That path
