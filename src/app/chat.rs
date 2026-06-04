@@ -143,17 +143,139 @@ pub(crate) async fn run_send() {
         return;
     };
 
-    // Allocate ids for the user turn, assistant turn, and first text
-    // segment up front. Element identity is fixed before we touch the DOM.
+    // Clear the prompt, keep focus — the value is already captured above.
+    prompt_area.set_value("");
+    let _ = prompt_area.focus();
+
+    // Swap the send arrow for a stop button for the whole (possibly
+    // multi-turn) run; the guard / loop-end restores it.
+    dom::swap_outer("terminal-send", &templates::stop_button().into_string());
+
+    // === Continuous execution ===
+    // The first turn carries the user's prompt and renders a user bubble.
+    // After it ends, if the model made tool actions but did NOT signal
+    // completion (no `finish`, no terminal question) we auto-continue with
+    // a brief internal nudge — no user bubble, no Enter press — so the
+    // agent drives a multi-step goal to the end instead of stopping after
+    // the first step. Bounded by `MAX_AUTO_CONTINUATIONS`, and every
+    // iteration cooperatively honours the stop button (TURN_CANCEL).
+    let mut next_input = TurnInput::User(prompt);
+    let mut auto_continuations: u32 = 0;
+    loop {
+        if TURN_CANCEL.with(|c| c.get()) {
+            break;
+        }
+        let outcome = stream_turn(&agent, next_input).await;
+
+        // Persist + refresh after every turn so tool-created files and the
+        // history marker show up incrementally (not just at the very end).
+        super::history::save_from_agent().await;
+        super::opfs::refresh().await;
+
+        match outcome {
+            // Hard stop conditions — never auto-continue.
+            TurnOutcome::Finished
+            | TurnOutcome::FinalAnswer
+            | TurnOutcome::Empty
+            | TurnOutcome::Error
+            | TurnOutcome::Cancelled => break,
+            // The turn ended right after tool activity without an explicit
+            // completion signal — keep going toward the goal.
+            TurnOutcome::Incomplete => {
+                if auto_continuations >= MAX_AUTO_CONTINUATIONS {
+                    // Safety cap reached — stop and hand control back rather
+                    // than looping forever. Surface it so it's never silent.
+                    let note_id = APP.with(|cell| cell.borrow_mut().alloc_id());
+                    dom::append_html(
+                        "transcript",
+                        &templates::turn(
+                            note_id,
+                            "assistant",
+                            templates::text_segment(
+                                note_id,
+                                "(paused — reached the auto-continue limit for this \
+                                 message. Send another message to keep going.)",
+                            ),
+                            false,
+                        )
+                        .into_string(),
+                    );
+                    dom::scroll_to_bottom("transcript");
+                    break;
+                }
+                auto_continuations += 1;
+                next_input = TurnInput::AutoContinue;
+            }
+        }
+    }
+
+    // Restore the send button if the stop button is still showing.
+    if dom::by_id("terminal-stop").is_some() {
+        dom::swap_outer("terminal-stop", &templates::send_button().into_string());
+    }
+}
+
+/// Upper bound on automatic "continue toward the goal" turns per single
+/// user message. A safety cap so a confused model can't loop forever
+/// (and to bound credit spend). The user can always send again to extend.
+const MAX_AUTO_CONTINUATIONS: u32 = 10;
+
+/// Internal nudge fed to the model on an auto-continuation. Kept terse so
+/// it doesn't derail the goal; instructs the model to either keep working
+/// or call `finish` / ask a question when it's actually done or blocked.
+const AUTO_CONTINUE_NUDGE: &str = "Continue toward the user's goal. If the task is \
+fully complete, call the `finish` tool. If you're blocked or need a decision, ask \
+the user a question. Otherwise take the next step now without waiting.";
+
+/// What a single streamed turn carries in.
+enum TurnInput {
+    /// A real user message — renders a user bubble.
+    User(String),
+    /// An internal auto-continuation nudge — no user bubble.
+    AutoContinue,
+}
+
+/// How a single streamed turn ended — drives the continuous-execution loop.
+enum TurnOutcome {
+    /// The model called `finish` — task explicitly complete. Stop.
+    Finished,
+    /// The turn ended on a final text answer with no tool activity this
+    /// turn (plain conversation / a closing reply / a question). Stop —
+    /// don't spam empty auto-continues on a chat reply.
+    FinalAnswer,
+    /// The turn performed tool actions and ended WITHOUT a completion
+    /// signal — the model likely stopped mid-goal. Auto-continue.
+    Incomplete,
+    /// Nothing visible was produced (empty response). Stop.
+    Empty,
+    /// The turn errored (already surfaced in the transcript). Stop.
+    Error,
+    /// The user hit stop mid-turn. Stop.
+    Cancelled,
+}
+
+/// Stream ONE agent turn into the transcript and report how it ended.
+/// Renders a user bubble only for [`TurnInput::User`]; auto-continuations
+/// render just the assistant bubble so the internal nudge never shows.
+async fn stream_turn(agent: &Agent, input: TurnInput) -> TurnOutcome {
+    let (prompt, render_user) = match input {
+        TurnInput::User(p) => (p, true),
+        TurnInput::AutoContinue => (AUTO_CONTINUE_NUDGE.to_string(), false),
+    };
+
+    // Allocate ids for the (optional) user turn, assistant turn, and first
+    // text segment up front. Element identity is fixed before we touch the DOM.
     let (user_turn_id, assistant_turn_id, mut seg_id) = APP.with(|cell| {
         let mut app = cell.borrow_mut();
         (app.alloc_id(), app.alloc_id(), app.alloc_id())
     });
 
-    dom::append_html(
-        "transcript",
-        &templates::turn(user_turn_id, "user", html! { (prompt) }, false).into_string(),
-    );
+    if render_user {
+        dom::append_html(
+            "transcript",
+            &templates::turn(user_turn_id, "user", html! { (prompt) }, false).into_string(),
+        );
+    }
     dom::append_html(
         "transcript",
         &templates::turn(
@@ -168,13 +290,6 @@ pub(crate) async fn run_send() {
 
     let assistant_body_id = format!("turn-body-{assistant_turn_id}");
 
-    // Clear the prompt, keep focus.
-    prompt_area.set_value("");
-    let _ = prompt_area.focus();
-    // No "thinking…" — the assistant turn renders with the .streaming
-    // class while in flight, which adds its own "· streaming" suffix
-    // to the role line. That's enough feedback.
-
     // FIFO of pending tool-block ids. The Gemini backend emits
     // ToolCall/ToolResult pairs sequentially (one result per call,
     // in order), so popping the front always matches.
@@ -183,34 +298,24 @@ pub(crate) async fn run_send() {
     // this turn — used for markdown rendering at end-of-stream.
     let mut text_segments: Vec<(u32, String)> = vec![(seg_id, String::new())];
     // Did this turn put ANYTHING visible on screen (text or a tool call)?
-    // A successful-but-empty stream otherwise leaves a blank bubble with no
-    // hint that anything happened — the "blank entry, no feedback" bug.
     let mut any_visible = false;
-
-    // Timing: ms since epoch is precise enough for ttft/total pills.
-    let t0 = js_sys::Date::now();
-    let mut t_first_chunk: Option<f64> = None;
+    // Completion signals tracked across the stream:
+    let mut saw_tool_call = false; // any non-finish tool action this turn?
+    let mut saw_finish = false; // the model called `finish`?
 
     let response = match agent.chat(prompt).await {
         Ok(r) => r,
         Err(err) => {
             report_turn_error("agent.chat", &format!("{err}"), assistant_turn_id);
-            return;
+            return TurnOutcome::Error;
         }
     };
     let mut cursor = response.chunks();
 
-    // Swap the send arrow for a stop button now that we're streaming.
-    dom::swap_outer("terminal-send", &templates::stop_button().into_string());
-
     while let Some(item) = cursor.next().await {
-        // Honor a stop request (checked per chunk — cooperative). The
-        // post-turn block appends a redirect prompt once the loop exits.
+        // Honor a stop request (checked per chunk — cooperative).
         if TURN_CANCEL.with(|c| c.get()) {
             break;
-        }
-        if t_first_chunk.is_none() {
-            t_first_chunk = Some(js_sys::Date::now());
         }
         match item {
             Ok(StreamChunk::Text { text, .. }) => {
@@ -227,6 +332,12 @@ pub(crate) async fn run_send() {
             }
             Ok(StreamChunk::ToolCall(call)) => {
                 any_visible = true;
+                // `finish` is a completion signal, not a goal step.
+                if call.name == "finish" {
+                    saw_finish = true;
+                } else {
+                    saw_tool_call = true;
+                }
                 let tool_seg_id = APP.with(|cell| cell.borrow_mut().alloc_id());
                 dom::append_html(
                     &assistant_body_id,
@@ -235,17 +346,13 @@ pub(crate) async fn run_send() {
                 pending_tools.push_back(tool_seg_id);
 
                 // Open a fresh text segment for whatever the model
-                // says after the tool call (it usually says nothing
-                // until the result comes back, but if it does, this
-                // is where it lands).
+                // says after the tool call.
                 seg_id = APP.with(|cell| cell.borrow_mut().alloc_id());
                 text_segments.push((seg_id, String::new()));
                 dom::append_html(
                     &assistant_body_id,
                     &templates::text_segment(seg_id, "").into_string(),
                 );
-                // Keep the newest content in view — tool-call blocks used to
-                // append below the fold without scrolling (text chunks did).
                 dom::scroll_to_bottom("transcript");
             }
             Ok(StreamChunk::ToolResult(result)) => {
@@ -263,17 +370,12 @@ pub(crate) async fn run_send() {
             }
             Err(err) => {
                 report_turn_error("stream", &format!("{err}"), assistant_turn_id);
-                return;
+                return TurnOutcome::Error;
             }
         }
     }
 
-    // Streaming finished (or was stopped) — flip the stop button back
-    // to send now, rather than waiting for the post-turn save/refresh.
-    dom::swap_outer("terminal-stop", &templates::send_button().into_string());
-
-    // Stream done — re-render each text segment as markdown so the
-    // user sees formatted output instead of raw md syntax.
+    // Stream done — re-render each text segment as markdown.
     for (id, raw) in &text_segments {
         if raw.is_empty() {
             continue;
@@ -284,9 +386,7 @@ pub(crate) async fn run_send() {
 
     mark_turn_done(assistant_turn_id);
 
-    // The stream completed without error but produced no visible output
-    // (no text, no tool call) — e.g. the model emitted only a thought, or
-    // the proxy returned an empty body. Say so instead of a blank bubble.
+    // The stream completed without error but produced no visible output.
     if !any_visible && !TURN_CANCEL.with(|c| c.get()) {
         let body_id = format!("turn-body-{assistant_turn_id}");
         dom::append_html(
@@ -308,8 +408,7 @@ pub(crate) async fn run_send() {
         APP.with(|cell| cell.borrow_mut().total_tokens = total.max(0) as u64);
     }
 
-    // If the user hit stop, append a short redirect prompt so the turn
-    // ends on a question rather than a half-finished thought.
+    // If the user hit stop, append a short redirect prompt.
     if TURN_CANCEL.with(|c| c.get()) {
         let note_id = APP.with(|cell| cell.borrow_mut().alloc_id());
         dom::append_html(
@@ -323,21 +422,25 @@ pub(crate) async fn run_send() {
             .into_string(),
         );
         dom::scroll_to_bottom("transcript");
+        return TurnOutcome::Cancelled;
     }
 
     APP.with(|cell| cell.borrow_mut().turn_count += 1);
-    let turn_count = APP.with(|cell| cell.borrow().turn_count);
 
-    // No status write on success — keep the terminal silent. (Per
-    // the minimalism pass; ttft/total metrics still computed for
-    // anyone who wants to grep the wasm but not surfaced in chrome.)
-    let _t_end = js_sys::Date::now();
-    let _ = (t0, t_first_chunk, turn_count);
-
-    // Persist the new history snapshot, then refresh the panel so
-    // any tool-created files (and the history marker itself) show up.
-    super::history::save_from_agent().await;
-    super::opfs::refresh().await;
+    // Classify how the turn ended for the continuous-execution loop.
+    if saw_finish {
+        TurnOutcome::Finished
+    } else if !any_visible {
+        TurnOutcome::Empty
+    } else if saw_tool_call {
+        // Ended right after tool activity with no explicit completion —
+        // the model probably has more to do. Auto-continue.
+        TurnOutcome::Incomplete
+    } else {
+        // Pure text reply, no tool calls — a conversational answer or a
+        // question. Don't auto-continue (would spam empty turns).
+        TurnOutcome::FinalAnswer
+    }
 }
 
 /// Surface a turn failure. Renders the error INTO the assistant bubble
@@ -526,7 +629,15 @@ pub(crate) async fn start_session(
              personality/role/instructions or restrict your tools. Changes \
              apply on your NEXT session. finish/ask_question/configure_agent \
              can never be disabled.\n\
-           • finish(result?) — signal that the task is complete.\n\n\
+           • read_self_docs() — read YOUR OWN runtime documentation (the live \
+             https://localharness.xyz/llms.txt plus an embedded summary). \
+             Read-only. Use it to self-diagnose, accurately explain your own \
+             platform/SDK, or give grounded feedback about it instead of guessing.\n\
+           • finish(result?) — signal that the task is COMPLETE. Call this when, \
+             and only when, you've fully satisfied the user's request — it ends \
+             the autonomous loop. If you still have steps left, just keep going \
+             (don't wait to be nudged); if you're blocked or need input, ask the \
+             user a question instead of calling finish.\n\n\
          \
          === Conventions ===\n\
          • Pick the right tool — do NOT default to run_cartridge: \
@@ -571,6 +682,15 @@ pub(crate) async fn start_session(
            result afterward; both are already visible in the transcript."
     );
 
+    // Self-knowledge: append a concise runtime digest so the agent has
+    // grounded priors about its OWN platform/SDK every turn (and knows it
+    // can read the full live spec via read_self_docs). This is the
+    // always-available, offline half of feature 1b.
+    let system_instructions = format!(
+        "{system_instructions}\n\n{}",
+        super::self_docs::system_prompt_digest()
+    );
+
     // Owner customization: append the contents of `.lh_system_prompt.txt`
     // (if any) under a clear header so the model sees the baked-in
     // tooling docs first, then the owner's overrides on top. This is
@@ -611,6 +731,7 @@ pub(crate) async fn start_session(
         .with_tool(release_subdomain_tool())
         .with_tool(list_subdomains_tool())
         .with_tool(submit_feedback_tool())
+        .with_tool(super::self_docs::read_self_docs_tool())
         .with_tool(spawn_recursive_subagent_tool(captured_key, base_url.clone()));
     // Credits mode: route the whole agent through the credit proxy. BYOK
     // leaves base_url None → direct to generativelanguage.googleapis.com.
