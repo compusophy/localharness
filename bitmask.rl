@@ -108,6 +108,18 @@ fn frame(t: i32) {
         i = i + 1;
     }
 
+    // Bit-index labels above each cell (15 .. 0), so the register reads.
+    let mut j: i32 = 0;
+    while j < 16 {
+        host::display::draw_number(j * 16 + 3, 25, 15 - j, 8421504, 1);
+        j = j + 1;
+    }
+
+    // Nibble-group dividers (every 4 bits) — visually mirror the 4 HEX digits.
+    host::display::fill_rect(64, 34, 1, 32, 8421504);
+    host::display::fill_rect(128, 34, 1, 32, 8421504);
+    host::display::fill_rect(192, 34, 1, 32, 8421504);
+
     // DEC
     host::display::draw_char(4, 76, 68, 8421504, 1);
     host::display::draw_char(10, 76, 69, 8421504, 1);
