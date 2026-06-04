@@ -606,33 +606,6 @@ fn requires_safety_policy(capabilities: &CapabilitiesConfig, has_custom_tools: b
             .any(|t| !BuiltinTool::READ_ONLY.contains(t))
 }
 
-#[cfg(test)]
-mod safety_guard_tests {
-    use super::*;
-
-    fn caps(enabled: Vec<BuiltinTool>) -> CapabilitiesConfig {
-        CapabilitiesConfig {
-            enabled_tools: Some(enabled),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn custom_tools_require_a_safety_policy() {
-        // No builtins, no custom tools → no policy required.
-        assert!(!requires_safety_policy(&caps(vec![]), false));
-        // A custom tool ALONE now requires a policy (the closed Phase-0b bypass).
-        assert!(requires_safety_policy(&caps(vec![]), true));
-        // A write builtin requires a policy (unchanged behavior).
-        assert!(requires_safety_policy(&caps(vec![BuiltinTool::CreateFile]), false));
-        // Read-only builtins alone do not.
-        assert!(!requires_safety_policy(
-            &caps(BuiltinTool::READ_ONLY.to_vec()),
-            false
-        ));
-    }
-}
-
 // =============================================================================
 // Tool dispatcher
 // =============================================================================
@@ -780,4 +753,31 @@ fn spawn_tool_dispatcher(
         }
         debug!("tool dispatcher exiting");
     });
+}
+
+#[cfg(test)]
+mod safety_guard_tests {
+    use super::*;
+
+    fn caps(enabled: Vec<BuiltinTool>) -> CapabilitiesConfig {
+        CapabilitiesConfig {
+            enabled_tools: Some(enabled),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn custom_tools_require_a_safety_policy() {
+        // No builtins, no custom tools → no policy required.
+        assert!(!requires_safety_policy(&caps(vec![]), false));
+        // A custom tool ALONE now requires a policy (the closed Phase-0b bypass).
+        assert!(requires_safety_policy(&caps(vec![]), true));
+        // A write builtin requires a policy (unchanged behavior).
+        assert!(requires_safety_policy(&caps(vec![BuiltinTool::CreateFile]), false));
+        // Read-only builtins alone do not.
+        assert!(!requires_safety_policy(
+            &caps(BuiltinTool::READ_ONLY.to_vec()),
+            false
+        ));
+    }
 }
