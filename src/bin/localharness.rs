@@ -1411,6 +1411,35 @@ mod tests {
     }
 
     #[test]
+    fn llms_txt_publishes_canonical_onchain_constants() {
+        // The agent-facing spec is read by agents to orient on-chain. It must
+        // not drift from the code's source of truth — stale addresses would
+        // send an agent to the wrong chain/contract. Automates the manual
+        // "audit llms.txt vs registry.rs" pass.
+        let spec = include_str!("../../web/llms.txt");
+        assert!(
+            spec.contains(registry::REGISTRY_ADDRESS),
+            "llms.txt missing canonical diamond address {}",
+            registry::REGISTRY_ADDRESS
+        );
+        assert!(
+            spec.contains(registry::LOCALHARNESS_TOKEN_ADDRESS),
+            "llms.txt missing the $LH token address {}",
+            registry::LOCALHARNESS_TOKEN_ADDRESS
+        );
+        assert!(
+            spec.contains(registry::RPC_URL),
+            "llms.txt missing the RPC URL {}",
+            registry::RPC_URL
+        );
+        assert!(
+            spec.contains(&registry::CHAIN_ID.to_string()),
+            "llms.txt missing chain id {}",
+            registry::CHAIN_ID
+        );
+    }
+
+    #[test]
     fn parse_addr20_roundtrips_registry_address() {
         let a = parse_addr20(registry::REGISTRY_ADDRESS).expect("valid registry addr");
         assert_eq!(a.len(), 20);
