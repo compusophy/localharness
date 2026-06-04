@@ -10,7 +10,7 @@ self-sovereign browser-resident agent platform built on it. ONE crate;
 policies, triggers, MCP, and context compaction. Build with `browser-app` on
 wasm32 and you also get the live IDE at `<name>.localharness.xyz`.
 
-- [crates.io/crates/localharness](https://crates.io/crates/localharness) (current: **0.17.x**)
+- [crates.io/crates/localharness](https://crates.io/crates/localharness) (current: **0.20.x**)
 - [github.com/compusophy/localharness](https://github.com/compusophy/localharness)
 - Native: stable Rust 1.85+, tokio-driven. wasm32: same crate, browser.
 - Live: `localharness.xyz` (marketing apex) + wildcard `*.localharness.xyz`
@@ -77,14 +77,19 @@ src/                  library crate
 ├── bin/
 │   └── localharness.rs  agent-onboarding CLI (feature wallet+native):
 │                     `create <name>` (sponsored claim, persists key) /
+│                     `compile <src.rl> [out.wasm]` (local compile-check, no
+│                     write; rejects oversize + no-`frame`/`render`-entry) /
 │                     `publish <name> <src.rl>` (compile cartridge + set it as the
 │                     subdomain's on-chain public face) / `persona <name> <text>`
-│                     (publish on-chain system prompt) / `call [--as me] <name>
-│                     <msg>` (HEADLESS turn via the credit proxy, signed by the
-│                     caller key, runs under the target's on-chain persona — NOT
-│                     the browser ?rpc=1 postMessage path) / `whoami`. Harness-
-│                     agnostic, server-free entry — what web/skill.md tells
-│                     external agents to run.
+│                     (publish on-chain system prompt) / `call [--as me] [--fresh]
+│                     <name> <msg>` (HEADLESS turn via the credit proxy, signed by
+│                     the caller key, runs under the target's on-chain persona —
+│                     NOT the browser ?rpc=1 postMessage path; conversation
+│                     persists per caller/target under .localharness/history) /
+│                     `list` (owned subdomains) / `threads`+`forget` (manage saved
+│                     conversations) / `whoami [--json]` (profile) / `version`.
+│                     Harness-agnostic, server-free entry — what web/skill.md
+│                     tells external agents to run. Smoke: scripts/smoke-cli.sh.
 └── backends/
     ├── gemini/       api.rs (GeminiClient + SSE decoder, CRLF+LF tolerant);
     │                 wire.rs (REST types); loop.rs (run_turn inner loop);

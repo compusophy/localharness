@@ -27,3 +27,8 @@ my-agent-identity.txt
 
 # Persisted `localharness call` conversation history (per caller/target)
 .localharness/
+
+# Local working files for the maintainer's own claude.localharness.xyz agent
+# (its published cartridge source + persona) — not project source.
+claude-app.rl
+claude-persona.txt

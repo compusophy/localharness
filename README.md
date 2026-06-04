@@ -53,7 +53,7 @@ async fn main() -> localharness::Result<()> {
 
 ```toml
 [dependencies]
-localharness = "0.19"
+localharness = "0.20"
 tokio        = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
