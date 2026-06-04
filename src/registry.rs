@@ -2891,6 +2891,54 @@ mod tests {
     }
 
     #[test]
+    fn proxy_auth_token_format_and_recovers_signer() {
+        let w = crate::wallet::generate();
+        let token = proxy_auth_token(&w.signer, 1_700_000_000);
+        let parts: Vec<&str> = token.split(':').collect();
+        assert_eq!(parts.len(), 3, "token is address:timestamp:signature");
+
+        let addr = format!("0x{}", bytes_to_hex(&crate::wallet::address(&w.signer)));
+        assert_eq!(parts[0], addr, "first field is the 0x address");
+        assert_eq!(parts[1], "1700000000", "second field is the unix timestamp");
+        assert!(parts[2].starts_with("0x"));
+        assert_eq!(parts[2].len(), 2 + 130, "signature is 65 bytes");
+
+        // The signature must recover the signer over the exact message the
+        // proxy reconstructs: "localharness-proxy:<addr>:<ts>".
+        let msg = format!("localharness-proxy:{}:{}", parts[0], parts[1]);
+        let digest = crate::wallet::personal_sign_digest(msg.as_bytes());
+        let sig: [u8; 65] = hex_to_bytes(parts[2]).unwrap().try_into().unwrap();
+        let recovered = crate::wallet::recover_address(&sig, &digest).unwrap();
+        assert_eq!(format!("0x{}", bytes_to_hex(&recovered)), addr);
+    }
+
+    #[test]
+    fn encode_set_persona_abi_layout() {
+        let cd = encode_set_persona(7, "hi");
+        assert_eq!(&cd[0..4], &selector("setMetadata(uint256,bytes32,bytes)"));
+        assert_eq!(&cd[4..36], &u256_be(7));
+        assert_eq!(&cd[36..68], &keccak_key(PERSONA_LABEL));
+        assert_eq!(&cd[68..100], &u256_be(0x60), "bytes offset");
+        assert_eq!(&cd[100..132], &u256_be(2), "payload length");
+        assert_eq!(&cd[132..134], b"hi");
+        assert_eq!(
+            cd.len(),
+            4 + 96 + 32 + 32,
+            "selector + 3 words + len + padded payload"
+        );
+    }
+
+    #[test]
+    fn persona_key_distinct_from_other_metadata_keys() {
+        // A copy-paste label collision would make persona overwrite the
+        // app/html/public_face slots — assert the keys are all distinct.
+        let persona = keccak_key(PERSONA_LABEL);
+        assert_ne!(persona, keccak_key(PUBLIC_FACE_LABEL));
+        assert_ne!(persona, keccak_key(PUBLIC_HTML_LABEL));
+        assert_ne!(persona, app_metadata_key());
+    }
+
+    #[test]
     fn decode_zero_means_available() {
         // 32-byte zero word
         let z = format!("0x{}", "0".repeat(64));

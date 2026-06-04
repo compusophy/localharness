@@ -293,30 +293,54 @@ async fn publish(name: &str, source_path: &str) -> i32 {
 /// `POST .../?rpc=1` path here always 405'd; the proxy is the real bridge.
 ///
 ///   localharness call [--as <yourname>] <target> <message…>
-async fn call(rest: &[String]) -> i32 {
-    // Optional `--as <name>` prefix selects which identity key signs.
-    let (caller_name, tail): (Option<&str>, &[String]) =
+/// Parsed `call` arguments: the optional `--as` caller, the target name, and
+/// the joined message. Pure (no I/O) so it is unit-testable; `Err` carries the
+/// usage line to print.
+struct ParsedCall {
+    caller: Option<String>,
+    target: String,
+    message: String,
+}
+
+fn parse_call_args(rest: &[String]) -> Result<ParsedCall, String> {
+    let (caller, tail): (Option<String>, &[String]) =
         if rest.first().map(String::as_str) == Some("--as") {
             match rest.get(1) {
-                Some(n) => (Some(n.as_str()), &rest[2..]),
+                Some(n) => (Some(n.clone()), &rest[2..]),
                 None => {
-                    eprintln!("usage: localharness call --as <yourname> <target> <message>");
-                    return 2;
+                    return Err(
+                        "usage: localharness call --as <yourname> <target> <message>".to_string(),
+                    )
                 }
             }
         } else {
             (None, rest)
         };
-    let (target, message) = match tail.split_first() {
-        Some((t, msg)) if !msg.is_empty() => (t.as_str(), msg.join(" ")),
-        _ => {
-            eprintln!("usage: localharness call [--as <yourname>] <target> <message>");
+    match tail.split_first() {
+        Some((t, msg)) if !msg.is_empty() => Ok(ParsedCall {
+            caller,
+            target: t.clone(),
+            message: msg.join(" "),
+        }),
+        _ => Err("usage: localharness call [--as <yourname>] <target> <message>".to_string()),
+    }
+}
+
+async fn call(rest: &[String]) -> i32 {
+    let ParsedCall {
+        caller,
+        target,
+        message,
+    } = match parse_call_args(rest) {
+        Ok(p) => p,
+        Err(usage) => {
+            eprintln!("{usage}");
             return 2;
         }
     };
 
     // Resolve the caller's identity key — it signs proxy auth + pays $LH.
-    let (key_file, key_hex) = match resolve_caller_key(caller_name) {
+    let (key_file, key_hex) = match resolve_caller_key(caller.as_deref()) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("{e}");
@@ -332,10 +356,10 @@ async fn call(rest: &[String]) -> i32 {
     };
 
     // Embody the target's PUBLISHED persona (falls back to a generic prompt).
-    let system = match registry::id_of_name(target).await {
+    let system = match registry::id_of_name(&target).await {
         Ok(id) if id != 0 => match registry::persona_of(id).await {
             Ok(Some(p)) => p,
-            Ok(None) => default_persona(target),
+            Ok(None) => default_persona(&target),
             Err(e) => {
                 eprintln!("RPC error reading persona: {e}");
                 return 1;
@@ -608,4 +632,98 @@ fn name_is_valid(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn parse_call_plain_target_and_message() {
+        let p = parse_call_args(&args(&["alice", "how", "are", "you"])).unwrap();
+        assert_eq!(p.caller, None);
+        assert_eq!(p.target, "alice");
+        assert_eq!(p.message, "how are you");
+    }
+
+    #[test]
+    fn parse_call_single_word_message() {
+        let p = parse_call_args(&args(&["alice", "hello"])).unwrap();
+        assert_eq!(p.caller, None);
+        assert_eq!(p.target, "alice");
+        assert_eq!(p.message, "hello");
+    }
+
+    #[test]
+    fn parse_call_with_as_flag() {
+        let p = parse_call_args(&args(&["--as", "bob", "alice", "what's", "up"])).unwrap();
+        assert_eq!(p.caller.as_deref(), Some("bob"));
+        assert_eq!(p.target, "alice");
+        assert_eq!(p.message, "what's up");
+    }
+
+    #[test]
+    fn parse_call_message_preserves_internal_spacing_as_single_spaces() {
+        // join(" ") normalises arg boundaries to single spaces — documents the
+        // contract so a caller relying on exact whitespace isn't surprised.
+        let p = parse_call_args(&args(&["alice", "a", "b", "c"])).unwrap();
+        assert_eq!(p.message, "a b c");
+    }
+
+    #[test]
+    fn parse_call_rejects_missing_message() {
+        assert!(parse_call_args(&args(&["alice"])).is_err());
+    }
+
+    #[test]
+    fn parse_call_rejects_empty() {
+        assert!(parse_call_args(&args(&[])).is_err());
+    }
+
+    #[test]
+    fn parse_call_rejects_as_without_name() {
+        assert!(parse_call_args(&args(&["--as"])).is_err());
+    }
+
+    #[test]
+    fn parse_call_rejects_as_name_without_target_or_message() {
+        // `--as bob` alone: caller set, but no target/message → usage error.
+        assert!(parse_call_args(&args(&["--as", "bob"])).is_err());
+        // `--as bob alice` : target but no message → usage error.
+        assert!(parse_call_args(&args(&["--as", "bob", "alice"])).is_err());
+    }
+
+    #[test]
+    fn parse_call_target_named_like_flag_after_as() {
+        // After `--as me`, the next token is always the target, even if it
+        // looks unusual — only a leading `--as` is special.
+        let p = parse_call_args(&args(&["--as", "me", "--as", "hi"])).unwrap();
+        assert_eq!(p.caller.as_deref(), Some("me"));
+        assert_eq!(p.target, "--as");
+        assert_eq!(p.message, "hi");
+    }
+
+    #[test]
+    fn name_validation_matches_registry_rule() {
+        assert!(name_is_valid("alice"));
+        assert!(name_is_valid("a-1-b"));
+        assert!(!name_is_valid("Alice")); // uppercase
+        assert!(!name_is_valid("a_b")); // underscore
+        assert!(!name_is_valid("")); // empty
+        assert!(name_is_valid(&"a".repeat(63)));
+        assert!(!name_is_valid(&"a".repeat(64))); // too long
+    }
+
+    #[test]
+    fn parse_addr20_roundtrips_registry_address() {
+        let a = parse_addr20(registry::REGISTRY_ADDRESS).expect("valid registry addr");
+        assert_eq!(a.len(), 20);
+        // Case-insensitive, 0x-optional.
+        assert_eq!(parse_addr20("0x00"), None); // wrong length
+        assert!(parse_addr20(&"0".repeat(40)).is_some());
+    }
 }
