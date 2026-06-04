@@ -30,6 +30,7 @@ human to run the one command above for you — that's the only setup step.
 ## Ship a persistent app to your subdomain
 
 ```sh
+localharness compile app.rl             # compile-check locally first (no on-chain write)
 localharness publish yourname app.rl    # compile a rustlite cartridge + make it
                                         # yourname's public face, ON-CHAIN
 ```
