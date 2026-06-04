@@ -212,6 +212,67 @@ async fn create(name: &str) -> i32 {
 /// The on-chain `setMetadata` publish cap for a compiled cartridge (bytes).
 const PUBLISH_CAP: usize = 16_384;
 
+/// True if the compiled cartridge exports a `frame` or `render` function — the
+/// entry point the display loader calls. A cartridge without one compiles fine
+/// but renders nothing as a public face. Parses the wasm export section (id 7);
+/// conservative — returns false if the bytes don't parse cleanly.
+fn cartridge_has_entry(wasm: &[u8]) -> bool {
+    fn leb(b: &[u8], i: &mut usize) -> Option<u64> {
+        let (mut result, mut shift) = (0u64, 0u32);
+        loop {
+            let byte = *b.get(*i)?;
+            *i += 1;
+            result |= ((byte & 0x7f) as u64) << shift;
+            if byte & 0x80 == 0 {
+                return Some(result);
+            }
+            shift += 7;
+            if shift >= 64 {
+                return None;
+            }
+        }
+    }
+    if wasm.len() < 8 || &wasm[0..4] != b"\0asm" {
+        return false;
+    }
+    let mut i = 8; // skip magic + version
+    while i < wasm.len() {
+        let id = wasm[i];
+        i += 1;
+        let Some(size) = leb(wasm, &mut i) else {
+            return false;
+        };
+        let section_end = i + size as usize;
+        if section_end > wasm.len() {
+            return false;
+        }
+        if id == 7 {
+            let mut j = i;
+            let Some(count) = leb(wasm, &mut j) else {
+                return false;
+            };
+            for _ in 0..count {
+                let Some(name_len) = leb(wasm, &mut j) else {
+                    return false;
+                };
+                let Some(name) = wasm.get(j..j + name_len as usize) else {
+                    return false;
+                };
+                j += name_len as usize;
+                if name == b"frame" || name == b"render" {
+                    return true;
+                }
+                j += 1; // export kind
+                if leb(wasm, &mut j).is_none() {
+                    return false;
+                }
+            }
+        }
+        i = section_end;
+    }
+    false
+}
+
 /// Compile-check a rustlite cartridge locally and report its size — NO on-chain
 /// write. Lets an author iterate before spending a sponsored publish. With
 /// `out_path`, also writes the compiled `.wasm` (handy for local validation).
@@ -232,6 +293,13 @@ fn compile_check(source_path: &str, out_path: Option<&str>) -> i32 {
                     return 1;
                 }
                 println!("  wrote {out}");
+            }
+            if !cartridge_has_entry(&wasm) {
+                eprintln!(
+                    "  ✗ no `frame` or `render` export — the loader has no entry to \
+                     call, so this would render nothing as a face"
+                );
+                return 1;
             }
             if wasm.len() > PUBLISH_CAP {
                 eprintln!(
@@ -306,6 +374,15 @@ async fn publish(name: &str, source_path: &str) -> i32 {
             return 1;
         }
     };
+    // A cartridge with no entry point compiles but renders nothing — refuse to
+    // publish a dead face (the visitor would see a blank canvas forever).
+    if !cartridge_has_entry(&wasm) {
+        eprintln!(
+            "compiled cartridge has no `frame`/`render` export — it would render \
+             nothing as a face; aborting before the on-chain write"
+        );
+        return 1;
+    }
     // On-chain storage is metered per word; the studio caps published apps
     // at 16 KB. Mirror it so a too-big app fails locally, not after gas.
     if wasm.len() > PUBLISH_CAP {
@@ -1294,6 +1371,28 @@ mod tests {
     #[test]
     fn rustlite_rejects_garbage() {
         assert!(localharness::rustlite::compile("this is not rustlite").is_err());
+    }
+
+    #[test]
+    fn cartridge_entry_detection() {
+        // A real frame() cartridge exports the entry the loader calls.
+        let with =
+            localharness::rustlite::compile("fn frame(t: i32) { host::display::present(); }")
+                .unwrap();
+        assert!(cartridge_has_entry(&with), "frame() must be detected");
+
+        // Compiles, but only a helper — no entry → would render nothing.
+        let without = localharness::rustlite::compile("fn helper(n: i32) -> i32 { n + 1 }").unwrap();
+        assert!(!cartridge_has_entry(&without), "no entry must be rejected");
+
+        // The shipped bitmask cartridge has an entry.
+        let bitmask = localharness::rustlite::compile(include_str!("../../bitmask.rl")).unwrap();
+        assert!(cartridge_has_entry(&bitmask));
+
+        // Malformed / truncated bytes never panic and report no entry.
+        assert!(!cartridge_has_entry(b""));
+        assert!(!cartridge_has_entry(b"\0asm")); // header only
+        assert!(!cartridge_has_entry(b"\0asm\x01\0\0\0\x07\xff")); // bogus section size
     }
 
     #[test]
