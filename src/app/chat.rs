@@ -490,6 +490,14 @@ pub(crate) async fn start_session(
              You CAN build real interactive apps now — a \
              clickable button is a fill_rect + label, hit-tested against \
              pointer_down() + pointer position, with state in the slots. \
+             NETWORKING (multiplayer / multi-device sync) via `use host::net;`: \
+             open(url_ptr) -> handle (WebSocket to a length-prefixed string at \
+             url_ptr in memory; -1 on error), send(handle, ptr) -> 1/0 (send the \
+             length-prefixed string at ptr), poll(handle, out_ptr, max) -> len \
+             (copy the next inbound message into memory at out_ptr, <= max bytes; \
+             0 if the inbox is empty), status(handle) (0 connecting / 1 open / \
+             2 closing / 3 closed), close(handle). Drain poll() each frame to \
+             receive. Use a public WebSocket relay for collaborative apps. \
              Use this to render visual/animated content on THIS subdomain's \
              display when the user asks to build/draw/show an app or graphic \
              HERE. It runs on the CURRENT tab and does NOT create a subdomain \

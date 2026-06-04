@@ -167,6 +167,10 @@ web-sys = { version = "0.3", features = [
     "KeyboardEvent",
     "InputEvent",
     "MessageEvent",
+    # host_net: WebSocket-backed cartridge networking (src/rustlite/loader.rs
+    # + src/app/display.rs). BinaryType selects arraybuffer framing.
+    "WebSocket",
+    "BinaryType",
     "History",
     "Location",
     "Storage",

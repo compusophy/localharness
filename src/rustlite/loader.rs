@@ -14,6 +14,10 @@ pub struct Cartridge {
     instance: wasm_bindgen::JsValue,
     #[cfg(target_arch = "wasm32")]
     memory: wasm_bindgen::JsValue,
+    // Keeps the `host_net` closures + state alive for the cartridge's
+    // lifetime (wasm holds JS references into them after instantiation).
+    #[cfg(target_arch = "wasm32")]
+    _net: NetRuntime,
     #[cfg(not(target_arch = "wasm32"))]
     _phantom: (),
 }
@@ -78,7 +82,13 @@ async fn load_wasm(wasm_bytes: &[u8]) -> Result<Cartridge, CompileError> {
     use wasm_bindgen::JsValue;
     use wasm_bindgen_futures::JsFuture;
 
-    let imports = build_host_imports()?;
+    // The `host_net` closures need the cartridge's linear memory to read
+    // outbound strings and write inbound ones, but memory only exists
+    // after instantiation. Share a cell the closures read lazily; we fill
+    // it in below once the instance is live.
+    let mem_cell: SharedMemory = std::rc::Rc::new(std::cell::RefCell::new(JsValue::NULL));
+
+    let (imports, net) = build_host_imports(&mem_cell)?;
 
     let promise = WebAssembly::instantiate_buffer(wasm_bytes, &imports);
     let result = JsFuture::from(promise)
@@ -93,11 +103,21 @@ async fn load_wasm(wasm_bytes: &[u8]) -> Result<Cartridge, CompileError> {
     let memory = Reflect::get(&exports, &JsValue::from_str("memory"))
         .unwrap_or(JsValue::NULL);
 
-    Ok(Cartridge { instance, memory })
+    *mem_cell.borrow_mut() = memory.clone();
+
+    Ok(Cartridge { instance, memory, _net: net })
 }
 
+/// Shared handle to the cartridge's linear memory, filled in after
+/// instantiation so the `host_net` closures can read/write strings.
 #[cfg(target_arch = "wasm32")]
-fn build_host_imports() -> Result<js_sys::Object, CompileError> {
+type SharedMemory = std::rc::Rc<std::cell::RefCell<wasm_bindgen::JsValue>>;
+
+#[cfg(target_arch = "wasm32")]
+use net::NetRuntime;
+
+#[cfg(target_arch = "wasm32")]
+fn build_host_imports(mem: &SharedMemory) -> Result<(js_sys::Object, NetRuntime), CompileError> {
     use js_sys::{Object, Reflect};
     use wasm_bindgen::prelude::*;
 
@@ -142,7 +162,246 @@ fn build_host_imports() -> Result<js_sys::Object, CompileError> {
     mem_fn.forget();
     let _ = Reflect::set(&imports, &JsValue::from_str("host_abort"), &host_abort);
 
-    Ok(imports)
+    // host_net module — WebSocket-backed multiplayer / sync I/O. Mirrors
+    // host_display: integer-only host functions a rustlite cartridge calls,
+    // strings passed as length-prefixed pointers into cartridge memory.
+    let net = net::build_host_net(&imports, mem)?;
+
+    Ok((imports, net))
+}
+
+/// WebSocket-backed networking imports for cartridges (`host_net`).
+///
+/// A cartridge is a sandbox: it has linear memory + the host imports we
+/// grant it, and no DOM. This module grants it a *poll-model* WebSocket —
+/// `open` returns an integer handle, `send`/`poll` move length-prefixed
+/// strings through cartridge memory, and the cartridge drains its inbox
+/// each frame. That's enough to build multi-device sync and multiplayer
+/// apps without ever touching the DOM or the network stack directly.
+#[cfg(target_arch = "wasm32")]
+mod net {
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+    use std::rc::Rc;
+
+    use js_sys::{Object, Reflect};
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen::JsCast;
+    use web_sys::{MessageEvent, WebSocket};
+
+    use crate::rustlite::CompileError;
+
+    use super::SharedMemory;
+
+    /// One open socket: the live `WebSocket` plus a bounded inbox of
+    /// received text messages the cartridge has not yet polled.
+    struct Socket {
+        ws: WebSocket,
+        inbox: Rc<RefCell<VecDeque<String>>>,
+        // Keeps the `onmessage` closure alive for the socket's lifetime.
+        _on_message: Closure<dyn FnMut(MessageEvent)>,
+    }
+
+    /// Handle-indexed socket table. A handle is an index into `Vec`;
+    /// closed sockets become `None` so handles never alias.
+    type SocketTable = Rc<RefCell<Vec<Option<Socket>>>>;
+
+    /// Keeps the `host_net` import closures + the socket table alive for
+    /// the cartridge's lifetime. wasm holds JS references into the closures.
+    #[allow(dead_code)]
+    pub(crate) struct NetRuntime {
+        sockets: SocketTable,
+        open: Closure<dyn FnMut(i32) -> i32>,
+        send: Closure<dyn FnMut(i32, i32) -> i32>,
+        poll: Closure<dyn FnMut(i32, i32, i32) -> i32>,
+        status: Closure<dyn FnMut(i32) -> i32>,
+        close: Closure<dyn FnMut(i32)>,
+    }
+
+    /// Cap the inbox so a chatty peer can't grow memory unbounded; oldest
+    /// messages are dropped first.
+    const MAX_INBOX: usize = 256;
+
+    /// Build the `host_net` import object and return the runtime that owns
+    /// the closures + socket table (must outlive the wasm instance).
+    pub(crate) fn build_host_net(
+        imports: &Object,
+        mem: &SharedMemory,
+    ) -> Result<NetRuntime, CompileError> {
+        let sockets: SocketTable = Rc::new(RefCell::new(Vec::new()));
+
+        let open = {
+            let sockets = sockets.clone();
+            let mem = mem.clone();
+            Closure::<dyn FnMut(i32) -> i32>::new(move |url_ptr: i32| {
+                let url = match read_string(&mem.borrow(), url_ptr) {
+                    Some(u) => u,
+                    None => return -1,
+                };
+                let ws = match WebSocket::new(&url) {
+                    Ok(ws) => ws,
+                    Err(_) => return -1,
+                };
+                ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
+
+                let inbox: Rc<RefCell<VecDeque<String>>> =
+                    Rc::new(RefCell::new(VecDeque::new()));
+                let on_message = {
+                    let inbox = inbox.clone();
+                    Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
+                        if let Some(text) = e.data().as_string() {
+                            let mut q = inbox.borrow_mut();
+                            if q.len() >= MAX_INBOX {
+                                q.pop_front();
+                            }
+                            q.push_back(text);
+                        }
+                    })
+                };
+                ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+
+                let mut table = sockets.borrow_mut();
+                let handle = table.len() as i32;
+                table.push(Some(Socket { ws, inbox, _on_message: on_message }));
+                handle
+            })
+        };
+
+        let send = {
+            let sockets = sockets.clone();
+            let mem = mem.clone();
+            Closure::<dyn FnMut(i32, i32) -> i32>::new(move |handle: i32, ptr: i32| {
+                let msg = match read_string(&mem.borrow(), ptr) {
+                    Some(m) => m,
+                    None => return 0,
+                };
+                let table = sockets.borrow();
+                match table.get(handle as usize).and_then(|s| s.as_ref()) {
+                    Some(sock) => match sock.ws.send_with_str(&msg) {
+                        Ok(()) => 1,
+                        Err(_) => 0,
+                    },
+                    None => 0,
+                }
+            })
+        };
+
+        let poll = {
+            let sockets = sockets.clone();
+            let mem = mem.clone();
+            Closure::<dyn FnMut(i32, i32, i32) -> i32>::new(
+                move |handle: i32, out_ptr: i32, max: i32| {
+                    let table = sockets.borrow();
+                    let sock = match table.get(handle as usize).and_then(|s| s.as_ref()) {
+                        Some(s) => s,
+                        None => return -1,
+                    };
+                    let msg = match sock.inbox.borrow_mut().pop_front() {
+                        Some(m) => m,
+                        None => return 0,
+                    };
+                    write_string(&mem.borrow(), out_ptr, &msg, max.max(0) as usize)
+                },
+            )
+        };
+
+        let status = {
+            let sockets = sockets.clone();
+            Closure::<dyn FnMut(i32) -> i32>::new(move |handle: i32| {
+                let table = sockets.borrow();
+                match table.get(handle as usize).and_then(|s| s.as_ref()) {
+                    // web_sys ready_state: 0 CONNECTING, 1 OPEN, 2 CLOSING, 3 CLOSED.
+                    Some(sock) => sock.ws.ready_state() as i32,
+                    None => -1,
+                }
+            })
+        };
+
+        let close = {
+            let sockets = sockets.clone();
+            Closure::<dyn FnMut(i32)>::new(move |handle: i32| {
+                let mut table = sockets.borrow_mut();
+                if let Some(slot) = table.get_mut(handle as usize) {
+                    if let Some(sock) = slot.take() {
+                        let _ = sock.ws.close();
+                    }
+                }
+            })
+        };
+
+        let host_net = Object::new();
+        set_fn(&host_net, "open", open.as_ref())?;
+        set_fn(&host_net, "send", send.as_ref())?;
+        set_fn(&host_net, "poll", poll.as_ref())?;
+        set_fn(&host_net, "status", status.as_ref())?;
+        set_fn(&host_net, "close", close.as_ref())?;
+        Reflect::set(imports, &JsValue::from_str("host_net"), &host_net)
+            .map_err(|_| CompileError::new("failed to set host_net import"))?;
+
+        Ok(NetRuntime { sockets, open, send, poll, status, close })
+    }
+
+    fn set_fn(obj: &Object, name: &str, f: &JsValue) -> Result<(), CompileError> {
+        Reflect::set(obj, &JsValue::from_str(name), f)
+            .map(|_| ())
+            .map_err(|_| CompileError::new(format!("failed to set host_net.{name}")))
+    }
+
+    /// Read a length-prefixed UTF-8 string from cartridge memory at `ptr`
+    /// (4 bytes LE length, then payload) — same layout as the loader's
+    /// `read_string`. Returns `None` on a missing memory or bad length.
+    fn read_string(memory: &JsValue, ptr: i32) -> Option<String> {
+        if ptr < 0 || memory.is_null() {
+            return None;
+        }
+        let buffer = Reflect::get(memory, &JsValue::from_str("buffer")).ok()?;
+        let array = js_sys::Uint8Array::new(&buffer);
+        let ptr = ptr as u32;
+        let mut len_bytes = [0u8; 4];
+        for (i, b) in len_bytes.iter_mut().enumerate() {
+            *b = array.get_index(ptr + i as u32);
+        }
+        let len = u32::from_le_bytes(len_bytes);
+        if len > 65536 {
+            return None;
+        }
+        let mut bytes = vec![0u8; len as usize];
+        for (i, b) in bytes.iter_mut().enumerate() {
+            *b = array.get_index(ptr + 4 + i as u32);
+        }
+        String::from_utf8(bytes).ok()
+    }
+
+    /// Write `s` into cartridge memory at `out_ptr` as a length-prefixed
+    /// UTF-8 string (4 bytes LE length, then payload), truncating the
+    /// payload to `max` bytes (on a UTF-8 char boundary). Returns the
+    /// payload byte length written, or -1 on a missing memory.
+    fn write_string(memory: &JsValue, out_ptr: i32, s: &str, max: usize) -> i32 {
+        if out_ptr < 0 || memory.is_null() {
+            return -1;
+        }
+        let buffer = match Reflect::get(memory, &JsValue::from_str("buffer")) {
+            Ok(b) => b,
+            Err(_) => return -1,
+        };
+        let array = js_sys::Uint8Array::new(&buffer);
+
+        // Truncate to `max` bytes without splitting a UTF-8 codepoint.
+        let mut end = s.len().min(max);
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        let bytes = &s.as_bytes()[..end];
+        let len = bytes.len() as u32;
+        let ptr = out_ptr as u32;
+        for (i, b) in len.to_le_bytes().iter().enumerate() {
+            array.set_index(ptr + i as u32, *b);
+        }
+        for (i, b) in bytes.iter().enumerate() {
+            array.set_index(ptr + 4 + i as u32, *b);
+        }
+        len as i32
+    }
 }
 
 #[cfg(target_arch = "wasm32")]

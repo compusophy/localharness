@@ -761,6 +761,28 @@ fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, 
         "display::pointer_down" => (vec![], I32),
         "display::state_get" => (vec![I32], I32),
         "display::state_set" => (vec![I32, I32], Void),
+        // --- networking (host_net): WebSocket-backed multiplayer/sync I/O.
+        // Strings (URL, message bodies) use the same length-prefixed memory
+        // layout as the loader's `read_string`: 4 bytes LE length, then UTF-8
+        // payload, at the given cartridge-memory pointer.
+        //
+        // `open(url_ptr) -> handle`   open a WebSocket to the url at `url_ptr`;
+        //                             returns a handle >= 0, or -1 on error.
+        // `send(handle, ptr) -> ok`   send the length-prefixed message at `ptr`;
+        //                             returns 1 if queued, 0 if not (closed/bad).
+        // `poll(handle, out_ptr, max) -> len`  copy the next inbound message
+        //                             (length-prefixed) into memory at `out_ptr`,
+        //                             writing at most `max` payload bytes; returns
+        //                             the payload byte length, 0 if the inbox is
+        //                             empty, or -1 on a bad handle.
+        // `status(handle) -> i32`     0 connecting, 1 open, 2 closing, 3 closed,
+        //                             -1 bad handle.
+        // `close(handle)`             close the socket and drop its inbox.
+        "net::open" => (vec![I32], I32),
+        "net::send" => (vec![I32, I32], I32),
+        "net::poll" => (vec![I32, I32, I32], I32),
+        "net::status" => (vec![I32], I32),
+        "net::close" => (vec![I32], Void),
         _ => return None,
     };
     let (module, func) = key.split_once("::")?;
