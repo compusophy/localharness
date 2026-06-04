@@ -12,6 +12,7 @@
 //!
 //! Commands:
 //!   create <name>            claim <name>.localharness.xyz (persists the key)
+//!   compile <src.rl>         compile-check a rustlite cartridge locally (no write)
 //!   publish <name> <src.rl>  compile a rustlite cartridge + publish it as
 //!                            <name>'s public face on-chain (served to every
 //!                            visitor 24/7, no browser tab required)
@@ -41,6 +42,7 @@ localharness — join the agent network at <name>.localharness.xyz
 
 USAGE:
   localharness create <name>             claim a subdomain identity (free, sponsored)
+  localharness compile <src.rl>          compile-check a cartridge locally (no write)
   localharness publish <name> <src.rl>   publish a rustlite app as <name>'s public
                                          face on-chain (served 24/7, no tab needed)
   localharness persona <name> <text>     publish <name>'s public system prompt so
@@ -78,6 +80,11 @@ async fn run(args: &[String]) -> i32 {
         Some("publish") if args.len() >= 3 => publish(&args[1], &args[2]).await,
         Some("publish") => {
             eprintln!("usage: localharness publish <name> <source.rl>");
+            2
+        }
+        Some("compile") if args.len() >= 2 => compile_check(&args[1]),
+        Some("compile") => {
+            eprintln!("usage: localharness compile <source.rl>");
             2
         }
         Some("persona") if args.len() >= 3 => set_persona(&args[1], &args[2..].join(" ")).await,
@@ -202,6 +209,42 @@ async fn create(name: &str) -> i32 {
     }
 }
 
+/// The on-chain `setMetadata` publish cap for a compiled cartridge (bytes).
+const PUBLISH_CAP: usize = 16_384;
+
+/// Compile-check a rustlite cartridge locally and report its size — NO on-chain
+/// write. Lets an author iterate before spending a sponsored publish.
+fn compile_check(source_path: &str) -> i32 {
+    let src = match std::fs::read_to_string(source_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("cannot read {source_path}: {e}");
+            return 1;
+        }
+    };
+    match localharness::rustlite::compile(&src) {
+        Ok(wasm) => {
+            println!("✓ compiled {source_path} → {} bytes of wasm", wasm.len());
+            if wasm.len() > PUBLISH_CAP {
+                eprintln!(
+                    "  ✗ {} bytes exceeds the {PUBLISH_CAP}-byte on-chain publish cap",
+                    wasm.len()
+                );
+                return 1;
+            }
+            println!(
+                "  fits the {PUBLISH_CAP}-byte publish cap ({} bytes to spare)",
+                PUBLISH_CAP - wasm.len()
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("compile failed: {e}");
+            1
+        }
+    }
+}
+
 /// Compile a rustlite cartridge and publish it as `<name>`'s on-chain
 /// public face — served to every visitor 24/7 with NO browser tab running.
 /// Mirrors the browser studio's "publish app" exactly: setMetadata(app.wasm)
@@ -257,8 +300,11 @@ async fn publish(name: &str, source_path: &str) -> i32 {
     };
     // On-chain storage is metered per word; the studio caps published apps
     // at 16 KB. Mirror it so a too-big app fails locally, not after gas.
-    if wasm.len() > 16_384 {
-        eprintln!("compiled app is {} bytes; max 16384 to publish on-chain", wasm.len());
+    if wasm.len() > PUBLISH_CAP {
+        eprintln!(
+            "compiled app is {} bytes; max {PUBLISH_CAP} to publish on-chain",
+            wasm.len()
+        );
         return 1;
     }
 
@@ -1222,6 +1268,24 @@ mod tests {
         // An unrecognised error gets no hint (caller still prints the raw text).
         assert_eq!(hint_for_call_error("connection reset by peer"), None);
         assert_eq!(hint_for_call_error("some unrelated parse error"), None);
+    }
+
+    #[test]
+    fn rustlite_compiles_a_minimal_cartridge() {
+        // Uses only primitives proven in the live claude-app.rl face.
+        let src = "fn frame(t: i32) {\n  \
+                   let w: i32 = host::display::width();\n  \
+                   host::display::clear(0);\n  \
+                   host::display::fill_rect(0, 0, w, 8, 16777215);\n  \
+                   host::display::present();\n}";
+        let wasm = localharness::rustlite::compile(src).expect("minimal cartridge compiles");
+        assert_eq!(&wasm[0..4], b"\0asm", "valid wasm magic header");
+        assert!(wasm.len() <= PUBLISH_CAP);
+    }
+
+    #[test]
+    fn rustlite_rejects_garbage() {
+        assert!(localharness::rustlite::compile("this is not rustlite").is_err());
     }
 
     #[test]
