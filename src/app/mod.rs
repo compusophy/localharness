@@ -37,6 +37,7 @@ mod opfs;
 mod owner;
 mod pricing;
 mod seed_pull;
+mod self_docs;
 mod signer;
 mod sponsor;
 mod agent_rpc;

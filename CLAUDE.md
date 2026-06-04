@@ -64,6 +64,9 @@ src/                  library crate
 │   ├── agent_rpc.rs  inter-agent RPC endpoint (?rpc=1 URL mode)
 │   ├── encryption.rs AES-256-GCM at-rest + ECIES via WebCrypto
 │   ├── system_prompt.rs  per-tenant custom prompt (.lh_system_prompt.txt)
+│   ├── self_docs.rs  agent self-knowledge: embedded runtime summary (injected
+│   │                 into the system prompt) + read_self_docs tool (fetches
+│   │                 live llms.txt, falls back to the summary)
 │   ├── tool_allowlist.rs per-agent tool restriction (.lh_tool_allowlist.txt)
 │   ├── sponsor.rs    embedded sponsor private key for fee_payer (testnet only)
 │   └── verify.rs     subdomain-side owner verification + the iframe signer
@@ -451,6 +454,24 @@ Subdomain tools (declared in `chat.rs::start_session`):
 - **`release_subdomain(name, confirmation)`** — DESTRUCTIVE. Burns the name
   (ReleaseFacet `releaseName`). Requires `confirmation == name` (typed in chat),
   refuses the caller's MAIN, NOT granted to subagents.
+- **`read_self_docs()`** — read-only. Returns the agent's own runtime docs:
+  fetches the live `https://localharness.xyz/llms.txt`, falls back to an
+  embedded summary (`self_docs::RUNTIME_SUMMARY`) offline. The same summary is
+  injected into every system prompt (`self_docs::system_prompt_digest`) so the
+  agent has grounded priors about its own platform/SDK and can self-diagnose.
+
+**Continuous execution (`chat.rs::run_send`).** One user message drives the
+agent until the goal is done, not one step. `run_send` loops over
+`stream_turn(agent, TurnInput)`: the first turn carries the user's prompt (with
+a user bubble); when a turn ends with tool activity but **no** completion signal
+(`TurnOutcome::Incomplete`) it auto-continues with an internal
+`AUTO_CONTINUE_NUDGE` (no user bubble) — no per-step nudge from the user.
+`stream_turn` classifies each turn: `Finished` (model called `finish`),
+`FinalAnswer` (pure text, no tool call → don't spam continues), `Incomplete`,
+`Empty`, `Error`, `Cancelled`. Bounded by `MAX_AUTO_CONTINUATIONS = 10`;
+respects `TURN_CANCEL` (stop button) every iteration and the `TURN_ACTIVE`
+one-turn-at-a-time guard across the whole run. History/opfs are saved after
+every turn so progress shows incrementally.
 
 **Ownership = on-chain, not a local cache.** `.lh_owner` (owner.rs) is no
 longer a random device UUID — it stores the on-chain owner ADDRESS this device
