@@ -66,6 +66,10 @@ USAGE:
                                          through the credit proxy (no key, no tab);
                                          the conversation continues across calls
                                          (--fresh starts over)
+  localharness mcp                       run an MCP (stdio) server exposing a
+                                         `call_agent` tool, so any MCP client
+                                         (Claude Code, …) can call localharness
+                                         agents; pays as the local identity
   localharness list [--as <me>]          list the subdomains you own (+ --json)
   localharness feedback [--as <me>] [text]   submit on-chain feedback, or read all
   localharness probe [--as <fleet>]      run QA self-checks; report failures on-chain
@@ -116,6 +120,7 @@ async fn run(args: &[String]) -> i32 {
             2
         }
         Some("call") => call(&args[1..]).await,
+        Some("mcp") => mcp_serve(&args[1..]).await,
         Some("list") | Some("mine") => match parse_list_flags(&args[1..]) {
             Ok((caller, json)) => list_mine(caller.as_deref(), json).await,
             Err(e) => {
@@ -780,54 +785,64 @@ async fn call(rest: &[String]) -> i32 {
     } else {
         std::fs::read(&hist_file).ok()
     };
-    let caller = match wallet::from_private_key_hex(&key_hex) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("bad key in {key_file}: {e}");
-            return 1;
+    match run_agent_turn(&key_hex, &target, &message, prior_history).await {
+        Ok((text, new_history)) => {
+            println!("{}", text.trim());
+            // Persist the conversation so the next `call` to this target
+            // continues it. Best-effort: a save failure must not flip the code.
+            if let Some(bytes) = new_history {
+                if let Some(dir) = hist_file.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                let _ = std::fs::write(&hist_file, bytes);
+            }
+            0
         }
-    };
+        Err(e) => {
+            report_call_error("call failed", &e);
+            1
+        }
+    }
+}
+
+/// Run ONE headless conversational turn as `target` — embodying its on-chain
+/// persona, paid for by the identity behind `key_hex` (proxy auth + a free $LH
+/// session). Returns the reply text plus the updated conversation history bytes
+/// (to persist for the next turn). Shared by the CLI `call` command and the
+/// `mcp` server's `call_agent` tool, so both reach an agent identically.
+async fn run_agent_turn(
+    key_hex: &str,
+    target: &str,
+    message: &str,
+    prior_history: Option<Vec<u8>>,
+) -> Result<(String, Option<Vec<u8>>), String> {
+    let caller =
+        wallet::from_private_key_hex(key_hex).map_err(|e| format!("bad identity key: {e}"))?;
 
     // Embody the target's PUBLISHED persona (falls back to a generic prompt).
-    let system = match registry::id_of_name(&target).await {
+    let system = match registry::id_of_name(target).await {
         Ok(id) if id != 0 => match registry::persona_of(id).await {
             Ok(Some(p)) => p,
-            Ok(None) => default_persona(&target),
-            Err(e) => {
-                eprintln!("RPC error reading persona: {e}");
-                return 1;
-            }
+            Ok(None) => default_persona(target),
+            Err(e) => return Err(format!("RPC error reading persona: {e}")),
         },
-        Ok(_) => {
-            eprintln!("{target} is not a registered agent");
-            return 1;
-        }
-        Err(e) => {
-            eprintln!("RPC error: {e}");
-            return 1;
-        }
+        Ok(_) => return Err(format!("{target} is not a registered agent")),
+        Err(e) => return Err(format!("RPC error: {e}")),
     };
 
-    // Open a free $LH session so the proxy doesn't 402 (best-effort: a live
-    // session/credit balance may already exist).
+    // Open a free $LH session so the proxy doesn't 402 (best-effort).
     if let Ok(sponsor) = wallet::from_private_key_hex(SPONSOR_KEY) {
         let _ = registry::open_session_sponsored(&caller, &sponsor, registry::ALPHA_USD_ADDRESS)
             .await;
     }
 
-    // Mint the proxy auth token and run one headless turn through it.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let token = registry::proxy_auth_token(&caller, now);
-    let base = match url::Url::parse(registry::CREDIT_PROXY_URL) {
-        Ok(u) => u,
-        Err(e) => {
-            eprintln!("internal: bad proxy url: {e}");
-            return 1;
-        }
-    };
+    let base = url::Url::parse(registry::CREDIT_PROXY_URL)
+        .map_err(|e| format!("internal: bad proxy url: {e}"))?;
 
     // A pure conversational turn: no local builtins (a remote prompt must not
     // read the CALLER's filesystem), no subagents.
@@ -836,7 +851,6 @@ async fn call(rest: &[String]) -> i32 {
         enable_subagents: false,
         ..Default::default()
     };
-
     let mut cfg = localharness::GeminiAgentConfig::new(token)
         .with_base_url(base)
         .with_system_instructions(system)
@@ -845,41 +859,146 @@ async fn call(rest: &[String]) -> i32 {
         cfg = cfg.with_history_bytes(bytes);
     }
 
-    let agent = match localharness::Agent::start_gemini(cfg).await {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("could not start agent session: {e}");
-            return 1;
-        }
+    let agent = localharness::Agent::start_gemini(cfg)
+        .await
+        .map_err(|e| format!("could not start agent session: {e}"))?;
+    let reply = match agent.chat(message).await {
+        Ok(resp) => resp.text().await.map_err(|e| format!("response error: {e}")),
+        Err(e) => Err(e.to_string()),
     };
-    let code = match agent.chat(message).await {
-        Ok(resp) => match resp.text().await {
-            Ok(text) => {
-                println!("{}", text.trim());
-                0
-            }
-            Err(e) => {
-                report_call_error("response error", &e.to_string());
-                1
-            }
-        },
-        Err(e) => {
-            report_call_error("call failed", &e.to_string());
-            1
-        }
-    };
-    // Persist the conversation so the next `call` to this target continues it.
-    // Best-effort: a save failure must not change the call's exit code.
-    if code == 0 {
-        if let Ok(Some(bytes)) = agent.history_bytes() {
-            if let Some(dir) = hist_file.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            let _ = std::fs::write(&hist_file, bytes);
-        }
-    }
+    let new_history = agent.history_bytes().ok().flatten();
     let _ = agent.shutdown().await;
-    code
+    reply.map(|text| (text, new_history))
+}
+
+// ---- MCP server ----------------------------------------------------------
+//
+// `localharness mcp` speaks the Model Context Protocol over stdio (newline-
+// delimited JSON-RPC 2.0), exposing localharness agents as a TOOL any MCP client
+// (Claude Code, Codex, …) can call. The headline tool `call_agent` lets an
+// external agent invoke a sovereign `<name>.localharness.xyz` agent under its
+// on-chain persona — the demand-side experiment: will anyone actually call these
+// agents? The server acts AS the sole identity key in the working directory (it
+// signs proxy auth and pays the $LH).
+
+async fn mcp_serve(args: &[String]) -> i32 {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    // The identity that signs proxy auth + pays for outbound calls. `--as <name>`
+    // picks it; with a single key in the dir it's inferred.
+    let caller = match take_as_flag(args) {
+        Ok((caller, _rest)) => caller,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let key_hex = match resolve_caller_key(caller) {
+        Ok((_file, hex)) => hex,
+        Err(e) => {
+            eprintln!("mcp: no usable identity ({e}). Pass --as <name> or run `localharness create <name>` first.");
+            return 2;
+        }
+    };
+
+    let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    let mut out = tokio::io::stdout();
+    eprintln!("localharness mcp: ready on stdio (acting as the local identity).");
+
+    while let Ok(Some(line)) = lines.next_line().await {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let req: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue, // ignore malformed frames
+        };
+        // Notifications (no `id`, e.g. notifications/initialized) get no reply.
+        let Some(id) = req.get("id").cloned() else { continue };
+        let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
+
+        let envelope = match mcp_handle(method, &req, &key_hex).await {
+            Ok(result) => serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result}),
+            Err((code, msg)) => {
+                serde_json::json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": msg}})
+            }
+        };
+        if out.write_all(format!("{envelope}\n").as_bytes()).await.is_err() {
+            break;
+        }
+        let _ = out.flush().await;
+    }
+    0
+}
+
+async fn mcp_handle(
+    method: &str,
+    req: &serde_json::Value,
+    key_hex: &str,
+) -> Result<serde_json::Value, (i64, String)> {
+    match method {
+        "initialize" => Ok(serde_json::json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": { "tools": {} },
+            "serverInfo": { "name": "localharness", "version": env!("CARGO_PKG_VERSION") }
+        })),
+        "tools/list" => Ok(serde_json::json!({ "tools": mcp_tool_list() })),
+        "tools/call" => {
+            let params = req.get("params").cloned().unwrap_or_default();
+            let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            let args = params.get("arguments").cloned().unwrap_or_default();
+            mcp_tool_call(name, &args, key_hex).await
+        }
+        "ping" => Ok(serde_json::json!({})),
+        other => Err((-32601, format!("method not found: {other}"))),
+    }
+}
+
+fn mcp_tool_list() -> serde_json::Value {
+    serde_json::json!([
+        {
+            "name": "call_agent",
+            "description": "Send a message to a sovereign localharness agent (a <name>.localharness.xyz NFT) and get its reply. The agent answers under its published on-chain persona; this server's configured identity pays in $LH credits.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "the agent's registered name / subdomain, e.g. \"claude\"" },
+                    "message": { "type": "string", "description": "the message to send the agent" }
+                },
+                "required": ["name", "message"]
+            }
+        }
+    ])
+}
+
+async fn mcp_tool_call(
+    name: &str,
+    args: &serde_json::Value,
+    key_hex: &str,
+) -> Result<serde_json::Value, (i64, String)> {
+    match name {
+        "call_agent" => {
+            let target = args.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let message = args.get("message").and_then(|v| v.as_str()).unwrap_or("");
+            if target.is_empty() || message.trim().is_empty() {
+                return Ok(mcp_text_result("call_agent requires both 'name' and 'message'", true));
+            }
+            // Stateless per MCP request for v1 (no persisted thread).
+            match run_agent_turn(key_hex, target, message, None).await {
+                Ok((text, _hist)) => Ok(mcp_text_result(text.trim(), false)),
+                Err(e) => Ok(mcp_text_result(&format!("call_agent failed: {e}"), true)),
+            }
+        }
+        other => Err((-32602, format!("unknown tool: {other}"))),
+    }
+}
+
+fn mcp_text_result(text: &str, is_error: bool) -> serde_json::Value {
+    serde_json::json!({
+        "content": [ { "type": "text", "text": text } ],
+        "isError": is_error
+    })
 }
 
 const KEY_SUFFIX: &str = ".localharness.key";

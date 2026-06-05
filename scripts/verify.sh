@@ -44,3 +44,7 @@ step "6/6  multi-module composition (host::compose)"
 node scripts/render-compose.js "$CART_WASM"
 
 printf "\n${G}PROOF-OF-SPEC OK${N} — all 6 stages passed.\n"
+
+# Opt-in extension: scripts/verify-onchain.sh proves the TRUST / on-chain layer
+# (a sponsored mint actually lands on-chain). NOT run here — it spends live
+# testnet sponsor gas. Run it by hand when you need that proof.
