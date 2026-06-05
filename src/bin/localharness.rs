@@ -30,6 +30,7 @@
 //!   list [--as <me>]         list the subdomains you own (`--json` for machine output)
 //!   feedback [--as <me>] [text]
 //!                            submit on-chain feedback (text), or read the log (no text)
+//!   probe [--as <fleet>]     autonomous QA self-checks; report failures on-chain
 //!   threads [--as <me>]      list your saved call conversations
 //!   forget [--as <me>] <name>  drop a saved conversation (or `--all`)
 //!   whoami [--json] <name>   profile of <name>: owner, wallet, persona, face
@@ -66,6 +67,7 @@ USAGE:
                                          (--fresh starts over)
   localharness list [--as <me>]          list the subdomains you own (+ --json)
   localharness feedback [--as <me>] [text]   submit on-chain feedback, or read all
+  localharness probe [--as <fleet>]      run QA self-checks; report failures on-chain
   localharness threads [--as <me>]       list your saved call conversations
   localharness forget [--as <me>] <name> drop a saved conversation (or --all)
   localharness whoami [--json] <name>    profile of <name> (owner, wallet, …; alias: lookup)
@@ -122,6 +124,13 @@ async fn run(args: &[String]) -> i32 {
         Some("feedback") => match take_as_flag(&args[1..]) {
             Ok((_, [])) => feedback_read().await,
             Ok((caller, rest)) => feedback_submit(caller, &rest.join(" ")).await,
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
+        Some("probe") => match take_as_flag(&args[1..]) {
+            Ok((caller, _)) => probe(caller).await,
             Err(e) => {
                 eprintln!("{e}");
                 2
@@ -1390,6 +1399,77 @@ async fn feedback_submit(caller_name: Option<&str>, text: &str) -> i32 {
     }
 }
 
+/// Deterministic, network-free QA checks the `probe` runs against the platform.
+/// Each pushes a failure description on an UNEXPECTED result (a real bug); an
+/// empty result means every invariant held. Pure + testable — the core of the
+/// autonomous loop's read-only observe pass (roadmap Track B / Phase 2).
+fn run_qa_checks() -> Vec<String> {
+    let mut fails = Vec::new();
+    // 1. A known-good cartridge compiles AND exposes an entry point.
+    let good = "fn frame(t: i32) { host::display::clear(0); host::display::present(); }";
+    match localharness::rustlite::compile(good) {
+        Ok(wasm) if !cartridge_has_entry(&wasm) => {
+            fails.push("a valid frame() cartridge compiled but has no frame/render export".into())
+        }
+        Ok(_) => {}
+        Err(e) => fails.push(format!("a known-good cartridge failed to compile: {e}")),
+    }
+    // 2. Garbage source is rejected, not silently accepted.
+    if localharness::rustlite::compile("this is not rustlite").is_ok() {
+        fails.push("the compiler ACCEPTED non-rustlite garbage (should error)".into());
+    }
+    // 3. An entry-less cartridge is detectable (it would render a blank face).
+    if let Ok(wasm) = localharness::rustlite::compile("fn helper(n: i32) -> i32 { n + 1 }") {
+        if cartridge_has_entry(&wasm) {
+            fails.push("an entry-less cartridge wrongly reports a frame/render export".into());
+        }
+    }
+    fails
+}
+
+/// `localharness probe [--as <fleet>]` — the autonomous loop's read-only
+/// observe pass. Runs deterministic QA checks against the platform plus one
+/// live chain read; on any failure it REPORTS on-chain as a `qa/v1` feedback
+/// envelope (no human bridge — the agent files its own bug). One-shot and
+/// synchronous (no daemon). The checks are deterministic; network is touched
+/// only for the chain read and the feedback submit (no `$LH` for the read).
+async fn probe(caller_name: Option<&str>) -> i32 {
+    let mut fails = run_qa_checks();
+    // A live, read-only chain check: a known name must still resolve.
+    match registry::owner_of_name("claude").await {
+        Ok(Some(_)) => {}
+        Ok(None) => fails.push("registry reports claude.localharness.xyz unregistered".into()),
+        Err(e) => fails.push(format!("chain read failed: {e}")),
+    }
+
+    if fails.is_empty() {
+        println!("✓ probe: all platform checks passed");
+        return 0;
+    }
+    eprintln!("probe found {} issue(s):", fails.len());
+    for f in &fails {
+        eprintln!("  - {f}");
+    }
+    // Report on-chain as the fleet identity (best-effort). The qa/v1 envelope
+    // marks fleet-authored feedback so a future triage pass can filter it.
+    let mut envelope = format!(
+        "qa/v1 source=qa-probe v{}: {}",
+        env!("CARGO_PKG_VERSION"),
+        fails.join(" | ")
+    );
+    if envelope.len() > 2048 {
+        let mut cut = 2048;
+        while cut > 0 && !envelope.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        envelope.truncate(cut);
+    }
+    if feedback_submit(caller_name, &envelope).await == 0 {
+        eprintln!("  → reported on-chain");
+    }
+    1
+}
+
 fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -1756,7 +1836,7 @@ mod tests {
         // command can't ship undocumented for beta testers reading `help`.
         for cmd in [
             "create", "compile", "publish", "face", "persona", "call", "list",
-            "feedback", "threads", "forget", "whoami",
+            "feedback", "probe", "threads", "forget", "whoami",
         ] {
             assert!(
                 USAGE.contains(cmd),
@@ -1803,6 +1883,15 @@ mod tests {
         let err = read_file_clean("definitely-nonexistent-file-xyz123.rl").unwrap_err();
         assert!(err.contains("no such file"), "got: {err}");
         assert!(!err.contains("os error"), "must not leak raw OS error: {err}");
+    }
+
+    #[test]
+    fn qa_checks_pass_on_a_healthy_platform() {
+        // The probe's deterministic invariants must hold against the shipped
+        // rustlite + entry detector. If this fails, the probe would (correctly)
+        // file an on-chain bug — so it doubles as a platform-health assertion.
+        let fails = run_qa_checks();
+        assert!(fails.is_empty(), "probe found issues on a healthy build: {fails:?}");
     }
 
     #[test]
