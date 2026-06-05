@@ -83,6 +83,10 @@ pub mod rustlite;
 /// foundation; native-testable, used by `app::display`). See `src/raster.rs`.
 pub mod raster;
 
+/// Compositor scheduling for `host::compose` — the deferred-mutation module
+/// table (native-testable control flow). See `src/compose.rs`.
+pub mod compose;
+
 // The browser-resident IDE. Gated on the `browser-app` feature AND a
 // wasm target, so a native `cargo add localharness` never compiles it.
 #[cfg(all(feature = "browser-app", target_arch = "wasm32"))]
