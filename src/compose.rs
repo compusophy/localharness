@@ -119,6 +119,24 @@ impl ComposeBudget {
     }
 }
 
+/// Tile `n` module viewports across an `fb_w` x `fb_h` framebuffer in a near-
+/// square grid (1 -> full screen, 2 -> side-by-side, 3-4 -> 2x2, 5-9 -> 3x3, …).
+/// Cells fill left-to-right, top-to-bottom. Integer division can leave a thin
+/// remainder strip on the right/bottom edge, which the compositor paints black.
+/// Cells never overlap and stay within the framebuffer. Pure + native-tested so
+/// the wasm-only `app::display` compositor carries no untested layout math.
+pub fn grid_viewports(n: usize, fb_w: i32, fb_h: i32) -> Vec<Viewport> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let cols = (n as f64).sqrt().ceil() as i32;
+    let rows = (n as i32 + cols - 1) / cols; // ceil(n / cols); cols >= 1
+    let (cw, ch) = (fb_w / cols, fb_h / rows);
+    (0..n as i32)
+        .map(|i| Viewport { ox: (i % cols) * cw, oy: (i / cols) * ch, w: cw, h: ch })
+        .collect()
+}
+
 /// A deferred-op buffer handed to a module during a tick. A child issues
 /// spawn/close/move here; nothing mutates the table until the tick completes.
 pub struct Pending<H> {
@@ -385,5 +403,39 @@ mod tests {
         let mut got = None;
         t.tick(|_i, _h, v, _p| got = Some(*v));
         assert_eq!(got, Some(Viewport { ox: 10, oy: 20, w: 64, h: 32 }));
+    }
+
+    #[test]
+    fn grid_one_module_is_the_full_framebuffer() {
+        assert_eq!(grid_viewports(1, 256, 144), vec![Viewport { ox: 0, oy: 0, w: 256, h: 144 }]);
+    }
+
+    #[test]
+    fn grid_two_modules_split_side_by_side_without_overlap() {
+        let v = grid_viewports(2, 256, 144);
+        assert_eq!(v, vec![
+            Viewport { ox: 0, oy: 0, w: 128, h: 144 },
+            Viewport { ox: 128, oy: 0, w: 128, h: 144 },
+        ]);
+        assert!(v[0].ox + v[0].w <= v[1].ox, "left cell ends before the right begins");
+    }
+
+    #[test]
+    fn grid_four_modules_are_a_2x2() {
+        let v = grid_viewports(4, 256, 144); // cols=2, rows=2, cw=128, ch=72
+        assert_eq!(v.len(), 4);
+        assert_eq!(v[0], Viewport { ox: 0, oy: 0, w: 128, h: 72 });
+        assert_eq!(v[3], Viewport { ox: 128, oy: 72, w: 128, h: 72 });
+    }
+
+    #[test]
+    fn grid_cells_stay_in_bounds_and_zero_is_empty() {
+        assert!(grid_viewports(0, 256, 144).is_empty());
+        for n in 1..=9 {
+            for vp in grid_viewports(n, 256, 144) {
+                assert!(vp.ox >= 0 && vp.oy >= 0);
+                assert!(vp.ox + vp.w <= 256 && vp.oy + vp.h <= 144, "cell {vp:?} escapes the framebuffer for n={n}");
+            }
+        }
     }
 }

@@ -252,7 +252,7 @@ async fn run_with_ctx(
 /// composed module can't beacon under the compositor's origin) is the documented
 /// follow-up gate (roadmap A4 / cross-cutting risk #1), tracked before any
 /// agent-driven `host_compose` spawn ABI lands.
-pub(crate) async fn mount_composition(modules: Vec<Vec<u8>>) -> Result<(), JsValue> {
+pub(crate) async fn mount_composition(modules: Vec<Option<Vec<u8>>>) -> Result<(), JsValue> {
     let ctx = size_and_get_ctx()?;
     // Bump the generation so any previous cartridge/compositor loop stops.
     let generation = FRAME_GEN.with(|g| {
@@ -265,12 +265,17 @@ pub(crate) async fn mount_composition(modules: Vec<Vec<u8>>) -> Result<(), JsVal
     let fb: Framebuffer = Rc::new(RefCell::new(black_framebuffer()));
     POINTER_DOWN.with(|d| d.set(0));
 
-    let viewports = grid_viewports(modules.len());
+    // Lay out a grid slot for EVERY requested module — including ones that failed
+    // to fetch (passed as `None`) — so an unavailable module leaves its cell black
+    // instead of shifting its siblings out of position. Layout is native-tested in
+    // `crate::compose`.
+    let viewports = crate::compose::grid_viewports(modules.len(), FB_W as i32, FB_H as i32);
     let budget = crate::compose::ComposeBudget::v1();
     let mut table: crate::compose::ModuleTable<ChildHandle> = crate::compose::ModuleTable::new();
     let mut total_bytes = 0usize;
 
-    for (bytes, vp) in modules.into_iter().zip(viewports) {
+    for (slot, vp) in modules.into_iter().zip(viewports) {
+        let Some(bytes) = slot else { continue }; // unavailable module -> black cell
         if let Err(reason) = budget.admit(table.len(), total_bytes, bytes.len()) {
             web_sys::console::warn_1(&JsValue::from_str(&reason));
             continue;
@@ -301,20 +306,6 @@ pub(crate) async fn mount_composition(modules: Vec<Vec<u8>>) -> Result<(), JsVal
     }
     start_compose_loop(table, generation, fb, ctx);
     Ok(())
-}
-
-/// Tile `n` viewports across the framebuffer in a near-square grid (1→full,
-/// 2→side-by-side, 3-4→2x2, …). The compositor draws black between cells.
-fn grid_viewports(n: usize) -> Vec<crate::raster::Viewport> {
-    if n == 0 {
-        return Vec::new();
-    }
-    let cols = (n as f64).sqrt().ceil() as i32;
-    let rows = (n as i32 + cols - 1) / cols; // ceil(n/cols); cols >= 1
-    let (cw, ch) = (FB_W as i32 / cols, FB_H as i32 / rows);
-    (0..n as i32)
-        .map(|i| crate::raster::Viewport { ox: (i % cols) * cw, oy: (i / cols) * ch, w: cw, h: ch })
-        .collect()
 }
 
 /// Set every framebuffer pixel to opaque black (the compositor clears the root

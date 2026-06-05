@@ -240,16 +240,20 @@ fn mount() -> Result<(), JsValue> {
     if let Some(names) = compose::compose_names() {
         root.set_inner_html(&templates::app_fullscreen(false).into_string());
         wasm_bindgen_futures::spawn_local(async move {
-            let mut mods: Vec<Vec<u8>> = Vec::new();
+            // Keep one slot per requested name (None = unavailable) so a module
+            // that hasn't published an app leaves its grid cell black instead of
+            // shifting the others.
+            let mut mods: Vec<Option<Vec<u8>>> = Vec::with_capacity(names.len());
             for name in &names {
-                match compose_module_wasm(name).await {
-                    Some(bytes) => mods.push(bytes),
-                    None => web_sys::console::warn_1(&JsValue::from_str(&format!(
+                let bytes = compose_module_wasm(name).await;
+                if bytes.is_none() {
+                    web_sys::console::warn_1(&JsValue::from_str(&format!(
                         "compose: {name} has no published app to composite"
-                    ))),
+                    )));
                 }
+                mods.push(bytes);
             }
-            if mods.is_empty() {
+            if mods.iter().all(Option::is_none) {
                 if let Some(r) = dom::document().ok().and_then(|d| d.get_element_by_id("root")) {
                     r.set_inner_html(
                         "<main style=\"padding:24px;color:#7a8493;font:14px ui-monospace,Menlo,Consolas,monospace\">compose · no named module published an app to composite</main>",
