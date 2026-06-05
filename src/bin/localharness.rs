@@ -129,16 +129,21 @@ async fn run(args: &[String]) -> i32 {
             }
         },
         Some("feedback") => match take_as_flag(&args[1..]) {
-            Ok((_, [])) => feedback_read().await,
-            Ok((caller, rest)) => feedback_submit(caller, &rest.join(" ")).await,
+            Ok((caller, rest)) if rest.is_empty() => {
+                let _ = caller;
+                feedback_read().await
+            }
+            Ok((caller, rest)) => feedback_submit(caller.as_deref(), &rest.join(" ")).await,
             Err(e) => {
                 eprintln!("{e}");
                 2
             }
         },
         Some("probe") => match take_as_flag(&args[1..]) {
-            Ok((caller, rest)) if rest.iter().any(|a| a == "--deep") => probe_agent(caller).await,
-            Ok((caller, _)) => probe(caller).await,
+            Ok((caller, rest)) if rest.iter().any(|a| a == "--deep") => {
+                probe_agent(caller.as_deref()).await
+            }
+            Ok((caller, _)) => probe(caller.as_deref()).await,
             Err(e) => {
                 eprintln!("{e}");
                 2
@@ -146,7 +151,7 @@ async fn run(args: &[String]) -> i32 {
         },
         Some("triage") => triage().await,
         Some("threads") => match take_as_flag(&args[1..]) {
-            Ok((caller, _)) => threads(caller),
+            Ok((caller, _)) => threads(caller.as_deref()),
             Err(e) => {
                 eprintln!("{e}");
                 2
@@ -154,7 +159,7 @@ async fn run(args: &[String]) -> i32 {
         },
         Some("forget") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => match rest.first() {
-                Some(target) => forget(caller, target),
+                Some(target) => forget(caller.as_deref(), target),
                 None => {
                     eprintln!("usage: localharness forget [--as <me>] <target|--all>");
                     2
@@ -383,15 +388,48 @@ async fn set_face(name: &str, choice: &str) -> i32 {
 /// The on-chain `setMetadata` publish cap for a compiled cartridge (bytes).
 const PUBLISH_CAP: usize = 16_384;
 
-/// Read a file, mapping common IO errors to clean, OS-agnostic messages.
-/// Addresses on-chain QA feedback: raw `std::fs` errors leaked "(os error 2)"
-/// to users instead of a readable "no such file".
-fn read_file_clean(path: &str) -> Result<String, String> {
-    std::fs::read_to_string(path).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => format!("no such file: {path}"),
+/// Map a filesystem IO error to a clean, OS-agnostic message. `verb` is the
+/// attempted action ("read"/"write"). Addresses on-chain QA feedback: raw
+/// `std::fs` errors leaked "(os error 2)" to users instead of a readable
+/// "file not found".
+fn clean_io_error(verb: &str, path: &str, e: &std::io::Error) -> String {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => format!("file not found: {path}"),
         std::io::ErrorKind::PermissionDenied => format!("permission denied: {path}"),
-        _ => format!("cannot read {path}: {e}"),
-    })
+        _ => format!("cannot {verb} {path}: {e}"),
+    }
+}
+
+/// Read a file, mapping common IO errors to clean, OS-agnostic messages.
+fn read_file_clean(path: &str) -> Result<String, String> {
+    std::fs::read_to_string(path).map_err(|e| clean_io_error("read", path, &e))
+}
+
+/// True when `arg` looks like it was MEANT as a file path (a path separator or a
+/// known text/source extension) rather than literal persona text. Used so the
+/// `persona` command can give a clean "file not found" error when the user
+/// clearly intended a file, instead of silently using the path string as the
+/// persona OR leaking a raw "(os error 2)".
+fn looks_like_path(arg: &str) -> bool {
+    arg.contains('/')
+        || arg.contains('\\')
+        || [".txt", ".md", ".rl", ".json", ".toml", ".prompt"]
+            .iter()
+            .any(|ext| arg.to_ascii_lowercase().ends_with(ext))
+}
+
+/// Resolve the `persona` arg to its text: a readable file's contents, or the
+/// arg used verbatim. Returns a clean error (never a raw OS error) when the arg
+/// is path-shaped but unreadable. A non-path-shaped string is always literal
+/// text — so a one-line persona never trips the filesystem.
+fn resolve_persona_arg(text_or_path: &str) -> Result<String, String> {
+    match std::fs::read_to_string(text_or_path) {
+        Ok(s) => Ok(s),
+        // Path-shaped + unreadable → the user meant a file; surface it cleanly.
+        Err(e) if looks_like_path(text_or_path) => Err(clean_io_error("read", text_or_path, &e)),
+        // Otherwise the arg IS the persona text.
+        Err(_) => Ok(text_or_path.to_string()),
+    }
 }
 
 /// True if the compiled cartridge exports a `frame` or `render` function — the
@@ -471,7 +509,7 @@ fn compile_check(source_path: &str, out_path: Option<&str>) -> i32 {
             println!("✓ compiled {source_path} → {} bytes of wasm", wasm.len());
             if let Some(out) = out_path {
                 if let Err(e) = std::fs::write(out, &wasm) {
-                    eprintln!("  could not write {out}: {e}");
+                    eprintln!("  {}", clean_io_error("write", out, &e));
                     return 1;
                 }
                 println!("  wrote {out}");
@@ -703,20 +741,45 @@ fn history_dir() -> std::path::PathBuf {
     std::path::Path::new(".localharness").join("history")
 }
 
-/// Where a `call` conversation between `caller_label` and `target` is
-/// persisted, so repeated calls continue the same thread. Pure path builder.
-fn history_path(caller_label: &str, target: &str) -> std::path::PathBuf {
-    history_dir().join(format!("{caller_label}__{target}.bin"))
+/// The serialization-backend tag a `model` routes to. Conversation history is
+/// serialized in a BACKEND-SPECIFIC wire shape (a Gemini thread loaded into the
+/// Anthropic backend dies with `missing field 'content'` and vice-versa), so
+/// the persisted thread is keyed by this tag — the two backends never share a
+/// file. Mirrors the `claude*` → Anthropic routing in `run_agent_turn`.
+fn model_backend_tag(model: Option<&str>) -> &'static str {
+    if model.map(|m| m.starts_with("claude")).unwrap_or(false) {
+        "anthropic"
+    } else {
+        "gemini"
+    }
 }
 
-/// Extract the target from a history filename `<caller>__<target>.bin` for the
-/// given caller label. `None` when it doesn't belong to that caller. Pure.
+/// Where a `call` conversation between `caller_label` and `target` on a given
+/// `backend` is persisted, so repeated calls continue the same thread. Keyed by
+/// backend too so a Gemini thread and an Anthropic thread to the same target
+/// never collide (their on-disk formats are incompatible). Pure path builder.
+fn history_path(caller_label: &str, target: &str, backend: &str) -> std::path::PathBuf {
+    history_dir().join(format!("{caller_label}__{target}.{backend}.bin"))
+}
+
+/// Extract the target from a history filename `<caller>__<target>.<backend>.bin`
+/// (or the legacy `<caller>__<target>.bin`) for the given caller label. `None`
+/// when it doesn't belong to that caller. Pure. A trailing `.gemini`/`.anthropic`
+/// backend tag is stripped so `threads`/`forget` show the bare target.
 fn thread_file_target(caller_label: &str, file_name: &str) -> Option<String> {
-    file_name
+    let stem = file_name
         .strip_prefix(&format!("{caller_label}__"))?
         .strip_suffix(".bin")
-        .filter(|t| !t.is_empty())
-        .map(str::to_string)
+        .filter(|t| !t.is_empty())?;
+    // Drop a known backend tag if present (newer files); legacy files have none.
+    let target = stem
+        .strip_suffix(".gemini")
+        .or_else(|| stem.strip_suffix(".anthropic"))
+        .unwrap_or(stem);
+    if target.is_empty() {
+        return None;
+    }
+    Some(target.to_string())
 }
 
 /// Map a failed `call` error to an actionable hint, if recognisable. Pure —
@@ -784,17 +847,23 @@ async fn call(rest: &[String]) -> i32 {
             return 2;
         }
     };
-    // Conversations persist per (caller, target) so repeated calls continue the
-    // same thread; `--fresh` starts over. Label by the key-file stem.
+    // Conversations persist per (caller, target, backend) so repeated calls
+    // continue the same thread; `--fresh` starts over. Label by the key-file
+    // stem. Keying on the backend too keeps a Gemini thread and an Anthropic
+    // thread to the same target in SEPARATE files — their on-disk history
+    // formats are incompatible (a Gemini thread loaded into the Anthropic
+    // backend dies with `missing field 'content'`).
     let caller_label = key_file
         .strip_suffix(".localharness.key")
         .unwrap_or(&key_file)
         .to_string();
-    let hist_file = history_path(&caller_label, &target);
+    let backend = model_backend_tag(model.as_deref());
+    let hist_file = history_path(&caller_label, &target, backend);
     let prior_history = if fresh {
         let _ = std::fs::remove_file(&hist_file);
         None
     } else {
+        // A read failure (missing/corrupt file) is non-fatal: start fresh.
         std::fs::read(&hist_file).ok()
     };
     match run_agent_turn(&key_hex, &target, &message, prior_history, model.as_deref()).await {
@@ -871,17 +940,36 @@ async fn run_agent_turn(
     if model.map(|m| m.starts_with("claude")).unwrap_or(false) {
         #[cfg(feature = "anthropic")]
         {
-            let mut cfg = localharness::AnthropicAgentConfig::new(token)
-                .with_base_url(base)
-                .with_model(model.unwrap())
-                .with_system_instructions(system)
-                .with_capabilities(caps);
-            if let Some(bytes) = prior_history {
-                cfg = cfg.with_history_bytes(bytes);
-            }
-            let agent = localharness::Agent::start_anthropic(cfg)
-                .await
-                .map_err(|e| format!("could not start anthropic session: {e}"))?;
+            let model = model.unwrap().to_string();
+            // Build a config, optionally seeded with prior history. Cloned inputs
+            // so a failed history-seeded start can be retried from scratch.
+            let build = |history: Option<Vec<u8>>| {
+                let mut cfg = localharness::AnthropicAgentConfig::new(token.clone())
+                    .with_base_url(base.clone())
+                    .with_model(model.clone())
+                    .with_system_instructions(system.clone())
+                    .with_capabilities(caps.clone());
+                if let Some(bytes) = history {
+                    cfg = cfg.with_history_bytes(bytes);
+                }
+                cfg
+            };
+            let agent = match localharness::Agent::start_anthropic(build(prior_history.clone())).await
+            {
+                Ok(a) => a,
+                Err(_) if prior_history.is_some() => {
+                    // Incompatible/corrupt saved thread → warn + start fresh
+                    // rather than failing the whole call.
+                    eprintln!(
+                        "warning: could not load saved conversation with {target} \
+                         (incompatible or corrupt) — starting a fresh thread"
+                    );
+                    localharness::Agent::start_anthropic(build(None))
+                        .await
+                        .map_err(|e| format!("could not start anthropic session: {e}"))?
+                }
+                Err(e) => return Err(format!("could not start anthropic session: {e}")),
+            };
             let reply = match agent.chat(message).await {
                 Ok(resp) => resp.text().await.map_err(|e| format!("response error: {e}")),
                 Err(e) => Err(e.to_string()),
@@ -896,17 +984,31 @@ async fn run_agent_turn(
         }
     }
 
-    let mut cfg = localharness::GeminiAgentConfig::new(token)
-        .with_base_url(base)
-        .with_system_instructions(system)
-        .with_capabilities(caps);
-    if let Some(bytes) = prior_history {
-        cfg = cfg.with_history_bytes(bytes);
-    }
-
-    let agent = localharness::Agent::start_gemini(cfg)
-        .await
-        .map_err(|e| format!("could not start agent session: {e}"))?;
+    let build = |history: Option<Vec<u8>>| {
+        let mut cfg = localharness::GeminiAgentConfig::new(token.clone())
+            .with_base_url(base.clone())
+            .with_system_instructions(system.clone())
+            .with_capabilities(caps.clone());
+        if let Some(bytes) = history {
+            cfg = cfg.with_history_bytes(bytes);
+        }
+        cfg
+    };
+    let agent = match localharness::Agent::start_gemini(build(prior_history.clone())).await {
+        Ok(a) => a,
+        Err(_) if prior_history.is_some() => {
+            // Incompatible/corrupt saved thread → warn + start fresh rather than
+            // failing the whole call.
+            eprintln!(
+                "warning: could not load saved conversation with {target} \
+                 (incompatible or corrupt) — starting a fresh thread"
+            );
+            localharness::Agent::start_gemini(build(None))
+                .await
+                .map_err(|e| format!("could not start agent session: {e}"))?
+        }
+        Err(e) => return Err(format!("could not start agent session: {e}")),
+    };
     let reply = match agent.chat(message).await {
         Ok(resp) => resp.text().await.map_err(|e| format!("response error: {e}")),
         Err(e) => Err(e.to_string()),
@@ -938,7 +1040,7 @@ async fn mcp_serve(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let key_hex = match resolve_caller_key(caller) {
+    let key_hex = match resolve_caller_key(caller.as_deref()) {
         Ok((_file, hex)) => hex,
         Err(e) => {
             eprintln!("mcp: no usable identity ({e}). Pass --as <name> or run `localharness create <name>` first.");
@@ -1102,16 +1204,34 @@ fn resolve_caller_key(name: Option<&str>) -> Result<(String, String), String> {
     Ok((file, key_hex))
 }
 
-/// Strip an optional leading `--as <name>`; returns `(caller, remaining)`.
-fn take_as_flag(args: &[String]) -> Result<(Option<&str>, &[String]), String> {
-    if args.first().map(String::as_str) == Some("--as") {
-        match args.get(1) {
-            Some(n) => Ok((Some(n.as_str()), &args[2..])),
-            None => Err("usage: --as <name> requires a name".to_string()),
+/// Extract a `--as <name>` flag from ANYWHERE in the arg list (not just the
+/// first position) and return `(caller, remaining_args_without_the_flag)`. The
+/// remainder is owned so the flag can be removed from the middle. Position-
+/// fragile parsing was a real bug: `probe --deep --as fleet` failed because
+/// `--as` wasn't first, so the fleet name was never resolved and the call
+/// errored with "multiple identities". A second `--as` is an error.
+fn take_as_flag(args: &[String]) -> Result<(Option<String>, Vec<String>), String> {
+    let mut caller: Option<String> = None;
+    let mut rest: Vec<String> = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--as" {
+            if caller.is_some() {
+                return Err("--as given more than once".to_string());
+            }
+            match args.get(i + 1) {
+                Some(n) => {
+                    caller = Some(n.clone());
+                    i += 2;
+                }
+                None => return Err("usage: --as <name> requires a name".to_string()),
+            }
+        } else {
+            rest.push(args[i].clone());
+            i += 1;
         }
-    } else {
-        Ok((None, args))
     }
+    Ok((caller, rest))
 }
 
 /// List the caller's saved conversation threads (`localharness threads`).
@@ -1175,9 +1295,23 @@ fn forget(caller_name: Option<&str>, target: &str) -> i32 {
         println!("forgot {n} conversation(s) for {label}");
         return 0;
     }
-    match std::fs::remove_file(history_path(&label, target)) {
-        Ok(_) => println!("forgot conversation with {target}"),
-        Err(_) => println!("no saved conversation with {target}"),
+    // A target can have a thread per backend (plus a legacy untagged file);
+    // forget them all so `forget <target>` clears the conversation regardless
+    // of which model it ran under.
+    let mut removed = false;
+    for candidate in [
+        history_path(&label, target, "gemini"),
+        history_path(&label, target, "anthropic"),
+        history_dir().join(format!("{label}__{target}.bin")), // legacy untagged
+    ] {
+        if std::fs::remove_file(candidate).is_ok() {
+            removed = true;
+        }
+    }
+    if removed {
+        println!("forgot conversation with {target}");
+    } else {
+        println!("no saved conversation with {target}");
     }
     0
 }
@@ -1231,7 +1365,14 @@ async fn set_persona(name: &str, text_or_path: &str) -> i32 {
     }
 
     // A readable path is loaded as a file; otherwise the arg IS the persona.
-    let persona = std::fs::read_to_string(text_or_path).unwrap_or_else(|_| text_or_path.to_string());
+    // A path-shaped-but-unreadable arg gets a CLEAN error, not a raw OS error.
+    let persona = match resolve_persona_arg(text_or_path) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
     let persona = persona.trim();
     if persona.is_empty() {
         eprintln!("persona is empty");
@@ -1964,6 +2105,26 @@ mod tests {
     }
 
     #[test]
+    fn parse_call_accepts_model_flag_in_any_order() {
+        // `--as`/`--model`/`--fresh` may appear in any order before the target.
+        let perms = [
+            vec!["--model", "claude-opus", "--as", "bob", "--fresh", "alice", "hi"],
+            vec!["--fresh", "--model", "claude-opus", "--as", "bob", "alice", "hi"],
+            vec!["--as", "bob", "--model", "claude-opus", "--fresh", "alice", "hi"],
+        ];
+        for parts in perms {
+            let p = parse_call_args(&args(&parts)).unwrap();
+            assert_eq!(p.caller.as_deref(), Some("bob"));
+            assert_eq!(p.model.as_deref(), Some("claude-opus"));
+            assert!(p.fresh);
+            assert_eq!(p.target, "alice");
+            assert_eq!(p.message, "hi");
+        }
+        // `--model` requires a value.
+        assert!(parse_call_args(&args(&["--model"])).is_err());
+    }
+
+    #[test]
     fn parse_call_defaults_to_not_fresh() {
         let p = parse_call_args(&args(&["alice", "hi"])).unwrap();
         assert!(!p.fresh);
@@ -2002,53 +2163,111 @@ mod tests {
 
     #[test]
     fn thread_file_target_parses_own_files_only() {
+        // Backend-tagged files (current format): the tag is stripped.
+        assert_eq!(
+            thread_file_target("claude", "claude__alice.gemini.bin").as_deref(),
+            Some("alice")
+        );
+        assert_eq!(
+            thread_file_target("claude", "claude__alice.anthropic.bin").as_deref(),
+            Some("alice")
+        );
+        // Legacy untagged files still parse (backward compatibility).
         assert_eq!(
             thread_file_target("claude", "claude__alice.bin").as_deref(),
             Some("alice")
         );
         // A target containing the separator stays intact (strip_prefix once).
         assert_eq!(
-            thread_file_target("claude", "claude__a__b.bin").as_deref(),
+            thread_file_target("claude", "claude__a__b.gemini.bin").as_deref(),
             Some("a__b")
         );
         // Different caller → not ours.
-        assert_eq!(thread_file_target("claude", "bob__alice.bin"), None);
+        assert_eq!(thread_file_target("claude", "bob__alice.gemini.bin"), None);
         // Wrong extension, or empty target → rejected.
         assert_eq!(thread_file_target("claude", "claude__alice.txt"), None);
         assert_eq!(thread_file_target("claude", "claude__.bin"), None);
+        assert_eq!(thread_file_target("claude", "claude__.gemini.bin"), None);
         assert_eq!(thread_file_target("claude", "unrelated.bin"), None);
     }
 
     #[test]
     fn thread_file_target_roundtrips_history_path() {
-        // The parser must invert the filename half of history_path.
-        let p = history_path("claude", "alice");
-        let name = p.file_name().unwrap().to_str().unwrap();
-        assert_eq!(thread_file_target("claude", name).as_deref(), Some("alice"));
+        // The parser must invert the filename half of history_path for both
+        // backends.
+        for backend in ["gemini", "anthropic"] {
+            let p = history_path("claude", "alice", backend);
+            let name = p.file_name().unwrap().to_str().unwrap();
+            assert_eq!(thread_file_target("claude", name).as_deref(), Some("alice"));
+        }
+    }
+
+    #[test]
+    fn model_backend_tag_routes_claude_to_anthropic() {
+        assert_eq!(model_backend_tag(Some("claude-opus-4")), "anthropic");
+        assert_eq!(model_backend_tag(Some("claude")), "anthropic");
+        assert_eq!(model_backend_tag(Some("gemini-3.5-flash")), "gemini");
+        assert_eq!(model_backend_tag(None), "gemini");
+    }
+
+    #[test]
+    fn history_path_keys_on_backend_so_formats_never_collide() {
+        // The cross-backend bug: a Gemini thread and an Anthropic thread to the
+        // same target must live in SEPARATE files (incompatible on-disk shapes).
+        let g = history_path("claude", "alice", "gemini");
+        let a = history_path("claude", "alice", "anthropic");
+        assert_ne!(g, a, "backends must not share a history file");
+        assert!(g.ends_with("claude__alice.gemini.bin"));
+        assert!(a.ends_with("claude__alice.anthropic.bin"));
     }
 
     #[test]
     fn take_as_flag_extracts_caller() {
         let a = args(&["--as", "bob", "threads"]);
         let (caller, rest) = take_as_flag(&a).unwrap();
-        assert_eq!(caller, Some("bob"));
-        assert_eq!(rest, &["threads".to_string()]);
+        assert_eq!(caller.as_deref(), Some("bob"));
+        assert_eq!(rest, vec!["threads".to_string()]);
 
         let b = args(&["alice"]);
         let (caller, rest) = take_as_flag(&b).unwrap();
         assert_eq!(caller, None);
-        assert_eq!(rest, &["alice".to_string()]);
+        assert_eq!(rest, vec!["alice".to_string()]);
 
         assert!(take_as_flag(&args(&["--as"])).is_err());
     }
 
     #[test]
+    fn take_as_flag_scans_any_position() {
+        // The real bug: `probe --deep --as fleet` — `--as` is NOT first, so the
+        // old first-arg-only parser missed it and the fleet name never resolved.
+        let (caller, rest) = take_as_flag(&args(&["--deep", "--as", "fleet"])).unwrap();
+        assert_eq!(caller.as_deref(), Some("fleet"));
+        assert_eq!(rest, vec!["--deep".to_string()]);
+
+        // Trailing flag is still consumed; surrounding args preserved in order.
+        let (caller, rest) = take_as_flag(&args(&["a", "b", "--as", "me", "c"])).unwrap();
+        assert_eq!(caller.as_deref(), Some("me"));
+        assert_eq!(rest, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+
+        // `--as` requiring a value, even mid-list.
+        assert!(take_as_flag(&args(&["--deep", "--as"])).is_err());
+        // A duplicated `--as` is an error, not a silent last-wins.
+        assert!(take_as_flag(&args(&["--as", "a", "--as", "b"])).is_err());
+    }
+
+    #[test]
     fn history_path_keys_on_caller_and_target() {
-        let p = history_path("claude", "alice");
-        assert!(p.ends_with("claude__alice.bin"));
+        let p = history_path("claude", "alice", "gemini");
+        assert!(p.ends_with("claude__alice.gemini.bin"));
         // Distinct caller or target → distinct file (no cross-thread bleed).
-        assert_ne!(history_path("claude", "alice"), history_path("bob", "alice"));
-        assert_ne!(history_path("claude", "alice"), history_path("claude", "bob"));
+        assert_ne!(
+            history_path("claude", "alice", "gemini"),
+            history_path("bob", "alice", "gemini")
+        );
+        assert_ne!(
+            history_path("claude", "alice", "gemini"),
+            history_path("claude", "bob", "gemini")
+        );
         // Lives under a hidden dir so it doesn't clutter the working tree.
         assert!(p.starts_with(".localharness"));
     }
@@ -2275,7 +2494,37 @@ mod tests {
     fn read_file_clean_maps_not_found_without_leaking_os_error() {
         // Closes on-chain QA finding #1: "os error 2" must not reach the user.
         let err = read_file_clean("definitely-nonexistent-file-xyz123.rl").unwrap_err();
-        assert!(err.contains("no such file"), "got: {err}");
+        assert!(err.contains("file not found"), "got: {err}");
+        assert!(err.contains("definitely-nonexistent-file-xyz123.rl"), "got: {err}");
+        assert!(!err.contains("os error"), "must not leak raw OS error: {err}");
+    }
+
+    #[test]
+    fn looks_like_path_distinguishes_files_from_prose() {
+        // Path-shaped: separators or known source/text extensions.
+        assert!(looks_like_path("persona.txt"));
+        assert!(looks_like_path("prompts/agent.md"));
+        assert!(looks_like_path("C:\\agents\\bob.prompt"));
+        assert!(looks_like_path("./x.rl"));
+        // Plain prose persona text is NOT a path.
+        assert!(!looks_like_path("You are bob, a helpful agent"));
+        assert!(!looks_like_path("bob"));
+    }
+
+    #[test]
+    fn resolve_persona_arg_literal_text_passthrough() {
+        // A non-path-shaped, unreadable string is the persona text verbatim —
+        // it must NOT touch the filesystem error path.
+        let p = resolve_persona_arg("You are bob, answer tersely").unwrap();
+        assert_eq!(p, "You are bob, answer tersely");
+    }
+
+    #[test]
+    fn resolve_persona_arg_missing_file_is_clean_error() {
+        // A path-shaped arg that doesn't exist → clean error, no raw OS error,
+        // and NOT silently used as literal text.
+        let err = resolve_persona_arg("definitely-nonexistent-xyz123.txt").unwrap_err();
+        assert!(err.contains("file not found"), "got: {err}");
         assert!(!err.contains("os error"), "must not leak raw OS error: {err}");
     }
 
