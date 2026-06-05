@@ -186,7 +186,7 @@ async fn run_with_ctx(
     // after instantiation. Share a cell the net closures read lazily.
     let mem_cell: SharedMemory = Rc::new(RefCell::new(JsValue::NULL));
 
-    let (imports, runtime) = build_host_display(&fb, &ctx, &mem_cell)?;
+    let (imports, runtime) = build_host_display(&fb, &mem_cell)?;
     // Hold the closures alive (drops the previous cartridge's set).
     RUNTIME.with(|cell| *cell.borrow_mut() = Some(runtime));
 
@@ -196,15 +196,28 @@ async fn run_with_ctx(
     // Wire memory into the `host_net` closures now that it exists.
     *mem_cell.borrow_mut() = Reflect::get(&exports, &JsValue::from_str("memory"))?;
 
-    // Prefer an animated `frame(t)`; fall back to a one-shot `render()`.
+    // Prefer an animated `frame(t)`; fall back to a one-shot `render()`. The
+    // host presents after each (the cartridge's own `present` is a no-op now).
     if let Some(frame) = export_fn(&exports, "frame") {
-        start_frame_loop(frame, generation);
+        start_frame_loop(frame, generation, fb.clone(), ctx.clone());
     } else if let Some(render) = export_fn(&exports, "render") {
         render.call0(&JsValue::NULL)?;
+        present_framebuffer(&fb, &ctx);
     } else {
         return Err(JsValue::from_str("cartridge exports neither frame nor render"));
     }
     Ok(())
+}
+
+/// Blit the host-owned framebuffer to the canvas. The host owns presenting now
+/// (the cartridge `present` import is a no-op) — called once after each
+/// `frame()`/`render()`. The seam a compositor will extend: draw every module's
+/// framebuffer, then present once. See `design/host-compose.md` (roadmap 0a).
+fn present_framebuffer(fb: &Framebuffer, ctx: &CanvasRenderingContext2d) {
+    let buf = fb.borrow();
+    if let Ok(img) = ImageData::new_with_u8_clamped_array_and_sh(Clamped(&buf[..]), FB_W, FB_H) {
+        let _ = ctx.put_image_data(&img, 0.0, 0.0);
+    }
 }
 
 /// Build the `host_display` import object (the Orbclient-style draw API)
@@ -212,7 +225,6 @@ async fn run_with_ctx(
 /// closures alive.
 fn build_host_display(
     fb: &Framebuffer,
-    ctx: &CanvasRenderingContext2d,
     mem: &SharedMemory,
 ) -> Result<(Object, CartridgeRuntime), JsValue> {
     // The single-cartridge path draws through a full-screen viewport (identity
@@ -247,18 +259,14 @@ fn build_host_display(
         )
     };
 
-    let present = {
-        let fb = fb.clone();
-        let ctx = ctx.clone();
-        Closure::<dyn FnMut()>::new(move || {
-            let buf = fb.borrow();
-            if let Ok(img) =
-                ImageData::new_with_u8_clamped_array_and_sh(Clamped(&buf[..]), FB_W, FB_H)
-            {
-                let _ = ctx.put_image_data(&img, 0.0, 0.0);
-            }
-        })
-    };
+    // present-ownership inversion (roadmap Phase 0a): the cartridge's `present`
+    // import is now a NO-OP — the HOST presents once after each `frame()` (see
+    // `present_framebuffer` + `start_frame_loop`). A cartridge calling present()
+    // mid-frame no longer blits the whole canvas, which is what lets a future
+    // compositor draw several module framebuffers before a single present.
+    // Validated by scripts/render-cartridge.js (the present-after-frame model
+    // renders the real bitmask cartridge correctly).
+    let present = Closure::<dyn FnMut()>::new(move || {});
 
     let draw_char = {
         let fb = fb.clone();
@@ -390,7 +398,12 @@ fn export_fn(exports: &JsValue, name: &str) -> Option<Function> {
 /// Drive `frame(t)` once per `requestAnimationFrame` tick, passing
 /// elapsed milliseconds since the loop started. Self-cancels when the
 /// global generation moves past `generation`.
-fn start_frame_loop(frame: Function, generation: u32) {
+fn start_frame_loop(
+    frame: Function,
+    generation: u32,
+    fb: Framebuffer,
+    ctx: CanvasRenderingContext2d,
+) {
     let start = js_sys::Date::now();
     let holder: FrameLoopHolder = Rc::new(RefCell::new(None));
     let holder2 = holder.clone();
@@ -402,6 +415,8 @@ fn start_frame_loop(frame: Function, generation: u32) {
         }
         let t = (js_sys::Date::now() - start) as i32;
         let _ = frame.call1(&JsValue::NULL, &JsValue::from(t));
+        // Host presents once the cartridge has drawn this frame.
+        present_framebuffer(&fb, &ctx);
         if let Some(cb) = holder2.borrow().as_ref() {
             let _ = request_af(cb);
         }
