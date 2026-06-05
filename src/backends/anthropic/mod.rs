@@ -48,7 +48,10 @@ use crate::content::Content;
 use crate::error::{Error, Result};
 use crate::hooks::{HookRunner, SessionContext};
 use crate::tools::ToolRunner;
-use crate::types::{CapabilitiesConfig, Step, SystemInstructions, ThinkingLevel, ToolResult};
+use crate::types::{
+    CapabilitiesConfig, Step, StepSource, StepStatus, SystemInstructions, ThinkingLevel,
+    ToolResult,
+};
 
 pub use wire::{DEFAULT_MODEL, OPUS_MODEL, SONNET_MODEL};
 
@@ -481,8 +484,27 @@ impl Connection for AnthropicConnection {
 
     fn subscribe_steps(&self) -> StepStream {
         let rx = self.state.steps.subscribe();
-        let mapped = BroadcastStream::new(rx)
-            .map(|r| r.map_err(|e| Error::other(format!("anthropic step lag: {e}"))));
+        let mapped = BroadcastStream::new(rx).map(|r| match r {
+            // A turn-failure Step (HTTP non-200, SSE decode error, in-stream
+            // `error` event) is emitted by `loop.rs::emit_error` as a
+            // System-sourced, Error-status Step. The shared `conversation.rs`
+            // only surfaces an error to `chat()`/`text()` when the *stream
+            // item itself* is `Err` (its `PollDecision::Error`) — a successful
+            // Step with `status: Error` is otherwise swallowed (empty content →
+            // no chunk → silent `Ok("")`). Translate that error Step into a
+            // stream `Err` carrying the real message so the failure propagates
+            // instead of returning an empty success. Refusal/safety terminal
+            // Steps are Model-sourced and pass through untouched.
+            Ok(step)
+                if step.source == StepSource::System
+                    && step.status == StepStatus::Error
+                    && !step.error.is_empty() =>
+            {
+                Err(Error::other(step.error))
+            }
+            Ok(step) => Ok(step),
+            Err(e) => Err(Error::other(format!("anthropic step lag: {e}"))),
+        });
         #[cfg(not(target_arch = "wasm32"))]
         {
             mapped.boxed()
@@ -518,6 +540,7 @@ mod tests {
     use super::*;
     use crate::filesystem::NativeFilesystem;
     use crate::tools::ToolRunner;
+    use crate::types::{StepTarget, StepType};
 
     /// Parity guard: every builtin tool declared to Anthropic must carry a
     /// single-`type` JSON schema (no nullable unions / `additionalProperties`
@@ -644,5 +667,146 @@ mod tests {
             asst.tool_calls[0].result.as_ref().unwrap()["contents"],
             "fn main() {}"
         );
+    }
+
+    /// Build a bare `AnthropicConnection` whose loop state we can poke
+    /// directly, with no client wiring needed.
+    fn test_connection() -> Arc<AnthropicConnection> {
+        let (steps_tx, _) = broadcast::channel::<Step>(STEP_BROADCAST_CAPACITY);
+        let state = Arc::new(LoopState::new(steps_tx));
+        let client: SharedClient = Arc::new(AnthropicClient::new("k").unwrap());
+        let config = LoopConfig::from_system(
+            DEFAULT_MODEL.to_string(),
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+        )
+        .unwrap();
+        Arc::new(AnthropicConnection {
+            deps_template: TurnDeps {
+                client,
+                config,
+                state: state.clone(),
+                tool_runner: None,
+                hook_runner: None,
+                session_ctx: None,
+            },
+            state,
+            conversation_id: "test".into(),
+        })
+    }
+
+    /// REGRESSION: a turn-failure Step (System-sourced, Error-status, with an
+    /// error message — exactly what `loop.rs::emit_error` broadcasts on a
+    /// non-200 / SSE decode failure / in-stream `error` event) MUST surface as
+    /// a stream `Err`, not a silently-swallowed success. Before the fix,
+    /// `subscribe_steps` mapped every successful Step to `Ok(step)`, so the
+    /// error Step (empty content → no chunk) made `chat()`/`text()` return an
+    /// empty `Ok("")`. Now it propagates the real message.
+    #[tokio::test]
+    async fn error_step_surfaces_as_stream_error() {
+        use crate::error::Error;
+
+        let conn = test_connection();
+        let mut stream = conn.subscribe_steps();
+
+        // Mirror `loop.rs::emit_error`: System + Error + message.
+        conn.state
+            .steps
+            .send(Step {
+                id: String::new(),
+                step_index: 0,
+                kind: StepType::TextResponse,
+                source: StepSource::System,
+                target: StepTarget::User,
+                status: StepStatus::Error,
+                content: String::new(),
+                content_delta: String::new(),
+                thinking: String::new(),
+                thinking_delta: String::new(),
+                tool_calls: Vec::new(),
+                error: "anthropic HTTP 500: boom".to_string(),
+                is_complete_response: Some(true),
+                structured_output: None,
+                usage_metadata: None,
+            })
+            .expect("subscriber is live");
+
+        let item = stream.next().await.expect("a stream item");
+        match item {
+            Ok(step) => panic!("error Step leaked as Ok: {step:?}"),
+            Err(Error::Other(msg)) => assert!(
+                msg.contains("anthropic HTTP 500: boom"),
+                "expected the real error message, got: {msg}"
+            ),
+            Err(other) => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    /// A normal Model-sourced terminal Step (status Done) passes through as a
+    /// success — only System/Error turn-failures convert to a stream `Err`, so
+    /// the fix doesn't poison ordinary completions.
+    #[tokio::test]
+    async fn done_step_passes_through_as_ok() {
+        let conn = test_connection();
+        let mut stream = conn.subscribe_steps();
+
+        conn.state
+            .steps
+            .send(Step {
+                id: "traj".into(),
+                step_index: 0,
+                kind: StepType::TextResponse,
+                source: StepSource::Model,
+                target: StepTarget::User,
+                status: StepStatus::Done,
+                content: "all good".to_string(),
+                content_delta: String::new(),
+                thinking: String::new(),
+                thinking_delta: String::new(),
+                tool_calls: Vec::new(),
+                error: String::new(),
+                is_complete_response: Some(true),
+                structured_output: None,
+                usage_metadata: None,
+            })
+            .expect("subscriber is live");
+
+        let item = stream.next().await.expect("a stream item");
+        let step = item.expect("Done step must pass through as Ok");
+        assert_eq!(step.content, "all good");
+        assert_eq!(step.status, StepStatus::Done);
+    }
+
+    /// End-to-end through the shared `Conversation`: a turn whose HTTP request
+    /// can't even connect (unroutable base URL) drives `loop.rs::emit_error`,
+    /// and `chat().text()` returns `Err` carrying the failure — NOT an empty
+    /// `Ok("")`. This is the user-visible symptom the task reports.
+    #[tokio::test]
+    async fn chat_text_returns_err_on_connect_failure() {
+        use crate::conversation::Conversation;
+
+        // Port 1 is privileged + unbound → connection refused fast.
+        let base = url::Url::parse("http://127.0.0.1:1/").unwrap();
+        let cfg = AnthropicBackendConfig::new("k").with_base_url(base);
+        let conn = AnthropicConnectionStrategy::new(cfg)
+            .connect()
+            .await
+            .expect("connect (no network yet)");
+        let conv = Conversation::new(conn);
+        let resp = conv.chat("hi").await.expect("send dispatches");
+        match resp.text().await {
+            Ok(t) => panic!("expected an error, got empty success: {t:?}"),
+            Err(e) => {
+                let s = e.to_string();
+                assert!(
+                    s.contains("anthropic POST") || s.contains("anthropic HTTP"),
+                    "expected the surfaced turn error, got: {s}"
+                );
+            }
+        }
     }
 }
