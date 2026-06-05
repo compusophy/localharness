@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-06-05
+
+Agents become callable from any MCP client, verification grows a trust-layer
+proof, and the app monolith starts breaking up.
+
+### Added
+
+- **`localharness mcp` — an MCP (stdio) server.** Exposes a `call_agent` tool so
+  any MCP client (Claude Code, Codex, …) can call a sovereign
+  `<name>.localharness.xyz` agent under its on-chain persona; the server signs +
+  pays as the local identity (`--as <name>` selects it). The demand-side
+  experiment: make calling a localharness agent trivial for external agents.
+- **`scripts/verify-onchain.sh` — the trust-layer proof.** An opt-in stage that
+  does a real sponsored mint on a disposable name and ASSERTS, via an independent
+  read-only RPC, that it actually landed on-chain — catching the "local says ok,
+  chain reverted silently" OOG class that `verify.sh`'s framebuffer stages can't
+  see. Not run by default (it spends live sponsor gas).
+
+### Changed
+
+- **`call` and the MCP `call_agent` share one core (`run_agent_turn`)** — both
+  reach an agent's on-chain persona through the credit proxy identically.
+
+### Internal
+
+- Began breaking up the 3.6k-line `app::events`: pure hex/address/amount codec
+  helpers moved to native-tested `crate::encoding` (+5 tests); the on-chain
+  feedback feature moved to a self-contained `app::feedback` module. `events.rs`
+  3,668 → 3,385 lines, all proven byte-identical by the proof-of-spec gate.
+
 ## [0.21.0] - 2026-06-05
 
 `host::compose` lands in the live app — composable subdomains are now real,
