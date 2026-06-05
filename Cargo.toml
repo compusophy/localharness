@@ -53,7 +53,7 @@ native = [
 # `maud` or DOM web-sys features. Enable it together with
 # `--no-default-features --target wasm32-unknown-unknown` via wasm-pack
 # to build the shipping browser bundle. Has no effect on a native build.
-browser-app = ["dep:maud", "dep:console_error_panic_hook", "dep:pulldown-cmark", "dep:qrcode", "wallet"]
+browser-app = ["dep:maud", "dep:console_error_panic_hook", "dep:pulldown-cmark", "dep:qrcode", "wallet", "anthropic"]
 # `wallet` is the M6 in-browser keypair. Uses k256 + sha3 directly
 # rather than alloy's split crates — alloy's TransactionEnvelope
 # proc-macro currently trips on `serde::__private` symbol resolution

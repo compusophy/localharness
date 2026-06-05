@@ -728,33 +728,88 @@ pub(crate) async fn start_session(
         None => CapabilitiesConfig::unrestricted(),
     };
 
+    // Which LLM backend this session uses. A `claude-*` model id routes to
+    // the Anthropic backend; everything else (the default `gemini-*`) to
+    // Gemini. The id is the owner's per-subdomain `.lh_model` choice. Both
+    // backends go through the SAME credit-proxy `base_url` in credits mode
+    // (the proxy is multi-provider — Gemini on `/v1beta/*`, Anthropic on
+    // `/v1/messages`) and carry the SAME `key` (the proxy auth token, or a
+    // raw key in BYOK). BYOK only routes Gemini directly; a Claude model on
+    // BYOK would need a raw Anthropic key, so the credit proxy is the
+    // intended Claude path.
+    let model = super::model::load().await;
     let captured_key = key.to_string();
-    let mut cfg = GeminiAgentConfig::new(key.to_string())
-        .with_capabilities(capabilities)
-        .with_policies(vec![policy::allow_all()])
-        .with_filesystem(super::shared_opfs())
-        .with_system_instructions(system_instructions)
-        .with_tool(create_subdomain_tool())
-        .with_tool(create_and_publish_app_tool())
-        .with_tool(release_subdomain_tool())
-        .with_tool(list_subdomains_tool())
-        .with_tool(submit_feedback_tool())
-        .with_tool(super::self_docs::read_self_docs_tool())
-        .with_tool(spawn_recursive_subagent_tool(captured_key, base_url.clone()));
-    // Credits mode: route the whole agent through the credit proxy. BYOK
-    // leaves base_url None → direct to generativelanguage.googleapis.com.
-    if let Some(b) = &base_url {
-        cfg = cfg.with_base_url(b.clone());
-    }
-    // If a previous session left history on OPFS, restore it into the
-    // new connection. Consumed once — subsequent key changes start
-    // fresh from the in-memory agent's history.
-    if let Some(bytes) = super::history::take_pending() {
-        cfg = cfg.with_history_bytes(bytes);
-    }
-    let agent = Agent::start_gemini(cfg)
-        .await
-        .map_err(|e| JsValue::from_str(&format!("start_gemini: {e}")))?;
+    // History from a previous session (if any), consumed once here so a
+    // backend switch doesn't lose the transcript.
+    let pending_history = super::history::take_pending();
+
+    let agent = if super::model::is_anthropic(&model) {
+        let mut cfg = crate::AnthropicAgentConfig::new(key.to_string())
+            .with_model(model.clone())
+            .with_capabilities(capabilities)
+            .with_policies(vec![policy::allow_all()])
+            .with_filesystem(super::shared_opfs())
+            .with_system_instructions(system_instructions)
+            .with_tool(create_subdomain_tool())
+            .with_tool(create_and_publish_app_tool())
+            .with_tool(release_subdomain_tool())
+            .with_tool(list_subdomains_tool())
+            .with_tool(submit_feedback_tool())
+            .with_tool(super::self_docs::read_self_docs_tool())
+            .with_tool(spawn_recursive_subagent_tool(captured_key, base_url.clone()));
+        // Credits mode: route Anthropic through the credit proxy (it serves
+        // `/v1/messages`). BYOK has no direct-Anthropic path here, so this is
+        // a no-op without a proxy base_url and the call would hit
+        // api.anthropic.com with the raw key.
+        if let Some(b) = &base_url {
+            cfg = cfg.with_base_url(b.clone());
+        }
+        // The on-disk history is the LAST backend's wire format. Only seed it
+        // into Anthropic when it actually parses as Anthropic history —
+        // otherwise (e.g. switching from a Gemini session) start fresh rather
+        // than failing the whole session start. The mount-time transcript
+        // paint stays regardless, so the user still sees the prior turns.
+        if let Some(bytes) = pending_history {
+            if crate::backends::anthropic::decode_transcript_bytes(&bytes).is_ok() {
+                cfg = cfg.with_history_bytes(bytes);
+            }
+        }
+        Agent::start_anthropic(cfg)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("start_anthropic: {e}")))?
+    } else {
+        let mut cfg = GeminiAgentConfig::new(key.to_string())
+            .with_model(model.clone())
+            .with_capabilities(capabilities)
+            .with_policies(vec![policy::allow_all()])
+            .with_filesystem(super::shared_opfs())
+            .with_system_instructions(system_instructions)
+            .with_tool(create_subdomain_tool())
+            .with_tool(create_and_publish_app_tool())
+            .with_tool(release_subdomain_tool())
+            .with_tool(list_subdomains_tool())
+            .with_tool(submit_feedback_tool())
+            .with_tool(super::self_docs::read_self_docs_tool())
+            .with_tool(spawn_recursive_subagent_tool(captured_key, base_url.clone()));
+        // Credits mode: route the whole agent through the credit proxy. BYOK
+        // leaves base_url None → direct to generativelanguage.googleapis.com.
+        if let Some(b) = &base_url {
+            cfg = cfg.with_base_url(b.clone());
+        }
+        // If a previous session left history on OPFS, restore it into the
+        // new connection. Consumed once — subsequent key changes start
+        // fresh from the in-memory agent's history. Only seed it when it
+        // parses as Gemini history (so switching back from a Claude session
+        // doesn't fail the session start on an incompatible wire format).
+        if let Some(bytes) = pending_history {
+            if crate::backends::gemini::decode_transcript_bytes(&bytes).is_ok() {
+                cfg = cfg.with_history_bytes(bytes);
+            }
+        }
+        Agent::start_gemini(cfg)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("start_gemini: {e}")))?
+    };
     APP.with(|cell| {
         let mut app = cell.borrow_mut();
         app.agent = Some(Rc::new(agent));

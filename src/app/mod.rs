@@ -34,6 +34,7 @@ mod events;
 mod feedback;
 mod history;
 mod key_store;
+mod model;
 mod opfs;
 mod owner;
 mod pricing;
