@@ -15,6 +15,61 @@
 //! scheduling logic carries zero browser dependencies.
 
 use crate::raster::Viewport;
+use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
+/// Content-addressed cache for fetched module artifacts (compiled wasm /
+/// instances in `app::display`; anything in tests). Keyed by a hash of the
+/// WASM BYTES — never by tokenId or name. The critique flagged tokenId-keying
+/// as a silent-staleness bug: an on-chain republish (new bytes, same name)
+/// would hit a stale entry forever. Content-addressing makes the new bytes a
+/// new key, so a republish is a cache miss → a fresh fetch. The on-chain TRUST
+/// commitment is keccak256 (the registry capability seam); this LOCAL cache
+/// only needs to distinguish different bytes, so a fast std hash suffices.
+pub struct WasmCache<V> {
+    map: HashMap<u64, V>,
+}
+
+impl<V> Default for WasmCache<V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<V> WasmCache<V> {
+    pub fn new() -> Self {
+        Self { map: HashMap::new() }
+    }
+
+    /// The content key for `bytes` — a hash of the bytes themselves, so
+    /// identical bytes share a key and any change produces a different one.
+    pub fn content_key(bytes: &[u8]) -> u64 {
+        let mut h = DefaultHasher::new();
+        bytes.hash(&mut h);
+        h.finish()
+    }
+
+    pub fn get(&self, key: u64) -> Option<&V> {
+        self.map.get(&key)
+    }
+
+    pub fn insert(&mut self, key: u64, value: V) {
+        self.map.insert(key, value);
+    }
+
+    pub fn contains(&self, key: u64) -> bool {
+        self.map.contains_key(&key)
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
 
 /// One composited child: its runtime handle and the sub-rectangle it draws to.
 pub struct Module<H> {
@@ -102,6 +157,20 @@ impl<H> ModuleTable<H> {
         if !pending.is_empty() {
             self.apply(pending);
         }
+    }
+
+    /// The topmost module whose viewport contains global point `(x, y)`, with
+    /// the pointer translated to that module's LOCAL coords. Last-pushed =
+    /// topmost (z-order). Pointer events route only to the focused child
+    /// (roadmap Phase 1c) so a click in one panel can't drive a sibling.
+    pub fn focus_at(&self, x: i32, y: i32) -> Option<(usize, i32, i32)> {
+        for i in (0..self.modules.len()).rev() {
+            let vp = &self.modules[i].viewport;
+            if x >= vp.ox && y >= vp.oy && x < vp.ox + vp.w && y < vp.oy + vp.h {
+                return Some((i, x - vp.ox, y - vp.oy));
+            }
+        }
+        None
     }
 
     fn apply(&mut self, pending: Pending<H>) {
@@ -202,6 +271,52 @@ mod tests {
         let mut left = None;
         t.tick(|_i, h, _vp, _p| left = Some(*h));
         assert_eq!(left, Some(1));
+    }
+
+    #[test]
+    fn focus_at_routes_to_containing_module_in_local_coords() {
+        let mut t: ModuleTable<i32> = ModuleTable::new();
+        t.push(0, Viewport { ox: 0, oy: 0, w: 100, h: 100 });
+        t.push(1, Viewport { ox: 100, oy: 50, w: 64, h: 32 });
+        // Inside module 1 → its index + pointer translated to local coords.
+        assert_eq!(t.focus_at(110, 60), Some((1, 10, 10)));
+        // Inside module 0 only.
+        assert_eq!(t.focus_at(5, 5), Some((0, 5, 5)));
+        // Outside every viewport.
+        assert_eq!(t.focus_at(200, 200), None);
+    }
+
+    #[test]
+    fn focus_at_picks_topmost_on_overlap() {
+        let mut t: ModuleTable<i32> = ModuleTable::new();
+        t.push(0, Viewport { ox: 0, oy: 0, w: 100, h: 100 });
+        t.push(1, Viewport { ox: 0, oy: 0, w: 100, h: 100 }); // same rect, on top
+        // Last-pushed (index 1) wins the click.
+        assert_eq!(t.focus_at(10, 10), Some((1, 10, 10)));
+    }
+
+    #[test]
+    fn cache_content_key_is_deterministic_and_byte_sensitive() {
+        let a = WasmCache::<()>::content_key(b"abc");
+        assert_eq!(a, WasmCache::<()>::content_key(b"abc"));
+        assert_ne!(a, WasmCache::<()>::content_key(b"abd"));
+        assert_ne!(a, WasmCache::<()>::content_key(b""));
+    }
+
+    #[test]
+    fn republish_changes_the_key_so_no_stale_hit() {
+        // The whole point: same name/tokenId, new bytes (a republish) → a new
+        // content key → cache MISS → fresh fetch. A tokenId-keyed cache would
+        // have served the stale v1 forever.
+        let mut cache: WasmCache<&str> = WasmCache::new();
+        let k1 = WasmCache::<&str>::content_key(b"app-wasm-v1");
+        cache.insert(k1, "compiled-v1");
+        assert!(cache.contains(k1));
+
+        let k2 = WasmCache::<&str>::content_key(b"app-wasm-v2");
+        assert_ne!(k1, k2);
+        assert!(cache.get(k2).is_none(), "republished bytes must not hit the v1 entry");
+        assert_eq!(cache.get(k1), Some(&"compiled-v1"), "the v1 bytes still resolve to v1");
     }
 
     #[test]
