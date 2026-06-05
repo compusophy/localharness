@@ -7,20 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-06-05
+
+localharness becomes genuinely **model-agnostic** — Gemini *and* Claude, on
+platform `$LH` credits, from both the CLI and the browser, with no per-user
+provider key. Live end-to-end.
+
 ### Added
 
 - **Anthropic backend (second `ConnectionStrategy`).** `src/backends/anthropic/`
   implements the Claude Messages API behind the same `Connection`/
-  `ConnectionStrategy` seam as Gemini — proving the harness is model-agnostic by
-  construction. `Agent::start_anthropic(AnthropicAgentConfig::new(key))` (BYOK),
-  models `claude-haiku-4-5-20251001` (default) / `claude-sonnet-4-6` /
-  `claude-opus-4-8`. Gated behind a new `anthropic` Cargo feature — purely
-  additive (off by default, no new deps, default build + Gemini backend
-  untouched). Streaming SSE, tool calling, thinking, and compaction all mapped to
-  the neutral types; 20 native canned-fixture tests (full stream sequence,
-  split-frame, CRLF, tool-arg fragment concat). The credit-proxy/credits routing
-  is the next phase (BYOK works today; platform credits need `ANTHROPIC_API_KEY`
-  on the proxy + per-model pricing — see `design/model-agnostic.md` Phase C).
+  `ConnectionStrategy` seam as Gemini — the harness is model-agnostic by
+  construction. `Agent::start_anthropic(AnthropicAgentConfig::new(key))`, models
+  `claude-haiku-4-5-20251001` (default) / `claude-sonnet-4-6` / `claude-opus-4-8`.
+  Gated behind a new `anthropic` Cargo feature — additive (off by default, no new
+  deps, default build + Gemini backend untouched). Streaming SSE, tool calling,
+  thinking, compaction all mapped to the neutral types; 23 canned-fixture tests.
+- **Multi-provider credit proxy.** The proxy routes by path (Gemini
+  `/v1beta/models/<m>:<method>`, Anthropic `/v1/messages`), holds both platform
+  keys, and meters per-model `$LH` (Gemini flat; haiku 0.01 / sonnet 0.05 / opus
+  0.20). One redeemed-invite balance calls EITHER provider, no provider key;
+  BYOK-either is the fallback. Gemini path byte-identical.
+- **Model selectors.** CLI: `call --model <id>` routes `claude-*` to the Anthropic
+  backend. Browser: a Gemini/Haiku/Sonnet/Opus dropdown in the Agent admin tab
+  (`src/app/model.rs`, persisted to `.lh_model`); `chat.rs` branches the session
+  to the right backend through the proxy.
+
+### Changed
+
+- **Shed the "antigravity SDK port" framing.** Described as a model-agnostic agent
+  SDK (Gemini today; pluggable backends) across `lib.rs` / README / `llms.txt` /
+  CLAUDE.md / Cargo; `content.rs`/`types.rs` reframed as provider-neutral;
+  `antig::mcp` → `localharness::mcp`.
+
+### Fixed
+
+- **`--as <name>` parses anywhere** in the arg list (was first-arg only — broke
+  `probe --deep --as <name>`).
+- **Cross-backend `call` history** keyed per backend (`__<target>.<backend>.bin`)
+  so Gemini/Claude threads to one target don't collide; an incompatible load warns
+  and starts fresh instead of failing the call.
+- **Clean fs errors** — compile/publish/persona map raw `os error 2` →
+  `file not found: <path>`.
+- **Anthropic turn errors surface** instead of an empty success (a failed Claude
+  turn returns the real error, e.g. low-balance).
+
+### Internal
+
+- `design/model-agnostic.md` (the multi-model → local-model → coding-model →
+  cluster arc) and `docs/SOP-QA-001-autonomous-feedback.md` (an ISO-9001 QA
+  feedback procedure).
 
 ## [0.22.0] - 2026-06-05
 
