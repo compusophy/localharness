@@ -104,8 +104,11 @@ grep -q "^\*\*version:\*\* $VERSION " web/llms.txt || fail "llms.txt version sta
 step "cargo build (refreshes Cargo.lock)"
 cargo build --quiet
 
-step "cargo test"
-cargo test --quiet
+step "proof-of-spec gate (scripts/verify.sh)"
+# Full end-to-end gate: native tests + wasm32 guardrail + REAL cartridge
+# instantiate/render/compose. Catches what a bare `cargo test` cannot — the
+# browser app's wasm runtime never executes under the cargo suite.
+./scripts/verify.sh
 
 step "cargo clippy"
 cargo clippy --all-targets -- -D warnings 2>&1 | tail -5
