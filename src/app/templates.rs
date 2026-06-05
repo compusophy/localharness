@@ -578,7 +578,7 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
                     button type="button" data-action="header-admin-close" .modal-close { "×" }
                 }
                 div.admin-tab-panel.panel-account {
-                    (admin_identity_section(None, owner_hex.as_deref(), None))
+                    (admin_identity_section(None, owner_hex.as_deref(), None, has_wallet))
                     @if has_wallet {
                         (admin_devices_section())
                     }
@@ -793,6 +793,7 @@ fn admin_identity_section(
     name: Option<&str>,
     owner_hex: Option<&str>,
     tba_hex: Option<&str>,
+    has_wallet: bool,
 ) -> Markup {
     html! {
         div.admin-section {
@@ -812,8 +813,37 @@ fn admin_identity_section(
                         (short_addr(addr))
                     }
                 }
-            } @else {
+            } @else if has_wallet {
                 p.admin-blurb { "verifying…" }
+            } @else {
+                // No wallet on this device (post-reset / fresh device). Surface
+                // identity recovery HERE on the admin tab instead of dead-ending
+                // at "verifying…". Buttons are EXPLICIT user actions wired to the
+                // existing CreateIdentity / ShowImport / ImportSeed handlers —
+                // never auto-fired, so the deliberate no-auto-create gate holds.
+                p.admin-blurb { "no identity on this device" }
+                div.pair-slot {
+                    button type="button" data-action="create-identity" .ghost {
+                        "create a new identity"
+                    }
+                }
+                div.pair-slot {
+                    button type="button" data-action="show-import" .ghost {
+                        "i already have one — import seed"
+                    }
+                }
+                div #import-slot {}
+                div #identity-msg .admin-msg-slot {}
+                div #seed-msg .admin-msg-slot {}
+                // Mobile lifeline: a TOP-LEVEL link to apex (the apex signer
+                // iframe is dead on mobile, so in-place create/import can't run
+                // there — this navigation can). Restore your seed at apex.
+                p.admin-blurb {
+                    "on mobile? "
+                    a href="https://localharness.xyz/?adopt=1" target="_top" rel="noopener" {
+                        "restore from your seed →"
+                    }
+                }
             }
             @if let Some(addr) = tba_hex {
                 div.admin-identity-row {
@@ -1124,10 +1154,10 @@ pub(crate) fn admin_security_expanded() -> Markup {
 pub(crate) fn reset_confirm_inline() -> Markup {
     html! {
         div #reset-confirm-slot .reset-confirm {
-            span.reset-confirm-prompt { "type RESET to wipe this device" }
+            span.reset-confirm-prompt { "type RESET to clear this device — identity + names are kept" }
             input #reset-confirm-text .redeem-input type="text" placeholder="RESET";
             div.reset-confirm-actions {
-                button type="button" data-action="reset-confirm" .danger { "wipe" }
+                button type="button" data-action="reset-confirm" .danger { "reset" }
                 button type="button" data-action="reset-cancel" .ghost { "cancel" }
             }
             div #reset-confirm-msg .admin-msg-slot {}

@@ -1491,7 +1491,10 @@ pub async fn release_name_sponsored(
         value_wei: 0,
         input: encode_release_name(token_id),
     };
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 400_000).await
+    // 1M, not a flat 400k: a name burn runs ~375-425k all-in (cold-slot clears
+    // + ~275k sponsorship), so 400k OOG-reverted while the UI reported success.
+    // Over-budget is free — the sponsor pays gas USED, not the limit.
+    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 1_000_000).await
 }
 
 /// Sponsored TBA remove-signer + index unlink (the unlink half of the

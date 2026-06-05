@@ -2479,7 +2479,12 @@ pub(crate) async fn run_release_subdomain(name: &str) -> Result<String, String> 
         value_wei: 0,
         input: super::registry::release_name_calldata(token_id),
     };
-    run_sponsored_tempo_call(&owner, vec![call], 400_000, "release subdomain").await
+    // A burn (clears the name's cold slots) runs ~100-150k inner + ~275k
+    // sponsorship ≈ ~375-425k — a flat 400k had near-zero margin and silently
+    // OOG-reverted (chain reverts, name stays `isTaken`, UI reports success:
+    // the feedback/redeem OOG bug class). Over-budget is free (the sponsor is
+    // billed on gas USED, not the limit), so headroom is the right call.
+    run_sponsored_tempo_call(&owner, vec![call], 1_000_000, "release subdomain").await
 }
 
 fn short_addr(addr: &str) -> String {
@@ -3511,11 +3516,12 @@ fn toggle_layout_class(class: &str) {
     layout.set_class_name(&new_cls);
 }
 
-/// Inline-confirmed reset: nuke every entry at OPFS root, reload.
+/// Inline-confirmed reset: clear local app data at OPFS root, reload.
+/// Identity-preserving — keeps the seed + owner hint (see the loop below).
 /// Replaces the old `window.confirm()` flow per [[feedback-no-js-alerts]].
 fn reset_confirm_pressed() {
-    // Typed confirmation — a wipe destroys the seed/identity on this
-    // device, so require the literal word, not just a second click.
+    // Typed confirmation — reset still clears app data/keys, so require the
+    // literal word, not just a second click. (It no longer touches the seed.)
     let typed = dom::input_by_id("reset-confirm-text")
         .map(|i| i.value().trim().to_string())
         .unwrap_or_default();
@@ -3530,6 +3536,15 @@ fn reset_confirm_pressed() {
         let fs = super::shared_opfs();
         if let Ok(entries) = fs.read_dir("").await {
             for entry in entries {
+                // Identity-preserving reset: KEEP the seed (`.lh_wallet`) and the
+                // proven-owner hint (`.lh_owner`) so the device re-verifies on
+                // reload instead of bricking. Everything else — history, app.rl,
+                // cached keys, working files — is cleared. The seed is the ONLY
+                // key to on-chain ownership; a local-only delete with no backup
+                // was the brick (mobile especially: no signer-iframe path back).
+                if entry.name == ".lh_wallet" || entry.name == ".lh_owner" {
+                    continue;
+                }
                 let _ = fs.delete(&entry.name).await;
             }
         }
