@@ -1,8 +1,10 @@
-// localharness credit proxy — transparent Gemini passthrough (Edge).
+// localharness credit proxy — multi-provider LLM passthrough (Edge).
 //
-// The browser app (Rust/wasm) in *platform-credits* mode points its
-// GeminiClient at this proxy (`with_base_url`) and sends requests with the
-// SAME path/shape it would send to Google. This function:
+// Routes by path: /v1beta/models/<model>:<method> -> Gemini (the original,
+// byte-identical path), /v1/messages -> Anthropic. A client in *platform-
+// credits* mode points its backend client at this proxy (`with_base_url`) and
+// sends requests with the SAME path/shape it would send to the provider. This
+// function:
 //   1. authenticates the caller from the `x-goog-api-key` header, which in
 //      credits mode carries a localharness AUTH TOKEN of the form
 //      `<address>:<timestamp>:<signature>` (an Ethereum personal-sign over
@@ -44,6 +46,8 @@ export const config = { runtime: 'edge' };
 const TEMPO_RPC = 'https://rpc.moderato.tempo.xyz';
 const REGISTRY = '0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
+const ANTHROPIC_BASE = 'https://api.anthropic.com';
+const ANTHROPIC_VERSION = '2023-06-01';
 const CHAIN_ID = 42431;
 // `$LH` (18-decimal wei) debited per request in per-request mode.
 // Env-overridable; default 0.01 LH.
@@ -54,6 +58,30 @@ const COST_PER_REQUEST_WEI = ((): bigint => {
     return 10_000_000_000_000_000n;
   }
 })();
+
+// Per-model price in `$LH` wei. Gemini stays FLAT (COST_PER_REQUEST_WEI —
+// unchanged, so its pricing is byte-identical); Anthropic is per-model. An
+// unknown anthropic model falls to a mid price, NEVER free (so a caller can't
+// request an unpriced model to dodge the meter). All env-overridable.
+function envWei(name: string, def: bigint): bigint {
+  try {
+    const v = process.env[name];
+    return v ? BigInt(v) : def;
+  } catch {
+    return def;
+  }
+}
+const PRICE_ANTHROPIC: Record<string, bigint> = {
+  'claude-haiku-4-5-20251001': envWei('PRICE_ANTHROPIC_HAIKU_WEI', 10_000_000_000_000_000n), // 0.01
+  'claude-sonnet-4-6': envWei('PRICE_ANTHROPIC_SONNET_WEI', 50_000_000_000_000_000n), // 0.05
+  'claude-opus-4-8': envWei('PRICE_ANTHROPIC_OPUS_WEI', 200_000_000_000_000_000n), // 0.20
+};
+const PRICE_ANTHROPIC_DEFAULT = envWei('PRICE_ANTHROPIC_DEFAULT_WEI', 50_000_000_000_000_000n);
+
+function priceOf(provider: 'gemini' | 'anthropic', model: string): bigint {
+  if (provider === 'gemini') return COST_PER_REQUEST_WEI;
+  return PRICE_ANTHROPIC[model] ?? PRICE_ANTHROPIC_DEFAULT;
+}
 
 const TEMPO_CHAIN = defineChain({
   id: CHAIN_ID,
@@ -91,7 +119,7 @@ const METHOD_RE = /^(generateContent|streamGenerateContent)$/;
 function corsHeaders(origin: string | null): Record<string, string> {
   const h: Record<string, string> = {
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'content-type, x-goog-api-key',
+    'Access-Control-Allow-Headers': 'content-type, x-goog-api-key, x-api-key, anthropic-version',
     'Vary': 'Origin',
   };
   if (
@@ -254,20 +282,43 @@ export default async function handler(req: Request): Promise<Response> {
   }
 
   try {
-    // Validate the path: /v1beta/models/<model>:<method>. The model and
-    // method are extracted and allowlisted so nothing the caller controls can
-    // reshape the key-bearing upstream request (H3).
+    // Route by path → provider + model. Gemini: /v1beta/models/<model>:<method>
+    // (model/method allowlisted so nothing the caller controls reshapes the
+    // key-bearing upstream URL — H3). Anthropic: /v1/messages (model is in the
+    // JSON body; read once here and forwarded verbatim).
     const reqUrl = new URL(req.url);
-    const m = reqUrl.pathname.match(
-      /^\/v1beta\/models\/([^:/]+):([^:/]+)$/,
-    );
-    if (!m || !MODEL_RE.test(m[1]) || !METHOD_RE.test(m[2])) {
+    let provider: 'gemini' | 'anthropic';
+    let model: string;
+    let anthropicBody: string | null = null;
+
+    const gem = reqUrl.pathname.match(/^\/v1beta\/models\/([^:/]+):([^:/]+)$/);
+    if (gem) {
+      if (!MODEL_RE.test(gem[1]) || !METHOD_RE.test(gem[2])) {
+        return json({ error: 'unsupported path' }, 400, origin);
+      }
+      provider = 'gemini';
+      model = gem[1];
+    } else if (reqUrl.pathname === '/v1/messages') {
+      provider = 'anthropic';
+      anthropicBody = await req.text();
+      let parsed: { model?: unknown };
+      try {
+        parsed = JSON.parse(anthropicBody);
+      } catch {
+        return json({ error: 'invalid JSON body' }, 400, origin);
+      }
+      model = typeof parsed.model === 'string' ? parsed.model : '';
+      if (!model || !MODEL_RE.test(model)) {
+        return json({ error: 'missing or invalid model' }, 400, origin);
+      }
+    } else {
       return json({ error: 'unsupported path' }, 400, origin);
     }
 
-    // AUTH — the localharness token rides in x-goog-api-key as
-    // `<address>:<timestamp>:<signature>`.
-    const token = req.headers.get('x-goog-api-key') ?? '';
+    // AUTH — the localharness token `<address>:<timestamp>:<signature>` rides in
+    // x-goog-api-key (Gemini clients) OR x-api-key (Anthropic clients).
+    const token =
+      req.headers.get('x-goog-api-key') ?? req.headers.get('x-api-key') ?? '';
     const parts = token.split(':');
     if (parts.length !== 3) {
       return json({ error: 'missing or malformed auth token' }, 401, origin);
@@ -296,43 +347,67 @@ export default async function handler(req: Request): Promise<Response> {
 
     // On-chain gate: serve if the caller has an active TIME session OR a
     // funded PER-REQUEST balance. Both modes supported transparently.
+    const cost = priceOf(provider, model);
     const [expiry, credit] = await Promise.all([
       sessionExpiryOf(address),
       creditOf(address),
     ]);
     const hasSession = expiry > BigInt(now);
-    const hasCredit = credit >= COST_PER_REQUEST_WEI;
+    const hasCredit = credit >= cost;
     if (!hasSession && !hasCredit) {
       return json({ error: 'no active session or credit' }, 402, origin);
     }
-    // Per-request: when no flat session covers it, debit the meter before
-    // serving. Fail closed if the debit can't be submitted (don't serve a
-    // free request).
+    // Per-request: when no flat session covers it, debit the PER-MODEL cost
+    // before serving. Fail closed if the debit can't be submitted (don't serve
+    // a free request).
     if (!hasSession) {
       try {
-        await meterDebit(address, COST_PER_REQUEST_WEI);
+        await meterDebit(address, cost);
       } catch (e) {
         return json({ error: 'metering failed: ' + (e as Error).message }, 502, origin);
       }
     }
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      return json({ error: 'proxy misconfigured: missing GEMINI_API_KEY' }, 500, origin);
-    }
-
-    // Forward verbatim: same path + query, raw body, real key in the HEADER
+    // Forward to the right upstream with the SERVER-held key in the HEADER
     // (never the URL). Stream the SSE body straight back.
-    const upstreamUrl = GEMINI_BASE + reqUrl.pathname + reqUrl.search;
-    const upstream = await fetch(upstreamUrl, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-goog-api-key': apiKey,
-        accept: req.headers.get('accept') ?? 'text/event-stream',
-      },
-      body: await req.text(),
-    });
+    let upstream: Response;
+    if (provider === 'gemini') {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        return json({ error: 'proxy misconfigured: missing GEMINI_API_KEY' }, 500, origin);
+      }
+      upstream = await fetch(GEMINI_BASE + reqUrl.pathname + reqUrl.search, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-goog-api-key': apiKey,
+          accept: req.headers.get('accept') ?? 'text/event-stream',
+        },
+        body: await req.text(),
+      });
+    } else {
+      const apiKey = process.env.ANTHROPIC_API_KEY;
+      if (!apiKey) {
+        return json(
+          {
+            error:
+              'proxy missing ANTHROPIC_API_KEY — add it to the proxy env to enable Claude on credits',
+          },
+          500,
+          origin,
+        );
+      }
+      upstream = await fetch(ANTHROPIC_BASE + '/v1/messages', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': ANTHROPIC_VERSION,
+          accept: req.headers.get('accept') ?? 'text/event-stream',
+        },
+        body: anthropicBody as string,
+      });
+    }
 
     return new Response(upstream.body, {
       status: upstream.status,
