@@ -31,6 +31,7 @@
 //!   feedback [--as <me>] [text]
 //!                            submit on-chain feedback (text), or read the log (no text)
 //!   probe [--as <fleet>]     autonomous QA self-checks; report failures on-chain
+//!   triage                   dedup + recurrence-rank the on-chain feedback log
 //!   threads [--as <me>]      list your saved call conversations
 //!   forget [--as <me>] <name>  drop a saved conversation (or `--all`)
 //!   whoami [--json] <name>   profile of <name>: owner, wallet, persona, face
@@ -68,6 +69,7 @@ USAGE:
   localharness list [--as <me>]          list the subdomains you own (+ --json)
   localharness feedback [--as <me>] [text]   submit on-chain feedback, or read all
   localharness probe [--as <fleet>]      run QA self-checks; report failures on-chain
+  localharness triage                    dedup + rank the on-chain feedback log
   localharness threads [--as <me>]       list your saved call conversations
   localharness forget [--as <me>] <name> drop a saved conversation (or --all)
   localharness whoami [--json] <name>    profile of <name> (owner, wallet, …; alias: lookup)
@@ -136,6 +138,7 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
         },
+        Some("triage") => triage().await,
         Some("threads") => match take_as_flag(&args[1..]) {
             Ok((caller, _)) => threads(caller),
             Err(e) => {
@@ -1373,6 +1376,55 @@ fn format_feedback(entries: &[registry::FeedbackEntry]) -> String {
     out
 }
 
+/// Collapse feedback bodies into a deduplicated, recurrence-ranked work-list:
+/// the same bug filed across many probe runs becomes ONE item, ranked by how
+/// often it recurred (most-reported first). Dedup BEFORE ranking, else the
+/// log's natural repetition drowns the signal. Ties break by first-seen order
+/// for stable output. The triage agent's deterministic core (roadmap Phase 4).
+fn triage_findings(bodies: &[String]) -> Vec<(String, usize)> {
+    use std::collections::HashMap;
+    // key -> (representative text, count, first-seen index)
+    let mut counts: HashMap<String, (String, usize, usize)> = HashMap::new();
+    for (i, body) in bodies.iter().enumerate() {
+        let key = body.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+        if key.is_empty() {
+            continue;
+        }
+        let e = counts.entry(key).or_insert_with(|| (body.trim().to_string(), 0, i));
+        e.1 += 1;
+    }
+    let mut v: Vec<(String, usize, usize)> = counts.into_values().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)));
+    v.into_iter().map(|(rep, count, _)| (rep, count)).collect()
+}
+
+/// `localharness triage` — read the on-chain feedback log and print a
+/// deduplicated, recurrence-ranked work-list. Read-only, no `$LH`. Prefers the
+/// `qa/v1` body when an entry is a fleet envelope.
+async fn triage() -> i32 {
+    let entries = match registry::list_feedback().await {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("RPC error: {e}");
+            return 1;
+        }
+    };
+    let bodies: Vec<String> = entries
+        .iter()
+        .map(|e| parse_qa_envelope(&e.text).map(|env| env.body).unwrap_or_else(|| e.text.clone()))
+        .collect();
+    let ranked = triage_findings(&bodies);
+    if ranked.is_empty() {
+        println!("no feedback to triage");
+        return 0;
+    }
+    println!("{} distinct item(s), most-recurring first:", ranked.len());
+    for (i, (rep, count)) in ranked.iter().enumerate() {
+        println!("  {}. (x{count}) {}", i + 1, rep.replace('\n', " "));
+    }
+    0
+}
+
 /// Read the on-chain feedback log (`localharness feedback`, no text).
 async fn feedback_read() -> i32 {
     match registry::list_feedback().await {
@@ -1873,7 +1925,7 @@ mod tests {
         // command can't ship undocumented for beta testers reading `help`.
         for cmd in [
             "create", "compile", "publish", "face", "persona", "call", "list",
-            "feedback", "probe", "threads", "forget", "whoami",
+            "feedback", "probe", "triage", "threads", "forget", "whoami",
         ] {
             assert!(
                 USAGE.contains(cmd),
@@ -1929,6 +1981,28 @@ mod tests {
         // file an on-chain bug — so it doubles as a platform-health assertion.
         let fails = run_qa_checks();
         assert!(fails.is_empty(), "probe found issues on a healthy build: {fails:?}");
+    }
+
+    #[test]
+    fn triage_dedups_and_ranks_by_recurrence() {
+        let bodies = vec![
+            "Compile leaks OS error".to_string(),
+            "compile leaks os error".to_string(),       // same modulo case
+            "  Compile   leaks OS error ".to_string(),  // same modulo whitespace
+            "whoami is slow".to_string(),
+        ];
+        let ranked = triage_findings(&bodies);
+        assert_eq!(ranked.len(), 2, "two distinct issues after dedup");
+        assert_eq!(ranked[0].1, 3, "the recurring one ranks first with count 3");
+        assert!(ranked[0].0.to_lowercase().contains("compile leaks"));
+        assert_eq!(ranked[1].1, 1);
+    }
+
+    #[test]
+    fn triage_skips_empty_bodies() {
+        let bodies = vec!["".to_string(), "   ".to_string(), "real bug".to_string()];
+        let ranked = triage_findings(&bodies);
+        assert_eq!(ranked, vec![("real bug".to_string(), 1)]);
     }
 
     #[test]
