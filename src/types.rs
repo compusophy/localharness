@@ -1,18 +1,18 @@
 //! Public boundary types for the SDK.
 //!
-//! These mirror the Pydantic models in `google/antigravity/types.py` so a
-//! payload that round-trips through JSON looks identical on the wire. The
-//! Rust port uses owned data (`String`/`Vec`) at the boundary for ergonomic
-//! cloning; hot paths in the connection layer use `Bytes` where it pays.
+//! Provider-neutral, wire-adjacent types every backend maps onto — the
+//! model-agnostic contract above the connection layer. Owned data
+//! (`String`/`Vec`) at the boundary for ergonomic cloning; hot paths in the
+//! connection layer use `Bytes` where it pays.
 
 use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-// Google's chat model. `gemini-3.x` doesn't exist on the public API
-// yet — using a model id the API actually accepts. Bump this when
-// Google publishes newer ids (and re-test 400s).
-/// Default chat model ID.
+// Default chat model FOR THE GEMINI BACKEND. Verify ids against the live API
+// before changing (model ids flip; re-test 400s). Other backends carry their
+// own default (e.g. `claude-haiku-4-5-20251001` for the Anthropic backend).
+/// Default chat model ID (Gemini backend).
 pub const DEFAULT_MODEL: &str = "gemini-3.5-flash";
 /// Default image generation model ID.
 pub const DEFAULT_IMAGE_GENERATION_MODEL: &str = "gemini-2.0-flash-exp-image-generation";

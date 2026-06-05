@@ -2,8 +2,8 @@
 
 # `localharness`
 
-**A Rust-native agent SDK for Google's Gemini API — and a self-sovereign,
-browser-resident agent platform built on it.**
+**A Rust-native, model-agnostic agent SDK (Gemini today; pluggable backends) —
+and a self-sovereign, browser-resident agent platform built on it.**
 
 [![crates.io](https://img.shields.io/crates/v/localharness.svg?style=flat-square)](https://crates.io/crates/localharness)
 [![docs.rs](https://img.shields.io/docsrs/localharness?style=flat-square)](https://docs.rs/localharness)
@@ -16,7 +16,8 @@ browser-resident agent platform built on it.**
 
 One Rust crate, two faces:
 
-- **The SDK.** A complete Gemini agent loop — streaming text, custom tools,
+- **The SDK.** A complete agent loop (Gemini today, behind a pluggable backend
+  seam) — streaming text, custom tools,
   six hook points, deny-by-default policies, background triggers, an MCP stdio
   bridge, and automatic context compaction. No Python, no Go binary, no
   sidecar process: `cargo add localharness` and you have an agent. Compiles to

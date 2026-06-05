@@ -4,8 +4,10 @@ Project context for Claude Code sessions. Read this first.
 
 ## What this is
 
-`localharness` is a Rust-native agent SDK for Google's Gemini API **and** a
-self-sovereign browser-resident agent platform built on it. ONE crate;
+`localharness` is a Rust-native, **model-agnostic** agent SDK (Gemini is the one
+shipping backend today, behind a `Connection`/`ConnectionStrategy` seam; Anthropic
+next) **and** a self-sovereign browser-resident agent platform built on it. ONE
+crate;
 `cargo add` gives an agent loop with streaming text, tool calling, hooks,
 policies, triggers, MCP, and context compaction. Build with `browser-app` on
 wasm32 and you also get the live IDE at `<name>.localharness.xyz`.

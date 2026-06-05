@@ -148,7 +148,7 @@ fn spawn_stderr_logger(mut stderr: tokio::process::ChildStderr) -> JoinHandle<()
                     while let Some(pos) = buf.iter().position(|b| *b == b'\n') {
                         let line: Vec<u8> = buf.drain(..=pos).collect();
                         let line = String::from_utf8_lossy(&line[..line.len() - 1]);
-                        debug!(target: "antig::mcp", "{}", line.trim_end_matches('\r'));
+                        debug!(target: "localharness::mcp", "{}", line.trim_end_matches('\r'));
                     }
                 }
                 Err(_) => break,

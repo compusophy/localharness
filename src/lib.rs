@@ -1,4 +1,4 @@
-//! # localharness — Rust-native agent SDK for Gemini
+//! # localharness — Rust-native, model-agnostic agent SDK
 //!
 //! Build production agents with streaming text, custom tools, safety
 //! policies, and background triggers — all from a single `cargo add`,

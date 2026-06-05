@@ -152,4 +152,4 @@ existing" rather than silently minting a second identity.
 
 ## Architecture
 
-Single Rust crate. Compiles to native (tokio) or wasm32 (browser). The `browser-app` feature flag builds the full IDE. Backend is Gemini API with streaming SSE, tool calling, and automatic context compaction.
+Single Rust crate. Compiles to native (tokio) or wasm32 (browser). The `browser-app` feature flag builds the full IDE. The LLM backend is pluggable behind a `Connection`/`ConnectionStrategy` trait layer — the shipping backend is the Gemini API (streaming SSE, tool calling, automatic context compaction); an Anthropic backend is next.

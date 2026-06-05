@@ -1,9 +1,8 @@
-//! Multimodal input primitives.
+//! Multimodal input primitives (text, images, documents, audio, video).
 //!
-//! Mirrors `google.antigravity.types.{Image, Document, Audio, Video, from_file}`.
-//! Validation lists track the Python `SUPPORTED_*_MIMES` frozensets — keeping
-//! the supported MIME surface identical guarantees a Rust caller's payload is
-//! accepted by the same harness build the Python SDK targets.
+//! These are the harness's own provider-neutral input types — the data model
+//! every LLM backend converts FROM. The validation lists below enumerate the
+//! MIME types accepted by the supported backends.
 
 use std::path::{Path, PathBuf};
 
