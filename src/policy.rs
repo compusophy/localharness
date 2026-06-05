@@ -388,6 +388,26 @@ mod tests {
         assert!(evaluate(&policies, &call("anything")).allow);
     }
 
+    #[test]
+    fn autonomous_loop_deny_by_default_allowlist_enforces_at_dispatch() {
+        // Roadmap Track B / Phase 0b: an autonomous QA agent registers
+        // deny-by-default + an explicit allowlist of its read-only qa_* tools.
+        // Anything off the list — a write tool, an off-list builtin, or a
+        // model-hallucinated/injected tool name — is DENIED at dispatch. This
+        // is what makes 0b's "custom tools require a policy" real enforcement
+        // rather than a prompt-level honor system the model can be talked past.
+        let policies = vec![
+            deny_all(),
+            Policy::allow("qa_compile"),
+            Policy::allow("qa_chain"),
+        ];
+        assert!(evaluate(&policies, &call("qa_compile")).allow);
+        assert!(evaluate(&policies, &call("qa_chain")).allow);
+        assert!(!evaluate(&policies, &call("qa_publish")).allow, "off-list write tool denied");
+        assert!(!evaluate(&policies, &call("run_command")).allow, "off-list builtin denied");
+        assert!(!evaluate(&policies, &call("hallucinated_tool")).allow, "unknown tool denied");
+    }
+
     // Realistic composition: a base allow + workspace containment denies.
     // `workspace_only` is deny-only, so on its own every non-matching call
     // hits the default-deny; in practice it's paired with an allow/approve
