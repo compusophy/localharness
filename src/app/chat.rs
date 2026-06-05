@@ -1350,7 +1350,7 @@ fn submit_feedback_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let from_hex = from_hex.ok_or_else(|| {
                 crate::error::Error::other("no identity — claim a subdomain first")
             })?;
-            match super::events::submit_feedback_onchain(&from_hex, text).await {
+            match super::feedback::submit_feedback_onchain(&from_hex, text).await {
                 Ok(tx_hash) => Ok(serde_json::json!({
                     "status": "submitted",
                     "tx_hash": tx_hash,

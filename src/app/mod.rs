@@ -31,6 +31,7 @@ pub(crate) mod agent_config;
 mod dom;
 mod embed;
 mod events;
+mod feedback;
 mod history;
 mod key_store;
 mod opfs;
