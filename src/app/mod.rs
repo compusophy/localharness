@@ -232,11 +232,33 @@ fn mount() -> Result<(), JsValue> {
         })
     }));
 
-    // Compose mode short-circuit (?compose=name1,name2,...). Renders a
-    // grid of embed-mode iframes — the minimal host harness for the
-    // composable-subdomain primitive. Works on any origin.
+    // Compose mode short-circuit (?compose=name1,name2,...). The iframe-free
+    // host::compose path (roadmap Track A): fetch each named subdomain's
+    // PUBLISHED app.wasm and composite them into one framebuffer via
+    // `display::mount_composition` — no iframes, one shared canvas, focus-gated
+    // pointer routing, budget-capped. Works on any origin.
     if let Some(names) = compose::compose_names() {
-        compose::paint_compose(names)?;
+        root.set_inner_html(&templates::app_fullscreen(false).into_string());
+        wasm_bindgen_futures::spawn_local(async move {
+            let mut mods: Vec<Vec<u8>> = Vec::new();
+            for name in &names {
+                match compose_module_wasm(name).await {
+                    Some(bytes) => mods.push(bytes),
+                    None => web_sys::console::warn_1(&JsValue::from_str(&format!(
+                        "compose: {name} has no published app to composite"
+                    ))),
+                }
+            }
+            if mods.is_empty() {
+                if let Some(r) = dom::document().ok().and_then(|d| d.get_element_by_id("root")) {
+                    r.set_inner_html(
+                        "<main style=\"padding:24px;color:#7a8493;font:14px ui-monospace,Menlo,Consolas,monospace\">compose · no named module published an app to composite</main>",
+                    );
+                }
+            } else if let Err(err) = display::mount_composition(mods).await {
+                web_sys::console::warn_1(&JsValue::from_str(&format!("compose failed: {err:?}")));
+            }
+        });
         return Ok(());
     }
 
@@ -1133,6 +1155,15 @@ async fn local_public_html() -> Option<String> {
 
 /// Cartridge bytes for `name`: the local `app.rl` working copy first (so
 /// the owner previews unpublished edits), else the on-chain published wasm.
+/// Fetch the PUBLISHED on-chain `app.wasm` for another subdomain `name` — no
+/// local working-copy fallback, since composing means showing what that
+/// subdomain publishes to the world. `None` if the name is unregistered or has
+/// published no app. Backs the iframe-free `?compose=` compositor.
+async fn compose_module_wasm(name: &str) -> Option<Vec<u8>> {
+    let id = registry::id_of_name(name).await.ok().filter(|&i| i != 0)?;
+    registry::app_wasm_of(id).await.ok().flatten()
+}
+
 async fn resolve_cartridge(id: Option<u64>) -> Option<Vec<u8>> {
     if let Some(w) = local_cartridge_wasm().await {
         return Some(w);

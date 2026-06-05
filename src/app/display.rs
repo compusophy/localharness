@@ -108,6 +108,32 @@ struct CartridgeRuntime {
     net: net::NetRuntime,
 }
 
+/// Where a cartridge's `pointer_*` / `state_*` host imports read from. The
+/// single-cartridge path uses [`InputSource::Global`] (the shared thread-locals,
+/// driven by the delegated DOM listeners) — identical to before host::compose.
+/// A composed child uses [`InputSource::Local`]: its own pointer + 64-slot
+/// register file, which the compositor fills focus-gated each frame so siblings
+/// stay isolated (roadmap Track A / Phase 1a + 1c).
+enum InputSource {
+    Global,
+    Local {
+        pointer: Rc<Cell<(i32, i32)>>,
+        down: Rc<Cell<i32>>,
+        state: Rc<RefCell<[i32; 64]>>,
+    },
+}
+
+/// One composited child held in the [`crate::compose::ModuleTable`]: its
+/// `frame`/`render` entry point, its focus-gated input cells (written by the
+/// compositor each tick), and the runtime/memory kept alive for its lifetime.
+struct ChildHandle {
+    frame: Function,
+    pointer: Rc<Cell<(i32, i32)>>,
+    down: Rc<Cell<i32>>,
+    _runtime: CartridgeRuntime,
+    _mem: SharedMemory,
+}
+
 /// Shared handle to the cartridge's linear memory. The `host_net`
 /// closures read/write length-prefixed strings through it, but memory
 /// only exists after instantiation — so the closures hold this cell and
@@ -186,7 +212,8 @@ async fn run_with_ctx(
     // after instantiation. Share a cell the net closures read lazily.
     let mem_cell: SharedMemory = Rc::new(RefCell::new(JsValue::NULL));
 
-    let (imports, runtime) = build_host_display(&fb, &mem_cell)?;
+    let full = crate::raster::Viewport::full(FB_W as i32, FB_H as i32);
+    let (imports, runtime) = build_host_display(&fb, &mem_cell, full, InputSource::Global)?;
     // Hold the closures alive (drops the previous cartridge's set).
     RUNTIME.with(|cell| *cell.borrow_mut() = Some(runtime));
 
@@ -209,10 +236,161 @@ async fn run_with_ctx(
     Ok(())
 }
 
+/// Composite several cartridges into ONE framebuffer, iframe-free — the live
+/// host::compose path (roadmap Track A), proven first in `scripts/render-
+/// compose.js`. Each module gets its own wasm `Instance` + `Memory`, its own
+/// 64-slot state, and a grid-cell [`crate::raster::Viewport`] it draws into via
+/// the SAME `build_host_display` closures the single-cartridge path uses (a
+/// child can't reach outside its rect — clipping is structural). Children are
+/// held in the native-tested [`crate::compose::ModuleTable`]; the compositor
+/// ticks each into the shared framebuffer and presents ONCE per frame (the
+/// present-ownership inversion of Phase 0a is what makes that single present
+/// possible). Admission is capped by [`crate::compose::ComposeBudget`] so an
+/// attacker-chosen `?compose=` graph can't exhaust host memory.
+///
+/// `host_net` is wired per-child as today; a per-child URL allowlist (so a
+/// composed module can't beacon under the compositor's origin) is the documented
+/// follow-up gate (roadmap A4 / cross-cutting risk #1), tracked before any
+/// agent-driven `host_compose` spawn ABI lands.
+pub(crate) async fn mount_composition(modules: Vec<Vec<u8>>) -> Result<(), JsValue> {
+    let ctx = size_and_get_ctx()?;
+    // Bump the generation so any previous cartridge/compositor loop stops.
+    let generation = FRAME_GEN.with(|g| {
+        let n = g.get().wrapping_add(1);
+        g.set(n);
+        n
+    });
+    RUNTIME.with(|cell| *cell.borrow_mut() = None);
+
+    let fb: Framebuffer = Rc::new(RefCell::new(black_framebuffer()));
+    POINTER_DOWN.with(|d| d.set(0));
+
+    let viewports = grid_viewports(modules.len());
+    let budget = crate::compose::ComposeBudget::v1();
+    let mut table: crate::compose::ModuleTable<ChildHandle> = crate::compose::ModuleTable::new();
+    let mut total_bytes = 0usize;
+
+    for (bytes, vp) in modules.into_iter().zip(viewports) {
+        if let Err(reason) = budget.admit(table.len(), total_bytes, bytes.len()) {
+            web_sys::console::warn_1(&JsValue::from_str(&reason));
+            continue;
+        }
+        let pointer = Rc::new(Cell::new((-1, -1)));
+        let down = Rc::new(Cell::new(0));
+        let state = Rc::new(RefCell::new([0i32; 64]));
+        let mem: SharedMemory = Rc::new(RefCell::new(JsValue::NULL));
+        let input = InputSource::Local { pointer: pointer.clone(), down: down.clone(), state };
+        let (imports, runtime) = build_host_display(&fb, &mem, vp, input)?;
+
+        let result = JsFuture::from(WebAssembly::instantiate_buffer(&bytes, &imports)).await?;
+        let instance = Reflect::get(&result, &JsValue::from_str("instance"))?;
+        let exports = Reflect::get(&instance, &JsValue::from_str("exports"))?;
+        *mem.borrow_mut() = Reflect::get(&exports, &JsValue::from_str("memory"))?;
+
+        let Some(frame) = export_fn(&exports, "frame").or_else(|| export_fn(&exports, "render"))
+        else {
+            web_sys::console::warn_1(&JsValue::from_str("compose: a module exports neither frame nor render — skipped"));
+            continue;
+        };
+        total_bytes += bytes.len();
+        table.push(ChildHandle { frame, pointer, down, _runtime: runtime, _mem: mem }, vp);
+    }
+
+    if table.is_empty() {
+        return Err(JsValue::from_str("compose: no module could be mounted"));
+    }
+    start_compose_loop(table, generation, fb, ctx);
+    Ok(())
+}
+
+/// Tile `n` viewports across the framebuffer in a near-square grid (1→full,
+/// 2→side-by-side, 3-4→2x2, …). The compositor draws black between cells.
+fn grid_viewports(n: usize) -> Vec<crate::raster::Viewport> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let cols = (n as f64).sqrt().ceil() as i32;
+    let rows = (n as i32 + cols - 1) / cols; // ceil(n/cols); cols >= 1
+    let (cw, ch) = (FB_W as i32 / cols, FB_H as i32 / rows);
+    (0..n as i32)
+        .map(|i| crate::raster::Viewport { ox: (i % cols) * cw, oy: (i / cols) * ch, w: cw, h: ch })
+        .collect()
+}
+
+/// Set every framebuffer pixel to opaque black (the compositor clears the root
+/// once per frame before ticking children, so inter-cell gaps stay black).
+fn clear_black(buf: &mut [u8]) {
+    for px in buf.chunks_exact_mut(4) {
+        px[0] = 0;
+        px[1] = 0;
+        px[2] = 0;
+        px[3] = 255;
+    }
+}
+
+/// The compositor rAF loop: read the global pointer, hit-test it to the topmost
+/// child via [`crate::compose::ModuleTable::focus_at`], feed THAT child local
+/// pointer coords (siblings see `(-1,-1)`/up), clear the root, tick every child
+/// into the shared framebuffer, present once. Self-cancels when the generation
+/// moves past `generation` (a new load / `stop`), mirroring [`start_frame_loop`].
+fn start_compose_loop(
+    table: crate::compose::ModuleTable<ChildHandle>,
+    generation: u32,
+    fb: Framebuffer,
+    ctx: CanvasRenderingContext2d,
+) {
+    let start = js_sys::Date::now();
+    let table = Rc::new(RefCell::new(table));
+    let holder: FrameLoopHolder = Rc::new(RefCell::new(None));
+    let holder2 = holder.clone();
+
+    *holder.borrow_mut() = Some(Closure::wrap(Box::new(move || {
+        if FRAME_GEN.with(|g| g.get()) != generation {
+            let _ = holder2.borrow_mut().take();
+            return;
+        }
+        let t = (js_sys::Date::now() - start) as i32;
+        let (gx, gy) = POINTER.with(|p| p.get());
+        let gdown = POINTER_DOWN.with(|d| d.get());
+
+        let mut tb = table.borrow_mut();
+        let focus = tb.focus_at(gx, gy);
+        {
+            let mut buf = fb.borrow_mut();
+            clear_black(&mut buf);
+        }
+        tb.tick(|i, child, _vp, _pending| {
+            match focus {
+                Some((fi, lx, ly)) if fi == i => {
+                    child.pointer.set((lx, ly));
+                    child.down.set(gdown);
+                }
+                _ => {
+                    child.pointer.set((-1, -1));
+                    child.down.set(0);
+                }
+            }
+            // The child's host_display closures draw into `fb` through its own
+            // viewport; the compositor holds no `fb` borrow here.
+            let _ = child.frame.call1(&JsValue::NULL, &JsValue::from(t));
+        });
+        drop(tb);
+        present_framebuffer(&fb, &ctx);
+
+        if let Some(cb) = holder2.borrow().as_ref() {
+            let _ = request_af(cb);
+        }
+    }) as Box<dyn FnMut()>));
+
+    if let Some(cb) = holder.borrow().as_ref() {
+        let _ = request_af(cb);
+    }
+}
+
 /// Blit the host-owned framebuffer to the canvas. The host owns presenting now
 /// (the cartridge `present` import is a no-op) — called once after each
-/// `frame()`/`render()`. The seam a compositor will extend: draw every module's
-/// framebuffer, then present once. See `design/host-compose.md` (roadmap 0a).
+/// `frame()`/`render()`, and once per compositor frame after every child has
+/// drawn. See `design/host-compose.md` (roadmap 0a).
 fn present_framebuffer(fb: &Framebuffer, ctx: &CanvasRenderingContext2d) {
     let buf = fb.borrow();
     if let Ok(img) = ImageData::new_with_u8_clamped_array_and_sh(Clamped(&buf[..]), FB_W, FB_H) {
@@ -226,12 +404,14 @@ fn present_framebuffer(fb: &Framebuffer, ctx: &CanvasRenderingContext2d) {
 fn build_host_display(
     fb: &Framebuffer,
     mem: &SharedMemory,
+    vp: crate::raster::Viewport,
+    input: InputSource,
 ) -> Result<(Object, CartridgeRuntime), JsValue> {
-    // The single-cartridge path draws through a full-screen viewport (identity
-    // transform). The pixel math lives in `crate::raster` (pure, native-tested)
-    // so host::compose can give a child a sub-rect viewport without touching
-    // these closures' shape. See `src/raster.rs` / design/host-compose.md.
-    let vp = crate::raster::Viewport::full(FB_W as i32, FB_H as i32);
+    // The viewport translates+clips this cartridge's draws into its sub-rect of
+    // the shared framebuffer: a full-screen identity transform for a single
+    // cartridge, a grid cell for a composed child (host::compose / Track A). The
+    // pixel math lives in `crate::raster` (pure, native-tested) so the child path
+    // is the same closures over a different rect. See `src/raster.rs`.
 
     let clear = {
         let fb = fb.clone();
@@ -292,23 +472,61 @@ fn build_host_display(
         )
     };
 
-    let width = Closure::<dyn FnMut() -> i32>::new(move || FB_W as i32);
-    let height = Closure::<dyn FnMut() -> i32>::new(move || FB_H as i32);
-    let pointer_x = Closure::<dyn FnMut() -> i32>::new(move || POINTER.with(|p| p.get().0));
-    let pointer_y = Closure::<dyn FnMut() -> i32>::new(move || POINTER.with(|p| p.get().1));
-    let pointer_down = Closure::<dyn FnMut() -> i32>::new(move || POINTER_DOWN.with(|d| d.get()));
-    let state_get = Closure::<dyn FnMut(i32) -> i32>::new(move |slot: i32| {
-        if !(0..64).contains(&slot) {
-            return 0;
+    // A child sees a display the size of its viewport, like Orbclient.
+    let width = Closure::<dyn FnMut() -> i32>::new(move || vp.w);
+    let height = Closure::<dyn FnMut() -> i32>::new(move || vp.h);
+
+    // Input + per-cartridge state: the single cartridge reads the shared
+    // thread-local pointer/state (`Global` — byte-identical to before the
+    // refactor); a composed child reads ITS OWN cells (`Local`), which the
+    // compositor populates per frame, focus-gated, so a click in one panel
+    // can't drive a sibling and each child keeps its own 64-slot register file.
+    let (pointer_x, pointer_y, pointer_down, state_get, state_set): (
+        Closure<dyn FnMut() -> i32>,
+        Closure<dyn FnMut() -> i32>,
+        Closure<dyn FnMut() -> i32>,
+        Closure<dyn FnMut(i32) -> i32>,
+        Closure<dyn FnMut(i32, i32)>,
+    ) = match input {
+        InputSource::Global => (
+            Closure::<dyn FnMut() -> i32>::new(move || POINTER.with(|p| p.get().0)),
+            Closure::<dyn FnMut() -> i32>::new(move || POINTER.with(|p| p.get().1)),
+            Closure::<dyn FnMut() -> i32>::new(move || POINTER_DOWN.with(|d| d.get())),
+            Closure::<dyn FnMut(i32) -> i32>::new(move |slot: i32| {
+                if !(0..64).contains(&slot) {
+                    return 0;
+                }
+                STATE.with(|s| s.borrow()[slot as usize])
+            }),
+            Closure::<dyn FnMut(i32, i32)>::new(move |slot: i32, value: i32| {
+                if !(0..64).contains(&slot) {
+                    return;
+                }
+                STATE.with(|s| s.borrow_mut()[slot as usize] = value);
+            }),
+        ),
+        InputSource::Local { pointer, down, state } => {
+            let (px, py, pd) = (pointer.clone(), pointer.clone(), down);
+            let (sg, ss) = (state.clone(), state);
+            (
+                Closure::<dyn FnMut() -> i32>::new(move || px.get().0),
+                Closure::<dyn FnMut() -> i32>::new(move || py.get().1),
+                Closure::<dyn FnMut() -> i32>::new(move || pd.get()),
+                Closure::<dyn FnMut(i32) -> i32>::new(move |slot: i32| {
+                    if !(0..64).contains(&slot) {
+                        return 0;
+                    }
+                    sg.borrow()[slot as usize]
+                }),
+                Closure::<dyn FnMut(i32, i32)>::new(move |slot: i32, value: i32| {
+                    if !(0..64).contains(&slot) {
+                        return;
+                    }
+                    ss.borrow_mut()[slot as usize] = value;
+                }),
+            )
         }
-        STATE.with(|s| s.borrow()[slot as usize])
-    });
-    let state_set = Closure::<dyn FnMut(i32, i32)>::new(move |slot: i32, value: i32| {
-        if !(0..64).contains(&slot) {
-            return;
-        }
-        STATE.with(|s| s.borrow_mut()[slot as usize] = value);
-    });
+    };
 
     let host_display = Object::new();
     set_fn(&host_display, "clear", &clear)?;

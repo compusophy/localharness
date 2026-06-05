@@ -275,32 +275,10 @@ pub(crate) fn embed_card(
     }
 }
 
-/// Compose-mode chrome — the host shell that includes one iframe per
-/// named module. Each iframe carries `data-embed-name=<name>` so the
-/// resize listener can target it. Iframe `src` is the embed-mode URL;
-/// initial height defaults to a small placeholder until the module
-/// posts `lh-embed-ready` and we resize.
-pub(crate) fn compose_chrome(names: &[String]) -> Markup {
-    html! {
-        main.compose-shell {
-            header.compose-header {
-                h1.compose-title { "compose" }
-                p.compose-sub { (names.len()) " module" @if names.len() != 1 { "s" } }
-            }
-            div.compose-grid {
-                @for name in names {
-                    div.compose-cell {
-                        iframe.compose-iframe
-                            src=(format!("https://{name}.localharness.xyz/?embed=1"))
-                            data-embed-name=(name)
-                            loading="lazy"
-                            referrerpolicy="no-referrer" {}
-                    }
-                }
-            }
-        }
-    }
-}
+// `compose_chrome` (the iframe-grid host shell) was removed when host::compose
+// landed iframe-free in the live app: `?compose=` now composites each module's
+// published `app.wasm` into one canvas via `display::mount_composition`
+// (roadmap Track A / Phase 3b). The `?embed=1` identity card above stays.
 
 /// Public agent directory (`?explore=1`) — a browsable gallery of every
 /// agent claimed on the registry. The grid is filled async by
