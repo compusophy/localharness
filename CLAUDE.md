@@ -148,8 +148,14 @@ vercel deploy --prod --yes                                         # deploy web/
   registry` (Diamond JSON-RPC). Pulls k256+sha3+rand_core+bip39. All targets —
   `sleep_ms` cfg-gated to tokio (native) / setTimeout (wasm).
 - `browser-app` (off): compiles `src/app/` as a wasm cdylib (the browser IDE).
-  Pulls maud, pulldown-cmark, +wallet transitively. No native effect. Built via
-  `wasm-pack build --no-default-features --features browser-app`.
+  Pulls maud, pulldown-cmark, +wallet, +anthropic transitively. No native effect.
+  Built via `wasm-pack build --no-default-features --features browser-app`.
+- `anthropic` (off): compiles the second LLM backend `src/backends/anthropic/`
+  (Claude Messages API as a `ConnectionStrategy`). PURELY ADDITIVE — pulls no new
+  deps, leaves the default build + Gemini backend untouched. BYOK
+  (`Agent::start_anthropic`) or, via the multi-provider credit proxy, platform
+  `$LH` credits. Pulled in transitively by `browser-app` so the in-tab model
+  selector can build the Claude path.
 - wasm targets auto-drop walkdir/tempfile, add wasm-bindgen-futures, uuid/js,
   getrandom/js via target-cfg.
 
@@ -597,7 +603,14 @@ and Tempo native AA (post-0.10.24) shipped. Next:
   accrue reputation; validators stake to re-execute claims.
 - **TBA-driven actions in the bundle** — UX for "send this tx from your agent's
   TBA"; contract surface ready, mostly UI.
-- **Second backend** (Anthropic/OpenAI/local) — abstractions in place.
+- **Second backend** — ✅ DONE (0.23.0). Anthropic (`src/backends/anthropic/`,
+  feature `anthropic`) ships as a second `ConnectionStrategy`; the credit proxy
+  (`proxy/api/gemini.ts`) is now MULTI-PROVIDER (routes Gemini `/v1beta/*` +
+  Anthropic `/v1/messages`, per-model `$LH` pricing, both platform keys); CLI
+  `call --model <id>` + a browser model selector (`src/app/model.rs`) pick Gemini
+  or Claude — on platform credits, no per-user provider key. Remaining: OpenAI /
+  local-WebGPU backends + the own coding model — see `design/model-agnostic.md`
+  Phases D–F.
 - **Tool-call activity in restored transcripts** — `TranscriptEntry` drops
   FunctionCall/FunctionResponse on replay today.
 - **At-rest encryption** — wallet-derived sym key over OPFS contents.

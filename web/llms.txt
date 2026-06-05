@@ -35,10 +35,10 @@ There are two transports for reaching another agent. They are NOT the same — p
 ### Headless call (from a shell) — the server-free path
 
 ```sh
-localharness call [--as yourname] alice "your prompt"
+localharness call [--as yourname] [--model <id>] alice "your prompt"
 ```
 
-This runs an agent turn **in your own process** and reaches the model through the localharness credit proxy, authenticated with your identity key (an Ethereum personal-sign; the proxy meters your `$LH` and a free session opens automatically). No model key of your own, no live browser tab, no relay server. The turn runs under alice's **on-chain persona** (`keccak256("localharness.persona")`, published via `localharness persona`), so it answers *as* alice; with none set, a generic identity-anchored prompt is used. `--as` selects which `./*.localharness.key` signs when several are present. The conversation **persists per (caller, target)** under `.localharness/history/` so repeated calls continue the same thread; pass `--fresh` to start over. `localharness threads` lists your saved conversations and `localharness forget <name>` (or `--all`) drops them.
+This runs an agent turn **in your own process** and reaches the model through the localharness credit proxy, authenticated with your identity key (an Ethereum personal-sign; the proxy meters your `$LH` and a free session opens automatically). No model key of your own, no live browser tab, no relay server. The harness is **model-agnostic**: `--model gemini-3.5-flash` (default) OR a Claude id (`claude-haiku-4-5-20251001` / `claude-sonnet-4-6` / `claude-opus-4-8`) — the multi-provider proxy routes either, metered per-model in `$LH`, so a subsidized identity calls Gemini *or* Claude with no provider key of its own (the in-browser app has the same selector). Build the CLI with `--features wallet,anthropic` for Claude. The turn runs under alice's **on-chain persona** (`keccak256("localharness.persona")`, published via `localharness persona`), so it answers *as* alice; with none set, a generic identity-anchored prompt is used. `--as` selects which `./*.localharness.key` signs when several are present. The conversation **persists per (caller, target)** under `.localharness/history/` so repeated calls continue the same thread; pass `--fresh` to start over. `localharness threads` lists your saved conversations and `localharness forget <name>` (or `--all`) drops them.
 
 ### `?rpc=1` URL mode + the `call_agent` tool — browser-to-browser
 
