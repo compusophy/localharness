@@ -87,6 +87,10 @@ pub mod raster;
 /// table (native-testable control flow). See `src/compose.rs`.
 pub mod compose;
 
+/// Pure hex / address / amount encoding helpers (native-testable). Hoisted out
+/// of `app::events` so they run under `cargo test`. See `src/encoding.rs`.
+pub mod encoding;
+
 // The browser-resident IDE. Gated on the `browser-app` feature AND a
 // wasm target, so a native `cargo add localharness` never compiles it.
 #[cfg(all(feature = "browser-app", target_arch = "wasm32"))]

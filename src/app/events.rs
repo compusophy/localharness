@@ -15,6 +15,9 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{Document, Element, KeyboardEvent, MouseEvent};
 
+use crate::encoding::{
+    bytes_to_hex_str, is_address_hex, parse_address, parse_token_amount, short_addr, tx_short_hash,
+};
 use crate::filesystem::Filesystem;
 
 use super::dom;
@@ -2487,14 +2490,6 @@ pub(crate) async fn run_release_subdomain(name: &str) -> Result<String, String> 
     run_sponsored_tempo_call(&owner, vec![call], 1_000_000, "release subdomain").await
 }
 
-fn short_addr(addr: &str) -> String {
-    let stripped = addr.trim_start_matches("0x");
-    if stripped.len() < 8 {
-        return addr.to_string();
-    }
-    format!("0x{}…{}", &stripped[..4], &stripped[stripped.len() - 4..])
-}
-
 /// Sponsored Tempo tx orchestrator. Apex iframe signs `sender_hash`,
 /// the bundle sponsor key signs `fee_payer_hash`, raw tx assembled
 /// locally and submitted. User holds zero of anything — `fee_payer`
@@ -2553,83 +2548,6 @@ pub(crate) async fn run_sponsored_tempo_call(
     let raw_hex = bytes_to_hex_str(&raw);
     super::registry::submit_and_wait_receipt(&raw_hex).await
         .map_err(|e| format!("submit: {e}"))
-}
-
-fn is_address_hex(s: &str) -> bool {
-    let stripped = s.trim_start_matches("0x").trim_start_matches("0X");
-    stripped.len() == 40 && stripped.bytes().all(|b| b.is_ascii_hexdigit())
-}
-
-/// Parse a human-typed amount like `1.5` or `0.000001` into 18-decimal
-/// token wei. Returns None on garbage input. Accepts up to 18 fractional
-/// digits; truncates anything finer.
-fn parse_token_amount(raw: &str) -> Option<u128> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return None;
-    }
-    let (whole_s, frac_s) = match raw.split_once('.') {
-        Some((w, f)) => (w, f),
-        None => (raw, ""),
-    };
-    let whole: u128 = if whole_s.is_empty() {
-        0
-    } else {
-        whole_s.parse().ok()?
-    };
-    if frac_s.bytes().any(|b| !b.is_ascii_digit()) {
-        return None;
-    }
-    let mut frac: u128 = 0;
-    let mut scale: u128 = 1_000_000_000_000_000_000;
-    for ch in frac_s.chars().take(18) {
-        let d = ch.to_digit(10)? as u128;
-        scale /= 10;
-        frac = frac.checked_add(d.checked_mul(scale)?)?;
-    }
-    let whole_wei = whole.checked_mul(1_000_000_000_000_000_000)?;
-    whole_wei.checked_add(frac)
-}
-
-fn parse_address(hex: &str) -> Result<[u8; 20], String> {
-    let stripped = hex.trim_start_matches("0x").trim_start_matches("0X");
-    if stripped.len() != 40 {
-        return Err(format!("address must be 40 hex chars, got {}", stripped.len()));
-    }
-    let mut out = [0u8; 20];
-    let bytes = stripped.as_bytes();
-    for i in 0..20 {
-        let hi = hex_nibble(bytes[i * 2])?;
-        let lo = hex_nibble(bytes[i * 2 + 1])?;
-        out[i] = (hi << 4) | lo;
-    }
-    Ok(out)
-}
-
-fn hex_nibble(b: u8) -> Result<u8, String> {
-    match b {
-        b'0'..=b'9' => Ok(b - b'0'),
-        b'a'..=b'f' => Ok(b - b'a' + 10),
-        b'A'..=b'F' => Ok(b - b'A' + 10),
-        _ => Err(format!("non-hex byte {b}")),
-    }
-}
-
-fn bytes_to_hex_str(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(2 + bytes.len() * 2);
-    s.push_str("0x");
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
-
-fn tx_short_hash(tx_hash: &str) -> String {
-    let stripped = tx_hash.trim_start_matches("0x");
-    if stripped.len() < 12 {
-        return tx_hash.to_string();
-    }
-    format!("{}…{}", &stripped[..6], &stripped[stripped.len() - 4..])
 }
 
 /// Toggle the header admin dropdown. Origin determines content —
