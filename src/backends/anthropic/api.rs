@@ -139,12 +139,23 @@ impl AnthropicClient {
             .await
             .map_err(|e| Error::other(format!("anthropic POST: {e}")))?;
 
+        let debug_sse = std::env::var("LH_DEBUG_SSE").is_ok();
+        if debug_sse {
+            eprintln!(
+                "[anthropic resp] status={} content-type={:?}",
+                response.status(),
+                response.headers().get("content-type"),
+            );
+        }
         if !response.status().is_success() {
             let status = response.status();
             let body = response
                 .text()
                 .await
                 .unwrap_or_else(|_| "<no body>".to_string());
+            if debug_sse {
+                eprintln!("[anthropic ERROR] HTTP {status}: {body}");
+            }
             return Err(Error::other(format!("anthropic HTTP {status}: {body}")));
         }
 

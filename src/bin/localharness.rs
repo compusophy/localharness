@@ -650,21 +650,31 @@ async fn publish(name: &str, source_path: &str) -> i32 {
 struct ParsedCall {
     caller: Option<String>,
     fresh: bool,
+    model: Option<String>,
     target: String,
     message: String,
 }
 
-const CALL_USAGE: &str = "usage: localharness call [--as <yourname>] [--fresh] <target> <message>";
+const CALL_USAGE: &str =
+    "usage: localharness call [--as <yourname>] [--fresh] [--model <id>] <target> <message>";
 
 fn parse_call_args(rest: &[String]) -> Result<ParsedCall, String> {
     let mut caller = None;
     let mut fresh = false;
+    let mut model = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
             "--as" => match rest.get(i + 1) {
                 Some(n) => {
                     caller = Some(n.clone());
+                    i += 2;
+                }
+                None => return Err(CALL_USAGE.to_string()),
+            },
+            "--model" => match rest.get(i + 1) {
+                Some(m) => {
+                    model = Some(m.clone());
                     i += 2;
                 }
                 None => return Err(CALL_USAGE.to_string()),
@@ -680,6 +690,7 @@ fn parse_call_args(rest: &[String]) -> Result<ParsedCall, String> {
         Some((t, msg)) if !msg.is_empty() => Ok(ParsedCall {
             caller,
             fresh,
+            model,
             target: t.clone(),
             message: msg.join(" "),
         }),
@@ -754,6 +765,7 @@ async fn call(rest: &[String]) -> i32 {
     let ParsedCall {
         caller,
         fresh,
+        model,
         target,
         message,
     } = match parse_call_args(rest) {
@@ -785,7 +797,7 @@ async fn call(rest: &[String]) -> i32 {
     } else {
         std::fs::read(&hist_file).ok()
     };
-    match run_agent_turn(&key_hex, &target, &message, prior_history).await {
+    match run_agent_turn(&key_hex, &target, &message, prior_history, model.as_deref()).await {
         Ok((text, new_history)) => {
             println!("{}", text.trim());
             // Persist the conversation so the next `call` to this target
@@ -815,6 +827,7 @@ async fn run_agent_turn(
     target: &str,
     message: &str,
     prior_history: Option<Vec<u8>>,
+    model: Option<&str>,
 ) -> Result<(String, Option<Vec<u8>>), String> {
     let caller =
         wallet::from_private_key_hex(key_hex).map_err(|e| format!("bad identity key: {e}"))?;
@@ -851,6 +864,38 @@ async fn run_agent_turn(
         enable_subagents: false,
         ..Default::default()
     };
+    // Route by model: a `claude-*` id uses the Anthropic backend; anything else
+    // (or none) uses Gemini. BOTH reach the model the same way — through the
+    // credit proxy with the same signed token — so a subsidized identity calls
+    // either provider with no provider key of its own.
+    if model.map(|m| m.starts_with("claude")).unwrap_or(false) {
+        #[cfg(feature = "anthropic")]
+        {
+            let mut cfg = localharness::AnthropicAgentConfig::new(token)
+                .with_base_url(base)
+                .with_model(model.unwrap())
+                .with_system_instructions(system)
+                .with_capabilities(caps);
+            if let Some(bytes) = prior_history {
+                cfg = cfg.with_history_bytes(bytes);
+            }
+            let agent = localharness::Agent::start_anthropic(cfg)
+                .await
+                .map_err(|e| format!("could not start anthropic session: {e}"))?;
+            let reply = match agent.chat(message).await {
+                Ok(resp) => resp.text().await.map_err(|e| format!("response error: {e}")),
+                Err(e) => Err(e.to_string()),
+            };
+            let new_history = agent.history_bytes().ok().flatten();
+            let _ = agent.shutdown().await;
+            return reply.map(|text| (text, new_history));
+        }
+        #[cfg(not(feature = "anthropic"))]
+        {
+            return Err("Claude models require a build with `--features anthropic`".to_string());
+        }
+    }
+
     let mut cfg = localharness::GeminiAgentConfig::new(token)
         .with_base_url(base)
         .with_system_instructions(system)
@@ -985,7 +1030,7 @@ async fn mcp_tool_call(
                 return Ok(mcp_text_result("call_agent requires both 'name' and 'message'", true));
             }
             // Stateless per MCP request for v1 (no persisted thread).
-            match run_agent_turn(key_hex, target, message, None).await {
+            match run_agent_turn(key_hex, target, message, None, None).await {
                 Ok((text, _hist)) => Ok(mcp_text_result(text.trim(), false)),
                 Err(e) => Ok(mcp_text_result(&format!("call_agent failed: {e}"), true)),
             }
