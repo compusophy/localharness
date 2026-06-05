@@ -1319,17 +1319,54 @@ async fn list_mine(caller_name: Option<&str>, json: bool) -> i32 {
     }
 }
 
-/// Render the on-chain feedback log (newest first). Pure for testing.
+/// A parsed `qa/v1` autonomous-fleet feedback envelope. `version`/`body` are
+/// consumed by the triage agent (roadmap Phase 4); `source` tags the listing.
+#[allow(dead_code)]
+struct QaEnvelope {
+    source: String,
+    version: String,
+    body: String,
+}
+
+/// Parse a `qa/v1 source=<s> v<ver>: <body>` envelope. `None` unless it is a
+/// well-formed qa/v1 envelope — the triage path must NOT consume a body (e.g.
+/// a repro string) from a malformed or non-fleet entry, since the feedback log
+/// is permissionless and an attacker can plant crafted text (a critique gate).
+fn parse_qa_envelope(text: &str) -> Option<QaEnvelope> {
+    let (header, body) = text.strip_prefix("qa/v1 ")?.split_once(": ")?;
+    let source = header.split_whitespace().find_map(|t| t.strip_prefix("source="))?;
+    let version = header.split_whitespace().find_map(|t| {
+        t.strip_prefix('v')
+            .filter(|v| v.starts_with(|c: char| c.is_ascii_digit()))
+    })?;
+    if source.is_empty() || body.trim().is_empty() {
+        return None;
+    }
+    Some(QaEnvelope {
+        source: source.to_string(),
+        version: version.to_string(),
+        body: body.to_string(),
+    })
+}
+
+/// Render the on-chain feedback log (newest first). Pure for testing. Entries
+/// the autonomous fleet authored (valid `qa/v1` envelopes) are tagged so the
+/// maintainer can tell agent-filed bugs from human ones at a glance.
 fn format_feedback(entries: &[registry::FeedbackEntry]) -> String {
     if entries.is_empty() {
         return "no on-chain feedback yet\n".to_string();
     }
     let mut out = format!("{} on-chain feedback entr(ies), newest first:\n", entries.len());
     for e in entries {
+        let tag = match parse_qa_envelope(&e.text) {
+            Some(env) => format!(" [fleet:{}]", env.source),
+            None => String::new(),
+        };
         out.push_str(&format!(
-            "  [{}] {}\n    {}\n",
+            "  [{}] {}{}\n    {}\n",
             e.timestamp,
             e.sender,
+            tag,
             e.text.replace('\n', " ")
         ));
     }
@@ -1892,6 +1929,42 @@ mod tests {
         // file an on-chain bug — so it doubles as a platform-health assertion.
         let fails = run_qa_checks();
         assert!(fails.is_empty(), "probe found issues on a healthy build: {fails:?}");
+    }
+
+    #[test]
+    fn parse_qa_envelope_accepts_valid_rejects_others() {
+        let env =
+            parse_qa_envelope("qa/v1 source=qa-probe v0.20.0: compile leaked os error").unwrap();
+        assert_eq!(env.source, "qa-probe");
+        assert_eq!(env.version, "0.20.0");
+        assert!(env.body.contains("compile leaked"));
+        // Not a fleet envelope → rejected (triage won't consume its body).
+        assert!(parse_qa_envelope("just some human feedback").is_none());
+        assert!(parse_qa_envelope("qa/v1 source=x v1.0.0:   ").is_none()); // empty body
+        assert!(parse_qa_envelope("qa/v1 no source or colon").is_none());
+        assert!(parse_qa_envelope("qa/v1 source=x vNOTVERSION: body").is_none());
+    }
+
+    #[test]
+    fn format_feedback_tags_fleet_envelopes_only() {
+        let entries = vec![
+            registry::FeedbackEntry {
+                sender: "0x1".into(),
+                timestamp: 1,
+                text: "qa/v1 source=qa-probe v0.20.0: a real bug".into(),
+            },
+            registry::FeedbackEntry {
+                sender: "0x2".into(),
+                timestamp: 2,
+                text: "a human note".into(),
+            },
+        ];
+        let out = format_feedback(&entries);
+        assert!(out.contains("[fleet:qa-probe]"));
+        assert!(
+            out.lines().any(|l| l.contains("0x2") && !l.contains("[fleet")),
+            "human feedback must not be tagged as fleet"
+        );
     }
 
     #[test]
