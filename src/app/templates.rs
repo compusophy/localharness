@@ -622,6 +622,7 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                     button type="button" data-action="header-admin-close" .modal-close { "×" }
                 }
                 div.admin-tab-panel.panel-agent {
+                    (admin_model_section())
                     (admin_prompt_section())
                     (admin_x402_price_section())
                     (admin_tool_allowlist_section())
@@ -708,6 +709,29 @@ pub(crate) fn admin_prompt_section() -> Markup {
                 }
             }
             div #prompt-msg .admin-msg-slot {}
+        }
+    }
+}
+
+/// Model selector — which LLM the in-tab agent uses. A `gemini-*` choice
+/// routes to the Gemini backend, a `claude-*` choice to the Anthropic
+/// backend (both via the multi-provider credit proxy in credits mode;
+/// BYOK still works for Gemini). The choice persists to `.lh_model` and is
+/// read by `chat::start_session`. Buttons render without an active marker;
+/// `events::refresh_model_selector` (fired on admin open + after a switch)
+/// flips `active` onto the persisted model — same async-fill pattern as the
+/// public-face / credits sections. `data-arg` carries the real model id.
+pub(crate) fn admin_model_section() -> Markup {
+    html! {
+        div #model-section .admin-section {
+            div.admin-section-title { "model" }
+            div #model-selector-row .public-face-picker {
+                @for (id, label) in super::model::MODELS {
+                    button type="button" data-action="set-model" data-arg=(id)
+                        class="ghost" data-model=(id) { (label) }
+                }
+            }
+            div #model-msg .admin-msg-slot {}
         }
     }
 }

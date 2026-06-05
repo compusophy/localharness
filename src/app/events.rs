@@ -97,6 +97,9 @@ enum Action {
     SetPublicFace(String),
     /// Choose how the agent reaches the model: "credits" or "byok".
     SetModelAccess(String),
+    /// Choose which LLM the in-tab agent uses (a `gemini-*` or `claude-*`
+    /// model id). Persisted to `.lh_model`; read by `chat::start_session`.
+    SetModel(String),
     /// Open (or renew) the caller's on-chain credit session.
     OpenSession,
     /// Redeem a one-time code for `$LH` credits.
@@ -176,6 +179,7 @@ impl Action {
             "stop-turn" => Action::StopTurn,
             "set-public-face" => Action::SetPublicFace(arg.unwrap_or_default()),
             "set-model-access" => Action::SetModelAccess(arg.unwrap_or_default()),
+            "set-model" => Action::SetModel(arg.unwrap_or_default()),
             "open-session" => Action::OpenSession,
             "redeem-code" => Action::RedeemCode,
             "deposit-credits" => Action::DepositCredits,
@@ -1053,6 +1057,7 @@ fn dispatch(action: Action) {
         Action::ResetToolAllowlist => reset_tool_allowlist_pressed(),
         Action::SaveApiKey => save_api_key_pressed(),
         Action::SetModelAccess(mode) => run_set_model_access(mode),
+        Action::SetModel(model) => run_set_model(model),
         Action::OpenSession => open_session_pressed(),
         Action::RedeemCode => redeem_code_pressed(),
         Action::DepositCredits => deposit_credits_pressed(),
@@ -1462,6 +1467,47 @@ fn run_set_model_access(mode: String) {
     wasm_bindgen_futures::spawn_local(async {
         refresh_credits_pill().await;
     });
+}
+
+/// Persist the chosen LLM model id (`.lh_model`) and reflect the active
+/// button in the selector. The change takes effect on the NEXT session
+/// start (`chat::start_session` reads `.lh_model`), so a turn already
+/// streaming keeps its backend — note that in `#model-msg`.
+fn run_set_model(model: String) {
+    wasm_bindgen_futures::spawn_local(async move {
+        super::model::save(&model).await;
+        refresh_model_selector().await;
+        let label = super::model::MODELS
+            .iter()
+            .find(|(id, _)| *id == model)
+            .map(|(_, l)| *l)
+            .unwrap_or("model");
+        dom::swap_inner(
+            "model-msg",
+            &format!("{label} — applies on your next message"),
+        );
+    });
+}
+
+/// Mark the persisted model's button `active` in `#model-selector-row`.
+/// No-op when the selector isn't mounted. Mirrors `refresh_public_face_status`
+/// (async-fill after the synchronous template paint).
+async fn refresh_model_selector() {
+    if dom::by_id("model-selector-row").is_none() {
+        return;
+    }
+    let chosen = super::model::load().await;
+    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+        if let Ok(buttons) = doc.query_selector_all("#model-selector-row button[data-model]") {
+            for i in 0..buttons.length() {
+                if let Some(el) = buttons.get(i) {
+                    let btn: web_sys::Element = JsCast::unchecked_into(el);
+                    let is_active = btn.get_attribute("data-model").as_deref() == Some(&chosen);
+                    btn.set_class_name(if is_active { "ghost active" } else { "ghost" });
+                }
+            }
+        }
+    }
 }
 
 /// Open (or renew) the caller's credit session — local key signs the
@@ -2650,6 +2696,7 @@ fn header_admin_toggle() {
                 dom::swap_inner("tool-allowlist-status", "all tools enabled");
             }
             refresh_public_face_status().await;
+            refresh_model_selector().await;
         });
     }
 }
