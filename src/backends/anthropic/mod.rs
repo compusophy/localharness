@@ -1,0 +1,648 @@
+//! Rust-native Anthropic (Claude Messages API) agent backend.
+//!
+//! A second `ConnectionStrategy`/`Connection` pair behind the same Layer-3
+//! seam the Gemini backend implements — proving the model-agnostic
+//! architecture by construction. Hits `POST /v1/messages` directly (BYOK
+//! via `AnthropicBackendConfig::new`); a `with_base_url` override exists
+//! for the future credit proxy (Phase C, out of scope here).
+//!
+//! Mirrors `backends/gemini/mod.rs` 1:1: `send` spawns the turn loop, a
+//! broadcast channel feeds `subscribe_steps`, idle is tracked on an
+//! `AtomicBool`, and tool calls dispatch inline through the registered
+//! hooks + policies + `ToolRunner`. Only the wire shapes differ (see
+//! `wire.rs` / `loop.rs`).
+//!
+//! Built-in tools are registered by REUSING the Gemini backend's
+//! `register_builtins` with both client slots set to `None` — every
+//! portable + filesystem builtin registers exactly as on Gemini, while
+//! the two Gemini-client-coupled tools (`start_subagent`, `generate_image`)
+//! simply don't register on this backend (Anthropic has no image endpoint;
+//! a neutral subagent is the design's deferred `OneShot` refactor).
+
+pub mod api;
+pub mod compaction;
+pub mod wire;
+#[path = "loop.rs"]
+mod r#loop;
+
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+
+use async_trait::async_trait;
+use futures_util::stream::StreamExt;
+use tokio::sync::broadcast;
+use tokio_stream::wrappers::BroadcastStream;
+use tracing::warn;
+
+use crate::backends::anthropic::api::{AnthropicClient, SharedClient};
+use crate::backends::anthropic::r#loop::{
+    run_turn, to_wire_user_content, LoopConfig, LoopState, TurnDeps,
+};
+use crate::backends::anthropic::wire::ToolDef;
+// Built-in tool registration is reused verbatim from the Gemini backend —
+// the tools consume neutral `Tool::input_schema()` JSON, which Anthropic's
+// `tools[].input_schema` takes raw.
+use crate::backends::gemini::tools::{register_builtins, BuiltinDeps};
+use crate::connections::{Connection, ConnectionStrategy, StepStream};
+use crate::content::Content;
+use crate::error::{Error, Result};
+use crate::hooks::{HookRunner, SessionContext};
+use crate::tools::ToolRunner;
+use crate::types::{CapabilitiesConfig, Step, SystemInstructions, ThinkingLevel, ToolResult};
+
+pub use wire::{DEFAULT_MODEL, OPUS_MODEL, SONNET_MODEL};
+
+const STEP_BROADCAST_CAPACITY: usize = 256;
+
+// =============================================================================
+// Configuration
+// =============================================================================
+
+/// Configuration for the Anthropic Messages backend.
+#[derive(Debug, Clone)]
+pub struct AnthropicBackendConfig {
+    /// Anthropic API key (BYOK) — or, in credits mode, the proxy auth token.
+    pub api_key: String,
+    /// Chat model ID. Defaults to [`wire::DEFAULT_MODEL`].
+    pub model: String,
+    /// Optional system instructions (flattened to the top-level `system`).
+    pub system_instructions: Option<SystemInstructions>,
+    /// Optional extended-thinking level.
+    pub thinking: Option<ThinkingLevel>,
+    /// Optional sampling temperature.
+    pub temperature: Option<f32>,
+    /// `max_tokens` for the response. Anthropic REQUIRES this; defaults to
+    /// [`wire::DEFAULT_MAX_TOKENS`].
+    pub max_tokens: Option<u32>,
+    /// Override the base URL (test server, proxy, regional endpoint).
+    pub base_url: Option<url::Url>,
+    /// Pre-existing conversation id to resume from. `None` → fresh UUID.
+    pub conversation_id: Option<String>,
+    /// Capability/built-in-tool selection.
+    pub capabilities: CapabilitiesConfig,
+    /// Filesystem impl the fs built-ins call into. `None` → `NativeFilesystem`
+    /// on native, nothing on wasm (caller supplies OPFS).
+    pub filesystem: Option<crate::filesystem::SharedFilesystem>,
+}
+
+impl AnthropicBackendConfig {
+    /// Create a config with the given API key and default model — BYOK,
+    /// talks directly to `api.anthropic.com`.
+    pub fn new(api_key: impl Into<String>) -> Self {
+        Self {
+            api_key: api_key.into(),
+            model: DEFAULT_MODEL.to_string(),
+            system_instructions: None,
+            thinking: None,
+            temperature: None,
+            max_tokens: None,
+            base_url: None,
+            conversation_id: None,
+            capabilities: CapabilitiesConfig::default(),
+            filesystem: None,
+        }
+    }
+
+    /// Plug in a custom [`Filesystem`] impl for the fs built-ins.
+    ///
+    /// [`Filesystem`]: crate::filesystem::Filesystem
+    pub fn with_filesystem(mut self, fs: crate::filesystem::SharedFilesystem) -> Self {
+        self.filesystem = Some(fs);
+        self
+    }
+
+    /// Override the chat model ID (e.g. [`SONNET_MODEL`], [`OPUS_MODEL`]).
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
+        self
+    }
+
+    /// Set system instructions.
+    pub fn with_system_instructions(mut self, s: impl Into<SystemInstructions>) -> Self {
+        self.system_instructions = Some(s.into());
+        self
+    }
+
+    /// Enable extended thinking at the given level.
+    pub fn with_thinking(mut self, level: ThinkingLevel) -> Self {
+        self.thinking = Some(level);
+        self
+    }
+
+    /// Set the sampling temperature.
+    pub fn with_temperature(mut self, t: f32) -> Self {
+        self.temperature = Some(t);
+        self
+    }
+
+    /// Set `max_tokens` for the response.
+    pub fn with_max_tokens(mut self, n: u32) -> Self {
+        self.max_tokens = Some(n);
+        self
+    }
+
+    /// Configure which built-in tools are enabled.
+    pub fn with_capabilities(mut self, c: CapabilitiesConfig) -> Self {
+        self.capabilities = c;
+        self
+    }
+
+    /// Route requests through an alternate base URL (e.g. the future
+    /// localharness credit proxy). In credits mode `api_key` carries the
+    /// proxy auth token. The proxy/credits routing itself is Phase C and
+    /// out of scope — this is just the override seam.
+    pub fn with_base_url(mut self, url: url::Url) -> Self {
+        self.base_url = Some(url);
+        self
+    }
+}
+
+// =============================================================================
+// Strategy
+// =============================================================================
+
+/// Injected runners for inline tool dispatch in the Anthropic backend.
+#[derive(Default)]
+pub struct AnthropicRunners {
+    /// Tool runner for custom + built-in tool execution.
+    pub tool_runner: Option<Arc<ToolRunner>>,
+    /// Hook runner for pre/post tool-call hooks.
+    pub hook_runner: Option<Arc<HookRunner>>,
+    /// Session context for hook dispatch.
+    pub session_ctx: Option<SessionContext>,
+}
+
+/// Factory that opens an [`AnthropicConnection`].
+pub struct AnthropicConnectionStrategy {
+    config: AnthropicBackendConfig,
+    runners: AnthropicRunners,
+    /// Optional out-slot: `connect()` stashes a clone of the typed
+    /// `Arc<AnthropicConnection>` here before upcasting. `Agent::start_anthropic`
+    /// uses this to keep a typed handle for backend-specific APIs.
+    typed_capture: Option<Arc<parking_lot::Mutex<Option<Arc<AnthropicConnection>>>>>,
+}
+
+impl AnthropicConnectionStrategy {
+    /// Create a strategy from a backend config.
+    pub fn new(config: AnthropicBackendConfig) -> Self {
+        Self {
+            config,
+            runners: AnthropicRunners::default(),
+            typed_capture: None,
+        }
+    }
+
+    /// Inject the runners the Agent owns (inline tool dispatch).
+    pub fn with_runners(mut self, runners: AnthropicRunners) -> Self {
+        self.runners = runners;
+        self
+    }
+
+    /// Provide a slot for `connect()` to write the typed connection into.
+    pub fn with_typed_capture(
+        mut self,
+        slot: Arc<parking_lot::Mutex<Option<Arc<AnthropicConnection>>>>,
+    ) -> Self {
+        self.typed_capture = Some(slot);
+        self
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl ConnectionStrategy for AnthropicConnectionStrategy {
+    async fn connect(&self) -> Result<Arc<dyn Connection>> {
+        if self.config.api_key.trim().is_empty() {
+            return Err(Error::config("AnthropicBackendConfig.api_key is empty"));
+        }
+        let mut client = AnthropicClient::new(self.config.api_key.clone())?;
+        if let Some(base) = &self.config.base_url {
+            client = client.with_base_url(base.clone());
+        }
+        let client: SharedClient = Arc::new(client);
+
+        // Auto-register built-in tools per the capabilities config, reusing
+        // the Gemini backend's `register_builtins`. Both client slots are
+        // None: the fs + portable builtins register; the two
+        // Gemini-client-coupled tools (start_subagent / generate_image)
+        // don't register on this backend.
+        if let Some(runner) = self.runners.tool_runner.as_ref() {
+            let fs: Option<crate::filesystem::SharedFilesystem> =
+                self.config.filesystem.clone().or_else(default_filesystem);
+            let deps = BuiltinDeps {
+                chat_client: None,
+                chat_model: self.config.model.clone(),
+                image_client: None,
+                image_model: String::new(),
+                fs,
+            };
+            let registered = register_builtins(runner, &self.config.capabilities, &deps);
+            if !registered.is_empty() {
+                tracing::debug!(?registered, "registered built-in tools (anthropic)");
+            }
+        }
+
+        let tool_decls = self
+            .runners
+            .tool_runner
+            .as_ref()
+            .map(|r| build_tool_declarations(r))
+            .unwrap_or_default();
+
+        let loop_config = LoopConfig::from_system(
+            self.config.model.clone(),
+            self.config.system_instructions.as_ref(),
+            self.config.thinking,
+            self.config.temperature,
+            self.config.max_tokens,
+            tool_decls,
+            self.config.capabilities.compaction_threshold,
+        )?;
+
+        let (steps_tx, _) = broadcast::channel::<Step>(STEP_BROADCAST_CAPACITY);
+        let state = Arc::new(LoopState::new(steps_tx));
+
+        let conv_id = self
+            .config
+            .conversation_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        let typed = Arc::new(AnthropicConnection {
+            deps_template: TurnDeps {
+                client,
+                config: loop_config,
+                state: state.clone(),
+                tool_runner: self.runners.tool_runner.clone(),
+                hook_runner: self.runners.hook_runner.clone(),
+                session_ctx: self.runners.session_ctx.clone(),
+            },
+            state,
+            conversation_id: conv_id.into(),
+        });
+        if let Some(slot) = &self.typed_capture {
+            *slot.lock() = Some(typed.clone());
+        }
+        Ok(typed)
+    }
+}
+
+/// Default filesystem when `filesystem` is `None`: `NativeFilesystem` on
+/// native, `None` on wasm.
+#[cfg(feature = "native")]
+fn default_filesystem() -> Option<crate::filesystem::SharedFilesystem> {
+    Some(Arc::new(crate::filesystem::NativeFilesystem::new()))
+}
+
+#[cfg(not(feature = "native"))]
+fn default_filesystem() -> Option<crate::filesystem::SharedFilesystem> {
+    None
+}
+
+fn build_tool_declarations(runner: &ToolRunner) -> Vec<ToolDef> {
+    runner
+        .iter_tools()
+        .into_iter()
+        .map(|tool| ToolDef {
+            name: tool.name().to_string(),
+            description: tool.description().to_string(),
+            input_schema: tool.input_schema(),
+        })
+        .collect()
+}
+
+// =============================================================================
+// Connection
+// =============================================================================
+
+/// A live Anthropic session that implements [`Connection`].
+pub struct AnthropicConnection {
+    deps_template: TurnDeps,
+    state: Arc<LoopState>,
+    conversation_id: Arc<str>,
+}
+
+impl AnthropicConnection {
+    /// Snapshot the current conversation history as opaque bytes.
+    /// Round-trips through `set_history_bytes`. The on-disk format (a JSON
+    /// array of Anthropic `Message`s) is not part of the public API.
+    pub fn history_bytes(&self) -> Result<Vec<u8>> {
+        let snapshot = self.state.history.lock().clone();
+        serde_json::to_vec(&snapshot).map_err(|e| Error::other(format!("history_bytes: {e}")))
+    }
+
+    /// Replace the entire conversation history with one previously returned
+    /// by `history_bytes`. Use on connection start to resume a session.
+    pub fn set_history_bytes(&self, bytes: &[u8]) -> Result<()> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let restored: Vec<wire::Message> = serde_json::from_slice(bytes)
+            .map_err(|e| Error::other(format!("set_history_bytes: {e}")))?;
+        *self.state.history.lock() = restored;
+        Ok(())
+    }
+
+    /// Manually trigger context compaction. Returns `true` if compaction
+    /// changed the history. Never errors — failures are logged + skipped.
+    pub async fn compact(&self) -> bool {
+        compaction::try_compact(
+            &self.state.history,
+            &self.deps_template.client,
+            &self.deps_template.config.model,
+        )
+        .await
+    }
+
+    /// Project the wire history into a flat, text-only `(role, text)`
+    /// transcript suitable for repainting a UI. Tool-call activity is
+    /// surfaced as `TranscriptToolCall`s (matched by `tool_use_id`).
+    pub fn transcript(&self) -> Vec<crate::types::TranscriptEntry> {
+        let snap = self.state.history.lock().clone();
+        project_history(&snap)
+    }
+}
+
+/// Decode opaque bytes from [`AnthropicConnection::history_bytes`] into a
+/// flat transcript without a live connection.
+pub fn decode_transcript_bytes(bytes: &[u8]) -> Result<Vec<crate::types::TranscriptEntry>> {
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let history: Vec<wire::Message> = serde_json::from_slice(bytes)
+        .map_err(|e| Error::other(format!("decode_transcript_bytes: {e}")))?;
+    Ok(project_history(&history))
+}
+
+fn project_history(history: &[wire::Message]) -> Vec<crate::types::TranscriptEntry> {
+    use crate::types::{TranscriptEntry, TranscriptRole, TranscriptToolCall};
+    use wire::{Block, Role};
+
+    let mut out: Vec<TranscriptEntry> = Vec::with_capacity(history.len());
+    // Index of tool_use_id → (entry index, tool-call index within that
+    // entry) so a later tool_result message can fill the call it answers.
+    // Matching by id is the load-bearing Anthropic difference (Gemini
+    // matches by name).
+    let mut call_index: std::collections::HashMap<String, (usize, usize)> =
+        std::collections::HashMap::new();
+
+    for msg in history {
+        let role = match msg.role {
+            Role::User => TranscriptRole::User,
+            Role::Assistant => TranscriptRole::Assistant,
+        };
+        let mut buf = String::new();
+        let mut calls_this_turn: Vec<(String, TranscriptToolCall)> = Vec::new();
+
+        for block in &msg.content {
+            match block {
+                Block::Text { text } => buf.push_str(text),
+                Block::Thinking { thinking, .. } => buf.push_str(thinking),
+                Block::ToolUse { id, name, input } => {
+                    calls_this_turn.push((
+                        id.clone(),
+                        TranscriptToolCall {
+                            name: name.clone(),
+                            args: input.clone(),
+                            result: None,
+                            error: None,
+                        },
+                    ));
+                }
+                Block::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                } => {
+                    if let Some(&(ei, ci)) = call_index.get(tool_use_id) {
+                        if let Some(call) = out.get_mut(ei).and_then(|e| e.tool_calls.get_mut(ci)) {
+                            if is_error.unwrap_or(false) {
+                                call.error = Some(content.to_string());
+                            } else {
+                                call.result = Some(content.clone());
+                            }
+                        }
+                    }
+                }
+                Block::Image { .. } => {}
+            }
+        }
+
+        if !buf.is_empty() || !calls_this_turn.is_empty() {
+            let entry_idx = out.len();
+            let tool_calls: Vec<TranscriptToolCall> = calls_this_turn
+                .into_iter()
+                .enumerate()
+                .map(|(ci, (id, call))| {
+                    call_index.insert(id, (entry_idx, ci));
+                    call
+                })
+                .collect();
+            out.push(TranscriptEntry {
+                role,
+                text: buf,
+                tool_calls,
+            });
+        }
+    }
+    out
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl Connection for AnthropicConnection {
+    fn is_idle(&self) -> bool {
+        self.state.idle.load(Ordering::Acquire)
+    }
+
+    fn conversation_id(&self) -> &str {
+        &self.conversation_id
+    }
+
+    async fn send(&self, content: Content) -> Result<()> {
+        let user = to_wire_user_content(content)?;
+        let deps = self.deps_template.clone();
+        crate::runtime::spawn(async move {
+            if let Err(e) = run_turn(deps, user).await {
+                warn!(error = %e, "anthropic turn failed");
+            }
+        });
+        Ok(())
+    }
+
+    async fn send_trigger(&self, content: String) -> Result<()> {
+        self.send(Content::text(content)).await
+    }
+
+    async fn send_tool_results(&self, _results: Vec<ToolResult>) -> Result<()> {
+        // The Anthropic backend dispatches tools inline inside the loop.
+        Ok(())
+    }
+
+    fn subscribe_steps(&self) -> StepStream {
+        let rx = self.state.steps.subscribe();
+        let mapped = BroadcastStream::new(rx)
+            .map(|r| r.map_err(|e| Error::other(format!("anthropic step lag: {e}"))));
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            mapped.boxed()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            mapped.boxed_local()
+        }
+    }
+
+    async fn wait_for_idle(&self) -> Result<()> {
+        loop {
+            if self.is_idle() {
+                return Ok(());
+            }
+            self.state.idle_notify.notified().await;
+        }
+    }
+
+    fn cancel_turn(&self) {
+        self.state.cancel.store(true, Ordering::Release);
+    }
+
+    async fn shutdown(&self) -> Result<()> {
+        self.state.idle.store(true, Ordering::Release);
+        self.state.idle_notify.notify_waiters();
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::filesystem::NativeFilesystem;
+    use crate::tools::ToolRunner;
+
+    /// Parity guard: every builtin tool declared to Anthropic must carry a
+    /// single-`type` JSON schema (no nullable unions / `additionalProperties`
+    /// / `$ref` / `oneOf` / etc). This is the same class of guard the
+    /// Gemini backend has (`builtin_tool_schemas_have_no_union_types`) —
+    /// Anthropic ALSO rejects union-type tool schemas, so the same lint
+    /// applies to the declarations this backend builds.
+    fn assert_single_type(v: &serde_json::Value, tool: &str, path: &str) {
+        match v {
+            serde_json::Value::Object(map) => {
+                if let Some(t) = map.get("type") {
+                    assert!(
+                        !t.is_array(),
+                        "tool `{tool}` schema at `{path}.type` = {t} is an array union",
+                    );
+                }
+                for (k, val) in map {
+                    assert_single_type(val, tool, &format!("{path}.{k}"));
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                for (i, val) in arr.iter().enumerate() {
+                    assert_single_type(val, tool, &format!("{path}[{i}]"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn anthropic_tool_declarations_have_single_type_schemas() {
+        let runner = ToolRunner::new();
+        let deps = BuiltinDeps {
+            chat_client: None,
+            chat_model: String::new(),
+            image_client: None,
+            image_model: String::new(),
+            fs: Some(Arc::new(NativeFilesystem::new()) as crate::filesystem::SharedFilesystem),
+        };
+        register_builtins(&runner, &CapabilitiesConfig::unrestricted(), &deps);
+        let decls = build_tool_declarations(&runner);
+        assert!(!decls.is_empty(), "expected builtins registered");
+        for d in &decls {
+            assert_single_type(&d.input_schema, &d.name, "input_schema");
+        }
+    }
+
+    /// `start_subagent` / `generate_image` are Gemini-client-coupled and
+    /// must NOT register on this backend (both client slots are None).
+    #[test]
+    fn gemini_client_coupled_tools_do_not_register() {
+        let runner = ToolRunner::new();
+        let deps = BuiltinDeps {
+            chat_client: None,
+            chat_model: String::new(),
+            image_client: None,
+            image_model: String::new(),
+            fs: Some(Arc::new(NativeFilesystem::new()) as crate::filesystem::SharedFilesystem),
+        };
+        let registered = register_builtins(&runner, &CapabilitiesConfig::unrestricted(), &deps);
+        assert!(
+            !registered.iter().any(|n| n == "start_subagent"),
+            "start_subagent must not register without a chat client"
+        );
+        assert!(
+            !registered.iter().any(|n| n == "generate_image"),
+            "generate_image must not register without an image client"
+        );
+        // But fs + portable builtins DO register.
+        assert!(registered.iter().any(|n| n == "finish"));
+        assert!(registered.iter().any(|n| n == "view_file"));
+    }
+
+    /// Empty api_key fails fast (mirrors the Gemini strategy). `Arc<dyn
+    /// Connection>` isn't `Debug`, so match on the Result rather than
+    /// `unwrap_err()`.
+    #[tokio::test]
+    async fn empty_api_key_errors() {
+        let strategy = AnthropicConnectionStrategy::new(AnthropicBackendConfig::new("  "));
+        match strategy.connect().await {
+            Ok(_) => panic!("expected empty api_key to error"),
+            Err(e) => assert!(e.to_string().contains("api_key is empty")),
+        }
+    }
+
+    /// Transcript projection matches tool calls to results by id.
+    #[test]
+    fn transcript_matches_tool_calls_by_id() {
+        use wire::{Block, Message, Role};
+        let history = vec![
+            Message::user_text("read main.rs"),
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    Block::Text {
+                        text: "Reading.".into(),
+                    },
+                    Block::ToolUse {
+                        id: "toolu_1".into(),
+                        name: "view_file".into(),
+                        input: serde_json::json!({"path": "main.rs"}),
+                    },
+                ],
+            },
+            Message {
+                role: Role::User,
+                content: vec![Block::ToolResult {
+                    tool_use_id: "toolu_1".into(),
+                    content: serde_json::json!({"contents": "fn main() {}"}),
+                    is_error: None,
+                }],
+            },
+            Message::assistant_text("Done."),
+        ];
+        let entries = project_history(&history);
+        // user, assistant(with tool call), assistant(done)
+        let asst = entries
+            .iter()
+            .find(|e| !e.tool_calls.is_empty())
+            .expect("assistant entry with a tool call");
+        assert_eq!(asst.tool_calls.len(), 1);
+        assert_eq!(asst.tool_calls[0].name, "view_file");
+        assert_eq!(
+            asst.tool_calls[0].result.as_ref().unwrap()["contents"],
+            "fn main() {}"
+        );
+    }
+}

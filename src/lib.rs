@@ -127,8 +127,14 @@ pub mod tempo_tx;
 pub mod x402_hook;
 
 pub use agent::{Agent, AgentConfig, GeminiAgentConfig};
+#[cfg(feature = "anthropic")]
+pub use agent::AnthropicAgentConfig;
 pub use backends::gemini::{
     decode_transcript_bytes, GeminiBackendConfig, GeminiConnection, GeminiConnectionStrategy,
+};
+#[cfg(feature = "anthropic")]
+pub use backends::anthropic::{
+    AnthropicBackendConfig, AnthropicConnection, AnthropicConnectionStrategy, AnthropicRunners,
 };
 #[cfg(feature = "native")]
 pub use backends::mcp::{McpBridge, McpClient, McpToolDecl};

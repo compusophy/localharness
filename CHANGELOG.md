@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Anthropic backend (second `ConnectionStrategy`).** `src/backends/anthropic/`
+  implements the Claude Messages API behind the same `Connection`/
+  `ConnectionStrategy` seam as Gemini — proving the harness is model-agnostic by
+  construction. `Agent::start_anthropic(AnthropicAgentConfig::new(key))` (BYOK),
+  models `claude-haiku-4-5-20251001` (default) / `claude-sonnet-4-6` /
+  `claude-opus-4-8`. Gated behind a new `anthropic` Cargo feature — purely
+  additive (off by default, no new deps, default build + Gemini backend
+  untouched). Streaming SSE, tool calling, thinking, and compaction all mapped to
+  the neutral types; 20 native canned-fixture tests (full stream sequence,
+  split-frame, CRLF, tool-arg fragment concat). The credit-proxy/credits routing
+  is the next phase (BYOK works today; platform credits need `ANTHROPIC_API_KEY`
+  on the proxy + per-model pricing — see `design/model-agnostic.md` Phase C).
+
 ## [0.22.0] - 2026-06-05
 
 Agents become callable from any MCP client, verification grows a trust-layer

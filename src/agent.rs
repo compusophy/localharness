@@ -27,6 +27,10 @@ use tracing::{debug, warn};
 use crate::backends::gemini::{
     GeminiBackendConfig, GeminiConnection, GeminiConnectionStrategy, GeminiRunners,
 };
+#[cfg(feature = "anthropic")]
+use crate::backends::anthropic::{
+    AnthropicBackendConfig, AnthropicConnection, AnthropicConnectionStrategy, AnthropicRunners,
+};
 use crate::connections::{Connection, ConnectionStrategy};
 use crate::content::Content;
 use crate::conversation::{ChatResponse, Conversation};
@@ -271,6 +275,138 @@ impl GeminiAgentConfig {
 }
 
 // =============================================================================
+// Anthropic agent config (feature = "anthropic")
+// =============================================================================
+
+/// Configuration for the Rust-native Anthropic (Claude Messages) backend.
+///
+/// Pairs the generic `AgentConfig` (hooks, tools, policies, triggers) with
+/// `AnthropicBackendConfig` (model, API key, thinking, max_tokens). The
+/// parallel of [`GeminiAgentConfig`]; additive — `start_gemini` and the
+/// neutral `AgentConfig` are untouched.
+#[cfg(feature = "anthropic")]
+pub struct AnthropicAgentConfig {
+    /// Backend-agnostic settings (tools, policies, triggers).
+    pub agent: AgentConfig,
+    /// Anthropic-specific settings (model, API key, thinking, max_tokens).
+    pub anthropic: AnthropicBackendConfig,
+    /// Opaque history bytes from a previous session
+    /// (`Agent::history_bytes()`), applied immediately after `connect()`.
+    pub initial_history: Option<Vec<u8>>,
+}
+
+#[cfg(feature = "anthropic")]
+impl AnthropicAgentConfig {
+    /// Create a new Anthropic agent configuration with the given API key
+    /// (BYOK — talks directly to `api.anthropic.com`).
+    pub fn new(api_key: impl Into<String>) -> Self {
+        Self {
+            agent: AgentConfig::default(),
+            anthropic: AnthropicBackendConfig::new(api_key),
+            initial_history: None,
+        }
+    }
+
+    /// Seed the new connection with previously-saved history bytes.
+    pub fn with_history_bytes(mut self, bytes: Vec<u8>) -> Self {
+        self.initial_history = Some(bytes);
+        self
+    }
+
+    /// Override the Anthropic model ID (e.g. sonnet / opus).
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.anthropic = self.anthropic.with_model(model);
+        self
+    }
+
+    /// Set the system instructions for the model.
+    pub fn with_system_instructions(mut self, instr: impl Into<SystemInstructions>) -> Self {
+        let instr = instr.into();
+        self.anthropic = self.anthropic.with_system_instructions(instr.clone());
+        self.agent = self.agent.with_system_instructions(instr);
+        self
+    }
+
+    /// Enable extended thinking at the given level.
+    pub fn with_thinking(mut self, level: crate::types::ThinkingLevel) -> Self {
+        self.anthropic = self.anthropic.with_thinking(level);
+        self
+    }
+
+    /// Set the sampling temperature.
+    pub fn with_temperature(mut self, t: f32) -> Self {
+        self.anthropic = self.anthropic.with_temperature(t);
+        self
+    }
+
+    /// Set `max_tokens` for the response (Anthropic requires it; defaults
+    /// to 8192 otherwise).
+    pub fn with_max_tokens(mut self, n: u32) -> Self {
+        self.anthropic = self.anthropic.with_max_tokens(n);
+        self
+    }
+
+    /// Route requests through an alternate base URL (future credit proxy).
+    pub fn with_base_url(mut self, url: url::Url) -> Self {
+        self.anthropic = self.anthropic.with_base_url(url);
+        self
+    }
+
+    /// Plug in a custom [`Filesystem`] impl for the fs built-ins.
+    ///
+    /// [`Filesystem`]: crate::filesystem::Filesystem
+    pub fn with_filesystem(mut self, fs: crate::filesystem::SharedFilesystem) -> Self {
+        self.anthropic = self.anthropic.with_filesystem(fs);
+        self
+    }
+
+    /// Configure which built-in tools are enabled.
+    pub fn with_capabilities(mut self, cap: CapabilitiesConfig) -> Self {
+        self.agent = self.agent.with_capabilities(cap);
+        self
+    }
+
+    /// Register a custom tool.
+    pub fn with_tool(mut self, tool: Arc<dyn Tool>) -> Self {
+        self.agent = self.agent.with_tool(tool);
+        self
+    }
+
+    /// Set the safety policies for tool execution.
+    pub fn with_policies(mut self, policies: Vec<Policy>) -> Self {
+        self.agent = self.agent.with_policies(policies);
+        self
+    }
+
+    /// Add a workspace root for path-containment enforcement.
+    pub fn with_workspace(mut self, ws: impl Into<PathBuf>) -> Self {
+        self.agent = self.agent.with_workspace(ws);
+        self
+    }
+
+    /// Register a background trigger.
+    pub fn with_trigger(mut self, trigger: Arc<dyn Trigger>) -> Self {
+        self.agent = self.agent.with_trigger(trigger);
+        self
+    }
+
+    /// Add an MCP server to connect at startup (native only).
+    #[cfg(feature = "native")]
+    pub fn with_mcp_server(mut self, server: McpServerConfig) -> Self {
+        self.agent = self.agent.with_mcp_server(server);
+        self
+    }
+
+    /// Resume an existing conversation by its ID.
+    pub fn resume(mut self, conversation_id: impl Into<String>) -> Self {
+        let id = conversation_id.into();
+        self.anthropic.conversation_id = Some(id.clone());
+        self.agent.conversation_id = Some(id);
+        self
+    }
+}
+
+// =============================================================================
 // Agent
 // =============================================================================
 
@@ -303,6 +439,11 @@ pub struct Agent {
     /// without forcing the Connection trait to carry every backend's
     /// per-protocol surface.
     gemini_connection: Option<Arc<GeminiConnection>>,
+    /// Typed handle to the Anthropic connection when `start_anthropic` was
+    /// used. Parallels `gemini_connection` so `history_bytes()` / `compact()`
+    /// / `transcript()` work for either backend. Additive (feature-gated).
+    #[cfg(feature = "anthropic")]
+    anthropic_connection: Option<Arc<AnthropicConnection>>,
     hook_runner: Arc<HookRunner>,
     tool_runner: Arc<ToolRunner>,
     trigger_runner: Option<Arc<TriggerRunner>>,
@@ -351,6 +492,39 @@ impl Agent {
         Ok(agent)
     }
 
+    /// Start an `Agent` backed by the Rust-native Anthropic (Claude Messages)
+    /// runtime. Parallels [`Agent::start_gemini`]; additive and
+    /// non-breaking. BYOK — `AnthropicAgentConfig::new(key)` talks directly
+    /// to `api.anthropic.com`.
+    #[cfg(feature = "anthropic")]
+    pub async fn start_anthropic(mut config: AnthropicAgentConfig) -> Result<Self> {
+        config.agent.capabilities.validate()?;
+        Self::wire_response_schema(&mut config.agent);
+        let mut anthropic_config = config.anthropic;
+        // Keep the backend's CapabilitiesConfig in sync with the agent's so
+        // register_builtins enables the right set.
+        anthropic_config.capabilities = config.agent.capabilities.clone();
+        let initial_history = config.initial_history.take();
+        let capture: Arc<parking_lot::Mutex<Option<Arc<AnthropicConnection>>>> =
+            Arc::new(parking_lot::Mutex::new(None));
+        let capture_for_factory = capture.clone();
+        let mut agent = Self::start_with_factory(config.agent, move |hooks, tools, ctx| {
+            AnthropicConnectionStrategy::new(anthropic_config)
+                .with_runners(AnthropicRunners {
+                    tool_runner: Some(tools),
+                    hook_runner: Some(hooks),
+                    session_ctx: Some(ctx),
+                })
+                .with_typed_capture(capture_for_factory)
+        })
+        .await?;
+        agent.anthropic_connection = capture.lock().take();
+        if let (Some(bytes), Some(ac)) = (initial_history, agent.anthropic_connection.as_ref()) {
+            ac.set_history_bytes(&bytes)?;
+        }
+        Ok(agent)
+    }
+
     /// Token usage accumulated across every turn in this agent's
     /// conversation. Surfaced in the browser app's Usage tab.
     pub fn cumulative_usage(&self) -> crate::types::UsageMetadata {
@@ -365,38 +539,51 @@ impl Agent {
         self.conversation.cancel_turn();
     }
 
-    /// Opaque snapshot of the current Gemini conversation history.
-    /// Returns `None` for non-Gemini backends. Round-trips through
-    /// [`GeminiAgentConfig::with_history_bytes`] for session resume.
+    /// Opaque snapshot of the current conversation history (Gemini or, with
+    /// the `anthropic` feature, the Anthropic backend). Returns `None` for
+    /// backends without a typed session handle. Round-trips through the
+    /// matching `with_history_bytes` for session resume.
     pub fn history_bytes(&self) -> Result<Option<Vec<u8>>> {
-        match self.gemini_connection.as_ref() {
-            Some(gc) => gc.history_bytes().map(Some),
-            None => Ok(None),
+        if let Some(gc) = self.gemini_connection.as_ref() {
+            return gc.history_bytes().map(Some);
         }
+        #[cfg(feature = "anthropic")]
+        if let Some(ac) = self.anthropic_connection.as_ref() {
+            return ac.history_bytes().map(Some);
+        }
+        Ok(None)
     }
 
     /// Manually trigger context compaction. Summarises older history
     /// entries and replaces them with a single synthetic turn, freeing
     /// context-window budget. Returns `true` if compaction changed the
     /// history, `false` if it was too short or not applicable.
-    /// Returns `false` for non-Gemini backends (no-op).
+    /// Returns `false` for backends without a typed session handle.
     pub async fn compact(&self) -> bool {
-        match self.gemini_connection.as_ref() {
-            Some(gc) => gc.compact().await,
-            None => false,
+        if let Some(gc) = self.gemini_connection.as_ref() {
+            return gc.compact().await;
         }
+        #[cfg(feature = "anthropic")]
+        if let Some(ac) = self.anthropic_connection.as_ref() {
+            return ac.compact().await;
+        }
+        false
     }
 
-    /// Human-readable transcript of the current session. Drops
-    /// tool-call activity — see [`TranscriptEntry`] for the shape.
-    /// Returns an empty vec for non-Gemini backends.
+    /// Human-readable transcript of the current session, including tool-call
+    /// activity — see [`TranscriptEntry`] for the shape. Returns an empty
+    /// vec for backends without a typed session handle.
     ///
     /// [`TranscriptEntry`]: crate::types::TranscriptEntry
     pub fn transcript(&self) -> Vec<crate::types::TranscriptEntry> {
-        self.gemini_connection
-            .as_ref()
-            .map(|gc| gc.transcript())
-            .unwrap_or_default()
+        if let Some(gc) = self.gemini_connection.as_ref() {
+            return gc.transcript();
+        }
+        #[cfg(feature = "anthropic")]
+        if let Some(ac) = self.anthropic_connection.as_ref() {
+            return ac.transcript();
+        }
+        Vec::new()
     }
 
     /// Internal: shared bootstrap. The `factory` closure receives the
@@ -505,6 +692,8 @@ impl Agent {
             conversation,
             connection,
             gemini_connection: None,
+            #[cfg(feature = "anthropic")]
+            anthropic_connection: None,
             hook_runner,
             tool_runner,
             trigger_runner,

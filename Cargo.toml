@@ -62,6 +62,12 @@ browser-app = ["dep:maud", "dep:console_error_panic_hook", "dep:pulldown-cmark",
 # what alloy uses under the hood anyway. bip39 gives us the
 # 12-word seed phrase for human-friendly backup.
 wallet = ["dep:k256", "dep:sha3", "dep:rand_core", "dep:bip39", "dep:zeroize"]
+# `anthropic` compiles the second LLM backend (`src/backends/anthropic/`):
+# the Claude Messages API as a `ConnectionStrategy`. Purely additive — off
+# by default, pulls no new dependencies (reuses reqwest/serde/futures), and
+# does not touch the default build or the Gemini backend. BYOK only here;
+# the credit-proxy/credits routing is Phase C (out of scope).
+anthropic = []
 
 [dependencies]
 tokio = { version = "1.42", default-features = false, features = [
