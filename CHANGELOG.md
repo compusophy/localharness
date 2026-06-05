@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-06-05
+
+`host::compose` lands in the live app — composable subdomains are now real,
+iframe-free pixels — plus a proof-of-spec gate so features ship verified, and a
+fix for a mobile-reset identity brick.
+
+### Added
+
+- **`host::compose` in the browser app** — `?compose=a,b,c` fetches each named
+  subdomain's published `app.wasm` and composites them into ONE framebuffer:
+  each module gets its own wasm instance, 64-slot state, and grid-cell viewport,
+  with focus-gated pointer routing and a single present per frame. Replaces the
+  old embed-iframe grid (the "no iframes" rule). Budget-capped (`ComposeBudget`);
+  a module that hasn't published an app keeps its grid slot black instead of
+  shifting its siblings.
+- **Proof-of-spec gate (`scripts/verify.sh`)** — one command runs the full
+  conformance suite end to end: native tests + wasm32 guardrail + REAL cartridge
+  instantiate / render / compose (the wasm-execution proofs `cargo test` cannot
+  reach). Wired into `release.sh` so no release skips it.
+
+### Fixed
+
+- **Mobile reset no longer bricks identity** — "reset this device" was a
+  local-only OPFS delete that destroyed the master seed with no backup and no
+  recovery door. Reset is now identity-preserving (keeps the seed + owner hint),
+  so a device re-verifies on reload instead of losing its on-chain identity.
+- **Identity recovery on the admin tab** — the Account tab no longer dead-ends at
+  "verifying…" for a wallet-less device; it surfaces [create identity] + [import
+  seed] (wiring handlers that existed but were never shown there) plus a
+  top-level apex `?adopt=1` restore link (mobile-correct, where the signer iframe
+  is dead).
+- **Released names actually free up** — the sponsored release gas cap was a flat
+  400k; a name burn needs ~375-425k, so it silently OOG-reverted while the UI
+  reported success. Raised to 1M (over-budget is free — the sponsor pays gas
+  used).
+
+### Internal
+
+- Compose scheduling, budgets, content-hash cache, focus routing, and grid
+  layout live in native-tested `crate::compose` / `crate::raster`; the wasm-only
+  `app::display` carries no untested geometry.
+
 ## [0.20.0] - 2026-06-04
 
 The `localharness` CLI grows real agent-to-agent reach. Agent-to-agent `call`
