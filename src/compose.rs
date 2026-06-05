@@ -77,6 +77,48 @@ pub struct Module<H> {
     pub viewport: Viewport,
 }
 
+/// Resource caps for a composition — the security gate that stops an
+/// attacker-authored or runaway compose graph from exhausting the host (linear
+/// memory) or the sponsor (per-mount fees). The adversarial critique flagged
+/// ALL three frontier designs as leaving these uncapped (its #2 top risk:
+/// "sponsor-key drain… uncapped in all three designs"). Checked when a spawn is
+/// requested, BEFORE any fetch/instantiate/settle.
+#[derive(Clone, Copy, Debug)]
+pub struct ComposeBudget {
+    pub max_children: usize,
+    pub max_bytes_per_child: usize,
+    pub max_total_bytes: usize,
+}
+
+impl ComposeBudget {
+    /// Conservative v1 caps (8 children, 16 KB each, 64 KB total).
+    pub fn v1() -> Self {
+        Self { max_children: 8, max_bytes_per_child: 16 * 1024, max_total_bytes: 64 * 1024 }
+    }
+
+    /// Whether a new child of `child_bytes` may be admitted given the `count`
+    /// children and `total_bytes` already mounted. `Err` carries the reason so
+    /// the host can log WHY a spawn was refused (silent caps read as "worked").
+    pub fn admit(&self, count: usize, total_bytes: usize, child_bytes: usize) -> Result<(), String> {
+        if count >= self.max_children {
+            return Err(format!("compose: at the {}-child cap", self.max_children));
+        }
+        if child_bytes > self.max_bytes_per_child {
+            return Err(format!(
+                "compose: child is {child_bytes} bytes, over the {}-byte per-child cap",
+                self.max_bytes_per_child
+            ));
+        }
+        if total_bytes.saturating_add(child_bytes) > self.max_total_bytes {
+            return Err(format!(
+                "compose: mounting {child_bytes} more bytes would exceed the {}-byte total cap",
+                self.max_total_bytes
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// A deferred-op buffer handed to a module during a tick. A child issues
 /// spawn/close/move here; nothing mutates the table until the tick completes.
 pub struct Pending<H> {
@@ -271,6 +313,22 @@ mod tests {
         let mut left = None;
         t.tick(|_i, h, _vp, _p| left = Some(*h));
         assert_eq!(left, Some(1));
+    }
+
+    #[test]
+    fn compose_budget_admits_within_caps_and_refuses_past_them() {
+        let b = ComposeBudget::v1();
+        // Within all caps.
+        assert!(b.admit(0, 0, 1024).is_ok());
+        assert!(b.admit(7, 1024, 1024).is_ok()); // last allowed child
+        // Too many children.
+        assert!(b.admit(8, 0, 1).is_err());
+        // Child too big.
+        assert!(b.admit(0, 0, 16 * 1024 + 1).is_err());
+        // Total would overflow the aggregate cap.
+        assert!(b.admit(1, 60 * 1024, 8 * 1024).is_err());
+        // saturating_add can't be tricked into wrapping past the cap.
+        assert!(b.admit(0, usize::MAX, 1).is_err());
     }
 
     #[test]
