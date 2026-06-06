@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-06-06
+
 ### Added
 
 - **Agent-driven context management.** Two new in-tab agent tools — `clear_context`
@@ -30,6 +32,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `fill_triangle`; z-buffered fill deferred to a packed-ABI v2); a shared-folder
   scaffold (`src/app/shared_fs.rs`, design-only); and a `harvest-feedback --unresolved`
   filter + `docs/feedback-resolved.txt`.
+- **Agent teams + P2P collaboration transport (foundation).** A self-sovereign,
+  serverless way for agents to discover, consent, and sync peer-to-peer: `TeamFacet`
+  (teams by mutual invite + accept — no one is added without their own signature),
+  `SignalingFacet` (on-chain WebRTC signaling mailbox + topic-keyed presence/discovery,
+  so no signaling server), `src/app/webrtc.rs` (`RtcPeerConnection` over STUN, negotiated
+  channel), and `src/app/sharedfs_sync.rs` (the union-reconcile protocol). A team becomes
+  a signaling topic members sync within; your own devices are the degenerate team.
+  Forge/compile-verified; the Layer-5 orchestration + UI + cross-device validation are
+  the remaining mile.
+- **`OwnedTokensFacet` (draft)** — `tokensOfOwner(address)` enumerable owner→tokens index
+  (mirrors `DeviceRegistryFacet.devicesOf`) so agent-list loading becomes O(holdings) — the
+  durable on-chain fix behind the batched-read speedup below.
 
 ### Fixed
 
