@@ -68,3 +68,28 @@ impl CompileError {
 impl From<String> for CompileError {
     fn from(s: String) -> Self { Self::new(s) }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::compile;
+
+    #[test]
+    fn const_resolves_and_is_order_independent() {
+        // const used in a fn declared BEFORE the const — resolution must not
+        // depend on source order.
+        assert!(compile(
+            "fn frame(t: i32) { host::display::clear(W); host::display::present(); } const W: i32 = 256;"
+        )
+        .is_ok());
+        // a const referencing an earlier const
+        assert!(compile(
+            "const A: i32 = 2; const B: i32 = A * 3; fn frame(t: i32) { host::display::clear(B); host::display::present(); }"
+        )
+        .is_ok());
+        // a genuinely undefined name still errors
+        assert!(compile(
+            "fn frame(t: i32) { host::display::clear(NOPE); host::display::present(); }"
+        )
+        .is_err());
+    }
+}

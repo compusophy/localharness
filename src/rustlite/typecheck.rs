@@ -149,6 +149,10 @@ struct TypeContext {
     functions: HashMap<String, FnSig>,
     locals: Vec<HashMap<String, (ResolvedType, bool)>>,
     current_return: ResolvedType,
+    /// Top-level `const`s, INLINED at each reference (name → typed value). A
+    /// const is a compile-time value, so a `Var` naming one returns a clone of
+    /// its value expr — no runtime global, no codegen change.
+    consts: HashMap<String, TypedExpr>,
 }
 
 impl TypeContext {
@@ -158,6 +162,7 @@ impl TypeContext {
             functions: HashMap::new(),
             locals: Vec::new(),
             current_return: ResolvedType::Void,
+            consts: HashMap::new(),
         }
     }
 
@@ -258,6 +263,25 @@ impl TypeContext {
         let mut functions = Vec::new();
         let mut consts = Vec::new();
 
+        // Consts FIRST, so a function body resolves them no matter the source
+        // order; each is registered in `self.consts` and inlined at its uses.
+        for item in &module.items {
+            if let Item::Const(c) = item {
+                let ty = self.resolve_ty(&c.ty)?;
+                self.push_scope();
+                let value = self.check_expr(&c.value)?;
+                self.pop_scope();
+                if value.ty != ty {
+                    return Err(CompileError::at(
+                        format!("const type mismatch: expected {ty:?}, got {:?}", value.ty),
+                        c.span,
+                    ));
+                }
+                self.consts.insert(c.name.clone(), value.clone());
+                consts.push(TypedConst { name: c.name.clone(), ty, value });
+            }
+        }
+
         for item in &module.items {
             match item {
                 Item::Struct(s) => {
@@ -273,19 +297,7 @@ impl TypeContext {
                 Item::Fn(f) => {
                     functions.push(self.check_fn(f)?);
                 }
-                Item::Const(c) => {
-                    let ty = self.resolve_ty(&c.ty)?;
-                    self.push_scope();
-                    let value = self.check_expr(&c.value)?;
-                    self.pop_scope();
-                    if value.ty != ty {
-                        return Err(CompileError::at(
-                            format!("const type mismatch: expected {ty:?}, got {:?}", value.ty),
-                            c.span,
-                        ));
-                    }
-                    consts.push(TypedConst { name: c.name.clone(), ty, value });
-                }
+                Item::Const(_) => {} // processed in the consts-first pass above
             }
         }
 
@@ -416,13 +428,14 @@ impl TypeContext {
             ExprKind::Var(name) => {
                 if let Some((ty, _)) = self.lookup_local(name) {
                     Ok(TypedExpr { kind: TypedExprKind::Var(name.clone()), ty: ty.clone(), span })
-                } else {
+                } else if let Some(value) = self.consts.get(name) {
+                    // A top-level const → inline a clone of its typed value.
+                    Ok(value.clone())
+                } else if self.functions.contains_key(name) {
                     // Could be a function name
-                    if self.functions.contains_key(name) {
-                        Ok(TypedExpr { kind: TypedExprKind::Var(name.clone()), ty: ResolvedType::Void, span })
-                    } else {
-                        Err(CompileError::at(format!("undefined variable '{name}'"), span))
-                    }
+                    Ok(TypedExpr { kind: TypedExprKind::Var(name.clone()), ty: ResolvedType::Void, span })
+                } else {
+                    Err(CompileError::at(format!("undefined variable '{name}'"), span))
                 }
             }
 

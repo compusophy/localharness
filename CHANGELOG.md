@@ -52,6 +52,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a `/*` lexed its leading `/` as division → "expected expression, got Slash".
   Now skipped as trivia like line comments. (LLM-authored source emits these
   constantly — ties into the #19/#20 first-shot-compile pain.)
+- **rustlite: top-level `const`s resolve.** `const W: i32 = 256;` parsed + typechecked
+  but a function referencing `W` errored "undefined variable" — consts were never put
+  in scope. Now processed before functions (order-independent) and INLINED at each use
+  (a clone of the typed value → no runtime global, no codegen change); consts may
+  reference earlier consts. Runtime-verified (a const loop bound iterates the right N).
 
 ## [0.24.0] - 2026-06-06
 
