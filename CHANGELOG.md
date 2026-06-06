@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Agent-teams P2P collaboration layer (Layer 5 wired).** The foundation
+  (SignalingFacet/TeamFacet, `webrtc.rs` transport, `sharedfs_sync.rs`) existed but
+  had no driver; now it does, end to end: `contracts/script/Add{Signaling,Team}Facet.s.sol`
+  (deploy + diamondCut), a Rust signaling driver in `registry.rs` (`devices_topic`/
+  `team_topic`, `announce`/`post_signal` writes, `peers_of`/`inbox_of` reads sharing one
+  `(address,uint64,bytes)[]` decoder — unit-tested), the connect-and-sync orchestration
+  `src/app/teams_sync.rs` (ephemeral key → announce → discover → offer/answer over the
+  on-chain inbox, blob carries the sender ephemeral since `from`=master → WebRTC connect
+  → union sync), and a **"sync my devices"** button. Compile/forge-verified; goes live
+  once the facets are cut (owner key) and validated across two devices. v1: SDP unsealed,
+  reads-only shared FS — noted.
 - **CLI billing self-test** — `localharness credits [--as <me>]` (wallet `$LH` /
   per-call meter / session) and `localharness topup [--as <me>]` (claim the daily
   `$LH` allowance + deposit it into the per-request meter, sponsored). The end-to-end

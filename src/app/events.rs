@@ -29,6 +29,7 @@ use super::templates;
 #[derive(Debug, Clone)]
 enum Action {
     Send,
+    SyncDevices,
     ClearKey,
     OpfsRefresh,
     OpfsWipe,
@@ -162,6 +163,7 @@ impl Action {
             "feedback-submit" => Action::FeedbackSubmit,
             "pair-start" => Action::PairStart,
             "add-device" => Action::AddDevice,
+            "sync-devices" => Action::SyncDevices,
             "adopt-device" => Action::AdoptDevice,
             "create-new-claim" => Action::CreateNewClaim(arg.unwrap_or_default()),
             "pair-cancel" => Action::PairCancel,
@@ -1099,6 +1101,7 @@ fn dispatch(action: Action) {
         Action::FeedbackSubmit => super::feedback::feedback_submit(),
         Action::PairStart => pair_start_pressed(),
         Action::AddDevice => add_device_pressed(),
+        Action::SyncDevices => run_sync_devices(),
         Action::AdoptDevice => adopt_device_pressed(),
         Action::PairCancel => pair_cancel_pressed(),
         Action::PairApprove => pair_approve_pressed(),
@@ -2168,6 +2171,31 @@ fn hex_to_bytes(s: &str) -> Option<Vec<u8>> {
 /// never sent to a server). The user reads the code off-screen and types
 /// it on the other device to decrypt + import — no on-chain pairing, no
 /// device keys, no redirect glue.
+/// "Sync my devices" — run one P2P collaboration pass: announce this device,
+/// discover the owner's other online devices via the on-chain signaling roster,
+/// connect over WebRTC, and union-sync the shared folder. Best-effort; status
+/// lands in `#pair-msg`. (Needs the SignalingFacet cut + a second device online.)
+fn run_sync_devices() {
+    dom::swap_inner(
+        "pair-msg",
+        "<span style=\"color:var(--muted)\">discovering devices…</span>",
+    );
+    wasm_bindgen_futures::spawn_local(async move {
+        let msg = match super::teams_sync::sync_my_devices().await {
+            Ok(0) => {
+                "no other devices online — open this agent on another device and sync there too"
+                    .to_string()
+            }
+            Ok(n) => format!("connected — syncing with {n} device(s)"),
+            Err(e) => format!("sync failed: {e}"),
+        };
+        dom::swap_inner(
+            "pair-msg",
+            &format!("<span style=\"color:var(--muted)\">{msg}</span>"),
+        );
+    });
+}
+
 fn add_device_pressed() {
     let phrase = super::APP
         .with(|cell| cell.borrow().wallet.as_ref().map(|w| w.mnemonic.to_string()));

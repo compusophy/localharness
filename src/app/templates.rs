@@ -910,7 +910,7 @@ pub(crate) fn admin_credits_section() -> Markup {
 pub(crate) fn admin_devices_section() -> Markup {
     html! {
         div.admin-section {
-            div.admin-section-title { "add a device" }
+            div.admin-section-title { "devices" }
             // Option A — identity IS the seed. "Add a device" shows a QR
             // whose fragment carries this device's seed ENCRYPTED under a
             // one-time code; scanning it on the other device + typing the
@@ -920,6 +920,15 @@ pub(crate) fn admin_devices_section() -> Markup {
             div #pair-slot .pair-slot {
                 button #pair-btn type="button" data-action="add-device" .ghost {
                     "add a device"
+                }
+            }
+            // P2P collaboration (Layer 5): announce this device on-chain,
+            // discover the owner's other online devices, connect over WebRTC,
+            // and union-sync the shared folder. Needs SignalingFacet cut + a
+            // second device online.
+            div.pair-slot {
+                button type="button" data-action="sync-devices" .ghost {
+                    "sync my devices"
                 }
             }
             div #pair-msg .admin-msg-slot {}
