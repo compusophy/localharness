@@ -8,4 +8,17 @@
 # immutable on-chain array positions.
 #
 # index  fixed-in   note
-# (none yet)
+0   v0.23.0  QA: clean fs errors + position-robust --as
+1   5f9fbc5  mass-registration → batch_create_subdomains (sanctioned one-tx path)
+2   5f9fbc5  (dup of 1) mass-registration batch path
+3   2ee0f4e  bulk_release_subdomains tool (single master-confirmed batch burn)
+4   2ee0f4e  QA v0.22.0: --as anywhere (0.23.0) + programmatic bulk-release
+5   5f9fbc5  batch/multicall: batch_create + bulk_release pack N calls into one tx
+6   5f9fbc5  (dup of 5) batch/multicall transactions
+7   e7753dd  clear_context / compact_context agent tools
+8   2ee0f4e  alt-subdomain credits — kick seed_pull on the owner-device studio path
+9   2ee0f4e  mobile header on keyboard — visualViewport + interactive-widget
+12  5f9fbc5  cartridge host::audio + software-3D primitives (z-buffer deferred to v2)
+13  5f9fbc5  feedback hygiene = this file + harvest --unresolved (append-only by design)
+14  2ee0f4e  feedback button moved from header into an admin-modal tab
+# 10, 11 (cross-subdomain secure folder) = DESIGN + scaffold only, NOT resolved yet.
