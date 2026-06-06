@@ -82,39 +82,75 @@ pub struct OwnedToken {
 }
 
 /// All NFTs (= registered names) currently owned by `owner_hex`.
-/// Iterates `1..nextId` and filters by `ownerOf(i) == owner_hex`.
-/// Fine for testnet where the total token count is small; if the
-/// registry ever grows past a few hundred we'd swap to log-based
-/// indexing or a multicall batch. Returns entries newest-first.
+/// Enumerate every subdomain `owner_hex` holds, newest-first.
+///
+/// There is no owner→tokens index on-chain yet (only `ownerOfId` id→owner +
+/// a `balanceOf` count), so the whole registry is still scanned — but in a
+/// SINGLE JSON-RPC batch POST instead of `nextId` sequential round-trips (the
+/// old loop did ~one RPC per token, serialized, which was ~5s once a few dozen
+/// names existed). One batch for `ownerOfId(1..nextId)`, then two more for the
+/// `nameOfId` + `tokenBoundAccount` of just the matches. For the O(holdings)
+/// fix (one call, your tokens only) see the `tokensOfOwner` facet draft.
 pub async fn list_owned_tokens(owner_hex: &str) -> Result<Vec<OwnedToken>, String> {
     if REGISTRY_ADDRESS == zero_address() {
         return Ok(Vec::new());
     }
     let total = next_id().await?;
+    if total <= 1 {
+        return Ok(Vec::new());
+    }
     let owner_lower = owner_hex.to_lowercase();
-    let mut out: Vec<OwnedToken> = Vec::new();
-    // nextId is one-past the highest issued id (we start at 1, so the
-    // valid range is 1..nextId-1 inclusive — equivalent to 1..nextId).
-    for id in 1..total {
-        let owner = match owner_of_id(id).await {
-            Ok(Some(addr)) => addr,
-            _ => continue,
-        };
-        if owner.to_lowercase() != owner_lower {
-            continue;
-        }
-        let name = name_of_id(id).await.unwrap_or_default();
+
+    // ONE batched POST: ownerOfId(1..total). nextId is one-past the highest id.
+    let owner_calls: Vec<(&str, String)> = (1..total)
+        .map(|id| (REGISTRY_ADDRESS, call_uint("ownerOfId(uint256)", id)))
+        .collect();
+    let owners = eth_call_batch(&owner_calls).await?;
+    let my_ids: Vec<u64> = owners
+        .iter()
+        .enumerate()
+        .filter_map(|(i, res)| {
+            let addr = decode_address(res.as_ref().ok()?)?;
+            (addr == owner_lower).then_some((i as u64) + 1)
+        })
+        .collect();
+    if my_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Two more batched POSTs: name + TBA of just the owned ids.
+    let name_calls: Vec<(&str, String)> = my_ids
+        .iter()
+        .map(|&id| (REGISTRY_ADDRESS, call_uint("nameOfId(uint256)", id)))
+        .collect();
+    let tba_calls: Vec<(&str, String)> = my_ids
+        .iter()
+        .map(|&id| (REGISTRY_ADDRESS, call_uint("tokenBoundAccount(uint256)", id)))
+        .collect();
+    let names = eth_call_batch(&name_calls).await?;
+    let tbas = eth_call_batch(&tba_calls).await?;
+
+    let mut out: Vec<OwnedToken> = Vec::with_capacity(my_ids.len());
+    for (k, &id) in my_ids.iter().enumerate() {
+        let name = names
+            .get(k)
+            .and_then(|r| r.as_ref().ok())
+            .and_then(|h| decode_string(h))
+            .unwrap_or_default();
         if name.is_empty() {
             continue;
         }
-        let tba = tba_of_name(&name).await.ok().flatten();
+        let tba = tbas
+            .get(k)
+            .and_then(|r| r.as_ref().ok())
+            .and_then(|h| decode_address(h));
         out.push(OwnedToken {
             token_id: id,
             name,
             tba,
         });
     }
-    // Reverse so newer registrations land at the top.
+    // Newest registrations at the top.
     out.reverse();
     Ok(out)
 }
@@ -129,23 +165,6 @@ async fn next_id() -> Result<u64, String> {
 /// `nextId - 1`. Used by the admin Usage tab.
 pub async fn subdomain_count() -> Result<u64, String> {
     Ok(next_id().await?.saturating_sub(1))
-}
-
-async fn owner_of_id(id: u64) -> Result<Option<String>, String> {
-    let mut data = Vec::with_capacity(4 + 32);
-    data.extend_from_slice(&selector("ownerOfId(uint256)"));
-    data.extend_from_slice(&u256_be(id as u128));
-    let calldata = format!("0x{}", bytes_to_hex(&data));
-    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
-    let trimmed = result_hex.trim().trim_start_matches("0x");
-    if trimmed.len() < 64 {
-        return Ok(None);
-    }
-    let addr_hex = &trimmed[trimmed.len() - 40..];
-    if addr_hex.chars().all(|c| c == '0') {
-        return Ok(None);
-    }
-    Ok(Some(format!("0x{}", addr_hex.to_lowercase())))
 }
 
 pub async fn name_of_id(id: u64) -> Result<String, String> {
@@ -2647,6 +2666,96 @@ async fn eth_call(to: &str, data_hex: &str) -> Result<String, String> {
         serde_json::json!([{ "to": to, "data": data_hex }, "latest"]),
     )
     .await
+}
+
+/// Build calldata for a `fn(uint256)` selector with a single id argument.
+fn call_uint(sig: &str, id: u64) -> String {
+    let mut data = Vec::with_capacity(4 + 32);
+    data.extend_from_slice(&selector(sig));
+    data.extend_from_slice(&u256_be(id as u128));
+    format!("0x{}", bytes_to_hex(&data))
+}
+
+/// Decode an ABI `address` return (right-aligned in 32 bytes). `None` for the
+/// zero address or a short result.
+fn decode_address(result_hex: &str) -> Option<String> {
+    let trimmed = result_hex.trim().trim_start_matches("0x");
+    if trimmed.len() < 64 {
+        return None;
+    }
+    let addr_hex = &trimmed[trimmed.len() - 40..];
+    if addr_hex.chars().all(|c| c == '0') {
+        return None;
+    }
+    Some(format!("0x{}", addr_hex.to_lowercase()))
+}
+
+/// Decode an ABI `string` return (offset + length + bytes). `None` on a
+/// short/truncated/invalid body.
+fn decode_string(result_hex: &str) -> Option<String> {
+    let raw = hex_to_bytes(result_hex).ok()?;
+    if raw.len() < 64 {
+        return None;
+    }
+    let len = u64::from_be_bytes(raw[56..64].try_into().ok()?) as usize;
+    if raw.len() < 64 + len {
+        return None;
+    }
+    String::from_utf8(raw[64..64 + len].to_vec()).ok()
+}
+
+/// Send many `eth_call`s as ONE JSON-RPC batch (a single POST). Returns each
+/// call's `result` hex in input order; a per-call RPC error maps to `Err` for
+/// just that entry. Collapses an N-token scan from N round-trips into one.
+async fn eth_call_batch(calls: &[(&str, String)]) -> Result<Vec<Result<String, String>>, String> {
+    if calls.is_empty() {
+        return Ok(Vec::new());
+    }
+    let batch: Vec<serde_json::Value> = calls
+        .iter()
+        .enumerate()
+        .map(|(i, (to, data))| {
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": i,
+                "method": "eth_call",
+                "params": [{ "to": to, "data": data }, "latest"],
+            })
+        })
+        .collect();
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(RPC_URL)
+        .json(&serde_json::Value::Array(batch))
+        .send()
+        .await
+        .map_err(|e| format!("eth_call batch send: {e}"))?;
+    let parsed: Vec<serde_json::Value> = resp
+        .json()
+        .await
+        .map_err(|e| format!("eth_call batch decode: {e}"))?;
+    // Batch responses may arrive out of order — index by the `id` we set.
+    let mut out: Vec<Result<String, String>> = (0..calls.len())
+        .map(|_| Err("missing batch response".to_string()))
+        .collect();
+    for item in parsed {
+        let Some(idx) = item.get("id").and_then(|v| v.as_u64()).map(|i| i as usize) else {
+            continue;
+        };
+        if idx >= out.len() {
+            continue;
+        }
+        if let Some(err) = item.get("error") {
+            let msg = err
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("rpc error");
+            out[idx] = Err(msg.to_string());
+        } else if let Some(result) = item.get("result").and_then(|r| r.as_str()) {
+            out[idx] = Ok(result.to_string());
+        }
+    }
+    Ok(out)
 }
 
 async fn eth_get_logs(
