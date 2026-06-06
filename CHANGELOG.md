@@ -48,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `'`; now lexed to the byte value as an `IntLit` (chars are `i32` glyph codes for
   `draw_char`) with string-style escapes; empty/multi-byte literals are clear errors.
   (On-chain feedback #15.)
+- **rustlite: block comments** (`/* … */`, nesting allowed). Only `//` was skipped,
+  so a `/*` lexed its leading `/` as division → "expected expression, got Slash".
+  Now skipped as trivia like line comments. (LLM-authored source emits these
+  constantly — ties into the #19/#20 first-shot-compile pain.)
 
 ## [0.24.0] - 2026-06-06
 

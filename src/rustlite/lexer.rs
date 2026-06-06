@@ -50,6 +50,24 @@ impl<'a> Lexer<'a> {
                 }
                 continue;
             }
+            // block comment `/* … */` — Rust allows nesting, so track depth.
+            // (Without this the leading `/` lexed as `Slash` → "got Slash".)
+            if self.pos + 1 < self.src.len() && self.src[self.pos] == b'/' && self.src[self.pos + 1] == b'*' {
+                let mut depth = 1usize;
+                self.pos += 2;
+                while self.pos < self.src.len() && depth > 0 {
+                    if self.pos + 1 < self.src.len() && self.src[self.pos] == b'/' && self.src[self.pos + 1] == b'*' {
+                        depth += 1;
+                        self.pos += 2;
+                    } else if self.pos + 1 < self.src.len() && self.src[self.pos] == b'*' && self.src[self.pos + 1] == b'/' {
+                        depth -= 1;
+                        self.pos += 2;
+                    } else {
+                        self.pos += 1;
+                    }
+                }
+                continue;
+            }
             // attribute: `#[...]` (outer) or `#![...]` (inner) — accepted and
             // ignored, treated as trivia like a comment, so standard Rust
             // attributes (`#[no_mangle]`, `#[derive(Clone)]`, …) that agent-
@@ -452,6 +470,20 @@ mod tests {
         // clear errors, not a lexer crash
         assert!(lex("''").is_err()); // empty
         assert!(lex("'AB'").is_err()); // multi-byte
+    }
+
+    #[test]
+    fn lex_block_comments() {
+        // `/* … */` is skipped (nesting allowed); `/` still lexes as division.
+        let toks: Vec<_> = lex("1 /* x */ + 2")
+            .unwrap()
+            .into_iter()
+            .filter(|t| !matches!(t.kind, TokenKind::Eof))
+            .map(|t| t.kind)
+            .collect();
+        assert_eq!(toks, vec![TokenKind::IntLit(1), TokenKind::Plus, TokenKind::IntLit(2)]);
+        assert_eq!(lex("/* /* nested */ */ 5").unwrap()[0].kind, TokenKind::IntLit(5));
+        assert_eq!(lex("6 / 2").unwrap()[1].kind, TokenKind::Slash);
     }
 
     #[test]
