@@ -74,6 +74,13 @@ pub enum TokenKind {
     GtEq,
     AmpAmp,
     PipePipe,
+    // Compound assignment (`x += 1` etc.) — desugared in the parser to
+    // `x = x <op> 1`.
+    PlusEq,
+    MinusEq,
+    StarEq,
+    SlashEq,
+    PercentEq,
 
     // Special
     Underscore,

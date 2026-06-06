@@ -105,10 +105,10 @@ impl<'a> Lexer<'a> {
             b',' => TokenKind::Comma,
             b';' => TokenKind::Semi,
             b'.' => TokenKind::Dot,
-            b'+' => TokenKind::Plus,
-            b'*' => TokenKind::Star,
-            b'/' => TokenKind::Slash,
-            b'%' => TokenKind::Percent,
+            b'+' => self.maybe_eq(TokenKind::PlusEq, TokenKind::Plus),
+            b'*' => self.maybe_eq(TokenKind::StarEq, TokenKind::Star),
+            b'/' => self.maybe_eq(TokenKind::SlashEq, TokenKind::Slash),
+            b'%' => self.maybe_eq(TokenKind::PercentEq, TokenKind::Percent),
 
             b':' => {
                 if self.peek() == Some(b':') {
@@ -123,6 +123,9 @@ impl<'a> Lexer<'a> {
                 if self.peek() == Some(b'>') {
                     self.advance();
                     TokenKind::Arrow
+                } else if self.peek() == Some(b'=') {
+                    self.advance();
+                    TokenKind::MinusEq
                 } else {
                     TokenKind::Minus
                 }
@@ -234,6 +237,17 @@ impl<'a> Lexer<'a> {
             }
         }
         Ok(TokenKind::StringLit(s))
+    }
+
+    /// An operator (`+ * / %`) followed by `=` → the compound-assign token,
+    /// else the plain operator.
+    fn maybe_eq(&mut self, if_eq: TokenKind, otherwise: TokenKind) -> TokenKind {
+        if self.peek() == Some(b'=') {
+            self.advance();
+            if_eq
+        } else {
+            otherwise
+        }
     }
 
     fn lex_number(&mut self, _start: usize) -> Result<TokenKind, CompileError> {

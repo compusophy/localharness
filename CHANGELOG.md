@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an identifier ("expected Semi, got Ident"); now lexed base-16 (underscores + an
   i32/i64 suffix allowed; an empty `0x` is a clean error). Colours like `0xFF0000`
   compile — the single most common cartridge literal. (On-chain feedback #15/#16.)
+- **rustlite: compound assignment** (`x += 1`, `-=`, `*=`, `/=`, `%=`). The lexer
+  split `+=` into `+` then `=`, so these threw the confusing "expected expression,
+  got Eq" — the TRUE source of that feedback (if-exprs always compiled). Now lexed
+  as compound-assign tokens and desugared `place OP= v` → `place = place OP v`
+  (operand order preserved for the non-commutative ops). Found by the test-user
+  dogfood pass; filed + fixed in the same loop.
 
 ## [0.24.0] - 2026-06-06
 

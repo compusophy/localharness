@@ -356,6 +356,34 @@ impl<'a> Parser<'a> {
                 _ => {
                     let expr = self.parse_expr()?;
 
+                    // Compound assignment: `place OP= value` desugars to
+                    // `place = place OP value` (e.g. `x += 1` → `x = x + 1`).
+                    let compound = match self.peek() {
+                        TokenKind::PlusEq => Some(BinOp::Add),
+                        TokenKind::MinusEq => Some(BinOp::Sub),
+                        TokenKind::StarEq => Some(BinOp::Mul),
+                        TokenKind::SlashEq => Some(BinOp::Div),
+                        TokenKind::PercentEq => Some(BinOp::Mod),
+                        _ => None,
+                    };
+                    if let Some(op) = compound {
+                        self.advance(); // consume the `OP=` token
+                        let rhs = self.parse_expr()?;
+                        self.expect(&TokenKind::Semi)?;
+                        let span = expr.span;
+                        let place = expr_to_place(&expr)?;
+                        let value = Expr {
+                            kind: ExprKind::BinOp {
+                                op,
+                                lhs: Box::new(expr),
+                                rhs: Box::new(rhs),
+                            },
+                            span,
+                        };
+                        stmts.push(Stmt::Assign { place, value, span });
+                        continue;
+                    }
+
                     // Assignment: expr followed by `=` (and the expr must be a place)
                     if matches!(self.peek(), TokenKind::Eq) && !matches!(self.peek(), TokenKind::EqEq) {
                         // Check it's actually `=` not `==`
@@ -948,6 +976,30 @@ mod tests {
             }
             _ => panic!("expected fn"),
         }
+    }
+
+    #[test]
+    fn parse_compound_assign_desugars() {
+        // `x += 5` → `x = x + 5`; `x -= 2` → `x = x - 2`. Operand order matters
+        // for the non-commutative ops (`-= /= %=`): the place is the LHS.
+        let m = parse_str("fn f() { let mut x: i32 = 0; x += 5; x -= 2; }");
+        let Item::Fn(f) = &m.items[0] else {
+            panic!("expected fn")
+        };
+        let check = |s: &Stmt, add: bool, want_rhs: i64| {
+            let Stmt::Assign { place, value, .. } = s else {
+                panic!("expected Assign")
+            };
+            assert_eq!(place.root, "x");
+            let ExprKind::BinOp { op, lhs, rhs } = &value.kind else {
+                panic!("expected BinOp value")
+            };
+            assert!(if add { matches!(op, BinOp::Add) } else { matches!(op, BinOp::Sub) });
+            assert!(matches!(&lhs.kind, ExprKind::Var(n) if n == "x"));
+            assert!(matches!(&rhs.kind, ExprKind::IntLit(n) if *n == want_rhs));
+        };
+        check(&f.body.stmts[1], true, 5);
+        check(&f.body.stmts[2], false, 2);
     }
 
     #[test]
