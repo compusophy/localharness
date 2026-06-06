@@ -641,6 +641,7 @@ impl<'a> Parser<'a> {
             TokenKind::Match => self.parse_match_expr(),
             TokenKind::While => self.parse_while_expr(),
             TokenKind::Loop => self.parse_loop_expr(),
+            TokenKind::For => self.parse_for_expr(),
 
             TokenKind::Break => {
                 self.advance();
@@ -881,6 +882,88 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// `for v in a..b { body }` — desugared to a `Block`:
+    ///   { let __end = b; let mut v = a - 1;
+    ///     loop { v = v + 1; if v >= __end { break; } body } }
+    /// The increment sits at the TOP of the loop (with `v` pre-decremented), so
+    /// `continue` — which compiles to the loop back-edge (`br 0`) — correctly
+    /// re-runs the increment + bound check instead of skipping them. Bounds are
+    /// evaluated once. Pure AST rewrite over loop/if/break — no codegen support.
+    fn parse_for_expr(&mut self) -> Result<Expr, CompileError> {
+        let start = self.span();
+        self.expect(&TokenKind::For)?;
+        let var = self.expect_ident()?;
+        self.expect(&TokenKind::In)?;
+        let start_expr = self.parse_expr()?;
+        self.expect(&TokenKind::DotDot)?;
+        let end_expr = self.parse_expr()?;
+        let body = self.parse_block()?;
+        let span = Span { start: start.start, end: self.tokens[self.pos - 1].span.end };
+        let end_name = format!("__for_end_{}", start.start);
+
+        let var_read = |v: &str| Expr { kind: ExprKind::Var(v.to_string()), span };
+        let int = |n| Expr { kind: ExprKind::IntLit(n), span };
+        let bin = |op, l, r| Expr {
+            kind: ExprKind::BinOp { op, lhs: Box::new(l), rhs: Box::new(r) },
+            span,
+        };
+
+        // loop body: [ v = v + 1;  if v >= __end { break; }  <user body> ]
+        let mut loop_stmts = vec![
+            Stmt::Assign {
+                place: Place { root: var.clone(), fields: Vec::new(), span },
+                value: bin(BinOp::Add, var_read(&var), int(1)),
+                span,
+            },
+            Stmt::Expr {
+                expr: Expr {
+                    kind: ExprKind::If {
+                        cond: Box::new(bin(BinOp::Ge, var_read(&var), var_read(&end_name))),
+                        then_block: Block {
+                            stmts: vec![Stmt::Expr {
+                                expr: Expr { kind: ExprKind::Break { value: None }, span },
+                                span,
+                            }],
+                            tail: None,
+                            span,
+                        },
+                        else_block: None,
+                    },
+                    span,
+                },
+                span,
+            },
+        ];
+        loop_stmts.extend(body.stmts);
+        if let Some(tail) = body.tail {
+            loop_stmts.push(Stmt::Expr { expr: *tail, span });
+        }
+        let the_loop = Expr {
+            kind: ExprKind::Loop {
+                body: Block { stmts: loop_stmts, tail: None, span },
+            },
+            span,
+        };
+
+        // outer block: [ let __end = b;  let mut v = a - 1;  <loop> ]
+        let outer = Block {
+            stmts: vec![
+                Stmt::Let { name: end_name, mutable: false, ty: None, init: end_expr, span },
+                Stmt::Let {
+                    name: var,
+                    mutable: true,
+                    ty: None,
+                    init: bin(BinOp::Sub, start_expr, int(1)),
+                    span,
+                },
+                Stmt::Expr { expr: the_loop, span },
+            ],
+            tail: None,
+            span,
+        };
+        Ok(Expr { kind: ExprKind::Block(outer), span })
+    }
+
     fn parse_arg_list(&mut self) -> Result<Vec<Expr>, CompileError> {
         let mut args = Vec::new();
         if matches!(self.peek(), TokenKind::RParen) { return Ok(args); }
@@ -1000,6 +1083,57 @@ mod tests {
         };
         check(&f.body.stmts[1], true, 5);
         check(&f.body.stmts[2], false, 2);
+    }
+
+    #[test]
+    fn parse_for_desugars_to_loop_with_top_increment() {
+        // `for i in 0..3 { … }` desugars to:
+        //   { let __end = 3; let mut i = 0 - 1;
+        //     loop { i = i + 1; if i >= __end { break; } … } }
+        // The increment-at-TOP is the whole point — it keeps `continue` correct.
+        let m = parse_str("fn f() { for i in 0..3 { let x: i32 = i; } }");
+        let Item::Fn(f) = &m.items[0] else {
+            panic!("expected fn")
+        };
+        let for_expr = f
+            .body
+            .tail
+            .as_deref()
+            .or_else(|| match f.body.stmts.last() {
+                Some(Stmt::Expr { expr, .. }) => Some(expr),
+                _ => None,
+            })
+            .expect("for expr");
+        let ExprKind::Block(outer) = &for_expr.kind else {
+            panic!("for should desugar to a block")
+        };
+        assert_eq!(outer.stmts.len(), 3, "let __end, let mut i, loop");
+        // `let mut i = start - 1`
+        match &outer.stmts[1] {
+            Stmt::Let { name, mutable, init, .. } => {
+                assert_eq!(name, "i");
+                assert!(*mutable);
+                assert!(matches!(&init.kind, ExprKind::BinOp { op: BinOp::Sub, .. }));
+            }
+            _ => panic!("expected `let mut i`"),
+        }
+        // the loop: body starts with `i = i + 1` then the `if i >= __end { break }`
+        let Stmt::Expr { expr, .. } = &outer.stmts[2] else {
+            panic!("expected loop statement")
+        };
+        let ExprKind::Loop { body } = &expr.kind else {
+            panic!("expected a loop")
+        };
+        match &body.stmts[0] {
+            Stmt::Assign { value, .. } => {
+                assert!(matches!(&value.kind, ExprKind::BinOp { op: BinOp::Add, .. }));
+            }
+            _ => panic!("loop body must start with the increment"),
+        }
+        assert!(matches!(
+            &body.stmts[1],
+            Stmt::Expr { expr, .. } if matches!(&expr.kind, ExprKind::If { .. })
+        ));
     }
 
     #[test]

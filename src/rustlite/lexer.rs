@@ -104,7 +104,14 @@ impl<'a> Lexer<'a> {
             b']' => TokenKind::RBracket,
             b',' => TokenKind::Comma,
             b';' => TokenKind::Semi,
-            b'.' => TokenKind::Dot,
+            b'.' => {
+                if self.peek() == Some(b'.') {
+                    self.advance();
+                    TokenKind::DotDot
+                } else {
+                    TokenKind::Dot
+                }
+            }
             b'+' => self.maybe_eq(TokenKind::PlusEq, TokenKind::Plus),
             b'*' => self.maybe_eq(TokenKind::StarEq, TokenKind::Star),
             b'/' => self.maybe_eq(TokenKind::SlashEq, TokenKind::Slash),

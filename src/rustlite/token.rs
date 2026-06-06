@@ -29,6 +29,8 @@ pub enum TokenKind {
     Loop,
     Break,
     Continue,
+    For,
+    In,
     Return,
     Struct,
     Enum,
@@ -55,6 +57,7 @@ pub enum TokenKind {
     ColonColon,
     Semi,
     Dot,
+    DotDot,     // .. (range)
     Arrow,      // ->
     FatArrow,   // =>
 
@@ -100,6 +103,8 @@ impl TokenKind {
             "loop" => Some(TokenKind::Loop),
             "break" => Some(TokenKind::Break),
             "continue" => Some(TokenKind::Continue),
+            "for" => Some(TokenKind::For),
+            "in" => Some(TokenKind::In),
             "return" => Some(TokenKind::Return),
             "struct" => Some(TokenKind::Struct),
             "enum" => Some(TokenKind::Enum),

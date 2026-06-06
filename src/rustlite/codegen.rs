@@ -121,6 +121,12 @@ struct WasmEmitter {
     local_map: Vec<std::collections::HashMap<String, u32>>,
     local_types: Vec<u8>,
     string_map: std::collections::HashMap<String, (u32, u32)>,
+    // Control frames (if/match) currently open BETWEEN the emit point and the
+    // innermost enclosing loop's body. `break`/`continue` add this to their
+    // branch depth so they reach the loop's block/loop frame even when nested
+    // inside conditionals (br targets are relative). Saved/reset around each
+    // loop, balanced inc/dec around each `if`/match arm → returns to 0.
+    extra_depth: u32,
 }
 
 struct ImportEntry {
@@ -150,6 +156,7 @@ impl WasmEmitter {
             local_map: Vec::new(),
             local_types: Vec::new(),
             string_map: std::collections::HashMap::new(),
+            extra_depth: 0,
         }
     }
 
@@ -624,6 +631,8 @@ impl WasmEmitter {
                 };
                 code.push(OP_IF);
                 code.push(block_ty);
+                // Inside the if frame: break/continue must step one frame further.
+                self.extra_depth += 1;
                 self.emit_block_code(then_block, code)?;
                 if let Some(else_branch) = else_block {
                     code.push(OP_ELSE);
@@ -632,6 +641,7 @@ impl WasmEmitter {
                         TypedElse::If(e) => self.emit_expr(e, code)?,
                     }
                 }
+                self.extra_depth -= 1;
                 code.push(OP_END);
             }
             TypedExprKind::Match { scrutinee, arms, result_ty } => {
@@ -656,6 +666,7 @@ impl WasmEmitter {
                         self.emit_pattern_check(&arm.pattern, scrutinee_local, &scrutinee.ty, code)?;
                         code.push(OP_IF);
                         code.push(block_ty);
+                        self.extra_depth += 1; // arm body is one if-frame deeper
                     }
                     self.emit_expr(&arm.body, code)?;
                     if !is_wildcard(&arm.pattern) && !is_last {
@@ -667,15 +678,20 @@ impl WasmEmitter {
                     let is_last = i == arms.len() - 1;
                     if !is_wildcard(&arm.pattern) && !is_last {
                         code.push(OP_END);
+                        self.extra_depth -= 1;
                     }
                 }
             }
             TypedExprKind::While { cond, body } => {
+                // New loop → the body's break/continue base level. Save + reset
+                // `extra_depth` so nested-if accounting starts fresh, restore after.
+                let saved = self.extra_depth;
+                self.extra_depth = 0;
                 code.push(OP_BLOCK);
                 code.push(BLOCK_VOID);
                 code.push(OP_LOOP);
                 code.push(BLOCK_VOID);
-                // Check condition
+                // Check condition (emitted directly in the loop body — depth 0)
                 self.emit_expr(cond, code)?;
                 code.push(OP_I32_EQZ);
                 code.push(OP_BR_IF);
@@ -686,8 +702,11 @@ impl WasmEmitter {
                 leb128_u32(0, code); // continue loop
                 code.push(OP_END); // end loop
                 code.push(OP_END); // end block
+                self.extra_depth = saved;
             }
             TypedExprKind::Loop { body } => {
+                let saved = self.extra_depth;
+                self.extra_depth = 0;
                 code.push(OP_BLOCK);
                 code.push(BLOCK_VOID);
                 code.push(OP_LOOP);
@@ -697,14 +716,18 @@ impl WasmEmitter {
                 leb128_u32(0, code);
                 code.push(OP_END);
                 code.push(OP_END);
+                self.extra_depth = saved;
             }
             TypedExprKind::Break { .. } => {
                 code.push(OP_BR);
-                leb128_u32(1, code); // break out of enclosing block
+                // Exit the loop's block, stepping past any enclosing if/match
+                // frames (br targets are relative to the current frame nesting).
+                leb128_u32(self.extra_depth + 1, code);
             }
             TypedExprKind::Continue => {
                 code.push(OP_BR);
-                leb128_u32(0, code); // continue enclosing loop
+                // Re-enter the loop, past any enclosing if/match frames.
+                leb128_u32(self.extra_depth, code);
             }
             TypedExprKind::Block(block) => {
                 self.emit_block_code(block, code)?;

@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-call meter / session) and `localharness topup [--as <me>]` (claim the daily
   `$LH` allowance + deposit it into the per-request meter, sponsored). The end-to-end
   billing check any agent can run as a real user: `topup → call → credits`.
+- **rustlite: `for i in a..b { … }` loops.** Desugared (no codegen change) to a
+  `loop` with the increment at the TOP and `v` pre-decremented, so `continue` stays
+  correct; bounds evaluated once. Range token `..` added. Render-verified at runtime.
 
 ### Fixed
 
@@ -33,6 +36,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as compound-assign tokens and desugared `place OP= v` → `place = place OP v`
   (operand order preserved for the non-commutative ops). Found by the test-user
   dogfood pass; filed + fixed in the same loop.
+- **rustlite: `break`/`continue` inside an `if` or `match` arm hung the cartridge.**
+  Codegen hardcoded the branch depth (`br 1` / `br 0`), ignoring the enclosing
+  conditional frames — so `while c { if x { break } }` branched to the loop instead
+  of out of it and **spun forever** (any guarded break/continue, the common case).
+  Now a per-function `extra_depth` counter tracks open `if`/match frames between the
+  break/continue and its loop, so the branch reaches the right target. Runtime-proven
+  via the render harness (the hanging cases now terminate). A SEVERE pre-existing bug
+  the test-user dogfood pass surfaced (it's what made for-loops hang at first).
 
 ## [0.24.0] - 2026-06-06
 
