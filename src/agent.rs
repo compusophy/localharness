@@ -713,14 +713,15 @@ impl Agent {
     /// request. Synchronous (clearing a `Vec` needs no network). No-op for
     /// backends without a typed session handle.
     pub fn clear_history(&self) {
+        // Exactly one backend connection is ever set, so each arm's `if let`
+        // fires only for the active backend — no early `return` needed (and a
+        // `return` is `needless_return` once the other arms are cfg'd out).
         if let Some(gc) = self.gemini_connection.as_ref() {
             gc.clear_history();
-            return;
         }
         #[cfg(feature = "anthropic")]
         if let Some(ac) = self.anthropic_connection.as_ref() {
             ac.clear_history();
-            return;
         }
         #[cfg(feature = "local")]
         if let Some(lc) = self.local_connection.as_ref() {

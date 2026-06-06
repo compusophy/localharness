@@ -12,7 +12,7 @@ crate;
 policies, triggers, MCP, and context compaction. Build with `browser-app` on
 wasm32 and you also get the live IDE at `<name>.localharness.xyz`.
 
-- [crates.io/crates/localharness](https://crates.io/crates/localharness) (current: **0.23.x**)
+- [crates.io/crates/localharness](https://crates.io/crates/localharness) (current: **0.24.x**)
 - [github.com/compusophy/localharness](https://github.com/compusophy/localharness)
 - Native: stable Rust 1.85+, tokio-driven. wasm32: same crate, browser.
 - Live: `localharness.xyz` (marketing apex) + wildcard `*.localharness.xyz`
@@ -66,6 +66,11 @@ src/                  library crate
 │   │                 the signer iframe is partitioned-dead on mobile)
 │   ├── agent_rpc.rs  inter-agent RPC endpoint (?rpc=1 URL mode)
 │   ├── encryption.rs AES-256-GCM at-rest + ECIES via WebCrypto
+│   ├── shared_fs.rs  cross-subdomain encrypted apex store (scaffold); webrtc.rs
+│   │                 (RtcPeerConnection P2P over STUN) + sharedfs_sync.rs
+│   │                 (union-reconcile) = the agent-team P2P collaboration
+│   │                 foundation, signaling via the on-chain SignalingFacet
+│   │                 (compile/forge-verified; Layer-5 orchestration + UI pending)
 │   ├── system_prompt.rs  per-tenant custom prompt (.lh_system_prompt.txt)
 │   ├── self_docs.rs  agent self-knowledge: embedded runtime summary (injected
 │   │                 into the system prompt) + read_self_docs tool (fetches
@@ -111,7 +116,10 @@ contracts/   Foundry project for the on-chain registry
 ├── src/      Diamond.sol (EIP-2535 proxy) + interfaces/; libraries/ (LibDiamond +
 │             one LibXyzStorage per facet); facets/ (DiamondCut, DiamondLoupe,
 │             Ownership, LocalharnessRegistry, ERC721, Tba, Feedback, MainIdentity,
-│             Redeem, Session, CreditMeter, X402, DeviceRegistry, Release, Pairing);
+│             Redeem, Session, CreditMeter, X402, DeviceRegistry, Release, Pairing;
+│             DRAFTS not yet cut: OwnedTokens (tokensOfOwner enumerable index),
+│             Signaling (on-chain WebRTC signaling mailbox + topic presence),
+│             Team (agent teams by mutual invite+accept));
 │             erc6551/ (vendored ref); upgradeInitializers/DiamondInit.sol;
 │             LocalharnessRegistry.sol (legacy flat, archived)
 ├── script/   DeployDiamond.s.sol + one Add<Facet>.s.sol cut script per facet

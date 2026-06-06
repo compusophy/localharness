@@ -2,8 +2,9 @@
 
 # `localharness`
 
-**A Rust-native, model-agnostic agent SDK (Gemini today; pluggable backends) —
-and a self-sovereign, browser-resident agent platform built on it.**
+**A Rust-native, model-agnostic agent SDK (Gemini + Claude today; pluggable
+backends, with an experimental in-browser local model) — and a self-sovereign,
+browser-resident agent platform built on it.**
 
 [![crates.io](https://img.shields.io/crates/v/localharness.svg?style=flat-square)](https://crates.io/crates/localharness)
 [![docs.rs](https://img.shields.io/docsrs/localharness?style=flat-square)](https://docs.rs/localharness)
