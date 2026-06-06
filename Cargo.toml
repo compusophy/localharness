@@ -226,6 +226,22 @@ web-sys = { version = "0.3", features = [
     "AudioBuffer",
     "AudioBufferSourceNode",
     "AudioScheduledSourceNode",
+    # WebRTC P2P transport for cross-device shared-folder sync (src/app/webrtc.rs).
+    # Signaling rides the on-chain SignalingFacet; STUN for reflexive candidates;
+    # non-trickle ICE folds candidates into ONE SDP per signaling blob.
+    "RtcPeerConnection",
+    "RtcConfiguration",
+    "RtcIceServer",
+    "RtcDataChannel",
+    "RtcDataChannelEvent",
+    "RtcDataChannelInit",
+    "RtcDataChannelType",
+    "RtcDataChannelState",
+    "RtcSessionDescription",
+    "RtcSessionDescriptionInit",
+    "RtcSdpType",
+    "RtcIceGatheringState",
+    "RtcPeerConnectionIceEvent",
     "History",
     "Location",
     "Storage",

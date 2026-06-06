@@ -44,6 +44,12 @@ mod seed_pull;
 // so silence dead-code until then. See `shared_fs` module doc.
 #[allow(dead_code)]
 mod shared_fs;
+/// WebRTC P2P transport (Layer 3) for cross-device shared-folder sync —
+/// `RtcPeerConnection` over STUN, signaling carried by the on-chain
+/// SignalingFacet. Compile-verified only (needs two browsers to exercise);
+/// dead-code-allowed until the Layer 4 sync protocol wires it.
+#[allow(dead_code)]
+mod webrtc;
 mod self_docs;
 mod signer;
 mod sponsor;
