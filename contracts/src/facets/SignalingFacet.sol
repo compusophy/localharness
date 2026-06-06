@@ -76,26 +76,28 @@ contract SignalingFacet {
         emit Signaled(msg.sender, msg.sender, type(uint256).max);
     }
 
-    // --- Presence / discovery (ephemeral-key model) -----------------------
-    // The owner's devices share one master address (seed adoption), so they
-    // can't address each other by identity. Instead each device generates an
-    // EPHEMERAL signaling key per session and announces it under the OWNER's
-    // roster (msg.sender, the master, via the sponsored tx). Siblings read the
-    // roster to find each other, then `postSignal` to the ephemeral address.
+    // --- Presence / discovery (ephemeral-key model, per TOPIC) ------------
+    // Peers can't always address each other by identity (an owner's devices
+    // share one master address). So each peer generates an EPHEMERAL signaling
+    // key per session and announces it under a TOPIC — a SignalingFacet room:
+    // `keccak256("devices", owner)` for your own devices, or `keccak256("team",
+    // teamId)` for an agent team (membership/consent lives in `TeamFacet`).
+    // Peers read the topic to discover each other, then `postSignal` to the
+    // ephemeral address. v1 leaves `announce` open (the topic IS the address):
+    // a fake entry just fails to connect, and the SDP blobs are encrypted to
+    // real ephemeral keys — member-gating the roster is a later hardening.
 
-    event Announced(address indexed owner, address indexed ephemeral);
+    event Announced(bytes32 indexed topic, address indexed ephemeral);
 
-    /// Announce (or refresh) `ephemeral` + its `pubkey` under the caller's
-    /// roster. Idempotent upsert keyed by `ephemeral`. `msg.sender` is the
-    /// owner master address (the sponsored-tx signer), so a device can only
-    /// announce under its own owner.
-    function announce(address ephemeral, bytes calldata pubkey) external {
-        LibSignalingStorage.Presence[] storage r = LibSignalingStorage.load().roster[msg.sender];
+    /// Announce (or refresh) `ephemeral` + its `pubkey` under `topic`.
+    /// Idempotent upsert keyed by `ephemeral`.
+    function announce(bytes32 topic, address ephemeral, bytes calldata pubkey) external {
+        LibSignalingStorage.Presence[] storage r = LibSignalingStorage.load().roster[topic];
         for (uint256 i = 0; i < r.length; i++) {
             if (r[i].ephemeral == ephemeral) {
                 r[i].ts = uint64(block.timestamp);
                 r[i].pubkey = pubkey;
-                emit Announced(msg.sender, ephemeral);
+                emit Announced(topic, ephemeral);
                 return;
             }
         }
@@ -106,22 +108,22 @@ contract SignalingFacet {
                 pubkey: pubkey
             })
         );
-        emit Announced(msg.sender, ephemeral);
+        emit Announced(topic, ephemeral);
     }
 
-    /// The ephemeral signaling keys `owner`'s devices have announced. Readers
-    /// filter stale entries by `ts` off-chain. View — no gas.
-    function peersOf(address owner)
+    /// The ephemeral signaling keys announced under `topic`. Readers filter
+    /// stale entries by `ts` off-chain. View — no gas.
+    function peersOf(bytes32 topic)
         external
         view
         returns (LibSignalingStorage.Presence[] memory)
     {
-        return LibSignalingStorage.load().roster[owner];
+        return LibSignalingStorage.load().roster[topic];
     }
 
-    /// Drop a no-longer-online `ephemeral` from the caller's roster (swap-pop).
-    function leave(address ephemeral) external {
-        LibSignalingStorage.Presence[] storage r = LibSignalingStorage.load().roster[msg.sender];
+    /// Drop a no-longer-online `ephemeral` from `topic`'s roster (swap-pop).
+    function leave(bytes32 topic, address ephemeral) external {
+        LibSignalingStorage.Presence[] storage r = LibSignalingStorage.load().roster[topic];
         uint256 n = r.length;
         for (uint256 i = 0; i < n; i++) {
             if (r[i].ephemeral == ephemeral) {

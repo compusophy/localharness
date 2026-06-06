@@ -31,10 +31,13 @@ library LibSignalingStorage {
         /// reader tracks off-chain (the `index` returned by `postSignal` /
         /// emitted by `Signaled`).
         mapping(address => Signal[]) inbox;
-        /// owner MASTER address => the ephemeral signaling keys its online
-        /// devices have announced (the peer set for the seed-adoption / shared-
-        /// address model, where DeviceRegistry can't distinguish devices).
-        mapping(address => Presence[]) roster;
+        /// TOPIC => the ephemeral signaling keys its online peers have
+        /// announced. A topic is a SignalingFacet room: `keccak256("devices",
+        /// owner)` for one owner's own devices, or `keccak256("team", teamId)`
+        /// for an agent TEAM (the consent layer is `TeamFacet`). This is what
+        /// makes the same P2P transport serve both "sync my devices" and
+        /// "sync with my teammates".
+        mapping(bytes32 => Presence[]) roster;
     }
 
     function load() internal pure returns (Storage storage s) {
