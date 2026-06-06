@@ -584,7 +584,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_term(&mut self) -> Result<Expr, CompileError> {
-        let mut lhs = self.parse_unary()?;
+        let mut lhs = self.parse_cast()?;
         while matches!(self.peek(), TokenKind::Star | TokenKind::Slash | TokenKind::Percent) {
             let op = match self.peek() {
                 TokenKind::Star => BinOp::Mul,
@@ -592,11 +592,24 @@ impl<'a> Parser<'a> {
                 _ => BinOp::Mod,
             };
             self.advance();
-            let rhs = self.parse_unary()?;
+            let rhs = self.parse_cast()?;
             let span = Span { start: lhs.span.start, end: rhs.span.end };
             lhs = Expr { kind: ExprKind::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span };
         }
         Ok(lhs)
+    }
+
+    /// `expr as Type` — binds tighter than `* / %`, looser than unary (Rust).
+    /// Left-assoc so `x as i64 as f64` chains.
+    fn parse_cast(&mut self) -> Result<Expr, CompileError> {
+        let mut e = self.parse_unary()?;
+        while matches!(self.peek(), TokenKind::As) {
+            self.advance();
+            let ty = self.parse_type()?;
+            let span = Span { start: e.span.start, end: self.tokens[self.pos - 1].span.end };
+            e = Expr { kind: ExprKind::Cast { expr: Box::new(e), ty }, span };
+        }
+        Ok(e)
     }
 
     fn parse_unary(&mut self) -> Result<Expr, CompileError> {

@@ -116,6 +116,8 @@ pub enum TypedExprKind {
 
     BinOp { op: BinOp, lhs: Box<TypedExpr>, rhs: Box<TypedExpr> },
     UnaryOp { op: UnaryOp, operand: Box<TypedExpr> },
+    /// `expr as <node.ty>` — numeric conversion. Source = inner expr's `.ty`.
+    Cast { expr: Box<TypedExpr> },
 
     If { cond: Box<TypedExpr>, then_block: TypedBlock, else_block: Option<TypedElse> },
     Match { scrutinee: Box<TypedExpr>, arms: Vec<TypedMatchArm>, result_ty: ResolvedType },
@@ -624,6 +626,28 @@ impl TypeContext {
                 Ok(TypedExpr {
                     ty,
                     kind: TypedExprKind::UnaryOp { op: *op, operand: Box::new(operand) },
+                    span,
+                })
+            }
+
+            ExprKind::Cast { expr, ty } => {
+                let inner = self.check_expr(expr)?;
+                let target = self.resolve_ty(ty)?;
+                let numeric = |t: &ResolvedType| {
+                    matches!(
+                        t,
+                        ResolvedType::I32 | ResolvedType::I64 | ResolvedType::F32 | ResolvedType::F64
+                    )
+                };
+                if !numeric(&inner.ty) || !numeric(&target) {
+                    return Err(CompileError::at(
+                        format!("`as` converts between numbers, not {:?} -> {:?}", inner.ty, target),
+                        span,
+                    ));
+                }
+                Ok(TypedExpr {
+                    ty: target,
+                    kind: TypedExprKind::Cast { expr: Box::new(inner) },
                     span,
                 })
             }

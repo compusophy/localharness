@@ -180,6 +180,12 @@ pub enum ExprKind {
         operand: Box<Expr>,
     },
 
+    /// `expr as Ty` — a numeric conversion (i32/i64/f32/f64).
+    Cast {
+        expr: Box<Expr>,
+        ty: Ty,
+    },
+
     If {
         cond: Box<Expr>,
         then_block: Block,

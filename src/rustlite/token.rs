@@ -36,6 +36,7 @@ pub enum TokenKind {
     Enum,
     Const,
     Use,
+    As,
 
     // Type keywords
     I32,
@@ -116,6 +117,7 @@ impl TokenKind {
             "enum" => Some(TokenKind::Enum),
             "const" => Some(TokenKind::Const),
             "use" => Some(TokenKind::Use),
+            "as" => Some(TokenKind::As),
             "true" => Some(TokenKind::True),
             "false" => Some(TokenKind::False),
             "i32" => Some(TokenKind::I32),

@@ -92,4 +92,14 @@ mod tests {
         )
         .is_err());
     }
+
+    #[test]
+    fn casts_between_numbers() {
+        // i32 → f64 → i32 round-trip + a float literal truncated to i32 (the
+        // common graphics pattern: float math, then cast to a pixel coord).
+        assert!(compile(
+            "fn frame(t: i32) { let x = t as f64; let y = x as i32; host::display::clear(y + (3.7 as i32)); host::display::present(); }"
+        )
+        .is_ok());
+    }
 }

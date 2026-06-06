@@ -66,6 +66,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(r<<16)|(g<<8)|b` and masks `& 0xFF` were impossible**, the most common cartridge
   idiom. Lexer/AST/parser/typecheck (integer-only)/codegen all wired; runtime-verified
   (values + precedence) via the render harness. Found by the test-user dogfood pass.
+- **rustlite: `as` numeric casts** — `t as f64`, `(a * 10.0) as i32`, i32↔i64, etc.
+  Previously `as` lexed as a bare identifier → "expected Semi, got Ident". Now an `As`
+  keyword + `ExprKind::Cast` with Rust precedence (tighter than `* / %`, looser than
+  unary); the codegen emits the right convert/trunc/extend/wrap/promote/demote opcode
+  per (from,to). The graphics staple — float math, then cast to a pixel coord.
+  Runtime-verified (`3.7 as i32`→3, `(1.5*4.0) as i32`→6).
 
 ## [0.24.0] - 2026-06-06
 

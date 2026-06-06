@@ -286,6 +286,7 @@ impl WasmEmitter {
                 self.scan_expr_imports(rhs);
             }
             TypedExprKind::UnaryOp { operand, .. } => self.scan_expr_imports(operand),
+            TypedExprKind::Cast { expr } => self.scan_expr_imports(expr),
             TypedExprKind::If { cond, then_block, else_block } => {
                 self.scan_expr_imports(cond);
                 self.scan_block_imports(then_block);
@@ -641,6 +642,28 @@ impl WasmEmitter {
                         self.emit_expr(operand, code)?;
                         code.push(OP_I32_EQZ);
                     }
+                }
+            }
+            TypedExprKind::Cast { expr: inner } => {
+                self.emit_expr(inner, code)?;
+                // (from, to) → wasm numeric-conversion opcode; same type = no-op.
+                let op: Option<u8> = match (&inner.ty, &expr.ty) {
+                    (ResolvedType::I32, ResolvedType::I64) => Some(0xAC), // i64.extend_i32_s
+                    (ResolvedType::I32, ResolvedType::F32) => Some(0xB2), // f32.convert_i32_s
+                    (ResolvedType::I32, ResolvedType::F64) => Some(0xB7), // f64.convert_i32_s
+                    (ResolvedType::I64, ResolvedType::I32) => Some(0xA7), // i32.wrap_i64
+                    (ResolvedType::I64, ResolvedType::F32) => Some(0xB4), // f32.convert_i64_s
+                    (ResolvedType::I64, ResolvedType::F64) => Some(0xB9), // f64.convert_i64_s
+                    (ResolvedType::F32, ResolvedType::I32) => Some(0xA8), // i32.trunc_f32_s
+                    (ResolvedType::F32, ResolvedType::I64) => Some(0xAE), // i64.trunc_f32_s
+                    (ResolvedType::F32, ResolvedType::F64) => Some(0xBB), // f64.promote_f32
+                    (ResolvedType::F64, ResolvedType::I32) => Some(0xAA), // i32.trunc_f64_s
+                    (ResolvedType::F64, ResolvedType::I64) => Some(0xB0), // i64.trunc_f64_s
+                    (ResolvedType::F64, ResolvedType::F32) => Some(0xB6), // f32.demote_f64
+                    _ => None, // identity cast — nothing to emit
+                };
+                if let Some(op) = op {
+                    code.push(op);
                 }
             }
             TypedExprKind::If { cond, then_block, else_block } => {
