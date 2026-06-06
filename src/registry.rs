@@ -2986,6 +2986,187 @@ fn decode_feedback_data(bytes: &[u8], sender: String) -> Option<FeedbackEntry> {
     Some(FeedbackEntry { sender, timestamp, text })
 }
 
+// ─── Agent-teams P2P signaling (SignalingFacet) ────────────────────────────
+// The on-chain seam for the WebRTC collaboration layer: a peer announces an
+// EPHEMERAL signaling key under a TOPIC, discovers others via `peersOf`, then
+// exchanges SDP offers/answers through `postSignal`/`inboxOf` (blobs sealed to
+// the recipient's ephemeral pubkey). Topics:
+//   - own devices: keccak256("localharness.devices" || owner_addr)
+//   - agent team:  keccak256("localharness.team"   || team_id)
+// `Presence` and `Signal` share the ABI shape `(address, uint64, bytes)`, so one
+// decoder serves both reads.
+
+/// Signaling topic for an owner's OWN devices.
+pub fn devices_topic(owner_addr: &str) -> [u8; 32] {
+    let mut pre = b"localharness.devices".to_vec();
+    if let Ok(a) = parse_eth_address(owner_addr) {
+        pre.extend_from_slice(&a);
+    }
+    keccak_key(&pre)
+}
+
+/// Signaling topic for an agent team.
+pub fn team_topic(team_id: u64) -> [u8; 32] {
+    let mut pre = b"localharness.team".to_vec();
+    pre.extend_from_slice(&u256_be(team_id as u128));
+    keccak_key(&pre)
+}
+
+/// 32-byte ABI word for an address (left-padded).
+fn address_word(addr: &[u8; 20]) -> [u8; 32] {
+    let mut w = [0u8; 32];
+    w[12..32].copy_from_slice(addr);
+    w
+}
+
+/// ABI-encode a trailing dynamic `bytes` (length word + padded data) onto `d`.
+fn push_abi_bytes(d: &mut Vec<u8>, bytes: &[u8]) {
+    d.extend_from_slice(&u256_be(bytes.len() as u128));
+    d.extend_from_slice(bytes);
+    let pad = (32 - (bytes.len() % 32)) % 32;
+    d.extend(std::iter::repeat(0u8).take(pad));
+}
+
+fn encode_announce(topic: &[u8; 32], ephemeral: &[u8; 20], pubkey: &[u8]) -> Vec<u8> {
+    let mut d = selector("announce(bytes32,address,bytes)").to_vec();
+    d.extend_from_slice(topic);
+    d.extend_from_slice(&address_word(ephemeral));
+    d.extend_from_slice(&u256_be(0x60)); // offset to `pubkey` (3 head words in)
+    push_abi_bytes(&mut d, pubkey);
+    d
+}
+
+/// Announce `ephemeral` + `pubkey` under `topic` (sponsored; caller = master).
+pub async fn announce_sponsored(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    topic: &[u8; 32],
+    ephemeral: &[u8; 20],
+    pubkey: &[u8],
+    fee_token: &str,
+) -> Result<String, String> {
+    let call = crate::tempo_tx::TempoCall {
+        to: parse_eth_address(REGISTRY_ADDRESS)?,
+        value_wei: 0,
+        input: encode_announce(topic, ephemeral, pubkey),
+    };
+    let gas = 1_200_000u128 + (pubkey.len() as u128) * 9_000;
+    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, gas).await
+}
+
+fn encode_post_signal(to: &[u8; 20], blob: &[u8]) -> Vec<u8> {
+    let mut d = selector("postSignal(address,bytes)").to_vec();
+    d.extend_from_slice(&address_word(to));
+    d.extend_from_slice(&u256_be(0x40)); // offset to `blob` (2 head words in)
+    push_abi_bytes(&mut d, blob);
+    d
+}
+
+/// Post a signaling blob (an SDP offer/answer/ICE bundle, sealed to `to`) into
+/// `to`'s inbox (sponsored).
+pub async fn post_signal_sponsored(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    to: &[u8; 20],
+    blob: &[u8],
+    fee_token: &str,
+) -> Result<String, String> {
+    let call = crate::tempo_tx::TempoCall {
+        to: parse_eth_address(REGISTRY_ADDRESS)?,
+        value_wei: 0,
+        input: encode_post_signal(to, blob),
+    };
+    let gas = 1_200_000u128 + (blob.len() as u128) * 9_000;
+    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, gas).await
+}
+
+/// One discovered/received entry. `peersOf` → (ephemeral, ts, pubkey);
+/// `inboxOf` → (from, ts, blob).
+pub type AddrTsBytes = (String, u64, Vec<u8>);
+
+/// Decode an ABI `(address, uint64, bytes)[]` return — the shared shape of
+/// `Presence[]` (peersOf) and `Signal[]` (inboxOf). Bounds-checked: a malformed
+/// word stops decoding rather than panicking.
+fn decode_addr_ts_bytes_array(result_hex: &str) -> Vec<AddrTsBytes> {
+    let raw = match hex_to_bytes(result_hex) {
+        Ok(b) => b,
+        Err(_) => return Vec::new(),
+    };
+    let read_usize = |off: usize| -> Option<usize> {
+        let w = raw.get(off..off + 32)?;
+        Some(u64::from_be_bytes(w[24..32].try_into().ok()?) as usize)
+    };
+    let mut out = Vec::new();
+    let arr_off = match read_usize(0) {
+        Some(o) => o,
+        None => return out,
+    };
+    let len = match read_usize(arr_off) {
+        Some(l) => l,
+        None => return out,
+    };
+    let heads = arr_off + 32; // element offsets are relative to here
+    for i in 0..len {
+        let elem = match read_usize(heads + i * 32) {
+            Some(rel) => heads + rel,
+            None => break,
+        };
+        let addr = match raw.get(elem + 12..elem + 32) {
+            Some(a) => format!("0x{}", bytes_to_hex(a)),
+            None => break,
+        };
+        let ts = match raw.get(elem + 56..elem + 64) {
+            Some(t) => u64::from_be_bytes(t.try_into().unwrap_or_default()),
+            None => break,
+        };
+        let boff = match read_usize(elem + 64) {
+            Some(rel) => elem + rel, // bytes offset is relative to the element
+            None => break,
+        };
+        let blen = match read_usize(boff) {
+            Some(l) => l,
+            None => break,
+        };
+        let bytes = raw
+            .get(boff + 32..boff + 32 + blen)
+            .map(|s| s.to_vec())
+            .unwrap_or_default();
+        out.push((addr, ts, bytes));
+    }
+    out
+}
+
+/// The ephemeral peers announced under `topic` (peersOf). Callers filter stale
+/// entries by the `ts` field.
+pub async fn peers_of(topic: &[u8; 32]) -> Result<Vec<AddrTsBytes>, String> {
+    let mut data = selector("peersOf(bytes32)").to_vec();
+    data.extend_from_slice(topic);
+    let res = eth_call(REGISTRY_ADDRESS, &format!("0x{}", bytes_to_hex(&data))).await?;
+    Ok(decode_addr_ts_bytes_array(&res))
+}
+
+/// `peer`'s signaling inbox from `from_index` onward (inboxOf). The caller
+/// tracks its own cursor.
+pub async fn inbox_of(peer: &[u8; 20], from_index: u64) -> Result<Vec<AddrTsBytes>, String> {
+    let mut data = selector("inboxOf(address,uint256)").to_vec();
+    data.extend_from_slice(&address_word(peer));
+    data.extend_from_slice(&u256_be(from_index as u128));
+    let res = eth_call(REGISTRY_ADDRESS, &format!("0x{}", bytes_to_hex(&data))).await?;
+    Ok(decode_addr_ts_bytes_array(&res))
+}
+
+/// `peer`'s inbox length (a cheap cursor poll).
+pub async fn inbox_length(peer: &[u8; 20]) -> Result<u64, String> {
+    let mut data = selector("inboxLength(address)").to_vec();
+    data.extend_from_slice(&address_word(peer));
+    let res = eth_call(REGISTRY_ADDRESS, &format!("0x{}", bytes_to_hex(&data))).await?;
+    let raw = hex_to_bytes(&res)?;
+    if raw.len() < 32 {
+        return Ok(0);
+    }
+    Ok(u64::from_be_bytes(raw[24..32].try_into().map_err(|_| "bad len")?))
+}
+
 async fn eth_get_transaction_count(addr: &str) -> Result<u128, String> {
     let hex = rpc(
         "eth_getTransactionCount",
@@ -3106,6 +3287,32 @@ pub async fn sleep_ms(ms: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decode_presence_signal_array() {
+        // Hand-crafted ABI `(address, uint64, bytes)[]` with one element:
+        // (0x11..11, ts=5, bytes=[0xAA, 0xBB]) — the Presence/Signal shape that
+        // peersOf/inboxOf return. Verifies the nested-offset decode.
+        let hex = String::from("0x")
+            + "0000000000000000000000000000000000000000000000000000000000000020" // array offset
+            + "0000000000000000000000000000000000000000000000000000000000000001" // len = 1
+            + "0000000000000000000000000000000000000000000000000000000000000020" // head[0] offset
+            + "0000000000000000000000001111111111111111111111111111111111111111" // address
+            + "0000000000000000000000000000000000000000000000000000000000000005" // ts = 5
+            + "0000000000000000000000000000000000000000000000000000000000000060" // bytes offset
+            + "0000000000000000000000000000000000000000000000000000000000000002" // bytes len = 2
+            + "aabb000000000000000000000000000000000000000000000000000000000000"; // bytes data
+        let out = decode_addr_ts_bytes_array(&hex);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, "0x1111111111111111111111111111111111111111");
+        assert_eq!(out[0].1, 5);
+        assert_eq!(out[0].2, vec![0xAA, 0xBB]);
+        // An empty array decodes to nothing (no panic).
+        let empty = String::from("0x")
+            + "0000000000000000000000000000000000000000000000000000000000000020"
+            + "0000000000000000000000000000000000000000000000000000000000000000";
+        assert!(decode_addr_ts_bytes_array(&empty).is_empty());
+    }
 
     #[test]
     fn selector_matches_known_value() {
