@@ -75,4 +75,62 @@ contract SignalingFacet {
         delete LibSignalingStorage.load().inbox[msg.sender];
         emit Signaled(msg.sender, msg.sender, type(uint256).max);
     }
+
+    // --- Presence / discovery (ephemeral-key model) -----------------------
+    // The owner's devices share one master address (seed adoption), so they
+    // can't address each other by identity. Instead each device generates an
+    // EPHEMERAL signaling key per session and announces it under the OWNER's
+    // roster (msg.sender, the master, via the sponsored tx). Siblings read the
+    // roster to find each other, then `postSignal` to the ephemeral address.
+
+    event Announced(address indexed owner, address indexed ephemeral);
+
+    /// Announce (or refresh) `ephemeral` + its `pubkey` under the caller's
+    /// roster. Idempotent upsert keyed by `ephemeral`. `msg.sender` is the
+    /// owner master address (the sponsored-tx signer), so a device can only
+    /// announce under its own owner.
+    function announce(address ephemeral, bytes calldata pubkey) external {
+        LibSignalingStorage.Presence[] storage r = LibSignalingStorage.load().roster[msg.sender];
+        for (uint256 i = 0; i < r.length; i++) {
+            if (r[i].ephemeral == ephemeral) {
+                r[i].ts = uint64(block.timestamp);
+                r[i].pubkey = pubkey;
+                emit Announced(msg.sender, ephemeral);
+                return;
+            }
+        }
+        r.push(
+            LibSignalingStorage.Presence({
+                ephemeral: ephemeral,
+                ts: uint64(block.timestamp),
+                pubkey: pubkey
+            })
+        );
+        emit Announced(msg.sender, ephemeral);
+    }
+
+    /// The ephemeral signaling keys `owner`'s devices have announced. Readers
+    /// filter stale entries by `ts` off-chain. View — no gas.
+    function peersOf(address owner)
+        external
+        view
+        returns (LibSignalingStorage.Presence[] memory)
+    {
+        return LibSignalingStorage.load().roster[owner];
+    }
+
+    /// Drop a no-longer-online `ephemeral` from the caller's roster (swap-pop).
+    function leave(address ephemeral) external {
+        LibSignalingStorage.Presence[] storage r = LibSignalingStorage.load().roster[msg.sender];
+        uint256 n = r.length;
+        for (uint256 i = 0; i < n; i++) {
+            if (r[i].ephemeral == ephemeral) {
+                if (i != n - 1) {
+                    r[i] = r[n - 1];
+                }
+                r.pop();
+                return;
+            }
+        }
+    }
 }
