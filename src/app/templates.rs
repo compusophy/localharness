@@ -99,12 +99,12 @@ pub(crate) fn rendered_markdown(raw: &str) -> Markup {
     html! { (PreEscaped(out)) }
 }
 
-/// Sticky header — brand left, two utility buttons right (feedback,
-/// admin). Footer is gone; the feedback button moved into the header
-/// so the bottom of the viewport can be claimed by the terminal /
-/// active panel. Both header buttons share a fixed min-width via
-/// `.header-button` so they read as a uniform pair regardless of
-/// label length.
+/// Sticky header — brand left, the admin button right. Feedback used to
+/// sit here too but moved INTO the admin modal as a `feedback` tab
+/// (`admin_feedback_section`), leaving the header to a single admin
+/// affordance. The bottom of the viewport stays claimed by the terminal /
+/// active panel. The admin button uses a fixed min-width via
+/// `.header-button` so the header reads cleanly.
 pub(crate) fn site_header(_host: &Host) -> Markup {
     html! {
         header.site-header {
@@ -121,9 +121,6 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
                         }
                     }
                 }
-                button type="button"
-                    data-action="feedback-open"
-                    .header-button.feedback-button { "feedback" }
                 div #header-admin .header-admin {
                     button type="button"
                         data-action="header-admin-toggle"
@@ -394,24 +391,24 @@ pub(crate) fn mobile_tabs() -> Markup {
 // `display: none` shim. If a footer ever comes back, reintroduce
 // here with a meaningful purpose.
 
-/// Feedback modal — opened from the footer button. Inline confirm
-/// pattern (no JS dialog). Submit appends to `.lh_feedback.txt`
-/// in OPFS for now; an on-chain FeedbackFacet submission lands
-/// next (requires a contract + bundle wiring).
-pub(crate) fn feedback_modal() -> Markup {
+/// Feedback admin-tab panel. Lives inline in the admin modal's
+/// `panel-feedback` (no overlay, no `×`) — the `[feedback]` header button
+/// was retired in favour of this tab. On-chain write-only: the textarea +
+/// submit reuse the exact ids `feedback::feedback_submit` drives
+/// (`#feedback-text` / `#feedback-msg`), so the submit / rate-limit /
+/// sign path is unchanged. Submit also mirrors to `.lh_feedback.txt` in
+/// OPFS as a local copy.
+pub(crate) fn admin_feedback_section() -> Markup {
     html! {
-        div #feedback-modal .feedback-modal {
-            div.feedback-card {
-                button type="button" data-action="feedback-close" .modal-close { "×" }
-                div.feedback-title { "feedback" }
-                textarea #feedback-text
-                    .feedback-textarea
-                    rows="6" {}
-                div.feedback-actions {
-                    button type="button" data-action="feedback-submit" { "submit" }
-                }
-                div #feedback-msg .feedback-msg {}
+        div.admin-section {
+            div.admin-section-title { "feedback" }
+            textarea #feedback-text
+                .feedback-textarea
+                rows="6" {}
+            div.prompt-actions {
+                button type="button" data-action="feedback-submit" .ghost { "submit" }
             }
+            div #feedback-msg .feedback-msg .admin-msg-slot {}
         }
     }
 }
@@ -574,8 +571,14 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
                     button #admin-tab-btn-usage type="button"
                         data-action="show-admin-tab" data-arg="usage"
                         .admin-tab-button { "usage" }
+                    button #admin-tab-btn-feedback type="button"
+                        data-action="show-admin-tab" data-arg="feedback"
+                        .admin-tab-button { "feedback" }
                     span.admin-tabs-spacer {}
                     button type="button" data-action="header-admin-close" .modal-close { "×" }
+                }
+                div.admin-tab-panel.panel-feedback {
+                    (admin_feedback_section())
                 }
                 div.admin-tab-panel.panel-account {
                     (admin_identity_section(None, owner_hex.as_deref(), None, has_wallet))
@@ -618,8 +621,14 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                     button #admin-tab-btn-usage type="button"
                         data-action="show-admin-tab" data-arg="usage"
                         .admin-tab-button { "usage" }
+                    button #admin-tab-btn-feedback type="button"
+                        data-action="show-admin-tab" data-arg="feedback"
+                        .admin-tab-button { "feedback" }
                     span.admin-tabs-spacer {}
                     button type="button" data-action="header-admin-close" .modal-close { "×" }
+                }
+                div.admin-tab-panel.panel-feedback {
+                    (admin_feedback_section())
                 }
                 div.admin-tab-panel.panel-agent {
                     (admin_model_section())

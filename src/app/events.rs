@@ -13,7 +13,7 @@
 
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use web_sys::{Document, Element, KeyboardEvent, MouseEvent};
+use web_sys::{Document, Element, HtmlElement, KeyboardEvent, MouseEvent};
 
 use crate::encoding::{
     bytes_to_hex_str, is_address_hex, parse_address, parse_token_amount, short_addr, tx_short_hash,
@@ -66,8 +66,6 @@ enum Action {
     ToggleTerminal,
     ToggleView,
     ShowTab(String),
-    FeedbackOpen,
-    FeedbackClose,
     FeedbackSubmit,
     PairStart,
     PairCancel,
@@ -161,8 +159,6 @@ impl Action {
             "toggle-terminal" => Action::ToggleTerminal,
             "toggle-view" => Action::ToggleView,
             "show-tab" => Action::ShowTab(arg.unwrap_or_default()),
-            "feedback-open" => Action::FeedbackOpen,
-            "feedback-close" => Action::FeedbackClose,
             "feedback-submit" => Action::FeedbackSubmit,
             "pair-start" => Action::PairStart,
             "add-device" => Action::AddDevice,
@@ -346,7 +342,67 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
     doc.add_event_listener_with_callback("touchend", touchend.as_ref().unchecked_ref())?;
     touchend.forget();
 
+    install_keyboard_viewport_fix();
+
     Ok(())
+}
+
+/// Mobile soft-keyboard fix (FB#9). When the on-screen keyboard opens,
+/// `dvh`/`vh` do NOT shrink (they track browser chrome, not the IME), so
+/// the full-height `#root` grows taller than the visible area and the
+/// browser scrolls the sticky header off the top. We listen on
+/// `window.visualViewport` (the only viewport that tracks the keyboard)
+/// and, while it is occluded, set CSS custom properties so `html,body,
+/// #root` size to the VISIBLE height (`--lh-vh`) and the app is nudged
+/// back into view (`--lh-vv-top`). A thin platform binding — it only
+/// writes CSS variables / a class on <html>, building no DOM (same
+/// spirit as the dom.rs helpers). No-op on desktop and when no
+/// `visualViewport` exists. Chrome/Android is already handled by the
+/// `interactive-widget=resizes-content` viewport meta; this covers iOS.
+fn install_keyboard_viewport_fix() {
+    let Some(win) = web_sys::window() else { return };
+    let Some(vv) = win.visual_viewport() else { return };
+
+    let apply = move || {
+        let Some(win) = web_sys::window() else { return };
+        let Some(vv) = win.visual_viewport() else { return };
+        let Some(doc) = win.document() else { return };
+        let Some(root) = doc.document_element() else { return };
+        let Ok(html) = root.dyn_into::<HtmlElement>() else { return };
+        let style = html.style();
+
+        // Layout-viewport height to compare against (window.innerHeight).
+        let layout_h = win
+            .inner_height()
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let visible_h = vv.height();
+        let offset_top = vv.offset_top();
+
+        // Keyboard is "open" once it eats a meaningful slice of the
+        // viewport. A small threshold avoids reacting to the URL-bar
+        // collapse (already covered by dvh) or sub-pixel jitter.
+        let occluded = layout_h - visible_h > 120.0;
+
+        if occluded {
+            let _ = style.set_property("--lh-vh", &format!("{visible_h}px"));
+            let _ = style.set_property("--lh-vv-top", &format!("{offset_top}px"));
+            let _ = html.class_list().add_1("lh-kb");
+        } else {
+            let _ = html.class_list().remove_1("lh-kb");
+            let _ = style.remove_property("--lh-vh");
+            let _ = style.remove_property("--lh-vv-top");
+        }
+    };
+
+    // Run once now (in case the page loads with the keyboard already up)
+    // and on every visualViewport resize/scroll.
+    apply();
+    let cb = Closure::<dyn FnMut()>::new(apply);
+    let _ = vv.add_event_listener_with_callback("resize", cb.as_ref().unchecked_ref());
+    let _ = vv.add_event_listener_with_callback("scroll", cb.as_ref().unchecked_ref());
+    cb.forget(); // lives for the document lifetime, like the other listeners
 }
 
 /// Persist the Gemini key from the input field to sessionStorage +
@@ -1040,8 +1096,6 @@ fn dispatch(action: Action) {
         Action::ToggleTerminal => toggle_layout_class("terminal-collapsed"),
         Action::ToggleView => toggle_layout_class("view-collapsed"),
         Action::ShowTab(name) => show_mobile_tab(&name),
-        Action::FeedbackOpen => super::feedback::feedback_open(),
-        Action::FeedbackClose => super::feedback::feedback_close(),
         Action::FeedbackSubmit => super::feedback::feedback_submit(),
         Action::PairStart => pair_start_pressed(),
         Action::AddDevice => add_device_pressed(),
@@ -2623,6 +2677,73 @@ pub(crate) async fn run_release_subdomain(name: &str) -> Result<String, String> 
     run_sponsored_tempo_call(&owner, vec![call], 1_000_000, "release subdomain").await
 }
 
+/// Bulk-release (burn) several subdomains in ONE sponsored, iframe-signed
+/// tx. `names` are resolved to token ids; the owner's MAIN is refused
+/// up-front (and again on-chain). The CALLER (tool) MUST gate on a single
+/// typed master confirmation BEFORE calling — this only performs the write.
+/// Returns (released_names, tx_hash).
+pub(crate) async fn run_bulk_release(
+    names: &[String],
+) -> Result<(Vec<String>, String), String> {
+    if names.is_empty() {
+        return Err("no subdomains to release".into());
+    }
+    // Resolve owner + MAIN from the current tenant, same preamble as
+    // consolidate (owner_main_tba) but we only need the owner hex + MAIN id.
+    let tenant = match super::tenant::current() {
+        super::tenant::Host::Tenant(n) => n,
+        _ => return Err("not running on a subdomain".into()),
+    };
+    let owner = super::registry::owner_of_name(&tenant)
+        .await
+        .map_err(|e| format!("owner: {e}"))?
+        .ok_or_else(|| "no on-chain owner".to_string())?;
+    let main_id = super::registry::main_of(&owner)
+        .await
+        .map_err(|e| format!("mainOf: {e}"))?;
+
+    let diamond = parse_address(super::registry::REGISTRY_ADDRESS)?;
+    let mut released: Vec<String> = Vec::with_capacity(names.len());
+    let mut calls: Vec<crate::tempo_tx::TempoCall> = Vec::with_capacity(names.len());
+    for raw in names {
+        let name = raw.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let token_id = match super::registry::check_name(name).await? {
+            super::registry::Status::Taken { agent_id } => agent_id,
+            _ => return Err(format!("'{name}' is not registered")),
+        };
+        if main_id != 0 && token_id == main_id {
+            return Err(format!(
+                "'{name}' is your MAIN identity and cannot be released"
+            ));
+        }
+        // Defensive: only burn names this owner actually holds — a stray
+        // name would revert the WHOLE batch on-chain (and waste sponsor gas).
+        let holder = super::registry::owner_of_name(name)
+            .await
+            .map_err(|e| format!("owner of {name}: {e}"))?
+            .ok_or_else(|| format!("no on-chain owner for '{name}'"))?;
+        if holder.to_lowercase() != owner.to_lowercase() {
+            return Err(format!("'{name}' is not owned by this identity"));
+        }
+        calls.push(crate::tempo_tx::TempoCall {
+            to: diamond,
+            value_wei: 0,
+            input: super::registry::release_name_calldata(token_id),
+        });
+        released.push(name.to_string());
+    }
+    if calls.is_empty() {
+        return Err("no subdomains to release after filtering".into());
+    }
+    // 1M base headroom + ~250k per extra burn (see release_names_sponsored).
+    let gas = 1_000_000 + (calls.len() as u128).saturating_sub(1) * 250_000;
+    let tx = run_sponsored_tempo_call(&owner, calls, gas, "bulk release subdomains").await?;
+    Ok((released, tx))
+}
+
 /// Sponsored Tempo tx orchestrator. Apex iframe signs `sender_hash`,
 /// the bundle sponsor key signs `fee_payer_hash`, raw tx assembled
 /// locally and submitted. User holds zero of anything — `fee_payer`
@@ -2832,7 +2953,7 @@ fn show_admin_tab(name: &str) {
     cls.push(format!("tab-{name}"));
     dialog.set_class_name(&cls.join(" "));
 
-    for tab in ["agent", "account", "usage"] {
+    for tab in ["agent", "account", "usage", "feedback"] {
         let Some(el) = dom::by_id(&format!("admin-tab-btn-{tab}")) else { continue };
         let c = el.class_name();
         let mut classes: Vec<&str> = c.split_whitespace().filter(|x| *x != "active").collect();

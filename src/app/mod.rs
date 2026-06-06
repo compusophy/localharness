@@ -624,6 +624,27 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
         return;
     }
 
+    // Local-seed-per-origin for the OWNER device too. We hold `.lh_owner`
+    // for this name but, on desktop, OPFS is per-origin: the master seed
+    // lives in the apex OPFS, not in this subdomain's. Without it,
+    // `chat::credit_signer` / `credit_address_existing` fall back to a
+    // per-origin device key (0 $LH) — so the Usage tab shows 0 and the
+    // proxy gates the chat turn against an empty EOA even though the
+    // owner's master EOA holds credits (correctly shown on apex/MAIN).
+    // Pull the seed via the top-level apex round-trip so credits resolve to
+    // the ONE master EOA on every subdomain. `maybe_auto_kick` is a no-op
+    // when the seed is already local or already attempted this tab session,
+    // so this navigates at most once and is self-healing (the round-trip
+    // re-enters `paint_tenant` with the seed present). Skip when this
+    // device has no master seed anywhere (a linked device acting via a
+    // device key): the apex side returns `seed_import=none` and the studio
+    // paints with the device key — at most one guarded redirect.
+    if APP.with(|cell| cell.borrow().wallet.is_none()) {
+        if seed_pull::maybe_auto_kick(&name).await {
+            return; // navigating to the apex round-trip; it re-enters paint_tenant
+        }
+    }
+
     // Paint the Studio — we own this name on this device (or a deliberate
     // preview fell through with nothing published).
     root.set_inner_html(&templates::chrome(&host).into_string());

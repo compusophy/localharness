@@ -6,42 +6,9 @@
 //! confirms it.
 
 use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
 
 use crate::encoding::{parse_address, tx_short_hash};
 use super::dom;
-use super::templates;
-
-/// Open the feedback modal (or focus it if already open). Write-only: we submit
-/// on-chain but never surface the public log to visitors — harvest off-chain via
-/// `scripts/harvest-feedback` when triaging.
-pub(crate) fn feedback_open() {
-    let Ok(doc) = dom::document() else { return };
-    let Some(body) = doc.body() else { return };
-    // If a modal already exists, focus the textarea instead of stacking.
-    if let Some(_existing) = doc.get_element_by_id("feedback-modal") {
-        if let Some(t) = dom::textarea_by_id("feedback-text") {
-            let _ = t.focus();
-        }
-        return;
-    }
-    let _ = body.insert_adjacent_html(
-        "beforeend",
-        &templates::feedback_modal().into_string(),
-    );
-    if let Some(t) = dom::textarea_by_id("feedback-text") {
-        let _ = t.focus();
-    }
-}
-
-/// Remove the feedback modal from the DOM.
-pub(crate) fn feedback_close() {
-    if let Some(el) = dom::by_id("feedback-modal") {
-        if let Some(parent) = el.parent_element() {
-            let _ = parent.remove_child(&el);
-        }
-    }
-}
 
 /// Validate + rate-limit the feedback textarea, mirror it to OPFS, and submit it
 /// on-chain (signed by the apex iframe wallet, sponsor-paid).
@@ -118,16 +85,8 @@ pub(crate) fn feedback_submit() {
                     "feedback-msg",
                     &dom::msg_span(dom::Msg::Accent, &format!("✓ on-chain (tx {short})")),
                 );
-                if let Some(window) = web_sys::window() {
-                    let cb = Closure::<dyn FnMut()>::new(|| {
-                        feedback_close();
-                    });
-                    let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                        cb.as_ref().unchecked_ref(),
-                        1200,
-                    );
-                    cb.forget();
-                }
+                // Inline in the admin tab — no overlay to dismiss; the
+                // success message stays in #feedback-msg.
             }
             Err(err) => {
                 web_sys::console::warn_1(&JsValue::from_str(&format!(

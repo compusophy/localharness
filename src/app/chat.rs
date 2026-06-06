@@ -585,6 +585,14 @@ pub(crate) async fn start_session(
              only pass that after the OWNER has TYPED the exact name in \
              chat. Never invent or auto-fill the confirmation. Refuses your \
              MAIN.\n\
+           • bulk_release_subdomains(confirmation, names?) — DESTRUCTIVE + \
+             IRREVERSIBLE batch: burns MANY subdomains at once and frees their \
+             names. Omit `names` to release ALL non-MAIN holdings; pass `names` \
+             for a subset. ONE master confirmation, not per-name. ALWAYS call it \
+             FIRST with confirmation empty to get the exact list it will \
+             release, show the user that list, then ask them to TYPE the phrase \
+             \"release all non-main\" and only then retry with that \
+             confirmation. Never auto-fill it. Always refuses your MAIN.\n\
            • list_subdomains() — list every subdomain your owner holds \
              (their identity's holdings). Read-only; use when asked what \
              subdomains/agents they have.\n\
@@ -694,7 +702,10 @@ pub(crate) async fn start_session(
            subdomain (release_subdomain), deleting files, or anything that \
            destroys an asset, NFT, wallet, or identity. NEVER perform one \
            unless, in THIS conversation, the owner has TYPED an explicit \
-           confirmation — for release_subdomain, the exact subdomain name. A \
+           confirmation — for release_subdomain, the exact subdomain name; \
+           for bulk_release_subdomains, the literal phrase \"release all \
+           non-main\" after you've shown the user the list of names that will \
+           be burned. A \
            vague \"yes\", \"do it\", or merely mentioning the thing is NOT \
            consent; require the typed phrase, and if it's absent, ask for it \
            and STOP. NEVER invent or auto-fill a confirmation argument. When \
@@ -811,6 +822,7 @@ pub(crate) async fn start_session(
             .with_tool(create_subdomain_tool())
             .with_tool(create_and_publish_app_tool())
             .with_tool(release_subdomain_tool())
+            .with_tool(bulk_release_subdomains_tool())
             .with_tool(list_subdomains_tool())
             .with_tool(submit_feedback_tool())
             .with_tool(super::self_docs::read_self_docs_tool())
@@ -847,6 +859,7 @@ pub(crate) async fn start_session(
             .with_tool(create_subdomain_tool())
             .with_tool(create_and_publish_app_tool())
             .with_tool(release_subdomain_tool())
+            .with_tool(bulk_release_subdomains_tool())
             .with_tool(list_subdomains_tool())
             .with_tool(submit_feedback_tool())
             .with_tool(super::self_docs::read_self_docs_tool())
@@ -1380,6 +1393,126 @@ fn release_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             match super::events::run_release_subdomain(&name).await {
                 Ok(tx) => Ok(serde_json::json!({ "released": name, "tx_hash": tx })),
                 Err(e) => Err(crate::error::Error::other(format!("release failed: {e}"))),
+            }
+        },
+    )
+}
+
+/// `bulk_release_subdomains(confirmation, names?)` — DESTRUCTIVE batch burn.
+/// With no `names`, targets EVERY non-MAIN subdomain the owner holds; with
+/// `names`, only that subset. Single master confirmation (NOT per-name): the
+/// owner must type the literal phrase `release all non-main`. An empty/absent
+/// confirmation returns the list it WOULD release (so the agent can show the
+/// user first) and performs NO write. Refuses the MAIN. Withheld from
+/// subagents (only registered on the main agent).
+fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "names": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "OPTIONAL subset of subdomain names to release in one \
+                    batch. Omit to target EVERY non-MAIN subdomain the owner holds."
+            },
+            "confirmation": {
+                "type": "string",
+                "description": "Must EXACTLY equal `release all non-main`. Pass ONLY after \
+                    the owner has TYPED that exact phrase in this chat. First call this \
+                    tool with confirmation empty to GET the list of names that will be \
+                    released, show the user, and ask them to type the phrase. Never \
+                    auto-fill or invent it."
+            }
+        },
+        "required": []
+    });
+    ClosureTool::new(
+        "bulk_release_subdomains",
+        "DESTRUCTIVE + IRREVERSIBLE: burn MANY subdomain NFTs and free their names in \
+         ONE batch. With no `names`, releases EVERY non-MAIN subdomain the owner holds; \
+         with `names`, only that subset. Requires a SINGLE master `confirmation` equal to \
+         \"release all non-main\" (the owner types it once — NOT one confirmation per \
+         name). ALWAYS call first with confirmation empty to receive the list of names it \
+         will release, show the user, then ask them to type the phrase and retry. Always \
+         refuses your MAIN. Returns the released names + tx hash.",
+        schema,
+        |args: serde_json::Value, _ctx| async move {
+            const CONFIRM_PHRASE: &str = "release all non-main";
+            let confirmation = args
+                .get("confirmation")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_lowercase();
+
+            // Resolve the kill-list: explicit subset, else all non-MAIN holdings.
+            let tenant = match super::tenant::current() {
+                super::tenant::Host::Tenant(n) => n,
+                _ => return Err(crate::error::Error::other("not running on a subdomain")),
+            };
+            let owner = super::registry::owner_of_name(&tenant)
+                .await
+                .map_err(crate::error::Error::other)?
+                .ok_or_else(|| crate::error::Error::other("no on-chain owner"))?;
+            let main_id = super::registry::main_of(&owner)
+                .await
+                .map_err(crate::error::Error::other)?;
+
+            let explicit: Vec<String> = args
+                .get("names")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let targets: Vec<String> = if explicit.is_empty() {
+                let tokens = super::registry::list_owned_tokens(&owner)
+                    .await
+                    .map_err(crate::error::Error::other)?;
+                tokens
+                    .into_iter()
+                    .filter(|t| main_id == 0 || t.token_id != main_id)
+                    .map(|t| t.name)
+                    .collect()
+            } else {
+                explicit
+            };
+
+            if targets.is_empty() {
+                return Ok(serde_json::json!({
+                    "status": "nothing_to_release",
+                    "note": "no non-MAIN subdomains to release"
+                }));
+            }
+
+            // REPORT-BEFORE-CONFIRM: no valid confirmation -> list + STOP.
+            if confirmation != CONFIRM_PHRASE {
+                return Ok(serde_json::json!({
+                    "status": "confirmation_required",
+                    "count": targets.len(),
+                    "will_release": targets,
+                    "instruction": format!(
+                        "These {} subdomain(s) will be PERMANENTLY released (burned). \
+                         Show this list to the owner. To proceed, the owner must TYPE the \
+                         exact phrase \"{}\" — then call bulk_release_subdomains again with \
+                         that confirmation. Do NOT auto-fill it.",
+                        targets.len(), CONFIRM_PHRASE
+                    )
+                }));
+            }
+
+            match super::events::run_bulk_release(&targets).await {
+                Ok((released, tx)) => Ok(serde_json::json!({
+                    "released": released,
+                    "count": released.len(),
+                    "tx_hash": tx,
+                })),
+                Err(e) => Err(crate::error::Error::other(format!("bulk release failed: {e}"))),
             }
         },
     )

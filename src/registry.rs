@@ -1516,6 +1516,40 @@ pub async fn release_name_sponsored(
     submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 1_000_000).await
 }
 
+/// Batch-release (burn) several names in ONE sponsored tx. `sender` must
+/// own every `token_id`; the on-chain ReleaseFacet refuses a caller's MAIN
+/// per-id (so a MAIN slipped into the list reverts the WHOLE batch — filter
+/// it out before calling). DESTRUCTIVE: the UI/tool MUST require a single
+/// typed master confirmation before calling this. Mirrors
+/// `consolidate_into_main_sponsored`'s multi-call construction, but burns
+/// instead of transfers. (Browser callers use the iframe-signed path in
+/// `app::events::run_bulk_release`; this is the off-bundle/native twin of
+/// `release_name_sponsored`.)
+pub async fn release_names_sponsored(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    token_ids: &[u64],
+    fee_token: &str,
+) -> Result<String, String> {
+    if token_ids.is_empty() {
+        return Err("no subdomains to release".into());
+    }
+    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
+    let calls: Vec<_> = token_ids
+        .iter()
+        .map(|&tid| crate::tempo_tx::TempoCall {
+            to: diamond_addr,
+            value_wei: 0,
+            input: encode_release_name(tid),
+        })
+        .collect();
+    // Each burn ~100-150k inner; +275k sponsorship once for the whole batch.
+    // 1M base mirrors the single-release headroom (release_name_sponsored),
+    // then ~250k/extra burn. Over-budget is free (sponsor billed on gas USED).
+    let gas = 1_000_000 + (token_ids.len() as u128).saturating_sub(1) * 250_000;
+    submit_tempo_sponsored(sender, fee_payer, calls, fee_token, gas).await
+}
+
 /// Sponsored TBA remove-signer + index unlink (the unlink half of the
 /// device lifecycle). `sender` must be an authorized signer of the MAIN.
 pub async fn remove_signer_sponsored(
