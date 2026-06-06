@@ -2909,12 +2909,17 @@ fn header_admin_toggle() {
         refresh_usage_slot().await;
     });
 
-    // Apex shows a credit balance pill. Fire-and-forget the on-chain
-    // read so the rest of the dropdown paints immediately; the pill
-    // updates from "…" to "N LH" when the call resolves.
+    // Credit balance — on EVERY host (apex AND subdomains). Credits are
+    // master-EOA-scoped, so a subdomain shows the SAME balance as the apex; the
+    // old apex-only gate is exactly why subdomains showed a blank "…" / "—".
+    // Fire-and-forget so the dropdown paints immediately; the pill resolves from
+    // "…" to "N LH".
+    wasm_bindgen_futures::spawn_local(async move {
+        refresh_credits_pill().await;
+    });
+    // Device/signer management lives at the apex only.
     if matches!(super::tenant::current(), super::tenant::Host::Apex) {
         wasm_bindgen_futures::spawn_local(async move {
-            refresh_credits_pill().await;
             refresh_signer_list().await;
         });
     }
@@ -3053,7 +3058,24 @@ pub(crate) async fn refresh_usage_slot() {
     if dom::by_id("usage-subdomains").is_none() {
         return;
     }
-    match super::registry::subdomain_count().await {
+    // YOUR owned subdomains — NOT the global registry total. `subdomain_count`
+    // (nextId-1) counts every name ever minted, including released/burned ones,
+    // so after a reset it stays high (the "still says 30" bug). Resolve the
+    // owner from the current tenant (else the local wallet) and count what they
+    // actually hold (released ids have ownerOfId=0, so they drop out).
+    let owner = match super::tenant::current() {
+        super::tenant::Host::Tenant(name) => {
+            super::registry::owner_of_name(&name).await.ok().flatten()
+        }
+        _ => super::APP.with(|c| c.borrow().wallet.as_ref().map(|w| w.address_hex())),
+    };
+    let count = match owner {
+        Some(owner_hex) => super::registry::list_owned_tokens(&owner_hex)
+            .await
+            .map(|t| t.len()),
+        None => Ok(0),
+    };
+    match count {
         Ok(n) => dom::swap_inner("usage-subdomains", &format!("{n}")),
         Err(_) => dom::swap_inner("usage-subdomains", "—"),
     }

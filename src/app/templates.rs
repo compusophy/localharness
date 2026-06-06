@@ -642,32 +642,9 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                     // pricing), folded in from the retired right rail.
                     // Injected from App state by header_admin_toggle.
                     div #financial-slot .financial-placeholder { "—" }
-                    // Model access + credits: the toggle leads with platform
-                    // credits (the default), redeem-a-code + per-request
-                    // controls live under it. BYOK paste field is below.
+                    // Platform credits only (the BYOK gemini-key UI is hidden —
+                    // the handlers + auto-restore stay, just no admin clutter).
                     (admin_credits_section())
-                    div.admin-section {
-                        div.admin-section-title { "gemini api key " span #keymeta {} }
-                        form.key-form onsubmit="return false" {
-                            div.key-row {
-                                input #key
-                                    type="password"
-                                    autocomplete="off"
-                                    placeholder="paste key" {}
-                                button.ghost
-                                    type="button"
-                                    data-action="clear-key" { "clear" }
-                            }
-                        }
-                        // On-chain key sync (#18): seal with a seed-derived
-                        // key (via the apex iframe) + store on-chain so a new
-                        // device that imports your seed auto-restores it.
-                        div.key-row {
-                            button.ghost type="button" data-action="sync-key" { "sync to seed" }
-                            button.ghost type="button" data-action="restore-key" { "restore" }
-                        }
-                        div #key-sync-msg .admin-msg-slot {}
-                    }
                     (admin_security_collapsed())
                 }
                 div.admin-tab-panel.panel-usage {
@@ -910,46 +887,22 @@ fn admin_identity_section(
 /// future direction is continuous streaming + a subscription, not a manual
 /// daily claim).
 pub(crate) fn admin_credits_section() -> Markup {
-    // Read the chosen mode for the active highlight. Defaults to credits
-    // (matches `chat::model_access_is_credits`) — only explicit "byok" flips
-    // off, so a new account lands on platform credits with redeem visible.
-    let credits = web_sys::window()
-        .and_then(|w| w.local_storage().ok().flatten())
-        .and_then(|s| s.get_item("lh_model_access").ok().flatten())
-        .map(|v| v != "byok")
-        .unwrap_or(true);
+    // Platform credits is the ONLY path surfaced for now. The BYOK toggle,
+    // time-boxed sessions, and per-request metering are intentionally HIDDEN —
+    // their handlers + the `lh_model_access` logic stay (default = credits), so
+    // the balance always loads with zero clutter. `redeem` stays — it's how you
+    // get `$LH`. (Session + metering: shelved, not deleted — for later.)
     html! {
         div #credits-section .admin-section {
-            div.admin-section-title { "model access" }
-            div #model-access-row .admin-credits-row {
-                button type="button" data-action="set-model-access" data-arg="byok"
-                    class=(if credits { "ghost" } else { "ghost active" }) { "your own key" }
-                button type="button" data-action="set-model-access" data-arg="credits"
-                    class=(if credits { "ghost active" } else { "ghost" }) { "platform credits" }
+            div.admin-section-title { "credits" }
+            div.admin-credits-row {
+                code #credits-balance .admin-identity-value { "…" }
             }
-            @if credits {
-                div.admin-section-title { "credits" }
-                div.admin-credits-row {
-                    code #credits-balance .admin-identity-value { "…" }
-                }
-                div #session-status .admin-msg-slot { "…" }
-                div.pair-slot {
-                    button #open-session-btn type="button" data-action="open-session" .ghost {
-                        "open session"
-                    }
-                }
-                div.redeem-row {
-                    input #redeem-code .redeem-input type="text" placeholder="redeem code";
-                    button type="button" data-action="redeem-code" .ghost { "redeem" }
-                }
-                div.admin-section-title { "per-request" }
-                div #meter-balance .admin-msg-slot { "…" }
-                div.redeem-row {
-                    input #deposit-amount .redeem-input type="text" placeholder="amount (LH)";
-                    button type="button" data-action="deposit-credits" .ghost { "add credits" }
-                }
-                div #credits-msg .admin-msg-slot {}
+            div.redeem-row {
+                input #redeem-code .redeem-input type="text" placeholder="redeem code";
+                button type="button" data-action="redeem-code" .ghost { "redeem" }
             }
+            div #credits-msg .admin-msg-slot {}
         }
     }
 }
