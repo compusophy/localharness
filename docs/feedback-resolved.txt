@@ -1,0 +1,11 @@
+# Resolved on-chain feedback indices (FeedbackFacet is append-only — this is the
+# off-chain "addressed" marker, keyed on the STABLE 0-based on-chain index shown
+# by scripts/harvest-feedback.{sh,ps1}). One line per resolved index:
+#   <index>  <version-or-commit>  <short note>
+# Record a line in the SAME commit that lands the fix (SOP-QA-001 §5.6 Close).
+# `harvest-feedback --unresolved` (sh) / `-Unresolved` (ps1) hides every index
+# listed here. Absent/empty => nothing hidden. NEVER renumber: indices are
+# immutable on-chain array positions.
+#
+# index  fixed-in   note
+# (none yet)

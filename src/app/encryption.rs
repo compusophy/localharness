@@ -58,6 +58,22 @@ pub(crate) fn keysync_key_from_entropy(entropy: &[u8]) -> [u8; 32] {
     out
 }
 
+/// Derive the 32-byte AES key sealing the cross-subdomain **shared folder**
+/// at rest in apex OPFS (`.lh_shared/`). Domain-separated from
+/// [`keysync_key_from_entropy`] (tag `localharness/v0/sharedfs`) so the
+/// shared-folder key and the Gemini-keysync key can never collide.
+/// Deterministic from the master seed, so the apex broker — the only origin
+/// that holds the seed — always derives the same key. See `app::shared_fs`.
+pub(crate) fn sharedfs_key_from_entropy(entropy: &[u8]) -> [u8; 32] {
+    use sha3::{Digest, Keccak256};
+    let mut hasher = Keccak256::new();
+    hasher.update(b"localharness/v0/sharedfs");
+    hasher.update(entropy);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&hasher.finalize());
+    out
+}
+
 /// Seal with an explicit 32-byte key (e.g. a wallet-seed-derived key)
 /// rather than the per-origin device key. Used by the on-chain API-key
 /// sync flow so the ciphertext follows the seed, not the device.

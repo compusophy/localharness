@@ -212,6 +212,20 @@ web-sys = { version = "0.3", features = [
     # + src/app/display.rs). BinaryType selects arraybuffer framing.
     "WebSocket",
     "BinaryType",
+    # host_audio: Web Audio (AudioContext) cartridge sound (src/app/display.rs
+    # `mod audio`). Voice = oscillator/buffer-source -> gain -> master gain ->
+    # destination. These gate the AudioContext methods + node/param types used.
+    "AudioContext",
+    "BaseAudioContext",
+    "AudioNode",
+    "AudioParam",
+    "AudioDestinationNode",
+    "OscillatorNode",
+    "OscillatorType",
+    "GainNode",
+    "AudioBuffer",
+    "AudioBufferSourceNode",
+    "AudioScheduledSourceNode",
     "History",
     "Location",
     "Storage",

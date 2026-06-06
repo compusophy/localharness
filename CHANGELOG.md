@@ -22,12 +22,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   text). Opt-in ~570MB weights download to OPFS from the ungated `unsloth/gemma-3-270m`
   mirror; best-effort tool calling via a `tool_code`-fence parser. `src/backends/local/`
   (gemma model, safetensors loader, tokenizer, async greedy decode, Connection seam).
+- **On-chain feedback sweep.** `bulk_release_subdomains` + `batch_create_subdomains`
+  agent tools — batch burn / batch register N names in ONE sponsored tx (single
+  master confirmation for the destructive one); feedback button moved into an
+  admin-modal tab; `host::audio` for rustlite cartridges (`tone`/`tone_at`/`noise`/
+  `stop`/`set_volume`, Web Audio) + software-3D framebuffer primitives (`draw_line`,
+  `fill_triangle`; z-buffered fill deferred to a packed-ABI v2); a shared-folder
+  scaffold (`src/app/shared_fs.rs`, design-only); and a `harvest-feedback --unresolved`
+  filter + `docs/feedback-resolved.txt`.
 
 ### Fixed
 
 - **`--no-default-features` wasm guardrail.** `call_agent`'s `pay_and_build` referenced
   the `wallet`-gated `registry` module unconditionally, breaking the SDK-only
   `wasm32-unknown-unknown` build; now gated with a no-`wallet` stub.
+- **Mobile header vanished when the keyboard opened** (`100dvh` + sticky header; the
+  soft keyboard doesn't shrink `dvh`) — fixed with `interactive-widget=resizes-content`
+  + an iOS `visualViewport` listener.
+- **Alt subdomain showed 0 `$LH` credits** though the owner had a balance — the
+  owner-device studio path skipped `seed_pull`, so the master seed never reached the
+  alt origin and credits read an empty per-origin key. Now kicks the seed pull
+  (credits are master-EOA-scoped).
+- **Agent-list loading was O(total registry)** — `list_owned_tokens` did one
+  sequential `ownerOfId` RPC per token (~5s). Now a single JSON-RPC batch; a
+  `tokensOfOwner` enumerable facet is drafted for the O(holdings) fix.
 
 ## [0.23.0] - 2026-06-05
 

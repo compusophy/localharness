@@ -2744,6 +2744,83 @@ pub(crate) async fn run_bulk_release(
     Ok((released, tx))
 }
 
+/// Batch-register N subdomains in ONE sponsored, iframe-signed tx — the
+/// sanctioned mass-registration path (vs. a sequential `create_subdomain`
+/// loop, which spends N sponsored txs + N auto-continue iterations). Names
+/// are sanitised, deduped, and availability-checked up front; an already-
+/// taken or invalid name is SKIPPED (a single bad `register` would revert
+/// the whole multicall on-chain and waste sponsor gas — same defensive
+/// lesson as `run_bulk_release`'s holder check). Returns (registered_names,
+/// tx_hash). The owner context is resolved from the current tenant.
+pub(crate) async fn run_batch_create_subdomains(
+    names: &[String],
+) -> Result<(Vec<String>, String), String> {
+    if names.is_empty() {
+        return Err("no names to register".into());
+    }
+    // Resolve the owner EOA from the current tenant (same preamble as
+    // run_bulk_release) — run_sponsored_tempo_call recovers + verifies the
+    // sender address against this, so it must be the master wallet's address.
+    let tenant = match super::tenant::current() {
+        super::tenant::Host::Tenant(n) => n,
+        _ => return Err("not running on a subdomain".into()),
+    };
+    let owner = super::registry::owner_of_name(&tenant)
+        .await
+        .map_err(|e| format!("owner: {e}"))?
+        .ok_or_else(|| "no on-chain owner".to_string())?;
+
+    let diamond = parse_address(super::registry::REGISTRY_ADDRESS)?;
+    let mut registered: Vec<String> = Vec::with_capacity(names.len());
+    let mut calls: Vec<crate::tempo_tx::TempoCall> = Vec::with_capacity(names.len());
+    for raw in names {
+        let cleaned = super::tenant::sanitize(raw);
+        // Reject silently-mangled or out-of-range names rather than minting a
+        // different name than asked. No explanatory text — just skip + report.
+        if cleaned.len() < 3
+            || cleaned.len() > 32
+            || cleaned != raw.trim().to_ascii_lowercase()
+        {
+            continue;
+        }
+        if registered.iter().any(|n| n == &cleaned) {
+            continue; // dedupe — a repeat register would revert the batch
+        }
+        // Availability pre-check: a register on a TAKEN name reverts the whole
+        // multicall. Skip taken names (the tool reports which were skipped).
+        match super::registry::check_name(&cleaned).await? {
+            super::registry::Status::Available => {}
+            _ => continue,
+        }
+        calls.push(crate::tempo_tx::TempoCall {
+            to: diamond,
+            value_wei: 0,
+            input: super::registry::register_calldata(&cleaned),
+        });
+        registered.push(cleaned);
+    }
+    if calls.is_empty() {
+        return Err("no valid, available names to register".into());
+    }
+    // Each register is a full cold ERC-721 mint (~1.32M inner each, per the
+    // eth_estimateGas note in registry.rs) + ONE ~275k sponsorship overhead
+    // for the tx. 1.5M/name covers the mint + cold-SSTORE variance + margin;
+    // +400k one-time. Over-budget is FREE — the sponsor is billed on gas USED,
+    // not the limit (same lesson as the redeem/feedback OOG bug class), so
+    // headroom is correct.
+    let gas = 400_000 + (calls.len() as u128) * 1_500_000;
+    let tx = run_sponsored_tempo_call(&owner, calls, gas, "batch create subdomains").await?;
+    // Inherit this device's Gemini key onto each new subdomain (best-effort,
+    // detached — same as the single create_subdomain flow).
+    for name in &registered {
+        let n = name.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            sync_local_key_to_main(&n).await;
+        });
+    }
+    Ok((registered, tx))
+}
+
 /// Sponsored Tempo tx orchestrator. Apex iframe signs `sender_hash`,
 /// the bundle sponsor key signs `fee_payer_hash`, raw tx assembled
 /// locally and submitted. User holds zero of anything — `fee_payer`

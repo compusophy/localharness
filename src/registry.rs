@@ -1494,6 +1494,20 @@ pub fn release_name_calldata(token_id: u64) -> Vec<u8> {
     encode_release_name(token_id)
 }
 
+/// Public `register(string)` calldata as raw bytes — for the iframe-signed
+/// agent batch path (`batch_create_subdomains`), where many register calls
+/// are packed into ONE sponsored Tempo tx. Same ABI as the single claim.
+/// NOTE: this is a bare `register` with no `approve` — correct only while
+/// `registrationCost()` is 0 (FREE, current testnet config). A non-zero
+/// cost would require an approve/transferFrom pair per name (handled by the
+/// single-create path), which the batch deliberately does not do.
+pub fn register_calldata(name: &str) -> Vec<u8> {
+    // `encode_register` returns 0x-hex; strip it back to bytes. Infallible
+    // for our own well-formed output, so a decode error degrades to empty
+    // calldata (the tx reverts harmlessly rather than panicking in wasm).
+    hex_to_bytes(&encode_register(name)).unwrap_or_default()
+}
+
 /// Release (recycle) a subdomain — burn the NFT + free the name — via a
 /// sponsored tx. `sender` must own the token. DESTRUCTIVE: the UI/tool
 /// MUST require typed confirmation before calling this. Refuses the MAIN
@@ -2076,11 +2090,11 @@ pub async fn claim_and_maybe_set_main_sponsored(
 
     let cost = registration_cost().await.unwrap_or(0);
 
-    let register_calldata = hex_to_bytes(&encode_register(name))?;
+    let register_input = hex_to_bytes(&encode_register(name))?;
     let register_call = crate::tempo_tx::TempoCall {
         to: diamond_addr,
         value_wei: 0,
-        input: register_calldata,
+        input: register_input,
     };
 
     let calls = if cost > 0 {

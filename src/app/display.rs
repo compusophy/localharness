@@ -28,6 +28,18 @@
 //!   integer register file that persists across `frame` calls (rustlite
 //!   has no globals, so this is how a cartridge keeps state)
 //!
+//! ## Cartridge ABI (`host_audio`) — Web Audio playback (see `mod audio`)
+//! Module-qualified spelling: call `audio::tone(...)`, NOT a bare `tone`.
+//! Integer ABI, fire-and-forget like `host_net`; silent until the first
+//! user gesture (browser AudioContext rule).
+//! - `tone(freq_hz, dur_ms, wave) -> handle` — `wave`: 0 sine, 1 square,
+//!   2 sawtooth, 3 triangle; returns a voice handle >= 0, or -1
+//! - `tone_at(freq_hz, dur_ms, wave, delay_ms) -> handle` — schedule a
+//!   tone `delay_ms` ahead (sequence a bar of notes from one `frame`)
+//! - `noise(dur_ms) -> handle` — white-noise burst (hats / explosions)
+//! - `stop(handle)` — stop one voice; `stop(-1)` stops every voice
+//! - `set_volume(pct)` — master gain, `pct` clamped 0..=100
+//!
 //! A cartridge exports `memory` and either an animated `frame(t: i32)`
 //! (driven by `requestAnimationFrame`, `t` = elapsed ms) or a one-shot
 //! `render()`.
@@ -97,6 +109,8 @@ struct CartridgeRuntime {
     fill_rect: Closure<dyn FnMut(i32, i32, i32, i32, i32)>,
     draw_char: Closure<dyn FnMut(i32, i32, i32, i32, i32)>,
     draw_number: Closure<dyn FnMut(i32, i32, i32, i32, i32)>,
+    draw_line: Closure<dyn FnMut(i32, i32, i32, i32, i32)>,
+    fill_triangle: Closure<dyn FnMut(i32, i32, i32, i32, i32, i32, i32)>,
     present: Closure<dyn FnMut()>,
     width: Closure<dyn FnMut() -> i32>,
     height: Closure<dyn FnMut() -> i32>,
@@ -106,6 +120,7 @@ struct CartridgeRuntime {
     state_get: Closure<dyn FnMut(i32) -> i32>,
     state_set: Closure<dyn FnMut(i32, i32)>,
     net: net::NetRuntime,
+    audio: audio::AudioRuntime,
 }
 
 /// Where a cartridge's `pointer_*` / `state_*` host imports read from. The
@@ -201,6 +216,11 @@ async fn run_with_ctx(
         g.set(n);
         n
     });
+    // Silence the prior cartridge's scheduled voices so a long note can't
+    // drone into the new one (the per-cartridge GainNodes are dropped with
+    // its RUNTIME below, but voices already scheduled on the shared engine
+    // keep playing until explicitly stopped).
+    audio::stop_all();
 
     let fb: Framebuffer = Rc::new(RefCell::new(black_framebuffer()));
 
@@ -261,6 +281,8 @@ pub(crate) async fn mount_composition(modules: Vec<Option<Vec<u8>>>) -> Result<(
         n
     });
     RUNTIME.with(|cell| *cell.borrow_mut() = None);
+    // Silence any prior cartridge's scheduled voices on the shared engine.
+    audio::stop_all();
 
     let fb: Framebuffer = Rc::new(RefCell::new(black_framebuffer()));
     POINTER_DOWN.with(|d| d.set(0));
@@ -463,6 +485,34 @@ fn build_host_display(
         )
     };
 
+    // --- software-3D primitives (FB#12b): line + filled triangle + z-tested
+    // triangle over the SAME pixel/viewport model as every other primitive
+    // (no WebGL, no iframe — pure writes into the shared framebuffer). All
+    // i32 ABI; the pixel math is in `crate::raster` (pure, native-tested).
+    let draw_line = {
+        let fb = fb.clone();
+        Closure::<dyn FnMut(i32, i32, i32, i32, i32)>::new(
+            move |x0: i32, y0: i32, x1: i32, y1: i32, rgb: i32| {
+                let mut buf = fb.borrow_mut();
+                crate::raster::draw_line(
+                    &mut buf, FB_W as i32, &vp, x0, y0, x1, y1, rgb_components(rgb),
+                );
+            },
+        )
+    };
+
+    let fill_triangle = {
+        let fb = fb.clone();
+        Closure::<dyn FnMut(i32, i32, i32, i32, i32, i32, i32)>::new(
+            move |x0: i32, y0: i32, x1: i32, y1: i32, x2: i32, y2: i32, rgb: i32| {
+                let mut buf = fb.borrow_mut();
+                crate::raster::fill_triangle(
+                    &mut buf, FB_W as i32, &vp, x0, y0, x1, y1, x2, y2, rgb_components(rgb),
+                );
+            },
+        )
+    };
+
     // A child sees a display the size of its viewport, like Orbclient.
     let width = Closure::<dyn FnMut() -> i32>::new(move || vp.w);
     let height = Closure::<dyn FnMut() -> i32>::new(move || vp.h);
@@ -525,6 +575,8 @@ fn build_host_display(
     set_fn(&host_display, "fill_rect", &fill_rect)?;
     set_fn(&host_display, "draw_char", &draw_char)?;
     set_fn(&host_display, "draw_number", &draw_number)?;
+    set_fn(&host_display, "draw_line", &draw_line)?;
+    set_fn(&host_display, "fill_triangle", &fill_triangle)?;
     set_fn(&host_display, "present", &present)?;
     set_fn(&host_display, "width", &width)?;
     set_fn(&host_display, "height", &height)?;
@@ -540,11 +592,15 @@ fn build_host_display(
     // host_net — WebSocket-backed multiplayer / sync I/O (poll model).
     let net = net::build_host_net(&imports, mem)?;
 
+    // host_audio — Web Audio (AudioContext) playback (fire-and-forget).
+    let audio = audio::build_host_audio(&imports)?;
+
     Ok((
         imports,
         CartridgeRuntime {
-            clear, set_pixel, fill_rect, draw_char, draw_number, present, width, height,
-            pointer_x, pointer_y, pointer_down, state_get, state_set, net,
+            clear, set_pixel, fill_rect, draw_char, draw_number, draw_line, fill_triangle,
+            present, width, height,
+            pointer_x, pointer_y, pointer_down, state_get, state_set, net, audio,
         },
     ))
 }
@@ -644,6 +700,10 @@ fn request_af(cb: &Closure<dyn FnMut()>) -> Result<i32, JsValue> {
 pub(crate) fn stop() {
     FRAME_GEN.with(|g| g.set(g.get().wrapping_add(1)));
     RUNTIME.with(|cell| *cell.borrow_mut() = None);
+    // Dropping RUNTIME drops the per-cartridge GainNodes; stop_all also halts
+    // any voices already scheduled on the shared thread_local engine so a swap
+    // never leaves a drone playing.
+    audio::stop_all();
 }
 
 /// Render the workshop canvas template into the center view-panel, then
@@ -1133,5 +1193,261 @@ mod net {
             array.set_index(ptr + 4 + i as u32, *b);
         }
         len as i32
+    }
+}
+
+// --- host_audio: Web Audio (AudioContext) cartridge sound ---------------
+//
+// The audio analog of host_display's framebuffer: integer-only host fns a
+// rustlite cartridge calls, no DOM. One AudioContext per tab (browsers cap
+// context count) lives in a thread_local, lazily created + resumed on the
+// first call (an AudioContext is silent until a user gesture — and a
+// cartridge only runs after the user opened it, so the first tone resumes
+// it). Voices are osc/buffer -> per-voice gain -> shared master gain ->
+// destination, and auto-free on `onended` so the handle table can't grow
+// unbounded. Mirrors `mod net`'s poll/fire-and-forget style + handle table.
+mod audio {
+    use std::cell::RefCell;
+
+    use js_sys::{Function, Object, Reflect};
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen::JsCast;
+    use web_sys::{AudioContext, GainNode, OscillatorType};
+
+    /// Cap concurrent voices so a runaway cartridge can't spawn thousands of
+    /// nodes; the oldest live voice is stopped first (mirrors host_net's
+    /// MAX_INBOX bound).
+    const MAX_VOICES: usize = 64;
+
+    thread_local! {
+        /// One shared AudioContext + master gain per tab, created lazily on
+        /// the first audio host call.
+        static ENGINE: RefCell<Option<Engine>> = const { RefCell::new(None) };
+    }
+
+    struct Engine {
+        ctx: AudioContext,
+        master: GainNode,
+        /// Live voices by handle index; a stopped voice becomes `None` so
+        /// handles never alias (same scheme as host_net's socket table).
+        voices: Vec<Option<Voice>>,
+    }
+
+    struct Voice {
+        /// The scheduled source node (oscillator or buffer source) as a
+        /// `JsValue`, so `stop` can call `.stop()` on it early regardless of
+        /// the concrete type.
+        node: JsValue,
+        /// Keeps the `onended` closure alive for the voice's lifetime.
+        _onended: Closure<dyn FnMut()>,
+    }
+
+    /// Keeps the `host_audio` import closures alive for the cartridge's life
+    /// (wasm holds JS references into them after instantiation).
+    #[allow(dead_code)]
+    pub(super) struct AudioRuntime {
+        tone: Closure<dyn FnMut(i32, i32, i32) -> i32>,
+        tone_at: Closure<dyn FnMut(i32, i32, i32, i32) -> i32>,
+        noise: Closure<dyn FnMut(i32) -> i32>,
+        stop: Closure<dyn FnMut(i32)>,
+        set_volume: Closure<dyn FnMut(i32)>,
+    }
+
+    /// Get-or-create the shared engine, resuming the context (a no-op if
+    /// already running). Returns `None` only if the browser has no
+    /// AudioContext or node creation fails.
+    fn with_engine<R>(f: impl FnOnce(&mut Engine) -> R) -> Option<R> {
+        ENGINE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            if slot.is_none() {
+                let ctx = AudioContext::new().ok()?;
+                let master = ctx.create_gain().ok()?;
+                master.gain().set_value(0.3);
+                let _ = master.connect_with_audio_node(&ctx.destination());
+                *slot = Some(Engine { ctx, master, voices: Vec::new() });
+            }
+            let eng = slot.as_mut()?;
+            let _ = eng.ctx.resume();
+            Some(f(eng))
+        })
+    }
+
+    /// Insert a voice, capping the table at `MAX_VOICES`; returns its handle.
+    /// The oldest live voice is stopped if we're at the cap.
+    fn push_voice(eng: &mut Engine, voice: Voice) -> i32 {
+        let live = eng.voices.iter().filter(|v| v.is_some()).count();
+        if live >= MAX_VOICES {
+            if let Some(slot) = eng.voices.iter_mut().find(|s| s.is_some()) {
+                if let Some(old) = slot.take() {
+                    stop_node(&old.node);
+                }
+            }
+        }
+        if let Some(i) = eng.voices.iter().position(|s| s.is_none()) {
+            eng.voices[i] = Some(voice);
+            i as i32
+        } else {
+            eng.voices.push(Some(voice));
+            (eng.voices.len() - 1) as i32
+        }
+    }
+
+    /// Call `.stop()` on an oscillator/buffer-source `JsValue`, ignoring
+    /// errors (the node may already have ended).
+    fn stop_node(node: &JsValue) {
+        if let Ok(f) = Reflect::get(node, &JsValue::from_str("stop")) {
+            if let Ok(f) = f.dyn_into::<Function>() {
+                let _ = f.call0(node);
+            }
+        }
+    }
+
+    fn osc_type(wave: i32) -> OscillatorType {
+        match wave {
+            1 => OscillatorType::Square,
+            2 => OscillatorType::Sawtooth,
+            3 => OscillatorType::Triangle,
+            _ => OscillatorType::Sine,
+        }
+    }
+
+    /// Schedule a tone `delay_ms` in the future for `dur_ms`. Shared by
+    /// `tone` (delay 0) and `tone_at`. Returns a voice handle or -1.
+    fn play_tone(freq: i32, dur_ms: i32, wave: i32, delay_ms: i32) -> i32 {
+        with_engine(|eng| {
+            let osc = match eng.ctx.create_oscillator() {
+                Ok(o) => o,
+                Err(_) => return -1,
+            };
+            let gain = match eng.ctx.create_gain() {
+                Ok(g) => g,
+                Err(_) => return -1,
+            };
+            osc.set_type(osc_type(wave));
+            osc.frequency().set_value(freq.max(1) as f32);
+
+            let t0 = eng.ctx.current_time() + (delay_ms.max(0) as f64) / 1000.0;
+            let dur = (dur_ms.max(1) as f64) / 1000.0;
+            // 4ms attack / release so notes don't click.
+            let g = gain.gain();
+            let _ = g.set_value_at_time(0.0, t0);
+            let _ = g.linear_ramp_to_value_at_time(1.0, t0 + 0.004);
+            let _ = g.set_value_at_time(1.0, (t0 + dur - 0.004).max(t0 + 0.004));
+            let _ = g.linear_ramp_to_value_at_time(0.0, t0 + dur);
+
+            let _ = osc.connect_with_audio_node(&gain);
+            let _ = gain.connect_with_audio_node(&eng.master);
+            let _ = osc.start_with_when(t0);
+            let _ = osc.stop_with_when(t0 + dur);
+
+            let node: JsValue = osc.clone().into();
+            let onended = Closure::<dyn FnMut()>::new(move || {});
+            osc.set_onended(Some(onended.as_ref().unchecked_ref()));
+            push_voice(eng, Voice { node, _onended: onended })
+        })
+        .unwrap_or(-1)
+    }
+
+    /// Build the `host_audio` import object on `imports` and return the
+    /// runtime that owns its closures (must outlive the wasm instance).
+    pub(super) fn build_host_audio(imports: &Object) -> Result<AudioRuntime, JsValue> {
+        let tone = Closure::<dyn FnMut(i32, i32, i32) -> i32>::new(
+            move |freq: i32, dur_ms: i32, wave: i32| play_tone(freq, dur_ms, wave, 0),
+        );
+        let tone_at = Closure::<dyn FnMut(i32, i32, i32, i32) -> i32>::new(
+            move |freq: i32, dur_ms: i32, wave: i32, delay_ms: i32| {
+                play_tone(freq, dur_ms, wave, delay_ms)
+            },
+        );
+        let noise = Closure::<dyn FnMut(i32) -> i32>::new(move |dur_ms: i32| {
+            with_engine(|eng| {
+                let sr = eng.ctx.sample_rate();
+                let frames = sr as u32; // 1s of noise (truncated by duration)
+                let buf = match eng.ctx.create_buffer(1, frames, sr) {
+                    Ok(b) => b,
+                    Err(_) => return -1,
+                };
+                let mut data = vec![0f32; frames as usize];
+                // Cheap LCG white noise (getrandom not needed for audio).
+                let mut s: u32 = 0x2545_F491;
+                for x in data.iter_mut() {
+                    s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    *x = ((s >> 8) as f32 / 8_388_608.0) - 1.0;
+                }
+                if buf.copy_to_channel(&data, 0).is_err() {
+                    return -1;
+                }
+                let src = match eng.ctx.create_buffer_source() {
+                    Ok(s) => s,
+                    Err(_) => return -1,
+                };
+                src.set_buffer(Some(&buf));
+                let gain = match eng.ctx.create_gain() {
+                    Ok(g) => g,
+                    Err(_) => return -1,
+                };
+                let t0 = eng.ctx.current_time();
+                let dur = (dur_ms.max(1) as f64) / 1000.0;
+                let g = gain.gain();
+                let _ = g.set_value_at_time(0.8, t0);
+                let _ = g.linear_ramp_to_value_at_time(0.0, t0 + dur);
+                let _ = src.connect_with_audio_node(&gain);
+                let _ = gain.connect_with_audio_node(&eng.master);
+                let _ = src.start_with_when(t0);
+                let _ = src.stop_with_when(t0 + dur);
+                let node: JsValue = src.clone().into();
+                let onended = Closure::<dyn FnMut()>::new(move || {});
+                src.set_onended(Some(onended.as_ref().unchecked_ref()));
+                push_voice(eng, Voice { node, _onended: onended })
+            })
+            .unwrap_or(-1)
+        });
+        let stop = Closure::<dyn FnMut(i32)>::new(move |handle: i32| {
+            ENGINE.with(|cell| {
+                if let Some(eng) = cell.borrow_mut().as_mut() {
+                    if handle < 0 {
+                        for slot in eng.voices.iter_mut() {
+                            if let Some(v) = slot.take() {
+                                stop_node(&v.node);
+                            }
+                        }
+                    } else if let Some(slot) = eng.voices.get_mut(handle as usize) {
+                        if let Some(v) = slot.take() {
+                            stop_node(&v.node);
+                        }
+                    }
+                }
+            });
+        });
+        let set_volume = Closure::<dyn FnMut(i32)>::new(move |pct: i32| {
+            with_engine(|eng| {
+                eng.master.gain().set_value((pct.clamp(0, 100) as f32) / 100.0);
+            });
+        });
+
+        let host_audio = Object::new();
+        super::set_fn(&host_audio, "tone", &tone)?;
+        super::set_fn(&host_audio, "tone_at", &tone_at)?;
+        super::set_fn(&host_audio, "noise", &noise)?;
+        super::set_fn(&host_audio, "stop", &stop)?;
+        super::set_fn(&host_audio, "set_volume", &set_volume)?;
+        Reflect::set(imports, &JsValue::from_str("host_audio"), &host_audio)?;
+
+        Ok(AudioRuntime { tone, tone_at, noise, stop, set_volume })
+    }
+
+    /// Stop every scheduled voice + suspend the context (called on cartridge
+    /// swap / `display::stop`) so a swap never leaves a drone playing.
+    pub(super) fn stop_all() {
+        ENGINE.with(|cell| {
+            if let Some(eng) = cell.borrow_mut().as_mut() {
+                for slot in eng.voices.iter_mut() {
+                    if let Some(v) = slot.take() {
+                        stop_node(&v.node);
+                    }
+                }
+                let _ = eng.ctx.suspend();
+            }
+        });
     }
 }

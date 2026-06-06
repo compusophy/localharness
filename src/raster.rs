@@ -160,6 +160,187 @@ pub fn draw_number(
     }
 }
 
+/// Draw a 1px line from child-local `(x0,y0)` to `(x1,y1)` (integer
+/// Bresenham), every pixel routed through [`set_pixel`] so it translates+
+/// clips by the viewport. The line counterpart of the triangle fill —
+/// wireframe edges, axes, vectors.
+#[allow(clippy::too_many_arguments)] // raster primitive: fb + viewport + 2 points + color
+pub fn draw_line(
+    buf: &mut [u8],
+    fb_w: i32,
+    vp: &Viewport,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    rgb: (u8, u8, u8),
+) {
+    let dx = (x1 - x0).abs();
+    let dy = -(y1 - y0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx + dy;
+    let (mut x, mut y) = (x0, y0);
+    loop {
+        set_pixel(buf, fb_w, vp, x, y, rgb);
+        if x == x1 && y == y1 {
+            break;
+        }
+        let e2 = 2 * err;
+        if e2 >= dy {
+            err += dy;
+            x += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y += sy;
+        }
+    }
+}
+
+/// Twice the signed area of triangle `(a,b,c)` — the edge function for
+/// barycentric coverage. `> 0` is CCW; widened to `i64` so 256x144 coords
+/// can't overflow the cross product.
+#[inline]
+fn edge(ax: i32, ay: i32, bx: i32, by: i32, cx: i32, cy: i32) -> i64 {
+    (bx - ax) as i64 * (cy - ay) as i64 - (by - ay) as i64 * (cx - ax) as i64
+}
+
+/// Fill the triangle `(x0,y0),(x1,y1),(x2,y2)` with a flat colour, scanline-
+/// rasterized via integer barycentric edge functions. Only the triangle's
+/// bounding box is scanned, clipped to the viewport; every covered pixel is
+/// routed through [`set_pixel`] (so it translates+clips like every other
+/// primitive). Winding-agnostic. The flat-shaded software-3D primitive —
+/// overlap order is the cartridge's responsibility (painter's algorithm);
+/// use [`fill_triangle_z`] for correct occlusion.
+#[allow(clippy::too_many_arguments)] // raster primitive: fb + viewport + 3 points + color
+pub fn fill_triangle(
+    buf: &mut [u8],
+    fb_w: i32,
+    vp: &Viewport,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    x2: i32,
+    y2: i32,
+    rgb: (u8, u8, u8),
+) {
+    let min_x = x0.min(x1).min(x2).max(0);
+    let min_y = y0.min(y1).min(y2).max(0);
+    let max_x = x0.max(x1).max(x2).min(vp.w - 1);
+    let max_y = y0.max(y1).max(y2).min(vp.h - 1);
+    if min_x > max_x || min_y > max_y {
+        return;
+    }
+    let area = edge(x0, y0, x1, y1, x2, y2);
+    if area == 0 {
+        return; // degenerate
+    }
+    let positive = area > 0;
+    let mut py = min_y;
+    while py <= max_y {
+        let mut px = min_x;
+        while px <= max_x {
+            let w0 = edge(x1, y1, x2, y2, px, py);
+            let w1 = edge(x2, y2, x0, y0, px, py);
+            let w2 = edge(x0, y0, x1, y1, px, py);
+            // Inside test independent of winding (all weights share `area`'s sign).
+            let inside = if positive {
+                w0 >= 0 && w1 >= 0 && w2 >= 0
+            } else {
+                w0 <= 0 && w1 <= 0 && w2 <= 0
+            };
+            if inside {
+                set_pixel(buf, fb_w, vp, px, py, rgb);
+            }
+            px += 1;
+        }
+        py += 1;
+    }
+}
+
+/// Fill a triangle with per-vertex depth `(z0,z1,z2)` (caller-provided i32
+/// fixed-point — any monotonic "nearer = smaller"), z-testing against
+/// `depth` (one i32 per framebuffer pixel, indexed by the GLOBAL pixel like
+/// `buf`). A pixel is drawn (and its depth updated) only when its
+/// barycentric-interpolated z is `<` the stored z, giving correct occlusion
+/// of interpenetrating triangles. `depth` MUST be `fb_w * fb_h` long;
+/// out-of-viewport / out-of-buffer pixels are skipped exactly as in
+/// [`set_pixel`]. Reset `depth` per frame with [`clear_depth`].
+#[allow(clippy::too_many_arguments)] // raster primitive: fb + depth + viewport + 3 points+z + color
+pub fn fill_triangle_z(
+    buf: &mut [u8],
+    depth: &mut [i32],
+    fb_w: i32,
+    vp: &Viewport,
+    x0: i32,
+    y0: i32,
+    z0: i32,
+    x1: i32,
+    y1: i32,
+    z1: i32,
+    x2: i32,
+    y2: i32,
+    z2: i32,
+    rgb: (u8, u8, u8),
+) {
+    let min_x = x0.min(x1).min(x2).max(0);
+    let min_y = y0.min(y1).min(y2).max(0);
+    let max_x = x0.max(x1).max(x2).min(vp.w - 1);
+    let max_y = y0.max(y1).max(y2).min(vp.h - 1);
+    if min_x > max_x || min_y > max_y {
+        return;
+    }
+    let area = edge(x0, y0, x1, y1, x2, y2);
+    if area == 0 {
+        return;
+    }
+    let positive = area > 0;
+    let area_f = area as f64;
+    let mut py = min_y;
+    while py <= max_y {
+        let mut px = min_x;
+        while px <= max_x {
+            let w0 = edge(x1, y1, x2, y2, px, py);
+            let w1 = edge(x2, y2, x0, y0, px, py);
+            let w2 = edge(x0, y0, x1, y1, px, py);
+            let inside = if positive {
+                w0 >= 0 && w1 >= 0 && w2 >= 0
+            } else {
+                w0 <= 0 && w1 <= 0 && w2 <= 0
+            };
+            if inside {
+                // Barycentric z interpolation. f64 keeps it readable + exact
+                // enough at 256x144; the whole ABI stays integer (z is i32).
+                let l0 = w0 as f64 / area_f;
+                let l1 = w1 as f64 / area_f;
+                let l2 = w2 as f64 / area_f;
+                let z = (l0 * z0 as f64 + l1 * z1 as f64 + l2 * z2 as f64) as i32;
+                let gx = vp.ox + px;
+                let gy = vp.oy + py;
+                if gx >= 0 && gy >= 0 && gx < fb_w {
+                    let di = (gy as usize) * (fb_w as usize) + gx as usize;
+                    if di < depth.len() && z < depth[di] {
+                        depth[di] = z;
+                        set_pixel(buf, fb_w, vp, px, py, rgb);
+                    }
+                }
+            }
+            px += 1;
+        }
+        py += 1;
+    }
+}
+
+/// Reset a depth buffer to `far` (the cartridge calls this once per frame
+/// before drawing z-tested triangles — it has no arrays/globals of its own).
+pub fn clear_depth(depth: &mut [i32], far: i32) {
+    for d in depth.iter_mut() {
+        *d = far;
+    }
+}
+
 /// 5x7 bitmap font. Each row's low 5 bits are pixels (bit 4 = leftmost).
 /// Covers digits, A-Z, a-z, space, and common punctuation; unknown codes
 /// render as a hollow box. Hand-encoded (no font dep).
@@ -350,5 +531,89 @@ mod tests {
         assert_eq!(&buf[0..4], &[0, 0, 0, 0], "origin is outside the viewport");
         let past = (((8 * w) + 8) * 4) as usize;
         assert_eq!(&buf[past..past + 4], &[0, 0, 0, 0], "just past the viewport");
+    }
+
+    fn px(buf: &[u8], w: i32, x: i32, y: i32) -> [u8; 4] {
+        let idx = ((y * w + x) * 4) as usize;
+        [buf[idx], buf[idx + 1], buf[idx + 2], buf[idx + 3]]
+    }
+
+    #[test]
+    fn draw_line_lights_both_endpoints() {
+        let (w, h) = (32, 16);
+        let mut buf = fb(w, h);
+        let vp = Viewport::full(w, h);
+        draw_line(&mut buf, w, &vp, 2, 3, 20, 11, (4, 5, 6));
+        assert_eq!(px(&buf, w, 2, 3), [4, 5, 6, 255], "first endpoint lit");
+        assert_eq!(px(&buf, w, 20, 11), [4, 5, 6, 255], "last endpoint lit");
+    }
+
+    #[test]
+    fn fill_triangle_fills_interior_and_clips_to_viewport() {
+        let (w, h) = (32, 32);
+        let mut buf = fb(w, h);
+        let vp = Viewport::full(w, h);
+        // A right triangle covering the top-left; (4,4) is well inside.
+        fill_triangle(&mut buf, w, &vp, 0, 0, 20, 0, 0, 20, (9, 9, 9));
+        assert_eq!(px(&buf, w, 4, 4), [9, 9, 9, 255], "interior pixel filled");
+        // A point past the hypotenuse stays blank.
+        assert_eq!(px(&buf, w, 18, 18), [0, 0, 0, 0], "outside the triangle blank");
+    }
+
+    #[test]
+    fn fill_triangle_winding_agnostic() {
+        let (w, h) = (32, 32);
+        let mut a = fb(w, h);
+        let mut b = fb(w, h);
+        let vp = Viewport::full(w, h);
+        // Same triangle, opposite vertex orders → identical coverage.
+        fill_triangle(&mut a, w, &vp, 0, 0, 20, 0, 0, 20, (1, 2, 3));
+        fill_triangle(&mut b, w, &vp, 0, 20, 20, 0, 0, 0, (1, 2, 3));
+        assert_eq!(a, b, "CW and CCW windings fill the same pixels");
+    }
+
+    #[test]
+    fn fill_triangle_clipped_by_offset_viewport() {
+        let (w, h) = (64, 64);
+        let mut buf = fb(w, h);
+        let vp = Viewport { ox: 10, oy: 10, w: 8, h: 8 };
+        // Child-local triangle larger than the viewport — must not escape it.
+        fill_triangle(&mut buf, w, &vp, 0, 0, 100, 0, 0, 100, (5, 5, 5));
+        // A pixel that would be inside the triangle but OUTSIDE the viewport.
+        assert_eq!(px(&buf, w, 30, 11), [0, 0, 0, 0], "draw clipped to viewport rect");
+        // A pixel inside both the triangle and the viewport is filled.
+        assert_eq!(px(&buf, w, 11, 11), [5, 5, 5, 255], "in-viewport interior filled");
+    }
+
+    #[test]
+    fn fill_triangle_z_nearer_overdraws_farther() {
+        let (w, h) = (32, 32);
+        let mut buf = fb(w, h);
+        let mut depth = vec![i32::MAX; (w * h) as usize];
+        let vp = Viewport::full(w, h);
+        // Far triangle (z=100) drawn first, then a nearer one (z=10) over the
+        // same area: the nearer colour must win at the overlap.
+        fill_triangle_z(&mut buf, &mut depth, w, &vp, 0, 0, 100, 20, 0, 100, 0, 20, 100, (1, 1, 1));
+        fill_triangle_z(&mut buf, &mut depth, w, &vp, 0, 0, 10, 20, 0, 10, 0, 20, 10, (2, 2, 2));
+        assert_eq!(px(&buf, w, 4, 4), [2, 2, 2, 255], "nearer triangle wins the z-test");
+    }
+
+    #[test]
+    fn fill_triangle_z_farther_does_not_overdraw_nearer() {
+        let (w, h) = (32, 32);
+        let mut buf = fb(w, h);
+        let mut depth = vec![i32::MAX; (w * h) as usize];
+        let vp = Viewport::full(w, h);
+        // Nearer first (z=10), then farther (z=100): farther must be occluded.
+        fill_triangle_z(&mut buf, &mut depth, w, &vp, 0, 0, 10, 20, 0, 10, 0, 20, 10, (2, 2, 2));
+        fill_triangle_z(&mut buf, &mut depth, w, &vp, 0, 0, 100, 20, 0, 100, 0, 20, 100, (1, 1, 1));
+        assert_eq!(px(&buf, w, 4, 4), [2, 2, 2, 255], "farther triangle is occluded");
+    }
+
+    #[test]
+    fn clear_depth_resets_every_slot() {
+        let mut depth = vec![5i32; 16];
+        clear_depth(&mut depth, i32::MAX);
+        assert!(depth.iter().all(|&d| d == i32::MAX), "all depth slots reset to far");
     }
 }

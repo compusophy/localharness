@@ -39,6 +39,11 @@ mod opfs;
 mod owner;
 mod pricing;
 mod seed_pull;
+// Cross-subdomain secure folder — apex-side encrypted store + data types
+// (scaffold). Items are unused until the deferred round-trip wiring lands,
+// so silence dead-code until then. See `shared_fs` module doc.
+#[allow(dead_code)]
+mod shared_fs;
 mod self_docs;
 mod signer;
 mod sponsor;

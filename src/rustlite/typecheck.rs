@@ -753,6 +753,15 @@ fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, 
         "display::fill_rect" => (vec![I32, I32, I32, I32, I32], Void),
         "display::draw_char" => (vec![I32, I32, I32, I32, I32], Void),
         "display::draw_number" => (vec![I32, I32, I32, I32, I32], Void),
+        // --- software 3D (FB#12b): framebuffer primitives, integer ABI, same
+        // pixel/viewport model as the other display fns (no WebGL/iframe).
+        // `draw_line(x0,y0,x1,y1,rgb)`; `fill_triangle(x0,y0,x1,y1,x2,y2,rgb)`
+        // flat-fill (painter's order — depth/overlap is the cartridge's job; a
+        // per-pixel z-buffered fill needs a packed ABI to fit the host closure
+        // arity limit, so it's deferred to v2). See `src/app/display.rs`
+        // build_host_display + `src/raster.rs`.
+        "display::draw_line" => (vec![I32, I32, I32, I32, I32], Void),
+        "display::fill_triangle" => (vec![I32, I32, I32, I32, I32, I32, I32], Void),
         "display::present" => (vec![], Void),
         "display::width" => (vec![], I32),
         "display::height" => (vec![], I32),
@@ -783,6 +792,27 @@ fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, 
         "net::poll" => (vec![I32, I32, I32], I32),
         "net::status" => (vec![I32], I32),
         "net::close" => (vec![I32], Void),
+        // --- audio (host_audio): Web Audio (AudioContext) playback. Integer
+        // ABI, fire-and-forget like host_net. `wave`: 0 sine, 1 square,
+        // 2 sawtooth, 3 triangle. A handle >= 0 names a voice for `stop`;
+        // `stop(-1)` stops every voice. `set_volume(pct)` sets master gain
+        // (0..=100). Audio is silent until the first user gesture (the browser
+        // AudioContext rule) — a cartridge only runs after the user opens it,
+        // so the first `tone` resumes the context. See `src/app/display.rs`
+        // `mod audio` for the host implementation.
+        //
+        // `tone(freq_hz, dur_ms, wave) -> handle`        play a tone now.
+        // `tone_at(freq_hz, dur_ms, wave, delay_ms) -> handle`  schedule a
+        //                             tone `delay_ms` in the future (sequencing
+        //                             a bar of notes from one frame).
+        // `noise(dur_ms) -> handle`   white-noise burst (hats/explosions).
+        // `stop(handle)`              stop one voice; `stop(-1)` stops all.
+        // `set_volume(pct)`           master gain 0..=100 (clamped).
+        "audio::tone" => (vec![I32, I32, I32], I32),
+        "audio::tone_at" => (vec![I32, I32, I32, I32], I32),
+        "audio::noise" => (vec![I32], I32),
+        "audio::stop" => (vec![I32], Void),
+        "audio::set_volume" => (vec![I32], Void),
         _ => return None,
     };
     let (module, func) = key.split_once("::")?;

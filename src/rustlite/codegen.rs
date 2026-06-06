@@ -1076,6 +1076,69 @@ mod tests {
     }
 
     #[test]
+    fn emit_host_audio_import() {
+        // A cartridge that plays a tone, schedules a delayed note, fires a
+        // noise burst, sets volume, and stops a voice — the Web Audio
+        // primitives. Asserts the `host_audio` import module + fields the
+        // loader/display host provides land in the wasm import section.
+        // Codegen is generic over `host_<module>`, so the only compiler
+        // change is the typecheck signature table — this guards that wiring.
+        let wasm = compile_to_wasm(
+            r#"
+            use host::audio;
+            fn frame(t: i32) {
+                let v: i32 = audio::tone(440, 200, 0);
+                audio::tone_at(660, 120, 1, 100);
+                audio::noise(80);
+                audio::set_volume(50);
+                audio::stop(v);
+            }
+        "#,
+        );
+        assert_eq!(&wasm[0..4], WASM_MAGIC);
+        assert!(section_ids(&wasm).contains(&SEC_IMPORT), "expected an import section");
+        for needle in
+            [&b"host_audio"[..], b"tone", b"tone_at", b"noise", b"stop", b"set_volume"]
+        {
+            assert!(
+                wasm.windows(needle.len()).any(|w| w == needle),
+                "wasm should reference {:?}",
+                std::str::from_utf8(needle).unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn emit_host_display_3d_import() {
+        // A cartridge drawing software 3D primitives: a flat-filled triangle
+        // and a line. Asserts the new host_display 3D fields (FB#12b) land in
+        // the wasm import section so codegen auto-derives the signatures from
+        // the typecheck table.
+        let wasm = compile_to_wasm(
+            r#"
+            use host::display;
+            fn frame(t: i32) {
+                display::fill_triangle(0, 0, 50, 0, 0, 50, 255);
+                display::draw_line(0, 0, t, 143, 16777215);
+            }
+        "#,
+        );
+        assert_eq!(&wasm[0..4], WASM_MAGIC);
+        assert!(section_ids(&wasm).contains(&SEC_IMPORT), "expected an import section");
+        for needle in [
+            &b"host_display"[..],
+            b"draw_line",
+            b"fill_triangle",
+        ] {
+            assert!(
+                wasm.windows(needle.len()).any(|w| w == needle),
+                "wasm should reference {:?}",
+                std::str::from_utf8(needle).unwrap(),
+            );
+        }
+    }
+
+    #[test]
     fn no_imports_when_no_host_calls() {
         let wasm = compile_to_wasm("fn add(a: i32, b: i32) -> i32 { a + b }");
         // Backward-compat: a module with no host calls has no import

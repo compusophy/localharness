@@ -579,6 +579,13 @@ pub(crate) async fn start_session(
              create a subdomain with an app from here (a per-origin sandbox \
              means you can't write another subdomain's files directly). \
              Returns {{ name, url, tx_hash }}.\n\
+           • batch_create_subdomains(names) — register MANY subdomains in ONE \
+             on-chain transaction. Use THIS instead of calling create_subdomain \
+             repeatedly when the user asks for more than one name at once \
+             (\"register a, b and c\", \"make me 5 subdomains\", \"spin up \
+             a-b-c-d\"). Taken/invalid names are skipped and reported in \
+             `skipped`. Max 20 per call. Returns {{ registered, skipped, count, \
+             tx_hash, urls }}.\n\
            • release_subdomain(name, confirmation) — DESTRUCTIVE + \
              IRREVERSIBLE: burns the subdomain NFT and frees the name. \
              Requires `confirmation` to EXACTLY equal `name` — and you must \
@@ -691,6 +698,11 @@ pub(crate) async fn start_session(
            as text, with NO tool call (call list_subdomains first only if you \
            must confirm the name exists). A request for a link is NEVER a \
            reason to run a cartridge.\n\
+         • Registering MULTIPLE names at once → batch_create_subdomains(names), \
+           ONE tx, NOT a create_subdomain loop. A loop spends one sponsored \
+           transaction per name and eats your auto-continue budget; the batch \
+           registers them all in a single transaction and reports which were \
+           skipped (taken/invalid).\n\
          • On-chain actions (create_subdomain, submit_feedback, publishing \
            a public face, etc.) are SPONSORED and signed automatically by the \
            owner's master wallet behind the scenes — there is NO wallet popup, \
@@ -821,6 +833,7 @@ pub(crate) async fn start_session(
             .with_system_instructions(system_instructions)
             .with_tool(create_subdomain_tool())
             .with_tool(create_and_publish_app_tool())
+            .with_tool(batch_create_subdomains_tool())
             .with_tool(release_subdomain_tool())
             .with_tool(bulk_release_subdomains_tool())
             .with_tool(list_subdomains_tool())
@@ -858,6 +871,7 @@ pub(crate) async fn start_session(
             .with_system_instructions(system_instructions)
             .with_tool(create_subdomain_tool())
             .with_tool(create_and_publish_app_tool())
+            .with_tool(batch_create_subdomains_tool())
             .with_tool(release_subdomain_tool())
             .with_tool(bulk_release_subdomains_tool())
             .with_tool(list_subdomains_tool())
@@ -1513,6 +1527,89 @@ fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                     "tx_hash": tx,
                 })),
                 Err(e) => Err(crate::error::Error::other(format!("bulk release failed: {e}"))),
+            }
+        },
+    )
+}
+
+/// `batch_create_subdomains(names)` — register MANY subdomains in ONE
+/// sponsored multi-call tx (the mirror of `bulk_release_subdomains`, but
+/// ADDITIVE: NO destructive confirmation). The sanctioned mass-registration
+/// path — one tx instead of an N-deep `create_subdomain` loop. Names are
+/// sanitised + availability-checked; taken/invalid names are skipped and
+/// reported. Capped at MAX_BATCH_CREATE to bound a confused model. Not
+/// granted to subagents (same restraint as bulk_release).
+fn batch_create_subdomains_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "names": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Subdomain names to register in ONE tx, e.g. \
+                    [\"alice\",\"bob\"] -> alice.localharness.xyz, \
+                    bob.localharness.xyz. Each: 3-32 chars, lowercase letters, \
+                    digits, hyphens. Already-taken or invalid names are skipped \
+                    and reported back. Max 20 per call."
+            }
+        },
+        "required": ["names"]
+    });
+    ClosureTool::new(
+        "batch_create_subdomains",
+        "Register MANY <name>.localharness.xyz subdomains on-chain in a SINGLE \
+         sponsored transaction. PREFER THIS over calling create_subdomain in a \
+         loop when registering more than one name — it is one tx, not N. The \
+         owner's master wallet ends up holding every resulting ERC-721 NFT. \
+         Taken or invalid names are skipped (not an error) and listed in \
+         `skipped`. Max 20 names per call. Returns { registered, skipped, \
+         count, tx_hash, urls }.",
+        schema,
+        |args: serde_json::Value, _ctx| async move {
+            const MAX_BATCH_CREATE: usize = 20;
+            let requested: Vec<String> = args
+                .get("names")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if requested.is_empty() {
+                return Err(crate::error::Error::other("names cannot be empty"));
+            }
+            if requested.len() > MAX_BATCH_CREATE {
+                return Err(crate::error::Error::other(format!(
+                    "too many names: {} (max {MAX_BATCH_CREATE} per batch) — \
+                     split into multiple calls",
+                    requested.len()
+                )));
+            }
+            match super::events::run_batch_create_subdomains(&requested).await {
+                Ok((registered, tx)) => {
+                    let skipped: Vec<&String> = requested
+                        .iter()
+                        .filter(|r| {
+                            let c = super::tenant::sanitize(r);
+                            !registered.iter().any(|reg| reg == &c)
+                        })
+                        .collect();
+                    Ok(serde_json::json!({
+                        "registered": registered,
+                        "skipped": skipped,
+                        "count": registered.len(),
+                        "tx_hash": tx,
+                        "urls": registered.iter()
+                            .map(|n| format!("https://{n}.localharness.xyz/"))
+                            .collect::<Vec<_>>(),
+                    }))
+                }
+                Err(e) => Err(crate::error::Error::other(format!(
+                    "batch create failed: {e}"
+                ))),
             }
         },
     )

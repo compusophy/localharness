@@ -162,6 +162,26 @@ fn build_host_imports(mem: &SharedMemory) -> Result<(js_sys::Object, NetRuntime)
     mem_fn.forget();
     let _ = Reflect::set(&imports, &JsValue::from_str("host_abort"), &host_abort);
 
+    // host_audio module — ambient stub. The real Web Audio engine lives in
+    // src/app/display.rs (browser-app); this no-op keeps the bare loader
+    // (SDK / tests) able to instantiate a cartridge that imports host_audio
+    // instead of failing instantiation with a missing-import LinkError.
+    let host_audio = Object::new();
+    let audio_ret3 = Closure::<dyn Fn(i32, i32, i32) -> i32>::new(|_a, _b, _c| -1);
+    let audio_ret4 = Closure::<dyn Fn(i32, i32, i32, i32) -> i32>::new(|_a, _b, _c, _d| -1);
+    let audio_noise = Closure::<dyn Fn(i32) -> i32>::new(|_a| -1);
+    let audio_void = Closure::<dyn Fn(i32)>::new(|_a| {});
+    let _ = Reflect::set(&host_audio, &JsValue::from_str("tone"), audio_ret3.as_ref());
+    let _ = Reflect::set(&host_audio, &JsValue::from_str("tone_at"), audio_ret4.as_ref());
+    let _ = Reflect::set(&host_audio, &JsValue::from_str("noise"), audio_noise.as_ref());
+    let _ = Reflect::set(&host_audio, &JsValue::from_str("stop"), audio_void.as_ref());
+    let _ = Reflect::set(&host_audio, &JsValue::from_str("set_volume"), audio_void.as_ref());
+    audio_ret3.forget();
+    audio_ret4.forget();
+    audio_noise.forget();
+    audio_void.forget();
+    let _ = Reflect::set(&imports, &JsValue::from_str("host_audio"), &host_audio);
+
     // host_net module — WebSocket-backed multiplayer / sync I/O. Mirrors
     // host_display: integer-only host functions a rustlite cartridge calls,
     // strings passed as length-prefixed pointers into cartridge memory.
