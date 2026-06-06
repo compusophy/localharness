@@ -21,6 +21,9 @@ pub enum ResolvedType {
     Struct { name: String, fields: Vec<(String, ResolvedType)> },
     Enum { name: String, variants: Vec<(String, VariantShape)> },
     Tuple(Vec<ResolvedType>),
+    /// `[T; N]` — fixed-size array. The runtime value is a base pointer (i32)
+    /// into linear memory.
+    Array(Box<ResolvedType>, usize),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -113,6 +116,11 @@ pub enum TypedExprKind {
     StructLit { name: String, fields: Vec<(String, TypedExpr)> },
 
     TupleLit(Vec<TypedExpr>),
+    /// `[e0, e1, …]` — stored to a static linear-memory region at codegen time;
+    /// the expression's value is the region's base pointer (i32).
+    ArrayLit(Vec<TypedExpr>),
+    /// `base[index]` — reads `i32.load(base + index*4)`.
+    Index { base: Box<TypedExpr>, index: Box<TypedExpr> },
 
     BinOp { op: BinOp, lhs: Box<TypedExpr>, rhs: Box<TypedExpr> },
     UnaryOp { op: UnaryOp, operand: Box<TypedExpr> },
@@ -571,6 +579,56 @@ impl TypeContext {
                 Ok(TypedExpr {
                     ty: ResolvedType::Tuple(tys),
                     kind: TypedExprKind::TupleLit(typed),
+                    span,
+                })
+            }
+
+            ExprKind::ArrayLit(elems) => {
+                if elems.is_empty() {
+                    return Err(CompileError::at("empty array literal is unsupported", span));
+                }
+                let typed: Result<Vec<_>, _> = elems.iter().map(|e| self.check_expr(e)).collect();
+                let typed = typed?;
+                let elem_ty = typed[0].ty.clone();
+                // v1: i32 elements only (colours, coords, tile/lookup tables).
+                if elem_ty != ResolvedType::I32 {
+                    return Err(CompileError::at(
+                        format!("arrays support i32 elements for now, got {elem_ty:?}"),
+                        span,
+                    ));
+                }
+                if typed.iter().any(|e| e.ty != elem_ty) {
+                    return Err(CompileError::at("array elements must all be the same type", span));
+                }
+                let n = typed.len();
+                Ok(TypedExpr {
+                    ty: ResolvedType::Array(Box::new(elem_ty), n),
+                    kind: TypedExprKind::ArrayLit(typed),
+                    span,
+                })
+            }
+
+            ExprKind::Index { base, index } => {
+                let base_t = self.check_expr(base)?;
+                let index_t = self.check_expr(index)?;
+                let elem_ty = match &base_t.ty {
+                    ResolvedType::Array(elem, _) => (**elem).clone(),
+                    other => {
+                        return Err(CompileError::at(
+                            format!("cannot index into {other:?} (only arrays are indexable)"),
+                            span,
+                        ))
+                    }
+                };
+                if index_t.ty != ResolvedType::I32 {
+                    return Err(CompileError::at(
+                        format!("array index must be i32, got {:?}", index_t.ty),
+                        span,
+                    ));
+                }
+                Ok(TypedExpr {
+                    ty: elem_ty,
+                    kind: TypedExprKind::Index { base: Box::new(base_t), index: Box::new(index_t) },
                     span,
                 })
             }

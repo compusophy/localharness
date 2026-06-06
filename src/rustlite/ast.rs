@@ -169,6 +169,15 @@ pub enum ExprKind {
 
     TupleLit(Vec<Expr>),
 
+    /// `[e0, e1, …]` — a fixed-size array literal (stored in linear memory).
+    ArrayLit(Vec<Expr>),
+
+    /// `base[index]` — array element access (read).
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
+    },
+
     BinOp {
         op: BinOp,
         lhs: Box<Expr>,

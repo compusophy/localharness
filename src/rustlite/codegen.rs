@@ -100,6 +100,7 @@ const OP_I64_OR: u8 = 0x84;
 const OP_I64_XOR: u8 = 0x85;
 const OP_I64_SHL: u8 = 0x86;
 const OP_I64_SHR_S: u8 = 0x87;
+const OP_I32_STORE: u8 = 0x36;
 
 const BLOCK_VOID: u8 = 0x40;
 
@@ -287,6 +288,15 @@ impl WasmEmitter {
             }
             TypedExprKind::UnaryOp { operand, .. } => self.scan_expr_imports(operand),
             TypedExprKind::Cast { expr } => self.scan_expr_imports(expr),
+            TypedExprKind::ArrayLit(elems) => {
+                for e in elems {
+                    self.scan_expr_imports(e);
+                }
+            }
+            TypedExprKind::Index { base, index } => {
+                self.scan_expr_imports(base);
+                self.scan_expr_imports(index);
+            }
             TypedExprKind::If { cond, then_block, else_block } => {
                 self.scan_expr_imports(cond);
                 self.scan_block_imports(then_block);
@@ -665,6 +675,38 @@ impl WasmEmitter {
                 if let Some(op) = op {
                     code.push(op);
                 }
+            }
+            TypedExprKind::ArrayLit(elems) => {
+                // Reserve a static, 4-byte-aligned region in linear memory and
+                // store each element into it (re-initialised whenever the literal
+                // evaluates). The expression's value is the region's base pointer.
+                let n = elems.len() as u32;
+                let pad = (4 - (self.data_offset % 4)) % 4;
+                self.data_offset += pad;
+                let base = self.data_offset;
+                self.data_offset += n * 4;
+                for (i, elem) in elems.iter().enumerate() {
+                    code.push(OP_I32_CONST);
+                    leb128_i32((base + i as u32 * 4) as i32, code);
+                    self.emit_expr(elem, code)?;
+                    code.push(OP_I32_STORE);
+                    leb128_u32(2, code); // align = 4 bytes (2^2)
+                    leb128_u32(0, code); // static offset
+                }
+                code.push(OP_I32_CONST);
+                leb128_i32(base as i32, code);
+            }
+            TypedExprKind::Index { base, index } => {
+                // addr = base + index*4 ; i32.load
+                self.emit_expr(base, code)?;
+                self.emit_expr(index, code)?;
+                code.push(OP_I32_CONST);
+                leb128_i32(4, code);
+                code.push(OP_I32_MUL);
+                code.push(OP_I32_ADD);
+                code.push(OP_I32_LOAD);
+                leb128_u32(2, code); // align
+                leb128_u32(0, code); // offset
             }
             TypedExprKind::If { cond, then_block, else_block } => {
                 self.emit_expr(cond, code)?;

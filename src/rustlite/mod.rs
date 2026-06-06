@@ -102,4 +102,23 @@ mod tests {
         )
         .is_ok());
     }
+
+    #[test]
+    fn arrays_literal_and_index() {
+        // array literal + variable-index read (the lookup-table pattern)
+        assert!(compile(
+            "fn frame(t: i32) { let pal = [16711680, 65280, 255]; host::display::clear(pal[t % 3]); host::display::present(); }"
+        )
+        .is_ok());
+        // indexing a non-array is a clear error
+        assert!(compile(
+            "fn frame(t: i32) { let x = 5; host::display::clear(x[0]); host::display::present(); }"
+        )
+        .is_err());
+        // writes `arr[i] = v` are not yet supported — clean error, not a crash
+        assert!(compile(
+            "fn frame(t: i32) { let a = [1, 2, 3]; a[0] = 9; host::display::present(); }"
+        )
+        .is_err());
+    }
 }

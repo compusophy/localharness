@@ -666,6 +666,13 @@ impl<'a> Parser<'a> {
                     let span = Span { start: expr.span.start, end: self.tokens[self.pos - 1].span.end };
                     expr = Expr { kind: ExprKind::Call { func: Box::new(expr), args }, span };
                 }
+                TokenKind::LBracket => {
+                    self.advance();
+                    let index = self.parse_expr()?;
+                    self.expect(&TokenKind::RBracket)?;
+                    let span = Span { start: expr.span.start, end: self.tokens[self.pos - 1].span.end };
+                    expr = Expr { kind: ExprKind::Index { base: Box::new(expr), index: Box::new(index) }, span };
+                }
                 _ => break,
             }
         }
@@ -695,6 +702,20 @@ impl<'a> Parser<'a> {
             TokenKind::False => {
                 self.advance();
                 Ok(Expr { kind: ExprKind::BoolLit(false), span: Span { start: start.start, end: self.tokens[self.pos - 1].span.end } })
+            }
+
+            TokenKind::LBracket => {
+                self.advance();
+                let mut elems = Vec::new();
+                while !matches!(self.peek(), TokenKind::RBracket) {
+                    elems.push(self.parse_expr()?);
+                    if !matches!(self.peek(), TokenKind::Comma) {
+                        break;
+                    }
+                    self.advance();
+                }
+                self.expect(&TokenKind::RBracket)?;
+                Ok(Expr { kind: ExprKind::ArrayLit(elems), span: Span { start: start.start, end: self.tokens[self.pos - 1].span.end } })
             }
 
             TokenKind::If => self.parse_if_expr(),

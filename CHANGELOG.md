@@ -60,6 +60,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **rustlite: arrays (literals + indexed reads)** — `let pal = [0xFF0000, 0x00FF00];`
+  and `pal[i]` (variable index). The single biggest missing feature: lookup tables,
+  palettes, sine/tile data. Stored in a static linear-memory region (re-initialised
+  when the literal evaluates), value = base pointer; `arr[i]` lowers to
+  `i32.load(base + i*4)`. v1 is i32 elements, read-only (mutation `arr[i] = v` is a
+  clean "invalid assignment target" error, deferred). New `ResolvedType::Array`,
+  `ExprKind::ArrayLit`/`Index`. Runtime-verified (`[3,5,7][1]`→5, loop-lookup over a
+  table). The first piece of the linear-memory model that full tuples will share.
 - **rustlite: bitwise + shift operators** — `&` `|` `^` `<<` `>>` (i32 + i64), with
   Rust precedence (`|` < `^` < `&` < `<<`/`>>` < `+`). Previously `<<` lexed as two
   `<`, and `&`/`|` were rejected as "no references/closures" — so **color packing
