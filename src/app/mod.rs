@@ -55,6 +55,11 @@ mod webrtc;
 /// orchestration (SignalingFacet driver + peer discovery + UI) wires it.
 #[allow(dead_code)]
 mod sharedfs_sync;
+/// Layer-5 orchestration: ephemeral keys + on-chain signaling drive a WebRTC
+/// connect + shared-folder sync between the owner's devices (or team members).
+/// Compile-verified only; dead-code-allowed until the teams/sync UI wires it.
+#[allow(dead_code)]
+mod teams_sync;
 mod self_docs;
 mod signer;
 mod sponsor;
