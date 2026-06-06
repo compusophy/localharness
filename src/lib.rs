@@ -129,6 +129,8 @@ pub mod x402_hook;
 pub use agent::{Agent, AgentConfig, GeminiAgentConfig};
 #[cfg(feature = "anthropic")]
 pub use agent::AnthropicAgentConfig;
+#[cfg(feature = "local")]
+pub use agent::LocalAgentConfig;
 pub use backends::gemini::{
     decode_transcript_bytes, GeminiBackendConfig, GeminiConnection, GeminiConnectionStrategy,
 };

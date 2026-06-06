@@ -1,0 +1,8 @@
+# Burn (the `local` feature) pulls getrandom 0.4, which on
+# wasm32-unknown-unknown has no default backend — it must be told to use the
+# JS crypto backend. This cfg selects it; the `wasm_js` *feature* (enabled via
+# the `getrandom_v04` dep in Cargo.toml under the `local` feature) provides the
+# backend code. Inert for every other crate and for getrandom 0.2 (the wallet's
+# wasm RNG), so it has no effect on builds without `local`.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", "getrandom_backend=\"wasm_js\""]

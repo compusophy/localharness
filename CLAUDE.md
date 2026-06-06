@@ -12,7 +12,7 @@ crate;
 policies, triggers, MCP, and context compaction. Build with `browser-app` on
 wasm32 and you also get the live IDE at `<name>.localharness.xyz`.
 
-- [crates.io/crates/localharness](https://crates.io/crates/localharness) (current: **0.20.x**)
+- [crates.io/crates/localharness](https://crates.io/crates/localharness) (current: **0.23.x**)
 - [github.com/compusophy/localharness](https://github.com/compusophy/localharness)
 - Native: stable Rust 1.85+, tokio-driven. wasm32: same crate, browser.
 - Live: `localharness.xyz` (marketing apex) + wildcard `*.localharness.xyz`
@@ -98,7 +98,14 @@ src/                  library crate
     │                 compaction.rs; tools/ (one Tool impl per BuiltinTool, incl.
     │                 call_agent, compile_rustlite, render_html, run_cartridge→DISPLAY);
     │                 mod.rs (GeminiConnectionStrategy + GeminiConnection)
-    └── mcp/          stdio MCP client (native-only)
+    ├── anthropic/    Claude Messages API backend (feature "anthropic"): mod.rs
+    │                 (Strategy+Connection), api.rs, wire.rs, loop.rs, compaction.rs
+    ├── mcp/          stdio MCP client (native-only)
+    └── local/        in-browser Gemma 3 270M via Burn/wgpu (feature "local"):
+                      gemma.rs (model), weights.rs (safetensors loader),
+                      tokenizer.rs, generate.rs (async greedy decode),
+                      tool_parse.rs (tool_code-fence parser), connection.rs
+                      (Connection seam + bounded tool loop), mod.rs
 
 contracts/   Foundry project for the on-chain registry
 ├── src/      Diamond.sol (EIP-2535 proxy) + interfaces/; libraries/ (LibDiamond +
@@ -156,6 +163,16 @@ vercel deploy --prod --yes                                         # deploy web/
   (`Agent::start_anthropic`) or, via the multi-provider credit proxy, platform
   `$LH` credits. Pulled in transitively by `browser-app` so the in-tab model
   selector can build the Claude path.
+- `local` (off): compiles the in-browser local-model backend `src/backends/local/`
+  — Gemma 3 270M via Burn's `wgpu`/WebGPU backend (no proxy, no `$LH`, no key).
+  HEAVY (pulls burn 0.21 + burn-store + tokenizers; ~570MB opt-in weights to OPFS).
+  NATIVE-VALIDATED — loads the real `unsloth/gemma-3-270m` checkpoint and emits
+  coherent text. Additive and OFF by default — NOT pulled by `browser-app`; build
+  the in-tab path explicitly with `--features browser-app,local`. Gotchas: burn
+  drags in getrandom 0.4 → needs `.cargo/config.toml` `getrandom_backend="wasm_js"`
+  + a renamed `getrandom_v04` dep; burn-store is a DIRECT dep (NOT burn's `store`
+  feature) so `memmap2` (wasm-broken) stays out of the graph; generate's GPU
+  read-back MUST be `into_data_async().await` (sync `into_data` panics on wasm).
 - wasm targets auto-drop walkdir/tempfile, add wasm-bindgen-futures, uuid/js,
   getrandom/js via target-cfg.
 

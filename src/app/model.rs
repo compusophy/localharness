@@ -27,12 +27,19 @@ pub(crate) const MODELS: &[(&str, &str)] = &[
     ("claude-haiku-4-5-20251001", "Claude Haiku"),
     ("claude-sonnet-4-6", "Claude Sonnet"),
     ("claude-opus-4-8", "Claude Opus"),
+    ("gemma-3-270m", "Local (Gemma)"),
 ];
 
 /// True for a Claude/Anthropic model id (`claude-*`). Everything else is
 /// treated as a Gemini id by [`super::chat::start_session`].
 pub(crate) fn is_anthropic(model: &str) -> bool {
     model.starts_with("claude-")
+}
+
+/// True for the in-browser local model id (`gemma-*`). Routes to the local
+/// (Burn-wgpu) backend rather than the credit proxy / a network API.
+pub(crate) fn is_local(model: &str) -> bool {
+    model.starts_with("gemma-")
 }
 
 /// Read the persisted model id, validated against [`MODELS`]. A missing,

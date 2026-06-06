@@ -26,6 +26,13 @@ thread_local! {
     /// Set by the stop button; the stream loop checks it each chunk and
     /// breaks, cooperatively ending the turn.
     static TURN_CANCEL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set by the `clear_context` tool; drained AFTER the turn ends in
+    /// `run_send` (never inline — wiping history mid-turn corrupts the
+    /// in-flight turn the tool runs inside).
+    static PENDING_CLEAR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Set by the `compact_context` tool; drained post-turn like
+    /// `PENDING_CLEAR`.
+    static PENDING_COMPACT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Request cooperative cancellation of the running turn (the stop
@@ -171,6 +178,26 @@ pub(crate) async fn run_send() {
         // history marker show up incrementally (not just at the very end).
         super::history::save_from_agent().await;
         super::opfs::refresh().await;
+
+        // Drain any context-management a tool requested THIS turn. Deferred
+        // to here (not run inside the tool) because clearing/summarising the
+        // history mid-turn corrupts the in-flight turn the tool ran inside —
+        // the backend re-locks history after the tool to append its result.
+        if PENDING_CLEAR.with(|c| c.replace(false)) {
+            agent.clear_history(); // wipe the model's working context
+            super::history::clear_persisted().await; // wipe the durable OPFS copy
+            dom::swap_inner("transcript", ""); // instant visible wipe, no refresh
+            break; // the context is gone — nothing left to continue toward
+        }
+        if PENDING_COMPACT.with(|c| c.replace(false)) && agent.compact().await {
+            // Compaction rewrote the backend history (older turns → one
+            // summary). Mirror that on screen: wipe and repaint from the
+            // now-compacted transcript, then persist so a reload matches.
+            let entries = agent.transcript();
+            dom::swap_inner("transcript", "");
+            super::history::paint_entries(&entries);
+            super::history::save_from_agent().await;
+        }
 
         match outcome {
             // Hard stop conditions — never auto-continue.
@@ -743,7 +770,38 @@ pub(crate) async fn start_session(
     // backend switch doesn't lose the transcript.
     let pending_history = super::history::take_pending();
 
-    let agent = if super::model::is_anthropic(&model) {
+    let agent = if super::model::is_local(&model) {
+        // In-browser local model (Gemma 3 270M via Burn-wgpu). No API key, no
+        // proxy: weights are read from this origin's OPFS (downloaded once via
+        // the model tab). The local backend speaks plain text — no tools — so
+        // we pass only the system instructions + filesystem. History from a
+        // prior session seeds only when it decodes as local history. Gated on
+        // the heavy `local` feature; without it, the id can't be served here.
+        #[cfg(feature = "local")]
+        {
+            let mut cfg = crate::LocalAgentConfig::new(model.clone())
+                .with_capabilities(capabilities)
+                .with_filesystem(super::shared_opfs())
+                .with_system_instructions(system_instructions);
+            if let Some(bytes) = pending_history {
+                if crate::backends::local::connection::decode_transcript_bytes(&bytes).is_ok() {
+                    cfg = cfg.with_history_bytes(bytes);
+                }
+            }
+            Agent::start_local(cfg)
+                .await
+                .map_err(|e| JsValue::from_str(&format!("start_local: {e}")))?
+        }
+        #[cfg(not(feature = "local"))]
+        {
+            // Keep the moved-in bindings live so the borrow checker is happy on
+            // this (never-taken-in-practice) path, then surface a clear error.
+            let _ = (&capabilities, &system_instructions, &pending_history);
+            return Err(JsValue::from_str(
+                "local model selected but this build was compiled without the `local` feature",
+            ));
+        }
+    } else if super::model::is_anthropic(&model) {
         let mut cfg = crate::AnthropicAgentConfig::new(key.to_string())
             .with_model(model.clone())
             .with_capabilities(capabilities)
@@ -756,6 +814,8 @@ pub(crate) async fn start_session(
             .with_tool(list_subdomains_tool())
             .with_tool(submit_feedback_tool())
             .with_tool(super::self_docs::read_self_docs_tool())
+            .with_tool(clear_context_tool())
+            .with_tool(compact_context_tool())
             .with_tool(spawn_recursive_subagent_tool(captured_key, base_url.clone()));
         // Credits mode: route Anthropic through the credit proxy (it serves
         // `/v1/messages`). BYOK has no direct-Anthropic path here, so this is
@@ -790,6 +850,8 @@ pub(crate) async fn start_session(
             .with_tool(list_subdomains_tool())
             .with_tool(submit_feedback_tool())
             .with_tool(super::self_docs::read_self_docs_tool())
+            .with_tool(clear_context_tool())
+            .with_tool(compact_context_tool())
             .with_tool(spawn_recursive_subagent_tool(captured_key, base_url.clone()));
         // Credits mode: route the whole agent through the credit proxy. BYOK
         // leaves base_url None → direct to generativelanguage.googleapis.com.
@@ -1357,6 +1419,50 @@ fn list_subdomains_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 "owner": owner,
                 "count": subdomains.len(),
                 "subdomains": subdomains,
+            }))
+        },
+    )
+}
+
+/// `clear_context()` — erase the entire conversation history and the visible
+/// chat, starting a fresh empty context. Deferred: sets `PENDING_CLEAR`,
+/// drained post-turn in [`run_send`] (clearing mid-turn would corrupt the
+/// in-flight turn this tool runs inside). Withheld from subagents — a
+/// detached subagent must never wipe the main tab's chat.
+fn clear_context_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    ClosureTool::new(
+        "clear_context",
+        "Erase the ENTIRE conversation history and clear the visible chat, starting a \
+         brand-new empty context. Use when the user asks to clear, reset, wipe, or start a \
+         fresh chat/context. Irreversible. The screen clears the moment this turn ends.",
+        serde_json::json!({ "type": "object", "properties": {} }),
+        |_args: serde_json::Value, _ctx| async move {
+            PENDING_CLEAR.with(|c| c.set(true));
+            Ok(serde_json::json!({
+                "status": "scheduled",
+                "note": "the conversation will be cleared as soon as this turn ends"
+            }))
+        },
+    )
+}
+
+/// `compact_context()` — summarise older turns into a short note while
+/// keeping recent turns verbatim, freeing context-window budget. Deferred
+/// like [`clear_context_tool`]; the post-turn drain also collapses the
+/// visible scrollback to mirror the compacted state.
+fn compact_context_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    ClosureTool::new(
+        "compact_context",
+        "Compact the conversation: summarise older messages into a short note while keeping \
+         the most recent turns verbatim, freeing context-window budget. Use when the user \
+         asks to compact, summarise, condense, or shrink the context. Takes effect the \
+         moment this turn ends; the visible chat collapses to match.",
+        serde_json::json!({ "type": "object", "properties": {} }),
+        |_args: serde_json::Value, _ctx| async move {
+            PENDING_COMPACT.with(|c| c.set(true));
+            Ok(serde_json::json!({
+                "status": "scheduled",
+                "note": "the context will be compacted as soon as this turn ends"
             }))
         },
     )

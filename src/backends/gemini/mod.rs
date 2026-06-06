@@ -357,6 +357,21 @@ impl GeminiConnection {
         .await
     }
 
+    /// Wipe the entire conversation history, returning the connection to a
+    /// fresh, empty context. Synchronous (no network). Backs
+    /// [`crate::Agent::clear_history`] — the in-tab `clear_context` tool.
+    /// Resets only the history and the per-turn bookkeeping that could
+    /// otherwise re-trigger compaction on the now-tiny history; the live
+    /// step broadcast and `conversation_id` are left untouched.
+    pub fn clear_history(&self) {
+        self.state.history.lock().clear();
+        *self.state.last_turn_usage.lock() = None;
+        *self.state.last_structured_output.lock() = None;
+        self.state
+            .next_step_index
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Project the wire history into a flat, text-only sequence of
     /// `(role, text)` turns suitable for repainting a UI. Tool-call
     /// activity (FunctionCall / FunctionResponse) is dropped — this is
@@ -607,5 +622,55 @@ mod tests {
             calls.iter().any(|c| c == "read_dir:/synthetic/dir"),
             "expected read_dir call recorded; got {calls:?}",
         );
+    }
+
+    /// `clear_history` empties the conversation AND resets the per-turn
+    /// bookkeeping (so a stale prompt-token count can't re-trigger
+    /// compaction on the now-tiny history). Backs `Agent::clear_history` —
+    /// the in-tab `clear_context` tool.
+    #[tokio::test]
+    async fn clear_history_empties_history_and_resets_counters() {
+        let capture: Arc<Mutex<Option<Arc<GeminiConnection>>>> = Arc::new(Mutex::new(None));
+        let cfg =
+            GeminiBackendConfig::new("test-key").with_capabilities(CapabilitiesConfig::unrestricted());
+        let strategy = GeminiConnectionStrategy::new(cfg)
+            .with_runners(GeminiRunners {
+                tool_runner: Some(Arc::new(ToolRunner::new())),
+                ..Default::default()
+            })
+            .with_typed_capture(capture.clone());
+        let _conn = strategy.connect().await.unwrap();
+        let gc = capture.lock().take().expect("typed capture filled by connect");
+
+        // Seed a turn + non-default per-turn bookkeeping.
+        gc.state.history.lock().push(wire::Content {
+            role: wire::ContentRole::User,
+            parts: vec![wire::Part::Text { text: "hello".into() }],
+        });
+        *gc.state.last_turn_usage.lock() = Some(crate::types::UsageMetadata::default());
+        *gc.state.last_structured_output.lock() = Some(json!({ "x": 1 }));
+        gc.state
+            .next_step_index
+            .store(7, std::sync::atomic::Ordering::Relaxed);
+
+        gc.clear_history();
+
+        assert!(gc.state.history.lock().is_empty(), "history not cleared");
+        assert!(gc.state.last_turn_usage.lock().is_none(), "usage not reset");
+        assert!(
+            gc.state.last_structured_output.lock().is_none(),
+            "structured output not reset"
+        );
+        assert_eq!(
+            gc.state
+                .next_step_index
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "step index not reset"
+        );
+        // The public snapshot reflects the wipe too.
+        let snapshot: Vec<wire::Content> =
+            serde_json::from_slice(&gc.history_bytes().unwrap()).unwrap();
+        assert!(snapshot.is_empty(), "history_bytes snapshot not empty");
     }
 }

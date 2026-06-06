@@ -18,5 +18,9 @@ pub mod gemini;
 /// purely additive (off by default).
 #[cfg(feature = "anthropic")]
 pub mod anthropic;
+/// Local in-browser model backend — Gemma 3 270M via Burn's wgpu/WebGPU
+/// backend. Gated on the `local` feature (heavy: pulls the Burn framework).
+#[cfg(feature = "local")]
+pub mod local;
 #[cfg(feature = "native")]
 pub mod mcp;

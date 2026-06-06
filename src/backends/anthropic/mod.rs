@@ -357,6 +357,21 @@ impl AnthropicConnection {
         .await
     }
 
+    /// Wipe the entire conversation history, returning the connection to a
+    /// fresh, empty context. Synchronous (no network). Backs
+    /// [`crate::Agent::clear_history`] — the in-tab `clear_context` tool.
+    /// Resets only the history and the per-turn bookkeeping that could
+    /// otherwise re-trigger compaction; the live step broadcast and
+    /// `conversation_id` are left untouched.
+    pub fn clear_history(&self) {
+        self.state.history.lock().clear();
+        *self.state.last_turn_usage.lock() = None;
+        *self.state.last_structured_output.lock() = None;
+        self.state
+            .next_step_index
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Project the wire history into a flat, text-only `(role, text)`
     /// transcript suitable for repainting a UI. Tool-call activity is
     /// surfaced as `TranscriptToolCall`s (matched by `tool_use_id`).

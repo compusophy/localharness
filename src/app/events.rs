@@ -100,6 +100,9 @@ enum Action {
     /// Choose which LLM the in-tab agent uses (a `gemini-*` or `claude-*`
     /// model id). Persisted to `.lh_model`; read by `chat::start_session`.
     SetModel(String),
+    /// Download the in-browser local model (Gemma 3 270M weights + tokenizer)
+    /// from the HF CDN into OPFS — the one-time opt-in for on-device inference.
+    DownloadLocalModel,
     /// Open (or renew) the caller's on-chain credit session.
     OpenSession,
     /// Redeem a one-time code for `$LH` credits.
@@ -180,6 +183,7 @@ impl Action {
             "set-public-face" => Action::SetPublicFace(arg.unwrap_or_default()),
             "set-model-access" => Action::SetModelAccess(arg.unwrap_or_default()),
             "set-model" => Action::SetModel(arg.unwrap_or_default()),
+            "download-local-model" => Action::DownloadLocalModel,
             "open-session" => Action::OpenSession,
             "redeem-code" => Action::RedeemCode,
             "deposit-credits" => Action::DepositCredits,
@@ -1058,6 +1062,7 @@ fn dispatch(action: Action) {
         Action::SaveApiKey => save_api_key_pressed(),
         Action::SetModelAccess(mode) => run_set_model_access(mode),
         Action::SetModel(model) => run_set_model(model),
+        Action::DownloadLocalModel => run_download_local_model(),
         Action::OpenSession => open_session_pressed(),
         Action::RedeemCode => redeem_code_pressed(),
         Action::DepositCredits => deposit_credits_pressed(),
@@ -1486,6 +1491,88 @@ fn run_set_model(model: String) {
             "model-msg",
             &format!("{label} — applies on your next message"),
         );
+    });
+}
+
+/// Ungated HF CDN URLs for the local Gemma 3 270M model files (the `unsloth`
+/// mirror — no license click-through, CORS-permissive across the
+/// huggingface.co → cas-bridge.xethub.hf.co redirect chain).
+const LOCAL_WEIGHTS_URL: &str =
+    "https://huggingface.co/unsloth/gemma-3-270m/resolve/main/model.safetensors";
+const LOCAL_TOKENIZER_URL: &str =
+    "https://huggingface.co/unsloth/gemma-3-270m/resolve/main/tokenizer.json";
+
+/// OPFS destinations for the downloaded files. MUST match the paths the local
+/// backend reads (`backends::local::connection::{WEIGHTS_PATH, TOKENIZER_PATH}`)
+/// — kept as literals here so the download works whether or not the heavy
+/// `local` feature is compiled into this bundle.
+const LOCAL_WEIGHTS_OPFS: &str = ".lh_local_model.safetensors";
+const LOCAL_TOKENIZER_OPFS: &str = ".lh_local_tokenizer.json";
+
+/// Download the in-browser local model (Gemma 3 270M weights + tokenizer) from
+/// the HF CDN into OPFS, streaming with a byte-progress message. One-time opt-in
+/// — once the files are in OPFS the local backend loads them on session start.
+fn run_download_local_model() {
+    use futures_util::StreamExt as _;
+    wasm_bindgen_futures::spawn_local(async move {
+        let fs = super::shared_opfs();
+
+        // Fetch one URL, streaming chunks into a buffer and reporting progress
+        // into `#local-model-msg`, then persist to OPFS via write_atomic.
+        async fn fetch_to_opfs(
+            fs: &std::sync::Arc<crate::filesystem::OpfsFilesystem>,
+            url: &str,
+            opfs_path: &str,
+            label: &str,
+        ) -> Result<(), String> {
+            use crate::filesystem::Filesystem as _;
+            let resp = reqwest::Client::new()
+                .get(url)
+                .send()
+                .await
+                .map_err(|e| format!("fetch {label}: {e}"))?;
+            if !resp.status().is_success() {
+                return Err(format!("fetch {label}: HTTP {}", resp.status().as_u16()));
+            }
+            let total = resp.content_length();
+            let mut buf: Vec<u8> = Vec::with_capacity(total.unwrap_or(0) as usize);
+            let mut stream = resp.bytes_stream();
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|e| format!("download {label}: {e}"))?;
+                buf.extend_from_slice(&chunk);
+                let got_mb = buf.len() / (1024 * 1024);
+                let msg = match total {
+                    Some(t) => {
+                        let pct = (buf.len() as f64 / t as f64 * 100.0) as u32;
+                        format!("downloading {label}: {got_mb} MB ({pct}%)")
+                    }
+                    None => format!("downloading {label}: {got_mb} MB"),
+                };
+                dom::swap_inner("local-model-msg", &msg);
+            }
+            fs.write_atomic(opfs_path, &buf)
+                .await
+                .map_err(|e| format!("save {label}: {e}"))?;
+            Ok(())
+        }
+
+        dom::swap_inner("local-model-msg", "starting download…");
+        let result = async {
+            fetch_to_opfs(&fs, LOCAL_TOKENIZER_URL, LOCAL_TOKENIZER_OPFS, "tokenizer").await?;
+            fetch_to_opfs(&fs, LOCAL_WEIGHTS_URL, LOCAL_WEIGHTS_OPFS, "weights").await?;
+            Ok::<(), String>(())
+        }
+        .await;
+        match result {
+            Ok(()) => dom::swap_inner(
+                "local-model-msg",
+                "local model ready — select Local (Gemma) and send a message",
+            ),
+            Err(e) => {
+                web_sys::console::warn_1(&JsValue::from_str(&format!("local model download: {e}")));
+                dom::swap_inner("local-model-msg", &dom::msg_span(dom::Msg::Error, &e));
+            }
+        }
     });
 }
 

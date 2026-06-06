@@ -732,6 +732,16 @@ pub(crate) fn admin_model_section() -> Markup {
                 }
             }
             div #model-msg .admin-msg-slot {}
+            // Opt-in download for the in-browser local model (~570 MB, fetched
+            // once from the HF CDN into OPFS). Always rendered; the handler
+            // is only meaningful once the local model is selected, and reports
+            // progress into `#local-model-msg`.
+            div.public-face-preview {
+                button type="button" data-action="download-local-model" .ghost {
+                    "download local model"
+                }
+            }
+            div #local-model-msg .admin-msg-slot {}
         }
     }
 }

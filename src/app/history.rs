@@ -41,64 +41,7 @@ pub(crate) async fn load_into_pending() {
     // Project the bytes into a transcript and paint each entry.
     match decode_transcript_bytes(&bytes) {
         Ok(entries) if !entries.is_empty() => {
-            for entry in &entries {
-                // Render tool calls before the assistant text (they
-                // happened during the turn, so showing them first
-                // matches the live order).
-                for tc in &entry.tool_calls {
-                    let seg_id = APP.with(|cell| cell.borrow_mut().alloc_id());
-                    let call = crate::types::ToolCall {
-                        name: tc.name.clone(),
-                        id: None,
-                        args: tc.args.clone(),
-                        canonical_path: None,
-                    };
-                    let mut block = templates::tool_call_block(seg_id, &call).into_string();
-                    if tc.result.is_some() || tc.error.is_some() {
-                        // Inject the result inline
-                        let result = crate::types::ToolResult {
-                            name: tc.name.clone(),
-                            id: None,
-                            result: tc.result.clone(),
-                            error: tc.error.clone(),
-                        };
-                        let result_html = templates::tool_call_result(&result).into_string();
-                        let result_slot = format!("id=\"tool-{seg_id}-result\"");
-                        block = block.replace(
-                            &format!("{result_slot}></div>"),
-                            &format!("{result_slot}>{result_html}</div>"),
-                        );
-                        // Mark status with the correct pill class:
-                        // "ok" (green checkmark) or "err" (red cross),
-                        // matching the CSS pseudo-elements in index.html.
-                        let final_class = if tc.error.is_none() {
-                            "tc-status ok"
-                        } else {
-                            "tc-status err"
-                        };
-                        block = block.replace("tc-status running", final_class);
-                    } else {
-                        // Tool was in-flight when the session ended —
-                        // don't leave it as "running" on replay.
-                        block = block.replace("tc-status running", "tc-status err");
-                    }
-                    dom::append_html("transcript", &block);
-                }
-
-                // Render the text turn (skip empty text-only entries
-                // that were tool-call-only turns).
-                if !entry.text.is_empty() {
-                    let turn_id = APP.with(|cell| cell.borrow_mut().alloc_id());
-                    let role = entry.role.as_str();
-                    let body = match entry.role {
-                        TranscriptRole::User => html! { (entry.text) },
-                        TranscriptRole::Assistant => templates::rendered_markdown(&entry.text),
-                    };
-                    let html_str =
-                        templates::turn(turn_id, role, body, false).into_string();
-                    dom::append_html("transcript", &html_str);
-                }
-            }
+            paint_entries(&entries);
             // Scroll so the user sees the most recent turn, not the
             // top of a long prior conversation. Deferred because the
             // restore happens before first layout/font-swap settles.
@@ -145,4 +88,82 @@ pub(crate) async fn save_from_agent() {
 /// `start_session` consumes it; subsequent calls return `None`.
 pub(crate) fn take_pending() -> Option<Vec<u8>> {
     APP.with(|cell| cell.borrow_mut().pending_history.take())
+}
+
+/// Paint a sequence of transcript entries into `#transcript` — tool calls
+/// first, then the text turn, per entry (matching live turn order). Does
+/// NOT clear `#transcript` first; the caller wipes it when replacing.
+/// Shared by [`load_into_pending`] (session restore) and the compact
+/// repaint in [`super::chat::run_send`] (collapse the visible scrollback
+/// into the post-compaction summary).
+pub(crate) fn paint_entries(entries: &[crate::types::TranscriptEntry]) {
+    for entry in entries {
+        // Render tool calls before the assistant text (they happened
+        // during the turn, so showing them first matches the live order).
+        for tc in &entry.tool_calls {
+            let seg_id = APP.with(|cell| cell.borrow_mut().alloc_id());
+            let call = crate::types::ToolCall {
+                name: tc.name.clone(),
+                id: None,
+                args: tc.args.clone(),
+                canonical_path: None,
+            };
+            let mut block = templates::tool_call_block(seg_id, &call).into_string();
+            if tc.result.is_some() || tc.error.is_some() {
+                // Inject the result inline
+                let result = crate::types::ToolResult {
+                    name: tc.name.clone(),
+                    id: None,
+                    result: tc.result.clone(),
+                    error: tc.error.clone(),
+                };
+                let result_html = templates::tool_call_result(&result).into_string();
+                let result_slot = format!("id=\"tool-{seg_id}-result\"");
+                block = block.replace(
+                    &format!("{result_slot}></div>"),
+                    &format!("{result_slot}>{result_html}</div>"),
+                );
+                // Mark status with the correct pill class: "ok" (green
+                // checkmark) or "err" (red cross), matching the CSS
+                // pseudo-elements in index.html.
+                let final_class = if tc.error.is_none() {
+                    "tc-status ok"
+                } else {
+                    "tc-status err"
+                };
+                block = block.replace("tc-status running", final_class);
+            } else {
+                // Tool was in-flight when the session ended — don't leave
+                // it as "running" on replay.
+                block = block.replace("tc-status running", "tc-status err");
+            }
+            dom::append_html("transcript", &block);
+        }
+
+        // Render the text turn (skip empty text-only entries that were
+        // tool-call-only turns).
+        if !entry.text.is_empty() {
+            let turn_id = APP.with(|cell| cell.borrow_mut().alloc_id());
+            let role = entry.role.as_str();
+            let body = match entry.role {
+                TranscriptRole::User => html! { (entry.text) },
+                TranscriptRole::Assistant => templates::rendered_markdown(&entry.text),
+            };
+            let html_str = templates::turn(turn_id, role, body, false).into_string();
+            dom::append_html("transcript", &html_str);
+        }
+    }
+}
+
+/// Wipe the persisted conversation history (the `clear_context` tool).
+/// Writes empty bytes rather than deleting: [`load_into_pending`] treats
+/// empty/missing as a fresh session, and `OpfsFilesystem::delete` errors
+/// on a missing file. Best-effort — logs but never surfaces to the UI.
+pub(crate) async fn clear_persisted() {
+    let fs = super::shared_opfs();
+    if let Err(err) = fs.write_atomic(HISTORY_FILE, &[]).await {
+        web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
+            "history clear: {err}"
+        )));
+    }
 }

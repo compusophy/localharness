@@ -31,6 +31,10 @@ use crate::backends::gemini::{
 use crate::backends::anthropic::{
     AnthropicBackendConfig, AnthropicConnection, AnthropicConnectionStrategy, AnthropicRunners,
 };
+#[cfg(feature = "local")]
+use crate::backends::local::connection::{
+    LocalBackendConfig, LocalConnection, LocalConnectionStrategy, LocalRunners,
+};
 use crate::connections::{Connection, ConnectionStrategy};
 use crate::content::Content;
 use crate::conversation::{ChatResponse, Conversation};
@@ -407,6 +411,95 @@ impl AnthropicAgentConfig {
 }
 
 // =============================================================================
+// Local agent config (feature = "local")
+// =============================================================================
+
+/// Configuration for the in-browser local (Gemma 3 270M / Burn-wgpu) backend.
+///
+/// Pairs the generic `AgentConfig` with [`LocalBackendConfig`]. The parallel of
+/// [`GeminiAgentConfig`] / [`AnthropicAgentConfig`]; additive and feature-gated.
+/// There is no API key — the model runs fully on-device; weights are read from
+/// the supplied [`Filesystem`] (OPFS in the browser).
+///
+/// [`Filesystem`]: crate::filesystem::Filesystem
+#[cfg(feature = "local")]
+pub struct LocalAgentConfig {
+    /// Backend-agnostic settings (tools, policies, triggers).
+    pub agent: AgentConfig,
+    /// Local-backend settings (model label, OPFS paths, filesystem).
+    pub local: LocalBackendConfig,
+    /// Opaque history bytes from a previous session, applied after `connect()`.
+    pub initial_history: Option<Vec<u8>>,
+}
+
+#[cfg(feature = "local")]
+impl LocalAgentConfig {
+    /// Create a new local agent configuration for the given model label.
+    pub fn new(model: impl Into<String>) -> Self {
+        Self {
+            agent: AgentConfig::default(),
+            local: LocalBackendConfig::new(model),
+            initial_history: None,
+        }
+    }
+
+    /// Seed the new connection with previously-saved history bytes.
+    pub fn with_history_bytes(mut self, bytes: Vec<u8>) -> Self {
+        self.initial_history = Some(bytes);
+        self
+    }
+
+    /// Set the model id label.
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.local = self.local.with_model(model);
+        self
+    }
+
+    /// Set the system instructions for the model.
+    pub fn with_system_instructions(mut self, instr: impl Into<SystemInstructions>) -> Self {
+        let instr = instr.into();
+        self.local = self.local.with_system_instructions(instr.clone());
+        self.agent = self.agent.with_system_instructions(instr);
+        self
+    }
+
+    /// Plug in the [`Filesystem`] the weights/tokenizer are read from.
+    ///
+    /// [`Filesystem`]: crate::filesystem::Filesystem
+    pub fn with_filesystem(mut self, fs: crate::filesystem::SharedFilesystem) -> Self {
+        self.local = self.local.with_filesystem(fs);
+        self
+    }
+
+    /// Configure which built-in tools are enabled.
+    pub fn with_capabilities(mut self, cap: CapabilitiesConfig) -> Self {
+        self.agent = self.agent.with_capabilities(cap);
+        self.local = self.local.with_capabilities(self.agent.capabilities.clone());
+        self
+    }
+
+    /// Register a custom tool.
+    pub fn with_tool(mut self, tool: Arc<dyn Tool>) -> Self {
+        self.agent = self.agent.with_tool(tool);
+        self
+    }
+
+    /// Set the safety policies for tool execution.
+    pub fn with_policies(mut self, policies: Vec<Policy>) -> Self {
+        self.agent = self.agent.with_policies(policies);
+        self
+    }
+
+    /// Resume an existing conversation by its ID.
+    pub fn resume(mut self, conversation_id: impl Into<String>) -> Self {
+        let id = conversation_id.into();
+        self.local.conversation_id = Some(id.clone());
+        self.agent.conversation_id = Some(id);
+        self
+    }
+}
+
+// =============================================================================
 // Agent
 // =============================================================================
 
@@ -444,6 +537,11 @@ pub struct Agent {
     /// / `transcript()` work for either backend. Additive (feature-gated).
     #[cfg(feature = "anthropic")]
     anthropic_connection: Option<Arc<AnthropicConnection>>,
+    /// Typed handle to the local (in-browser Gemma) connection when
+    /// `start_local` was used. Parallels `anthropic_connection`. Additive
+    /// (feature-gated).
+    #[cfg(feature = "local")]
+    local_connection: Option<Arc<LocalConnection>>,
     hook_runner: Arc<HookRunner>,
     tool_runner: Arc<ToolRunner>,
     trigger_runner: Option<Arc<TriggerRunner>>,
@@ -525,6 +623,38 @@ impl Agent {
         Ok(agent)
     }
 
+    /// Start an `Agent` backed by the in-browser local (Gemma 3 270M / Burn-wgpu)
+    /// runtime. Parallels [`Agent::start_gemini`]; additive and non-breaking. No
+    /// API key — the model runs fully on-device, reading weights from the
+    /// supplied filesystem (OPFS in the browser).
+    #[cfg(feature = "local")]
+    pub async fn start_local(mut config: LocalAgentConfig) -> Result<Self> {
+        config.agent.capabilities.validate()?;
+        Self::wire_response_schema(&mut config.agent);
+        let mut local_config = config.local;
+        // Keep the backend's CapabilitiesConfig in sync with the agent's.
+        local_config.capabilities = config.agent.capabilities.clone();
+        let initial_history = config.initial_history.take();
+        let capture: Arc<parking_lot::Mutex<Option<Arc<LocalConnection>>>> =
+            Arc::new(parking_lot::Mutex::new(None));
+        let capture_for_factory = capture.clone();
+        let mut agent = Self::start_with_factory(config.agent, move |hooks, tools, ctx| {
+            LocalConnectionStrategy::new(local_config)
+                .with_runners(LocalRunners {
+                    tool_runner: Some(tools),
+                    hook_runner: Some(hooks),
+                    session_ctx: Some(ctx),
+                })
+                .with_typed_capture(capture_for_factory)
+        })
+        .await?;
+        agent.local_connection = capture.lock().take();
+        if let (Some(bytes), Some(lc)) = (initial_history, agent.local_connection.as_ref()) {
+            lc.set_history_bytes(&bytes)?;
+        }
+        Ok(agent)
+    }
+
     /// Token usage accumulated across every turn in this agent's
     /// conversation. Surfaced in the browser app's Usage tab.
     pub fn cumulative_usage(&self) -> crate::types::UsageMetadata {
@@ -551,6 +681,10 @@ impl Agent {
         if let Some(ac) = self.anthropic_connection.as_ref() {
             return ac.history_bytes().map(Some);
         }
+        #[cfg(feature = "local")]
+        if let Some(lc) = self.local_connection.as_ref() {
+            return lc.history_bytes().map(Some);
+        }
         Ok(None)
     }
 
@@ -567,7 +701,31 @@ impl Agent {
         if let Some(ac) = self.anthropic_connection.as_ref() {
             return ac.compact().await;
         }
+        #[cfg(feature = "local")]
+        if let Some(lc) = self.local_connection.as_ref() {
+            return lc.compact().await;
+        }
         false
+    }
+
+    /// Wipe the conversation history, returning the agent to a fresh, empty
+    /// context — the in-tab `clear_context` tool / a "clear the chat"
+    /// request. Synchronous (clearing a `Vec` needs no network). No-op for
+    /// backends without a typed session handle.
+    pub fn clear_history(&self) {
+        if let Some(gc) = self.gemini_connection.as_ref() {
+            gc.clear_history();
+            return;
+        }
+        #[cfg(feature = "anthropic")]
+        if let Some(ac) = self.anthropic_connection.as_ref() {
+            ac.clear_history();
+            return;
+        }
+        #[cfg(feature = "local")]
+        if let Some(lc) = self.local_connection.as_ref() {
+            lc.clear_history();
+        }
     }
 
     /// Human-readable transcript of the current session, including tool-call
@@ -582,6 +740,10 @@ impl Agent {
         #[cfg(feature = "anthropic")]
         if let Some(ac) = self.anthropic_connection.as_ref() {
             return ac.transcript();
+        }
+        #[cfg(feature = "local")]
+        if let Some(lc) = self.local_connection.as_ref() {
+            return lc.transcript();
         }
         Vec::new()
     }
@@ -694,6 +856,8 @@ impl Agent {
             gemini_connection: None,
             #[cfg(feature = "anthropic")]
             anthropic_connection: None,
+            #[cfg(feature = "local")]
+            local_connection: None,
             hook_runner,
             tool_runner,
             trigger_runner,

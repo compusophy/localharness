@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Agent-driven context management.** Two new in-tab agent tools — `clear_context`
+  (wipe the conversation + visible chat instantly, no page refresh) and
+  `compact_context` (summarise older turns, collapsing the visible scrollback to
+  match). Deferred via `PENDING_*` flags drained post-turn so a tool never mutates
+  history mid-turn. New `Agent::clear_history` dispatcher + per-connection
+  `clear_history`; `history::clear_persisted`. Works across Gemini and Claude.
+  (On-chain feedback #7.)
+- **Local in-browser model backend (feature `local`).** Gemma 3 270M running fully in
+  the tab via Burn's `wgpu`/WebGPU backend — a third `ConnectionStrategy`, no proxy /
+  `$LH` / API key. NATIVE-VALIDATED (loads the real checkpoint, generates coherent
+  text). Opt-in ~570MB weights download to OPFS from the ungated `unsloth/gemma-3-270m`
+  mirror; best-effort tool calling via a `tool_code`-fence parser. `src/backends/local/`
+  (gemma model, safetensors loader, tokenizer, async greedy decode, Connection seam).
+
+### Fixed
+
+- **`--no-default-features` wasm guardrail.** `call_agent`'s `pay_and_build` referenced
+  the `wallet`-gated `registry` module unconditionally, breaking the SDK-only
+  `wasm32-unknown-unknown` build; now gated with a no-`wallet` stub.
+
 ## [0.23.0] - 2026-06-05
 
 localharness becomes genuinely **model-agnostic** — Gemini *and* Claude, on

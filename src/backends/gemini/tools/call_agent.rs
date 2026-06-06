@@ -115,10 +115,22 @@ fn hex0x(b: &[u8]) -> String {
 /// `payment` object to re-post.
 /// Max `$LH` (wei) this caller will pay for a single agent call — a hard
 /// ceiling so a malicious callee can't drain the wallet (C1/H1).
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "wallet"))]
 const MAX_PAY_PER_CALL_WEI: u128 = 100_000_000_000_000_000_000; // 100 LH
 
-#[cfg(target_arch = "wasm32")]
+/// Stub for the no-`wallet` build: inter-agent x402 payment needs the registry
+/// (`tba_of_name`) + the x402 signer, both of which only exist with `wallet`.
+/// Same signature as the real one so the call site compiles unchanged; returning
+/// an error keeps the SDK-only `--no-default-features` wasm guardrail building.
+#[cfg(all(target_arch = "wasm32", not(feature = "wallet")))]
+async fn pay_and_build(
+    _name: &str,
+    _ch: &ChallengeParts,
+) -> std::result::Result<js_sys::Object, String> {
+    Err("x402 inter-agent payment requires the `wallet` feature".to_string())
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "wallet"))]
 async fn pay_and_build(
     name: &str,
     ch: &ChallengeParts,
