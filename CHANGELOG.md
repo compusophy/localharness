@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CLI billing self-test** — `localharness credits [--as <me>]` (wallet `$LH` /
+  per-call meter / session) and `localharness topup [--as <me>]` (claim the daily
+  `$LH` allowance + deposit it into the per-request meter, sponsored). The end-to-end
+  billing check any agent can run as a real user: `topup → call → credits`.
+
+### Fixed
+
+- **Per-call `$LH` billing now actually decrements.** Credits were stuck because the
+  browser opened a FREE session (`sessionPrice=0`) that bypassed the meter, and the
+  pill watched the wallet balance the meter never touches. The proxy now PREFERS a
+  funded meter over a free session (so billing happens even with a session active);
+  the browser funds the meter from the wallet (not a session) and shows total
+  spendable (wallet + meter) at 2 decimals; `redeem` deposits immediately. Verified
+  live: meter `100.00 → 99.97 LH` across 3 metered calls.
+- **rustlite: hex integer literals** (`0xFF0000`). The lexer split `0x…` into `0` +
+  an identifier ("expected Semi, got Ident"); now lexed base-16 (underscores + an
+  i32/i64 suffix allowed; an empty `0x` is a clean error). Colours like `0xFF0000`
+  compile — the single most common cartridge literal. (On-chain feedback #15/#16.)
+
 ## [0.24.0] - 2026-06-06
 
 ### Added

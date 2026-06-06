@@ -237,7 +237,40 @@ impl<'a> Lexer<'a> {
     }
 
     fn lex_number(&mut self, _start: usize) -> Result<TokenKind, CompileError> {
-        // We already consumed the first digit
+        // We already consumed the first digit.
+        // Hex literal: a leading `0` followed by `x`/`X` (e.g. colours like
+        // `0xFF0000`). Consume hex digits (underscores allowed) + an optional
+        // i32/i64 suffix and parse base-16 — via u64 so a full 32-bit value
+        // fits, then cast to i64. Without this branch the `0` lexes alone and
+        // `xFF0000` becomes an Ident → "expected Semi, got Ident" (feedback #15/#16).
+        if self.src.get(_start) == Some(&b'0') && matches!(self.peek(), Some(b'x') | Some(b'X')) {
+            self.advance(); // 'x'
+            let digits_start = self.pos;
+            while self.peek().is_some_and(|c| c.is_ascii_hexdigit() || c == b'_') {
+                self.advance();
+            }
+            if self.pos == digits_start {
+                return Err(CompileError::at(
+                    "hex literal `0x` has no digits".to_string(),
+                    Span { start: _start, end: self.pos },
+                ));
+            }
+            let digits_end = self.pos;
+            if self.peek() == Some(b'i') {
+                let suffix_start = self.pos;
+                self.advance();
+                if self.peek() == Some(b'3') { self.advance(); if self.peek() == Some(b'2') { self.advance(); } else { self.pos = suffix_start; } }
+                else if self.peek() == Some(b'6') { self.advance(); if self.peek() == Some(b'4') { self.advance(); } else { self.pos = suffix_start; } }
+                else { self.pos = suffix_start; }
+            }
+            let raw = std::str::from_utf8(&self.src[digits_start..digits_end])
+                .unwrap()
+                .replace('_', "");
+            let val = u64::from_str_radix(&raw, 16).map_err(|e| {
+                CompileError::at(format!("bad hex int: {e}"), Span { start: _start, end: self.pos })
+            })? as i64;
+            return Ok(TokenKind::IntLit(val));
+        }
         while self.peek().is_some_and(|c| c.is_ascii_digit()) {
             self.advance();
         }
@@ -312,6 +345,20 @@ mod tests {
     fn lex_float() {
         let tokens = lex("2.75f32").unwrap();
         assert_eq!(tokens[0].kind, TokenKind::FloatLit(2.75));
+    }
+
+    #[test]
+    fn lex_hex_literals() {
+        // The common case: 24-bit RGB colours.
+        assert_eq!(lex("0xFF0000").unwrap()[0].kind, TokenKind::IntLit(0xFF_0000));
+        // lowercase + underscore separators.
+        assert_eq!(lex("0xff_00ff").unwrap()[0].kind, TokenKind::IntLit(0xFF_00FF));
+        // an i32 suffix is consumed (rustlite ints are i64 internally).
+        assert_eq!(lex("0x10i32").unwrap()[0].kind, TokenKind::IntLit(16));
+        // `0x` with no digits is a clean error, not a silent `0` + `Ident("x…")`.
+        assert!(lex("0x").is_err());
+        // Regression guard: a bare `0` still lexes as decimal zero.
+        assert_eq!(lex("0").unwrap()[0].kind, TokenKind::IntLit(0));
     }
 
     #[test]
