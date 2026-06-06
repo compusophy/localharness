@@ -85,7 +85,7 @@ pub(crate) async fn run_send() {
     // Credits mode (base_url set): ensure a session is open so the proxy
     // accepts the call. Free in beta; silent best-effort.
     if access.base_url.is_some() {
-        ensure_credit_session().await;
+        ensure_credit_meter().await;
     }
     let key = access.cfg_auth;
 
@@ -1093,29 +1093,36 @@ async fn resolve_credit_access() -> Option<ModelAccess> {
     })
 }
 
-/// Credits mode only: make sure the caller has an active credit session
-/// before the proxy call, since the proxy 402s without one. Sessions are
-/// free in beta (`sessionPrice == 0`), so this opens one lazily via the
-/// sponsor — "default to platform credits" then works with zero setup.
-/// Best-effort and silent: any failure falls through to the proxy's own
-/// gating (and the admin → account controls). Only re-opens when the
-/// current session is within 60s of expiry.
-async fn ensure_credit_session() {
+/// Credits mode: fund the PER-REQUEST METER so the proxy debits real `$LH` per
+/// call (per-call billing — NOT a free session). Moves any `$LH` sitting in the
+/// wallet into the `CreditMeterFacet` (approve + deposit, one sponsored tx); the
+/// proxy then debits `creditOf` per request and the balance actually decrements.
+/// The `wallet == 0` check makes this idempotent — once moved, there's nothing
+/// to re-deposit. Best-effort + silent: a failure just falls through to the
+/// proxy's gating (a still-active free session keeps the agent usable).
+///
+/// NOTE: deposited `$LH` lives in the meter and has no withdraw path — that's
+/// fine, it's there to be spent on calls. (Old free sessions still bypass
+/// metering until they expire ≤1h; the proxy now PREFERS the funded meter, so
+/// once funded, billing is immediate regardless of a lingering session.)
+pub(crate) async fn ensure_credit_meter() {
     let Some((signer, addr)) = credit_signer().await else {
         return;
     };
     let addr_hex = hex_of(&addr);
-    let now = (js_sys::Date::now() / 1000.0) as u64;
-    let expiry = super::registry::session_expiry_of(&addr_hex).await.unwrap_or(0);
-    if expiry > now + 60 {
-        return; // still valid
+    let wallet = super::registry::token_balance_of(&addr_hex)
+        .await
+        .unwrap_or(0);
+    if wallet == 0 {
+        return; // nothing to fund the meter with (already moved, or empty)
     }
     let Ok(fee_payer) = super::sponsor::signer() else {
         return;
     };
-    let _ = super::registry::open_session_sponsored(
+    let _ = super::registry::deposit_credits_sponsored(
         &signer,
         &fee_payer,
+        wallet,
         super::registry::ALPHA_USD_ADDRESS,
     )
     .await;

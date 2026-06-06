@@ -1417,25 +1417,17 @@ pub(crate) async fn refresh_credits_pill() {
     // Use the credit identity (master wallet, else local device key) so
     // the balance + session reflect what the proxy will actually see.
     let Some(addr) = super::chat::credit_address_existing().await else { return };
-    if let Ok(balance_wei) = super::registry::token_balance_of(&addr).await {
-        let lh = balance_wei / 1_000_000_000_000_000_000u128;
-        dom::swap_inner("credits-balance", &format!("{lh} LH"));
-    }
-    // Credit-session window the proxy gates on.
-    if let Ok(expiry) = super::registry::session_expiry_of(&addr).await {
-        let now = (js_sys::Date::now() / 1000.0) as u64;
-        let msg = if expiry > now {
-            format!("session active · ~{} min left", (expiry - now) / 60)
-        } else {
-            "no active session".to_string()
-        };
-        dom::swap_inner("session-status", &msg);
-    }
-    // Per-request metered balance (CreditMeterFacet).
-    if let Ok(meter) = super::registry::credit_balance_of(&addr).await {
-        let lh = meter / 1_000_000_000_000_000_000u128;
-        dom::swap_inner("meter-balance", &format!("{lh} LH metered"));
-    }
+    // "Credits" = total spendable $LH = wallet balance + the per-request meter
+    // (the wallet auto-deposits into the meter on the next turn; the proxy
+    // debits the meter per call). 2-decimal so a per-call debit (0.01–0.20 LH)
+    // is visibly subtracted; goes up on redeem. (The session-status + separate
+    // meter line are gone — metering is the only billing surface now.)
+    let wallet = super::registry::token_balance_of(&addr).await.unwrap_or(0);
+    let meter = super::registry::credit_balance_of(&addr).await.unwrap_or(0);
+    let total = wallet + meter;
+    let whole = total / 1_000_000_000_000_000_000u128;
+    let cents = (total % 1_000_000_000_000_000_000u128) / 10_000_000_000_000_000u128;
+    dom::swap_inner("credits-balance", &format!("{whole}.{cents:02} LH"));
     warn_if_sponsor_low().await;
 }
 
@@ -1728,6 +1720,9 @@ fn redeem_code_pressed() {
                     "credits-msg",
                     "<span style=\"color:var(--muted)\">redeemed</span>",
                 );
+                // Move the redeemed $LH straight into the per-request meter so
+                // it's billable + the balance reflects it now (not next turn).
+                super::chat::ensure_credit_meter().await;
                 refresh_credits_pill().await;
             }
             Err(e) => {

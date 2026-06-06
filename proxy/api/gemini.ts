@@ -357,10 +357,13 @@ export default async function handler(req: Request): Promise<Response> {
     if (!hasSession && !hasCredit) {
       return json({ error: 'no active session or credit' }, 402, origin);
     }
-    // Per-request: when no flat session covers it, debit the PER-MODEL cost
-    // before serving. Fail closed if the debit can't be submitted (don't serve
-    // a free request).
-    if (!hasSession) {
+    // PREFER per-request metering: a FUNDED meter (`creditOf >= cost`) means the
+    // caller opted into real per-call billing, so debit the per-model cost even
+    // if a (free beta, `sessionPrice==0`) session is ALSO active — otherwise the
+    // free session would silently make every call free. Callers with ONLY a
+    // session and no meter balance (the free-beta / CLI fallback) are still
+    // served free. Fail closed if the debit can't be submitted.
+    if (hasCredit) {
       try {
         await meterDebit(address, cost);
       } catch (e) {
