@@ -71,6 +71,9 @@ USAGE:
                                          (Claude Code, …) can call localharness
                                          agents; pays as the local identity
   localharness list [--as <me>]          list the subdomains you own (+ --json)
+  localharness credits [--as <me>]       show your $LH wallet + per-call meter + session
+  localharness topup [--as <me>]         claim daily $LH + fund the per-call meter
+                                         (the billing self-test: topup -> call -> credits)
   localharness feedback [--as <me>] [text]   submit on-chain feedback, or read all
   localharness probe [--as <fleet>]      run QA self-checks; report failures on-chain
   localharness triage                    dedup + rank the on-chain feedback log
@@ -134,6 +137,20 @@ async fn run(args: &[String]) -> i32 {
                 feedback_read().await
             }
             Ok((caller, rest)) => feedback_submit(caller.as_deref(), &rest.join(" ")).await,
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
+        Some("topup") => match take_as_flag(&args[1..]) {
+            Ok((caller, _)) => topup(caller.as_deref()).await,
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
+        Some("credits") => match take_as_flag(&args[1..]) {
+            Ok((caller, _)) => credits_show(caller.as_deref()).await,
             Err(e) => {
                 eprintln!("{e}");
                 2
@@ -1789,6 +1806,120 @@ async fn feedback_submit(caller_name: Option<&str>, text: &str) -> i32 {
         }
         Err(e) => {
             eprintln!("feedback failed: {e}");
+            1
+        }
+    }
+}
+
+/// Lowercase 0x string of a 20-byte address (the credit identity the proxy
+/// authenticates + meters).
+fn addr_to_hex(a: [u8; 20]) -> String {
+    let mut s = String::from("0x");
+    for b in a {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// Format `$LH` wei as a 2-decimal LH string.
+fn fmt_lh(wei: u128) -> String {
+    let whole = wei / 1_000_000_000_000_000_000u128;
+    let cents = (wei % 1_000_000_000_000_000_000u128) / 10_000_000_000_000_000u128;
+    format!("{whole}.{cents:02} LH")
+}
+
+/// `localharness credits [--as <me>]` — show the caller's billing state: wallet
+/// `$LH`, the per-request meter (`creditOf`, what per-call billing debits), and
+/// any session window. Read-only; these are the exact numbers the proxy gates on.
+async fn credits_show(caller_name: Option<&str>) -> i32 {
+    let (key_file, key_hex) = match resolve_caller_key(caller_name) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let signer = match wallet::from_private_key_hex(&key_hex) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("bad key in {key_file}: {e}");
+            return 1;
+        }
+    };
+    let addr = addr_to_hex(wallet::address(&signer));
+    let token = registry::token_balance_of(&addr).await.unwrap_or(0);
+    let meter = registry::credit_balance_of(&addr).await.unwrap_or(0);
+    let expiry = registry::session_expiry_of(&addr).await.unwrap_or(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    println!("{addr}");
+    println!("  wallet   {}", fmt_lh(token));
+    println!("  meter    {}   <- per-call billing debits this", fmt_lh(meter));
+    if expiry > now {
+        println!(
+            "  session  active ~{}min left (free; a funded meter now overrides it)",
+            (expiry - now) / 60
+        );
+    } else {
+        println!("  session  none");
+    }
+    0
+}
+
+/// `localharness topup [--as <me>]` — fund the caller for PER-CALL billing:
+/// claim the daily `$LH` allowance (if eligible) then deposit the whole wallet
+/// balance into the per-request meter, so the proxy debits real `$LH` each
+/// `call`. Sponsored — needs no gas. The end-to-end billing self-test:
+/// `topup` -> `call` -> `credits` (watch the meter drop).
+async fn topup(caller_name: Option<&str>) -> i32 {
+    let (key_file, key_hex) = match resolve_caller_key(caller_name) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let signer = match wallet::from_private_key_hex(&key_hex) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("bad key in {key_file}: {e}");
+            return 1;
+        }
+    };
+    let sponsor = match wallet::from_private_key_hex(SPONSOR_KEY) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("sponsor key error: {e}");
+            return 1;
+        }
+    };
+    let addr = addr_to_hex(wallet::address(&signer));
+    // 1. Claim the daily allowance (mints $LH to the wallet) if eligible.
+    if registry::can_claim_credits(&addr).await.unwrap_or(false) {
+        match registry::claim_daily_sponsored(&signer, &sponsor, registry::ALPHA_USD_ADDRESS).await {
+            Ok(tx) => println!("claimed daily $LH  tx: {tx}"),
+            Err(e) => eprintln!("claim failed (continuing to deposit): {e}"),
+        }
+    } else {
+        println!("daily allowance already claimed today (or none) - skipping claim");
+    }
+    // 2. Deposit the wallet balance into the per-request meter.
+    let bal = registry::token_balance_of(&addr).await.unwrap_or(0);
+    if bal == 0 {
+        println!("wallet has 0 $LH - nothing to deposit");
+        return 0;
+    }
+    match registry::deposit_credits_sponsored(&signer, &sponsor, bal, registry::ALPHA_USD_ADDRESS)
+        .await
+    {
+        Ok(tx) => {
+            println!("deposited {} into the meter  tx: {tx}", fmt_lh(bal));
+            0
+        }
+        Err(e) => {
+            eprintln!("deposit failed: {e}");
             1
         }
     }
