@@ -181,6 +181,13 @@ impl Peer {
     pub(crate) fn send(&self, bytes: &[u8]) -> Result<(), JsValue> {
         self.channel.send_with_u8_array(bytes)
     }
+
+    /// A cloneable handle to the data channel, so the sync layer (Layer 4) can
+    /// send replies from inside the `on_msg` callback without borrowing the
+    /// whole `Peer`. `RtcDataChannel` is a JS-reference wrapper (cheap to clone).
+    pub(crate) fn sender(&self) -> RtcDataChannel {
+        self.channel.clone()
+    }
 }
 
 impl Drop for Peer {

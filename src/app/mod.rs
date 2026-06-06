@@ -50,6 +50,11 @@ mod shared_fs;
 /// dead-code-allowed until the Layer 4 sync protocol wires it.
 #[allow(dead_code)]
 mod webrtc;
+/// Cross-device shared-folder sync protocol (Layer 4) over the WebRTC channel +
+/// the apex store. Compile-verified only; dead-code-allowed until the Layer 5
+/// orchestration (SignalingFacet driver + peer discovery + UI) wires it.
+#[allow(dead_code)]
+mod sharedfs_sync;
 mod self_docs;
 mod signer;
 mod sponsor;
