@@ -201,6 +201,8 @@ impl<'a> Lexer<'a> {
 
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.lex_ident(start)?,
 
+            b'\'' => self.lex_char(start)?,
+
             _ => return Err(CompileError::at(format!("unexpected byte 0x{b:02x}"), Span { start, end: self.pos })),
         };
 
@@ -244,6 +246,63 @@ impl<'a> Lexer<'a> {
             }
         }
         Ok(TokenKind::StringLit(s))
+    }
+
+    /// A char literal `'A'` → its byte value as an `IntLit` (chars are `i32`
+    /// glyph codes in rustlite, e.g. `host::display::draw_char(x, y, 'A', …)`).
+    /// Same escapes as strings; the opening quote is already consumed. Empty
+    /// (`''`) and multi-byte literals are clear errors.
+    fn lex_char(&mut self, start: usize) -> Result<TokenKind, CompileError> {
+        let byte: u8 = match self.peek() {
+            Some(b'\\') => {
+                self.advance();
+                let e = match self.peek() {
+                    Some(b'n') => b'\n',
+                    Some(b't') => b'\t',
+                    Some(b'\\') => b'\\',
+                    Some(b'\'') => b'\'',
+                    Some(b'0') => 0,
+                    Some(c) => {
+                        return Err(CompileError::at(
+                            format!("unknown escape \\{}", c as char),
+                            Span { start, end: self.pos + 1 },
+                        ));
+                    }
+                    None => {
+                        return Err(CompileError::at(
+                            "unterminated char literal",
+                            Span { start, end: self.pos },
+                        ));
+                    }
+                };
+                self.advance();
+                e
+            }
+            Some(b'\'') => {
+                return Err(CompileError::at(
+                    "empty char literal",
+                    Span { start, end: self.pos },
+                ));
+            }
+            Some(c) => {
+                self.advance();
+                c
+            }
+            None => {
+                return Err(CompileError::at(
+                    "unterminated char literal",
+                    Span { start, end: self.pos },
+                ));
+            }
+        };
+        if self.peek() != Some(b'\'') {
+            return Err(CompileError::at(
+                "char literal must be a single byte (use a \"string\" for text)",
+                Span { start, end: self.pos },
+            ));
+        }
+        self.advance(); // closing quote
+        Ok(TokenKind::IntLit(byte as i64))
     }
 
     /// An operator (`+ * / %`) followed by `=` → the compound-assign token,
@@ -380,6 +439,19 @@ mod tests {
         assert!(lex("0x").is_err());
         // Regression guard: a bare `0` still lexes as decimal zero.
         assert_eq!(lex("0").unwrap()[0].kind, TokenKind::IntLit(0));
+    }
+
+    #[test]
+    fn lex_char_literals() {
+        // `'A'` → its byte value (a `draw_char` glyph code).
+        assert_eq!(lex("'A'").unwrap()[0].kind, TokenKind::IntLit(65));
+        assert_eq!(lex("' '").unwrap()[0].kind, TokenKind::IntLit(32));
+        // escapes
+        assert_eq!(lex(r"'\n'").unwrap()[0].kind, TokenKind::IntLit(10));
+        assert_eq!(lex(r"'\\'").unwrap()[0].kind, TokenKind::IntLit(92));
+        // clear errors, not a lexer crash
+        assert!(lex("''").is_err()); // empty
+        assert!(lex("'AB'").is_err()); // multi-byte
     }
 
     #[test]

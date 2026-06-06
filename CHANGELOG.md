@@ -44,6 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   break/continue and its loop, so the branch reaches the right target. Runtime-proven
   via the render harness (the hanging cases now terminate). A SEVERE pre-existing bug
   the test-user dogfood pass surfaced (it's what made for-loops hang at first).
+- **rustlite: char literals** (`'A'`). The lexer hit `unexpected byte 0x27` on a
+  `'`; now lexed to the byte value as an `IntLit` (chars are `i32` glyph codes for
+  `draw_char`) with string-style escapes; empty/multi-byte literals are clear errors.
+  (On-chain feedback #15.)
 
 ## [0.24.0] - 2026-06-06
 
