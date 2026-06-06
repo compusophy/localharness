@@ -802,6 +802,24 @@ impl WasmEmitter {
                     }
                 }
             }
+            crate::rustlite::ast::PatternKind::IntRange { lo, hi, inclusive } => {
+                // (scrutinee >= lo) & (scrutinee <(=) hi)
+                code.push(OP_LOCAL_GET);
+                leb128_u32(scrutinee_local, code);
+                code.push(OP_I32_CONST);
+                leb128_i32(*lo as i32, code);
+                code.push(OP_I32_GE_S);
+                code.push(OP_LOCAL_GET);
+                leb128_u32(scrutinee_local, code);
+                code.push(OP_I32_CONST);
+                leb128_i32(*hi as i32, code);
+                if *inclusive {
+                    code.push(OP_I32_LE_S);
+                } else {
+                    code.push(OP_I32_LT_S);
+                }
+                code.push(OP_I32_AND);
+            }
             _ => {
                 // Binding or wildcard: always matches
                 code.push(OP_I32_CONST);

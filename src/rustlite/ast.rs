@@ -245,6 +245,12 @@ pub struct Pattern {
 pub enum PatternKind {
     Wildcard,
     Literal(LitPattern),
+    /// An integer range pattern: `lo..=hi` (inclusive) or `lo..hi` (exclusive).
+    IntRange {
+        lo: i64,
+        hi: i64,
+        inclusive: bool,
+    },
     Binding(String),
     Path(Vec<String>),
     TupleVariant {

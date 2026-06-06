@@ -59,6 +59,7 @@ pub enum TokenKind {
     Semi,
     Dot,
     DotDot,     // .. (range)
+    DotDotEq,   // ..= (inclusive range)
     Arrow,      // ->
     FatArrow,   // =>
 

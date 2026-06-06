@@ -851,6 +851,27 @@ impl<'a> Parser<'a> {
             }
             TokenKind::IntLit(n) => {
                 self.advance();
+                // Range pattern? `lo..=hi` (inclusive) or `lo..hi` (exclusive).
+                if matches!(self.peek(), TokenKind::DotDot | TokenKind::DotDotEq) {
+                    let inclusive = matches!(self.peek(), TokenKind::DotDotEq);
+                    self.advance();
+                    let hi = match self.peek().clone() {
+                        TokenKind::IntLit(h) => {
+                            self.advance();
+                            h
+                        }
+                        _ => {
+                            return Err(CompileError::at(
+                                "range pattern needs an integer upper bound",
+                                self.span(),
+                            ))
+                        }
+                    };
+                    return Ok(Pattern {
+                        kind: PatternKind::IntRange { lo: n, hi, inclusive },
+                        span: Span { start: start.start, end: self.tokens[self.pos - 1].span.end },
+                    });
+                }
                 Ok(Pattern { kind: PatternKind::Literal(LitPattern::Int(n)), span: Span { start: start.start, end: self.tokens[self.pos - 1].span.end } })
             }
             TokenKind::FloatLit(n) => {
@@ -1219,6 +1240,23 @@ mod tests {
             panic!("top operator should be BitOr")
         };
         assert!(matches!(&rhs.kind, ExprKind::BinOp { op: BinOp::BitAnd, .. }));
+    }
+
+    #[test]
+    fn parse_match_range_pattern() {
+        // `0..=5 =>` parses to an inclusive IntRange pattern.
+        let m = parse_str("fn f(x: i32) -> i32 { match x { 0..=5 => 1, _ => 2 } }");
+        let Item::Fn(f) = &m.items[0] else {
+            panic!("expected fn")
+        };
+        let tail = f.body.tail.as_deref().expect("match tail");
+        let ExprKind::Match { arms, .. } = &tail.kind else {
+            panic!("expected match")
+        };
+        assert!(matches!(
+            &arms[0].pattern.kind,
+            PatternKind::IntRange { lo: 0, hi: 5, inclusive: true }
+        ));
     }
 
     #[test]

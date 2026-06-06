@@ -72,6 +72,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unary); the codegen emits the right convert/trunc/extend/wrap/promote/demote opcode
   per (from,to). The graphics staple — float math, then cast to a pixel coord.
   Runtime-verified (`3.7 as i32`→3, `(1.5*4.0) as i32`→6).
+- **rustlite: `match` range patterns** — `0..=5 => …` (inclusive) and `0..5 => …`
+  (exclusive). Previously the `..` in an arm hit "expected FatArrow, got DotDot". Now
+  a `..=` (`DotDotEq`) token + an `IntRange` pattern lowered to `scrutinee >= lo &
+  scrutinee <(=) hi`. Runtime-verified (in-range vs out-of-range select the right arm).
 
 ## [0.24.0] - 2026-06-06
 

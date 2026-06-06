@@ -737,6 +737,7 @@ impl TypeContext {
         match &pattern.kind {
             PatternKind::Wildcard => Ok(()),
             PatternKind::Literal(_) => Ok(()),
+            PatternKind::IntRange { .. } => Ok(()),
             PatternKind::Binding(name) => {
                 self.define_local(name, scrutinee_ty.clone(), false);
                 Ok(())
