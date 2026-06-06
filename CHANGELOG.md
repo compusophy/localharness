@@ -58,6 +58,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (a clone of the typed value → no runtime global, no codegen change); consts may
   reference earlier consts. Runtime-verified (a const loop bound iterates the right N).
 
+### Added
+
+- **rustlite: bitwise + shift operators** — `&` `|` `^` `<<` `>>` (i32 + i64), with
+  Rust precedence (`|` < `^` < `&` < `<<`/`>>` < `+`). Previously `<<` lexed as two
+  `<`, and `&`/`|` were rejected as "no references/closures" — so **color packing
+  `(r<<16)|(g<<8)|b` and masks `& 0xFF` were impossible**, the most common cartridge
+  idiom. Lexer/AST/parser/typecheck (integer-only)/codegen all wired; runtime-verified
+  (values + precedence) via the render harness. Found by the test-user dogfood pass.
+
 ## [0.24.0] - 2026-06-06
 
 ### Added

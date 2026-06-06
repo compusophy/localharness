@@ -178,7 +178,10 @@ impl<'a> Lexer<'a> {
             }
 
             b'<' => {
-                if self.peek() == Some(b'=') {
+                if self.peek() == Some(b'<') {
+                    self.advance();
+                    TokenKind::Shl
+                } else if self.peek() == Some(b'=') {
                     self.advance();
                     TokenKind::LtEq
                 } else {
@@ -187,7 +190,10 @@ impl<'a> Lexer<'a> {
             }
 
             b'>' => {
-                if self.peek() == Some(b'=') {
+                if self.peek() == Some(b'>') {
+                    self.advance();
+                    TokenKind::Shr
+                } else if self.peek() == Some(b'=') {
                     self.advance();
                     TokenKind::GtEq
                 } else {
@@ -200,7 +206,7 @@ impl<'a> Lexer<'a> {
                     self.advance();
                     TokenKind::AmpAmp
                 } else {
-                    return Err(CompileError::at("unexpected '&' (no references in rustlite)", Span { start, end: self.pos }));
+                    TokenKind::Amp
                 }
             }
 
@@ -209,9 +215,11 @@ impl<'a> Lexer<'a> {
                     self.advance();
                     TokenKind::PipePipe
                 } else {
-                    return Err(CompileError::at("unexpected '|' (no closures in rustlite)", Span { start, end: self.pos }));
+                    TokenKind::Pipe
                 }
             }
+
+            b'^' => TokenKind::Caret,
 
             b'"' => self.lex_string(start)?,
 

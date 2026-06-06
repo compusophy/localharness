@@ -89,6 +89,17 @@ const OP_F64_SUB: u8 = 0xA1;
 const OP_F64_MUL: u8 = 0xA2;
 const OP_F64_DIV: u8 = 0xA3;
 const OP_F64_NEG: u8 = 0x9A;
+// Bitwise + shift (integer only)
+const OP_I32_AND: u8 = 0x71;
+const OP_I32_OR: u8 = 0x72;
+const OP_I32_XOR: u8 = 0x73;
+const OP_I32_SHL: u8 = 0x74;
+const OP_I32_SHR_S: u8 = 0x75;
+const OP_I64_AND: u8 = 0x83;
+const OP_I64_OR: u8 = 0x84;
+const OP_I64_XOR: u8 = 0x85;
+const OP_I64_SHL: u8 = 0x86;
+const OP_I64_SHR_S: u8 = 0x87;
 
 const BLOCK_VOID: u8 = 0x40;
 
@@ -567,6 +578,11 @@ impl WasmEmitter {
                     (ResolvedType::I32, BinOp::Gt) => OP_I32_GT_S,
                     (ResolvedType::I32, BinOp::Le) => OP_I32_LE_S,
                     (ResolvedType::I32, BinOp::Ge) => OP_I32_GE_S,
+                    (ResolvedType::I32, BinOp::BitAnd) => OP_I32_AND,
+                    (ResolvedType::I32, BinOp::BitOr) => OP_I32_OR,
+                    (ResolvedType::I32, BinOp::BitXor) => OP_I32_XOR,
+                    (ResolvedType::I32, BinOp::Shl) => OP_I32_SHL,
+                    (ResolvedType::I32, BinOp::Shr) => OP_I32_SHR_S,
                     (ResolvedType::I64, BinOp::Add) => OP_I64_ADD,
                     (ResolvedType::I64, BinOp::Sub) => OP_I64_SUB,
                     (ResolvedType::I64, BinOp::Mul) => OP_I64_MUL,
@@ -578,6 +594,11 @@ impl WasmEmitter {
                     (ResolvedType::I64, BinOp::Gt) => OP_I64_GT_S,
                     (ResolvedType::I64, BinOp::Le) => OP_I64_LE_S,
                     (ResolvedType::I64, BinOp::Ge) => OP_I64_GE_S,
+                    (ResolvedType::I64, BinOp::BitAnd) => OP_I64_AND,
+                    (ResolvedType::I64, BinOp::BitOr) => OP_I64_OR,
+                    (ResolvedType::I64, BinOp::BitXor) => OP_I64_XOR,
+                    (ResolvedType::I64, BinOp::Shl) => OP_I64_SHL,
+                    (ResolvedType::I64, BinOp::Shr) => OP_I64_SHR_S,
                     (ResolvedType::F64, BinOp::Add) => OP_F64_ADD,
                     (ResolvedType::F64, BinOp::Sub) => OP_F64_SUB,
                     (ResolvedType::F64, BinOp::Mul) => OP_F64_MUL,

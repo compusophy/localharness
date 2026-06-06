@@ -271,6 +271,7 @@ pub enum BinOp {
     Add, Sub, Mul, Div, Mod,
     Eq, Ne, Lt, Gt, Le, Ge,
     And, Or,
+    Shl, Shr, BitAnd, BitOr, BitXor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

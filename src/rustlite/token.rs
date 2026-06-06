@@ -84,6 +84,12 @@ pub enum TokenKind {
     StarEq,
     SlashEq,
     PercentEq,
+    // Bitwise + shift
+    Amp,   // &
+    Pipe,  // |
+    Caret, // ^
+    Shl,   // <<
+    Shr,   // >>
 
     // Special
     Underscore,

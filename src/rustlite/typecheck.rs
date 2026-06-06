@@ -587,6 +587,21 @@ impl TypeContext {
                         }
                         l.ty.clone()
                     }
+                    BinOp::Shl | BinOp::Shr | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
+                        if l.ty != r.ty {
+                            return Err(CompileError::at(
+                                format!("bitwise op type mismatch: {:?} vs {:?}", l.ty, r.ty),
+                                span,
+                            ));
+                        }
+                        if l.ty != ResolvedType::I32 && l.ty != ResolvedType::I64 {
+                            return Err(CompileError::at(
+                                format!("bitwise/shift ops require integers, got {:?}", l.ty),
+                                span,
+                            ));
+                        }
+                        l.ty.clone()
+                    }
                     BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
                         ResolvedType::Bool
                     }

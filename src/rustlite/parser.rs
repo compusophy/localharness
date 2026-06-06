@@ -508,7 +508,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_cmp(&mut self) -> Result<Expr, CompileError> {
-        let lhs = self.parse_sum()?;
+        let lhs = self.parse_bitor()?;
         let op = match self.peek() {
             TokenKind::EqEq => BinOp::Eq,
             TokenKind::BangEq => BinOp::Ne,
@@ -519,9 +519,56 @@ impl<'a> Parser<'a> {
             _ => return Ok(lhs),
         };
         self.advance();
-        let rhs = self.parse_sum()?;
+        let rhs = self.parse_bitor()?;
         let span = Span { start: lhs.span.start, end: rhs.span.end };
         Ok(Expr { kind: ExprKind::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span })
+    }
+
+    // Bitwise + shift precedence (loosest → tightest, between comparison and
+    // additive, matching Rust): `|` < `^` < `&` < `<< >>` < `+ -`.
+    fn parse_bitor(&mut self) -> Result<Expr, CompileError> {
+        let mut lhs = self.parse_bitxor()?;
+        while matches!(self.peek(), TokenKind::Pipe) {
+            self.advance();
+            let rhs = self.parse_bitxor()?;
+            let span = Span { start: lhs.span.start, end: rhs.span.end };
+            lhs = Expr { kind: ExprKind::BinOp { op: BinOp::BitOr, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span };
+        }
+        Ok(lhs)
+    }
+
+    fn parse_bitxor(&mut self) -> Result<Expr, CompileError> {
+        let mut lhs = self.parse_bitand()?;
+        while matches!(self.peek(), TokenKind::Caret) {
+            self.advance();
+            let rhs = self.parse_bitand()?;
+            let span = Span { start: lhs.span.start, end: rhs.span.end };
+            lhs = Expr { kind: ExprKind::BinOp { op: BinOp::BitXor, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span };
+        }
+        Ok(lhs)
+    }
+
+    fn parse_bitand(&mut self) -> Result<Expr, CompileError> {
+        let mut lhs = self.parse_shift()?;
+        while matches!(self.peek(), TokenKind::Amp) {
+            self.advance();
+            let rhs = self.parse_shift()?;
+            let span = Span { start: lhs.span.start, end: rhs.span.end };
+            lhs = Expr { kind: ExprKind::BinOp { op: BinOp::BitAnd, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span };
+        }
+        Ok(lhs)
+    }
+
+    fn parse_shift(&mut self) -> Result<Expr, CompileError> {
+        let mut lhs = self.parse_sum()?;
+        while matches!(self.peek(), TokenKind::Shl | TokenKind::Shr) {
+            let op = if matches!(self.peek(), TokenKind::Shl) { BinOp::Shl } else { BinOp::Shr };
+            self.advance();
+            let rhs = self.parse_sum()?;
+            let span = Span { start: lhs.span.start, end: rhs.span.end };
+            lhs = Expr { kind: ExprKind::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }, span };
+        }
+        Ok(lhs)
     }
 
     fn parse_sum(&mut self) -> Result<Expr, CompileError> {
@@ -1134,6 +1181,31 @@ mod tests {
             &body.stmts[1],
             Stmt::Expr { expr, .. } if matches!(&expr.kind, ExprKind::If { .. })
         ));
+    }
+
+    #[test]
+    fn parse_bitwise_precedence() {
+        // Shift is LOOSER than additive (Rust): `1 + 2 << 3` → `(1 + 2) << 3`.
+        let m = parse_str("fn f() -> i32 { 1 + 2 << 3 }");
+        let Item::Fn(f) = &m.items[0] else {
+            panic!("expected fn")
+        };
+        let tail = f.body.tail.as_deref().expect("tail expr");
+        let ExprKind::BinOp { op: BinOp::Shl, lhs, .. } = &tail.kind else {
+            panic!("top operator should be Shl")
+        };
+        assert!(matches!(&lhs.kind, ExprKind::BinOp { op: BinOp::Add, .. }));
+
+        // `&` binds tighter than `|`: `1 | 2 & 3` → `1 | (2 & 3)`.
+        let m = parse_str("fn f() -> i32 { 1 | 2 & 3 }");
+        let Item::Fn(f) = &m.items[0] else {
+            panic!("expected fn")
+        };
+        let tail = f.body.tail.as_deref().expect("tail expr");
+        let ExprKind::BinOp { op: BinOp::BitOr, rhs, .. } = &tail.kind else {
+            panic!("top operator should be BitOr")
+        };
+        assert!(matches!(&rhs.kind, ExprKind::BinOp { op: BinOp::BitAnd, .. }));
     }
 
     #[test]
