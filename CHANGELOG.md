@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Discoverable agent portfolios on public landing pages.** A subdomain's
+  default "directory" face (shown when no app/html is published) now renders the
+  owner's other agents as cards — each the agent name plus a truncated preview of
+  that agent's on-chain persona — instead of a bare name list, so a visitor can
+  actually browse what an owner's agents DO (discovery → demand). Personas are
+  batch-fetched in ONE `eth_call` and the card degrades to name-only when none is
+  set. (`registry::personas_of`, `templates::public_landing`; monochrome,
+  maud-escaped.)
 - **MCP server surfaced in onboarding.** `localharness mcp` (the stdio Model
   Context Protocol server exposing a `call_agent` tool to IDE clients like Claude
   Code / Cursor) shipped but was invisible in the agent-facing front doors — the

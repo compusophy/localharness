@@ -571,6 +571,62 @@ pub fn encode_set_persona(token_id: u64, persona: &str) -> Vec<u8> {
     encode_set_metadata_bytes(token_id, keccak_key(PERSONA_LABEL), persona.as_bytes())
 }
 
+/// Read the personas for MANY tokens in ONE JSON-RPC batch POST (vs N
+/// serial `persona_of` round-trips). Returns one entry per input id, in
+/// input order: `Some(persona)` when set, `None` when unset / empty / the
+/// per-call RPC failed (graceful degradation — a single bad slot never
+/// fails the whole batch). Backs the public-landing agent portfolio cards.
+pub async fn personas_of(token_ids: &[u64]) -> Vec<Option<String>> {
+    if token_ids.is_empty() || REGISTRY_ADDRESS == zero_address() {
+        return token_ids.iter().map(|_| None).collect();
+    }
+    let key = keccak_key(PERSONA_LABEL);
+    let calls: Vec<(&str, String)> = token_ids
+        .iter()
+        .map(|&id| (REGISTRY_ADDRESS, call_metadata(id, key)))
+        .collect();
+    match eth_call_batch(&calls).await {
+        Ok(results) => results
+            .iter()
+            .map(|r| {
+                r.as_ref()
+                    .ok()
+                    .and_then(|hex| decode_metadata_bytes(hex))
+                    .and_then(|b| String::from_utf8(b).ok())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            })
+            .collect(),
+        // Whole-batch failure (network) → degrade every card to no-preview.
+        Err(_) => token_ids.iter().map(|_| None).collect(),
+    }
+}
+
+/// `metadata(tokenId, key)` calldata (hex) for batching.
+fn call_metadata(token_id: u64, key: [u8; 32]) -> String {
+    let mut data = Vec::with_capacity(4 + 64);
+    data.extend_from_slice(&selector("metadata(uint256,bytes32)"));
+    data.extend_from_slice(&u256_be(token_id as u128));
+    data.extend_from_slice(&key);
+    format!("0x{}", bytes_to_hex(&data))
+}
+
+/// Decode an ABI `bytes` return (offset + length + payload). `None` when
+/// short / empty / truncated. Shared by the batched metadata reads.
+fn decode_metadata_bytes(result_hex: &str) -> Option<Vec<u8>> {
+    let bytes = hex_to_bytes(result_hex).ok()?;
+    if bytes.len() < 64 {
+        return None;
+    }
+    let mut len_buf = [0u8; 8];
+    len_buf.copy_from_slice(&bytes[56..64]);
+    let len = u64::from_be_bytes(len_buf) as usize;
+    if len == 0 {
+        return None;
+    }
+    bytes.get(64..64 + len).map(|s| s.to_vec())
+}
+
 const CAPABILITY_LABEL: &[u8] = b"localharness.capability";
 
 /// Roadmap Phase 0c — the capability-descriptor seam (economy foundation).

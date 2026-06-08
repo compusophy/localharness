@@ -1122,6 +1122,12 @@ async fn paint_public_landing(host: &tenant::Host, name: &str, owner_overlay: bo
         siblings.retain(|t| t.name != name);
     }
 
+    // Fetch every sibling's on-chain persona in ONE batched RPC POST (not N
+    // serial round-trips). Aligned 1:1 with `siblings`; a missing/failed slot
+    // is `None` and the card degrades to name-only. Cheap when empty.
+    let sibling_ids: Vec<u64> = siblings.iter().map(|t| t.token_id).collect();
+    let personas = registry::personas_of(&sibling_ids).await;
+
     let html = templates::public_landing(
         name,
         owner.as_deref(),
@@ -1129,6 +1135,7 @@ async fn paint_public_landing(host: &tenant::Host, name: &str, owner_overlay: bo
         main_name.as_deref(),
         is_main,
         &siblings,
+        &personas,
         owner_overlay,
     )
     .into_string();

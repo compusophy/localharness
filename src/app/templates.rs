@@ -214,6 +214,19 @@ fn short_addr(addr: &str) -> String {
     format!("0x{}…{}", &stripped[..4], &stripped[stripped.len() - 4..])
 }
 
+/// One-line preview of an agent's persona for a portfolio card. Collapses
+/// internal whitespace/newlines to single spaces and truncates to ~`max`
+/// chars on a char boundary, appending an ellipsis when cut. maud escapes
+/// the returned text, so arbitrary on-chain persona content is XSS-safe.
+fn truncate_preview(text: &str, max: usize) -> String {
+    let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        return flat;
+    }
+    let cut: String = flat.chars().take(max).collect();
+    format!("{}…", cut.trim_end())
+}
+
 /// Embed-mode card — the minimal identity surface a subdomain exposes
 /// when loaded as `name.localharness.xyz/?embed=1`. Fields lazy-load:
 /// initial paint passes None for everything except `name`; the second
@@ -1641,7 +1654,10 @@ pub(crate) fn display_surface() -> Markup {
 ///
 /// `is_main` badges the hero when this subdomain IS the owner's primary
 /// identity. `owner_overlay` paints the `[studio]` escape (owner preview
-/// only). `siblings` should already exclude this subdomain.
+/// only). `siblings` should already exclude this subdomain. `personas` is
+/// aligned 1:1 with `siblings` (a short on-chain persona preview per agent,
+/// `None` when unset) — each sibling renders as a discoverable portfolio
+/// card: name + a truncated persona blurb, degrading to name-only.
 pub(crate) fn public_landing(
     name: &str,
     owner: Option<&str>,
@@ -1649,6 +1665,7 @@ pub(crate) fn public_landing(
     main_name: Option<&str>,
     is_main: bool,
     siblings: &[crate::app::registry::OwnedToken],
+    personas: &[Option<String>],
     owner_overlay: bool,
 ) -> Markup {
     html! {
@@ -1691,12 +1708,15 @@ pub(crate) fn public_landing(
                 section.public-directory {
                     h2.public-section-title { "more agents by this owner" }
                     ul.agents-rows {
-                        @for s in siblings {
+                        @for (i, s) in siblings.iter().enumerate() {
+                            @let preview = personas.get(i).and_then(|p| p.as_deref());
                             li.agent-row {
-                                a.agent-row-line
+                                a.agent-card
                                     href=(format!("https://{}.localharness.xyz/", s.name)) {
                                     span.agent-name { (s.name) }
-                                    span.agent-row-spacer {}
+                                    @if let Some(p) = preview {
+                                        span.agent-preview { (truncate_preview(p, 80)) }
+                                    }
                                 }
                             }
                         }
