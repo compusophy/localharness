@@ -165,6 +165,11 @@ function addrWord(address: string): Uint8Array {
 /** Big-endian 32-byte word for a uint (bigint, fits 256 bits). */
 function uintWord(v: bigint): Uint8Array {
   if (v < 0n) throw new Error('uint underflow');
+  // Reject anything that does not fit a uint256 rather than SILENTLY
+  // truncating the high bits — a truncated word would desync the
+  // reconstructed digest from the value, and an oversized value can never
+  // settle on-chain anyway. Fail fast and unambiguously.
+  if (v >> 256n !== 0n) throw new Error('uint overflow (exceeds 256 bits)');
   const w = new Uint8Array(32);
   let x = v;
   for (let i = 31; i >= 0 && x > 0n; i--) {
@@ -187,12 +192,28 @@ function bytes32Word(hex: string): Uint8Array {
  * recover from that digest with no `\x19Ethereum Signed Message` prefix — the
  * exact inverse of `src/wallet.rs::recover_address` (used by `sign_x402`).
  * `sigHex` is 65 bytes r||s||v, v ∈ {27,28} or {0,1}.
+ *
+ * Mirrors `X402Facet._isValidSignature`'s EOA branch EXACTLY, INCLUDING the
+ * EIP-2 low-s requirement: noble's `recoverPublicKey` happily recovers the
+ * SAME address from a high-s malleated copy of a signature, but the on-chain
+ * `settle` REJECTS high-s (`uint256(vs) > HALF_N -> BadSignature`). Without
+ * this check the proxy would "verify" a malleated sig, then waste a settle tx
+ * that reverts and report a confusing "settlement failed" 402. Reject high-s
+ * here so a malleated authorization fails fast with a precise signature error.
  */
+// secp256k1n / 2 — the EIP-2 low-s bound (matches X402Facet.HALF_N).
+const SECP256K1_HALF_N =
+  0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0n;
+
 function recoverFromDigest(digest: Uint8Array, sigHex: string): string {
   const sig = hexToBytes(stripHex(sigHex));
   if (sig.length !== 65) throw new Error('signature must be 65 bytes');
   const r = sig.slice(0, 32);
   const s = sig.slice(32, 64);
+  const sVal = BigInt('0x' + bytesToHex(s));
+  if (sVal > SECP256K1_HALF_N) {
+    throw new Error('signature has high-s (EIP-2 malleable) — not accepted');
+  }
   let v = sig[64];
   if (v >= 27) v -= 27;
   if (v !== 0 && v !== 1) throw new Error('invalid recovery id');
