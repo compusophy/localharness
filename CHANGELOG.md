@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Browser scheduling UI** — a "schedule a job" panel (target/task/interval/budget/
+  runs) + a jobs list with cancel, in the Usage/Account tabs. Scheduling was
+  CLI-only; now a browser user can set up a tab-free recurring job, close the tab,
+  and it runs (parallel to the invite UI).
+
+### Security
+
+- **`gemini.ts` credit-proxy hardening** (the main `$LH`-metered path). Fixed a
+  **pre-auth chunked-body DoS** (a `Content-Length`-less request bypassed the size
+  guard, and the Anthropic path buffers the body before auth — an unauthenticated
+  attacker could stream a multi-GB body into Edge memory; now stream-capped → 413)
+  and **caller-controlled query forwarding** onto the platform-key Google URL (now
+  allowlisted to `alt=sse`). Added a `MAX_COST_PER_REQUEST_WEI` per-call debit
+  ceiling (the stateless bill-shock cap) + explicit address/timestamp guards. The
+  gate/debit/auth/routing were audited + confirmed safe (fail-closed).
+
 ### Changed
 
 - **Experience + quality pass (fresh-eyes audits across the conversion path).**
