@@ -902,19 +902,15 @@ const CALL_USAGE: &str =
     "usage: localharness call [--as <yourname>] [--fresh] [--model <id>] <target> <message>";
 
 fn parse_call_args(rest: &[String]) -> Result<ParsedCall, String> {
-    let mut caller = None;
+    // `--as` is pulled from ANY position (via take_as_flag — consistent with
+    // schedule/invite/send), so `call <target> "msg" --as me` works, not just
+    // the leading form. --model/--fresh stay leading flags before the target.
+    let (caller, rest) = take_as_flag(rest)?;
     let mut fresh = false;
     let mut model = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
-            "--as" => match rest.get(i + 1) {
-                Some(n) => {
-                    caller = Some(n.clone());
-                    i += 2;
-                }
-                None => return Err(CALL_USAGE.to_string()),
-            },
             "--model" => match rest.get(i + 1) {
                 Some(m) => {
                     model = Some(m.clone());
@@ -1398,18 +1394,13 @@ const MCP_CALL_USAGE: &str =
     "usage: localharness mcp-call [--as <yourname>] [--pay <amount>] <target> <message>";
 
 fn parse_mcp_call_args(rest: &[String]) -> Result<ParsedMcpCall, String> {
-    let mut caller = None;
+    // `--as` from ANY position (take_as_flag — consistent with the other
+    // commands); --pay stays a leading flag before the target.
+    let (caller, rest) = take_as_flag(rest)?;
     let mut pay = MCP_CALL_DEFAULT_PAY.to_string();
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
-            "--as" => match rest.get(i + 1) {
-                Some(n) => {
-                    caller = Some(n.clone());
-                    i += 2;
-                }
-                None => return Err(MCP_CALL_USAGE.to_string()),
-            },
             "--pay" => match rest.get(i + 1) {
                 Some(p) => {
                     pay = p.clone();
