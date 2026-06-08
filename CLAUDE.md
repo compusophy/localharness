@@ -325,7 +325,9 @@ working copy (owner previews unpublished edits) else published. `PublicFace` enu
 - **`Html(src)`** — `index.html` (local) or `public_html_of` (key
   `keccak256("localharness.public.html")`); → `render_html_in_root_canvas`.
 - **`Directory`** — `paint_public_landing`: profile (name, owner MAIN name when
-  differs, TBA wallet, sibling agents via `registry::list_owned_tokens`).
+  differs, TBA wallet, sibling agents via `registry::list_owned_tokens` — each
+  rendered as a discoverable card with a truncated on-chain-persona preview,
+  `registry::personas_of` batch-fetching all personas in one `eth_call`).
 
 UNSET infers "cartridge if one exists, else directory". `owner_overlay` gates
 the `[studio]` link. `Host::Other` uses `try_paint_app` (local `app.rl` only).
