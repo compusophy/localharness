@@ -26,27 +26,26 @@
 //! an address, already public in the roster); only the SDP payload is sealed.
 //! A peer that announced no pubkey is skipped (we can't seal to it).
 //!
-//! ## Roster trust — READ BEFORE RELYING ON THIS FOR ANYTHING SENSITIVE
-//! `SignalingFacet.announce` is currently OPEN: `msg.sender` is the sponsored
-//! MASTER, not the ephemeral, and the contract stores attacker-controllable
-//! `(ephemeral, pubkey)` with NO signature binding the ephemeral key to a real
-//! linked device or team member. The signaling TOPIC is public
-//! (`keccak256("localharness.devices" || owner_addr)`, derivable from any
-//! address). So today **any party can announce a pubkey under your topic and
-//! receive your SDP offer sealed to THEM** — then complete the WebRTC handshake
-//! and pull the whole shared folder over the union protocol (which has no
-//! peer-auth of its own). The data-channel DTLS only stops a passive network
-//! observer, NOT a peer who legitimately joined.
+//! ## Roster trust
+//! `SignalingFacet.announce` is now OWNER-SIGNED for the DEVICES topic: the
+//! announcement carries `sig` over `keccak256(topic || ephemeral || pubkey)`,
+//! and the facet recovers it vs `owner` AND requires
+//! `topic == keccak256("localharness.devices" || owner)` (recomputed on-chain).
+//! Since device-linking shares ONE seed across the user's devices, only the seed
+//! holder can produce a valid signature — so an attacker who derives the public
+//! topic but lacks the seed **cannot** put a self-chosen pubkey on the roster,
+//! which closes the MITM where the attacker received the SDP offer sealed to
+//! THEIR key and pulled the shared folder. The roster returned by `peersOf` for
+//! the devices topic is therefore TRUSTWORTHY (every entry was signed by the
+//! owner). High-s is rejected (EIP-2). (Team topics are not live-used; their
+//! announce currently requires only self-consistency `sig == ephemeral` —
+//! full member-gating vs `TeamFacet.isMember` is a follow-up.)
 //!
-//! Closing this properly needs an ON-CHAIN change (the announce must carry a
-//! signature over `topic||ephemeral||pubkey` by an enrolled device/MAIN key,
-//! verified against `DeviceRegistry`/`TeamFacet`) — out of scope for the app
-//! layer alone. What this module DOES enforce client-side as defence-in-depth:
+//! Defence-in-depth still enforced client-side (cheap, harmless now that the
+//! roster is gated):
 //!   - **self-consistency**: `address(announced_pubkey) == announced_ephemeral`
 //!     — reject a roster entry whose pubkey doesn't hash to the address it was
-//!     announced under (a forged/mismatched seal target). Doesn't stop an
-//!     attacker who announces a fresh self-consistent keypair, but kills the
-//!     trivial "announce a victim's address with MY pubkey" confusion.
+//!     announced under (a forged/mismatched seal target).
 //!   - **freshness**: skip entries older than [`PRESENCE_TTL_SECS`]. Stale
 //!     ephemerals from prior sessions are offline; connecting to them wastes a
 //!     ~60s poll AND a sponsored on-chain offer tx each (real funds), and
@@ -155,23 +154,34 @@ pub(crate) async fn sync_my_devices() -> Result<usize, String> {
         .await
         .ok_or("no identity")?;
     let fee_payer = super::sponsor::signer().map_err(|_| "no sponsor")?;
+    let owner_addr = addr20(&owner).ok_or("bad owner address")?;
     let topic = registry::devices_topic(&owner);
-    sync_topic(&master, &fee_payer, &topic).await
+    sync_topic(&master, &fee_payer, &owner_addr, &topic).await
 }
 
-/// Announce under `topic`, discover peers, connect + sync each.
+/// Announce under `topic`, discover peers, connect + sync each. `owner_addr` is
+/// the seed holder whose key authorizes the (owner-gated) `announce` — for the
+/// devices topic this MUST be the address `topic` was derived from, and
+/// `master` MUST be its key (true on the owner's device: same seed wallet).
 async fn sync_topic(
     master: &k256::ecdsa::SigningKey,
     fee_payer: &k256::ecdsa::SigningKey,
+    owner_addr: &[u8; 20],
     topic: &[u8; 32],
 ) -> Result<usize, String> {
     // Ephemeral signaling identity (its address is our inbox key).
     let eph = crate::wallet::generate();
     let eph_addr = addr20(&eph.address_hex()).ok_or("bad ephemeral address")?;
     let me = hex20(&eph_addr);
+    // Owner-signed announce: the facet recovers the sig over
+    // keccak256(topic||ephemeral||pubkey) vs `owner_addr` and requires
+    // `topic == devices_topic(owner_addr)`, so the roster is gated to the seed
+    // holder. We sign with `master` (= the owner's seed key on this device).
     registry::announce_sponsored(
         master,
         fee_payer,
+        master, // owner_key = the seed key (== master on the owner's device)
+        owner_addr,
         topic,
         &eph_addr,
         &crate::wallet::pubkey_compressed(&eph.signer), // seal target for our peers

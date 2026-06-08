@@ -80,18 +80,75 @@ contract SignalingFacet {
     // Peers can't always address each other by identity (an owner's devices
     // share one master address). So each peer generates an EPHEMERAL signaling
     // key per session and announces it under a TOPIC — a SignalingFacet room:
-    // `keccak256("devices", owner)` for your own devices, or `keccak256("team",
-    // teamId)` for an agent team (membership/consent lives in `TeamFacet`).
-    // Peers read the topic to discover each other, then `postSignal` to the
-    // ephemeral address. v1 leaves `announce` open (the topic IS the address):
-    // a fake entry just fails to connect, and the SDP blobs are encrypted to
-    // real ephemeral keys — member-gating the roster is a later hardening.
+    // `keccak256("localharness.devices", owner)` for your own devices, or
+    // `keccak256("localharness.team", teamId)` for an agent team
+    // (membership/consent lives in `TeamFacet`). Peers read the topic to
+    // discover each other, then `postSignal` to the ephemeral address.
+    //
+    // AUTH (devices topic — the live "sync my devices" path). An UNGATED
+    // `announce` is a MITM hole: the devices topic is PUBLIC (anyone can derive
+    // `keccak256("localharness.devices" || owner)` from an address), so an
+    // attacker could announce a self-chosen pubkey under the victim's roster,
+    // receive the victim's SDP offer sealed to the ATTACKER's key, complete the
+    // WebRTC handshake, and pull the whole shared folder over the (peer-unauthed)
+    // union protocol. We close it by binding the announcement to the OWNER's
+    // seed key: since device-linking shares ONE seed across the user's devices,
+    // only the seed holder can produce a valid signature, so only a real device
+    // can join the roster. `announce` requires:
+    //   (a) topic == keccak256(abi.encodePacked("localharness.devices", owner))
+    //       — recomputed on-chain to match `registry::devices_topic`; and
+    //   (b) recover(keccak256(abi.encodePacked(topic, ephemeral, pubkey)), sig)
+    //       == owner  (the owner's key signed THIS announcement).
+    // Reject high-s (EIP-2), mirroring X402Facet._isValidSignature.
+    //
+    // TEAM topics: the analogous gate (sig by a team MEMBER, verified against
+    // `TeamFacet.isMember(teamId, signer)`) is OUT OF THIS SCOPE — teams aren't
+    // live-used yet. For now a team-topic announce (any topic that is NOT the
+    // caller-supplied owner's devices topic) MUST still be self-consistent:
+    // `recover(...) == ephemeral` (the ephemeral key signed its own
+    // announcement). That kills the trivial "announce a victim's address with my
+    // pubkey" substitution; full member-gating is a follow-up when teams ship.
 
     event Announced(bytes32 indexed topic, address indexed ephemeral);
 
-    /// Announce (or refresh) `ephemeral` + its `pubkey` under `topic`.
-    /// Idempotent upsert keyed by `ephemeral`.
-    function announce(bytes32 topic, address ephemeral, bytes calldata pubkey) external {
+    error BadTopic();
+    error Unauthorized();
+
+    // secp256k1n / 2 — reject high-s signatures (EIP-2 malleability).
+    uint256 private constant HALF_N =
+        0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0;
+
+    /// Announce (or refresh) `ephemeral` + its `pubkey` under `topic`, signed by
+    /// `owner` (the seed holder). Idempotent upsert keyed by `ephemeral`.
+    ///
+    /// Auth (see the block comment above):
+    ///   - DEVICES topic: `topic` MUST equal
+    ///     `keccak256(abi.encodePacked("localharness.devices", owner))` and `sig`
+    ///     MUST recover to `owner` over
+    ///     `keccak256(abi.encodePacked(topic, ephemeral, pubkey))`.
+    ///   - any OTHER topic (team / future): `sig` must recover to `ephemeral`
+    ///     (self-consistency floor; full member-gating is a follow-up).
+    function announce(
+        bytes32 topic,
+        address owner,
+        address ephemeral,
+        bytes calldata pubkey,
+        bytes calldata sig
+    ) external {
+        bytes32 digest = keccak256(abi.encodePacked(topic, ephemeral, pubkey));
+        bytes32 devicesTopic =
+            keccak256(abi.encodePacked("localharness.devices", owner));
+        if (topic == devicesTopic) {
+            // Owner-gated: only the seed holder can populate the devices roster.
+            if (owner == address(0)) revert Unauthorized();
+            if (_recover(digest, sig) != owner) revert Unauthorized();
+        } else {
+            // Non-devices (team / future) topic: self-consistency floor — the
+            // ephemeral key must have signed its own announcement. Full
+            // member-gating (vs TeamFacet.isMember) is out of scope here.
+            if (_recover(digest, sig) != ephemeral) revert Unauthorized();
+        }
+
         LibSignalingStorage.Presence[] storage r = LibSignalingStorage.load().roster[topic];
         for (uint256 i = 0; i < r.length; i++) {
             if (r[i].ephemeral == ephemeral) {
@@ -109,6 +166,26 @@ contract SignalingFacet {
             })
         );
         emit Announced(topic, ephemeral);
+    }
+
+    /// ecrecover an `r‖s‖v` (65-byte) signature over `digest`; rejects high-s
+    /// (EIP-2) and bad `v`. Returns `address(0)` on any malformed/failed
+    /// recovery (callers compare against the expected signer). Mirrors
+    /// `X402Facet._isValidSignature` (EOA path).
+    function _recover(bytes32 digest, bytes calldata sig) internal pure returns (address) {
+        if (sig.length != 65) return address(0);
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+        assembly {
+            r := calldataload(sig.offset)
+            s := calldataload(add(sig.offset, 32))
+            v := byte(0, calldataload(add(sig.offset, 64)))
+        }
+        if (uint256(s) > HALF_N) return address(0); // reject high-s
+        if (v < 27) v += 27;
+        if (v != 27 && v != 28) return address(0);
+        return ecrecover(digest, v, r, s);
     }
 
     /// The ephemeral signaling keys announced under `topic`. Readers filter

@@ -3896,28 +3896,66 @@ fn push_abi_bytes(d: &mut Vec<u8>, bytes: &[u8]) {
     d.extend(std::iter::repeat(0u8).take(pad));
 }
 
-fn encode_announce(topic: &[u8; 32], ephemeral: &[u8; 20], pubkey: &[u8]) -> Vec<u8> {
-    let mut d = selector("announce(bytes32,address,bytes)").to_vec();
+/// The 32-byte digest the OWNER signs to authorize an `announce`:
+/// `keccak256(topic || ephemeral || pubkey)` — `abi.encodePacked(bytes32,
+/// address, bytes)` on-chain. MUST match `SignalingFacet.announce`'s digest
+/// byte-for-byte (topic[32] ‖ ephemeral_addr[20] ‖ raw pubkey).
+pub fn announce_digest(topic: &[u8; 32], ephemeral: &[u8; 20], pubkey: &[u8]) -> [u8; 32] {
+    let mut pre = Vec::with_capacity(32 + 20 + pubkey.len());
+    pre.extend_from_slice(topic);
+    pre.extend_from_slice(ephemeral);
+    pre.extend_from_slice(pubkey);
+    keccak32(&pre)
+}
+
+fn encode_announce(
+    topic: &[u8; 32],
+    owner: &[u8; 20],
+    ephemeral: &[u8; 20],
+    pubkey: &[u8],
+    sig: &[u8; 65],
+) -> Vec<u8> {
+    // announce(bytes32 topic, address owner, address ephemeral, bytes pubkey,
+    //          bytes sig). Head: topic, owner, ephemeral, off(pubkey), off(sig)
+    // = 5 words. Two trailing dynamic `bytes` (pubkey then sig).
+    let mut d = selector("announce(bytes32,address,address,bytes,bytes)").to_vec();
     d.extend_from_slice(topic);
+    d.extend_from_slice(&address_word(owner));
     d.extend_from_slice(&address_word(ephemeral));
-    d.extend_from_slice(&u256_be(0x60)); // offset to `pubkey` (3 head words in)
+    // 5 head words = 0xa0 bytes before the first dynamic payload.
+    d.extend_from_slice(&u256_be(0xa0)); // offset to `pubkey`
+    // pubkey tail = len word + padded data; sig follows it.
+    let pubkey_tail = 32 + ((pubkey.len() + 31) / 32) * 32;
+    d.extend_from_slice(&u256_be((0xa0 + pubkey_tail) as u128)); // offset to `sig`
     push_abi_bytes(&mut d, pubkey);
+    push_abi_bytes(&mut d, sig);
     d
 }
 
-/// Announce `ephemeral` + `pubkey` under `topic` (sponsored; caller = master).
+/// Announce `ephemeral` + `pubkey` under `topic` (sponsored; tx caller =
+/// `sender`/master). `owner` is the seed-holder whose key authorizes the
+/// announcement; the digest `keccak256(topic||ephemeral||pubkey)` is signed
+/// with `owner_key` (the same seed key — `sender` and `owner_key` are the same
+/// wallet on the owner's device). The facet recovers the sig vs `owner` and
+/// requires `topic == devices_topic(owner)`, so an attacker without the seed
+/// can't populate the roster.
+#[allow(clippy::too_many_arguments)]
 pub async fn announce_sponsored(
     sender: &SigningKey,
     fee_payer: &SigningKey,
+    owner_key: &SigningKey,
+    owner: &[u8; 20],
     topic: &[u8; 32],
     ephemeral: &[u8; 20],
     pubkey: &[u8],
     fee_token: &str,
 ) -> Result<String, String> {
+    let digest = announce_digest(topic, ephemeral, pubkey);
+    let sig = crate::wallet::sign_hash(owner_key, &digest); // low-s r‖s‖v, v∈{27,28}
     let call = crate::tempo_tx::TempoCall {
         to: parse_eth_address(REGISTRY_ADDRESS)?,
         value_wei: 0,
-        input: encode_announce(topic, ephemeral, pubkey),
+        input: encode_announce(topic, owner, ephemeral, pubkey, &sig),
     };
     let gas = 1_200_000u128 + (pubkey.len() as u128) * 9_000;
     submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, gas).await
@@ -4576,6 +4614,89 @@ mod tests {
         assert_eq!(cd.len(), 4 + 32);
         assert_eq!(&cd[..4], &selector("reclaimInvite(bytes32)"));
         assert_eq!(&cd[4..36], &code_hash[..]);
+    }
+
+    #[test]
+    fn devices_topic_preimage_is_label_then_raw_address() {
+        // MUST equal keccak256("localharness.devices" || owner_20bytes), the
+        // SAME preimage SignalingFacet recomputes on-chain as
+        // keccak256(abi.encodePacked("localharness.devices", owner)). Any drift
+        // here silently breaks the owner-gated announce (topic != devicesTopic).
+        let owner = "0x1111111111111111111111111111111111111111";
+        let topic = devices_topic(owner);
+        let mut pre = b"localharness.devices".to_vec();
+        pre.extend_from_slice(&parse_eth_address(owner).unwrap());
+        assert_eq!(topic, keccak_key(&pre));
+        // The label is 20 ASCII bytes; the address is appended raw (20 bytes),
+        // so the preimage is exactly 40 bytes.
+        assert_eq!(pre.len(), 40);
+    }
+
+    #[test]
+    fn announce_digest_is_packed_topic_ephemeral_pubkey() {
+        // The owner signs keccak256(topic || ephemeral || pubkey) — matching
+        // SignalingFacet's keccak256(abi.encodePacked(bytes32, address, bytes)).
+        // topic[32] ‖ ephemeral_addr[20] ‖ raw pubkey, NO padding.
+        let topic = [0xABu8; 32];
+        let eph = [0x22u8; 20];
+        let pubkey = vec![0x02u8; 33];
+        let mut pre = Vec::new();
+        pre.extend_from_slice(&topic);
+        pre.extend_from_slice(&eph);
+        pre.extend_from_slice(&pubkey);
+        assert_eq!(pre.len(), 32 + 20 + 33);
+        assert_eq!(announce_digest(&topic, &eph, &pubkey), keccak32(&pre));
+    }
+
+    #[test]
+    fn announce_digest_signature_recovers_to_owner() {
+        // Full round-trip: the sig the driver attaches MUST recover to the
+        // OWNER over the announce digest — exactly what the facet's `_recover`
+        // checks (`recover(...) == owner`). Proves the driver's signing path
+        // and the facet's recovery path agree.
+        let w = crate::wallet::generate();
+        let owner = crate::wallet::address(&w.signer); // [u8;20]
+        let topic = [0x11u8; 32];
+        let eph = [0x99u8; 20];
+        let pubkey = vec![0x03u8; 33];
+        let digest = announce_digest(&topic, &eph, &pubkey);
+        let sig = crate::wallet::sign_hash(&w.signer, &digest); // low-s r‖s‖v
+        let recovered = crate::wallet::recover_address(&sig, &digest)
+            .expect("sig recovers");
+        assert_eq!(recovered, owner, "announce sig recovers to the owner");
+    }
+
+    #[test]
+    fn encode_announce_5arg_layout() {
+        // New owner-signed signature; pin the selector + the two-trailing-bytes
+        // ABI layout so it matches announce(bytes32,address,address,bytes,bytes).
+        let topic = [0x11u8; 32];
+        let owner = [0x22u8; 20];
+        let eph = [0x33u8; 20];
+        let pubkey = vec![0x02u8; 33]; // compressed-pubkey-shaped (1 padded word past len)
+        let sig = [0x44u8; 65];
+        let cd = encode_announce(&topic, &owner, &eph, &pubkey, &sig);
+
+        assert_eq!(
+            &cd[..4],
+            &selector("announce(bytes32,address,address,bytes,bytes)")
+        );
+        // Head: topic, owner, ephemeral, off(pubkey)=0xa0, off(sig)=0xa0+96=0x100.
+        assert_eq!(&cd[4..36], &topic[..]);
+        assert_eq!(&cd[36..68], &address_word(&owner)[..]);
+        assert_eq!(&cd[68..100], &address_word(&eph)[..]);
+        assert_eq!(&cd[100..132], &u256_be(0xa0)[..]); // pubkey offset
+        assert_eq!(&cd[132..164], &u256_be(0x100)[..]); // sig offset (0xa0 + 0x60)
+        // pubkey tail at 4 + 0xa0 = 0xa4: len word (33) then 64 padded bytes.
+        let pk_off = 4 + 0xa0;
+        assert_eq!(&cd[pk_off..pk_off + 32], &u256_be(33)[..]);
+        assert_eq!(&cd[pk_off + 32..pk_off + 32 + 33], &pubkey[..]);
+        // sig tail at 4 + 0x100 = 0x104: len word (65) then 96 padded bytes.
+        let sig_off = 4 + 0x100;
+        assert_eq!(&cd[sig_off..sig_off + 32], &u256_be(65)[..]);
+        assert_eq!(&cd[sig_off + 32..sig_off + 32 + 65], &sig[..]);
+        // Total: 4 sel + 5 head words + (32+64) pubkey + (32+96) sig.
+        assert_eq!(cd.len(), 4 + 5 * 32 + (32 + 64) + (32 + 96));
     }
 
     #[test]
