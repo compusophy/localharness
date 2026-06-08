@@ -871,16 +871,29 @@ export default async function handler(req: Request): Promise<Response> {
   const results: JobResult[] = [];
   let scanned = 0;
   try {
-    // Read up to MAX_JOBS_PER_TICK due jobs (one page is enough for the MVP —
-    // overflow spills to the next tick). startAfter=0 scans from the start of
-    // the enumerable index.
-    const { ids } = await jobsDue(0n, BigInt(MAX_JOBS_PER_TICK));
-    scanned = ids.length;
+    // Collect up to MAX_JOBS_PER_TICK due jobs by FOLLOWING the cursor across
+    // pages. jobsDue(startAfter, limit) scans the INDEX WINDOW
+    // [startAfter, startAfter+limit) of the enumerable jobIds and returns the
+    // due ones in it + nextCursor (the index after the window). A single page
+    // from 0 STARVES newer due jobs once terminal (Exhausted/Cancelled) jobs
+    // pile up at low indices — so page forward until we have enough due jobs or
+    // the index is fully scanned. Bounded (max 64 pages) so a huge index can't spin.
+    const ids: bigint[] = [];
+    const SCAN_PAGE = 64n;
+    let cursor = 0n;
+    for (let page = 0; page < 64 && ids.length < MAX_JOBS_PER_TICK; page++) {
+      const { ids: pageIds, nextCursor } = await jobsDue(cursor, SCAN_PAGE);
+      for (const id of pageIds) ids.push(id);
+      if (nextCursor <= cursor) break; // cursor didn't advance => fully scanned
+      cursor = nextCursor;
+    }
+    const due = ids.slice(0, MAX_JOBS_PER_TICK);
+    scanned = due.length;
 
     // Process SEQUENTIALLY so recordRun txs from the single scheduler account
     // don't collide on the nonce (they share one EOA). Each run's accounting is
     // awaited before the next starts — bounded + ordered.
-    for (const id of ids) {
+    for (const id of due) {
       try {
         results.push(await processJob(id));
       } catch (e) {
