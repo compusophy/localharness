@@ -692,6 +692,7 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
                 div.admin-tab-panel.panel-usage {
                     @if has_wallet { (admin_credits_section()) }
                     @if has_wallet { (admin_invite_section()) }
+                    @if has_wallet { (admin_schedule_section()) }
                     (admin_usage_section())
                 }
                 div.admin-footer {
@@ -751,6 +752,9 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                     // Owner-funded invites: escrow your own $LH behind a
                     // shareable `?invite=` link (InviteFacet createInvite).
                     (admin_invite_section())
+                    // Recurring jobs: escrow $LH to run an agent on a fixed
+                    // interval with no tab open (ScheduleFacet scheduleJob).
+                    (admin_schedule_section())
                     (admin_security_collapsed())
                 }
                 div.admin-tab-panel.panel-usage {
@@ -1052,6 +1056,59 @@ pub(crate) fn invite_result_panel(code: &str, link: &str) -> Markup {
             }
             div.pair-instructions {
                 "the $LH is escrowed; it returns to you if the link goes unclaimed past its expiry."
+            }
+        }
+    }
+}
+
+/// "Schedule a job" panel — the browser surface for ScheduleFacet (mirrors
+/// `admin_invite_section`). Inputs for target subdomain, task prompt, cadence
+/// (e.g. `5m`/`1h`, 60s min), `$LH` budget to escrow, and an optional run
+/// cap (default 100). `events::schedule_job_pressed` resolves the target
+/// name→id, escrows the budget behind `scheduleJob` in ONE sponsored tx, and
+/// swaps `#schedule-result` for a success panel. `#schedule-jobs` is filled by
+/// `events::refresh_jobs_list` (the caller's `jobsOf`) on admin open + after
+/// every schedule/cancel. No explanatory-validation text — bad/empty input is
+/// a silent no-op.
+pub(crate) fn admin_schedule_section() -> Markup {
+    html! {
+        div #schedule-section .admin-section {
+            div.admin-section-title { "schedule a job" }
+            div.redeem-row {
+                input #schedule-target .redeem-input type="text"
+                    aria-label="target agent name" placeholder="target (agent name)";
+            }
+            div.redeem-row {
+                input #schedule-task .redeem-input type="text"
+                    aria-label="task prompt" placeholder="task";
+            }
+            div.redeem-row {
+                input #schedule-interval .redeem-input type="text"
+                    aria-label="interval" placeholder="every (e.g. 5m, 1h)";
+                input #schedule-budget .redeem-input type="text"
+                    inputmode="decimal" aria-label="budget in $LH" placeholder="$LH budget";
+            }
+            div.redeem-row {
+                input #schedule-runs .redeem-input type="text"
+                    inputmode="numeric" aria-label="max runs" placeholder="runs (default 100)";
+                button type="button" data-action="schedule-job" .ghost { "schedule" }
+            }
+            div #schedule-result .admin-msg-slot {}
+            div #schedule-jobs {}
+        }
+    }
+}
+
+/// The freshly-scheduled job — shown after `scheduleJob` mines. Reassures the
+/// owner the job is durable: it fires on its cadence with NO browser tab open
+/// (the on-chain ScheduleFacet + the cron worker). `id` is escaped by maud.
+pub(crate) fn schedule_result_panel(job_id: u64) -> Markup {
+    html! {
+        div.invite-result-card {
+            div.pair-instructions { "scheduled — job #" (job_id) }
+            div.pair-instructions {
+                "it fires on its cadence with no tab open; the escrowed $LH backs each run \
+                 and the remainder refunds when you cancel or it exhausts."
             }
         }
     }
