@@ -256,6 +256,8 @@ web-sys = { version = "0.3", features = [
 
 [dev-dependencies]
 tokio = { version = "1.42", features = ["macros", "rt-multi-thread", "test-util"] }
+serde_json = "1.0"
+async-trait = "0.1"
 
 # Live-only Tempo Moderato harness. Depends on the `wallet` feature
 # (k256 + sha3 + registry/tempo_tx/wallet modules) and an `EVM_PRIVATE_KEY`

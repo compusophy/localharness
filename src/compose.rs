@@ -7,7 +7,7 @@
 //! the compositor is iterating it — a re-entrant mutation that double-borrows
 //! the live `RefCell` (single-threaded wasm can't deadlock, but it *can* panic
 //! the whole tab). The fix is structural: during a tick a child can only queue
-//! ops into a separate [`Pending`] buffer; the table applies them AFTER every
+//! ops into a separate [`Pending`](crate::compose::Pending) buffer; the table applies them AFTER every
 //! module has ticked. The iteration never sees a mid-flight mutation.
 //!
 //! `H` is the opaque per-module runtime handle (a wasm instance + its memory in

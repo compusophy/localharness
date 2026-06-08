@@ -231,7 +231,7 @@ fn fs_paths_from_args(tool: &str, args: &serde_json::Value) -> Vec<String> {
 }
 
 /// Builds policies that deny file-tool calls outside the given
-/// workspaces. Covers every tool in [`FS_TOOLS`] and fails **closed**:
+/// workspaces. Covers every tool in `FS_TOOLS` and fails **closed**:
 /// an fs tool call whose paths can't be resolved, or that touches any
 /// path outside every workspace, is denied. `rename_file` is checked on
 /// both `from` and `to`.

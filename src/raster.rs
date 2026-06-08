@@ -2,9 +2,9 @@
 //! geometry foundation for `host::compose` (roadmap Phase 0a, `design/host-
 //! compose.md`).
 //!
-//! A [`Viewport`] offsets and clips a cartridge's draw calls into a sub-
+//! A [`Viewport`](crate::raster::Viewport) offsets and clips a cartridge's draw calls into a sub-
 //! rectangle of the shared RGBA framebuffer. The single-cartridge path uses
-//! [`Viewport::full`] — an identity transform that reproduces the pre-refactor
+//! [`Viewport::full`](crate::raster::Viewport::full) — an identity transform that reproduces the pre-refactor
 //! behavior byte-for-byte. Because these functions operate on a plain `&mut
 //! [u8]` (not a web-sys canvas), they are unit-tested natively here — closing
 //! the gap the design flagged, where the wasm-only display closures can't be

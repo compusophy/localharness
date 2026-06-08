@@ -36,9 +36,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **rustlite: `for i in a..b { … }` loops.** Desugared (no codegen change) to a
   `loop` with the increment at the TOP and `v` pre-decremented, so `continue` stays
   correct; bounds evaluated once. Range token `..` added. Render-verified at runtime.
+- **First integration test** (`tests/tool_hook_policy.rs`, 5 tests) — exercises the
+  tool + hook + policy pipeline TOGETHER through the public API (the layer the
+  backend loop actually runs): policy precedence (specific-deny > wildcard-allow)
+  gating real `ToolRunner` dispatch, deny-by-default allowlists, ask-user verdicts,
+  first-deny-wins hook ordering, and post-hooks observing both allow and deny
+  outcomes. The repo's first `tests/` suite; prior coverage was per-layer units.
 
 ### Fixed
 
+- **docs.rs: 4 broken intra-doc links resolved** (`raster` `Viewport` /
+  `Viewport::full`, `compose` `Pending`, `policy` `FS_TOOLS`) — the module-level
+  `//!` docs used bare paths that didn't resolve; now fully-qualified
+  (`crate::raster::Viewport`) or de-linked for the private `FS_TOOLS`. `cargo doc
+  --no-deps` is warning-free.
 - **Credit proxy: the `$LH` meter debit is now authoritative (closes burst
   over-serving).** The proxy gated a request with a cheap `creditOf` read then
   fired the `meter()` debit awaiting only SUBMISSION — so a flurry of concurrent
