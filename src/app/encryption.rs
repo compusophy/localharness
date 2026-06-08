@@ -143,13 +143,17 @@ fn load_or_create_key_bytes() -> Result<[u8; 32], String> {
     }
 
     // First use on this origin — generate a fresh key and persist it.
+    // `get_random_values_with_u8_array` fills the buffer in place via a
+    // copy-back, so we never hold a `Uint8Array::view` (a JS view aliasing
+    // wasm linear memory) over a `&[u8]` while CSPRNG writes through it —
+    // that pattern is UB under Rust's aliasing model and a future optimizer
+    // could read a stale all-zero buffer. For a key (and the GCM IV below)
+    // a zeroed value would be catastrophic, so fill safely.
     let crypto = window.crypto().map_err(|_| "no crypto")?;
-    let bytes = [0u8; 32];
-    let view = unsafe { js_sys::Uint8Array::view(&bytes) };
+    let mut bytes = [0u8; 32];
     crypto
-        .get_random_values_with_array_buffer_view(&view)
+        .get_random_values_with_u8_array(&mut bytes)
         .map_err(|_| "getRandomValues failed")?;
-    drop(view);
     let _ = storage.set_item(STORAGE_KEY, &hex32(&bytes));
     Ok(bytes)
 }
@@ -184,15 +188,21 @@ async fn encrypt(key: &web_sys::CryptoKey, plaintext: &[u8]) -> Result<Vec<u8>, 
     let crypto = window.crypto().map_err(|_| "no crypto")?;
     let subtle = crypto.subtle();
 
-    let iv_bytes = [0u8; IV_LEN];
-    let iv_view = unsafe { js_sys::Uint8Array::view(&iv_bytes) };
+    // Fresh random 96-bit GCM nonce per encryption — reuse with the same
+    // key would break confidentiality + integrity. Fill in place via the
+    // copy-back API (no `Uint8Array::view` aliasing a `&[u8]`, which is UB
+    // and could be optimized into a stale zero IV), then hand WebCrypto a
+    // SEPARATE owned copy so the value prepended to the output is exactly
+    // the value used to encrypt.
+    let mut iv_bytes = [0u8; IV_LEN];
     crypto
-        .get_random_values_with_array_buffer_view(&iv_view)
+        .get_random_values_with_u8_array(&mut iv_bytes)
         .map_err(|_| "getRandomValues failed")?;
+    let iv_js = js_sys::Uint8Array::from(&iv_bytes[..]);
 
     let algo = js_sys::Object::new();
     let _ = js_sys::Reflect::set(&algo, &JsValue::from_str("name"), &JsValue::from_str("AES-GCM"));
-    let _ = js_sys::Reflect::set(&algo, &JsValue::from_str("iv"), &iv_view);
+    let _ = js_sys::Reflect::set(&algo, &JsValue::from_str("iv"), &iv_js);
 
     let data = plaintext.to_vec();
     let promise = subtle
