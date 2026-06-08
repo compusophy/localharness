@@ -143,10 +143,16 @@ pub(crate) const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) fn terminal_input() -> Markup {
     html! {
         div.terminal-body {
-            div #status .terminal-status {}
+            // `dom::set_status` writes transient dispatcher messages here
+            // (errors, payment notices). role=status is an implicit polite
+            // live region, so updates are announced without stealing focus.
+            div #status .terminal-status role="status" aria-live="polite" {}
             div.terminal-row {
-                span.terminal-prompt { ">" }
-                textarea #prompt rows="1" {}
+                // Decorative prompt glyph — hidden from the a11y tree so it
+                // isn't announced as stray content before the input.
+                span.terminal-prompt aria-hidden="true" { ">" }
+                // No visible label, so give the textarea an accessible name.
+                textarea #prompt rows="1" aria-label="message the agent" {}
                 (send_button())
             }
         }
@@ -157,7 +163,7 @@ pub(crate) fn terminal_input() -> Markup {
 /// while a turn is streaming so the same slot becomes the kill switch.
 pub(crate) fn send_button() -> Markup {
     html! {
-        button #terminal-send .terminal-send data-action="send" title="send" { "▶" }
+        button #terminal-send .terminal-send data-action="send" title="send" aria-label="send" { "▶" }
     }
 }
 
@@ -166,7 +172,7 @@ pub(crate) fn send_button() -> Markup {
 /// running turn.
 pub(crate) fn stop_button() -> Markup {
     html! {
-        button #terminal-stop .terminal-send.terminal-stop data-action="stop-turn" title="stop" { "■" }
+        button #terminal-stop .terminal-send.terminal-stop data-action="stop-turn" title="stop" aria-label="stop generating" { "■" }
     }
 }
 
@@ -202,7 +208,10 @@ pub(crate) fn verify_pill(state: &VerifyState) -> Markup {
         ),
     };
     html! {
-        span #verify-pill class=(class) title=(title) { (label) }
+        // Background verification swaps this pill in place as ownership
+        // resolves; role=status announces the result. `aria-label` carries the
+        // fuller description (otherwise only on hover via `title`).
+        span #verify-pill class=(class) title=(title) role="status" aria-label=(title) { (label) }
     }
 }
 
@@ -378,7 +387,14 @@ pub(crate) fn chrome(host: &Host) -> Markup {
                 section.view-panel {
                     div #view-content .view-content {}
                 }
-                div #transcript .transcript {}
+                // Live region: streamed assistant turns are appended/swapped
+                // into here as the model replies, so screen readers must be
+                // told to announce mutations. `role=log` + `aria-live=polite`
+                // queue new content without interrupting; `aria-atomic=false`
+                // announces only the added nodes, not the whole transcript each
+                // chunk. Purely semantic — no visual change.
+                div #transcript .transcript role="log" aria-live="polite" aria-atomic="false"
+                    aria-label="agent conversation" {}
                 section.terminal-panel {
                     (terminal_input())
                 }
@@ -597,7 +613,7 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
                         data-action="show-admin-tab" data-arg="feedback"
                         .admin-tab-button { "feedback" }
                     span.admin-tabs-spacer {}
-                    button type="button" data-action="header-admin-close" .modal-close { "×" }
+                    button type="button" data-action="header-admin-close" .modal-close aria-label="close admin" { "×" }
                 }
                 div.admin-tab-panel.panel-feedback {
                     (admin_feedback_section())
@@ -647,7 +663,7 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                         data-action="show-admin-tab" data-arg="feedback"
                         .admin-tab-button { "feedback" }
                     span.admin-tabs-spacer {}
-                    button type="button" data-action="header-admin-close" .modal-close { "×" }
+                    button type="button" data-action="header-admin-close" .modal-close aria-label="close admin" { "×" }
                 }
                 div.admin-tab-panel.panel-feedback {
                     (admin_feedback_section())
@@ -1591,10 +1607,13 @@ pub(crate) fn opfs_list(cwd: &[String], entries: &[DirEntry]) -> Markup {
                                     data-arg=(entry.name)
                                     title=(format!("edit {}", entry.name)) { "edit" }
                             }
+                            // Icon-only (`×`): give it an accessible name so a
+                            // screen reader announces more than "button".
                             button.file-delete
                                 type="button"
                                 data-action="opfs-delete"
                                 data-arg=(entry.name)
+                                aria-label=(format!("delete {}", entry.name))
                                 title=(format!("delete {}", entry.name)) { "×" }
                         }
                     }

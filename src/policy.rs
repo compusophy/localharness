@@ -486,4 +486,212 @@ mod tests {
         let policies = ws_policies(cwd);
         assert!(!evaluate(&policies, &call("delete_file")).allow);
     }
+
+    // -------------------------------------------------------------------------
+    // Sandbox-escape coverage. These exercise `is_path_in_workspace` /
+    // `secure_normalize_path` directly (pure-path logic, no policy plumbing)
+    // so each escape vector is asserted in isolation, plus a couple driven
+    // through the full `evaluate` gate. Filesystem cases (sibling prefix,
+    // symlink) build a real temp tree but stay fast + self-cleaning.
+    // -------------------------------------------------------------------------
+
+    fn unique_tmp(label: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("lh_pol_{label}_{}", uuid::Uuid::new_v4()));
+        p
+    }
+
+    /// The CLASSIC prefix-matching bug: workspace `/foo/proj`, target
+    /// `/foo/proj-evil/secret`. A naive `target.starts_with(workspace)`
+    /// string match would WRONGLY admit the sibling. The component-wise
+    /// comparison must reject it. Covered for: the file existing, a ghost
+    /// file under an existing sibling parent, and a ghost path whose parent
+    /// is also missing (so `secure_normalize_path` falls back to the raw
+    /// absolute path — the prefix trap is most tempting there).
+    #[test]
+    fn sibling_with_shared_prefix_is_outside() {
+        let ws = unique_tmp("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        // Sibling sharing the workspace's full path as a string prefix.
+        let sibling = PathBuf::from(format!("{}-evil", ws.display()));
+        std::fs::create_dir_all(&sibling).unwrap();
+        let secret = sibling.join("secret.txt");
+        std::fs::write(&secret, b"top secret").unwrap();
+
+        assert!(
+            !is_path_in_workspace(&secret, &ws),
+            "existing sibling `<ws>-evil/secret.txt` must be OUTSIDE (prefix-match trap)"
+        );
+        assert!(
+            !is_path_in_workspace(sibling.join("ghost.txt"), &ws),
+            "ghost file under existing sibling parent must be OUTSIDE"
+        );
+        assert!(
+            !is_path_in_workspace(
+                PathBuf::from(format!("{}-evil/no/such/dir/ghost.txt", ws.display())),
+                &ws
+            ),
+            "ghost file whose parent is also missing must be OUTSIDE (raw-absolute fallback)"
+        );
+        // Sanity: a real child IS inside.
+        assert!(
+            is_path_in_workspace(ws.join("child.txt"), &ws),
+            "a genuine child must be inside"
+        );
+
+        std::fs::remove_dir_all(&ws).ok();
+        std::fs::remove_dir_all(&sibling).ok();
+    }
+
+    /// `..` segments that ESCAPE the workspace are rejected even when the
+    /// target doesn't exist (the parent is canonicalized, collapsing `..`).
+    /// `..` segments that STAY inside are allowed — a legit operation.
+    #[test]
+    fn dotdot_escapes_denied_but_inward_dotdot_allowed() {
+        let ws = unique_tmp("dd");
+        std::fs::create_dir_all(ws.join("sub")).unwrap();
+        std::fs::write(ws.join("inside.txt"), b"x").unwrap();
+
+        // ws/sub/../inside.txt collapses to ws/inside.txt → inside.
+        let inward = ws.join("sub").join("..").join("inside.txt");
+        assert!(
+            is_path_in_workspace(&inward, &ws),
+            "`..` that stays within the workspace must be allowed"
+        );
+
+        // ws/../<escape> climbs out → outside.
+        let outward = ws.join("..").join("lh_pol_escape_target");
+        assert!(
+            !is_path_in_workspace(&outward, &ws),
+            "`..` that climbs out of the workspace must be denied"
+        );
+
+        // A long climb to a real system path is denied.
+        assert!(
+            !is_path_in_workspace(
+                format!("{}/../../../../../../etc/passwd", ws.display()),
+                &ws
+            ),
+            "deep `..` traversal to /etc/passwd must be denied"
+        );
+
+        std::fs::remove_dir_all(&ws).ok();
+    }
+
+    /// Windows-style backslash traversal (`<ws>\..\..\Windows\System32`) must
+    /// be rejected. `dunce::canonicalize` + component comparison treat `\` as
+    /// a separator on Windows; on Unix the whole thing is one weird filename
+    /// under the (existing) workspace, which is *inside* — so only assert the
+    /// escape on Windows, where the separator is real.
+    #[test]
+    #[cfg(windows)]
+    fn windows_backslash_traversal_denied() {
+        let ws = unique_tmp("bs");
+        std::fs::create_dir_all(&ws).unwrap();
+        let bs = "\\";
+        let trav = format!(
+            "{ws}{bs}..{bs}..{bs}Windows{bs}System32{bs}config{bs}SAM",
+            ws = ws.display()
+        );
+        assert!(
+            !is_path_in_workspace(&trav, &ws),
+            "backslash `..` traversal must escape-deny on Windows"
+        );
+        std::fs::remove_dir_all(&ws).ok();
+    }
+
+    /// On a case-insensitive filesystem (Windows / macOS) a path that differs
+    /// only in case from the workspace must still be recognized as INSIDE, so
+    /// an attacker can't dodge containment by changing case. On a
+    /// case-sensitive FS it's legitimately a different (nonexistent) path; we
+    /// only assert the case-insensitive platforms.
+    #[test]
+    #[cfg(any(windows, target_os = "macos"))]
+    fn case_variant_still_inside_on_case_insensitive_fs() {
+        let ws = unique_tmp("case");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("inside.txt"), b"x").unwrap();
+        let upper =
+            PathBuf::from(ws.display().to_string().to_uppercase()).join("inside.txt");
+        assert!(
+            is_path_in_workspace(&upper, &ws),
+            "case-variant path must still resolve as inside the workspace"
+        );
+        std::fs::remove_dir_all(&ws).ok();
+    }
+
+    /// An empty path string must NOT be treated as inside any workspace —
+    /// `secure_normalize_path("")` joins it onto cwd (yielding cwd), so the
+    /// only risk is mis-treating it as the workspace root. Assert it's denied
+    /// for a workspace that is NOT the cwd.
+    #[test]
+    fn empty_path_is_not_inside_arbitrary_workspace() {
+        let ws = unique_tmp("empty");
+        std::fs::create_dir_all(&ws).unwrap();
+        assert!(
+            !is_path_in_workspace("", &ws),
+            "empty path must not be admitted into an arbitrary workspace"
+        );
+        std::fs::remove_dir_all(&ws).ok();
+    }
+
+    /// `rename_file` must check BOTH operands. The existing
+    /// `workspace_checks_both_rename_operands` covers an escaping `to`; this
+    /// covers an escaping `from` (exfiltrate-by-moving-out is symmetric — a
+    /// rename FROM outside INTO the workspace would let the agent pull an
+    /// arbitrary file in). Both directions must be denied.
+    #[test]
+    fn rename_denies_when_from_escapes() {
+        let cwd = std::env::current_dir().unwrap();
+        let policies = ws_policies(cwd);
+        let escape_src = call_args(
+            "rename_file",
+            serde_json::json!({ "from": "/etc/passwd", "to": "stolen.txt" }),
+        );
+        assert!(
+            !evaluate(&policies, &escape_src).allow,
+            "rename whose `from` is outside the workspace must be denied"
+        );
+    }
+
+    /// A symlink that lives INSIDE the workspace but points OUTSIDE must not
+    /// become an escape hatch: accessing a file *through* it has to be denied.
+    /// `secure_normalize_path` canonicalizes (resolving the symlink) BEFORE the
+    /// containment check, so the resolved real path lands outside and is
+    /// rejected. Symlink creation needs privileges on Windows (Developer Mode)
+    /// — when it fails we skip rather than fail, so the test is a real proof on
+    /// Unix/CI and a no-op elsewhere.
+    #[test]
+    fn symlink_inside_pointing_outside_is_denied() {
+        let ws = unique_tmp("symws");
+        let outside = unique_tmp("symout");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), b"TOPSECRET").unwrap();
+
+        let link = ws.join("escape_link");
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_dir(&outside, &link).is_ok();
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&outside, &link).is_ok();
+        #[cfg(not(any(windows, unix)))]
+        let made = false;
+
+        if made {
+            let via_link = link.join("secret.txt");
+            assert!(
+                !is_path_in_workspace(&via_link, &ws),
+                "reading an outside file through an in-workspace symlink must be denied \
+                 (canonicalize resolves the link before the containment check)"
+            );
+        } else {
+            eprintln!(
+                "skipping symlink escape assertion: could not create a symlink \
+                 (needs privileges / Developer Mode on Windows)"
+            );
+        }
+
+        std::fs::remove_dir_all(&ws).ok();
+        std::fs::remove_dir_all(&outside).ok();
+    }
 }

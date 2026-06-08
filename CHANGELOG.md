@@ -15,6 +15,14 @@ per-op randomness + ECIES ephemerals, chainId+nonce+validity in Tempo tx, EIP-71
 domain separation) and prior hardening holds (postMessage origin allowlist,
 tx-target allowlist, markdown/error-string escaping). Real findings fixed:
 
+- **Filesystem sandbox (`workspace_only`) audited + regression-tested.** A
+  security deep-dive confirmed the agent file-tool sandbox holds against path
+  traversal (incl. deep `../../etc/passwd` and Windows `..\`), absolute-path
+  escape, sibling shared-prefix (`<ws>` vs `<ws>-evil`), case-bypass on
+  case-insensitive filesystems, symlink-out, and `rename_file` exfiltration (both
+  `from` AND `to` checked; missing args fail closed) — **no exploitable bug**.
+  Added +7 regression tests so a future refactor can't silently reintroduce a
+  `starts_with` sibling bug or a check-before-canonicalize symlink hole.
 - **ABI decoders hardened against hostile/garbage RPC responses (`registry.rs`).**
   Nine dynamic decoders read offset/length words from untrusted `eth_call`
   responses then did unchecked arithmetic before slicing. In the release/wasm
@@ -145,6 +153,15 @@ tx-target allowlist, markdown/error-string escaping). Real findings fixed:
 
 ### Fixed
 
+- **Accessibility: agent streams are now a screen-reader live region (+ labels).**
+  The `#transcript` container — where every streamed assistant turn, text chunk,
+  and tool block lands — gained `role="log"` + `aria-live="polite"` +
+  `aria-atomic="false"`, so screen-reader users hear new responses *as they
+  stream* (previously silent). Also: accessible names on the icon-only
+  send/stop/close/delete buttons + the unlabeled prompt textarea, a
+  `role="status"` live region on the status line, and `aria-hidden` on decorative
+  glyphs. Semantic-only — zero visual change. Surfaced by the test-user fleet
+  (ada-qa).
 - **CLI: reject leading/trailing-hyphen names (dead-on-arrival subdomains).**
   `name_is_valid` allowed `-foo` / `foo-` (not valid DNS labels), so `create`
   (and now `publish`) would mint them. Now rejected per RFC 1035. Surfaced by the
