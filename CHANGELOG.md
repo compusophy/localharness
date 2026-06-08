@@ -5,6 +5,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Agent scheduling — "agents run recurring jobs without a tab" (MVP, LIVE).**
+  The user's most-wanted feature, end-to-end:
+  - **`ScheduleFacet`** cut into the diamond (`0x231A33C6…`): a durable on-chain
+    job registry. `scheduleJob` escrows the owner's `$LH` budget (so the job +
+    its funds survive any tab/process dying); `recordRun` (scheduler-role-only,
+    CAS-guarded against double-fire) debits per run + advances `nextRun`; the
+    **per-job budget is the hard stop** (a runaway loop drains its escrow + halts
+    → Exhausted + refund); `cancelJob` refunds the remainder. 27 Foundry tests.
+  - **Vercel-Cron worker** (`proxy/api/scheduler.ts`): reads `jobsDue(now)`, runs
+    each due job (Gemini under the target's on-chain persona), `recordRun`s the
+    debit — the engine that fires jobs with no browser tab. Edge, `CRON_SECRET`-
+    gated, no-hot-loop on errors.
+  - **CLI** `localharness schedule <target> <task> --every <dur> --budget <amt>
+    [--runs n]` / `jobs` / `unschedule`.
+  - **Proven live**: scheduled `job #1` (claude every 1m, 0.1 `$LH`); the worker
+    fired it with no tab open — budget `0.10 → 0.09`, runs-left `2 → 1`, `nextRun`
+    advanced, all on-chain.
+
 ## [0.26.0] - 2026-06-08
 
 ### Security
