@@ -70,6 +70,17 @@ localharness unschedule [--as me] <jobId>  # cancel a job; refunds its remaining
 
 `schedule` makes `<target>` (any registered agent) run a `<task>` prompt on a fixed cadence WITHOUT a browser tab — the durable job + its `$LH` budget live ON-CHAIN in `ScheduleFacet`, so they survive any tab or process dying. `--every <dur>` is a duration like `5m`/`1h`/`30s` (60s minimum, enforced on-chain); `--budget <amt>` ESCROWS that much `$LH` from your wallet into the diamond to back the job (approve + `scheduleJob` in one sponsored tx); `--runs <n>` caps the total fires (default 100). The **per-job budget is the hard stop**: each fire debits ~0.01 `$LH`, and when the budget or run count is spent the facet marks the job `Exhausted` and refunds the unspent remainder; `unschedule` cancels early and refunds the full remainder. The engine that fires due jobs is the credit proxy's `/scheduler` Vercel-Cron worker (below). Each run executes under the target's on-chain persona, the SAME headless model path as `call`. (Recursion / agent-to-agent ping-pong of scheduled runs is NOT built yet — the worker only logs each reply; the budget is the autonomous leash regardless.)
 
+### Invites — fund a refundable onboarding link for a newcomer
+
+```sh
+localharness invite create [--as me] --amount <X> [--ttl <dur>]  # escrow X $LH behind a fresh bearer code + print the ?invite= link
+localharness invite accept [--as me] <code>     # accept an invite (the escrowed $LH pays out to you)
+localharness invite reclaim [--as me] <code>    # refund an EXPIRED, unclaimed invite to its funder
+localharness invite list [--as me]              # your total $LH locked in pending invites
+```
+
+`invite create` spends your OWN `$LH` to back a shareable onboarding link: it ESCROWS `--amount` `$LH` from your wallet into the diamond behind a fresh bearer code (`InviteFacet.createInvite`, approve + create in one sponsored tx), then prints `localharness.xyz/?invite=<code>` to share. `--ttl <dur>` is the accept window (`1h`..`90d`, default a short TTL; bearer codes are meant for one trusted recipient). Whoever presents the code FIRST gets the escrowed `$LH` (`invite accept` → `acceptInvite`) — a bearer secret, so guard it. If nobody accepts before expiry, `invite reclaim` refunds the funder 100% (`reclaimInvite` is permissionless to CALL but always pays the FUNDER, never the caller). Invites are SUPPLY-NEUTRAL — they redistribute existing `$LH`, never mint — which is what makes them safe to make permissionless (contrast `redeem`, which mints owner-loaded bootstrap codes). Bearer-only MVP; bound vouchers (an optional named recipient) are Phase 2.
+
 ## Agent tool surface
 
 Each agent has access to:
@@ -118,6 +129,12 @@ All cut into the diamond — call them on the diamond address above.
 ```
 # RedeemFacet
 redeem(string code)                  # mint mapped $LH to caller (one-time code)
+# InviteFacet (user-funded, refundable onboarding codes — escrows existing $LH, never mints)
+createInvite(bytes32 codeHash,uint256 amount,uint64 ttlSeconds)  # holder escrows their own $LH behind a bearer code (TTL 1h..90d)
+acceptInvite(string code) → uint256  # bearer: pay the escrowed $LH to whoever presents the code first
+reclaimInvite(bytes32 codeHash)      # permissionless to call; always refunds the FUNDER after expiry
+getInvite(bytes32 codeHash) → (address funder,uint128 amount,uint64 expiry,uint8 status)
+escrowedOf(address funder) → uint256 # funder's total $LH locked in open invites
 # SessionFacet
 openSession()                        # spend sessionPrice() $LH; expiry = now + sessionDuration()
 sessionExpiryOf(address) → uint256   # session expiry the proxy gates on

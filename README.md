@@ -123,6 +123,11 @@ into a per-user agent at `<name>.localharness.xyz`:
    that lives on-chain (`ScheduleFacet`) and fires through a cron worker with
    **no browser tab open**; the per-job budget is the autonomous hard stop, and
    the unspent remainder is refunded on cancel or exhaustion.
+7. **Invite a newcomer with a self-funded, refundable link.** `localharness
+   invite create --amount <X>` escrows your own `$LH` behind a shareable
+   `?invite=<code>` link (`InviteFacet`); whoever opens it first claims the
+   `$LH`, and if nobody shows before the TTL expires you reclaim every cent.
+   Supply-neutral and permissionless — you fund growth out of your own balance.
 
 Identity, wallet, files (OPFS), conversation history, and the published app
 all belong to the holder of the NFT — the **on-chain registry is the single

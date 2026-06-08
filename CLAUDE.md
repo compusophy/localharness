@@ -104,7 +104,14 @@ src/                  library crate
 │                     fires with no browser tab; approve+scheduleJob in one
 │                     sponsored tx) / `jobs` (list the caller's scheduled jobs) /
 │                     `unschedule <jobId>` (cancel a job; refunds remaining
-│                     budget) / `threads`+`forget` (manage saved conversations) /
+│                     budget) / `invite create [--as me] --amount <X> [--ttl
+│                     <dur>]` (escrow your own `$LH` behind a fresh bearer code +
+│                     print the `?invite=<code>` link to share — refundable on
+│                     expiry; InviteFacet `createInvite`) / `invite accept
+│                     <code>` (claim an invite; the escrowed `$LH` pays out to
+│                     you) / `invite reclaim <code>` (refund an EXPIRED invite to
+│                     its funder) / `invite list` (your `$LH` locked in pending
+│                     invites) / `threads`+`forget` (manage saved conversations) /
 │                     `whoami [--json]` (profile) / `version`.
 │                     Harness-agnostic, server-free entry — what web/skill.md
 │                     tells external agents to run. Smoke: scripts/smoke-cli.sh.
@@ -156,7 +163,9 @@ scripts/      release.{ps1,sh}; build-web.{ps1,sh}; probe-gemini.ps1;
 examples/tempo_tx_live.rs  live harness vs Moderato; source of truth for tempo_tx
 design/       main-identity.md; agent-writes-rust.md; launch-1.0.md (1.0 spec —
               1.0=mainnet, betas=testnet); beta-plan.md; paymaster.md;
-              invites.md (user-created escrow invite codes — DESIGN, not built);
+              invites.md (user-funded escrow invite codes — SHIPPED: InviteFacet
+              cut + `invite create/accept/reclaim/list` CLI live; bearer MVP,
+              bound vouchers = Phase 2);
               agent-scheduling.md (on-chain ScheduleFacet + Vercel-Cron worker so
               agents run recurring jobs without a tab — SHIPPED: facet cut +
               `/scheduler` worker + CLI live; recursion/ping-pong = Phase 2)
@@ -449,6 +458,21 @@ Currently cut in:
 - **RedeemFacet** — bootstraps $LH: owner loads `addRedeemCodes(bytes32[],
   uint256)`, holder calls `redeem(string code)` (mints via `ISSUER_ROLE`, burns
   code); owner-only `disableRedeemCodes`.
+- **InviteFacet** (`0xc7A69Ae93F67636E2ccEd7008858979cB4c8D298`) — user-funded,
+  refundable-on-expiry onboarding codes (the GROWTH primitive; sibling of
+  RedeemFacet, NOT a replacement). PERMISSIONLESS: any HOLDER calls
+  `createInvite(bytes32 codeHash, uint256 amount, uint64 ttlSeconds)` to ESCROW
+  their OWN `$LH` (`transferFrom` funder→diamond) behind a bearer code
+  (`keccak256(bytes(code))`, same hashing as `redeem`; TTL 1h..90d,
+  `MAX_ESCROWED` per-funder cap). `acceptInvite(string code)` pays the escrow to
+  whoever presents the code first (Open + unexpired); `reclaimInvite(bytes32
+  codeHash)` is permissionless to CALL but ALWAYS refunds the FUNDER 100% once
+  Open + expired (accept/reclaim windows are disjoint → accepted XOR reclaimed).
+  Views `getInvite` / `escrowedOf`. SUPPLY-NEUTRAL (escrows existing `$LH`, no
+  `ISSUER_ROLE`, no mint — so it doesn't reopen the daily-allowance sybil hole),
+  CEI throughout. **Bearer MVP** — bound vouchers (an optional named
+  `recipient`) are Phase 2, NOT built. Cut via `script/AddInviteFacet.s.sol`
+  (no post-cut config — reads the credits token from CreditsFacet storage).
 - **SessionFacet** — coarse time-boxed $LH sessions: `openSession()` pulls
   `sessionPrice()`, sets `expiry = now + sessionDuration()`; proxy reads
   `sessionExpiryOf`. **Currently `sessionDuration=3600, sessionPrice=1e19` (10 $LH/hr).**

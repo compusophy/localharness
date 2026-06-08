@@ -26,6 +26,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Proven live**: scheduled `job #1` (claude every 1m, 0.1 `$LH`); the worker
     fired it with no tab open — budget `0.10 → 0.09`, runs-left `2 → 1`, `nextRun`
     advanced, all on-chain.
+- **Invites — user-funded, refundable onboarding links (bearer MVP, LIVE).**
+  Spend your own `$LH` to invite a newcomer, get it back if they never show:
+  - **`InviteFacet`** cut into the diamond (`0xc7A69Ae9…`): a HOLDER calls
+    `createInvite(bytes32 codeHash, uint256 amount, uint64 ttlSeconds)` to ESCROW
+    their OWN `$LH` behind a shareable bearer code (TTL 1h..90d, `MAX_ESCROWED`
+    per-funder cap). `acceptInvite(string code)` pays the escrow to whoever
+    presents the code first (the newcomer); `reclaimInvite(bytes32 codeHash)` is
+    permissionless to call but ALWAYS refunds the FUNDER 100% once expired and
+    unclaimed. Views `getInvite` / `escrowedOf`. Supply-NEUTRAL (escrows existing
+    `$LH`, never mints — so it doesn't reopen a sybil hole), CEI throughout.
+    Bearer-only MVP; bound vouchers (an optional named `recipient`) are Phase 2.
+    Sibling of `RedeemFacet` (owner-minted bootstrap codes), not a replacement.
+  - **CLI** `localharness invite create [--as me] --amount <X> [--ttl <dur>]`
+    (generates a bearer code + prints the `localharness.xyz/?invite=<code>` link)
+    / `invite accept <code>` / `invite reclaim <code>` / `invite list` (your
+    total `$LH` locked in pending invites).
 
 ## [0.26.0] - 2026-06-08
 
