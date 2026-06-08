@@ -372,10 +372,11 @@ impl GeminiConnection {
             .store(0, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Project the wire history into a flat, text-only sequence of
-    /// `(role, text)` turns suitable for repainting a UI. Tool-call
-    /// activity (FunctionCall / FunctionResponse) is dropped — this is
-    /// the human-readable view, not a fidelity snapshot.
+    /// Project the wire history into a flat sequence of user/assistant
+    /// turns suitable for repainting a UI. Tool-call activity
+    /// (FunctionCall / FunctionResponse) is surfaced as `TranscriptToolCall`s
+    /// (matched by name), so a restored session shows what the agent DID, not
+    /// just what it said.
     pub fn transcript(&self) -> Vec<crate::types::TranscriptEntry> {
         let snap = self.state.history.lock().clone();
         project_history(&snap)
@@ -397,9 +398,21 @@ pub fn decode_transcript_bytes(bytes: &[u8]) -> Result<Vec<crate::types::Transcr
 
 fn project_history(history: &[wire::Content]) -> Vec<crate::types::TranscriptEntry> {
     use crate::types::{TranscriptEntry, TranscriptRole, TranscriptToolCall};
+    use std::collections::{HashMap, VecDeque};
     use wire::{ContentRole, Part};
-    let mut out = Vec::with_capacity(history.len());
-    let mut pending_calls: Vec<TranscriptToolCall> = Vec::new();
+    let mut out: Vec<TranscriptEntry> = Vec::with_capacity(history.len());
+
+    // Gemini lays the wire out as a Model content `[Text?, FunctionCall*]`
+    // IMMEDIATELY followed by a User content `[FunctionResponse*]` (the SDK
+    // sends tool results back as a user turn — see `loop.rs`). So a call's
+    // result lands in the NEXT content, AFTER the assistant entry is already
+    // pushed. We can't drain at push time (the old bug — `result` stayed
+    // None forever). Instead we push the assistant entry with results pending
+    // and remember WHERE each call lives — a per-name FIFO of
+    // `(entry_idx, call_idx)` — so a later FunctionResponse fills the call it
+    // answers. Matching by name is the load-bearing Gemini difference
+    // (FunctionResponse carries no call id; Anthropic matches by id).
+    let mut pending: HashMap<String, VecDeque<(usize, usize)>> = HashMap::new();
 
     for content in history {
         let role = match content.role {
@@ -426,27 +439,44 @@ fn project_history(history: &[wire::Content]) -> Vec<crate::types::TranscriptEnt
                     });
                 }
                 Part::FunctionResponse { function_response } => {
-                    // Match response to a pending call by name
-                    if let Some(call) = pending_calls.iter_mut().find(|c| c.name == function_response.name && c.result.is_none()) {
-                        call.result = Some(function_response.response.clone());
+                    // Fill the earliest unanswered call of this name. The live
+                    // path encodes tool failures as `{"error": "..."}` in the
+                    // wire response (see `loop.rs`); lift that into the typed
+                    // `error` field so replay renders the red error pill, not a
+                    // green result pill — byte-identical to a live error.
+                    if let Some((ei, ci)) = pending
+                        .get_mut(&function_response.name)
+                        .and_then(|q| q.pop_front())
+                    {
+                        if let Some(call) =
+                            out.get_mut(ei).and_then(|e| e.tool_calls.get_mut(ci))
+                        {
+                            let resp = &function_response.response;
+                            match resp.get("error").and_then(|e| e.as_str()) {
+                                Some(msg) => call.error = Some(msg.to_string()),
+                                None => call.result = Some(resp.clone()),
+                            }
+                        }
                     }
                 }
                 _ => {}
             }
         }
 
-        if !calls_this_turn.is_empty() {
-            pending_calls.extend(calls_this_turn.clone());
-        }
-
         if !buf.is_empty() || !calls_this_turn.is_empty() {
-            // Attach any completed tool calls to this entry
-            let attached = if role == TranscriptRole::Assistant {
-                std::mem::take(&mut pending_calls)
-            } else {
-                Vec::new()
-            };
-            out.push(TranscriptEntry { role, text: buf, tool_calls: attached });
+            let entry_idx = out.len();
+            // Index each call so a later FunctionResponse can fill it.
+            for (ci, call) in calls_this_turn.iter().enumerate() {
+                pending
+                    .entry(call.name.clone())
+                    .or_default()
+                    .push_back((entry_idx, ci));
+            }
+            out.push(TranscriptEntry {
+                role,
+                text: buf,
+                tool_calls: calls_this_turn,
+            });
         }
     }
     out
@@ -672,5 +702,96 @@ mod tests {
         let snapshot: Vec<wire::Content> =
             serde_json::from_slice(&gc.history_bytes().unwrap()).unwrap();
         assert!(snapshot.is_empty(), "history_bytes snapshot not empty");
+    }
+
+    /// Transcript projection matches each FunctionResponse back to the
+    /// FunctionCall it answers (Gemini matches by NAME — the response carries
+    /// no call id — and the result lands in the User content that FOLLOWS the
+    /// Model content, so the assistant entry is already pushed when the result
+    /// arrives). REGRESSION: before the fix, `pending_calls` was drained when
+    /// the assistant entry was pushed, so the result was never attached
+    /// (`result` stayed `None`) and a reload lost every tool result.
+    #[test]
+    fn transcript_attaches_results_to_calls_by_name() {
+        use wire::{Content, ContentRole, FunctionCall, FunctionResponse, Part};
+        let history = vec![
+            Content {
+                role: ContentRole::User,
+                parts: vec![Part::Text {
+                    text: "read main.rs".into(),
+                }],
+            },
+            Content {
+                role: ContentRole::Model,
+                parts: vec![
+                    Part::Text {
+                        text: "Reading.".into(),
+                    },
+                    Part::FunctionCall {
+                        function_call: FunctionCall {
+                            name: "view_file".into(),
+                            args: json!({"path": "main.rs"}),
+                        },
+                    },
+                ],
+            },
+            Content {
+                role: ContentRole::User,
+                parts: vec![Part::FunctionResponse {
+                    function_response: FunctionResponse {
+                        name: "view_file".into(),
+                        response: json!({"contents": "fn main() {}"}),
+                    },
+                }],
+            },
+            Content {
+                role: ContentRole::Model,
+                parts: vec![Part::Text { text: "Done.".into() }],
+            },
+        ];
+        let entries = project_history(&history);
+        let asst = entries
+            .iter()
+            .find(|e| !e.tool_calls.is_empty())
+            .expect("assistant entry with a tool call");
+        assert_eq!(asst.tool_calls.len(), 1);
+        assert_eq!(asst.tool_calls[0].name, "view_file");
+        assert_eq!(
+            asst.tool_calls[0].result.as_ref().expect("result attached")["contents"],
+            "fn main() {}"
+        );
+        assert!(asst.tool_calls[0].error.is_none());
+    }
+
+    /// A FunctionResponse encoding the live-path `{"error": "..."}` failure
+    /// convention surfaces as the typed `error` (red pill on replay), not a
+    /// success `result` — byte-identical to a live tool error.
+    #[test]
+    fn transcript_lifts_error_convention_into_error_field() {
+        use wire::{Content, ContentRole, FunctionCall, FunctionResponse, Part};
+        let history = vec![
+            Content {
+                role: ContentRole::Model,
+                parts: vec![Part::FunctionCall {
+                    function_call: FunctionCall {
+                        name: "view_file".into(),
+                        args: json!({"path": "missing"}),
+                    },
+                }],
+            },
+            Content {
+                role: ContentRole::User,
+                parts: vec![Part::FunctionResponse {
+                    function_response: FunctionResponse {
+                        name: "view_file".into(),
+                        response: json!({"error": "no such file"}),
+                    },
+                }],
+            },
+        ];
+        let entries = project_history(&history);
+        let call = &entries[0].tool_calls[0];
+        assert_eq!(call.error.as_deref(), Some("no such file"));
+        assert!(call.result.is_none());
     }
 }

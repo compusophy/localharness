@@ -63,6 +63,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Restored transcripts now show Gemini tool *results*, not just the calls.**
+  The Gemini backend's `project_history` emptied its pending-calls buffer when the
+  assistant `Content` was pushed — before the *following* `FunctionResponse`
+  `Content` arrived — so projecting wire history into a saved transcript dropped
+  every tool result/error. A reloaded conversation showed tool calls with a blank
+  (no result/error) pill. Now matched per-name FIFO across the two wire contents,
+  lifting the live error convention (`{"error": …}` → typed `error`). +4 tests
+  incl. old-format `TranscriptEntry` backward-compat. (Anthropic/local were already
+  correct; the replay path already reuses the live tool-call templates.)
 - **SDK: closed a `ChatResponse` cursor lost-wakeup window.**
   `ChatCursor::poll_next` created its `tokio::Notify` waiter AFTER checking the
   chunk buffer — a producer `notify_waiters()` landing in that gap could be

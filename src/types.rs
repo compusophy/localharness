@@ -863,3 +863,65 @@ pub struct TranscriptToolCall {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
+
+#[cfg(test)]
+mod transcript_tests {
+    use super::*;
+
+    /// BACKWARD COMPAT: a transcript entry persisted by an OLDER build — one
+    /// with NO `tool_calls` field at all — must still deserialize. `tool_calls`
+    /// is `#[serde(default)]`, so an absent field restores as an empty Vec and
+    /// the old entry replays exactly as it did before (text only). This is the
+    /// load-bearing guarantee: existing `.lh_history.json` projections (the UI
+    /// repaint path never decoded the raw history, but a forward-compat reader
+    /// must tolerate both shapes) keep loading.
+    #[test]
+    fn old_format_entry_without_tool_calls_deserializes() {
+        let old = r#"{"role":"assistant","text":"hi there"}"#;
+        let entry: TranscriptEntry = serde_json::from_str(old).expect("old format must deserialize");
+        assert_eq!(entry.role, TranscriptRole::Assistant);
+        assert_eq!(entry.text, "hi there");
+        assert!(entry.tool_calls.is_empty(), "absent tool_calls → empty Vec");
+    }
+
+    /// A NEW entry carrying tool calls (with result + error) round-trips
+    /// losslessly. `tool_calls` is `skip_serializing_if = "Vec::is_empty"`, so
+    /// a text-only entry serializes WITHOUT the field — staying byte-compatible
+    /// with the old shape that older readers expect.
+    #[test]
+    fn new_format_with_tool_calls_round_trips() {
+        let entry = TranscriptEntry {
+            role: TranscriptRole::Assistant,
+            text: "checking your files".into(),
+            tool_calls: vec![
+                TranscriptToolCall {
+                    name: "view_file".into(),
+                    args: serde_json::json!({"path": "main.rs"}),
+                    result: Some(serde_json::json!({"contents": "fn main() {}"})),
+                    error: None,
+                },
+                TranscriptToolCall {
+                    name: "view_file".into(),
+                    args: serde_json::json!({"path": "missing"}),
+                    result: None,
+                    error: Some("no such file".into()),
+                },
+            ],
+        };
+        let bytes = serde_json::to_vec(&entry).unwrap();
+        let back: TranscriptEntry = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(entry, back);
+
+        // Text-only entries omit the field entirely (old-shape compatible).
+        let text_only = TranscriptEntry {
+            role: TranscriptRole::User,
+            text: "hello".into(),
+            tool_calls: Vec::new(),
+        };
+        let json = serde_json::to_string(&text_only).unwrap();
+        assert!(
+            !json.contains("tool_calls"),
+            "empty tool_calls must be omitted, got: {json}"
+        );
+    }
+}

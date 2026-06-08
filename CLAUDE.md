@@ -640,8 +640,11 @@ and Tempo native AA (post-0.10.24) shipped. Next:
   or Claude — on platform credits, no per-user provider key. Remaining: OpenAI /
   local-WebGPU backends + the own coding model — see `design/model-agnostic.md`
   Phases D–F.
-- **Tool-call activity in restored transcripts** — `TranscriptEntry` drops
-  FunctionCall/FunctionResponse on replay today.
+- **Tool-call activity in restored transcripts** — ✅ DONE. `TranscriptEntry`
+  carries `tool_calls` (with results/errors); `history.rs::paint_entries` replays
+  them with the live `tool_call_block`/`tool_call_result` templates. Backends
+  project their wire history into it (`project_history`). Backward-compatible
+  (old text-only saves still load).
 - **At-rest encryption** — wallet-derived sym key over OPFS contents.
 
 ## Filesystem trait
