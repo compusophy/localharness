@@ -2783,12 +2783,14 @@ pub async fn schedule_job_sponsored(
         value_wei: 0,
         input: encode_schedule_job(target_id, task, interval_secs, budget_wei, max_runs),
     };
-    // approve (~46k) + scheduleJob: 3 packed cold job slots + the cold `task`
-    // bytes (~7.6k gas/BYTE, the FeedbackFacet byte-storage cost) + the two
-    // enumerable-index pushes (jobIds + jobsOfOwner) + transferFrom + event.
-    // Like the publish path, scale the budget by the task length; 1.5M base +
-    // 8.5k/byte with headroom, plus ~275k sponsorship the base absorbs.
-    let gas = 1_500_000 + (task.len() as u128) * 8_500;
+    // approve (~46k) + scheduleJob + ~275k sponsorship overhead. MEASURED via
+    // `cast estimate`: scheduleJob alone is ~2.88M for a ~45-byte task (3 packed
+    // cold job slots + the cold `task` bytes ~7.6k/BYTE + the two enumerable-index
+    // pushes jobIds/jobsOfOwner + transferFrom + event). The old 1.5M base
+    // OUT-OF-GASSED at ~1.9M (receipt status=false). 3.5M base + 9k/byte gives
+    // comfortable headroom; the sponsor only pays gas USED, so over-budgeting is
+    // free. (See the CLAUDE.md "cast estimate, never guess" gotcha.)
+    let gas = 3_500_000 + (task.len() as u128) * 9_000;
     submit_tempo_sponsored(sender, fee_payer, vec![approve_call, schedule_call], fee_token, gas).await
 }
 
