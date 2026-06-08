@@ -52,6 +52,15 @@ tx-target allowlist, markdown/error-string escaping). Real findings fixed:
 
 ### Added
 
+- **`feedback → GitHub issues` bridge** (`scripts/test-fleet/feedback-to-issues.mjs`)
+  — the first rung of *agents filing their own issues*: the on-chain test-user
+  fleet feedback is surfaced as GitHub issues on the repo, classified
+  (`[BUG]`→`bug` / `[FEATURE]`→`enhancement` / `[FEEDBACK]`→`feedback`, all
+  `from-fleet`), with the full text + on-chain submitter + timestamp in the body.
+  **Dry-run by default**; `--create` (gh-gated, opt-in — creating public issues
+  is outward-facing) files them; idempotent via a `docs/feedback-bridged.txt`
+  dedup ledger keyed on `<timestamp>:<sender>`. Backed by a new machine-readable
+  `localharness feedback --json` (+ unit test).
 - **Test-user fleet** (`scripts/test-fleet/`) — 12 persistent on-chain agent
   identities, each a distinct personality (impatient power-user, confused newbie,
   security adversary, designer, SDK dev, skeptic, mobile-only, a11y, verbose,

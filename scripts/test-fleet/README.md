@@ -54,7 +54,24 @@ scripts/harvest-feedback.sh        # or:  localharness feedback
 ```
 
 Needs `node` (for JSON parsing) and a built CLI (`cargo build --features
-wallet`, or set `LOCALHARNESS_BIN`). **Cost:** the sponsor's AlphaUSD gas — one mint + one
+wallet`, or set `LOCALHARNESS_BIN`).
+
+## Bridge the feedback to GitHub issues
+
+The first rung of *agents filing their own issues*: surface the on-chain feedback
+as GitHub issues on the repo so it's tracked + actionable.
+
+```sh
+node scripts/test-fleet/feedback-to-issues.mjs           # DRY RUN — prints what it'd file
+node scripts/test-fleet/feedback-to-issues.mjs --create  # actually file them (needs `gh` authed)
+```
+
+It reads `localharness feedback --json`, skips entries already filed (dedup
+ledger `docs/feedback-bridged.txt`, keyed on `<timestamp>:<sender>`), classifies
+each (`[BUG]`→`bug`, `[FEATURE]`→`enhancement`, `[FEEDBACK]`→`feedback`, all
+`from-fleet`), and opens an issue carrying the full text + on-chain submitter +
+timestamp. **Dry-run by default; `--create` is opt-in** — creating public issues
+is outward-facing. Idempotent, so it's safe to wire into a cron/CI later. **Cost:** the sponsor's AlphaUSD gas — one mint + one
 feedback write per *new* persona (reused personas pay only the feedback write).
 Model calls are free in the beta (a `$LH` session opens automatically for any
 identity). The personas are persistent, so re-runs only add fresh feedback.

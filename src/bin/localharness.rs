@@ -33,8 +33,9 @@
 //!   credits [--as <me>]      show your $LH wallet + per-call meter + session
 //!   topup [--as <me>]        claim daily $LH + fund the meter (billing self-test)
 //!   list [--as <me>]         list the subdomains you own (`--json` for machine output)
-//!   feedback [--as <me>] [text]
-//!                            submit on-chain feedback (text), or read the log (no text)
+//!   feedback [--as <me>] [text|--json]
+//!                            submit on-chain feedback (text), or read the log
+//!                            (no text; `--json` = machine-readable array)
 //!   probe [--as <fleet>]     autonomous QA self-checks; report failures on-chain
 //!   triage                   dedup + recurrence-rank the on-chain feedback log
 //!   threads [--as <me>]      list your saved call conversations
@@ -79,7 +80,8 @@ USAGE:
   localharness credits [--as <me>]       show your $LH wallet + per-call meter + session
   localharness topup [--as <me>]         claim daily $LH + fund the per-call meter
                                          (the billing self-test: topup -> call -> credits)
-  localharness feedback [--as <me>] [text]   submit on-chain feedback, or read all
+  localharness feedback [--as <me>] [text|--json]  submit on-chain feedback, or read
+                                         all (no text; --json for machine output)
   localharness probe [--as <fleet>]      run QA self-checks; report failures on-chain
   localharness triage                    dedup + rank the on-chain feedback log
   localharness threads [--as <me>]       list your saved call conversations
@@ -139,7 +141,11 @@ async fn run(args: &[String]) -> i32 {
         Some("feedback") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) if rest.is_empty() => {
                 let _ = caller;
-                feedback_read().await
+                feedback_read(false).await
+            }
+            Ok((caller, rest)) if rest.len() == 1 && rest[0] == "--json" => {
+                let _ = caller;
+                feedback_read(true).await
             }
             Ok((caller, rest)) => feedback_submit(caller.as_deref(), &rest.join(" ")).await,
             Err(e) => {
@@ -1797,11 +1803,17 @@ async fn triage() -> i32 {
     0
 }
 
-/// Read the on-chain feedback log (`localharness feedback`, no text).
-async fn feedback_read() -> i32 {
+/// Read the on-chain feedback log (`localharness feedback`, no text). With
+/// `--json`, emit a machine-readable array instead of the human view — for
+/// tooling like the feedback→GitHub-issues bridge.
+async fn feedback_read(json: bool) -> i32 {
     match registry::list_feedback().await {
         Ok(entries) => {
-            print!("{}", format_feedback(&entries));
+            if json {
+                print!("{}", feedback_json(&entries));
+            } else {
+                print!("{}", format_feedback(&entries));
+            }
             0
         }
         Err(e) => {
@@ -1809,6 +1821,32 @@ async fn feedback_read() -> i32 {
             1
         }
     }
+}
+
+/// Render the feedback log as a JSON array (`feedback --json`), newest first,
+/// matching the human view. Each item: `{ timestamp, sender, text }`, plus
+/// `{ fleet_source, body }` when the entry is a `qa/v1` fleet envelope.
+/// `(timestamp, sender)` is a stable dedup key for tooling — `list_feedback`
+/// is a windowed log scan, so there's no stable on-chain append index to emit.
+fn feedback_json(entries: &[registry::FeedbackEntry]) -> String {
+    let items: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|e| {
+            let mut o = serde_json::json!({
+                "timestamp": e.timestamp,
+                "sender": e.sender,
+                "text": e.text,
+            });
+            if let Some(env) = parse_qa_envelope(&e.text) {
+                o["fleet_source"] = serde_json::json!(env.source);
+                o["body"] = serde_json::json!(env.body);
+            }
+            o
+        })
+        .collect();
+    serde_json::to_string_pretty(&serde_json::Value::Array(items))
+        .unwrap_or_else(|_| "[]".to_string())
+        + "\n"
 }
 
 /// Submit on-chain feedback as the caller's identity (sponsored). This is the
@@ -2767,6 +2805,36 @@ mod tests {
         assert!(parse_qa_envelope("qa/v1 source=x v1.0.0:   ").is_none()); // empty body
         assert!(parse_qa_envelope("qa/v1 no source or colon").is_none());
         assert!(parse_qa_envelope("qa/v1 source=x vNOTVERSION: body").is_none());
+    }
+
+    #[test]
+    fn feedback_json_emits_fields_and_fleet_envelope() {
+        let entries = vec![
+            registry::FeedbackEntry {
+                sender: "0xabc".into(),
+                timestamp: 100,
+                text: "[BUG] something broke".into(),
+            },
+            registry::FeedbackEntry {
+                sender: "0xdef".into(),
+                timestamp: 200,
+                text: "qa/v1 source=qa-probe v0.20.0: a real bug".into(),
+            },
+        ];
+        let v: serde_json::Value = serde_json::from_str(&feedback_json(&entries)).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        // plain entry: dedup-key fields + raw text, no fleet fields
+        assert_eq!(arr[0]["sender"], "0xabc");
+        assert_eq!(arr[0]["timestamp"], 100);
+        assert_eq!(arr[0]["text"], "[BUG] something broke");
+        assert!(arr[0].get("fleet_source").is_none());
+        // qa/v1 envelope: gets fleet_source + decoded body
+        assert_eq!(arr[1]["fleet_source"], "qa-probe");
+        assert!(arr[1]["body"].as_str().unwrap().contains("a real bug"));
+        // empty log → valid empty array
+        let empty: serde_json::Value = serde_json::from_str(&feedback_json(&[])).unwrap();
+        assert_eq!(empty.as_array().unwrap().len(), 0);
     }
 
     #[test]
