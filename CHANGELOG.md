@@ -135,6 +135,14 @@ tx-target allowlist, markdown/error-string escaping). Real findings fixed:
 
 ### Fixed
 
+- **MCP client: image-bearing tool results no longer silently fail.**
+  `ContentBlock::Image`'s `mime_type` field expected snake_case, but
+  `rename_all="lowercase"` renames only the variant *tags* (not struct fields) and
+  MCP sends camelCase `mimeType` — so a real `{"type":"image",…,"mimeType":…}`
+  block failed to deserialize, erroring the WHOLE `tools/call` response even
+  though the server answered correctly. Added `#[serde(rename = "mimeType")]`.
+  +28 protocol/correlation/framing tests for a previously untested module (incl.
+  out-of-order / unmatched / duplicate response-id correlation).
 - **Context compaction: silent TOTAL context loss in tool-heavy sessions (both
   backends).** `pick_split` walked the summarize/keep boundary FORWARD to avoid
   orphaning a tool pair — but in a long unbroken run of `[assistant tool_use,

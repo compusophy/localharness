@@ -253,20 +253,30 @@ fn spawn_dispatcher(
                     None => return,
                 }
             };
-            let resp: Response = match serde_json::from_str(&line) {
-                Ok(r) => r,
-                Err(e) => {
-                    trace!(?e, %line, "mcp: undecodable line (likely a notification)");
-                    continue;
-                }
-            };
-            if let Some(id) = resp.id {
-                if let Some(tx) = pending.lock().await.remove(&id) {
-                    let _ = tx.send(resp);
-                }
-            }
+            route_line(&line, &pending).await;
         }
     })
+}
+
+/// Decode one inbound line and, if it is a response with a matching
+/// pending `id`, deliver it. Undecodable lines (server log noise) and
+/// notifications (no `id`) are dropped. A response whose `id` matches no
+/// pending request is dropped — never panics, never blocks. Factored out
+/// of `spawn_dispatcher` so the framing/correlation logic is unit-testable
+/// without a live child process.
+async fn route_line(line: &str, pending: &Mutex<HashMap<u64, oneshot::Sender<Response>>>) {
+    let resp: Response = match serde_json::from_str(line) {
+        Ok(r) => r,
+        Err(e) => {
+            trace!(?e, %line, "mcp: undecodable line (likely a notification)");
+            return;
+        }
+    };
+    if let Some(id) = resp.id {
+        if let Some(tx) = pending.lock().await.remove(&id) {
+            let _ = tx.send(resp);
+        }
+    }
 }
 
 // =============================================================================
@@ -381,5 +391,154 @@ impl Tool for McpTool {
                 Err(e)
             }
         }
+    }
+}
+
+// =============================================================================
+// Tests — framing / correlation / error edges (no live child process)
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fresh empty pending table.
+    fn pending_map() -> Arc<Mutex<HashMap<u64, oneshot::Sender<Response>>>> {
+        Arc::new(Mutex::new(HashMap::new()))
+    }
+
+    /// Register a waiter for `id`, returning the receiver the caller awaits.
+    async fn register(
+        pending: &Mutex<HashMap<u64, oneshot::Sender<Response>>>,
+        id: u64,
+    ) -> oneshot::Receiver<Response> {
+        let (tx, rx) = oneshot::channel();
+        pending.lock().await.insert(id, tx);
+        rx
+    }
+
+    #[tokio::test]
+    async fn routes_result_response_to_waiter() {
+        let pending = pending_map();
+        let rx = register(&pending, 1).await;
+        route_line(r#"{"jsonrpc":"2.0","id":1,"result":{"v":42}}"#, &pending).await;
+        let resp = rx.await.expect("delivered");
+        assert_eq!(resp.result, Some(serde_json::json!({"v": 42})));
+        // The entry is consumed (a duplicate would find nothing).
+        assert!(pending.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn routes_error_response_to_waiter() {
+        let pending = pending_map();
+        let rx = register(&pending, 5).await;
+        route_line(
+            r#"{"jsonrpc":"2.0","id":5,"error":{"code":-32000,"message":"nope"}}"#,
+            &pending,
+        )
+        .await;
+        let resp = rx.await.expect("delivered");
+        let err = resp.error.expect("error present");
+        assert_eq!(err.code, -32000);
+        assert_eq!(err.message, "nope");
+    }
+
+    #[tokio::test]
+    async fn out_of_order_responses_match_by_id() {
+        // Two concurrent requests; the server answers id=2 before id=1.
+        let pending = pending_map();
+        let rx1 = register(&pending, 1).await;
+        let rx2 = register(&pending, 2).await;
+        route_line(r#"{"jsonrpc":"2.0","id":2,"result":"second"}"#, &pending).await;
+        route_line(r#"{"jsonrpc":"2.0","id":1,"result":"first"}"#, &pending).await;
+        assert_eq!(rx1.await.unwrap().result, Some(serde_json::json!("first")));
+        assert_eq!(rx2.await.unwrap().result, Some(serde_json::json!("second")));
+    }
+
+    #[tokio::test]
+    async fn unmatched_id_is_dropped_without_panic() {
+        // A response for an id we never sent (or already answered) must be
+        // silently ignored — not panic, not block.
+        let pending = pending_map();
+        let rx = register(&pending, 1).await;
+        route_line(r#"{"jsonrpc":"2.0","id":999,"result":"ghost"}"#, &pending).await;
+        // Our real waiter is untouched.
+        assert!(pending.lock().await.contains_key(&1));
+        // Now answer it properly.
+        route_line(r#"{"jsonrpc":"2.0","id":1,"result":"ok"}"#, &pending).await;
+        assert_eq!(rx.await.unwrap().result, Some(serde_json::json!("ok")));
+    }
+
+    #[tokio::test]
+    async fn duplicate_response_for_same_id_does_not_panic() {
+        // A buggy/malicious server sends two responses with the same id.
+        // The first is delivered; the second finds no pending entry and is
+        // dropped. Must not panic on the orphaned second send.
+        let pending = pending_map();
+        let rx = register(&pending, 1).await;
+        route_line(r#"{"jsonrpc":"2.0","id":1,"result":"a"}"#, &pending).await;
+        route_line(r#"{"jsonrpc":"2.0","id":1,"result":"b"}"#, &pending).await;
+        assert_eq!(rx.await.unwrap().result, Some(serde_json::json!("a")));
+        assert!(pending.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn notification_without_id_does_not_consume_a_waiter() {
+        // Server-initiated notification (method, no id) must be dropped and
+        // must NOT be mistaken for a response to any pending request.
+        let pending = pending_map();
+        let rx = register(&pending, 1).await;
+        route_line(
+            r#"{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info"}}"#,
+            &pending,
+        )
+        .await;
+        assert!(pending.lock().await.contains_key(&1));
+        // The waiter is still live and answerable.
+        route_line(r#"{"jsonrpc":"2.0","id":1,"result":"done"}"#, &pending).await;
+        assert_eq!(rx.await.unwrap().result, Some(serde_json::json!("done")));
+    }
+
+    #[tokio::test]
+    async fn undecodable_noise_line_is_ignored() {
+        // A server logging plain text / a partial line to stdout must not
+        // disturb pending requests or panic the dispatcher.
+        let pending = pending_map();
+        let rx = register(&pending, 1).await;
+        route_line("INFO server ready", &pending).await;
+        route_line("{ not valid json", &pending).await;
+        route_line("", &pending).await;
+        assert!(pending.lock().await.contains_key(&1));
+        route_line(r#"{"jsonrpc":"2.0","id":1,"result":1}"#, &pending).await;
+        assert_eq!(rx.await.unwrap().result, Some(serde_json::json!(1)));
+    }
+
+    #[tokio::test]
+    async fn response_with_null_id_is_dropped() {
+        // JSON-RPC parse-error responses carry id:null. We can't correlate
+        // them, so they're dropped — pending waiters untouched.
+        let pending = pending_map();
+        let rx = register(&pending, 1).await;
+        route_line(
+            r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse error"}}"#,
+            &pending,
+        )
+        .await;
+        assert!(pending.lock().await.contains_key(&1));
+        drop(rx);
+    }
+
+    #[tokio::test]
+    async fn dropped_sender_yields_recv_error_for_caller() {
+        // Models "child died mid-request": the dispatcher never delivers,
+        // and on shutdown the pending sender is dropped. The awaiting
+        // caller observes RecvError, which request_via maps to Error::Closed
+        // (never an infinite hang at this layer — the hang ceiling is the
+        // outer timeout()).
+        let pending = pending_map();
+        let rx = register(&pending, 1).await;
+        // Simulate teardown dropping all pending senders.
+        pending.lock().await.clear();
+        assert!(rx.await.is_err());
     }
 }
