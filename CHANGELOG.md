@@ -35,6 +35,16 @@ tx-target allowlist, markdown/error-string escaping). Real findings fixed:
 
 ### Added
 
+- **Test-user fleet** (`scripts/test-fleet/`) — 12 persistent on-chain agent
+  identities, each a distinct personality (impatient power-user, confused newbie,
+  security adversary, designer, SDK dev, skeptic, mobile-only, a11y, verbose,
+  terse, chaos), that dogfood the platform and file GROUNDED feedback on-chain.
+  `run-fleet.sh` drives each persona: create → probe a live agent → reflect
+  *in-persona* on the REAL experience → submit one `[BUG]`/`[FEATURE]`/`[FEEDBACK]`
+  item (`FeedbackFacet`); read it back via `harvest-feedback`. Reuses the existing
+  CLI — no new server. Validated live: a 3-persona sample landed real DX,
+  onboarding, and security feedback on-chain (e.g. "`create` writes a raw private
+  key to the cwd with no chmod/`.gitignore`").
 - **SDK: a minimal getting-started example** (`examples/basic_agent.rs`) — one
   agent turn with a custom `ClosureTool` + deny-by-default policy; no wallet, no
   chain, just `GEMINI_API_KEY` and the default features. The smallest end-to-end
