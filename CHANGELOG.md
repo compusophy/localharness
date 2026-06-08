@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   across throwaway accounts. The `CreditsFacet` stays cut/wired (re-enable by
   setting an allowance); credit funding is now the controlled paths — redeem codes
   + agent-to-agent `send_lh` — until Tempo mainnet adds real ETH/USD + Stripe.
+- **Free sessions closed** (`setSessionPrice(1e18)`, was `0`). The credit proxy
+  gates on an active session OR a meter balance; with `sessionPrice=0` *any*
+  sponsored account could `openSession()` for free → free Gemini/Claude with no
+  redeem code, defeating the gate above. Sessions now cost `1 $LH/hr`, so both
+  proxy paths require `$LH`. Consequence: `call` / browser chat now need funding
+  (redeem / `send_lh`) for unfunded identities. Reversible (`setSessionPrice(0)`).
 
 ### Added
 

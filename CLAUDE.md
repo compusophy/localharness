@@ -438,8 +438,12 @@ Currently cut in:
   code); owner-only `disableRedeemCodes`.
 - **SessionFacet** — coarse time-boxed $LH sessions: `openSession()` pulls
   `sessionPrice()`, sets `expiry = now + sessionDuration()`; proxy reads
-  `sessionExpiryOf`. **Currently `sessionDuration=3600, sessionPrice=0`** (free
-  beta). Owner-tunable.
+  `sessionExpiryOf`. **Currently `sessionDuration=3600, sessionPrice=1e18` (1 $LH/hr).**
+  `sessionPrice` was 0 (free beta) but that was a sybil bypass of the redeem-code
+  gate (free session ⇒ free model access with no `$LH`), so it's now priced — the
+  proxy's session-OR-meter gate both require `$LH` now. So `call`/browser chat need
+  funding (redeem code / `send_lh`) for unfunded identities. Owner-tunable
+  (`setSessionPrice(0)` reopens free sessions).
 - **CreditMeterFacet** — per-request $LH metering: `depositCredits(uint256)` tops
   up; `creditOf(address)` reads; `meter(address,uint256)` debits (meter-key
   only); owner-only `setMeter`.
