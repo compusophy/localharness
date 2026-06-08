@@ -76,11 +76,28 @@ impl Cartridge {
     }
 }
 
+/// Hard ceiling on cartridge wasm a cartridge loader will instantiate. A
+/// cartridge is UNTRUSTED bytes (published by any agent / fetched on-chain),
+/// so the runtime must not rely on the publish-time UI cap (16 KB) — refuse
+/// oversized bytes here too. 64 KB leaves generous headroom over the publish
+/// cap while still bounding the work `instantiate_buffer` is asked to do.
+#[cfg(target_arch = "wasm32")]
+const MAX_CARTRIDGE_BYTES: usize = 64 * 1024;
+
 #[cfg(target_arch = "wasm32")]
 async fn load_wasm(wasm_bytes: &[u8]) -> Result<Cartridge, CompileError> {
     use js_sys::{Reflect, WebAssembly};
     use wasm_bindgen::JsValue;
     use wasm_bindgen_futures::JsFuture;
+
+    // Size gate BEFORE instantiation — a malicious blob can't make us hand an
+    // arbitrarily large buffer to the wasm engine.
+    if wasm_bytes.len() > MAX_CARTRIDGE_BYTES {
+        return Err(CompileError::new(format!(
+            "cartridge too large: {} bytes (max {MAX_CARTRIDGE_BYTES})",
+            wasm_bytes.len()
+        )));
+    }
 
     // The `host_net` closures need the cartridge's linear memory to read
     // outbound strings and write inbound ones, but memory only exists
@@ -100,6 +117,11 @@ async fn load_wasm(wasm_bytes: &[u8]) -> Result<Cartridge, CompileError> {
 
     let exports = Reflect::get(&instance, &JsValue::from_str("exports"))
         .map_err(|e| CompileError::new(format!("no exports: {e:?}")))?;
+    // NB: the generic loader does NOT require a `frame`/`render` export — it
+    // backs `compile_rustlite`, which compiles + calls an ARBITRARY exported
+    // function (e.g. `add`). The display path (`run_with_ctx` /
+    // `mount_composition`) enforces the `frame`/`render` entry for cartridges
+    // it actually animates.
     let memory = Reflect::get(&exports, &JsValue::from_str("memory"))
         .unwrap_or(JsValue::NULL);
 
@@ -242,6 +264,49 @@ mod net {
     /// messages are dropped first.
     const MAX_INBOX: usize = 256;
 
+    /// Cap live sockets per cartridge. A `frame` loop calling `open` every
+    /// tick would otherwise flood connections (fd exhaustion / connection-
+    /// flood amplifier). Once at the cap, `open` refuses until one is closed.
+    const MAX_SOCKETS: usize = 8;
+
+    /// Reject any WebSocket URL a cartridge must NOT open. A cartridge is
+    /// UNTRUSTED wasm (published by any agent / fetched on-chain) run in the
+    /// visitor's tab, so `open(url)` is an SSRF surface: without this gate it
+    /// could reach loopback / LAN / internal hosts from inside the victim's
+    /// network, or beacon to an arbitrary host. Policy: `wss://` only (no
+    /// cleartext `ws://`, which is also the loopback vector browsers don't
+    /// mixed-content-block), and the host must not be empty, an IP literal,
+    /// `localhost`/`*.localhost`, or a `.local` mDNS name. Mirrors the gate
+    /// in `src/app/display.rs::net::url_is_allowed`.
+    fn url_is_allowed(url: &str) -> bool {
+        let rest = match url
+            .split_once("://")
+            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("wss"))
+        {
+            Some((_, rest)) => rest,
+            None => return false,
+        };
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+        let hostport = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
+        if hostport.starts_with('[') {
+            return false; // IPv6 literal
+        }
+        let host = hostport.split(':').next().unwrap_or("");
+        if host.is_empty() {
+            return false;
+        }
+        let lower = host.to_ascii_lowercase();
+        if lower == "localhost" || lower.ends_with(".localhost") || lower.ends_with(".local") {
+            return false;
+        }
+        if lower.split('.').count() == 4
+            && lower.split('.').all(|o| !o.is_empty() && o.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return false; // bare IPv4 literal
+        }
+        lower.contains('.')
+    }
+
     /// Build the `host_net` import object and return the runtime that owns
     /// the closures + socket table (must outlive the wasm instance).
     pub(crate) fn build_host_net(
@@ -257,6 +322,18 @@ mod net {
                 let url = match read_string(&mem.borrow(), url_ptr) {
                     Some(u) => u,
                     None => return -1,
+                };
+                // SSRF/abuse gate — only public `wss://` hosts.
+                if !url_is_allowed(&url) {
+                    return -1;
+                }
+                // Connection cap; reuse a freed slot so handles stay bounded.
+                let free_slot = {
+                    let table = sockets.borrow();
+                    if table.iter().filter(|s| s.is_some()).count() >= MAX_SOCKETS {
+                        return -1;
+                    }
+                    table.iter().position(|s| s.is_none())
                 };
                 let ws = match WebSocket::new(&url) {
                     Ok(ws) => ws,
@@ -280,10 +357,19 @@ mod net {
                 };
                 ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
 
+                let socket = Socket { ws, inbox, _on_message: on_message };
                 let mut table = sockets.borrow_mut();
-                let handle = table.len() as i32;
-                table.push(Some(Socket { ws, inbox, _on_message: on_message }));
-                handle
+                match free_slot {
+                    Some(i) => {
+                        table[i] = Some(socket);
+                        i as i32
+                    }
+                    None => {
+                        let handle = table.len() as i32;
+                        table.push(Some(socket));
+                        handle
+                    }
+                }
             })
         };
 
@@ -376,18 +462,25 @@ mod net {
         }
         let buffer = Reflect::get(memory, &JsValue::from_str("buffer")).ok()?;
         let array = js_sys::Uint8Array::new(&buffer);
-        let ptr = ptr as u32;
+        let cap = array.length() as u64;
+        let ptr = ptr as u64;
+        // Bound the read region against the cartridge's own memory (an OOB
+        // Uint8Array read yields 0 in JS — never host memory — but we check so
+        // the read is well-defined and the `u32` adds below can't wrap).
+        if ptr + 4 > cap {
+            return None;
+        }
         let mut len_bytes = [0u8; 4];
         for (i, b) in len_bytes.iter_mut().enumerate() {
-            *b = array.get_index(ptr + i as u32);
+            *b = array.get_index(ptr as u32 + i as u32);
         }
-        let len = u32::from_le_bytes(len_bytes);
-        if len > 65536 {
+        let len = u32::from_le_bytes(len_bytes) as u64;
+        if len > 65536 || ptr + 4 + len > cap {
             return None;
         }
         let mut bytes = vec![0u8; len as usize];
         for (i, b) in bytes.iter_mut().enumerate() {
-            *b = array.get_index(ptr + 4 + i as u32);
+            *b = array.get_index(ptr as u32 + 4 + i as u32);
         }
         String::from_utf8(bytes).ok()
     }
@@ -405,6 +498,8 @@ mod net {
             Err(_) => return -1,
         };
         let array = js_sys::Uint8Array::new(&buffer);
+        let cap = array.length() as u64;
+        let ptr = out_ptr as u64;
 
         // Truncate to `max` bytes without splitting a UTF-8 codepoint.
         let mut end = s.len().min(max);
@@ -413,7 +508,13 @@ mod net {
         }
         let bytes = &s.as_bytes()[..end];
         let len = bytes.len() as u32;
-        let ptr = out_ptr as u32;
+        // The full write region must fit the cartridge's own memory (an OOB
+        // `set_index` is a JS no-op — never reaches host memory — but check so
+        // a partial write can't land and the `u32` adds can't wrap).
+        if ptr + 4 + len as u64 > cap {
+            return -1;
+        }
+        let ptr = ptr as u32;
         for (i, b) in len.to_le_bytes().iter().enumerate() {
             array.set_index(ptr + i as u32, *b);
         }

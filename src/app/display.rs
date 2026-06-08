@@ -999,6 +999,75 @@ mod net {
     /// messages drop first.
     const MAX_INBOX: usize = 256;
 
+    /// Cap live sockets per cartridge. A `frame` loop calling `open` every
+    /// tick would otherwise flood connections (fd exhaustion / turn the
+    /// victim's tab into a connection-flood amplifier against a target). Once
+    /// at the cap, `open` refuses until the cartridge `close`s one.
+    const MAX_SOCKETS: usize = 8;
+
+    /// Reject any WebSocket URL a cartridge must NOT be able to open. A
+    /// cartridge is UNTRUSTED wasm published by any agent / fetched on-chain
+    /// and run in the visitor's tab, so `open(url)` is an SSRF surface:
+    /// without this gate it could connect to loopback / LAN / internal hosts
+    /// (router admin, dev servers, metadata endpoints) from inside the
+    /// victim's browser + network, or beacon to an arbitrary external host
+    /// under the victim's origin. Policy:
+    ///   * scheme MUST be `wss://` (encrypted). Plain `ws://` is refused —
+    ///     it's the loopback-SSRF vector browsers DON'T mixed-content-block,
+    ///     and it's cleartext exfil otherwise.
+    ///   * host must not be empty, an IP literal, `localhost`, `*.localhost`,
+    ///     or a `.local` mDNS name (no LAN / loopback reach).
+    /// This is a deliberately conservative allowlist-by-shape — public TLS
+    /// endpoints only — matching the multiplayer/sync use case. (`design/
+    /// host-compose.md` A4 tracked a per-child variant; this lands the base
+    /// gate for both the single-cartridge and composed paths.)
+    fn url_is_allowed(url: &str) -> bool {
+        // Scheme: wss:// only (case-insensitive), and require the `//`.
+        let rest = match url
+            .split_once("://")
+            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("wss"))
+        {
+            Some((_, rest)) => rest,
+            None => return false,
+        };
+        // Authority is everything up to the first '/', '?' or '#'.
+        let authority = rest
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or("");
+        // Strip userinfo (`user:pass@host`) — judge the real host only, and
+        // drop credentials-in-URL while we're here.
+        let hostport = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
+        // Host is hostport minus an optional `:port`. Bracketed IPv6 (`[::1]`)
+        // is rejected outright (it's an IP literal anyway).
+        if hostport.starts_with('[') {
+            return false; // IPv6 literal — never a public hostname
+        }
+        let host = hostport.split(':').next().unwrap_or("");
+        if host.is_empty() {
+            return false;
+        }
+        let lower = host.to_ascii_lowercase();
+        // Block loopback / LAN names.
+        if lower == "localhost"
+            || lower.ends_with(".localhost")
+            || lower.ends_with(".local")
+        {
+            return false;
+        }
+        // Block bare IPv4 literals (loopback 127/8, RFC-1918, link-local,
+        // metadata 169.254.169.254, etc. — a published cartridge has no
+        // legitimate reason to dial a raw IP, so refuse them all).
+        if lower.split('.').count() == 4
+            && lower.split('.').all(|o| !o.is_empty() && o.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return false;
+        }
+        // Require at least one dot (a real DNS name like `host.example.com`);
+        // a bare single label can resolve to an intranet host.
+        lower.contains('.')
+    }
+
     /// One open socket: the live `WebSocket` plus its not-yet-polled inbox
     /// of received text messages.
     struct Socket {
@@ -1039,6 +1108,23 @@ mod net {
                     Some(u) => u,
                     None => return -1,
                 };
+                // SSRF/abuse gate: only public `wss://` hosts (no loopback /
+                // LAN / IP literals). UNTRUSTED cartridge -> refuse anything
+                // it shouldn't be able to dial before touching the network.
+                if !url_is_allowed(&url) {
+                    return -1;
+                }
+                // Connection cap: refuse once at MAX_SOCKETS live so a frame
+                // loop can't flood connections. Reuse a freed (`None`) slot if
+                // one exists so handles stay bounded.
+                let free_slot = {
+                    let table = sockets.borrow();
+                    let live = table.iter().filter(|s| s.is_some()).count();
+                    if live >= MAX_SOCKETS {
+                        return -1;
+                    }
+                    table.iter().position(|s| s.is_none())
+                };
                 let ws = match WebSocket::new(&url) {
                     Ok(ws) => ws,
                     Err(_) => return -1,
@@ -1061,10 +1147,19 @@ mod net {
                 };
                 ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
 
+                let socket = Socket { ws, inbox, _on_message: on_message };
                 let mut table = sockets.borrow_mut();
-                let handle = table.len() as i32;
-                table.push(Some(Socket { ws, inbox, _on_message: on_message }));
-                handle
+                match free_slot {
+                    Some(i) => {
+                        table[i] = Some(socket);
+                        i as i32
+                    }
+                    None => {
+                        let handle = table.len() as i32;
+                        table.push(Some(socket));
+                        handle
+                    }
+                }
             })
         };
 
@@ -1149,18 +1244,27 @@ mod net {
         }
         let buffer = Reflect::get(memory, &JsValue::from_str("buffer")).ok()?;
         let array = js_sys::Uint8Array::new(&buffer);
-        let ptr = ptr as u32;
+        let cap = array.length() as u64;
+        let ptr = ptr as u64;
+        // Bounds the whole [ptr, ptr+4) length prefix against the cartridge's
+        // own memory. (OOB reads on a Uint8Array yield 0 in JS rather than
+        // host memory — the cartridge can only see its OWN linear memory — but
+        // we check explicitly so the read is well-defined and the `u32` adds
+        // below can't wrap.)
+        if ptr + 4 > cap {
+            return None;
+        }
         let mut len_bytes = [0u8; 4];
         for (i, b) in len_bytes.iter_mut().enumerate() {
-            *b = array.get_index(ptr + i as u32);
+            *b = array.get_index(ptr as u32 + i as u32);
         }
-        let len = u32::from_le_bytes(len_bytes);
-        if len > 65536 {
+        let len = u32::from_le_bytes(len_bytes) as u64;
+        if len > 65536 || ptr + 4 + len > cap {
             return None;
         }
         let mut bytes = vec![0u8; len as usize];
         for (i, b) in bytes.iter_mut().enumerate() {
-            *b = array.get_index(ptr + 4 + i as u32);
+            *b = array.get_index(ptr as u32 + 4 + i as u32);
         }
         String::from_utf8(bytes).ok()
     }
@@ -1178,6 +1282,8 @@ mod net {
             Err(_) => return -1,
         };
         let array = js_sys::Uint8Array::new(&buffer);
+        let cap = array.length() as u64;
+        let ptr = out_ptr as u64;
 
         let mut end = s.len().min(max);
         while end > 0 && !s.is_char_boundary(end) {
@@ -1185,7 +1291,14 @@ mod net {
         }
         let bytes = &s.as_bytes()[..end];
         let len = bytes.len() as u32;
-        let ptr = out_ptr as u32;
+        // The full [out_ptr, out_ptr+4+len) write region must fit the
+        // cartridge's own memory. (An OOB `set_index` is a silent no-op in JS,
+        // so a wild pointer can never reach host memory — but check explicitly
+        // so a partial write can't land and the `u32` adds can't wrap.)
+        if ptr + 4 + len as u64 > cap {
+            return -1;
+        }
+        let ptr = ptr as u32;
         for (i, b) in len.to_le_bytes().iter().enumerate() {
             array.set_index(ptr + i as u32, *b);
         }
