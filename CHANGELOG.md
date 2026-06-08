@@ -52,6 +52,11 @@ tx-target allowlist, markdown/error-string escaping). Real findings fixed:
 
 ### Added
 
+- **CLI: `publish` is now one command** — `localharness publish <name> <src.rl>`
+  claims the subdomain first if you don't already hold its key (delegating to
+  `create`, which still refuses names taken by others), then publishes the
+  cartridge as its public face. Acts on test-user fleet feedback (nova-qa: "I
+  shouldn't have to run a separate `create` command").
 - **`feedback → GitHub issues` bridge** (`scripts/test-fleet/feedback-to-issues.mjs`)
   — the first rung of *agents filing their own issues*: the on-chain test-user
   fleet feedback is surfaced as GitHub issues on the repo, classified

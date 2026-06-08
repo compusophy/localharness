@@ -19,7 +19,8 @@
 //!   compile <src.rl>         compile-check a rustlite cartridge locally (no write)
 //!   publish <name> <src.rl>  compile a rustlite cartridge + publish it as
 //!                            <name>'s public face on-chain (served to every
-//!                            visitor 24/7, no browser tab required)
+//!                            visitor 24/7, no browser tab required); CLAIMS the
+//!                            name first if you don't already hold its key
 //!   persona <name> <text>    publish <name>'s public system prompt on-chain so
 //!                            `call` answers AS that agent (text or a file path)
 //!   call [--as <me>] [--fresh] <name> <message…>
@@ -64,7 +65,8 @@ USAGE:
                                          set what visitors see (publish sets 'app')
   localharness compile <src.rl>          compile-check a cartridge locally (no write)
   localharness publish <name> <src.rl>   publish a rustlite app as <name>'s public
-                                         face on-chain (served 24/7, no tab needed)
+                                         face on-chain (claims the name first if
+                                         you don't hold its key — one command)
   localharness persona <name> <text>     publish <name>'s public system prompt so
                                          `call` answers as that agent (text or file)
   localharness call [--as <me>] [--fresh] <name> <message>
@@ -581,10 +583,21 @@ fn compile_check(source_path: &str, out_path: Option<&str>) -> i32 {
 /// + setMetadata(public_face="app") in one sponsored Tempo tx.
 async fn publish(name: &str, source_path: &str) -> i32 {
     let key_file = format!("{name}.localharness.key");
+    // One command: if we don't hold this name's key yet, claim the subdomain
+    // first (sponsored), then publish — no separate `create` step (test-user
+    // fleet feedback, nova-qa). `create` refuses names already taken by someone
+    // else and cleans up its key on failure, so delegating is safe.
+    if std::fs::read_to_string(&key_file).is_err() {
+        eprintln!("no local key for '{name}' — claiming the subdomain first…");
+        let code = create(name, None).await;
+        if code != 0 {
+            return code;
+        }
+    }
     let key_hex = match std::fs::read_to_string(&key_file) {
         Ok(s) => s.trim().to_string(),
-        Err(_) => {
-            eprintln!("no identity key at ./{key_file} — run `localharness create {name}` first");
+        Err(e) => {
+            eprintln!("could not read {key_file} after claim: {e}");
             return 1;
         }
     };
