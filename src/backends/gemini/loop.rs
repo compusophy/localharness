@@ -18,7 +18,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use base64::Engine as _;
-use futures_util::stream::StreamExt;
 use parking_lot::Mutex;
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, Notify};
@@ -27,6 +26,7 @@ use uuid::Uuid;
 
 use crate::backends::gemini::api::SharedClient;
 use crate::backends::gemini::compaction::{self, should_compact};
+use crate::backends::stream_timeout::{idle_timeout_ms, next_with_idle_timeout, NextChunk};
 use crate::backends::gemini::tools::FINISH_TOOL_NAME;
 use crate::backends::gemini::wire::{
     self, ContentRole, FinishReason, FunctionCall, FunctionResponse, GenerateContentRequest,
@@ -235,7 +235,28 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content) -> Result<()> 
         let mut finish_reason: Option<FinishReason> = None;
         let mut last_usage: Option<wire::WireUsage> = None;
 
-        while let Some(chunk_res) = stream.next().await {
+        // Idle-stall guard: a fresh `idle_ms` timer is armed for EACH chunk
+        // (re-armed every time data arrives), so a steadily streaming response
+        // never trips it — only `idle_ms` of total silence does. On a stall we
+        // end the stream with an Err so the turn returns via the normal error
+        // path and the one-turn guard releases (vs. hanging on a dead socket
+        // that the cooperative cancel check below can never reach).
+        let idle_ms = idle_timeout_ms();
+        loop {
+            let chunk_res = match next_with_idle_timeout(&mut stream, idle_ms).await {
+                NextChunk::Item(item) => item,
+                NextChunk::End => break,
+                NextChunk::IdleTimeout => {
+                    let e = Error::other(format!(
+                        "model stream stalled — no data for {}s",
+                        idle_ms / 1000
+                    ));
+                    emit_error(&deps.state, e.to_string());
+                    deps.state.idle.store(true, Ordering::Release);
+                    deps.state.idle_notify.notify_waiters();
+                    return Err(e);
+                }
+            };
             // Cooperative stop: drop the rest of this streamed response.
             if deps.state.cancel.load(Ordering::Acquire) {
                 break;

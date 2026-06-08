@@ -12,6 +12,12 @@
 //!
 //! [`Connection`]: crate::connections::Connection
 
+/// Idle (stall) timeout shared by the streaming backend turn loops: races
+/// each per-chunk `stream.next()` against a freshly-armed sleep so a stream
+/// parked on a silent socket ERRORS the turn (recoverable) instead of hanging
+/// forever, while a steadily streaming response is unaffected.
+mod stream_timeout;
+
 pub mod gemini;
 /// Anthropic (Claude Messages API) backend — a second `ConnectionStrategy`
 /// behind the same Layer-3 seam. Gated on the `anthropic` feature so it's
