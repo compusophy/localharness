@@ -520,6 +520,8 @@ async fn paint_workshop(host: &tenant::Host) {
 
     // Auto-redeem a pending `?invite=CODE` into the local credit identity.
     wasm_bindgen_futures::spawn_local(events::try_redeem_pending_invite(true));
+    // No-funds onboarding CTA above the prompt (self-clears once funded).
+    wasm_bindgen_futures::spawn_local(events::refresh_fund_banner());
 
     let has_key = if let Some(persisted_key) = key_store::load().await {
         if let Ok(Some(storage)) = dom::session_storage() {
@@ -678,6 +680,12 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
     // Paint the Studio — we own this name on this device (or a deliberate
     // preview fell through with nothing published).
     root.set_inner_html(&templates::chrome(&host).into_string());
+
+    // No-funds onboarding: surface the inline redeem CTA above the prompt
+    // when this credit identity holds zero `$LH` (gated access means an
+    // unfunded send would silently fail at the proxy). Fire-and-forget so
+    // the chrome paints immediately; self-clears once funded.
+    wasm_bindgen_futures::spawn_local(events::refresh_fund_banner());
 
     let has_key = if let Some(persisted_key) = key_store::load().await {
         if let Ok(Some(storage)) = dom::session_storage() {

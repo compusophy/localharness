@@ -143,6 +143,11 @@ pub(crate) const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) fn terminal_input() -> Markup {
     html! {
         div.terminal-body {
+            // Funding affordance — empty by default; `events::refresh_fund_banner`
+            // fills it with a redeem CTA when the credit identity holds zero `$LH`
+            // (so a new user with no funds sees the path to redeem instead of a
+            // silent proxy rejection on their first send). Hidden again once funded.
+            div #fund-banner .fund-banner {}
             // `dom::set_status` writes transient dispatcher messages here
             // (errors, payment notices). role=status is an implicit polite
             // live region, so updates are announced without stealing focus.
@@ -173,6 +178,32 @@ pub(crate) fn send_button() -> Markup {
 pub(crate) fn stop_button() -> Markup {
     html! {
         button #terminal-stop .terminal-send.terminal-stop data-action="stop-turn" title="stop" aria-label="stop generating" { "■" }
+    }
+}
+
+/// Inner body of the no-funds funding banner, swapped into `#fund-banner`
+/// when the credit identity holds zero `$LH`. A concise CTA + an inline
+/// redeem field so the path from "I can't use this yet" → "redeem" → "now
+/// I can" is one click away, not buried in the admin dropdown. The input
+/// id + action are banner-local (`fund-redeem-code` / `redeem-banner`) so
+/// they never collide with the admin credits section's own redeem field;
+/// both ultimately call the same sponsored `redeem` path. No
+/// explanatory-rule text — the line states the situation, the field acts.
+pub(crate) fn fund_banner_body() -> Markup {
+    // Inline layout only (no new stylesheet rules — styles.css is owned
+    // elsewhere). Uses existing CSS vars so it stays monochrome/brutalist
+    // and matches the surrounding chrome. The input/button/msg slot reuse
+    // already-styled classes (`redeem-input` / `ghost` / `admin-msg-slot`).
+    html! {
+        div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;\
+                    padding:8px 10px;margin-bottom:8px;\
+                    border:1px solid var(--border);background:var(--panel);\
+                    font-size:12px;color:var(--muted)" {
+            span { "no $LH yet — redeem a code to start" }
+            input #fund-redeem-code .redeem-input type="text" placeholder="redeem code";
+            button type="button" data-action="redeem-banner" .ghost { "redeem" }
+            div #fund-msg .admin-msg-slot style="margin-top:0;flex-basis:100%" {}
+        }
     }
 }
 

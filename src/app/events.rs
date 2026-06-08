@@ -106,6 +106,8 @@ enum Action {
     OpenSession,
     /// Redeem a one-time code for `$LH` credits.
     RedeemCode,
+    /// Redeem a one-time code from the inline no-funds banner above the prompt.
+    RedeemBanner,
     /// Prepay `$LH` into the per-request credit meter.
     DepositCredits,
     /// Save this agent's per-call x402 price (`.lh_x402_price`).
@@ -184,6 +186,7 @@ impl Action {
             "download-local-model" => Action::DownloadLocalModel,
             "open-session" => Action::OpenSession,
             "redeem-code" => Action::RedeemCode,
+            "redeem-banner" => Action::RedeemBanner,
             "deposit-credits" => Action::DepositCredits,
             "save-x402-price" => Action::SaveX402Price,
             "consolidate" => Action::Consolidate,
@@ -1122,6 +1125,7 @@ fn dispatch(action: Action) {
         Action::DownloadLocalModel => run_download_local_model(),
         Action::OpenSession => open_session_pressed(),
         Action::RedeemCode => redeem_code_pressed(),
+        Action::RedeemBanner => redeem_banner_pressed(),
         Action::DepositCredits => deposit_credits_pressed(),
         Action::SaveX402Price => save_x402_price_pressed(),
         Action::Consolidate => consolidate_pressed(),
@@ -1434,6 +1438,47 @@ pub(crate) async fn refresh_credits_pill() {
     warn_if_sponsor_low().await;
 }
 
+/// Show or hide the inline no-funds funding banner (`#fund-banner` in the
+/// terminal). Credit access is now GATED — a session costs `$LH` and the
+/// daily allowance is disabled — so an identity with zero `$LH` (zero wallet
+/// balance + zero meter) can't reach the model and would otherwise hit a
+/// silent proxy rejection on first send. When that's the case, surface a
+/// one-click redeem CTA right above the prompt; once funded, clear it.
+///
+/// No-ops gracefully: if the banner slot isn't in the DOM (apex, public
+/// face) there's nothing to fill, and a missing identity (no wallet/device
+/// key yet) leaves the banner empty rather than nagging a marketing visit.
+/// BYOK users (own key) aren't gated on `$LH`, so the banner stays hidden
+/// for them too.
+pub(crate) async fn refresh_fund_banner() {
+    // Only meaningful where the terminal chrome exists.
+    if dom::by_id("fund-banner").is_none() {
+        return;
+    }
+    // BYOK reaches the model without `$LH` — don't show a funding nag.
+    let is_credits = local_storage()
+        .and_then(|s| s.get_item("lh_model_access").ok().flatten())
+        .map(|m| m != "byok")
+        .unwrap_or(true);
+    if !is_credits {
+        dom::swap_inner("fund-banner", "");
+        return;
+    }
+    // Resolve the credit identity WITHOUT minting one (an unfunded marketing
+    // visit shouldn't generate a device key just to be told it's broke).
+    let Some(addr) = super::chat::credit_address_existing().await else {
+        dom::swap_inner("fund-banner", "");
+        return;
+    };
+    let wallet = super::registry::token_balance_of(&addr).await.unwrap_or(0);
+    let meter = super::registry::credit_balance_of(&addr).await.unwrap_or(0);
+    if wallet == 0 && meter == 0 {
+        dom::swap_inner("fund-banner", &templates::fund_banner_body().into_string());
+    } else {
+        dom::swap_inner("fund-banner", "");
+    }
+}
+
 /// Soft per-origin sponsored-tx rate cap — a testnet abuse guard. Rolling
 /// window kept in localStorage; bypassable (clear storage) but bounds
 /// runaway loops + casual drain. The real mainnet fix is the sponsor-key
@@ -1687,15 +1732,31 @@ fn open_session_pressed() {
     });
 }
 
-/// Redeem a one-time code for `$LH` — local key signs, sponsor pays.
+/// Redeem a one-time code from the admin credits section (`#redeem-code`),
+/// writing status into `#credits-msg`.
 fn redeem_code_pressed() {
-    let Some(input) = dom::input_by_id("redeem-code") else { return };
+    redeem_from("redeem-code", "credits-msg");
+}
+
+/// Redeem a one-time code from the inline no-funds banner
+/// (`#fund-redeem-code`), writing status into `#fund-msg`. Same sponsored
+/// `redeem` path as the admin field — just a different input/message slot.
+fn redeem_banner_pressed() {
+    redeem_from("fund-redeem-code", "fund-msg");
+}
+
+/// Shared redeem flow — local key signs, sponsor pays. Reads the code from
+/// `input_id`, reports into `msg_id`, then re-funds the meter + refreshes
+/// the balance pill and the no-funds banner. Used by both the admin credits
+/// field and the inline funding banner so there's ONE redeem path.
+fn redeem_from(input_id: &'static str, msg_id: &'static str) {
+    let Some(input) = dom::input_by_id(input_id) else { return };
     let code = input.value().trim().to_string();
     if code.is_empty() {
         return;
     }
     dom::swap_inner(
-        "credits-msg",
+        msg_id,
         "<span style=\"color:var(--muted)\">redeeming…</span>",
     );
     wasm_bindgen_futures::spawn_local(async move {
@@ -1720,18 +1781,20 @@ fn redeem_code_pressed() {
         match result {
             Ok(_) => {
                 dom::swap_inner(
-                    "credits-msg",
+                    msg_id,
                     "<span style=\"color:var(--muted)\">redeemed</span>",
                 );
                 // Move the redeemed $LH straight into the per-request meter so
                 // it's billable + the balance reflects it now (not next turn).
                 super::chat::ensure_credit_meter().await;
                 refresh_credits_pill().await;
+                // Now-funded → drop the no-funds banner (if it was up).
+                refresh_fund_banner().await;
             }
             Err(e) => {
                 web_sys::console::warn_1(&JsValue::from_str(&format!("redeem: {e}")));
                 dom::swap_inner(
-                    "credits-msg",
+                    msg_id,
                     &dom::msg_span(dom::Msg::Error, &format!("redeem failed: {e}")),
                 );
             }
@@ -1801,10 +1864,15 @@ pub(crate) async fn try_redeem_pending_invite(allow_generate: bool) {
             }
             dom::set_status("invite redeemed — platform credits added", false);
             refresh_credits_pill().await;
+            // Now funded → drop the no-funds banner if the chrome is up.
+            refresh_fund_banner().await;
         }
         Err(e) => {
             web_sys::console::warn_1(&JsValue::from_str(&format!("invite redeem: {e}")));
             dom::set_status("invite couldn't be redeemed (it may be used already)", true);
+            // Redeem failed (e.g. used code) → the visitor may still be unfunded;
+            // surface the manual redeem CTA so they have a recovery path.
+            refresh_fund_banner().await;
         }
     }
 }
