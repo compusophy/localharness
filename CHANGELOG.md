@@ -145,6 +145,12 @@ tx-target allowlist, markdown/error-string escaping). Real findings fixed:
 
 ### Fixed
 
+- **CLI: reject leading/trailing-hyphen names (dead-on-arrival subdomains).**
+  `name_is_valid` allowed `-foo` / `foo-` (not valid DNS labels), so `create`
+  (and now `publish`) would mint them. Now rejected per RFC 1035. Surfaced by the
+  test-user fleet (juno-qa) — emoji/uppercase/oversized were ALREADY caught, so
+  this closed the one real residual, and confirmed the fleet (like real users)
+  files speculative bugs that need scrutiny before acting.
 - **MCP client: image-bearing tool results no longer silently fail.**
   `ContentBlock::Image`'s `mime_type` field expected snake_case, but
   `rename_all="lowercase"` renames only the variant *tags* (not struct fields) and

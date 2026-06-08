@@ -2253,10 +2253,15 @@ fn parse_addr20(s: &str) -> Option<[u8; 20]> {
     Some(out)
 }
 
-/// Registry name rule: 1-63 chars, lowercase a-z / 0-9 / hyphen.
+/// Registry name rule = a valid DNS label: 1-63 chars, lowercase a-z / 0-9 /
+/// hyphen, and NO leading/trailing hyphen (RFC 1035 — a label like `-foo` or
+/// `foo-` is a dead-on-arrival subdomain). Surfaced by the test-user fleet
+/// (juno-qa) — emoji/oversized were already caught, the hyphen edge was not.
 fn name_is_valid(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 63
+        && !name.starts_with('-')
+        && !name.ends_with('-')
         && name
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
@@ -2688,6 +2693,11 @@ mod tests {
         assert!(!name_is_valid("")); // empty
         assert!(name_is_valid(&"a".repeat(63)));
         assert!(!name_is_valid(&"a".repeat(64))); // too long
+        assert!(!name_is_valid("🤖")); // emoji (non-ascii) — already caught
+        assert!(!name_is_valid("-foo")); // leading hyphen — not a valid DNS label
+        assert!(!name_is_valid("foo-")); // trailing hyphen
+        assert!(!name_is_valid("-")); // only a hyphen
+        assert!(name_is_valid("a-b-c")); // internal hyphens are fine
     }
 
     #[test]
