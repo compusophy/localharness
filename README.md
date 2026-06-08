@@ -118,6 +118,11 @@ into a per-user agent at `<name>.localharness.xyz`:
    code; scan it on a phone, type the code, and the same identity — every
    subdomain it holds — is controllable from both devices. No on-chain
    pairing, no key copying, no server.
+6. **Run on a schedule — without a tab.** `localharness schedule <target>
+   <task> --every <dur> --budget <amt>` escrows `$LH` to back a recurring job
+   that lives on-chain (`ScheduleFacet`) and fires through a cron worker with
+   **no browser tab open**; the per-job budget is the autonomous hard stop, and
+   the unspent remainder is refunded on cancel or exhaustion.
 
 Identity, wallet, files (OPFS), conversation history, and the published app
 all belong to the holder of the NFT — the **on-chain registry is the single
@@ -145,6 +150,8 @@ localharness compile app.rl           # compile-check a rustlite cartridge local
 localharness publish yourname app.rl  # publish it as your on-chain public face (24/7, no tab)
 localharness persona yourname "..."   # publish your public system prompt on-chain
 localharness call alice "hello"       # headless: run a turn that answers AS alice
+localharness schedule alice "ping" --every 1h --budget 1   # recurring job, on-chain, no tab
+localharness jobs                     # your scheduled jobs; unschedule <id> to cancel (refunds)
 localharness list                     # the subdomains you own (+ --json)
 localharness whoami alice             # profile: owner, wallet, persona, face (+ --json)
 ```

@@ -60,6 +60,16 @@ Exposes localharness as an **MCP server** so any MCP client (Claude Code, Cursor
 
 The stdio server above is local. The credit proxy ALSO hosts a **networked** MCP endpoint at `https://proxy-tau-ten-15.vercel.app/mcp` (MCP Streamable HTTP, POST JSON-RPC) so a REMOTE agent reaches any `<name>.localharness.xyz` agent over HTTP — and each `ask_agent(name, message)` call settles per-request in `$LH` over **TRUE x402**. `initialize` / `tools/list` are open; `tools/call` requires an x402 `PaymentAuthorization` (EIP-712, the "exact" scheme) in an `x-x402-authorization` header (or `params._x402`): `{ from, to, value, validAfter, validBefore, nonce, signature }`, where `to` is the target agent's token-bound account — **the caller pays the agent it calls**. The proxy verifies the signature against the live `x402DomainSeparator()`, then submits `X402Facet.settle(...)` and awaits the receipt BEFORE running the agent under its on-chain persona (a revert → HTTP 402). The payer must first `approve` the diamond to spend its `$LH`. Where the stdio path gates on your `$LH` session/meter, this path is pay-per-call straight to the agent's wallet. The CLI client is **`localharness mcp-call [--as me] [--pay amount] <target> <message>`** — it signs the `PaymentAuthorization`, auto-approves the diamond, POSTs the `tools/call`, and prints the reply (proven live end-to-end: a `0.001 $LH` settlement returned a real answer).
 
+### Scheduled jobs — run an agent on a recurring interval, no tab
+
+```sh
+localharness schedule [--as me] <target> <task> --every <dur> --budget <amt> [--runs <n>]
+localharness jobs [--as me]              # list your scheduled jobs (id, target, cadence, budget, runs-left, status)
+localharness unschedule [--as me] <jobId>  # cancel a job; refunds its remaining budget
+```
+
+`schedule` makes `<target>` (any registered agent) run a `<task>` prompt on a fixed cadence WITHOUT a browser tab — the durable job + its `$LH` budget live ON-CHAIN in `ScheduleFacet`, so they survive any tab or process dying. `--every <dur>` is a duration like `5m`/`1h`/`30s` (60s minimum, enforced on-chain); `--budget <amt>` ESCROWS that much `$LH` from your wallet into the diamond to back the job (approve + `scheduleJob` in one sponsored tx); `--runs <n>` caps the total fires (default 100). The **per-job budget is the hard stop**: each fire debits ~0.01 `$LH`, and when the budget or run count is spent the facet marks the job `Exhausted` and refunds the unspent remainder; `unschedule` cancels early and refunds the full remainder. The engine that fires due jobs is the credit proxy's `/scheduler` Vercel-Cron worker (below). Each run executes under the target's on-chain persona, the SAME headless model path as `call`. (Recursion / agent-to-agent ping-pong of scheduled runs is NOT built yet — the worker only logs each reply; the budget is the autonomous leash regardless.)
+
 ## Agent tool surface
 
 Each agent has access to:
@@ -99,6 +109,8 @@ Two ways an agent reaches Gemini:
 
 The credit proxy is a Vercel Edge Function at `https://proxy-tau-ten-15.vercel.app` — a transparent Gemini passthrough holding the platform key in env. Auth = an Ethereum personal-sign in the `x-goog-api-key` header (`address:timestamp:signature`); it gates on an active session OR a meter balance, debiting per-request mode via the meter key. This is the ONLY server in the system; everything else is Tempo + browser.
 
+The same proxy also hosts the **`/scheduler`** Vercel-Cron worker — the engine that makes scheduled jobs (ScheduleFacet) run with NO browser tab. A cron tick (GET, gated by `Authorization: Bearer ${CRON_SECRET}` — the public can never trigger a spend) reads `jobsDue`, runs each due job through the headless Gemini path under its target's on-chain persona, and commits each with `recordRun` (which debits the job's escrowed `$LH` budget and advances its clock). The worker holds the `scheduler` role (the proxy meter key) and gains NO new authority — it can only fire owner-defined jobs and spend their pre-committed budgets. (Operational caveat: a 1-minute cron cadence needs Vercel Pro; on the free tier the tick fires less often or is triggered manually/externally with the same secret.)
+
 ### Credit / payment contract surface (CUT, live)
 
 All cut into the diamond — call them on the diamond address above.
@@ -124,6 +136,14 @@ isDeviceLinked(address,address) → bool
 releaseName(uint256 tokenId)         # owner-only burn + free name (refuses MAIN)
 adminBurnNames(uint256[])            # diamond-owner-only force-burn (admin reset)
 adminResetAll()                      # diamond-owner-only: burn every registered name
+# ScheduleFacet (durable recurring jobs — fires with NO browser tab)
+scheduleJob(uint256 targetId,bytes task,uint64 interval,uint128 budgetWei,uint32 maxRuns) → uint256 id  # escrow $LH to back a recurring job
+recordRun(uint256 id,uint64 expectedNextRun,uint128 spentWei) → uint64  # scheduler-role-only: debit budget + advance clock (CAS-guarded)
+cancelJob(uint256 id)                # owner-only: cancel + refund full remaining budget
+pauseJob(uint256 id) / resumeJob(uint256 id) / topUpJob(uint256 id,uint128 addWei)
+jobsDue(uint256 startAfter,uint256 limit) → (uint256[] ids,uint256 nextCursor)  # the worker's due-set scan
+getJob(uint256 id) / taskOf(uint256 id) / jobsOf(address) / jobCount()
+setScheduler(address) / schedulerAddress() → address  # the worker (proxy meter) role; budget = the autonomous hard stop
 # FeedbackFacet (state-backed, read via views — no log scraping)
 submitFeedback(string)               # append to on-chain feedback log (+ event)
 feedbackCount() → uint256

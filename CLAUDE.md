@@ -98,7 +98,13 @@ src/                  library crate
 │                     `list` (owned subdomains) / `redeem <code>` (mint $LH to your
 │                     wallet — funding) / `mcp-call [--pay] <target> <msg>` (x402
 │                     client for the hosted /mcp endpoint; auto-approve + sign +
-│                     settle) / `threads`+`forget` (manage saved conversations) /
+│                     settle) / `schedule [--as me] <target> <task> --every
+│                     <dur> --budget <amt> [--runs n]` (escrow `$LH` to run
+│                     <target> on a fixed interval ON-CHAIN via ScheduleFacet —
+│                     fires with no browser tab; approve+scheduleJob in one
+│                     sponsored tx) / `jobs` (list the caller's scheduled jobs) /
+│                     `unschedule <jobId>` (cancel a job; refunds remaining
+│                     budget) / `threads`+`forget` (manage saved conversations) /
 │                     `whoami [--json]` (profile) / `version`.
 │                     Harness-agnostic, server-free entry — what web/skill.md
 │                     tells external agents to run. Smoke: scripts/smoke-cli.sh.
@@ -139,7 +145,10 @@ proxy/        $LH credit proxy — SEPARATE Vercel project ("proxy") at
               component. LIVE. api/gemini.ts = Vercel Edge Gemini passthrough;
               api/mcp.ts = networked MCP-over-HTTP endpoint (`/mcp`, ask_agent)
               gated by TRUE x402 per-call settlement (EIP-712 verify vs live
-              x402DomainSeparator + X402Facet.settle; payee = target agent's TBA)
+              x402DomainSeparator + X402Facet.settle; payee = target agent's TBA);
+              api/scheduler.ts = the `/scheduler` Vercel-Cron worker (CRON_SECRET-
+              gated) — reads ScheduleFacet `jobsDue`, runs each due job under its
+              target's on-chain persona, `recordRun`s the debit; the "no-tab" engine
 scripts/      release.{ps1,sh}; build-web.{ps1,sh}; probe-gemini.ps1;
               harvest-feedback.{ps1,sh}; clear-feedback.sh (owner-only feedback GC);
               issue-to-pr.sh (verify-gated GitHub issue→PR harness, colony rung-2);
@@ -149,7 +158,8 @@ design/       main-identity.md; agent-writes-rust.md; launch-1.0.md (1.0 spec �
               1.0=mainnet, betas=testnet); beta-plan.md; paymaster.md;
               invites.md (user-created escrow invite codes — DESIGN, not built);
               agent-scheduling.md (on-chain ScheduleFacet + Vercel-Cron worker so
-              agents run recursive jobs without a tab — DESIGN, not built)
+              agents run recurring jobs without a tab — SHIPPED: facet cut +
+              `/scheduler` worker + CLI live; recursion/ping-pong = Phase 2)
 RELEASING.md / CHANGELOG.md / vercel.json / .vercelignore
 ```
 
@@ -463,6 +473,21 @@ Currently cut in:
   regardless of holder (testnet clean slate); a shared `_burn` clears exactly
   what `register()` writes (name↔id, ownerOfId, ERC721 owner/balance/approval,
   MAIN pointer) so names re-register cleanly.
+- **ScheduleFacet** (`0x231A33C67Fc11CC3ebEe38F6A45462f4C707283A`) — durable,
+  tab-independent recurring jobs. `scheduleJob(targetId, task, interval,
+  budgetWei, maxRuns)` ESCROWS the owner's `$LH` into the diamond to back a job
+  that runs `<target>` on a fixed interval (60s min; `register`-style sponsored
+  approve + scheduleJob in one tx). `recordRun(id, expectedNextRun, spentWei)`
+  is SCHEDULER-ROLE-ONLY (the worker): atomically debits the budget + advances
+  `nextRun` (CAS-guarded against double-fire, skip-don't-pile-up). The per-job
+  `budgetWei` is the HARD STOP — when budget/runs are spent the job is marked
+  `Exhausted` and the unspent remainder refunded; `cancelJob` refunds the full
+  remainder, `pauseJob`/`resumeJob`/`topUpJob` are owner-only controls. Views:
+  `jobsDue(startAfter,limit)` (the worker's due-set scan), `getJob`/`taskOf`/
+  `jobsOf`/`jobCount`. `setScheduler`/`schedulerAddress` set the worker role =
+  the proxy meter key. Spent `$LH` stays in the diamond as treasury. Cut via
+  `script/AddScheduleFacet.s.sol`; fired by the `/scheduler` cron worker (proxy
+  section). Recursion / agent-to-agent ping-pong is NOT built (Phase 2).
 - **PairingFacet** (dormant — superseded by QR seed-adoption). v2 selector
   `announcePairing(bytes32,bytes)` emits `PairingAnnounced(codeHash, device, …)`.
   Event-only. Old device-key path: phone opened `?pair=CODE`, generated a device
@@ -674,6 +699,13 @@ and Tempo native AA (post-0.10.24) shipped. Next:
   project their wire history into it (`project_history`). Backward-compatible
   (old text-only saves still load).
 - **At-rest encryption** — wallet-derived sym key over OPFS contents.
+- **Agent scheduling** — ✅ DONE. `ScheduleFacet`
+  (`0x231A33C67Fc11CC3ebEe38F6A45462f4C707283A`) is the on-chain durable job
+  registry (escrow `$LH`, per-job budget = hard stop); the credit proxy's
+  `/scheduler` Vercel-Cron worker (`proxy/api/scheduler.ts`, CRON_SECRET-gated)
+  fires due jobs with NO browser tab; CLI `schedule`/`jobs`/`unschedule`. Agents
+  run recurring jobs tab-free. Remaining: recursion / agent-to-agent ping-pong
+  of scheduled runs (Phase 2) + a 1-min cron cadence (needs Vercel Pro).
 
 ## Filesystem trait
 
