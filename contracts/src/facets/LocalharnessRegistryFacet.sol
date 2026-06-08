@@ -29,6 +29,13 @@ contract LocalharnessRegistryFacet {
     event Registered(uint256 indexed agentId, address indexed owner, string name);
     event MetadataSet(uint256 indexed agentId, bytes32 indexed key, bytes value);
     event RegistrationCostUpdated(uint256 oldCostWei, uint256 newCostWei);
+
+    /// `name` is not a valid DNS label (1-63 bytes of lowercase a-z / 0-9 /
+    /// hyphen, no leading or trailing hyphen). Mirrors the CLI's
+    /// `name_is_valid` so a direct contract call can't mint an unreachable
+    /// "ghost" subdomain (uppercase / underscore / emoji / oversized break
+    /// DNS routing).
+    error InvalidName(string name);
     // ERC-721 Transfer event — emitted on register (mint, from = 0) and
     // on the proper ERC-721 transferFrom (lives in ERC721Facet).
     event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
@@ -47,8 +54,12 @@ contract LocalharnessRegistryFacet {
     /// same sponsored Tempo tx as the register call).
     function register(string calldata name) external returns (uint256 agentId) {
         LibRegistryStorage.Storage storage s = LibRegistryStorage.load();
+        // Defense-in-depth: reject malformed names BEFORE any mint / state
+        // write so a direct contract call can't bypass the CLI guard and
+        // mint a DNS-unreachable ghost. Validate first — an invalid name is
+        // an invalid name regardless of whether it happens to be taken.
+        if (!_isValidName(name)) revert InvalidName(name);
         require(s.idOfName[name] == 0, "name taken");
-        require(_isValidName(name), "invalid name");
         // Token IDs MUST start at 1. `idOfName[name] == 0` is the "name is
         // free" sentinel, so a token with id 0 would make its own name read
         // as unclaimed — anyone could re-register it and overwrite
@@ -176,9 +187,15 @@ contract LocalharnessRegistryFacet {
 
     // --- internals -------------------------------------------------------
 
+    /// A valid DNS label, EXACTLY matching the CLI's `name_is_valid`
+    /// (src/bin/localharness.rs): 1-63 bytes, every byte lowercase `a-z`
+    /// (0x61-0x7a) / digit `0-9` (0x30-0x39) / hyphen `-` (0x2d), and the
+    /// first + last byte are NOT a hyphen (RFC 1035 — `-foo` / `foo-` are
+    /// dead-on-arrival subdomains). A multi-byte UTF-8 char (emoji) fails
+    /// the per-byte range check; uppercase fails the `a-z` range.
     function _isValidName(string memory name) internal pure returns (bool) {
         bytes memory b = bytes(name);
-        if (b.length < 3 || b.length > 32) return false;
+        if (b.length < 1 || b.length > 63) return false;
         if (b[0] == 0x2d || b[b.length - 1] == 0x2d) return false;
         for (uint256 i = 0; i < b.length; i++) {
             bytes1 c = b[i];
