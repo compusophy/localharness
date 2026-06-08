@@ -196,6 +196,16 @@ struct ToolUseAccum {
     args_json: String,
 }
 
+/// A completed `thinking` block accumulated across streamed deltas. The
+/// `thinking` text arrives as `thinking_delta`s; the `signature` (required
+/// to echo the block back alongside a tool_use) arrives as a trailing
+/// `signature_delta` for the same block index.
+#[derive(Default)]
+struct ThinkingAccum {
+    thinking: String,
+    signature: String,
+}
+
 pub(crate) async fn run_turn(deps: TurnDeps, user: Message) -> Result<()> {
     deps.state.idle.store(false, Ordering::Release);
     deps.state.cancel.store(false, Ordering::Release);
@@ -230,7 +240,16 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message) -> Result<()> {
 
         let step_index = deps.state.alloc_step_index();
         let mut accumulated_text = String::new();
-        let mut accumulated_thinking = String::new();
+        // Per-index thinking accumulators. With extended thinking enabled,
+        // Anthropic REQUIRES the assistant turn's thinking block(s) — WITH
+        // their `signature` — to be echoed back verbatim in the next request
+        // whenever that turn also contains `tool_use`; otherwise the follow-up
+        // round 400s (`messages.N: ... thinking blocks must be preserved`).
+        // So we accumulate each thinking block's text + signature by block
+        // index and re-emit them (in index order, ahead of text/tool_use) into
+        // the persisted assistant message. (`signature` arrives on a separate
+        // `signature_delta`, after the `thinking_delta`s for the same index.)
+        let mut thinking_blocks: BTreeMap<u32, ThinkingAccum> = BTreeMap::new();
         // Per-index block accumulators — text blocks need no state, tool_use
         // blocks accumulate id/name/args across deltas.
         let mut tool_blocks: BTreeMap<u32, ToolUseAccum> = BTreeMap::new();
@@ -314,13 +333,23 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message) -> Result<()> {
                         }
                         BlockDelta::ThinkingDelta { thinking } => {
                             if !thinking.is_empty() {
-                                accumulated_thinking.push_str(&thinking);
+                                thinking_blocks
+                                    .entry(index)
+                                    .or_default()
+                                    .thinking
+                                    .push_str(&thinking);
                                 deps.state.emit(thought_delta_step(
                                     &trajectory_id,
                                     step_index,
                                     &thinking,
                                 ));
                             }
+                        }
+                        BlockDelta::SignatureDelta { signature } => {
+                            // The cryptographic signature for the thinking
+                            // block at this index — required when echoing the
+                            // block back alongside a tool_use.
+                            thinking_blocks.entry(index).or_default().signature = signature;
                         }
                         BlockDelta::InputJsonDelta { partial_json } => {
                             if let Some(acc) = tool_blocks.get_mut(&index) {
@@ -378,8 +407,22 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message) -> Result<()> {
             pending_calls.push((acc.id, acc.name, args, parse_error));
         }
 
-        // Build the assistant-turn content (text + tool_use blocks) and push.
+        // Build the assistant-turn content and push. Block order matters:
+        // Anthropic requires thinking block(s) to lead the turn (ahead of
+        // text/tool_use), each carrying its `signature`. We only persist a
+        // thinking block once its signature has arrived — an unsigned thinking
+        // block echoed back would itself 400. (A thinking block with no
+        // signature can only occur on a truncated/cancelled stream, in which
+        // case we drop it; the turn won't be replayed correctly anyway.)
         let mut assistant_blocks: Vec<Block> = Vec::new();
+        for (_idx, acc) in std::mem::take(&mut thinking_blocks) {
+            if !acc.thinking.is_empty() && !acc.signature.is_empty() {
+                assistant_blocks.push(Block::Thinking {
+                    thinking: acc.thinking,
+                    signature: Some(acc.signature),
+                });
+            }
+        }
         if !accumulated_text.is_empty() {
             assistant_blocks.push(Block::Text {
                 text: accumulated_text.clone(),
@@ -442,7 +485,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message) -> Result<()> {
                     .emit_chunk_step(StreamChunk::ToolResult(post_result));
                 result_blocks.push(Block::ToolResult {
                     tool_use_id: id,
-                    content: json!({ "error": msg }),
+                    content: tool_result_content(&json!({ "error": msg })),
                     is_error: Some(true),
                 });
                 continue;
@@ -454,7 +497,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message) -> Result<()> {
                 saw_finish = true;
                 result_blocks.push(Block::ToolResult {
                     tool_use_id: id,
-                    content: json!({ "ok": true }),
+                    content: tool_result_content(&json!({ "ok": true })),
                     is_error: None,
                 });
                 continue;
@@ -509,7 +552,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message) -> Result<()> {
 
             result_blocks.push(Block::ToolResult {
                 tool_use_id: id,
-                content: result_value,
+                content: tool_result_content(&result_value),
                 is_error: post_result_error.map(|_| true),
             });
         }
@@ -608,6 +651,23 @@ fn resolve_tool_args(name: &str, args_json: &str) -> (Value, Option<String>) {
             warn!(error = %e, name = %name, "tool_use args not valid JSON; surfacing tool error");
             (json!({}), Some(msg))
         }
+    }
+}
+
+/// Normalize a tool's return `Value` into a wire-valid `tool_result.content`.
+///
+/// Anthropic's `tool_result.content` is typed `string | content_block[]` — a
+/// bare JSON object/array/number is REJECTED with a 400 (`tool_result.content:
+/// Input should be a valid string`). Tools here return arbitrary JSON (objects
+/// like `{"contents": "..."}`, the finish sentinel `{"ok": true}`, error
+/// envelopes), so an unwrapped object would break EVERY tool round-trip. We map
+/// any non-string Value to its compact JSON text (a string the model parses
+/// fine); a Value that's already a string passes through verbatim (no double
+/// quoting). The result is always a `Value::String`, which the API accepts.
+fn tool_result_content(v: &Value) -> Value {
+    match v {
+        Value::String(_) => v.clone(),
+        other => Value::String(other.to_string()),
     }
 }
 
@@ -831,6 +891,39 @@ mod tests {
         assert_eq!(args, json!({}));
     }
 
+    /// REGRESSION: Anthropic's `tool_result.content` is typed
+    /// `string | content_block[]`; a bare JSON object/array/number is
+    /// REJECTED with a 400 (`tool_result.content: Input should be a valid
+    /// string`). The fs/agent tools here return JSON OBJECTS (e.g.
+    /// `{"contents": "..."}`) and the loop echoed them straight into
+    /// `tool_result.content`, which would 400 on EVERY tool round-trip.
+    /// `tool_result_content` must serialize a non-string Value to its JSON
+    /// text (a valid string), and pass a string Value through verbatim (no
+    /// double-quoting).
+    #[test]
+    fn tool_result_content_objects_become_json_strings() {
+        // An object → a JSON string the model can read.
+        let obj = json!({"contents": "fn main() {}", "lines": 1});
+        let wire = tool_result_content(&obj);
+        assert!(wire.is_string(), "object must serialize to a string, got {wire}");
+        // Round-trips back to the same object.
+        let back: Value = serde_json::from_str(wire.as_str().unwrap()).unwrap();
+        assert_eq!(back, obj);
+
+        // The finish/error sentinels are objects too — also stringified.
+        assert!(tool_result_content(&json!({"ok": true})).is_string());
+        assert!(tool_result_content(&json!({"error": "boom"})).is_string());
+
+        // An array result is likewise stringified (also not a valid bare
+        // content value).
+        assert!(tool_result_content(&json!(["a", "b"])).is_string());
+
+        // A Value that is ALREADY a string passes through unchanged — we must
+        // NOT double-quote it into "\"hi\"".
+        let s = json!("plain text result");
+        assert_eq!(tool_result_content(&s), json!("plain text result"));
+    }
+
     #[test]
     fn build_request_clamps_thinking_below_max_tokens() {
         let config = LoopConfig {
@@ -924,6 +1017,96 @@ mod tests {
         assert_eq!(neutral.candidates_token_count, Some(33));
         assert_eq!(neutral.prompt_token_count, Some(12));
         assert_eq!(neutral.total_token_count, Some(45)); // 12 + 33
+    }
+
+    /// Replicate `run_turn`'s assistant-block assembly for a thinking-enabled
+    /// turn that also makes a tool call. Anthropic REQUIRES the signed thinking
+    /// block(s) to be echoed back (and lead the assistant turn) whenever the
+    /// turn contains a tool_use — omitting them 400s the follow-up round. The
+    /// block order must be: thinking (with signature) → text → tool_use.
+    #[test]
+    fn assistant_turn_preserves_signed_thinking_block_before_tool_use() {
+        // Mirror the per-index accumulators run_turn fills from the stream.
+        let mut thinking_blocks: BTreeMap<u32, ThinkingAccum> = BTreeMap::new();
+        // Block 0: a thinking block with text + a trailing signature.
+        thinking_blocks.insert(
+            0,
+            ThinkingAccum {
+                thinking: "Let me reason about this.".into(),
+                signature: "sig_abc".into(),
+            },
+        );
+        let accumulated_text = "I'll read it.".to_string();
+        let pending_calls: Vec<(String, String, Value, Option<String>)> =
+            vec![("toolu_1".into(), "view_file".into(), json!({"path": "a.rs"}), None)];
+
+        // --- assembly copied from run_turn (thinking → text → tool_use) ---
+        let mut assistant_blocks: Vec<Block> = Vec::new();
+        for (_idx, acc) in std::mem::take(&mut thinking_blocks) {
+            if !acc.thinking.is_empty() && !acc.signature.is_empty() {
+                assistant_blocks.push(Block::Thinking {
+                    thinking: acc.thinking,
+                    signature: Some(acc.signature),
+                });
+            }
+        }
+        if !accumulated_text.is_empty() {
+            assistant_blocks.push(Block::Text {
+                text: accumulated_text.clone(),
+            });
+        }
+        for (id, name, args, _e) in &pending_calls {
+            assistant_blocks.push(Block::ToolUse {
+                id: id.clone(),
+                name: name.clone(),
+                input: args.clone(),
+            });
+        }
+
+        // Thinking must be FIRST and carry its signature.
+        match &assistant_blocks[0] {
+            Block::Thinking { thinking, signature } => {
+                assert_eq!(thinking, "Let me reason about this.");
+                assert_eq!(signature.as_deref(), Some("sig_abc"));
+            }
+            other => panic!("expected leading Thinking block, got {other:?}"),
+        }
+        assert!(matches!(assistant_blocks[1], Block::Text { .. }));
+        assert!(matches!(assistant_blocks[2], Block::ToolUse { .. }));
+
+        // Serializes to the wire shape the API requires for replay.
+        let wire = serde_json::to_value(&assistant_blocks[0]).unwrap();
+        assert_eq!(wire["type"], "thinking");
+        assert_eq!(wire["thinking"], "Let me reason about this.");
+        assert_eq!(wire["signature"], "sig_abc");
+    }
+
+    /// A thinking block whose `signature_delta` never arrived (truncated /
+    /// cancelled stream) must be DROPPED, not echoed back unsigned — an
+    /// unsigned thinking block sent back is itself a 400.
+    #[test]
+    fn unsigned_thinking_block_is_dropped() {
+        let mut thinking_blocks: BTreeMap<u32, ThinkingAccum> = BTreeMap::new();
+        thinking_blocks.insert(
+            0,
+            ThinkingAccum {
+                thinking: "partial reasoning".into(),
+                signature: String::new(), // never signed
+            },
+        );
+        let mut assistant_blocks: Vec<Block> = Vec::new();
+        for (_idx, acc) in std::mem::take(&mut thinking_blocks) {
+            if !acc.thinking.is_empty() && !acc.signature.is_empty() {
+                assistant_blocks.push(Block::Thinking {
+                    thinking: acc.thinking,
+                    signature: Some(acc.signature),
+                });
+            }
+        }
+        assert!(
+            assistant_blocks.is_empty(),
+            "unsigned thinking must not be persisted"
+        );
     }
 
     /// Multiple `message_delta` events (the spec permits more than one) each
