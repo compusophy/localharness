@@ -82,8 +82,8 @@ pub(crate) async fn run_send() {
             return;
         }
     };
-    // Credits mode (base_url set): ensure a session is open so the proxy
-    // accepts the call. Free in beta; silent best-effort.
+    // Credits mode (base_url set): top up the per-request meter so the proxy
+    // bills real `$LH` per call (NOT a free session). Silent best-effort.
     if access.base_url.is_some() {
         ensure_credit_meter().await;
     }
@@ -774,6 +774,14 @@ pub(crate) async fn start_session(
              https://localharness.xyz/llms.txt plus an embedded summary). \
              Read-only. Use it to self-diagnose, accurately explain your own \
              platform/SDK, or give grounded feedback about it instead of guessing.\n\
+           • clear_context() — erase the ENTIRE conversation history + the \
+             visible chat, starting a fresh empty context. THIS is what 'clear \
+             history / reset / wipe / start a fresh chat' means — call it; do NOT \
+             delete `.lh_history.json` by hand. Irreversible; the screen clears \
+             when this turn ends.\n\
+           • compact_context() — summarise older turns into a short note while \
+             keeping recent turns verbatim, to free context-window budget. Use \
+             when the user asks to compact / condense / shrink the context.\n\
            • finish(result?) — signal that the task is COMPLETE. Call this when, \
              and only when, you've fully satisfied the user's request — it ends \
              the autonomous loop. If you still have steps left, just keep going \
@@ -815,10 +823,10 @@ pub(crate) async fn start_session(
            unsure whether something is destructive, treat it as destructive.\n\
          • Files at the OPFS root are the user's. These internal files are \
            managed by the platform — read only if asked, NEVER write or delete: \
-           `.lh_history.json` (conversation history — this is what 'clear \
-           history' targets), `.lh_api_key`, `.lh_owner`, `.lh_feedback.txt`, \
-           and `agent.json` (your config — change it via configure_agent, not \
-           by editing the file).\n\
+           `.lh_history.json` (conversation history — to clear it call the \
+           clear_context tool, never delete this file), `.lh_api_key`, \
+           `.lh_owner`, `.lh_feedback.txt`, and `agent.json` (your config — \
+           change it via configure_agent, not by editing the file).\n\
          • Keep responses concise and conversational. The user is on the same \
            page; they don't need you restating what you just did.\n\
          • Don't speculate about filesystem contents — call list_directory first \
