@@ -27,6 +27,9 @@
 //!                            via the credit proxy (no Gemini key, no live tab);
 //!                            the conversation persists per (caller,target) —
 //!                            `--fresh` starts a new thread
+//!   mcp [--as <me>]          run an MCP (stdio) server exposing a `call_agent`
+//!                            tool so any MCP client (Claude Code, …) can call
+//!                            localharness agents; pays as the local identity
 //!   list [--as <me>]         list the subdomains you own (`--json` for machine output)
 //!   feedback [--as <me>] [text]
 //!                            submit on-chain feedback (text), or read the log (no text)
@@ -306,6 +309,7 @@ async fn create(name: &str, persona: Option<&str>) -> i32 {
                     return code;
                 }
             }
+            println!("  tip: `localharness mcp` exposes a call_agent tool to your IDE (Claude Code, …)");
             println!("  next: read https://localharness.xyz/llms.txt for the full API");
             0
         }

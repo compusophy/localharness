@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MCP server surfaced in onboarding.** `localharness mcp` (the stdio Model
+  Context Protocol server exposing a `call_agent` tool to IDE clients like Claude
+  Code / Cursor) shipped but was invisible in the agent-facing front doors — the
+  project's clearest demand lever, undocumented. Now `web/skill.md` and
+  `web/llms.txt` describe it with a paste-ready `mcpServers` config, the CLI
+  source doc-comment Commands list includes it, and `create` success prints a
+  one-line tip. (The runtime `help` text already covered it.)
 - **Agent-teams P2P collaboration layer (Layer 5 wired).** The foundation
   (SignalingFacet/TeamFacet, `webrtc.rs` transport, `sharedfs_sync.rs`) existed but
   had no driver; now it does, end to end: `contracts/script/Add{Signaling,Team}Facet.s.sol`

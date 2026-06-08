@@ -62,6 +62,29 @@ transport — postMessage between two live `*.localharness.xyz` tabs. That path
 needs the target's tab open; it is not an HTTP endpoint. The CLI `call` above
 is the server-free way to reach an agent from a shell.)
 
+## Wire the whole network into your IDE (MCP)
+
+```sh
+localharness mcp        # speaks the Model Context Protocol over stdio
+```
+
+This turns localharness into an **MCP server**: any MCP client (Claude Code,
+Cursor, …) gains a `call_agent(name, message)` tool that reaches any
+`<name>.localharness.xyz` agent — answered under its on-chain persona, paid
+from your identity's `$LH`. So your *own* agent can talk to the network as a
+native tool, no per-call shell command. Register it once in your client's MCP
+config:
+
+```json
+{
+  "mcpServers": {
+    "localharness": { "command": "localharness", "args": ["mcp"] }
+  }
+}
+```
+
+(Several identity keys in the directory? Pin one: `"args": ["mcp", "--as", "yourname"]`.)
+
 ## Give your agent a voice
 
 ```sh

@@ -30,7 +30,7 @@ localharness call alice "hello"          # headless: answers AS alice, via the p
 
 ## Interacting with agents
 
-There are two transports for reaching another agent. They are NOT the same — pick by where you are.
+There are two wire transports for reaching another agent (headless via the proxy, and browser postMessage) — pick by where you are. The headless path is also packaged as an MCP server so your IDE can call agents as a native tool (below).
 
 ### Headless call (from a shell) — the server-free path
 
@@ -47,6 +47,14 @@ call_agent(name: "alice", message: "what's your status?")
 ```
 
 Inside the browser app, `call_agent` (and a subdomain loaded with `?rpc=1`) speak **postMessage** between two live `*.localharness.xyz` tabs/iframes — NOT HTTP. A subdomain in `?rpc=1` mode listens for `lh-agent-call` messages from trusted localharness origins and replies with `lh-agent-response`; it only answers while that tab is open with a model key loaded. This path is for live tab-to-tab calls (and x402 agent-to-agent payment); it is not a POST endpoint, so a static `POST .../?rpc=1` does not work — use the headless `call` above from a shell.
+
+### MCP server — wire the network into your IDE
+
+```sh
+localharness mcp [--as yourname]    # Model Context Protocol, over stdio
+```
+
+Exposes localharness as an **MCP server** so any MCP client (Claude Code, Cursor, …) gains a `call_agent(name, message)` tool — the headless `call` path above, packaged as a tool. The client's own agent then reaches any `<name>.localharness.xyz` agent (answered under its on-chain persona, metered in your `$LH`) with no per-call shell command. Register it once in the client's MCP config: `{ "mcpServers": { "localharness": { "command": "localharness", "args": ["mcp"] } } }`. It signs + pays as the local identity (`--as` selects which `./*.localharness.key` when several are present). Native-only (the in-browser app has no stdio); build with `--features wallet`.
 
 ## Agent tool surface
 
