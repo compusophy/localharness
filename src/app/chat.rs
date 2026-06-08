@@ -184,6 +184,11 @@ pub(crate) async fn run_send() {
         // history mid-turn corrupts the in-flight turn the tool ran inside —
         // the backend re-locks history after the tool to append its result.
         if PENDING_CLEAR.with(|c| c.replace(false)) {
+            // Clear supersedes compact — the context is being wiped, so any
+            // compact requested the same turn is moot. Drain its flag too, or
+            // it would leak and spuriously compact the fresh/empty history at
+            // the start of the NEXT user message.
+            PENDING_COMPACT.with(|c| c.set(false));
             agent.clear_history(); // wipe the model's working context
             super::history::clear_persisted().await; // wipe the durable OPFS copy
             dom::swap_inner("transcript", ""); // instant visible wipe, no refresh
@@ -263,6 +268,7 @@ enum TurnInput {
 }
 
 /// How a single streamed turn ended — drives the continuous-execution loop.
+#[derive(Debug, PartialEq, Eq)]
 enum TurnOutcome {
     /// The model called `finish` — task explicitly complete. Stop.
     Finished,
@@ -327,8 +333,9 @@ async fn stream_turn(agent: &Agent, input: TurnInput) -> TurnOutcome {
     // Did this turn put ANYTHING visible on screen (text or a tool call)?
     let mut any_visible = false;
     // Completion signals tracked across the stream:
-    let mut saw_tool_call = false; // any non-finish tool action this turn?
+    let mut saw_tool_call = false; // any goal-step tool action this turn?
     let mut saw_finish = false; // the model called `finish`?
+    let mut saw_question = false; // the model called `ask_question` (blocking)?
 
     let response = match agent.chat(prompt).await {
         Ok(r) => r,
@@ -359,9 +366,14 @@ async fn stream_turn(agent: &Agent, input: TurnInput) -> TurnOutcome {
             }
             Ok(StreamChunk::ToolCall(call)) => {
                 any_visible = true;
-                // `finish` is a completion signal, not a goal step.
+                // `finish` and `ask_question` are completion / blocking
+                // signals, NOT goal steps — they end the autonomous loop
+                // (finish = done, ask_question = waiting on the user). Only a
+                // real goal-step tool marks the turn as mid-goal / continuable.
                 if call.name == "finish" {
                     saw_finish = true;
+                } else if call.name == "ask_question" {
+                    saw_question = true;
                 } else {
                     saw_tool_call = true;
                 }
@@ -462,9 +474,38 @@ async fn stream_turn(agent: &Agent, input: TurnInput) -> TurnOutcome {
 
     APP.with(|cell| cell.borrow_mut().turn_count += 1);
 
-    // Classify how the turn ended for the continuous-execution loop.
+    // Classify how the turn ended for the continuous-execution loop. The
+    // cancel case is handled by the early return above, so it's not passed in.
+    classify_turn(saw_finish, saw_question, saw_tool_call, any_visible)
+}
+
+/// Decide how a completed (non-cancelled) turn ended, for the
+/// continuous-execution loop. Pure over the four signals tracked while
+/// streaming so it can be unit-tested without a browser:
+/// - `saw_finish`: the model called `finish` → task complete, stop.
+/// - `saw_question`: the model called `ask_question` → it's blocking on the
+///   user, stop and wait (do NOT auto-continue — that would spam the model
+///   and never let the user answer).
+/// - `saw_tool_call`: a goal-step tool ran (NOT finish / ask_question).
+/// - `any_visible`: anything (text or a tool block) was rendered.
+///
+/// Precedence: `finish` wins over everything (the model can call other tools
+/// then `finish` in the same turn — that's still "done"). A blocking question
+/// stops next. Then truly-empty turns. Then a goal-step-only turn auto-continues
+/// (`Incomplete`). A pure text reply with no tool activity is a `FinalAnswer`.
+fn classify_turn(
+    saw_finish: bool,
+    saw_question: bool,
+    saw_tool_call: bool,
+    any_visible: bool,
+) -> TurnOutcome {
     if saw_finish {
         TurnOutcome::Finished
+    } else if saw_question {
+        // Blocking on the user — a conversational stop, like FinalAnswer.
+        // Never auto-continue (the default ask_question returns "skipped",
+        // so a continue would loop the model 10x without a real answer).
+        TurnOutcome::FinalAnswer
     } else if !any_visible {
         TurnOutcome::Empty
     } else if saw_tool_call {
@@ -2375,4 +2416,117 @@ fn spawn_recursive_subagent_tool(
             }
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_turn, TurnOutcome, MAX_AUTO_CONTINUATIONS};
+
+    // --- Turn classification (the continuous-execution loop's decision) -----
+
+    #[test]
+    fn finish_wins_over_everything() {
+        // finish + a goal-step tool in the same turn is still "done".
+        assert_eq!(
+            classify_turn(true, false, true, true),
+            TurnOutcome::Finished
+        );
+        // finish alone.
+        assert_eq!(
+            classify_turn(true, false, false, true),
+            TurnOutcome::Finished
+        );
+        // finish even alongside a question.
+        assert_eq!(
+            classify_turn(true, true, true, true),
+            TurnOutcome::Finished
+        );
+    }
+
+    #[test]
+    fn ask_question_stops_the_loop_not_incomplete() {
+        // REGRESSION: a blocking ask_question used to be read as a goal step
+        // (saw_tool_call) → Incomplete → auto-continue, spamming the model and
+        // never letting the user answer. It must stop like a FinalAnswer.
+        assert_eq!(
+            classify_turn(false, true, false, true),
+            TurnOutcome::FinalAnswer
+        );
+        // A question accompanied by some other goal-step tool still stops:
+        // the question is the blocking signal.
+        assert_eq!(
+            classify_turn(false, true, true, true),
+            TurnOutcome::FinalAnswer
+        );
+    }
+
+    #[test]
+    fn goal_step_tool_only_auto_continues() {
+        assert_eq!(
+            classify_turn(false, false, true, true),
+            TurnOutcome::Incomplete
+        );
+    }
+
+    #[test]
+    fn pure_text_reply_is_final_answer() {
+        assert_eq!(
+            classify_turn(false, false, false, true),
+            TurnOutcome::FinalAnswer
+        );
+    }
+
+    #[test]
+    fn nothing_visible_is_empty() {
+        assert_eq!(
+            classify_turn(false, false, false, false),
+            TurnOutcome::Empty
+        );
+        // No-visible takes precedence over a stray tool flag (can't have run a
+        // tool with nothing rendered, but the ordering must be deterministic).
+        assert_eq!(
+            classify_turn(false, false, true, false),
+            TurnOutcome::Empty
+        );
+    }
+
+    /// The only outcome that auto-continues is `Incomplete`. This guards the
+    /// loop-termination invariant: every other classification breaks the
+    /// continuous-execution loop, so the loop can only spin via `Incomplete`,
+    /// which is hard-bounded by `MAX_AUTO_CONTINUATIONS`.
+    #[test]
+    fn only_incomplete_continues() {
+        let continues = |o: TurnOutcome| o == TurnOutcome::Incomplete;
+        assert!(!continues(classify_turn(true, false, false, true))); // Finished
+        assert!(!continues(classify_turn(false, true, false, true))); // FinalAnswer (question)
+        assert!(!continues(classify_turn(false, false, false, true))); // FinalAnswer (text)
+        assert!(!continues(classify_turn(false, false, false, false))); // Empty
+        assert!(continues(classify_turn(false, false, true, true))); // Incomplete
+    }
+
+    /// Mirrors the loop's increment/break: an always-`Incomplete` turn can fire
+    /// at most `MAX_AUTO_CONTINUATIONS` auto-continuations, then the cap stops
+    /// it. Proves no infinite loop when a confused model never finishes.
+    #[test]
+    fn auto_continuation_is_bounded() {
+        let mut auto: u32 = 0;
+        let mut iterations = 0u32;
+        loop {
+            iterations += 1;
+            // Always Incomplete (the worst case for the loop).
+            if matches!(classify_turn(false, false, true, true), TurnOutcome::Incomplete) {
+                if auto >= MAX_AUTO_CONTINUATIONS {
+                    break;
+                }
+                auto += 1;
+            } else {
+                break;
+            }
+            // Safety net for the test itself.
+            assert!(iterations < MAX_AUTO_CONTINUATIONS + 5, "loop did not terminate");
+        }
+        // First turn + MAX_AUTO_CONTINUATIONS continuations, then the cap break.
+        assert_eq!(auto, MAX_AUTO_CONTINUATIONS);
+        assert_eq!(iterations, MAX_AUTO_CONTINUATIONS + 1);
+    }
 }
