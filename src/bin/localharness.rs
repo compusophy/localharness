@@ -259,6 +259,8 @@ async fn create(name: &str, persona: Option<&str>) -> i32 {
         eprintln!("could not persist key to {key_file}: {e} — aborting before any on-chain write");
         return 1;
     }
+    // Lock perms (0600, unix) + keep the raw key out of git.
+    let gitignored = secure_key_file(&key_file);
 
     match registry::owner_of_name(name).await {
         Ok(Some(o)) => {
@@ -302,6 +304,9 @@ async fn create(name: &str, persona: Option<&str>) -> i32 {
             println!("✓ you are live at https://{name}.localharness.xyz/");
             println!("  tx:  {tx}");
             println!("  key: ./{key_file}  (keep this — it is your identity)");
+            if gitignored {
+                println!("       (added *.localharness.key to .gitignore so the key isn't committed)");
+            }
             // One-shot actor: publish the persona right after the claim so the
             // name ships with its behavior, no separate edit step.
             if let Some(p) = persona {
@@ -1183,6 +1188,39 @@ fn identity_key_files() -> Result<Vec<String>, String> {
         .collect();
     found.sort();
     Ok(found)
+}
+
+/// `true` if `.gitignore` content already excludes identity keys — the wildcard
+/// `*.localharness.key` or the exact file, on any non-comment line.
+fn gitignore_already_covers(existing: &str, key_file: &str) -> bool {
+    existing.lines().any(|l| {
+        let t = l.trim();
+        t == "*.localharness.key" || t == key_file
+    })
+}
+
+/// Lock down a freshly-written identity key (a fix the on-chain test-user fleet
+/// asked for): owner-only file perms (0600, unix) plus ensure `.gitignore`
+/// excludes `*.localharness.key`, so a raw private key in the working directory
+/// can't be world-readable or accidentally `git commit`ed. Best-effort — never
+/// fails the create. Returns whether `.gitignore` was created/appended.
+fn secure_key_file(key_file: &str) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(key_file, std::fs::Permissions::from_mode(0o600));
+    }
+    match std::fs::read_to_string(".gitignore") {
+        Ok(existing) => {
+            if gitignore_already_covers(&existing, key_file) {
+                false
+            } else {
+                let sep = if existing.is_empty() || existing.ends_with('\n') { "" } else { "\n" };
+                std::fs::write(".gitignore", format!("{existing}{sep}*.localharness.key\n")).is_ok()
+            }
+        }
+        Err(_) => std::fs::write(".gitignore", "*.localharness.key\n").is_ok(),
+    }
 }
 
 /// The identity-key filename to act as. With `name`, it's `<name>.localharness
@@ -2179,6 +2217,22 @@ mod tests {
 
     fn args(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn gitignore_already_covers_detects_wildcard_and_exact() {
+        // wildcard covers any key file
+        assert!(gitignore_already_covers("target/\n*.localharness.key\n", "alice.localharness.key"));
+        // exact filename covers itself
+        assert!(gitignore_already_covers("alice.localharness.key\n", "alice.localharness.key"));
+        // tolerant of surrounding whitespace
+        assert!(gitignore_already_covers("  *.localharness.key  \n", "x.localharness.key"));
+        // not covered → needs appending
+        assert!(!gitignore_already_covers("target/\nnode_modules/\n", "alice.localharness.key"));
+        // a different exact key does NOT count as covering this one
+        assert!(!gitignore_already_covers("bob.localharness.key\n", "alice.localharness.key"));
+        // empty gitignore → not covered
+        assert!(!gitignore_already_covers("", "alice.localharness.key"));
     }
 
     #[test]

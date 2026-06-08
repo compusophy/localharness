@@ -15,6 +15,13 @@ per-op randomness + ECIES ephemerals, chainId+nonce+validity in Tempo tx, EIP-71
 domain separation) and prior hardening holds (postMessage origin allowlist,
 tx-target allowlist, markdown/error-string escaping). Real findings fixed:
 
+- **CLI: `create` now protects the persisted identity key.** It sets owner-only
+  perms (`0600`, unix) and adds `*.localharness.key` to `.gitignore` (created if
+  absent) so a raw private key written to the working directory can't be
+  world-readable or accidentally `git commit`ed. **Surfaced by the on-chain
+  test-user fleet** (`vex-qa`) dogfooding the platform — a closed feedback loop:
+  the fleet filed it on-chain, this fixes it. (+ a pure unit test for the
+  idempotent `.gitignore` check.)
 - **Proxy: auth-token replay window cut 24h → 5 min.** `FRESHNESS_WINDOW_SECS`
   was 86400, so a captured `address:timestamp:signature` token was replayable for
   a day. Clients sign per request, so 300s (ample clock-skew tolerance) closes the
