@@ -50,10 +50,14 @@ import {
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
-// Node serverless (NOT edge): Vercel Cron invokes a serverless function, and we
-// want a generous wall-clock budget for the per-job Gemini calls + awaited
-// recordRun receipts. The default Node runtime is correct here.
-export const config = { maxDuration: 300 };
+// Edge runtime — matches gemini.ts / mcp.ts, which use the SAME Web
+// `Request`->`Response` handler shape. That shape runs on Edge, NOT on Vercel's
+// Node runtime (a Node function expects `(req, res)`, so a Web handler there
+// 500s with FUNCTION_INVOCATION_FAILED). Edge's ~25s wall-clock caps the
+// per-tick batch (see MAX_JOBS_PER_TICK); leftover due jobs spill to the next
+// cron tick. (For a future high-volume Node 300s budget, rewrite the handler to
+// the `(req, res)` Node signature.)
+export const config = { runtime: 'edge' };
 
 // ---- constants (shared with gemini.ts / mcp.ts) ----------------------------
 
@@ -79,8 +83,11 @@ const COST_WEI = ((): bigint => {
 // due than this; the rest fire on the next tick. Bounds sponsor gas + Gemini
 // fan-out per invocation (design §4.3 "global worker budget").
 const MAX_JOBS_PER_TICK = ((): number => {
-  const n = Number(process.env.SCHEDULER_MAX_JOBS_PER_TICK ?? '20');
-  return Number.isFinite(n) && n > 0 ? Math.min(Math.trunc(n), 100) : 20;
+  // Edge ~25s budget: each job = a Gemini call + an awaited recordRun receipt
+  // (~5-7s). Keep the per-tick batch small so a tick can't exceed the wall-clock
+  // mid-recordRun; the rest spill to the next tick. (Raise via env on Pro/Node.)
+  const n = Number(process.env.SCHEDULER_MAX_JOBS_PER_TICK ?? '4');
+  return Number.isFinite(n) && n > 0 ? Math.min(Math.trunc(n), 100) : 4;
 })();
 
 // Status enum (LibScheduleStorage.Status). Only Active (0) jobs are fired.
