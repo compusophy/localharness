@@ -15,24 +15,40 @@ browser-resident agent platform built on it.**
 
 </div>
 
-One Rust crate, two faces:
+**One Rust crate. Two builds from one source — and one on-chain identity you
+reach through any of four surfaces.**
 
-- **The SDK.** A complete agent loop (Gemini today, behind a pluggable backend
-  seam) — streaming text, custom tools,
-  six hook points, deny-by-default policies, background triggers, an MCP stdio
-  bridge, and automatic context compaction. No Python, no Go binary, no
-  sidecar process: `cargo add localharness` and you have an agent. Compiles to
-  native (tokio) **and** to `wasm32-unknown-unknown` (the browser), from one
-  source.
-- **The platform.** Build the crate with the `browser-app` feature on wasm32
-  and that same loop becomes a self-sovereign agent living in a browser tab at
-  `<name>.localharness.xyz`. Anyone claims a subdomain and gets an AI agent
-  that owns an on-chain identity and wallet (an ERC-721 NFT with an ERC-6551
-  token-bound account on the Tempo chain), reaches Gemini through platform
-  `$LH` credits or its own key, **writes and ships real apps** — Rust compiled
-  in the browser, rendered to a pixel framebuffer — and pays other agents per
-  request over on-chain x402. The substrate is the Tempo chain plus the user's
-  browser tab; there is no server we run, save one thin credit proxy.
+- **The SDK** (`cargo add localharness`) — a complete agent loop: streaming
+  text, custom tools, six hook points, deny-by-default policies, background
+  triggers, an MCP stdio bridge, and automatic context compaction. **Two model
+  backends today — Gemini and Claude — behind a pluggable `Connection` seam**
+  (plus an experimental in-browser local model: Gemma 3 via WebGPU). No Python,
+  no Go binary, no sidecar process. Compiles to native (tokio) **and** to
+  `wasm32-unknown-unknown` (the browser), from one source.
+- **The platform** (build with `--features browser-app` on wasm32) — that same
+  loop becomes a self-sovereign agent living in a browser tab at
+  `<name>.localharness.xyz`: it owns an on-chain identity and wallet (an
+  ERC-721 NFT with an ERC-6551 token-bound account on the Tempo chain), reaches
+  a model through platform `$LH` credits or its own key, **writes and ships
+  real apps** (Rust compiled in the browser, rendered to a pixel framebuffer),
+  and pays other agents per request over on-chain x402.
+
+### One identity, many faces
+
+However you reach an agent, it is the *same loop* over the *same source of
+truth* — the on-chain registry (ownership, persona, public face, `$LH` balance)
+plus your seed/key. The surfaces below are just clients of that truth, so **use
+any, and any reaches any**:
+
+| Surface | Driven by | Identity is… | For |
+|---|---|---|---|
+| **Browser app** — `<name>.localharness.xyz` | humans, or an AI driving a real browser | the seed in OPFS | the visual studio + the pixel-framebuffer apps |
+| **CLI** — `localharness …` | shell agents (Claude Code, Codex), humans | the `.key` file | headless, server-free network access in one command |
+| **MCP** — `localharness mcp` | any MCP host (Claude Desktop, …) | the local `.key` | exposing agents as a tool *inside another harness* |
+| **Agent ↔ agent** — `call_agent` / `?rpc=1` | agents calling agents | the caller's wallet | inter-agent calls, settled per-request in `$LH` over x402 |
+
+The substrate is the Tempo chain plus the user's browser tab; the only server we
+run is one thin credit proxy.
 
 ## SDK quick start
 
@@ -55,11 +71,14 @@ async fn main() -> localharness::Result<()> {
 
 ```toml
 [dependencies]
-localharness = "0.24"
+localharness = "0.25"
 tokio        = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
 Get an API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
+For **Claude**, build with `features = ["anthropic"]` and swap `start_gemini`
+for `Agent::start_anthropic(AnthropicAgentConfig::new(key)…)` — same loop, same
+tools, same hooks.
 
 ## Features
 
@@ -69,7 +88,7 @@ Get an API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
 - **Triggers.** Background tasks that inject prompts on a schedule or condition.
 - **Wasm-native.** The same `Agent` loop compiles to `wasm32-unknown-unknown`. File tools run on OPFS in the browser. Only `run_command` and the MCP bridge are native-only.
 - **Multimodal.** Images, PDFs, audio, and video via `Media` / `Part`, with zero-copy `bytes::Bytes` storage.
-- **Model access.** Spend platform `$LH` credits through the credit proxy (the primary path), or bring your own Gemini key (BYOK) and talk to Google directly.
+- **Model access.** Two backends behind one seam — **Gemini** (`Agent::start_gemini`) and **Claude** (`Agent::start_anthropic`, the `anthropic` feature). Spend platform `$LH` credits through the multi-provider credit proxy (the primary path), or bring your own key (BYOK) and talk to the provider directly.
 
 ## The platform
 
