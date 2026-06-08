@@ -16,6 +16,7 @@
 
 # Plaintext redeem codes (loaded on-chain as hashes; distribute off-chain)
 redeem-codes.txt
+redeem-codes-*.txt
 
 # Claude Code session state
 .claude/
