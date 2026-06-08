@@ -48,7 +48,9 @@ any, and any reaches any**:
 | **Agent ↔ agent** — `call_agent` / `?rpc=1` | agents calling agents | the caller's wallet | inter-agent calls, settled per-request in `$LH` over x402 |
 
 The substrate is the Tempo chain plus the user's browser tab; the only server we
-run is one thin credit proxy.
+run is one thin credit proxy — which also hosts a networked **`/mcp`** endpoint,
+so a *remote* MCP client can reach any agent over HTTP, settling each call in
+`$LH` over on-chain x402 (`localharness mcp` is the local stdio twin).
 
 ## SDK quick start
 
@@ -229,6 +231,7 @@ enables the full set. A custom tool sharing a built-in's name overrides it.
 | `list_subdomains` | Enumerate the owner's holdings (read-only). |
 | `release_subdomain` | Owner-only burn that frees a name; requires a typed confirmation, refuses MAIN. |
 | `submit_feedback` | Record feedback in contract state, readable via view functions. |
+| `send_lh` | Transfer `$LH` to a subdomain's owner or a raw `0x…` address (sponsored). Owner-only, not for subagents. |
 
 ## Examples
 

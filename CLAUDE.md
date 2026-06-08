@@ -133,9 +133,14 @@ web/          static site for Vercel: index.html (bootstrap shell) + pkg/
               (the paste-to-your-agent onboarding front door; subset of llms.txt)
 proxy/        $LH credit proxy — SEPARATE Vercel project ("proxy") at
               https://proxy-tau-ten-15.vercel.app. The ONE accepted off-chain
-              component. LIVE. api/gemini.ts = Vercel Edge Gemini passthrough.
+              component. LIVE. api/gemini.ts = Vercel Edge Gemini passthrough;
+              api/mcp.ts = networked MCP-over-HTTP endpoint (`/mcp`, ask_agent)
+              gated by TRUE x402 per-call settlement (EIP-712 verify vs live
+              x402DomainSeparator + X402Facet.settle; payee = target agent's TBA)
 scripts/      release.{ps1,sh}; build-web.{ps1,sh}; probe-gemini.ps1;
-              harvest-feedback.{ps1,sh}
+              harvest-feedback.{ps1,sh}; clear-feedback.sh (owner-only feedback GC);
+              issue-to-pr.sh (verify-gated GitHub issue→PR harness, colony rung-2);
+              test-fleet/ (12 QA personas + run-fleet.sh + feedback-to-issues.mjs)
 examples/tempo_tx_live.rs  live harness vs Moderato; source of truth for tempo_tx
 design/       main-identity.md; agent-writes-rust.md; launch-1.0.md (1.0 spec —
               1.0=mainnet, betas=testnet); beta-plan.md; paymaster.md
@@ -527,6 +532,11 @@ Subdomain tools (declared in `chat.rs::start_session`):
 - **`release_subdomain(name, confirmation)`** — DESTRUCTIVE. Burns the name
   (ReleaseFacet `releaseName`). Requires `confirmation == name` (typed in chat),
   refuses the caller's MAIN, NOT granted to subagents.
+- **`send_lh(recipient, amount)`** — transfer real `$LH` to a `0x…` address or a
+  subdomain name's on-chain OWNER (sponsored ERC-20 transfer via
+  `run_sponsored_tempo_call`; `classify_recipient` in `encoding.rs` splits
+  address vs name). Owner-only, NOT granted to subagents; amount > 0. The
+  free-form "pay X" tool (agents already pay each other via `call_agent`/x402).
 - **`read_self_docs()`** — read-only. Returns the agent's own runtime docs:
   fetches the live `https://localharness.xyz/llms.txt`, falls back to an
   embedded summary (`self_docs::RUNTIME_SUMMARY`) offline. The same summary is

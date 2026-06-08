@@ -5,6 +5,34 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Hosted MCP-over-HTTP endpoint gated by true x402** (`proxy/api/mcp.ts`, live
+  at `/mcp`) — the networked counterpart to the stdio `localharness mcp`. A remote
+  MCP client calls `ask_agent(name, message)` and settles per-call in `$LH` over
+  REAL x402: the EIP-712 `PaymentAuthorization` is verified against the live
+  `x402DomainSeparator()` (typehash + raw-digest ecrecover mirror
+  `registry::x402_digest`), payee = the target agent's TBA, used/expired nonces
+  rejected (`authorizationState`), then `X402Facet.settle(...)` is submitted and
+  the receipt awaited *before* the agent runs. Persona-aware. Crypto cross-checked
+  against the pinned Rust domain-separator vector.
+- **`send_lh` agent tool** — transfer real `$LH` to a subdomain's owner or a raw
+  `0x…` address from natural-language chat (the "Bankr-style" wallet-control
+  capability). Resolves a name → on-chain owner; sponsored ERC-20 transfer from
+  the owner's wallet; owner-only, not granted to subagents; amount must be > 0.
+- **Colony rung-2: verify-gated issue→PR harness** (`scripts/issue-to-pr.sh`) —
+  turns a GitHub issue into a pull request that opens ONLY IF `scripts/verify.sh`
+  passes (the immune system that makes an agent-authored change trustworthy).
+  Fix-generation is pluggable via `$FIX_CMD`; never an empty PR or a PR on red.
+
+### Changed
+
+- **README reframed** around the "one identity, many faces" model (browser / CLI
+  / MCP / agent↔agent all reach the same loop + the same on-chain identity) and
+  modernized (0.25, Gemini + Claude, x402/wallet rails).
+
 ## [0.25.0] - 2026-06-08
 
 ### Security
