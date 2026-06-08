@@ -38,6 +38,8 @@
 //!                            reply. The networked sibling of the stdio `mcp`.
 //!   credits [--as <me>]      show your $LH wallet + per-call meter + session
 //!   redeem [--as <me>] <code>  redeem a code for $LH into your wallet (funding)
+//!   send [--as <me>] <to> <amt>  send $LH to an address / a name's owner (fund an agent)
+//!   session [--as <me>]      open a proxy session (spend sessionPrice $LH)
 //!   topup [--as <me>]        deposit your wallet $LH into the per-call meter
 //!   list [--as <me>]         list the subdomains you own (`--json` for machine output)
 //!   feedback [--as <me>] [text|--json]
@@ -92,6 +94,8 @@ USAGE:
   localharness list [--as <me>]          list the subdomains you own (+ --json)
   localharness credits [--as <me>]       show your $LH wallet + per-call meter + session
   localharness redeem [--as <me>] <code> redeem a code for $LH into your wallet
+  localharness send [--as <me>] <to> <amt>  send $LH to an address / a name's owner
+  localharness session [--as <me>]       open a proxy session (spend sessionPrice $LH)
   localharness topup [--as <me>]         deposit your wallet $LH into the per-call meter
   localharness feedback [--as <me>] [text|--json]  submit on-chain feedback, or read
                                          all (no text; --json for machine output)
@@ -180,6 +184,26 @@ async fn run(args: &[String]) -> i32 {
                 eprintln!("usage: localharness redeem [--as <me>] <code>");
                 2
             }
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
+        Some("send") => match take_as_flag(&args[1..]) {
+            Ok((caller, rest)) if rest.len() == 2 => {
+                send_lh(caller.as_deref(), &rest[0], &rest[1]).await
+            }
+            Ok(_) => {
+                eprintln!("usage: localharness send [--as <me>] <recipient> <amount>");
+                2
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
+        Some("session") => match take_as_flag(&args[1..]) {
+            Ok((caller, _)) => open_session(caller.as_deref()).await,
             Err(e) => {
                 eprintln!("{e}");
                 2
@@ -2365,6 +2389,116 @@ async fn redeem(caller_name: Option<&str>, code: &str) -> i32 {
         }
         Err(e) => {
             eprintln!("redeem failed: {e}");
+            1
+        }
+    }
+}
+
+/// `localharness send <recipient> <amount>` — transfer `$LH` from your wallet to
+/// a `0x…` address or a subdomain name's on-chain OWNER (sponsored). The CLI twin
+/// of the browser `send_lh` tool — fund another agent (the same effect as a
+/// redeem code; "one agent sends another `$LH`").
+async fn send_lh(caller_name: Option<&str>, recipient: &str, amount: &str) -> i32 {
+    use localharness::encoding::{classify_recipient, Recipient};
+    let to_hex = match classify_recipient(recipient) {
+        Ok(Recipient::Address(a)) => a,
+        Ok(Recipient::Name(n)) => match registry::owner_of_name(&n).await {
+            Ok(Some(o)) => o,
+            Ok(None) => {
+                eprintln!("send: '{n}' is not registered");
+                return 1;
+            }
+            Err(e) => {
+                eprintln!("send: RPC error resolving '{n}': {e}");
+                return 1;
+            }
+        },
+        Err(e) => {
+            eprintln!("send: {e}");
+            return 2;
+        }
+    };
+    let amount_wei = match localharness::encoding::parse_token_amount(amount) {
+        Some(w) if w > 0 => w,
+        _ => {
+            eprintln!("send: invalid amount '{amount}' (expected a positive number of $LH)");
+            return 2;
+        }
+    };
+    let (key_file, key_hex) = match resolve_caller_key(caller_name) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let signer = match wallet::from_private_key_hex(&key_hex) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("bad key in {key_file}: {e}");
+            return 1;
+        }
+    };
+    let sponsor = match wallet::from_private_key_hex(SPONSOR_KEY) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("sponsor key error: {e}");
+            return 1;
+        }
+    };
+    match registry::transfer_lh_sponsored(
+        &signer,
+        &sponsor,
+        &to_hex,
+        amount_wei,
+        registry::ALPHA_USD_ADDRESS,
+    )
+    .await
+    {
+        Ok(tx) => {
+            println!("sent {amount} $LH to {to_hex}  tx: {tx}");
+            0
+        }
+        Err(e) => {
+            eprintln!("send failed: {e}");
+            1
+        }
+    }
+}
+
+/// `localharness session` — open a time-boxed proxy session by spending
+/// `sessionPrice()` `$LH` (sponsored gas). Grants `sessionDuration()` of proxy
+/// access without per-request metering. Needs `$LH` in your WALLET (redeem a code
+/// or receive `send`).
+async fn open_session(caller_name: Option<&str>) -> i32 {
+    let (key_file, key_hex) = match resolve_caller_key(caller_name) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let signer = match wallet::from_private_key_hex(&key_hex) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("bad key in {key_file}: {e}");
+            return 1;
+        }
+    };
+    let sponsor = match wallet::from_private_key_hex(SPONSOR_KEY) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("sponsor key error: {e}");
+            return 1;
+        }
+    };
+    match registry::open_session_sponsored(&signer, &sponsor, registry::ALPHA_USD_ADDRESS).await {
+        Ok(tx) => {
+            println!("session opened  tx: {tx}");
+            0
+        }
+        Err(e) => {
+            eprintln!("open session failed: {e}");
             1
         }
     }

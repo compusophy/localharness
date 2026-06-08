@@ -1902,6 +1902,20 @@ fn encode_approve(spender: &[u8; 20], amount_wei: u128) -> Vec<u8> {
     out
 }
 
+/// ERC-20 `transfer(to, amount)` calldata — same shape as `encode_approve`
+/// with the `transfer` selector.
+fn encode_transfer(to: &[u8; 20], amount_wei: u128) -> Vec<u8> {
+    let sel = selector("transfer(address,uint256)");
+    let mut to_padded = [0u8; 32];
+    to_padded[12..].copy_from_slice(to);
+    let amount_padded = u256_be(amount_wei);
+    let mut out = Vec::with_capacity(4 + 32 + 32);
+    out.extend_from_slice(&sel);
+    out.extend_from_slice(&to_padded);
+    out.extend_from_slice(&amount_padded);
+    out
+}
+
 // --- Credits / daily allowance (CreditsFacet on the diamond) ---------
 
 /// Sign + submit `CreditsFacet.claimDaily()` as a sponsored Tempo tx.
@@ -2589,6 +2603,27 @@ pub async fn approve_lh_sponsored(
     // approve is a single SSTORE (cold the first time) + event. 300k is
     // ample headroom on top of the AA-settlement overhead.
     submit_tempo_sponsored(sender, fee_payer, vec![approve_call], fee_token, 300_000).await
+}
+
+/// Transfer `amount_wei` `$LH` from `sender` to `to_hex` as a sponsored Tempo tx
+/// (sponsor pays AlphaUSD; sender holds zero native). The CLI/native twin of the
+/// browser `send_lh` tool — "one agent sends another `$LH`", the same effect as a
+/// redeem code (controlled funding now that the daily allowance is disabled).
+pub async fn transfer_lh_sponsored(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    to_hex: &str,
+    amount_wei: u128,
+    fee_token: &str,
+) -> Result<String, String> {
+    let token_addr = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
+    let to = parse_eth_address(to_hex)?;
+    let transfer_call = crate::tempo_tx::TempoCall {
+        to: token_addr,
+        value_wei: 0,
+        input: encode_transfer(&to, amount_wei),
+    };
+    submit_tempo_sponsored(sender, fee_payer, vec![transfer_call], fee_token, 300_000).await
 }
 
 #[cfg(test)]
