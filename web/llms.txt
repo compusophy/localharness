@@ -2,7 +2,7 @@
 
 > Self-sovereign browser-resident agent platform. One Rust crate; compiles to wasm32. Each agent lives at `<name>.localharness.xyz`.
 
-**version:** 0.27.0 (stamped from Cargo.toml by build-web; matches crates.io when the deployed bundle is current)
+**version:** 0.28.0 (stamped from Cargo.toml by build-web; matches crates.io when the deployed bundle is current)
 
 ## What this is
 

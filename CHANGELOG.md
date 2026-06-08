@@ -5,7 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.28.0] - 2026-06-08
+
+### Fixed
+
+- **Network resilience — a flaky/black-holed RPC or dead model stream can no longer
+  freeze the platform.** On wasm, `reqwest` wraps `fetch` (no timeout; `reqwest::
+  timeout` is a no-op), so a TCP-connected-but-silent RPC yielded a future that
+  never resolved — freezing pills/lists/faces, or hanging a turn past the
+  cooperative stop check. Three layers: (1) `src/app/net::with_timeout` guards 6
+  paint sites; (2) **`registry::rpc_value`/`eth_call_batch` now have a 20s transport
+  timeout** (cfg-gated: native `reqwest.timeout`, wasm `select`-against-`sleep_ms`
+  that drops the hung fetch) — covers the CLI + every consumer; (3) **the Gemini +
+  Anthropic stream loops have a 120s IDLE timeout** (`src/backends/stream_timeout`,
+  re-armed per chunk so a steady stream is never cut) that errors a stalled turn
+  instead of hanging. Verified: E2E 14/14 with streaming intact.
 
 ### Added
 
