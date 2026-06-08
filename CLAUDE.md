@@ -68,9 +68,11 @@ src/                  library crate
 │   ├── encryption.rs AES-256-GCM at-rest + ECIES via WebCrypto
 │   ├── shared_fs.rs  cross-subdomain encrypted apex store (scaffold); webrtc.rs
 │   │                 (RtcPeerConnection P2P over STUN) + sharedfs_sync.rs
-│   │                 (union-reconcile) = the agent-team P2P collaboration
-│   │                 foundation, signaling via the on-chain SignalingFacet
-│   │                 (compile/forge-verified; Layer-5 orchestration + UI pending)
+│   │                 (union-reconcile) + teams_sync.rs (Layer-5 connect-and-sync
+│   │                 orchestration; SDP ECIES-sealed to the peer's ephemeral pubkey)
+│   │                 = the agent-team P2P collaboration layer, signaling via the
+│   │                 on-chain SignalingFacet (compile/forge-verified; "sync my
+│   │                 devices" UI shipped; 2-device E2E pending)
 │   ├── system_prompt.rs  per-tenant custom prompt (.lh_system_prompt.txt)
 │   ├── self_docs.rs  agent self-knowledge: embedded runtime summary (injected
 │   │                 into the system prompt) + read_self_docs tool (fetches

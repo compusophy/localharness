@@ -18,8 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `src/app/teams_sync.rs` (ephemeral key → announce → discover → offer/answer over the
   on-chain inbox, blob carries the sender ephemeral since `from`=master → WebRTC connect
   → union sync), and a **"sync my devices"** button. Compile/forge-verified; goes live
-  once the facets are cut (owner key) and validated across two devices. v1: SDP unsealed,
-  reads-only shared FS — noted.
+  once the facets are cut (owner key) and validated across two devices. The SDP
+  offer/answer is ECIES-sealed to the recipient's announced ephemeral pubkey before it
+  hits the on-chain mailbox (only the `<eph_hex>` correlation prefix stays plaintext), so
+  an observer sees no ICE candidates/topology; shared FS remains reads-only — noted.
 - **CLI billing self-test** — `localharness credits [--as <me>]` (wallet `$LH` /
   per-call meter / session) and `localharness topup [--as <me>]` (claim the daily
   `$LH` allowance + deposit it into the per-request meter, sponsored). The end-to-end

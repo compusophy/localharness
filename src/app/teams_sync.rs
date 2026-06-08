@@ -17,11 +17,18 @@
 //! peers apart. The signaling blob therefore carries the sender's ephemeral
 //! address itself: `"<eph_hex>\n<sdp>"`.
 //!
+//! **SDP sealing:** each peer announces its ephemeral COMPRESSED PUBKEY in the
+//! presence roster; the SDP offer/answer is ECIES-sealed to the recipient's
+//! ephemeral pubkey before it touches the chain and opened with the matching
+//! ephemeral key on receipt (`encryption::ecies_seal`/`ecies_open`). So an
+//! on-chain observer sees only the sealed envelope — never the ICE candidates
+//! or topology. The `<eph_hex>` correlation prefix stays plaintext (it's just
+//! an address, already public in the roster); only the SDP payload is sealed.
+//! A peer that announced no pubkey is skipped (we can't seal to it).
+//!
 //! **COMPILE-VERIFIED ONLY.** The whole flow only proves out across two real
-//! browsers with `SignalingFacet` cut into the diamond. v1 limitations (noted):
-//! the SDP rides the chain UNSEALED (DTLS still protects the data channel;
-//! sealing to the peer pubkey is a privacy hardening), and the inbox isn't
-//! cleared between passes. Gated on `feature = "browser-app"`.
+//! browsers with `SignalingFacet` cut into the diamond; the inbox isn't cleared
+//! between passes. Gated on `feature = "browser-app"`.
 
 use std::cell::RefCell;
 
@@ -60,15 +67,22 @@ fn addr20(hex: &str) -> Option<[u8; 20]> {
     Some(out)
 }
 
-fn make_blob(sender_eph_hex: &str, sdp: &str) -> Vec<u8> {
-    format!("{sender_eph_hex}\n{sdp}").into_bytes()
+/// Build a signaling blob: the plaintext `<sender_eph_hex>` correlation prefix,
+/// a `\n` separator, then the ECIES-sealed SDP bytes (binary, not UTF-8).
+fn make_blob(sender_eph_hex: &str, sealed_sdp: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(sender_eph_hex.len() + 1 + sealed_sdp.len());
+    out.extend_from_slice(sender_eph_hex.as_bytes());
+    out.push(b'\n');
+    out.extend_from_slice(sealed_sdp);
+    out
 }
 
-/// `(sender_eph_hex, sdp)` from a `"<eph>\n<sdp>"` blob.
-fn parse_blob(bytes: &[u8]) -> Option<(String, String)> {
-    let s = String::from_utf8(bytes.to_vec()).ok()?;
-    let (eph, sdp) = s.split_once('\n')?;
-    Some((eph.to_string(), sdp.to_string()))
+/// `(sender_eph_hex, sealed_sdp_bytes)` from a `"<eph>\n<sealed>"` blob. Splits
+/// on the FIRST newline only — the sealed tail is binary and may contain `\n`.
+fn parse_blob(bytes: &[u8]) -> Option<(String, Vec<u8>)> {
+    let nl = bytes.iter().position(|&b| b == b'\n')?;
+    let eph = std::str::from_utf8(&bytes[..nl]).ok()?.to_string();
+    Some((eph, bytes[nl + 1..].to_vec()))
 }
 
 /// One-shot: sync the shared folder with the owner's OTHER online devices.
@@ -98,23 +112,35 @@ async fn sync_topic(
         fee_payer,
         topic,
         &eph_addr,
-        &[], // v1: empty pubkey (SDP posted unsealed — sealing deferred)
+        &crate::wallet::pubkey_compressed(&eph.signer), // seal target for our peers
         registry::ALPHA_USD_ADDRESS,
     )
     .await?;
 
     let peers = registry::peers_of(topic).await?;
     let mut connected = 0usize;
-    for (peer_hex, _ts, _pubkey) in peers {
+    for (peer_hex, _ts, peer_pubkey) in peers {
         if peer_hex.eq_ignore_ascii_case(&me) {
             continue; // ourselves
+        }
+        if peer_pubkey.is_empty() {
+            continue; // no pubkey announced → can't seal the SDP to them
         }
         let Some(peer_addr) = addr20(&peer_hex) else {
             continue;
         };
-        if connect_and_sync(master, fee_payer, &eph_addr, &me, &peer_addr, &peer_hex)
-            .await
-            .is_ok()
+        if connect_and_sync(
+            master,
+            fee_payer,
+            &eph.signer,
+            &eph_addr,
+            &me,
+            &peer_addr,
+            &peer_hex,
+            &peer_pubkey,
+        )
+        .await
+        .is_ok()
         {
             connected += 1;
         }
@@ -124,37 +150,50 @@ async fn sync_topic(
 
 /// The offer/answer handshake over the on-chain inbox + open the sync channel.
 /// Lower ephemeral address offers; higher answers (so exactly one side offers).
+#[allow(clippy::too_many_arguments)]
 async fn connect_and_sync(
     master: &k256::ecdsa::SigningKey,
     fee_payer: &k256::ecdsa::SigningKey,
+    eph_signer: &k256::ecdsa::SigningKey,
     eph_addr: &[u8; 20],
     me_hex: &str,
     peer_addr: &[u8; 20],
     peer_hex: &str,
+    peer_pubkey: &[u8],
 ) -> Result<(), String> {
     let session = if me_hex < peer_hex {
-        // OFFERER: create the offer, post it to the peer, await the answer.
+        // OFFERER: create the offer, seal it to the peer, post, await the answer.
         let (s, offer) = SharedFsSync::offer().await.map_err(|_| "offer failed")?;
+        let sealed = super::encryption::ecies_seal(peer_pubkey, offer.as_bytes())
+            .await
+            .ok_or("seal offer failed")?;
         registry::post_signal_sponsored(
             master,
             fee_payer,
             peer_addr,
-            &make_blob(me_hex, &offer),
+            &make_blob(me_hex, &sealed),
             registry::ALPHA_USD_ADDRESS,
         )
         .await?;
-        let answer = poll_inbox_from(eph_addr, peer_hex).await.ok_or("no answer")?;
+        let answer = poll_inbox_from(eph_signer, eph_addr, peer_hex)
+            .await
+            .ok_or("no answer")?;
         s.accept_answer(&answer).await.map_err(|_| "bad answer")?;
         s
     } else {
-        // ANSWERER: await the offer, answer it, post the answer back.
-        let offer = poll_inbox_from(eph_addr, peer_hex).await.ok_or("no offer")?;
+        // ANSWERER: await the offer, answer it, seal the answer back to the peer.
+        let offer = poll_inbox_from(eph_signer, eph_addr, peer_hex)
+            .await
+            .ok_or("no offer")?;
         let (s, answer) = SharedFsSync::answer(&offer).await.map_err(|_| "answer failed")?;
+        let sealed = super::encryption::ecies_seal(peer_pubkey, answer.as_bytes())
+            .await
+            .ok_or("seal answer failed")?;
         registry::post_signal_sponsored(
             master,
             fee_payer,
             peer_addr,
-            &make_blob(me_hex, &answer),
+            &make_blob(me_hex, &sealed),
             registry::ALPHA_USD_ADDRESS,
         )
         .await?;
@@ -174,14 +213,23 @@ async fn connect_and_sync(
 }
 
 /// Poll our ephemeral inbox until a blob whose EMBEDDED sender == `from_hex`
-/// arrives; return its SDP. Capped (~60s) so a missing peer can't hang forever.
-async fn poll_inbox_from(eph_addr: &[u8; 20], from_hex: &str) -> Option<String> {
+/// arrives; ECIES-open its sealed SDP with our ephemeral key and return it.
+/// Capped (~60s) so a missing peer can't hang forever.
+async fn poll_inbox_from(
+    eph_signer: &k256::ecdsa::SigningKey,
+    eph_addr: &[u8; 20],
+    from_hex: &str,
+) -> Option<String> {
     for _ in 0..60 {
         if let Ok(signals) = registry::inbox_of(eph_addr, 0).await {
             for (_from_master, _ts, blob) in signals {
-                if let Some((sender_eph, sdp)) = parse_blob(&blob) {
+                if let Some((sender_eph, sealed)) = parse_blob(&blob) {
                     if sender_eph.eq_ignore_ascii_case(from_hex) {
-                        return Some(sdp);
+                        if let Some(sdp) = super::encryption::ecies_open(eph_signer, &sealed).await {
+                            if let Ok(s) = String::from_utf8(sdp) {
+                                return Some(s);
+                            }
+                        }
                     }
                 }
             }
