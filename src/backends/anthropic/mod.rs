@@ -443,6 +443,7 @@ fn project_history(history: &[wire::Message]) -> Vec<crate::types::TranscriptEnt
                     }
                 }
                 Block::Image { .. } => {}
+                Block::Other => {}
             }
         }
 

@@ -652,19 +652,31 @@ fn thinking_level_to_budget(level: ThinkingLevel) -> u32 {
     }
 }
 
+/// Fold a usage report from one stream event into the per-round accumulator.
+///
+/// Anthropic's streaming usage is CUMULATIVE, not incremental: `message_start`
+/// reports `input_tokens` + cache fields + a small PLACEHOLDER `output_tokens`
+/// (the envelope, typically 1-4), and each `message_delta` reports the running
+/// TOTAL `output_tokens` so far. The terminal value is therefore the LATEST
+/// reported value, NOT the sum — summing would double-count the placeholder
+/// every round (and over-count badly if the model emits several
+/// `message_delta`s). So every field is "take the latest non-`None` value"
+/// (last-writer-wins), which is correct for cumulative counters and harmless
+/// for the report-once fields (`input_tokens`, cache) that only ever appear in
+/// `message_start`.
 fn accumulate_wire_usage(acc: &mut WireUsage, other: &WireUsage) {
-    fn add(a: &mut Option<i32>, b: Option<i32>) {
-        if let Some(v) = b {
-            *a = Some(a.unwrap_or(0) + v);
+    fn take_latest(a: &mut Option<i32>, b: Option<i32>) {
+        if b.is_some() {
+            *a = b;
         }
     }
-    add(&mut acc.input_tokens, other.input_tokens);
-    add(&mut acc.output_tokens, other.output_tokens);
-    add(
+    take_latest(&mut acc.input_tokens, other.input_tokens);
+    take_latest(&mut acc.output_tokens, other.output_tokens);
+    take_latest(
         &mut acc.cache_read_input_tokens,
         other.cache_read_input_tokens,
     );
-    add(
+    take_latest(
         &mut acc.cache_creation_input_tokens,
         other.cache_creation_input_tokens,
     );
@@ -858,5 +870,96 @@ mod tests {
         assert_eq!(req.temperature, Some(0.3));
         assert_eq!(req.max_tokens, 4096);
         assert_eq!(req.system.as_deref(), Some("sys"));
+    }
+
+    /// REGRESSION: Anthropic splits usage across two events — `message_start`
+    /// carries `input_tokens` + a small PLACEHOLDER `output_tokens` (typically
+    /// 1-4, the envelope), and `message_delta` carries the CUMULATIVE final
+    /// `output_tokens` for the whole message. `run_turn` folds both into
+    /// `round_usage` exactly as this test does. `output_tokens` must end up
+    /// equal to the `message_delta` value (the cumulative total), NOT
+    /// `message_start.output_tokens + message_delta.output_tokens` — adding
+    /// them double-counts the placeholder and over-reports billed output
+    /// tokens every turn (and compounds per round in a multi-round tool turn).
+    #[test]
+    fn usage_does_not_double_count_message_start_output_placeholder() {
+        // Replicates the exact accumulation `run_turn` performs in one round.
+        let mut round = WireUsage::default();
+        // message_start.message.usage
+        accumulate_wire_usage(
+            &mut round,
+            &WireUsage {
+                input_tokens: Some(12),
+                output_tokens: Some(1), // placeholder envelope count
+                cache_read_input_tokens: Some(8),
+                cache_creation_input_tokens: None,
+            },
+        );
+        // message_delta.usage — cumulative final output count.
+        accumulate_wire_usage(
+            &mut round,
+            &WireUsage {
+                input_tokens: None,
+                output_tokens: Some(33),
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+            },
+        );
+
+        assert_eq!(round.input_tokens, Some(12), "input from message_start");
+        assert_eq!(
+            round.cache_read_input_tokens,
+            Some(8),
+            "cache_read from message_start"
+        );
+        assert_eq!(
+            round.output_tokens,
+            Some(33),
+            "output_tokens must be the cumulative message_delta value (33), \
+             not message_start placeholder (1) + 33 = 34"
+        );
+
+        // The neutral mapping then reports the corrected totals.
+        let neutral: UsageMetadata = round.into();
+        assert_eq!(neutral.candidates_token_count, Some(33));
+        assert_eq!(neutral.prompt_token_count, Some(12));
+        assert_eq!(neutral.total_token_count, Some(45)); // 12 + 33
+    }
+
+    /// Multiple `message_delta` events (the spec permits more than one) each
+    /// carry the CUMULATIVE output count, so the final reported value must be
+    /// the LAST one, not the sum of all of them.
+    #[test]
+    fn usage_takes_latest_cumulative_output_across_multiple_deltas() {
+        let mut round = WireUsage::default();
+        accumulate_wire_usage(
+            &mut round,
+            &WireUsage {
+                input_tokens: Some(20),
+                output_tokens: Some(2),
+                ..Default::default()
+            },
+        );
+        // Two message_delta events, cumulative: 10 then 25.
+        accumulate_wire_usage(
+            &mut round,
+            &WireUsage {
+                output_tokens: Some(10),
+                ..Default::default()
+            },
+        );
+        accumulate_wire_usage(
+            &mut round,
+            &WireUsage {
+                output_tokens: Some(25),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            round.output_tokens,
+            Some(25),
+            "cumulative deltas: final reported output is the LAST value (25), not 2+10+25"
+        );
+        assert_eq!(round.input_tokens, Some(20));
     }
 }

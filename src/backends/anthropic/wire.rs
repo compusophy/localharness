@@ -110,6 +110,15 @@ pub enum Block {
     },
     /// Inline base64 media (image input).
     Image { source: ImageSource },
+    /// Any content-block `type` the SDK doesn't model — e.g.
+    /// `redacted_thinking` (extended thinking with a redacted segment) or
+    /// future server-side blocks (`server_tool_use`, `web_search_tool_result`,
+    /// `mcp_tool_use`). Without this fallback an unmodeled block type would
+    /// fail to deserialize and abort the whole stream/turn. We decode it into
+    /// this benign variant; the loop simply ignores it (it's not text, not a
+    /// tool call). `#[serde(other)]` requires a unit variant.
+    #[serde(other)]
+    Other,
 }
 
 /// Base64 image source for an [`Block::Image`].
@@ -386,6 +395,36 @@ mod tests {
                 assert_eq!(input["path"], "x.txt");
             }
             other => panic!("expected ToolUse, got {other:?}"),
+        }
+    }
+
+    /// REGRESSION: a `content_block_start` carrying a content-block type the
+    /// SDK doesn't model (`redacted_thinking` when extended thinking is
+    /// redacted, or future server-side block types like `server_tool_use` /
+    /// `web_search_tool_result`) must NOT fail to deserialize — that would
+    /// error the ENTIRE stream and abort the turn. The `Block` enum needs an
+    /// `Other` fallback so unmodeled block types decode into a benign,
+    /// ignored variant instead of a hard decode error.
+    #[test]
+    fn deserialize_unknown_block_type_does_not_error() {
+        // redacted_thinking is a real Anthropic block type (extended thinking).
+        let redacted = r#"{"type":"redacted_thinking","data":"EvwBCkYIB..."}"#;
+        let b: Block = serde_json::from_str(redacted)
+            .expect("unknown block type must decode into a fallback, not error");
+        assert!(matches!(b, Block::Other), "expected Block::Other, got {b:?}");
+
+        // The stream wraps it in a content_block_start — the event the live
+        // loop actually sees. This is the path that previously aborted turns.
+        let ev: StreamEvent = serde_json::from_str(
+            r#"{"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"EvwBCkYIB..."}}"#,
+        )
+        .expect("content_block_start with an unknown block must decode, not error");
+        match ev {
+            StreamEvent::ContentBlockStart { index, content_block } => {
+                assert_eq!(index, 1);
+                assert!(matches!(content_block, Block::Other));
+            }
+            other => panic!("expected ContentBlockStart, got {other:?}"),
         }
     }
 

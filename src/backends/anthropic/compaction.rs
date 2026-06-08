@@ -175,7 +175,15 @@ fn render_transcript(history: &[Message]) -> String {
                     out.push_str("[tool_result] ");
                     let body = content.to_string();
                     if body.len() > 512 {
-                        out.push_str(&body[..512]);
+                        // Truncate at a CHAR boundary — slicing `[..512]`
+                        // blindly panics when byte 512 lands inside a
+                        // multibyte UTF-8 char (tool-result content is
+                        // arbitrary network-derived text).
+                        let mut end = 512;
+                        while end > 0 && !body.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        out.push_str(&body[..end]);
                         out.push_str("…[truncated]");
                     } else {
                         out.push_str(&body);
@@ -186,6 +194,7 @@ fn render_transcript(history: &[Message]) -> String {
                     out.push_str(&source.media_type);
                     out.push(']');
                 }
+                Block::Other => {}
             }
             out.push('\n');
         }
@@ -416,5 +425,44 @@ mod tests {
         // len == keep_entries → nothing to summarize.
         let h: Vec<Message> = (0..12).map(|i| user_text(&format!("u{i}"))).collect();
         assert_eq!(pick_split(&h, 6), 0);
+    }
+
+    /// REGRESSION: a tool_result whose body exceeds 512 bytes with a multibyte
+    /// UTF-8 char straddling byte 512 must truncate at a char boundary, not
+    /// panic. Body is arbitrary network text; blind `&body[..512]` panicked.
+    #[test]
+    fn render_transcript_truncates_long_tool_result_on_char_boundary() {
+        let filler = "a".repeat(509); // quote + 509 'a' → next char starts at byte 510
+        let body = format!("{filler}世世世世世世");
+        let history = vec![Message {
+            role: Role::Assistant,
+            content: vec![Block::ToolResult {
+                tool_use_id: "toolu_1".into(),
+                content: json!(body),
+                is_error: None,
+            }],
+        }];
+        let rendered = render_transcript(&history);
+        assert!(rendered.contains("[tool_result]"));
+        assert!(rendered.contains("…[truncated]"));
+        assert!(std::str::from_utf8(rendered.as_bytes()).is_ok());
+    }
+
+    /// REGRESSION: an unmodeled content block (`redacted_thinking`, or future
+    /// server-side block types) decoded as `Block::Other` must render
+    /// harmlessly, not panic the transcript builder.
+    #[test]
+    fn render_transcript_ignores_other_block() {
+        let history = vec![Message {
+            role: Role::Assistant,
+            content: vec![
+                Block::Other,
+                Block::Text {
+                    text: "after".into(),
+                },
+            ],
+        }];
+        let rendered = render_transcript(&history);
+        assert!(rendered.contains("after"));
     }
 }

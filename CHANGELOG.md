@@ -104,6 +104,17 @@ tx-target allowlist, markdown/error-string escaping). Real findings fixed:
   can only be orphaned by a *leading* tool_result whose call was summarized),
   keeping ≥ the recent window and preserving the tool_use↔tool_result pairing.
   +20 tests (gemini + anthropic).
+- **Anthropic backend: 3 streaming/wire bugs + a compaction panic.** (1) The
+  final SSE frame at EOF without a trailing blank line was dropped — losing the
+  turn's `stop_reason` + final `output_tokens` (the Gemini analog; ported
+  `take_remaining`). (2) **Output-token usage was double-counted** — Anthropic
+  streams *cumulative* usage (a `message_start` placeholder + each `message_delta`
+  carrying the running total), but the fold SUMMED them, over-reporting metered
+  tokens every turn (the credit proxy meters on these); now last-writer-wins.
+  (3) An unmodeled content block (`redacted_thinking`, future server-side types)
+  aborted the whole stream — added a `Block::Other` serde fallback. (4)
+  `render_transcript` truncated long tool-result bodies with `&body[..512]`,
+  panicking on a multibyte char at byte 512 — now char-boundary-safe. +12 tests.
 - **Gemini streaming: 3 SSE/wire correctness bugs.** (1) A final `data:` frame
   with no trailing blank line at stream end was dropped — and for Gemini that
   frame carries `finishReason` + `usageMetadata`; the EOF path now flushes the
