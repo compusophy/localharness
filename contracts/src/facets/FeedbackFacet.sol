@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import {LibDiamond} from "../libraries/LibDiamond.sol";
 import {LibFeedbackStorage} from "../libraries/LibFeedbackStorage.sol";
 
 /// @title FeedbackFacet
@@ -21,6 +22,7 @@ contract FeedbackFacet {
         uint256 timestamp,
         string text
     );
+    event FeedbackCleared(uint256 cleared);
 
     error EmptyFeedback();
     error FeedbackTooLong(uint256 length);
@@ -43,6 +45,21 @@ contract FeedbackFacet {
         );
 
         emit FeedbackSubmitted(msg.sender, block.timestamp, text);
+    }
+
+    /// Diamond-owner-only (EIP-173): GC the on-chain feedback inbox. The array
+    /// is otherwise append-only and grows unbounded — every fleet run appends
+    /// notes that cost storage gas and lengthen `feedbackRange` reads forever.
+    /// Treat on-chain feedback as a TRANSIENT inbox: once the maintainer has
+    /// harvested/bridged the notes off-chain (e.g. to GitHub issues), clear the
+    /// storage so it can't balloon. The `FeedbackSubmitted` event log is
+    /// immutable but naturally windows out (Tempo's 100k-block `eth_getLogs`
+    /// cap), so the durable record should live off-chain after harvest.
+    function clearFeedback() external {
+        LibDiamond.enforceIsContractOwner();
+        uint256 n = LibFeedbackStorage.load().entries.length;
+        delete LibFeedbackStorage.load().entries;
+        emit FeedbackCleared(n);
     }
 
     /// Total number of feedback submissions ever stored.

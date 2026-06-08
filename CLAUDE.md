@@ -407,12 +407,17 @@ Currently cut in:
 - **MainIdentityFacet** — `registerMain / clearMain / mainOf / mainNameOf /
   isMain`. Holder's primary identity NFT; auto-set on first-claim.
 - **FeedbackFacet** — `submitFeedback(string)` appends to an on-chain
-  append-only `Entry[]` in `LibFeedbackStorage`
+  `Entry[]` in `LibFeedbackStorage`
   (`keccak256("localharness.feedback.storage.v1")`) AND emits
   `FeedbackSubmitted`. Read via state views `feedbackCount()` /
   `feedbackAt(i)` / `feedbackRange(start,count)` — `harvest-feedback.{sh,ps1}`
   now reads state (no `cast logs` / 100k-block window). Gas is the spam
-  filter; 2048-byte cap.
+  filter; 2048-byte cap. **GC:** owner-only `clearFeedback()` (added via
+  `script/AddFeedbackClear.s.sol`) wipes the array — on-chain feedback is a
+  TRANSIENT inbox (harvest/bridge off-chain via `scripts/test-fleet/
+  feedback-to-issues.mjs`, then `scripts/clear-feedback.sh`). The immutable
+  `FeedbackSubmitted` event log windows out naturally, so `localharness
+  feedback` still shows recent notes after a clear.
 - **CreditsFacet** — `LocalharnessCredits` TIP-20 distribution: `claimDaily /
   canClaim / dailyAllowance / lastClaimDay / creditsToken`; owner setters.
   Diamond holds `ISSUER_ROLE`; day = `block.timestamp / 86400` (UTC). Currency =

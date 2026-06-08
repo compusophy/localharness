@@ -52,6 +52,16 @@ tx-target allowlist, markdown/error-string escaping). Real findings fixed:
 
 ### Added
 
+- **On-chain feedback garbage collection.** The `FeedbackFacet`'s append-only
+  `Entry[]` grew unbounded — every fleet run + probe appends an entry that costs
+  storage gas and lengthens `feedbackRange` forever (it had reached 46). Added an
+  owner-only `clearFeedback()` (cut into the live diamond via
+  `script/AddFeedbackClear.s.sol`) so on-chain feedback is a TRANSIENT inbox:
+  harvest/bridge off-chain (GitHub issues / `harvest-feedback`), then
+  `scripts/clear-feedback.sh` GCs the storage. The immutable `FeedbackSubmitted`
+  event log windows out naturally (100k-block cap), so `localharness feedback`
+  still shows recent notes after a clear. Verified live: storage `46 → 0`, events
+  preserved.
 - **CLI: `publish` is now one command** — `localharness publish <name> <src.rl>`
   claims the subdomain first if you don't already hold its key (delegating to
   `create`, which still refuses names taken by others), then publishes the
