@@ -550,6 +550,30 @@ pub(crate) async fn start_session(
         super::tenant::Host::Tenant(name) => name.clone(),
         _ => "this agent".to_string(),
     };
+
+    // Which LLM backend this session uses — needed up front so the prompt
+    // advertises ONLY the tools the chosen backend actually registers. The
+    // Anthropic backend reuses the Gemini `register_builtins` with both
+    // client slots `None`, so the two Gemini-client-coupled builtins
+    // (`start_subagent`, `generate_image`) do NOT register on Claude. Gate
+    // their prompt lines on the backend so a Claude agent is never told it
+    // has tools it can't call.
+    let model = super::model::load().await;
+    let on_anthropic = super::model::is_anthropic(&model);
+    // Prompt fragments for the two Gemini-only builtins — empty on Anthropic.
+    let start_subagent_line = if on_anthropic {
+        ""
+    } else {
+        "  • start_subagent(system_instructions, prompt) — spawn a one-shot \
+           text-only subagent with no tool access. Use for self-contained \
+           reasoning / writing tasks you want isolated from your context.\n"
+    };
+    let generate_image_line = if on_anthropic {
+        ""
+    } else {
+        "  • generate_image(prompt) — produce an image from a text prompt.\n"
+    };
+
     let system_instructions = format!(
         "You are {agent_name}, a browser-resident assistant running inside \
          the localharness platform — a Rust SDK that compiles to wasm and runs \
@@ -611,9 +635,7 @@ pub(crate) async fn start_session(
            • list_subdomains() — list every subdomain your owner holds \
              (their identity's holdings). Read-only; use when asked what \
              subdomains/agents they have.\n\
-           • start_subagent(system_instructions, prompt) — spawn a one-shot \
-             text-only subagent with no tool access. Use for self-contained \
-             reasoning / writing tasks you want isolated from your context.\n\
+         {start_subagent_line}\
            • spawn_recursive_subagent(system_instructions, prompt) — spawn a \
              full subagent with the same tool surface YOU have (filesystem, \
              create_subdomain, start_subagent, etc.). Use for delegation that \
@@ -680,7 +702,7 @@ pub(crate) async fn start_session(
              under ~2000 bytes. Summarize; do NOT paste long multi-paragraph \
              reports. Text over 2048 bytes is rejected before it reaches the \
              chain.\n\
-           • generate_image(prompt) — produce an image from a text prompt.\n\
+         {generate_image_line}\
            • configure_agent(system_prompt?, tools?, reset?) — read or change \
              YOUR OWN config (custom system prompt + tool allowlist), stored in \
              `agent.json`. Use this when the user asks you to change your \
@@ -786,16 +808,15 @@ pub(crate) async fn start_session(
         None => CapabilitiesConfig::unrestricted(),
     };
 
-    // Which LLM backend this session uses. A `claude-*` model id routes to
+    // `model` (the owner's per-subdomain `.lh_model` choice) was loaded above
+    // so the prompt could be gated to the backend. A `claude-*` id routes to
     // the Anthropic backend; everything else (the default `gemini-*`) to
-    // Gemini. The id is the owner's per-subdomain `.lh_model` choice. Both
-    // backends go through the SAME credit-proxy `base_url` in credits mode
-    // (the proxy is multi-provider — Gemini on `/v1beta/*`, Anthropic on
-    // `/v1/messages`) and carry the SAME `key` (the proxy auth token, or a
-    // raw key in BYOK). BYOK only routes Gemini directly; a Claude model on
-    // BYOK would need a raw Anthropic key, so the credit proxy is the
+    // Gemini. Both backends go through the SAME credit-proxy `base_url` in
+    // credits mode (the proxy is multi-provider — Gemini on `/v1beta/*`,
+    // Anthropic on `/v1/messages`) and carry the SAME `key` (the proxy auth
+    // token, or a raw key in BYOK). BYOK only routes Gemini directly; a Claude
+    // model on BYOK would need a raw Anthropic key, so the credit proxy is the
     // intended Claude path.
-    let model = super::model::load().await;
     let captured_key = key.to_string();
     // History from a previous session (if any), consumed once here so a
     // backend switch doesn't lose the transcript.

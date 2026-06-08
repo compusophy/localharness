@@ -53,6 +53,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **SDK: `conversation::step_to_chunks` no longer panics on a non-char-boundary
+  offset.** The terminal-response tail-recovery byte-sliced
+  `content[text_emitted..]`; when a harness split a multibyte UTF-8 char across
+  deltas, `text_emitted` landed mid-char and the slice **panicked** (a library
+  panic crashes the consumer). It now uses `str::get`, degrading to a no-op on a
+  bad boundary, and the doc comment is corrected (it's a BYTE offset, not chars).
+  +3 regression tests.
+- **Browser app: the system prompt no longer advertises Gemini-only tools to
+  Claude agents.** `generate_image` and `start_subagent` aren't registered on the
+  Anthropic backend, but the prompt listed them unconditionally — so every
+  Claude-backed agent was told it had tools it couldn't call. Those two bullets
+  are now gated on the selected backend (`!is_anthropic(model)`; the model is
+  knowable at prompt-build time). Also `RUNTIME_SUMMARY` no longer claims
+  "Gemini-backed" (the platform runs Gemini, Claude, or local Gemma).
+- **CLI: clearer empty-key error + doc completeness.** An empty
+  `.localharness.key` produced a cryptic wallet-parse error; it now reports the
+  file is empty and to recreate it. `credits`/`topup` added to the source command
+  list (they were only in the runtime `help`).
 - **Credit proxy: CORS origin check hardened + clearer first-call 402.** The
   localhost allowance used `startsWith('http://localhost')`, which also matched
   `http://localhost.evil.com` — an attacker origin could read proxy responses

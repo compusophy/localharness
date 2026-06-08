@@ -403,9 +403,9 @@ impl Stream for ChatCursor {
 // =============================================================================
 
 /// Convert one step into zero or more `StreamChunk`s. `text_emitted` is the
-/// running tally of text characters this turn has yielded so far; passing
-/// it in lets us recover the tail when a harness emits the final content
-/// without preceding `content_delta`s.
+/// running tally of text BYTES this turn has yielded so far (the caller passes
+/// `emitted_text.len()`); passing it in lets us recover the tail when a harness
+/// emits the final content without preceding `content_delta`s.
 fn step_to_chunks(step: &Step, text_emitted: usize) -> Vec<StreamChunk> {
     let mut out = Vec::new();
     if !step.thinking_delta.is_empty() {
@@ -419,15 +419,75 @@ fn step_to_chunks(step: &Step, text_emitted: usize) -> Vec<StreamChunk> {
             step_index: step.step_index,
             text: step.content_delta.clone(),
         });
-    } else if step.is_terminal_response() && step.content.len() > text_emitted {
-        // No delta was sent but `content` advanced — emit the suffix.
-        out.push(StreamChunk::Text {
-            step_index: step.step_index,
-            text: step.content[text_emitted..].to_string(),
-        });
+    } else if step.is_terminal_response() {
+        // No delta was sent but `content` advanced — emit the un-emitted suffix.
+        // `text_emitted` is a BYTE offset; use `str::get` so an offset that
+        // doesn't land on a char boundary (a harness split a multibyte char
+        // across deltas) degrades to a no-op instead of panicking on a bad
+        // byte slice.
+        if let Some(suffix) = step.content.get(text_emitted..) {
+            if !suffix.is_empty() {
+                out.push(StreamChunk::Text {
+                    step_index: step.step_index,
+                    text: suffix.to_string(),
+                });
+            }
+        }
     }
     for tc in &step.tool_calls {
         out.push(StreamChunk::ToolCall(tc.clone()));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A turn-terminating step carrying `content` and no delta — the path that
+    /// triggers tail recovery (`content.get(text_emitted..)`).
+    fn terminal_step(content: &str) -> Step {
+        serde_json::from_value(serde_json::json!({
+            "content": content,
+            "is_complete_response": true,
+        }))
+        .expect("valid Step json")
+    }
+
+    fn recovered_text(chunks: &[StreamChunk]) -> String {
+        chunks
+            .iter()
+            .filter_map(|c| match c {
+                StreamChunk::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn recovery_does_not_panic_on_non_char_boundary_offset() {
+        // "héllo": 'é' is two bytes, so byte offset 2 lands MID-char. The old
+        // byte slice `content[2..]` panicked; recovery must now degrade safely
+        // (no panic, and no corrupt partial-char suffix).
+        let step = terminal_step("héllo");
+        let chunks = step_to_chunks(&step, 2);
+        assert_eq!(
+            recovered_text(&chunks),
+            "",
+            "a non-char-boundary offset must emit no (corrupt) text suffix",
+        );
+    }
+
+    #[test]
+    fn recovery_emits_suffix_on_valid_boundary() {
+        // Byte offset 1 is a valid boundary (after 'h'); suffix is "éllo".
+        let step = terminal_step("héllo");
+        assert_eq!(recovered_text(&step_to_chunks(&step, 1)), "éllo");
+    }
+
+    #[test]
+    fn recovery_is_noop_when_everything_emitted() {
+        let step = terminal_step("hi");
+        assert_eq!(recovered_text(&step_to_chunks(&step, 2)), "");
+    }
 }

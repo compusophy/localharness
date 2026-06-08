@@ -30,6 +30,8 @@
 //!   mcp [--as <me>]          run an MCP (stdio) server exposing a `call_agent`
 //!                            tool so any MCP client (Claude Code, …) can call
 //!                            localharness agents; pays as the local identity
+//!   credits [--as <me>]      show your $LH wallet + per-call meter + session
+//!   topup [--as <me>]        claim daily $LH + fund the meter (billing self-test)
 //!   list [--as <me>]         list the subdomains you own (`--json` for machine output)
 //!   feedback [--as <me>] [text]
 //!                            submit on-chain feedback (text), or read the log (no text)
@@ -1222,6 +1224,11 @@ fn resolve_caller_key(name: Option<&str>) -> Result<(String, String), String> {
         })?
         .trim()
         .to_string();
+    if key_hex.is_empty() {
+        return Err(format!(
+            "{file} is empty — recreate it with `localharness create <name>`"
+        ));
+    }
     Ok((file, key_hex))
 }
 
