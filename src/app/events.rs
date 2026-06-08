@@ -16,7 +16,7 @@ use wasm_bindgen::JsCast;
 use web_sys::{Document, Element, HtmlElement, KeyboardEvent, MouseEvent};
 
 use crate::encoding::{
-    bytes_to_hex_str, is_address_hex, parse_address, parse_token_amount, short_addr, tx_short_hash,
+    bytes_to_hex_str, parse_address, parse_token_amount, short_addr, tx_short_hash,
 };
 use crate::filesystem::Filesystem;
 
@@ -1359,9 +1359,17 @@ fn agent_send_lh_pressed(token_id_str: String) {
     let amt_raw = dom::input_by_id(&format!("agent-send-amt-{token_id}"))
         .map(|i| i.value().trim().to_string())
         .unwrap_or_default();
-    if !is_address_hex(&to_raw) {
-        return; // silent no-op per [[feedback-no-explanatory-validation]]
-    }
+    // Route the recipient through the SAME hardened choke point as send_lh /
+    // the per-turn payment (`classify_recipient`), which refuses the zero
+    // address (a transfer there burns the TBA's $LH irrecoverably). The act
+    // panel only accepts a raw address, so anything that classifies as a Name
+    // (wrong length, non-hex) is a silent no-op too — per
+    // [[feedback-no-explanatory-validation]].
+    let Ok(crate::encoding::Recipient::Address(to_raw)) =
+        crate::encoding::classify_recipient(&to_raw)
+    else {
+        return; // empty, zero-address, or not a 40-hex address → silent no-op
+    };
     let Some(amount_wei) = parse_token_amount(&amt_raw) else { return };
     if amount_wei == 0 {
         return;

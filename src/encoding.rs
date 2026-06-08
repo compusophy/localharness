@@ -311,4 +311,35 @@ mod tests {
             Ok(Recipient::Name("solidity-bob".to_string()))
         );
     }
+
+    /// The address-ONLY acceptance contract the browser "act" panel relies on
+    /// (`agent_send_lh_pressed`): it transfers `$LH` out of an agent's TBA to a
+    /// raw address and so accepts the recipient ONLY when `classify_recipient`
+    /// yields an `Address` — empty, the funds-burning zero address, or anything
+    /// that classifies as a `Name` (wrong-length / non-hex) is rejected before
+    /// any sponsored tx. This pins that filter so the zero-address guard can't
+    /// regress on that surface (the act panel does not resolve names).
+    #[test]
+    fn act_panel_address_only_filter() {
+        // Helper mirroring the act panel's `let Ok(Address(_)) = ... else return`.
+        fn accepts(raw: &str) -> bool {
+            matches!(classify_recipient(raw), Ok(Recipient::Address(_)))
+        }
+        // Accept: a real 40-hex address (with/without 0x).
+        assert!(accepts(&format!("0x{}", "a".repeat(40))));
+        assert!(accepts(&"B".repeat(40)));
+        // Reject: zero address (funds would be burned).
+        assert!(!accepts(&format!("0x{}", "0".repeat(40))));
+        assert!(!accepts(&"0".repeat(40)));
+        // Reject: empty / whitespace.
+        assert!(!accepts(""));
+        assert!(!accepts("   "));
+        // Reject: a name (the act panel can't resolve names; it must error out
+        // rather than send to a name-shaped string).
+        assert!(!accepts("alice"));
+        // Reject: off-by-one hex length (classifies as a doomed Name, not an
+        // Address) — would otherwise have passed the old `is_address_hex`-only
+        // check as false and been rejected, but pin it here too.
+        assert!(!accepts(&format!("0x{}", "a".repeat(41))));
+    }
 }
