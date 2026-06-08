@@ -165,10 +165,20 @@ impl GeminiAgentConfig {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// use localharness::GeminiAgentConfig;
+    /// use localharness::{GeminiAgentConfig, policy};
     ///
+    /// // Builders chain; each returns `Self`. A deny-by-default policy turns the
+    /// // agent into an allowlist (only the named tools run), and `with_workspace`
+    /// // sandboxes the filesystem builtins to that directory.
     /// let cfg = GeminiAgentConfig::new("my-api-key")
-    ///     .with_system_instructions("You are helpful.");
+    ///     .with_model("gemini-3.5-flash")
+    ///     .with_system_instructions("You are a careful coding assistant.")
+    ///     .with_workspace("/path/to/project")
+    ///     .with_policies(vec![
+    ///         policy::deny_all(),
+    ///         policy::Policy::allow("view_file"),
+    ///     ]);
+    /// # let _ = cfg;
     /// ```
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {

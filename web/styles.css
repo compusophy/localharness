@@ -719,6 +719,17 @@ main.layout .transcript > * { flex-shrink: 0; }
 .explore-card:hover { border-color: var(--fg); }
 .explore-card-name { color: var(--fg); font-size: 15px; font-weight: 600; }
 .explore-card-host { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+/* One-line on-chain-persona preview — same muted, single-line-clipped
+   language as .agent-preview (public-landing portfolio cards). A small
+   top margin separates it from the host line; no radius/shadow. */
+.explore-card-preview {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* Terminal interior — bare prompt, no chrome. Status renders
    empty by default; only fills when there's something to say. */

@@ -306,8 +306,13 @@ pub(crate) fn explore_chrome(host: &Host) -> Markup {
 }
 
 /// Render the directory grid: one card per agent, linking to its
-/// subdomain. Newest first.
-pub(crate) fn explore_grid(agents: &[(u64, String)]) -> Markup {
+/// subdomain. Newest first. `personas` is index-aligned with `agents`
+/// (one entry per agent, in the same order — see `registry::personas_of`):
+/// when an agent has an on-chain persona set, a one-line preview renders
+/// below the host; otherwise the card degrades to name-only. A short or
+/// empty `personas` slice (e.g. the batch fetch failed) just yields
+/// name-only cards — never an empty/"undefined" preview.
+pub(crate) fn explore_grid(agents: &[(u64, String)], personas: &[Option<String>]) -> Markup {
     if agents.is_empty() {
         return html! {
             div #explore-grid .explore-grid .explore-empty {
@@ -318,12 +323,16 @@ pub(crate) fn explore_grid(agents: &[(u64, String)]) -> Markup {
     }
     html! {
         div #explore-grid .explore-grid {
-            @for (_, name) in agents {
+            @for (i, (_, name)) in agents.iter().enumerate() {
+                @let preview = personas.get(i).and_then(|p| p.as_deref());
                 a.explore-card
                     href=(format!("https://{name}.localharness.xyz/"))
                     rel="noopener" {
                     span.explore-card-name { (name) }
                     span.explore-card-host { (name) ".localharness.xyz" }
+                    @if let Some(p) = preview {
+                        span.explore-card-preview { (truncate_preview(p, 80)) }
+                    }
                 }
             }
         }

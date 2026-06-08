@@ -355,14 +355,29 @@ impl Stream for ChatCursor {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            // If we're waiting on a notification, finish that first.
-            if let Some(fut) = self.notify.as_mut() {
-                match fut.as_mut().poll(cx) {
-                    Poll::Ready(()) => {
-                        self.notify = None;
-                    }
-                    Poll::Pending => return Poll::Pending,
-                }
+            // Register a waiter BEFORE inspecting the buffer. tokio `Notify`
+            // only wakes waiters that already exist when `notify_waiters()`
+            // fires, so the previous code — which created the `notified()`
+            // future AFTER the buffer check — had a lost-wakeup window: a
+            // producer append+notify landing between our check and parking could
+            // be missed, hanging the cursor at the tail. Creating + polling the
+            // waiter first closes that window (tokio's canonical
+            // register-then-check pattern). The future is built from a
+            // 'static Arc clone so it satisfies Send + 'static.
+            if self.notify.is_none() {
+                let inner = self.inner.clone();
+                self.notify = Some(Box::pin(async move {
+                    inner.notify.notified().await;
+                }));
+            }
+            let woke = matches!(
+                self.notify.as_mut().unwrap().as_mut().poll(cx),
+                Poll::Ready(())
+            );
+            if woke {
+                // Wake consumed — drop it so the next iteration registers a
+                // fresh waiter before re-checking.
+                self.notify = None;
             }
 
             let snapshot = {
@@ -385,15 +400,16 @@ impl Stream for ChatCursor {
                 }
                 PollDecision::Done => return Poll::Ready(None),
                 PollDecision::Error(msg) => return Poll::Ready(Some(Err(Error::other(msg)))),
-                PollDecision::Park => {}
+                // Returning Pending only here, where the poll above left a waiter
+                // registered (Pending) — so a later notify always wakes us. If we
+                // just consumed a wake but found nothing new, loop to re-register.
+                PollDecision::Park => {
+                    if woke {
+                        continue;
+                    }
+                    return Poll::Pending;
+                }
             }
-
-            // Park on the notification. Construct the future from a
-            // 'static-bound Arc clone so it satisfies Send + 'static.
-            let inner = self.inner.clone();
-            self.notify = Some(Box::pin(async move {
-                inner.notify.notified().await;
-            }));
         }
     }
 }
@@ -489,5 +505,233 @@ mod tests {
     fn recovery_is_noop_when_everything_emitted() {
         let step = terminal_step("hi");
         assert_eq!(recovered_text(&step_to_chunks(&step, 2)), "");
+    }
+
+    // =========================================================================
+    // Multi-cursor streaming concurrency (ChatResponse + ChatCursor)
+    //
+    // These drive `ChatResponse::new` directly with a hand-controlled step
+    // stream (no live backend). We mirror the codebase's own mock pattern:
+    // a tokio mpsc whose receiver is wrapped as a `StepStream` (the backends
+    // wrap a broadcast the same way via `tokio_stream::wrappers`). Sending /
+    // closing the channel deterministically advances the producer; ordering is
+    // driven by `yield_now` (cooperative, NOT timed) so nothing is sleep-flaky.
+    // =========================================================================
+
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+    use tokio_stream::wrappers::UnboundedReceiverStream;
+
+    /// A non-terminal text delta step. `step_to_chunks` turns this into a
+    /// single `StreamChunk::Text` (the streaming-delta path).
+    fn delta_step(idx: u32, delta: &str) -> Step {
+        serde_json::from_value(serde_json::json!({
+            "step_index": idx,
+            "content_delta": delta,
+        }))
+        .expect("valid Step json")
+    }
+
+    /// Build a `ChatResponse` fed by an mpsc sender the test controls. Steps
+    /// pushed onto `tx` flow through the producer task into the shared buffer;
+    /// dropping `tx` (or sending `Err`) terminates the stream. Returns the
+    /// response plus the sender so the test drives the producer step-by-step.
+    fn controlled_response() -> (ChatResponse, mpsc::UnboundedSender<Result<Step>>) {
+        let (tx, rx) = mpsc::unbounded_channel::<Result<Step>>();
+        let stream: crate::connections::StepStream =
+            Box::pin(UnboundedReceiverStream::new(rx));
+        let conv_state = Arc::new(Mutex::new(ConversationState::default()));
+        (ChatResponse::new(stream, conv_state), tx)
+    }
+
+    fn text_of(chunk: &StreamChunk) -> Option<&str> {
+        match chunk {
+            StreamChunk::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Drain a cursor to completion under a timeout. A timeout is a HANG guard,
+    /// not a synchronization primitive — the channel is already closed before we
+    /// call this, so a healthy cursor returns immediately; only a lost-wakeup
+    /// bug would make it expire.
+    async fn drain(cursor: &mut ChatCursor) -> Vec<StreamChunk> {
+        let mut out = Vec::new();
+        loop {
+            let next = tokio::time::timeout(std::time::Duration::from_secs(5), cursor.next())
+                .await
+                .expect("cursor must not hang draining a closed stream");
+            match next {
+                Some(Ok(chunk)) => out.push(chunk),
+                Some(Err(e)) => panic!("unexpected stream error: {e}"),
+                None => break,
+            }
+        }
+        out
+    }
+
+    /// CONTRACT: every cursor observes ALL chunks, in order — and a cursor
+    /// created AFTER the response fully completed still replays from chunk zero.
+    #[tokio::test]
+    async fn late_cursor_replays_all_chunks_in_order() {
+        let (resp, tx) = controlled_response();
+
+        // Drive the whole turn, then close the stream so the producer finishes.
+        tx.send(Ok(delta_step(0, "Hello"))).unwrap();
+        tx.send(Ok(delta_step(1, ", "))).unwrap();
+        tx.send(Ok(delta_step(2, "world"))).unwrap();
+        tx.send(Ok(terminal_step("Hello, world!"))).unwrap();
+        drop(tx);
+
+        // First cursor drains everything (this also forces the producer to run
+        // to completion since the cursor parks until `done`).
+        let mut early = resp.chunks();
+        let early_chunks = drain(&mut early).await;
+        let early_text: String = early_chunks.iter().filter_map(text_of).collect();
+        assert_eq!(
+            early_text, "Hello, world!",
+            "the deltas + recovered terminal tail must concatenate in order"
+        );
+
+        // A cursor born long after the turn ended must replay the SAME chunks
+        // from the start — no shifted offset, no missed head.
+        let mut late = resp.chunks();
+        let late_chunks = drain(&mut late).await;
+        assert_eq!(
+            late_chunks, early_chunks,
+            "a late cursor must replay the identical chunk sequence from zero"
+        );
+    }
+
+    /// CONTRACT: cursors advance INDEPENDENTLY. A cursor parked at the tail
+    /// while another races ahead must, once data arrives, still see every chunk
+    /// from where it was — none dropped, none duplicated, order preserved. This
+    /// exercises the park-on-`Notify` → wake path on the real async runtime.
+    #[tokio::test]
+    async fn cursors_advance_independently_without_dropping_chunks() {
+        let (resp, tx) = controlled_response();
+
+        let mut a = resp.chunks();
+        let mut b = resp.chunks();
+
+        // Both cursors are parked (empty buffer). Feed one chunk and let the
+        // producer run; cursor A drains exactly that chunk while B stays parked.
+        tx.send(Ok(delta_step(0, "one"))).unwrap();
+        let a0 = a.next().await.expect("a yields").expect("ok");
+        assert_eq!(text_of(&a0), Some("one"));
+
+        // Feed a second chunk. A reads it; B — which was parked across BOTH
+        // sends — must now replay from its own position 0, losing nothing.
+        tx.send(Ok(delta_step(1, "two"))).unwrap();
+        let a1 = a.next().await.expect("a yields").expect("ok");
+        assert_eq!(text_of(&a1), Some("two"));
+
+        let b0 = b.next().await.expect("b yields").expect("ok");
+        let b1 = b.next().await.expect("b yields").expect("ok");
+        assert_eq!(text_of(&b0), Some("one"), "parked cursor kept chunk 0");
+        assert_eq!(text_of(&b1), Some("two"), "parked cursor kept chunk 1");
+
+        // Close out: both terminate cleanly with no extra chunks.
+        drop(tx);
+        assert!(drain(&mut a).await.is_empty(), "a saw the full tail already");
+        assert!(drain(&mut b).await.is_empty(), "b saw the full tail already");
+    }
+
+    /// CONTRACT: a mid-stream error terminates the buffer and propagates to
+    /// EVERY cursor — both an in-flight one and one created after the fact.
+    #[tokio::test]
+    async fn error_propagates_to_every_cursor() {
+        let (resp, tx) = controlled_response();
+
+        tx.send(Ok(delta_step(0, "partial"))).unwrap();
+        tx.send(Err(Error::other("upstream exploded"))).unwrap();
+        drop(tx);
+
+        // Cursor created BEFORE we read: sees the one good chunk, then the error.
+        let mut a = resp.chunks();
+        let first = a.next().await.expect("a yields").expect("ok");
+        assert_eq!(text_of(&first), Some("partial"));
+        let err = a
+            .next()
+            .await
+            .expect("a yields again")
+            .expect_err("must surface the error");
+        assert!(
+            err.to_string().contains("upstream exploded"),
+            "the upstream message must survive, got: {err}"
+        );
+
+        // Cursor created AFTER the error landed: replays the good chunk, then
+        // the SAME error. Errors aren't swallowed by buffering.
+        let mut b = resp.chunks();
+        let b0 = b.next().await.expect("b yields").expect("ok");
+        assert_eq!(text_of(&b0), Some("partial"));
+        let b_err = b
+            .next()
+            .await
+            .expect("b yields again")
+            .expect_err("late cursor must also see the error");
+        assert!(b_err.to_string().contains("upstream exploded"));
+    }
+
+    /// CONTRACT: terminal completion. After the stream ends, a cursor returns
+    /// the remaining buffered chunks and THEN completes (`None`) — no hang, no
+    /// missed tail. Reading past completion keeps returning `None`.
+    #[tokio::test]
+    async fn cursor_completes_after_tail_with_no_hang() {
+        let (resp, tx) = controlled_response();
+
+        // Two deltas stream "Hi" incrementally. The terminal step carries the
+        // CUMULATIVE turn content "Hi there" with no delta of its own, so the
+        // producer's tail-recovery emits exactly the un-streamed suffix
+        // (" there"). This mirrors a harness that sends the final whole content
+        // after the streamed deltas — the very case `text_emitted` exists for.
+        tx.send(Ok(delta_step(0, "Hi"))).unwrap();
+        tx.send(Ok(terminal_step("Hi there"))).unwrap();
+        drop(tx);
+
+        let mut cursor = resp.chunks();
+        let chunks = drain(&mut cursor).await;
+        let text: String = chunks.iter().filter_map(text_of).collect();
+        assert_eq!(text, "Hi there", "streamed delta then the recovered tail");
+
+        // Past completion the cursor is permanently fused to `None`.
+        let after = tokio::time::timeout(std::time::Duration::from_secs(5), cursor.next())
+            .await
+            .expect("polling a completed cursor must not hang");
+        assert!(after.is_none(), "a completed cursor stays completed");
+    }
+
+    /// CONTRACT (concurrency stress): a cursor that is `.await`-parked at the
+    /// live tail in one task must wake and receive a chunk pushed concurrently
+    /// from another task. This is the lost-wakeup window — cursor decides to
+    /// park, releases the lock, THEN builds its `Notify::notified()` future; if
+    /// the producer fires `notify_waiters()` inside that window the cursor can
+    /// miss the wake. We run on a multi-thread runtime so the cursor's park
+    /// window and the producer's `notify_waiters` can genuinely interleave, and
+    /// guard with a timeout so a regression shows as a failure, not a hung suite.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn parked_cursor_wakes_on_concurrent_push() {
+        let (resp, tx) = controlled_response();
+        let mut cursor = resp.chunks();
+
+        // Park the cursor on the empty buffer in a spawned task. Awaiting
+        // `next()` polls it to Pending (registered as a waiter).
+        let handle = tokio::spawn(async move {
+            let next = tokio::time::timeout(std::time::Duration::from_secs(5), cursor.next())
+                .await
+                .expect("a parked cursor must wake on a concurrent push");
+            next.expect("yields").expect("ok")
+        });
+
+        // Yield so the spawned task actually reaches its parked Pending state
+        // before we push (cooperative, not a timed sleep).
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        tx.send(Ok(delta_step(0, "woke"))).unwrap();
+
+        let chunk = handle.await.expect("task joins");
+        assert_eq!(text_of(&chunk), Some("woke"));
     }
 }

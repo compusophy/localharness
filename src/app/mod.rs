@@ -1067,7 +1067,16 @@ fn has_explore_hint() -> bool {
 async fn paint_explore() {
     match registry::list_recent_agents(60).await {
         Ok(agents) => {
-            dom::swap_outer("explore-grid", &templates::explore_grid(&agents).into_string());
+            // Batch-fetch every agent's on-chain persona in ONE eth_call so
+            // each card shows what the agent actually DOES (not just a name).
+            // `personas_of` is index-aligned with `ids`, degrading any unset /
+            // failed slot to None — the template then renders name-only.
+            let ids: Vec<u64> = agents.iter().map(|(id, _)| *id).collect();
+            let personas = registry::personas_of(&ids).await;
+            dom::swap_outer(
+                "explore-grid",
+                &templates::explore_grid(&agents, &personas).into_string(),
+            );
         }
         Err(err) => {
             // maud escapes `err` — an RPC node's error string is

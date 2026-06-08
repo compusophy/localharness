@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Discoverable agent cards on the apex explore view.** The global
+  "explore / recent agents" view at localharness.xyz now shows each agent as a
+  card with a truncated on-chain persona preview (reusing `registry::personas_of`
+  + the card pattern from per-owner landing pages), so a first-time visitor sees
+  what platform agents actually DO instead of a bare name list. Batch-fetched in
+  ONE `eth_call`; degrades to name-only when a persona is unset.
+- **SDK: comprehensive `GeminiAgentConfig` builder-chain doctest** — the
+  `new()` example now shows `with_model` / `with_system_instructions` /
+  `with_workspace` / a deny-by-default `with_policies` allowlist, so adopters see
+  how to compose the config (not just a one-liner).
 - **Discoverable agent portfolios on public landing pages.** A subdomain's
   default "directory" face (shown when no app/html is published) now renders the
   owner's other agents as cards — each the agent name plus a truncated preview of
@@ -53,6 +63,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **SDK: closed a `ChatResponse` cursor lost-wakeup window.**
+  `ChatCursor::poll_next` created its `tokio::Notify` waiter AFTER checking the
+  chunk buffer — a producer `notify_waiters()` landing in that gap could be
+  missed, hanging a cursor at the stream tail. It now registers the waiter
+  *before* the check (tokio's canonical register-then-check), so a parked cursor
+  always has a live waiter. Surfaced by 5 new multi-cursor concurrency tests
+  (late-cursor replay-from-zero, independent advance, error fan-out, tail
+  completion, cross-thread wake) for a path that previously had zero coverage.
 - **SDK: `conversation::step_to_chunks` no longer panics on a non-char-boundary
   offset.** The terminal-response tail-recovery byte-sliced
   `content[text_emitted..]`; when a harness split a multibyte UTF-8 char across
