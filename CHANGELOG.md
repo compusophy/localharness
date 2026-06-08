@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Free sessions closed** (`setSessionPrice(1e18)`, was `0`). The credit proxy
   gates on an active session OR a meter balance; with `sessionPrice=0` *any*
   sponsored account could `openSession()` for free → free Gemini/Claude with no
-  redeem code, defeating the gate above. Sessions now cost `1 $LH/hr`, so both
+  redeem code, defeating the gate above. Sessions now cost `10 $LH/hr`, so both
   proxy paths require `$LH`. Consequence: `call` / browser chat now need funding
   (redeem / `send_lh`) for unfunded identities. Reversible (`setSessionPrice(0)`).
 
@@ -49,6 +49,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Tiered redeem codes** (`scripts/add-redeem-codes.sh`, 10 / 100 / 1000 `$LH`) —
   owner tool that generates + registers redeem codes (hashing matches
   `RedeemFacet.redeem`; plaintext stays gitignored, only hashes go on-chain).
+- **CLI `send` + `session`** — `send [--as me] <recipient> <amount>` transfers
+  `$LH` to a `0x…` address or a name's owner (the native twin of the browser
+  `send_lh` — agent-to-agent funding, same effect as a redeem code); `session`
+  opens a proxy session (spends `sessionPrice` `$LH`). Both proven live. Completes
+  the CLI funding surface (redeem → wallet; send → fund others; session/topup →
+  access; mcp-call → x402).
+- **Actor model on subdomain creation** — `create_subdomain(name, persona?,
+  prefund_lh?)` + `create_and_publish_app(name, source, persona?, prefund_lh?)`:
+  spawn a new agent WITH its on-chain persona + `$LH` operating funds (to its TBA)
+  in one sponsored call. Backward-compatible.
+- **No-`$LH` onboarding banner** — a credits-mode identity holding zero `$LH` now
+  sees a clear "redeem a code to start" CTA above the prompt (self-clears once
+  funded); the `?invite=CODE` flow reconciles the funded state on landing.
+- **Invite system deep-plan** (`design/invites.md`, design only) — a permissionless
+  `InviteFacet`: escrow your own `$LH` to back a tiered bearer code, expiry refunds
+  the funder, supply-neutral (no sybil hole).
 
 ### Changed
 
