@@ -179,10 +179,12 @@ pub async fn name_of_id(id: u64) -> Result<String, String> {
         return Err(format!("nameOfId: short response {} bytes", raw.len()));
     }
     let len = u64::from_be_bytes(raw[56..64].try_into().map_err(|e: std::array::TryFromSliceError| e.to_string())?) as usize;
-    if raw.len() < 64 + len {
-        return Err(format!("nameOfId: truncated body (need {} bytes, have {})", 64 + len, raw.len()));
-    }
-    String::from_utf8(raw[64..64 + len].to_vec()).map_err(|e| e.to_string())
+    // `len` is attacker-controlled — `64 + len` could overflow, so add checked.
+    let end = len
+        .checked_add(64)
+        .filter(|&end| end <= raw.len())
+        .ok_or_else(|| format!("nameOfId: truncated body (len {}, have {})", len, raw.len()))?;
+    String::from_utf8(raw[64..end].to_vec()).map_err(|e| e.to_string())
 }
 
 /// `eth_call tokenBoundAccount(tokenId)` and return the ERC-6551
@@ -386,8 +388,11 @@ pub async fn app_wasm_of(token_id: u64) -> Result<Option<Vec<u8>>, String> {
     if len == 0 {
         return Ok(None);
     }
-    let payload = bytes
-        .get(64..64 + len)
+    // `len` is attacker-controlled (up to u64::MAX) — `64 + len` could overflow
+    // (panic in debug / wrap in release), so add it checked before slicing.
+    let payload = len
+        .checked_add(64)
+        .and_then(|end| bytes.get(64..end))
         .ok_or_else(|| "app wasm truncated".to_string())?;
     Ok(Some(payload.to_vec()))
 }
@@ -438,8 +443,9 @@ pub async fn gemini_key_of(token_id: u64) -> Result<Option<Vec<u8>>, String> {
     if len == 0 {
         return Ok(None);
     }
-    let payload = bytes
-        .get(64..64 + len)
+    let payload = len
+        .checked_add(64)
+        .and_then(|end| bytes.get(64..end))
         .ok_or_else(|| "gemini key ciphertext truncated".to_string())?;
     Ok(Some(payload.to_vec()))
 }
@@ -498,8 +504,9 @@ async fn metadata_bytes_of(token_id: u64, key: [u8; 32]) -> Result<Option<Vec<u8
     if len == 0 {
         return Ok(None);
     }
-    let payload = bytes
-        .get(64..64 + len)
+    let payload = len
+        .checked_add(64)
+        .and_then(|end| bytes.get(64..end))
         .ok_or_else(|| "metadata truncated".to_string())?;
     Ok(Some(payload.to_vec()))
 }
@@ -624,7 +631,9 @@ fn decode_metadata_bytes(result_hex: &str) -> Option<Vec<u8>> {
     if len == 0 {
         return None;
     }
-    bytes.get(64..64 + len).map(|s| s.to_vec())
+    len.checked_add(64)
+        .and_then(|end| bytes.get(64..end))
+        .map(|s| s.to_vec())
 }
 
 const CAPABILITY_LABEL: &[u8] = b"localharness.capability";
@@ -1462,13 +1471,21 @@ pub async fn devices_of(main_id: u64) -> Result<Vec<String>, String> {
     let mut len_buf = [0u8; 8];
     len_buf.copy_from_slice(&bytes[56..64]); // low 8 bytes of the length word
     let len = u64::from_be_bytes(len_buf) as usize;
-    let mut out = Vec::with_capacity(len);
+    // Don't pre-allocate `len` (attacker-controlled, up to u64::MAX → OOM); the
+    // index math below is checked so a hostile length just stops the decode.
+    let mut out = Vec::new();
     for i in 0..len {
-        let start = 64 + i * 32;
-        if start + 32 > bytes.len() {
+        let start = match i.checked_mul(32).and_then(|o| o.checked_add(64)) {
+            Some(s) => s,
+            None => break,
+        };
+        let Some(word) = start
+            .checked_add(32)
+            .and_then(|end| bytes.get(start + 12..end))
+        else {
             break;
-        }
-        out.push(format!("0x{}", bytes_to_hex(&bytes[start + 12..start + 32])));
+        };
+        out.push(format!("0x{}", bytes_to_hex(word)));
     }
     Ok(out)
 }
@@ -1744,7 +1761,10 @@ pub async fn find_pairing_device(
             let mut len_buf = [0u8; 8];
             len_buf.copy_from_slice(&data[88..96]);
             let len = u64::from_be_bytes(len_buf) as usize;
-            data.get(96..96 + len).map(|s| s.to_vec()).unwrap_or_default()
+            len.checked_add(96)
+                .and_then(|end| data.get(96..end))
+                .map(|s| s.to_vec())
+                .unwrap_or_default()
         } else {
             Vec::new()
         };
@@ -1790,8 +1810,9 @@ pub async fn wrapped_device_key_of(
     if len == 0 {
         return Ok(None);
     }
-    let payload = bytes
-        .get(64..64 + len)
+    let payload = len
+        .checked_add(64)
+        .and_then(|end| bytes.get(64..end))
         .ok_or_else(|| "wrapped key truncated".to_string())?;
     Ok(Some(payload.to_vec()))
 }
@@ -2802,10 +2823,11 @@ fn decode_string(result_hex: &str) -> Option<String> {
         return None;
     }
     let len = u64::from_be_bytes(raw[56..64].try_into().ok()?) as usize;
-    if raw.len() < 64 + len {
-        return None;
-    }
-    String::from_utf8(raw[64..64 + len].to_vec()).ok()
+    // `len` is attacker-controlled — slice via checked add so a huge length
+    // returns None instead of overflowing.
+    let end = len.checked_add(64)?;
+    let body = raw.get(64..end)?;
+    String::from_utf8(body.to_vec()).ok()
 }
 
 /// Send many `eth_call`s as ONE JSON-RPC batch (a single POST). Returns each
@@ -3037,7 +3059,9 @@ fn decode_feedback_data(bytes: &[u8], sender: String) -> Option<FeedbackEntry> {
     len_buf.copy_from_slice(&bytes[88..96]); // low 8 bytes of the length word
     let len = u64::from_be_bytes(len_buf) as usize;
 
-    let text_bytes = bytes.get(96..96 + len)?;
+    // `len` is attacker-controlled — `96 + len` could overflow, so add checked.
+    let end = len.checked_add(96)?;
+    let text_bytes = bytes.get(96..end)?;
     let text = String::from_utf8_lossy(text_bytes).into_owned();
     Some(FeedbackEntry { sender, timestamp, text })
 }
@@ -3148,8 +3172,14 @@ fn decode_addr_ts_bytes_array(result_hex: &str) -> Vec<AddrTsBytes> {
         Ok(b) => b,
         Err(_) => return Vec::new(),
     };
+    // `read_usize` reads the low 8 bytes of a 32-byte word — so any offset or
+    // length is an attacker-controlled value up to u64::MAX. Every derived index
+    // below uses checked arithmetic so a hostile word stops the decode (returns
+    // what was parsed so far) instead of overflowing (panic in debug / wraparound
+    // garbage in release) or slicing out of bounds.
     let read_usize = |off: usize| -> Option<usize> {
-        let w = raw.get(off..off + 32)?;
+        let end = off.checked_add(32)?;
+        let w = raw.get(off..end)?;
         Some(u64::from_be_bytes(w[24..32].try_into().ok()?) as usize)
     };
     let mut out = Vec::new();
@@ -3161,30 +3191,55 @@ fn decode_addr_ts_bytes_array(result_hex: &str) -> Vec<AddrTsBytes> {
         Some(l) => l,
         None => return out,
     };
-    let heads = arr_off + 32; // element offsets are relative to here
+    let heads = match arr_off.checked_add(32) {
+        Some(h) => h, // element offsets are relative to here
+        None => return out,
+    };
     for i in 0..len {
-        let elem = match read_usize(heads + i * 32) {
-            Some(rel) => heads + rel,
+        // head slot for element i = heads + i*32
+        let head_slot = match i.checked_mul(32).and_then(|o| heads.checked_add(o)) {
+            Some(s) => s,
             None => break,
         };
-        let addr = match raw.get(elem + 12..elem + 32) {
+        let elem = match read_usize(head_slot) {
+            Some(rel) => match heads.checked_add(rel) {
+                Some(e) => e,
+                None => break,
+            },
+            None => break,
+        };
+        let addr = match elem
+            .checked_add(12)
+            .zip(elem.checked_add(32))
+            .and_then(|(a, b)| raw.get(a..b))
+        {
             Some(a) => format!("0x{}", bytes_to_hex(a)),
             None => break,
         };
-        let ts = match raw.get(elem + 56..elem + 64) {
+        let ts = match elem
+            .checked_add(56)
+            .zip(elem.checked_add(64))
+            .and_then(|(a, b)| raw.get(a..b))
+        {
             Some(t) => u64::from_be_bytes(t.try_into().unwrap_or_default()),
             None => break,
         };
-        let boff = match read_usize(elem + 64) {
-            Some(rel) => elem + rel, // bytes offset is relative to the element
+        let boff = match elem.checked_add(64).and_then(read_usize) {
+            // bytes offset is relative to the element
+            Some(rel) => match elem.checked_add(rel) {
+                Some(b) => b,
+                None => break,
+            },
             None => break,
         };
         let blen = match read_usize(boff) {
             Some(l) => l,
             None => break,
         };
-        let bytes = raw
-            .get(boff + 32..boff + 32 + blen)
+        let bytes = boff
+            .checked_add(32)
+            .and_then(|start| start.checked_add(blen).map(|end| (start, end)))
+            .and_then(|(start, end)| raw.get(start..end))
             .map(|s| s.to_vec())
             .unwrap_or_default();
         out.push((addr, ts, bytes));
@@ -3497,5 +3552,210 @@ mod tests {
         s.push_str(&"0".repeat(63));
         let hex = format!("0x{s}");
         assert!(decode_u256_as_u64(&hex).is_err());
+    }
+
+    // ─── ABI dynamic-decode edge cases (untrusted RPC hex must never panic) ──
+    //
+    // The decoders below read offsets/lengths out of attacker-controlled words
+    // (the low 8 bytes → up to u64::MAX) and then slice the response. These tests
+    // feed deliberately empty / truncated / malformed-offset / huge-length hex
+    // and assert the decoder returns empty/None/Err WITHOUT panicking. The test
+    // profile has overflow-checks ON, so an unchecked `64 + len` / `arr_off + 32`
+    // would panic here — that's exactly the regression these pin down.
+
+    // 64 hex chars per ABI word.
+    const Z: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+    fn word_usize(v: u64) -> String {
+        format!("{:064x}", v)
+    }
+    /// A 32-byte word whose LOW 8 bytes are u64::MAX (the largest value the
+    /// low-8-bytes offset/length readers will extract → forces overflow if any
+    /// add is unchecked).
+    fn word_u64_max() -> String {
+        format!("{:048x}{:016x}", 0u64, u64::MAX)
+    }
+
+    #[test]
+    fn addr_ts_bytes_array_empty_and_short_inputs() {
+        // Totally empty RPC result ("0x").
+        assert!(decode_addr_ts_bytes_array("0x").is_empty());
+        // Not even one word.
+        assert!(decode_addr_ts_bytes_array("0x00").is_empty());
+        // Odd-length / non-hex never panics (hex_to_bytes errors → empty).
+        assert!(decode_addr_ts_bytes_array("0xabc").is_empty());
+        assert!(decode_addr_ts_bytes_array("0xzz").is_empty());
+        assert!(decode_addr_ts_bytes_array("nonsense").is_empty());
+        // Array offset points past the buffer → empty, no panic.
+        let off_oob = format!("0x{}", word_usize(0x40)); // offset 64, only 32 bytes present
+        assert!(decode_addr_ts_bytes_array(&off_oob).is_empty());
+    }
+
+    #[test]
+    fn addr_ts_bytes_array_hostile_offsets_dont_overflow() {
+        // Array offset = u64::MAX. `arr_off + 32` must NOT overflow.
+        let huge_off = format!("0x{}", word_u64_max());
+        assert!(decode_addr_ts_bytes_array(&huge_off).is_empty());
+
+        // Valid array offset (0x20) + length = u64::MAX. The per-element head
+        // read must stop at the buffer end, not loop u64::MAX times or overflow
+        // `heads + i*32`.
+        let huge_len = format!("0x{}{}", word_usize(0x20), word_u64_max());
+        assert!(decode_addr_ts_bytes_array(&huge_len).is_empty());
+
+        // One element whose head-offset word is u64::MAX → `heads + rel` overflow.
+        let bad_head = String::from("0x")
+            + &word_usize(0x20) // array offset
+            + &word_usize(1) // len = 1
+            + &word_u64_max(); // head[0] = u64::MAX (relative element offset)
+        assert!(decode_addr_ts_bytes_array(&bad_head).is_empty());
+
+        // One element whose inner bytes-offset is u64::MAX → `elem + rel` overflow.
+        let bad_bytes_off = String::from("0x")
+            + &word_usize(0x20) // array offset
+            + &word_usize(1) // len = 1
+            + &word_usize(0x20) // head[0] → element starts right after heads
+            + &word_usize(0x1111) // address word
+            + &word_usize(7) // ts
+            + &word_u64_max(); // bytes offset = u64::MAX
+        assert!(decode_addr_ts_bytes_array(&bad_bytes_off).is_empty());
+    }
+
+    #[test]
+    fn addr_ts_bytes_array_multi_element_decodes() {
+        // Two elements: (0x11..,1,[0xAA]) and (0x22..,2,[0xBB,0xCC]).
+        // Each element is a `(address,uint64,bytes)` tuple, encoded as 5 words:
+        // [addr][ts][bytes-rel-offset(0x60)][bytes-len][bytes-data].
+        let elem0 = String::from("")
+            + "0000000000000000000000001111111111111111111111111111111111111111" // addr
+            + &word_usize(1) // ts
+            + &word_usize(0x60) // bytes offset (relative to element)
+            + &word_usize(1) // bytes len
+            + "aa00000000000000000000000000000000000000000000000000000000000000"; // data
+        let elem1 = String::from("")
+            + "0000000000000000000000002222222222222222222222222222222222222222"
+            + &word_usize(2)
+            + &word_usize(0x60)
+            + &word_usize(2)
+            + "bbcc000000000000000000000000000000000000000000000000000000000000";
+        // elem0 is 5 words = 0xA0 bytes. heads = arr_off(0x20)+0x20 = 0x40.
+        // head[0] rel = 0x40 (2 head words), head[1] rel = 0x40 + 0xA0 = 0xE0.
+        let hex = String::from("0x")
+            + &word_usize(0x20) // array offset
+            + &word_usize(2) // len = 2
+            + &word_usize(0x40) // head[0]
+            + &word_usize(0xE0) // head[1]
+            + &elem0
+            + &elem1;
+        let out = decode_addr_ts_bytes_array(&hex);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].0, "0x1111111111111111111111111111111111111111");
+        assert_eq!(out[0].1, 1);
+        assert_eq!(out[0].2, vec![0xAA]);
+        assert_eq!(out[1].0, "0x2222222222222222222222222222222222222222");
+        assert_eq!(out[1].1, 2);
+        assert_eq!(out[1].2, vec![0xBB, 0xCC]);
+    }
+
+    #[test]
+    fn metadata_bytes_edge_cases() {
+        // Empty result → None.
+        assert_eq!(decode_metadata_bytes("0x"), None);
+        // Shorter than two words → None (not a panic).
+        assert_eq!(decode_metadata_bytes(&format!("0x{Z}")), None);
+        // Zero length → None.
+        let zero_len = format!("0x{}{}", word_usize(0x20), Z);
+        assert_eq!(decode_metadata_bytes(&zero_len), None);
+        // Huge length (u64::MAX) → None, no overflow on `64 + len`.
+        let huge = format!("0x{}{}", word_usize(0x20), word_u64_max());
+        assert_eq!(decode_metadata_bytes(&huge), None);
+        // Length present but payload truncated → None.
+        let trunc = format!("0x{}{}", word_usize(0x20), word_usize(10)); // claims 10 bytes, has 0
+        assert_eq!(decode_metadata_bytes(&trunc), None);
+        // Well-formed 3-byte payload → Some.
+        let ok = format!(
+            "0x{}{}{}",
+            word_usize(0x20),
+            word_usize(3),
+            "aabbcc0000000000000000000000000000000000000000000000000000000000"
+        );
+        assert_eq!(decode_metadata_bytes(&ok), Some(vec![0xAA, 0xBB, 0xCC]));
+    }
+
+    #[test]
+    fn decode_string_edge_cases() {
+        // Empty / short → None.
+        assert_eq!(decode_string("0x"), None);
+        assert_eq!(decode_string(&format!("0x{Z}")), None);
+        // Huge length → None, no `64 + len` overflow.
+        let huge = format!("0x{}{}", word_usize(0x20), word_u64_max());
+        assert_eq!(decode_string(&huge), None);
+        // Truncated body → None.
+        let trunc = format!("0x{}{}", word_usize(0x20), word_usize(64));
+        assert_eq!(decode_string(&trunc), None);
+        // Valid "hi".
+        let ok = format!(
+            "0x{}{}{}",
+            word_usize(0x20),
+            word_usize(2),
+            "6869000000000000000000000000000000000000000000000000000000000000"
+        );
+        assert_eq!(decode_string(&ok).as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn decode_feedback_data_edge_cases() {
+        // < 96 bytes → None. (FeedbackEntry has no PartialEq → use is_none.)
+        assert!(decode_feedback_data(&[], "s".into()).is_none());
+        assert!(decode_feedback_data(&[0u8; 95], "s".into()).is_none());
+        // Huge length word (low 8 bytes = u64::MAX) → None, no `96 + len` overflow.
+        let mut buf = vec![0u8; 96];
+        buf[88..96].copy_from_slice(&u64::MAX.to_be_bytes());
+        assert!(decode_feedback_data(&buf, "s".into()).is_none());
+        // Well-formed: ts=9, text="ab".
+        let body = String::from("")
+            + &word_usize(9) // timestamp
+            + &word_usize(0x40) // offset
+            + &word_usize(2) // text len
+            + "6162000000000000000000000000000000000000000000000000000000000000";
+        let bytes = hex_to_bytes(&body).unwrap();
+        let entry = decode_feedback_data(&bytes, "sender".into()).unwrap();
+        assert_eq!(entry.timestamp, 9);
+        assert_eq!(entry.text, "ab");
+        assert_eq!(entry.sender, "sender");
+    }
+
+    #[test]
+    fn hex_to_bytes_rejects_malformed_without_panic() {
+        assert!(hex_to_bytes("0xabc").is_err()); // odd length
+        assert!(hex_to_bytes("0xzz").is_err()); // non-hex
+        assert!(hex_to_bytes("0x").unwrap().is_empty()); // empty is ok
+        assert_eq!(hex_to_bytes("0xAaBb").unwrap(), vec![0xAA, 0xBB]); // case-insensitive
+        assert_eq!(hex_to_bytes("deadbeef").unwrap(), vec![0xDE, 0xAD, 0xBE, 0xEF]); // no prefix
+    }
+
+    #[test]
+    fn decode_address_edge_cases() {
+        // Short / empty → None.
+        assert_eq!(decode_address("0x"), None);
+        assert_eq!(decode_address("0x00"), None);
+        // All-zero word → None (zero address means "unset").
+        assert_eq!(decode_address(&format!("0x{Z}")), None);
+        // A real address in the low 20 bytes.
+        let w = format!("0x{}", "0".repeat(24) + "1111111111111111111111111111111111111111");
+        assert_eq!(
+            decode_address(&w).as_deref(),
+            Some("0x1111111111111111111111111111111111111111")
+        );
+    }
+
+    #[test]
+    fn decode_u256_as_u128_truncation_and_empty() {
+        // Empty → 0.
+        assert_eq!(decode_u256_as_u128("0x").unwrap(), 0);
+        // Normal small value.
+        assert_eq!(decode_u256_as_u128(&format!("0x{}", word_usize(42))).unwrap(), 42);
+        // Exactly u128::MAX in the low 16 bytes.
+        let max = format!("0x{}{}", "0".repeat(32), "f".repeat(32));
+        assert_eq!(decode_u256_as_u128(&max).unwrap(), u128::MAX);
     }
 }

@@ -15,6 +15,16 @@ per-op randomness + ECIES ephemerals, chainId+nonce+validity in Tempo tx, EIP-71
 domain separation) and prior hardening holds (postMessage origin allowlist,
 tx-target allowlist, markdown/error-string escaping). Real findings fixed:
 
+- **ABI decoders hardened against hostile/garbage RPC responses (`registry.rs`).**
+  Nine dynamic decoders read offset/length words from untrusted `eth_call`
+  responses then did unchecked arithmetic before slicing. In the release/wasm
+  profile (`panic="abort"`, overflow-checks OFF — the *deployed* one) a hostile
+  word WRAPPED → silently sliced the wrong region → returned wrong owner /
+  metadata / persona / device / signaling bytes with no error (in dev it
+  panicked). `devices_of` also pre-allocated `Vec::with_capacity(hostile_len)`
+  (OOM). All derived indices now use `checked_add`/`checked_mul` + `.get()`
+  (behavior-preserving on valid input; hostile input → empty/None/Err). +9
+  hostile-input/edge-case tests.
 - **CLI: `create` now protects the persisted identity key.** It sets owner-only
   perms (`0600`, unix) and adds `*.localharness.key` to `.gitignore` (created if
   absent) so a raw private key written to the working directory can't be
