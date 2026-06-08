@@ -661,6 +661,11 @@ pub(crate) async fn start_session(
              subdomain name and receive its text response. The target agent \
              must have an API key configured. Use this for inter-agent \
              collaboration, delegation, or multi-agent workflows.\n\
+           • discover_agents(query) — find agents by capability/persona, then \
+             call_agent them. Read-only registry scan: returns the names + \
+             persona snippets of agents whose name OR on-chain persona matches \
+             `query` (ranked, name hits first). Use it to FIND a peer to \
+             delegate to before calling call_agent.\n\
            • compile_rustlite(source, function?, args?) — compile Rust-subset \
              source code to wasm and execute a function. Supports structs, \
              enums, fns, match, if/else, while/loop, let mut. No traits, \
@@ -881,6 +886,7 @@ pub(crate) async fn start_session(
             .with_tool(release_subdomain_tool())
             .with_tool(bulk_release_subdomains_tool())
             .with_tool(list_subdomains_tool())
+            .with_tool(discover_agents_tool())
             .with_tool(send_lh_tool())
             .with_tool(submit_feedback_tool())
             .with_tool(super::self_docs::read_self_docs_tool())
@@ -920,6 +926,7 @@ pub(crate) async fn start_session(
             .with_tool(release_subdomain_tool())
             .with_tool(bulk_release_subdomains_tool())
             .with_tool(list_subdomains_tool())
+            .with_tool(discover_agents_tool())
             .with_tool(send_lh_tool())
             .with_tool(submit_feedback_tool())
             .with_tool(super::self_docs::read_self_docs_tool())
@@ -1968,6 +1975,74 @@ fn list_subdomains_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 "owner": owner,
                 "count": subdomains.len(),
                 "subdomains": subdomains,
+            }))
+        },
+    )
+}
+
+/// `discover_agents(query)` — find peer agents by capability/persona. The
+/// browser twin of the `localharness discover` CLI command: a read-only
+/// registry scan (no `$LH`, no tx) that reuses [`registry::discover_agents`]
+/// (which ranks `(name, persona)` matches — name hits above persona hits). The
+/// agent uses it to LOCATE a peer to delegate to, then `call_agent`s it.
+/// Returns `{ agents: [{ name, persona }], count }`; persona snippets are
+/// truncated to a char-safe ~160-char preview. Safe to grant broadly.
+fn discover_agents_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    /// Char-safe truncation of a persona to a short preview (never splits a
+    /// UTF-8 codepoint; appends an ellipsis when clipped).
+    fn snippet(persona: &str) -> String {
+        const MAX: usize = 160;
+        let trimmed = persona.trim();
+        if trimmed.chars().count() <= MAX {
+            return trimmed.to_string();
+        }
+        let mut s: String = trimmed.chars().take(MAX).collect();
+        s.push('…');
+        s
+    }
+    ClosureTool::new(
+        "discover_agents",
+        "Find peer agents by capability or persona. Read-only registry scan: \
+         returns the agents whose subdomain NAME or on-chain persona matches \
+         `query` (ranked — name matches first, then persona matches). Use this \
+         to LOCATE an agent to delegate to, then call_agent it. Returns \
+         { agents: [ { name, persona } ], count } (persona is a short preview).",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What to look for — a capability, topic, or \
+                        keyword matched (case-insensitively) against agent names \
+                        and personas (e.g. \"solidity\", \"image\", \"research\"). \
+                        Empty returns recent agents."
+                }
+            },
+            "required": ["query"]
+        }),
+        |args: serde_json::Value, _ctx| async move {
+            let query = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            // Reuse the registry's ranked discovery (same core as the
+            // `localharness discover` CLI). 100 = how many recent agents to scan.
+            let matches = super::registry::discover_agents(&query, 100)
+                .await
+                .map_err(crate::error::Error::other)?;
+            let agents: Vec<_> = matches
+                .iter()
+                .map(|(name, persona)| {
+                    serde_json::json!({
+                        "name": name,
+                        "persona": snippet(persona),
+                    })
+                })
+                .collect();
+            Ok(serde_json::json!({
+                "count": agents.len(),
+                "agents": agents,
             }))
         },
     )
