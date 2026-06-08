@@ -26,6 +26,32 @@
 //! an address, already public in the roster); only the SDP payload is sealed.
 //! A peer that announced no pubkey is skipped (we can't seal to it).
 //!
+//! ## Roster trust — READ BEFORE RELYING ON THIS FOR ANYTHING SENSITIVE
+//! `SignalingFacet.announce` is currently OPEN: `msg.sender` is the sponsored
+//! MASTER, not the ephemeral, and the contract stores attacker-controllable
+//! `(ephemeral, pubkey)` with NO signature binding the ephemeral key to a real
+//! linked device or team member. The signaling TOPIC is public
+//! (`keccak256("localharness.devices" || owner_addr)`, derivable from any
+//! address). So today **any party can announce a pubkey under your topic and
+//! receive your SDP offer sealed to THEM** — then complete the WebRTC handshake
+//! and pull the whole shared folder over the union protocol (which has no
+//! peer-auth of its own). The data-channel DTLS only stops a passive network
+//! observer, NOT a peer who legitimately joined.
+//!
+//! Closing this properly needs an ON-CHAIN change (the announce must carry a
+//! signature over `topic||ephemeral||pubkey` by an enrolled device/MAIN key,
+//! verified against `DeviceRegistry`/`TeamFacet`) — out of scope for the app
+//! layer alone. What this module DOES enforce client-side as defence-in-depth:
+//!   - **self-consistency**: `address(announced_pubkey) == announced_ephemeral`
+//!     — reject a roster entry whose pubkey doesn't hash to the address it was
+//!     announced under (a forged/mismatched seal target). Doesn't stop an
+//!     attacker who announces a fresh self-consistent keypair, but kills the
+//!     trivial "announce a victim's address with MY pubkey" confusion.
+//!   - **freshness**: skip entries older than [`PRESENCE_TTL_SECS`]. Stale
+//!     ephemerals from prior sessions are offline; connecting to them wastes a
+//!     ~60s poll AND a sponsored on-chain offer tx each (real funds), and
+//!     widens the window in which a long-lived forged entry is honoured.
+//!
 //! **COMPILE-VERIFIED ONLY.** The whole flow only proves out across two real
 //! browsers with `SignalingFacet` cut into the diamond; the inbox isn't cleared
 //! between passes. Gated on `feature = "browser-app"`.
@@ -43,6 +69,42 @@ thread_local! {
 }
 
 const HEXD: &[u8; 16] = b"0123456789abcdef";
+
+/// How recent a roster `announce` must be to be treated as ONLINE. Devices
+/// re-announce at the start of every sync pass, so a peer that genuinely wants
+/// to connect has a `ts` within seconds of now. Entries older than this are
+/// dead sessions left in the roster (the facet never auto-expires them) — we
+/// skip them so we don't burn a sponsored offer tx + a ~60s poll per ghost, and
+/// so a long-stale forged entry can't be honoured indefinitely. 10 min covers
+/// chain/wall-clock skew on the testnet with margin.
+const PRESENCE_TTL_SECS: u64 = 600;
+
+/// Current wall-clock time in seconds (UTC), comparable to a chain
+/// `block.timestamp`. Used to age out stale roster presence.
+fn now_secs() -> u64 {
+    (js_sys::Date::now() / 1000.0) as u64
+}
+
+/// Ethereum address (lowercase `0x…`) of a compressed/uncompressed SEC1 public
+/// key, or `None` if it isn't a valid curve point. Lets us check that a roster
+/// entry's announced `pubkey` actually hashes to the `ephemeral` address it was
+/// announced under (so the SDP seal target is self-consistent, not a pubkey
+/// swapped in under someone else's address).
+fn address_of_pubkey(pubkey_sec1: &[u8]) -> Option<String> {
+    use k256::elliptic_curve::sec1::ToEncodedPoint;
+    use k256::PublicKey;
+    use sha3::{Digest, Keccak256};
+    let pk = PublicKey::from_sec1_bytes(pubkey_sec1).ok()?;
+    let uncompressed = pk.to_encoded_point(false); // 65 bytes, 0x04 prefix
+    let bytes = uncompressed.as_bytes();
+    if bytes.len() != 65 {
+        return None;
+    }
+    let digest = Keccak256::digest(&bytes[1..]); // drop the 0x04 tag
+    let mut addr = [0u8; 20];
+    addr.copy_from_slice(&digest[12..]);
+    Some(hex20(&addr))
+}
 
 fn hex20(a: &[u8; 20]) -> String {
     let mut s = String::with_capacity(42);
@@ -118,13 +180,29 @@ async fn sync_topic(
     .await?;
 
     let peers = registry::peers_of(topic).await?;
+    let now = now_secs();
     let mut connected = 0usize;
-    for (peer_hex, _ts, peer_pubkey) in peers {
+    for (peer_hex, ts, peer_pubkey) in peers {
         if peer_hex.eq_ignore_ascii_case(&me) {
             continue; // ourselves
         }
         if peer_pubkey.is_empty() {
             continue; // no pubkey announced → can't seal the SDP to them
+        }
+        // Freshness: skip dead/stale presence so we don't waste a sponsored
+        // offer tx + a ~60s poll on an offline ephemeral (and don't honour a
+        // long-stale forged entry). `ts` is a chain `block.timestamp`;
+        // `saturating_sub` tolerates a peer slightly ahead of our wall clock.
+        if now.saturating_sub(ts) > PRESENCE_TTL_SECS {
+            continue;
+        }
+        // Self-consistency: the announced pubkey MUST hash to the address it
+        // was announced under, or the seal target is forged/mismatched. (Does
+        // not authenticate the peer as a real device — see the module doc — but
+        // rejects the trivial pubkey-under-another's-address substitution.)
+        match address_of_pubkey(&peer_pubkey) {
+            Some(derived) if derived.eq_ignore_ascii_case(&peer_hex) => {}
+            _ => continue,
         }
         let Some(peer_addr) = addr20(&peer_hex) else {
             continue;
