@@ -2,7 +2,11 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
     { "source": "/mcp", "destination": "/api/mcp" },
+    { "source": "/scheduler", "destination": "/api/scheduler" },
     { "source": "/v1beta/(.*)", "destination": "/api/gemini" },
     { "source": "/v1/(.*)", "destination": "/api/gemini" }
+  ],
+  "crons": [
+    { "path": "/api/scheduler", "schedule": "* * * * *" }
   ]
 }
