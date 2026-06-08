@@ -94,6 +94,16 @@ tx-target allowlist, markdown/error-string escaping). Real findings fixed:
 
 ### Fixed
 
+- **Context compaction: silent TOTAL context loss in tool-heavy sessions (both
+  backends).** `pick_split` walked the summarize/keep boundary FORWARD to avoid
+  orphaning a tool pair — but in a long unbroken run of `[assistant tool_use,
+  user tool_result]` round-trips *every* index qualified, so it chained to
+  `history.len()` and kept ZERO messages, defeating `KEEP_RECENT_TURNS` exactly
+  when compaction fires. The request still succeeded, so the agent just went
+  silently context-blind mid-task. The boundary now walks EARLIER (a kept slice
+  can only be orphaned by a *leading* tool_result whose call was summarized),
+  keeping ≥ the recent window and preserving the tool_use↔tool_result pairing.
+  +20 tests (gemini + anthropic).
 - **Gemini streaming: 3 SSE/wire correctness bugs.** (1) A final `data:` frame
   with no trailing blank line at stream end was dropped — and for Gemini that
   frame carries `finishReason` + `usageMetadata`; the EOF path now flushes the

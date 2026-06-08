@@ -77,9 +77,23 @@ pub async fn try_compact(history: &Mutex<Vec<Message>>, client: &SharedClient, m
 }
 
 /// Pick `i` such that history[..i] is summarized and history[i..] is kept.
-/// Honors `KEEP_RECENT_TURNS` and never orphans a tool_use from its
-/// matching tool_result (a user message of tool_result blocks must stay
-/// with the assistant tool_use turn before it).
+/// Honors `KEEP_RECENT_TURNS` and never orphans a tool_use from its matching
+/// tool_result.
+///
+/// The kept slice `history[i..]` is API-valid iff its first message is NOT a
+/// lone `tool_result` user turn — otherwise the matching `tool_use` (at `i-1`)
+/// would be in the summarized prefix and the request 400s on a dangling
+/// `tool_result`. (Linear history guarantees a `tool_use` is always followed
+/// by its `tool_result`, so a kept *tool_use* never dangles; only the leading
+/// `tool_result` can orphan.)
+///
+/// We therefore start at the keep-window boundary and walk the boundary
+/// EARLIER (toward 0) past any leading `tool_result`, absorbing the orphaned
+/// pair into the summary. Walking earlier keeps strictly MORE history than
+/// requested (never less) and can never run off the end — the old
+/// walk-FORWARD logic could chain through a long run of tool round-trips and
+/// keep ZERO messages, summarizing away the entire recent context including
+/// the turn being answered.
 fn pick_split(history: &[Message], keep_pairs: usize) -> usize {
     let keep_entries = keep_pairs * 2;
     if history.len() <= keep_entries {
@@ -87,28 +101,22 @@ fn pick_split(history: &[Message], keep_pairs: usize) -> usize {
     }
     let mut split = history.len() - keep_entries;
 
-    while split < history.len() {
-        let prev = split.checked_sub(1).and_then(|i| history.get(i));
-        let here = &history[split];
-
-        let prev_carries_calls = prev.is_some_and(turn_has_tool_use);
-        let here_is_result =
-            matches!(here.role, Role::User) && turn_is_tool_result(here);
-
-        let crosses_call_result = prev_carries_calls && here_is_result;
-        let mid_turn = matches!(here.role, Role::Assistant);
-
-        if crosses_call_result || mid_turn {
-            split += 1;
-            continue;
-        }
-        break;
+    // Walk the boundary earlier past any leading orphaned tool_result so the
+    // kept slice begins on a clean turn boundary.
+    while split > 0 && is_leading_orphan(history, split) {
+        split -= 1;
     }
-    split.min(history.len())
+    split
 }
 
-fn turn_has_tool_use(m: &Message) -> bool {
-    m.content.iter().any(|b| matches!(b, Block::ToolUse { .. }))
+/// True if keeping `history[split..]` would orphan a leading `tool_result`:
+/// the first kept message is a user turn of only `tool_result` blocks, whose
+/// matching `tool_use` lives at `split-1` (and would be summarized away).
+fn is_leading_orphan(history: &[Message], split: usize) -> bool {
+    match history.get(split) {
+        Some(m) => matches!(m.role, Role::User) && turn_is_tool_result(m),
+        None => false,
+    }
 }
 
 fn turn_is_tool_result(m: &Message) -> bool {
@@ -275,5 +283,138 @@ mod tests {
         assert!(!should_compact(Some(500), None));
         assert!(!should_compact(Some(500), Some(1000)));
         assert!(should_compact(Some(1500), Some(1000)));
+    }
+
+    // --- Wire-invariant probes added by the compaction correctness dive ---
+
+    /// Build a linear tool-heavy history: u_text, then N (assistant tool_use,
+    /// user tool_result) round-trips. This is the realistic shape of an agent
+    /// session that actually triggers compaction.
+    fn tool_heavy_history(rounds: usize) -> Vec<Message> {
+        let mut h = vec![user_text("start")];
+        for i in 0..rounds {
+            let id = format!("toolu_{i}");
+            h.push(assistant_call(&id, "view_file"));
+            h.push(user_result(&id));
+        }
+        h
+    }
+
+    /// Collect the set of tool_use ids in a message slice.
+    fn tool_use_ids(ms: &[Message]) -> std::collections::HashSet<String> {
+        let mut s = std::collections::HashSet::new();
+        for m in ms {
+            for b in &m.content {
+                if let Block::ToolUse { id, .. } = b {
+                    s.insert(id.clone());
+                }
+            }
+        }
+        s
+    }
+
+    /// Collect the set of tool_result ids in a message slice.
+    fn tool_result_ids(ms: &[Message]) -> std::collections::HashSet<String> {
+        let mut s = std::collections::HashSet::new();
+        for m in ms {
+            for b in &m.content {
+                if let Block::ToolResult { tool_use_id, .. } = b {
+                    s.insert(tool_use_id.clone());
+                }
+            }
+        }
+        s
+    }
+
+    /// THE CORE INVARIANT: after compaction, the message list sent to the API
+    /// (synthetic summary + kept) must have every tool_result paired with a
+    /// tool_use *within the kept slice*. The summary is opaque text, so a
+    /// tool_use that was summarized cannot satisfy a kept tool_result, and a
+    /// kept tool_use whose result was summarized leaves a dangling call.
+    ///
+    /// We assert directly on `to_keep` (history[split..]): its tool_result ids
+    /// must be a subset of its tool_use ids, and vice-versa — fully balanced.
+    fn assert_keep_slice_balanced(h: &[Message]) {
+        let split = pick_split(h, KEEP_RECENT_TURNS);
+        let kept = &h[split..];
+        let uses = tool_use_ids(kept);
+        let results = tool_result_ids(kept);
+        // Every kept tool_result must have its tool_use kept too.
+        for r in &results {
+            assert!(
+                uses.contains(r),
+                "ORPHAN tool_result {r:?} kept without its tool_use (split={split}, kept_len={})",
+                kept.len()
+            );
+        }
+        // Every kept tool_use must have its tool_result kept too (otherwise the
+        // assistant turn ends on an unanswered call — also a 400 from Anthropic).
+        for u in &uses {
+            assert!(
+                results.contains(u),
+                "DANGLING tool_use {u:?} kept without its tool_result (split={split}, kept_len={})",
+                kept.len()
+            );
+        }
+    }
+
+    #[test]
+    fn keep_slice_balanced_for_tool_heavy_history() {
+        // Vary the number of round-trips so the natural split lands on every
+        // possible alignment (on a tool_use, on a tool_result, on the seam).
+        for rounds in 4..=20 {
+            let h = tool_heavy_history(rounds);
+            assert_keep_slice_balanced(&h);
+        }
+    }
+
+    #[test]
+    fn keep_slice_never_starts_with_orphan_tool_result() {
+        // The first kept message must never be a lone tool_result (its tool_use
+        // would be in the summarized prefix → orphaned in the API request).
+        for rounds in 4..=20 {
+            let h = tool_heavy_history(rounds);
+            let split = pick_split(&h, KEEP_RECENT_TURNS);
+            if split < h.len() {
+                let first = &h[split];
+                assert!(
+                    !(matches!(first.role, Role::User) && turn_is_tool_result(first)),
+                    "first kept message is an orphaned tool_result (rounds={rounds}, split={split})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pick_split_keeps_at_least_something_when_over_window() {
+        // Regression guard: the walk-forward must not run away to the end and
+        // keep ZERO messages (which would summarize the turn currently being
+        // answered and lose ALL recent context).
+        for rounds in 4..=30 {
+            let h = tool_heavy_history(rounds);
+            let split = pick_split(&h, KEEP_RECENT_TURNS);
+            assert!(
+                split < h.len(),
+                "pick_split kept nothing (rounds={rounds}, split={split}, len={})",
+                h.len()
+            );
+        }
+    }
+
+    #[test]
+    fn pick_split_empty_history() {
+        assert_eq!(pick_split(&[], 6), 0);
+    }
+
+    #[test]
+    fn pick_split_single_message() {
+        assert_eq!(pick_split(&[user_text("only")], 6), 0);
+    }
+
+    #[test]
+    fn pick_split_exactly_at_keep_window() {
+        // len == keep_entries → nothing to summarize.
+        let h: Vec<Message> = (0..12).map(|i| user_text(&format!("u{i}"))).collect();
+        assert_eq!(pick_split(&h, 6), 0);
     }
 }

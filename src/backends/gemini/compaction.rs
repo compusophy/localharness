@@ -111,12 +111,23 @@ pub async fn try_compact(
 }
 
 /// Pick an index `i` such that history[..i] is summarized and
-/// history[i..] is kept. Honors:
+/// history[i..] is kept. Honors `KEEP_RECENT_TURNS` (a turn = one
+/// user+model pair, so 2 entries) and function-call/response pairing.
 ///
-/// * `KEEP_RECENT_TURNS` (a turn = one user+model pair, so 2 entries),
-/// * function-call/response pairing (a Model turn carrying a
-///   functionCall must be followed by the next User turn carrying the
-///   matching functionResponse — never split between them).
+/// The kept slice `history[i..]` is API-valid iff its first message is NOT
+/// a lone `functionResponse` user turn — otherwise the matching
+/// `functionCall` (at `i-1`) would be summarized away and orphaned. (Linear
+/// history guarantees a `functionCall` is always followed by its
+/// `functionResponse`, so a kept *call* never dangles; only a leading
+/// response can orphan.)
+///
+/// We start at the keep-window boundary and walk it EARLIER (toward 0) past
+/// any leading `functionResponse`, absorbing the orphaned pair into the
+/// summary. Walking earlier keeps strictly MORE history than requested
+/// (never less) and can never run off the end — the old walk-FORWARD logic
+/// could chain through a long run of tool round-trips and keep ZERO messages,
+/// summarizing away the entire recent context including the turn being
+/// answered.
 fn pick_split(history: &[Content], keep_pairs: usize) -> usize {
     let keep_entries = keep_pairs * 2;
     if history.len() <= keep_entries {
@@ -124,30 +135,21 @@ fn pick_split(history: &[Content], keep_pairs: usize) -> usize {
     }
     let mut split = history.len() - keep_entries;
 
-    // Walk forward off any boundary that would orphan a functionCall
-    // from its functionResponse, or split a User->Model pair mid-turn.
-    while split < history.len() {
-        let prev = split.checked_sub(1).and_then(|i| history.get(i));
-        let here = &history[split];
-
-        let prev_carries_calls = prev.is_some_and(turn_has_function_call);
-        let here_is_response = matches!(here.role, ContentRole::User) && turn_is_function_response(here);
-
-        let crosses_call_response = prev_carries_calls && here_is_response;
-        let mid_turn = matches!(here.role, ContentRole::Model);
-
-        if crosses_call_response || mid_turn {
-            split += 1;
-            continue;
-        }
-        break;
+    while split > 0 && is_leading_orphan(history, split) {
+        split -= 1;
     }
-
-    split.min(history.len())
+    split
 }
 
-fn turn_has_function_call(c: &Content) -> bool {
-    c.parts.iter().any(|p| matches!(p, Part::FunctionCall { .. }))
+/// True if keeping `history[split..]` would orphan a leading
+/// `functionResponse`: the first kept message is a user turn of only
+/// `functionResponse` parts, whose matching `functionCall` lives at
+/// `split-1` (and would be summarized away).
+fn is_leading_orphan(history: &[Content], split: usize) -> bool {
+    match history.get(split) {
+        Some(c) => matches!(c.role, ContentRole::User) && turn_is_function_response(c),
+        None => false,
+    }
 }
 
 fn turn_is_function_response(c: &Content) -> bool {
@@ -365,5 +367,115 @@ mod tests {
         assert!(!should_compact(Some(500), None));
         assert!(!should_compact(Some(500), Some(1000)));
         assert!(should_compact(Some(1500), Some(1000)));
+    }
+
+    // --- Wire-invariant probes added by the compaction correctness dive ---
+
+    /// Linear tool-heavy history: user_text, then N (model functionCall,
+    /// user functionResponse) round-trips — the realistic compaction case.
+    fn tool_heavy_history(rounds: usize) -> Vec<Content> {
+        let mut h = vec![user_text("start")];
+        for i in 0..rounds {
+            let name = format!("view_file_{i}");
+            h.push(model_call(&name));
+            h.push(user_response(&name));
+        }
+        h
+    }
+
+    fn call_names(cs: &[Content]) -> std::collections::HashSet<String> {
+        let mut s = std::collections::HashSet::new();
+        for c in cs {
+            for p in &c.parts {
+                if let Part::FunctionCall { function_call } = p {
+                    s.insert(function_call.name.clone());
+                }
+            }
+        }
+        s
+    }
+
+    fn response_names(cs: &[Content]) -> std::collections::HashSet<String> {
+        let mut s = std::collections::HashSet::new();
+        for c in cs {
+            for p in &c.parts {
+                if let Part::FunctionResponse { function_response } = p {
+                    s.insert(function_response.name.clone());
+                }
+            }
+        }
+        s
+    }
+
+    /// THE CORE INVARIANT: the kept slice must be self-consistent — its
+    /// functionResponses must each have their functionCall kept too, and
+    /// vice-versa. (Gemini matches by name; we use unique names per round.)
+    #[test]
+    fn keep_slice_balanced_for_tool_heavy_history() {
+        for rounds in 4..=20 {
+            let h = tool_heavy_history(rounds);
+            let split = pick_split(&h, KEEP_RECENT_TURNS);
+            let kept = &h[split..];
+            let calls = call_names(kept);
+            let resps = response_names(kept);
+            for r in &resps {
+                assert!(
+                    calls.contains(r),
+                    "ORPHAN functionResponse {r:?} kept without its call (rounds={rounds}, split={split})"
+                );
+            }
+            for c in &calls {
+                assert!(
+                    resps.contains(c),
+                    "DANGLING functionCall {c:?} kept without its response (rounds={rounds}, split={split})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn keep_slice_never_starts_with_orphan_function_response() {
+        for rounds in 4..=20 {
+            let h = tool_heavy_history(rounds);
+            let split = pick_split(&h, KEEP_RECENT_TURNS);
+            if split < h.len() {
+                let first = &h[split];
+                assert!(
+                    !(matches!(first.role, ContentRole::User) && turn_is_function_response(first)),
+                    "first kept message is an orphaned functionResponse (rounds={rounds}, split={split})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pick_split_keeps_at_least_something_when_over_window() {
+        // Regression guard for the walk-FORWARD run-away bug: a long run of
+        // tool round-trips must not summarize away ALL recent context.
+        for rounds in 4..=30 {
+            let h = tool_heavy_history(rounds);
+            let split = pick_split(&h, KEEP_RECENT_TURNS);
+            assert!(
+                split < h.len(),
+                "pick_split kept nothing (rounds={rounds}, split={split}, len={})",
+                h.len()
+            );
+        }
+    }
+
+    #[test]
+    fn pick_split_empty_history() {
+        assert_eq!(pick_split(&[], 6), 0);
+    }
+
+    #[test]
+    fn pick_split_single_message() {
+        assert_eq!(pick_split(&[user_text("only")], 6), 0);
+    }
+
+    #[test]
+    fn pick_split_exactly_at_keep_window() {
+        let h: Vec<Content> = (0..12).map(|i| user_text(&format!("u{i}"))).collect();
+        assert_eq!(pick_split(&h, 6), 0);
     }
 }
