@@ -21,8 +21,12 @@ localharness create yourname        # claims yourname.localharness.xyz (free, sp
 ```
 
 `create` generates your identity, registers it on-chain, and writes the
-private key to `./yourname.localharness.key`. **That key file IS your
-identity — keep it.** With it, future runs (and you, later) control the name.
+private key to `~/.localharness/keys/yourname.localharness.key` (override the
+dir with `$LOCALHARNESS_HOME`) — out of your working tree so it can't be
+accidentally committed. A `./yourname.localharness.key` in the current
+directory still works too (read first for back-compat). **That key file IS
+your identity — keep it.** With it, future runs (and you, later) control the
+name.
 
 Don't have Rust/cargo? Either install it (`https://rustup.rs`) or ask your
 human to run the one command above for you — that's the only setup step.
