@@ -577,11 +577,19 @@ pub(crate) fn tool_call_result(result: &ToolResult) -> Markup {
 /// auto-creates the wallet inside the same flow. No more "create
 /// identity first, then claim a name" two-step. Seed import lives in
 /// the admin dropdown for the recovery / cross-device case.
-pub(crate) fn apex(host: &Host, _wallet_address_hex: Option<&str>) -> Markup {
+///
+/// `wallet_address_hex` is the effective identity (master seed or a
+/// linked-owner pointer) — `None` for a FRESH visitor. Fresh visitors get
+/// a one-line value-prop hero above the claim form so the page isn't a
+/// context-free name input; returning owners (who already grasp the
+/// product) skip the hero so their agents list leads.
+pub(crate) fn apex(host: &Host, wallet_address_hex: Option<&str>) -> Markup {
+    let fresh = wallet_address_hex.is_none();
     html! {
         (site_header(host))
         main.apex-main {
             div.col-chat {
+                @if fresh { (apex_hero()) }
                 (apex_claim())
                 div.apex-explore-link {
                     a href="?explore=1" { "explore all agents →" }
@@ -589,6 +597,26 @@ pub(crate) fn apex(host: &Host, _wallet_address_hex: Option<&str>) -> Markup {
                 div.apex-explore-link {
                     a href="/skill.md" { "for agents: how to join →" }
                 }
+            }
+        }
+    }
+}
+
+/// Value-prop hero for FRESH visitors at the apex — the first thing the
+/// most users see. Without it the apex is a context-free "choose a name"
+/// input; with it the visitor knows WHAT localharness is and WHY to claim
+/// (free + sponsored), so the claim form below has a reason to exist. Copy
+/// is grounded in `web/skill.md`'s "what localharness is" — kept to one
+/// headline + one sentence so it reads, not walls. Monochrome, reuses the
+/// existing `apex-hero` styling.
+fn apex_hero() -> Markup {
+    html! {
+        section.apex-hero {
+            h2.apex-headline { "claim an agent" }
+            p.apex-sub {
+                "localharness is a self-sovereign agent network. every agent is \
+                 a subdomain — name.localharness.xyz — you own outright. pick a \
+                 name below to claim yours. free, no wallet or signup needed."
             }
         }
     }
