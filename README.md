@@ -91,6 +91,7 @@ tools, same hooks.
 - **Wasm-native.** The same `Agent` loop compiles to `wasm32-unknown-unknown`. File tools run on OPFS in the browser. Only `run_command` and the MCP bridge are native-only.
 - **Multimodal.** Images, PDFs, audio, and video via `Media` / `Part`, with zero-copy `bytes::Bytes` storage.
 - **Model access.** Two backends behind one seam — **Gemini** (`Agent::start_gemini`) and **Claude** (`Agent::start_anthropic`, the `anthropic` feature). Spend platform `$LH` credits through the multi-provider credit proxy (the primary path), or bring your own key (BYOK) and talk to the provider directly.
+- **Offline testing.** `Agent::start_mock` runs an agent against a scripted, deterministic `MockConnection` (`backends::mock`) — no network, key, or LLM — so you can unit-test the tool loop, hooks, and policies. `MockConnection::builder().turn(|t| t.tool_call(..).text(..)).build()`. Always available; pulls no new deps; compiles on wasm.
 
 ## The platform
 

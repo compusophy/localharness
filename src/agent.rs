@@ -27,6 +27,7 @@ use tracing::{debug, warn};
 use crate::backends::gemini::{
     GeminiBackendConfig, GeminiConnection, GeminiConnectionStrategy, GeminiRunners,
 };
+use crate::backends::mock::{MockConnectionStrategy, MockRunners};
 #[cfg(feature = "anthropic")]
 use crate::backends::anthropic::{
     AnthropicBackendConfig, AnthropicConnection, AnthropicConnectionStrategy, AnthropicRunners,
@@ -284,6 +285,95 @@ impl GeminiAgentConfig {
         let id = conversation_id.into();
         self.gemini.conversation_id = Some(id.clone());
         self.agent.conversation_id = Some(id);
+        self
+    }
+}
+
+// =============================================================================
+// Mock agent config (always available — offline testing)
+// =============================================================================
+
+/// Configuration for the deterministic, offline mock backend.
+///
+/// Pairs the generic [`AgentConfig`] (hooks, tools, policies, triggers) with a
+/// scripted [`MockConnectionStrategy`] so an [`Agent`] can be driven entirely
+/// offline — no network, no API key, no LLM. The parallel of
+/// [`GeminiAgentConfig`], always available (no feature flag). Build the
+/// strategy with [`MockConnection::builder`].
+///
+/// [`MockConnectionStrategy`]: crate::backends::mock::MockConnectionStrategy
+/// [`MockConnection::builder`]: crate::backends::mock::MockConnection::builder
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use localharness::{Agent, policy};
+/// use localharness::backends::mock::{MockAgentConfig, MockConnection};
+///
+/// # async fn run() -> localharness::Result<()> {
+/// let backend = MockConnection::builder()
+///     .turn(|t| t.text("the scripted answer"))
+///     .build();
+/// let agent = Agent::start_mock(MockAgentConfig::new(backend)).await?;
+/// assert_eq!(agent.chat("anything").await?.text().await?, "the scripted answer");
+/// agent.shutdown().await?;
+/// # Ok(())
+/// # }
+/// ```
+pub struct MockAgentConfig {
+    /// Backend-agnostic settings (tools, policies, triggers).
+    pub agent: AgentConfig,
+    /// The scripted mock backend strategy.
+    pub mock: MockConnectionStrategy,
+}
+
+impl MockAgentConfig {
+    /// Create a mock agent configuration from a scripted backend strategy
+    /// (built via [`MockConnection::builder`]).
+    ///
+    /// [`MockConnection::builder`]: crate::backends::mock::MockConnection::builder
+    pub fn new(mock: MockConnectionStrategy) -> Self {
+        Self {
+            agent: AgentConfig::default(),
+            mock,
+        }
+    }
+
+    /// Set the system instructions (recorded on the agent config; the mock
+    /// ignores them — its turns are scripted, not generated).
+    pub fn with_system_instructions(mut self, instr: impl Into<SystemInstructions>) -> Self {
+        self.agent = self.agent.with_system_instructions(instr);
+        self
+    }
+
+    /// Configure which built-in tools are enabled.
+    pub fn with_capabilities(mut self, cap: CapabilitiesConfig) -> Self {
+        self.agent = self.agent.with_capabilities(cap);
+        self
+    }
+
+    /// Register a custom tool. Scripted `tool_call`s dispatch through it.
+    pub fn with_tool(mut self, tool: Arc<dyn Tool>) -> Self {
+        self.agent = self.agent.with_tool(tool);
+        self
+    }
+
+    /// Set the safety policies for tool execution. Scripted tool calls run
+    /// through these exactly as the live backends do.
+    pub fn with_policies(mut self, policies: Vec<Policy>) -> Self {
+        self.agent = self.agent.with_policies(policies);
+        self
+    }
+
+    /// Add a workspace root for path-containment enforcement.
+    pub fn with_workspace(mut self, ws: impl Into<PathBuf>) -> Self {
+        self.agent = self.agent.with_workspace(ws);
+        self
+    }
+
+    /// Register a background trigger.
+    pub fn with_trigger(mut self, trigger: Arc<dyn Trigger>) -> Self {
+        self.agent = self.agent.with_trigger(trigger);
         self
     }
 }
@@ -598,6 +688,48 @@ impl Agent {
             gc.set_history_bytes(&bytes)?;
         }
         Ok(agent)
+    }
+
+    /// Start an `Agent` backed by the deterministic, offline [mock backend].
+    ///
+    /// The agent runs entirely offline — no network, no API key, no LLM. The
+    /// model's turns are scripted via [`MockConnection::builder`]; scripted
+    /// tool calls dispatch inline through the SAME hooks + policies + tool
+    /// runner the live backends use, so this exercises real agent logic (the
+    /// tool loop) against a deterministic model. Always available (no feature
+    /// flag) — built for unit-testing agents.
+    ///
+    /// [mock backend]: crate::backends::mock
+    /// [`MockConnection::builder`]: crate::backends::mock::MockConnection::builder
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use localharness::{Agent, policy};
+    /// use localharness::backends::mock::{MockAgentConfig, MockConnection};
+    ///
+    /// # async fn run() -> localharness::Result<()> {
+    /// let backend = MockConnection::builder()
+    ///     .turn(|t| t.text("hello from the mock"))
+    ///     .build();
+    /// let agent = Agent::start_mock(MockAgentConfig::new(backend)).await?;
+    /// assert_eq!(agent.chat("hi").await?.text().await?, "hello from the mock");
+    /// agent.shutdown().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn start_mock(mut config: MockAgentConfig) -> Result<Self> {
+        config.agent.capabilities.validate()?;
+        Self::wire_response_schema(&mut config.agent);
+        let mock = config.mock;
+        Self::start_with_factory(config.agent, move |hooks, tools, ctx| {
+            mock.with_runners(MockRunners {
+                tool_runner: Some(tools),
+                hook_runner: Some(hooks),
+                session_ctx: Some(ctx),
+            })
+        })
+        .await
     }
 
     /// Start an `Agent` backed by the Rust-native Anthropic (Claude Messages)

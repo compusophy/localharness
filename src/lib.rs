@@ -126,13 +126,16 @@ pub mod tempo_tx;
 /// tool sign payments using the app-layer wallet).
 pub mod x402_hook;
 
-pub use agent::{Agent, AgentConfig, GeminiAgentConfig};
+pub use agent::{Agent, AgentConfig, GeminiAgentConfig, MockAgentConfig};
 #[cfg(feature = "anthropic")]
 pub use agent::AnthropicAgentConfig;
 #[cfg(feature = "local")]
 pub use agent::LocalAgentConfig;
 pub use backends::gemini::{
     decode_transcript_bytes, GeminiBackendConfig, GeminiConnection, GeminiConnectionStrategy,
+};
+pub use backends::mock::{
+    MockConnection, MockConnectionBuilder, MockConnectionStrategy, MockRunners, ScriptedTurn,
 };
 #[cfg(feature = "anthropic")]
 pub use backends::anthropic::{

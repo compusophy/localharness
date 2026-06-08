@@ -19,6 +19,11 @@
 mod stream_timeout;
 
 pub mod gemini;
+/// Deterministic, offline mock backend for testing agents — a scripted
+/// `ConnectionStrategy` that replays fixed model turns with no network, key,
+/// or LLM. Always available (no feature flag): pulls no new deps and compiles
+/// on every target, so the crate's own tests and consumers' dev-deps both use it.
+pub mod mock;
 /// Anthropic (Claude Messages API) backend — a second `ConnectionStrategy`
 /// behind the same Layer-3 seam. Gated on the `anthropic` feature so it's
 /// purely additive (off by default).
