@@ -1478,12 +1478,26 @@ pub(crate) async fn refresh_credits_pill() {
     // debits the meter per call). 2-decimal so a per-call debit (0.01–0.20 LH)
     // is visibly subtracted; goes up on redeem. (The session-status + separate
     // meter line are gone — metering is the only billing surface now.)
-    let wallet = super::registry::token_balance_of(&addr).await.unwrap_or(0);
-    let meter = super::registry::credit_balance_of(&addr).await.unwrap_or(0);
-    let total = wallet + meter;
-    let whole = total / 1_000_000_000_000_000_000u128;
-    let cents = (total % 1_000_000_000_000_000_000u128) / 10_000_000_000_000_000u128;
-    dom::swap_inner("credits-balance", &format!("{whole}.{cents:02} LH"));
+    // Timeout-capped: the browser-fetch transport has no timeout, so a dead
+    // RPC would leave the pill stuck on its `…` placeholder forever. On a
+    // timeout (or read error) show a dash rather than spinning.
+    let wallet = super::net::read(super::registry::token_balance_of(&addr))
+        .await
+        .ok()
+        .and_then(Result::ok);
+    let meter = super::net::read(super::registry::credit_balance_of(&addr))
+        .await
+        .ok()
+        .and_then(Result::ok);
+    match (wallet, meter) {
+        (Some(wallet), Some(meter)) => {
+            let total = wallet + meter;
+            let whole = total / 1_000_000_000_000_000_000u128;
+            let cents = (total % 1_000_000_000_000_000_000u128) / 10_000_000_000_000_000u128;
+            dom::swap_inner("credits-balance", &format!("{whole}.{cents:02} LH"));
+        }
+        _ => dom::swap_inner("credits-balance", "—"),
+    }
     warn_if_sponsor_low().await;
 }
 
@@ -3570,8 +3584,14 @@ async fn refresh_public_face_status() {
     if dom::by_id("public-face-status").is_none() {
         return;
     }
-    let face = match super::registry::id_of_name(&name).await {
-        Ok(id) if id != 0 => super::registry::public_face_of(id).await.ok().flatten(),
+    // Timeout-capped so a dead RPC resolves to the directory-default label
+    // instead of leaving the placeholder text up forever.
+    let face = match super::net::read(super::registry::id_of_name(&name)).await {
+        Ok(Ok(id)) if id != 0 => super::net::read(super::registry::public_face_of(id))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .flatten(),
         _ => None,
     };
     let label = match face.as_deref() {

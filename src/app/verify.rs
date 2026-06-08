@@ -31,6 +31,14 @@ const SIGNER_ORIGIN: &str = "https://localharness.xyz";
 /// How long to wait for the signer to reply before giving up.
 const TIMEOUT_MS: u32 = 5_000;
 
+/// Overall ceiling for a [`verify_owner`] call, used by `kick_verification`
+/// to cap the flow. The internal iframe wait is `TIMEOUT_MS` (5s), but the
+/// first step is an on-chain `owner_of_name` read whose transport (browser
+/// `fetch`) has no timeout — so without an outer cap a dead RPC hangs the
+/// whole verification (and the verify pill) indefinitely. Generous enough to
+/// absorb the iframe round-trip on top of a slow-but-alive read.
+pub(crate) const VERIFY_BUDGET_MS: u32 = 15_000;
+
 /// The local master wallet IF this origin holds the seed — apex always,
 /// or a subdomain that pulled it in via [`super::seed_pull`]. When
 /// present, seed-derived ops (owner proof, tempo-tx sign, key seal/open)

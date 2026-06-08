@@ -35,6 +35,7 @@ mod feedback;
 mod history;
 mod key_store;
 mod model;
+mod net;
 mod opfs;
 mod owner;
 mod pricing;
@@ -735,7 +736,15 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
 ///   repaint the public face. A `Failed` (RPC/iframe hiccup) is NOT a
 ///   demotion: keep the optimistic studio rather than punish a transient.
 async fn kick_verification(host: tenant::Host, name: String, painted_from_hint: bool) {
-    let verify_result = verify::verify_owner(&name).await;
+    // Cap the whole verification — its first step is an on-chain
+    // `owner_of_name` read with NO transport timeout (browser fetch never
+    // times out), so a black-holed RPC would otherwise leave the verify pill
+    // stuck on "pending" forever. A timeout degrades to a `Failed` verdict,
+    // which is treated as a transient (the optimistic studio stays painted).
+    let verify_result = match net::with_timeout(verify::VERIFY_BUDGET_MS, verify::verify_owner(&name)).await {
+        Ok(r) => r,
+        Err(_) => Err("verification timed out (RPC unreachable)".to_string()),
+    };
 
     // Self-correct the on-chain-derived hint before anything else.
     match &verify_result {
@@ -881,7 +890,14 @@ pub(crate) async fn paint_apex(host: tenant::Host) {
             r#"<div id="agents-list" class="agents-list"><p class="apex-fine">loading agents…</p></div>"#,
         );
         wasm_bindgen_futures::spawn_local(async move {
-            match registry::list_owned_tokens(&owner_addr).await {
+            // Timeout-capped: the "loading agents…" placeholder is up; a hung
+            // RPC (browser fetch never times out) would freeze it there. A
+            // timeout maps to the same error branch as a read failure.
+            let listed = match net::read(registry::list_owned_tokens(&owner_addr)).await {
+                Ok(r) => r,
+                Err(_) => Err("on-chain read timed out".to_string()),
+            };
+            match listed {
                 Ok(mut agents) => {
                     // MAIN lookup is best-effort — facet might not be
                     // cut on a given diamond, in which case the badge
@@ -1082,7 +1098,14 @@ fn has_explore_hint() -> bool {
 
 /// Fetch the recent agents and swap them into the directory grid.
 async fn paint_explore() {
-    match registry::list_recent_agents(60).await {
+    // Timeout-capped: the directory paints a "loading…" grid placeholder;
+    // a hung RPC would otherwise freeze it there. A timeout maps to the same
+    // error branch as a read failure (visible message, not a permanent spinner).
+    let listed = match net::read(registry::list_recent_agents(60)).await {
+        Ok(r) => r,
+        Err(_) => Err("on-chain read timed out".to_string()),
+    };
+    match listed {
         Ok(agents) => {
             // Batch-fetch every agent's on-chain persona in ONE eth_call so
             // each card shows what the agent actually DOES (not just a name).
@@ -1178,7 +1201,15 @@ async fn paint_public_landing(host: &tenant::Host, name: &str, owner_overlay: bo
 /// seed-bearing owner reach their workshop from a device that has no
 /// local `.lh_owner` marker, without exposing a studio door to visitors.
 async fn redirect_to_studio_if_owner(name: String) {
-    match verify::verify_owner(&name).await {
+    // Capped like `kick_verification` — a hung on-chain read inside
+    // `verify_owner` would otherwise leave this background task pending
+    // forever. A timeout maps to `Err`, which falls through to the
+    // seed-pull recovery (the same as a genuine iframe failure).
+    let verdict = match net::with_timeout(verify::VERIFY_BUDGET_MS, verify::verify_owner(&name)).await {
+        Ok(r) => r,
+        Err(_) => Err("verification timed out".to_string()),
+    };
+    match verdict {
         Ok(verify::VerifyResult::VerifiedOwner { address }) => {
             // Proven owner on a device without the local hint (e.g. a second
             // device): remember the proven address so the next load paints

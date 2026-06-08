@@ -93,17 +93,25 @@ pub(crate) fn system_prompt_digest() -> String {
 /// so the caller can fall back to the embedded summary. Uses `reqwest`
 /// (the same client the Gemini backend uses — browser fetch on wasm).
 async fn fetch_live_docs() -> Result<String, String> {
-    let resp = reqwest::Client::new()
-        .get(LLMS_TXT_URL)
-        .send()
-        .await
-        .map_err(|e| format!("fetch llms.txt: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("llms.txt HTTP {}", resp.status().as_u16()));
-    }
-    resp.text()
-        .await
-        .map_err(|e| format!("read llms.txt body: {e}"))
+    // Timeout-capped: the browser-fetch transport has no timeout, so a hung
+    // request would hang the whole `read_self_docs` tool call (and the agent
+    // turn it runs inside). On a timeout, Err → the caller falls back to the
+    // always-available embedded summary.
+    super::net::read(async {
+        let resp = reqwest::Client::new()
+            .get(LLMS_TXT_URL)
+            .send()
+            .await
+            .map_err(|e| format!("fetch llms.txt: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("llms.txt HTTP {}", resp.status().as_u16()));
+        }
+        resp.text()
+            .await
+            .map_err(|e| format!("read llms.txt body: {e}"))
+    })
+    .await
+    .unwrap_or_else(|_| Err("fetch llms.txt: timeout".to_string()))
 }
 
 /// `read_self_docs()` — read-only tool. Returns the agent's own runtime
