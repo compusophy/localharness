@@ -384,11 +384,28 @@ async function recordRun(
     return 'stale';
   }
   const pub = publicClient();
-  const { status } = await pub.waitForTransactionReceipt({
-    hash,
-    timeout: 30_000,
-    pollingInterval: 500,
-  });
+  let status: 'success' | 'reverted';
+  try {
+    // 12s (matches gemini.ts::meterDebit) — NOT 30s. The cron ticks every
+    // minute and processes up to MAX_JOBS_PER_TICK jobs SEQUENTIALLY, each a
+    // Gemini call + this receipt wait; a 30s-per-job wait could let a single
+    // tick blow past Edge's ~25s wall-clock and die mid-batch. Keep each wait
+    // bounded so the whole tick fits.
+    ({ status } = await pub.waitForTransactionReceipt({
+      hash,
+      timeout: 12_000,
+      pollingInterval: 500,
+    }));
+  } catch {
+    // Ambiguous: the tx was SUBMITTED but the receipt didn't arrive in time
+    // (RPC slow / Edge clock). The recordRun is CAS-guarded on `nextRun`, so if
+    // it lands it advances the job exactly once (no double-bill possible); if it
+    // doesn't, next tick re-fires under the same CAS. Treat as a non-recorded
+    // skip — do NOT throw (a throw would just be logged as an error upstream and
+    // tells us nothing more). The chain is the source of truth.
+    console.warn(`[scheduler] recordRun(${id}) submitted (tx ${hash}) but receipt wait timed out — chain CAS will reconcile`);
+    return 'stale';
+  }
   if (status === 'reverted') {
     console.warn(`[scheduler] recordRun(${id}) reverted on-chain (tx ${hash}) — treated as a benign skip`);
     return 'stale';
@@ -427,15 +444,29 @@ async function processJob(id: bigint): Promise<JobResult> {
   if (job.nextRun > nowTs) {
     return { id: idStr, outcome: 'skipped', ran: 'n/a', note: 'not due yet' };
   }
-  // The facet rejects spentWei > budgetWei. If the remaining budget can't cover
-  // a run, the job will exhaust on the next eligible record anyway — but a
-  // budget below COST_WEI means we can't even record this run. Skip; the facet
-  // will exhaust it when a covered run lands (or the owner cancels for a refund).
-  if (job.budgetWei < COST_WEI) {
-    return { id: idStr, outcome: 'skipped', ran: 'n/a', note: 'budget below per-run cost' };
-  }
 
   const expectedNextRun = job.nextRun;
+
+  // The facet rejects spentWei > budgetWei. If the remaining budget can't cover
+  // a FULL run (`budgetWei < COST_WEI`), we must NOT skip-and-leave-it: a skipped
+  // job's `nextRun` is never advanced, so it stays Active+due and `jobsDue`
+  // returns it EVERY tick forever (a permanent hot-loop that also starves the
+  // per-tick batch, since a covered run can never land — the budget can only
+  // shrink). Instead, record a FINAL run debiting exactly the dust remainder
+  // (`spentWei = budgetWei`): the facet sees `remaining(0) < spentWei`, marks the
+  // job Exhausted, and refunds 0 — clearing it from the due set for good. We do
+  // NOT run Gemini for this (no budget to pay for it) — it's a pure
+  // accounting-close, not a free model call.
+  if (job.budgetWei < COST_WEI) {
+    const outcome = await recordRun(id, expectedNextRun, job.budgetWei);
+    return {
+      id: idStr,
+      outcome,
+      ran: 'n/a',
+      note: 'budget below per-run cost — closed (Exhausted) without a run',
+    };
+  }
+
   const name = await nameOfId(job.targetId);
 
   // Build + run the turn. Persona resolution + Gemini errors must NOT abort the
@@ -484,6 +515,27 @@ function unauthorized(): Response {
   });
 }
 
+/**
+ * Constant-time string compare for the CRON_SECRET bearer check. A plain `!==`
+ * short-circuits on the first differing byte, leaking the secret's length +
+ * matched-prefix length through response timing — and this secret is a STATIC
+ * shared bearer (unlike the per-request ECDSA tokens in gemini.ts/mcp.ts, which
+ * are non-forgeable regardless of compare timing). Compare every byte; the
+ * length check is folded into the accumulator so a length mismatch can't
+ * short-circuit either. (Edge network jitter dwarfs the signal in practice —
+ * this is defense-in-depth, cheap to do right.)
+ */
+function timingSafeEqual(a: string, b: string): boolean {
+  const ab = new TextEncoder().encode(a);
+  const bb = new TextEncoder().encode(b);
+  let diff = ab.length ^ bb.length;
+  const n = Math.max(ab.length, bb.length);
+  for (let i = 0; i < n; i++) {
+    diff |= (ab[i] ?? 0) ^ (bb[i] ?? 0);
+  }
+  return diff === 0;
+}
+
 export default async function handler(req: Request): Promise<Response> {
   // CRON_SECRET gate — Vercel's cron sends `Authorization: Bearer ${CRON_SECRET}`.
   // The same header gates a manual dogfood POST. The public can NEVER trigger a
@@ -504,7 +556,7 @@ export default async function handler(req: Request): Promise<Response> {
     );
   }
   const auth = req.headers.get('authorization') ?? '';
-  if (auth !== `Bearer ${secret}`) {
+  if (!timingSafeEqual(auth, `Bearer ${secret}`)) {
     return unauthorized();
   }
 
