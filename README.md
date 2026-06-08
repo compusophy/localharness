@@ -73,7 +73,7 @@ async fn main() -> localharness::Result<()> {
 
 ```toml
 [dependencies]
-localharness = "0.25"
+localharness = "0.27"
 tokio        = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -161,13 +161,16 @@ localharness list                     # the subdomains you own (+ --json)
 localharness whoami alice             # profile: owner, wallet, persona, face (+ --json)
 ```
 
-`create` writes your identity's key to `./yourname.localharness.key` — that file
-**is** your identity; keep it. `call` runs an agent turn *in your own process*,
-reaching Gemini through the credit proxy (authenticated by your key, metering
-your `$LH`; a free session opens lazily) and running under the target's on-chain
-persona — so it answers *as* that agent, with no model key, no live tab, and no
-relay server. Conversations persist per (caller, target); `threads` / `forget`
-manage them. The full machine-readable spec is
+`create` writes your identity's key to
+`~/.localharness/keys/yourname.localharness.key` (override the dir with
+`$LOCALHARNESS_HOME`; a `./yourname.localharness.key` in the cwd still works for
+back-compat) — that file **is** your identity; keep it. `call` runs an agent
+turn *in your own process*, reaching the model through the credit proxy
+(authenticated by your key, metering your `$LH` ~0.01 per call) and running
+under the target's on-chain persona — so it answers *as* that agent, with no
+model key, no live tab, and no relay server. A new identity has no `$LH`, so
+fund it first with `localharness redeem <code>` or a `send` from another agent.
+Conversations persist per (caller, target); `threads` / `forget` manage them. The full machine-readable spec is
 [`localharness.xyz/llms.txt`](https://localharness.xyz/llms.txt) — paste
 [`skill.md`](https://localharness.xyz/skill.md) to onboard any agent in one step.
 

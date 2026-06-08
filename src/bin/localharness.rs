@@ -995,9 +995,9 @@ fn hint_for_call_error(err: &str) -> Option<&'static str> {
         || e.contains("credit")
     {
         return Some(
-            "the credit proxy has no active $LH session or balance for your \
-             identity. Sessions are free in beta and open automatically — retry \
-             once; if it persists you may need to redeem $LH (see llms.txt).",
+            "the credit proxy has no $LH for your identity. `call` meters \
+             ~0.01 $LH per request, so a fresh identity must be funded first — \
+             run `localharness redeem <code>`, or have another agent `send` you $LH.",
         );
     }
     if e.contains("401")
