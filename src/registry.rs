@@ -4060,9 +4060,174 @@ async fn eth_send_raw_transaction(raw_hex: &str) -> Result<String, String> {
     }
 }
 
+/// Map a 4-byte custom-error / `Error(string)` selector (the first 4 bytes of
+/// revert data) to a friendly, actionable message. PURE + network-free — the
+/// core of revert decoding, unit-tested in isolation. Covers the facets a CLI
+/// user actually hits on a sponsored write: ScheduleFacet
+/// (`schedule`/`unschedule`), InviteFacet (`invite create/accept/reclaim`), and
+/// the cost/escrow facets the writes pull `$LH` through. Selectors are computed
+/// from the EXACT `error Name(...)` signatures in the facet sources, so a
+/// rename there must be mirrored here (the unit test pins the bytes).
+///
+/// `None` for an unrecognised selector so the caller can fall back to the
+/// generic hint — never a misleading guess.
+fn decode_known_revert(selector_bytes: [u8; 4]) -> Option<&'static str> {
+    // (error signature, friendly message). The signature is keccak'd to its
+    // 4-byte selector exactly as Solidity does (same `selector()` the encoders
+    // use), so this list is the source of truth, not hand-copied hex.
+    const KNOWN: &[(&str, &str)] = &[
+        // --- ScheduleFacet (schedule / unschedule / pause / resume / topup) ---
+        ("NotDue()", "this job isn't due yet — the scheduler only fires on the interval. Check `localharness jobs` for its next run."),
+        ("StaleNextRun()", "this run was already fired by the scheduler — nothing to do (the on-chain clock already advanced)."),
+        ("SpendExceedsBudget()", "the run would spend more $LH than the job's remaining budget — top it up or it will be marked exhausted."),
+        ("NotScheduler()", "only the scheduler worker can record a run — this isn't a user action."),
+        ("NotJobOwner()", "you don't own this job — only its scheduler can cancel/pause/top it up. Check `localharness jobs` under the right `--as` identity."),
+        ("UnknownJob()", "no job with that id — list yours with `localharness jobs` (the id is the `#N`)."),
+        ("JobNotActive()", "the job is already cancelled or exhausted — there's nothing to cancel. See `localharness jobs`."),
+        ("JobNotPaused()", "the job isn't paused, so it can't be resumed."),
+        ("UnregisteredTarget()", "the target isn't a registered agent — run `localharness whoami <target>` to confirm it exists first."),
+        ("ZeroInterval()", "the interval is below the 60s minimum the facet allows — use `--every 60s` or more."),
+        ("ZeroRuns()", "max-runs must be at least 1 — drop `--runs 0`."),
+        // --- InviteFacet (invite create / accept / reclaim) ---
+        ("CodeTaken()", "that invite code already exists on-chain — generate a fresh one (`invite create` makes a new code each time)."),
+        ("BadTtl()", "the invite TTL is outside the allowed 1h..90d window — use e.g. `--ttl 7d`."),
+        ("EscrowCapExceeded()", "this would push your locked invite escrow past the per-funder cap — reclaim an expired invite (`invite reclaim <code>`) or use a smaller amount."),
+        ("UnknownInvite()", "no invite matches that code — double-check you copied the full code, including the `inv-` prefix."),
+        ("NotOpen()", "this invite was already accepted or reclaimed — it's spent."),
+        ("Expired()", "this invite has expired — it can no longer be accepted, only reclaimed by its funder (`invite reclaim <code>`)."),
+        ("NotYetExpired()", "this invite hasn't expired yet — reclaim only works AFTER the TTL elapses. Until then it can still be accepted."),
+        // --- Shared (both facets + the cost/escrow path) ---
+        ("ZeroBudget()", "the budget/amount must be greater than 0."),
+        ("ZeroAmount()", "the amount must be greater than 0."),
+        ("NotConfigured()", "the on-chain credits token isn't configured — this is a platform-side misconfiguration, not your input. Report it via `localharness feedback`."),
+        // --- Generic ERC-20 transferFrom failure (escrow pull) ---
+        // The facets `require(transferFrom(...))` with these reason strings; if
+        // the require trips it surfaces as Error(string). The selector branch
+        // below decodes the actual string, but map the bare selector too.
+        ("Error(string)", "the on-chain call reverted with a reason string (decoded above when available)."),
+    ];
+    for (sig, msg) in KNOWN {
+        if selector(sig) == selector_bytes {
+            return Some(msg);
+        }
+    }
+    None
+}
+
+/// Turn raw revert return-data into a human message. Recognises:
+///   - the standard `Error(string)` envelope (`0x08c379a0` + ABI string) — the
+///     `require("...")` reason, e.g. "schedule: escrow failed" / "ERC20:
+///     transfer amount exceeds balance" (an under-funded escrow);
+///   - a known custom-error selector via `decode_known_revert`.
+/// Returns `None` for empty/unrecognised data so the caller keeps the bare hash
+/// plus a generic hint. PURE — unit-tested.
+fn decode_revert_data(data: &[u8]) -> Option<String> {
+    if data.len() < 4 {
+        return None;
+    }
+    let sel: [u8; 4] = [data[0], data[1], data[2], data[3]];
+    // Standard Error(string): 0x08c379a0 || abi.encode(string). Decode the
+    // string and pass it through verbatim — `require` reasons are already
+    // human-readable (and often the most actionable: an escrow-pull failure
+    // means "you don't have enough $LH / haven't approved the diamond").
+    if sel == [0x08, 0xc3, 0x79, 0xa0] {
+        let hex = format!("0x{}", bytes_to_hex(&data[4..]));
+        if let Some(reason) = decode_string(&hex) {
+            let reason = reason.trim();
+            if !reason.is_empty() {
+                let lower = reason.to_ascii_lowercase();
+                // An ERC-20 balance/allowance failure on an escrow pull is the
+                // single most common cause — say what to DO about it.
+                if lower.contains("balance") || lower.contains("allowance") || lower.contains("escrow") {
+                    return Some(format!(
+                        "{reason} — you likely don't have enough $LH for the escrow. \
+                         Fund it (`localharness redeem <code>` or have another agent \
+                         `send` you $LH), then retry."
+                    ));
+                }
+                return Some(reason.to_string());
+            }
+        }
+    }
+    // Panic(uint256) (0x4e487b71) → arithmetic/assert; rare here, generic.
+    if sel == [0x4e, 0x48, 0x7b, 0x71] {
+        return Some("the contract hit an internal assertion (Panic) — this is a platform bug, not your input; please `localharness feedback` it.".to_string());
+    }
+    decode_known_revert(sel).map(|m| m.to_string())
+}
+
+/// Best-effort fetch + decode of WHY a sponsored tx reverted: re-run the same
+/// top-level call via `eth_call` at the block it failed in, capture the revert
+/// return-data from the node's error `data` field, and decode it
+/// (`decode_revert_data`). The replay is read-only (no new tx, no gas, no
+/// `$LH`). Returns `None` on any failure to obtain a reason — the caller still
+/// has the hash + a generic hint. Never errors out the original flow.
+async fn fetch_revert_reason(tx_hash: &str) -> Option<String> {
+    // 1. Pull the original tx so we can replay its call shape.
+    let tx = rpc_value("eth_getTransactionByHash", serde_json::json!([tx_hash]))
+        .await
+        .ok()?;
+    let tx = tx.as_object()?;
+    let to = tx.get("to")?.as_str()?;
+    let from = tx.get("from")?.as_str()?;
+    let input = tx.get("input").and_then(|v| v.as_str()).unwrap_or("0x");
+    // Replay AT the failing block (state just before is closest to reproduce).
+    let block = tx.get("blockNumber").and_then(|v| v.as_str()).unwrap_or("latest");
+
+    // 2. eth_call the same call — a reverting call returns the revert data in
+    //    the JSON-RPC error's `data` field. Capture it explicitly (the shared
+    //    `rpc_value` discards `error.data`, so do a raw call here).
+    let body = RpcRequest {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "eth_call",
+        params: serde_json::json!([{ "from": from, "to": to, "data": input }, block]),
+    };
+    let client = reqwest::Client::new();
+    let resp = client.post(RPC_URL).json(&body).send().await.ok()?;
+    let json: serde_json::Value = resp.json().await.ok()?;
+
+    // The revert payload can live in error.data (string or {message,data}).
+    let err = json.get("error")?;
+    let data_hex = err
+        .get("data")
+        .and_then(|d| {
+            d.as_str()
+                .map(|s| s.to_string())
+                .or_else(|| d.get("data").and_then(|x| x.as_str()).map(|s| s.to_string()))
+        })
+        .filter(|s| s.len() > 2 && s.starts_with("0x"));
+    if let Some(hex) = data_hex {
+        if let Ok(bytes) = hex_to_bytes(&hex) {
+            if let Some(reason) = decode_revert_data(&bytes) {
+                return Some(reason);
+            }
+        }
+    }
+    // No structured data — some nodes embed the reason in error.message.
+    err.get("message").and_then(|m| m.as_str()).and_then(|m| {
+        let m = m.trim();
+        // Only surface a message that actually says something beyond "reverted".
+        if m.is_empty() || m.eq_ignore_ascii_case("execution reverted") {
+            None
+        } else {
+            Some(m.to_string())
+        }
+    })
+}
+
+/// The catch-all line appended to a bare revert so the user is never left
+/// staring at only a hash. Lists the common, user-fixable causes.
+const GENERIC_REVERT_HINT: &str = "the transaction reverted on-chain. Common causes: \
+    not enough $LH for the escrow/cost (fund with `localharness redeem <code>`), \
+    you don't own the name/job you're acting on, a duplicate/expired/already-spent \
+    invite, or a not-yet-due job. Run `localharness whoami <name>` / `jobs` to check state.";
+
 /// Poll `eth_getTransactionReceipt` until the receipt resolves. Errors
 /// after ~30 seconds — Tempo Moderato blocks are ~1s so 30 attempts
-/// is more than enough headroom.
+/// is more than enough headroom. On a `0x0` (revert) status, best-effort
+/// fetch + decode the revert REASON (so the user sees WHY, not just a hash)
+/// and always append the generic hint.
 async fn wait_for_receipt(tx_hash: &str) -> Result<(), String> {
     for _ in 0..30 {
         let body = RpcRequest {
@@ -4092,7 +4257,12 @@ async fn wait_for_receipt(tx_hash: &str) -> Result<(), String> {
             if status == "0x1" {
                 return Ok(());
             } else if status == "0x0" {
-                return Err(format!("tx reverted: {tx_hash}"));
+                // Decode WHY it reverted (best-effort; read-only replay).
+                let reason = fetch_revert_reason(tx_hash).await;
+                return Err(match reason {
+                    Some(r) => format!("tx reverted: {r}\n  {GENERIC_REVERT_HINT}\n  tx: {tx_hash}"),
+                    None => format!("tx reverted — {GENERIC_REVERT_HINT}\n  tx: {tx_hash}"),
+                });
             }
         }
         // Wait ~1s before next poll. spawn_local + a 1s timer would
@@ -4186,6 +4356,88 @@ mod tests {
         let sel = selector("idOfName(string)");
         let hex: String = sel.iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(hex, "127c388a");
+    }
+
+    #[test]
+    fn decode_known_revert_maps_facet_errors() {
+        // The decoder must recognise the exact custom-error selectors the
+        // ScheduleFacet + InviteFacet emit — keyed off their source signatures.
+        // A few representative ones, each with an actionable message.
+        let cases = [
+            ("NotDue()", "due"),
+            ("UnknownJob()", "no job"),
+            ("NotJobOwner()", "don't own"),
+            ("UnregisteredTarget()", "registered agent"),
+            ("CodeTaken()", "already exists"),
+            ("NotYetExpired()", "hasn't expired"),
+            ("Expired()", "expired"),
+            ("NotOpen()", "already accepted or reclaimed"),
+            ("BadTtl()", "1h..90d"),
+            ("EscrowCapExceeded()", "escrow"),
+            ("UnknownInvite()", "no invite"),
+        ];
+        for (sig, needle) in cases {
+            let sel = selector(sig);
+            let msg = decode_known_revert(sel)
+                .unwrap_or_else(|| panic!("no mapping for {sig}"));
+            assert!(
+                msg.to_lowercase().contains(needle),
+                "message for {sig} ({msg:?}) should mention {needle:?}"
+            );
+        }
+        // An unknown selector → None (caller falls back to the generic hint).
+        assert_eq!(decode_known_revert([0xde, 0xad, 0xbe, 0xef]), None);
+    }
+
+    #[test]
+    fn decode_known_revert_selector_bytes_are_keccak_of_signature() {
+        // Pin the wire bytes so a facet rename (which changes the on-chain
+        // selector) trips this test, forcing the map to be updated in lockstep.
+        // keccak256("NotDue()")[..4] — verifiable with `cast sig "NotDue()"`.
+        let not_due = selector("NotDue()");
+        let hex: String = not_due.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, "47a2375f");
+        assert!(decode_known_revert(not_due).is_some());
+    }
+
+    #[test]
+    fn decode_revert_data_decodes_error_string_envelope() {
+        // Standard Error(string) = 0x08c379a0 || abi.encode("...").
+        // Hand-encode `require(false, "schedule: escrow failed")`.
+        let reason = b"schedule: escrow failed";
+        let mut data = vec![0x08, 0xc3, 0x79, 0xa0];
+        data.extend_from_slice(&u256_be(0x20)); // offset to string
+        data.extend_from_slice(&u256_be(reason.len() as u128)); // length
+        let mut padded = reason.to_vec();
+        padded.resize(padded.len().div_ceil(32) * 32, 0);
+        data.extend_from_slice(&padded);
+
+        let out = decode_revert_data(&data).expect("decodes Error(string)");
+        assert!(out.contains("schedule: escrow failed"), "got {out:?}");
+
+        // An ERC-20 balance failure on an escrow pull → actionable funding hint.
+        let bal = b"ERC20: transfer amount exceeds balance";
+        let mut d2 = vec![0x08, 0xc3, 0x79, 0xa0];
+        d2.extend_from_slice(&u256_be(0x20));
+        d2.extend_from_slice(&u256_be(bal.len() as u128));
+        let mut p2 = bal.to_vec();
+        p2.resize(p2.len().div_ceil(32) * 32, 0);
+        d2.extend_from_slice(&p2);
+        let out2 = decode_revert_data(&d2).expect("decodes balance error");
+        assert!(out2.to_lowercase().contains("$lh"), "should suggest funding: {out2:?}");
+    }
+
+    #[test]
+    fn decode_revert_data_maps_custom_error_and_handles_empty() {
+        // A bare custom-error selector (no args) → its friendly message.
+        let sel = selector("NotYetExpired()");
+        let out = decode_revert_data(&sel).expect("maps custom error");
+        assert!(out.to_lowercase().contains("hasn't expired"), "got {out:?}");
+        // Empty / too-short data → None (caller keeps the hash + generic hint).
+        assert_eq!(decode_revert_data(&[]), None);
+        assert_eq!(decode_revert_data(&[0x01, 0x02]), None);
+        // Unknown selector → None.
+        assert_eq!(decode_revert_data(&[0xde, 0xad, 0xbe, 0xef]), None);
     }
 
     #[test]

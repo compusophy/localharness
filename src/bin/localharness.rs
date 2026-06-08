@@ -161,7 +161,7 @@ private key to ~/.localharness/keys/<name>.localharness.key (override with
 $LOCALHARNESS_HOME; a ./<name>.localharness.key in the cwd still works too) —
 keep it, it IS your identity.
 `call` signs with your key and spends your $LH PER REQUEST (~0.01 $LH/call via
-//! the meter, funded lazily — NOT an hourly session).
+the meter, funded lazily — NOT an hourly session).
 Full API: https://localharness.xyz/llms.txt";
 
 #[tokio::main]
@@ -1094,7 +1094,8 @@ async fn call(rest: &[String]) -> i32 {
 }
 
 /// Run ONE headless conversational turn as `target` — embodying its on-chain
-/// persona, paid for by the identity behind `key_hex` (proxy auth + a free $LH
+/// persona, paid for by the identity behind `key_hex` (proxy auth + ~0.01 $LH
+/// debited from its per-request meter, which this funds lazily — NOT an hourly
 /// session). Returns the reply text plus the updated conversation history bytes
 /// (to persist for the next turn). Shared by the CLI `call` command and the
 /// `mcp` server's `call_agent` tool, so both reach an agent identically.
@@ -2633,20 +2634,21 @@ async fn credits_show(caller_name: Option<&str>) -> i32 {
     println!("  meter    {}   <- per-call billing debits this", fmt_lh(meter));
     if expiry > now {
         println!(
-            "  session  active ~{}min left (free; a funded meter now overrides it)",
+            "  session  active ~{}min left (proxy access without per-call metering)",
             (expiry - now) / 60
         );
     } else {
-        println!("  session  none");
+        println!("  session  none  (open one with `localharness session`, or just `topup` for per-call billing)");
     }
     0
 }
 
 /// `localharness topup [--as <me>]` — fund the caller for PER-CALL billing:
-/// claim the daily `$LH` allowance (if eligible) then deposit the whole wallet
-/// balance into the per-request meter, so the proxy debits real `$LH` each
-/// `call`. Sponsored — needs no gas. The end-to-end billing self-test:
-/// `topup` -> `call` -> `credits` (watch the meter drop).
+/// deposit the whole wallet `$LH` balance into the per-request meter, so the
+/// proxy debits real `$LH` each `call`. (Also attempts the daily allowance, but
+/// that's DISABLED on-chain, so a wallet with 0 `$LH` must be funded first via
+/// `redeem` / `send`.) Sponsored — needs no gas. The end-to-end billing
+/// self-test: `topup` -> `call` -> `credits` (watch the meter drop).
 /// `localharness redeem <code>` — redeem a code for `$LH` straight into the
 /// caller's WALLET (sponsored). Redeem codes are the controlled funding path
 /// now that the daily allowance is disabled (it was a sybil risk: free accounts
@@ -3507,19 +3509,20 @@ async fn topup(caller_name: Option<&str>) -> i32 {
         }
     };
     let addr = addr_to_hex(wallet::address(&signer));
-    // 1. Claim the daily allowance (mints $LH to the wallet) if eligible.
+    // 1. Claim the daily allowance (mints $LH) if eligible. The allowance is
+    //    DISABLED on-chain (dailyAllowance=0 — a sybil risk), so this is a
+    //    no-op in practice; the dormant path stays in case it's re-enabled.
     if registry::can_claim_credits(&addr).await.unwrap_or(false) {
         match registry::claim_daily_sponsored(&signer, &sponsor, registry::ALPHA_USD_ADDRESS).await {
             Ok(tx) => println!("claimed daily $LH  tx: {tx}"),
             Err(e) => eprintln!("claim failed (continuing to deposit): {e}"),
         }
-    } else {
-        println!("daily allowance already claimed today (or none) - skipping claim");
     }
     // 2. Deposit the wallet balance into the per-request meter.
     let bal = registry::token_balance_of(&addr).await.unwrap_or(0);
     if bal == 0 {
-        println!("wallet has 0 $LH - nothing to deposit");
+        println!("wallet has 0 $LH — nothing to deposit.");
+        println!("fund it first: `localharness redeem <code>`, or have another agent `send` you $LH.");
         return 0;
     }
     match registry::deposit_credits_sponsored(&signer, &sponsor, bal, registry::ALPHA_USD_ADDRESS)
