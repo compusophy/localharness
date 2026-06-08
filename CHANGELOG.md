@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.25.0] - 2026-06-08
 
 ### Security
 
@@ -60,6 +60,13 @@ tx-target allowlist, markdown/error-string escaping). Real findings fixed:
 
 ### Added
 
+- **SDK reliability: usage-accounting + trigger-lifecycle regression tests.** A
+  control-flow deep-dive verified the conversation usage accounting (`cumulative`
+  sums, `last_turn` resets each `send`, no per-step double-count — both backends
+  emit `usage_metadata` only on the terminal step), the trigger lifecycle
+  (double-start guard, `stop()` joins, callback error/panic isolation, `Drop`
+  aborts), and `Agent::shutdown` teardown order — no bug — and locked in +11
+  deterministic tests (240 lib total).
 - **On-chain feedback garbage collection.** The `FeedbackFacet`'s append-only
   `Entry[]` grew unbounded — every fleet run + probe appends an entry that costs
   storage gas and lengthens `feedbackRange` forever (it had reached 46). Added an
