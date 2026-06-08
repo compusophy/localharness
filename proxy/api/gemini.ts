@@ -79,9 +79,27 @@ const PRICE_ANTHROPIC: Record<string, bigint> = {
 };
 const PRICE_ANTHROPIC_DEFAULT = envWei('PRICE_ANTHROPIC_DEFAULT_WEI', 50_000_000_000_000_000n);
 
+// Hard ceiling on the `$LH` a SINGLE request may debit. Bill-shock guard: a
+// stateless Edge function has no per-identity rate store, so the spend cap is
+// the user's on-chain `creditOf` balance — but a misconfigured price env (an
+// extra zero on PRICE_ANTHROPIC_*_WEI) or any future code path must never debit
+// an absurd amount in one shot. Anything above this is clamped DOWN to it, so
+// the meter can never charge more than the configured maximum per call. 1 $LH
+// is ~100x the default per-request cost — comfortably above any real model
+// price, far below "drain the wallet in one call". Env-overridable.
+const MAX_COST_PER_REQUEST_WEI = envWei('MAX_COST_PER_REQUEST_WEI', 1_000_000_000_000_000_000n);
+
 function priceOf(provider: 'gemini' | 'anthropic', model: string): bigint {
-  if (provider === 'gemini') return COST_PER_REQUEST_WEI;
-  return PRICE_ANTHROPIC[model] ?? PRICE_ANTHROPIC_DEFAULT;
+  const raw = provider === 'gemini'
+    ? COST_PER_REQUEST_WEI
+    : (PRICE_ANTHROPIC[model] ?? PRICE_ANTHROPIC_DEFAULT);
+  // Clamp to the per-request ceiling — never debit more than the cap in one call.
+  return raw > MAX_COST_PER_REQUEST_WEI ? MAX_COST_PER_REQUEST_WEI : raw;
+}
+
+/** Whether `s` is a well-formed 0x-prefixed 20-byte hex address. */
+function isHexAddress(s: string): boolean {
+  return /^0x[0-9a-fA-F]{40}$/.test(s);
 }
 
 const TEMPO_CHAIN = defineChain({
@@ -320,6 +338,47 @@ async function meterDebit(user: string, amount: bigint): Promise<void> {
   }
 }
 
+// ---- body reading (size-capped) --------------------------------------------
+
+/** Thrown by `readTextCapped` when the streamed body exceeds `MAX_BODY_BYTES`. */
+class BodyTooLargeError extends Error {}
+
+/**
+ * Read a request body to a string, ABORTING past `MAX_BODY_BYTES`. The
+ * up-front `Content-Length` check is advisory only — a chunked request (no
+ * declared length) bypasses it, so without this a caller could stream an
+ * unbounded body into the Edge function's memory BEFORE we ever reach the auth
+ * gate (especially on the Anthropic path, which must read the body to learn the
+ * model). This streams the reader and throws the moment the running total
+ * crosses the cap, so the buffer can never exceed it regardless of headers.
+ */
+async function readTextCapped(req: Request): Promise<string> {
+  const body = req.body;
+  if (!body) return '';
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      total += value.length;
+      if (total > MAX_BODY_BYTES) {
+        await reader.cancel().catch(() => {});
+        throw new BodyTooLargeError('request body too large');
+      }
+      chunks.push(value);
+    }
+  }
+  const merged = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    merged.set(c, off);
+    off += c.length;
+  }
+  return new TextDecoder().decode(merged);
+}
+
 // ---- handler ---------------------------------------------------------------
 
 export default async function handler(req: Request): Promise<Response> {
@@ -355,7 +414,7 @@ export default async function handler(req: Request): Promise<Response> {
       model = gem[1];
     } else if (reqUrl.pathname === '/v1/messages') {
       provider = 'anthropic';
-      anthropicBody = await req.text();
+      anthropicBody = await readTextCapped(req);
       let parsed: { model?: unknown };
       try {
         parsed = JSON.parse(anthropicBody);
@@ -382,6 +441,23 @@ export default async function handler(req: Request): Promise<Response> {
     const timestamp = Number(tsStr);
     if (!address || !signature || !Number.isFinite(timestamp)) {
       return json({ error: 'malformed auth token' }, 401, origin);
+    }
+    // Validate the address shape up front. The recovered-address match below
+    // already forces a well-formed 0x-address (recovery always yields one), but
+    // checking explicitly — like mcp.ts's `isHexAddress` — keeps `address` from
+    // ever flowing UNvalidated into `encodeAddressWord` / the on-chain
+    // `meter(user,...)` debit, and rejects garbage with a clean 401 instead of
+    // relying on the later equality as an implicit validator.
+    if (!isHexAddress(address)) {
+      return json({ error: 'malformed auth token: address' }, 401, origin);
+    }
+    // The signed timestamp must be a non-negative INTEGER (unix seconds). The
+    // client signs the decimal it embeds; reject fractional/odd numerics so a
+    // token whose `tsStr` re-stringifies differently than what was signed fails
+    // here rather than later at the signature-mismatch (clearer error, and no
+    // chance of an exotic numeric slipping the freshness math).
+    if (!Number.isInteger(timestamp) || timestamp < 0) {
+      return json({ error: 'malformed auth token: timestamp' }, 401, origin);
     }
 
     const now = Math.floor(Date.now() / 1000);
@@ -458,14 +534,22 @@ export default async function handler(req: Request): Promise<Response> {
       if (!apiKey) {
         return json({ error: 'proxy misconfigured: missing GEMINI_API_KEY' }, 500, origin);
       }
-      upstream = await fetch(GEMINI_BASE + reqUrl.pathname + reqUrl.search, {
+      // Rebuild the upstream query from an ALLOWLIST instead of forwarding the
+      // caller-controlled `reqUrl.search` verbatim. The real client sends only
+      // `alt=sse` (GeminiClient::stream_generate). Passing the raw search string
+      // let a caller append arbitrary params to the key-bearing Google URL
+      // (e.g. `?key=...`, which Google reads as an alternate credential, or
+      // other request-reshaping params) — nothing the caller controls should
+      // touch the upstream URL beyond the already-allowlisted model/method.
+      const upstreamQs = reqUrl.searchParams.get('alt') === 'sse' ? '?alt=sse' : '';
+      upstream = await fetch(GEMINI_BASE + reqUrl.pathname + upstreamQs, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
           'x-goog-api-key': apiKey,
           accept: req.headers.get('accept') ?? 'text/event-stream',
         },
-        body: await req.text(),
+        body: await readTextCapped(req),
       });
     } else {
       const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -500,6 +584,9 @@ export default async function handler(req: Request): Promise<Response> {
       },
     });
   } catch (e) {
+    if (e instanceof BodyTooLargeError) {
+      return json({ error: 'request body too large' }, 413, origin);
+    }
     return json({ error: (e as Error).message }, 500, origin);
   }
 }

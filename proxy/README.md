@@ -31,6 +31,7 @@ into the wasm):
 vercel env add GEMINI_API_KEY production        # the platform Gemini key
 vercel env add PROXY_METER_KEY production       # meter EOA priv key (per-request mode)
 vercel env add COST_PER_REQUEST_WEI production  # optional; default 0.01 LH (1e16)
+vercel env add MAX_COST_PER_REQUEST_WEI production  # optional; per-call debit ceiling, default 1 LH (1e18)
 ```
 
 For **per-request mode**, the `PROXY_METER_KEY` EOA must (1) be funded with
@@ -82,13 +83,17 @@ to `*.localharness.xyz` (and `localhost` for dev).
 | 401    | missing/stale/bad/mismatched auth token  |
 | 402    | no active on-chain credit session        |
 | 405    | non-POST method                          |
+| 413    | request body too large (declared OR streamed past the cap) |
 | 500    | upstream / config error                  |
+| 502    | metering submission failed (fail-closed) |
 
 ## Auth model
 
-1. **Freshness** — reject if `|now - timestamp| > 24h`. The on-chain session is
-   the real gate, so the token only proves the caller signed recently (re-signed
-   per session). Bounded-replayable within the window — see the known limit.
+1. **Freshness** — reject if `|now - timestamp| > 5 min` (`FRESHNESS_WINDOW_SECS`).
+   The check is two-sided (`Math.abs`), so a future-dated stamp is rejected too,
+   and the timestamp must be a non-negative integer. The on-chain session is the
+   real gate; the token only proves the caller signed recently (re-signed per
+   request). Bounded-replayable within the 5-minute window — see the known limit.
 2. **Signature** — recover the EOA from the personal-sign and require it matches
    the token's `address`.
 3. **On-chain gate** — `eth_call` the diamond at
@@ -108,3 +113,28 @@ on-chain session + Gemini's own rate limits — acceptable for an invited testne
 beta with a free-tier key (same risk class as the embedded sponsor key). The
 public / mainnet-safe fix is **per-request x402 metering** (pay-per-call), not
 shipped here.
+
+### Bill-shock / rate limit (known gap — documented, not half-built)
+
+A compromised or leaked auth key (or session) can flood requests and drain an
+identity's whole `$LH` per-request balance before the owner notices. There is
+**no per-identity request-rate limit**, and there cannot be one without a
+*stateful* store — which this stack deliberately does NOT have (Edge Functions
+are stateless per invocation; the project's substrate is Tempo + the browser, no
+databases/daemons). What bounds the damage today:
+
+- **The on-chain `creditOf` balance is the spend cap.** Per-request mode only
+  drains what the user chose to deposit; the contract reverts once it's gone (a
+  user never goes negative). Keep the deposited balance small to bound exposure.
+- **`MAX_COST_PER_REQUEST_WEI`** clamps the per-call debit so no single request
+  (or a price-env typo) can charge an absurd amount — a hard ceiling per call.
+- Time-session mode is all-you-can-use within the window but spends no
+  per-request balance; its blast radius is Gemini's own upstream rate limits.
+
+**Fix path (when the no-off-chain-infra rule is relaxed for the proxy, or for
+mainnet):** a short-TTL counter keyed by `address` in a KV store (Vercel KV /
+Upstash) — increment per request, reject past N/min — would add a true sliding-
+window limiter. It is intentionally **not** implemented here: it would introduce
+a new stateful off-chain component, and a fake in-memory limiter on a stateless
+Edge function (per-instance, reset on every cold start) would be security
+theater. The clean cap is per-request x402 metering (above).
