@@ -39,6 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Credit proxy: the `$LH` meter debit is now authoritative (closes burst
+  over-serving).** The proxy gated a request with a cheap `creditOf` read then
+  fired the `meter()` debit awaiting only SUBMISSION — so a flurry of concurrent
+  requests could all pass the gate and be served while only the first N debits fit
+  the balance; the rest reverted on-chain (`InsufficientCredits`) unnoticed and the
+  PLATFORM ate the over-served calls. (User balances were never at risk — the
+  contract reverts rather than underflowing.) `meterDebit` now awaits the RECEIPT
+  and a definitive revert returns 402 (unless a session also covers the caller);
+  ambiguous RPC/timeout still serves, to avoid double-charging on retry.
 - **Per-call `$LH` billing now actually decrements.** Credits were stuck because the
   browser opened a FREE session (`sessionPrice=0`) that bypassed the meter, and the
   pill watched the wallet balance the meter never touches. The proxy now PREFERS a

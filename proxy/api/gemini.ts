@@ -32,6 +32,7 @@ import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import {
+  createPublicClient,
   createWalletClient,
   defineChain,
   encodeFunctionData,
@@ -239,16 +240,29 @@ async function creditOf(address: string): Promise<bigint> {
   return BigInt(body.result);
 }
 
+/** Thrown when the on-chain debit REVERTED — the caller is actually out of
+ * `$LH` for this request (`CreditMeterFacet.meter` reverts `InsufficientCredits`
+ * rather than ever letting a balance go negative). The handler maps this to 402,
+ * distinct from an ambiguous RPC failure (502). */
+class InsufficientCreditError extends Error {}
+
 /**
  * Debit `amount` `$LH` from `user` via `CreditMeterFacet.meter`, signed by
  * the proxy's meter key (env `PROXY_METER_KEY`, set as the diamond's
  * `setMeter` and funded with native gas). A standard EIP-1559 tx — Tempo
- * accepts these (the contracts were deployed with forge). Awaits
- * submission (the tx hash), not inclusion, so latency is one RPC.
+ * accepts these (the contracts were deployed with forge).
  *
- * NOTE: concurrent requests from one user can race the meter key's nonce
- * (bounded burst overspend) — acceptable for the invited beta; a queue /
- * batching is the hardening.
+ * The debit is AUTHORITATIVE: we await the RECEIPT, not just submission, and
+ * throw `InsufficientCreditError` if it reverted. This closes the prior
+ * burst-overspend window where a flurry of concurrent requests all passed the
+ * cheap `creditOf` gate, got served, but only the first N debits fit the
+ * balance — the rest reverted on-chain (`InsufficientCredits`) unnoticed, so
+ * the PLATFORM ate the over-served calls (the user's balance can never go
+ * negative — the contract reverts — so this was never a user-balance bug).
+ * An ambiguous wait failure (RPC/timeout) is deliberately NOT treated as a
+ * revert: we return normally so the caller is still served, rather than risk a
+ * double-charge if they retry a debit that actually landed. Bursts produce
+ * definitive reverts, not timeouts, so the leak still closes.
  */
 async function meterDebit(user: string, amount: bigint): Promise<void> {
   const pk = process.env.PROXY_METER_KEY;
@@ -266,7 +280,26 @@ async function meterDebit(user: string, amount: bigint): Promise<void> {
     functionName: 'meter',
     args: [user as `0x${string}`, amount],
   });
-  await wallet.sendTransaction({ to: REGISTRY as `0x${string}`, data, value: 0n });
+  const hash = await wallet.sendTransaction({
+    to: REGISTRY as `0x${string}`,
+    data,
+    value: 0n,
+  });
+
+  const pub = createPublicClient({ chain: TEMPO_CHAIN, transport: http(TEMPO_RPC) });
+  let status: 'success' | 'reverted';
+  try {
+    ({ status } = await pub.waitForTransactionReceipt({
+      hash,
+      timeout: 12_000,
+      pollingInterval: 500,
+    }));
+  } catch {
+    return; // ambiguous (RPC/timeout) — serve; do NOT double-charge on retry
+  }
+  if (status === 'reverted') {
+    throw new InsufficientCreditError('on-chain debit reverted (insufficient $LH)');
+  }
 }
 
 // ---- handler ---------------------------------------------------------------
@@ -367,7 +400,24 @@ export default async function handler(req: Request): Promise<Response> {
       try {
         await meterDebit(address, cost);
       } catch (e) {
-        return json({ error: 'metering failed: ' + (e as Error).message }, 502, origin);
+        // A definitive revert = genuinely out of $LH for THIS request. If a
+        // (free-beta) session also covers the caller, serve under it; otherwise
+        // it's a real 402. Anything else is an ambiguous infra error (502).
+        if (e instanceof InsufficientCreditError) {
+          if (!hasSession) {
+            return json(
+              {
+                error:
+                  'insufficient $LH credit — the on-chain debit reverted (balance changed since the gate read)',
+              },
+              402,
+              origin,
+            );
+          }
+          // else: covered by an active session — fall through and serve.
+        } else {
+          return json({ error: 'metering failed: ' + (e as Error).message }, 502, origin);
+        }
       }
     }
 
