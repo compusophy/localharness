@@ -50,6 +50,7 @@
 //!   threads [--as <me>]      list your saved call conversations
 //!   forget [--as <me>] <name>  drop a saved conversation (or `--all`)
 //!   whoami [--json] <name>   profile of <name>: owner, wallet, persona, face
+//!   discover <query>         find agents by capability (name/persona search)
 //!   help                     this text
 
 use localharness::registry;
@@ -112,6 +113,7 @@ USAGE:
   localharness threads [--as <me>]       list your saved call conversations
   localharness forget [--as <me>] <name> drop a saved conversation (or --all)
   localharness whoami [--json] <name>    profile of <name> (owner, wallet, …; alias: lookup)
+  localharness discover <query>          find agents by capability (Agent Yellow Pages)
 
 Your identity is an ERC-721 NFT on Tempo Moderato; `create` persists its
 private key to ./<name>.localharness.key — keep it, it IS your identity.
@@ -269,6 +271,15 @@ async fn run(args: &[String]) -> i32 {
                     eprintln!("usage: localharness whoami [--json] <name>");
                     2
                 }
+            }
+        }
+        Some("discover") => {
+            let q = args[1..].join(" ");
+            if q.trim().is_empty() {
+                eprintln!("usage: localharness discover <query>   (e.g. \"solidity auditor\")");
+                2
+            } else {
+                discover(&q).await
             }
         }
         Some("version") | Some("--version") | Some("-V") => {
@@ -2210,6 +2221,37 @@ async fn triage() -> i32 {
         println!("  {}. (x{count}) {}", i + 1, rep.replace('\n', " "));
     }
     0
+}
+
+/// `localharness discover <query>` — the Agent Yellow Pages: search the on-chain
+/// registry for agents whose name or persona matches `<query>`, so you can find
+/// a peer by capability and then `call` / `mcp-call` it. Read-only, no `$LH`.
+async fn discover(query: &str) -> i32 {
+    const SCAN: u64 = 100;
+    match registry::discover_agents(query, SCAN).await {
+        Ok(matches) if matches.is_empty() => {
+            println!("no agents match \"{query}\" (scanned the {SCAN} most recent)");
+            0
+        }
+        Ok(matches) => {
+            println!("{} agent(s) matching \"{query}\":", matches.len());
+            for (name, persona) in matches.iter().take(20) {
+                let snippet: String = persona.replace('\n', " ").chars().take(100).collect();
+                let snippet = if snippet.trim().is_empty() {
+                    "(no persona)".to_string()
+                } else {
+                    snippet
+                };
+                println!("  {name}.localharness.xyz — {snippet}");
+            }
+            println!("then: localharness call <name> \"…\"  (or mcp-call to pay per request)");
+            0
+        }
+        Err(e) => {
+            eprintln!("discover: RPC error: {e}");
+            1
+        }
+    }
 }
 
 /// Read the on-chain feedback log (`localharness feedback`, no text). With

@@ -351,6 +351,49 @@ pub async fn list_recent_agents(limit: u64) -> Result<Vec<(u64, String)>, String
     Ok(out)
 }
 
+/// Pure: filter + rank `(name, persona)` pairs by a query (case-insensitive
+/// substring against the name OR the persona). Name matches rank above
+/// persona-only matches; input order (recency) is preserved within each tier.
+/// Empty query returns all. The matching core of [`discover_agents`], split out
+/// for testing.
+pub fn rank_agent_matches(agents: &[(String, String)], query: &str) -> Vec<(String, String)> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return agents.to_vec();
+    }
+    let mut name_hits = Vec::new();
+    let mut persona_hits = Vec::new();
+    for (name, persona) in agents {
+        if name.to_lowercase().contains(&q) {
+            name_hits.push((name.clone(), persona.clone()));
+        } else if persona.to_lowercase().contains(&q) {
+            persona_hits.push((name.clone(), persona.clone()));
+        }
+    }
+    name_hits.extend(persona_hits);
+    name_hits
+}
+
+/// Discover agents by capability/keyword — the "Agent Yellow Pages". Scans the
+/// most recent `scan` registered agents, fetches each one's on-chain persona,
+/// and returns `(name, persona)` matches for `query`, ranked by relevance (name
+/// hit first, then persona hit; newest-first within a tier). Read-only; an agent
+/// (or `localharness discover`) uses it to FIND a peer, then `call`/`mcp-call` it.
+pub async fn discover_agents(query: &str, scan: u64) -> Result<Vec<(String, String)>, String> {
+    let agents = list_recent_agents(scan).await?;
+    if agents.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<u64> = agents.iter().map(|(id, _)| *id).collect();
+    let personas = personas_of(&ids).await;
+    let pairs: Vec<(String, String)> = agents
+        .into_iter()
+        .zip(personas)
+        .map(|((_, name), persona)| (name, persona.unwrap_or_default()))
+        .collect();
+    Ok(rank_agent_matches(&pairs, query))
+}
+
 // --- Published app cartridge (cross-visitor) -------------------------
 //
 // A subdomain's app is the compiled wasm cartridge stored on-chain under
@@ -3488,6 +3531,30 @@ pub async fn sleep_ms(ms: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rank_agent_matches_filters_and_ranks() {
+        let agents = vec![
+            ("alice".to_string(), "A friendly chatbot".to_string()),
+            ("solidity-bob".to_string(), "general assistant".to_string()),
+            (
+                "carol".to_string(),
+                "An expert SOLIDITY auditor + security reviewer".to_string(),
+            ),
+            ("dave".to_string(), "writes haikus".to_string()),
+        ];
+        // "solidity" hits a NAME (bob) and a PERSONA (carol, case-insensitive);
+        // the name hit ranks first.
+        let hits = rank_agent_matches(&agents, "solidity");
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].0, "solidity-bob");
+        assert_eq!(hits[1].0, "carol");
+        // no match → empty
+        assert!(rank_agent_matches(&agents, "nonexistent").is_empty());
+        // empty / whitespace query returns all, order preserved
+        assert_eq!(rank_agent_matches(&agents, "").len(), 4);
+        assert_eq!(rank_agent_matches(&agents, "   ").len(), 4);
+    }
 
     #[test]
     fn decode_presence_signal_array() {
