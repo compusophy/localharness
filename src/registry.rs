@@ -3476,6 +3476,58 @@ struct RpcError {
     message: String,
 }
 
+/// Transport-level deadline for a single JSON-RPC READ (`rpc_value` /
+/// `eth_call_batch`). Generous — real reads are sub-2s, but a big `eth_call`
+/// under load shouldn't trip it. Its job is to bound the pathological case: a
+/// TCP-connected-but-silent RPC node ("black hole"). On `wasm32`, `reqwest`
+/// wraps the browser `fetch` API, which has NO default timeout AND
+/// `reqwest::Client::timeout` is a documented no-op — so without this guard
+/// such a node yields a future that never resolves and hangs EVERY consumer
+/// (CLI, off-bundle, every browser paint site), not just the few UI paths that
+/// wrap calls in `app::net::with_timeout`.
+const RPC_TIMEOUT_MS: u32 = 20_000;
+
+/// Build the shared read client. On native, `reqwest`'s own `timeout` works, so
+/// set it directly (covers connect + the whole request/body). On wasm it's a
+/// no-op (see [`RPC_TIMEOUT_MS`]) — the caller races against [`sleep_ms`].
+fn read_client() -> reqwest::Client {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(RPC_TIMEOUT_MS as u64))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        reqwest::Client::new()
+    }
+}
+
+/// Race a read future against an [`RPC_TIMEOUT_MS`] timer and return its output,
+/// or a timeout `Err`. This is the portable backstop for the wasm no-op-timeout
+/// case (`reqwest::Client::timeout` does nothing on `fetch`): it mirrors
+/// `app::net::with_timeout`, racing the work against the cfg-gated [`sleep_ms`]
+/// (tokio on native / `setTimeout` Promise on wasm) via
+/// `futures_util::future::select`. The losing future is dropped (browser
+/// `fetch` cancels on drop). Runs on BOTH targets — on native it's belt-and-
+/// suspenders alongside the client builder timeout; on wasm it IS the timeout.
+async fn timeout_send<F, T>(label: &str, fut: F) -> Result<T, String>
+where
+    F: std::future::Future<Output = T>,
+{
+    use futures_util::future::{select, Either};
+    let work = std::pin::pin!(fut);
+    let timer = std::pin::pin!(sleep_ms(RPC_TIMEOUT_MS));
+    match select(work, timer).await {
+        Either::Left((out, _)) => Ok(out),
+        Either::Right(((), _)) => Err(format!(
+            "{label}: RPC request timed out after {}s",
+            RPC_TIMEOUT_MS / 1000
+        )),
+    }
+}
+
 /// Raw JSON-RPC call returning the `result` field verbatim. Methods like
 /// `eth_getLogs` return arrays, so the result type must stay a `Value`
 /// rather than being forced into a `String` (which silently broke log
@@ -3487,17 +3539,21 @@ async fn rpc_value(method: &str, params: serde_json::Value) -> Result<serde_json
         method,
         params,
     };
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(RPC_URL)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("{method} send: {e}"))?;
-    let parsed: RpcResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("{method} decode: {e}"))?;
+    let client = read_client();
+    // Race send + body-read against the deadline as ONE future so a node that
+    // connects then stalls mid-body can't hang either step (the wasm case).
+    let parsed: RpcResponse = timeout_send(method, async {
+        let resp = client
+            .post(RPC_URL)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("{method} send: {e}"))?;
+        resp.json::<RpcResponse>()
+            .await
+            .map_err(|e| format!("{method} decode: {e}"))
+    })
+    .await??;
     if let Some(err) = parsed.error {
         return Err(format!("{method}: {}", err.message));
     }
@@ -3579,17 +3635,20 @@ async fn eth_call_batch(calls: &[(&str, String)]) -> Result<Vec<Result<String, S
             })
         })
         .collect();
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(RPC_URL)
-        .json(&serde_json::Value::Array(batch))
-        .send()
-        .await
-        .map_err(|e| format!("eth_call batch send: {e}"))?;
-    let parsed: Vec<serde_json::Value> = resp
-        .json()
-        .await
-        .map_err(|e| format!("eth_call batch decode: {e}"))?;
+    let client = read_client();
+    // Same deadline as the single-call path — race send + body-read together.
+    let parsed: Vec<serde_json::Value> = timeout_send("eth_call batch", async {
+        let resp = client
+            .post(RPC_URL)
+            .json(&serde_json::Value::Array(batch))
+            .send()
+            .await
+            .map_err(|e| format!("eth_call batch send: {e}"))?;
+        resp.json::<Vec<serde_json::Value>>()
+            .await
+            .map_err(|e| format!("eth_call batch decode: {e}"))
+    })
+    .await??;
     // Batch responses may arrive out of order — index by the `id` we set.
     let mut out: Vec<Result<String, String>> = (0..calls.len())
         .map(|_| Err("missing batch response".to_string()))
