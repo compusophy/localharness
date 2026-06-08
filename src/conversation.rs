@@ -734,4 +734,241 @@ mod tests {
         let chunk = handle.await.expect("task joins");
         assert_eq!(text_of(&chunk), Some("woke"));
     }
+
+    // =========================================================================
+    // Usage accounting across turns (cumulative_usage / last_turn_usage /
+    // turn_count). These drive a real `Conversation` over a mock `Connection`
+    // whose step stream is a tokio broadcast — exactly the shape the live
+    // backends expose (`GeminiConnection::subscribe_steps` wraps a broadcast).
+    // The mock mirrors the live backends' invariant that usage is reported ONLY
+    // on the turn-terminal step; intermediate deltas carry `usage_metadata:
+    // None`. That invariant is what makes `cumulative_usage.accumulate(u)` in
+    // `receive_steps` count each turn's usage exactly once.
+    // =========================================================================
+
+    use crate::connections::{Connection, StepStream};
+    use crate::content::Content;
+    use crate::types::ToolResult;
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::broadcast;
+
+    /// Mock connection: holds a broadcast sender; the test pushes `Step`s onto
+    /// it directly to simulate a turn. `subscribe_steps` hands out independent
+    /// receivers (late subscribers see only steps sent after they subscribe —
+    /// same as the live broadcast).
+    struct MockConn {
+        steps_tx: broadcast::Sender<Step>,
+        idle: AtomicBool,
+    }
+
+    impl MockConn {
+        fn new() -> Arc<Self> {
+            let (steps_tx, _) = broadcast::channel(64);
+            Arc::new(Self {
+                steps_tx,
+                idle: AtomicBool::new(true),
+            })
+        }
+        /// Push one step onto the broadcast (what a live turn's producer does).
+        fn push(&self, step: Step) {
+            let _ = self.steps_tx.send(step);
+        }
+    }
+
+    #[async_trait]
+    impl Connection for MockConn {
+        fn is_idle(&self) -> bool {
+            self.idle.load(Ordering::Acquire)
+        }
+        fn conversation_id(&self) -> &str {
+            "mock"
+        }
+        async fn send(&self, _content: Content) -> Result<()> {
+            Ok(())
+        }
+        async fn send_trigger(&self, _content: String) -> Result<()> {
+            Ok(())
+        }
+        async fn send_tool_results(&self, _results: Vec<ToolResult>) -> Result<()> {
+            Ok(())
+        }
+        fn subscribe_steps(&self) -> StepStream {
+            let rx = self.steps_tx.subscribe();
+            Box::pin(
+                tokio_stream::wrappers::BroadcastStream::new(rx)
+                    .map(|r| r.map_err(|e| Error::other(format!("lag: {e}")))),
+            )
+        }
+        async fn wait_for_idle(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn shutdown(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Build a terminal step carrying both `content` and a `usage_metadata`
+    /// with the given prompt / candidates / total token counts. This is the
+    /// ONLY step in a turn that reports usage (mirrors the live backends).
+    fn terminal_with_usage(content: &str, prompt: i32, cand: i32, total: i32) -> Step {
+        serde_json::from_value(serde_json::json!({
+            "content": content,
+            "is_complete_response": true,
+            "usage_metadata": {
+                "prompt_token_count": prompt,
+                "candidates_token_count": cand,
+                "total_token_count": total,
+            }
+        }))
+        .expect("valid Step json")
+    }
+
+    /// Drive one full turn through a Conversation: subscribe via `chat`, push
+    /// the turn's steps, drain the response to completion (forces the producer +
+    /// the `receive_steps` accumulator to run over every step).
+    async fn run_turn(conv: &Conversation, conn: &MockConn, steps: Vec<Step>) {
+        let resp = conv.chat("hi").await.expect("chat starts");
+        for s in steps {
+            conn.push(s);
+        }
+        // Draining forces the producer task (and thus the `receive_steps`
+        // accumulator closure) to observe every step including the terminal.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), resp.text())
+            .await
+            .expect("turn must terminate")
+            .expect("no stream error");
+    }
+
+    /// CONTRACT: `turn_count` increments exactly once per `chat`, and
+    /// `cumulative_usage` is the SUM across turns while `last_turn_usage`
+    /// reflects ONLY the most recent turn (reset at each `send`). This is the
+    /// core anti-double-count / anti-leak guarantee.
+    #[tokio::test]
+    async fn cumulative_sums_while_last_turn_resets() {
+        let conn = MockConn::new();
+        let conv = Conversation::new(conn.clone());
+
+        // Turn 1: prompt 10, candidates 5, total 15.
+        run_turn(
+            &conv,
+            &conn,
+            vec![
+                delta_step(0, "ans1"),
+                terminal_with_usage("ans1", 10, 5, 15),
+            ],
+        )
+        .await;
+        assert_eq!(conv.turn_count(), 1);
+        let cum1 = conv.cumulative_usage();
+        assert_eq!(cum1.total_token_count, Some(15));
+        let last1 = conv.last_turn_usage().expect("turn 1 usage");
+        assert_eq!(last1.total_token_count, Some(15));
+
+        // Turn 2: prompt 20, candidates 8, total 28.
+        run_turn(
+            &conv,
+            &conn,
+            vec![
+                delta_step(0, "ans2"),
+                terminal_with_usage("ans2", 20, 8, 28),
+            ],
+        )
+        .await;
+        assert_eq!(conv.turn_count(), 2, "turn_count increments once per chat");
+
+        // Cumulative is the SUM of both turns — not the last, not double-counted.
+        let cum2 = conv.cumulative_usage();
+        assert_eq!(cum2.prompt_token_count, Some(30), "10 + 20");
+        assert_eq!(cum2.candidates_token_count, Some(13), "5 + 8");
+        assert_eq!(cum2.total_token_count, Some(43), "15 + 28");
+
+        // last_turn_usage was RESET at turn 2's send → it is ONLY turn 2,
+        // never turn 1 + turn 2 (the leak we guard against).
+        let last2 = conv.last_turn_usage().expect("turn 2 usage");
+        assert_eq!(last2.total_token_count, Some(28), "only turn 2, not 43");
+        assert_eq!(last2.prompt_token_count, Some(20));
+    }
+
+    /// CONTRACT: the turn-terminal usage is counted EXACTLY ONCE even though a
+    /// turn emits many steps (deltas + tool-call steps). A regression that
+    /// accumulated usage on every step would inflate the total. We model a turn
+    /// with several no-usage intermediate steps and a single usage-bearing
+    /// terminal — the live backends' exact shape.
+    #[tokio::test]
+    async fn usage_counted_once_despite_many_steps() {
+        let conn = MockConn::new();
+        let conv = Conversation::new(conn.clone());
+        run_turn(
+            &conv,
+            &conn,
+            vec![
+                delta_step(0, "a"),
+                delta_step(1, "b"),
+                delta_step(2, "c"),
+                terminal_with_usage("abc", 100, 50, 150),
+            ],
+        )
+        .await;
+        assert_eq!(conv.cumulative_usage().total_token_count, Some(150));
+        assert_eq!(
+            conv.last_turn_usage().unwrap().total_token_count,
+            Some(150),
+            "the single terminal usage, counted once"
+        );
+    }
+
+    /// CONTRACT: `send()` resets `last_turn_usage` to an empty (non-None) usage
+    /// BEFORE the turn's steps arrive — so a turn that reports NO usage leaves
+    /// `last_turn_usage` as Some(default), distinguishable from "never sent"
+    /// (None), while cumulative stays untouched.
+    #[tokio::test]
+    async fn send_resets_last_turn_even_when_turn_reports_no_usage() {
+        let conn = MockConn::new();
+        let conv = Conversation::new(conn.clone());
+
+        // A turn WITH usage, then a turn with NONE.
+        run_turn(
+            &conv,
+            &conn,
+            vec![terminal_with_usage("first", 10, 5, 15)],
+        )
+        .await;
+        assert_eq!(conv.last_turn_usage().unwrap().total_token_count, Some(15));
+
+        // Turn 2 reports no usage at all (terminal step without usage_metadata).
+        run_turn(
+            &conv,
+            &conn,
+            vec![terminal_step("second")],
+        )
+        .await;
+
+        // last_turn_usage was reset at turn 2's send → empty, NOT turn 1's 15.
+        let last = conv.last_turn_usage().expect("send set it to Some(default)");
+        assert_eq!(
+            last.total_token_count, None,
+            "turn 2 reported nothing; last_turn must not leak turn 1's tokens"
+        );
+        // Cumulative is unchanged from turn 1 (turn 2 added nothing).
+        assert_eq!(conv.cumulative_usage().total_token_count, Some(15));
+    }
+
+    /// CONTRACT: a raw `send()` (no `chat`) resets `last_turn_usage` to
+    /// Some(default) and does NOT touch turn_count (only `chat` bumps it).
+    #[tokio::test]
+    async fn raw_send_resets_usage_but_not_turn_count() {
+        let conn = MockConn::new();
+        let conv = Conversation::new(conn.clone());
+        assert_eq!(conv.turn_count(), 0);
+        assert!(conv.last_turn_usage().is_none());
+
+        conv.send(Content::text("x")).await.expect("send ok");
+        assert_eq!(conv.turn_count(), 0, "raw send does not count a turn");
+        assert!(
+            conv.last_turn_usage().is_some(),
+            "send primes last_turn_usage to Some(default)"
+        );
+        assert_eq!(conv.last_turn_usage().unwrap(), UsageMetadata::default());
+    }
 }
