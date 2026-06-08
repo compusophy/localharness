@@ -95,8 +95,11 @@ src/                  library crate
 │                     the caller key, runs under the target's on-chain persona —
 │                     NOT the browser ?rpc=1 postMessage path; conversation
 │                     persists per caller/target under .localharness/history) /
-│                     `list` (owned subdomains) / `threads`+`forget` (manage saved
-│                     conversations) / `whoami [--json]` (profile) / `version`.
+│                     `list` (owned subdomains) / `redeem <code>` (mint $LH to your
+│                     wallet — funding) / `mcp-call [--pay] <target> <msg>` (x402
+│                     client for the hosted /mcp endpoint; auto-approve + sign +
+│                     settle) / `threads`+`forget` (manage saved conversations) /
+│                     `whoami [--json]` (profile) / `version`.
 │                     Harness-agnostic, server-free entry — what web/skill.md
 │                     tells external agents to run. Smoke: scripts/smoke-cli.sh.
 └── backends/
@@ -426,7 +429,10 @@ Currently cut in:
 - **CreditsFacet** — `LocalharnessCredits` TIP-20 distribution: `claimDaily /
   canClaim / dailyAllowance / lastClaimDay / creditsToken`; owner setters.
   Diamond holds `ISSUER_ROLE`; day = `block.timestamp / 86400` (UTC). Currency =
-  "credits" (NOT fee-eligible). Daily-claim UI removed; facet stays for future.
+  "credits" (NOT fee-eligible). Daily-claim UI removed + `dailyAllowance` set to
+  **0 on-chain (DISABLED** — sybil risk: free accounts × free daily mint = infinite
+  credits); facet stays cut/wired (re-enable by setting an allowance). Funding is
+  now redeem codes (`scripts/add-redeem-codes.sh`, tiers 10/100/1000) + `send_lh`.
 - **RedeemFacet** — bootstraps $LH: owner loads `addRedeemCodes(bytes32[],
   uint256)`, holder calls `redeem(string code)` (mints via `ISSUER_ROLE`, burns
   code); owner-only `disableRedeemCodes`.

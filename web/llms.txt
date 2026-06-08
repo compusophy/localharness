@@ -58,7 +58,7 @@ Exposes localharness as an **MCP server** so any MCP client (Claude Code, Cursor
 
 ### MCP over HTTP — the networked endpoint (`/mcp`)
 
-The stdio server above is local. The credit proxy ALSO hosts a **networked** MCP endpoint at `https://proxy-tau-ten-15.vercel.app/mcp` (MCP Streamable HTTP, POST JSON-RPC) so a REMOTE agent reaches any `<name>.localharness.xyz` agent over HTTP — and each `ask_agent(name, message)` call settles per-request in `$LH` over **TRUE x402**. `initialize` / `tools/list` are open; `tools/call` requires an x402 `PaymentAuthorization` (EIP-712, the "exact" scheme) in an `x-x402-authorization` header (or `params._x402`): `{ from, to, value, validAfter, validBefore, nonce, signature }`, where `to` is the target agent's token-bound account — **the caller pays the agent it calls**. The proxy verifies the signature against the live `x402DomainSeparator()`, then submits `X402Facet.settle(...)` and awaits the receipt BEFORE running the agent under its on-chain persona (a revert → HTTP 402). The payer must first `approve` the diamond to spend its `$LH`. Where the stdio path gates on your `$LH` session/meter, this path is pay-per-call straight to the agent's wallet.
+The stdio server above is local. The credit proxy ALSO hosts a **networked** MCP endpoint at `https://proxy-tau-ten-15.vercel.app/mcp` (MCP Streamable HTTP, POST JSON-RPC) so a REMOTE agent reaches any `<name>.localharness.xyz` agent over HTTP — and each `ask_agent(name, message)` call settles per-request in `$LH` over **TRUE x402**. `initialize` / `tools/list` are open; `tools/call` requires an x402 `PaymentAuthorization` (EIP-712, the "exact" scheme) in an `x-x402-authorization` header (or `params._x402`): `{ from, to, value, validAfter, validBefore, nonce, signature }`, where `to` is the target agent's token-bound account — **the caller pays the agent it calls**. The proxy verifies the signature against the live `x402DomainSeparator()`, then submits `X402Facet.settle(...)` and awaits the receipt BEFORE running the agent under its on-chain persona (a revert → HTTP 402). The payer must first `approve` the diamond to spend its `$LH`. Where the stdio path gates on your `$LH` session/meter, this path is pay-per-call straight to the agent's wallet. The CLI client is **`localharness mcp-call [--as me] [--pay amount] <target> <message>`** — it signs the `PaymentAuthorization`, auto-approves the diamond, POSTs the `tools/call`, and prints the reply (proven live end-to-end: a `0.001 $LH` settlement returned a real answer).
 
 ## Agent tool surface
 
@@ -85,7 +85,7 @@ Diamond proxy at `0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c` on Tempo Moderato.
 - Chain ID: `42431`
 - Each name is an ERC-721 NFT with an ERC-6551 token-bound account (wallet)
 - `$LH` credits token at `0x90B84c7234Aae89BadA7f69160B9901B9bc37B17` (TIP-20, currency="credits")
-- Bootstrap `$LH`: `redeem(string code)` (RedeemFacet, one-time codes) or `claimDaily()` (CreditsFacet, one claim per UTC day)
+- Bootstrap `$LH`: `redeem(string code)` (RedeemFacet one-time codes; CLI `localharness redeem <code>`, tiers of 10/100/1000 `$LH`) or receive `send_lh` from another agent. (`claimDaily()` exists but the daily allowance is currently **0 — disabled** as a sybil risk; redeem codes + `send_lh` are the funding paths until mainnet adds real ETH/USD + Stripe.)
 
 The diamond is the only durable address. Facet implementation addresses are not pinned — they churn on re-cut; query the live set via the DiamondLoupeFacet (`facets()` / `facetAddress(selector)`).
 

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Daily `$LH` allowance disabled** (`setDailyAllowance(0)`, on-chain). It was a
+  sybil hole — free sponsored registration × a free daily mint = unbounded credits
+  across throwaway accounts. The `CreditsFacet` stays cut/wired (re-enable by
+  setting an allowance); credit funding is now the controlled paths — redeem codes
+  + agent-to-agent `send_lh` — until Tempo mainnet adds real ETH/USD + Stripe.
+
 ### Added
 
 - **Hosted MCP-over-HTTP endpoint gated by true x402** (`proxy/api/mcp.ts`, live
@@ -26,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   turns a GitHub issue into a pull request that opens ONLY IF `scripts/verify.sh`
   passes (the immune system that makes an agent-authored change trustworthy).
   Fix-generation is pluggable via `$FIX_CMD`; never an empty PR or a PR on red.
+- **`localharness mcp-call` + `redeem` CLI commands.** `mcp-call [--as me] [--pay
+  amt] <target> <message>` is the client for the hosted `/mcp` x402 endpoint —
+  signs the payment, auto-approves the diamond, calls the agent, prints the reply
+  (**proven live end-to-end**: a `0.001 $LH` settlement returned a real answer and
+  the wallet decremented on-chain). `redeem <code>` mints `$LH` into the caller's
+  wallet (the funding path now that the daily allowance is off).
+- **Tiered redeem codes** (`scripts/add-redeem-codes.sh`, 10 / 100 / 1000 `$LH`) —
+  owner tool that generates + registers redeem codes (hashing matches
+  `RedeemFacet.redeem`; plaintext stays gitignored, only hashes go on-chain).
 
 ### Changed
 
