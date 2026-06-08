@@ -52,6 +52,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `127.0.0.1` over http only). Separately, the first-call `402` (`no active
   session or credit`) was cryptic; it now explains the free-beta auto-session
   and how to get `$LH`.
+- **Browser app: XSS hardening — unescaped error/dynamic strings in `innerHTML`.**
+  Four DOM sinks interpolated RPC error strings and on-chain-derived values
+  straight into HTML via `format!` (not maud), so an attacker-controlled RPC node
+  could return an error containing `<script>`/`<img onerror>` that executes in the
+  wallet-bearing origin: the `agents-list` + `explore-grid` error paths
+  (`mod.rs`), and the device-signer list + sync-result (`events.rs`). All now
+  build via maud (auto-escaped); a full sweep confirmed every other sink already
+  escapes (`dom::msg_span`, `set_status`/`set_text_content`, maud templates).
+  Closes the long-open "escape error-string innerHTML" item. Also: an orphaned
+  `ToolResult` (no matching pending call) now logs a warning instead of silently
+  dropping (`chat.rs`).
+- **Anthropic backend: malformed streamed tool-args no longer silently run with
+  `{}`.** A non-empty `partial_json` that failed to parse executed the tool with
+  an empty object (silent wrong-args); it now surfaces a real tool error
+  (`is_error` `ToolResult`) the model can retry on. The legitimate no-arg (`{}`)
+  and valid-JSON paths are preserved; +3 unit tests.
+- **README: stale `localharness = "0.20"` → `"0.24"`; documented the `anthropic`
+  and `local` cargo features** (agents copy-paste the quickstart — the version was
+  4 minors behind).
 - **docs.rs: 4 broken intra-doc links resolved** (`raster` `Viewport` /
   `Viewport::full`, `compose` `Pending`, `policy` `FS_TOOLS`) — the module-level
   `//!` docs used bare paths that didn't resolve; now fully-qualified

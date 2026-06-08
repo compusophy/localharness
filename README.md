@@ -55,7 +55,7 @@ async fn main() -> localharness::Result<()> {
 
 ```toml
 [dependencies]
-localharness = "0.20"
+localharness = "0.24"
 tokio        = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -159,6 +159,8 @@ and `tokio::spawn` becomes `spawn_local`. One codebase, two targets.
 | `native` | yes | Tokio runtime, `run_command`, MCP stdio bridge, `NativeFilesystem`. |
 | `wallet` | no | secp256k1 keypair, BIP-39, RLP, on-chain registry client. Works on every target. |
 | `browser-app` | no | The browser-resident platform as a wasm cdylib (built with wasm-pack). Pulls in `wallet`. |
+| `anthropic` | no | Claude (Anthropic Messages API) backend as a second `ConnectionStrategy`. Additive — pulls no new deps; build with `--features wallet,anthropic` for Claude. |
+| `local` | no | In-browser local-model backend (Gemma 3 270M via Burn/wgpu, WebGPU). Heavy (~570MB weights to OPFS); no proxy, no API key. Opt-in. |
 
 Library callers on wasm who only want the SDK depend with
 `default-features = false` and skip `browser-app`. Off-bundle consumers that

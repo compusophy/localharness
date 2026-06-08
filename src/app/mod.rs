@@ -886,11 +886,18 @@ pub(crate) async fn paint_apex(host: tenant::Host) {
                     dom::swap_outer("agents-list", &html);
                 }
                 Err(err) => {
+                    // maud escapes `err` — an RPC node's error string is
+                    // attacker-influencable, so never interpolate it raw.
                     dom::swap_outer(
                         "agents-list",
-                        &format!(
-                            r#"<div id="agents-list" class="agents-list"><p class="apex-fine" style="color:var(--error)">couldn't list agents: {err}</p></div>"#
-                        ),
+                        &maud::html! {
+                            div #agents-list .agents-list {
+                                p .apex-fine style="color:var(--error)" {
+                                    "couldn't list agents: " (err)
+                                }
+                            }
+                        }
+                        .into_string(),
                     );
                 }
             }
@@ -1063,9 +1070,14 @@ async fn paint_explore() {
             dom::swap_outer("explore-grid", &templates::explore_grid(&agents).into_string());
         }
         Err(err) => {
+            // maud escapes `err` — an RPC node's error string is
+            // attacker-influencable, so never interpolate it raw.
             dom::swap_inner(
                 "explore-grid",
-                &format!("<span style=\"color:var(--muted)\">couldn't load agents: {err}</span>"),
+                &maud::html! {
+                    span style="color:var(--muted)" { "couldn't load agents: " (err) }
+                }
+                .into_string(),
             );
         }
     }

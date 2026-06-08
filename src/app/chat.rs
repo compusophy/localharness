@@ -390,6 +390,14 @@ async fn stream_turn(agent: &Agent, input: TurnInput) -> TurnOutcome {
                         &templates::tool_call_result(&result).into_string(),
                     );
                     dom::scroll_to_bottom("transcript");
+                } else {
+                    // No pending tool block to attach this result to — the
+                    // backend emitted a ToolResult without a preceding
+                    // ToolCall (out-of-order / duplicate). Surface it instead
+                    // of dropping it silently.
+                    web_sys::console::warn_1(&JsValue::from_str(
+                        "orphaned ToolResult (no pending tool call) — dropping",
+                    ));
                 }
             }
             Ok(StreamChunk::Thought { .. }) => {

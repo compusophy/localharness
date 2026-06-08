@@ -1932,21 +1932,24 @@ async fn refresh_signer_list() {
             dom::swap_inner("signer-list", "owner only (no linked devices)");
         }
         Ok(signers) => {
-            let mut html = String::new();
-            for s in &signers {
-                let short = if s.len() > 10 {
-                    format!("{}…{}", &s[..6], &s[s.len()-4..])
-                } else {
-                    s.clone()
-                };
-                html.push_str(&format!(
-                    "<div style=\"display:flex;justify-content:center;align-items:center;\
-                     gap:8px;color:var(--fg);font-size:11px;margin:2px 0\">\
-                     <code>{short}</code>\
-                     <button type=\"button\" class=\"modal-close\" data-action=\"unlink-device\" \
-                     data-arg=\"{s}\" title=\"unlink\">×</button></div>"
-                ));
+            // Device addresses come back from an RPC node; maud escapes both
+            // the displayed `short` and the `data-arg` so a hostile node can't
+            // inject markup (the `data-arg` lands back in the click dispatcher).
+            let html = maud::html! {
+                @for s in &signers {
+                    @let short = if s.len() > 10 {
+                        format!("{}…{}", &s[..6], &s[s.len()-4..])
+                    } else {
+                        s.clone()
+                    };
+                    div style="display:flex;justify-content:center;align-items:center;gap:8px;color:var(--fg);font-size:11px;margin:2px 0" {
+                        code { (short) }
+                        button type="button" class="modal-close" data-action="unlink-device"
+                            data-arg=(s) title="unlink" { "×" }
+                    }
+                }
             }
+            .into_string();
             dom::swap_inner("signer-list", &html);
         }
         Err(_) => {
@@ -2189,10 +2192,9 @@ fn run_sync_devices() {
             Ok(n) => format!("connected — syncing with {n} device(s)"),
             Err(e) => format!("sync failed: {e}"),
         };
-        dom::swap_inner(
-            "pair-msg",
-            &format!("<span style=\"color:var(--muted)\">{msg}</span>"),
-        );
+        // `msg` can carry a sync/network error string (`sync failed: {e}`),
+        // so escape it via maud rather than interpolating raw HTML.
+        dom::swap_inner("pair-msg", &dom::msg_span(dom::Msg::Muted, &msg));
     });
 }
 

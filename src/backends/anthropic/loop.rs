@@ -366,18 +366,16 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message) -> Result<()> {
         };
 
         // Resolve tool_use accumulators into ordered ToolCalls (parse the
-        // concatenated args JSON; empty → {}).
-        let mut pending_calls: Vec<(String, String, Value)> = Vec::new();
+        // concatenated args JSON). An EMPTY/absent fragment is a valid
+        // no-arg call → `{}`. A NON-EMPTY fragment that FAILS to parse
+        // (truncated stream, malformed concat) must NOT silently run the
+        // tool with `{}` — that executes with wrong args invisibly. Carry
+        // the parse error so dispatch surfaces it as a tool error to the
+        // model instead (which can then retry the call correctly).
+        let mut pending_calls: Vec<(String, String, Value, Option<String>)> = Vec::new();
         for (_idx, acc) in tool_blocks {
-            let args: Value = if acc.args_json.trim().is_empty() {
-                json!({})
-            } else {
-                serde_json::from_str(&acc.args_json).unwrap_or_else(|e| {
-                    warn!(error = %e, name = %acc.name, "tool_use args not valid JSON; sending empty");
-                    json!({})
-                })
-            };
-            pending_calls.push((acc.id, acc.name, args));
+            let (args, parse_error) = resolve_tool_args(&acc.name, &acc.args_json);
+            pending_calls.push((acc.id, acc.name, args, parse_error));
         }
 
         // Build the assistant-turn content (text + tool_use blocks) and push.
@@ -387,7 +385,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message) -> Result<()> {
                 text: accumulated_text.clone(),
             });
         }
-        for (id, name, args) in &pending_calls {
+        for (id, name, args, _parse_error) in &pending_calls {
             assistant_blocks.push(Block::ToolUse {
                 id: id.clone(),
                 name: name.clone(),
@@ -429,7 +427,26 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message) -> Result<()> {
         // tool_result blocks matched by id.
         let mut result_blocks: Vec<Block> = Vec::with_capacity(pending_calls.len());
         let mut saw_finish = false;
-        for (id, name, args) in pending_calls {
+        for (id, name, args, parse_error) in pending_calls {
+            // Streamed args failed to parse — surface a clear tool error to
+            // the model (matching the dispatch error convention) instead of
+            // running the tool with `{}`. Skip execution entirely.
+            if let Some(msg) = parse_error {
+                let post_result = ToolResult {
+                    name: name.clone(),
+                    id: Some(id.clone()),
+                    result: Some(json!({ "error": msg.clone() })),
+                    error: Some(msg.clone()),
+                };
+                deps.state
+                    .emit_chunk_step(StreamChunk::ToolResult(post_result));
+                result_blocks.push(Block::ToolResult {
+                    tool_use_id: id,
+                    content: json!({ "error": msg }),
+                    is_error: Some(true),
+                });
+                continue;
+            }
             if name == FINISH_TOOL_NAME {
                 if let Some(out) = args.get("output").cloned() {
                     *deps.state.last_structured_output.lock() = Some(out);
@@ -574,6 +591,25 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Resolve a tool_use block's concatenated `partial_json` fragment into
+/// parsed args. An EMPTY/absent fragment is a valid no-arg call → `({}, None)`.
+/// A NON-EMPTY fragment that fails to parse returns `({}, Some(error))`: the
+/// caller surfaces that error to the model as a tool error rather than running
+/// the tool with empty args silently.
+fn resolve_tool_args(name: &str, args_json: &str) -> (Value, Option<String>) {
+    if args_json.trim().is_empty() {
+        return (json!({}), None);
+    }
+    match serde_json::from_str(args_json) {
+        Ok(v) => (v, None),
+        Err(e) => {
+            let msg = format!("malformed tool arguments for '{name}': {e} (got: {args_json})");
+            warn!(error = %e, name = %name, "tool_use args not valid JSON; surfacing tool error");
+            (json!({}), Some(msg))
+        }
+    }
+}
 
 pub(crate) fn build_request(config: &LoopConfig, history: &[Message]) -> MessagesRequest {
     // Clamp thinking budget below max_tokens (Anthropic requires
@@ -749,6 +785,38 @@ mod tests {
             text: "be terse".into(),
         });
         assert_eq!(render_system(&s), "be terse");
+    }
+
+    #[test]
+    fn resolve_tool_args_valid_json_parses() {
+        let (args, err) = resolve_tool_args("view_file", r#"{"path":"main.rs"}"#);
+        assert!(err.is_none());
+        assert_eq!(args["path"], "main.rs");
+    }
+
+    #[test]
+    fn resolve_tool_args_empty_is_valid_no_arg_call() {
+        // A legitimately no-arg tool sends no partial_json → {} with no error.
+        let (args, err) = resolve_tool_args("list_subdomains", "");
+        assert!(err.is_none(), "empty args must NOT be treated as malformed");
+        assert_eq!(args, json!({}));
+        // Whitespace-only is also "no args".
+        let (args2, err2) = resolve_tool_args("list_subdomains", "   ");
+        assert!(err2.is_none());
+        assert_eq!(args2, json!({}));
+    }
+
+    #[test]
+    fn resolve_tool_args_malformed_surfaces_error_not_empty() {
+        // Non-empty but invalid JSON (e.g. truncated stream) → error, NOT a
+        // silent empty-object execution.
+        let (args, err) = resolve_tool_args("edit_file", r#"{"path":"a.rs","content":"#);
+        assert!(err.is_some(), "malformed non-empty args must surface an error");
+        let msg = err.unwrap();
+        assert!(msg.contains("malformed tool arguments for 'edit_file'"));
+        // args fall back to {} for the assistant-turn echo, but the error
+        // (set above) makes dispatch skip execution and report the failure.
+        assert_eq!(args, json!({}));
     }
 
     #[test]
