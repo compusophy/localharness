@@ -146,7 +146,10 @@ scripts/      release.{ps1,sh}; build-web.{ps1,sh}; probe-gemini.ps1;
               test-fleet/ (12 QA personas + run-fleet.sh + feedback-to-issues.mjs)
 examples/tempo_tx_live.rs  live harness vs Moderato; source of truth for tempo_tx
 design/       main-identity.md; agent-writes-rust.md; launch-1.0.md (1.0 spec —
-              1.0=mainnet, betas=testnet); beta-plan.md; paymaster.md
+              1.0=mainnet, betas=testnet); beta-plan.md; paymaster.md;
+              invites.md (user-created escrow invite codes — DESIGN, not built);
+              agent-scheduling.md (on-chain ScheduleFacet + Vercel-Cron worker so
+              agents run recursive jobs without a tab — DESIGN, not built)
 RELEASING.md / CHANGELOG.md / vercel.json / .vercelignore
 ```
 

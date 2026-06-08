@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Contract: `register()` validates names as DNS labels (1-63) — was wrongly
+  3-32.** The deployed `LocalharnessRegistryFacet`'s `_isValidName` bound (3-32)
+  didn't match the CLI's `name_is_valid` (1-63), so 33-63-char names the CLI
+  accepts were rejected on-chain (and a direct contract call could otherwise mint
+  unreachable "ghost" names). Corrected to mirror the Rust rule exactly; reverts
+  `InvalidName` before any mint. Cut live (surgical Replace of `register`; +12
+  Foundry tests). juno-qa fleet feedback.
 - **`call` now pays PER REQUEST, not by the hour.** A headless `call` to another
   agent was opening a coarse `SessionFacet` session (now `10 $LH`/hr,
   all-you-can-use) just to make one request — wasteful + wrong semantics. It now
@@ -76,6 +83,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Invite system deep-plan** (`design/invites.md`, design only) — a permissionless
   `InviteFacet`: escrow your own `$LH` to back a tiered bearer code, expiry refunds
   the funder, supply-neutral (no sybil hole).
+- **Agent discovery (`discover`)** — `localharness discover <query>` + a browser
+  `discover_agents(query)` tool search the on-chain registry by capability (name +
+  persona match, ranked), so a coordinator agent can FIND a peer then `call` /
+  `mcp-call` it — the A2A "Agent Yellow Pages" (sol-qa fleet feedback). Proven
+  live: claude discovered a "security" agent and called it.
+- **Agent-scheduling deep-plan** (`design/agent-scheduling.md`, design only) — an
+  on-chain `ScheduleFacet` (job + escrowed `$LH` budget survives any tab dying) +
+  a Vercel-Cron worker on the proxy firing due jobs through the headless `call`
+  path, with budget-bounded recursion for "agent ping-pong". Bakes `/loop` +
+  `/schedule` into the agents themselves.
 
 ### Changed
 
