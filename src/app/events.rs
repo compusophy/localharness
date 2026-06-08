@@ -265,12 +265,38 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
     // Enter case). Cmd/Ctrl+Enter still sends as a convention some
     // users have muscle-memory for.
     let keydown = Closure::<dyn FnMut(_)>::new(move |event: KeyboardEvent| {
-        if event.key() != "Enter" {
+        let key = event.key();
+        if key != "Enter" && key != " " {
             return;
         }
         let Some(target) = event.target() else { return };
         let Ok(el) = target.dyn_into::<Element>() else { return };
-        if el.id() != "prompt" {
+
+        // a11y: Enter/Space activates a focused role="button" carrying a
+        // data-action — the non-<button> clickables (OPFS file/dir rows,
+        // breadcrumbs); real <button>s activate natively. Walk up for
+        // data-action exactly like the click handler, then dispatch.
+        if el.get_attribute("role").as_deref() == Some("button") {
+            let mut node = el.clone();
+            let action = loop {
+                if let Some(name) = node.get_attribute("data-action") {
+                    break Action::parse(&name, node.get_attribute("data-arg"));
+                }
+                match node.parent_element() {
+                    Some(parent) => node = parent,
+                    None => break None,
+                }
+            };
+            if let Some(action) = action {
+                event.prevent_default();
+                dispatch(action);
+                return;
+            }
+        }
+
+        // Enter inside the prompt textarea sends; Shift+Enter inserts a
+        // newline (default); Cmd/Ctrl+Enter still sends.
+        if key != "Enter" || el.id() != "prompt" {
             return;
         }
         let mod_held = event.meta_key() || event.ctrl_key();

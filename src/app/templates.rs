@@ -31,6 +31,7 @@ pub(crate) fn api_key_modal() -> Markup {
                         input #api-key-input
                             type="password"
                             autocomplete="off"
+                            aria-label="gemini api key"
                             placeholder="paste key" {}
                         button type="button"
                             data-action="save-api-key" { "save" }
@@ -40,7 +41,7 @@ pub(crate) fn api_key_modal() -> Markup {
                     a href="https://aistudio.google.com/apikey"
                         target="_blank" rel="noopener" { "get a free key →" }
                 }
-                div #api-key-msg .feedback-msg {}
+                div #api-key-msg .feedback-msg role="status" aria-live="polite" {}
             }
         }
     }
@@ -147,7 +148,9 @@ pub(crate) fn terminal_input() -> Markup {
             // fills it with a redeem CTA when the credit identity holds zero `$LH`
             // (so a new user with no funds sees the path to redeem instead of a
             // silent proxy rejection on their first send). Hidden again once funded.
-            div #fund-banner .fund-banner {}
+            // role=status announces the "no $LH — redeem" CTA when it appears, so a
+            // screen-reader user isn't left to hit a silent rejection on first send.
+            div #fund-banner .fund-banner role="status" aria-live="polite" {}
             // `dom::set_status` writes transient dispatcher messages here
             // (errors, payment notices). role=status is an implicit polite
             // live region, so updates are announced without stealing focus.
@@ -200,7 +203,7 @@ pub(crate) fn fund_banner_body() -> Markup {
                     border:1px solid var(--border);background:var(--panel);\
                     font-size:12px;color:var(--muted)" {
             span { "no $LH yet — redeem a code to start" }
-            input #fund-redeem-code .redeem-input type="text" placeholder="redeem code";
+            input #fund-redeem-code .redeem-input type="text" aria-label="redeem code" placeholder="redeem code";
             button type="button" data-action="redeem-banner" .ghost { "redeem" }
             div #fund-msg .admin-msg-slot style="margin-top:0;flex-basis:100%" {}
         }
@@ -473,6 +476,7 @@ pub(crate) fn admin_feedback_section() -> Markup {
             div.admin-section-title { "feedback" }
             textarea #feedback-text
                 .feedback-textarea
+                aria-label="feedback message"
                 rows="6" {}
             div.prompt-actions {
                 button type="button" data-action="feedback-submit" .ghost { "submit" }
@@ -636,6 +640,7 @@ fn apex_claim() -> Markup {
                 input #apex-input
                     .create-input
                     type="text"
+                    aria-label="agent name to claim"
                     placeholder="choose a name"
                     autocomplete="off"
                     spellcheck="false"
@@ -790,6 +795,7 @@ pub(crate) fn admin_prompt_section() -> Markup {
                 textarea #prompt-input
                     .prompt-input
                     rows="5"
+                    aria-label="custom system prompt"
                     placeholder="optional — empty uses the default" {}
                 div.prompt-actions {
                     button type="submit" .ghost { "save" }
@@ -841,7 +847,7 @@ pub(crate) fn admin_x402_price_section() -> Markup {
         div.admin-section {
             div.admin-section-title { "x402 price" }
             form.prompt-form data-action="save-x402-price" onsubmit="return false" {
-                input #x402-price-input .redeem-input type="text" placeholder="price per call (LH)";
+                input #x402-price-input .redeem-input type="text" aria-label="x402 price per call in LH" placeholder="price per call (LH)";
                 div.prompt-actions {
                     button type="submit" .ghost { "save" }
                 }
@@ -1000,7 +1006,7 @@ pub(crate) fn admin_credits_section() -> Markup {
                 code #credits-balance .admin-identity-value { "…" }
             }
             div.redeem-row {
-                input #redeem-code .redeem-input type="text" placeholder="redeem code";
+                input #redeem-code .redeem-input type="text" aria-label="redeem code" placeholder="redeem code";
                 button type="button" data-action="redeem-code" .ghost { "redeem" }
             }
             div #credits-msg .admin-msg-slot {}
@@ -1022,7 +1028,7 @@ pub(crate) fn admin_invite_section() -> Markup {
             div.admin-section-title { "invite a friend" }
             div.redeem-row {
                 input #invite-amount .redeem-input type="text"
-                    inputmode="decimal" placeholder="$LH amount";
+                    inputmode="decimal" aria-label="invite amount in $LH" placeholder="$LH amount";
                 button type="button" data-action="create-invite" .ghost { "create" }
             }
             div #invite-result .admin-msg-slot {}
@@ -1213,6 +1219,7 @@ pub(crate) fn adopt_join(ct_hex: &str) -> Markup {
                     div.pair-instructions { "adopt your identity on this device" }
                     form.create-form data-action="adopt-device" {
                         input #adopt-code .create-input type="text"
+                            aria-label="one-time adoption code"
                             placeholder="enter code" autocomplete="off"
                             spellcheck="false" maxlength="8" required {}
                         input #adopt-ct type="hidden" value=(ct_hex) {}
@@ -1304,7 +1311,7 @@ pub(crate) fn reset_confirm_inline() -> Markup {
     html! {
         div #reset-confirm-slot .reset-confirm {
             span.reset-confirm-prompt { "type RESET to clear this device — identity + names are kept" }
-            input #reset-confirm-text .redeem-input type="text" placeholder="RESET";
+            input #reset-confirm-text .redeem-input type="text" aria-label="type RESET to confirm" placeholder="RESET";
             div.reset-confirm-actions {
                 button type="button" data-action="reset-confirm" .danger { "reset" }
                 button type="button" data-action="reset-cancel" .ghost { "cancel" }
@@ -1449,6 +1456,7 @@ pub(crate) fn pricing_card_body(price_wei: u128, is_owner: bool) -> Markup {
                     input #pricing-input
                         type="text"
                         inputmode="decimal"
+                        aria-label="price per turn in $localharness"
                         placeholder="1.0"
                         value=(if price_wei == 0 { String::new() } else { super::format_wei_as_test_eth(price_wei) }) {}
                     span.pricing-unit { "$localharness/turn" }
@@ -1470,6 +1478,7 @@ pub(crate) fn import_seed_inline() -> Markup {
     html! {
         div #import-slot .seed-import {
             textarea #import-seed
+                aria-label="12-word recovery phrase"
                 placeholder="paste 12 words separated by spaces"
                 rows="3" {}
             div.seed-import-actions {
@@ -1554,6 +1563,7 @@ pub(crate) fn agent_act_panel(
             input
                 id=(format!("agent-send-to-{token_id}"))
                 type="text"
+                aria-label="recipient address"
                 placeholder="recipient 0x…"
                 autocomplete="off"
                 spellcheck="false"
@@ -1561,6 +1571,7 @@ pub(crate) fn agent_act_panel(
             input
                 id=(format!("agent-send-amt-{token_id}"))
                 type="text"
+                aria-label="amount in LH"
                 placeholder="amount LH"
                 autocomplete="off"
                 spellcheck="false"
@@ -1666,11 +1677,15 @@ pub(crate) fn unclaimed(host: &Host, name: &str) -> Markup {
 // --- OPFS panel templates --------------------------------------------
 
 pub(crate) fn opfs_breadcrumb(cwd: &[String]) -> Markup {
+    // `href="#"` makes each crumb a real link — keyboard-focusable and
+    // Enter-activatable. The delegated click listener calls preventDefault,
+    // so the `#` never actually navigates; it only exists to put the anchor
+    // in the focus order and fire a native click on Enter.
     html! {
-        a data-action="opfs-nav" data-arg="" { "/" }
+        a href="#" data-action="opfs-nav" data-arg="" aria-label="root directory" { "/" }
         @for i in 0..cwd.len() {
             @let arg = cwd[..=i].join("/");
-            a data-action="opfs-nav" data-arg=(arg) { (cwd[i]) "/" }
+            a href="#" data-action="opfs-nav" data-arg=(arg) { (cwd[i]) "/" }
         }
     }
 }
@@ -1688,7 +1703,14 @@ pub(crate) fn opfs_list(cwd: &[String], entries: &[DirEntry]) -> Markup {
                         } else {
                             format!("{}/{}", cwd.join("/"), entry.name)
                         };
-                        li.dir data-action="opfs-nav" data-arg=(arg) {
+                        // `role=button` + `tabindex=0` put the directory row in
+                        // the focus order and announce it as a button (a bare
+                        // `<li>` is neither focusable nor activatable). Kept an
+                        // `<li>` rather than a `<button>` so the `.fs-list li`
+                        // flex layout + CSS (owned elsewhere) is preserved.
+                        li.dir data-action="opfs-nav" data-arg=(arg)
+                            role="button" tabindex="0"
+                            aria-label=(format!("open folder {}", entry.name)) {
                             span.name { (entry.name) }
                         }
                     }
@@ -1698,7 +1720,13 @@ pub(crate) fn opfs_list(cwd: &[String], entries: &[DirEntry]) -> Markup {
                             || lname.ends_with(".htm")
                             || lname.ends_with(".rl");
                         li.file {
-                            span.name data-action="opfs-open" data-arg=(entry.name) {
+                            // The filename opens the file in DISPLAY on click.
+                            // `role=button` + `tabindex=0` make the clickable
+                            // `<span>` focusable + announced (kept a span so the
+                            // `.fs-list li .name` ellipsis/flex CSS still applies).
+                            span.name data-action="opfs-open" data-arg=(entry.name)
+                                role="button" tabindex="0"
+                                aria-label=(format!("open {}", entry.name)) {
                                 (entry.name)
                             }
                             @if let Some(size) = entry.size {
@@ -1753,7 +1781,7 @@ pub(crate) fn opfs_editor(display_path: &str, name: &str, text: &str) -> Markup 
                         data-action="opfs-close-viewer" { "close" }
                 }
             }
-            textarea #fs-editor .editor-textarea { (text) }
+            textarea #fs-editor .editor-textarea aria-label=(format!("editing {name}")) { (text) }
         }
     }
 }
