@@ -594,23 +594,31 @@ pub(crate) async fn start_session(
            • rename_file(from, to) — move or rename.\n\n\
          \
          Platform:\n\
-           • create_subdomain(name) — register a NEW name-only \
-             <name>.localharness.xyz subdomain on-chain, owned by your owner's \
-             master wallet. Use this to make a new subdomain/agent WITHOUT an \
-             app: when the user says \"create/make/spin up a subdomain\" or \
-             \"make me a new <name>\", call THIS — never run_cartridge, which \
-             does NOT create a subdomain. Returns {{ name, url, owner, tx_hash \
-             }}; after it succeeds, give the user the returned `url` as a \
+           • create_subdomain(name, persona?, prefund_lh?) — register a NEW \
+             name-only <name>.localharness.xyz subdomain on-chain, owned by your \
+             owner's master wallet (the ACTOR MODEL). Use this to make a new \
+             subdomain/agent WITHOUT an app: when the user says \
+             \"create/make/spin up a subdomain\" or \"make me a new <name>\", \
+             call THIS — never run_cartridge, which does NOT create a subdomain. \
+             OPTIONAL actor extras: `persona` publishes the new agent's on-chain \
+             system instruction; `prefund_lh` moves that much $LH from YOUR \
+             wallet into the new agent's token-bound account (its own spendable \
+             wallet — to pay other agents). Both omitted = a bare subdomain. \
+             Returns {{ name, url, owner, tx_hash, persona_set?, prefunded_lh?, \
+             tba? }}; after it succeeds, give the user the returned `url` as a \
              clickable link. Each subdomain is its own agent tab with its own \
              per-origin sandbox.\n\
-           • create_and_publish_app(name, source) — ONE-SHOT: register a new \
-             <name>.localharness.xyz AND publish a compiled rustlite cartridge \
-             as its fullscreen public face (compile + register + publish in a \
-             single call). Use this whenever the user wants a subdomain that \
-             IS an app — \"make me a clock/<app> subdomain\". This is how you \
-             create a subdomain with an app from here (a per-origin sandbox \
-             means you can't write another subdomain's files directly). \
-             Returns {{ name, url, tx_hash }}.\n\
+           • create_and_publish_app(name, source, persona?, prefund_lh?) — \
+             ONE-SHOT: register a new <name>.localharness.xyz AND publish a \
+             compiled rustlite cartridge as its fullscreen public face (compile \
+             + register + publish in a single call). Use this whenever the user \
+             wants a subdomain that IS an app — \"make me a clock/<app> \
+             subdomain\". This is how you create a subdomain with an app from \
+             here (a per-origin sandbox means you can't write another \
+             subdomain's files directly). Same OPTIONAL actor extras as \
+             create_subdomain (`persona`, `prefund_lh`), folded into the same \
+             sponsored tx. Returns {{ name, url, tx_hash, persona_set?, \
+             prefunded_lh?, tba? }}.\n\
            • batch_create_subdomains(names) — register MANY subdomains in ONE \
              on-chain transaction. Use THIS instead of calling create_subdomain \
              repeatedly when the user asks for more than one name at once \
@@ -1224,12 +1232,171 @@ fn u256_be(value: u128) -> [u8; 32] {
 }
 
 fn transfer_selector() -> [u8; 4] {
+    selector4(b"transfer(address,uint256)")
+}
+
+/// First 4 bytes of keccak256 of an ABI function signature.
+fn selector4(sig: &[u8]) -> [u8; 4] {
     use sha3::{Digest, Keccak256};
     let mut hasher = Keccak256::new();
-    hasher.update(b"transfer(address,uint256)");
+    hasher.update(sig);
     let mut out = [0u8; 4];
     out.copy_from_slice(&hasher.finalize()[..4]);
     out
+}
+
+/// ERC-20 `transfer(to, amount_wei)` calldata against the `$LH` token — the
+/// exact shape `send_lh` builds. `to` is a 20-byte address; `amount_wei` is
+/// 18-decimal token wei.
+fn lh_transfer_calldata(to: &[u8; 20], amount_wei: u128) -> Vec<u8> {
+    let mut to_padded = [0u8; 32];
+    to_padded[12..].copy_from_slice(to);
+    let mut calldata = Vec::with_capacity(4 + 32 + 32);
+    calldata.extend_from_slice(&transfer_selector());
+    calldata.extend_from_slice(&to_padded);
+    calldata.extend_from_slice(&u256_be(amount_wei));
+    calldata
+}
+
+/// `createTokenBoundAccount(tokenId)` calldata against the registry diamond.
+/// Idempotent: deploys the ERC-6551 account so a counterfactual TBA can hold
+/// funds (registry's own helper is private, so we mirror it here — chat.rs
+/// already hand-builds calldata for `send_lh` the same way).
+fn create_tba_calldata(token_id: u64) -> Vec<u8> {
+    let mut data = Vec::with_capacity(4 + 32);
+    data.extend_from_slice(&selector4(b"createTokenBoundAccount(uint256)"));
+    data.extend_from_slice(&u256_be(token_id as u128));
+    data
+}
+
+/// Result of preparing the optional actor-model extras (persona + prefund) for
+/// a freshly-registered subdomain. `calls` are appended to the same sponsored
+/// Tempo tx that publishes / sets up the new token; `extra_gas` is added to the
+/// base gas budget.
+struct ActorSetup {
+    calls: Vec<crate::tempo_tx::TempoCall>,
+    extra_gas: u128,
+    prefunded_lh: Option<String>,
+    tba: Option<String>,
+    persona_set: bool,
+}
+
+/// Build the optional persona + prefund calls for `create_subdomain` /
+/// `create_and_publish_app` (the ACTOR MODEL).
+///
+/// **Billing-semantics finding → prefund recipient = the new subdomain's TBA.**
+/// The credit proxy keys `$LH` usage by the *signing EOA address*
+/// (`sessionExpiryOf(address)` / `creditOf(address)` in `proxy/api/gemini.ts`),
+/// and the creator already OWNS the new name, so funds sent to the creator's
+/// own wallet would be a no-op for "the new actor". The meaningful, spendable
+/// wallet an actor controls is its **token-bound account (TBA)** — that's also
+/// the x402 payee when one agent pays another (`proxy/api/mcp.ts` resolves
+/// `tokenBoundAccountByName` → "payee (the agent's TBA)"). So prefund flows
+/// CREATOR-wallet → new-name's TBA, giving the spawned actor operating funds it
+/// controls. We batch `createTokenBoundAccount(tokenId)` first (idempotent) so
+/// the counterfactual TBA exists to receive the transfer.
+///
+/// `creator` is the owner address paying / signing; `token_id` is the new
+/// name's freshly-minted id; `name` is the (sanitised) subdomain.
+async fn build_actor_setup(
+    creator: &str,
+    token_id: u64,
+    name: &str,
+    persona: Option<&str>,
+    prefund_lh: Option<&str>,
+) -> Result<ActorSetup, crate::error::Error> {
+    let registry_addr =
+        parse_address(super::registry::REGISTRY_ADDRESS).map_err(crate::error::Error::other)?;
+    let mut calls: Vec<crate::tempo_tx::TempoCall> = Vec::new();
+    let mut extra_gas: u128 = 0;
+    let mut persona_set = false;
+    let mut prefunded_lh = None;
+    let mut tba_out = None;
+
+    // PERSONA — publish the new subdomain's on-chain system prompt under the
+    // persona metadata key (keccak256("localharness.persona")), the same slot
+    // the CLI `persona` cmd + headless `call` read. setMetadata is gas-hungry
+    // (~8.5k/byte; see CLAUDE.md), so scale the budget by length.
+    if let Some(p) = persona {
+        let p = p.trim();
+        if !p.is_empty() {
+            calls.push(crate::tempo_tx::TempoCall {
+                to: registry_addr,
+                value_wei: 0,
+                input: super::registry::encode_set_persona(token_id, p),
+            });
+            extra_gas += 1_200_000 + (p.len() as u128) * 8_500;
+            persona_set = true;
+        }
+    }
+
+    // PREFUND — move `$LH` from the CREATOR to the new name's TBA. Validate the
+    // creator actually holds the amount first (clear error, before any write).
+    if let Some(amt_str) = prefund_lh {
+        let amt_str = amt_str.trim();
+        if !amt_str.is_empty() {
+            let amount_wei = crate::encoding::parse_token_amount(amt_str).ok_or_else(|| {
+                crate::error::Error::other(format!(
+                    "could not parse prefund_lh \"{amt_str}\" — pass a decimal $LH figure \
+                     like \"5\" or \"1.5\""
+                ))
+            })?;
+            if amount_wei > 0 {
+                // Balance gate: refuse if the creator can't cover it.
+                let bal = super::registry::token_balance_of(creator)
+                    .await
+                    .map_err(crate::error::Error::other)?;
+                if bal < amount_wei {
+                    return Err(crate::error::Error::other(format!(
+                        "insufficient $LH to prefund: need {amt_str}, creator holds \
+                         {} wei — redeem a code or lower prefund_lh",
+                        bal
+                    )));
+                }
+                // Resolve the new name's TBA (counterfactual address). We batch
+                // createTokenBoundAccount(tokenId) FIRST so it's deployed to
+                // receive funds (idempotent if already deployed).
+                let tba = super::registry::tba_of_name(name)
+                    .await
+                    .map_err(crate::error::Error::other)?
+                    .ok_or_else(|| {
+                        crate::error::Error::other(
+                            "could not resolve the new subdomain's token-bound account \
+                             (TBA) to prefund — retry shortly",
+                        )
+                    })?;
+                let tba_bytes = parse_address(&tba).map_err(crate::error::Error::other)?;
+                let token_addr =
+                    parse_address(crate::registry::LOCALHARNESS_TOKEN_ADDRESS)
+                        .map_err(crate::error::Error::other)?;
+                // 1) deploy the TBA (on the registry diamond)
+                calls.push(crate::tempo_tx::TempoCall {
+                    to: registry_addr,
+                    value_wei: 0,
+                    input: create_tba_calldata(token_id),
+                });
+                // 2) ERC-20 transfer creator → TBA (on the $LH token)
+                calls.push(crate::tempo_tx::TempoCall {
+                    to: token_addr,
+                    value_wei: 0,
+                    input: lh_transfer_calldata(&tba_bytes, amount_wei),
+                });
+                // TBA deploy (~mint-class cold SSTOREs) + ERC-20 transfer.
+                extra_gas += 1_500_000 + 500_000;
+                prefunded_lh = Some(amt_str.to_string());
+                tba_out = Some(tba);
+            }
+        }
+    }
+
+    let _ = creator; // (used above only when prefunding)
+    Ok(ActorSetup {
+        calls,
+        extra_gas,
+        prefunded_lh,
+        tba: tba_out,
+        persona_set,
+    })
 }
 
 fn short_hash(hash: &str) -> String {
@@ -1257,38 +1424,111 @@ fn create_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 "description": "Subdomain to register, e.g. \"alice\" \
                     becomes alice.localharness.xyz. 3-32 chars; lowercase \
                     letters, digits, and hyphens only."
+            },
+            "persona": {
+                "type": "string",
+                "description": "OPTIONAL system instruction / persona for the new \
+                    agent — published on-chain as its system prompt (the persona \
+                    that headless `call`s and the public face read). Omit to leave \
+                    the default."
+            },
+            "prefund_lh": {
+                "type": "string",
+                "description": "OPTIONAL amount of $LH to prefund the new agent with, \
+                    as a decimal string (\"5\", \"1.5\"). Transferred from YOUR \
+                    wallet to the new subdomain's token-bound account (its own \
+                    spendable wallet — used to pay other agents via x402). Omit, or \
+                    pass \"0\", to skip. Must not exceed your $LH balance."
             }
         },
         "required": ["name"]
     });
     ClosureTool::new(
         "create_subdomain",
-        "Register a new <name>.localharness.xyz subdomain on-chain. The owner's master \
-         wallet pays gas and ends up holding the resulting ERC-721 NFT. Returns the tx hash.",
+        "Register a new <name>.localharness.xyz subdomain on-chain (the ACTOR MODEL). \
+         The owner's master wallet pays gas and ends up holding the resulting ERC-721 \
+         NFT. OPTIONALLY spawn the actor WITH behavior + funds in one call: `persona` \
+         publishes its on-chain system instruction; `prefund_lh` moves that much $LH \
+         from your wallet into the new agent's token-bound account (its own wallet). \
+         Returns { name, url, owner, tx_hash, persona_set?, prefunded_lh?, tba? }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
             let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let persona = args.get("persona").and_then(|v| v.as_str());
+            let prefund_lh = args.get("prefund_lh").and_then(|v| v.as_str());
             let cleaned = super::tenant::sanitize(name);
             if cleaned.len() < 3 || cleaned.len() > 32 {
                 return Err(crate::error::Error::other("invalid name"));
             }
-            match super::verify::claim_name_via_iframe(&cleaned).await {
-                Ok((owner, tx_hash)) => {
-                    // Proactively push this device's Gemini key to the MAIN
-                    // slot so the new subdomain inherits it (no re-save).
-                    let n = cleaned.clone();
-                    wasm_bindgen_futures::spawn_local(async move {
-                        super::events::sync_local_key_to_main(&n).await;
-                    });
-                    Ok(serde_json::json!({
-                        "name": cleaned,
-                        "url": format!("https://{cleaned}.localharness.xyz/"),
-                        "owner": owner,
-                        "tx_hash": tx_hash,
-                    }))
-                }
-                Err(e) => Err(crate::error::Error::other(format!("claim failed: {e}"))),
+            // Register the name first (master wallet ends up holding the new id).
+            let (owner, claim_tx) = super::verify::claim_name_via_iframe(&cleaned)
+                .await
+                .map_err(|e| crate::error::Error::other(format!("claim failed: {e}")))?;
+            // Proactively push this device's Gemini key to the MAIN slot so the
+            // new subdomain inherits it (no re-save).
+            {
+                let n = cleaned.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    super::events::sync_local_key_to_main(&n).await;
+                });
             }
+
+            // Optional ACTOR-MODEL extras: persona + prefund. Only if asked.
+            let want_persona = persona.map(|p| !p.trim().is_empty()).unwrap_or(false);
+            let want_prefund = prefund_lh
+                .map(|p| {
+                    let t = p.trim();
+                    !t.is_empty() && t != "0"
+                })
+                .unwrap_or(false);
+            let mut result = serde_json::json!({
+                "name": cleaned,
+                "url": format!("https://{cleaned}.localharness.xyz/"),
+                "owner": owner,
+                "tx_hash": claim_tx,
+            });
+            if want_persona || want_prefund {
+                // Resolve the freshly-minted tokenId for the metadata/TBA ops.
+                let token_id = match super::registry::id_of_name(&cleaned).await {
+                    Ok(id) if id != 0 => id,
+                    Ok(_) => {
+                        return Err(crate::error::Error::other(
+                            "registered but tokenId not yet visible on-chain — retry \
+                             persona/prefund shortly",
+                        ))
+                    }
+                    Err(e) => return Err(crate::error::Error::other(format!("id_of_name: {e}"))),
+                };
+                let setup = build_actor_setup(
+                    &owner,
+                    token_id,
+                    &cleaned,
+                    persona,
+                    prefund_lh,
+                )
+                .await?;
+                if !setup.calls.is_empty() {
+                    let tx_hash = super::events::run_sponsored_tempo_call(
+                        &owner,
+                        setup.calls,
+                        setup.extra_gas,
+                        "spawn actor (persona + prefund)",
+                    )
+                    .await
+                    .map_err(|e| {
+                        crate::error::Error::other(format!("actor setup failed: {e}"))
+                    })?;
+                    result["setup_tx_hash"] = serde_json::json!(tx_hash);
+                    result["persona_set"] = serde_json::json!(setup.persona_set);
+                    if let Some(amt) = setup.prefunded_lh {
+                        result["prefunded_lh"] = serde_json::json!(amt);
+                    }
+                    if let Some(tba) = setup.tba {
+                        result["tba"] = serde_json::json!(tba);
+                    }
+                }
+            }
+            Ok(result)
         },
     )
 }
@@ -1318,6 +1558,20 @@ fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                     run_cartridge. Exports `fn frame(t: i32)` (animated) or \
                     `fn render()` and draws via `use host::display;`. This becomes \
                     the subdomain's fullscreen public face."
+            },
+            "persona": {
+                "type": "string",
+                "description": "OPTIONAL system instruction / persona for the new \
+                    agent — published on-chain as its system prompt (read by \
+                    headless `call`s). Omit to leave the default."
+            },
+            "prefund_lh": {
+                "type": "string",
+                "description": "OPTIONAL amount of $LH to prefund the new agent with, \
+                    as a decimal string (\"5\", \"1.5\"). Transferred from YOUR \
+                    wallet to the new subdomain's token-bound account (its own \
+                    spendable wallet). Omit, or pass \"0\", to skip. Must not exceed \
+                    your $LH balance."
             }
         },
         "required": ["name", "source"]
@@ -1327,12 +1581,17 @@ fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
         "One-shot: register a new <name>.localharness.xyz AND publish a compiled \
          rustlite cartridge as its fullscreen public face, in a single call (compile \
          + on-chain register + sponsored setMetadata publish). Use this for \"make me \
-         a clock/<app> subdomain\". create_subdomain remains for registering a \
-         name-only subdomain. Returns { name, url, tx_hash }.",
+         a clock/<app> subdomain\". The ACTOR MODEL: optionally also set the new \
+         agent's `persona` (on-chain system instruction) and `prefund_lh` it with $LH \
+         (into its token-bound account), all in the SAME sponsored tx. create_subdomain \
+         remains for registering a name-only subdomain. Returns { name, url, tx_hash, \
+         persona_set?, prefunded_lh?, tba? }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
             let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
             let source = args.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            let persona = args.get("persona").and_then(|v| v.as_str());
+            let prefund_lh = args.get("prefund_lh").and_then(|v| v.as_str());
             let cleaned = super::tenant::sanitize(name);
             if cleaned.len() < 3 || cleaned.len() > 32 {
                 return Err(crate::error::Error::other("invalid name"));
@@ -1383,12 +1642,17 @@ fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 value_wei: 0,
                 input,
             };
-            let calls = vec![
+            let mut calls = vec![
                 mk(super::registry::encode_set_app_wasm(token_id, &wasm)),
                 mk(super::registry::encode_set_public_face(token_id, "app")),
             ];
             let words = (wasm.len() / 32 + 1) as u128;
-            let gas = 1_300_000 + words * 40_000;
+            let mut gas = 1_300_000 + words * 40_000;
+            // ACTOR MODEL: fold optional persona + prefund into the SAME tx.
+            let setup =
+                build_actor_setup(&owner, token_id, &cleaned, persona, prefund_lh).await?;
+            calls.extend(setup.calls);
+            gas += setup.extra_gas;
             let tx_hash = super::events::run_sponsored_tempo_call(
                 &owner,
                 calls,
@@ -1397,11 +1661,21 @@ fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             )
             .await
             .map_err(|e| crate::error::Error::other(format!("publish failed: {e}")))?;
-            Ok(serde_json::json!({
+            let mut result = serde_json::json!({
                 "name": cleaned,
                 "url": format!("https://{cleaned}.localharness.xyz/"),
                 "tx_hash": tx_hash,
-            }))
+            });
+            if setup.persona_set {
+                result["persona_set"] = serde_json::json!(true);
+            }
+            if let Some(amt) = setup.prefunded_lh {
+                result["prefunded_lh"] = serde_json::json!(amt);
+            }
+            if let Some(tba) = setup.tba {
+                result["tba"] = serde_json::json!(tba);
+            }
+            Ok(result)
         },
     )
 }
