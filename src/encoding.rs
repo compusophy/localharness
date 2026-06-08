@@ -55,6 +55,33 @@ pub fn parse_token_amount(raw: &str) -> Option<u128> {
     whole_wei.checked_add(frac)
 }
 
+/// How a user-supplied transfer recipient should be resolved: a raw 20-byte
+/// hex address is used as-is; anything else is treated as a subdomain name to
+/// look up on-chain. Empty input is rejected up front.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Recipient {
+    /// A syntactically valid `0x…` 40-hex address — use it directly.
+    Address(String),
+    /// A subdomain name (e.g. `alice`) — resolve to its on-chain owner address.
+    Name(String),
+}
+
+/// Classify a transfer `recipient` argument WITHOUT any on-chain I/O: trim it,
+/// reject empty, return `Address` for a 40-hex string (preserving the original
+/// `0x…` form) else `Name` (lowercased — subdomain names are lowercase). Pure,
+/// so it's unit-testable; the async owner lookup lives in the caller.
+pub fn classify_recipient(raw: &str) -> Result<Recipient, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("recipient is empty".to_string());
+    }
+    if is_address_hex(trimmed) {
+        Ok(Recipient::Address(trimmed.to_string()))
+    } else {
+        Ok(Recipient::Name(trimmed.to_lowercase()))
+    }
+}
+
 /// Parse a 40-char hex string (with/without `0x`) into 20 address bytes.
 pub fn parse_address(hex: &str) -> Result<[u8; 20], String> {
     let stripped = hex.trim_start_matches("0x").trim_start_matches("0X");
@@ -142,5 +169,33 @@ mod tests {
     fn tx_short_hash_abbreviates_and_passes_through_short() {
         assert_eq!(tx_short_hash("0xabcdef1234567890"), "abcdef…7890");
         assert_eq!(tx_short_hash("0xabcd"), "0xabcd");
+    }
+
+    #[test]
+    fn classify_recipient_distinguishes_address_from_name() {
+        // 40-hex (with and without 0x) → Address, original form preserved.
+        let addr = format!("0x{}", "a".repeat(40));
+        assert_eq!(
+            classify_recipient(&addr),
+            Ok(Recipient::Address(addr.clone()))
+        );
+        let bare = "B".repeat(40);
+        assert_eq!(
+            classify_recipient(&format!("  {bare}  ")),
+            Ok(Recipient::Address(bare.clone()))
+        );
+        // A subdomain name → Name, lowercased + trimmed.
+        assert_eq!(
+            classify_recipient("  Alice "),
+            Ok(Recipient::Name("alice".to_string()))
+        );
+        // Wrong-length hex is NOT an address — treated as a (doomed) name.
+        assert_eq!(
+            classify_recipient("0x1234"),
+            Ok(Recipient::Name("0x1234".to_string()))
+        );
+        // Empty / whitespace-only is rejected.
+        assert!(classify_recipient("").is_err());
+        assert!(classify_recipient("   ").is_err());
     }
 }

@@ -635,6 +635,13 @@ pub(crate) async fn start_session(
            • list_subdomains() — list every subdomain your owner holds \
              (their identity's holdings). Read-only; use when asked what \
              subdomains/agents they have.\n\
+           • send_lh(recipient, amount) — TRANSFER real $LH credits from your \
+             owner's wallet. `recipient` is a raw 0x… address OR a subdomain \
+             name (the funds go to that name's on-chain OWNER). `amount` is a \
+             decimal $LH figure (\"5\", \"1.5\"), must be > 0. This MOVES VALUE \
+             — always confirm the recipient and amount with the owner before \
+             calling. Returns {{ amount, recipient, resolved_recipient, tx_hash \
+             }}.\n\
          {start_subagent_line}\
            • spawn_recursive_subagent(system_instructions, prompt) — spawn a \
              full subagent with the same tool surface YOU have (filesystem, \
@@ -866,6 +873,7 @@ pub(crate) async fn start_session(
             .with_tool(release_subdomain_tool())
             .with_tool(bulk_release_subdomains_tool())
             .with_tool(list_subdomains_tool())
+            .with_tool(send_lh_tool())
             .with_tool(submit_feedback_tool())
             .with_tool(super::self_docs::read_self_docs_tool())
             .with_tool(clear_context_tool())
@@ -904,6 +912,7 @@ pub(crate) async fn start_session(
             .with_tool(release_subdomain_tool())
             .with_tool(bulk_release_subdomains_tool())
             .with_tool(list_subdomains_tool())
+            .with_tool(send_lh_tool())
             .with_tool(submit_feedback_tool())
             .with_tool(super::self_docs::read_self_docs_tool())
             .with_tool(clear_context_tool())
@@ -1685,6 +1694,146 @@ fn list_subdomains_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 "owner": owner,
                 "count": subdomains.len(),
                 "subdomains": subdomains,
+            }))
+        },
+    )
+}
+
+/// `send_lh(recipient, amount)` — transfer real `$LH` credits from the owner's
+/// wallet. `recipient` is either a raw `0x…` address or a subdomain name (whose
+/// on-chain OWNER address receives the funds). `amount` is a human-typed `$LH`
+/// figure (18-decimal token; "5", "1.5", "0.000001"). Builds an ERC-20
+/// `transfer(to, amount_wei)` against the `$LH` token and routes it through the
+/// SAME sponsored Tempo path as the per-turn payment + the "act" panel
+/// (`run_sponsored_tempo_call`): the owner's apex wallet signs the intent, the
+/// bundle sponsor pays gas in AlphaUSD. NOT granted to subagents (it moves
+/// value). No typed-confirmation gate — a transfer is an intended action, unlike
+/// the destructive `release_subdomain` burn — but the amount must parse to > 0.
+fn send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "recipient": {
+                "type": "string",
+                "description": "Who receives the $LH: either a raw 0x… 20-byte \
+                    address, or a subdomain name like \"alice\" (the funds go to \
+                    that subdomain's on-chain OWNER address)."
+            },
+            "amount": {
+                "type": "string",
+                "description": "Amount of $LH to send, as a decimal string \
+                    (e.g. \"5\", \"1.5\", \"0.01\"). Must be greater than 0."
+            }
+        },
+        "required": ["recipient", "amount"]
+    });
+    ClosureTool::new(
+        "send_lh",
+        "Transfer real $LH credits from the owner's wallet to a recipient. \
+         `recipient` is a raw 0x… address OR a subdomain name (funds go to that \
+         name's on-chain owner). `amount` is a decimal $LH figure (must be > 0). \
+         Moves value: confirm the recipient + amount with the owner before \
+         calling. Returns { amount, recipient (input), resolved_recipient, \
+         tx_hash }.",
+        schema,
+        |args: serde_json::Value, _ctx| async move {
+            use crate::encoding::{parse_token_amount, Recipient};
+
+            let recipient_arg = args
+                .get("recipient")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let amount_arg = args
+                .get("amount")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+
+            // Amount: parse to 18-decimal wei (same units as the act panel /
+            // per-turn payment), reject zero / garbage.
+            let amount_wei = parse_token_amount(&amount_arg).ok_or_else(|| {
+                crate::error::Error::other(format!(
+                    "could not parse amount \"{amount_arg}\" — pass a decimal $LH \
+                     figure like \"5\" or \"1.5\""
+                ))
+            })?;
+            if amount_wei == 0 {
+                return Err(crate::error::Error::other(
+                    "amount must be greater than 0",
+                ));
+            }
+
+            // Recipient: address used directly; name → on-chain owner address.
+            let kind = crate::encoding::classify_recipient(&recipient_arg)
+                .map_err(crate::error::Error::other)?;
+            let to_hex = match kind {
+                Recipient::Address(addr) => addr,
+                Recipient::Name(name) => super::registry::owner_of_name(&name)
+                    .await
+                    .map_err(crate::error::Error::other)?
+                    .ok_or_else(|| {
+                        crate::error::Error::other(format!(
+                            "no on-chain owner for subdomain \"{name}\" — is it registered?"
+                        ))
+                    })?,
+            };
+
+            // Sender = this subdomain's on-chain owner (the apex wallet that
+            // signs via the iframe), matching list_subdomains / bulk_release.
+            let tenant = match super::tenant::current() {
+                super::tenant::Host::Tenant(n) => n,
+                _ => {
+                    return Err(crate::error::Error::other(
+                        "not running on a subdomain — no owner wallet to send from",
+                    ))
+                }
+            };
+            let from = super::registry::owner_of_name(&tenant)
+                .await
+                .map_err(crate::error::Error::other)?
+                .ok_or_else(|| crate::error::Error::other("no on-chain owner"))?;
+
+            // ERC-20 transfer(to, amount_wei) against the $LH token — the exact
+            // calldata shape the per-turn payment + act panel build.
+            let to_bytes = crate::encoding::parse_address(&to_hex)
+                .map_err(crate::error::Error::other)?;
+            let mut to_padded = [0u8; 32];
+            to_padded[12..].copy_from_slice(&to_bytes);
+            let mut calldata = Vec::with_capacity(4 + 32 + 32);
+            calldata.extend_from_slice(&transfer_selector());
+            calldata.extend_from_slice(&to_padded);
+            calldata.extend_from_slice(&u256_be(amount_wei));
+
+            let token_addr =
+                crate::encoding::parse_address(crate::registry::LOCALHARNESS_TOKEN_ADDRESS)
+                    .map_err(crate::error::Error::other)?;
+            let call = crate::tempo_tx::TempoCall {
+                to: token_addr,
+                value_wei: 0,
+                input: calldata,
+            };
+
+            let amount_display = amount_arg.clone();
+            let purpose = format!("send {amount_display} $LH to {to_hex}");
+            // 500k mirrors the per-turn payment's ERC-20 transfer budget; the
+            // sponsor is billed on gas USED, not the limit.
+            let tx_hash = super::events::run_sponsored_tempo_call(
+                &from,
+                vec![call],
+                500_000,
+                &purpose,
+            )
+            .await
+            .map_err(|e| crate::error::Error::other(format!("send_lh failed: {e}")))?;
+
+            Ok(serde_json::json!({
+                "amount": amount_display,
+                "recipient": recipient_arg,
+                "resolved_recipient": to_hex,
+                "tx_hash": tx_hash,
             }))
         },
     )
