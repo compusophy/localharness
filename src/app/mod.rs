@@ -361,12 +361,21 @@ fn mount() -> Result<(), JsValue> {
                 );
                 wasm_bindgen_futures::spawn_local(async move {
                     let _ = wallet_store::persist_linked_owner(&owner).await;
+                    // Validate `then` is a bare DNS label before building the
+                    // redirect URL. An unvalidated value would be an OPEN
+                    // REDIRECT: `?then=evil.com%23` →
+                    // `https://evil.com#.localharness.xyz/` navigates to evil.com.
                     if let Some(then) = read_query_param("then") {
-                        if let Some(window) = web_sys::window() {
-                            let _ = window
-                                .location()
-                                .set_href(&format!("https://{then}.localharness.xyz/"));
-                            return;
+                        let valid_label = !then.is_empty()
+                            && then.len() <= 63
+                            && then.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+                        if valid_label {
+                            if let Some(window) = web_sys::window() {
+                                let _ = window
+                                    .location()
+                                    .set_href(&format!("https://{then}.localharness.xyz/"));
+                                return;
+                            }
                         }
                     }
                     paint_apex(tenant::Host::Apex).await;

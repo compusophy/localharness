@@ -32,10 +32,11 @@ contract ReleaseFacet {
         address owner = s.ownerOfId[tokenId];
         if (owner != msg.sender) revert NotOwner();
 
-        // Guard: never release your MAIN (self-call to MainIdentityFacet).
-        (bool ok, bytes memory ret) =
-            address(this).staticcall(abi.encodeWithSignature("mainOf(address)", msg.sender));
-        if (ok && ret.length >= 32 && abi.decode(ret, (uint256)) == tokenId) {
+        // Guard: never release your MAIN. Read the MAIN pointer DIRECTLY from
+        // diamond storage rather than via a self-`staticcall` to
+        // MainIdentityFacet — a cross-facet call returns ok=false (not a revert)
+        // if that facet is ever cut out, which would silently BYPASS this guard.
+        if (LibMainIdentityStorage.load().mainOf[msg.sender] == tokenId) {
             revert CannotReleaseMain();
         }
 

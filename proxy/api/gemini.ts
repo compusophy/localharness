@@ -105,7 +105,11 @@ const METER_ABI = [
 ] as const;
 // Generous: the on-chain credit session is the real gate, so the token only
 // needs to prove the caller signed *recently enough* (re-signed per session).
-const FRESHNESS_WINDOW_SECS = 86400; // 24h
+const FRESHNESS_WINDOW_SECS = 300; // 5 min — tight replay window (clients sign per request)
+// Reject absurdly large request bodies up front (declared Content-Length) so one
+// caller can't make the proxy buffer a multi-GB body. Real LLM requests (long
+// context + tools) are a few MB; 16 MB is comfortably above legitimate use.
+const MAX_BODY_BYTES = 16_000_000;
 // Only browser origins under our own domain may invoke the proxy (H2). A
 // server-side caller sends no Origin header and is allowed through.
 const ALLOWED_ORIGIN_SUFFIX = '.localharness.xyz';
@@ -326,6 +330,10 @@ export default async function handler(req: Request): Promise<Response> {
   }
   if (req.method !== 'POST') {
     return json({ error: 'method not allowed' }, 405, origin);
+  }
+  const declaredLen = Number(req.headers.get('content-length') ?? '0');
+  if (Number.isFinite(declaredLen) && declaredLen > MAX_BODY_BYTES) {
+    return json({ error: 'request body too large' }, 413, origin);
   }
 
   try {

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+Hardening from a comprehensive adversarial audit (proxy / browser+seed / contracts
+/ wallet-crypto). The crypto layer re-verified as sound (low-s signatures, fresh
+per-op randomness + ECIES ephemerals, chainId+nonce+validity in Tempo tx, EIP-712
+domain separation) and prior hardening holds (postMessage origin allowlist,
+tx-target allowlist, markdown/error-string escaping). Real findings fixed:
+
+- **Proxy: auth-token replay window cut 24h → 5 min.** `FRESHNESS_WINDOW_SECS`
+  was 86400, so a captured `address:timestamp:signature` token was replayable for
+  a day. Clients sign per request, so 300s (ample clock-skew tolerance) closes the
+  window at no UX cost.
+- **Proxy: request-body size cap (16 MB).** An oversized declared `Content-Length`
+  is now rejected up front (413) so one caller can't make the edge function buffer
+  a multi-GB body. Generous enough for max-context LLM requests.
+- **Browser: closed an open redirect via `?then=`.** The linked-device hand-off
+  interpolated the raw `?then=` query param into the redirect URL, so
+  `?then=evil.com%23` → `https://evil.com#.localharness.xyz/` navigated off-domain.
+  `then` is now validated as a bare DNS label (alphanumeric + hyphen, ≤63) first.
+- **Contract (source; cut pending): `ReleaseFacet` MAIN guard reads storage
+  directly.** It used a self-`staticcall` to `mainOf` that returns `ok=false` (not
+  a revert) if `MainIdentityFacet` were ever cut out — silently bypassing the
+  "can't release your MAIN" guard. Now reads `LibMainIdentityStorage` directly.
+  Source-only this pass; effective on the next `diamondCut` (low exploitability:
+  owner-misconfig + self-harm only).
+
 ### Added
 
 - **Discoverable agent cards on the apex explore view.** The global
