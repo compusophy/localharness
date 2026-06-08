@@ -37,7 +37,8 @@
 //!                            target agent's TBA, POST a `tools/call`, print the
 //!                            reply. The networked sibling of the stdio `mcp`.
 //!   credits [--as <me>]      show your $LH wallet + per-call meter + session
-//!   topup [--as <me>]        claim daily $LH + fund the meter (billing self-test)
+//!   redeem [--as <me>] <code>  redeem a code for $LH into your wallet (funding)
+//!   topup [--as <me>]        deposit your wallet $LH into the per-call meter
 //!   list [--as <me>]         list the subdomains you own (`--json` for machine output)
 //!   feedback [--as <me>] [text|--json]
 //!                            submit on-chain feedback (text), or read the log
@@ -90,8 +91,8 @@ USAGE:
                                          reply (the networked sibling of `mcp`)
   localharness list [--as <me>]          list the subdomains you own (+ --json)
   localharness credits [--as <me>]       show your $LH wallet + per-call meter + session
-  localharness topup [--as <me>]         claim daily $LH + fund the per-call meter
-                                         (the billing self-test: topup -> call -> credits)
+  localharness redeem [--as <me>] <code> redeem a code for $LH into your wallet
+  localharness topup [--as <me>]         deposit your wallet $LH into the per-call meter
   localharness feedback [--as <me>] [text|--json]  submit on-chain feedback, or read
                                          all (no text; --json for machine output)
   localharness probe [--as <fleet>]      run QA self-checks; report failures on-chain
@@ -168,6 +169,17 @@ async fn run(args: &[String]) -> i32 {
         },
         Some("topup") => match take_as_flag(&args[1..]) {
             Ok((caller, _)) => topup(caller.as_deref()).await,
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
+        Some("redeem") => match take_as_flag(&args[1..]) {
+            Ok((caller, rest)) if !rest.is_empty() => redeem(caller.as_deref(), &rest[0]).await,
+            Ok(_) => {
+                eprintln!("usage: localharness redeem [--as <me>] <code>");
+                2
+            }
             Err(e) => {
                 eprintln!("{e}");
                 2
@@ -2313,6 +2325,51 @@ async fn credits_show(caller_name: Option<&str>) -> i32 {
 /// balance into the per-request meter, so the proxy debits real `$LH` each
 /// `call`. Sponsored — needs no gas. The end-to-end billing self-test:
 /// `topup` -> `call` -> `credits` (watch the meter drop).
+/// `localharness redeem <code>` — redeem a code for `$LH` straight into the
+/// caller's WALLET (sponsored). Redeem codes are the controlled funding path
+/// now that the daily allowance is disabled (it was a sybil risk: free accounts
+/// × free daily mint = infinite credits). A redeemed wallet can `topup` (deposit
+/// to the per-request meter), pay agents via `mcp-call` / x402, or `send_lh` to
+/// fund another agent (same effect as a code).
+async fn redeem(caller_name: Option<&str>, code: &str) -> i32 {
+    let code = code.trim();
+    if code.is_empty() {
+        eprintln!("redeem: empty code");
+        return 2;
+    }
+    let (key_file, key_hex) = match resolve_caller_key(caller_name) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let signer = match wallet::from_private_key_hex(&key_hex) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("bad key in {key_file}: {e}");
+            return 1;
+        }
+    };
+    let sponsor = match wallet::from_private_key_hex(SPONSOR_KEY) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("sponsor key error: {e}");
+            return 1;
+        }
+    };
+    match registry::redeem_sponsored(&signer, &sponsor, code, registry::ALPHA_USD_ADDRESS).await {
+        Ok(tx) => {
+            println!("redeemed — $LH minted to your wallet  tx: {tx}");
+            0
+        }
+        Err(e) => {
+            eprintln!("redeem failed: {e}");
+            1
+        }
+    }
+}
+
 async fn topup(caller_name: Option<&str>) -> i32 {
     let (key_file, key_hex) = match resolve_caller_key(caller_name) {
         Ok(c) => c,
