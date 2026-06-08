@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Adversarial pass on the funds-moving code — no exploit, 3 hardening fixes.** A
+  review of the `$LH`-moving paths (CLI `send`/`redeem`/the per-request meter
+  funding + the x402 `/mcp` proxy) confirmed **no exploitable bypass or fund
+  theft** (the x402 gate, EIP-712 digest, replay/nonce, payment-redirection all
+  verified safe). Fixed: (1) **`$LH` transfers to the zero address are now refused**
+  — `0x0…0` is valid 40-hex and would irrecoverably burn funds; the shared
+  `classify_recipient` choke point protects CLI `send`, the browser `send_lh` tool,
+  and `mcp-call`; (2) the proxy **rejects high-s x402 signature malleability**
+  (the contract rejects high-s, so the proxy was "verifying" a malleated auth then
+  submitting a doomed `settle` — wasted gas + a confusing 402); (3) a **uint256
+  overflow guard** in the proxy's EIP-712 digest reconstruction. +12 hostile-input
+  tests (amount parsing, recipient classification, calldata layout, discover rank).
 - **Daily `$LH` allowance disabled** (`setDailyAllowance(0)`, on-chain). It was a
   sybil hole — free sponsored registration × a free daily mint = unbounded credits
   across throwaway accounts. The `CreditsFacet` stays cut/wired (re-enable by

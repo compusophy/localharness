@@ -2740,6 +2740,107 @@ mod x402_tests {
         assert_eq!(&cd[0..4], &selector("depositCredits(uint256)"));
         assert_eq!(cd.len(), 36);
     }
+
+    /// ERC-20 `transfer(address,uint256)` — the `send_lh` payload. A wrong
+    /// selector or mis-padded address word sends `$LH` to the wrong account.
+    /// Tests an address with the HIGH bit of every byte set, so a left/right
+    /// padding mistake (top 12 bytes vs low 20) would be caught.
+    #[test]
+    fn transfer_calldata_layout() {
+        let to = [0xFFu8; 20];
+        let amount = 1_500_000_000_000_000_000u128; // 1.5 $LH
+        let cd = encode_transfer(&to, amount);
+        // keccak256("transfer(address,uint256)")[0..4] = 0xa9059cbb.
+        assert_eq!(&cd[0..4], &[0xa9, 0x05, 0x9c, 0xbb]);
+        assert_eq!(cd.len(), 4 + 64);
+        // Address right-aligned in word 0: top 12 bytes ZERO, low 20 = `to`.
+        assert_eq!(&cd[4..4 + 12], &[0u8; 12]);
+        assert_eq!(&cd[4 + 12..4 + 32], &to);
+        // Amount as a full uint256 in word 1 (16 high bytes zero, low 16 = u128).
+        assert_eq!(&cd[4 + 32..4 + 48], &[0u8; 16]);
+        assert_eq!(
+            u128::from_be_bytes(cd[4 + 48..4 + 64].try_into().unwrap()),
+            amount
+        );
+    }
+
+    /// ERC-20 `approve(address,uint256)` with `u128::MAX` (the one-time
+    /// "approve forever" the mcp-call path uses). The amount must land as
+    /// 2^128-1 in the LOW 16 bytes of word 1, NOT wrap or shift.
+    #[test]
+    fn approve_calldata_layout_max_amount() {
+        let spender = [0xABu8; 20];
+        let cd = encode_approve(&spender, u128::MAX);
+        // keccak256("approve(address,uint256)")[0..4] = 0x095ea7b3.
+        assert_eq!(&cd[0..4], &[0x09, 0x5e, 0xa7, 0xb3]);
+        assert_eq!(cd.len(), 4 + 64);
+        assert_eq!(&cd[4 + 12..4 + 32], &spender);
+        // High 16 bytes of the amount word are zero; low 16 are all 0xFF.
+        assert_eq!(&cd[4 + 32..4 + 48], &[0u8; 16]);
+        assert_eq!(&cd[4 + 48..4 + 64], &[0xFFu8; 16]);
+    }
+
+    /// x402 `settle(...)` calldata: the dynamic-`bytes` signature must be
+    /// pointed at by the right offset (7 words) and length-prefixed with 65,
+    /// then zero-padded to a 32-byte multiple. A wrong offset/length makes the
+    /// facet read a bogus signature → reject (or worse, accept the wrong one).
+    #[test]
+    fn settle_calldata_layout() {
+        let from = [0x11u8; 20];
+        let to = [0x22u8; 20];
+        let nonce = [0x33u8; 32];
+        let sig = [0x44u8; 65];
+        let value = 7_000u128;
+        let cd = encode_settle(&from, &to, value, 1, 2, &nonce, &sig);
+        assert_eq!(
+            &cd[0..4],
+            &selector("settle(address,address,uint256,uint256,uint256,bytes32,bytes)")
+        );
+        // 6 static words + offset word + length word + 65 sig + 31 pad = 96 tail.
+        assert_eq!(cd.len(), 4 + 6 * 32 + 32 + 32 + 96);
+        assert_eq!(&cd[4 + 12..4 + 32], &from); // word 0
+        assert_eq!(&cd[4 + 44..4 + 64], &to); // word 1
+        assert_eq!(u128::from_be_bytes(cd[4 + 80..4 + 96].try_into().unwrap()), value); // word 2
+        assert_eq!(&cd[4 + 5 * 32..4 + 6 * 32], &nonce); // word 5
+        // Word 6 = offset to the bytes arg = 7*32 = 224.
+        assert_eq!(u64::from_be_bytes(cd[4 + 6 * 32 + 24..4 + 7 * 32].try_into().unwrap()), 7 * 32);
+        // Word 7 = bytes length = 65.
+        assert_eq!(u64::from_be_bytes(cd[4 + 7 * 32 + 24..4 + 8 * 32].try_into().unwrap()), 65);
+        // The 65 signature bytes follow, then zero padding to a 32-multiple.
+        assert_eq!(&cd[4 + 8 * 32..4 + 8 * 32 + 65], &sig);
+        assert_eq!(&cd[4 + 8 * 32 + 65..], &[0u8; 31]);
+    }
+
+    /// `rank_agent_matches` hostile inputs: case-insensitivity, name-tier vs
+    /// persona-tier ordering, substring (not word) matching, empty registry,
+    /// all-whitespace query (returns all), and duplicate handling.
+    #[test]
+    fn rank_agent_matches_hostile_inputs() {
+        // Empty registry → empty, regardless of query.
+        assert!(rank_agent_matches(&[], "anything").is_empty());
+        assert!(rank_agent_matches(&[], "").is_empty());
+
+        let agents = vec![
+            ("auditor".to_string(), "reviews code".to_string()),
+            ("bob".to_string(), "I AUDIT contracts".to_string()),
+            ("carol".to_string(), "unrelated".to_string()),
+        ];
+        // Substring (not whole-word) match: "audit" hits the name "auditor"
+        // (name tier) AND the persona "I AUDIT" (persona tier, case-insensitive).
+        let hits = rank_agent_matches(&agents, "audit");
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].0, "auditor"); // name tier first
+        assert_eq!(hits[1].0, "bob"); // persona tier second
+        // Whitespace-padded query is trimmed, then matched.
+        assert_eq!(rank_agent_matches(&agents, "  AUDIT  ").len(), 2);
+        // All-whitespace query returns the whole list, order preserved.
+        let all = rank_agent_matches(&agents, "\t \n");
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].0, "auditor");
+        // A name match is NOT also double-counted into the persona tier (else-if).
+        let dual = vec![("audit".to_string(), "audit audit".to_string())];
+        assert_eq!(rank_agent_matches(&dual, "audit").len(), 1);
+    }
 }
 
 #[cfg(target_arch = "wasm32")]

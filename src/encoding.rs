@@ -70,16 +70,32 @@ pub enum Recipient {
 /// reject empty, return `Address` for a 40-hex string (preserving the original
 /// `0x…` form) else `Name` (lowercased — subdomain names are lowercase). Pure,
 /// so it's unit-testable; the async owner lookup lives in the caller.
+///
+/// The all-zero address is rejected: a `$LH` `transfer` to `0x0` burns the
+/// funds irrecoverably (the chain may or may not revert), and it's never a
+/// legitimate payee — far more likely a typo or an empty-input slip-through.
+/// Catching it here protects every funding path (`send`/`send_lh`/`mcp-call`)
+/// at the single pure choke point they all share.
 pub fn classify_recipient(raw: &str) -> Result<Recipient, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err("recipient is empty".to_string());
     }
     if is_address_hex(trimmed) {
+        if is_zero_address(trimmed) {
+            return Err("refusing to send to the zero address (0x0) — funds would be burned".to_string());
+        }
         Ok(Recipient::Address(trimmed.to_string()))
     } else {
         Ok(Recipient::Name(trimmed.to_lowercase()))
     }
+}
+
+/// Whether a 40-hex address string (with/without `0x`) is the all-zero address.
+/// Assumes the caller already validated it as 40-hex via [`is_address_hex`].
+fn is_zero_address(s: &str) -> bool {
+    let stripped = s.trim_start_matches("0x").trim_start_matches("0X");
+    stripped.bytes().all(|b| b == b'0')
 }
 
 /// Parse a 40-char hex string (with/without `0x`) into 20 address bytes.
@@ -154,6 +170,51 @@ mod tests {
         assert_eq!(parse_token_amount("1.2x"), None);
     }
 
+    /// Hostile / boundary inputs to the decimal→wei parser. A WRONG wei here
+    /// moves the wrong amount of real `$LH`, and the release profile has
+    /// `overflow-checks` OFF (`panic = "abort"`, no `overflow-checks = true`),
+    /// so any unchecked multiply/add would WRAP silently to a bogus amount
+    /// instead of panicking. These pin that every overflow path returns `None`.
+    #[test]
+    fn parse_token_amount_hostile_inputs() {
+        // --- Overflow: whole part too large for u128 even before *1e18. ---
+        // u128::MAX = 340282366920938463463374607431768211455.
+        assert_eq!(parse_token_amount("340282366920938463463374607431768211455"), None);
+        // A huge whole that PARSES as u128 but overflows the *1e18 scale → None,
+        // NOT a wrapped-around small amount.
+        assert_eq!(parse_token_amount("340282366920938463464"), None);
+        // The largest whole that still fits after *1e18 round-trips exactly.
+        assert_eq!(
+            parse_token_amount("340282366920938463463"),
+            Some(340_282_366_920_938_463_463_u128 * 1_000_000_000_000_000_000)
+        );
+        // A many-digit garbage number doesn't panic — just None.
+        assert_eq!(parse_token_amount(&"9".repeat(60)), None);
+
+        // --- Excess fractional precision: truncated, never rounded/overflowed. ---
+        // 18 frac digits = exactly 1 wei.
+        assert_eq!(parse_token_amount("0.000000000000000001"), Some(1));
+        // 19+ frac digits: the sub-wei tail is dropped (truncated to 0), no panic.
+        assert_eq!(parse_token_amount("0.0000000000000000009"), Some(0));
+        assert_eq!(parse_token_amount(&format!("1.{}", "9".repeat(40))), {
+            // 1.999…9 (40 nines) → 1 whole + .999999999999999999 (18 nines).
+            Some(1_999_999_999_999_999_999)
+        });
+
+        // --- Malformed shapes. ---
+        assert_eq!(parse_token_amount("1.2.3"), None); // two dots
+        assert_eq!(parse_token_amount("1e5"), None); // scientific notation
+        assert_eq!(parse_token_amount("-1"), None); // negative
+        assert_eq!(parse_token_amount("0x10"), None); // hex
+        assert_eq!(parse_token_amount("  1.5  "), Some(1_500_000_000_000_000_000)); // trims
+        assert_eq!(parse_token_amount(" 1 2 "), None); // internal space
+        // Zero / dot-only parse to 0 — callers gate on `> 0`, so this is safe,
+        // but pin it so a future "treat 0 as error" change is a conscious choice.
+        assert_eq!(parse_token_amount("0"), Some(0));
+        assert_eq!(parse_token_amount("."), Some(0));
+        assert_eq!(parse_token_amount("0.0"), Some(0));
+    }
+
     #[test]
     fn parse_address_roundtrips_with_bytes_to_hex() {
         let addr = "0x00112233445566778899aabbccddeeff00112233";
@@ -197,5 +258,57 @@ mod tests {
         // Empty / whitespace-only is rejected.
         assert!(classify_recipient("").is_err());
         assert!(classify_recipient("   ").is_err());
+    }
+
+    /// Hostile recipient inputs — these decide WHERE real `$LH` goes.
+    #[test]
+    fn classify_recipient_hostile_inputs() {
+        // The all-zero address (with and without 0x, mixed-case 0X) is REFUSED
+        // — a transfer there burns funds.
+        assert!(classify_recipient(&format!("0x{}", "0".repeat(40))).is_err());
+        assert!(classify_recipient(&"0".repeat(40)).is_err());
+        assert!(classify_recipient(&format!("0X{}", "0".repeat(40))).is_err());
+        // A near-zero address (one nonzero nibble) is a legitimate Address.
+        let almost = format!("0x{}1", "0".repeat(39));
+        assert_eq!(
+            classify_recipient(&almost),
+            Ok(Recipient::Address(almost.clone()))
+        );
+
+        // Mixed-case checksummed address is preserved verbatim (downstream
+        // hex decode is case-insensitive) — NOT lowercased into a name.
+        let checksum = "0xAbC0000000000000000000000000000000000123";
+        assert_eq!(
+            classify_recipient(checksum),
+            Ok(Recipient::Address(checksum.to_string()))
+        );
+
+        // Off-by-one hex lengths are NOT addresses → treated as (doomed) names,
+        // so the on-chain name lookup errors rather than sending to a malformed
+        // address.
+        assert!(matches!(
+            classify_recipient(&format!("0x{}", "a".repeat(39))),
+            Ok(Recipient::Name(_))
+        ));
+        assert!(matches!(
+            classify_recipient(&format!("0x{}", "a".repeat(41))),
+            Ok(Recipient::Name(_))
+        ));
+
+        // A 40-char ALL-HEX name collides with the address form (inherent
+        // ambiguity, documented): it classifies as an Address. A real
+        // subdomain name is unlikely to be exactly 40 hex chars, but pin the
+        // behavior so a future change is deliberate.
+        let hexname = "deadbeef".repeat(5); // 40 hex chars, no 0x
+        assert!(matches!(
+            classify_recipient(&hexname),
+            Ok(Recipient::Address(_))
+        ));
+
+        // A non-hex name is lowercased.
+        assert_eq!(
+            classify_recipient("Solidity-Bob"),
+            Ok(Recipient::Name("solidity-bob".to_string()))
+        );
     }
 }
