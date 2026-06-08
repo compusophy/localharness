@@ -5,6 +5,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Experience + quality pass (fresh-eyes audits across the conversion path).**
+  - **Onboarding**: skill.md/llms.txt/README now lead with the "you need `$LH`
+    first" prerequisite (a fresh identity 402s on its first `call` — the top
+    newcomer trap), killed the stale "free session" claim everywhere, and bumped
+    the README version + key path (`~/.localharness/keys/`).
+  - **Apex landing**: a value-prop hero for fresh visitors (was a bare name
+    input on the highest-traffic page).
+  - **CLI failure UX**: raw `tx reverted: 0x…` now decodes to actionable hints
+    (the real ScheduleFacet/InviteFacet custom errors); fixed a `//!` leaking
+    into `help`, the stale credits/topup messages.
+  - **Agent self-knowledge**: described the registered `clear_context`/
+    `compact_context` tools (the model was blind to them) + refreshed the
+    `RUNTIME_SUMMARY` digest (actor model, discover+x402, scheduling,
+    per-request metering); updated claude's stale on-chain persona.
+  - **Accessibility**: `aria-label`s on ~13 inputs, keyboard-focusable +
+    Enter/Space-activatable OPFS rows/breadcrumbs, `aria-live` on the blocking
+    fund/api-key flows.
+
 ## [0.27.0] - 2026-06-08
 
 ### Added
