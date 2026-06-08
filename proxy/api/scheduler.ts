@@ -4,11 +4,19 @@
 // tab. The durable job registry lives ON-CHAIN in `ScheduleFacet` on the
 // diamond (design/agent-scheduling.md). This function is the ONE worker (the
 // `scheduler` role = the proxy's PROXY_METER_KEY): a Vercel Cron ticks it on a
-// crontab, it reads the due set off-chain, runs each due job through the
-// existing headless model-bridge (target persona + the job's task prompt as the
-// user message, the SAME Gemini generateContent path `mcp.ts::runAgent` uses),
-// and commits each run with `recordRun(jobId, expectedNextRun, spentWei)` —
-// which atomically debits the job's escrowed budget and advances `nextRun`.
+// crontab, it reads the due set off-chain, runs each due job as a BOUNDED AGENT
+// PING-PONG loop under its target's on-chain persona (the agent can `call_agent`
+// other localharness agents during the run — multi-agent orchestration with no
+// tab open), and commits each run with `recordRun(jobId, expectedNextRun,
+// spentWei)` — which atomically debits the job's escrowed budget and advances
+// `nextRun`. AGENT PING-PONG (replaces the old single Gemini turn): every
+// generateContent (the agent's turns + each sub-agent turn) costs COST_WEI and
+// is metered against the job's per-run budget; the budget is the HARD ceiling on
+// the whole run (a runaway loop just drains the escrow → the facet exhausts the
+// job). See `runPingPong` for the loop + the budget gate. CROSS-TICK recursion
+// (a scheduled agent scheduling CHILD jobs from its remaining budget via a
+// scheduler-role `scheduleChildJob`) is the deliberate NEXT increment, out of
+// this scope.
 //
 // TRUST ENVELOPE (design §2.6): the worker gains NO new authority. It can only
 // fire owner-defined jobs and spend their PRE-COMMITTED budgets. `recordRun` is
@@ -29,11 +37,16 @@
 //     once per interval and stays bounded by its budget. A perpetually-failing
 //     job drains its budget and the facet marks it Exhausted — it can never get
 //     stuck in a hot loop.
-//   * Budget = hard stop — every run debits COST_WEI; the FACET decides when the
-//     budget/runs are spent and exhausts+refunds. We just pass the cost.
+//   * Budget = hard stop — every generateContent in the loop debits COST_WEI; we
+//     STOP before any call the remaining budget can't cover, then pass
+//     `calls * COST_WEI` (capped to budget) to recordRun ONCE. The FACET decides
+//     when the budget/runs are spent and exhausts+refunds. The per-job budget
+//     thus bounds the ENTIRE ping-pong run, not one turn.
 //   * Bounded per tick — at most MAX_JOBS_PER_TICK jobs are processed; the rest
-//     spill to the next tick (fair by scan order). recordRun receipts are
-//     AWAITED (the accounting is never fire-and-forget).
+//     spill to the next tick (fair by scan order). A ping-pong job is HEAVIER
+//     than the old single-turn run (a bounded loop, not one call), so the
+//     per-tick default is LOWER (2) — one heavy job must not starve the others'
+//     wall-clock. recordRun receipts are AWAITED (accounting never fire-and-forget).
 //
 // Reuses gemini.ts / mcp.ts setup verbatim: the diamond address, Tempo chain,
 // RPC, the PROXY_METER_KEY wallet (now ALSO the scheduler role), persona
@@ -83,11 +96,25 @@ const COST_WEI = ((): bigint => {
 // due than this; the rest fire on the next tick. Bounds sponsor gas + Gemini
 // fan-out per invocation (design §4.3 "global worker budget").
 const MAX_JOBS_PER_TICK = ((): number => {
-  // Edge ~25s budget: each job = a Gemini call + an awaited recordRun receipt
-  // (~5-7s). Keep the per-tick batch small so a tick can't exceed the wall-clock
-  // mid-recordRun; the rest spill to the next tick. (Raise via env on Pro/Node.)
-  const n = Number(process.env.SCHEDULER_MAX_JOBS_PER_TICK ?? '4');
-  return Number.isFinite(n) && n > 0 ? Math.min(Math.trunc(n), 100) : 4;
+  // Edge ~25s budget. A ping-pong job is now HEAVIER than the old single-turn
+  // run: it's a BOUNDED tool loop (up to MAX_PINGPONG_ROUNDS generateContent
+  // calls + one sub-agent generateContent per call_agent) followed by an awaited
+  // recordRun receipt. A single heavy job can approach the whole wall-clock, so
+  // the per-tick batch defaults LOWER than before (2, was 4) — leftover due jobs
+  // spill to the next tick. (Raise via env on Pro/Node with a bigger budget.)
+  const n = Number(process.env.SCHEDULER_MAX_JOBS_PER_TICK ?? '2');
+  return Number.isFinite(n) && n > 0 ? Math.min(Math.trunc(n), 100) : 2;
+})();
+
+// Max rounds of the agent's OWN tool loop per scheduled run (the agent's turns,
+// not counting sub-agent turns). Kept small so the whole ping-pong run fits
+// inside Edge's ~25s wall-clock: each round is one generateContent (~3-5s), and
+// a call_agent within a round adds one more sub-agent generateContent. 4 rounds
+// ⇒ at most ~8 generateContent calls worst-case ⇒ comfortably under the budget.
+// The PER-JOB $LH budget is the other (and harder) ceiling — see the loop.
+const MAX_PINGPONG_ROUNDS = ((): number => {
+  const n = Number(process.env.SCHEDULER_MAX_PINGPONG_ROUNDS ?? '4');
+  return Number.isFinite(n) && n > 0 ? Math.min(Math.trunc(n), 16) : 4;
 })();
 
 // Status enum (LibScheduleStorage.Status). Only Active (0) jobs are fired.
@@ -179,6 +206,18 @@ const NAME_ABI = [
     stateMutability: 'view',
     inputs: [{ name: 'id', type: 'uint256' }],
     outputs: [{ name: '', type: 'string' }],
+  },
+] as const;
+
+// idOfName(string) -> uint256 — resolves a `call_agent` target name to its token
+// id (0 = unregistered). Mirrors mcp.ts::idOfName / registry::id_of_name.
+const ID_OF_NAME_ABI = [
+  {
+    name: 'idOfName',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'name', type: 'string' }],
+    outputs: [{ name: '', type: 'uint256' }],
   },
 ] as const;
 
@@ -277,6 +316,16 @@ async function nameOfId(tokenId: bigint): Promise<string> {
   }
 }
 
+/** `idOfName(name)` — the token id of a registered name; 0n if unregistered. */
+async function idOfName(name: string): Promise<bigint> {
+  return (await publicClient().readContract({
+    address: REGISTRY as `0x${string}`,
+    abi: ID_OF_NAME_ABI,
+    functionName: 'idOfName',
+    args: [name],
+  })) as bigint;
+}
+
 /** Decode an ABI-`bytes` 0x word (viem already unwraps to the raw 0x payload). */
 function decodeUtf8Bytes(hex: `0x${string}`): string {
   const h = hex.startsWith('0x') ? hex.slice(2) : hex;
@@ -288,26 +337,102 @@ function decodeUtf8Bytes(hex: `0x${string}`): string {
   return new TextDecoder().decode(bytes);
 }
 
-// ---- the agent turn (same path as mcp.ts::runAgent) -------------------------
+// ---- the agent run: a BOUNDED tool loop with agent ping-pong ----------------
+//
+// AGENT PING-PONG. The old single-turn `runAgent` (one generateContent under the
+// target persona) is replaced by a BOUNDED tool loop: the scheduled agent gets
+// ONE tool, `call_agent(name, message)`, so a no-tab scheduled run can ORCHESTRATE
+// other localharness agents. Each loop round is one generateContent under the
+// JOB's target persona; if the model returns a `call_agent` functionCall we
+// resolve that target's on-chain persona, run ONE generateContent for the
+// sub-agent (sub-agents are SINGLE turns — no nested loops, so the call tree is
+// bounded to depth 1 and can't fan out unbounded), feed its reply back as a
+// functionResponse, and continue. Text with no call = the final answer; stop.
+//
+// The whole run is bounded THREE ways: (1) MAX_PINGPONG_ROUNDS caps the agent's
+// own turns; (2) sub-agents never loop; (3) — the HARD ceiling — the per-job $LH
+// budget: every generateContent costs COST_WEI and we STOP before any call the
+// budget can't cover (see `runPingPong` + `processJob`). A runaway loop simply
+// drains the escrow and the facet exhausts the job.
+//
+// CROSS-TICK recursion (a scheduled agent SCHEDULING child jobs funded from the
+// parent's remaining budget, via a scheduler-role `scheduleChildJob` facet fn) is
+// the deliberate NEXT increment and is intentionally OUT OF SCOPE here — this
+// builds the in-tick, in-budget ping-pong core only.
 
 function defaultPersona(name: string): string {
   return (
     `You are ${name}, an autonomous agent on the localharness platform ` +
     `(a self-sovereign, browser-resident agent network on the Tempo testnet). ` +
     `You are reachable at ${name}.localharness.xyz. This is a SCHEDULED run — ` +
-    `carry out the task below and report concisely, speaking as ${name}.`
+    `carry out the task below and report concisely, speaking as ${name}. ` +
+    `You may use the call_agent tool to delegate to or consult other ` +
+    `localharness agents when that helps you complete the task.`
   );
 }
 
-/** Non-streaming Gemini generateContent with the platform key → reply text. */
-async function runAgent(persona: string, task: string): Promise<string> {
+// ---- Gemini wire shapes (just the parts of generateContent we touch) --------
+
+interface GeminiFunctionCall {
+  name: string;
+  args?: Record<string, unknown>;
+}
+interface GeminiPart {
+  text?: string;
+  functionCall?: GeminiFunctionCall;
+  functionResponse?: { name: string; response: Record<string, unknown> };
+}
+interface GeminiContent {
+  role: 'user' | 'model' | 'function';
+  parts: GeminiPart[];
+}
+
+// The ONE tool the scheduled agent gets. A single-`type` schema with no union /
+// additionalProperties (Gemini 400s on those — see CLAUDE.md gotcha).
+const CALL_AGENT_TOOL = {
+  functionDeclarations: [
+    {
+      name: 'call_agent',
+      description:
+        'Send a message to another localharness agent (by its subdomain name) and get its reply. Use this to delegate work to, or consult, another agent during this scheduled run.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description:
+              'The target agent subdomain name, e.g. "claude" for claude.localharness.xyz.',
+          },
+          message: {
+            type: 'string',
+            description: 'The message / question to send the target agent.',
+          },
+        },
+        required: ['name', 'message'],
+      },
+    },
+  ],
+} as const;
+
+/**
+ * One non-streaming generateContent. `tools` is optional (the sub-agent path
+ * passes none so a sub-agent can never itself call_agent — single turn, no
+ * nesting). Returns the candidate's parts verbatim so the caller can inspect
+ * functionCall vs text. Throws on a non-2xx (the caller decides whether to halt).
+ */
+async function generateContent(
+  systemInstruction: string,
+  contents: GeminiContent[],
+  withTool: boolean,
+): Promise<GeminiPart[]> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('proxy misconfigured: missing GEMINI_API_KEY');
   const url = `${GEMINI_BASE}/v1beta/models/${RUN_MODEL}:generateContent`;
-  const body = {
-    systemInstruction: { parts: [{ text: persona }] },
-    contents: [{ role: 'user', parts: [{ text: task }] }],
+  const body: Record<string, unknown> = {
+    systemInstruction: { parts: [{ text: systemInstruction }] },
+    contents,
   };
+  if (withTool) body.tools = [CALL_AGENT_TOOL];
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
@@ -318,14 +443,162 @@ async function runAgent(persona: string, task: string): Promise<string> {
     throw new Error(`gemini ${res.status}: ${t.slice(0, 500)}`);
   }
   const data = (await res.json()) as {
-    candidates?: { content?: { parts?: { text?: string }[] } }[];
+    candidates?: { content?: { parts?: GeminiPart[] } }[];
   };
-  const parts = data.candidates?.[0]?.content?.parts ?? [];
-  const text = parts
+  return data.candidates?.[0]?.content?.parts ?? [];
+}
+
+/** Join the text parts of a candidate (ignoring functionCall parts). */
+function partsText(parts: GeminiPart[]): string {
+  return parts
     .map((p) => p.text ?? '')
     .join('')
     .trim();
+}
+
+/** First functionCall part addressed to `call_agent`, if any. */
+function findCallAgent(parts: GeminiPart[]): GeminiFunctionCall | null {
+  for (const p of parts) {
+    if (p.functionCall && p.functionCall.name === 'call_agent') {
+      return p.functionCall;
+    }
+  }
+  return null;
+}
+
+/**
+ * Run ONE sub-agent turn: resolve `name`'s on-chain persona, run a SINGLE
+ * generateContent (NO tools — sub-agents don't recurse) under it, return its
+ * text. The caller has already CONFIRMED budget for this call. An unregistered
+ * target / Gemini error is surfaced as a thrown Error so the loop can feed an
+ * error functionResponse back (never hang). This is itself ONE generateContent —
+ * the caller counts it toward the budget.
+ */
+async function runSubAgent(name: string, message: string): Promise<string> {
+  const targetId = await idOfName(name);
+  if (targetId === 0n) {
+    throw new Error(`no such agent: "${name}" is not registered`);
+  }
+  let persona: string;
+  try {
+    persona = (await personaOf(targetId)) ?? defaultPersona(name);
+  } catch {
+    persona = defaultPersona(name);
+  }
+  const parts = await generateContent(
+    persona,
+    [{ role: 'user', parts: [{ text: message }] }],
+    false,
+  );
+  const text = partsText(parts);
   return text.length ? text : '(the agent returned no text)';
+}
+
+/** Outcome of a bounded ping-pong run. `calls` = generateContent calls made
+ * (the agent's turns + each sub-agent turn) = the unit COST_WEI meters on. */
+interface PingPongResult {
+  output: string;
+  calls: number;
+  rounds: number;
+  /** True if the loop stopped because the budget couldn't cover the next call. */
+  budgetCapped: boolean;
+}
+
+/**
+ * The bounded agent tool loop ("agent ping-pong").
+ *
+ * `maxCalls` is how many generateContent calls the JOB's remaining budget can pay
+ * for (floor(remaining / COST_WEI), computed by the caller). It's the HARD
+ * ceiling: BEFORE every generateContent (the agent's own turn AND each
+ * sub-agent turn) we check `calls < maxCalls`; if not, we STOP rather than make a
+ * call the budget can't cover. So `calls` returned here is always <= maxCalls,
+ * and `processJob` can charge `calls * COST_WEI` knowing it never exceeds
+ * budgetWei (the facet reverts SpendExceedsBudget otherwise).
+ *
+ * Bounds: MAX_PINGPONG_ROUNDS on the agent's turns, single-turn sub-agents (the
+ * call tree is depth-1), the budget on total calls, and Edge's wall-clock
+ * (rounds × ~3-5s each). A sub-agent error becomes an error functionResponse —
+ * the loop continues, never hangs.
+ *
+ * The caller guarantees `maxCalls >= 1` (it doesn't enter the loop otherwise).
+ */
+async function runPingPong(
+  persona: string,
+  task: string,
+  maxCalls: number,
+): Promise<PingPongResult> {
+  const contents: GeminiContent[] = [
+    { role: 'user', parts: [{ text: task }] },
+  ];
+  let calls = 0;
+  let lastText = '';
+  let budgetCapped = false;
+
+  for (let round = 0; round < MAX_PINGPONG_ROUNDS; round++) {
+    // BUDGET GATE (the agent's own turn). Never make a call the budget can't pay.
+    if (calls >= maxCalls) {
+      budgetCapped = true;
+      break;
+    }
+    calls++;
+    const parts = await generateContent(persona, contents, true);
+
+    const call = findCallAgent(parts);
+    if (!call) {
+      // Pure text → final answer. Stop.
+      lastText = partsText(parts) || lastText;
+      return { output: lastText || '(the agent returned no text)', calls, rounds: round + 1, budgetCapped };
+    }
+
+    // The model wants to ping another agent. Record the model's functionCall
+    // turn in history so the subsequent functionResponse is well-formed.
+    lastText = partsText(parts) || lastText;
+    contents.push({ role: 'model', parts });
+
+    const targetName =
+      typeof call.args?.name === 'string' ? (call.args.name as string).trim() : '';
+    const subMessage =
+      typeof call.args?.message === 'string' ? (call.args.message as string) : '';
+
+    // BUDGET GATE (the sub-agent turn). If we can't pay for the sub-agent call,
+    // feed an error response so the agent can still wrap up on its NEXT turn
+    // (which itself is budget-gated at the top of the loop) — don't half-run it.
+    let responsePayload: Record<string, unknown>;
+    if (!targetName || !subMessage) {
+      responsePayload = { error: 'call_agent requires non-empty "name" and "message"' };
+    } else if (calls >= maxCalls) {
+      budgetCapped = true;
+      responsePayload = {
+        error: 'budget exhausted: not enough remaining $LH to call another agent',
+      };
+    } else {
+      calls++;
+      try {
+        const reply = await runSubAgent(targetName, subMessage);
+        responsePayload = { reply };
+      } catch (e) {
+        // A sub-agent error (unregistered target / Gemini failure) MUST NOT hang
+        // or abort — feed it back so the agent can react or finish.
+        responsePayload = { error: (e as Error).message };
+      }
+    }
+
+    contents.push({
+      role: 'function',
+      parts: [
+        { functionResponse: { name: 'call_agent', response: responsePayload } },
+      ],
+    });
+  }
+
+  // Fell out of the loop: either MAX_PINGPONG_ROUNDS hit or the budget capped us
+  // mid-conversation. Return the best text we have (the last model text).
+  return {
+    output: lastText || '(the agent reached its round/budget limit without a final answer)',
+    calls,
+    rounds: MAX_PINGPONG_ROUNDS,
+    budgetCapped,
+  };
 }
 
 // ---- recordRun (the worker's ONLY on-chain write; scheduler role) -----------
@@ -388,9 +661,9 @@ async function recordRun(
   try {
     // 12s (matches gemini.ts::meterDebit) — NOT 30s. The cron ticks every
     // minute and processes up to MAX_JOBS_PER_TICK jobs SEQUENTIALLY, each a
-    // Gemini call + this receipt wait; a 30s-per-job wait could let a single
-    // tick blow past Edge's ~25s wall-clock and die mid-batch. Keep each wait
-    // bounded so the whole tick fits.
+    // bounded ping-pong loop + this receipt wait; a 30s-per-job wait could let a
+    // single tick blow past Edge's ~25s wall-clock and die mid-batch. Keep each
+    // wait bounded so the whole tick fits.
     ({ status } = await pub.waitForTransactionReceipt({
       hash,
       timeout: 12_000,
@@ -419,14 +692,19 @@ interface JobResult {
   id: string;
   outcome: 'recorded' | 'skipped' | 'stale';
   ran: 'ok' | 'error' | 'n/a';
+  /** generateContent calls made this run (agent turns + sub-agent turns). */
+  calls?: number;
+  /** $LH wei actually debited (calls * COST_WEI, capped to budget). */
+  spentWei?: string;
   note?: string;
 }
 
 /**
  * Process ONE due job: read its full record + task, (re)confirm it's Active and
- * due, run the agent turn under its target's persona, then ALWAYS recordRun
- * (advancing nextRun + debiting COST_WEI) — even if the Gemini call errored, so
- * a broken job can never hot-loop and stays bounded by its budget.
+ * due, run a BOUNDED agent ping-pong loop under its target's persona, then ALWAYS
+ * recordRun (advancing nextRun + debiting `calls * COST_WEI`, capped to the
+ * budget) — even if Gemini errored, so a broken job can never hot-loop and stays
+ * bounded by its budget. The per-job budget bounds the WHOLE ping-pong run.
  */
 async function processJob(id: bigint): Promise<JobResult> {
   const idStr = id.toString();
@@ -469,41 +747,70 @@ async function processJob(id: bigint): Promise<JobResult> {
 
   const name = await nameOfId(job.targetId);
 
-  // Build + run the turn. Persona resolution + Gemini errors must NOT abort the
-  // accounting: capture the outcome, then record the run regardless.
+  // BUDGET → MAX CALLS. The per-job budget is the HARD ceiling on the ENTIRE
+  // ping-pong run: how many generateContent calls (agent turns + sub-agent turns)
+  // can the remaining budget pay for? `floor(budgetWei / COST_WEI)`. We're past
+  // the `budgetWei < COST_WEI` dust-close above, so maxCalls >= 1. The loop never
+  // makes call N+1 unless `N < maxCalls`, so the total it returns is <= maxCalls,
+  // and `min(calls * COST_WEI, budgetWei)` can never exceed budgetWei (the facet
+  // reverts SpendExceedsBudget if it did). MAX_PINGPONG_ROUNDS additionally caps
+  // the agent's OWN turns (so even a huge budget can't blow the Edge wall-clock).
+  const maxCalls = Number(job.budgetWei / COST_WEI);
+
+  // Build + run the bounded loop. Persona resolution + Gemini errors must NOT
+  // abort the accounting: capture the outcome + the call count, then record once.
   let ran: 'ok' | 'error' = 'ok';
   let runNote = '';
+  // Default to charging for ONE call: if even persona/task READS throw before the
+  // loop runs, we still debit a cost so a perpetually-failing job drains its
+  // budget and exhausts (never a hot loop). Overwritten by the loop's real count.
+  let calls = 1;
+  let budgetCapped = false;
   try {
     const persona = (await personaOf(job.targetId)) ?? defaultPersona(name);
-    const task = (await taskOf(id)).trim();
-    if (!task) {
-      // An empty task = "run under the persona's standing instruction"
-      // (design §3.4 sentinel). Use a minimal default tick prompt.
-      const out = await runAgent(persona, 'Perform your scheduled task and report concisely.');
-      runNote = out;
-    } else {
-      const out = await runAgent(persona, task);
-      runNote = out;
-    }
+    const rawTask = (await taskOf(id)).trim();
+    // An empty task = "run under the persona's standing instruction" (sentinel).
+    const task = rawTask || 'Perform your scheduled task and report concisely.';
+    const result = await runPingPong(persona, task, maxCalls);
+    calls = result.calls;
+    budgetCapped = result.budgetCapped;
+    runNote = result.output;
     // MVP output sink = the Vercel log. The reply is recorded here so a scheduled
     // run is observable in the function logs.
-    // TODO: richer output routing — persist the transcript on-chain / in a
-    // store, or chain the reply to another agent (recursion / "ping-pong",
-    // design §4–5.2), instead of only logging.
+    // TODO: richer output routing — persist the transcript on-chain / in a store,
+    // or push the final output to the owner, instead of only logging. (The
+    // ping-pong replies ARE chained in-loop now; this TODO is the OUTPUT side.)
     console.log(
-      `[scheduler] job ${idStr} target ${name} (#${job.targetId}) reply: ${runNote.slice(0, 800)}`,
+      `[scheduler] job ${idStr} target ${name} (#${job.targetId}) ` +
+        `calls=${calls}/${maxCalls} rounds=${result.rounds}${budgetCapped ? ' (budget-capped)' : ''} ` +
+        `reply: ${runNote.slice(0, 800)}`,
     );
   } catch (e) {
     ran = 'error';
     runNote = (e as Error).message;
-    // CRITICAL: still record the run below. A failing job advances its clock and
-    // debits a cost so it re-fires at most once per interval and drains its
-    // budget — never a hot loop.
+    // CRITICAL: still record the run below (calls already defaults to 1). A
+    // failing job advances its clock and debits a cost so it re-fires at most once
+    // per interval and drains its budget — never a hot loop.
     console.error(`[scheduler] job ${idStr} target ${name} run ERROR (will still recordRun): ${runNote}`);
   }
 
-  const outcome = await recordRun(id, expectedNextRun, COST_WEI);
-  return { id: idStr, outcome, ran, note: ran === 'error' ? runNote.slice(0, 200) : undefined };
+  // METER: debit calls * COST_WEI, CAPPED to budgetWei (the facet reverts
+  // SpendExceedsBudget if spentWei > remaining). `calls` is already bounded by
+  // maxCalls in the success path; the `min` is belt-and-suspenders for the error
+  // path's default and any rounding. When this debit consumes the budget the
+  // facet marks the job Exhausted + refunds the remainder.
+  let spentWei = BigInt(calls) * COST_WEI;
+  if (spentWei > job.budgetWei) spentWei = job.budgetWei;
+
+  const outcome = await recordRun(id, expectedNextRun, spentWei);
+  return {
+    id: idStr,
+    outcome,
+    ran,
+    calls,
+    spentWei: spentWei.toString(),
+    note: ran === 'error' ? runNote.slice(0, 200) : budgetCapped ? 'budget-capped mid-run' : undefined,
+  };
 }
 
 // ---- handler ----------------------------------------------------------------
@@ -593,6 +900,9 @@ export default async function handler(req: Request): Promise<Response> {
   const stale = results.filter((r) => r.outcome === 'stale').length;
   const skipped = results.filter((r) => r.outcome === 'skipped').length;
   const errored = results.filter((r) => r.ran === 'error').length;
+  // Total generateContent calls across the tick (agent + sub-agent turns) — the
+  // metered unit; lets a dogfood POST see the ping-pong fan-out at a glance.
+  const totalCalls = results.reduce((acc, r) => acc + (r.calls ?? 0), 0);
   const summary = {
     ok: true,
     scanned,
@@ -600,11 +910,12 @@ export default async function handler(req: Request): Promise<Response> {
     stale,
     skipped,
     errored,
+    totalCalls,
     durationMs: Date.now() - tickStart,
     jobs: results,
   };
   console.log(
-    `[scheduler] tick: scanned=${scanned} recorded=${recorded} stale=${stale} skipped=${skipped} errored=${errored} in ${summary.durationMs}ms`,
+    `[scheduler] tick: scanned=${scanned} recorded=${recorded} stale=${stale} skipped=${skipped} errored=${errored} calls=${totalCalls} in ${summary.durationMs}ms`,
   );
   return new Response(JSON.stringify(summary), {
     status: 200,
