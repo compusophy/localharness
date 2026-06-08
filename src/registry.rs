@@ -2536,6 +2536,61 @@ pub async fn x402_authorization_state(
     Ok(decode_u256_as_u64(&result).map(|v| v != 0).unwrap_or(false))
 }
 
+/// A fresh random 32-byte x402 nonce (CSPRNG via `getrandom`). Each
+/// `PaymentAuthorization` needs a unique nonce — the on-chain `settle`
+/// records it one-shot, so a replayed nonce reverts.
+pub fn random_x402_nonce() -> [u8; 32] {
+    use rand_core::RngCore;
+    let mut n = [0u8; 32];
+    rand_core::OsRng.fill_bytes(&mut n);
+    n
+}
+
+/// `eth_call allowance(owner, spender)` on [`LOCALHARNESS_TOKEN_ADDRESS`] —
+/// how much `$LH` (18-decimal wei) `owner` has approved `spender` to pull
+/// via `transferFrom`. The x402 `settle` pulls `$LH` from the payer through
+/// the diamond's `transferFrom`, so the payer must have approved the diamond
+/// (`REGISTRY_ADDRESS`) for at least the payment value; this lets the client
+/// check before paying and approve if short.
+pub async fn lh_allowance(owner_hex: &str, spender_hex: &str) -> Result<u128, String> {
+    if LOCALHARNESS_TOKEN_ADDRESS == zero_address() {
+        return Ok(0);
+    }
+    let owner = parse_eth_address(owner_hex)?;
+    let spender = parse_eth_address(spender_hex)?;
+    let mut calldata = Vec::with_capacity(4 + 64);
+    calldata.extend_from_slice(&selector("allowance(address,address)"));
+    calldata.extend_from_slice(&addr_word(&owner));
+    calldata.extend_from_slice(&addr_word(&spender));
+    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
+    let result = eth_call(LOCALHARNESS_TOKEN_ADDRESS, &calldata_hex).await?;
+    decode_u256_as_u128(&result)
+}
+
+/// Approve `spender` to pull up to `amount_wei` `$LH` from `sender` via a
+/// sponsored Tempo tx (sender holds zero gas; `fee_payer` pays AlphaUSD).
+/// The x402 prerequisite: before paying an agent over `/mcp`, the payer
+/// approves the diamond (`REGISTRY_ADDRESS`) so `settle`'s `transferFrom`
+/// succeeds. Pass a large/`u128::MAX` amount to approve once and reuse.
+pub async fn approve_lh_sponsored(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    spender_hex: &str,
+    amount_wei: u128,
+    fee_token: &str,
+) -> Result<String, String> {
+    let token_addr = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
+    let spender = parse_eth_address(spender_hex)?;
+    let approve_call = crate::tempo_tx::TempoCall {
+        to: token_addr,
+        value_wei: 0,
+        input: encode_approve(&spender, amount_wei),
+    };
+    // approve is a single SSTORE (cold the first time) + event. 300k is
+    // ample headroom on top of the AA-settlement overhead.
+    submit_tempo_sponsored(sender, fee_payer, vec![approve_call], fee_token, 300_000).await
+}
+
 #[cfg(test)]
 mod x402_tests {
     use super::*;
