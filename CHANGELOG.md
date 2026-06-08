@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proxy paths require `$LH`. Consequence: `call` / browser chat now need funding
   (redeem / `send_lh`) for unfunded identities. Reversible (`setSessionPrice(0)`).
 
+### Fixed
+
+- **`call` now pays PER REQUEST, not by the hour.** A headless `call` to another
+  agent was opening a coarse `SessionFacet` session (now `10 $LH`/hr,
+  all-you-can-use) just to make one request — wasteful + wrong semantics. It now
+  funds the per-request `CreditMeterFacet` (the proxy debits ~`0.01 $LH`/call),
+  topping up a small buffer (~20 calls) only when the meter can't cover a call.
+  Proven live: a fresh identity's call left `sessionExpiry=0`, meter `0.19`, a
+  `1000×` cost drop (0.01 vs 10 `$LH`). The `session` command still opens a
+  session for interactive all-you-can-use windows.
+
 ### Added
 
 - **Hosted MCP-over-HTTP endpoint gated by true x402** (`proxy/api/mcp.ts`, live

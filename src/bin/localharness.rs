@@ -61,6 +61,14 @@ use localharness::wallet;
 // balance. Rotate before mainnet.
 const SPONSOR_KEY: &str = "0x046a830b5203d1d2c0a205a1432746e4381d0874711b2de7f575a973644b9d43";
 
+/// The credit proxy debits ~this much `$LH` per request (mirrors the proxy's
+/// `COST_PER_REQUEST_WEI` = 1e16 = 0.01 `$LH`).
+const CALL_COST_WEI: u128 = 10_000_000_000_000_000;
+/// When the per-request meter can't cover a call, top it up with this much from
+/// the wallet — a small buffer (~20 calls) so we don't deposit on every call.
+/// A one-shot agent call pays PER REQUEST, not a 10-`$LH` hour-long session.
+const CALL_METER_TOPUP_WEI: u128 = 200_000_000_000_000_000;
+
 const USAGE: &str = "\
 localharness — join the agent network at <name>.localharness.xyz
 
@@ -107,7 +115,8 @@ USAGE:
 
 Your identity is an ERC-721 NFT on Tempo Moderato; `create` persists its
 private key to ./<name>.localharness.key — keep it, it IS your identity.
-`call` signs with your key and spends your $LH (a free session opens lazily).
+`call` signs with your key and spends your $LH PER REQUEST (~0.01 $LH/call via
+//! the meter, funded lazily — NOT an hourly session).
 Full API: https://localharness.xyz/llms.txt";
 
 #[tokio::main]
@@ -1006,10 +1015,21 @@ async fn run_agent_turn(
         Err(e) => return Err(format!("RPC error: {e}")),
     };
 
-    // Open a free $LH session so the proxy doesn't 402 (best-effort).
+    // Pay PER REQUEST, not by the hour: fund the per-request meter so the proxy
+    // debits ~CALL_COST_WEI per call. A one-shot agent call must NOT buy a
+    // 10-$LH hour-long session (the old behavior). Best-effort + sponsored; an
+    // unfunded wallet stays unfunded (the proxy 402s, the hint says to redeem).
     if let Ok(sponsor) = wallet::from_private_key_hex(SPONSOR_KEY) {
-        let _ = registry::open_session_sponsored(&caller, &sponsor, registry::ALPHA_USD_ADDRESS)
+        let addr = addr_to_hex(wallet::address(&caller));
+        if registry::credit_balance_of(&addr).await.unwrap_or(0) < CALL_COST_WEI {
+            let _ = registry::deposit_credits_sponsored(
+                &caller,
+                &sponsor,
+                CALL_METER_TOPUP_WEI,
+                registry::ALPHA_USD_ADDRESS,
+            )
             .await;
+        }
     }
 
     let now = std::time::SystemTime::now()
@@ -2603,9 +2623,18 @@ async fn probe_agent(caller_name: Option<&str>) -> i32 {
             return 1;
         }
     };
+    // Pay PER REQUEST (fund the meter), not a 10-$LH hour-long session.
     if let Ok(sponsor) = wallet::from_private_key_hex(SPONSOR_KEY) {
-        let _ = registry::open_session_sponsored(&caller, &sponsor, registry::ALPHA_USD_ADDRESS)
+        let addr = addr_to_hex(wallet::address(&caller));
+        if registry::credit_balance_of(&addr).await.unwrap_or(0) < CALL_COST_WEI {
+            let _ = registry::deposit_credits_sponsored(
+                &caller,
+                &sponsor,
+                CALL_METER_TOPUP_WEI,
+                registry::ALPHA_USD_ADDRESS,
+            )
             .await;
+        }
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
