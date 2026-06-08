@@ -110,6 +110,9 @@ enum Action {
     RedeemBanner,
     /// Prepay `$LH` into the per-request credit meter.
     DepositCredits,
+    /// Escrow the owner's `$LH` behind a fresh bearer code + surface the
+    /// `?invite=` share link (InviteFacet `createInvite`).
+    CreateInvite,
     /// Save this agent's per-call x402 price (`.lh_x402_price`).
     SaveX402Price,
     /// Consolidate this identity's subdomains into its MAIN's TBA.
@@ -188,6 +191,7 @@ impl Action {
             "redeem-code" => Action::RedeemCode,
             "redeem-banner" => Action::RedeemBanner,
             "deposit-credits" => Action::DepositCredits,
+            "create-invite" => Action::CreateInvite,
             "save-x402-price" => Action::SaveX402Price,
             "consolidate" => Action::Consolidate,
             "unlink-device" => Action::UnlinkDevice(arg.unwrap_or_default()),
@@ -1127,6 +1131,7 @@ fn dispatch(action: Action) {
         Action::RedeemCode => redeem_code_pressed(),
         Action::RedeemBanner => redeem_banner_pressed(),
         Action::DepositCredits => deposit_credits_pressed(),
+        Action::CreateInvite => create_invite_pressed(),
         Action::SaveX402Price => save_x402_price_pressed(),
         Action::Consolidate => consolidate_pressed(),
         Action::UnlinkDevice(addr) => unlink_device_prompt(addr),
@@ -1824,10 +1829,18 @@ fn pending_invite_code() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Auto-redeem a pending invite code (captured from an `?invite=CODE`
+/// Auto-claim a pending invite code (captured from an `?invite=CODE`
 /// link) into the visitor's credit identity, so an invitee lands with a
-/// credited `$LH` balance instead of typing a code. This is layered ON
-/// TOP of the manual redeem flow — both share `redeem_sponsored`.
+/// credited `$LH` balance instead of typing a code.
+///
+/// TWO code shapes share the one `?invite=` router (distinguished by
+/// prefix — `design/invites.md` §5.1):
+/// - **`inv-…`** → an InviteFacet BEARER invite: the on-chain `$LH` was
+///   ESCROWED by another HOLDER; `acceptInvite(code)` pays it out to the
+///   newcomer (`accept_invite_sponsored`). This is the growth primitive.
+/// - **anything else** (`lh-…` etc.) → an owner-minted RedeemFacet code:
+///   `redeem(code)` MINTS `$LH` to the caller (`redeem_sponsored`). The
+///   pre-existing path, untouched.
 ///
 /// `allow_generate`: on the apex (identity hub) we pass `false` so we
 /// wait for the visitor to create/import their MAIN before crediting it
@@ -1851,35 +1864,61 @@ pub(crate) async fn try_redeem_pending_invite(allow_generate: bool) {
         return;
     };
     // Commit: clear the pending code first so a concurrent repaint or a
-    // refresh can't fire a second (double-spend) redeem of the same code.
+    // refresh can't fire a second (double-spend) accept/redeem of the same
+    // code.
     if let Some(s) = local_storage() {
         let _ = s.remove_item("lh_pending_invite");
     }
-    dom::set_status("redeeming invite…", false);
-    match super::registry::redeem_sponsored(
-        &signer,
-        &fee_payer,
-        &code,
-        super::registry::ALPHA_USD_ADDRESS,
-    )
-    .await
-    {
+    // Bearer InviteFacet invite (escrow payout) vs owner-minted redeem code.
+    let is_invite = code.starts_with("inv-");
+    dom::set_status(
+        if is_invite { "accepting invite…" } else { "redeeming invite…" },
+        false,
+    );
+    let result = if is_invite {
+        super::registry::accept_invite_sponsored(
+            &signer,
+            &fee_payer,
+            &code,
+            super::registry::ALPHA_USD_ADDRESS,
+        )
+        .await
+    } else {
+        super::registry::redeem_sponsored(
+            &signer,
+            &fee_payer,
+            &code,
+            super::registry::ALPHA_USD_ADDRESS,
+        )
+        .await
+    };
+    match result {
         Ok(_) => {
             // Land them on platform credits (the default) and refresh the
             // balance pill so the new $LH shows immediately.
             if let Some(s) = local_storage() {
                 let _ = s.set_item("lh_model_access", "credits");
             }
-            dom::set_status("invite redeemed — platform credits added", false);
+            dom::set_status(
+                if is_invite {
+                    "invite accepted — $LH added"
+                } else {
+                    "invite redeemed — platform credits added"
+                },
+                false,
+            );
             refresh_credits_pill().await;
             // Now funded → drop the no-funds banner if the chrome is up.
             refresh_fund_banner().await;
         }
         Err(e) => {
-            web_sys::console::warn_1(&JsValue::from_str(&format!("invite redeem: {e}")));
-            dom::set_status("invite couldn't be redeemed (it may be used already)", true);
-            // Redeem failed (e.g. used code) → the visitor may still be unfunded;
-            // surface the manual redeem CTA so they have a recovery path.
+            web_sys::console::warn_1(&JsValue::from_str(&format!("invite claim: {e}")));
+            dom::set_status(
+                "invite couldn't be claimed (it may be used or expired)",
+                true,
+            );
+            // Claim failed (e.g. used/expired code) → the visitor may still be
+            // unfunded; surface the manual redeem CTA so they have a recovery path.
             refresh_fund_banner().await;
         }
     }
@@ -1933,6 +1972,101 @@ fn deposit_credits_pressed() {
                 dom::swap_inner(
                     "credits-msg",
                     "<span style=\"color:var(--error)\">deposit failed</span>",
+                );
+            }
+        }
+    });
+}
+
+/// Default invite lifetime when the owner doesn't specify one: 7 days
+/// (matches the CLI's `INVITE_DEFAULT_TTL_SECS`). After it expires
+/// unclaimed the funder reclaims the escrow (`invite reclaim`).
+const INVITE_DEFAULT_TTL_SECS: u64 = 7 * 24 * 3600;
+
+/// Generate a fresh, link-safe bearer invite code: `inv-<amount>-<10
+/// base32 chars>`. Mirrors the CLI's `gen_invite_code` EXACTLY (same
+/// Crockford-ish alphabet, same 10-char CSPRNG tail) so a browser-minted
+/// code is indistinguishable from a CLI one — both hash via
+/// `registry::invite_code_hash` and both route through the `inv-` `?invite=`
+/// branch. The plaintext is the bearer secret; only its keccak hash is
+/// stored on-chain.
+fn gen_invite_code(amount_label: &str) -> String {
+    // Crockford base32 minus the visually-ambiguous 0/1/i/l/o/u.
+    const ALPHABET: &[u8; 32] = b"abcdefghjkmnpqrstvwxyz23456789ab";
+    let bytes = super::registry::random_x402_nonce(); // 32 CSPRNG bytes (getrandom/js)
+    let mut tail = String::with_capacity(10);
+    for &b in bytes.iter().take(10) {
+        tail.push(ALPHABET[(b & 0x1f) as usize] as char);
+    }
+    format!("inv-{amount_label}-{tail}")
+}
+
+/// Escrow the owner's `$LH` behind a fresh bearer code and surface the
+/// `?invite=` share link (InviteFacet `createInvite`). The funder is the
+/// credit identity (local key) — same signing path as redeem/deposit, so
+/// `create_invite_sponsored` is called directly (sponsor pays the fee).
+/// Silent no-op on empty/invalid amount (no explanatory-validation text);
+/// success swaps `#invite-result` for the share-link panel.
+fn create_invite_pressed() {
+    let Some(input) = dom::input_by_id("invite-amount") else {
+        return;
+    };
+    let raw = input.value().trim().to_string();
+    // Silent no-op on empty/invalid/zero (no explanatory-validation text).
+    let Some(amount_wei) = crate::encoding::parse_token_amount(&raw) else {
+        return;
+    };
+    if amount_wei == 0 {
+        return;
+    }
+    // Link-safe label for the human-readable middle of the code: keep only
+    // digits + the decimal point (the `?invite=` router keys ONLY on the
+    // `inv-` prefix, so this part is cosmetic but must stay URL-clean).
+    let amount_label: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let code = gen_invite_code(&amount_label);
+    let code_hash = super::registry::invite_code_hash(&code);
+    dom::swap_inner(
+        "invite-result",
+        "<span style=\"color:var(--muted)\">creating invite…</span>",
+    );
+    wasm_bindgen_futures::spawn_local(async move {
+        let result = async {
+            sponsor_rate_guard()?;
+            let (signer, _) = super::chat::credit_signer()
+                .await
+                .ok_or_else(|| "no identity".to_string())?;
+            let fee_payer = super::sponsor::signer()?;
+            super::registry::create_invite_sponsored(
+                &signer,
+                &fee_payer,
+                code_hash,
+                amount_wei,
+                INVITE_DEFAULT_TTL_SECS,
+                super::registry::ALPHA_USD_ADDRESS,
+            )
+            .await
+        }
+        .await;
+        match result {
+            Ok(_) => {
+                // The escrow left the funder's spendable balance — reflect it.
+                refresh_credits_pill().await;
+                // The apex is the canonical landing origin for `?invite=` links
+                // (standalone `…/?invite=CODE`), so share that.
+                let link = format!("https://localharness.xyz/?invite={code}");
+                dom::swap_inner(
+                    "invite-result",
+                    &templates::invite_result_panel(&code, &link).into_string(),
+                );
+            }
+            Err(e) => {
+                web_sys::console::warn_1(&JsValue::from_str(&format!("create invite: {e}")));
+                dom::swap_inner(
+                    "invite-result",
+                    &dom::msg_span(dom::Msg::Error, "invite couldn't be created (need $LH to escrow)"),
                 );
             }
         }

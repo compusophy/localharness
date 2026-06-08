@@ -658,6 +658,7 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
                 }
                 div.admin-tab-panel.panel-usage {
                     @if has_wallet { (admin_credits_section()) }
+                    @if has_wallet { (admin_invite_section()) }
                     (admin_usage_section())
                 }
                 div.admin-footer {
@@ -714,6 +715,9 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                     // Platform credits only (the BYOK gemini-key UI is hidden —
                     // the handlers + auto-restore stay, just no admin clutter).
                     (admin_credits_section())
+                    // Owner-funded invites: escrow your own $LH behind a
+                    // shareable `?invite=` link (InviteFacet createInvite).
+                    (admin_invite_section())
                     (admin_security_collapsed())
                 }
                 div.admin-tab-panel.panel-usage {
@@ -972,6 +976,49 @@ pub(crate) fn admin_credits_section() -> Markup {
                 button type="button" data-action="redeem-code" .ghost { "redeem" }
             }
             div #credits-msg .admin-msg-slot {}
+        }
+    }
+}
+
+/// "Invite a friend" panel — the owner-side of the user-funded invite
+/// primitive (InviteFacet `createInvite`). The owner types a `$LH` amount;
+/// `events::create_invite_pressed` generates a bearer code client-side
+/// (CSPRNG, `inv-<amt>-<base32>`), escrows the `$LH` behind its keccak hash
+/// in ONE sponsored tx, and swaps `#invite-result` for `invite_result_panel`
+/// (the share link). No explanatory-validation text — an empty/zero amount is
+/// a silent no-op. The escrow is refundable to the funder via `invite reclaim`
+/// after it expires unclaimed.
+pub(crate) fn admin_invite_section() -> Markup {
+    html! {
+        div #invite-section .admin-section {
+            div.admin-section-title { "invite a friend" }
+            div.redeem-row {
+                input #invite-amount .redeem-input type="text"
+                    inputmode="decimal" placeholder="$LH amount";
+                button type="button" data-action="create-invite" .ghost { "create" }
+            }
+            div #invite-result .admin-msg-slot {}
+        }
+    }
+}
+
+/// The freshly-minted invite — shown ONCE after `createInvite` mines. The
+/// plaintext `code` is the bearer secret (lives only in this DOM; only its
+/// hash is on-chain), so it's surfaced with the ready-to-share `?invite=`
+/// link. Refundable to the funder via `invite reclaim` after expiry. Both
+/// `code` + `link` are escaped by maud's `(…)`.
+pub(crate) fn invite_result_panel(code: &str, link: &str) -> Markup {
+    html! {
+        div.invite-result-card {
+            div.pair-instructions { "share this link with ONE person you trust:" }
+            a.pair-url href=(link) target="_blank" rel="noopener" { (link) }
+            div.pair-code-row {
+                span.pair-code-label { "code" }
+                code.pair-code { (code) }
+            }
+            div.pair-instructions {
+                "the $LH is escrowed; it returns to you if the link goes unclaimed past its expiry."
+            }
         }
     }
 }
