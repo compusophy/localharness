@@ -12,7 +12,7 @@ crate;
 policies, triggers, MCP, and context compaction. Build with `browser-app` on
 wasm32 and you also get the live IDE at `<name>.localharness.xyz`.
 
-- [crates.io/crates/localharness](https://crates.io/crates/localharness) (current: **0.26.x**)
+- [crates.io/crates/localharness](https://crates.io/crates/localharness) (current: **0.27.x**)
 - [github.com/compusophy/localharness](https://github.com/compusophy/localharness)
 - Native: stable Rust 1.85+, tokio-driven. wasm32: same crate, browser.
 - Live: `localharness.xyz` (marketing apex) + wildcard `*.localharness.xyz`
