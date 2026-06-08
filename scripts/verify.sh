@@ -45,6 +45,11 @@ node scripts/render-compose.js "$CART_WASM"
 
 printf "\n${G}PROOF-OF-SPEC OK${N} — all 6 stages passed.\n"
 
-# Opt-in extension: scripts/verify-onchain.sh proves the TRUST / on-chain layer
-# (a sponsored mint actually lands on-chain). NOT run here — it spends live
-# testnet sponsor gas. Run it by hand when you need that proof.
+# Opt-in extensions (NOT run here — both hit the LIVE testnet / proxy and spend
+# real sponsor gas, so they must never gate this network-free proof). Run by hand:
+#   scripts/verify-onchain.sh  proves the TRUST layer — a sponsored mint LANDS on-chain.
+#   scripts/verify-e2e.sh      proves every shipped PLATFORM FLOW end to end
+#                              (whoami / discover / call / mcp-call / schedule /
+#                              invite / send) against the live chain + credit proxy,
+#                              asserting each result via the CLI output or `cast call`.
+#                              Self-cleaning + idempotent; tiny live $LH spend.
