@@ -45,6 +45,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Credit proxy: CORS origin check hardened + clearer first-call 402.** The
+  localhost allowance used `startsWith('http://localhost')`, which also matched
+  `http://localhost.evil.com` — an attacker origin could read proxy responses
+  cross-origin; it now parses the URL and checks the hostname (`localhost` /
+  `127.0.0.1` over http only). Separately, the first-call `402` (`no active
+  session or credit`) was cryptic; it now explains the free-beta auto-session
+  and how to get `$LH`.
 - **docs.rs: 4 broken intra-doc links resolved** (`raster` `Viewport` /
   `Viewport::full`, `compose` `Pending`, `policy` `FS_TOOLS`) — the module-level
   `//!` docs used bare paths that didn't resolve; now fully-qualified

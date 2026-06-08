@@ -123,15 +123,29 @@ function corsHeaders(origin: string | null): Record<string, string> {
     'Access-Control-Allow-Headers': 'content-type, x-goog-api-key, x-api-key, anthropic-version',
     'Vary': 'Origin',
   };
-  if (
-    origin &&
-    (origin === ALLOWED_ORIGIN_EXACT ||
-      origin.endsWith(ALLOWED_ORIGIN_SUFFIX) ||
-      origin.startsWith('http://localhost'))
-  ) {
+  if (origin && isAllowedOrigin(origin)) {
     h['Access-Control-Allow-Origin'] = origin;
   }
   return h;
+}
+
+/** Whether `origin` may receive CORS headers. The localhost branch parses the
+ * URL and checks the HOSTNAME — a bare `startsWith('http://localhost')` also
+ * matched `http://localhost.evil.com`, letting an attacker origin read proxy
+ * responses cross-origin. */
+function isAllowedOrigin(origin: string): boolean {
+  if (origin === ALLOWED_ORIGIN_EXACT || origin.endsWith(ALLOWED_ORIGIN_SUFFIX)) {
+    return true;
+  }
+  try {
+    const u = new URL(origin);
+    return (
+      u.protocol === 'http:' &&
+      (u.hostname === 'localhost' || u.hostname === '127.0.0.1')
+    );
+  } catch {
+    return false;
+  }
 }
 
 function json(body: unknown, status: number, origin: string | null): Response {
@@ -388,7 +402,14 @@ export default async function handler(req: Request): Promise<Response> {
     const hasSession = expiry > BigInt(now);
     const hasCredit = credit >= cost;
     if (!hasSession && !hasCredit) {
-      return json({ error: 'no active session or credit' }, 402, origin);
+      return json(
+        {
+          error:
+            'no $LH credit or active session for this identity. In the free beta a session opens automatically — if this persists, redeem an invite/$LH or fund the per-request meter. See https://localharness.xyz/llms.txt',
+        },
+        402,
+        origin,
+      );
     }
     // PREFER per-request metering: a FUNDED meter (`creditOf >= cost`) means the
     // caller opted into real per-call billing, so debit the per-model cost even
