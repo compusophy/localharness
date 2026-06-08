@@ -273,6 +273,12 @@ required-features = ["wallet"]
 name = "create_subagent_live"
 required-features = ["wallet"]
 
+# Minimal getting-started example: one agent turn with a custom tool. Needs only
+# the default `native` feature (tokio) + a GEMINI_API_KEY at runtime — no wallet,
+# no chain. The smallest end-to-end use of the core agent loop.
+[[example]]
+name = "basic_agent"
+
 # Agent-onboarding CLI: `localharness create <name>` / `call` / `whoami`.
 # The harness-agnostic, server-free way for any agent to join the network.
 # Needs `wallet` (registry + tempo signing); native (default) supplies tokio.

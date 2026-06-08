@@ -72,7 +72,15 @@ pub enum Part {
         thought: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         text: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        // Gemini wires this as `thoughtSignature` (camelCase). The enum is
+        // untagged so there's no enum-level `rename_all`; rename explicitly
+        // or it deserializes to None (and re-serializes under the wrong key
+        // when echoing thinking history back to the model).
+        #[serde(
+            rename = "thoughtSignature",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         thought_signature: Option<String>,
     },
     /// Plain text. Keep last in the enum so it's only matched after
@@ -309,6 +317,117 @@ mod tests {
             }
             other => panic!("expected FunctionCall, got {other:?}"),
         }
+    }
+
+    /// THE documented Gemini 3.x quirk: a *visible-text* part arrives stamped
+    /// with `thought: false`. Because the untagged `Part::Thought` variant
+    /// precedes `Part::Text` and only requires the `thought` key, such a part
+    /// deserializes into `Thought { thought: false, text: Some(_) }`, NOT
+    /// `Text`. Any consumer matching only `Text` (or only `thought: true`)
+    /// would silently drop the model's output. This test pins the shape so
+    /// the streaming loop's `thought: false` arm can't regress unnoticed.
+    #[test]
+    fn thought_false_text_is_thought_variant_not_text() {
+        let p: Part = serde_json::from_str(r#"{"thought":false,"text":"hi"}"#).unwrap();
+        match p {
+            Part::Thought {
+                thought: false,
+                text: Some(t),
+                ..
+            } => assert_eq!(t, "hi"),
+            other => panic!(
+                "Gemini 3.x stamps text parts with thought:false; expected \
+                 Thought{{thought:false,text}}, got {other:?}"
+            ),
+        }
+    }
+
+    /// A *normal* text part with NO `thought` key must still land on `Text`
+    /// (the `Thought` variant requires `thought`, which is absent → it falls
+    /// through to `Text`). This is the pre-3.x shape and must keep working.
+    #[test]
+    fn plain_text_without_thought_key_is_text() {
+        let p: Part = serde_json::from_str(r#"{"text":"plain"}"#).unwrap();
+        assert!(matches!(p, Part::Text { ref text } if text == "plain"));
+    }
+
+    /// A part carrying BOTH `text` and `functionCall`. `FunctionCall` is the
+    /// first untagged variant and matches on the `functionCall` key alone, so
+    /// such a hybrid resolves to `FunctionCall` and the stray `text` is lost.
+    /// This documents the precedence so callers know a function-call part is
+    /// never *also* surfaced as text.
+    #[test]
+    fn text_plus_function_call_resolves_to_function_call() {
+        let p: Part =
+            serde_json::from_str(r#"{"text":"hi","functionCall":{"name":"f","args":{}}}"#)
+                .unwrap();
+        assert!(matches!(p, Part::FunctionCall { .. }));
+    }
+
+    /// A `functionCall` stamped with `thought:false` (Gemini 3.x stamps every
+    /// part) still resolves to `FunctionCall`, because that variant precedes
+    /// `Thought` in declaration order.
+    #[test]
+    fn function_call_with_thought_false_stamp_resolves_to_function_call() {
+        let p: Part = serde_json::from_str(
+            r#"{"thought":false,"functionCall":{"name":"f","args":{}}}"#,
+        )
+        .unwrap();
+        assert!(matches!(p, Part::FunctionCall { .. }));
+    }
+
+    /// A thought part with NO `text` (a thought-signature-only part). Must
+    /// deserialize without error and leave `text` None — the streaming loop
+    /// guards on `text: Some(_)` so a None-text thought is harmlessly ignored.
+    #[test]
+    fn thought_without_text_deserializes() {
+        let p: Part = serde_json::from_str(r#"{"thought":true}"#).unwrap();
+        assert!(matches!(p, Part::Thought { thought: true, text: None, .. }));
+    }
+
+    /// Unknown / future fields alongside a known one must not break
+    /// deserialization (untagged variants ignore extra object keys).
+    #[test]
+    fn unknown_extra_fields_are_tolerated() {
+        let p: Part =
+            serde_json::from_str(r#"{"text":"hi","videoMetadata":{"x":1}}"#).unwrap();
+        assert!(matches!(p, Part::Text { ref text } if text == "hi"));
+    }
+
+    /// `thoughtSignature` rides along on a thought part (Gemini sends an
+    /// opaque base64 signature). It must be captured, not rejected.
+    #[test]
+    fn thought_signature_is_captured() {
+        let p: Part = serde_json::from_str(
+            r#"{"thought":true,"text":"r","thoughtSignature":"AbC="}"#,
+        )
+        .unwrap();
+        match p {
+            Part::Thought {
+                thought_signature, ..
+            } => assert_eq!(thought_signature.as_deref(), Some("AbC=")),
+            other => panic!("expected Thought, got {other:?}"),
+        }
+    }
+
+    /// An unknown `finishReason` string must map to `Unknown` (via
+    /// `#[serde(other)]`) rather than failing the whole chunk decode — a new
+    /// server-side reason should never brick streaming.
+    #[test]
+    fn unknown_finish_reason_maps_to_unknown() {
+        let json = r#"{"candidates":[{"finishReason":"SOME_NEW_REASON_2027"}]}"#;
+        let chunk: GenerateChunk = serde_json::from_str(json).unwrap();
+        assert_eq!(chunk.candidates[0].finish_reason, Some(FinishReason::Unknown));
+    }
+
+    /// A chunk that carries ONLY metadata (`modelVersion` / `responseId`, no
+    /// candidates) decodes to an empty-candidates chunk, not an error.
+    #[test]
+    fn metadata_only_chunk_decodes_empty() {
+        let json = r#"{"modelVersion":"gemini-3.5-flash","responseId":"abc123"}"#;
+        let chunk: GenerateChunk = serde_json::from_str(json).unwrap();
+        assert!(chunk.candidates.is_empty());
+        assert_eq!(chunk.model_version.as_deref(), Some("gemini-3.5-flash"));
     }
 
     #[test]

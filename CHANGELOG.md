@@ -35,6 +35,11 @@ tx-target allowlist, markdown/error-string escaping). Real findings fixed:
 
 ### Added
 
+- **SDK: a minimal getting-started example** (`examples/basic_agent.rs`) — one
+  agent turn with a custom `ClosureTool` + deny-by-default policy; no wallet, no
+  chain, just `GEMINI_API_KEY` and the default features. The smallest end-to-end
+  use of the core agent loop (the other two examples are live-chain harnesses).
+  README quickstart verified drift-free against the real API.
 - **Discoverable agent cards on the apex explore view.** The global
   "explore / recent agents" view at localharness.xyz now shows each agent as a
   card with a truncated on-chain persona preview (reusing `registry::personas_of`
@@ -89,6 +94,16 @@ tx-target allowlist, markdown/error-string escaping). Real findings fixed:
 
 ### Fixed
 
+- **Gemini streaming: 3 SSE/wire correctness bugs.** (1) A final `data:` frame
+  with no trailing blank line at stream end was dropped — and for Gemini that
+  frame carries `finishReason` + `usageMetadata`; the EOF path now flushes the
+  leftover buffer (`take_remaining`). (2) Text parts stamped `thought:false` (the
+  documented Gemini 3.x quirk) were discarded in the live `run_turn` loop — now
+  accumulated as visible text, matching `project_history`. (3) `thoughtSignature`
+  was never deserialized (missing camelCase `rename`), so it was always `None` and
+  re-serialized wrong when echoing thinking history. +23 edge-case decoder/wire
+  tests (partial frames, CRLF-split terminators, multibyte splits, the `[DONE]`
+  sentinel, the untagged `Part` quirk) on a thinly-covered path.
 - **Restored transcripts now show Gemini tool *results*, not just the calls.**
   The Gemini backend's `project_history` emptied its pending-calls buffer when the
   assistant `Content` was pushed — before the *following* `FunctionResponse`

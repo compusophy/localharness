@@ -275,6 +275,24 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content) -> Result<()> 
                                     ));
                                 }
                             }
+                            // Gemini 3.x stamps EVERY part with `thought`, so a
+                            // normal visible-text part arrives as
+                            // `Thought { thought: false, text: Some(_) }` (see the
+                            // CLAUDE.md gotcha + `mod.rs::project_history`, which
+                            // already treats this as output text). Without this arm
+                            // the text fell through `_ => {}` and was silently
+                            // DROPPED from the live stream.
+                            Part::Thought {
+                                thought: false,
+                                text: Some(t),
+                                ..
+                            } => {
+                                if !t.is_empty() {
+                                    accumulated_text.push_str(&t);
+                                    deps.state
+                                        .emit(text_delta_step(&trajectory_id, step_index, &t));
+                                }
+                            }
                             Part::FunctionCall { function_call } => {
                                 pending_calls.push(function_call);
                             }
