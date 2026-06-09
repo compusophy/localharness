@@ -7,8 +7,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Agent-economy coordination ladder — guilds, DAO governance, reputation, and
+  the colony (all live on the diamond).** The bounty board (rung 1) grew into a
+  full coordination stack:
+  - **`GuildFacet`** (`0xfE806FD00d03C957d8CeB0dc23DDBe2c1C09e2c9`) — durable
+    on-chain organizations of agents. `createGuild(name)` mints the guild its OWN
+    identity + ERC-6551 token-bound account (a pooled `$LH` treasury wallet) and
+    makes the caller Admin. Membership is consent-gated (`inviteToGuild` by an
+    Officer+, the invitee `acceptGuildInvite`s) and a member MAY be a contract —
+    another guild's TBA — which is what lets guilds nest. `fundGuild` /
+    `spendTreasury` (admin/officer) move the treasury; views `guildMembersOf` /
+    `roleOf` / `treasuryBalanceOf` / `guildAddress` / `guildName` / `guildsOf`.
+    CLI `localharness guild create/invite/accept/leave/role/fund/spend/members/
+    treasury/mine` + browser agent tools `create_guild` / `invite_to_guild` /
+    `fund_guild` / `spend_treasury`.
+  - **`VotingFacet`** (`0x5C5F97596E702cB14F555cE8410D3DDE2974523a`) — guild DAO
+    governance. A member `propose`s a treasury spend (recipient + amount + memo +
+    voting period 1h..30d), members `vote` one-member-one-vote, and once the
+    period closes anyone `execute`s it — paying the treasury to the recipient IFF
+    it passed quorum. CLI `localharness vote propose/cast/execute/list/show` +
+    browser agent tools `propose_measure` / `cast_vote` / `execute_proposal` /
+    `list_proposals`.
+  - **The turtles** — because a guild's TBA is just an address and guild
+    membership accepts contracts, a guild can JOIN and VOTE in a PARENT guild's
+    DAO (a guild that is a member of a guild — DAOs of DAOs). Driven with
+    `localharness tba exec --tba <guild>`; proven live end-to-end.
+  - **`ReputationFacet`** (`0xb8CE3AF9cE075B6d489265053e7fe3195890B2e0`) —
+    attestation-based on-chain agent trust (ERC-8004-flavored). `attest(subject,
+    rating 1-5, workRef)` records a peer rating tagged with a work reference (a
+    bounty id or `0x` ref); one attestation per (attester, subject, workRef)
+    (anti-inflation), no self-attestation. Reads `reputationOf(tokenId) ->
+    (count, sum)` (average computed off-chain) + `attestationsOf` (paginated
+    trail). CLI `localharness reputation show/attest` (alias `rep`).
+- **`colony run` — one autonomous agent-economy cycle, end to end.** `localharness
+  colony run <task> --reward <lh>` composes the whole economy into a single
+  self-driving loop with no human between the steps: post the task as a bounty →
+  REPUTATION-AWARE worker PICK (the top `discover()` match, ranked by on-chain
+  reputation) → the worker's persona does the work via a headless `call` →
+  submit → a NEUTRAL JUDGE PANEL (`--judges N`, default 3 distinct local agents
+  excluding the worker + caller; or `--judge` for a single judge) scores it 1-5
+  and the worker's rating is the panel MEDIAN → PAYMENT GATE: accept + pay IFF
+  the median `>= --min-accept-rating` (default 2), else reject (no payment;
+  escrow reclaimable after the TTL) → ALWAYS attest the judged median rating
+  (accept or reject). The self-evolving-colony loop — reputation reflects judged
+  QUALITY, not completion, and feeds back into the next PICK.
+- **`tba` CLI — act through a token-bound account (the headless act-panel).**
+  `localharness tba show/deploy/exec`; `tba exec [--tba <name-or-0xaddr>] <to>
+  <amount> [--data <hex>]` makes a TBA EXECUTE a call (send `$LH`, or CALL `<to>`
+  with calldata), and `--tba` acts through an owned TBA OTHER than your main —
+  e.g. a guild's wallet voting in a parent guild's DAO (the turtles).
+- **`bounty reclaim` CLI** — refund an EXPIRED claimed/submitted-but-never-
+  accepted bounty to its poster (`reclaimExpired`), the recovery path for a
+  stranded escrow (`bounty cancel` only refunds an OPEN bounty).
+- **Free discovery tools on the hosted MCP endpoint (`/mcp`)** — the demand
+  on-ramp. `discover_agents(query)` (on-chain agent yellow-pages) and
+  `list_bounties()` (open, unexpired bounties) are now exposed alongside the
+  x402-gated `ask_agent`, both FREE / read-only, so a newcomer can find agents +
+  work before holding any `$LH`.
+- **Rustlite arrays grew into a stateful-grid primitive** — indexed array writes
+  (`arr[i] = value`), array types as fn params, and sized repeat init (`[v; N]`),
+  proven by a Conway's Game of Life cartridge and a node compile-run-assert
+  regression corpus.
+
+### Changed
+
+- **Incremental, recency-weighted context compaction.** The in-tab agent now has
+  auto-compaction enabled (long conversations stopped overflowing into empty
+  responses), and the compaction fold is INCREMENTAL — it folds only the newly-
+  aged turns instead of re-summarizing the whole history each time.
+
 ### Fixed
 
+- **Convergent P2P shared-FS reconcile.** Device-sync previously reconciled by
+  FILENAME only, so two devices holding the same name with DIFFERENT content
+  never healed (silent divergence). Resolution now drives off a keccak256 hash of
+  each file's plaintext: same name + equal hash = no-op; same name + different
+  hash = the lexicographically-greater hash wins the plain name and the loser is
+  preserved as `name.conflict-<8hex>` (no edit lost); distinct names union. Both
+  devices compute the same hashes, pick the same winner, derive the same conflict
+  name, and CONVERGE to a byte-identical folder. New pure, native-testable
+  `src/sharedfs_reconcile.rs` (7 determinism/symmetry/convergence tests); the
+  2-device end-to-end still needs the user's browsers.
+- **VotingFacet quorum-churn drain.** The DAO quorum is now SNAPSHOT at
+  propose-time (re-cut `0x5C5F97596E702cB14F555cE8410D3DDE2974523a`) so a vote
+  can't be gamed by churning guild membership mid-vote; +29 adversarial tests.
+- **Colony recovery advice + the missing reclaim path.** A colony step failure
+  printed advice that steered to a reverting command; it now prints the CORRECT
+  recovery command (`bounty cancel` while OPEN, else `bounty reclaim` after the
+  TTL), and the previously-missing `bounty reclaim` command was added.
+- **Rustlite array-memory safety** — guarded array-return memory corruption and
+  array-region page overrun (adversarial review).
 - **Cartridge hangs no longer freeze the app or brick a subdomain.** A cartridge
   whose `frame()` loops long/unbounded used to block the MAIN thread (you can't
   preempt synchronous wasm from JS), freezing the whole tab — chat included — and
