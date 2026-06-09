@@ -13,6 +13,15 @@ pub fn emit(module: &TypedModule) -> Result<Vec<u8>, CompileError> {
 const WASM_MAGIC: &[u8] = b"\0asm";
 const WASM_VERSION: &[u8] = &[1, 0, 0, 0];
 
+/// The module declares exactly ONE 64KB page of linear memory and NEVER grows
+/// it (memory section: 1 page, no max). Every static region (array literals,
+/// `[v; N]` repeat inits, string literals) is bump-allocated out of this single
+/// page via `data_offset`. If the cumulative reservation runs past the page,
+/// the emitted `i32.store`/`i32.load` addresses are out of bounds and the
+/// cartridge TRAPS at the first access with no diagnostic — so the region
+/// allocator bounds-checks against this at compile time (see `reserve_region`).
+const LINEAR_MEMORY_BYTES: u32 = 64 * 1024;
+
 // Section IDs
 const SEC_TYPE: u8 = 1;
 const SEC_IMPORT: u8 = 2;
@@ -491,6 +500,32 @@ impl WasmEmitter {
         Ok(())
     }
 
+    /// 4-byte-align `data_offset`, reserve `n` i32 slots (`n*4` bytes), and
+    /// return the region's base address. Bounds-checked against the single
+    /// non-growable 64KB page: a region that would run past it is rejected with
+    /// a clear compile error rather than emitting stores that trap at runtime
+    /// with no diagnostic (the `[0; 20000]` footgun — 80KB > one page). `n*4`
+    /// is computed in `u64` so a huge `count` can't wrap the bound check.
+    fn reserve_region(&mut self, n: u32) -> Result<u32, CompileError> {
+        let pad = (4 - (self.data_offset % 4)) % 4;
+        let base = self.data_offset + pad;
+        let end = base as u64 + (n as u64) * 4;
+        if end > LINEAR_MEMORY_BYTES as u64 {
+            return Err(CompileError::new_code(
+                codes::OVERSIZE,
+                format!(
+                    "array region of {n} i32 slots ({} bytes) overruns the cartridge's \
+                     single {LINEAR_MEMORY_BYTES}-byte memory page (already used {} bytes); \
+                     it would trap at runtime — use a smaller array",
+                    (n as u64) * 4,
+                    self.data_offset,
+                ),
+            ));
+        }
+        self.data_offset = end as u32;
+        Ok(base)
+    }
+
     fn emit_expr(&mut self, expr: &TypedExpr, code: &mut Vec<u8>) -> Result<(), CompileError> {
         match &expr.kind {
             TypedExprKind::IntLit(n) => {
@@ -719,10 +754,7 @@ impl WasmEmitter {
                 // store each element into it (re-initialised whenever the literal
                 // evaluates). The expression's value is the region's base pointer.
                 let n = elems.len() as u32;
-                let pad = (4 - (self.data_offset % 4)) % 4;
-                self.data_offset += pad;
-                let base = self.data_offset;
-                self.data_offset += n * 4;
+                let base = self.reserve_region(n)?;
                 for (i, elem) in elems.iter().enumerate() {
                     code.push(OP_I32_CONST);
                     leb128_i32((base + i as u32 * 4) as i32, code);
@@ -740,11 +772,17 @@ impl WasmEmitter {
                 // temp local (it may be a host call / non-constant), then store
                 // it into each of the `count` i32 slots. The expression's value
                 // is the region's base pointer.
-                let n = *count as u32;
-                let pad = (4 - (self.data_offset % 4)) % 4;
-                self.data_offset += pad;
-                let base = self.data_offset;
-                self.data_offset += n * 4;
+                //
+                // `count` is a `usize`; a value above the page's slot capacity
+                // (and certainly above `u32::MAX`) cannot fit, and casting it
+                // straight to `u32` would WRAP and hide the overflow. Reject any
+                // count that can't be a u32 slot count up front; `reserve_region`
+                // then bounds-checks it against the single 64KB page.
+                let n: u32 = (*count).try_into().map_err(|_| CompileError::new_code(
+                    codes::OVERSIZE,
+                    format!("array repeat count {count} is far too large for the cartridge's one memory page"),
+                ))?;
+                let base = self.reserve_region(n)?;
 
                 let val_local = self.alloc_local("__array_repeat_val", &ResolvedType::I32);
                 self.emit_expr(value, code)?;
@@ -1348,6 +1386,29 @@ mod tests {
         );
         // And the address math (i32.mul by 4 then i32.add) the read side uses.
         assert!(wasm.iter().any(|&b| b == OP_I32_MUL), "addr math: index*4");
+    }
+
+    #[test]
+    fn array_region_overrunning_the_page_is_a_compile_error() {
+        // The cartridge has ONE non-growable 64KB page; a static array region
+        // that runs past it would emit stores/loads that trap at runtime with
+        // no diagnostic. Codegen must reject it at compile time instead.
+        // [0; 20000] = 80000 bytes > 65536 → OVERSIZE.
+        let err = {
+            let tokens = lexer::lex(
+                "fn frame(t: i32) { let mut g = [0; 20000]; g[19999] = 1; host::display::present(); }",
+            ).unwrap();
+            let module = parser::parse(&tokens).unwrap();
+            let typed = typecheck::check(&module).unwrap();
+            emit(&typed).expect_err("oversize array region must be rejected")
+        };
+        assert_eq!(err.code, Some(codes::OVERSIZE), "{err}");
+        // A region that fits the page still compiles. [0; 15000] = 60000 bytes,
+        // base 1024 → ends at 61024 < 65536.
+        let wasm = compile_to_wasm(
+            "fn frame(t: i32) { let mut g = [0; 15000]; g[14999] = 1; host::display::present(); }",
+        );
+        assert_eq!(&wasm[0..4], WASM_MAGIC);
     }
 
     #[test]

@@ -260,6 +260,33 @@ mod tests {
         )
         .is_err());
     }
+
+    #[test]
+    fn array_return_type_is_rejected() {
+        // RETURNING an array is unsound under the static-region model: the region
+        // a returned array points into is reused on every call, so two live
+        // results of one array-returning fn would alias and the second call
+        // silently clobbers the first (proven via node:
+        //   fn mk(v:i32)->[i32;3]{[v,v,v]}  let a=mk(1); let b=mk(2);
+        // made `a[0]` read back as 2, not 1). The compiler must reject it rather
+        // than emit corrupting code — the supported pattern is a mutable array
+        // PARAM the callee fills in place (C-style shared backing).
+        let e = compile("fn mk(v: i32) -> [i32; 3] { [v, v, v] } fn frame(t: i32) { let a = mk(1); host::display::clear(a[0]); host::display::present(); }")
+            .expect_err("array return must be rejected");
+        assert_eq!(e.code, Some(codes::UNSUPPORTED_FEATURE), "{e}");
+        // Forward reference (fn declared after frame) is rejected too — the guard
+        // lives in the signature-resolution pass, which runs before any body.
+        assert!(compile(
+            "fn frame(t: i32) { host::display::present(); } fn mk() -> [i32; 2] { [1, 2] }"
+        )
+        .is_err());
+        // An array PARAM with an i32 return is still fine (the real pattern).
+        assert!(compile(
+            "fn fill(a: [i32; 3], v: i32) -> i32 { a[0] = v; a[0] } \
+             fn frame(t: i32) { let mut g = [0, 0, 0]; host::display::clear(fill(g, 9)); host::display::present(); }"
+        )
+        .is_ok());
+    }
 }
 
 /// Emit the indexed-array-write cartridges that the node run-proof

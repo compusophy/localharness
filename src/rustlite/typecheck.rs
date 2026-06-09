@@ -278,6 +278,27 @@ impl TypeContext {
                         .map(|t| self.resolve_ty(t))
                         .transpose()?
                         .unwrap_or(ResolvedType::Void);
+                    // RETURNING an array is unsound under the static-region model:
+                    // an array value is just the base pointer of a per-AST-node
+                    // region that is REUSED on every call, so two live results of
+                    // the same array-returning fn alias and the second call
+                    // silently clobbers the first (`let a = mk(1); let b = mk(2);`
+                    // makes `a` read as 2). Reject it at the signature rather than
+                    // emit code that corrupts. The intended pattern is an array
+                    // PARAM the callee mutates in place (C-style, shared backing).
+                    if let ResolvedType::Array(_, _) = ret {
+                        return Err(CompileError::at_code(
+                            codes::UNSUPPORTED_FEATURE,
+                            format!(
+                                "fn '{}': returning an array is unsupported (the static \
+                                 region a returned array points into is reused every \
+                                 call, so two results would alias and corrupt). Pass a \
+                                 mutable array param for the callee to fill instead.",
+                                f.name
+                            ),
+                            f.span,
+                        ));
+                    }
                     self.functions.insert(f.name.clone(), FnSig { params: params?, ret });
                 }
                 Item::Const(_) => {} // handled in check pass
