@@ -1,11 +1,17 @@
 // localharness MCP-over-HTTP endpoint — hosted, x402-gated (Edge).
 //
 // A minimal MCP "Streamable HTTP" server: POST-only, one JSON-RPC request in,
-// one JSON-RPC response out (no SSE, no session id). It exposes ONE tool,
-// `ask_agent(name, message)`, which runs the named on-chain agent's published
-// persona against the caller's message via the platform Gemini key — exactly
-// the headless `localharness call` path, but reachable by any remote MCP client
-// (Claude Desktop, Cursor, another agent's MCP client, …) over plain HTTP.
+// one JSON-RPC response out (no SSE, no session id). Tools:
+//   * ask_agent(name, message) — runs the named on-chain agent's published
+//     persona against the caller's message via the platform Gemini key (exactly
+//     the headless `localharness call` path). x402-GATED (see below).
+//   * discover_agents(query)   — FREE, read-only. The on-chain agent
+//     yellow-pages: enumerate recent agents + rank by query (name + persona).
+//   * list_bounties()          — FREE, read-only. Open, unexpired bounties
+//     (work an agent could claim for $LH).
+// Reachable by any remote MCP client (Claude Desktop, Cursor, another agent's
+// MCP client, …) over plain HTTP. Discovery is FREE on purpose — it's the demand
+// on-ramp, and must be frictionless; only `ask_agent` settles a payment.
 //
 // The gate is TRUE x402 per-call settlement (NOT the coarse session/meter
 // credit gate `gemini.ts` uses): the caller PAYS THE AGENT being called. For
@@ -60,6 +66,46 @@ const TEMPO_CHAIN = defineChain({
   nativeCurrency: { name: 'Tempo', symbol: 'TEMPO', decimals: 18 },
   rpcUrls: { default: { http: [TEMPO_RPC] } },
 });
+
+// BountyFacet views — the FREE discovery surface for `list_bounties`. Read-only
+// (no state mutation, no x402). NOTE: the task view is `bountyTaskOf`, NOT
+// `taskOf` — ScheduleFacet already owns the `taskOf(uint256)` selector and a
+// diamond can't share one (see CLAUDE.md / BountyFacet.sol).
+const BOUNTY_ABI = [
+  {
+    name: 'openBounties',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'startAfter', type: 'uint256' },
+      { name: 'limit', type: 'uint256' },
+    ],
+    outputs: [
+      { name: 'ids', type: 'uint256[]' },
+      { name: 'nextCursor', type: 'uint256' },
+    ],
+  },
+  {
+    name: 'getBounty',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'bountyId', type: 'uint256' }],
+    outputs: [
+      { name: 'poster', type: 'address' },
+      { name: 'rewardWei', type: 'uint128' },
+      { name: 'expiry', type: 'uint64' },
+      { name: 'status', type: 'uint8' },
+      { name: 'claimantTokenId', type: 'uint256' },
+    ],
+  },
+  {
+    name: 'bountyTaskOf',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'bountyId', type: 'uint256' }],
+    outputs: [{ name: 'task', type: 'bytes' }],
+  },
+] as const;
 
 // X402Facet.settle(address,address,uint256,uint256,uint256,bytes32,bytes)
 const X402_ABI = [
@@ -307,6 +353,34 @@ async function personaOf(tokenId: bigint): Promise<string | null> {
   return text.length ? text : null;
 }
 
+/** `nextId() -> uint256`. The next token id to mint; registered ids are
+ * `1..nextId()-1` (ids start at 1 and are monotonic). 0/empty = nothing minted. */
+async function nextId(): Promise<bigint> {
+  const data = '0x' + selectorHex('nextId()');
+  const res = await ethCall(REGISTRY, data);
+  try {
+    return BigInt(res);
+  } catch {
+    return 0n;
+  }
+}
+
+/** `nameOfId(uint256) -> string`. Empty for an unregistered / burned id.
+ * Decodes the ABI string return (offset|length|utf8). */
+async function nameOfId(tokenId: bigint): Promise<string> {
+  const sel = selectorHex('nameOfId(uint256)');
+  const data = '0x' + sel + bytesToHex(uintWord(tokenId));
+  const res = await ethCall(REGISTRY, data);
+  const b = hexToBytes(stripHex(res));
+  if (b.length < 64) return '';
+  let len = 0;
+  for (let i = 56; i < 64; i++) len = len * 256 + b[i];
+  if (len === 0) return '';
+  const payload = b.slice(64, 64 + len);
+  if (payload.length < len) return '';
+  return new TextDecoder().decode(payload).trim();
+}
+
 /** ABI-encode a single `string` arg (offset 0x20 | length | utf8 padded). */
 function encodeStringArg(value: string): string {
   const bytes = new TextEncoder().encode(value);
@@ -322,6 +396,88 @@ function encodeStringArg(value: string): string {
   }
   buf.set(bytes, 64);
   return bytesToHex(buf);
+}
+
+// ---- bounty reads (FREE discovery — viem readContract over the same diamond) -
+//
+// The bounty views return a tuple (getBounty) + dynamic arrays (openBounties) +
+// `bytes` (bountyTaskOf), so we decode them via viem's `readContract` (exactly
+// the pattern scheduler.ts uses) rather than hand-rolling the ABI decode.
+
+/** Bounty status enum (LibBountyStorage.Status). 0 = Open is the only one
+ * `list_bounties` surfaces (openBounties already filters to Open + unexpired). */
+const BOUNTY_STATUS_LABELS = [
+  'open',
+  'claimed',
+  'submitted',
+  'accepted',
+  'cancelled',
+  'reclaimed',
+] as const;
+
+function bountyStatusLabel(status: number): string {
+  return BOUNTY_STATUS_LABELS[status] ?? `status-${status}`;
+}
+
+function bountyPublicClient() {
+  return createPublicClient({ chain: TEMPO_CHAIN, transport: http(TEMPO_RPC) });
+}
+
+/** `openBounties(startAfter, limit)` — up to `limit` Open+unexpired bounty ids
+ * in the index window after `startAfter`, plus the next cursor. */
+async function openBounties(
+  startAfter: bigint,
+  limit: bigint,
+): Promise<{ ids: bigint[]; nextCursor: bigint }> {
+  const [ids, nextCursor] = (await bountyPublicClient().readContract({
+    address: REGISTRY as `0x${string}`,
+    abi: BOUNTY_ABI,
+    functionName: 'openBounties',
+    args: [startAfter, limit],
+  })) as readonly [readonly bigint[], bigint];
+  return { ids: [...ids], nextCursor };
+}
+
+interface BountyRecord {
+  poster: string;
+  rewardWei: bigint;
+  expiry: bigint;
+  status: number;
+  claimantTokenId: bigint;
+}
+
+/** `getBounty(id)` — the full record (zeros / poster==0 for an unknown id). */
+async function getBounty(bountyId: bigint): Promise<BountyRecord> {
+  const r = (await bountyPublicClient().readContract({
+    address: REGISTRY as `0x${string}`,
+    abi: BOUNTY_ABI,
+    functionName: 'getBounty',
+    args: [bountyId],
+  })) as readonly [string, bigint, bigint, number, bigint];
+  return {
+    poster: r[0],
+    rewardWei: r[1],
+    expiry: r[2],
+    status: Number(r[3]),
+    claimantTokenId: r[4],
+  };
+}
+
+/** `bountyTaskOf(id)` — the task spec bytes, decoded as UTF-8 (best-effort). */
+async function bountyTaskOf(bountyId: bigint): Promise<string> {
+  const raw = (await bountyPublicClient().readContract({
+    address: REGISTRY as `0x${string}`,
+    abi: BOUNTY_ABI,
+    functionName: 'bountyTaskOf',
+    args: [bountyId],
+  })) as `0x${string}`;
+  const h = raw.startsWith('0x') ? raw.slice(2) : raw;
+  if (h.length === 0) return '';
+  const bytes = new Uint8Array(h.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
+  }
+  return new TextDecoder().decode(bytes).trim();
 }
 
 // ---- x402 digest (mirror registry::x402_digest / X402Facet.sol) ------------
@@ -487,6 +643,264 @@ const ASK_AGENT_TOOL = {
     required: ['name', 'message'],
   },
 } as const;
+
+// ---- FREE discovery tools (no x402) ----------------------------------------
+//
+// Discovery is the DEMAND on-ramp — it must be frictionless, so these two tools
+// are FREE (no payment gate; only `ask_agent` settles). They are READ-ONLY:
+// pure on-chain reads against the diamond, no writes, no spend. Each handler is
+// fully try/caught so a bad RPC read degrades to a clean tool-error result and
+// never 500s the endpoint.
+
+// How many of the most-recent token ids `discover_agents` scans. Bounds RPC
+// fan-out per call (one nameOfId + one persona read per id). Env-overridable.
+const DISCOVER_SCAN_CAP = ((): number => {
+  const n = Number(process.env.MCP_DISCOVER_SCAN_CAP ?? '100');
+  return Number.isFinite(n) && n > 0 ? Math.min(Math.trunc(n), 250) : 100;
+})();
+
+// How many bounties `list_bounties` reads (Open + unexpired window). The
+// `openBounties` view already filters; this just bounds the page size.
+const BOUNTY_LIST_CAP = ((): number => {
+  const n = Number(process.env.MCP_BOUNTY_LIST_CAP ?? '50');
+  return Number.isFinite(n) && n > 0 ? Math.min(Math.trunc(n), 200) : 50;
+})();
+
+// Max chars of persona text returned per agent match (keeps the result compact).
+const PERSONA_EXCERPT_LEN = 240;
+
+const DISCOVER_AGENTS_TOOL = {
+  name: 'discover_agents',
+  description:
+    'Find localharness on-chain agents by a free-text query (the agent yellow-pages). Scans the most recently registered agents and ranks them by how well the query matches their subdomain name and published persona. Returns the top matches as {name, tokenId, persona_excerpt}. FREE / read-only — no payment. Use this to locate an agent (e.g. "a solidity auditor"), then ask_agent it.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      query: {
+        type: 'string',
+        description:
+          'What you are looking for, e.g. "solidity auditor" or "image generation". Empty returns the most recent agents unranked.',
+      },
+    },
+    required: ['query'],
+  },
+} as const;
+
+const LIST_BOUNTIES_TOOL = {
+  name: 'list_bounties',
+  description:
+    'List OPEN, unexpired bounties on the localharness agent economy — work an agent could claim and get paid $LH for. Returns {id, reward_lh, task, status} for each open bounty. FREE / read-only — no payment. Surfaces the demand side of the economy.',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+    required: [],
+  },
+} as const;
+
+/**
+ * Rank `(name, persona)` agents against a query — mirrors the spirit of
+ * `src/registry.rs::rank_agent_matches`: name substring hits rank ABOVE persona
+ * substring hits, original order preserved within each bucket. Beyond that exact
+ * Rust behavior we add a light token-overlap tiebreak (more shared query tokens →
+ * higher) so a richer query surfaces the best of several name OR persona hits
+ * first. An empty query returns the input order unchanged (most-recent first).
+ */
+function rankAgentMatches(
+  agents: { name: string; tokenId: bigint; persona: string }[],
+  query: string,
+): { name: string; tokenId: bigint; persona: string }[] {
+  const q = query.trim().toLowerCase();
+  if (q === '') return agents;
+  const tokens = q.split(/\s+/).filter((t) => t.length > 0);
+
+  const overlap = (text: string): number => {
+    const lower = text.toLowerCase();
+    let n = 0;
+    for (const t of tokens) if (lower.includes(t)) n++;
+    return n;
+  };
+
+  const nameHits: { agent: (typeof agents)[number]; score: number; order: number }[] = [];
+  const personaHits: { agent: (typeof agents)[number]; score: number; order: number }[] = [];
+  agents.forEach((agent, order) => {
+    const nameLower = agent.name.toLowerCase();
+    const personaLower = agent.persona.toLowerCase();
+    if (nameLower.includes(q) || overlap(agent.name) > 0) {
+      // a whole-phrase name hit (Rust's `name.contains(q)`) scores highest.
+      const score = (nameLower.includes(q) ? 100 : 0) + overlap(agent.name);
+      nameHits.push({ agent, score, order });
+    } else if (personaLower.includes(q) || overlap(agent.persona) > 0) {
+      const score = (personaLower.includes(q) ? 100 : 0) + overlap(agent.persona);
+      personaHits.push({ agent, score, order });
+    }
+  });
+
+  // Stable sort: higher score first, original order as the tiebreak (preserves
+  // most-recent-first within equal scores, matching the Rust bucket order).
+  const byScore = (
+    a: { score: number; order: number },
+    b: { score: number; order: number },
+  ): number => (b.score !== a.score ? b.score - a.score : a.order - b.order);
+  nameHits.sort(byScore);
+  personaHits.sort(byScore);
+  return [...nameHits, ...personaHits].map((h) => h.agent);
+}
+
+/**
+ * `discover_agents(query)` — FREE on-chain agent yellow-pages. Enumerate the
+ * most-recent ~DISCOVER_SCAN_CAP token ids (ids are 1..nextId()-1, monotonic),
+ * read each name + persona, rank by the query, return the top matches.
+ * Fully try/caught: a bad RPC read returns a clean tool-error result, never 500.
+ */
+async function handleDiscoverAgents(
+  id: string | number | null,
+  args: Record<string, unknown>,
+): Promise<{ body: unknown; httpStatus: number }> {
+  const query = typeof args.query === 'string' ? args.query : '';
+  try {
+    const next = await nextId();
+    if (next <= 1n) {
+      // Nothing minted yet — clean empty result, not an error.
+      return {
+        body: rpcResult(id, {
+          content: [{ type: 'text', text: JSON.stringify({ query, matches: [] }, null, 2) }],
+          _meta: { matchCount: 0, scanned: 0 },
+        }),
+        httpStatus: 200,
+      };
+    }
+    // Most-recent first: scan ids [hi .. lo] descending, capped.
+    const hi = next - 1n;
+    const lo = hi - BigInt(DISCOVER_SCAN_CAP) + 1n;
+    const start = lo > 1n ? lo : 1n;
+    const idsDesc: bigint[] = [];
+    for (let tid = hi; tid >= start; tid--) idsDesc.push(tid);
+
+    const agents: { name: string; tokenId: bigint; persona: string }[] = [];
+    for (const tid of idsDesc) {
+      // Per-id reads are independently guarded so one burned/odd id can't abort
+      // the whole scan. nameOfId is empty for a burned (released) id — skip it.
+      let name = '';
+      try {
+        name = await nameOfId(tid);
+      } catch {
+        continue;
+      }
+      if (!name) continue;
+      let persona = '';
+      try {
+        persona = (await personaOf(tid)) ?? '';
+      } catch {
+        persona = '';
+      }
+      agents.push({ name, tokenId: tid, persona });
+    }
+
+    const ranked = rankAgentMatches(agents, query);
+    const matches = ranked.map((a) => ({
+      name: a.name,
+      tokenId: a.tokenId.toString(),
+      persona_excerpt:
+        a.persona.length > PERSONA_EXCERPT_LEN
+          ? a.persona.slice(0, PERSONA_EXCERPT_LEN) + '…'
+          : a.persona,
+    }));
+    return {
+      body: rpcResult(id, {
+        content: [
+          { type: 'text', text: JSON.stringify({ query, matches }, null, 2) },
+        ],
+        _meta: { matchCount: matches.length, scanned: agents.length },
+      }),
+      httpStatus: 200,
+    };
+  } catch (e) {
+    // A bad RPC read MUST NOT 500 the endpoint — degrade to a tool-error result.
+    return {
+      body: rpcResult(id, {
+        content: [
+          { type: 'text', text: `discover_agents failed: ${(e as Error).message}` },
+        ],
+        isError: true,
+      }),
+      httpStatus: 200,
+    };
+  }
+}
+
+/**
+ * `list_bounties()` — FREE open-work board. Read `openBounties(0, N)` (already
+ * filtered to Open + unexpired by the facet), then `getBounty` + `bountyTaskOf`
+ * for each. Returns {id, reward_lh, task, status}. Fully try/caught; per-bounty
+ * reads are independently guarded so one bad id can't drop the whole list.
+ */
+async function handleListBounties(
+  id: string | number | null,
+): Promise<{ body: unknown; httpStatus: number }> {
+  try {
+    const { ids } = await openBounties(0n, BigInt(BOUNTY_LIST_CAP));
+    const bounties: {
+      id: string;
+      reward_lh: string;
+      task: string;
+      status: string;
+    }[] = [];
+    for (const bid of ids) {
+      try {
+        const rec = await getBounty(bid);
+        // poster==0 => unknown/zeroed; openBounties shouldn't return these, but
+        // guard anyway. Surface only Open ones (defensive; the view filters too).
+        if (rec.poster === '0x0000000000000000000000000000000000000000') continue;
+        let task = '';
+        try {
+          task = await bountyTaskOf(bid);
+        } catch {
+          task = '';
+        }
+        bounties.push({
+          id: bid.toString(),
+          // $LH is 18-decimal; render a human decimal string alongside the id.
+          reward_lh: formatLh(rec.rewardWei),
+          task,
+          status: bountyStatusLabel(rec.status),
+        });
+      } catch {
+        // One unreadable bounty must not drop the rest.
+        continue;
+      }
+    }
+    return {
+      body: rpcResult(id, {
+        content: [
+          { type: 'text', text: JSON.stringify({ bounties }, null, 2) },
+        ],
+        _meta: { count: bounties.length },
+      }),
+      httpStatus: 200,
+    };
+  } catch (e) {
+    return {
+      body: rpcResult(id, {
+        content: [
+          { type: 'text', text: `list_bounties failed: ${(e as Error).message}` },
+        ],
+        isError: true,
+      }),
+      httpStatus: 200,
+    };
+  }
+}
+
+/** Render an 18-decimal $LH wei amount as a trimmed decimal string. */
+function formatLh(wei: bigint): string {
+  const base = 1_000_000_000_000_000_000n;
+  const whole = wei / base;
+  const frac = wei % base;
+  if (frac === 0n) return whole.toString();
+  // up to 18 fractional digits, trailing zeros trimmed.
+  let fracStr = frac.toString().padStart(18, '0').replace(/0+$/, '');
+  return `${whole.toString()}.${fracStr}`;
+}
 
 function defaultPersona(name: string): string {
   return (
@@ -794,7 +1208,7 @@ export default async function handler(req: Request): Promise<Response> {
             capabilities: { tools: { listChanged: false } },
             serverInfo: { name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION },
             instructions:
-              'localharness MCP. One tool: ask_agent(name, message). Each call requires an x402 $LH payment to the agent (x-x402-authorization header or params._x402).',
+              'localharness MCP. Tools: discover_agents(query) + list_bounties() are FREE read-only discovery (find agents / open work). ask_agent(name, message) runs an agent under its on-chain persona and requires an x402 $LH payment to the agent (x-x402-authorization header or params._x402).',
           }),
           200,
         );
@@ -810,7 +1224,12 @@ export default async function handler(req: Request): Promise<Response> {
 
       // --- tools ----------------------------------------------------------
       case 'tools/list':
-        return respond(rpcResult(id, { tools: [ASK_AGENT_TOOL] }), 200);
+        return respond(
+          rpcResult(id, {
+            tools: [DISCOVER_AGENTS_TOOL, LIST_BOUNTIES_TOOL, ASK_AGENT_TOOL],
+          }),
+          200,
+        );
 
       case 'tools/call': {
         const toolName = typeof params.name === 'string' ? params.name : '';
@@ -818,6 +1237,16 @@ export default async function handler(req: Request): Promise<Response> {
           params.arguments && typeof params.arguments === 'object'
             ? (params.arguments as Record<string, unknown>)
             : {};
+        // FREE read-only discovery tools (no x402 gate). Self-contained +
+        // try/caught inside each handler so a bad RPC can't 500 the endpoint.
+        if (toolName === 'discover_agents') {
+          const out = await handleDiscoverAgents(id, args);
+          return respond(out.body, out.httpStatus);
+        }
+        if (toolName === 'list_bounties') {
+          const out = await handleListBounties(id);
+          return respond(out.body, out.httpStatus);
+        }
         if (toolName !== 'ask_agent') {
           const err = rpcError(id, -32602, `unknown tool: "${toolName}"`);
           return respond(err.body, err.httpStatus);
