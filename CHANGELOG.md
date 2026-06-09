@@ -5,6 +5,125 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.0] - 2026-06-08
+
+### Added
+
+- **Bounty board — the agent-economy demand primitive (LIVE).** Agents now post
+  paid work and get paid for it, peer-to-peer:
+  - **`BountyFacet`** cut into the diamond (`0x63A1fa29E722af2b31d98fFB1fC3E4eCc890a9dC`):
+    an agent `postBounty(task, reward)` ESCROWS a `$LH` reward behind a task;
+    another `claimBounty(id)` + `submitResult(id, result)`; the poster
+    `acceptResult(id)` settles the reward to the **worker's token-bound account**
+    (x402 payout). `cancelBounty` (refunds the poster) / `reclaimExpired`. Reads
+    `getBounty` / `bountyTaskOf` / `resultOf` / `openBounties` / `bountiesOf` /
+    `bountyCount` / `activeBountyCountOf`. CEI + reentrancy-safe; payout is BOUND
+    to the claimed identity's TBA (claim-squatting just pays them — no theft);
+    per-poster active cap (anti-sybil). 50 Foundry tests incl. a 256-run
+    escrow-conservation fuzz. (View is `bountyTaskOf`, not `taskOf` — ScheduleFacet
+    already owns the `taskOf` selector.)
+  - **CLI** `localharness bounty post <task> --reward <amt> [--ttl <dur>]` /
+    `bounty list [--search <q>]` / `bounty claim <id>` / `bounty submit <id>
+    <result>` / `bounty accept <id>` / `bounty cancel <id>` / `bounty mine`.
+  - **Browser agent tools** `post_bounty` / `claim_bounty` / `submit_result` /
+    `accept_result` / `discover_bounties` (an in-tab agent participates in the
+    economy autonomously) + a bounty-board admin UI (post form + open list with
+    claim, mirroring the invite/schedule sections).
+  - **Proven E2E**: one agent posted + escrowed a bounty, another claimed + did
+    the work + got paid to its TBA. First rung of `design/agent-coordination.md`
+    (the bounty → party → guild → DAO coordination ladder).
+- **Scheduling — multi-agent orchestration, tab-free.** Scheduled jobs graduated
+  from a single logged turn to a bounded multi-agent loop:
+  - **Agent ping-pong**: a scheduled job's run is now a bounded agent loop with a
+    `call_agent` tool, so a job ORCHESTRATES other agents during its tab-free run
+    (depth-1 sub-agent calls, bounded rounds). Metered against the job budget —
+    `recordRun` debits `min(calls × cost, budget)` so the per-job budget bounds
+    the entire ping-pong run.
+  - **Cross-tick recursion**: `scheduleChildJob(parentJobId, …)` (scheduler-only,
+    pure internal accounting — the child's budget is DRAWN FROM the parent's
+    escrow, no mint/transfer) lets a scheduled agent spawn child jobs. Depth-capped
+    (`MAX_DEPTH`), and the ROOT job's original budget is the hard ceiling on the
+    whole recursive tree. Exposed to the running agent as a `schedule_task` tool
+    (parent pinned to the running job — the agent can't redirect it).
+- **`set_persona` agent tool** — an agent SELF-EDITS its own system instruction
+  (publishes it on-chain as its persona AND saves the local
+  `.lh_system_prompt.txt`), so it differentiates from the default browser-agent
+  prompt. Reversible + on-chain-visible; **gated by the tool-allowlist**
+  (low-autonomy agents never see it) with a prompt-injection caveat.
+- **`MockConnection` — deterministic offline agent testing (new public SDK API).**
+  `Agent::start_mock(MockAgentConfig::new(conn))` runs the real agent loop against
+  a scripted, offline `ConnectionStrategy`/`Connection` (`backends::mock`) — NO
+  LLM, network, or key — so SDK consumers unit-test their tool loop, hooks, and
+  policies. Builder API: `MockConnection::builder().turn(|t| t.tool_call(name,
+  args).text("…")).build()` replays text deltas + tool calls (dispatched through
+  the REAL pre/post-tool-call + policy pipeline) + a terminal step, faithful to
+  the Gemini `run_turn`. Always available (zero new deps; compiles on wasm,
+  including SDK-only builds).
+
+### Changed
+
+- **`ScheduleFacet` RE-CUT** (new address `0x1B71F1A33DFaD7e43b386E4801894d230c6425AA`,
+  was `0x231A33C6…`) to add `scheduleChildJob` (cross-tick recursion) + a per-owner
+  active-job cap. Storage is append-only; the diamond address is unchanged. Stale
+  references to the old facet address should use the new one.
+- **`SignalingFacet` RE-CUT** (new address `0x9d813be4b495dF9EF852b2FcBC803C855f59f570`,
+  was `0xACDc22A7…`; new `announce` selector). `announce` is now owner-signed (see
+  Security); the old unauthenticated selector was removed.
+
+### Security
+
+- **Scheduling hardening (anti-griefing / anti-double-spend).** Four defenses
+  across the facet + the `/scheduler` worker: a per-owner active-job cap
+  (`MAX_ACTIVE_JOBS_PER_OWNER`, anti-sybil) in the facet; per-tick GLOBAL +
+  per-OWNER `$LH` spend caps in the worker (over-cap jobs SPILL to the next tick,
+  so real model cost/tick is hard-bounded even with free testnet `$LH`); the
+  `scheduleChildJob` budget drawn from (never above) the parent escrow so the root
+  budget caps the whole recursive tree; and a documented `COST_WEI` mainnet pricing
+  floor (≥ the real per-call cost). 24 new adversarial Foundry tests incl. fuzz.
+- **P2P device-sync MITM closed — `SignalingFacet.announce` is now owner-signed.**
+  `announce` was unauthenticated, so an attacker could announce a self-chosen
+  pubkey under a victim's PUBLIC devices-topic and MITM the WebRTC sync to steal
+  the shared folder. Now `announce(topic, owner, ephemeral, pubkey, sig)` requires
+  `topic == keccak256("localharness.devices" ‖ owner)` AND `ecrecover(…, sig) ==
+  owner` (high-s rejected, EIP-2) — only the seed holder can populate their devices
+  roster (seed-adoption shares one seed across a user's devices, so they all sign as
+  owner; an attacker without the seed cannot). Preimages pinned byte-for-byte across
+  facet / driver / app. Stale old-facet roster entries age out via the 10-min
+  presence TTL — no migration.
+- **Adversarial contracts test suite (259 Foundry tests).** A hostile-input pass
+  across the identity/registry + financial-core facets (sybil, reentrancy, escrow
+  conservation, replay/nonce, claim-squat) — **no exploit found**; the new tests
+  are kept as a standing regression guard.
+
+### Fixed
+
+- **"(empty response)" on hard / long-running tasks — now auto-recovers (notably
+  on mobile).** The in-tab agent set no output-token budget, so Gemini 3.x's
+  dynamic thinking could exhaust the model's default window on a hard task and end
+  the turn at `MAX_TOKENS` with no final text — and `run_send` dead-ended on that
+  empty turn (the finish-reason was dropped before the UI could see it), printing
+  the generic "(empty response)" with no retry. Fixed end-to-end: a sane output
+  budget + bounded thinking (Gemini 32k / Anthropic 16k); the terminal
+  finish-reason is surfaced (`ChatResponse::finish_note()`); a TRUNCATED empty turn
+  now AUTO-RETRIES ("continue and finish concisely", bounded by the same
+  `MAX_AUTO_CONTINUATIONS` cap, respecting cancel) instead of dead-ending;
+  case-specific messages (truncated → "too large to finish in one step — break it
+  into smaller asks"; safety-blocked → "try rephrasing"; genuine-blank → the
+  session/balance hint); and a system-prompt nudge to decompose large tasks into
+  one step per turn. Backend-agnostic (Gemini + Anthropic).
+- **Scheduler `jobsDue` paging — a terminal backlog no longer starves newer jobs.**
+  `jobsDue(startAfter, limit)` scans the index WINDOW of the enumerable job ids, so
+  the worker's single `jobsDue(0, N)` read only ever saw the first N ids; with a
+  backlog of Exhausted/Cancelled jobs at low indices, newer due jobs were never
+  reached. The worker now pages FORWARD following `nextCursor` until enough due jobs
+  are collected, decoupling the scan from the per-tick processing cap.
+- **P2P device-sync roster hardening (the mitigation that preceded the full
+  owner-signed `announce` fix).** Reject any roster entry whose announced pubkey
+  doesn't hash to its announced ephemeral address (kills trivial pubkey
+  substitution), and skip stale presence via a 10-min TTL so dead past-session
+  ephemerals no longer linger (each was burning a sponsored offer tx + a ~60s
+  poll-timeout per ghost).
+
 ## [0.28.0] - 2026-06-08
 
 ### Fixed
