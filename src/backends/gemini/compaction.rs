@@ -205,7 +205,18 @@ fn extract_prior_summary(head: Option<&Content>) -> Option<String> {
         _ => return None,
     };
     let rest = text.strip_prefix(COMPACTION_TAG)?;
-    Some(rest.trim_start_matches('\n').to_string())
+    let body = rest.trim_start_matches('\n').to_string();
+    // A whitespace-only body is NOT a usable prior summary. Recognizing it as
+    // one would set `delta_start = 1` (excluding the head from the fold delta)
+    // while `fold_prompt`'s `!s.trim().is_empty()` guard would then refuse to
+    // emit it as PRIOR SUMMARY — so the head turn's content would be dropped
+    // from the summarizer input entirely (silent loss). Treat it as a normal
+    // turn instead, so it's folded verbatim into the delta. Keeps the two
+    // predicates consistent.
+    if body.trim().is_empty() {
+        return None;
+    }
+    Some(body)
 }
 
 /// Pick an index `i` such that history[..i] is summarized and
@@ -524,6 +535,44 @@ mod tests {
         assert_eq!(extract_prior_summary(Some(&user_text("just a message"))), None);
         assert_eq!(extract_prior_summary(Some(&model_text("model reply"))), None);
         assert_eq!(extract_prior_summary(None), None);
+    }
+
+    /// A tagged head whose body is EMPTY or whitespace-only must NOT be
+    /// recognized as a prior summary. `plan_fold` keys `delta_start` off
+    /// `prior_summary.is_some()`, but `fold_prompt` only emits a summary when
+    /// `!s.trim().is_empty()`. If those two predicates disagree, the head turn
+    /// is excluded from the delta AND omitted from PRIOR SUMMARY — dropped from
+    /// the summarizer input entirely (silent loss). Recognition must use the
+    /// SAME predicate as `fold_prompt`.
+    #[test]
+    fn extract_prior_summary_rejects_whitespace_only_body() {
+        // Exactly the tag (empty body) and the tag + only whitespace.
+        let empty = user_text(COMPACTION_TAG);
+        let ws = user_text(&format!("{COMPACTION_TAG}\n   \n\t"));
+        assert_eq!(extract_prior_summary(Some(&empty)), None);
+        assert_eq!(extract_prior_summary(Some(&ws)), None);
+    }
+
+    /// End-to-end consequence of the fix: a whitespace-only tagged head is
+    /// folded as part of the delta (treated as a normal turn), NOT excluded.
+    /// Before the fix, `delta_start` was 1 here while the prompt printed
+    /// "(none)" — so the head's content never reached the summarizer.
+    #[test]
+    fn whitespace_tagged_head_is_folded_not_dropped() {
+        let mut h = vec![user_text(&format!("{COMPACTION_TAG}\n  "))];
+        for i in 0..10 {
+            h.push(user_text(&format!("u{i}")));
+            h.push(model_text(&format!("m{i}")));
+        }
+        let plan = plan_fold(&h).expect("fold planned");
+        assert!(
+            plan.prior_summary.is_none(),
+            "whitespace-only head must not be taken as a prior summary"
+        );
+        assert_eq!(
+            plan.delta_start, 0,
+            "the head turn must be INCLUDED in the fold delta, not skipped"
+        );
     }
 
     // ---- THE AMORTIZATION PROOF ----
