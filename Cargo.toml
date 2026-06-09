@@ -208,6 +208,15 @@ web-sys = { version = "0.3", features = [
     "KeyboardEvent",
     "InputEvent",
     "MessageEvent",
+    # Worker — runs UNTRUSTED cartridge wasm OFF the main thread so a hung
+    # frame() can't freeze the app; the main thread's watchdog terminates a
+    # worker that stops posting frames (src/app/display.rs cartridge worker).
+    "Worker",
+    "WorkerOptions",
+    "WorkerType",
+    "Blob",
+    "BlobPropertyBag",
+    "Url",
     # host_net: WebSocket-backed cartridge networking (src/rustlite/loader.rs
     # + src/app/display.rs). BinaryType selects arraybuffer framing.
     "WebSocket",

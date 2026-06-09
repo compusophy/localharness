@@ -57,7 +57,12 @@ src/                  library crate
 │   ├── history.rs    OPFS-persisted conversation (tool-call replay)
 │   ├── opfs.rs       file browser + inline editor; click-to-DISPLAY .wasm/.rl/.html
 │   ├── display.rs    framebuffer: runs wasm cartridges (host_display draw API +
-│   │                 host_net WebSocket API) + rasterizes HTML; 5x7 font
+│   │                 host_net WebSocket API) + rasterizes HTML; 5x7 font. The
+│   │                 SINGLE-cartridge path runs the cartridge OFF the main
+│   │                 thread in a Web Worker (`mod worker` + web/cartridge-
+│   │                 worker.js) so a hung/unbounded frame() can't freeze the
+│   │                 app; a main-thread WATCHDOG terminates a worker that stops
+│   │                 posting frames (the brick fix). Composition stays in-thread.
 │   ├── key_store.rs  Gemini API key in OPFS
 │   ├── owner.rs      self-correcting on-chain-derived owner hint (.lh_owner)
 │   ├── tenant.rs     hostname classifier (apex / tenant / other)
@@ -154,10 +159,14 @@ contracts/   Foundry project for the on-chain registry
 ├── script/   DeployDiamond.s.sol + one Add<Facet>.s.sol cut script per facet
 └── README.md architecture write-up
 
-web/          static site for Vercel: index.html (bootstrap shell) + pkg/
-              (wasm-pack output, gitignored, built locally, uploaded by deploy);
-              llms.txt (full agent spec, leads with the quickstart) + skill.md
-              (the paste-to-your-agent onboarding front door; subset of llms.txt)
+web/          static site for Vercel: index.html (bootstrap shell) + boot.js +
+              cartridge-worker.js (the off-main-thread cartridge runtime — a
+              hand-written Web Worker re-implementing the host_display ABI +
+              host_net/host_audio so an untrusted cartridge runs contained; the
+              brick fix) + pkg/ (wasm-pack output, gitignored, built locally,
+              uploaded by deploy); llms.txt (full agent spec, leads with the
+              quickstart) + skill.md (the paste-to-your-agent onboarding front
+              door; subset of llms.txt)
 proxy/        $LH credit proxy — SEPARATE Vercel project ("proxy") at
               https://proxy-tau-ten-15.vercel.app. The ONE accepted off-chain
               component. LIVE. api/gemini.ts = Vercel Edge Gemini passthrough;

@@ -130,6 +130,14 @@ struct CartridgeRuntime {
 /// register file, which the compositor fills focus-gated each frame so siblings
 /// stay isolated (roadmap Track A / Phase 1a + 1c).
 enum InputSource {
+    // Retained as the in-thread single-cartridge fallback (reads the shared
+    // POINTER/POINTER_DOWN/STATE thread-locals). The default single-cartridge
+    // path now runs in a Web Worker (`mod worker`) which owns its own input +
+    // state cells, so `Global` is currently only the documented fallback and
+    // not constructed — composition uses `Local`. Keep it: it's the contract
+    // for re-enabling an in-thread run, and the thread-locals it reads are
+    // still live (the worker-input forwarder reads POINTER/POINTER_DOWN).
+    #[allow(dead_code)]
     Global,
     Local {
         pointer: Rc<Cell<(i32, i32)>>,
@@ -202,58 +210,38 @@ pub(crate) fn render_html_in_root_canvas(source: &str) -> Result<(), JsValue> {
     Ok(())
 }
 
-/// Shared core: wire the host imports over a fresh framebuffer, reset
-/// per-cartridge input/state, instantiate, and start the frame loop (or
-/// one-shot render).
+/// Shared core: run the cartridge OFF the main thread in a Web Worker so a
+/// hung/unbounded `frame()` can't freeze the app, and start the watchdog that
+/// terminates a worker which stops posting frames. The worker re-implements the
+/// `host_display` ABI faithfully (`web/cartridge-worker.js`); the main thread
+/// only blits the framebuffer it posts, feeds input, and plays forwarded audio.
+///
+/// This is the BRICK FIX: a cartridge persisted as the subdomain's public face
+/// can no longer wedge the tab (chat included) — synchronous wasm is
+/// un-preemptable from JS, so the only containment is "run it elsewhere + be
+/// able to kill it", which the worker + watchdog provide. The old in-thread
+/// `start_frame_loop` + `build_host_display` closures remain for the
+/// composition path (`mount_composition`), which is owner-driven and not the
+/// brick vector — see the note there.
 async fn run_with_ctx(
     wasm_bytes: &[u8],
     ctx: CanvasRenderingContext2d,
 ) -> Result<(), JsValue> {
-    // Bump the generation first so any previous cartridge's frame loop
-    // stops on its next tick.
-    let generation = FRAME_GEN.with(|g| {
-        let n = g.get().wrapping_add(1);
-        g.set(n);
-        n
-    });
+    // Bump the generation first so any previous cartridge's loop stops, and
+    // tear down the previous worker (terminate + drop its closures).
+    FRAME_GEN.with(|g| g.set(g.get().wrapping_add(1)));
+    worker::stop_worker();
+    // Drop any in-thread runtime (composition path) so its closures release.
+    RUNTIME.with(|cell| *cell.borrow_mut() = None);
     // Silence the prior cartridge's scheduled voices so a long note can't
-    // drone into the new one (the per-cartridge GainNodes are dropped with
-    // its RUNTIME below, but voices already scheduled on the shared engine
-    // keep playing until explicitly stopped).
+    // drone into the new one.
     audio::stop_all();
-
-    let fb: Framebuffer = Rc::new(RefCell::new(black_framebuffer()));
 
     // Fresh cartridge starts with cleared input + state.
     POINTER_DOWN.with(|d| d.set(0));
     STATE.with(|s| *s.borrow_mut() = [0; 64]);
 
-    // `host_net` needs the cartridge's linear memory, which only exists
-    // after instantiation. Share a cell the net closures read lazily.
-    let mem_cell: SharedMemory = Rc::new(RefCell::new(JsValue::NULL));
-
-    let full = crate::raster::Viewport::full(FB_W as i32, FB_H as i32);
-    let (imports, runtime) = build_host_display(&fb, &mem_cell, full, InputSource::Global)?;
-    // Hold the closures alive (drops the previous cartridge's set).
-    RUNTIME.with(|cell| *cell.borrow_mut() = Some(runtime));
-
-    let result = JsFuture::from(WebAssembly::instantiate_buffer(wasm_bytes, &imports)).await?;
-    let instance = Reflect::get(&result, &JsValue::from_str("instance"))?;
-    let exports = Reflect::get(&instance, &JsValue::from_str("exports"))?;
-    // Wire memory into the `host_net` closures now that it exists.
-    *mem_cell.borrow_mut() = Reflect::get(&exports, &JsValue::from_str("memory"))?;
-
-    // Prefer an animated `frame(t)`; fall back to a one-shot `render()`. The
-    // host presents after each (the cartridge's own `present` is a no-op now).
-    if let Some(frame) = export_fn(&exports, "frame") {
-        start_frame_loop(frame, generation, fb.clone(), ctx.clone());
-    } else if let Some(render) = export_fn(&exports, "render") {
-        render.call0(&JsValue::NULL)?;
-        present_framebuffer(&fb, &ctx);
-    } else {
-        return Err(JsValue::from_str("cartridge exports neither frame nor render"));
-    }
-    Ok(())
+    worker::spawn_cartridge(wasm_bytes, ctx)
 }
 
 /// Composite several cartridges into ONE framebuffer, iframe-free — the live
@@ -611,6 +599,20 @@ fn build_host_display(
 /// canvas. Called from the delegated listeners in `events.rs`.
 pub(crate) fn set_pointer_down(down: bool) {
     POINTER_DOWN.with(|d| d.set(if down { 1 } else { 0 }));
+    forward_pointer_to_worker();
+}
+
+/// Forward the latest pointer state (position + button) to the cartridge
+/// worker if one is live. The single-cartridge path runs off-thread, so its
+/// `pointer_*` host imports read cells INSIDE the worker — we keep them fresh
+/// by posting on every pointer event. (The thread-local cells are still
+/// updated for the in-thread composition path.) No-op when no worker is active.
+fn forward_pointer_to_worker() {
+    if worker::is_active() {
+        let (x, y) = POINTER.with(|p| p.get());
+        let down = POINTER_DOWN.with(|d| d.get());
+        worker::post_input(x, y, down);
+    }
 }
 
 /// Update the cursor position from a `mousemove` over the canvas. Maps
@@ -629,6 +631,7 @@ pub(crate) fn set_pointer(client_x: f64, client_y: f64) {
     let fx = (((client_x - rect.left()) / w) * FB_W as f64).clamp(0.0, (FB_W - 1) as f64) as i32;
     let fy = (((client_y - rect.top()) / h) * FB_H as f64).clamp(0.0, (FB_H - 1) as f64) as i32;
     POINTER.with(|p| p.set((fx, fy)));
+    forward_pointer_to_worker();
 }
 
 fn set_fn<T: ?Sized>(obj: &Object, name: &str, closure: &Closure<T>) -> Result<(), JsValue> {
@@ -660,37 +663,13 @@ fn export_fn(exports: &JsValue, name: &str) -> Option<Function> {
         .and_then(|v| v.dyn_into::<Function>().ok())
 }
 
-/// Drive `frame(t)` once per `requestAnimationFrame` tick, passing
-/// elapsed milliseconds since the loop started. Self-cancels when the
-/// global generation moves past `generation`.
-fn start_frame_loop(
-    frame: Function,
-    generation: u32,
-    fb: Framebuffer,
-    ctx: CanvasRenderingContext2d,
-) {
-    let start = js_sys::Date::now();
-    let holder: FrameLoopHolder = Rc::new(RefCell::new(None));
-    let holder2 = holder.clone();
-
-    *holder.borrow_mut() = Some(Closure::wrap(Box::new(move || {
-        if FRAME_GEN.with(|g| g.get()) != generation {
-            let _ = holder2.borrow_mut().take();
-            return;
-        }
-        let t = (js_sys::Date::now() - start) as i32;
-        let _ = frame.call1(&JsValue::NULL, &JsValue::from(t));
-        // Host presents once the cartridge has drawn this frame.
-        present_framebuffer(&fb, &ctx);
-        if let Some(cb) = holder2.borrow().as_ref() {
-            let _ = request_af(cb);
-        }
-    }) as Box<dyn FnMut()>));
-
-    if let Some(cb) = holder.borrow().as_ref() {
-        let _ = request_af(cb);
-    }
-}
+// NOTE: the old single-cartridge in-thread `start_frame_loop` was removed — the
+// single-cartridge path now runs in a Web Worker (see `mod worker`) so a hung
+// `frame()` can't freeze the main thread. The composition path keeps its own
+// in-thread loop (`start_compose_loop`) because it draws several owner-chosen
+// modules into one framebuffer via offset viewports, which the worker (identity
+// viewport, one cartridge) doesn't model yet. Composition is owner-driven, not
+// the brick vector; moving it off-thread is tracked as follow-up.
 
 fn request_af(cb: &Closure<dyn FnMut()>) -> Result<i32, JsValue> {
     dom::window()?.request_animation_frame(cb.as_ref().unchecked_ref())
@@ -700,6 +679,9 @@ fn request_af(cb: &Closure<dyn FnMut()>) -> Result<i32, JsValue> {
 pub(crate) fn stop() {
     FRAME_GEN.with(|g| g.set(g.get().wrapping_add(1)));
     RUNTIME.with(|cell| *cell.borrow_mut() = None);
+    // Terminate + drop the cartridge worker (the single-cartridge path runs
+    // off-thread now). Idempotent — a no-op when no worker is live.
+    worker::stop_worker();
     // Dropping RUNTIME drops the per-cartridge GainNodes; stop_all also halts
     // any voices already scheduled on the shared thread_local engine so a swap
     // never leaves a drone playing.
@@ -729,6 +711,332 @@ fn size_and_get_ctx() -> Result<CanvasRenderingContext2d, JsValue> {
         .ok_or_else(|| JsValue::from_str("no 2d context"))?
         .dyn_into::<CanvasRenderingContext2d>()?;
     Ok(ctx)
+}
+
+// --- cartridge worker: off-main-thread containment ----------------------
+//
+// The single-cartridge path runs the UNTRUSTED cartridge wasm in a Web Worker
+// (`web/cartridge-worker.js`) so a hung/unbounded `frame()` can only block the
+// worker, never the main thread (chat / studio stay live). The worker posts a
+// transferable framebuffer each frame; this module blits it to the canvas,
+// forwards pointer input + plays forwarded audio, and runs the WATCHDOG that
+// terminates a worker which stops posting frames — the actual hang defense
+// (synchronous wasm is un-preemptable from JS, so "kill it" is the only cure).
+//
+// This is what un-bricks a subdomain whose persisted public-face cartridge
+// loops forever: a previous build froze the whole tab on every reload; now the
+// reload spawns a worker, the watchdog fires after WATCHDOG_MS, the worker is
+// terminated, and an overlay invites a retry while the rest of the app works.
+mod worker {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    use js_sys::{ArrayBuffer, Object, Reflect, Uint8Array, Uint8ClampedArray};
+    use wasm_bindgen::prelude::*;
+    use wasm_bindgen::{Clamped, JsCast};
+    use web_sys::{CanvasRenderingContext2d, ImageData, MessageEvent, Worker};
+
+    use super::dom;
+    use super::{audio, FB_H, FB_W};
+
+    /// No-frame timeout: if the worker doesn't post a frame within this many
+    /// ms, the watchdog treats the cartridge as hung and terminates it. ~1.5s
+    /// is well past a normal frame (16ms) yet short enough that a hang is
+    /// obvious. Re-spawned workers each get the full window.
+    const WATCHDOG_MS: f64 = 1500.0;
+    /// How often the watchdog checks the last-frame timestamp.
+    const WATCHDOG_TICK_MS: i32 = 500;
+
+    thread_local! {
+        /// The live cartridge worker + its kept-alive closures + watchdog
+        /// handle. Replaced on the next cartridge load (terminating the prior
+        /// one) and cleared on `stop`/hang.
+        static WORKER: RefCell<Option<WorkerHandle>> = const { RefCell::new(None) };
+    }
+
+    /// Everything that must outlive a running worker: the `Worker` itself, the
+    /// `onmessage` closure (JS holds a reference into it), the watchdog interval
+    /// id + its callback closure, and the `terminated` flag the watchdog/stop
+    /// path flip so an in-flight tick is a no-op. (The last-frame timestamp is
+    /// owned by the onmessage + watchdog closures via their own `Rc` clones —
+    /// it doesn't need a struct slot.)
+    struct WorkerHandle {
+        worker: Worker,
+        _onmessage: Closure<dyn FnMut(MessageEvent)>,
+        watchdog: Option<i32>,
+        _watchdog_cb: Option<Closure<dyn FnMut()>>,
+        terminated: Rc<Cell<bool>>,
+    }
+
+    impl Drop for WorkerHandle {
+        fn drop(&mut self) {
+            // Clear the watchdog interval — UNLESS the watchdog already fired
+            // (`terminated`), in which case it self-cleared its own id and the
+            // id may have been recycled by the browser, so re-clearing here
+            // could nuke an unrelated interval. terminate() is idempotent.
+            if let Some(id) = self.watchdog.take() {
+                if !self.terminated.get() {
+                    if let Ok(win) = dom::window() {
+                        win.clear_interval_with_handle(id);
+                    }
+                }
+            }
+            self.worker.terminate();
+        }
+    }
+
+    /// Spawn a worker for `wasm_bytes`, wire its message handler to the canvas
+    /// `ctx`, post the cartridge, and arm the watchdog. Replaces any previous
+    /// worker (its `Drop` terminates it + clears its interval).
+    pub(super) fn spawn_cartridge(
+        wasm_bytes: &[u8],
+        ctx: CanvasRenderingContext2d,
+    ) -> Result<(), JsValue> {
+        // Tear down the previous worker first (idempotent).
+        stop_worker();
+
+        let worker = Worker::new(&worker_url())
+            .map_err(|e| JsValue::from_str(&format!("worker spawn failed: {e:?}")))?;
+
+        let last_frame = Rc::new(Cell::new(js_sys::Date::now()));
+        let terminated = Rc::new(Cell::new(false));
+
+        // Message handler: blit frames, play forwarded audio, surface errors.
+        let onmessage = {
+            let ctx = ctx.clone();
+            let last_frame = last_frame.clone();
+            Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
+                let data = e.data();
+                let ty = Reflect::get(&data, &JsValue::from_str("type"))
+                    .ok()
+                    .and_then(|v| v.as_string())
+                    .unwrap_or_default();
+                match ty.as_str() {
+                    "frame" => {
+                        last_frame.set(js_sys::Date::now());
+                        blit_frame(&data, &ctx);
+                    }
+                    "audio" => handle_audio(&data),
+                    "error" => {
+                        let detail = Reflect::get(&data, &JsValue::from_str("detail"))
+                            .ok()
+                            .and_then(|v| v.as_string())
+                            .unwrap_or_default();
+                        web_sys::console::warn_1(&JsValue::from_str(&format!(
+                            "cartridge error: {detail}"
+                        )));
+                    }
+                    "log" => {
+                        let msg = Reflect::get(&data, &JsValue::from_str("msg"))
+                            .ok()
+                            .and_then(|v| v.as_string())
+                            .unwrap_or_default();
+                        web_sys::console::log_1(&JsValue::from_str(&msg));
+                    }
+                    _ => {}
+                }
+            })
+        };
+        worker.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
+
+        // Post the wasm. `instantiate` copies the bytes, so we don't need to
+        // transfer ownership of this buffer.
+        let bytes = Uint8Array::from(wasm_bytes);
+        let msg = Object::new();
+        Reflect::set(&msg, &JsValue::from_str("type"), &JsValue::from_str("load"))?;
+        Reflect::set(&msg, &JsValue::from_str("wasm"), &bytes.buffer())?;
+        worker
+            .post_message(&msg)
+            .map_err(|e| JsValue::from_str(&format!("worker post failed: {e:?}")))?;
+
+        // Arm the watchdog: terminate the worker if no frame lands in time.
+        let (watchdog, watchdog_cb) =
+            arm_watchdog(worker.clone(), ctx, last_frame.clone(), terminated.clone());
+
+        WORKER.with(|cell| {
+            *cell.borrow_mut() = Some(WorkerHandle {
+                worker,
+                _onmessage: onmessage,
+                watchdog,
+                _watchdog_cb: watchdog_cb,
+                terminated,
+            });
+        });
+        Ok(())
+    }
+
+    /// Terminate + drop the current worker (clears its watchdog). Idempotent.
+    pub(super) fn stop_worker() {
+        WORKER.with(|cell| {
+            // Mark terminated so an in-flight watchdog tick is a no-op, then
+            // drop the handle (its `Drop` terminates the worker + clears the
+            // interval).
+            if let Some(h) = cell.borrow().as_ref() {
+                h.terminated.set(true);
+            }
+            *cell.borrow_mut() = None;
+        });
+    }
+
+    /// Forward the latest pointer to the worker (poll model). No-op if no
+    /// worker is live.
+    pub(super) fn post_input(x: i32, y: i32, down: i32) {
+        WORKER.with(|cell| {
+            if let Some(h) = cell.borrow().as_ref() {
+                let msg = Object::new();
+                let _ = Reflect::set(&msg, &JsValue::from_str("type"), &JsValue::from_str("input"));
+                let _ = Reflect::set(&msg, &JsValue::from_str("x"), &JsValue::from_f64(x as f64));
+                let _ = Reflect::set(&msg, &JsValue::from_str("y"), &JsValue::from_f64(y as f64));
+                let _ = Reflect::set(&msg, &JsValue::from_str("down"), &JsValue::from_f64(down as f64));
+                let _ = h.worker.post_message(&msg);
+            }
+        });
+    }
+
+    /// `true` while a cartridge worker is live AND not terminated (used by the
+    /// input handlers to decide whether to forward pointer events). A hung
+    /// worker the watchdog killed reports `false` even though its inert handle
+    /// is still in the slot.
+    pub(super) fn is_active() -> bool {
+        WORKER.with(|cell| {
+            cell.borrow()
+                .as_ref()
+                .map(|h| !h.terminated.get())
+                .unwrap_or(false)
+        })
+    }
+
+    /// Resolve the worker script URL relative to the page. `web/cartridge-
+    /// worker.js` ships next to `index.html`, so an absolute `/cartridge-
+    /// worker.js` resolves on apex, tenants, and Vercel previews alike.
+    fn worker_url() -> String {
+        "/cartridge-worker.js".to_string()
+    }
+
+    /// Blit a `{ type:'frame', fb:ArrayBuffer, w, h }` message to the canvas.
+    /// The framebuffer is RGBA8888 already in the worker's packing
+    /// (0xAABBGGRR little-endian == ImageData byte order R,G,B,A).
+    fn blit_frame(data: &JsValue, ctx: &CanvasRenderingContext2d) {
+        let Ok(fb) = Reflect::get(data, &JsValue::from_str("fb")) else { return };
+        let Ok(buffer) = fb.dyn_into::<ArrayBuffer>() else { return };
+        let clamped = Uint8ClampedArray::new(&buffer);
+        // ImageData wants a &Clamped<&[u8]>; copy the transferred buffer out.
+        let mut bytes = vec![0u8; clamped.length() as usize];
+        clamped.copy_to(&mut bytes[..]);
+        if let Ok(img) =
+            ImageData::new_with_u8_clamped_array_and_sh(Clamped(&bytes[..]), FB_W, FB_H)
+        {
+            let _ = ctx.put_image_data(&img, 0.0, 0.0);
+        }
+    }
+
+    /// Play a `{ type:'audio', op, args }` message on the main-thread audio
+    /// engine (AudioContext can't run in a worker). Mirrors the `host_audio`
+    /// ABI; the return handle is dropped (the worker tracks its own local
+    /// handles).
+    fn handle_audio(data: &JsValue) {
+        let op = Reflect::get(data, &JsValue::from_str("op"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_default();
+        let args = Reflect::get(data, &JsValue::from_str("args")).unwrap_or(JsValue::NULL);
+        let arg = |i: u32| -> i32 {
+            Reflect::get_u32(&args, i)
+                .ok()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as i32
+        };
+        match op.as_str() {
+            "tone" => { audio::play_tone(arg(0), arg(1), arg(2), 0); }
+            "tone_at" => { audio::play_tone(arg(0), arg(1), arg(2), arg(3)); }
+            "noise" => { audio::play_noise(arg(0)); }
+            "stop" => audio::stop_handle(arg(0)),
+            "set_volume" => audio::set_master_volume(arg(0)),
+            _ => {}
+        }
+    }
+
+    /// Arm a polling watchdog: every `WATCHDOG_TICK_MS`, if the last frame is
+    /// older than `WATCHDOG_MS`, the cartridge is hung → terminate the worker,
+    /// paint a "stopped" overlay, and clear its own interval. Crucially this
+    /// runs on the MAIN thread, which is never blocked (the cartridge runs in
+    /// the worker), so it can always fire — that is what makes a hung cartridge
+    /// terminable + the subdomain un-brickable.
+    ///
+    /// SAFETY: the watchdog must NOT drop its own `WorkerHandle` from inside the
+    /// callback (that would drop the `Closure` currently executing). So on a
+    /// hang it sets `terminated` (making the slot inert + `is_active()` false),
+    /// terminates the worker, and clears its interval via a shared id cell —
+    /// but leaves the `WorkerHandle` in place. The next `spawn_cartridge` /
+    /// `stop_worker` drops it safely (off the callback stack).
+    fn arm_watchdog(
+        worker: Worker,
+        ctx: CanvasRenderingContext2d,
+        last_frame: Rc<Cell<f64>>,
+        terminated: Rc<Cell<bool>>,
+    ) -> (Option<i32>, Option<Closure<dyn FnMut()>>) {
+        // Shared interval-id cell so the callback can clear ITSELF without
+        // touching (and dropping) its WorkerHandle.
+        let interval_id: Rc<Cell<Option<i32>>> = Rc::new(Cell::new(None));
+        let cb = {
+            let interval_id = interval_id.clone();
+            Closure::<dyn FnMut()>::new(move || {
+                if terminated.get() {
+                    return;
+                }
+                if js_sys::Date::now() - last_frame.get() > WATCHDOG_MS {
+                    terminated.set(true);
+                    worker.terminate();
+                    paint_stopped_overlay(&ctx);
+                    // Self-clear the interval (don't drop the handle here).
+                    if let Some(id) = interval_id.take() {
+                        if let Ok(win) = dom::window() {
+                            win.clear_interval_with_handle(id);
+                        }
+                    }
+                }
+            })
+        };
+        let id = dom::window().ok().and_then(|win| {
+            win.set_interval_with_callback_and_timeout_and_arguments_0(
+                cb.as_ref().unchecked_ref(),
+                WATCHDOG_TICK_MS,
+            )
+            .ok()
+        });
+        interval_id.set(id);
+        (id, Some(cb))
+    }
+
+    /// Paint a monochrome "cartridge stopped" message into the framebuffer
+    /// (pixels, via the shared 5x7 font — no DOM), so the canvas shows WHY it
+    /// went dark instead of just freezing. The rest of the app is reachable.
+    fn paint_stopped_overlay(ctx: &CanvasRenderingContext2d) {
+        let mut buf = vec![0u8; (FB_W * FB_H * 4) as usize];
+        for px in buf.chunks_exact_mut(4) {
+            px[3] = 255; // opaque black
+        }
+        let vp = crate::raster::Viewport::full(FB_W as i32, FB_H as i32);
+        let lines = ["CARTRIDGE STOPPED", "IT HUNG - RELOAD TO RETRY"];
+        let mut y = (FB_H as i32) / 2 - 8;
+        for line in lines {
+            let advance = 6; // 5px glyph + 1px gap at scale 1
+            let width = line.len() as i32 * advance;
+            let mut x = ((FB_W as i32) - width) / 2;
+            for ch in line.chars() {
+                crate::raster::blit_glyph(
+                    &mut buf, FB_W as i32, &vp, x, y, ch as u32, (200, 200, 200), 1,
+                );
+                x += advance;
+            }
+            y += 12;
+        }
+        if let Ok(img) =
+            ImageData::new_with_u8_clamped_array_and_sh(Clamped(&buf[..]), FB_W, FB_H)
+        {
+            let _ = ctx.put_image_data(&img, 0.0, 0.0);
+        }
+    }
 }
 
 // --- HTML → framebuffer rendering --------------------------------------
@@ -1426,7 +1734,10 @@ mod audio {
 
     /// Schedule a tone `delay_ms` in the future for `dur_ms`. Shared by
     /// `tone` (delay 0) and `tone_at`. Returns a voice handle or -1.
-    fn play_tone(freq: i32, dur_ms: i32, wave: i32, delay_ms: i32) -> i32 {
+    /// `pub(super)` so the cartridge-worker bridge can play tones forwarded
+    /// from the worker (an AudioContext can't run in a worker, so audio host
+    /// calls round-trip to the main thread).
+    pub(super) fn play_tone(freq: i32, dur_ms: i32, wave: i32, delay_ms: i32) -> i32 {
         with_engine(|eng| {
             let osc = match eng.ctx.create_oscillator() {
                 Ok(o) => o,
@@ -1461,6 +1772,81 @@ mod audio {
         .unwrap_or(-1)
     }
 
+    /// White-noise burst for `dur_ms`. Extracted so the cartridge-worker bridge
+    /// can play `host_audio::noise` forwarded from the worker. Returns a voice
+    /// handle or -1.
+    pub(super) fn play_noise(dur_ms: i32) -> i32 {
+        with_engine(|eng| {
+            let sr = eng.ctx.sample_rate();
+            let frames = sr as u32; // 1s of noise (truncated by duration)
+            let buf = match eng.ctx.create_buffer(1, frames, sr) {
+                Ok(b) => b,
+                Err(_) => return -1,
+            };
+            let mut data = vec![0f32; frames as usize];
+            // Cheap LCG white noise (getrandom not needed for audio).
+            let mut s: u32 = 0x2545_F491;
+            for x in data.iter_mut() {
+                s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                *x = ((s >> 8) as f32 / 8_388_608.0) - 1.0;
+            }
+            if buf.copy_to_channel(&data, 0).is_err() {
+                return -1;
+            }
+            let src = match eng.ctx.create_buffer_source() {
+                Ok(s) => s,
+                Err(_) => return -1,
+            };
+            src.set_buffer(Some(&buf));
+            let gain = match eng.ctx.create_gain() {
+                Ok(g) => g,
+                Err(_) => return -1,
+            };
+            let t0 = eng.ctx.current_time();
+            let dur = (dur_ms.max(1) as f64) / 1000.0;
+            let g = gain.gain();
+            let _ = g.set_value_at_time(0.8, t0);
+            let _ = g.linear_ramp_to_value_at_time(0.0, t0 + dur);
+            let _ = src.connect_with_audio_node(&gain);
+            let _ = gain.connect_with_audio_node(&eng.master);
+            let _ = src.start_with_when(t0);
+            let _ = src.stop_with_when(t0 + dur);
+            let node: JsValue = src.clone().into();
+            let onended = Closure::<dyn FnMut()>::new(move || {});
+            src.set_onended(Some(onended.as_ref().unchecked_ref()));
+            push_voice(eng, Voice { node, _onended: onended })
+        })
+        .unwrap_or(-1)
+    }
+
+    /// Stop one voice by handle, or all voices when `handle < 0`. Extracted so
+    /// the cartridge-worker bridge can forward `host_audio::stop`.
+    pub(super) fn stop_handle(handle: i32) {
+        ENGINE.with(|cell| {
+            if let Some(eng) = cell.borrow_mut().as_mut() {
+                if handle < 0 {
+                    for slot in eng.voices.iter_mut() {
+                        if let Some(v) = slot.take() {
+                            stop_node(&v.node);
+                        }
+                    }
+                } else if let Some(slot) = eng.voices.get_mut(handle as usize) {
+                    if let Some(v) = slot.take() {
+                        stop_node(&v.node);
+                    }
+                }
+            }
+        });
+    }
+
+    /// Set the master gain (`pct` 0..=100). Extracted so the cartridge-worker
+    /// bridge can forward `host_audio::set_volume`.
+    pub(super) fn set_master_volume(pct: i32) {
+        with_engine(|eng| {
+            eng.master.gain().set_value((pct.clamp(0, 100) as f32) / 100.0);
+        });
+    }
+
     /// Build the `host_audio` import object on `imports` and return the
     /// runtime that owns its closures (must outlive the wasm instance).
     pub(super) fn build_host_audio(imports: &Object) -> Result<AudioRuntime, JsValue> {
@@ -1472,71 +1858,9 @@ mod audio {
                 play_tone(freq, dur_ms, wave, delay_ms)
             },
         );
-        let noise = Closure::<dyn FnMut(i32) -> i32>::new(move |dur_ms: i32| {
-            with_engine(|eng| {
-                let sr = eng.ctx.sample_rate();
-                let frames = sr as u32; // 1s of noise (truncated by duration)
-                let buf = match eng.ctx.create_buffer(1, frames, sr) {
-                    Ok(b) => b,
-                    Err(_) => return -1,
-                };
-                let mut data = vec![0f32; frames as usize];
-                // Cheap LCG white noise (getrandom not needed for audio).
-                let mut s: u32 = 0x2545_F491;
-                for x in data.iter_mut() {
-                    s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                    *x = ((s >> 8) as f32 / 8_388_608.0) - 1.0;
-                }
-                if buf.copy_to_channel(&data, 0).is_err() {
-                    return -1;
-                }
-                let src = match eng.ctx.create_buffer_source() {
-                    Ok(s) => s,
-                    Err(_) => return -1,
-                };
-                src.set_buffer(Some(&buf));
-                let gain = match eng.ctx.create_gain() {
-                    Ok(g) => g,
-                    Err(_) => return -1,
-                };
-                let t0 = eng.ctx.current_time();
-                let dur = (dur_ms.max(1) as f64) / 1000.0;
-                let g = gain.gain();
-                let _ = g.set_value_at_time(0.8, t0);
-                let _ = g.linear_ramp_to_value_at_time(0.0, t0 + dur);
-                let _ = src.connect_with_audio_node(&gain);
-                let _ = gain.connect_with_audio_node(&eng.master);
-                let _ = src.start_with_when(t0);
-                let _ = src.stop_with_when(t0 + dur);
-                let node: JsValue = src.clone().into();
-                let onended = Closure::<dyn FnMut()>::new(move || {});
-                src.set_onended(Some(onended.as_ref().unchecked_ref()));
-                push_voice(eng, Voice { node, _onended: onended })
-            })
-            .unwrap_or(-1)
-        });
-        let stop = Closure::<dyn FnMut(i32)>::new(move |handle: i32| {
-            ENGINE.with(|cell| {
-                if let Some(eng) = cell.borrow_mut().as_mut() {
-                    if handle < 0 {
-                        for slot in eng.voices.iter_mut() {
-                            if let Some(v) = slot.take() {
-                                stop_node(&v.node);
-                            }
-                        }
-                    } else if let Some(slot) = eng.voices.get_mut(handle as usize) {
-                        if let Some(v) = slot.take() {
-                            stop_node(&v.node);
-                        }
-                    }
-                }
-            });
-        });
-        let set_volume = Closure::<dyn FnMut(i32)>::new(move |pct: i32| {
-            with_engine(|eng| {
-                eng.master.gain().set_value((pct.clamp(0, 100) as f32) / 100.0);
-            });
-        });
+        let noise = Closure::<dyn FnMut(i32) -> i32>::new(move |dur_ms: i32| play_noise(dur_ms));
+        let stop = Closure::<dyn FnMut(i32)>::new(move |handle: i32| stop_handle(handle));
+        let set_volume = Closure::<dyn FnMut(i32)>::new(move |pct: i32| set_master_volume(pct));
 
         let host_audio = Object::new();
         super::set_fn(&host_audio, "tone", &tone)?;

@@ -5,6 +5,35 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Cartridge hangs no longer freeze the app or brick a subdomain.** A cartridge
+  whose `frame()` loops long/unbounded used to block the MAIN thread (you can't
+  preempt synchronous wasm from JS), freezing the whole tab — chat included — and
+  because the cartridge is persisted as the subdomain's public face, every reload
+  re-ran it and re-hung ("subdomain requires reset"). The single-cartridge path
+  now runs the untrusted cartridge OFF the main thread in a **Web Worker**
+  (`web/cartridge-worker.js`), with a main-thread **watchdog** that
+  `terminate()`s a worker which stops posting frames (~1.5s). Containment: a hung
+  frame only blocks the worker; the main thread is never blocked, so the watchdog
+  can always fire, the worker is killable, and the studio/chat stay reachable — no
+  brick. On a hang the canvas paints a "cartridge stopped" overlay.
+  - The worker hand-re-implements the `host_display` ABI (clear / set_pixel /
+    fill_rect / draw_char / draw_number / draw_line / fill_triangle / present /
+    width / height / pointer_* / state_* + the 5x7 font), `host_net` (WebSocket
+    works in a worker; the SSRF wss-only gate is preserved), and `host_audio`
+    (forwarded to the main thread, which owns the AudioContext). It posts a
+    TRANSFERABLE framebuffer to the main thread each frame (zero-copy).
+  - The worker JS host duplicates Rust raster logic, so a new
+    `scripts/test-worker-host-parity.mjs` (verify.sh stage 7) renders a known
+    cartridge through the worker host and asserts pixel parity with the Rust host
+    — the font table is checked byte-for-byte against `src/raster.rs` — so the two
+    can't silently drift.
+  - The dormant `host_abort.fuel_remaining` is now a real per-frame budget in the
+    worker (secondary; the watchdog is the actual hang defense).
+
 ## [0.29.0] - 2026-06-08
 
 ### Added

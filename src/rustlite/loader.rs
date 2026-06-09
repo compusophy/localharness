@@ -175,6 +175,14 @@ fn build_host_imports(mem: &SharedMemory) -> Result<(js_sys::Object, NetRuntime)
     let _ = Reflect::set(&host_abort, &JsValue::from_str("panic"), panic_fn.as_ref());
     panic_fn.forget();
 
+    // fuel_remaining: a constant in this BARE loader (SDK / compile-check path)
+    // because it runs no frame loop — there's no budget to decrement. The DISPLAY
+    // path runs cartridges in a Web Worker (web/cartridge-worker.js), whose
+    // host_abort.fuel_remaining IS a real per-frame decreasing budget. Note that
+    // fuel is only a courtesy for cartridges that voluntarily poll it: the
+    // rustlite compiler emits no fuel checks, so the actual hang defense against
+    // an unbounded frame() is the worker + the main-thread WATCHDOG that
+    // terminates a worker which stops posting frames (display.rs `mod worker`).
     let fuel_fn = Closure::<dyn Fn() -> f64>::new(|| 1_000_000.0);
     let _ = Reflect::set(&host_abort, &JsValue::from_str("fuel_remaining"), fuel_fn.as_ref());
     fuel_fn.forget();
