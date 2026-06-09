@@ -33,13 +33,16 @@ async fn main() -> localharness::Result<()> {
     // A side effect we can observe from outside the tool: a call counter. This
     // proves the tool BODY actually executed (not just that a call was scripted).
     let calls = Arc::new(AtomicU64::new(0));
-    let calls_in_tool = calls.clone();
 
-    // A custom tool = name + description + JSON-schema + async closure. The
-    // closure receives the model's args as `serde_json::Value` and returns the
-    // JSON the model sees as the tool's result. `ClosureTool::new` hands back an
-    // `Arc<ClosureTool>` ready to pass to `with_tool`.
-    let add = ClosureTool::new(
+    // A custom tool = name + description + JSON-schema + async closure. Because
+    // this tool captures SHARED state (the `calls` counter), we use
+    // `ClosureTool::with_state`: pass the state ONCE and the framework clones a
+    // fresh handle into every call — no manual clone-into-closure, no
+    // double-move. The closure receives that clone as its first argument, then
+    // the model's args as `serde_json::Value`, and returns the JSON the model
+    // sees as the result. `with_state` hands back an `Arc<ClosureTool>` ready to
+    // pass to `with_tool`. (For a STATELESS tool, reach for `ClosureTool::new`.)
+    let add = ClosureTool::with_state(
         "add",
         "Add two integers and return their sum.",
         json!({
@@ -50,14 +53,12 @@ async fn main() -> localharness::Result<()> {
             },
             "required": ["a", "b"]
         }),
-        move |args, _ctx| {
-            let calls = calls_in_tool.clone();
-            async move {
-                calls.fetch_add(1, Ordering::SeqCst);
-                let a = args["a"].as_i64().unwrap_or(0);
-                let b = args["b"].as_i64().unwrap_or(0);
-                Ok(json!({ "sum": a + b }))
-            }
+        calls.clone(),
+        |calls, args, _ctx| async move {
+            calls.fetch_add(1, Ordering::SeqCst);
+            let a = args["a"].as_i64().unwrap_or(0);
+            let b = args["b"].as_i64().unwrap_or(0);
+            Ok(json!({ "sum": a + b }))
         },
     );
 

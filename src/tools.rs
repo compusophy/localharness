@@ -247,6 +247,101 @@ impl ClosureTool {
             handler: Arc::new(move |a, c| Box::pin(handler(a, c))),
         })
     }
+
+    /// Build a closure-based tool whose handler captures shared `state`.
+    ///
+    /// A `ClosureTool` runs its handler on *every* call, so any state the
+    /// handler touches (a counter, an `Arc` resource, an observability sink)
+    /// must be cloned *into the handler once* and then *again into each async
+    /// body* — the awkward double-move below. `with_state` hoists that clone
+    /// into the framework: you pass the shared `state` once, and your closure
+    /// receives a fresh clone as its first argument on every call. The handler
+    /// stays clean — no manual clone, no double-move.
+    ///
+    /// # Before (stateless [`new`] — the double-move workaround)
+    ///
+    /// ```rust,no_run
+    /// use std::sync::Arc;
+    /// use std::sync::atomic::{AtomicU64, Ordering};
+    /// use localharness::ClosureTool;
+    /// use serde_json::json;
+    ///
+    /// let calls = Arc::new(AtomicU64::new(0));
+    /// let calls_in_tool = calls.clone();              // move #1: into the closure
+    /// let tool = ClosureTool::new(
+    ///     "tick",
+    ///     "Increment a shared counter.",
+    ///     json!({"type": "object", "properties": {}}),
+    ///     move |_args, _ctx| {
+    ///         let calls = calls_in_tool.clone();       // move #2: into the async body
+    ///         async move {
+    ///             calls.fetch_add(1, Ordering::SeqCst);
+    ///             Ok(json!({"count": calls.load(Ordering::SeqCst)}))
+    ///         }
+    ///     },
+    /// );
+    /// ```
+    ///
+    /// # After (stateful `with_state` — the framework owns the clone)
+    ///
+    /// ```rust,no_run
+    /// use std::sync::Arc;
+    /// use std::sync::atomic::{AtomicU64, Ordering};
+    /// use localharness::ClosureTool;
+    /// use serde_json::json;
+    ///
+    /// let calls = Arc::new(AtomicU64::new(0));
+    /// let tool = ClosureTool::with_state(
+    ///     "tick",
+    ///     "Increment a shared counter.",
+    ///     json!({"type": "object", "properties": {}}),
+    ///     calls,                                       // shared state, passed once
+    ///     |calls, _args, _ctx| async move {            // a fresh clone per call
+    ///         calls.fetch_add(1, Ordering::SeqCst);
+    ///         Ok(json!({"count": calls.load(Ordering::SeqCst)}))
+    ///     },
+    /// );
+    /// ```
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_state<S, F, Fut>(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        schema: Value,
+        state: S,
+        f: F,
+    ) -> Arc<Self>
+    where
+        S: Clone + Send + Sync + 'static,
+        F: Fn(S, Value, Option<Arc<ToolContext>>) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<Value>> + Send + 'static,
+    {
+        Self::new(name, description, schema, move |args, ctx| {
+            f(state.clone(), args, ctx)
+        })
+    }
+
+    /// Build a closure-based tool whose handler captures shared `state`.
+    ///
+    /// See the native overload for the before/after example. On wasm32 the
+    /// closure, future, and state shed their `Send + Sync` bounds (the browser
+    /// executor is single-threaded), matching [`ClosureTool::new`].
+    #[cfg(target_arch = "wasm32")]
+    pub fn with_state<S, F, Fut>(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        schema: Value,
+        state: S,
+        f: F,
+    ) -> Arc<Self>
+    where
+        S: Clone + 'static,
+        F: Fn(S, Value, Option<Arc<ToolContext>>) -> Fut + 'static,
+        Fut: std::future::Future<Output = Result<Value>> + 'static,
+    {
+        Self::new(name, description, schema, move |args, ctx| {
+            f(state.clone(), args, ctx)
+        })
+    }
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -263,5 +358,49 @@ impl Tool for ClosureTool {
     }
     async fn execute(&self, args: Value, ctx: Option<Arc<ToolContext>>) -> Result<Value> {
         (self.handler)(args, ctx).await
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use serde_json::json;
+
+    // `with_state` must thread the SAME shared state through every call, cloned
+    // once by the framework. Build a counter tool over an `Arc<AtomicU64>`,
+    // invoke it three times via the runner, and assert the mutation accumulated
+    // across calls (i.e. the clone is a handle to the one counter, not a copy).
+    #[tokio::test]
+    async fn with_state_threads_shared_state_across_calls() {
+        let counter = Arc::new(AtomicU64::new(0));
+
+        let tool = ClosureTool::with_state(
+            "tick",
+            "Increment a shared counter and report the new value.",
+            json!({ "type": "object", "properties": {} }),
+            counter.clone(),
+            |counter: Arc<AtomicU64>, _args, _ctx| async move {
+                let prev = counter.fetch_add(1, Ordering::SeqCst);
+                Ok(json!({ "count": prev + 1 }))
+            },
+        );
+
+        let runner = ToolRunner::new();
+        runner.register(tool);
+
+        // Three independent invocations.
+        let r1 = runner.execute("tick", json!({})).await.unwrap();
+        let r2 = runner.execute("tick", json!({})).await.unwrap();
+        let r3 = runner.execute("tick", json!({})).await.unwrap();
+
+        // Each call saw the running total — the same state was threaded through.
+        assert_eq!(r1["count"], json!(1));
+        assert_eq!(r2["count"], json!(2));
+        assert_eq!(r3["count"], json!(3));
+
+        // The handle the test still holds reflects all three mutations: the
+        // framework cloned a SHARED handle per call, not an independent copy.
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
     }
 }
