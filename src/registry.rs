@@ -2159,17 +2159,21 @@ pub async fn tba_execute_call_sponsored(
         value_wei: 0,
         input: encode_tba_execute(&target, value_wei, data),
     };
-    // execute (~30k) + the inner call (varies — an ERC-20 transfer ~52k, a
-    // vote ~80k) + Tempo sponsorship (~275k). 600k covers a typical inner
-    // call with headroom; the sponsor is billed on gas USED, not the limit.
-    // The cold first-deploy cost lives in create_token_bound_account_sponsored
-    // (a separate tx), so this stays modest.
+    // execute (~30k) + the inner call + Tempo sponsorship (~275k). The inner
+    // call varies WIDELY: an ERC-20 transfer ~52k, a vote ~80k, but a GUILD
+    // JOIN (`acceptGuildInvite` — cold roster + `guildsOf` enumerable pushes +
+    // role SSTORE) is ~1.3M (live: a 600k cap OOG'd it — the receipt said
+    // reverted while `cast run` replay falsely showed success, the classic
+    // replay-vs-real-exec gap). 2M comfortably covers a guild-join-class inner
+    // call with headroom; the sponsor is billed on gas USED, not the limit, so
+    // the headroom is free. The cold first-deploy cost lives in
+    // create_token_bound_account_sponsored (a separate tx).
     submit_tempo_sponsored(
         owner_signer,
         fee_payer,
         vec![execute_call],
         fee_token,
-        600_000,
+        2_000_000,
     )
     .await
 }

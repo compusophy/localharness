@@ -65,10 +65,12 @@
 //!   tba show [--as <me>] [<name>]   your (or <name>'s) token-bound account
 //!                            address, $LH balance, and deployed status
 //!   tba deploy [--as <me>] [<name>]  deploy the token-bound account on-chain
-//!   tba exec [--as <me>] <to> <amount> [--data <hex>]
-//!                            make YOUR token-bound account EXECUTE a call (the
+//!   tba exec [--as <me>] [--tba <name-or-0xaddr>] <to> <amount> [--data <hex>]
+//!                            make a token-bound account EXECUTE a call (the
 //!                            headless act-panel): no --data sends <amount> $LH
-//!                            to <to>; --data <hex> calls <to> with that calldata
+//!                            to <to>; --data <hex> calls <to> with that calldata;
+//!                            --tba acts through an owned TBA other than your main
+//!                            (e.g. a guild's wallet joining + voting in a DAO)
 //!                            and forwards <amount> as the value
 //!   help                     this text
 
@@ -195,10 +197,12 @@ USAGE:
   localharness tba deploy [--as <me>] [<name>]
                                          deploy the token-bound account on-chain (needed
                                          once before it can execute / hold signers)
-  localharness tba exec [--as <me>] <to> <amount> [--data <hex>]
-                                         make YOUR token-bound account EXECUTE a call:
+  localharness tba exec [--as <me>] [--tba <name-or-0xaddr>] <to> <amount> [--data <hex>]
+                                         make a token-bound account EXECUTE a call:
                                          no --data sends <amount> $LH to <to>; with
-                                         --data <hex> it calls <to> with that calldata
+                                         --data <hex> it calls <to> with that calldata;
+                                         --tba acts through an owned TBA other than your
+                                         main (e.g. a guild's wallet voting in a DAO)
                                          and forwards <amount> as the value (the headless
                                          act-panel — your agent acts through its own wallet)
   localharness topup [--as <me>]         deposit your wallet $LH into the per-call meter
@@ -4001,10 +4005,14 @@ const TBA_USAGE: &str = "\
 usage: localharness tba <show|deploy|exec> ...
   tba show   [--as <me>] [<name>]            your (or <name>'s) TBA address, $LH, deployed?
   tba deploy [--as <me>] [<name>]            deploy the TBA on-chain (createTokenBoundAccount)
-  tba exec   [--as <me>] <to> <amount> [--data <hex>]
-                                             make YOUR TBA execute a call:
+  tba exec   [--as <me>] [--tba <name-or-0xaddr>] <to> <amount> [--data <hex>]
+                                             make a TBA execute a call:
                                                no --data → send <amount> $LH to <to>
                                                --data <hex> → call <to> with <hex>, <amount> as value
+                                               --tba → act through an owned TBA other than
+                                                       your main (a guild's wallet, etc.); default
+                                                       is your main TBA. The chain gates execute to
+                                                       the TBA owner, so it must be one you control.
   <to> is a name (→ its on-chain owner) or a 0x… address.
   <amount> is in $LH (the transfer amount, or the ETH value forwarded with --data).";
 
@@ -4157,16 +4165,29 @@ async fn tba_deploy(caller: Option<&str>, name: Option<&str>) -> i32 {
     }
 }
 
-/// `tba exec [--as <me>] <to> <amount> [--data <hex>]` — make the CALLER'S OWN
-/// token-bound account EXECUTE a call. With no `--data` this is a plain `$LH`
-/// transfer of `<amount>` to `<to>` (`execute($LH, 0, transfer(to, amount))`);
-/// with `--data <hex>` it calls `<to>` with that calldata and forwards
-/// `<amount>` as the call value (`execute(to, amount, data)`). `<to>` is a name
-/// (resolved to its on-chain owner address) or a raw `0x…` address. The TBA is
-/// deployed first if needed. The agent acts through its OWN wallet.
+/// `tba exec [--as <me>] [--tba <name-or-0xaddr>] <to> <amount> [--data <hex>]` —
+/// make a token-bound account EXECUTE a call. With no `--data` this is a plain
+/// `$LH` transfer of `<amount>` to `<to>` (`execute($LH, 0, transfer(to,
+/// amount))`); with `--data <hex>` it calls `<to>` with that calldata and
+/// forwards `<amount>` as the call value (`execute(to, amount, data)`). `<to>`
+/// is a name (resolved to its on-chain owner address) or a raw `0x…` address.
+/// The acting TBA defaults to the CALLER'S OWN main; `--tba` overrides it with
+/// any TBA the caller controls — a name (→ `tokenBoundAccountByName`) or a raw
+/// `0x…` address — so a GUILD's wallet can act (e.g. join + vote in a parent
+/// guild's DAO). The MultiSignerAccount gates `execute` to the TBA owner
+/// on-chain (`_isAuthorized`); a client-side owner check warns early for a name
+/// target. The TBA is deployed first if needed (when its token id is known).
 async fn tba_exec(caller: Option<&str>, rest: &[String]) -> i32 {
-    // Pull an optional `--data <hex>` from anywhere in the args.
-    let (data_hex, positional) = match take_data_flag(rest) {
+    // Pull an optional `--tba <name-or-0xaddr>` (override the acting TBA) and an
+    // optional `--data <hex>` from anywhere in the args.
+    let (tba_flag, after_tba) = match take_tba_flag(rest) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let (data_hex, positional) = match take_data_flag(&after_tba) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("{e}");
@@ -4231,40 +4252,113 @@ async fn tba_exec(caller: Option<&str>, rest: &[String]) -> i32 {
         Ok(pair) => pair,
         Err(code) => return code,
     };
-    // The acting TBA is ALWAYS the caller's OWN identity — an agent acts through
-    // its own wallet; it can't drive someone else's (the contract would revert).
-    let token_id = match resolve_own_token_id(caller, &signer).await {
-        Ok(id) => id,
-        Err(e) => {
-            eprintln!("{e}");
-            return 1;
+    let caller_addr = addr_to_hex(wallet::address(&signer));
+
+    // Resolve the ACTING TBA. Default (no --tba) = the caller's OWN main TBA, as
+    // before. With --tba it's an arbitrary owned TBA: a name → its
+    // `tokenBoundAccountByName`, or a raw 0x address. The MultiSignerAccount gates
+    // `execute` to the TBA owner on-chain (`_isAuthorized`), so signing as the
+    // caller only works for a TBA the caller controls — the client check below is
+    // a clean early warning, the chain is the real gate. `exec_token_id` is the id
+    // backing the TBA when known (a name target / the caller's own), used to
+    // auto-deploy a counterfactual TBA; `None` for a raw-address target (no
+    // reverse index → we can't deploy it, only warn).
+    let (tba_addr, exec_token_id, tba_label) = match &tba_flag {
+        // --tba <name-or-0xaddr>: an explicit, possibly-foreign-but-owned TBA.
+        Some(target) => {
+            use localharness::encoding::{classify_recipient, Recipient};
+            match classify_recipient(target) {
+                Ok(Recipient::Address(a)) => {
+                    // Raw TBA address — no on-chain reverse index to its token, so
+                    // we can't resolve the controlling owner or auto-deploy. The
+                    // on-chain `_isAuthorized` is the real gate.
+                    (a.clone(), None, a)
+                }
+                Ok(Recipient::Name(n)) => {
+                    let addr = match registry::tba_of_name(&n).await {
+                        Ok(Some(a)) => a,
+                        Ok(None) => {
+                            eprintln!("tba exec: '{n}' is not registered (no token-bound account)");
+                            return 1;
+                        }
+                        Err(e) => {
+                            eprintln!("tba exec: RPC error resolving '{n}': {e}");
+                            return 1;
+                        }
+                    };
+                    // Client-side owner check: warn (don't block) when the name's
+                    // controlling NFT owner isn't the caller. The chain still gates.
+                    match registry::owner_of_name(&n).await {
+                        Ok(Some(o)) if o.eq_ignore_ascii_case(&caller_addr) => {}
+                        Ok(Some(o)) => {
+                            eprintln!(
+                                "warning: '{n}' is controlled by {o}, not you ({caller_addr}) — \
+                                 the TBA's on-chain _isAuthorized will reject this unless you're \
+                                 an enrolled signer."
+                            );
+                        }
+                        _ => {}
+                    }
+                    // The token id backs the auto-deploy of a counterfactual TBA.
+                    let id = registry::id_of_name(&n).await.unwrap_or(0);
+                    (addr, if id != 0 { Some(id) } else { None }, n)
+                }
+                Err(e) => {
+                    eprintln!("tba exec: --tba {e}");
+                    return 2;
+                }
+            }
         }
-    };
-    let tba_addr = match registry::tba_of_token_id(token_id).await {
-        Ok(Some(a)) => a,
-        Ok(None) => {
-            eprintln!("tba exec: no token-bound account for your token #{token_id}");
-            return 1;
-        }
-        Err(e) => {
-            eprintln!("tba exec: RPC error: {e}");
-            return 1;
+        // No --tba: the caller's OWN identity (the original, unchanged behaviour).
+        None => {
+            let token_id = match resolve_own_token_id(caller, &signer).await {
+                Ok(id) => id,
+                Err(e) => {
+                    eprintln!("{e}");
+                    return 1;
+                }
+            };
+            match registry::tba_of_token_id(token_id).await {
+                Ok(Some(a)) => (a, Some(token_id), "your".to_string()),
+                Ok(None) => {
+                    eprintln!("tba exec: no token-bound account for your token #{token_id}");
+                    return 1;
+                }
+                Err(e) => {
+                    eprintln!("tba exec: RPC error: {e}");
+                    return 1;
+                }
+            }
         }
     };
 
-    // The TBA must be deployed before it can execute. Deploy first if not.
+    // The TBA must be deployed before it can execute. Deploy first if we know its
+    // token id (caller's own, or a name target). A raw-address target can't be
+    // deployed (no token id) — surface a clean error instead of an opaque revert.
     if !registry::is_contract_deployed(&tba_addr).await.unwrap_or(false) {
-        println!("your TBA {tba_addr} isn't deployed yet — deploying first …");
-        if let Err(e) = registry::create_token_bound_account_sponsored(
-            &signer,
-            &sponsor,
-            token_id,
-            registry::ALPHA_USD_ADDRESS,
-        )
-        .await
-        {
-            eprintln!("tba exec: TBA deploy failed: {e}");
-            return 1;
+        match exec_token_id {
+            Some(token_id) => {
+                println!("{tba_label} TBA {tba_addr} isn't deployed yet — deploying first …");
+                if let Err(e) = registry::create_token_bound_account_sponsored(
+                    &signer,
+                    &sponsor,
+                    token_id,
+                    registry::ALPHA_USD_ADDRESS,
+                )
+                .await
+                {
+                    eprintln!("tba exec: TBA deploy failed: {e}");
+                    return 1;
+                }
+            }
+            None => {
+                eprintln!(
+                    "tba exec: TBA {tba_addr} isn't deployed and was given as a raw address \
+                     (no token id to deploy it) — pass `--tba <name>` so it can be deployed, \
+                     or deploy it first with `tba deploy`."
+                );
+                return 1;
+            }
         }
     }
 
@@ -4272,7 +4366,7 @@ async fn tba_exec(caller: Option<&str>, rest: &[String]) -> i32 {
         // Arbitrary call: execute(to, amount_as_value, data).
         Some(bytes) => {
             println!(
-                "your TBA {tba_addr} → execute({to_hex}, value {}, {} bytes of calldata) …",
+                "{tba_label} TBA {tba_addr} → execute({to_hex}, value {}, {} bytes of calldata) …",
                 fmt_lh(amount_wei),
                 bytes.len()
             );
@@ -4289,7 +4383,7 @@ async fn tba_exec(caller: Option<&str>, rest: &[String]) -> i32 {
         }
         // Plain $LH transfer: execute($LH, 0, transfer(to, amount)).
         None => {
-            println!("your TBA {tba_addr} → send {} $LH to {to_hex} …", fmt_lh(amount_wei));
+            println!("{tba_label} TBA {tba_addr} → send {} $LH to {to_hex} …", fmt_lh(amount_wei));
             registry::tba_send_lh_sponsored(
                 &signer,
                 &sponsor,
@@ -4311,6 +4405,34 @@ async fn tba_exec(caller: Option<&str>, rest: &[String]) -> i32 {
             1
         }
     }
+}
+
+/// Extract an optional `--tba <name-or-0xaddr>` flag (from anywhere) and return
+/// `(Option<value>, remaining)`. A second `--tba` is an error. Pure + testable;
+/// `tba exec` uses it to OVERRIDE the acting TBA (default = caller's-main) with
+/// an arbitrary owned TBA — a name (→ `tokenBoundAccountByName`) or a raw 0x addr.
+fn take_tba_flag(args: &[String]) -> Result<(Option<String>, Vec<String>), String> {
+    let mut tba: Option<String> = None;
+    let mut rest: Vec<String> = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--tba" {
+            if tba.is_some() {
+                return Err("--tba given more than once".to_string());
+            }
+            match args.get(i + 1) {
+                Some(v) => {
+                    tba = Some(v.clone());
+                    i += 2;
+                }
+                None => return Err("usage: --tba <name-or-0xaddr> requires a value".to_string()),
+            }
+        } else {
+            rest.push(args[i].clone());
+            i += 1;
+        }
+    }
+    Ok((tba, rest))
 }
 
 /// Extract an optional `--data <hex>` flag (from anywhere) and return
@@ -6342,6 +6464,28 @@ mod tests {
                 "`{cmd}` is dispatchable but missing from the help/USAGE text"
             );
         }
+    }
+
+    #[test]
+    fn take_tba_flag_extracts_target_from_anywhere() {
+        // No flag → all positionals, no override (default = caller's main TBA).
+        let (t, rest) = take_tba_flag(&args(&["0xabc", "0", "--data", "0x01"])).unwrap();
+        assert_eq!(t, None);
+        assert_eq!(rest, args(&["0xabc", "0", "--data", "0x01"]));
+        // --tba <name> at the front — positionals preserved in order.
+        let (t, rest) = take_tba_flag(&args(&["--tba", "guildb", "0xdiamond", "0"])).unwrap();
+        assert_eq!(t.as_deref(), Some("guildb"));
+        assert_eq!(rest, args(&["0xdiamond", "0"]));
+        // --tba <0xaddr> in the middle, alongside an untouched --data (left for the
+        // later take_data_flag pass) — only --tba is consumed here.
+        let (t, rest) =
+            take_tba_flag(&args(&["0xdiamond", "0", "--tba", "0xfeed", "--data", "0xbeef"]))
+                .unwrap();
+        assert_eq!(t.as_deref(), Some("0xfeed"));
+        assert_eq!(rest, args(&["0xdiamond", "0", "--data", "0xbeef"]));
+        // Dangling / doubled → error.
+        assert!(take_tba_flag(&args(&["--tba"])).is_err());
+        assert!(take_tba_flag(&args(&["--tba", "a", "--tba", "b"])).is_err());
     }
 
     #[test]
