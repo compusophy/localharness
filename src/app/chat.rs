@@ -1170,7 +1170,7 @@ pub(crate) async fn start_session(
         None => system_instructions,
     };
 
-    let capabilities = match super::tool_allowlist::load().await {
+    let mut capabilities = match super::tool_allowlist::load().await {
         Some(mut tools) => {
             // Always union the golden tools so neither the owner nor the
             // agent can disable recovery (finish / ask_question /
@@ -1186,6 +1186,17 @@ pub(crate) async fn start_session(
         }
         None => CapabilitiesConfig::unrestricted(),
     };
+    // ENABLE AUTO-COMPACTION. `unrestricted()` leaves `compaction_threshold =
+    // None`, which DISABLES it (`should_compact` always false) — so the in-tab
+    // conversation grew unbounded until it overflowed the model's context window
+    // and the turn came back empty ("(empty response)" reliably after a certain
+    // length). The backend (gemini/anthropic loop.rs) compares this against
+    // `usage.prompt_token_count` (the LIVE context size) and, when crossed,
+    // summarizes the old prefix before the next turn (compaction.rs). Conservative
+    // ceiling — set well under any plausible window so it ALWAYS trips before an
+    // overflow; tunable, and a recency-weighted summarization scheme can retain far
+    // more at this same ceiling.
+    capabilities.compaction_threshold = Some(128_000);
 
     // `model` (the owner's per-subdomain `.lh_model` choice) was loaded above
     // so the prompt could be gated to the backend. A `claude-*` id routes to
