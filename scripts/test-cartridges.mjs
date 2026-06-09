@@ -273,6 +273,67 @@ const SPECS = {
     return { ok: true, detail: 'ball starts at (8,8) and moves with t (triangle-wave bounce)' };
   },
 
+  // life: STATEFUL Conway's Game of Life on an 8x8 grid in the 64 state slots
+  // (slot = y*8 + x). frame(0) seeds a HORIZONTAL blinker at (2,4),(3,4),(4,4)
+  // then steps one generation; each later frame steps once more. The blinker is
+  // a PERIOD-2 oscillator, so reading the slots back after each frame:
+  //   after frame(0): VERTICAL   — column x=3, rows y=3,4,5 -> slots 27,35,43
+  //   after frame(1): HORIZONTAL — row y=4, cols x=2,3,4    -> slots 34,35,36
+  //   after frame(2): VERTICAL again (period 2)
+  // and the live-cell COUNT is exactly 3 at every step. This is a deterministic
+  // Game-of-Life correctness check exercising indexed array writes (next[i]=v),
+  // array reads, the state slots, and nested loops — not "it drew something".
+  'life.rl': {
+    needsState: true,
+    check: (api) => {
+      // Read the 64 slots into the live-cell index list + count.
+      const liveCells = () => {
+        const cells = [];
+        for (let i = 0; i < 64; i++) if ((api.state.get(i) | 0) === 1) cells.push(i);
+        return cells;
+      };
+      const sameSet = (got, want) =>
+        got.length === want.length && want.every((v, i) => got[i] === v);
+
+      const VERT = [27, 35, 43]; // x=3, y=3,4,5
+      const HORIZ = [34, 35, 36]; // y=4, x=2,3,4
+
+      // frame(0): seed horizontal + step once -> VERTICAL.
+      const fb0 = api.renderAt(0);
+      const g0 = liveCells();
+      if (g0.length !== 3) {
+        return { ok: false, detail: `gen after frame(0): expected 3 live cells, got ${g0.length} ([${g0}]) — array writes / rules wrong` };
+      }
+      if (!sameSet(g0, VERT)) {
+        return { ok: false, detail: `gen after frame(0): expected VERTICAL blinker [${VERT}], got [${g0}]` };
+      }
+      if (api.litPixels(fb0) === 0) {
+        return { ok: false, detail: 'grid drew nothing at frame(0)' };
+      }
+      // A live cell at (3,3) -> pixel inside its 16px block (px=48..63, py=48..63).
+      const liveBlock = api.pixelRGB(fb0, 52, 52);
+      if (!api.eqRGB(liveBlock, [0, 255, 0])) {
+        return { ok: false, detail: `live cell (3,3) block: expected green [0,255,0] at (52,52), got [${liveBlock}]` };
+      }
+
+      // frame(1): step again -> HORIZONTAL (period 2, half-way).
+      api.renderAt(1);
+      const g1 = liveCells();
+      if (g1.length !== 3 || !sameSet(g1, HORIZ)) {
+        return { ok: false, detail: `gen after frame(1): expected HORIZONTAL blinker [${HORIZ}] (count 3), got [${g1}] (count ${g1.length})` };
+      }
+
+      // frame(2): step again -> VERTICAL (full period-2 cycle complete).
+      api.renderAt(2);
+      const g2 = liveCells();
+      if (g2.length !== 3 || !sameSet(g2, VERT)) {
+        return { ok: false, detail: `gen after frame(2): expected VERTICAL blinker [${VERT}] again (period 2), got [${g2}] (count ${g2.length})` };
+      }
+
+      return { ok: true, detail: 'blinker oscillates H->V->H->V across frames (period 2, 3 cells) — array-write next-gen correct' };
+    },
+  },
+
   // counter: STATEFUL. Drive frame() N times against ONE shared state map; the
   // stored slot 0 must equal N (it increments per call, surviving across frames).
   'counter.rl': {
