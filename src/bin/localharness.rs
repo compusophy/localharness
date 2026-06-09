@@ -4947,13 +4947,26 @@ async fn colony_discover_relevant(task: &str) -> Result<Vec<(String, String)>, S
     Ok(ranked.into_iter().map(|(name, (_, persona))| (name, persona)).collect())
 }
 
+/// Pure: drop the `caller`'s own identity from a worker-candidate pool — the
+/// colony picking the caller as the worker is a DEGENERATE self-deal (caller
+/// posts → does the work → pays its OWN TBA, and the [8/8] self-attest reverts
+/// on-chain). Matching is case-INSENSITIVE on the bare name (subdomain names are
+/// case-insensitive). Returns the surviving candidates (order preserved), which
+/// may be empty — the auto-PICK then fails with "no valid worker". Testable.
+fn exclude_caller_candidates(candidates: Vec<WorkerCandidate>, caller: &str) -> Vec<WorkerCandidate> {
+    candidates
+        .into_iter()
+        .filter(|c| !c.name.eq_ignore_ascii_case(caller))
+        .collect()
+}
+
 /// Auto-pick the best worker for `task`, REPUTATION-AWARE. Builds the set of
 /// drivable candidates (a `discover` match whose identity key is present locally,
-/// so it can sign its own claim+submit), reads each one's on-chain reputation,
-/// then applies [`pick_reputation_aware`]. Returns `(name, reasoning_line)` so
-/// the caller can echo WHY this worker was chosen, or an error naming what to do.
-/// Read-only (no `$LH`).
-async fn colony_pick_worker(task: &str) -> Result<(String, String), String> {
+/// so it can sign its own claim+submit), EXCLUDES the `caller` (no self-deal),
+/// reads each one's on-chain reputation, then applies [`pick_reputation_aware`].
+/// Returns `(name, reasoning_line)` so the caller can echo WHY this worker was
+/// chosen, or an error naming what to do. Read-only (no `$LH`).
+async fn colony_pick_worker(task: &str, caller: &str) -> Result<(String, String), String> {
     let matches = colony_discover_relevant(task).await?;
     if matches.is_empty() {
         return Err(
@@ -4964,10 +4977,14 @@ async fn colony_pick_worker(task: &str) -> Result<(String, String), String> {
     }
     // Drivable candidates only: a discover match we ALSO hold a key for (it must
     // sign its own claim + submit). `task_rank` = the merged discover position.
+    // The CALLER is skipped up front (no wasted reputation RPC + no self-deal).
     let mut candidates: Vec<WorkerCandidate> = Vec::new();
     for (task_rank, (name, _persona)) in matches.iter().enumerate() {
         if resolve_key_read_path(name).is_none() {
             continue;
+        }
+        if name.eq_ignore_ascii_case(caller) {
+            continue; // never auto-pick the caller as its own worker (self-deal).
         }
         // Read on-chain reputation for this candidate (count, rating sum). A read
         // failure / unregistered name is treated as "no reputation" (0, 0) so a
@@ -4983,11 +5000,16 @@ async fn colony_pick_worker(task: &str) -> Result<(String, String), String> {
             rep_sum,
         });
     }
+    // Belt-and-braces: re-filter the pool (pure + tested) so the self-deal can
+    // never slip through, then PICK. An empty pool after excluding the caller
+    // means there's no valid worker — fail clearly rather than self-dealing.
+    let candidates = exclude_caller_candidates(candidates, caller);
     match pick_reputation_aware(&candidates) {
         Some(c) => Ok((c.name.clone(), colony_pick_reasoning(c))),
         None => Err(format!(
-            "the top discover() matches ({}) have no local key — pass --worker <agent> whose \
-             key is in your keys dir (the worker signs its own claim + submit)",
+            "no valid worker to auto-pick — the discover matches ({}) are either the caller \
+             ({caller}) itself or have no local key. Pass --worker <agent> (NOT the caller) whose \
+             key is in your keys dir (the worker signs its own claim + submit).",
             matches.iter().take(5).map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")
         )),
     }
@@ -5015,6 +5037,14 @@ fn select_judge_panel(local: &[String], worker: &str, caller: &str, n: usize) ->
         panel.push(name.clone());
     }
     panel
+}
+
+/// Pure: `true` when an explicit `--judge <agent>` names the same identity as the
+/// WORKER — which would let the worker grade its OWN work (self-inflated rating),
+/// the exact self-deal the neutral panel exists to prevent. Case-INSENSITIVE on
+/// the bare name (subdomain names are case-insensitive). Testable with no fs.
+fn judge_equals_worker(judge: &str, worker: &str) -> bool {
+    judge.eq_ignore_ascii_case(worker)
 }
 
 /// Resolve the NEUTRAL JUDGE PANEL for `colony run`: scan every locally-keyed
@@ -5049,6 +5079,20 @@ fn is_transient_rpc_error(err: &str) -> bool {
         || e.contains("eof"))
         // A real on-chain revert is NOT transient — those carry a reason/selector.
         && !e.contains("revert") && !e.contains("execution reverted")
+}
+
+/// `true` if a `run_agent_turn` outcome (the WORK / model turn) should be RETRIED
+/// once. A retry is warranted when the model returned an EMPTY/whitespace-only
+/// reply (a transient proxy/model hiccup that strands the claimed bounty — seen
+/// dogfooding) OR the turn FAILED with a transient RPC/transport error (reusing
+/// [`is_transient_rpc_error`] detection). A NON-empty reply is NEVER retried (it's
+/// a real result), and a non-transient error (a genuine failure) bails as before.
+/// Pure so the retry decision is unit-testable with no network.
+fn work_result_needs_retry(outcome: &Result<(String, Option<Vec<u8>>), String>) -> bool {
+    match outcome {
+        Ok((text, _)) => text.trim().is_empty(),
+        Err(e) => is_transient_rpc_error(e),
+    }
 }
 
 /// Drive a `colony` on-chain WRITE step with ONE transient-error retry that's
@@ -5248,8 +5292,8 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     let worker_name = match worker {
         Some(w) => w,
         None => {
-            println!("[2/8] PICK  — auto-selecting the best worker (reputation-aware) …");
-            match colony_pick_worker(&task).await {
+            println!("[2/8] PICK  — auto-selecting the best worker (reputation-aware, excluding the caller) …");
+            match colony_pick_worker(&task, &caller_label).await {
                 Ok((w, why)) => {
                     println!("      ✓ {why}");
                     w
@@ -5258,6 +5302,22 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
             }
         }
     };
+    // FIX 3: an explicit `--judge <agent>` must NOT name the WORKER. The auto-panel
+    // already excludes the worker (+ caller), but the override bypassed that — a
+    // caller could force the worker to judge its OWN work (self-inflated rating).
+    // Reject up front (clearest), keeping `--judge <neutral-agent>` working.
+    if let Some(j) = &judge {
+        if judge_equals_worker(j, &worker_name) {
+            bail!(
+                "2/8",
+                format!(
+                    "--judge '{j}' is the WORKER — a worker can't judge its own work (self-inflated \
+                     rating). Pass --judge <neutral-agent> (NOT the worker), or drop --judge to use \
+                     the auto-selected neutral panel."
+                )
+            )
+        }
+    }
     // The worker signs its OWN claim + submit, so its key must be local.
     let (worker_key_file, worker_key_hex) = match resolve_caller_key(Some(&worker_name)) {
         Ok(c) => c,
@@ -5317,25 +5377,35 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     );
     // The caller pays for the work turn (same as `call --as caller worker …`),
     // running the WORKER's on-chain persona. No prior history (a one-shot job).
-    let result_text = match run_agent_turn(
-        &caller_key_hex,
-        &worker_name,
-        &work_prompt,
-        None,
-        None,
-    )
-    .await
-    {
+    // Retry ONCE on an EMPTY reply or a TRANSIENT failure: tick-14's dogfood saw
+    // the WORK turn return an empty model reply (a transient proxy/model hiccup)
+    // that bailed the whole cycle and stranded the claimed bounty. A non-empty
+    // result is NEVER retried; a genuine (non-transient) error bails as before.
+    let mut work_outcome =
+        run_agent_turn(&caller_key_hex, &worker_name, &work_prompt, None, None).await;
+    if work_result_needs_retry(&work_outcome) {
+        match &work_outcome {
+            Ok(_) => println!(
+                "      ⚠ WORK returned an empty reply (transient model hiccup) — retrying once …"
+            ),
+            Err(e) => println!(
+                "      ⚠ WORK turn failed transiently ({e}) — retrying once …"
+            ),
+        }
+        work_outcome =
+            run_agent_turn(&caller_key_hex, &worker_name, &work_prompt, None, None).await;
+    }
+    let result_text = match work_outcome {
         Ok((text, _hist)) => {
             let trimmed = text.trim().to_string();
             if trimmed.is_empty() {
-                bail!("4/8", "WORK produced an empty result — nothing to submit.".to_string());
+                bail!("4/8", "WORK produced an empty result (even after one retry) — nothing to submit.".to_string());
             }
             trimmed
         }
         Err(e) => {
             report_call_error("[4/8] WORK failed", &e);
-            bail!("4/8", "the worker's persona turn failed — see the hint above.".to_string());
+            bail!("4/8", "the worker's persona turn failed (even after one retry) — see the hint above.".to_string());
         }
     };
     println!("      ✓ {worker_name} produced a result:");
@@ -8078,6 +8148,70 @@ mod tests {
         assert!(!is_transient_rpc_error("execution reverted: NotOpen()"));
         assert!(!is_transient_rpc_error("revert: bounty not submitted"));
         assert!(!is_transient_rpc_error("insufficient balance"));
+    }
+
+    #[test]
+    fn work_result_needs_retry_only_on_empty_or_transient() {
+        // FIX 1: the WORK turn retries ONCE on an empty reply OR a transient error.
+        let ok = |s: &str| -> Result<(String, Option<Vec<u8>>), String> { Ok((s.to_string(), None)) };
+        let err = |s: &str| -> Result<(String, Option<Vec<u8>>), String> { Err(s.to_string()) };
+        // Empty / whitespace-only reply (the tick-14 hiccup) → retry.
+        assert!(work_result_needs_retry(&ok("")));
+        assert!(work_result_needs_retry(&ok("   \n\t  ")));
+        // A NON-empty result is a real deliverable → NEVER retry.
+        assert!(!work_result_needs_retry(&ok("here is the answer")));
+        assert!(!work_result_needs_retry(&ok("  trimmed but present  ")));
+        // A TRANSIENT failure → retry (reuses is_transient_rpc_error detection).
+        assert!(work_result_needs_retry(&err("error decoding response body")));
+        assert!(work_result_needs_retry(&err("connection reset")));
+        assert!(work_result_needs_retry(&err("request timed out")));
+        // A GENUINE (non-transient) failure → bail, do NOT retry.
+        assert!(!work_result_needs_retry(&err("402 payment required — redeem a code")));
+        assert!(!work_result_needs_retry(&err("execution reverted: NotOpen()")));
+        assert!(!work_result_needs_retry(&err("is not a registered agent")));
+    }
+
+    #[test]
+    fn exclude_caller_candidates_removes_the_caller_and_can_empty() {
+        // FIX 2: the auto-PICK pool must EXCLUDE the caller (self-deal). Pure test
+        // of the exclusion rule — no network.
+        let cand = |name: &str, rank: usize| WorkerCandidate {
+            name: name.into(),
+            task_rank: rank,
+            rep_count: 0,
+            rep_sum: 0,
+        };
+        // The caller is removed; the rest survive in order.
+        let pool = vec![cand("claude", 0), cand("dex-qa", 1), cand("vex-qa", 2)];
+        let kept = exclude_caller_candidates(pool, "claude");
+        assert_eq!(kept.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["dex-qa", "vex-qa"]);
+        assert!(!kept.iter().any(|c| c.name == "claude"));
+        // Case-insensitive match on the bare name (subdomain names are case-insens).
+        let pool = vec![cand("Claude", 0), cand("dex-qa", 1)];
+        let kept = exclude_caller_candidates(pool, "claude");
+        assert_eq!(kept.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["dex-qa"]);
+        // Excluding the caller can EMPTY the pool → the auto-PICK then fails with
+        // "no valid worker" (pick_reputation_aware(&[]) is None).
+        let pool = vec![cand("claude", 0)];
+        let kept = exclude_caller_candidates(pool, "claude");
+        assert!(kept.is_empty());
+        assert!(pick_reputation_aware(&kept).is_none());
+        // A non-caller pool is untouched.
+        let pool = vec![cand("dex-qa", 0), cand("vex-qa", 1)];
+        let kept = exclude_caller_candidates(pool, "claude");
+        assert_eq!(kept.len(), 2);
+    }
+
+    #[test]
+    fn judge_equals_worker_guards_the_explicit_override() {
+        // FIX 3: --judge naming the WORKER is rejected (self-inflated rating); a
+        // neutral judge is allowed.
+        assert!(judge_equals_worker("vex-qa", "vex-qa")); // exact self-judge → reject
+        assert!(judge_equals_worker("VEX-QA", "vex-qa")); // case-insensitive
+        assert!(judge_equals_worker("vex-qa", "VEX-QA"));
+        // A different (neutral) agent is fine.
+        assert!(!judge_equals_worker("dex-qa", "vex-qa"));
+        assert!(!judge_equals_worker("claude", "vex-qa"));
     }
 
     #[test]
