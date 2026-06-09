@@ -695,6 +695,7 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
                     @if has_wallet { (admin_schedule_section()) }
                     @if has_wallet { (admin_bounty_section()) }
                     @if has_wallet { (admin_guild_section()) }
+                    @if has_wallet { (admin_governance_section()) }
                     (admin_usage_section())
                 }
                 div.admin-footer {
@@ -763,6 +764,9 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                     // Guilds: a durable on-chain org with members, roles, and a
                     // pooled $LH treasury (GuildFacet createGuild / fundGuild).
                     (admin_guild_section())
+                    // DAO governance: propose + vote on treasury spends from a
+                    // guild's pooled $LH (VotingFacet propose / vote / execute).
+                    (admin_governance_section())
                     (admin_security_collapsed())
                 }
                 div.admin-tab-panel.panel-usage {
@@ -1199,6 +1203,60 @@ pub(crate) fn guild_result_panel(guild_id: u64, name: &str) -> Markup {
             div.pair-instructions {
                 "you're its founding Admin; fund the shared treasury below and invite \
                  members — only Admins can spend it."
+            }
+        }
+    }
+}
+
+/// "Govern a guild treasury" panel — the human-facing surface of the on-chain DAO
+/// governance (VotingFacet): guild members propose treasury spends, vote, and
+/// execute once a proposal passes past its deadline. The owner picks a guild id +
+/// types a spend (to / amount / voting period); `events::propose_measure_pressed`
+/// opens the proposal in ONE sponsored tx and swaps `#governance-result` for a
+/// confirmation. `#governance-list` is filled by `events::refresh_governance_list`
+/// (the guild's `proposals_of`, each with its tally + vote/execute buttons) when
+/// the guild field is set + after every propose/vote/execute. No
+/// explanatory-validation text — bad/empty input is a silent no-op.
+pub(crate) fn admin_governance_section() -> Markup {
+    html! {
+        div #governance-section .admin-section {
+            div.admin-section-title { "govern a treasury" }
+            div.redeem-row {
+                input #governance-guild .redeem-input type="text"
+                    inputmode="numeric" aria-label="guild id"
+                    placeholder="guild id";
+                button type="button" data-action="load-proposals" .ghost { "load" }
+            }
+            div.redeem-row {
+                input #governance-to .redeem-input type="text"
+                    aria-label="spend recipient" placeholder="to (address or name)";
+            }
+            div.redeem-row {
+                input #governance-amount .redeem-input type="text"
+                    inputmode="decimal" aria-label="amount in $LH" placeholder="$LH amount";
+                input #governance-period .redeem-input type="text"
+                    inputmode="numeric" aria-label="voting period hours"
+                    placeholder="vote hrs (default 48)";
+                button type="button" data-action="propose-measure" .ghost { "propose" }
+            }
+            div #governance-result .admin-msg-slot {}
+            div #governance-list {}
+        }
+    }
+}
+
+/// The freshly-opened proposal — shown after `propose` mines. `id` + `amount`
+/// are escaped by maud. Reassures the owner the proposal is open for votes and
+/// can be executed once it passes past its deadline.
+pub(crate) fn governance_result_panel(proposal_id: u64, amount_lh: &str) -> Markup {
+    html! {
+        div.invite-result-card {
+            div.pair-instructions {
+                "proposed — measure #" (proposal_id) " (" (amount_lh) " $LH)"
+            }
+            div.pair-instructions {
+                "guild members can now vote for/against; once it passes and the \
+                 voting deadline elapses, it can be executed to pay out the treasury."
             }
         }
     }
