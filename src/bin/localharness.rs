@@ -4342,13 +4342,176 @@ async fn colony(caller: Option<&str>, rest: &[String]) -> i32 {
     }
 }
 
-/// Auto-pick the best worker for `task`: the top `discover` match whose identity
-/// key is present locally (so it can sign its own claim+submit). Returns the
-/// agent name, or an error naming what to do. Read-only.
-async fn colony_pick_worker(task: &str) -> Result<String, String> {
-    let matches = registry::discover_agents(task, 100)
+/// A drivable worker candidate for the colony PICK step: a discover-matched
+/// agent whose key is local, decorated with on-chain reputation. `task_rank` is
+/// its 0-based position in `discover_agents` (lower = better task fit; name-hit
+/// before persona-hit, newest-first within a tier). `rep_count`/`rep_sum` are the
+/// raw `reputationOf` pair (attestation count + rating sum, sum ≤ 5·count). Pure
+/// data so the selection rule below is unit-testable with no network.
+#[derive(Debug, Clone)]
+struct WorkerCandidate {
+    name: String,
+    task_rank: usize,
+    rep_count: u64,
+    rep_sum: u64,
+}
+
+impl WorkerCandidate {
+    /// Average rating in milli-units (so 5.0★ = 5000), `0` when never attested.
+    /// Integer math keeps the selection rule exact + reproducible (no float
+    /// ordering surprises). An unproven agent (count 0) sorts as avg 0 — below
+    /// any proven one at the same task-fit tier, but still eligible.
+    fn avg_milli(&self) -> u64 {
+        if self.rep_count == 0 {
+            0
+        } else {
+            (self.rep_sum * 1000) / self.rep_count
+        }
+    }
+}
+
+/// Candidates whose `task_rank` is within this many positions of the BEST
+/// (rank-0) match are treated as "similar task fit" and decided on reputation.
+/// Outside the band, the better task fit wins outright — so a wildly-irrelevant
+/// high-reputation agent can never out-rank a clearly more task-relevant one.
+/// Discover returns name-hits before persona-hits, so a small band keeps
+/// reputation as the decider among genuinely comparable agents only.
+const COLONY_TASK_FIT_BAND: usize = 3;
+
+/// The reputation-aware selection RULE (pure + testable). Picks the best worker
+/// from `candidates` (each already filtered to "task-relevant AND locally
+/// keyed"). The blend, in strict priority order:
+///   1. **Task-fit tier** (primary) — group candidates by discover proximity:
+///      everything within `COLONY_TASK_FIT_BAND` positions of the top match is
+///      one tier; a meaningfully worse task match is a lower tier. Better tier
+///      always wins (task fit dominates).
+///   2. **Average rating** (secondary) — within a tier, higher avg★ wins, so
+///      proven good work beats unproven at comparable task fit.
+///   3. **Attestation count** (tertiary tiebreak) — more attestations wins when
+///      avg ties (a 5.0 from 3 beats a 5.0 from 1).
+///   4. **Discover rank** (final tiebreak) — the original task-fit order, so the
+///      result is deterministic.
+/// An agent with NO attestations (avg 0) is eligible but ranks below a proven one
+/// in the same tier. Returns `None` only for an empty slice.
+fn pick_reputation_aware(candidates: &[WorkerCandidate]) -> Option<&WorkerCandidate> {
+    let best_rank = candidates.iter().map(|c| c.task_rank).min()?;
+    // Tier 0 = within the band of the best; higher tiers = progressively worse
+    // task fit (one tier per band-width step beyond the best).
+    let tier = |c: &WorkerCandidate| (c.task_rank - best_rank) / (COLONY_TASK_FIT_BAND + 1);
+    candidates.iter().min_by(|a, b| {
+        tier(a)
+            .cmp(&tier(b)) // 1. lower tier (better task fit) first
+            .then_with(|| b.avg_milli().cmp(&a.avg_milli())) // 2. higher avg★ first
+            .then_with(|| b.rep_count.cmp(&a.rep_count)) // 3. more attestations first
+            .then_with(|| a.task_rank.cmp(&b.task_rank)) // 4. better discover rank first
+    })
+}
+
+/// A one-line, human-readable justification for a PICK — so the choice is
+/// transparent in the colony transcript. Pure.
+fn colony_pick_reasoning(c: &WorkerCandidate) -> String {
+    let fit = if c.task_rank == 0 {
+        "top task match".to_string()
+    } else {
+        format!("task match #{}", c.task_rank + 1)
+    };
+    if c.rep_count == 0 {
+        format!("picked {} — no reputation yet, {} among local agents", c.name, fit)
+    } else {
+        let whole = c.avg_milli() / 1000;
+        let frac = (c.avg_milli() % 1000) / 100; // one decimal place
+        let plural = if c.rep_count == 1 { "attestation" } else { "attestations" };
+        format!(
+            "picked {} — reputation {whole}.{frac} from {} {plural} ({fit} among local agents)",
+            c.name, c.rep_count
+        )
+    }
+}
+
+/// Pure: extract the significant search keywords from a free-form `task`, so a
+/// descriptive task ("QA: suggest one concrete CLI improvement") still surfaces
+/// relevant agents. `registry::discover_agents` matches the query as a SINGLE
+/// substring, so feeding it the whole sentence matches nothing — we split into
+/// words, lowercase, strip punctuation, drop short/stop words, and de-dupe
+/// (preserving order). Capped at `COLONY_MAX_KEYWORDS` so the discovery fan-out
+/// stays bounded. Empty when the task has no significant words.
+fn colony_task_keywords(task: &str) -> Vec<String> {
+    const STOP: &[&str] = &[
+        "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "with", "one", "two",
+        "is", "are", "be", "this", "that", "your", "you", "it", "as", "at", "by", "from",
+        "suggest", "please", "make", "give", "find", "do", "can", "should", "would", "about",
+    ];
+    let mut out: Vec<String> = Vec::new();
+    for raw in task.split_whitespace() {
+        let w: String = raw
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .collect::<String>()
+            .to_lowercase();
+        if w.len() < 3 || STOP.contains(&w.as_str()) || out.contains(&w) {
+            continue;
+        }
+        out.push(w);
+        if out.len() >= COLONY_MAX_KEYWORDS {
+            break;
+        }
+    }
+    out
+}
+
+/// Cap on keywords fanned out to `discover_agents` per task (bounds the reads).
+const COLONY_MAX_KEYWORDS: usize = 6;
+
+/// Discover task-relevant agents ROBUSTLY: try the full task as one query first
+/// (cheap — catches an exact name/persona hit), then fan out across the task's
+/// keywords ([`colony_task_keywords`]) and UNION the matches, preserving the
+/// best rank each name was first seen at (so a name-hit / earlier-keyword agent
+/// stays ahead). Returns `(name, persona)` rows in ascending rank order. This is
+/// what lets `colony_pick_worker` find a worker for a descriptive task even
+/// though `discover_agents` only does single-substring matching.
+async fn colony_discover_relevant(task: &str) -> Result<Vec<(String, String)>, String> {
+    // best rank seen per name + the persona; insertion order tracked separately.
+    let mut best: std::collections::HashMap<String, (usize, String)> =
+        std::collections::HashMap::new();
+    let mut rank_cursor = 0usize;
+    let mut absorb = |rows: Vec<(String, String)>, cursor: &mut usize| {
+        for (name, persona) in rows {
+            let r = *cursor;
+            *cursor += 1;
+            best.entry(name)
+                .and_modify(|e| {
+                    if r < e.0 {
+                        e.0 = r;
+                    }
+                })
+                .or_insert((r, persona));
+        }
+    };
+    // 1. Full task verbatim (an exact persona/name hit ranks first).
+    let full = registry::discover_agents(task, 100)
         .await
         .map_err(|e| format!("discover failed: {e}"))?;
+    absorb(full, &mut rank_cursor);
+    // 2. Per-keyword fan-out (keeps descriptive tasks discoverable).
+    for kw in colony_task_keywords(task) {
+        let rows = registry::discover_agents(&kw, 100)
+            .await
+            .map_err(|e| format!("discover failed: {e}"))?;
+        absorb(rows, &mut rank_cursor);
+    }
+    let mut ranked: Vec<(String, (usize, String))> = best.into_iter().collect();
+    ranked.sort_by_key(|(_, (rank, _))| *rank);
+    Ok(ranked.into_iter().map(|(name, (_, persona))| (name, persona)).collect())
+}
+
+/// Auto-pick the best worker for `task`, REPUTATION-AWARE. Builds the set of
+/// drivable candidates (a `discover` match whose identity key is present locally,
+/// so it can sign its own claim+submit), reads each one's on-chain reputation,
+/// then applies [`pick_reputation_aware`]. Returns `(name, reasoning_line)` so
+/// the caller can echo WHY this worker was chosen, or an error naming what to do.
+/// Read-only (no `$LH`).
+async fn colony_pick_worker(task: &str) -> Result<(String, String), String> {
+    let matches = colony_discover_relevant(task).await?;
     if matches.is_empty() {
         return Err(
             "no agents matched the task to auto-pick a worker — pass --worker <agent> \
@@ -4356,17 +4519,35 @@ async fn colony_pick_worker(task: &str) -> Result<String, String> {
                 .to_string(),
         );
     }
-    // Prefer the highest-ranked match we ALSO hold a key for (it must sign).
-    for (name, _persona) in &matches {
-        if resolve_key_read_path(name).is_some() {
-            return Ok(name.clone());
+    // Drivable candidates only: a discover match we ALSO hold a key for (it must
+    // sign its own claim + submit). `task_rank` = the merged discover position.
+    let mut candidates: Vec<WorkerCandidate> = Vec::new();
+    for (task_rank, (name, _persona)) in matches.iter().enumerate() {
+        if resolve_key_read_path(name).is_none() {
+            continue;
         }
+        // Read on-chain reputation for this candidate (count, rating sum). A read
+        // failure / unregistered name is treated as "no reputation" (0, 0) so a
+        // transient RPC hiccup can't drop an otherwise-drivable worker.
+        let (rep_count, rep_sum) = match registry::id_of_name(name).await {
+            Ok(id) if id != 0 => registry::reputation_of(id).await.unwrap_or((0, 0)),
+            _ => (0, 0),
+        };
+        candidates.push(WorkerCandidate {
+            name: name.clone(),
+            task_rank,
+            rep_count,
+            rep_sum,
+        });
     }
-    Err(format!(
-        "the top discover() matches ({}) have no local key — pass --worker <agent> whose \
-         key is in your keys dir (the worker signs its own claim + submit)",
-        matches.iter().take(5).map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")
-    ))
+    match pick_reputation_aware(&candidates) {
+        Some(c) => Ok((c.name.clone(), colony_pick_reasoning(c))),
+        None => Err(format!(
+            "the top discover() matches ({}) have no local key — pass --worker <agent> whose \
+             key is in your keys dir (the worker signs its own claim + submit)",
+            matches.iter().take(5).map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")
+        )),
+    }
 }
 
 /// `true` if a sponsored-write error looks TRANSIENT (an RPC/transport hiccup,
@@ -4523,10 +4704,10 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     let worker_name = match worker {
         Some(w) => w,
         None => {
-            println!("[2/8] PICK  — auto-selecting the best worker for the task …");
+            println!("[2/8] PICK  — auto-selecting the best worker (reputation-aware) …");
             match colony_pick_worker(&task).await {
-                Ok(w) => {
-                    println!("      ✓ auto-picked worker: {w}");
+                Ok((w, why)) => {
+                    println!("      ✓ {why}");
                     w
                 }
                 Err(e) => return bail("2/8", &format!("PICK failed: {e}")),
@@ -6982,6 +7163,101 @@ mod tests {
         // The accuracy anchor that lets the judge catch the serverless hallucination.
         assert!(p.contains("SERVERLESS"));
         assert!(p.contains("single digit 1-5"));
+    }
+
+    #[test]
+    fn pick_reputation_aware_blends_task_fit_then_reputation() {
+        let cand = |name: &str, task_rank: usize, count: u64, sum: u64| WorkerCandidate {
+            name: name.into(),
+            task_rank,
+            rep_count: count,
+            rep_sum: sum,
+        };
+
+        // 1. PROVEN beats UNPROVEN at SIMILAR task fit (both within the band):
+        //    dex-qa is the very top match but has no reputation; vex-qa is one rank
+        //    behind but carries 5.0★ from 2 attestations → reputation decides.
+        let set = [
+            cand("dex-qa", 0, 0, 0),  // top task fit, unproven
+            cand("vex-qa", 1, 2, 10), // similar task fit, 5.0★ x2
+        ];
+        assert_eq!(pick_reputation_aware(&set).unwrap().name, "vex-qa");
+
+        // 2. TASK FIT still DOMINATES a wildly-irrelevant high-rep agent: a 5.0★
+        //    agent buried far down the discover list (way outside the band) loses
+        //    to the relevant-but-unproven top match.
+        let set = [
+            cand("dex-qa", 0, 0, 0),     // top task fit, unproven
+            cand("guru-bot", 50, 9, 45), // irrelevant to the task, 5.0★ x9
+        ];
+        assert_eq!(pick_reputation_aware(&set).unwrap().name, "dex-qa");
+
+        // 3. Higher AVERAGE wins within a tier (4.0★ x10 vs 5.0★ x2 → 5.0 wins).
+        let set = [
+            cand("steady", 0, 10, 40), // 4.0★
+            cand("ace", 1, 2, 10),     // 5.0★
+        ];
+        assert_eq!(pick_reputation_aware(&set).unwrap().name, "ace");
+
+        // 4. Equal average → MORE attestations is the tiebreak (5.0 x3 > 5.0 x1).
+        let set = [
+            cand("rookie", 0, 1, 5),   // 5.0★ x1
+            cand("veteran", 1, 3, 15), // 5.0★ x3
+        ];
+        assert_eq!(pick_reputation_aware(&set).unwrap().name, "veteran");
+
+        // 5. All unproven → falls back to best discover rank (deterministic).
+        let set = [cand("first", 0, 0, 0), cand("second", 1, 0, 0)];
+        assert_eq!(pick_reputation_aware(&set).unwrap().name, "first");
+
+        // Empty candidate set → no pick.
+        assert!(pick_reputation_aware(&[]).is_none());
+    }
+
+    #[test]
+    fn colony_task_keywords_extracts_significant_words() {
+        // The dogfood task: stop words + short words + punctuation dropped, the
+        // meaningful keywords kept in order (so "qa" surfaces the QA fleet).
+        let kw = colony_task_keywords("QA: suggest one concrete localharness CLI improvement (1-2 sentences)");
+        assert!(kw.contains(&"localharness".to_string()));
+        assert!(kw.contains(&"improvement".to_string()));
+        assert!(kw.contains(&"concrete".to_string()));
+        // "cli" is 3 chars and not a stop word → kept (punctuation stripped).
+        assert!(kw.contains(&"cli".to_string()));
+        // Stop words + sub-3-char tokens ("qa", "12") dropped; "suggest" is a stop word.
+        assert!(!kw.contains(&"one".to_string()));
+        assert!(!kw.contains(&"suggest".to_string()));
+        assert!(!kw.contains(&"qa".to_string()));
+        assert!(!kw.contains(&"12".to_string()));
+        // No dupes, bounded.
+        let dup = colony_task_keywords("test test test localharness localharness bounty");
+        assert_eq!(dup.iter().filter(|w| *w == "test").count(), 1);
+        assert!(dup.len() <= COLONY_MAX_KEYWORDS);
+        // All-stop-word / empty task → no keywords.
+        assert!(colony_task_keywords("the a an to of").is_empty());
+        assert!(colony_task_keywords("").is_empty());
+    }
+
+    #[test]
+    fn colony_pick_reasoning_is_transparent() {
+        let proven = WorkerCandidate { name: "vex-qa".into(), task_rank: 0, rep_count: 2, rep_sum: 10 };
+        let line = colony_pick_reasoning(&proven);
+        assert!(line.contains("vex-qa"));
+        assert!(line.contains("reputation 5.0"));
+        assert!(line.contains("2 attestations"));
+        assert!(line.contains("top task match"));
+
+        let unproven = WorkerCandidate { name: "dex-qa".into(), task_rank: 1, rep_count: 0, rep_sum: 0 };
+        let line = colony_pick_reasoning(&unproven);
+        assert!(line.contains("dex-qa"));
+        assert!(line.contains("no reputation yet"));
+        assert!(line.contains("task match #2"));
+
+        // Singular grammar for a single attestation.
+        let single = WorkerCandidate { name: "solo".into(), task_rank: 0, rep_count: 1, rep_sum: 4 };
+        let line = colony_pick_reasoning(&single);
+        assert!(line.contains("4.0 from 1 attestation"));
+        assert!(!line.contains("attestations"));
     }
 
     #[test]
