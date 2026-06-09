@@ -288,6 +288,25 @@ required-features = ["wallet"]
 [[example]]
 name = "basic_agent"
 
+# Offline, deterministic teaching examples. All three drive the always-available
+# scripted `MockConnection` (Agent::start_mock) so they run with NO API key and
+# NO network — `cargo run --example <name>` just works. They only need the
+# default `native` feature (tokio); no required-features line needed.
+
+# The smallest agent: build a mock, run a turn, print the scripted reply.
+[[example]]
+name = "minimal_agent"
+
+# Register a `ClosureTool` and script the model to call it; the mock dispatches
+# it inline through the real tool runner + policies, exactly like a live backend.
+[[example]]
+name = "agent_with_tool"
+
+# Attach a real `PostToolCallHook` (observe) + a deny-by-default `Policy` (gate),
+# and watch both fire against scripted tool calls.
+[[example]]
+name = "hooks_and_policies"
+
 # Agent-onboarding CLI: `localharness create <name>` / `call` / `whoami`.
 # The harness-agnostic, server-free way for any agent to join the network.
 # Needs `wallet` (registry + tempo signing); native (default) supplies tokio.

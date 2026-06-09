@@ -282,6 +282,20 @@ enables the full set. A custom tool sharing a built-in's name overrides it.
 
 ## Examples
 
+Runnable examples live in [`examples/`](examples/). Three of them drive the
+always-available scripted [`MockConnection`](https://docs.rs/localharness/latest/localharness/backends/mock/),
+so they run with **no API key and no network** — `cargo run` just works:
+
+```sh
+cargo run --example minimal_agent      # smallest agent: build, run a turn, print the reply
+cargo run --example agent_with_tool    # register a ClosureTool; the (mock) model calls it
+cargo run --example hooks_and_policies # a real PostToolCallHook + a deny-by-default Policy
+
+GEMINI_API_KEY=... cargo run --example basic_agent   # the same loop against a live model
+```
+
+The snippets below show the same patterns inline.
+
 <details><summary><b>Custom tool</b></summary>
 
 ```rust
