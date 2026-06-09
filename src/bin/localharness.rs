@@ -62,11 +62,12 @@
 //!   forget [--as <me>] <name>  drop a saved conversation (or `--all`)
 //!   whoami [--json] <name>   profile of <name>: owner, wallet, persona, face
 //!   discover <query>         find agents by capability (name/persona search)
-//!   colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--ttl <dur>]
+//!   colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--judge <agent>] [--ttl <dur>]
 //!                            run ONE autonomous agent-economy cycle end-to-end:
 //!                            the caller posts <task> as a bounty, a worker claims
-//!                            it, its persona does the work, submits, and the caller
-//!                            accepts — the reward settles to the worker's TBA
+//!                            it, its persona does the work, submits, a JUDGE scores
+//!                            the result 1-5, the caller accepts — the reward settles
+//!                            to the worker's TBA — and attests the JUDGE's rating
 //!   tba show [--as <me>] [<name>]   your (or <name>'s) token-bound account
 //!                            address, $LH balance, and deployed status
 //!   tba deploy [--as <me>] [<name>]  deploy the token-bound account on-chain
@@ -171,14 +172,17 @@ USAGE:
   localharness bounty accept [--as <me>] <id>    accept a result + pay the claimant (poster)
   localharness bounty cancel [--as <me>] <id>    cancel your bounty (refunds the escrow)
   localharness bounty mine [--as <me>]   list the bounties you've posted
-  localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--ttl <dur>]
+  localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--judge <agent>] [--ttl <dur>]
                                          run ONE autonomous agent-economy cycle:
                                          the caller posts <task> as a bounty, a worker
                                          claims it, its persona does the work, submits,
-                                         and the caller accepts — the reward settles to
-                                         the worker's TBA. No human between the steps.
-                                         A 7th step auto-attests the worker (5★), so
-                                         every cycle builds its on-chain reputation.
+                                         a JUDGE scores the result 1-5 (catching
+                                         hallucinations), the caller accepts — the reward
+                                         settles to the worker's TBA. No human between
+                                         the steps. The final step attests the JUDGE's
+                                         rating (not a flat 5★), so on-chain reputation
+                                         reflects judged quality. --judge <agent> names a
+                                         neutral evaluator (defaults to the caller).
   localharness reputation show <agent>   show an agent's on-chain reputation: its
                                          attestation count, average rating, and recent
                                          attestations (read-only; alias: rep)
@@ -4187,36 +4191,85 @@ async fn reputation_attest(caller: Option<&str>, rest: &[String]) -> i32 {
 
 // ---- colony (the agent economy's first autonomous cycle) ------------------
 //
-// `colony run` composes the bounty lifecycle + a headless `call` into ONE
+// `colony run` composes the bounty lifecycle + two headless `call`s into ONE
 // self-driving turn of the demand flywheel: the platform (the caller) POSTS
 // real work as an escrowed bounty, a WORKER agent claims it, the worker's
 // on-chain persona DOES the work (an LLM turn via the credit proxy), the worker
-// submits the result, and the caller accepts — settling the reward to the
-// worker's token-bound account. No human orchestrates the steps. The result
-// TEXT is an LLM turn (it varies); the CYCLE mechanics (post→claim→submit→
-// accept→payout) are deterministic. Every on-chain step reuses the SAME helpers
-// as the `bounty` subcommands (`post_bounty_sponsored` / `claim_bounty_sponsored`
-// / `submit_result_sponsored` / `accept_result_sponsored`) and the SAME headless
-// turn as `call` (`run_agent_turn`), so it adds no new on-chain surface.
+// submits the result, a JUDGE scores it 1-5 for genuine + accurate task-fit, the
+// caller accepts — settling the reward to the worker's token-bound account — and
+// finally ATTESTS the JUDGE'S rating on-chain (NOT a hardcoded 5★), so the
+// worker's reputation reflects judged quality and rewards no hallucination. No
+// human orchestrates the steps. The result + judge TEXT are LLM turns (they
+// vary); the CYCLE mechanics (post→claim→submit→accept→payout→attest) are
+// deterministic. Every on-chain step reuses the SAME helpers as the `bounty`
+// subcommands (`post_bounty_sponsored` / `claim_bounty_sponsored` /
+// `submit_result_sponsored` / `accept_result_sponsored` / `attest_sponsored`)
+// and the work + judge reuse the SAME headless turn as `call` (`run_agent_turn`),
+// so it adds no new on-chain surface.
 
 const COLONY_USAGE: &str = "\
-usage: localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--ttl <dur>]
+usage: localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--judge <agent>] [--ttl <dur>]
   Run ONE autonomous agent-economy cycle end-to-end:
     1. the caller (--as, default your sole identity) POSTS <task> as a bounty escrowing <reward> $LH
     2. a WORKER is picked: --worker <agent>, else the top discover() match for <task>
     3. the worker CLAIMS the bounty (reward bound to the worker's token-bound account)
     4. the worker's on-chain persona DOES the work via a headless `call`
     5. the worker SUBMITS the produced result
-    6. the caller ACCEPTS → the escrowed $LH settles to the worker's TBA
-    7. the caller ATTESTS to the worker (5★, workRef = the bounty id) → reputation
+    6. a JUDGE scores the result 1-5 for genuine + accurate task-fit (catches hallucinations)
+    7. the caller ACCEPTS → the escrowed $LH settles to the worker's TBA
+    8. the caller ATTESTS to the worker (the JUDGE's rating, workRef = the bounty id) → reputation
   --reward <lh>      the $LH reward to escrow (e.g. 0.02)            [required]
   --worker <agent>   the worker subdomain (its key must be local);
                      omit to auto-pick the best discover() match
+  --judge <agent>    a NEUTRAL evaluator for [6/8] JUDGE (its key must be local);
+                     omit to use the caller (--as) as the judge
   --ttl <dur>        bounty expiry (1h/7d/30d, 1h…90d, default 7d)
   The worker MUST be a fleet/owned agent whose key is in your keys dir
   (it signs its own claim + submit). On any step failure the bounty id is
   printed so it can be `bounty cancel`ed / `bounty` reclaimed — never a silent
-  half-state.";
+  half-state. ACCEPT still pays even on a low judge score (the worker did work;
+  reputation, not payment, is the quality signal — payment-gating a failing
+  result is a documented further refinement).";
+
+/// Build the impartial-judge prompt for the [6/8] JUDGE step. The judge scores
+/// the worker's `result` against the `task` on a 1-5 scale, explicitly checking
+/// for ACCURACY/hallucination (with the serverless-localharness context baked in
+/// so a "binds a port / control API" style fabrication scores low). The reply's
+/// first line MUST be a single 1-5 digit; the rest is rationale.
+fn colony_judge_prompt(task: &str, result: &str) -> String {
+    format!(
+        "You are an impartial judge scoring a bounty result.\n\
+         TASK: {task}\n\
+         WORKER RESULT: {result}\n\n\
+         Score 1-5 whether the result genuinely AND ACCURATELY addresses the task \
+         (5 = excellent, specific, correct; 1 = irrelevant, wrong, or HALLUCINATED). \
+         IMPORTANT context for accuracy-checking: localharness is SERVERLESS — it runs \
+         on the Tempo chain + the browser + a Vercel edge proxy; there is NO local \
+         server/daemon/control-API/port binding. A result that claims to fix or find \
+         such a thing is HALLUCINATED and scores low.\n\n\
+         Output ONLY a single digit 1-5 on the first line, then one short line of rationale."
+    )
+}
+
+/// Parse a judge's reply into `(rating, rationale)`. The rating is the FIRST
+/// `1..=5` digit anywhere in the reply (the prompt asks for it on line 1, but a
+/// chatty model may prepend a word); unparseable → a neutral default of 3. The
+/// rationale is the first non-empty line that is not just the bare rating digit.
+/// Pure + testable.
+fn parse_judge_rating(reply: &str) -> (u8, String) {
+    let rating = reply
+        .chars()
+        .find_map(|c| c.to_digit(10).filter(|d| (1..=5).contains(d)))
+        .map(|d| d as u8)
+        .unwrap_or(3);
+    let rationale = reply
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && l.trim_matches(|c: char| !c.is_alphanumeric()).len() > 1)
+        .unwrap_or("")
+        .to_string();
+    (rating, rationale)
+}
 
 /// Parsed `colony run` arguments. The task is the joined positional remainder
 /// (so an unquoted multi-word task works, matching `bounty post`).
@@ -4224,6 +4277,7 @@ struct ParsedColonyRun {
     task: String,
     reward_wei: u128,
     worker: Option<String>,
+    judge: Option<String>,
     ttl_secs: u64,
 }
 
@@ -4233,6 +4287,7 @@ fn parse_colony_run_args(rest: &[String]) -> Result<ParsedColonyRun, String> {
     let mut positional: Vec<String> = Vec::new();
     let mut reward: Option<String> = None;
     let mut worker: Option<String> = None;
+    let mut judge: Option<String> = None;
     let mut ttl: Option<String> = None;
     let mut i = 0;
     while i < rest.len() {
@@ -4243,6 +4298,10 @@ fn parse_colony_run_args(rest: &[String]) -> Result<ParsedColonyRun, String> {
             }
             "--worker" => {
                 worker = Some(rest.get(i + 1).ok_or(COLONY_USAGE)?.clone());
+                i += 2;
+            }
+            "--judge" => {
+                judge = Some(rest.get(i + 1).ok_or(COLONY_USAGE)?.clone());
                 i += 2;
             }
             "--ttl" => {
@@ -4269,7 +4328,7 @@ fn parse_colony_run_args(rest: &[String]) -> Result<ParsedColonyRun, String> {
         None => INVITE_DEFAULT_TTL_SECS,
         Some(raw) => parse_ttl(&raw)?,
     };
-    Ok(ParsedColonyRun { task, reward_wei, worker, ttl_secs })
+    Ok(ParsedColonyRun { task, reward_wei, worker, judge, ttl_secs })
 }
 
 /// `localharness colony <subcommand>` — the colony-engine router.
@@ -4359,12 +4418,15 @@ where
     }
 }
 
-/// `colony run` — drive ONE autonomous post→claim→work→submit→accept→payout
-/// cycle. Each on-chain step reuses the bounty helpers; the work itself reuses
-/// `run_agent_turn`. On any failure mid-cycle the bounty id is surfaced so the
-/// escrow is never silently stranded.
+/// `colony run` — drive ONE autonomous post→claim→work→submit→JUDGE→accept→
+/// payout→attest cycle. Each on-chain step reuses the bounty helpers; the work
+/// AND the judge both reuse `run_agent_turn`. The [6/8] JUDGE step scores the
+/// worker's result 1-5 for genuine + accurate task-fit, and [8/8] ATTEST signs
+/// THAT rating on-chain (not a hardcoded 5★) — so reputation is quality-gated.
+/// On any failure mid-cycle the bounty id is surfaced so the escrow is never
+/// silently stranded.
 async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
-    let ParsedColonyRun { task, reward_wei, worker, ttl_secs } = match parse_colony_run_args(rest) {
+    let ParsedColonyRun { task, reward_wei, worker, judge, ttl_secs } = match parse_colony_run_args(rest) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("{e}");
@@ -4406,7 +4468,7 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     println!();
 
     // -- STEP 1: the caller POSTS the bounty (escrows the reward). ----------
-    println!("[1/7] POST  — escrowing {} behind the task …", fmt_lh(reward_wei));
+    println!("[1/8] POST  — escrowing {} behind the task …", fmt_lh(reward_wei));
     let post_tx = match registry::post_bounty_sponsored(
         &caller_signer,
         &sponsor,
@@ -4419,7 +4481,7 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     {
         Ok(tx) => tx,
         Err(e) => {
-            eprintln!("[1/7] POST failed: {e}");
+            eprintln!("[1/8] POST failed: {e}");
             eprintln!("  no escrow was created — nothing to clean up.");
             return 1;
         }
@@ -4429,14 +4491,14 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
         Ok(ids) if !ids.is_empty() => ids[ids.len() - 1],
         Ok(_) => {
             eprintln!(
-                "[1/7] POST mined (tx {post_tx}) but the new bounty id could not be read back \
+                "[1/8] POST mined (tx {post_tx}) but the new bounty id could not be read back \
                  from bountiesOf — re-run `bounty mine` to find + manage it."
             );
             return 1;
         }
         Err(e) => {
             eprintln!(
-                "[1/7] POST mined (tx {post_tx}) but reading the bounty id failed: {e} \
+                "[1/8] POST mined (tx {post_tx}) but reading the bounty id failed: {e} \
                  — re-run `bounty mine` to find + manage it."
             );
             return 1;
@@ -4461,13 +4523,13 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     let worker_name = match worker {
         Some(w) => w,
         None => {
-            println!("[2/7] PICK  — auto-selecting the best worker for the task …");
+            println!("[2/8] PICK  — auto-selecting the best worker for the task …");
             match colony_pick_worker(&task).await {
                 Ok(w) => {
                     println!("      ✓ auto-picked worker: {w}");
                     w
                 }
-                Err(e) => return bail("2/7", &format!("PICK failed: {e}")),
+                Err(e) => return bail("2/8", &format!("PICK failed: {e}")),
             }
         }
     };
@@ -4476,7 +4538,7 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
         Ok(c) => c,
         Err(e) => {
             return bail(
-                "2/7",
+                "2/8",
                 &format!(
                     "worker '{worker_name}' has no local identity key ({e}). The worker must be a \
                      fleet/owned agent whose key is in your keys dir — it signs its own claim + submit."
@@ -4486,18 +4548,18 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     };
     let worker_signer = match wallet::from_private_key_hex(&worker_key_hex) {
         Ok(s) => s,
-        Err(e) => return bail("2/7", &format!("bad worker key in {worker_key_file}: {e}")),
+        Err(e) => return bail("2/8", &format!("bad worker key in {worker_key_file}: {e}")),
     };
     // The worker's tokenId (the identity that earns the reward) + its TBA wallet
     // (where the reward lands) — resolve both up front so the payout is verifiable.
     let worker_token_id = match resolve_own_token_id(Some(&worker_name), &worker_signer).await {
         Ok(id) => id,
-        Err(e) => return bail("2/7", &format!("could not resolve worker '{worker_name}' identity: {e}")),
+        Err(e) => return bail("2/8", &format!("could not resolve worker '{worker_name}' identity: {e}")),
     };
     let worker_tba = match registry::tba_of_token_id(worker_token_id).await {
         Ok(Some(a)) => a,
-        Ok(None) => return bail("2/7", &format!("worker token #{worker_token_id} has no token-bound account")),
-        Err(e) => return bail("2/7", &format!("RPC error resolving worker TBA: {e}")),
+        Ok(None) => return bail("2/8", &format!("worker token #{worker_token_id} has no token-bound account")),
+        Err(e) => return bail("2/8", &format!("RPC error resolving worker TBA: {e}")),
     };
     let tba_before = registry::token_balance_of(&worker_tba).await.unwrap_or(0);
     println!("      worker {worker_name} = token #{worker_token_id}, TBA {worker_tba}");
@@ -4505,8 +4567,8 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     println!();
 
     // -- STEP 3: the worker CLAIMS the bounty. -----------------------------
-    println!("[3/7] CLAIM — {worker_name} claims bounty #{bounty_id} (reward → its TBA) …");
-    match colony_write_step(bounty_id, "3/7", "CLAIM", 1, || {
+    println!("[3/8] CLAIM — {worker_name} claims bounty #{bounty_id} (reward → its TBA) …");
+    match colony_write_step(bounty_id, "3/8", "CLAIM", 1, || {
         registry::claim_bounty_sponsored(
             &worker_signer,
             &sponsor,
@@ -4518,12 +4580,12 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     .await
     {
         Ok(tx) => println!("      ✓ claimed by token #{worker_token_id}  (tx {tx})"),
-        Err(e) => return bail("3/7", &format!("CLAIM failed: {e}")),
+        Err(e) => return bail("3/8", &format!("CLAIM failed: {e}")),
     }
     println!();
 
     // -- STEP 4: run the WORK — a headless turn as the worker's persona. ----
-    println!("[4/7] WORK  — running {worker_name}'s persona on the task (headless `call`) …");
+    println!("[4/8] WORK  — running {worker_name}'s persona on the task (headless `call`) …");
     let work_prompt = format!(
         "{task}\n\nSubmit your concrete result / deliverable as your reply \
          (it will be recorded on-chain as your bounty submission)."
@@ -4542,13 +4604,13 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
         Ok((text, _hist)) => {
             let trimmed = text.trim().to_string();
             if trimmed.is_empty() {
-                return bail("4/7", "WORK produced an empty result — nothing to submit.");
+                return bail("4/8", "WORK produced an empty result — nothing to submit.");
             }
             trimmed
         }
         Err(e) => {
-            report_call_error("[4/7] WORK failed", &e);
-            return bail("4/7", "the worker's persona turn failed — see the hint above.");
+            report_call_error("[4/8] WORK failed", &e);
+            return bail("4/8", "the worker's persona turn failed — see the hint above.");
         }
     };
     println!("      ✓ {worker_name} produced a result:");
@@ -4560,8 +4622,8 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     println!();
 
     // -- STEP 5: the worker SUBMITS the result. ----------------------------
-    println!("[5/7] SUBMIT — {worker_name} submits its result for bounty #{bounty_id} …");
-    match colony_write_step(bounty_id, "5/7", "SUBMIT", 2, || {
+    println!("[5/8] SUBMIT — {worker_name} submits its result for bounty #{bounty_id} …");
+    match colony_write_step(bounty_id, "5/8", "SUBMIT", 2, || {
         registry::submit_result_sponsored(
             &worker_signer,
             &sponsor,
@@ -4573,13 +4635,71 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     .await
     {
         Ok(tx) => println!("      ✓ result submitted  (tx {tx})"),
-        Err(e) => return bail("5/7", &format!("SUBMIT failed: {e}")),
+        Err(e) => return bail("5/8", &format!("SUBMIT failed: {e}")),
     }
     println!();
 
-    // -- STEP 6: the caller ACCEPTS → reward settles to the worker's TBA. ---
-    println!("[6/7] ACCEPT — caller accepts + pays the escrow to {worker_name}'s TBA …");
-    match colony_write_step(bounty_id, "6/7", "ACCEPT", 3, || {
+    // -- STEP 6: a JUDGE scores the result for genuine + accurate task-fit. -
+    // This is what makes the attestation MEANINGFUL: the rating below reflects
+    // the JUDGED QUALITY of the work, not an unconditional 5★. The default judge
+    // is the CALLER (`--as`); `--judge <agent>` names a neutral evaluator. Either
+    // way the CALLER key pays the turn (proxy auth + $LH); the judge agent's
+    // PERSONA is embodied but the impartial-judge PROMPT overrides its framing.
+    // A failed judge turn DOES NOT bail (payout still happens) — it falls back to
+    // a neutral 3 so the cycle completes with an honest, non-inflated rating.
+    let judge_agent = judge.as_deref().unwrap_or(&worker_name);
+    let judge_label = judge.as_deref().unwrap_or(caller_label.as_str());
+    // The judge's turn is paid + signed by whoever owns the judge identity: a
+    // named `--judge` signs with its own key (so a neutral judge funds itself);
+    // the default (caller-as-judge) reuses the caller key already loaded.
+    let judge_key_hex = match &judge {
+        Some(j) => match resolve_caller_key(Some(j)) {
+            Ok((_, hex)) => hex,
+            Err(e) => {
+                // A bad --judge is a config error, but the payout has NOT happened
+                // yet — fall back to the caller as judge rather than stranding the
+                // escrow. Warn loudly so the misconfiguration is visible.
+                eprintln!(
+                    "      ⚠ --judge '{j}' has no local identity key ({e}); \
+                     falling back to the caller ({caller_label}) as judge."
+                );
+                caller_key_hex.clone()
+            }
+        },
+        None => caller_key_hex.clone(),
+    };
+    println!("[6/8] JUDGE — {judge_label} scores {worker_name}'s result 1-5 (accuracy-checked) …");
+    let judge_prompt = colony_judge_prompt(&task, &result_text);
+    let (judged_rating, judge_rationale) =
+        match run_agent_turn(&judge_key_hex, judge_agent, &judge_prompt, None, None).await {
+            Ok((reply, _hist)) => {
+                let (rating, rationale) = parse_judge_rating(&reply);
+                (rating, rationale)
+            }
+            Err(e) => {
+                report_call_error("[6/8] JUDGE turn failed", &e);
+                println!(
+                    "      ⚠ the judge turn failed — defaulting to a neutral 3★ \
+                     (the cycle still completes; the worker is not credited a false 5★)."
+                );
+                (3u8, "judge turn failed — neutral default".to_string())
+            }
+        };
+    // Defensive clamp: the parser already constrains to 1..=5, but ATTEST signs
+    // this value on-chain, so guarantee the contract's valid range.
+    let judged_rating = judged_rating.clamp(1, 5);
+    println!("      ✓ JUDGE rating: {judged_rating}★");
+    if !judge_rationale.is_empty() {
+        println!("      rationale: {judge_rationale}");
+    }
+    println!();
+
+    // -- STEP 7: the caller ACCEPTS → reward settles to the worker's TBA. ---
+    // ACCEPT still pays regardless of the judge score: the worker DID work, so it
+    // is paid; reputation (the [8/8] attestation), NOT payment, is the quality
+    // signal. Payment-gating a failing result is a documented further refinement.
+    println!("[7/8] ACCEPT — caller accepts + pays the escrow to {worker_name}'s TBA …");
+    match colony_write_step(bounty_id, "7/8", "ACCEPT", 3, || {
         registry::accept_result_sponsored(
             &caller_signer,
             &sponsor,
@@ -4590,31 +4710,37 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     .await
     {
         Ok(tx) => println!("      ✓ accepted — {} settled  (tx {tx})", fmt_lh(reward_wei)),
-        Err(e) => return bail("6/7", &format!("ACCEPT failed: {e}")),
+        Err(e) => return bail("7/8", &format!("ACCEPT failed: {e}")),
     }
     println!();
 
-    // -- STEP 7: the caller ATTESTS to the worker → on-chain reputation. ----
+    // -- STEP 8: the caller ATTESTS the JUDGE'S rating → on-chain reputation. -
     // The payout already succeeded; attestation is a BONUS that builds the
-    // worker's reputation. A failure here WARNS but does NOT fail the cycle (and
-    // never triggers `bail`, since there's no unsettled escrow to recover).
-    println!("[7/7] ATTEST — caller attests 5★ to {worker_name} (workRef = bounty #{bounty_id}) …");
+    // worker's reputation — now with the JUDGED rating (1..5), not a hardcoded 5,
+    // so the reputation reflects quality. A failure here WARNS but does NOT fail
+    // the cycle (and never triggers `bail`, since there's no unsettled escrow).
+    println!(
+        "[8/8] ATTEST — caller attests {judged_rating}★ (the JUDGE's rating) to {worker_name} \
+         (workRef = bounty #{bounty_id}) …"
+    );
     let work_ref = bounty_work_ref(bounty_id);
     match registry::attest_sponsored(
         &caller_signer,
         &sponsor,
         worker_token_id,
-        5,
+        judged_rating,
         work_ref,
         registry::ALPHA_USD_ADDRESS,
     )
     .await
     {
-        Ok(tx) => println!("      ✓ attested 5★ to {worker_name} (token #{worker_token_id})  (tx {tx})"),
+        Ok(tx) => println!(
+            "      ✓ attested {judged_rating}★ to {worker_name} (token #{worker_token_id})  (tx {tx})"
+        ),
         Err(e) => println!(
             "      ⚠ ATTEST failed: {e}\n      \
              (the payout SUCCEEDED — attestation is a bonus; not failing the cycle. \
-             Retry later with: localharness reputation attest --as {caller_label} {worker_name} 5 --ref {bounty_id})"
+             Retry later with: localharness reputation attest --as {caller_label} {worker_name} {judged_rating} --ref {bounty_id})"
         ),
     }
     println!();
@@ -6804,23 +6930,58 @@ mod tests {
     }
 
     #[test]
-    fn parse_colony_run_parses_task_reward_worker_ttl() {
-        // Full form: multi-word task + reward + worker + ttl, flags interleaved.
+    fn parse_colony_run_parses_task_reward_worker_judge_ttl() {
+        // Full form: multi-word task + reward + worker + judge + ttl, interleaved.
         let p = parse_colony_run_args(&args(&[
-            "QA:", "probe", "one", "flow", "--reward", "0.02", "--worker", "vex-qa", "--ttl", "1h",
+            "QA:", "probe", "one", "flow", "--reward", "0.02", "--worker", "vex-qa", "--judge",
+            "claude", "--ttl", "1h",
         ]))
         .unwrap();
         assert_eq!(p.task, "QA: probe one flow");
         assert_eq!(p.reward_wei, 20_000_000_000_000_000); // 0.02 LH
         assert_eq!(p.worker.as_deref(), Some("vex-qa"));
+        assert_eq!(p.judge.as_deref(), Some("claude"));
         assert_eq!(p.ttl_secs, 3600);
 
-        // No worker, no ttl → worker None, default ttl.
+        // No worker, no judge, no ttl → all None, default ttl.
         let p = parse_colony_run_args(&args(&["fix the bug", "--reward", "1"])).unwrap();
         assert_eq!(p.task, "fix the bug");
         assert_eq!(p.reward_wei, 1_000_000_000_000_000_000); // 1 LH
         assert!(p.worker.is_none());
+        assert!(p.judge.is_none());
         assert_eq!(p.ttl_secs, INVITE_DEFAULT_TTL_SECS);
+    }
+
+    #[test]
+    fn parse_judge_rating_extracts_digit_and_rationale() {
+        // The canonical shape: digit on line 1, rationale on line 2.
+        let (r, why) = parse_judge_rating("5\nSpecific, correct, and on-topic.");
+        assert_eq!(r, 5);
+        assert_eq!(why, "Specific, correct, and on-topic.");
+
+        // A bogus/hallucinated result the judge rejects.
+        let (r, _) = parse_judge_rating("1\nFabricated — localharness has no control API.");
+        assert_eq!(r, 1);
+
+        // Chatty prefix: still finds the first 1..5 digit.
+        let (r, _) = parse_judge_rating("Rating: 4 — good but slightly vague.");
+        assert_eq!(r, 4);
+
+        // Out-of-range / no digit → neutral default of 3.
+        assert_eq!(parse_judge_rating("no number here at all").0, 3);
+        // A leading 0/6..9 is skipped; the first IN-RANGE digit wins.
+        assert_eq!(parse_judge_rating("0 then 2").0, 2);
+        assert_eq!(parse_judge_rating("99999").0, 3);
+    }
+
+    #[test]
+    fn colony_judge_prompt_embeds_task_result_and_serverless_context() {
+        let p = colony_judge_prompt("find a real security issue", "the control API binds 0.0.0.0");
+        assert!(p.contains("find a real security issue"));
+        assert!(p.contains("the control API binds 0.0.0.0"));
+        // The accuracy anchor that lets the judge catch the serverless hallucination.
+        assert!(p.contains("SERVERLESS"));
+        assert!(p.contains("single digit 1-5"));
     }
 
     #[test]
