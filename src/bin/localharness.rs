@@ -2890,9 +2890,46 @@ async fn triage() -> i32 {
     0
 }
 
+/// How many matched agents `discover` prints (and the cap on the extra
+/// reputation reads — we only fetch reputation for the agents actually shown,
+/// not the whole scanned set, so the per-result RPC cost stays bounded).
+const DISCOVER_SHOW: usize = 20;
+
+/// Format an agent's on-chain reputation as a compact inline tag for `discover`.
+/// `rep` is `Some((count, sum))` from `reputation_of` (sum ≤ 5·count), or `None`
+/// when the read FAILED (shown as `—`, so one bad RPC never sinks the row). The
+/// average is `sum/count` to 2 dp WITHOUT floats — the same math as
+/// `reputation show` — so the two surfaces always agree. Pure (no I/O).
+fn format_reputation_inline(rep: Option<(u64, u64)>) -> String {
+    match rep {
+        None => "reputation: —".to_string(),
+        Some((0, _)) => "reputation: none yet".to_string(),
+        Some((count, sum)) => {
+            // Average to 2 dp without floats: (sum*100)/count rounded — identical
+            // to `reputation_show`'s `avg_x100`.
+            let avg_x100 = (sum * 100 + count / 2) / count;
+            let plural = if count == 1 { "attestation" } else { "attestations" };
+            format!(
+                "reputation {}.{:02} from {count} {plural}",
+                avg_x100 / 100,
+                avg_x100 % 100
+            )
+        }
+    }
+}
+
 /// `localharness discover <query>` — the Agent Yellow Pages: search the on-chain
 /// registry for agents whose name or persona matches `<query>`, so you can find
 /// a peer by capability and then `call` / `mcp-call` it. Read-only, no `$LH`.
+///
+/// Each printed result also shows that agent's on-chain reputation inline (avg
+/// rating + attestation count, or "none yet") so capability AND track-record are
+/// weighed together — no separate `reputation show` per agent. Ordering is
+/// UNCHANGED: results stay in `discover_agents`' query-match order (reputation is
+/// informational — a fresh, capable agent legitimately has 0 attestations, so
+/// ranking by it would bury new agents). We only fetch reputation for the agents
+/// actually printed (≤ `DISCOVER_SHOW`), and a failed read shows `—` rather than
+/// failing the whole command.
 async fn discover(query: &str) -> i32 {
     const SCAN: u64 = 100;
     match registry::discover_agents(query, SCAN).await {
@@ -2902,14 +2939,25 @@ async fn discover(query: &str) -> i32 {
         }
         Ok(matches) => {
             println!("{} agent(s) matching \"{query}\":", matches.len());
-            for (name, persona) in matches.iter().take(20) {
+            println!("(ordered by task match; reputation shown for context, not ranked on)");
+            for (name, persona) in matches.iter().take(DISCOVER_SHOW) {
                 let snippet: String = persona.replace('\n', " ").chars().take(100).collect();
                 let snippet = if snippet.trim().is_empty() {
                     "(no persona)".to_string()
                 } else {
                     snippet
                 };
-                println!("  {name}.localharness.xyz — {snippet}");
+                // Reputation is informational only — resolve this printed agent's
+                // tokenId (`discover_agents` discards it) and read its on-chain
+                // attestation count + rating sum. Any failure (unregistered name /
+                // RPC error) degrades to "—" so one bad read never sinks the row
+                // or the command; the ranking above is never touched.
+                let rep = match registry::id_of_name(name).await {
+                    Ok(id) if id != 0 => registry::reputation_of(id).await.ok(),
+                    _ => None,
+                };
+                let rep_tag = format_reputation_inline(rep);
+                println!("  {name}.localharness.xyz — {snippet}  [{rep_tag}]");
             }
             println!("then: localharness call <name> \"…\"  (or mcp-call to pay per request)");
             0
@@ -8041,6 +8089,29 @@ mod tests {
 
         // Empty candidate set → no pick.
         assert!(pick_reputation_aware(&[]).is_none());
+    }
+
+    #[test]
+    fn discover_reputation_inline_formats_like_reputation_show() {
+        // No attestations → "none yet" (matches the zero branch of `reputation show`).
+        assert_eq!(format_reputation_inline(Some((0, 0))), "reputation: none yet");
+        // A failed read → "—", so one bad RPC degrades a row without sinking it.
+        assert_eq!(format_reputation_inline(None), "reputation: —");
+        // 21/5 = 4.20 → 2 dp, no floats; plural for >1 attestation.
+        assert_eq!(
+            format_reputation_inline(Some((5, 21))),
+            "reputation 4.20 from 5 attestations"
+        );
+        // A single attestation is grammatically singular.
+        assert_eq!(
+            format_reputation_inline(Some((1, 4))),
+            "reputation 4.00 from 1 attestation"
+        );
+        // Rounding half-up to 2 dp matches `reputation show`'s avg_x100: 10/3 = 3.333… → 3.33.
+        assert_eq!(
+            format_reputation_inline(Some((3, 10))),
+            "reputation 3.33 from 3 attestations"
+        );
     }
 
     #[test]
