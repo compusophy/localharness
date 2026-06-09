@@ -3704,7 +3704,12 @@ pub async fn create_guild_sponsored(
     // Admin role + the `guildsOf` enumerable push) + ~275k sponsorship. Cold
     // writes dominate (CLAUDE.md "cast estimate, never guess"); budget the same
     // base + per-byte the on-chain name write costs. Sponsor billed on gas USED.
-    let gas = 1_500_000 + (name.len() as u128) * 9_000;
+    // Measured live: `cast estimate createGuild` ≈ 2.87M (the full name mint —
+    // ERC721 + name↔id + ownerOfId + MAIN — plus the guild struct). A 1.5M base
+    // OOG'd the live tx (static call succeeded → pure gas). Budget 3.5M base like
+    // scheduleJob (comfortably above 2.87M + sponsorship overhead). Sponsor billed
+    // on gas USED, so the headroom is free.
+    let gas = 3_500_000 + (name.len() as u128) * 9_000;
     submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, gas).await
 }
 
@@ -3745,8 +3750,10 @@ pub async fn accept_guild_invite_sponsored(
         input: call_uint_bytes("acceptGuildInvite(uint256)", guild_id),
     };
     // Role SSTORE + the roster + `guildsOf` enumerable pushes + event — cold
-    // index writes; budget like createGuild's base.
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 1_000_000).await
+    // index writes dominate. Measured: `cast estimate acceptGuildInvite` ≈ 1.33M
+    // (a 1.0M limit OOG'd live, gasUsed pinned at the cap). Budget 2M (sponsor
+    // billed on gas USED, so the headroom is free).
+    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 2_000_000).await
 }
 
 /// Leave a guild via a sponsored Tempo tx (`leaveGuild(guildId)`): the caller's
@@ -3763,8 +3770,10 @@ pub async fn leave_guild_sponsored(
         value_wei: 0,
         input: call_uint_bytes("leaveGuild(uint256)", guild_id),
     };
-    // Role clear + the roster/index removals + event.
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 600_000).await
+    // Role clear + the roster/index removals (swap-and-pop array writes, symmetric
+    // to accept's pushes) + event. Budget 1.5M like accept (the 600k guess was the
+    // same under-estimate class as the createGuild/accept OOGs).
+    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 1_500_000).await
 }
 
 /// Set a member's role via a sponsored Tempo tx (`setRole(guildId, member,
