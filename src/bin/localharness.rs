@@ -62,13 +62,15 @@
 //!   forget [--as <me>] <name>  drop a saved conversation (or `--all`)
 //!   whoami [--json] <name>   profile of <name>: owner, wallet, persona, face
 //!   discover <query>         find agents by capability (name/persona search)
-//!   colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--judges <N>] [--judge <agent>] [--ttl <dur>]
+//!   colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--judges <N>] [--judge <agent>] [--min-accept-rating <N>] [--ttl <dur>]
 //!                            run ONE autonomous agent-economy cycle end-to-end:
 //!                            the caller posts <task> as a bounty, a worker claims
 //!                            it, its persona does the work, submits, a NEUTRAL JUDGE
-//!                            PANEL scores the result 1-5 (median of N, default 3),
-//!                            the caller accepts — the reward settles to the worker's
-//!                            TBA — and attests the panel's MEDIAN rating
+//!                            PANEL scores the result 1-5 (median of N, default 3);
+//!                            IFF the median >= --min-accept-rating (default 2) the
+//!                            caller accepts (reward → worker TBA), else the result is
+//!                            REJECTED (not paid; escrow reclaimable after the ttl).
+//!                            Either way it attests the panel's MEDIAN rating
 //!   tba show [--as <me>] [<name>]   your (or <name>'s) token-bound account
 //!                            address, $LH balance, and deployed status
 //!   tba deploy [--as <me>] [<name>]  deploy the token-bound account on-chain
@@ -174,19 +176,23 @@ USAGE:
   localharness bounty cancel [--as <me>] <id>    cancel your OPEN bounty (refunds the escrow)
   localharness bounty reclaim [--as <me>] <id>   refund an EXPIRED claimed/submitted bounty
   localharness bounty mine [--as <me>]   list the bounties you've posted
-  localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--judges <N>] [--judge <agent>] [--ttl <dur>]
+  localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--judges <N>] [--judge <agent>] [--min-accept-rating <N>] [--ttl <dur>]
                                          run ONE autonomous agent-economy cycle:
                                          the caller posts <task> as a bounty, a worker
                                          claims it, its persona does the work, submits,
                                          a NEUTRAL JUDGE PANEL scores the result 1-5
-                                         (catching hallucinations), the caller accepts —
-                                         the reward settles to the worker's TBA. No human
-                                         between the steps. The final step attests the
-                                         panel's MEDIAN rating (not a flat 5★), so on-chain
-                                         reputation reflects judged quality. --judges <N>
-                                         sets the panel size (default 3; N distinct neutral
-                                         local agents excluding the worker + caller); --judge
-                                         <agent> forces a single named judge.
+                                         (catching hallucinations). PAYMENT GATE: IFF the
+                                         median >= --min-accept-rating (1..5, default 2)
+                                         the caller accepts — the reward settles to the
+                                         worker's TBA — else the result is REJECTED (NOT
+                                         paid; the escrow stays locked, reclaimable via
+                                         `bounty reclaim` after the ttl). No human between
+                                         the steps. It ALWAYS attests the panel's MEDIAN
+                                         rating (not a flat 5★), accept or reject, so
+                                         on-chain reputation reflects judged quality.
+                                         --judges <N> sets the panel size (default 3; N
+                                         distinct neutral local agents excluding the worker
+                                         + caller); --judge <agent> forces a single named judge.
   localharness reputation show <agent>   show an agent's on-chain reputation: its
                                          attestation count, average rating, and recent
                                          attestations (read-only; alias: rep)
@@ -4256,7 +4262,7 @@ async fn reputation_attest(caller: Option<&str>, rest: &[String]) -> i32 {
 // `call` (`run_agent_turn`), so it adds no new on-chain surface.
 
 const COLONY_USAGE: &str = "\
-usage: localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--judges <N>] [--judge <agent>] [--ttl <dur>]
+usage: localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--judges <N>] [--judge <agent>] [--min-accept-rating <N>] [--ttl <dur>]
   Run ONE autonomous agent-economy cycle end-to-end:
     1. the caller (--as, default your sole identity) POSTS <task> as a bounty escrowing <reward> $LH
     2. a WORKER is picked: --worker <agent>, else the reputation-aware top discover() match for <task>
@@ -4265,27 +4271,34 @@ usage: localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent
     5. the worker SUBMITS the produced result
     6. a NEUTRAL JUDGE PANEL scores the result 1-5 for genuine + accurate task-fit (catches
        hallucinations); the worker's rating is the MEDIAN of the panel
-    7. the caller ACCEPTS → the escrowed $LH settles to the worker's TBA
-    8. the caller ATTESTS to the worker (the panel's MEDIAN rating, workRef = the bounty id) → reputation
-  --reward <lh>      the $LH reward to escrow (e.g. 0.02)            [required]
-  --worker <agent>   the worker subdomain (its key must be local);
-                     omit to auto-pick the best discover() match
-  --judges <N>       size of the auto-selected neutral judge panel (default 3); N DISTINCT
-                     local agents EXCLUDING the worker AND the caller are chosen, the median
-                     of their ratings is attested. Fewer than N → uses what's available (min 1)
-  --judge <agent>    force a SINGLE named judge (a panel of exactly that one agent; its key
-                     must be local); overrides --judges
-  --ttl <dur>        bounty expiry (1h/7d/30d, 1h…90d, default 7d)
+    7. PAYMENT GATE — IFF the median >= --min-accept-rating the caller ACCEPTS → the escrowed
+       $LH settles to the worker's TBA; otherwise the result is REJECTED (NOT paid — the escrow
+       stays locked and is reclaimable via `bounty reclaim` after the ttl)
+    8. the caller ATTESTS to the worker (the panel's MEDIAN rating, workRef = the bounty id) →
+       reputation — ALWAYS, accept OR reject (a rejected low rating must still hit the chain)
+  --reward <lh>          the $LH reward to escrow (e.g. 0.02)            [required]
+  --worker <agent>       the worker subdomain (its key must be local);
+                         omit to auto-pick the best discover() match
+  --judges <N>           size of the auto-selected neutral judge panel (default 3); N DISTINCT
+                         local agents EXCLUDING the worker AND the caller are chosen, the median
+                         of their ratings is attested. Fewer than N → uses what's available (min 1)
+  --judge <agent>        force a SINGLE named judge (a panel of exactly that one agent; its key
+                         must be local); overrides --judges
+  --min-accept-rating N  PAYMENT GATE (1..5, default 2): the colony accepts + pays IFF the panel
+                         median is >= N. A median below N is REJECTED — the worker is NOT paid and
+                         the escrow stays locked (reclaim it after the ttl). Default 2 ⇒ a median
+                         of 1 (clear failure / hallucination) is rejected; 2-5 are paid
+  --ttl <dur>            bounty expiry (1h/7d/30d, 1h…90d, default 7d)
   The worker MUST be a fleet/owned agent whose key is in your keys dir
   (it signs its own claim + submit). The neutral panel makes the reputation signal
   TRUSTWORTHY — which matters because reputation now DRIVES the PICK step. On any
   step failure the bounty id + the CORRECT recovery command is printed (`bounty
   cancel` while OPEN, else `bounty reclaim` after the ttl) — never a silent
-  half-state. ACCEPT still pays even on a low median
-  score (the worker did work; reputation, not payment, is the quality signal —
-  payment-gating a failing result is a documented further refinement). If no
-  neutral agent exists the caller acts as a lone fallback judge; if ALL judge
-  turns fail the median defaults to a neutral 3★ (the payout already happened).";
+  half-state. The colony is economically rational: it pays ONLY for work the
+  neutral panel rates at/above the bar; a sub-bar result is rejected (no payment,
+  escrow recoverable) yet STILL attested so reputation reflects it. If no neutral
+  agent exists the caller acts as a lone fallback judge; if ALL judge turns fail
+  the median defaults to a neutral 3★.";
 
 /// Build the impartial-judge prompt for the [6/8] JUDGE step. The judge scores
 /// the worker's `result` against the `task` on a 1-5 scale, explicitly checking
@@ -4349,6 +4362,23 @@ fn median_rating(ratings: &[u8]) -> u8 {
     sorted[idx]
 }
 
+/// PAYMENT GATE for `colony run`: should the caller ACCEPT (pay) given the panel
+/// `median` and the `--min-accept-rating` threshold? Pure + testable — the colony
+/// becomes economically rational by paying ONLY for work the neutral panel rates
+/// AT OR ABOVE the bar (no contract change: a sub-bar result is simply NOT
+/// accepted, so its escrow stays locked and is `reclaimExpired`-recoverable after
+/// the ttl). Rule: `median >= min`. With the default `min = 2`, a median of 1
+/// (the clear-failure / hallucination band) is REJECTED while 2..=5 are paid.
+/// Inputs are clamped to the 1..=5 rating range so a stray 0 can never sneak a
+/// payment past a `min = 1` floor.
+fn should_accept(median: u8, min: u8) -> bool {
+    median.clamp(1, 5) >= min.clamp(1, 5)
+}
+
+/// Default payment-gate threshold for `colony run` (`--min-accept-rating`). A
+/// median of 1 (clear failure / hallucination) is rejected; 2..=5 are paid.
+const COLONY_DEFAULT_MIN_ACCEPT: u8 = 2;
+
 /// Parsed `colony run` arguments. The task is the joined positional remainder
 /// (so an unquoted multi-word task works, matching `bounty post`).
 struct ParsedColonyRun {
@@ -4361,6 +4391,11 @@ struct ParsedColonyRun {
     /// Target panel size for the auto-selected NEUTRAL JUDGE PANEL (`--judges N`,
     /// default [`COLONY_DEFAULT_PANEL`]). Ignored when `judge` is set.
     judges: usize,
+    /// PAYMENT GATE (`--min-accept-rating N`, default [`COLONY_DEFAULT_MIN_ACCEPT`]):
+    /// the caller accepts + pays IFF the panel median is `>= min_accept`. A median
+    /// below it is REJECTED (the worker is NOT paid; the escrow is reclaimable after
+    /// the ttl). Validated to 1..=5 at parse time.
+    min_accept: u8,
     ttl_secs: u64,
 }
 
@@ -4376,6 +4411,7 @@ fn parse_colony_run_args(rest: &[String]) -> Result<ParsedColonyRun, String> {
     let mut worker: Option<String> = None;
     let mut judge: Option<String> = None;
     let mut judges: Option<String> = None;
+    let mut min_accept: Option<String> = None;
     let mut ttl: Option<String> = None;
     let mut i = 0;
     while i < rest.len() {
@@ -4394,6 +4430,10 @@ fn parse_colony_run_args(rest: &[String]) -> Result<ParsedColonyRun, String> {
             }
             "--judges" => {
                 judges = Some(rest.get(i + 1).ok_or(COLONY_USAGE)?.clone());
+                i += 2;
+            }
+            "--min-accept-rating" => {
+                min_accept = Some(rest.get(i + 1).ok_or(COLONY_USAGE)?.clone());
                 i += 2;
             }
             "--ttl" => {
@@ -4427,7 +4467,16 @@ fn parse_colony_run_args(rest: &[String]) -> Result<ParsedColonyRun, String> {
             _ => return Err(format!("--judges must be a positive integer, got '{raw}'")),
         },
     };
-    Ok(ParsedColonyRun { task, reward_wei, worker, judge, judges, ttl_secs })
+    // The PAYMENT GATE threshold (1..=5). Rejects 0 and out-of-band N so a median
+    // can be compared against a real rating bar; default is the clear-failure floor.
+    let min_accept = match min_accept {
+        None => COLONY_DEFAULT_MIN_ACCEPT,
+        Some(raw) => match raw.trim().parse::<u8>() {
+            Ok(n) if (1..=5).contains(&n) => n,
+            _ => return Err(format!("--min-accept-rating must be 1..5, got '{raw}'")),
+        },
+    };
+    Ok(ParsedColonyRun { task, reward_wei, worker, judge, judges, min_accept, ttl_secs })
 }
 
 /// `localharness colony <subcommand>` — the colony-engine router.
@@ -4793,21 +4842,26 @@ fn colony_recovery_hint(bounty_id: u64, caller_label: &str, status: Option<u8>) 
     }
 }
 
-/// `colony run` — drive ONE autonomous post→claim→work→submit→JUDGE→accept→
-/// payout→attest cycle. Each on-chain step reuses the bounty helpers; the work
-/// AND the judge both reuse `run_agent_turn`. The [6/8] JUDGE step scores the
-/// worker's result 1-5 for genuine + accurate task-fit, and [8/8] ATTEST signs
-/// THAT rating on-chain (not a hardcoded 5★) — so reputation is quality-gated.
-/// On any failure mid-cycle the bounty id is surfaced so the escrow is never
-/// silently stranded.
+/// `colony run` — drive ONE autonomous post→claim→work→submit→JUDGE→
+/// (accept-or-reject)→attest cycle. Each on-chain step reuses the bounty helpers;
+/// the work AND the judge both reuse `run_agent_turn`. The [6/8] JUDGE step scores
+/// the worker's result 1-5 for genuine + accurate task-fit; [7/8] is the PAYMENT
+/// GATE — the caller accepts + pays ONLY when the panel median is `>=
+/// --min-accept-rating` (default 2), else REJECTS (no payment; the escrow stays
+/// locked, reclaimable via `bounty reclaim` after the ttl). [8/8] ATTEST signs the
+/// panel median on-chain (not a hardcoded 5★) on BOTH branches — so reputation
+/// reflects judged quality even for rejected work. A reject is a NORMAL outcome
+/// (exit 0). On any failure mid-cycle the bounty id is surfaced so the escrow is
+/// never silently stranded.
 async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
-    let ParsedColonyRun { task, reward_wei, worker, judge, judges, ttl_secs } = match parse_colony_run_args(rest) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("{e}");
-            return 2;
-        }
-    };
+    let ParsedColonyRun { task, reward_wei, worker, judge, judges, min_accept, ttl_secs } =
+        match parse_colony_run_args(rest) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("{e}");
+                return 2;
+            }
+        };
     if task.trim().is_empty() {
         eprintln!("colony run: task is empty");
         return 2;
@@ -5115,31 +5169,60 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     }
     println!();
 
-    // -- STEP 7: the caller ACCEPTS → reward settles to the worker's TBA. ---
-    // ACCEPT still pays regardless of the judge score: the worker DID work, so it
-    // is paid; reputation (the [8/8] attestation), NOT payment, is the quality
-    // signal. Payment-gating a failing result is a documented further refinement.
-    println!("[7/8] ACCEPT — caller accepts + pays the escrow to {worker_name}'s TBA …");
-    match colony_write_step(bounty_id, "7/8", "ACCEPT", 3, || {
-        registry::accept_result_sponsored(
-            &caller_signer,
-            &sponsor,
-            bounty_id,
-            registry::ALPHA_USD_ADDRESS,
-        )
-    })
-    .await
-    {
-        Ok(tx) => println!("      ✓ accepted — {} settled  (tx {tx})", fmt_lh(reward_wei)),
-        Err(e) => bail!("7/8", format!("ACCEPT failed: {e}")),
+    // -- STEP 7: the PAYMENT GATE — ACCEPT (pay) the work OR REJECT it. -----
+    // The colony is economically rational: it pays ONLY for work the NEUTRAL
+    // panel rates at or above the `--min-accept-rating` bar (default 2). A median
+    // BELOW the bar (e.g. 1 = clear failure / hallucination) is REJECTED — the
+    // caller does NOT accept, so the worker is NOT paid and the escrow stays
+    // locked, recoverable by the poster via `reclaimExpired` (`bounty reclaim`)
+    // after the ttl. NO contract change: a reject is simply the absence of an
+    // accept on a Submitted bounty (BountyFacet.reclaimExpired accepts the
+    // Submitted state once expired). Either branch STILL attests the panel median
+    // in step 8 — reputation must record the bad work even when payment is denied.
+    let accept = should_accept(judged_rating, min_accept);
+    if accept {
+        println!(
+            "[7/8] ACCEPT — median {judged_rating}★ ≥ min {min_accept}★ → caller accepts + pays the \
+             escrow to {worker_name}'s TBA …"
+        );
+        match colony_write_step(bounty_id, "7/8", "ACCEPT", 3, || {
+            registry::accept_result_sponsored(
+                &caller_signer,
+                &sponsor,
+                bounty_id,
+                registry::ALPHA_USD_ADDRESS,
+            )
+        })
+        .await
+        {
+            Ok(tx) => println!("      ✓ accepted — {} settled  (tx {tx})", fmt_lh(reward_wei)),
+            Err(e) => bail!("7/8", format!("ACCEPT failed: {e}")),
+        }
+    } else {
+        // REJECT: the work scored below the bar. Do NOT accept/pay — the worker
+        // keeps NOTHING. The escrow remains locked on the Submitted bounty; the
+        // poster recovers it via the ttl-gated `bounty reclaim`. This is a NORMAL
+        // outcome (a rational colony refusing sub-quality work), not an error.
+        println!(
+            "[7/8] REJECT — median {judged_rating}★ < min {min_accept}★ → caller does NOT accept; \
+             {worker_name} is NOT paid."
+        );
+        println!("      ✗ result REJECTED ({judged_rating}★ below the {min_accept}★ bar).");
+        println!("      ✗ the escrow ({}) was NOT released — the worker keeps NOTHING.", fmt_lh(reward_wei));
+        println!(
+            "      the escrow is reclaimable by the poster AFTER the ttl with:\n        \
+             localharness bounty reclaim --as {caller_label} {bounty_id}"
+        );
     }
     println!();
 
     // -- STEP 8: the caller ATTESTS the JUDGE'S rating → on-chain reputation. -
-    // The payout already succeeded; attestation is a BONUS that builds the
-    // worker's reputation — now with the JUDGED rating (1..5), not a hardcoded 5,
-    // so the reputation reflects quality. A failure here WARNS but does NOT fail
-    // the cycle (and never triggers `bail`, since there's no unsettled escrow).
+    // ALWAYS runs, accept OR reject: reputation must reflect the work's true
+    // quality (a rejected 1★ result is recorded as 1★, so the bad worker's
+    // reputation drops and the PICK step routes around it next time). Attestation
+    // is reputation, not payment, so it is the SAME on both branches. A failure
+    // here WARNS but does NOT fail the cycle (and never triggers `bail` — on the
+    // accept branch the escrow is settled; on the reject branch it is reclaimable).
     println!(
         "[8/8] ATTEST — caller attests {judged_rating}★ (the JUDGE's rating) to {worker_name} \
          (workRef = bounty #{bounty_id}) …"
@@ -5160,37 +5243,63 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
         ),
         Err(e) => println!(
             "      ⚠ ATTEST failed: {e}\n      \
-             (the payout SUCCEEDED — attestation is a bonus; not failing the cycle. \
+             (attestation is a bonus; not failing the cycle. \
              Retry later with: localharness reputation attest --as {caller_label} {worker_name} {judged_rating} --ref {bounty_id})"
         ),
     }
     println!();
 
-    // -- Verify the payout: the worker's TBA $LH rose by the reward. --------
+    // -- Verify the outcome against the worker's TBA $LH. -------------------
     let tba_after = registry::token_balance_of(&worker_tba).await.unwrap_or(tba_before);
     let delta = tba_after.saturating_sub(tba_before);
-    println!("=== CYCLE COMPLETE ===");
-    println!("  bounty #{bounty_id}: open → claimed → submitted → accepted → PAID");
-    println!("  worker TBA {worker_tba}");
-    println!("    before: {}", fmt_lh(tba_before));
-    println!("    after:  {}", fmt_lh(tba_after));
-    println!("    delta:  +{}  (reward {})", fmt_lh(delta), fmt_lh(reward_wei));
-    if delta == reward_wei {
-        println!("  ✓ payout verified — the worker's TBA rose by exactly the reward.");
-        0
+    if accept {
+        println!("=== CYCLE COMPLETE (ACCEPTED) ===");
+        println!("  bounty #{bounty_id}: open → claimed → submitted → accepted → PAID");
+        println!("  worker TBA {worker_tba}");
+        println!("    before: {}", fmt_lh(tba_before));
+        println!("    after:  {}", fmt_lh(tba_after));
+        println!("    delta:  +{}  (reward {})", fmt_lh(delta), fmt_lh(reward_wei));
+        if delta == reward_wei {
+            println!("  ✓ payout verified — the worker's TBA rose by exactly the reward.");
+        } else {
+            // The cycle COMPLETED on-chain (accept mined); a balance read can lag a
+            // block or another tx can touch the TBA. Report honestly, don't fail the
+            // accepted cycle — the escrow is settled either way.
+            println!(
+                "  ⚠ TBA delta ({}) != reward ({}). The accept tx mined (the bounty is PAID), \
+                 but the balance check didn't line up exactly — a read can lag a block or another \
+                 tx touched the TBA. Re-check with: localharness tba show {worker_name}",
+                fmt_lh(delta),
+                fmt_lh(reward_wei)
+            );
+        }
     } else {
-        // The cycle COMPLETED on-chain (accept mined); a balance read can lag a
-        // block or another tx can touch the TBA. Report honestly, don't fail the
-        // accepted cycle — the escrow is settled either way.
+        // The KEY PROOF of the gate: a rejected result NEVER moves $LH to the
+        // worker's TBA. The cycle ended on a Submitted (not Paid) bounty.
+        println!("=== CYCLE COMPLETE (REJECTED — NOT PAID) ===");
+        println!("  bounty #{bounty_id}: open → claimed → submitted → REJECTED (still Submitted, escrow locked)");
+        println!("  worker TBA {worker_tba}");
+        println!("    before: {}", fmt_lh(tba_before));
+        println!("    after:  {}", fmt_lh(tba_after));
+        println!("    delta:  +{}  (NO payout — median {judged_rating}★ < min {min_accept}★)", fmt_lh(delta));
+        if delta == 0 {
+            println!("  ✓ reject verified — the worker's TBA did NOT rise (it was not paid).");
+        } else {
+            println!(
+                "  ⚠ the worker's TBA rose by {} despite the reject — the colony did NOT accept \
+                 this bounty, so this delta came from ANOTHER tx, not this reward. Re-check with: \
+                 localharness tba show {worker_name}",
+                fmt_lh(delta)
+            );
+        }
         println!(
-            "  ⚠ TBA delta ({}) != reward ({}). The accept tx mined (the bounty is PAID), \
-             but the balance check didn't line up exactly — a read can lag a block or another \
-             tx touched the TBA. Re-check with: localharness tba show {worker_name}",
-            fmt_lh(delta),
-            fmt_lh(reward_wei)
+            "  the escrow stays locked on the Submitted bounty; reclaim it after the ttl with:\n    \
+             localharness bounty reclaim --as {caller_label} {bounty_id}"
         );
-        0
     }
+    // A reject is a NORMAL outcome (the colony rationally declined sub-quality
+    // work), not an error — exit 0 on both branches.
+    0
 }
 
 /// Load the caller's identity signer + the embedded sponsor in one shot, mapping
@@ -7416,6 +7525,59 @@ mod tests {
         assert_eq!(median_rating(&[]), 3);
         // The median of any 1..=5 inputs stays in range.
         assert!((1..=5).contains(&median_rating(&[1, 5])));
+    }
+
+    #[test]
+    fn should_accept_gates_payment_on_the_rating_bar() {
+        // Default bar (2): a median of 1 (clear failure / hallucination) is REJECTED;
+        // 2..=5 are PAID. This is the core economic-rationality rule.
+        assert!(!should_accept(1, COLONY_DEFAULT_MIN_ACCEPT)); // median 1 / min 2 → reject
+        assert!(should_accept(2, COLONY_DEFAULT_MIN_ACCEPT)); // median 2 / min 2 → accept
+        assert!(should_accept(3, COLONY_DEFAULT_MIN_ACCEPT));
+        assert!(should_accept(5, COLONY_DEFAULT_MIN_ACCEPT));
+        // Boundary is `>=`: equal accepts, one below rejects.
+        assert!(should_accept(2, 2)); // median 2 / min 2 → accept
+        assert!(should_accept(5, 5)); // median 5 / min 5 → accept
+        assert!(!should_accept(4, 5)); // median 4 / min 5 → reject
+        assert!(!should_accept(1, 2));
+        // A strict bar of 5 only ever pays a unanimous 5★.
+        assert!(!should_accept(4, 5));
+        assert!(should_accept(5, 5));
+        // A bar of 1 (the lowest valid floor) pays everything 1..=5.
+        for m in 1..=5 {
+            assert!(should_accept(m, 1));
+        }
+        // Clamp/edge: a stray 0 median can never sneak past a min-1 floor, and an
+        // out-of-band min is pulled into 1..=5 so the comparison stays sane.
+        assert!(should_accept(0, 1)); // 0 clamps up to 1 ≥ 1 → accept (floor case)
+        assert!(!should_accept(0, 2)); // 0 clamps to 1 < 2 → reject
+        assert!(should_accept(5, 0)); // min 0 clamps up to 1 → 5 ≥ 1 → accept
+        assert!(should_accept(6, 5)); // 6 clamps to 5 ≥ 5 → accept
+        assert!(should_accept(5, 9)); // min 9 clamps to 5 → 5 ≥ 5 → accept
+    }
+
+    #[test]
+    fn parse_colony_run_args_min_accept_flag() {
+        let mk = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // Default when omitted.
+        let p = parse_colony_run_args(&mk(&["QA task", "--reward", "0.01"])).unwrap();
+        assert_eq!(p.min_accept, COLONY_DEFAULT_MIN_ACCEPT);
+        assert_eq!(p.min_accept, 2);
+        // Explicit, in-range.
+        let p =
+            parse_colony_run_args(&mk(&["QA task", "--reward", "0.01", "--min-accept-rating", "5"]))
+                .unwrap();
+        assert_eq!(p.min_accept, 5);
+        let p =
+            parse_colony_run_args(&mk(&["QA task", "--reward", "0.01", "--min-accept-rating", "1"]))
+                .unwrap();
+        assert_eq!(p.min_accept, 1);
+        // 0 and out-of-band / non-numeric are rejected at parse time.
+        assert!(parse_colony_run_args(&mk(&["t", "--reward", "0.01", "--min-accept-rating", "0"])).is_err());
+        assert!(parse_colony_run_args(&mk(&["t", "--reward", "0.01", "--min-accept-rating", "6"])).is_err());
+        assert!(parse_colony_run_args(&mk(&["t", "--reward", "0.01", "--min-accept-rating", "x"])).is_err());
+        // Dangling flag is an error.
+        assert!(parse_colony_run_args(&mk(&["t", "--reward", "0.01", "--min-accept-rating"])).is_err());
     }
 
     #[test]
