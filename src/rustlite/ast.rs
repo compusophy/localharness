@@ -126,6 +126,11 @@ pub enum Stmt {
 pub struct Place {
     pub root: String,
     pub fields: Vec<String>,
+    /// `Some(expr)` for an INDEXED assignment target `base[index] = value`,
+    /// where `base` is `root[.fields…]` (an array value) and `index` is an
+    /// `i32`. `None` for a plain variable / struct-field place. Mirrors the
+    /// read side's `ExprKind::Index { base, index }` (address = base + idx*4).
+    pub index: Option<Box<Expr>>,
     pub span: Span,
 }
 

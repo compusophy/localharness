@@ -237,7 +237,12 @@ impl WasmEmitter {
         for stmt in &block.stmts {
             match stmt {
                 TypedStmt::Let { init, .. } => self.scan_expr_imports(init),
-                TypedStmt::Assign { value, .. } => self.scan_expr_imports(value),
+                TypedStmt::Assign { index, value, .. } => {
+                    if let Some(index) = index {
+                        self.scan_expr_imports(index);
+                    }
+                    self.scan_expr_imports(value);
+                }
                 TypedStmt::Return { value } => {
                     if let Some(v) = value {
                         self.scan_expr_imports(v);
@@ -431,12 +436,30 @@ impl WasmEmitter {
                 code.push(OP_LOCAL_SET);
                 leb128_u32(local_idx, code);
             }
-            TypedStmt::Assign { place, value, .. } => {
-                self.emit_expr(value, code)?;
-                let local_idx = *self.local_map.last().unwrap().get(&place.root)
-                    .ok_or_else(|| CompileError::new_code(codes::UNDEFINED_VARIABLE, format!("undefined local '{}'", place.root)))?;
-                code.push(OP_LOCAL_SET);
-                leb128_u32(local_idx, code);
+            TypedStmt::Assign { place, index, value, .. } => {
+                if let Some(index) = index {
+                    // Indexed array write `place[index] = value`:
+                    //   addr = base + index*4 ; <value> ; i32.store
+                    // where `base` is the array's base pointer. This mirrors the
+                    // read side (`TypedExprKind::Index`) byte-for-byte on the
+                    // address math, so reads and writes agree on layout.
+                    self.emit_place_base_pointer(place, code)?;
+                    self.emit_expr(index, code)?;
+                    code.push(OP_I32_CONST);
+                    leb128_i32(4, code);
+                    code.push(OP_I32_MUL);
+                    code.push(OP_I32_ADD);
+                    self.emit_expr(value, code)?;
+                    code.push(OP_I32_STORE);
+                    leb128_u32(2, code); // align = 4 bytes (2^2)
+                    leb128_u32(0, code); // static offset
+                } else {
+                    self.emit_expr(value, code)?;
+                    let local_idx = *self.local_map.last().unwrap().get(&place.root)
+                        .ok_or_else(|| CompileError::new_code(codes::UNDEFINED_VARIABLE, format!("undefined local '{}'", place.root)))?;
+                    code.push(OP_LOCAL_SET);
+                    leb128_u32(local_idx, code);
+                }
             }
             TypedStmt::Return { value } => {
                 if let Some(val) = value {
@@ -451,6 +474,19 @@ impl WasmEmitter {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Push the base pointer of an indexed-write place `root[index]` onto the
+    /// stack. The typechecker guarantees the place has no field chain (v1
+    /// indexed writes target a named array local), so this is exactly the
+    /// `local.get root` that the read side emits for `ExprKind::Index { base:
+    /// Var(root), .. }` — reads and writes share the same base.
+    fn emit_place_base_pointer(&mut self, place: &crate::rustlite::ast::Place, code: &mut Vec<u8>) -> Result<(), CompileError> {
+        let local_idx = *self.local_map.last().unwrap().get(&place.root)
+            .ok_or_else(|| CompileError::new_code(codes::UNDEFINED_VARIABLE, format!("undefined local '{}'", place.root)))?;
+        code.push(OP_LOCAL_GET);
+        leb128_u32(local_idx, code);
         Ok(())
     }
 
@@ -1264,6 +1300,24 @@ mod tests {
                 std::str::from_utf8(needle).unwrap(),
             );
         }
+    }
+
+    #[test]
+    fn emit_array_indexed_write_stores() {
+        // `a[i] = v` must emit an i32.store (0x36). The read path emits
+        // i32.load (0x28); a stateful cartridge needs the store. Structural
+        // proof that the write opcode is in the body; the run-proof
+        // (scripts/verify-array-write.mjs) asserts the value round-trips.
+        let wasm = compile_to_wasm(
+            "fn frame(t: i32) { let mut a = [0, 0, 0, 0]; a[2] = 42; host::display::clear(a[2]); host::display::present(); }",
+        );
+        assert_eq!(&wasm[0..4], WASM_MAGIC);
+        assert!(
+            wasm.iter().any(|&b| b == OP_I32_STORE),
+            "indexed array write must emit an i32.store opcode (0x36)",
+        );
+        // And the address math (i32.mul by 4 then i32.add) the read side uses.
+        assert!(wasm.iter().any(|&b| b == OP_I32_MUL), "addr math: index*4");
     }
 
     #[test]

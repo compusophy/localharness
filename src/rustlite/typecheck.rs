@@ -80,7 +80,10 @@ pub struct TypedBlock {
 #[derive(Debug, Clone)]
 pub enum TypedStmt {
     Let { name: String, mutable: bool, ty: ResolvedType, init: TypedExpr },
-    Assign { place: Place, value: TypedExpr },
+    /// `place = value`. `index` is `Some(typed_i32_expr)` for an indexed array
+    /// write `place[index] = value` (mirrors the read's `Index` address math),
+    /// `None` for a plain variable / struct-field assignment.
+    Assign { place: Place, index: Option<TypedExpr>, value: TypedExpr },
     Return { value: Option<TypedExpr> },
     Expr { expr: TypedExpr },
 }
@@ -388,10 +391,49 @@ impl TypeContext {
                 if !is_mut {
                     return Err(CompileError::at_code(codes::NOT_MUTABLE, format!("'{}' is not mutable", place.root), *span));
                 }
+                // Resolve the base type at `root[.fields…]`.
                 let mut target_ty = local_ty;
                 for field in &place.fields {
                     target_ty = self.field_type(&target_ty, field, *span)?;
                 }
+                // Indexed write: the base must be an array, the index an i32, and
+                // the value the element type. Mirrors `ExprKind::Index` reads.
+                let typed_index = if let Some(index_expr) = &place.index {
+                    // v1: index a NAMED array local directly (`arr[i] = v`).
+                    // Writing through a struct field (`s.grid[i] = v`) needs
+                    // working struct-in-memory codegen (not yet present), so
+                    // reject it cleanly rather than emit wrong stores.
+                    if !place.fields.is_empty() {
+                        return Err(CompileError::at_code(
+                            codes::INVALID_ASSIGN_TARGET,
+                            "indexed write through a struct field is not yet supported",
+                            *span,
+                        ));
+                    }
+                    let elem_ty = match &target_ty {
+                        ResolvedType::Array(elem, _) => (**elem).clone(),
+                        other => {
+                            return Err(CompileError::at_code(
+                                codes::BAD_INDEX,
+                                format!("cannot index into {other:?} (only arrays are indexable)"),
+                                *span,
+                            ))
+                        }
+                    };
+                    let index_t = self.check_expr(index_expr)?;
+                    if index_t.ty != ResolvedType::I32 {
+                        return Err(CompileError::at_code(
+                            codes::BAD_INDEX,
+                            format!("array index must be i32, got {:?}", index_t.ty),
+                            *span,
+                        ));
+                    }
+                    // From here the value must match the ELEMENT type, not the array.
+                    target_ty = elem_ty;
+                    Some(index_t)
+                } else {
+                    None
+                };
                 let val = self.check_expr(value)?;
                 if val.ty != target_ty {
                     return Err(CompileError::at_code(
@@ -400,7 +442,7 @@ impl TypeContext {
                         *span,
                     ));
                 }
-                Ok(TypedStmt::Assign { place: place.clone(), value: val })
+                Ok(TypedStmt::Assign { place: place.clone(), index: typed_index, value: val })
             }
             Stmt::Return { value, span } => {
                 let val = value.as_ref().map(|v| self.check_expr(v)).transpose()?;

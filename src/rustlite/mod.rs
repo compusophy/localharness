@@ -124,8 +124,10 @@ mod tests {
         let e = compile_err("fn (t: i32) {}");
         assert_eq!(e.code, Some(codes::UNEXPECTED_TOKEN), "{e}");
 
-        // invalid assignment target / array write (parser).
-        let e = compile_err("fn frame(t: i32) { let a = [1, 2, 3]; a[0] = 9; host::display::present(); }");
+        // invalid assignment target (parser): can't assign to a literal.
+        // (Indexed array writes `a[0] = 9` ARE now supported — see
+        // `arrays_literal_and_index`; this exercises the remaining reject path.)
+        let e = compile_err("fn frame(t: i32) { 5 = 9; host::display::present(); }");
         assert_eq!(e.code, Some(codes::INVALID_ASSIGN_TARGET), "{e}");
 
         // unknown function (codegen): a host fn path that doesn't resolve —
@@ -188,10 +190,80 @@ mod tests {
             "fn frame(t: i32) { let x = 5; host::display::clear(x[0]); host::display::present(); }"
         )
         .is_err());
-        // writes `arr[i] = v` are not yet supported — clean error, not a crash
+        // INDEXED WRITES `arr[i] = v` now compile (the stateful-grid primitive):
+        // write then read back the SAME element in one frame.
+        assert!(compile(
+            "fn frame(t: i32) { let mut a = [1, 2, 3]; a[0] = 9; host::display::clear(a[0]); host::display::present(); }"
+        )
+        .is_ok());
+        // a variable index on the write side, mutating from a host value
+        assert!(compile(
+            "fn frame(t: i32) { let mut a = [0, 0, 0, 0]; a[t % 4] = t; host::display::clear(a[t % 4]); host::display::present(); }"
+        )
+        .is_ok());
+        // writing the wrong element type is still a type error (i32 elems only)
+        assert!(compile(
+            "fn frame(t: i32) { let mut a = [1, 2, 3]; a[0] = true; host::display::present(); }"
+        )
+        .is_err());
+        // writing into a non-mut array binding is rejected (mutability holds)
         assert!(compile(
             "fn frame(t: i32) { let a = [1, 2, 3]; a[0] = 9; host::display::present(); }"
         )
         .is_err());
+        // indexing a non-array on the write side is a clear error
+        assert!(compile(
+            "fn frame(t: i32) { let mut x = 5; x[0] = 9; host::display::present(); }"
+        )
+        .is_err());
+    }
+}
+
+/// Emit the indexed-array-write cartridges that the node run-proof
+/// (`scripts/verify-array-write.mjs`) instantiates + runs. This is the bridge
+/// the task asks for: "use a Rust test that compiles + writes the bytes for
+/// node to load." Each cartridge ends its `frame` by `clear()`-ing with a value
+/// it READ BACK out of an array it just WROTE; node asserts the value matches.
+///
+/// Run `cargo test emits_wasm_for_node_proof`, then `node
+/// scripts/verify-array-write.mjs`. Native-only (writes to the source tree).
+#[cfg(all(test, feature = "native"))]
+mod array_write_run_proof {
+    use super::compile;
+
+    #[test]
+    fn emits_wasm_for_node_proof() {
+        let out_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("scripts")
+            .join(".array-write-proof");
+        std::fs::create_dir_all(&out_dir).expect("create proof dir");
+
+        let cases: &[(&str, &str)] = &[
+            // 1) single write then read back the SAME element
+            (
+                "single.wasm",
+                "fn frame(t: i32) { let mut a = [0, 0, 0, 0]; a[2] = 42; host::display::clear(a[2]); host::display::present(); }",
+            ),
+            // 2) loop-fill a[i] = i*10, read a fixed cell (a[3] => 30)
+            (
+                "loopfill.wasm",
+                "fn frame(t: i32) { let mut a = [0, 0, 0, 0, 0]; for i in 0..5 { a[i] = i * 10; } host::display::clear(a[3]); host::display::present(); }",
+            ),
+            // 2b) same loop-fill, read a[t] so node can pick the cell at runtime
+            (
+                "loopfill_t.wasm",
+                "fn frame(t: i32) { let mut a = [0, 0, 0, 0, 0]; for i in 0..5 { a[i] = i * 10; } host::display::clear(a[t]); host::display::present(); }",
+            ),
+            // 3) overwrite the same cell twice — later write wins
+            (
+                "overwrite.wasm",
+                "fn frame(t: i32) { let mut a = [0, 0]; a[0] = 7; a[0] = 99; host::display::clear(a[0]); host::display::present(); }",
+            ),
+        ];
+
+        for (file, src) in cases {
+            let wasm = compile(src).unwrap_or_else(|e| panic!("compile {file}: {e}"));
+            std::fs::write(out_dir.join(file), &wasm).unwrap_or_else(|e| panic!("write {file}: {e}"));
+        }
     }
 }

@@ -1023,7 +1023,7 @@ impl<'a> Parser<'a> {
         // loop body: [ v = v + 1;  if v >= __end { break; }  <user body> ]
         let mut loop_stmts = vec![
             Stmt::Assign {
-                place: Place { root: var.clone(), fields: Vec::new(), span },
+                place: Place { root: var.clone(), fields: Vec::new(), index: None, span },
                 value: bin(BinOp::Add, var_read(&var), int(1)),
                 span,
             },
@@ -1119,10 +1119,29 @@ fn is_block_expr(expr: &Expr) -> bool {
 
 fn expr_to_place(expr: &Expr) -> Result<Place, CompileError> {
     match &expr.kind {
-        ExprKind::Var(name) => Ok(Place { root: name.clone(), fields: Vec::new(), span: expr.span }),
+        ExprKind::Var(name) => Ok(Place { root: name.clone(), fields: Vec::new(), index: None, span: expr.span }),
         ExprKind::FieldAccess { object, field } => {
             let mut place = expr_to_place(object)?;
+            // A field access AFTER an index (`a[i].x`) is not a supported
+            // place — `index` is the OUTERMOST component of a place.
+            if place.index.is_some() {
+                return Err(CompileError::at_code(codes::INVALID_ASSIGN_TARGET, "invalid assignment target", expr.span));
+            }
             place.fields.push(field.clone());
+            place.span = expr.span;
+            Ok(place)
+        }
+        ExprKind::Index { base, index } => {
+            // Indexed assignment target `base[index] = value`. The `base` must
+            // itself be a place (var / struct-field chain); the index is the
+            // single trailing component. Nested indices (`a[i][j] = v`) and
+            // post-index field access are rejected — same MVP scope as reads
+            // that mutate one array element.
+            let mut place = expr_to_place(base)?;
+            if place.index.is_some() {
+                return Err(CompileError::at_code(codes::INVALID_ASSIGN_TARGET, "invalid assignment target", expr.span));
+            }
+            place.index = Some(Box::new((**index).clone()));
             place.span = expr.span;
             Ok(place)
         }
