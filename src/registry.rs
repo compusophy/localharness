@@ -3697,9 +3697,10 @@ pub async fn attest_sponsored(
         input: encode_attest(subject_token_id, rating, &work_ref),
     };
     // One struct push (attester/rating/workRef) into the subject's enumerable
-    // list + two counter SSTOREs (count, sum) + an event. A bounded write; mirror
-    // the claim/cancel single-write budget with headroom for the first cold push.
-    submit_tempo_sponsored(attester_signer, fee_payer, vec![call], fee_token, 600_000).await
+    // list + two counter SSTOREs (count, sum) + an event. The FIRST attestation to a
+    // subject writes all-COLD storage (the array + both counters + the dedup slot,
+    // never-touched) so 600k OOG'd live — bump to 2M (over-budget is free, billed on USED).
+    submit_tempo_sponsored(attester_signer, fee_payer, vec![call], fee_token, 2_000_000).await
 }
 
 /// Read `reputationOf(uint256 tokenId)` → `(attestationCount, ratingSum)`. Both
