@@ -4141,8 +4141,9 @@ pub async fn propose_sponsored(
     };
     // The proposal struct's cold SSTOREs (3 packed scalar slots + the
     // proposalsOfGuild enumerable push) + the cold `memo` bytes (~9k/byte) +
-    // event + ~275k sponsorship. Mirror the spendTreasury base + per-byte scale.
-    let gas = 2_000_000 + (memo.len() as u128) * 9_000;
+    // event + ~275k sponsorship. Measured: cast estimate propose ~= 2.35M, so a 2M
+    // base OOG'd live — bump to 3M (sponsor billed on gas USED, headroom is free).
+    let gas = 3_000_000 + (memo.len() as u128) * 9_000;
     submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, gas).await
 }
 
@@ -4163,9 +4164,9 @@ pub async fn vote_sponsored(
         value_wei: 0,
         input: encode_vote(proposal_id, support),
     };
-    // voted-flag SSTORE + the forVotes/againstVotes tally bump + event. 400k
-    // mirrors the claim/cancel-job budget (a couple of SSTOREs + an event).
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 400_000).await
+    // voted-flag SSTORE + the forVotes/againstVotes tally bump + event. 800k for
+    // headroom (the propose/createGuild OOGs showed estimates run high; free on USED).
+    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 800_000).await
 }
 
 /// Resolve a proposal after its voting period ends via a sponsored Tempo tx
@@ -4189,7 +4190,7 @@ pub async fn execute_proposal_sponsored(
     // status flip (1 SSTORE) + on the PASS path the treasury debit + payout
     // `transfer` (cold token balances) + event. Mirror the accept-result /
     // payout budget for headroom (sponsor billed on gas USED).
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 2_000_000).await
+    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 3_000_000).await
 }
 
 /// Read `getProposal(uint256)` → the full [`Proposal`] record. The returned
