@@ -62,12 +62,13 @@
 //!   forget [--as <me>] <name>  drop a saved conversation (or `--all`)
 //!   whoami [--json] <name>   profile of <name>: owner, wallet, persona, face
 //!   discover <query>         find agents by capability (name/persona search)
-//!   colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--judge <agent>] [--ttl <dur>]
+//!   colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--judges <N>] [--judge <agent>] [--ttl <dur>]
 //!                            run ONE autonomous agent-economy cycle end-to-end:
 //!                            the caller posts <task> as a bounty, a worker claims
-//!                            it, its persona does the work, submits, a JUDGE scores
-//!                            the result 1-5, the caller accepts — the reward settles
-//!                            to the worker's TBA — and attests the JUDGE's rating
+//!                            it, its persona does the work, submits, a NEUTRAL JUDGE
+//!                            PANEL scores the result 1-5 (median of N, default 3),
+//!                            the caller accepts — the reward settles to the worker's
+//!                            TBA — and attests the panel's MEDIAN rating
 //!   tba show [--as <me>] [<name>]   your (or <name>'s) token-bound account
 //!                            address, $LH balance, and deployed status
 //!   tba deploy [--as <me>] [<name>]  deploy the token-bound account on-chain
@@ -172,17 +173,19 @@ USAGE:
   localharness bounty accept [--as <me>] <id>    accept a result + pay the claimant (poster)
   localharness bounty cancel [--as <me>] <id>    cancel your bounty (refunds the escrow)
   localharness bounty mine [--as <me>]   list the bounties you've posted
-  localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--judge <agent>] [--ttl <dur>]
+  localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--judges <N>] [--judge <agent>] [--ttl <dur>]
                                          run ONE autonomous agent-economy cycle:
                                          the caller posts <task> as a bounty, a worker
                                          claims it, its persona does the work, submits,
-                                         a JUDGE scores the result 1-5 (catching
-                                         hallucinations), the caller accepts — the reward
-                                         settles to the worker's TBA. No human between
-                                         the steps. The final step attests the JUDGE's
-                                         rating (not a flat 5★), so on-chain reputation
-                                         reflects judged quality. --judge <agent> names a
-                                         neutral evaluator (defaults to the caller).
+                                         a NEUTRAL JUDGE PANEL scores the result 1-5
+                                         (catching hallucinations), the caller accepts —
+                                         the reward settles to the worker's TBA. No human
+                                         between the steps. The final step attests the
+                                         panel's MEDIAN rating (not a flat 5★), so on-chain
+                                         reputation reflects judged quality. --judges <N>
+                                         sets the panel size (default 3; N distinct neutral
+                                         local agents excluding the worker + caller); --judge
+                                         <agent> forces a single named judge.
   localharness reputation show <agent>   show an agent's on-chain reputation: its
                                          attestation count, average rating, and recent
                                          attestations (read-only; alias: rep)
@@ -4191,45 +4194,54 @@ async fn reputation_attest(caller: Option<&str>, rest: &[String]) -> i32 {
 
 // ---- colony (the agent economy's first autonomous cycle) ------------------
 //
-// `colony run` composes the bounty lifecycle + two headless `call`s into ONE
-// self-driving turn of the demand flywheel: the platform (the caller) POSTS
-// real work as an escrowed bounty, a WORKER agent claims it, the worker's
-// on-chain persona DOES the work (an LLM turn via the credit proxy), the worker
-// submits the result, a JUDGE scores it 1-5 for genuine + accurate task-fit, the
-// caller accepts — settling the reward to the worker's token-bound account — and
-// finally ATTESTS the JUDGE'S rating on-chain (NOT a hardcoded 5★), so the
-// worker's reputation reflects judged quality and rewards no hallucination. No
-// human orchestrates the steps. The result + judge TEXT are LLM turns (they
-// vary); the CYCLE mechanics (post→claim→submit→accept→payout→attest) are
-// deterministic. Every on-chain step reuses the SAME helpers as the `bounty`
-// subcommands (`post_bounty_sponsored` / `claim_bounty_sponsored` /
-// `submit_result_sponsored` / `accept_result_sponsored` / `attest_sponsored`)
-// and the work + judge reuse the SAME headless turn as `call` (`run_agent_turn`),
-// so it adds no new on-chain surface.
+// `colony run` composes the bounty lifecycle + a headless `call` + a headless
+// JUDGE PANEL into ONE self-driving turn of the demand flywheel: the platform
+// (the caller) POSTS real work as an escrowed bounty, a WORKER agent claims it,
+// the worker's on-chain persona DOES the work (an LLM turn via the credit proxy),
+// the worker submits the result, a NEUTRAL JUDGE PANEL (median of N, default 3)
+// scores it 1-5 for genuine + accurate task-fit, the caller accepts — settling
+// the reward to the worker's token-bound account — and finally ATTESTS the
+// PANEL'S MEDIAN rating on-chain (NOT a hardcoded 5★), so the worker's reputation
+// reflects judged quality and rewards no hallucination. The panel EXCLUDES the
+// worker AND the caller (neutrality), which matters because that reputation now
+// DRIVES the PICK step. No human orchestrates the steps. The result + judge TEXT
+// are LLM turns (they vary); the CYCLE mechanics
+// (post→claim→submit→accept→payout→attest) are deterministic. Every on-chain step
+// reuses the SAME helpers as the `bounty` subcommands (`post_bounty_sponsored` /
+// `claim_bounty_sponsored` / `submit_result_sponsored` / `accept_result_sponsored`
+// / `attest_sponsored`) and the work + each judge reuse the SAME headless turn as
+// `call` (`run_agent_turn`), so it adds no new on-chain surface.
 
 const COLONY_USAGE: &str = "\
-usage: localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--judge <agent>] [--ttl <dur>]
+usage: localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--judges <N>] [--judge <agent>] [--ttl <dur>]
   Run ONE autonomous agent-economy cycle end-to-end:
     1. the caller (--as, default your sole identity) POSTS <task> as a bounty escrowing <reward> $LH
-    2. a WORKER is picked: --worker <agent>, else the top discover() match for <task>
+    2. a WORKER is picked: --worker <agent>, else the reputation-aware top discover() match for <task>
     3. the worker CLAIMS the bounty (reward bound to the worker's token-bound account)
     4. the worker's on-chain persona DOES the work via a headless `call`
     5. the worker SUBMITS the produced result
-    6. a JUDGE scores the result 1-5 for genuine + accurate task-fit (catches hallucinations)
+    6. a NEUTRAL JUDGE PANEL scores the result 1-5 for genuine + accurate task-fit (catches
+       hallucinations); the worker's rating is the MEDIAN of the panel
     7. the caller ACCEPTS → the escrowed $LH settles to the worker's TBA
-    8. the caller ATTESTS to the worker (the JUDGE's rating, workRef = the bounty id) → reputation
+    8. the caller ATTESTS to the worker (the panel's MEDIAN rating, workRef = the bounty id) → reputation
   --reward <lh>      the $LH reward to escrow (e.g. 0.02)            [required]
   --worker <agent>   the worker subdomain (its key must be local);
                      omit to auto-pick the best discover() match
-  --judge <agent>    a NEUTRAL evaluator for [6/8] JUDGE (its key must be local);
-                     omit to use the caller (--as) as the judge
+  --judges <N>       size of the auto-selected neutral judge panel (default 3); N DISTINCT
+                     local agents EXCLUDING the worker AND the caller are chosen, the median
+                     of their ratings is attested. Fewer than N → uses what's available (min 1)
+  --judge <agent>    force a SINGLE named judge (a panel of exactly that one agent; its key
+                     must be local); overrides --judges
   --ttl <dur>        bounty expiry (1h/7d/30d, 1h…90d, default 7d)
   The worker MUST be a fleet/owned agent whose key is in your keys dir
-  (it signs its own claim + submit). On any step failure the bounty id is
-  printed so it can be `bounty cancel`ed / `bounty` reclaimed — never a silent
-  half-state. ACCEPT still pays even on a low judge score (the worker did work;
-  reputation, not payment, is the quality signal — payment-gating a failing
-  result is a documented further refinement).";
+  (it signs its own claim + submit). The neutral panel makes the reputation signal
+  TRUSTWORTHY — which matters because reputation now DRIVES the PICK step. On any
+  step failure the bounty id is printed so it can be `bounty cancel`ed / `bounty`
+  reclaimed — never a silent half-state. ACCEPT still pays even on a low median
+  score (the worker did work; reputation, not payment, is the quality signal —
+  payment-gating a failing result is a documented further refinement). If no
+  neutral agent exists the caller acts as a lone fallback judge; if ALL judge
+  turns fail the median defaults to a neutral 3★ (the payout already happened).";
 
 /// Build the impartial-judge prompt for the [6/8] JUDGE step. The judge scores
 /// the worker's `result` against the `task` on a 1-5 scale, explicitly checking
@@ -4271,15 +4283,46 @@ fn parse_judge_rating(reply: &str) -> (u8, String) {
     (rating, rationale)
 }
 
+/// Aggregate a NEUTRAL JUDGE PANEL's per-judge ratings into a single MEDIAN
+/// rating (the robust, outlier-resistant centre — one rogue judge can't swing
+/// it the way a mean would). Pure + testable.
+///
+/// Rule: sort the ratings ascending; **odd N** → the middle element; **even N**
+/// → the LOWER-MIDDLE element (`[n/2 - 1]`) — a deliberately conservative tie
+/// break so a split panel never rounds reputation UP. An EMPTY slice → a neutral
+/// `3` (the same default the colony uses when every judge turn fails, so the
+/// cycle completes with an honest, non-inflated rating). The result is always in
+/// `1..=5` given `1..=5` inputs (median of in-range values is in range).
+fn median_rating(ratings: &[u8]) -> u8 {
+    if ratings.is_empty() {
+        return 3;
+    }
+    let mut sorted = ratings.to_vec();
+    sorted.sort_unstable();
+    let n = sorted.len();
+    // Odd: the true middle. Even: the lower-middle (conservative — don't inflate).
+    let idx = if n % 2 == 1 { n / 2 } else { n / 2 - 1 };
+    sorted[idx]
+}
+
 /// Parsed `colony run` arguments. The task is the joined positional remainder
 /// (so an unquoted multi-word task works, matching `bounty post`).
 struct ParsedColonyRun {
     task: String,
     reward_wei: u128,
     worker: Option<String>,
+    /// An explicit single-judge override (`--judge <agent>`) — a panel of exactly
+    /// that one neutral agent. `None` → auto-select a panel of `judges` agents.
     judge: Option<String>,
+    /// Target panel size for the auto-selected NEUTRAL JUDGE PANEL (`--judges N`,
+    /// default [`COLONY_DEFAULT_PANEL`]). Ignored when `judge` is set.
+    judges: usize,
     ttl_secs: u64,
 }
+
+/// Default neutral-judge panel size for `colony run` (median of N). Odd so the
+/// median is a clean middle value with no even-split tie.
+const COLONY_DEFAULT_PANEL: usize = 3;
 
 /// Parse `colony run` flags. Pure/testable — mirrors `parse_bounty_post_args`
 /// plus a `--worker` override.
@@ -4288,6 +4331,7 @@ fn parse_colony_run_args(rest: &[String]) -> Result<ParsedColonyRun, String> {
     let mut reward: Option<String> = None;
     let mut worker: Option<String> = None;
     let mut judge: Option<String> = None;
+    let mut judges: Option<String> = None;
     let mut ttl: Option<String> = None;
     let mut i = 0;
     while i < rest.len() {
@@ -4302,6 +4346,10 @@ fn parse_colony_run_args(rest: &[String]) -> Result<ParsedColonyRun, String> {
             }
             "--judge" => {
                 judge = Some(rest.get(i + 1).ok_or(COLONY_USAGE)?.clone());
+                i += 2;
+            }
+            "--judges" => {
+                judges = Some(rest.get(i + 1).ok_or(COLONY_USAGE)?.clone());
                 i += 2;
             }
             "--ttl" => {
@@ -4328,7 +4376,14 @@ fn parse_colony_run_args(rest: &[String]) -> Result<ParsedColonyRun, String> {
         None => INVITE_DEFAULT_TTL_SECS,
         Some(raw) => parse_ttl(&raw)?,
     };
-    Ok(ParsedColonyRun { task, reward_wei, worker, judge, ttl_secs })
+    let judges = match judges {
+        None => COLONY_DEFAULT_PANEL,
+        Some(raw) => match raw.trim().parse::<usize>() {
+            Ok(n) if n >= 1 => n,
+            _ => return Err(format!("--judges must be a positive integer, got '{raw}'")),
+        },
+    };
+    Ok(ParsedColonyRun { task, reward_wei, worker, judge, judges, ttl_secs })
 }
 
 /// `localharness colony <subcommand>` — the colony-engine router.
@@ -4550,6 +4605,51 @@ async fn colony_pick_worker(task: &str) -> Result<(String, String), String> {
     }
 }
 
+/// Pure: choose up to `n` DISTINCT neutral judges from the locally-keyed agent
+/// names `local`, EXCLUDING the `worker` and the `caller` (so neither the party
+/// being rated nor the party that posted the work can score it — that's the
+/// neutrality the panel buys). `local` is taken in its caller-supplied order
+/// (`identity_key_files` sorts by name, so selection is deterministic); the first
+/// `n` eligible names are taken. Returns fewer than `n` when too few neutral
+/// agents exist (the caller notes the shortfall + still runs the smaller panel).
+/// Empty only when there is NO neutral local agent at all. Testable with no fs.
+fn select_judge_panel(local: &[String], worker: &str, caller: &str, n: usize) -> Vec<String> {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut panel: Vec<String> = Vec::new();
+    for name in local {
+        if panel.len() >= n {
+            break;
+        }
+        let s = name.as_str();
+        if s == worker || s == caller || !seen.insert(s) {
+            continue; // exclude the worker, the caller, and de-dupe.
+        }
+        panel.push(name.clone());
+    }
+    panel
+}
+
+/// Resolve the NEUTRAL JUDGE PANEL for `colony run`: scan every locally-keyed
+/// identity ([`identity_key_files`] → bare names) and pick up to `n` DISTINCT
+/// neutral agents, excluding the `worker` AND the `caller`. Returns the panel
+/// names (each holds a local key, so each funds + signs its own judge turn). On
+/// zero neutral agents this returns an empty Vec; the caller falls back to the
+/// caller-as-judge so the cycle never strands the escrow.
+fn resolve_judge_panel(worker: &str, caller: &str, n: usize) -> Vec<String> {
+    let local: Vec<String> = identity_key_files()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|p| {
+            std::path::Path::new(&p)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .and_then(|f| f.strip_suffix(KEY_SUFFIX))
+                .map(str::to_string)
+        })
+        .collect();
+    select_judge_panel(&local, worker, caller, n)
+}
+
 /// `true` if a sponsored-write error looks TRANSIENT (an RPC/transport hiccup,
 /// not a contract revert) — worth one retry. The Tempo RPC intermittently fails
 /// to decode the `eth_sendRawTransaction` RESPONSE even when the tx mined, so we
@@ -4607,7 +4707,7 @@ where
 /// On any failure mid-cycle the bounty id is surfaced so the escrow is never
 /// silently stranded.
 async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
-    let ParsedColonyRun { task, reward_wei, worker, judge, ttl_secs } = match parse_colony_run_args(rest) {
+    let ParsedColonyRun { task, reward_wei, worker, judge, judges, ttl_secs } = match parse_colony_run_args(rest) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("{e}");
@@ -4820,58 +4920,103 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     }
     println!();
 
-    // -- STEP 6: a JUDGE scores the result for genuine + accurate task-fit. -
-    // This is what makes the attestation MEANINGFUL: the rating below reflects
-    // the JUDGED QUALITY of the work, not an unconditional 5★. The default judge
-    // is the CALLER (`--as`); `--judge <agent>` names a neutral evaluator. Either
-    // way the CALLER key pays the turn (proxy auth + $LH); the judge agent's
-    // PERSONA is embodied but the impartial-judge PROMPT overrides its framing.
-    // A failed judge turn DOES NOT bail (payout still happens) — it falls back to
-    // a neutral 3 so the cycle completes with an honest, non-inflated rating.
-    let judge_agent = judge.as_deref().unwrap_or(&worker_name);
-    let judge_label = judge.as_deref().unwrap_or(caller_label.as_str());
-    // The judge's turn is paid + signed by whoever owns the judge identity: a
-    // named `--judge` signs with its own key (so a neutral judge funds itself);
-    // the default (caller-as-judge) reuses the caller key already loaded.
-    let judge_key_hex = match &judge {
-        Some(j) => match resolve_caller_key(Some(j)) {
-            Ok((_, hex)) => hex,
-            Err(e) => {
-                // A bad --judge is a config error, but the payout has NOT happened
-                // yet — fall back to the caller as judge rather than stranding the
-                // escrow. Warn loudly so the misconfiguration is visible.
-                eprintln!(
-                    "      ⚠ --judge '{j}' has no local identity key ({e}); \
-                     falling back to the caller ({caller_label}) as judge."
-                );
-                caller_key_hex.clone()
-            }
-        },
-        None => caller_key_hex.clone(),
+    // -- STEP 6: a NEUTRAL JUDGE PANEL scores the result; take the MEDIAN. ---
+    // This is what makes the attestation MEANINGFUL and TRUSTWORTHY: the rating
+    // below is the MEDIAN of N neutral judges (default 3), not one self-interested
+    // score. The panel EXCLUDES the worker (don't grade your own work) AND the
+    // caller (the poster has skin in the game — its score would bias the
+    // reputation signal that now DRIVES the PICK step). `--judge <agent>` forces a
+    // panel of exactly that one named agent. Each judge signs + funds its OWN turn
+    // (its key is local); the judge agent's PERSONA is embodied but the impartial
+    // PROMPT overrides its framing. A failed judge turn doesn't bail (the payout
+    // still happens) — and if ALL judges fail the median falls back to a neutral 3
+    // so the cycle completes with an honest, non-inflated rating.
+    //
+    // Build the panel: an explicit `--judge X` = the single agent X; else
+    // auto-select up to `judges` neutral local agents (excluding worker + caller).
+    let panel: Vec<String> = match &judge {
+        Some(j) => vec![j.clone()],
+        None => resolve_judge_panel(&worker_name, &caller_label, judges),
     };
-    println!("[6/8] JUDGE — {judge_label} scores {worker_name}'s result 1-5 (accuracy-checked) …");
+    println!(
+        "[6/8] JUDGE — neutral panel scores {worker_name}'s result 1-5 (accuracy-checked) …"
+    );
+    if judge.is_none() {
+        if panel.is_empty() {
+            // No neutral local agent — fall back to the caller as a single judge
+            // (better an interested score than stranding the cycle). Loud note.
+            println!(
+                "      ⚠ no neutral local agent (excluding the worker + caller) to form a panel; \
+                 falling back to the caller ({caller_label}) as a single judge."
+            );
+        } else if panel.len() < judges {
+            println!(
+                "      note: only {} neutral local agent(s) available (asked for {judges}); \
+                 running a panel of {}.",
+                panel.len(),
+                panel.len()
+            );
+        }
+    }
+    // Run each judge in turn, collecting (label, rating, rationale). A judge whose
+    // turn FAILS is skipped (logged) — it doesn't pollute the median with a
+    // fabricated score. The caller key pays the fallback (caller-as-judge) turn.
     let judge_prompt = colony_judge_prompt(&task, &result_text);
-    let (judged_rating, judge_rationale) =
-        match run_agent_turn(&judge_key_hex, judge_agent, &judge_prompt, None, None).await {
-            Ok((reply, _hist)) => {
-                let (rating, rationale) = parse_judge_rating(&reply);
-                (rating, rationale)
-            }
-            Err(e) => {
-                report_call_error("[6/8] JUDGE turn failed", &e);
-                println!(
-                    "      ⚠ the judge turn failed — defaulting to a neutral 3★ \
-                     (the cycle still completes; the worker is not credited a false 5★)."
-                );
-                (3u8, "judge turn failed — neutral default".to_string())
+    let mut panel_results: Vec<(String, u8, String)> = Vec::new();
+    // The effective panel: the resolved neutral agents, or — when empty — the
+    // caller acting as the lone judge (paid by the caller key already loaded).
+    let effective_panel: Vec<String> =
+        if panel.is_empty() { vec![caller_label.clone()] } else { panel.clone() };
+    for judge_name in &effective_panel {
+        // Each neutral judge funds + signs its own turn; the caller-fallback judge
+        // reuses the caller key (so a missing-key judge can't strand the escrow).
+        let judge_key_hex = if judge_name == &caller_label {
+            caller_key_hex.clone()
+        } else {
+            match resolve_caller_key(Some(judge_name)) {
+                Ok((_, hex)) => hex,
+                Err(e) => {
+                    eprintln!(
+                        "      ⚠ judge '{judge_name}' has no local identity key ({e}); skipping it."
+                    );
+                    continue;
+                }
             }
         };
-    // Defensive clamp: the parser already constrains to 1..=5, but ATTEST signs
-    // this value on-chain, so guarantee the contract's valid range.
-    let judged_rating = judged_rating.clamp(1, 5);
-    println!("      ✓ JUDGE rating: {judged_rating}★");
-    if !judge_rationale.is_empty() {
-        println!("      rationale: {judge_rationale}");
+        match run_agent_turn(&judge_key_hex, judge_name, &judge_prompt, None, None).await {
+            Ok((reply, _hist)) => {
+                let (rating, rationale) = parse_judge_rating(&reply);
+                let rating = rating.clamp(1, 5);
+                println!("      • {judge_name}: {rating}★");
+                if !rationale.is_empty() {
+                    println!("        {rationale}");
+                }
+                panel_results.push((judge_name.clone(), rating, rationale));
+            }
+            Err(e) => {
+                report_call_error(&format!("[6/8] JUDGE turn failed ({judge_name})"), &e);
+                println!("      ⚠ judge '{judge_name}' turn failed — excluded from the median.");
+            }
+        }
+    }
+    // Aggregate to the MEDIAN. If EVERY judge turn failed, `median_rating([])`
+    // returns the neutral 3 default — the cycle still completes with an honest,
+    // non-inflated rating (the worker is never credited a false 5★).
+    let panel_ratings: Vec<u8> = panel_results.iter().map(|(_, r, _)| *r).collect();
+    let judged_rating = median_rating(&panel_ratings).clamp(1, 5);
+    if panel_ratings.is_empty() {
+        println!(
+            "      ⚠ every judge turn failed — defaulting to a neutral {judged_rating}★ \
+             (the cycle still completes; the worker is not credited a false 5★)."
+        );
+    } else {
+        // Echo the panel + the median, e.g. "panel: dex-qa 5★, iris-qa 4★ → median 5★".
+        let summary = panel_results
+            .iter()
+            .map(|(n, r, _)| format!("{n} {r}★"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("      ✓ panel: {summary} → median {judged_rating}★");
     }
     println!();
 
@@ -7153,6 +7298,68 @@ mod tests {
         // A leading 0/6..9 is skipped; the first IN-RANGE digit wins.
         assert_eq!(parse_judge_rating("0 then 2").0, 2);
         assert_eq!(parse_judge_rating("99999").0, 3);
+    }
+
+    #[test]
+    fn median_rating_aggregates_panel() {
+        // Odd N → the true middle (sorted).
+        assert_eq!(median_rating(&[5, 4, 5]), 5);
+        assert_eq!(median_rating(&[1, 3, 5]), 3);
+        assert_eq!(median_rating(&[2, 5, 4, 3, 1]), 3); // unsorted input is sorted
+        // A single rogue judge can't swing the median.
+        assert_eq!(median_rating(&[5, 5, 1]), 5);
+        assert_eq!(median_rating(&[1, 1, 5]), 1);
+        // Even N → the LOWER-MIDDLE (conservative: never inflate a split panel).
+        assert_eq!(median_rating(&[4, 5]), 4);
+        assert_eq!(median_rating(&[1, 2, 4, 5]), 2); // sorted [1,2,4,5], idx n/2-1 = 1 → 2
+        // All-same → that value (any N).
+        assert_eq!(median_rating(&[4, 4, 4]), 4);
+        assert_eq!(median_rating(&[2, 2]), 2);
+        // A single judge → its own rating (a `--judge X` panel of one).
+        assert_eq!(median_rating(&[3]), 3);
+        // EMPTY (every judge turn failed) → the neutral 3 default.
+        assert_eq!(median_rating(&[]), 3);
+        // The median of any 1..=5 inputs stays in range.
+        assert!((1..=5).contains(&median_rating(&[1, 5])));
+    }
+
+    #[test]
+    fn select_judge_panel_excludes_worker_and_caller_distinct() {
+        let local: Vec<String> = ["claude", "dex-qa", "vex-qa", "iris-qa", "juno-qa"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        // Worker = vex-qa, caller = claude → both excluded; first 3 of the rest.
+        let panel = select_judge_panel(&local, "vex-qa", "claude", 3);
+        assert_eq!(panel, vec!["dex-qa", "iris-qa", "juno-qa"]);
+        assert!(!panel.iter().any(|n| n == "vex-qa" || n == "claude"));
+        // Fewer neutral agents than asked → returns what's available (no panic).
+        let small = vec!["claude".to_string(), "dex-qa".to_string()];
+        let panel = select_judge_panel(&small, "dex-qa", "claude", 3);
+        assert!(panel.is_empty()); // both excluded → no neutral agent
+        let panel = select_judge_panel(&small, "someone-else", "claude", 3);
+        assert_eq!(panel, vec!["dex-qa"]); // only one neutral remains
+        // Distinct: a duplicate name in the input is taken once.
+        let dupes = vec!["dex-qa".to_string(), "dex-qa".to_string(), "iris-qa".to_string()];
+        let panel = select_judge_panel(&dupes, "w", "c", 5);
+        assert_eq!(panel, vec!["dex-qa", "iris-qa"]);
+        // N caps the size even when more neutral agents exist.
+        let panel = select_judge_panel(&local, "w", "c", 2);
+        assert_eq!(panel.len(), 2);
+    }
+
+    #[test]
+    fn parse_colony_run_args_judges_flag() {
+        let mk = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // Default panel size when --judges is omitted.
+        let p = parse_colony_run_args(&mk(&["QA task", "--reward", "0.01"])).unwrap();
+        assert_eq!(p.judges, COLONY_DEFAULT_PANEL);
+        // Explicit --judges.
+        let p = parse_colony_run_args(&mk(&["QA task", "--reward", "0.01", "--judges", "5"])).unwrap();
+        assert_eq!(p.judges, 5);
+        // Zero / non-numeric is rejected.
+        assert!(parse_colony_run_args(&mk(&["t", "--reward", "0.01", "--judges", "0"])).is_err());
+        assert!(parse_colony_run_args(&mk(&["t", "--reward", "0.01", "--judges", "x"])).is_err());
     }
 
     #[test]
