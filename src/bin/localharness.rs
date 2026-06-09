@@ -62,6 +62,14 @@
 //!   forget [--as <me>] <name>  drop a saved conversation (or `--all`)
 //!   whoami [--json] <name>   profile of <name>: owner, wallet, persona, face
 //!   discover <query>         find agents by capability (name/persona search)
+//!   tba show [--as <me>] [<name>]   your (or <name>'s) token-bound account
+//!                            address, $LH balance, and deployed status
+//!   tba deploy [--as <me>] [<name>]  deploy the token-bound account on-chain
+//!   tba exec [--as <me>] <to> <amount> [--data <hex>]
+//!                            make YOUR token-bound account EXECUTE a call (the
+//!                            headless act-panel): no --data sends <amount> $LH
+//!                            to <to>; --data <hex> calls <to> with that calldata
+//!                            and forwards <amount> as the value
 //!   help                     this text
 
 use localharness::registry;
@@ -181,6 +189,18 @@ USAGE:
                                          resolve a closed proposal (spends if passed)
   localharness vote list <guildId>       list a guild's open proposals + their tally
   localharness vote show <proposalId>    full proposal detail + tally + whether passing
+  localharness tba show [--as <me>] [<name>]
+                                         your (or <name>'s) token-bound account: its
+                                         wallet address, $LH balance, and deployed status
+  localharness tba deploy [--as <me>] [<name>]
+                                         deploy the token-bound account on-chain (needed
+                                         once before it can execute / hold signers)
+  localharness tba exec [--as <me>] <to> <amount> [--data <hex>]
+                                         make YOUR token-bound account EXECUTE a call:
+                                         no --data sends <amount> $LH to <to>; with
+                                         --data <hex> it calls <to> with that calldata
+                                         and forwards <amount> as the value (the headless
+                                         act-panel — your agent acts through its own wallet)
   localharness topup [--as <me>]         deposit your wallet $LH into the per-call meter
   localharness feedback [--as <me>] [text|--json]  submit on-chain feedback, or read
                                          all (no text; --json for machine output)
@@ -339,6 +359,13 @@ async fn run(args: &[String]) -> i32 {
         },
         Some("guild") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => guild(caller.as_deref(), &rest).await,
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
+        Some("tba") => match take_as_flag(&args[1..]) {
+            Ok((caller, rest)) => tba(caller.as_deref(), &rest).await,
             Err(e) => {
                 eprintln!("{e}");
                 2
@@ -3956,6 +3983,382 @@ async fn resolve_own_token_id(
     }
 }
 
+// ---- tba (token-bound account: make YOUR agent's wallet EXECUTE a call) ------
+//
+// The headless / agent equivalent of the browser act-panel. Every identity NFT
+// has a deterministic token-bound account (ERC-6551 `MultiSignerAccount`) — a
+// smart wallet the NFT holder controls. This command lets an agent ACT through
+// it from a shell, with no browser tab: deploy it, see its `$LH`, and make it
+// EXECUTE an arbitrary call (a `$LH` transfer, or any `to` + `--data <hex>`).
+// Authorization is enforced on-chain by the account (only the NFT holder or an
+// enrolled signer can `execute`); the embedded sponsor pays the fee. Unblocks a
+// guild's TBA voting in a parent DAO, an agent's TBA paying/calling, etc.
+// Mirrors `registry::tba_execute_call_sponsored` / `tba_send_lh_sponsored` /
+// `create_token_bound_account_sponsored` — the same flat sponsored path as the
+// browser `agent_send_lh_pressed` act-panel.
+
+const TBA_USAGE: &str = "\
+usage: localharness tba <show|deploy|exec> ...
+  tba show   [--as <me>] [<name>]            your (or <name>'s) TBA address, $LH, deployed?
+  tba deploy [--as <me>] [<name>]            deploy the TBA on-chain (createTokenBoundAccount)
+  tba exec   [--as <me>] <to> <amount> [--data <hex>]
+                                             make YOUR TBA execute a call:
+                                               no --data → send <amount> $LH to <to>
+                                               --data <hex> → call <to> with <hex>, <amount> as value
+  <to> is a name (→ its on-chain owner) or a 0x… address.
+  <amount> is in $LH (the transfer amount, or the ETH value forwarded with --data).";
+
+async fn tba(caller: Option<&str>, rest: &[String]) -> i32 {
+    match rest.first().map(String::as_str) {
+        Some("show") => tba_show(caller, rest.get(1).map(String::as_str)).await,
+        Some("deploy") => tba_deploy(caller, rest.get(1).map(String::as_str)).await,
+        Some("exec") => tba_exec(caller, &rest[1..]).await,
+        _ => {
+            eprintln!("{TBA_USAGE}");
+            2
+        }
+    }
+}
+
+/// Resolve the tokenId to operate on: an explicit `<name>` if given (it must be
+/// registered), else the caller's OWN identity (`resolve_own_token_id` — MAIN,
+/// or sole holding). Returns `(token_id, label)` where `label` is for display.
+async fn tba_target_token(
+    caller: Option<&str>,
+    name: Option<&str>,
+    signer: &k256::ecdsa::SigningKey,
+) -> Result<(u64, String), String> {
+    if let Some(n) = name {
+        match registry::id_of_name(n).await {
+            Ok(0) => Err(format!("tba: '{n}' is not registered")),
+            Ok(id) => Ok((id, n.to_string())),
+            Err(e) => Err(format!("tba: RPC error resolving '{n}': {e}")),
+        }
+    } else {
+        let id = resolve_own_token_id(caller, signer).await?;
+        let label = registry::name_of_id(id).await.unwrap_or_else(|_| format!("token #{id}"));
+        Ok((id, label))
+    }
+}
+
+/// `tba show [--as <me>] [<name>]` — print the token-bound account address, its
+/// `$LH` balance, and whether it's deployed on-chain. Read-only, no `$LH` spent.
+/// With an explicit `<name>` it's a PURE read (no local identity key needed —
+/// you can inspect any agent's wallet); without one it resolves YOUR identity,
+/// which requires a local key.
+async fn tba_show(caller: Option<&str>, name: Option<&str>) -> i32 {
+    let (token_id, label) = if let Some(n) = name {
+        // Explicit name → pure on-chain read, no key required.
+        match registry::id_of_name(n).await {
+            Ok(0) => {
+                eprintln!("tba show: '{n}' is not registered");
+                return 1;
+            }
+            Ok(id) => (id, n.to_string()),
+            Err(e) => {
+                eprintln!("tba show: RPC error resolving '{n}': {e}");
+                return 1;
+            }
+        }
+    } else {
+        // No name → resolve the caller's OWN identity (needs a local key).
+        let (key_file, key_hex) = match resolve_caller_key(caller) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("{e}");
+                return 2;
+            }
+        };
+        let signer = match wallet::from_private_key_hex(&key_hex) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("bad key in {key_file}: {e}");
+                return 1;
+            }
+        };
+        match tba_target_token(caller, None, &signer).await {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("{e}");
+                return 1;
+            }
+        }
+    };
+    let tba_addr = match registry::tba_of_token_id(token_id).await {
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            eprintln!("tba show: no token-bound account for '{label}' (token #{token_id})");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("tba show: RPC error: {e}");
+            return 1;
+        }
+    };
+    let balance = registry::token_balance_of(&tba_addr).await.unwrap_or(0);
+    let deployed = registry::is_contract_deployed(&tba_addr).await.unwrap_or(false);
+    println!("{label}  (token #{token_id})");
+    println!("  wallet (TBA):  {tba_addr}");
+    println!("  balance:       {}", fmt_lh(balance));
+    println!(
+        "  deployed:      {}",
+        if deployed { "yes" } else { "no — run `tba deploy` before it can execute" }
+    );
+    0
+}
+
+/// `tba deploy [--as <me>] [<name>]` — deploy the token-bound account on-chain
+/// via `createTokenBoundAccount` (idempotent; a no-op if already deployed).
+/// Needed before the TBA can `execute` / hold signers. Sponsored gas.
+async fn tba_deploy(caller: Option<&str>, name: Option<&str>) -> i32 {
+    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    let (token_id, label) = match tba_target_token(caller, name, &signer).await {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    let tba_addr = match registry::tba_of_token_id(token_id).await {
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            eprintln!("tba deploy: no token-bound account for '{label}' (token #{token_id})");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("tba deploy: RPC error: {e}");
+            return 1;
+        }
+    };
+    if registry::is_contract_deployed(&tba_addr).await.unwrap_or(false) {
+        println!("{label}'s TBA {tba_addr} is already deployed — nothing to do.");
+        return 0;
+    }
+    println!("deploying {label}'s TBA {tba_addr} …");
+    match registry::create_token_bound_account_sponsored(
+        &signer,
+        &sponsor,
+        token_id,
+        registry::ALPHA_USD_ADDRESS,
+    )
+    .await
+    {
+        Ok(tx) => {
+            println!("✓ deployed  tx: {tx}");
+            0
+        }
+        Err(e) => {
+            eprintln!("tba deploy failed: {e}");
+            1
+        }
+    }
+}
+
+/// `tba exec [--as <me>] <to> <amount> [--data <hex>]` — make the CALLER'S OWN
+/// token-bound account EXECUTE a call. With no `--data` this is a plain `$LH`
+/// transfer of `<amount>` to `<to>` (`execute($LH, 0, transfer(to, amount))`);
+/// with `--data <hex>` it calls `<to>` with that calldata and forwards
+/// `<amount>` as the call value (`execute(to, amount, data)`). `<to>` is a name
+/// (resolved to its on-chain owner address) or a raw `0x…` address. The TBA is
+/// deployed first if needed. The agent acts through its OWN wallet.
+async fn tba_exec(caller: Option<&str>, rest: &[String]) -> i32 {
+    // Pull an optional `--data <hex>` from anywhere in the args.
+    let (data_hex, positional) = match take_data_flag(rest) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    if positional.len() != 2 {
+        eprintln!("{TBA_USAGE}");
+        return 2;
+    }
+    let to_arg = &positional[0];
+    let amount_arg = &positional[1];
+
+    // Resolve `<to>`: a 0x address, or a name → its on-chain OWNER.
+    use localharness::encoding::{classify_recipient, Recipient};
+    let to_hex = match classify_recipient(to_arg) {
+        Ok(Recipient::Address(a)) => a,
+        Ok(Recipient::Name(n)) => match registry::owner_of_name(&n).await {
+            Ok(Some(o)) => o,
+            Ok(None) => {
+                eprintln!("tba exec: '{n}' is not registered");
+                return 1;
+            }
+            Err(e) => {
+                eprintln!("tba exec: RPC error resolving '{n}': {e}");
+                return 1;
+            }
+        },
+        Err(e) => {
+            eprintln!("tba exec: {e}");
+            return 2;
+        }
+    };
+
+    // `<amount>` is the $LH transfer amount (no --data) or the ETH call value.
+    let amount_wei = match localharness::encoding::parse_token_amount(amount_arg) {
+        Some(w) => w,
+        None => {
+            eprintln!("tba exec: invalid amount '{amount_arg}' (expected a number of $LH)");
+            return 2;
+        }
+    };
+    // The transfer path needs a positive amount; the --data path may forward 0.
+    if data_hex.is_none() && amount_wei == 0 {
+        eprintln!("tba exec: amount must be greater than 0 for a $LH transfer");
+        return 2;
+    }
+
+    // Decode `--data <hex>` (0x-optional) when present.
+    let data = match &data_hex {
+        Some(h) => match decode_hex_arg(h) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                eprintln!("tba exec: {e}");
+                return 2;
+            }
+        },
+        None => None,
+    };
+
+    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    // The acting TBA is ALWAYS the caller's OWN identity — an agent acts through
+    // its own wallet; it can't drive someone else's (the contract would revert).
+    let token_id = match resolve_own_token_id(caller, &signer).await {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    let tba_addr = match registry::tba_of_token_id(token_id).await {
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            eprintln!("tba exec: no token-bound account for your token #{token_id}");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("tba exec: RPC error: {e}");
+            return 1;
+        }
+    };
+
+    // The TBA must be deployed before it can execute. Deploy first if not.
+    if !registry::is_contract_deployed(&tba_addr).await.unwrap_or(false) {
+        println!("your TBA {tba_addr} isn't deployed yet — deploying first …");
+        if let Err(e) = registry::create_token_bound_account_sponsored(
+            &signer,
+            &sponsor,
+            token_id,
+            registry::ALPHA_USD_ADDRESS,
+        )
+        .await
+        {
+            eprintln!("tba exec: TBA deploy failed: {e}");
+            return 1;
+        }
+    }
+
+    let result = match &data {
+        // Arbitrary call: execute(to, amount_as_value, data).
+        Some(bytes) => {
+            println!(
+                "your TBA {tba_addr} → execute({to_hex}, value {}, {} bytes of calldata) …",
+                fmt_lh(amount_wei),
+                bytes.len()
+            );
+            registry::tba_execute_call_sponsored(
+                &signer,
+                &sponsor,
+                &tba_addr,
+                &to_hex,
+                amount_wei,
+                bytes,
+                registry::ALPHA_USD_ADDRESS,
+            )
+            .await
+        }
+        // Plain $LH transfer: execute($LH, 0, transfer(to, amount)).
+        None => {
+            println!("your TBA {tba_addr} → send {} $LH to {to_hex} …", fmt_lh(amount_wei));
+            registry::tba_send_lh_sponsored(
+                &signer,
+                &sponsor,
+                &tba_addr,
+                &to_hex,
+                amount_wei,
+                registry::ALPHA_USD_ADDRESS,
+            )
+            .await
+        }
+    };
+    match result {
+        Ok(tx) => {
+            println!("✓ executed  tx: {tx}");
+            0
+        }
+        Err(e) => {
+            eprintln!("tba exec failed: {e}");
+            1
+        }
+    }
+}
+
+/// Extract an optional `--data <hex>` flag (from anywhere) and return
+/// `(Option<hex>, remaining_positionals)`. A second `--data` is an error.
+fn take_data_flag(args: &[String]) -> Result<(Option<String>, Vec<String>), String> {
+    let mut data: Option<String> = None;
+    let mut rest: Vec<String> = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--data" {
+            if data.is_some() {
+                return Err("--data given more than once".to_string());
+            }
+            match args.get(i + 1) {
+                Some(h) => {
+                    data = Some(h.clone());
+                    i += 2;
+                }
+                None => return Err("usage: --data <hex> requires a value".to_string()),
+            }
+        } else {
+            rest.push(args[i].clone());
+            i += 1;
+        }
+    }
+    Ok((data, rest))
+}
+
+/// Decode a `--data` hex argument into bytes. Accepts an optional `0x` prefix;
+/// rejects odd-length / non-hex with a clear message (never panics). Empty
+/// (`""` / `0x`) decodes to no bytes — a value-only call.
+fn decode_hex_arg(raw: &str) -> Result<Vec<u8>, String> {
+    let s = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")).unwrap_or(raw);
+    if s.is_empty() {
+        return Ok(Vec::new());
+    }
+    if s.len() % 2 != 0 {
+        return Err(format!("--data has an odd number of hex digits ({} chars)", s.len()));
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&s[i..i + 2], 16)
+                .map_err(|_| format!("--data is not valid hex near '{}'", &s[i..i + 2]))
+        })
+        .collect()
+}
+
 // ---- guild (GuildFacet: on-chain orgs — members, roles, pooled treasury) -----
 //
 // Rung 3 of the coordination ladder (bounty → party → GUILD → DAO). A guild is
@@ -5932,13 +6335,47 @@ mod tests {
         for cmd in [
             "create", "compile", "publish", "face", "persona", "call", "list",
             "feedback", "probe", "triage", "threads", "forget", "whoami", "invite",
-            "bounty", "guild", "vote",
+            "bounty", "guild", "vote", "tba",
         ] {
             assert!(
                 USAGE.contains(cmd),
                 "`{cmd}` is dispatchable but missing from the help/USAGE text"
             );
         }
+    }
+
+    #[test]
+    fn take_data_flag_extracts_hex_from_anywhere() {
+        // No flag → all positionals, no data.
+        let (d, rest) = take_data_flag(&args(&["alice", "5"])).unwrap();
+        assert_eq!(d, None);
+        assert_eq!(rest, args(&["alice", "5"]));
+        // --data at the end.
+        let (d, rest) = take_data_flag(&args(&["0xabc", "0", "--data", "0xdeadbeef"])).unwrap();
+        assert_eq!(d.as_deref(), Some("0xdeadbeef"));
+        assert_eq!(rest, args(&["0xabc", "0"]));
+        // --data in the middle — positionals preserved in order.
+        let (d, rest) = take_data_flag(&args(&["--data", "0x01", "bob", "2"])).unwrap();
+        assert_eq!(d.as_deref(), Some("0x01"));
+        assert_eq!(rest, args(&["bob", "2"]));
+        // Dangling / doubled → error.
+        assert!(take_data_flag(&args(&["--data"])).is_err());
+        assert!(take_data_flag(&args(&["--data", "0x01", "--data", "0x02"])).is_err());
+    }
+
+    #[test]
+    fn decode_hex_arg_accepts_prefix_and_rejects_malformed() {
+        // 0x-prefixed and bare both decode the same.
+        assert_eq!(decode_hex_arg("0xdeadbeef").unwrap(), vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        assert_eq!(decode_hex_arg("deadbeef").unwrap(), vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        // Case-insensitive.
+        assert_eq!(decode_hex_arg("0xAaBb").unwrap(), vec![0xAA, 0xBB]);
+        // Empty (or bare 0x) → no bytes (a value-only call).
+        assert!(decode_hex_arg("").unwrap().is_empty());
+        assert!(decode_hex_arg("0x").unwrap().is_empty());
+        // Odd length / non-hex → clean error, never a panic.
+        assert!(decode_hex_arg("0xabc").is_err());
+        assert!(decode_hex_arg("0xzz").is_err());
     }
 
     #[test]

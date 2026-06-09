@@ -2095,12 +2095,7 @@ pub async fn tba_transfer_lh_sponsored(
     fee_token: &str,
 ) -> Result<String, String> {
     let recipient = parse_eth_address(recipient_hex)?;
-    let mut transfer_data = Vec::with_capacity(4 + 32 + 32);
-    transfer_data.extend_from_slice(&selector("transfer(address,uint256)"));
-    let mut padded = [0u8; 32];
-    padded[12..].copy_from_slice(&recipient);
-    transfer_data.extend_from_slice(&padded);
-    transfer_data.extend_from_slice(&u256_be(amount_wei));
+    let transfer_data = encode_erc20_transfer(&recipient, amount_wei);
 
     tba_execute_sponsored(
         sender,
@@ -2121,6 +2116,123 @@ pub async fn tba_transfer_lh_sponsored(
         2_000_000,
     )
     .await
+}
+
+/// Make a token-bound account EXECUTE an arbitrary call — the headless /
+/// agent equivalent of the browser act-panel's "send" button. Fires ONE
+/// sponsored Tempo tx calling `tba.execute(to, value, data, 0)` on the
+/// `MultiSignerAccount` at `tba_addr` (operation 0 = CALL; the contract
+/// rejects any other). With empty `data` and `value_wei = 0` this is a no-op
+/// call; pass an ABI-encoded inner calldata (e.g. an ERC-20 `transfer`, a
+/// guild `castVote`) to drive a real action — the TBA becomes the `msg.sender`
+/// of the inner call, so an agent's wallet (its TBA) can vote in a parent DAO,
+/// pay, or call any contract under its OWN identity.
+///
+/// Authorization is enforced ON-CHAIN by `MultiSignerAccount.execute`, which
+/// reverts unless `msg.sender` (here `owner_signer`) is the NFT holder of the
+/// owning token or an enrolled additional signer. This helper just signs as
+/// that owner; the contract is the gate. `fee_payer` (the bundle sponsor) pays
+/// the AlphaUSD fee so the owner holds no gas token.
+///
+/// The TBA must already be deployed (a counterfactual address has no code, so
+/// `execute` would revert). Callers deploy first via
+/// [`create_token_bound_account_sponsored`] — the CLI does this when
+/// [`is_contract_deployed`] is false. Flat (address-keyed, no token id) — the
+/// low-level primitive the [`tba_execute_sponsored`] (token-id keyed, batches
+/// the deploy) and [`tba_transfer_lh_sponsored`] wrappers build on.
+// Discrete params are the wire fields (owner+sponsor signers, TBA, target,
+// value, inner calldata, fee token); bundling into a struct just moves noise.
+#[allow(clippy::too_many_arguments)]
+pub async fn tba_execute_call_sponsored(
+    owner_signer: &SigningKey,
+    fee_payer: &SigningKey,
+    tba_addr: &str,
+    to: &str,
+    value_wei: u128,
+    data: &[u8],
+    fee_token: &str,
+) -> Result<String, String> {
+    let tba = parse_eth_address(tba_addr)?;
+    let target = parse_eth_address(to)?;
+    let execute_call = crate::tempo_tx::TempoCall {
+        to: tba,
+        value_wei: 0,
+        input: encode_tba_execute(&target, value_wei, data),
+    };
+    // execute (~30k) + the inner call (varies — an ERC-20 transfer ~52k, a
+    // vote ~80k) + Tempo sponsorship (~275k). 600k covers a typical inner
+    // call with headroom; the sponsor is billed on gas USED, not the limit.
+    // The cold first-deploy cost lives in create_token_bound_account_sponsored
+    // (a separate tx), so this stays modest.
+    submit_tempo_sponsored(
+        owner_signer,
+        fee_payer,
+        vec![execute_call],
+        fee_token,
+        600_000,
+    )
+    .await
+}
+
+/// Sponsored `createTokenBoundAccount(token_id)` — deploys the
+/// `MultiSignerAccount` for `token_id`'s deterministic TBA address via the
+/// TbaFacet. Idempotent (a no-op if already deployed) and permissionless to
+/// CALL, but only useful for a token the caller controls. Needed before the
+/// TBA can `execute` / `addSigner` (a counterfactual address has no code). The
+/// cold deploy is gas-hungry — CREATE2 of the full account bytecode is
+/// ~742k live-measured — so the limit covers that plus Tempo sponsorship.
+pub async fn create_token_bound_account_sponsored(
+    owner_signer: &SigningKey,
+    fee_payer: &SigningKey,
+    token_id: u64,
+    fee_token: &str,
+) -> Result<String, String> {
+    let diamond = parse_eth_address(REGISTRY_ADDRESS)?;
+    let create_call = crate::tempo_tx::TempoCall {
+        to: diamond,
+        value_wei: 0,
+        input: encode_create_tba(token_id),
+    };
+    submit_tempo_sponsored(owner_signer, fee_payer, vec![create_call], fee_token, 1_200_000).await
+}
+
+/// Make a TBA send `$LH` — `execute($LH_token, 0, transfer(recipient, amount))`
+/// via [`tba_execute_call_sponsored`]. The flat (address-keyed, deploy NOT
+/// batched) sibling of [`tba_transfer_lh_sponsored`]; the headless CLI calls
+/// [`create_token_bound_account_sponsored`] first when the TBA isn't deployed
+/// yet, so this assumes a live TBA. The TBA must hold at least `amount_wei`.
+pub async fn tba_send_lh_sponsored(
+    owner_signer: &SigningKey,
+    fee_payer: &SigningKey,
+    tba_addr: &str,
+    recipient_hex: &str,
+    amount_wei: u128,
+    fee_token: &str,
+) -> Result<String, String> {
+    let recipient = parse_eth_address(recipient_hex)?;
+    let transfer_data = encode_erc20_transfer(&recipient, amount_wei);
+    tba_execute_call_sponsored(
+        owner_signer,
+        fee_payer,
+        tba_addr,
+        LOCALHARNESS_TOKEN_ADDRESS,
+        0,
+        &transfer_data,
+        fee_token,
+    )
+    .await
+}
+
+/// ABI-encode an ERC-20 `transfer(address,uint256)` calldata. The inner
+/// payload for a `$LH`-transfer-via-TBA (`execute($LH, 0, transfer(to, amt))`).
+fn encode_erc20_transfer(recipient: &[u8; 20], amount_wei: u128) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + 32 + 32);
+    out.extend_from_slice(&selector("transfer(address,uint256)"));
+    let mut padded = [0u8; 32];
+    padded[12..].copy_from_slice(recipient);
+    out.extend_from_slice(&padded);
+    out.extend_from_slice(&u256_be(amount_wei));
+    out
 }
 
 fn encode_tba_execute(target: &[u8; 20], value_wei: u128, data: &[u8]) -> Vec<u8> {
@@ -5276,6 +5388,27 @@ async fn eth_call(to: &str, data_hex: &str) -> Result<String, String> {
     .await
 }
 
+/// `true` if `address` has deployed bytecode (i.e. is a contract, not a
+/// counterfactual / EOA). A token-bound account is deterministic — it
+/// exists as an address even before `createTokenBoundAccount` deploys it,
+/// so this distinguishes a live TBA from a not-yet-deployed one. Reads
+/// `eth_getCode`; an empty result (`0x` / `0x0`) means undeployed.
+pub async fn is_contract_deployed(address: &str) -> Result<bool, String> {
+    if REGISTRY_ADDRESS == zero_address() {
+        return Ok(false);
+    }
+    // Validate the address shape so a malformed string surfaces a clear
+    // error rather than an opaque RPC fault.
+    let _ = parse_eth_address(address)?;
+    let code = rpc(
+        "eth_getCode",
+        serde_json::json!([address, "latest"]),
+    )
+    .await?;
+    let trimmed = code.trim().trim_start_matches("0x");
+    Ok(!trimmed.is_empty() && !trimmed.chars().all(|c| c == '0'))
+}
+
 /// Build calldata for a `fn(uint256)` selector with a single id argument.
 fn call_uint(sig: &str, id: u64) -> String {
     let mut data = Vec::with_capacity(4 + 32);
@@ -6767,5 +6900,73 @@ mod tests {
         // Exactly u128::MAX in the low 16 bytes.
         let max = format!("0x{}{}", "0".repeat(32), "f".repeat(32));
         assert_eq!(decode_u256_as_u128(&max).unwrap(), u128::MAX);
+    }
+
+    /// Pin the `MultiSignerAccount.execute(address,uint256,bytes,uint8)`
+    /// calldata layout — selector + the static head (target, value, data
+    /// offset, operation) + the dynamic `bytes data` (length word + the
+    /// 32-byte-padded body). This is the wire shape the TBA EXECUTE primitive
+    /// drives; if it drifts, every headless TBA action reverts.
+    #[test]
+    fn tba_execute_calldata_layout() {
+        let target = [0xABu8; 20];
+        // 5-byte inner payload so we exercise the 32-byte padding.
+        let data = [0x01, 0x02, 0x03, 0x04, 0x05];
+        let value: u128 = 0x1234;
+        let cd = encode_tba_execute(&target, value, &data);
+
+        // Selector for the full 4-arg signature (CALL-only MultiSignerAccount).
+        assert_eq!(&cd[0..4], &selector("execute(address,uint256,bytes,uint8)"));
+        // Static head: target right-aligned in word 0.
+        assert!(cd[4..16].iter().all(|&b| b == 0)); // left-pad zeros
+        assert_eq!(&cd[16..36], &target); // 20-byte address in the low bytes
+        // value in word 1.
+        assert_eq!(&cd[36..68], &u256_be(value));
+        // data offset in word 2 = 0x80 (static head is 4 words = 128 bytes).
+        assert_eq!(&cd[68..100], &u256_be(0x80));
+        // operation in word 3 = 0 (CALL — the contract reverts on anything else).
+        assert!(cd[100..132].iter().all(|&b| b == 0));
+        // dynamic region at offset 4(selector)+0x80 = 132: length word then body.
+        assert_eq!(&cd[132..164], &u256_be(data.len() as u128));
+        assert_eq!(&cd[164..164 + data.len()], &data);
+        // The body is padded to a 32-byte boundary with zeros.
+        assert_eq!(cd.len(), 164 + 32); // 5 bytes → one padded word
+        assert!(cd[164 + data.len()..].iter().all(|&b| b == 0));
+
+        // Empty data degenerates cleanly: head only, length 0, no body.
+        let empty = encode_tba_execute(&target, 0, &[]);
+        assert_eq!(empty.len(), 4 + 128 + 32); // selector + head + zero-length word
+        assert_eq!(&empty[132..164], &u256_be(0));
+    }
+
+    /// Pin the `$LH`-transfer-via-TBA encoding: the inner payload is an ERC-20
+    /// `transfer(address,uint256)` and `encode_tba_execute` wraps it as
+    /// `execute($LH, 0, transfer(to, amt), 0)`. Confirms the nested calldata is
+    /// byte-exact (offsets shift since the inner data is now 68 bytes).
+    #[test]
+    fn tba_transfer_lh_calldata_layout() {
+        let recipient = [0xCDu8; 20];
+        let amount: u128 = 1_000_000_000_000_000_000; // 1 $LH
+
+        // Inner ERC-20 transfer calldata.
+        let inner = encode_erc20_transfer(&recipient, amount);
+        assert_eq!(&inner[0..4], &selector("transfer(address,uint256)"));
+        assert_eq!(&inner[16..36], &recipient); // recipient right-aligned
+        assert_eq!(&inner[36..68], &u256_be(amount));
+        assert_eq!(inner.len(), 4 + 32 + 32); // selector + 2 words
+
+        // Wrapped as a TBA execute to the $LH token, value 0.
+        let token = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS).unwrap();
+        let cd = encode_tba_execute(&token, 0, &inner);
+        assert_eq!(&cd[0..4], &selector("execute(address,uint256,bytes,uint8)"));
+        assert_eq!(&cd[16..36], &token); // execute target = $LH token
+        assert_eq!(&cd[36..68], &u256_be(0)); // value = 0 (ERC-20 carries amount)
+        assert_eq!(&cd[68..100], &u256_be(0x80)); // data offset
+        assert!(cd[100..132].iter().all(|&b| b == 0)); // operation CALL
+        // dynamic: length = 68 (the inner transfer calldata), then the body.
+        assert_eq!(&cd[132..164], &u256_be(inner.len() as u128));
+        assert_eq!(&cd[164..164 + inner.len()], inner.as_slice());
+        // 68 bytes pads to 96 (3 words); total = selector + head(128) + len(32) + 96.
+        assert_eq!(cd.len(), 4 + 128 + 32 + 96);
     }
 }
