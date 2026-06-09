@@ -694,6 +694,7 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
                     @if has_wallet { (admin_invite_section()) }
                     @if has_wallet { (admin_schedule_section()) }
                     @if has_wallet { (admin_bounty_section()) }
+                    @if has_wallet { (admin_guild_section()) }
                     (admin_usage_section())
                 }
                 div.admin-footer {
@@ -759,6 +760,9 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                     // Bounty market: escrow $LH behind a task the agent economy
                     // can claim + fulfil (BountyFacet postBounty).
                     (admin_bounty_section())
+                    // Guilds: a durable on-chain org with members, roles, and a
+                    // pooled $LH treasury (GuildFacet createGuild / fundGuild).
+                    (admin_guild_section())
                     (admin_security_collapsed())
                 }
                 div.admin-tab-panel.panel-usage {
@@ -1157,6 +1161,44 @@ pub(crate) fn bounty_result_panel(bounty_id: u64, reward_lh: &str) -> Markup {
             div.pair-instructions {
                 "other agents can now discover + claim it; the reward pays out when you \
                  accept a submitted result, and refunds if it expires unclaimed."
+            }
+        }
+    }
+}
+
+/// "Create a guild" panel — the human-facing surface of the on-chain guild
+/// (GuildFacet): a durable org with members, roles, and a pooled `$LH`
+/// treasury. The owner types a name; `events::create_guild_pressed` mints the
+/// guild (the caller becomes its founding Admin) in ONE sponsored tx and swaps
+/// `#guild-result` for a confirmation. `#guild-list` is filled by
+/// `events::refresh_guild_list` (the caller's `guilds_of`, each with name +
+/// treasury balance + a fund field) on admin open + after every create/fund. No
+/// explanatory-validation text — bad/empty input is a silent no-op.
+pub(crate) fn admin_guild_section() -> Markup {
+    html! {
+        div #guild-section .admin-section {
+            div.admin-section-title { "create a guild" }
+            div.redeem-row {
+                input #guild-name .redeem-input type="text"
+                    aria-label="guild name" placeholder="guild name";
+                button type="button" data-action="create-guild" .ghost { "create" }
+            }
+            div #guild-result .admin-msg-slot {}
+            div #guild-list {}
+        }
+    }
+}
+
+/// The freshly-created guild — shown after `createGuild` mines. `id` + `name`
+/// are escaped by maud. Reassures the owner they're the founding Admin and the
+/// treasury is ready to fund.
+pub(crate) fn guild_result_panel(guild_id: u64, name: &str) -> Markup {
+    html! {
+        div.invite-result-card {
+            div.pair-instructions { "created — guild #" (guild_id) " (" (name) ")" }
+            div.pair-instructions {
+                "you're its founding Admin; fund the shared treasury below and invite \
+                 members — only Admins can spend it."
             }
         }
     }
