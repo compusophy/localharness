@@ -75,6 +75,15 @@ via x402.\n\
 - SCHEDULE: agents run recurring jobs on a fixed interval with NO open tab \
 (on-chain ScheduleFacet + a cron worker; via the `localharness schedule` CLI). \
 Each job escrows a `$LH` budget that is the hard autonomous stop.\n\
+- BUILD APPS (rustlite cartridges): you compile a Rust SUBSET to wasm IN-BROWSER \
+and run it on the 256x144 display. Discipline: PLAN first (components + which of \
+the 64 state slots hold what + frame(t) vs render), then build incrementally and \
+call compile_rustlite after EACH addition to catch errors, then run_cartridge / \
+create_and_publish_app only after a CLEAN compile. The subset has fn/struct/enum/ \
+const/match(+ranges)/if/while/for/loop/arrays(read)/recursion but NO traits, \
+generics, references, heap types (Vec/String building), array writes, or globals \
+— state lives in state_get/state_set slots. Don't emit a whole untested app in \
+one shot.\n\
 \n\
 You can read your FULL live spec with the `read_self_docs` tool (fetches \
 https://localharness.xyz/llms.txt). Use it to self-diagnose, explain your own \

@@ -273,6 +273,15 @@ const MAX_AUTO_CONTINUATIONS: u32 = 10;
 /// answer in one call. Paired with a bounded thinking level so reasoning can't
 /// monopolise it. (Phones aren't the cause — the same too-small default budget
 /// hits everywhere; mobile just surfaces hard tasks more often.)
+///
+/// DEEP-THINK NOTE: the in-tab session now runs `ThinkingLevel::High` (a 16384
+/// thinking budget — see `gemini::loop::thinking_level_to_config`). Gemini's
+/// `thinkingBudget` is a CEILING ON REASONING TOKENS THAT IS DRAWN FROM this
+/// `maxOutputTokens` window, so 16384 (think) + this 32768 (total) leaves a
+/// guaranteed ~16k for the actual answer/tool-calls — thinking can deepen WITHOUT
+/// starving the final text (the empty-response fix is preserved: budget ≥ 2×
+/// thinking). Don't lower this below `2 × High thinking budget` without also
+/// dropping the thinking level, or hard coding turns can regress to empty.
 const GEMINI_MAX_OUTPUT_TOKENS: u32 = 32_768;
 
 /// Output-token cap per call for the in-tab Anthropic path. The backend default
@@ -1049,7 +1058,95 @@ pub(crate) async fn start_session(
          • When you do call a tool, lead with a short one-line note on what \
            you're about to do (e.g. \"checking your files…\") so the turn is \
            never silent — but don't re-narrate the call's args or dump its \
-           result afterward; both are already visible in the transcript."
+           result afterward; both are already visible in the transcript.\n\n\
+         \
+         === Building cartridges / apps (CODING DISCIPLINE — follow this) ===\n\
+         When the user asks you to build an app, game, animation, or anything \
+         visual on the display (a run_cartridge / compile_rustlite / \
+         create_and_publish_app task), do NOT try to emit the whole program in \
+         one shot — that fails on anything non-trivial. Work like a careful \
+         engineer:\n\
+         1. PLAN FIRST (always visible). Before writing ANY code, post a SHORT \
+            plan in plain text — a handful of lines, not an essay. Cover: (a) the \
+            components / what's on screen, (b) the STATE MODEL — rustlite has NO \
+            globals, so name which of the 64 integer state slots \
+            (state_get(slot)/state_set(slot,v)) hold what, (c) whether it's \
+            animated `fn frame(t: i32)` (t = elapsed ms) or one-shot `fn \
+            render()`, and (d) the incremental build steps. This plan is for the \
+            user to SEE — surface it; never skip straight to code.\n\
+         2. BUILD INCREMENTALLY + COMPILE IN THE LOOP. Build the cartridge in \
+            small pieces. After EACH meaningful addition, call compile_rustlite \
+            (it compiles the source and reports errors WITHOUT touching the \
+            display) to check it. READ the error `detail` it returns, FIX the \
+            problem, and only THEN add the next piece. Never paste a large \
+            untested blob and hope — a clear screen + one rect first, then add \
+            interaction, then polish, compiling between each. Each compile is \
+            cheap and you auto-continue, so iterating is free.\n\
+         3. ONLY render/publish after a CLEAN compile. Once compile_rustlite \
+            returns no `error`, THEN run_cartridge (to show it live on this tab's \
+            display) or create_and_publish_app (to ship it to a new subdomain). \
+            Do not run_cartridge or publish source you haven't compiled clean.\n\
+         4. If a compile error is unclear, re-read the rustlite subset below — \
+            most failures are using a feature rustlite lacks (heap types, \
+            traits, generics, references, string ops) or a host fn name/arity \
+            that doesn't exist. Simplify to the supported subset rather than \
+            fighting the compiler.\n\n\
+         \
+         === rustlite — the supported subset (write VALID rustlite first-try) ===\n\
+         rustlite is a small Rust SUBSET compiled to wasm in-browser. Numbers are \
+         i32 / i64 / f32 / f64 (cast with `as`, e.g. `(x as f64)`, `(y as i32)`); \
+         also bool. The display/host ABI is INTEGER-only (i32). What EXISTS:\n\
+         • Items: `fn`, `const NAME: i32 = …;` (const order doesn't matter), \
+           `struct`, `enum` (unit / tuple / struct variants). Recursion is fine.\n\
+         • Statements: `let x = …;` and `let mut x = …;` (type usually inferred; \
+           annotate with `let x: i32 = …` if needed); assignment `x = …;` and \
+           struct-field assignment `p.x = …;`; `return …;`.\n\
+         • Control flow: `if/else if/else` (an expression — yields a value), \
+           `while cond {{ }}`, `loop {{ … break; }}` (loop can yield via `break v`), \
+           `for i in lo..hi {{ }}` (EXCLUSIVE `..` only — for-loops do NOT take \
+           `..=`), `break` / `continue`.\n\
+         • `match` on an int/enum with: literal arms, range arms `0..=5` \
+           (inclusive) and `0..5` (exclusive — ranges are allowed HERE, unlike \
+           for), bindings, enum variants, and `_`. Every match must be \
+           exhaustive (end with `_` for ints).\n\
+         • Arrays: literals `let pal = [255, 65280, 16711680];` and indexed \
+           READS `pal[i]` (great for lookup tables / palettes). Element WRITES \
+           `arr[i] = v` are NOT supported — use state slots or rebuild the array. \
+           No `Vec`, no slices, no `.len()`.\n\
+         • Operators: + - * / %, == != < > <= >=, && ||, & | ^ << >> (bitwise — \
+           handy for packing colors / coords), unary - and !.\n\
+         What does NOT exist (do not use — these are the usual compile failures): \
+         traits / impl blocks / methods you define, generics, references \
+         (`&`/`&mut`) + lifetimes, closures, `Vec` / `HashMap` / `Box` / any heap \
+         or std collection, `String` building / formatting / `format!` / string \
+         methods (string literals exist only as host args like a WebSocket URL), \
+         `Option` / `Result` / `?`, tuples returned from fns, array writes, \
+         global `static`/`let` (NO module-level mutable state — that's what the \
+         64 state slots are for).\n\
+         CARTRIDGE SHAPE: a display cartridge starts with `use host::display;` \
+         and exports EITHER `fn frame(t: i32) {{ … }}` (called every frame; `t` is \
+         elapsed ms — animate off it) OR `fn render() {{ … }}` (drawn once). Call \
+         host fns as `display::clear(…)` etc. (after the `use`), and ALWAYS call \
+         `display::present()` LAST each frame to flush. Colors are 0xRRGGBB \
+         packed into an i32 (white = 16777215, black = 0). The framebuffer is \
+         256 wide × 144 tall.\n\
+         HOST ABI (exact names + arity — calling a wrong name/arity is a compile \
+         error). Drawing: clear(rgb); set_pixel(x,y,rgb); \
+         fill_rect(x,y,w,h,rgb); draw_char(x,y,code,rgb,scale) (code = ASCII int, \
+         e.g. 65 = 'A'); draw_number(x,y,value,rgb,scale) (renders a decimal \
+         int); draw_line(x0,y0,x1,y1,rgb); fill_triangle(x0,y0,x1,y1,x2,y2,rgb); \
+         present(). Info: width() -> i32; height() -> i32. Input (poll each \
+         frame): pointer_x() -> i32; pointer_y() -> i32; pointer_down() -> i32 (1 \
+         while pressed). State across frames: state_get(slot) -> i32 and \
+         state_set(slot, value) — 64 slots (0..=63), all start at 0; THIS is your \
+         only persistent memory between frames. (Also available: `use host::net;` \
+         for WebSocket multiplayer — net::open/send/poll/status/close — and `use \
+         host::audio;` — audio::tone(freq,dur_ms,wave)/tone_at/noise/stop/\
+         set_volume. Use only if the app needs sound or networking.)\n\
+         PATTERN — a clickable button with state: each frame clear(); fill_rect \
+         the button box; draw its label; then `if pointer_down() != 0 && px >= bx \
+         && px < bx+bw && py >= by && py < by+bh {{ … toggle state_set(0, …) … }}`; \
+         present(). Hold the toggle/counter in a state slot, never a global."
     );
 
     // Self-knowledge: append a concise runtime digest so the agent has
@@ -1203,7 +1300,14 @@ pub(crate) async fn start_session(
             // bound reasoning (visible thinking) so it can't eat the whole
             // window — the fix for "(empty response)" on long tasks.
             .with_max_output_tokens(GEMINI_MAX_OUTPUT_TOKENS)
-            .with_thinking(ThinkingLevel::Medium)
+            // Deep-think for the coding-heavy in-tab path. High = a 16384 thinking
+            // budget, which Gemini draws FROM the 32768 output cap above — leaving
+            // ~16k guaranteed for the final answer / tool calls. So reasoning gets
+            // real room to PLAN + reason about rustlite WITHOUT starving the output
+            // (the "(empty response)" fix holds because budget ≥ 2× thinking). The
+            // visible PLAN-FIRST + compile-in-the-loop discipline below leans on
+            // this headroom.
+            .with_thinking(ThinkingLevel::High)
             .with_tool(create_subdomain_tool())
             .with_tool(create_and_publish_app_tool())
             .with_tool(batch_create_subdomains_tool())

@@ -22,10 +22,17 @@ impl Tool for CompileRustlite {
     }
 
     fn description(&self) -> &str {
-        "Compile Rust-subset source code to wasm and execute a function. \
-         The source uses rustlite syntax: structs, enums, fns, match, if/else, \
-         while/loop, let mut — no traits, no generics, no references. \
-         Returns the i32 result of calling the named entry function."
+        "Compile-check rustlite (Rust-subset) source to wasm WITHOUT touching the \
+         display — your compile-in-the-loop tool. Use it after each addition while \
+         building a cartridge: it returns either a clean compile (then run_cartridge \
+         / create_and_publish_app) or, on failure, `{ error: \"compilation failed\", \
+         detail: \"<the exact compiler message, with a [start..end] source byte \
+         span>\" }` — READ that detail, fix the issue, and recompile before adding \
+         more. rustlite supports structs, enums, fns, match (incl. ranges), \
+         if/else, while/for/loop, arrays (read), const, recursion — but NO traits, \
+         generics, references, heap types (Vec/String building/Box), or array \
+         writes. If `function` is given it is also called and its i32 result \
+         returned; for a plain compile-check just pass `source`."
     }
 
     fn input_schema(&self) -> Value {
@@ -79,9 +86,19 @@ impl Tool for CompileRustlite {
         let wasm_bytes = match crate::rustlite::compile(&source) {
             Ok(bytes) => bytes,
             Err(err) => {
+                // Surface the compiler message verbatim (it carries a
+                // `[start..end]` source byte span) PLUS a steady hint so the
+                // model fixes-and-recompiles in the loop instead of giving up
+                // or, worse, publishing the broken source anyway.
                 return Ok(json!({
                     "error": "compilation failed",
                     "detail": err.to_string(),
+                    "hint": "Fix the issue at the reported source span and call \
+                             compile_rustlite again. Common causes: a feature \
+                             rustlite lacks (traits, generics, references, \
+                             Vec/String building, array writes, Option/Result) or \
+                             a wrong host fn name/arity. Do NOT run_cartridge or \
+                             publish until this compiles clean.",
                     "exports": []
                 }));
             }
