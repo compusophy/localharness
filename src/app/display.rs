@@ -760,25 +760,33 @@ mod worker {
     /// path flip so an in-flight tick is a no-op. (The last-frame timestamp is
     /// owned by the onmessage + watchdog closures via their own `Rc` clones —
     /// it doesn't need a struct slot.)
+    ///
+    /// The watchdog interval id lives in a SHARED [`Rc<Cell<Option<i32>>>`] —
+    /// the watchdog callback `take()`s it when it self-clears (on a hang), the
+    /// `done` handler `take()`s it when a one-shot render disarms it, and `Drop`
+    /// clears whatever id is still present. Exactly one of those clears the
+    /// interval; the others see `None`. (A bare `Option<i32>` here was the leak:
+    /// `stop_worker` set `terminated` BEFORE the drop, so `Drop` wrongly assumed
+    /// the watchdog had self-cleared and skipped the clear — leaving a live
+    /// interval whose `Closure` was just dropped, an invoke-after-drop hazard.)
     struct WorkerHandle {
         worker: Worker,
         _onmessage: Closure<dyn FnMut(MessageEvent)>,
-        watchdog: Option<i32>,
+        watchdog: Rc<Cell<Option<i32>>>,
         _watchdog_cb: Option<Closure<dyn FnMut()>>,
         terminated: Rc<Cell<bool>>,
     }
 
     impl Drop for WorkerHandle {
         fn drop(&mut self) {
-            // Clear the watchdog interval — UNLESS the watchdog already fired
-            // (`terminated`), in which case it self-cleared its own id and the
-            // id may have been recycled by the browser, so re-clearing here
-            // could nuke an unrelated interval. terminate() is idempotent.
+            // Clear the watchdog interval if it's still armed. Whoever cleared
+            // it first (the watchdog's hang self-clear, or the one-shot `done`
+            // disarm) `take()`s the id to `None`, so this is a no-op in those
+            // cases and never double-clears a recycled id. terminate() is
+            // idempotent.
             if let Some(id) = self.watchdog.take() {
-                if !self.terminated.get() {
-                    if let Ok(win) = dom::window() {
-                        win.clear_interval_with_handle(id);
-                    }
+                if let Ok(win) = dom::window() {
+                    win.clear_interval_with_handle(id);
                 }
             }
             self.worker.terminate();
@@ -800,11 +808,17 @@ mod worker {
 
         let last_frame = Rc::new(Cell::new(js_sys::Date::now()));
         let terminated = Rc::new(Cell::new(false));
+        // Shared watchdog interval id. `arm_watchdog` fills it; the watchdog
+        // self-clears it on a hang, the `done` handler disarms it after a
+        // one-shot render completes, and `WorkerHandle::Drop` clears whatever
+        // remains. `take()` makes exactly one of those the real clear.
+        let watchdog_id: Rc<Cell<Option<i32>>> = Rc::new(Cell::new(None));
 
         // Message handler: blit frames, play forwarded audio, surface errors.
         let onmessage = {
             let ctx = ctx.clone();
             let last_frame = last_frame.clone();
+            let watchdog_id = watchdog_id.clone();
             Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
                 let data = e.data();
                 let ty = Reflect::get(&data, &JsValue::from_str("type"))
@@ -847,6 +861,20 @@ mod worker {
                             .unwrap_or_default();
                         web_sys::console::log_1(&JsValue::from_str(&msg));
                     }
+                    "done" => {
+                        // A one-shot `render()` finished and posted its single
+                        // frame — it can't hang now (it already returned), so
+                        // DISARM the watchdog. Otherwise it would fire ~1.5s
+                        // later and falsely paint "CARTRIDGE STOPPED LH1001"
+                        // over a perfectly-good static render. The worker stays
+                        // alive (a re-load reuses it). Animated cartridges never
+                        // send `done`, so they keep the watchdog.
+                        if let Some(id) = watchdog_id.take() {
+                            if let Ok(win) = dom::window() {
+                                win.clear_interval_with_handle(id);
+                            }
+                        }
+                    }
                     _ => {}
                 }
             })
@@ -864,14 +892,19 @@ mod worker {
             .map_err(|e| JsValue::from_str(&format!("worker post failed: {e:?}")))?;
 
         // Arm the watchdog: terminate the worker if no frame lands in time.
-        let (watchdog, watchdog_cb) =
-            arm_watchdog(worker.clone(), ctx, last_frame.clone(), terminated.clone());
+        let watchdog_cb = arm_watchdog(
+            worker.clone(),
+            ctx,
+            last_frame.clone(),
+            terminated.clone(),
+            watchdog_id.clone(),
+        );
 
         WORKER.with(|cell| {
             *cell.borrow_mut() = Some(WorkerHandle {
                 worker,
                 _onmessage: onmessage,
-                watchdog,
+                watchdog: watchdog_id,
                 _watchdog_cb: watchdog_cb,
                 terminated,
             });
@@ -980,18 +1013,17 @@ mod worker {
     /// SAFETY: the watchdog must NOT drop its own `WorkerHandle` from inside the
     /// callback (that would drop the `Closure` currently executing). So on a
     /// hang it sets `terminated` (making the slot inert + `is_active()` false),
-    /// terminates the worker, and clears its interval via a shared id cell —
-    /// but leaves the `WorkerHandle` in place. The next `spawn_cartridge` /
-    /// `stop_worker` drops it safely (off the callback stack).
+    /// terminates the worker, and clears its interval via the SHARED `interval_id`
+    /// cell — but leaves the `WorkerHandle` in place. The next `spawn_cartridge`
+    /// / `stop_worker` drops it safely (off the callback stack); `Drop` clears
+    /// whatever id remains, and the `take()` here ensures it sees `None`.
     fn arm_watchdog(
         worker: Worker,
         ctx: CanvasRenderingContext2d,
         last_frame: Rc<Cell<f64>>,
         terminated: Rc<Cell<bool>>,
-    ) -> (Option<i32>, Option<Closure<dyn FnMut()>>) {
-        // Shared interval-id cell so the callback can clear ITSELF without
-        // touching (and dropping) its WorkerHandle.
-        let interval_id: Rc<Cell<Option<i32>>> = Rc::new(Cell::new(None));
+        interval_id: Rc<Cell<Option<i32>>>,
+    ) -> Option<Closure<dyn FnMut()>> {
         let cb = {
             let interval_id = interval_id.clone();
             Closure::<dyn FnMut()>::new(move || {
@@ -1003,7 +1035,9 @@ mod worker {
                     worker.terminate();
                     // LH1001 = frame timeout (the hang the watchdog catches).
                     paint_stopped_overlay_coded(&ctx, crate::error_codes::FRAME_TIMEOUT);
-                    // Self-clear the interval (don't drop the handle here).
+                    // Self-clear the interval (don't drop the handle here). The
+                    // shared `take()` leaves `None` so `Drop` won't re-clear a
+                    // recycled id.
                     if let Some(id) = interval_id.take() {
                         if let Ok(win) = dom::window() {
                             win.clear_interval_with_handle(id);
@@ -1020,7 +1054,7 @@ mod worker {
             .ok()
         });
         interval_id.set(id);
-        (id, Some(cb))
+        Some(cb)
     }
 
     /// Paint a monochrome "cartridge stopped" message into the framebuffer

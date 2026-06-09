@@ -37,6 +37,8 @@
 //     { type: 'audio', op, args: [...] }        play a tone/noise on the main AudioContext
 //     { type: 'error', code, detail }           instantiate / fatal error (code = LH1xxx)
 //     { type: 'log',   level, msg }             console passthrough
+//     { type: 'done' }                          a one-shot render() finished (disarm
+//                                               the watchdog — no more frames coming)
 //
 //   The `code` on an error message is a stable LH1xxx runtime code from the
 //   localharness error registry (the LH-prefixed integer; see src/error_codes.rs
@@ -567,6 +569,11 @@ async function load(wasmBuf) {
     }
     present();
     running = false;
+    // Tell the main thread this was a ONE-SHOT render that completed: it posted
+    // exactly one frame and will never post another, so the watchdog must stand
+    // down (else it fires ~1.5s later and falsely paints "CARTRIDGE STOPPED
+    // LH1001" over a good static render). Animated cartridges never send `done`.
+    self.postMessage({ type: 'done' });
   }
 }
 
@@ -649,6 +656,27 @@ if (typeof module !== 'undefined' && module.exports) {
       fb32 = new Uint32Array(fbBytes.buffer);
       for (const [name, ...args] of ops) host_display[name](...args);
       return fbBytes.slice();
+    },
+    // Run the worker's REAL `load()` against a captured postMessage sink and
+    // return the ordered list of message `type`s it posted. Drives the actual
+    // one-shot-vs-animated branch so the parity harness can assert that a
+    // one-shot render() emits a `done` (the watchdog-disarm signal) and an
+    // animated frame() does NOT — the regression guard for the false-LH1001
+    // bug. A no-op `setTimeout` neutralizes the animated self-pacing loop so the
+    // test posts exactly one frame and returns.
+    async loadAndCollect(wasmBytes) {
+      const types = [];
+      const prevSelf = globalThis.self;
+      const prevSetTimeout = globalThis.setTimeout;
+      globalThis.self = { postMessage: (m) => types.push(m && m.type) };
+      globalThis.setTimeout = () => 0; // don't actually re-tick the frame loop
+      try {
+        await load(wasmBytes);
+      } finally {
+        globalThis.self = prevSelf;
+        globalThis.setTimeout = prevSetTimeout;
+      }
+      return types;
     },
   };
 }

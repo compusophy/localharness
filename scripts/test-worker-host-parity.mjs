@@ -295,6 +295,56 @@ console.log('\nCHECK 4 — set_pixel/draw_line/fill_triangle direct-drive expect
   check(eq(at(35, 95), [0, 0, 0, 0]), 'fill_triangle exterior pixel is unfilled');
 }
 
+// ============================================================================
+// CHECK 5 — one-shot render() posts a `done` (watchdog-disarm signal); an
+//           animated frame() does NOT. Regression guard for the false-LH1001
+//           bug where a static render got terminated ~1.5s after its single
+//           frame and the canvas showed "CARTRIDGE STOPPED LH1001".
+// ============================================================================
+console.log('\nCHECK 5 — one-shot render() emits `done`; animated frame() does not');
+{
+  // A minimal hand-assembled wasm module exporting `memory` + one empty fn under
+  // `entryName`. No host imports — exercises the worker's load() entry-detection
+  // + one-shot-vs-animated branch directly, no compiler needed.
+  function tinyCartridge(entryName) {
+    const name = [...entryName].map((c) => c.charCodeAt(0));
+    return Uint8Array.from([
+      0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic + version
+      // type section: one type () -> ()
+      0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+      // function section: one function, type 0
+      0x03, 0x02, 0x01, 0x00,
+      // memory section: one memory, min 1 page
+      0x05, 0x03, 0x01, 0x00, 0x01,
+      // export section: "memory" (mem 0) + entryName (func 0)
+      0x07,
+      0x0d + name.length, // section size = count(1) + memory-export(9) + entry(3+len)
+      0x02, // 2 exports
+      0x06, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 0x02, 0x00, // "memory" -> mem 0
+      name.length, ...name, 0x00, 0x00, // entryName -> func 0
+      // code section: one empty body (just `end`)
+      0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b,
+    ]);
+  }
+
+  // Sanity: the synthesized module instantiates with the named export.
+  const renderTypes = await worker.loadAndCollect(tinyCartridge('render'));
+  const frameTypes = await worker.loadAndCollect(tinyCartridge('frame'));
+
+  check(
+    renderTypes.includes('frame') && renderTypes.includes('done'),
+    `one-shot render() posts a frame then a done (got [${renderTypes}])`,
+  );
+  check(
+    !frameTypes.includes('done'),
+    `animated frame() does NOT post done (got [${frameTypes}])`,
+  );
+  check(
+    frameTypes.includes('frame'),
+    `animated frame() still posts at least one frame (got [${frameTypes}])`,
+  );
+}
+
 console.log('');
 if (failures > 0) {
   console.error(`HOST-PARITY FAILED — ${failures} check(s) failed.`);
