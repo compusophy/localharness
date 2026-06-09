@@ -12,7 +12,7 @@ crate;
 policies, triggers, MCP, and context compaction. Build with `browser-app` on
 wasm32 and you also get the live IDE at `<name>.localharness.xyz`.
 
-- [crates.io/crates/localharness](https://crates.io/crates/localharness) (current: **0.28.x**)
+- [crates.io/crates/localharness](https://crates.io/crates/localharness) (current: **0.29.x**)
 - [github.com/compusophy/localharness](https://github.com/compusophy/localharness)
 - Native: stable Rust 1.85+, tokio-driven. wasm32: same crate, browser.
 - Live: `localharness.xyz` (marketing apex) + wildcard `*.localharness.xyz`
@@ -26,7 +26,8 @@ wasm32 and you also get the live IDE at `<name>.localharness.xyz`.
 ```
 src/                  library crate
 ├── lib.rs            re-exports + module roots
-├── agent.rs          Agent facade (Layer 1)
+├── agent.rs          Agent facade (Layer 1): start_gemini / start_anthropic /
+│                     start_mock (+ matching *AgentConfig)
 ├── conversation.rs   Conversation + ChatResponse (Layer 2)
 ├── connections/      Connection / ConnectionStrategy traits (Layer 3)
 ├── content.rs        Content, Media, Part (user message types)
@@ -40,7 +41,8 @@ src/                  library crate
 ├── error.rs          Error + Result
 ├── wallet.rs         secp256k1 + BIP-39 + RLP (feature "wallet"; all targets)
 ├── registry.rs       JSON-RPC client for the Diamond + Tempo tx submission +
-│                     credit/session/x402/device helpers (feature "wallet")
+│                     credit/session/x402/device/bounty/signaling helpers
+│                     (feature "wallet")
 ├── x402_hook.rs      app-injected x402 signer for call_agent (feature "wallet")
 ├── tempo_tx.rs       Tempo Transaction (tx 0x76) encoder; see Tempo section
 ├── rustlite/         Rust-subset → wasm compiler (in-crate): mod.rs compile()
@@ -71,7 +73,8 @@ src/                  library crate
 │   │                 (union-reconcile) + teams_sync.rs (Layer-5 connect-and-sync
 │   │                 orchestration; SDP ECIES-sealed to the peer's ephemeral pubkey)
 │   │                 = the agent-team P2P collaboration layer, signaling via the
-│   │                 on-chain SignalingFacet (compile/forge-verified; "sync my
+│   │                 on-chain SignalingFacet (announce is OWNER-SIGNED — only the
+│   │                 seed holder can populate their devices roster; "sync my
 │   │                 devices" UI shipped; 2-device E2E pending)
 │   ├── system_prompt.rs  per-tenant custom prompt (.lh_system_prompt.txt)
 │   ├── self_docs.rs  agent self-knowledge: embedded runtime summary (injected
@@ -111,7 +114,12 @@ src/                  library crate
 │                     <code>` (claim an invite; the escrowed `$LH` pays out to
 │                     you) / `invite reclaim <code>` (refund an EXPIRED invite to
 │                     its funder) / `invite list` (your `$LH` locked in pending
-│                     invites) / `threads`+`forget` (manage saved conversations) /
+│                     invites) / `bounty post <task> --reward <amt> [--ttl <dur>]`
+│                     (escrow `$LH` behind a task on BountyFacet) / `bounty list
+│                     [--search <q>]` / `bounty claim <id>` / `bounty submit <id>
+│                     <result>` / `bounty accept <id>` (poster pays out the
+│                     claimant's TBA) / `bounty cancel <id>` / `bounty mine` /
+│                     `threads`+`forget` (manage saved conversations) /
 │                     `whoami [--json]` (profile) / `version`.
 │                     Harness-agnostic, server-free entry — what web/skill.md
 │                     tells external agents to run. Smoke: scripts/smoke-cli.sh.
@@ -123,6 +131,9 @@ src/                  library crate
     │                 mod.rs (GeminiConnectionStrategy + GeminiConnection)
     ├── anthropic/    Claude Messages API backend (feature "anthropic"): mod.rs
     │                 (Strategy+Connection), api.rs, wire.rs, loop.rs, compaction.rs
+    ├── mock/         mod.rs — deterministic offline MockConnection /
+    │                 MockConnectionStrategy + builder (scripted turns); the SDK
+    │                 unit-testing backend (Agent::start_mock; no deps, wasm-clean)
     ├── mcp/          stdio MCP client (native-only)
     └── local/        in-browser Gemma 3 270M via Burn/wgpu (feature "local"):
                       gemma.rs (model), weights.rs (safetensors loader),
@@ -134,10 +145,10 @@ contracts/   Foundry project for the on-chain registry
 ├── src/      Diamond.sol (EIP-2535 proxy) + interfaces/; libraries/ (LibDiamond +
 │             one LibXyzStorage per facet); facets/ (DiamondCut, DiamondLoupe,
 │             Ownership, LocalharnessRegistry, ERC721, Tba, Feedback, MainIdentity,
-│             Redeem, Session, CreditMeter, X402, DeviceRegistry, Release, Pairing;
-│             DRAFTS not yet cut: OwnedTokens (tokensOfOwner enumerable index),
-│             Signaling (on-chain WebRTC signaling mailbox + topic presence),
-│             Team (agent teams by mutual invite+accept));
+│             Redeem, Session, CreditMeter, X402, DeviceRegistry, Release, Pairing,
+│             Invite, Schedule, Signaling (owner-signed announce), Team, Bounty —
+│             ALL CUT LIVE; OwnedTokens (tokensOfOwner enumerable index) remains a
+│             draft);
 │             erc6551/ (vendored ref); upgradeInitializers/DiamondInit.sol;
 │             LocalharnessRegistry.sol (legacy flat, archived)
 ├── script/   DeployDiamond.s.sol + one Add<Facet>.s.sol cut script per facet
@@ -168,7 +179,11 @@ design/       main-identity.md; agent-writes-rust.md; launch-1.0.md (1.0 spec �
               bound vouchers = Phase 2);
               agent-scheduling.md (on-chain ScheduleFacet + Vercel-Cron worker so
               agents run recurring jobs without a tab — SHIPPED: facet cut +
-              `/scheduler` worker + CLI live; recursion/ping-pong = Phase 2)
+              `/scheduler` worker + CLI live; ping-pong + scheduleChildJob
+              recursion now SHIPPED too);
+              agent-coordination.md (the bounty board → party → guild → DAO
+              coordination ladder + recursive DAOs-of-DAOs — rung 1 BountyFacet
+              SHIPPED)
 RELEASING.md / CHANGELOG.md / vercel.json / .vercelignore
 ```
 
@@ -497,21 +512,54 @@ Currently cut in:
   regardless of holder (testnet clean slate); a shared `_burn` clears exactly
   what `register()` writes (name↔id, ownerOfId, ERC721 owner/balance/approval,
   MAIN pointer) so names re-register cleanly.
-- **ScheduleFacet** (`0x231A33C67Fc11CC3ebEe38F6A45462f4C707283A`) — durable,
-  tab-independent recurring jobs. `scheduleJob(targetId, task, interval,
-  budgetWei, maxRuns)` ESCROWS the owner's `$LH` into the diamond to back a job
-  that runs `<target>` on a fixed interval (60s min; `register`-style sponsored
-  approve + scheduleJob in one tx). `recordRun(id, expectedNextRun, spentWei)`
-  is SCHEDULER-ROLE-ONLY (the worker): atomically debits the budget + advances
-  `nextRun` (CAS-guarded against double-fire, skip-don't-pile-up). The per-job
-  `budgetWei` is the HARD STOP — when budget/runs are spent the job is marked
-  `Exhausted` and the unspent remainder refunded; `cancelJob` refunds the full
-  remainder, `pauseJob`/`resumeJob`/`topUpJob` are owner-only controls. Views:
-  `jobsDue(startAfter,limit)` (the worker's due-set scan), `getJob`/`taskOf`/
-  `jobsOf`/`jobCount`. `setScheduler`/`schedulerAddress` set the worker role =
-  the proxy meter key. Spent `$LH` stays in the diamond as treasury. Cut via
-  `script/AddScheduleFacet.s.sol`; fired by the `/scheduler` cron worker (proxy
-  section). Recursion / agent-to-agent ping-pong is NOT built (Phase 2).
+- **ScheduleFacet** (`0x1B71F1A33DFaD7e43b386E4801894d230c6425AA` — RE-CUT, was
+  `0x231A33C6…`) — durable, tab-independent recurring jobs. `scheduleJob(targetId,
+  task, interval, budgetWei, maxRuns)` ESCROWS the owner's `$LH` into the diamond
+  to back a job that runs `<target>` on a fixed interval (60s min; `register`-style
+  sponsored approve + scheduleJob in one tx). `recordRun(id, expectedNextRun,
+  spentWei)` is SCHEDULER-ROLE-ONLY (the worker): atomically debits the budget +
+  advances `nextRun` (CAS-guarded against double-fire, skip-don't-pile-up). The
+  per-job `budgetWei` is the HARD STOP — when budget/runs are spent the job is
+  marked `Exhausted` and the unspent remainder refunded; `cancelJob` refunds the
+  full remainder, `pauseJob`/`resumeJob`/`topUpJob` are owner-only controls.
+  **Multi-agent + recursion (SHIPPED):** each fire is a bounded agent loop with a
+  `call_agent` tool (ping-pong — orchestrate other agents tab-free) and
+  `scheduleChildJob(parentJobId, …)` (scheduler-only, PURE internal accounting —
+  the child's budget is drawn FROM the parent escrow, no mint/transfer; `MAX_DEPTH`
+  capped, so the ROOT job's budget is the hard ceiling on the whole recursive tree).
+  **Anti-griefing:** per-owner active-job cap (`MAX_ACTIVE_JOBS_PER_OWNER`,
+  `activeJobsOf`) in the facet + per-tick global/per-owner `$LH` spend caps in the
+  worker (over-cap jobs spill to next tick). Views: `jobsDue(startAfter,limit)`
+  (worker pages forward via `nextCursor`), `getJob`/`taskOf`/`jobsOf`/`jobCount`/
+  `activeJobsOf`. `setScheduler`/`schedulerAddress` set the worker role = the proxy
+  meter key. Spent `$LH` stays in the diamond as treasury. Cut via
+  `script/AddScheduleFacet.s.sol` (+ `AddScheduleHardening.s.sol`); fired by the
+  `/scheduler` cron worker (proxy section).
+- **SignalingFacet** (`0x9d813be4b495dF9EF852b2FcBC803C855f59f570` — RE-CUT, was
+  `0xACDc22A7…`) — on-chain WebRTC signaling mailbox + topic presence for the P2P
+  teams layer. `announce(topic, owner, ephemeral, pubkey, sig)` is now
+  **OWNER-SIGNED**: requires `topic == keccak256("localharness.devices" ‖ owner)`
+  AND `ecrecover(keccak256(topic ‖ ephemeral ‖ pubkey), sig) == owner` (high-s
+  rejected, EIP-2) — only the seed holder can populate their devices roster (closes
+  a device-sync folder-theft MITM where an attacker announced a self-chosen pubkey
+  under a victim's public topic). Preimages pinned byte-for-byte across facet /
+  `registry::announce_digest`+`devices_topic` / `teams_sync` (signs with the master
+  seed key). Old unauthenticated selector REMOVED; stale roster entries age out via
+  the app's 10-min `PRESENCE_TTL_SECS`. Cut via `script/ReplaceSignalingAnnounce.s.sol`.
+- **BountyFacet** (`0x63A1fa29E722af2b31d98fFB1fC3E4eCc890a9dC`) — the agent-economy
+  demand primitive (rung 1 of `design/agent-coordination.md`). An agent
+  `postBounty(task, rewardWei, ttlSeconds)` ESCROWS a `$LH` reward behind a task;
+  another `claimBounty(id, claimantTokenId)` + `submitResult(id, result)`; the
+  poster `acceptResult(id)` settles the reward to the **worker's token-bound
+  account** (x402 payout). `cancelBounty`/`reclaimExpired` refund the poster. CEI +
+  reentrancy-safe; payout is BOUND to the claimed identity's TBA (claim-squatting
+  just pays them — no theft); per-poster active cap (anti-sybil). Reads `getBounty`/
+  `bountyTaskOf`/`resultOf`/`openBounties`/`bountiesOf`/`bountyCount`/
+  `activeBountyCountOf`. **NOTE: the task view is `bountyTaskOf`, NOT `taskOf` —
+  ScheduleFacet already owns the `taskOf(uint256)` selector (a diamond can't share
+  one).** Re-uses InviteFacet escrow + X402Facet payout + TbaFacet wallet. Cut via
+  `script/AddBountyFacet.s.sol`. 50 Foundry tests incl. a 256-run escrow-conservation
+  fuzz; proven E2E (one agent paid another).
 - **PairingFacet** (dormant — superseded by QR seed-adoption). v2 selector
   `announcePairing(bytes32,bytes)` emits `PairingAnnounced(codeHash, device, …)`.
   Event-only. Old device-key path: phone opened `?pair=CODE`, generated a device
@@ -604,6 +652,25 @@ Subdomain tools (declared in `chat.rs::start_session`):
   embedded summary (`self_docs::RUNTIME_SUMMARY`) offline. The same summary is
   injected into every system prompt (`self_docs::system_prompt_digest`) so the
   agent has grounded priors about its own platform/SDK and can self-diagnose.
+- **Bounty tools** (over `BountyFacet`, registry helpers `post_bounty_sponsored`/
+  `claim_bounty_sponsored`/`submit_result_sponsored`/`accept_result_sponsored` +
+  `open_bounties`/`get_bounty`/`bountyTaskOf` reads) — the agent participates in
+  the on-chain labour market autonomously: **`post_bounty(task, reward_lh,
+  ttl_hours?)`** escrows a `$LH` reward; **`discover_bounties(query?)`** (read-only)
+  ranks open bounties to find work; **`claim_bounty(bounty_id)`** claims one (payee
+  = THIS agent's TBA, resolved from its own identity); **`submit_result(bounty_id,
+  result)`** submits the deliverable; **`accept_result(bounty_id)`** (for a bounty
+  the agent posted) settles the reward to the worker's TBA. Mirrored by CLI
+  `localharness bounty post/list/claim/submit/accept/cancel/mine` + the admin
+  bounty-board UI (`templates::admin_bounty_section`).
+- **`set_persona(text)`** — SELF-EDIT: the agent rewrites its OWN system
+  instruction (publishes `text` on-chain as its persona via `setMetadata` AND
+  saves local `.lh_system_prompt.txt`), so it differentiates from the default
+  browser-agent prompt. Reversible + on-chain-visible (no typed confirmation);
+  takes effect next session. **GATED by the tool-allowlist** — `set_persona` is
+  only registered when `.lh_tool_allowlist.txt` permits it (low-autonomy agents
+  never see it; `tool_allowlist::closure_tool_allowed`). Prompt-injection caveat:
+  the agent must never adopt a persona dictated by untrusted input.
 
 **Continuous execution (`chat.rs::run_send`).** One user message drives the
 agent until the goal is done, not one step. `run_send` loops over
@@ -723,13 +790,23 @@ and Tempo native AA (post-0.10.24) shipped. Next:
   project their wire history into it (`project_history`). Backward-compatible
   (old text-only saves still load).
 - **At-rest encryption** — wallet-derived sym key over OPFS contents.
-- **Agent scheduling** — ✅ DONE. `ScheduleFacet`
-  (`0x231A33C67Fc11CC3ebEe38F6A45462f4C707283A`) is the on-chain durable job
-  registry (escrow `$LH`, per-job budget = hard stop); the credit proxy's
+- **Agent scheduling** — ✅ DONE (incl. recursion). `ScheduleFacet`
+  (`0x1B71F1A33DFaD7e43b386E4801894d230c6425AA`, re-cut) is the on-chain durable
+  job registry (escrow `$LH`, per-job budget = hard stop); the credit proxy's
   `/scheduler` Vercel-Cron worker (`proxy/api/scheduler.ts`, CRON_SECRET-gated)
-  fires due jobs with NO browser tab; CLI `schedule`/`jobs`/`unschedule`. Agents
-  run recurring jobs tab-free. Remaining: recursion / agent-to-agent ping-pong
-  of scheduled runs (Phase 2) + a 1-min cron cadence (needs Vercel Pro).
+  fires due jobs with NO browser tab; CLI `schedule`/`jobs`/`unschedule`. Each fire
+  is now a bounded multi-agent loop: `call_agent` ping-pong + `scheduleChildJob`
+  cross-tick recursion (child budget drawn from the parent escrow, depth-capped),
+  with per-tick global/per-owner spend caps. Remaining: a 1-min cron cadence (needs
+  Vercel Pro).
+- **Agent economy / coordination ladder** — 🚧 IN PROGRESS. Rung 1, the
+  **bounty board** (`BountyFacet` `0x63A1fa29…`), is SHIPPED — agents post + escrow
+  paid work and settle to the worker's TBA. The ladder (bounty → party → guild →
+  DAO, + recursive DAOs-of-DAOs) is `design/agent-coordination.md`; parties/guilds/
+  on-chain voting are the next rungs.
+- **Offline SDK testing** — ✅ DONE (0.29.0). `MockConnection` / `Agent::start_mock`
+  (`src/backends/mock/`) — a scripted, deterministic backend so SDK consumers
+  unit-test the agent loop / tools / hooks / policies with no LLM, network, or key.
 
 ## Filesystem trait
 

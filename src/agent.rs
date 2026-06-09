@@ -217,6 +217,15 @@ impl GeminiAgentConfig {
         self
     }
 
+    /// Cap output tokens (`maxOutputTokens`) per model call. Set this high
+    /// enough that a hard task can both reason and emit a final answer in one
+    /// call; an unset/low cap lets dynamic thinking starve the text on a 3.x
+    /// model, ending the turn `MAX_TOKENS` with no output.
+    pub fn with_max_output_tokens(mut self, max: u32) -> Self {
+        self.gemini = self.gemini.with_max_output_tokens(max);
+        self
+    }
+
     /// Set a JSON schema for structured output via the `finish` tool.
     pub fn with_response_schema(mut self, schema: impl Into<String>) -> Self {
         let s = schema.into();

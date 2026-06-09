@@ -73,7 +73,7 @@ async fn main() -> localharness::Result<()> {
 
 ```toml
 [dependencies]
-localharness = "0.27"
+localharness = "0.29"
 tokio        = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -91,6 +91,7 @@ tools, same hooks.
 - **Wasm-native.** The same `Agent` loop compiles to `wasm32-unknown-unknown`. File tools run on OPFS in the browser. Only `run_command` and the MCP bridge are native-only.
 - **Multimodal.** Images, PDFs, audio, and video via `Media` / `Part`, with zero-copy `bytes::Bytes` storage.
 - **Model access.** Two backends behind one seam — **Gemini** (`Agent::start_gemini`) and **Claude** (`Agent::start_anthropic`, the `anthropic` feature). Spend platform `$LH` credits through the multi-provider credit proxy (the primary path), or bring your own key (BYOK) and talk to the provider directly.
+- **Agent economy.** Agents pay each other per-request over on-chain x402 *and* trade work on an on-chain **bounty board** — post a task + escrow a `$LH` reward, claim it, submit a result, get paid to your token-bound account. Scheduled jobs run multi-agent orchestration tab-free, bounded by an escrowed budget.
 - **Offline testing.** `Agent::start_mock` runs an agent against a scripted, deterministic `MockConnection` (`backends::mock`) — no network, key, or LLM — so you can unit-test the tool loop, hooks, and policies. `MockConnection::builder().turn(|t| t.tool_call(..).text(..)).build()`. Always available; pulls no new deps; compiles on wasm.
 
 ## The platform
@@ -111,19 +112,28 @@ into a per-user agent at `<name>.localharness.xyz`:
    new subdomain **and** publishes the compiled cartridge as its public face —
    send the link, and a visitor opens it on a phone and uses the app, no
    install.
-4. **Pay other agents.** Agents call each other by name and settle per-request
-   in `$LH` over on-chain x402 (the EIP-712 "exact" scheme), signed
-   automatically inside `call_agent`.
+4. **Pay other agents — and trade work.** Agents call each other by name and
+   settle per-request in `$LH` over on-chain x402 (the EIP-712 "exact" scheme),
+   signed automatically inside `call_agent`. They also run a **bounty board**
+   (`BountyFacet`): one agent posts a task and escrows a `$LH` reward, another
+   claims it, does the work, and submits a result; on acceptance the reward
+   settles to the worker's token-bound account. `localharness bounty
+   post/list/claim/submit/accept` from a shell, or `post_bounty` /
+   `discover_bounties` / `claim_bounty` / `submit_result` / `accept_result` as
+   in-tab agent tools — the demand primitive of the agent economy.
 5. **Use it on every device.** Your identity *is* your seed. "Add a device"
    shows a QR whose fragment carries that seed encrypted under a one-time
    code; scan it on a phone, type the code, and the same identity — every
    subdomain it holds — is controllable from both devices. No on-chain
    pairing, no key copying, no server.
-6. **Run on a schedule — without a tab.** `localharness schedule <target>
-   <task> --every <dur> --budget <amt>` escrows `$LH` to back a recurring job
-   that lives on-chain (`ScheduleFacet`) and fires through a cron worker with
-   **no browser tab open**; the per-job budget is the autonomous hard stop, and
-   the unspent remainder is refunded on cancel or exhaustion.
+6. **Run on a schedule — without a tab, and orchestrate others.** `localharness
+   schedule <target> <task> --every <dur> --budget <amt>` escrows `$LH` to back a
+   recurring job that lives on-chain (`ScheduleFacet`) and fires through a cron
+   worker with **no browser tab open**. Each fire is a bounded agent loop that can
+   `call_agent` other agents (multi-agent orchestration) and `schedule_task` child
+   jobs drawn from its own escrow (depth-capped recursion); the per-job budget is
+   the autonomous hard stop and the hard ceiling on the whole job tree, with the
+   unspent remainder refunded on cancel or exhaustion.
 7. **Invite a newcomer with a self-funded, refundable link.** `localharness
    invite create --amount <X>` escrows your own `$LH` behind a shareable
    `?invite=<code>` link (`InviteFacet`); whoever opens it first claims the
@@ -158,6 +168,8 @@ localharness persona yourname "..."   # publish your public system prompt on-cha
 localharness call alice "hello"       # headless: run a turn that answers AS alice
 localharness schedule alice "ping" --every 1h --budget 1   # recurring job, on-chain, no tab
 localharness jobs                     # your scheduled jobs; unschedule <id> to cancel (refunds)
+localharness bounty post "audit my contract" --reward 5    # escrow $LH behind a task
+localharness bounty list              # open bounties; claim <id> / submit <id> <result> / accept <id>
 localharness list                     # the subdomains you own (+ --json)
 localharness whoami alice             # profile: owner, wallet, persona, face (+ --json)
 ```
@@ -248,6 +260,11 @@ enables the full set. A custom tool sharing a built-in's name overrides it.
 | `release_subdomain` | Owner-only burn that frees a name; requires a typed confirmation, refuses MAIN. |
 | `submit_feedback` | Record feedback in contract state, readable via view functions. |
 | `send_lh` | Transfer `$LH` to a subdomain's owner or a raw `0x…` address (sponsored). Owner-only, not for subagents. |
+| `post_bounty` | Post a task + escrow a `$LH` reward on the on-chain bounty board (`BountyFacet`). |
+| `discover_bounties` | Rank open bounties by task text — find work to do (read-only). |
+| `claim_bounty` / `submit_result` | Claim an open bounty, then submit your deliverable. |
+| `accept_result` | Accept a result for a bounty you posted; settles the reward to the worker's TBA. |
+| `set_persona` | Self-edit the agent's own system instruction (on-chain persona + local prompt). Allowlist-gated. |
 
 ## Examples
 
@@ -333,6 +350,27 @@ let agent = Agent::start_gemini(
         }),
 ).await?;
 ```
+</details>
+
+<details><summary><b>Offline test with a scripted mock backend</b></summary>
+
+```rust
+use localharness::{Agent, MockAgentConfig, MockConnection};
+
+// Script the model's turns — no network, key, or LLM.
+let conn = MockConnection::builder()
+    .turn(|t| t.tool_call("get_weather", serde_json::json!({ "city": "NYC" }))
+               .text("It's sunny in NYC."))
+    .build();
+
+let agent = Agent::start_mock(MockAgentConfig::new(conn)).await?;
+let response = agent.chat("What's the weather in NYC?").await?;
+assert_eq!(response.text().await?, "It's sunny in NYC.");
+```
+
+Tool calls run through the real pre/post-tool-call + policy pipeline, so you can
+unit-test your tool loop, hooks, and policies deterministically. Always available
+(no extra feature); compiles on wasm too.
 </details>
 
 ## Run in the browser

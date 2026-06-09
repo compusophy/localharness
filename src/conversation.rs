@@ -191,6 +191,13 @@ struct ChatBuf {
     chunks: Vec<StreamChunk>,
     done: bool,
     error: Option<String>,
+    /// The terminal step's `error` string — a non-fatal *finish-reason note*
+    /// (e.g. "stopped at max tokens", "stopped by safety policy"), NOT a hard
+    /// error. Backends stash the model's `finishReason`/`stop_reason` here so a
+    /// consumer can tell an empty turn that was TRUNCATED (max tokens — retry /
+    /// break it down) apart from a genuinely blank or safety-blocked one. Empty
+    /// when the turn ended cleanly.
+    finish_note: Option<String>,
 }
 
 impl ChatResponse {
@@ -203,6 +210,7 @@ impl ChatResponse {
                 chunks: Vec::new(),
                 done: false,
                 error: None,
+                finish_note: None,
             }),
             notify: Notify::new(),
         });
@@ -225,6 +233,16 @@ impl ChatResponse {
                             inner_clone.notify.notify_waiters();
                         }
                         if step.is_terminal_response() {
+                            // Stash the terminal finish-reason note (model
+                            // `finishReason`/`stop_reason`, e.g. "stopped at max
+                            // tokens") so a consumer can distinguish a TRUNCATED
+                            // empty turn from a genuinely blank one. This is the
+                            // step's `error` field, which is a non-fatal note on
+                            // a terminal step — NOT a stream error (those arrive
+                            // via the `Err` arm below).
+                            if !step.error.is_empty() {
+                                inner_clone.state.lock().finish_note = Some(step.error.clone());
+                            }
                             let mut s = conv_state.lock();
                             let final_text = if !step.content.is_empty() {
                                 step.content.clone()
@@ -254,6 +272,20 @@ impl ChatResponse {
         });
 
         Self { inner }
+    }
+
+    /// The terminal *finish-reason note* once the turn has ended, if the model
+    /// stopped for a notable reason. This is the backend's human-readable
+    /// rendering of the wire `finishReason`/`stop_reason` (e.g. "stopped at max
+    /// tokens", "stopped by safety policy") — a non-fatal diagnostic, NOT a
+    /// stream error. `None` when the turn ended cleanly or is still in flight.
+    ///
+    /// Lets a consumer distinguish an empty turn that was *truncated* (max
+    /// tokens — worth a retry / breaking the task down) from one that was
+    /// genuinely blank or safety-blocked. Read it after draining the chunk
+    /// stream.
+    pub fn finish_note(&self) -> Option<String> {
+        self.inner.state.lock().finish_note.clone()
     }
 
     /// A fresh cursor that replays every chunk from the start. Multiple

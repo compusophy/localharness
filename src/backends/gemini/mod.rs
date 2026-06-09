@@ -57,6 +57,13 @@ pub struct GeminiBackendConfig {
     pub thinking: Option<ThinkingLevel>,
     /// JSON-string response schema; opt-in to structured output.
     pub response_schema: Option<String>,
+    /// Cap on output tokens (`maxOutputTokens`) per model call. `None` lets
+    /// Gemini apply its own default — which, for a 3.x model doing dynamic
+    /// thinking, can be exhausted by reasoning alone on a hard task, leaving
+    /// no budget for a final answer (the turn ends `MAX_TOKENS` with empty
+    /// text → "(empty response)"). Set this high so a hard task can BOTH reason
+    /// AND answer in one call.
+    pub max_output_tokens: Option<u32>,
     /// Override the Gemini base URL — useful for tests, proxies, or
     /// regional endpoints.
     pub base_url: Option<url::Url>,
@@ -83,6 +90,7 @@ impl GeminiBackendConfig {
             system_instructions: None,
             thinking: None,
             response_schema: None,
+            max_output_tokens: None,
             base_url: None,
             conversation_id: None,
             capabilities: CapabilitiesConfig::default(),
@@ -122,6 +130,15 @@ impl GeminiBackendConfig {
     /// Set a JSON schema for structured output.
     pub fn with_response_schema(mut self, schema: impl Into<String>) -> Self {
         self.response_schema = Some(schema.into());
+        self
+    }
+
+    /// Cap output tokens (`maxOutputTokens`) per model call. Set this high
+    /// enough that a hard task can both reason (dynamic thinking) AND emit a
+    /// final answer in one call; an unset/low cap lets thinking starve the
+    /// text on a 3.x model, ending the turn `MAX_TOKENS` with no output.
+    pub fn with_max_output_tokens(mut self, max: u32) -> Self {
+        self.max_output_tokens = Some(max);
         self
     }
 
@@ -244,7 +261,7 @@ impl ConnectionStrategy for GeminiConnectionStrategy {
             .map(|r| build_tool_declarations(r))
             .unwrap_or_default();
 
-        let loop_config = LoopConfig::from_system(
+        let mut loop_config = LoopConfig::from_system(
             self.config.model.clone(),
             self.config.system_instructions.as_ref(),
             self.config.thinking,
@@ -252,6 +269,7 @@ impl ConnectionStrategy for GeminiConnectionStrategy {
             tool_decls,
             self.config.capabilities.compaction_threshold,
         )?;
+        loop_config.max_output_tokens = self.config.max_output_tokens;
 
         let (steps_tx, _) = broadcast::channel::<Step>(STEP_BROADCAST_CAPACITY);
         let state = Arc::new(LoopState::new(steps_tx));
