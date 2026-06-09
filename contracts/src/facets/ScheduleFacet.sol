@@ -72,6 +72,17 @@ contract ScheduleFacet {
     event JobResumed(uint256 indexed id, uint64 nextRun);
     event JobToppedUp(uint256 indexed id, uint128 addWei, uint128 newBudget);
     event SchedulerUpdated(address indexed scheduler);
+    /// #4 A child job spawned from `parentId`'s escrow. `rootId` is the
+    /// top-of-tree job whose ORIGINAL budget caps the whole recursion;
+    /// `depth` = parent depth + 1. No `$LH` minted — `budgetWei` MOVED
+    /// from the parent's remaining budget (internal accounting only).
+    event ChildJobScheduled(
+        uint256 indexed id,
+        uint256 indexed parentId,
+        uint256 indexed rootId,
+        uint64 depth,
+        uint128 budgetWei
+    );
 
     // --- Errors ---------------------------------------------------------
 
@@ -88,6 +99,11 @@ contract ScheduleFacet {
     error NotDue();
     error StaleNextRun(); // CAS guard — another firer already advanced this run
     error SpendExceedsBudget();
+    // --- Hardening (#3 per-owner cap, #4 recursion) ---------------------
+    error TooManyActiveJobs(); // owner already at MAX_ACTIVE_JOBS_PER_OWNER
+    error InsufficientParentBudget(); // child draw exceeds parent's remaining budget
+    error MaxDepthExceeded(); // child depth would exceed MAX_DEPTH
+    error ParentNotActive(); // can only spawn a child from an Active parent
 
     // --- Bounds (§4.1 / §7.3 Q7). Sanity guards baked into the facet;
     //     finer per-owner caps + recursion depth live in Phase 2. ------
@@ -97,6 +113,24 @@ contract ScheduleFacet {
     uint64 internal constant MIN_INTERVAL = 60;
     /// A job fires at most this many times ever, regardless of budget.
     uint32 internal constant MAX_RUNS = 1_000_000;
+
+    /// #3 ANTI-SYBIL: max simultaneously-live (Active|Paused) jobs ONE
+    /// owner may hold. Caps the per-owner row count the worker's
+    /// `jobsDue` scan and the "my jobs" UI must walk, so a single funded
+    /// account can't flood the registry (each job still escrows real
+    /// `$LH`, but the row-count itself is the griefing vector this
+    /// bounds). 32 is generous for a real user yet small enough to keep
+    /// enumeration cheap. Counter is `activeJobsOf`; see its storage doc
+    /// for the forward-looking (pre-existing-jobs start at 0) caveat.
+    uint256 internal constant MAX_ACTIVE_JOBS_PER_OWNER = 32;
+
+    /// #4 RECURSION: max depth of a child-job tree (root = depth 0, its
+    /// direct child = depth 1, …). Bounds runaway self-scheduling; the
+    /// root's original budget already caps total spend (children draw
+    /// from the parent's escrow — no new `$LH`), this just bounds the
+    /// TREE HEIGHT so the depth field + any off-chain tree walk stay
+    /// bounded. A child at MAX_DEPTH can spawn no further children.
+    uint64 internal constant MAX_DEPTH = 4;
 
     // --- Schedule (permissionless to create; owner escrows the budget) --
 
@@ -132,20 +166,9 @@ contract ScheduleFacet {
         address token = LibCreditsStorage.load().creditsToken;
         if (token == address(0)) revert NotConfigured();
 
-        id = ++s.nextJobId; // ids start at 1
-        uint64 next = uint64(block.timestamp) + interval;
-        s.jobs[id] = LibScheduleStorage.Job({
-            owner: msg.sender,
-            interval: interval,
-            status: LibScheduleStorage.Status.Active,
-            nextRun: next,
-            budgetWei: budgetWei,
-            runsLeft: maxRuns,
-            targetId: targetId
-        });
-        s.task[id] = task;
-        s.jobIds.push(id);
-        s.jobsOfOwner[msg.sender].push(id);
+        // Commit the job record + per-owner cap bump (#3). `_writeJob`
+        // reverts TooManyActiveJobs at the cap BEFORE the escrow.
+        id = _writeJob(s, msg.sender, targetId, task, interval, budgetWei, maxRuns);
 
         // CEI: escrow LAST. State is fully committed above; a failed
         // pull reverts everything (and these writes with it).
@@ -154,7 +177,43 @@ contract ScheduleFacet {
             "schedule: escrow failed"
         );
 
-        emit JobScheduled(id, msg.sender, targetId, interval, budgetWei, next);
+        emit JobScheduled(id, msg.sender, targetId, interval, budgetWei, s.jobs[id].nextRun);
+    }
+
+    /// Shared job-record writer for `scheduleJob` + `scheduleChildJob`.
+    /// Enforces the #3 per-owner active-job cap (reverts
+    /// `TooManyActiveJobs`), bumps `activeJobsOf[owner]`, allocates the
+    /// next id, and writes the `Job` + task + both enumerable indexes.
+    /// Does NOT move any `$LH` (callers handle escrow / parent-budget
+    /// draw) and does NOT touch `childMeta` (the child caller writes that
+    /// after). Factored out to keep both callers under the stack limit.
+    function _writeJob(
+        LibScheduleStorage.Storage storage s,
+        address jobOwner,
+        uint256 targetId,
+        bytes calldata task,
+        uint64 interval,
+        uint128 budgetWei,
+        uint32 maxRuns
+    ) internal returns (uint256 id) {
+        if (s.activeJobsOf[jobOwner] >= MAX_ACTIVE_JOBS_PER_OWNER) {
+            revert TooManyActiveJobs();
+        }
+        s.activeJobsOf[jobOwner] += 1;
+
+        id = ++s.nextJobId; // ids start at 1
+        s.jobs[id] = LibScheduleStorage.Job({
+            owner: jobOwner,
+            interval: interval,
+            status: LibScheduleStorage.Status.Active,
+            nextRun: uint64(block.timestamp) + interval,
+            budgetWei: budgetWei,
+            runsLeft: maxRuns,
+            targetId: targetId
+        });
+        s.task[id] = task;
+        s.jobIds.push(id);
+        s.jobsOfOwner[jobOwner].push(id);
     }
 
     // --- Run accounting (the WORKER's only write; scheduler-only) -------
@@ -208,6 +267,12 @@ contract ScheduleFacet {
         if (runsLeft == 0 || remaining < spentWei) {
             j.status = LibScheduleStorage.Status.Exhausted;
             newNextRun = 0;
+            // #3: the job leaves the live (Active|Paused) set — drop the
+            // owner's active count so freed slots return to the cap.
+            // (Underflow-safe: scheduleJob/scheduleChildJob always
+            // incremented on creation; status guards above guarantee each
+            // job is exhausted at most once.)
+            s.activeJobsOf[j.owner] -= 1;
             // Refund the unspent remainder to the owner (CEI: status is
             // already terminal, budget already zeroed below, before the
             // external transfer).
@@ -221,6 +286,110 @@ contract ScheduleFacet {
             j.nextRun = newNextRun;
             emit JobRan(id, runsLeft, spentWei, newNextRun, uint8(LibScheduleStorage.Status.Active));
         }
+    }
+
+    // --- Recursion (#4 cross-tick child jobs, parent-budget-funded) -----
+
+    /// Schedule a CHILD job funded entirely out of a PARENT job's
+    /// already-escrowed budget. SCHEDULER-ROLE-ONLY: the worker calls
+    /// this DURING a parent's run, on the scheduled agent's behalf, so a
+    /// run can spawn follow-up work that fires on a LATER tick (cross-tick
+    /// recursion / agent-to-agent ping-pong — design §7.1 Phase 2).
+    ///
+    /// PURE INTERNAL ACCOUNTING — no wallet pull, no `transferFrom`. The
+    /// `$LH` is ALREADY escrowed in the diamond (the parent pulled it at
+    /// `scheduleJob`); this MOVES `budgetWei` out of the parent's
+    /// remaining `budgetWei` and into a fresh child job. The diamond's
+    /// `$LH` balance is unchanged; the live-budget SUM is unchanged (the
+    /// wei just moved rows). Reverts `InsufficientParentBudget` if the
+    /// parent holds less than `budgetWei`.
+    ///
+    /// ROOT-BUDGET-CAPS-THE-TREE: because every child is carved out of
+    /// its parent's escrow and NO new `$LH` is ever created here, the sum
+    /// of all live budgets in a tree can never exceed the root job's
+    /// original budget. That single number is the hard ceiling on the
+    /// entire recursive fan-out — money is the leash, exactly as for a
+    /// flat job (§4.1). `MAX_DEPTH` additionally bounds the tree HEIGHT.
+    ///
+    /// OWNER INHERITANCE: the child's `owner` is the PARENT's owner, so
+    /// cancel/exhaust refunds flow to the right account and the child
+    /// counts toward the PARENT owner's `activeJobsOf` cap. The parent
+    /// must be Active (`ParentNotActive` otherwise).
+    ///
+    /// CEI / reentrancy-safe: there is NO external call in this function
+    /// (no transfer — the escrow never moves), so it's reentrancy-inert
+    /// by construction; all writes are committed before it returns.
+    function scheduleChildJob(
+        uint256 parentJobId,
+        uint256 targetId,
+        bytes calldata task,
+        uint64 interval,
+        uint128 budgetWei,
+        uint32 maxRuns
+    ) external returns (uint256 childJobId) {
+        LibScheduleStorage.Storage storage s = LibScheduleStorage.load();
+        if (msg.sender != s.scheduler) revert NotScheduler();
+
+        // Same input validation as scheduleJob (the child is a real job).
+        if (budgetWei == 0) revert ZeroBudget();
+        if (interval < MIN_INTERVAL) revert ZeroInterval();
+        if (maxRuns == 0) revert ZeroRuns();
+        if (maxRuns > MAX_RUNS) maxRuns = MAX_RUNS;
+        if (LibRegistryStorage.load().ownerOfId[targetId] == address(0)) {
+            revert UnregisteredTarget();
+        }
+
+        LibScheduleStorage.Job storage parent = s.jobs[parentJobId];
+        if (parent.owner == address(0)) revert UnknownJob();
+        if (parent.status != LibScheduleStorage.Status.Active) revert ParentNotActive();
+
+        // Depth: root is depth 0; a direct child is depth 1; bounded by
+        // MAX_DEPTH so the tree height stays finite. rootId chains up to
+        // the top: parent's rootId if the parent is itself a child, else
+        // the parent IS the root.
+        uint64 childDepth = s.childMeta[parentJobId].depth + 1;
+        if (childDepth > MAX_DEPTH) revert MaxDepthExceeded();
+        uint256 rootId =
+            s.childMeta[parentJobId].rootId == 0 ? parentJobId : s.childMeta[parentJobId].rootId;
+
+        // MOVE budget from the parent's escrow into the child. No mint,
+        // no transfer — the $LH already sits in the diamond. This is the
+        // ONLY way budget enters a child, so the root's original budget
+        // inherently caps the whole tree. (Drawn BEFORE `_writeJob` so a
+        // cap-revert in there also rolls back this debit.)
+        if (parent.budgetWei < budgetWei) revert InsufficientParentBudget();
+        parent.budgetWei -= budgetWei;
+
+        // Child record + per-owner cap (#3), inheriting the parent's
+        // owner (refund identity). `_writeJob` reverts TooManyActiveJobs
+        // at the cap (and the parent-budget debit above reverts with it).
+        childJobId = _writeJob(s, parent.owner, targetId, task, interval, budgetWei, maxRuns);
+        s.childMeta[childJobId] =
+            LibScheduleStorage.ChildMeta({parentId: parentJobId, depth: childDepth, rootId: rootId});
+
+        emit JobScheduled(
+            childJobId, parent.owner, targetId, interval, budgetWei, s.jobs[childJobId].nextRun
+        );
+        emit ChildJobScheduled(childJobId, parentJobId, rootId, childDepth, budgetWei);
+    }
+
+    /// Child-tree metadata for a job (parentId / depth / rootId). Returns
+    /// all-zero for a root (non-child) job. Lets the worker + UIs read a
+    /// job's place in a recursive tree without touching the live `Job`.
+    function childMetaOf(uint256 id)
+        external
+        view
+        returns (uint256 parentId, uint64 depth, uint256 rootId)
+    {
+        LibScheduleStorage.ChildMeta storage m = LibScheduleStorage.load().childMeta[id];
+        return (m.parentId, m.depth, m.rootId);
+    }
+
+    /// The count of an owner's currently-live (Active|Paused) jobs — the
+    /// `activeJobsOf` cap key (#3). Read it to know how many slots remain
+    /// before `MAX_ACTIVE_JOBS_PER_OWNER`.
+    function activeJobCountOf(address owner) external view returns (uint256) {
+        return LibScheduleStorage.load().activeJobsOf[owner];
     }
 
     // --- Owner controls -------------------------------------------------
@@ -241,6 +410,11 @@ contract ScheduleFacet {
         uint128 refund = j.budgetWei;
         j.budgetWei = 0;
         j.status = LibScheduleStorage.Status.Cancelled;
+        // #3: the job leaves the live (Active|Paused) set — drop the
+        // owner's active count. (Underflow-safe: it was incremented on
+        // creation and the Active|Paused status guard above means a job
+        // is cancelled at most once.)
+        s.activeJobsOf[j.owner] -= 1;
         emit JobCancelled(id, refund);
         if (refund > 0) _refund(j.owner, refund);
     }

@@ -37,6 +37,17 @@ library LibScheduleStorage {
         uint256 targetId; // tokenId of the agent to run (name resolved off-chain)
     }
 
+    /// Child-tree metadata for a recursively-scheduled job
+    /// (`scheduleChildJob`). Lives in its OWN mapping (NOT new `Job`
+    /// fields) so the live `Job` storage layout is byte-for-byte
+    /// unchanged — append-only discipline. A non-child job has no entry
+    /// here (all zero: parentId 0, depth 0, rootId 0).
+    struct ChildMeta {
+        uint256 parentId; // the job this child was spawned from (0 for a root)
+        uint64 depth; // 1 for a direct child; parent.depth + 1; bounded by MAX_DEPTH
+        uint256 rootId; // the top-of-tree job id whose original budget caps the tree
+    }
+
     struct Storage {
         /// jobId -> job record. Monotonic id from `nextJobId`.
         mapping(uint256 => Job) jobs;
@@ -61,6 +72,24 @@ library LibScheduleStorage {
         /// scheduler role, separable from the meter key (§7.3 Q3
         /// recommendation): firing authority distinct from metering.
         address scheduler;
+        // === APPENDED 2026-06-08 (hardening: per-owner cap + recursion).
+        //     New members ONLY at the end — the live diamond's storage
+        //     for the members above is untouched (positional layout). ===
+        /// owner -> count of their CURRENTLY-ACTIVE-or-PAUSED jobs (the
+        /// anti-sybil cap key). `scheduleJob`/`scheduleChildJob` bump it
+        /// and revert `TooManyActiveJobs` at `MAX_ACTIVE_JOBS_PER_OWNER`;
+        /// `recordRun` (on exhaust) and `cancelJob` decrement it.
+        /// CAVEAT (forward-looking): live jobs that predate this counter
+        /// were never counted, so it starts at 0 on the live diamond and
+        /// tracks only NEW jobs — an owner with old jobs can hold up to
+        /// the cap MORE. Acceptable: the cap exists to bound future spam,
+        /// not to retroactively reclassify the existing handful of jobs.
+        mapping(address => uint256) activeJobsOf;
+        /// jobId -> child-tree metadata (parent / depth / root). Only
+        /// populated for jobs created by `scheduleChildJob`; absent (all
+        /// zero) for normal root jobs. A NEW mapping, NOT new `Job`
+        /// fields — keeps the live `Job` layout immutable.
+        mapping(uint256 => ChildMeta) childMeta;
     }
 
     function load() internal pure returns (Storage storage s) {
