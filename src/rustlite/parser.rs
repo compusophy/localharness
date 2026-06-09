@@ -26,11 +26,37 @@ struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
     depth: usize,
+    /// Rust's "no struct literal" restriction. While true, a bare `ident {`
+    /// is parsed as just the identifier (the `{` opens a block) rather than a
+    /// struct literal — so `if a < b { … }`, `while i < len { … }`,
+    /// `for k in 0..n { … }`, and `match x { … }` parse `b`/`len`/`n`/`x` as
+    /// expressions, not struct-literal heads. Set true around the if/while
+    /// CONDITION, the for ITERABLE, and the match SCRUTINEE; reset to false
+    /// inside any parenthesised sub-expr, array/tuple/index/arg position, and
+    /// (always) the block body. A struct literal in a restricted position must
+    /// then be parenthesised: `if x == (Foo { a: 1 }) { … }`.
+    no_struct_literal: bool,
 }
 
 impl<'a> Parser<'a> {
     fn new(tokens: &'a [Token]) -> Self {
-        Self { tokens, pos: 0, depth: 0 }
+        Self { tokens, pos: 0, depth: 0, no_struct_literal: false }
+    }
+
+    /// Parse `f` with the no-struct-literal restriction set to `flag`, restoring
+    /// the previous setting afterward. Used to TURN ON the restriction for a
+    /// condition/scrutinee/iterable and to TURN IT OFF again for the bracketed
+    /// sub-contexts (parens, `[ ]`, args) where a struct literal is unambiguous.
+    fn with_no_struct_literal<T>(
+        &mut self,
+        flag: bool,
+        f: impl FnOnce(&mut Self) -> Result<T, CompileError>,
+    ) -> Result<T, CompileError> {
+        let prev = self.no_struct_literal;
+        self.no_struct_literal = flag;
+        let r = f(self);
+        self.no_struct_literal = prev;
+        r
     }
 
     /// Enter one recursion level; error (don't overflow) past the cap.
@@ -338,7 +364,10 @@ impl<'a> Parser<'a> {
 
     fn parse_block(&mut self) -> Result<Block, CompileError> {
         self.enter()?;
-        let r = self.parse_block_inner();
+        // A block body is always unrestricted: struct literals are fine inside
+        // `if cond { let p = Foo { .. }; }`. Reset the no-struct-literal flag
+        // for the whole body regardless of the enclosing condition context.
+        let r = self.with_no_struct_literal(false, |p| p.parse_block_inner());
         self.leave();
         r
     }
@@ -675,7 +704,8 @@ impl<'a> Parser<'a> {
                 }
                 TokenKind::LBracket => {
                     self.advance();
-                    let index = self.parse_expr()?;
+                    // `[ … ]` is unambiguous: a struct literal index is fine.
+                    let index = self.with_no_struct_literal(false, |p| p.parse_expr())?;
                     self.expect(&TokenKind::RBracket)?;
                     let span = Span { start: expr.span.start, end: self.tokens[self.pos - 1].span.end };
                     expr = Expr { kind: ExprKind::Index { base: Box::new(expr), index: Box::new(index) }, span };
@@ -713,14 +743,19 @@ impl<'a> Parser<'a> {
 
             TokenKind::LBracket => {
                 self.advance();
-                let mut elems = Vec::new();
-                while !matches!(self.peek(), TokenKind::RBracket) {
-                    elems.push(self.parse_expr()?);
-                    if !matches!(self.peek(), TokenKind::Comma) {
-                        break;
+                // Inside `[ … ]` a struct literal is unambiguous — lift the
+                // no-struct-literal restriction for the elements.
+                let elems = self.with_no_struct_literal(false, |p| {
+                    let mut elems = Vec::new();
+                    while !matches!(p.peek(), TokenKind::RBracket) {
+                        elems.push(p.parse_expr()?);
+                        if !matches!(p.peek(), TokenKind::Comma) {
+                            break;
+                        }
+                        p.advance();
                     }
-                    self.advance();
-                }
+                    Ok(elems)
+                })?;
                 self.expect(&TokenKind::RBracket)?;
                 Ok(Expr { kind: ExprKind::ArrayLit(elems), span: Span { start: start.start, end: self.tokens[self.pos - 1].span.end } })
             }
@@ -748,21 +783,31 @@ impl<'a> Parser<'a> {
 
             TokenKind::LParen => {
                 self.advance();
-                let first = self.parse_expr()?;
-                if matches!(self.peek(), TokenKind::Comma) {
-                    // Tuple literal
-                    let mut exprs = vec![first];
-                    while matches!(self.peek(), TokenKind::Comma) {
-                        self.advance();
-                        if matches!(self.peek(), TokenKind::RParen) { break; }
-                        exprs.push(self.parse_expr()?);
+                // Inside parens the grammar is unambiguous, so a struct literal
+                // is allowed here even when the enclosing context (an if/while
+                // condition etc.) forbids a BARE one: `if x == (Foo { a: 1 })`.
+                let (first, exprs) = self.with_no_struct_literal(false, |p| {
+                    let first = p.parse_expr()?;
+                    if matches!(p.peek(), TokenKind::Comma) {
+                        // Tuple literal
+                        let mut exprs = vec![first];
+                        while matches!(p.peek(), TokenKind::Comma) {
+                            p.advance();
+                            if matches!(p.peek(), TokenKind::RParen) { break; }
+                            exprs.push(p.parse_expr()?);
+                        }
+                        Ok((None, Some(exprs)))
+                    } else {
+                        Ok((Some(first), None))
                     }
+                })?;
+                if let Some(exprs) = exprs {
                     self.expect(&TokenKind::RParen)?;
                     Ok(Expr { kind: ExprKind::TupleLit(exprs), span: Span { start: start.start, end: self.tokens[self.pos - 1].span.end } })
                 } else {
                     // Parenthesized expr
                     self.expect(&TokenKind::RParen)?;
-                    Ok(first)
+                    Ok(first.unwrap())
                 }
             }
 
@@ -770,7 +815,10 @@ impl<'a> Parser<'a> {
                 // Could be: variable, path, struct literal, or path call
                 let path = self.parse_path()?;
 
-                if matches!(self.peek(), TokenKind::LBrace) && self.looks_like_struct_lit() {
+                if !self.no_struct_literal
+                    && matches!(self.peek(), TokenKind::LBrace)
+                    && self.looks_like_struct_lit()
+                {
                     // Struct literal: Path { field: value, ... }
                     self.advance();
                     let fields = self.parse_field_init_list()?;
@@ -816,7 +864,10 @@ impl<'a> Parser<'a> {
     fn parse_if_expr(&mut self) -> Result<Expr, CompileError> {
         let start = self.span();
         self.expect(&TokenKind::If)?;
-        let cond = self.parse_expr()?;
+        // The condition forbids a BARE struct literal so `if a < b { … }` reads
+        // `b` as a variable and `{` as the block. A struct literal here needs
+        // parens. `parse_block` resets the flag, so the body is unrestricted.
+        let cond = self.with_no_struct_literal(true, |p| p.parse_expr())?;
         let then_block = self.parse_block()?;
         let else_block = if matches!(self.peek(), TokenKind::Else) {
             self.advance();
@@ -837,7 +888,9 @@ impl<'a> Parser<'a> {
     fn parse_match_expr(&mut self) -> Result<Expr, CompileError> {
         let start = self.span();
         self.expect(&TokenKind::Match)?;
-        let scrutinee = self.parse_expr()?;
+        // Scrutinee forbids a bare struct literal so `match x { … }` reads `x`
+        // as a variable and `{` as the arm block (parens for a struct literal).
+        let scrutinee = self.with_no_struct_literal(true, |p| p.parse_expr())?;
         self.expect(&TokenKind::LBrace)?;
         let mut arms = Vec::new();
         while !matches!(self.peek(), TokenKind::RBrace) {
@@ -976,7 +1029,8 @@ impl<'a> Parser<'a> {
     fn parse_while_expr(&mut self) -> Result<Expr, CompileError> {
         let start = self.span();
         self.expect(&TokenKind::While)?;
-        let cond = self.parse_expr()?;
+        // Condition forbids a bare struct literal (`while i < n { … }`).
+        let cond = self.with_no_struct_literal(true, |p| p.parse_expr())?;
         let body = self.parse_block()?;
         Ok(Expr {
             kind: ExprKind::While { cond: Box::new(cond), body },
@@ -994,21 +1048,34 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `for v in a..b { body }` — desugared to a `Block`:
+    /// `for v in a..b { body }` (exclusive) or `for v in a..=b { body }`
+    /// (inclusive) — desugared to a `Block`:
     ///   { let __end = b; let mut v = a - 1;
     ///     loop { v = v + 1; if v >= __end { break; } body } }
-    /// The increment sits at the TOP of the loop (with `v` pre-decremented), so
-    /// `continue` — which compiles to the loop back-edge (`br 0`) — correctly
-    /// re-runs the increment + bound check instead of skipping them. Bounds are
-    /// evaluated once. Pure AST rewrite over loop/if/break — no codegen support.
+    /// (exclusive uses `>= __end`, inclusive uses `> __end`, so `..=b` runs the
+    /// body for `v == b`). The increment sits at the TOP of the loop (with `v`
+    /// pre-decremented), so `continue` — which compiles to the loop back-edge
+    /// (`br 0`) — correctly re-runs the increment + bound check instead of
+    /// skipping them. Bounds are evaluated once. Pure AST rewrite over
+    /// loop/if/break — no codegen support.
+    ///
+    /// The iterable bounds parse under the no-struct-literal restriction so
+    /// `for k in 0..n { … }` reads `n` as a variable and `{` as the body, not a
+    /// struct literal `n { … }`. `parse_block` resets the flag for the body.
     fn parse_for_expr(&mut self) -> Result<Expr, CompileError> {
         let start = self.span();
         self.expect(&TokenKind::For)?;
         let var = self.expect_ident()?;
         self.expect(&TokenKind::In)?;
-        let start_expr = self.parse_expr()?;
-        self.expect(&TokenKind::DotDot)?;
-        let end_expr = self.parse_expr()?;
+        let start_expr = self.with_no_struct_literal(true, |p| p.parse_expr())?;
+        // `..` exclusive (default) or `..=` inclusive upper bound.
+        let inclusive = matches!(self.peek(), TokenKind::DotDotEq);
+        if inclusive {
+            self.expect(&TokenKind::DotDotEq)?;
+        } else {
+            self.expect(&TokenKind::DotDot)?;
+        }
+        let end_expr = self.with_no_struct_literal(true, |p| p.parse_expr())?;
         let body = self.parse_block()?;
         let span = Span { start: start.start, end: self.tokens[self.pos - 1].span.end };
         let end_name = format!("__for_end_{}", start.start);
@@ -1021,6 +1088,8 @@ impl<'a> Parser<'a> {
         };
 
         // loop body: [ v = v + 1;  if v >= __end { break; }  <user body> ]
+        // (inclusive `..=` uses `>` so the body runs for `v == __end`.)
+        let exit_op = if inclusive { BinOp::Gt } else { BinOp::Ge };
         let mut loop_stmts = vec![
             Stmt::Assign {
                 place: Place { root: var.clone(), fields: Vec::new(), index: None, span },
@@ -1030,7 +1099,7 @@ impl<'a> Parser<'a> {
             Stmt::Expr {
                 expr: Expr {
                     kind: ExprKind::If {
-                        cond: Box::new(bin(BinOp::Ge, var_read(&var), var_read(&end_name))),
+                        cond: Box::new(bin(exit_op, var_read(&var), var_read(&end_name))),
                         then_block: Block {
                             stmts: vec![Stmt::Expr {
                                 expr: Expr { kind: ExprKind::Break { value: None }, span },
@@ -1077,14 +1146,19 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_arg_list(&mut self) -> Result<Vec<Expr>, CompileError> {
-        let mut args = Vec::new();
-        if matches!(self.peek(), TokenKind::RParen) { return Ok(args); }
-        loop {
-            args.push(self.parse_expr()?);
-            if !matches!(self.peek(), TokenKind::Comma) { break; }
-            self.advance();
-        }
-        Ok(args)
+        // Call/method args sit inside `( … )` — unambiguous, so lift the
+        // no-struct-literal restriction (`f(Foo { a: 1 })` is a struct literal
+        // arg even inside an if/while condition).
+        self.with_no_struct_literal(false, |p| {
+            let mut args = Vec::new();
+            if matches!(p.peek(), TokenKind::RParen) { return Ok(args); }
+            loop {
+                args.push(p.parse_expr()?);
+                if !matches!(p.peek(), TokenKind::Comma) { break; }
+                p.advance();
+            }
+            Ok(args)
+        })
     }
 
     fn parse_field_init_list(&mut self) -> Result<Vec<FieldInit>, CompileError> {
@@ -1430,6 +1504,149 @@ mod tests {
             }
             _ => panic!("expected fn"),
         }
+    }
+
+    // ── no-struct-literal restriction (the `if a < b {` parser surprise) ──
+    //
+    // Rust forbids a BARE struct literal in the condition of if/while, the
+    // iterable of for, and the scrutinee of match — so the `{` after an
+    // identifier opens the BLOCK, not a struct literal. These guard that
+    // `if a < b { … }` / `while i < n { … }` / `for k in 0..n { … }` (identifier
+    // upper bounds) compile, while struct literals keep working everywhere they
+    // are unambiguous.
+
+    #[test]
+    fn if_cond_ident_lt_ident_is_not_struct_lit() {
+        // `if a < b { … }` — `b` is a VARIABLE, `{` opens the block. This was
+        // misparsed as `b { … }` (struct literal) before the restriction.
+        let m = parse_str("fn f(a: i32, b: i32) -> i32 { if a < b { 1 } else { 0 } }");
+        let Item::Fn(f) = &m.items[0] else { panic!("expected fn") };
+        let tail = f.body.tail.as_deref().expect("if tail");
+        let ExprKind::If { cond, .. } = &tail.kind else { panic!("expected if") };
+        let ExprKind::BinOp { op: BinOp::Lt, lhs, rhs } = &cond.kind else {
+            panic!("condition should be `a < b`")
+        };
+        assert!(matches!(&lhs.kind, ExprKind::Var(n) if n == "a"));
+        assert!(matches!(&rhs.kind, ExprKind::Var(n) if n == "b"), "rhs must be the variable `b`, not a struct literal");
+    }
+
+    #[test]
+    fn while_cond_ident_bound_is_not_struct_lit() {
+        // `while i < n { … }` — `n` is the loop bound, not a struct head.
+        let m = parse_str("fn f(n: i32) { let mut i: i32 = 0; while i < n { i = i + 1; } }");
+        let Item::Fn(f) = &m.items[0] else { panic!("expected fn") };
+        let Stmt::Expr { expr, .. } = &f.body.stmts[1] else { panic!("expected while stmt") };
+        let ExprKind::While { cond, .. } = &expr.kind else { panic!("expected while") };
+        let ExprKind::BinOp { op: BinOp::Lt, rhs, .. } = &cond.kind else {
+            panic!("condition should be `i < n`")
+        };
+        assert!(matches!(&rhs.kind, ExprKind::Var(n) if n == "n"));
+    }
+
+    #[test]
+    fn for_iterable_ident_bound_compiles() {
+        // `for k in 0..n { … }` — `n` is the upper bound, not a struct head.
+        // (for desugars to a block; just assert it parses without erroring.)
+        assert!(
+            try_parse("fn f(n: i32) { let mut s: i32 = 0; for k in 0..n { s = s + k; } }").is_ok(),
+            "`for k in 0..n {{ … }}` (identifier bound) must compile"
+        );
+    }
+
+    #[test]
+    fn match_scrutinee_ident_is_not_struct_lit() {
+        // `match x { … }` — `x` is the scrutinee variable, `{` opens the arms.
+        let m = parse_str("fn f(x: i32) -> i32 { match x { 0 => 1, _ => 2 } }");
+        let Item::Fn(f) = &m.items[0] else { panic!("expected fn") };
+        let tail = f.body.tail.as_deref().expect("match tail");
+        let ExprKind::Match { scrutinee, .. } = &tail.kind else { panic!("expected match") };
+        assert!(matches!(&scrutinee.kind, ExprKind::Var(n) if n == "x"));
+    }
+
+    #[test]
+    fn struct_literal_still_parses_in_normal_positions() {
+        // The restriction is ONLY for if/while/for/match heads. Struct literals
+        // in let-init, return, and call-arg positions must still parse.
+        let m = parse_str(
+            "fn g(p: Point) -> Point { let q: Point = Point { x: 1, y: 2 }; g(Point { x: 3, y: 4 }); return Point { x: 5, y: 6 }; }",
+        );
+        let Item::Fn(f) = &m.items[0] else { panic!("expected fn") };
+        // let q = Point { .. }
+        let Stmt::Let { init, .. } = &f.body.stmts[0] else { panic!("expected let") };
+        assert!(matches!(init.kind, ExprKind::StructLit { .. }), "let-init struct literal");
+        // g(Point { .. })
+        let Stmt::Expr { expr, .. } = &f.body.stmts[1] else { panic!("expected call stmt") };
+        let ExprKind::Call { args, .. } = &expr.kind else { panic!("expected call") };
+        assert!(matches!(args[0].kind, ExprKind::StructLit { .. }), "call-arg struct literal");
+        // return Point { .. }
+        let Stmt::Return { value: Some(v), .. } = &f.body.stmts[2] else { panic!("expected return") };
+        assert!(matches!(v.kind, ExprKind::StructLit { .. }), "return struct literal");
+    }
+
+    #[test]
+    fn struct_literal_in_condition_works_with_parens() {
+        // A struct literal IS allowed in a condition when parenthesised:
+        // `if x == (Foo { a: 1 }) { … }`.
+        let m = parse_str("fn f(x: Foo) -> i32 { if x == (Foo { a: 1 }) { 1 } else { 0 } }");
+        let Item::Fn(f) = &m.items[0] else { panic!("expected fn") };
+        let tail = f.body.tail.as_deref().expect("if tail");
+        let ExprKind::If { cond, .. } = &tail.kind else { panic!("expected if") };
+        let ExprKind::BinOp { op: BinOp::Eq, rhs, .. } = &cond.kind else {
+            panic!("condition should be `x == (Foo {{ … }})`")
+        };
+        assert!(matches!(rhs.kind, ExprKind::StructLit { .. }), "parenthesised struct literal in condition");
+    }
+
+    #[test]
+    fn condition_body_can_use_struct_literals() {
+        // The block BODY of an if/while is unrestricted — a bare struct literal
+        // there still parses (the flag is reset for the body).
+        let m = parse_str("fn f(c: bool) -> Point { if c { Point { x: 1, y: 2 } } else { Point { x: 0, y: 0 } } }");
+        let Item::Fn(f) = &m.items[0] else { panic!("expected fn") };
+        let tail = f.body.tail.as_deref().expect("if tail");
+        let ExprKind::If { then_block, .. } = &tail.kind else { panic!("expected if") };
+        assert!(
+            matches!(then_block.tail.as_deref().map(|e| &e.kind), Some(ExprKind::StructLit { .. })),
+            "struct literal in the then-block body"
+        );
+    }
+
+    #[test]
+    fn for_inclusive_range_runs_through_upper_bound() {
+        // `for i in 0..=n` desugars with a `>` exit test (vs `>=` for `..`), so
+        // the body runs for `i == n`. Assert the inclusive form picks `Gt`.
+        let m = parse_str("fn f(n: i32) { for i in 0..=n { let x: i32 = i; } }");
+        let Item::Fn(f) = &m.items[0] else { panic!("expected fn") };
+        let for_expr = f.body.tail.as_deref().or_else(|| match f.body.stmts.last() {
+            Some(Stmt::Expr { expr, .. }) => Some(expr),
+            _ => None,
+        }).expect("for expr");
+        let ExprKind::Block(outer) = &for_expr.kind else { panic!("for should desugar to a block") };
+        let Stmt::Expr { expr, .. } = &outer.stmts[2] else { panic!("expected loop stmt") };
+        let ExprKind::Loop { body } = &expr.kind else { panic!("expected loop") };
+        // body[1] is `if i > __end { break; }` for inclusive ranges.
+        let Stmt::Expr { expr, .. } = &body.stmts[1] else { panic!("expected exit-check stmt") };
+        let ExprKind::If { cond, .. } = &expr.kind else { panic!("expected if") };
+        assert!(
+            matches!(&cond.kind, ExprKind::BinOp { op: BinOp::Gt, .. }),
+            "inclusive `..=` must use `>` for the exit test (so the body runs at i == n)"
+        );
+        // And the exclusive form still uses `>=`.
+        let m = parse_str("fn f(n: i32) { for i in 0..n { let x: i32 = i; } }");
+        let Item::Fn(f) = &m.items[0] else { panic!("expected fn") };
+        let for_expr = f.body.tail.as_deref().or_else(|| match f.body.stmts.last() {
+            Some(Stmt::Expr { expr, .. }) => Some(expr),
+            _ => None,
+        }).expect("for expr");
+        let ExprKind::Block(outer) = &for_expr.kind else { panic!("for should desugar to a block") };
+        let Stmt::Expr { expr, .. } = &outer.stmts[2] else { panic!("expected loop stmt") };
+        let ExprKind::Loop { body } = &expr.kind else { panic!("expected loop") };
+        let Stmt::Expr { expr, .. } = &body.stmts[1] else { panic!("expected exit-check stmt") };
+        let ExprKind::If { cond, .. } = &expr.kind else { panic!("expected if") };
+        assert!(
+            matches!(&cond.kind, ExprKind::BinOp { op: BinOp::Ge, .. }),
+            "exclusive `..` must use `>=` for the exit test"
+        );
     }
 
     #[test]

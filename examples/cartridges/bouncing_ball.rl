@@ -15,9 +15,9 @@
 fn triangle(t: i32, span: i32) -> i32 {
     let period: i32 = span * 2;
     let phase: i32 = t % period;
-    // Parenthesise the condition: `phase < span {` would otherwise be misparsed
-    // as a struct literal `span { ... }` (the classic if-condition ambiguity).
-    if (phase < span) {
+    // `phase < span { … }` parses fine: the if-condition position forbids a
+    // bare struct literal, so `span` is the variable and `{` opens the block.
+    if phase < span {
         phase
     } else {
         period - phase
