@@ -177,6 +177,15 @@ USAGE:
                                          claims it, its persona does the work, submits,
                                          and the caller accepts — the reward settles to
                                          the worker's TBA. No human between the steps.
+                                         A 7th step auto-attests the worker (5★), so
+                                         every cycle builds its on-chain reputation.
+  localharness reputation show <agent>   show an agent's on-chain reputation: its
+                                         attestation count, average rating, and recent
+                                         attestations (read-only; alias: rep)
+  localharness reputation attest [--as <me>] <agent> <rating 1-5> [--ref <hex|bountyId>]
+                                         attest to an agent you've worked with (1-5);
+                                         --ref tags the work (a bounty id or 0x ref),
+                                         defaulting to a zero ref
   localharness guild create [--as <me>] <name>
                                          create an on-chain guild (org with members,
                                          roles, and a pooled $LH treasury); you're its admin
@@ -374,6 +383,13 @@ async fn run(args: &[String]) -> i32 {
         },
         Some("colony") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => colony(caller.as_deref(), &rest).await,
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
+        Some("reputation") | Some("rep") => match take_as_flag(&args[1..]) {
+            Ok((caller, rest)) => reputation(caller.as_deref(), &rest).await,
             Err(e) => {
                 eprintln!("{e}");
                 2
@@ -3940,6 +3956,235 @@ async fn bounty_mine(caller: Option<&str>) -> i32 {
     0
 }
 
+// ---- reputation (attestation-based on-chain agent reputation) -------------
+//
+// A peer-attestation reputation primitive over ReputationFacet: `reputation
+// show <agent>` reads an agent's running `(count, sum)` + recent attestations;
+// `reputation attest <agent> <rating> [--ref ...]` records a 1-5 rating about a
+// piece of work (a bounty id or a 0x ref). The colony engine's [7/7] step
+// auto-attests the worker, so the demand flywheel keeps reputation flowing.
+
+const REPUTATION_USAGE: &str = "\
+usage: localharness reputation <show|attest> ...   (alias: rep)
+  reputation show <agent>                              an agent's count, avg rating, recent attestations
+  reputation attest [--as <me>] <agent> <rating 1-5> [--ref <hex|bountyId>]
+                                                       attest to an agent you've worked with (1-5)
+  --ref tags the work: a bounty id (left-padded to bytes32) or a 0x… 32-byte ref;
+  it defaults to a zero ref. You can't attest to yourself or re-attest the same
+  (agent, ref) pair.";
+
+/// Turn a `--ref` argument into a `bytes32` workRef: a `0x…` value is parsed as a
+/// raw 32-byte ref (left-padded if shorter); a bare integer is treated as a bounty
+/// id and left-padded big-endian into the low 8 bytes (the SAME `bytes32(bountyId)`
+/// the colony [7/7] step uses). `None` → the zero ref. Pure + testable.
+fn parse_work_ref(raw: Option<&str>) -> Result<[u8; 32], String> {
+    let mut out = [0u8; 32];
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(out); // default: zero ref
+    };
+    if let Some(hex) = raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
+        if hex.is_empty() || hex.len() > 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(format!("--ref hex must be 1..32 bytes of hex, got '{raw}'"));
+        }
+        // Right-align the supplied bytes (left-pad with zeros) into the 32-byte word.
+        let bytes = decode_hex_even(hex)?;
+        out[32 - bytes.len()..].copy_from_slice(&bytes);
+        return Ok(out);
+    }
+    // A bare integer → bounty id, left-padded big-endian into the low 8 bytes.
+    match raw.trim_start_matches('#').parse::<u64>() {
+        Ok(id) => {
+            out[24..32].copy_from_slice(&id.to_be_bytes());
+            Ok(out)
+        }
+        Err(_) => Err(format!(
+            "--ref must be a 0x… hex ref or a bounty id (integer), got '{raw}'"
+        )),
+    }
+}
+
+/// Decode an even-length hex string (no `0x`) into bytes, left-padding an odd
+/// nibble count by prefixing a `0`. Helper for [`parse_work_ref`].
+fn decode_hex_even(hex: &str) -> Result<Vec<u8>, String> {
+    let padded = if hex.len() % 2 == 1 { format!("0{hex}") } else { hex.to_string() };
+    (0..padded.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&padded[i..i + 2], 16).map_err(|e| e.to_string()))
+        .collect()
+}
+
+/// `bytes32(bountyId)` — a bounty id left-padded big-endian into the low 8 bytes
+/// of a 32-byte word, the canonical workRef the colony [7/7] step attests with.
+fn bounty_work_ref(bounty_id: u64) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out[24..32].copy_from_slice(&bounty_id.to_be_bytes());
+    out
+}
+
+/// `localharness reputation <subcommand>` — the reputation router.
+async fn reputation(caller: Option<&str>, rest: &[String]) -> i32 {
+    match rest.first().map(String::as_str) {
+        Some("show") => match rest.get(1) {
+            Some(agent) => reputation_show(agent).await,
+            None => {
+                eprintln!("usage: localharness reputation show <agent>");
+                2
+            }
+        },
+        Some("attest") => reputation_attest(caller, &rest[1..]).await,
+        _ => {
+            eprintln!("{REPUTATION_USAGE}");
+            2
+        }
+    }
+}
+
+/// `reputation show <agent>` — resolve the name→tokenId, then print its
+/// attestation count, average rating (sum/count), and recent attestations.
+/// Read-only, no `$LH`.
+async fn reputation_show(agent: &str) -> i32 {
+    let token_id = match registry::id_of_name(agent).await {
+        Ok(0) | Err(_) => {
+            eprintln!("reputation show: '{agent}' is not a registered agent (check the name)");
+            return 1;
+        }
+        Ok(id) => id,
+    };
+    let (count, sum) = match registry::reputation_of(token_id).await {
+        Ok(pair) => pair,
+        Err(e) => {
+            eprintln!("RPC error reading reputation: {e}");
+            return 1;
+        }
+    };
+    println!("reputation of {agent} (token #{token_id}):");
+    if count == 0 {
+        println!("  no attestations yet — be the first with `reputation attest {agent} <1-5>`");
+        return 0;
+    }
+    // Average to 2 dp without floats: (sum*100)/count rounded.
+    let avg_x100 = (sum * 100 + count / 2) / count;
+    println!("  attestations: {count}");
+    println!("  average rating: {}.{:02} / 5  (sum {sum})", avg_x100 / 100, avg_x100 % 100);
+    // Recent attestations (the head of the list).
+    match registry::attestations_of(token_id, 0, REPUTATION_SHOW_LIMIT).await {
+        Ok(rows) if !rows.is_empty() => {
+            println!("  recent attestations:");
+            for (attester, rating, work_ref) in rows {
+                // Surface a bounty-id workRef compactly when the high bytes are 0.
+                let ref_note = format_work_ref(&work_ref);
+                println!("    {rating}★  by {attester}{ref_note}");
+            }
+        }
+        Ok(_) => {}
+        Err(e) => println!("  (could not list attestations: {e})"),
+    }
+    0
+}
+
+/// How many recent attestations `reputation show` lists. A small page head — the
+/// list is small at launch scale.
+const REPUTATION_SHOW_LIMIT: u64 = 10;
+
+/// Render a workRef for display: a zero ref shows nothing; a ref whose high 24
+/// bytes are zero is shown as its low-8 bounty id; otherwise the full 0x-hex.
+/// Pure (operates on the `0x…` string from `attestations_of`).
+fn format_work_ref(work_ref_hex: &str) -> String {
+    let hex = work_ref_hex.trim_start_matches("0x");
+    if hex.len() != 64 || hex.chars().all(|c| c == '0') {
+        return String::new(); // zero / malformed ref → no note
+    }
+    // High 48 nibbles (24 bytes) zero → a left-padded integer (bounty id).
+    if hex[..48].chars().all(|c| c == '0') {
+        if let Ok(id) = u64::from_str_radix(&hex[48..], 16) {
+            return format!("  (work #{id})");
+        }
+    }
+    format!("  (ref 0x{}…)", &hex[..8])
+}
+
+/// `reputation attest <agent> <rating 1-5> [--ref <hex|bountyId>]` — attest to an
+/// agent you've worked with. Resolves the agent name→tokenId, signs `attest` as
+/// the caller, and surfaces a duplicate/self/bad-rating revert clearly.
+async fn reputation_attest(caller: Option<&str>, rest: &[String]) -> i32 {
+    // Positional: <agent> <rating>; flag: --ref <value>.
+    let mut positional: Vec<&str> = Vec::new();
+    let mut work_ref_arg: Option<&str> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--ref" => {
+                match rest.get(i + 1) {
+                    Some(v) => work_ref_arg = Some(v),
+                    None => {
+                        eprintln!("--ref needs a value\n{REPUTATION_USAGE}");
+                        return 2;
+                    }
+                }
+                i += 2;
+            }
+            other => {
+                positional.push(other);
+                i += 1;
+            }
+        }
+    }
+    let (agent, rating_arg) = match positional.as_slice() {
+        [agent, rating] => (*agent, *rating),
+        _ => {
+            eprintln!("usage: localharness reputation attest [--as <me>] <agent> <rating 1-5> [--ref <hex|bountyId>]");
+            return 2;
+        }
+    };
+    let rating = match rating_arg.trim().parse::<u8>() {
+        Ok(r) if (1..=5).contains(&r) => r,
+        _ => {
+            eprintln!("rating must be an integer 1-5, got '{rating_arg}'");
+            return 2;
+        }
+    };
+    let work_ref = match parse_work_ref(work_ref_arg) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+
+    let token_id = match registry::id_of_name(agent).await {
+        Ok(0) | Err(_) => {
+            eprintln!("reputation attest: '{agent}' is not a registered agent (check the name)");
+            return 1;
+        }
+        Ok(id) => id,
+    };
+    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    println!("attesting {rating}★ to {agent} (token #{token_id}) …");
+    match registry::attest_sponsored(
+        &signer,
+        &sponsor,
+        token_id,
+        rating,
+        work_ref,
+        registry::ALPHA_USD_ADDRESS,
+    )
+    .await
+    {
+        Ok(tx) => {
+            println!("✓ attested {rating}★ to {agent} — it's now on-chain  tx: {tx}");
+            println!("  see it with `reputation show {agent}`.");
+            0
+        }
+        Err(e) => {
+            eprintln!("reputation attest failed: {e}");
+            1
+        }
+    }
+}
+
 // ---- colony (the agent economy's first autonomous cycle) ------------------
 //
 // `colony run` composes the bounty lifecycle + a headless `call` into ONE
@@ -3963,6 +4208,7 @@ usage: localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent
     4. the worker's on-chain persona DOES the work via a headless `call`
     5. the worker SUBMITS the produced result
     6. the caller ACCEPTS → the escrowed $LH settles to the worker's TBA
+    7. the caller ATTESTS to the worker (5★, workRef = the bounty id) → reputation
   --reward <lh>      the $LH reward to escrow (e.g. 0.02)            [required]
   --worker <agent>   the worker subdomain (its key must be local);
                      omit to auto-pick the best discover() match
@@ -4160,7 +4406,7 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     println!();
 
     // -- STEP 1: the caller POSTS the bounty (escrows the reward). ----------
-    println!("[1/6] POST  — escrowing {} behind the task …", fmt_lh(reward_wei));
+    println!("[1/7] POST  — escrowing {} behind the task …", fmt_lh(reward_wei));
     let post_tx = match registry::post_bounty_sponsored(
         &caller_signer,
         &sponsor,
@@ -4173,7 +4419,7 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     {
         Ok(tx) => tx,
         Err(e) => {
-            eprintln!("[1/6] POST failed: {e}");
+            eprintln!("[1/7] POST failed: {e}");
             eprintln!("  no escrow was created — nothing to clean up.");
             return 1;
         }
@@ -4183,14 +4429,14 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
         Ok(ids) if !ids.is_empty() => ids[ids.len() - 1],
         Ok(_) => {
             eprintln!(
-                "[1/6] POST mined (tx {post_tx}) but the new bounty id could not be read back \
+                "[1/7] POST mined (tx {post_tx}) but the new bounty id could not be read back \
                  from bountiesOf — re-run `bounty mine` to find + manage it."
             );
             return 1;
         }
         Err(e) => {
             eprintln!(
-                "[1/6] POST mined (tx {post_tx}) but reading the bounty id failed: {e} \
+                "[1/7] POST mined (tx {post_tx}) but reading the bounty id failed: {e} \
                  — re-run `bounty mine` to find + manage it."
             );
             return 1;
@@ -4215,13 +4461,13 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     let worker_name = match worker {
         Some(w) => w,
         None => {
-            println!("[2/6] PICK  — auto-selecting the best worker for the task …");
+            println!("[2/7] PICK  — auto-selecting the best worker for the task …");
             match colony_pick_worker(&task).await {
                 Ok(w) => {
                     println!("      ✓ auto-picked worker: {w}");
                     w
                 }
-                Err(e) => return bail("2/6", &format!("PICK failed: {e}")),
+                Err(e) => return bail("2/7", &format!("PICK failed: {e}")),
             }
         }
     };
@@ -4230,7 +4476,7 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
         Ok(c) => c,
         Err(e) => {
             return bail(
-                "2/6",
+                "2/7",
                 &format!(
                     "worker '{worker_name}' has no local identity key ({e}). The worker must be a \
                      fleet/owned agent whose key is in your keys dir — it signs its own claim + submit."
@@ -4240,18 +4486,18 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     };
     let worker_signer = match wallet::from_private_key_hex(&worker_key_hex) {
         Ok(s) => s,
-        Err(e) => return bail("2/6", &format!("bad worker key in {worker_key_file}: {e}")),
+        Err(e) => return bail("2/7", &format!("bad worker key in {worker_key_file}: {e}")),
     };
     // The worker's tokenId (the identity that earns the reward) + its TBA wallet
     // (where the reward lands) — resolve both up front so the payout is verifiable.
     let worker_token_id = match resolve_own_token_id(Some(&worker_name), &worker_signer).await {
         Ok(id) => id,
-        Err(e) => return bail("2/6", &format!("could not resolve worker '{worker_name}' identity: {e}")),
+        Err(e) => return bail("2/7", &format!("could not resolve worker '{worker_name}' identity: {e}")),
     };
     let worker_tba = match registry::tba_of_token_id(worker_token_id).await {
         Ok(Some(a)) => a,
-        Ok(None) => return bail("2/6", &format!("worker token #{worker_token_id} has no token-bound account")),
-        Err(e) => return bail("2/6", &format!("RPC error resolving worker TBA: {e}")),
+        Ok(None) => return bail("2/7", &format!("worker token #{worker_token_id} has no token-bound account")),
+        Err(e) => return bail("2/7", &format!("RPC error resolving worker TBA: {e}")),
     };
     let tba_before = registry::token_balance_of(&worker_tba).await.unwrap_or(0);
     println!("      worker {worker_name} = token #{worker_token_id}, TBA {worker_tba}");
@@ -4259,8 +4505,8 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     println!();
 
     // -- STEP 3: the worker CLAIMS the bounty. -----------------------------
-    println!("[3/6] CLAIM — {worker_name} claims bounty #{bounty_id} (reward → its TBA) …");
-    match colony_write_step(bounty_id, "3/6", "CLAIM", 1, || {
+    println!("[3/7] CLAIM — {worker_name} claims bounty #{bounty_id} (reward → its TBA) …");
+    match colony_write_step(bounty_id, "3/7", "CLAIM", 1, || {
         registry::claim_bounty_sponsored(
             &worker_signer,
             &sponsor,
@@ -4272,12 +4518,12 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     .await
     {
         Ok(tx) => println!("      ✓ claimed by token #{worker_token_id}  (tx {tx})"),
-        Err(e) => return bail("3/6", &format!("CLAIM failed: {e}")),
+        Err(e) => return bail("3/7", &format!("CLAIM failed: {e}")),
     }
     println!();
 
     // -- STEP 4: run the WORK — a headless turn as the worker's persona. ----
-    println!("[4/6] WORK  — running {worker_name}'s persona on the task (headless `call`) …");
+    println!("[4/7] WORK  — running {worker_name}'s persona on the task (headless `call`) …");
     let work_prompt = format!(
         "{task}\n\nSubmit your concrete result / deliverable as your reply \
          (it will be recorded on-chain as your bounty submission)."
@@ -4296,13 +4542,13 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
         Ok((text, _hist)) => {
             let trimmed = text.trim().to_string();
             if trimmed.is_empty() {
-                return bail("4/6", "WORK produced an empty result — nothing to submit.");
+                return bail("4/7", "WORK produced an empty result — nothing to submit.");
             }
             trimmed
         }
         Err(e) => {
-            report_call_error("[4/6] WORK failed", &e);
-            return bail("4/6", "the worker's persona turn failed — see the hint above.");
+            report_call_error("[4/7] WORK failed", &e);
+            return bail("4/7", "the worker's persona turn failed — see the hint above.");
         }
     };
     println!("      ✓ {worker_name} produced a result:");
@@ -4314,8 +4560,8 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     println!();
 
     // -- STEP 5: the worker SUBMITS the result. ----------------------------
-    println!("[5/6] SUBMIT — {worker_name} submits its result for bounty #{bounty_id} …");
-    match colony_write_step(bounty_id, "5/6", "SUBMIT", 2, || {
+    println!("[5/7] SUBMIT — {worker_name} submits its result for bounty #{bounty_id} …");
+    match colony_write_step(bounty_id, "5/7", "SUBMIT", 2, || {
         registry::submit_result_sponsored(
             &worker_signer,
             &sponsor,
@@ -4327,13 +4573,13 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     .await
     {
         Ok(tx) => println!("      ✓ result submitted  (tx {tx})"),
-        Err(e) => return bail("5/6", &format!("SUBMIT failed: {e}")),
+        Err(e) => return bail("5/7", &format!("SUBMIT failed: {e}")),
     }
     println!();
 
     // -- STEP 6: the caller ACCEPTS → reward settles to the worker's TBA. ---
-    println!("[6/6] ACCEPT — caller accepts + pays the escrow to {worker_name}'s TBA …");
-    match colony_write_step(bounty_id, "6/6", "ACCEPT", 3, || {
+    println!("[6/7] ACCEPT — caller accepts + pays the escrow to {worker_name}'s TBA …");
+    match colony_write_step(bounty_id, "6/7", "ACCEPT", 3, || {
         registry::accept_result_sponsored(
             &caller_signer,
             &sponsor,
@@ -4344,7 +4590,32 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     .await
     {
         Ok(tx) => println!("      ✓ accepted — {} settled  (tx {tx})", fmt_lh(reward_wei)),
-        Err(e) => return bail("6/6", &format!("ACCEPT failed: {e}")),
+        Err(e) => return bail("6/7", &format!("ACCEPT failed: {e}")),
+    }
+    println!();
+
+    // -- STEP 7: the caller ATTESTS to the worker → on-chain reputation. ----
+    // The payout already succeeded; attestation is a BONUS that builds the
+    // worker's reputation. A failure here WARNS but does NOT fail the cycle (and
+    // never triggers `bail`, since there's no unsettled escrow to recover).
+    println!("[7/7] ATTEST — caller attests 5★ to {worker_name} (workRef = bounty #{bounty_id}) …");
+    let work_ref = bounty_work_ref(bounty_id);
+    match registry::attest_sponsored(
+        &caller_signer,
+        &sponsor,
+        worker_token_id,
+        5,
+        work_ref,
+        registry::ALPHA_USD_ADDRESS,
+    )
+    .await
+    {
+        Ok(tx) => println!("      ✓ attested 5★ to {worker_name} (token #{worker_token_id})  (tx {tx})"),
+        Err(e) => println!(
+            "      ⚠ ATTEST failed: {e}\n      \
+             (the payout SUCCEEDED — attestation is a bonus; not failing the cycle. \
+             Retry later with: localharness reputation attest --as {caller_label} {worker_name} 5 --ref {bounty_id})"
+        ),
     }
     println!();
 
@@ -6954,13 +7225,53 @@ mod tests {
         for cmd in [
             "create", "compile", "publish", "face", "persona", "call", "list",
             "feedback", "probe", "triage", "threads", "forget", "whoami", "invite",
-            "bounty", "colony", "guild", "vote", "tba",
+            "bounty", "colony", "reputation", "guild", "vote", "tba",
         ] {
             assert!(
                 USAGE.contains(cmd),
                 "`{cmd}` is dispatchable but missing from the help/USAGE text"
             );
         }
+    }
+
+    #[test]
+    fn parse_work_ref_handles_none_hex_and_bounty_id() {
+        // None → the zero ref.
+        assert_eq!(parse_work_ref(None), Ok([0u8; 32]));
+        assert_eq!(parse_work_ref(Some("   ")), Ok([0u8; 32]));
+        // A bare integer (or #N) → bounty id left-padded into the low 8 bytes — the
+        // SAME bytes `bounty_work_ref` produces (what the colony [7/7] step uses).
+        assert_eq!(parse_work_ref(Some("7")).unwrap(), bounty_work_ref(7));
+        assert_eq!(parse_work_ref(Some("#42")).unwrap(), bounty_work_ref(42));
+        let r7 = parse_work_ref(Some("7")).unwrap();
+        assert_eq!(&r7[24..32], &7u64.to_be_bytes());
+        assert!(r7[..24].iter().all(|&b| b == 0));
+        // A 0x hex ref is right-aligned (left-padded with zeros).
+        let r = parse_work_ref(Some("0xabcd")).unwrap();
+        assert_eq!(r[30], 0xab);
+        assert_eq!(r[31], 0xcd);
+        assert!(r[..30].iter().all(|&b| b == 0));
+        // A full 32-byte hex ref is preserved as-is.
+        let full = "0x".to_string() + &"cd".repeat(32);
+        assert_eq!(parse_work_ref(Some(&full)).unwrap(), [0xcd; 32]);
+        // Rejects: over-long hex, non-hex, and a non-integer non-hex token.
+        assert!(parse_work_ref(Some(&("0x".to_string() + &"ab".repeat(33)))).is_err());
+        assert!(parse_work_ref(Some("0xzz")).is_err());
+        assert!(parse_work_ref(Some("notanid")).is_err());
+    }
+
+    #[test]
+    fn format_work_ref_renders_bounty_id_and_zero() {
+        // Zero ref → no note.
+        assert_eq!(format_work_ref(&format!("0x{}", "0".repeat(64))), "");
+        // A bounty-id ref (high 24 bytes zero) → "(work #N)".
+        let id_ref = format!("0x{}{:016x}", "0".repeat(48), 9u64);
+        assert_eq!(format_work_ref(&id_ref), "  (work #9)");
+        // A ref with non-zero high bytes → a truncated 0x note.
+        let mixed = format!("0xcd{}", "0".repeat(62));
+        assert_eq!(format_work_ref(&mixed), "  (ref 0xcd000000…)");
+        // Malformed length → no note (no panic).
+        assert_eq!(format_work_ref("0xdead"), "");
     }
 
     #[test]
