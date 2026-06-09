@@ -61,6 +61,9 @@
 //!   threads [--as <me>]      list your saved call conversations
 //!   forget [--as <me>] <name>  drop a saved conversation (or `--all`)
 //!   whoami [--json] <name>   profile of <name>: owner, wallet, persona, face
+//!   status [--as <me>] [<name>]
+//!                            one read-only dashboard: identity, $LH balances,
+//!                            reputation, guilds, bounties, scheduled jobs
 //!   discover <query>         find agents by capability (name/persona search)
 //!   colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--judges <N>] [--judge <agent>] [--min-accept-rating <N>] [--ttl <dur>]
 //!                            run ONE autonomous agent-economy cycle end-to-end:
@@ -247,6 +250,12 @@ USAGE:
   localharness threads [--as <me>]       list your saved call conversations
   localharness forget [--as <me>] <name> drop a saved conversation (or --all)
   localharness whoami [--json] <name>    profile of <name> (owner, wallet, …; alias: lookup)
+  localharness status [--as <me>] [<name>]
+                                         ONE read-only economy dashboard for an agent:
+                                         identity, $LH balances (EOA + TBA), reputation,
+                                         guilds, posted bounties, and scheduled jobs.
+                                         No <name> resolves YOUR identity (needs a local
+                                         key); a <name> inspects any agent (pure read)
   localharness discover <query>          find agents by capability (Agent Yellow Pages)
 
 Your identity is an ERC-721 NFT on Tempo Moderato; `create` persists its
@@ -483,6 +492,22 @@ async fn run(args: &[String]) -> i32 {
                 }
             }
         }
+        Some("status") => match take_as_flag(&args[1..]) {
+            Ok((caller, rest)) => {
+                // An optional positional <name> inspects any agent (pure read);
+                // none resolves the caller's OWN identity (needs a local key).
+                if rest.len() > 1 {
+                    eprintln!("usage: localharness status [--as <me>] [<name>]");
+                    2
+                } else {
+                    status(caller.as_deref(), rest.first().map(String::as_str)).await
+                }
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
         Some("discover") => {
             let q = args[1..].join(" ");
             if q.trim().is_empty() {
@@ -2409,6 +2434,249 @@ async fn whoami(name: &str, json: bool) -> i32 {
             1
         }
     }
+}
+
+// ---- status (the unified read-only economy dashboard) --------------------
+//
+// `status [--as <me>] [<name>]` aggregates an agent's WHOLE on-chain state in
+// ONE command — what previously meant running `whoami` + `credits` + `bounty
+// mine` + `guild mine` + `reputation show` + `jobs` separately. Every read is
+// READ-ONLY (no tx, no gas). With a `<name>` it's a PURE on-chain read of any
+// agent; with no name it resolves the caller's OWN identity (needs a local key,
+// like `bounty mine` / `guild mine` / `jobs`). It reuses the EXACT registry
+// reads those commands use — `id_of_name`/`owner_of_name`/`main_of`/`name_of_id`
+// + `tba_of_token_id` (identity), `token_balance_of` (balances), `reputation_of`
+// (reputation), `guilds_of`/`guild_name`/`role_of_guild` (guilds),
+// `bounties_of`/`get_bounty`/`task_of_bounty` (bounties), `jobs_of`/`get_job`/
+// `task_of` (jobs) — so it adds NO new on-chain surface. Every list is bounded
+// (`STATUS_LIST_CAP`) so a prolific agent doesn't flood the terminal, and every
+// section degrades gracefully to "none" / "—" rather than failing the whole view.
+
+/// How many rows each list section (guilds / bounties / jobs) prints before a
+/// `… +N more` note. Keeps the dashboard a glanceable single screen.
+const STATUS_LIST_CAP: usize = 10;
+
+/// Render the trailing "… +N more (use `<hint>`)" note for a list section that
+/// exceeded [`STATUS_LIST_CAP`], or empty when it didn't. Pure + testable.
+fn status_more_note(total: usize, hint: &str) -> String {
+    if total > STATUS_LIST_CAP {
+        format!("    … +{} more (see `{hint}`)\n", total - STATUS_LIST_CAP)
+    } else {
+        String::new()
+    }
+}
+
+/// `status [--as <me>] [<name>]` — the unified read-only economy dashboard.
+/// Resolves the target identity (explicit `<name>` = any agent, pure read; else
+/// the caller's own key), then prints Identity / Balances / Reputation / Guilds /
+/// Bounties / Scheduled jobs. Read-only — no `$LH`, no tx, no gas.
+async fn status(caller: Option<&str>, name: Option<&str>) -> i32 {
+    // 1. Resolve the target: a name is a pure read of any agent; no name
+    //    resolves the caller's own identity from their local key.
+    let (label, owner_eoa, token_id) = match name {
+        Some(n) => {
+            let owner = match registry::owner_of_name(n).await {
+                Ok(Some(o)) => o,
+                Ok(None) => {
+                    eprintln!("status: '{n}' is not registered");
+                    return 1;
+                }
+                Err(e) => {
+                    eprintln!("status: RPC error resolving '{n}': {e}");
+                    return 1;
+                }
+            };
+            let id = registry::id_of_name(n).await.unwrap_or(0);
+            (n.to_string(), owner, id)
+        }
+        None => {
+            let (key_file, key_hex) = match resolve_caller_key(caller) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("{e}");
+                    return 2;
+                }
+            };
+            let signer = match wallet::from_private_key_hex(&key_hex) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("bad key in {key_file}: {e}");
+                    return 1;
+                }
+            };
+            let addr = addr_to_hex(wallet::address(&signer));
+            // Prefer the caller's MAIN identity for the tokenId-keyed sections;
+            // fall back to the key-file stem as the display label.
+            let main_id = registry::main_of(&addr).await.unwrap_or(0);
+            let label = if main_id != 0 {
+                registry::name_of_id(main_id)
+                    .await
+                    .ok()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| resolve_caller_label(caller).unwrap_or_else(|_| addr.clone()))
+            } else {
+                resolve_caller_label(caller).unwrap_or_else(|_| addr.clone())
+            };
+            (label, addr, main_id)
+        }
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    println!("== {label} ==  (read-only economy dashboard)");
+
+    // 2. Identity ----------------------------------------------------------
+    println!("\nidentity");
+    println!("  name      {label}");
+    if token_id != 0 {
+        println!("  tokenId   #{token_id}");
+    } else {
+        println!("  tokenId   — (no registered identity)");
+    }
+    // MAIN identity, shown only when it differs from this token (so a sub-name
+    // surfaces its primary). owner_eoa here is the holder address.
+    let main_id = registry::main_of(&owner_eoa).await.unwrap_or(0);
+    if main_id != 0 && main_id != token_id {
+        let main_name = registry::name_of_id(main_id)
+            .await
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| format!("token #{main_id}"));
+        println!("  main      {main_name} (#{main_id})");
+    }
+    println!("  owner     {owner_eoa}");
+    let tba = if token_id != 0 {
+        registry::tba_of_token_id(token_id).await.ok().flatten()
+    } else {
+        None
+    };
+    match &tba {
+        Some(a) => println!("  wallet    {a}  (token-bound account)"),
+        None => println!("  wallet    —"),
+    }
+
+    // 3. Balances ($LH of the owner EOA + the TBA) -------------------------
+    println!("\nbalances ($LH)");
+    let eoa_bal = registry::token_balance_of(&owner_eoa).await.unwrap_or(0);
+    println!("  owner EOA {}", fmt_lh(eoa_bal));
+    match &tba {
+        Some(a) => {
+            let tba_bal = registry::token_balance_of(a).await.unwrap_or(0);
+            println!("  TBA       {}", fmt_lh(tba_bal));
+        }
+        None => println!("  TBA       —"),
+    }
+
+    // 4. Reputation (attestation count + average ★) ------------------------
+    println!("\nreputation");
+    if token_id == 0 {
+        println!("  none yet");
+    } else {
+        match registry::reputation_of(token_id).await {
+            Ok((0, _)) => println!("  none yet"),
+            Ok((count, sum)) => {
+                // Average to 2 dp without floats (same math as `reputation show`).
+                let avg_x100 = (sum * 100 + count / 2) / count;
+                println!(
+                    "  {count} attestation(s)   avg {}.{:02} / 5",
+                    avg_x100 / 100,
+                    avg_x100 % 100
+                );
+            }
+            Err(e) => println!("  (could not read: {e})"),
+        }
+    }
+
+    // 5. Guilds (guildsOf → id + name + the agent's role) ------------------
+    println!("\nguilds");
+    match registry::guilds_of(&owner_eoa).await {
+        Ok(ids) if ids.is_empty() => println!("  none"),
+        Ok(ids) => {
+            let total = ids.len();
+            for id in ids.into_iter().take(STATUS_LIST_CAP) {
+                let gname = registry::guild_name(id).await.unwrap_or_default();
+                let role = registry::role_of_guild(id, &owner_eoa)
+                    .await
+                    .map(|r| r.label().to_string())
+                    .unwrap_or_else(|_| "?".to_string());
+                let name_part = if gname.is_empty() {
+                    String::new()
+                } else {
+                    format!(" '{gname}'")
+                };
+                println!("  #{id}{name_part}  [you: {role}]");
+            }
+            print!("{}", status_more_note(total, "guild mine"));
+        }
+        Err(e) => println!("  (could not read: {e})"),
+    }
+
+    // 6. Bounties (bountiesOf → posted: id + status) -----------------------
+    println!("\nbounties posted");
+    match registry::bounties_of(&owner_eoa).await {
+        Ok(ids) if ids.is_empty() => println!("  none"),
+        Ok(ids) => {
+            let total = ids.len();
+            for id in ids.into_iter().take(STATUS_LIST_CAP) {
+                match registry::get_bounty(id).await {
+                    Ok(b) => {
+                        let task = registry::task_of_bounty(id).await.unwrap_or_default();
+                        let snippet: String =
+                            task.replace('\n', " ").chars().take(50).collect();
+                        println!(
+                            "  #{id}  reward {}  [{}]  {snippet}",
+                            fmt_lh(b.reward_wei),
+                            b.status_label()
+                        );
+                    }
+                    Err(e) => println!("  #{id}  (could not read: {e})"),
+                }
+            }
+            print!("{}", status_more_note(total, "bounty mine"));
+        }
+        Err(e) => println!("  (could not read: {e})"),
+    }
+
+    // 7. Scheduled jobs (jobsOf → active id + budget + interval) -----------
+    println!("\nscheduled jobs");
+    match registry::jobs_of(&owner_eoa).await {
+        Ok(ids) if ids.is_empty() => println!("  none"),
+        Ok(ids) => {
+            let total = ids.len();
+            for id in ids.into_iter().take(STATUS_LIST_CAP) {
+                match registry::get_job(id).await {
+                    Ok(job) => {
+                        let target = registry::name_of_id(job.target_id)
+                            .await
+                            .ok()
+                            .filter(|n| !n.is_empty())
+                            .unwrap_or_else(|| format!("token#{}", job.target_id));
+                        let next = if job.next_run == 0 {
+                            "—".to_string()
+                        } else if job.next_run <= now {
+                            "due now".to_string()
+                        } else {
+                            format!("in {}", fmt_interval(job.next_run - now))
+                        };
+                        println!(
+                            "  #{id}  -> {target}  every {}  next {next}  budget {}  [{}]",
+                            fmt_interval(job.interval),
+                            fmt_lh(job.budget_wei),
+                            job.status_label()
+                        );
+                    }
+                    Err(e) => println!("  #{id}  (could not read: {e})"),
+                }
+            }
+            print!("{}", status_more_note(total, "jobs"));
+        }
+        Err(e) => println!("  (could not read: {e})"),
+    }
+
+    0
 }
 
 /// Parse `list`'s optional `--as <name>` / `--json` flags (order-independent).
@@ -8162,14 +8430,26 @@ mod tests {
         // command can't ship undocumented for beta testers reading `help`.
         for cmd in [
             "create", "compile", "publish", "face", "persona", "call", "list",
-            "feedback", "probe", "triage", "threads", "forget", "whoami", "invite",
-            "bounty", "colony", "reputation", "guild", "vote", "tba",
+            "feedback", "probe", "triage", "threads", "forget", "whoami", "status",
+            "invite", "bounty", "colony", "reputation", "guild", "vote", "tba",
         ] {
             assert!(
                 USAGE.contains(cmd),
                 "`{cmd}` is dispatchable but missing from the help/USAGE text"
             );
         }
+    }
+
+    #[test]
+    fn status_more_note_caps_and_hints() {
+        // At or below the cap → no note.
+        assert_eq!(status_more_note(0, "jobs"), "");
+        assert_eq!(status_more_note(STATUS_LIST_CAP, "jobs"), "");
+        // Over the cap → the overflow count + the drill-down hint.
+        let n = status_more_note(STATUS_LIST_CAP + 3, "bounty mine");
+        assert!(n.contains("+3 more"));
+        assert!(n.contains("bounty mine"));
+        assert!(n.ends_with('\n'));
     }
 
     #[test]
