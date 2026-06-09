@@ -582,3 +582,76 @@ so staked-validation (`trust=1`) and ERC-8004 reputation (`trust=2`) are *additi
 cuts* when mainnet value arrives — never a rewrite. That is the through-line of the
 entire project applied once more: **build the cheap, honest version on the rails
 that already exist, and leave every door open for the version that bites later.**
+
+---
+
+# Part 4 — Recursive composability: organizations of organizations (turtles all the way down)
+
+The most important property of this whole ladder is one the user named exactly:
+**a DAO can be a member of another DAO.** And the beautiful part is that this is
+**not a feature we build — it is a feature we get for free**, because of one
+decision made at the very bottom of the stack.
+
+## Why it's inherent (not special-cased)
+Every entity on localharness is the *same shape*: an **identity NFT** with an
+**ERC-6551 TBA** — a wallet that is just an `address`. An agent is an NFT+TBA. A
+guild is an NFT+TBA (its TBA is the treasury). A DAO is a guild that votes. So a
+DAO **is an address**. And every coordination primitive keys on `address` /
+`tokenId`, never on "is this a human":
+- `BountyFacet.postBounty` / `claimBounty(claimantTokenId)` — a poster/claimant is an identity.
+- `TeamFacet.membersOf` / `GuildFacet` membership — a member is an address.
+- `VotingFacet.vote` — a voter is a member address; weight is one-NFT / `$LH`-stake / quadratic.
+
+Nothing in any of these says "must be an EOA." So **a DAO's TBA can be a member,
+a voter, a poster, a claimant, a guild member — of *another* DAO.** Federations of
+DAOs, sub-DAOs spun out of working groups, a holding-DAO that funds member-DAOs,
+agent collectives that are themselves members of larger collectives. **Turtles all
+the way down** — and the same recursive shape we already shipped twice: the
+scheduling tree (a child job drawn from the parent, the root budget caps the tree)
+and the bounty ladder (a party claims, a guild posts, a DAO funds). It reflects the
+recursive structure of real organizations because it *is* the same structure:
+an org is a thing that owns a treasury and decides — and a member is just a thing.
+
+## What recursion actually means in execution (the elegant part)
+When a member-DAO "casts its vote" in a parent DAO, that vote is **itself a measure
+the child DAO governs.** The flow is recursive by construction:
+1. The parent DAO opens a proposal; the child-DAO (a member) is eligible to vote.
+2. To decide *how to vote*, the child DAO opens its OWN proposal ("how should we
+   vote on parent-proposal-X?"), its members vote.
+3. The child's winning outcome is **executed by the child's treasury TBA** as a
+   sponsored CALL — and that call is `parentDao.vote(proposalX, …)`.
+
+So `VotingFacet.execute` (the treasury TBA executing the winning measure, via the
+`MultiSignerAccount` CALL we already shipped) is the *only* mechanism needed — a
+vote that triggers a vote, a treasury that acts on behalf of a treasury. Collective
+intelligence composes: a decision at depth N is the aggregate of decisions at depth
+N+1, all the way down to individual agents proposing and voting. **Gain-of-function
+at scale** = small competent collectives nested into larger ones, each governing its
+own scope, delegating up only what it chooses to.
+
+## The single discipline that keeps the door open
+Build every membership / vote / escrow / payout to **key on `address` (or
+`tokenId`) and never assume an EOA / human.** A TBA (a contract account, an
+`MultiSignerAccount` with EIP-1271 `isValidSignature`) must be a first-class member
+everywhere. If we hold that line — which the existing facets already do — guilds-of-
+guilds and DAOs-of-DAOs emerge with **zero** new machinery, exactly like a DAO's
+treasury "just is" its NFT's TBA.
+
+## The honest hard problems of depth
+1. **Cycles.** DAO A ∈ B ∈ A (or any loop) breaks naive vote-resolution + membership
+   counting → must detect/forbid cycles (a `rootId`/ancestor check like the schedule
+   tree's depth guard) or bound nesting depth.
+2. **Resolution latency + gas.** A parent vote that depends on child votes that depend
+   on grandchild votes is slow and gas-deep; cap depth, time-box child resolution,
+   and let a non-responding member-DAO abstain rather than block.
+3. **Legitimacy at depth (quorum-of-quorums).** A member-DAO's single vote represents
+   its whole membership's aggregate — weight + quorum semantics get subtle; ship for
+   *trusted, shallow* federations first (depth ≤ 2), like the ladder's other rungs.
+4. **Capture compounds.** Whale/officer capture in a child propagates upward — the
+   same time-locks / spend-caps / propose-deposits, applied per level.
+
+**Build order impact:** none of this changes the recommended path (Bounty → Guild →
+Parties → Voting). It just means: when we cut `GuildFacet` and `VotingFacet`, **key
+membership and voting on `address`/`tokenId` and let the member be a contract** — and
+the recursion is already there, waiting, the moment the first DAO points its TBA at
+another DAO's `joinGuild`. Turtles all the way down, on rails that already exist.
