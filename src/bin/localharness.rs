@@ -62,6 +62,11 @@
 //!   forget [--as <me>] <name>  drop a saved conversation (or `--all`)
 //!   whoami [--json] <name>   profile of <name>: owner, wallet, persona, face
 //!   discover <query>         find agents by capability (name/persona search)
+//!   colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--ttl <dur>]
+//!                            run ONE autonomous agent-economy cycle end-to-end:
+//!                            the caller posts <task> as a bounty, a worker claims
+//!                            it, its persona does the work, submits, and the caller
+//!                            accepts — the reward settles to the worker's TBA
 //!   tba show [--as <me>] [<name>]   your (or <name>'s) token-bound account
 //!                            address, $LH balance, and deployed status
 //!   tba deploy [--as <me>] [<name>]  deploy the token-bound account on-chain
@@ -166,6 +171,12 @@ USAGE:
   localharness bounty accept [--as <me>] <id>    accept a result + pay the claimant (poster)
   localharness bounty cancel [--as <me>] <id>    cancel your bounty (refunds the escrow)
   localharness bounty mine [--as <me>]   list the bounties you've posted
+  localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--ttl <dur>]
+                                         run ONE autonomous agent-economy cycle:
+                                         the caller posts <task> as a bounty, a worker
+                                         claims it, its persona does the work, submits,
+                                         and the caller accepts — the reward settles to
+                                         the worker's TBA. No human between the steps.
   localharness guild create [--as <me>] <name>
                                          create an on-chain guild (org with members,
                                          roles, and a pooled $LH treasury); you're its admin
@@ -356,6 +367,13 @@ async fn run(args: &[String]) -> i32 {
         },
         Some("bounty") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => bounty(caller.as_deref(), &rest).await,
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
+        Some("colony") => match take_as_flag(&args[1..]) {
+            Ok((caller, rest)) => colony(caller.as_deref(), &rest).await,
             Err(e) => {
                 eprintln!("{e}");
                 2
@@ -3922,6 +3940,441 @@ async fn bounty_mine(caller: Option<&str>) -> i32 {
     0
 }
 
+// ---- colony (the agent economy's first autonomous cycle) ------------------
+//
+// `colony run` composes the bounty lifecycle + a headless `call` into ONE
+// self-driving turn of the demand flywheel: the platform (the caller) POSTS
+// real work as an escrowed bounty, a WORKER agent claims it, the worker's
+// on-chain persona DOES the work (an LLM turn via the credit proxy), the worker
+// submits the result, and the caller accepts — settling the reward to the
+// worker's token-bound account. No human orchestrates the steps. The result
+// TEXT is an LLM turn (it varies); the CYCLE mechanics (post→claim→submit→
+// accept→payout) are deterministic. Every on-chain step reuses the SAME helpers
+// as the `bounty` subcommands (`post_bounty_sponsored` / `claim_bounty_sponsored`
+// / `submit_result_sponsored` / `accept_result_sponsored`) and the SAME headless
+// turn as `call` (`run_agent_turn`), so it adds no new on-chain surface.
+
+const COLONY_USAGE: &str = "\
+usage: localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--ttl <dur>]
+  Run ONE autonomous agent-economy cycle end-to-end:
+    1. the caller (--as, default your sole identity) POSTS <task> as a bounty escrowing <reward> $LH
+    2. a WORKER is picked: --worker <agent>, else the top discover() match for <task>
+    3. the worker CLAIMS the bounty (reward bound to the worker's token-bound account)
+    4. the worker's on-chain persona DOES the work via a headless `call`
+    5. the worker SUBMITS the produced result
+    6. the caller ACCEPTS → the escrowed $LH settles to the worker's TBA
+  --reward <lh>      the $LH reward to escrow (e.g. 0.02)            [required]
+  --worker <agent>   the worker subdomain (its key must be local);
+                     omit to auto-pick the best discover() match
+  --ttl <dur>        bounty expiry (1h/7d/30d, 1h…90d, default 7d)
+  The worker MUST be a fleet/owned agent whose key is in your keys dir
+  (it signs its own claim + submit). On any step failure the bounty id is
+  printed so it can be `bounty cancel`ed / `bounty` reclaimed — never a silent
+  half-state.";
+
+/// Parsed `colony run` arguments. The task is the joined positional remainder
+/// (so an unquoted multi-word task works, matching `bounty post`).
+struct ParsedColonyRun {
+    task: String,
+    reward_wei: u128,
+    worker: Option<String>,
+    ttl_secs: u64,
+}
+
+/// Parse `colony run` flags. Pure/testable — mirrors `parse_bounty_post_args`
+/// plus a `--worker` override.
+fn parse_colony_run_args(rest: &[String]) -> Result<ParsedColonyRun, String> {
+    let mut positional: Vec<String> = Vec::new();
+    let mut reward: Option<String> = None;
+    let mut worker: Option<String> = None;
+    let mut ttl: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--reward" => {
+                reward = Some(rest.get(i + 1).ok_or(COLONY_USAGE)?.clone());
+                i += 2;
+            }
+            "--worker" => {
+                worker = Some(rest.get(i + 1).ok_or(COLONY_USAGE)?.clone());
+                i += 2;
+            }
+            "--ttl" => {
+                ttl = Some(rest.get(i + 1).ok_or(COLONY_USAGE)?.clone());
+                i += 2;
+            }
+            _ => {
+                positional.push(rest[i].clone());
+                i += 1;
+            }
+        }
+    }
+    if positional.is_empty() {
+        return Err(format!("colony run needs a <task>\n{COLONY_USAGE}"));
+    }
+    let task = positional.join(" ");
+    let reward_label =
+        reward.ok_or_else(|| format!("colony run needs --reward <X $LH>\n{COLONY_USAGE}"))?;
+    let reward_wei = match localharness::encoding::parse_token_amount(&reward_label) {
+        Some(w) if w > 0 => w,
+        _ => return Err(format!("--reward must be a positive $LH amount, got '{reward_label}'")),
+    };
+    let ttl_secs = match ttl {
+        None => INVITE_DEFAULT_TTL_SECS,
+        Some(raw) => parse_ttl(&raw)?,
+    };
+    Ok(ParsedColonyRun { task, reward_wei, worker, ttl_secs })
+}
+
+/// `localharness colony <subcommand>` — the colony-engine router.
+async fn colony(caller: Option<&str>, rest: &[String]) -> i32 {
+    match rest.first().map(String::as_str) {
+        Some("run") => colony_run(caller, &rest[1..]).await,
+        _ => {
+            eprintln!("{COLONY_USAGE}");
+            2
+        }
+    }
+}
+
+/// Auto-pick the best worker for `task`: the top `discover` match whose identity
+/// key is present locally (so it can sign its own claim+submit). Returns the
+/// agent name, or an error naming what to do. Read-only.
+async fn colony_pick_worker(task: &str) -> Result<String, String> {
+    let matches = registry::discover_agents(task, 100)
+        .await
+        .map_err(|e| format!("discover failed: {e}"))?;
+    if matches.is_empty() {
+        return Err(
+            "no agents matched the task to auto-pick a worker — pass --worker <agent> \
+             (an agent whose key is in your keys dir)"
+                .to_string(),
+        );
+    }
+    // Prefer the highest-ranked match we ALSO hold a key for (it must sign).
+    for (name, _persona) in &matches {
+        if resolve_key_read_path(name).is_some() {
+            return Ok(name.clone());
+        }
+    }
+    Err(format!(
+        "the top discover() matches ({}) have no local key — pass --worker <agent> whose \
+         key is in your keys dir (the worker signs its own claim + submit)",
+        matches.iter().take(5).map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")
+    ))
+}
+
+/// `true` if a sponsored-write error looks TRANSIENT (an RPC/transport hiccup,
+/// not a contract revert) — worth one retry. The Tempo RPC intermittently fails
+/// to decode the `eth_sendRawTransaction` RESPONSE even when the tx mined, so we
+/// re-check on-chain state before retrying (the caller does that). Pure.
+fn is_transient_rpc_error(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    (e.contains("decode") || e.contains("decoding") || e.contains("timed out")
+        || e.contains("timeout") || e.contains("connection") || e.contains("response body")
+        || e.contains("eof"))
+        // A real on-chain revert is NOT transient — those carry a reason/selector.
+        && !e.contains("revert") && !e.contains("execution reverted")
+}
+
+/// Drive a `colony` on-chain WRITE step with ONE transient-error retry that's
+/// guarded by an idempotence check: before retrying, read `getBounty(id).status`
+/// and treat it as success if the chain ALREADY advanced past `done_at_or_after`
+/// (the original tx mined; the failure was only the response decode). This is the
+/// fix for the live decode-error-at-accept seen dogfooding the cycle — without it
+/// a flaky RPC stranded the escrow in `Submitted`. `attempt` runs the sponsored
+/// write; `step`/`verb` label the output. Returns the tx hash (or "(already
+/// advanced on-chain)") on success, or a final error string on real failure.
+async fn colony_write_step<F, Fut>(
+    bounty_id: u64,
+    step: &str,
+    verb: &str,
+    done_at_or_after: u8,
+    attempt: F,
+) -> Result<String, String>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    match attempt().await {
+        Ok(tx) => Ok(tx),
+        Err(e) if is_transient_rpc_error(&e) => {
+            eprintln!("      … {step} {verb}: transient RPC error ({e}); re-checking on-chain state …");
+            // Did the original tx actually mine despite the bad response?
+            if let Ok(b) = registry::get_bounty(bounty_id).await {
+                if b.status >= done_at_or_after && b.status != 4 && b.status != 5 {
+                    return Ok("(already advanced on-chain — the original tx mined)".to_string());
+                }
+            }
+            eprintln!("      … retrying {step} {verb} once …");
+            attempt().await
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// `colony run` — drive ONE autonomous post→claim→work→submit→accept→payout
+/// cycle. Each on-chain step reuses the bounty helpers; the work itself reuses
+/// `run_agent_turn`. On any failure mid-cycle the bounty id is surfaced so the
+/// escrow is never silently stranded.
+async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
+    let ParsedColonyRun { task, reward_wei, worker, ttl_secs } = match parse_colony_run_args(rest) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    if task.trim().is_empty() {
+        eprintln!("colony run: task is empty");
+        return 2;
+    }
+
+    // The caller (platform / poster) — its key signs the post + accept and pays
+    // the headless `call` that runs the work.
+    let (caller_signer, sponsor) = match load_signer_and_sponsor(caller) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    let caller_addr = addr_to_hex(wallet::address(&caller_signer));
+    let caller_label = match resolve_caller_label(caller) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("colony run: {e}");
+            return 2;
+        }
+    };
+    // The caller key (hex) drives the headless work turn (proxy auth + $LH).
+    let caller_key_hex = match resolve_caller_key(caller) {
+        Ok((_, hex)) => hex,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+
+    println!("=== COLONY RUN — one autonomous agent-economy cycle ===");
+    println!("  caller (poster): {caller_label}  ({caller_addr})");
+    println!("  task:            {task}");
+    println!("  reward:          {}", fmt_lh(reward_wei));
+    println!();
+
+    // -- STEP 1: the caller POSTS the bounty (escrows the reward). ----------
+    println!("[1/6] POST  — escrowing {} behind the task …", fmt_lh(reward_wei));
+    let post_tx = match registry::post_bounty_sponsored(
+        &caller_signer,
+        &sponsor,
+        task.as_bytes(),
+        reward_wei,
+        ttl_secs,
+        registry::ALPHA_USD_ADDRESS,
+    )
+    .await
+    {
+        Ok(tx) => tx,
+        Err(e) => {
+            eprintln!("[1/6] POST failed: {e}");
+            eprintln!("  no escrow was created — nothing to clean up.");
+            return 1;
+        }
+    };
+    // The new bounty id is the last entry in the poster's bountiesOf index.
+    let bounty_id = match registry::bounties_of(&caller_addr).await {
+        Ok(ids) if !ids.is_empty() => ids[ids.len() - 1],
+        Ok(_) => {
+            eprintln!(
+                "[1/6] POST mined (tx {post_tx}) but the new bounty id could not be read back \
+                 from bountiesOf — re-run `bounty mine` to find + manage it."
+            );
+            return 1;
+        }
+        Err(e) => {
+            eprintln!(
+                "[1/6] POST mined (tx {post_tx}) but reading the bounty id failed: {e} \
+                 — re-run `bounty mine` to find + manage it."
+            );
+            return 1;
+        }
+    };
+    println!("      ✓ bounty #{bounty_id} posted  (tx {post_tx})");
+    println!();
+
+    // From here on, any failure must surface the bounty id so the escrow can be
+    // reclaimed — never a silent half-state.
+    let bail = |stage: &str, err: &str| -> i32 {
+        eprintln!("[{stage}] {err}");
+        eprintln!(
+            "  ⚠ bounty #{bounty_id} is escrowed and unsettled. Recover the $LH with:\n    \
+             localharness bounty cancel --as {caller_label} {bounty_id}   (refunds you now, if not yet paid)\n  \
+             or let it expire and reclaim it after the ttl. Inspect: localharness bounty mine --as {caller_label}"
+        );
+        1
+    };
+
+    // -- STEP 2: pick + resolve the WORKER. --------------------------------
+    let worker_name = match worker {
+        Some(w) => w,
+        None => {
+            println!("[2/6] PICK  — auto-selecting the best worker for the task …");
+            match colony_pick_worker(&task).await {
+                Ok(w) => {
+                    println!("      ✓ auto-picked worker: {w}");
+                    w
+                }
+                Err(e) => return bail("2/6", &format!("PICK failed: {e}")),
+            }
+        }
+    };
+    // The worker signs its OWN claim + submit, so its key must be local.
+    let (worker_key_file, worker_key_hex) = match resolve_caller_key(Some(&worker_name)) {
+        Ok(c) => c,
+        Err(e) => {
+            return bail(
+                "2/6",
+                &format!(
+                    "worker '{worker_name}' has no local identity key ({e}). The worker must be a \
+                     fleet/owned agent whose key is in your keys dir — it signs its own claim + submit."
+                ),
+            )
+        }
+    };
+    let worker_signer = match wallet::from_private_key_hex(&worker_key_hex) {
+        Ok(s) => s,
+        Err(e) => return bail("2/6", &format!("bad worker key in {worker_key_file}: {e}")),
+    };
+    // The worker's tokenId (the identity that earns the reward) + its TBA wallet
+    // (where the reward lands) — resolve both up front so the payout is verifiable.
+    let worker_token_id = match resolve_own_token_id(Some(&worker_name), &worker_signer).await {
+        Ok(id) => id,
+        Err(e) => return bail("2/6", &format!("could not resolve worker '{worker_name}' identity: {e}")),
+    };
+    let worker_tba = match registry::tba_of_token_id(worker_token_id).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return bail("2/6", &format!("worker token #{worker_token_id} has no token-bound account")),
+        Err(e) => return bail("2/6", &format!("RPC error resolving worker TBA: {e}")),
+    };
+    let tba_before = registry::token_balance_of(&worker_tba).await.unwrap_or(0);
+    println!("      worker {worker_name} = token #{worker_token_id}, TBA {worker_tba}");
+    println!("      worker TBA $LH before: {}", fmt_lh(tba_before));
+    println!();
+
+    // -- STEP 3: the worker CLAIMS the bounty. -----------------------------
+    println!("[3/6] CLAIM — {worker_name} claims bounty #{bounty_id} (reward → its TBA) …");
+    match colony_write_step(bounty_id, "3/6", "CLAIM", 1, || {
+        registry::claim_bounty_sponsored(
+            &worker_signer,
+            &sponsor,
+            bounty_id,
+            worker_token_id,
+            registry::ALPHA_USD_ADDRESS,
+        )
+    })
+    .await
+    {
+        Ok(tx) => println!("      ✓ claimed by token #{worker_token_id}  (tx {tx})"),
+        Err(e) => return bail("3/6", &format!("CLAIM failed: {e}")),
+    }
+    println!();
+
+    // -- STEP 4: run the WORK — a headless turn as the worker's persona. ----
+    println!("[4/6] WORK  — running {worker_name}'s persona on the task (headless `call`) …");
+    let work_prompt = format!(
+        "{task}\n\nSubmit your concrete result / deliverable as your reply \
+         (it will be recorded on-chain as your bounty submission)."
+    );
+    // The caller pays for the work turn (same as `call --as caller worker …`),
+    // running the WORKER's on-chain persona. No prior history (a one-shot job).
+    let result_text = match run_agent_turn(
+        &caller_key_hex,
+        &worker_name,
+        &work_prompt,
+        None,
+        None,
+    )
+    .await
+    {
+        Ok((text, _hist)) => {
+            let trimmed = text.trim().to_string();
+            if trimmed.is_empty() {
+                return bail("4/6", "WORK produced an empty result — nothing to submit.");
+            }
+            trimmed
+        }
+        Err(e) => {
+            report_call_error("[4/6] WORK failed", &e);
+            return bail("4/6", "the worker's persona turn failed — see the hint above.");
+        }
+    };
+    println!("      ✓ {worker_name} produced a result:");
+    println!("      ┌─────────────────────────────────────────────────────────");
+    for line in result_text.lines() {
+        println!("      │ {line}");
+    }
+    println!("      └─────────────────────────────────────────────────────────");
+    println!();
+
+    // -- STEP 5: the worker SUBMITS the result. ----------------------------
+    println!("[5/6] SUBMIT — {worker_name} submits its result for bounty #{bounty_id} …");
+    match colony_write_step(bounty_id, "5/6", "SUBMIT", 2, || {
+        registry::submit_result_sponsored(
+            &worker_signer,
+            &sponsor,
+            bounty_id,
+            result_text.as_bytes(),
+            registry::ALPHA_USD_ADDRESS,
+        )
+    })
+    .await
+    {
+        Ok(tx) => println!("      ✓ result submitted  (tx {tx})"),
+        Err(e) => return bail("5/6", &format!("SUBMIT failed: {e}")),
+    }
+    println!();
+
+    // -- STEP 6: the caller ACCEPTS → reward settles to the worker's TBA. ---
+    println!("[6/6] ACCEPT — caller accepts + pays the escrow to {worker_name}'s TBA …");
+    match colony_write_step(bounty_id, "6/6", "ACCEPT", 3, || {
+        registry::accept_result_sponsored(
+            &caller_signer,
+            &sponsor,
+            bounty_id,
+            registry::ALPHA_USD_ADDRESS,
+        )
+    })
+    .await
+    {
+        Ok(tx) => println!("      ✓ accepted — {} settled  (tx {tx})", fmt_lh(reward_wei)),
+        Err(e) => return bail("6/6", &format!("ACCEPT failed: {e}")),
+    }
+    println!();
+
+    // -- Verify the payout: the worker's TBA $LH rose by the reward. --------
+    let tba_after = registry::token_balance_of(&worker_tba).await.unwrap_or(tba_before);
+    let delta = tba_after.saturating_sub(tba_before);
+    println!("=== CYCLE COMPLETE ===");
+    println!("  bounty #{bounty_id}: open → claimed → submitted → accepted → PAID");
+    println!("  worker TBA {worker_tba}");
+    println!("    before: {}", fmt_lh(tba_before));
+    println!("    after:  {}", fmt_lh(tba_after));
+    println!("    delta:  +{}  (reward {})", fmt_lh(delta), fmt_lh(reward_wei));
+    if delta == reward_wei {
+        println!("  ✓ payout verified — the worker's TBA rose by exactly the reward.");
+        0
+    } else {
+        // The cycle COMPLETED on-chain (accept mined); a balance read can lag a
+        // block or another tx can touch the TBA. Report honestly, don't fail the
+        // accepted cycle — the escrow is settled either way.
+        println!(
+            "  ⚠ TBA delta ({}) != reward ({}). The accept tx mined (the bounty is PAID), \
+             but the balance check didn't line up exactly — a read can lag a block or another \
+             tx touched the TBA. Re-check with: localharness tba show {worker_name}",
+            fmt_lh(delta),
+            fmt_lh(reward_wei)
+        );
+        0
+    }
+}
+
 /// Load the caller's identity signer + the embedded sponsor in one shot, mapping
 /// any failure to a process exit code. The shared front-half of every sponsored
 /// `bounty` write (post/claim/submit/accept/cancel).
@@ -6080,6 +6533,50 @@ mod tests {
     }
 
     #[test]
+    fn parse_colony_run_parses_task_reward_worker_ttl() {
+        // Full form: multi-word task + reward + worker + ttl, flags interleaved.
+        let p = parse_colony_run_args(&args(&[
+            "QA:", "probe", "one", "flow", "--reward", "0.02", "--worker", "vex-qa", "--ttl", "1h",
+        ]))
+        .unwrap();
+        assert_eq!(p.task, "QA: probe one flow");
+        assert_eq!(p.reward_wei, 20_000_000_000_000_000); // 0.02 LH
+        assert_eq!(p.worker.as_deref(), Some("vex-qa"));
+        assert_eq!(p.ttl_secs, 3600);
+
+        // No worker, no ttl → worker None, default ttl.
+        let p = parse_colony_run_args(&args(&["fix the bug", "--reward", "1"])).unwrap();
+        assert_eq!(p.task, "fix the bug");
+        assert_eq!(p.reward_wei, 1_000_000_000_000_000_000); // 1 LH
+        assert!(p.worker.is_none());
+        assert_eq!(p.ttl_secs, INVITE_DEFAULT_TTL_SECS);
+    }
+
+    #[test]
+    fn parse_colony_run_rejects_bad_forms() {
+        assert!(parse_colony_run_args(&args(&[])).is_err()); // empty
+        assert!(parse_colony_run_args(&args(&["task"])).is_err()); // no --reward
+        assert!(parse_colony_run_args(&args(&["task", "--reward", "0"])).is_err()); // zero reward
+        assert!(parse_colony_run_args(&args(&["--reward", "1"])).is_err()); // no task
+        assert!(parse_colony_run_args(&args(&["task", "--reward"])).is_err()); // dangling --reward
+        assert!(parse_colony_run_args(&args(&["t", "--reward", "1", "--worker"])).is_err()); // dangling
+    }
+
+    #[test]
+    fn is_transient_rpc_error_classifies_hiccups_not_reverts() {
+        // The live failure mode: a decode/transport hiccup on the response.
+        assert!(is_transient_rpc_error(
+            "eth_sendRawTransaction decode: error decoding response body"
+        ));
+        assert!(is_transient_rpc_error("connection reset"));
+        assert!(is_transient_rpc_error("request timed out"));
+        // A real contract revert must NOT be retried (it'll just revert again).
+        assert!(!is_transient_rpc_error("execution reverted: NotOpen()"));
+        assert!(!is_transient_rpc_error("revert: bounty not submitted"));
+        assert!(!is_transient_rpc_error("insufficient balance"));
+    }
+
+    #[test]
     fn mcp_call_pay_parses_to_18_decimal_wei() {
         // The default + a few human amounts map to the bundle's 18-dec wei.
         assert_eq!(
@@ -6457,7 +6954,7 @@ mod tests {
         for cmd in [
             "create", "compile", "publish", "face", "persona", "call", "list",
             "feedback", "probe", "triage", "threads", "forget", "whoami", "invite",
-            "bounty", "guild", "vote", "tba",
+            "bounty", "colony", "guild", "vote", "tba",
         ] {
             assert!(
                 USAGE.contains(cmd),
