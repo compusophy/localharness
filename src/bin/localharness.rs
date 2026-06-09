@@ -146,6 +146,16 @@ USAGE:
   localharness invite accept [--as <me>] <code>  accept an invite (the $LH is paid to you)
   localharness invite reclaim [--as <me>] <code> refund an EXPIRED invite back to its funder
   localharness invite list [--as <me>]   show your total $LH locked in pending invites
+  localharness bounty post [--as <me>] <task> --reward <amt> [--ttl <dur>]
+                                         escrow $LH behind a task on the bounty board;
+                                         prints the bounty id + share link (the demand
+                                         primitive — any agent can claim and earn it)
+  localharness bounty list [--search <q>]  list open bounties (id, reward, ttl, task)
+  localharness bounty claim [--as <me>] <id>     claim an open bounty (you do the work)
+  localharness bounty submit [--as <me>] <id> <result>  submit your result for a claim
+  localharness bounty accept [--as <me>] <id>    accept a result + pay the claimant (poster)
+  localharness bounty cancel [--as <me>] <id>    cancel your bounty (refunds the escrow)
+  localharness bounty mine [--as <me>]   list the bounties you've posted
   localharness topup [--as <me>]         deposit your wallet $LH into the per-call meter
   localharness feedback [--as <me>] [text|--json]  submit on-chain feedback, or read
                                          all (no text; --json for machine output)
@@ -290,6 +300,13 @@ async fn run(args: &[String]) -> i32 {
         },
         Some("invite") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => invite(caller.as_deref(), &rest).await,
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
+        Some("bounty") => match take_as_flag(&args[1..]) {
+            Ok((caller, rest)) => bounty(caller.as_deref(), &rest).await,
             Err(e) => {
                 eprintln!("{e}");
                 2
@@ -3366,6 +3383,540 @@ async fn invite_list(caller: Option<&str>) -> i32 {
     }
 }
 
+// ---- bounty post/list/claim/submit/accept/cancel/mine (BountyFacet) ------
+//
+// The DEMAND primitive / agent-economy task board: a poster ESCROWS `$LH` behind
+// a task; any agent claims it (identified by THEIR OWN tokenId), submits a
+// result, and is paid the escrow when the poster accepts. `post` creates one
+// (approve + postBounty in one sponsored tx), `list` shows the open board (with
+// `--search` ranking), `claim`/`submit`/`accept`/`cancel` drive the lifecycle,
+// `mine` lists the caller's posted bounties. Mirrors `registry::*_bounty_*`.
+
+const BOUNTY_USAGE: &str = "\
+usage: localharness bounty <post|list|claim|submit|accept|cancel|mine> ...
+  bounty post [--as <me>] <task...> --reward <amt> [--ttl <dur>]   escrow $LH behind a task
+  bounty list [--search <q>]                          list OPEN bounties (--search ranks)
+  bounty claim [--as <me>] <id>                        claim an open bounty (you do the work)
+  bounty submit [--as <me>] <id> <result...>           submit your result for a claim
+  bounty accept [--as <me>] <id>                       accept a result + pay out (poster)
+  bounty cancel [--as <me>] <id>                       cancel your bounty (refunds escrow)
+  bounty mine [--as <me>]                              list bounties you've posted
+  dur: 1h / 7d / 30d   (1h … 90d, default 7d)   amount: $LH (e.g. 5 or 0.5)";
+
+/// How many open bounties `bounty list` / `discover_bounties` scan from the
+/// board's head. A sane page bound — the board is small at launch scale; bump
+/// when an index/cursor walk is worth it.
+const BOUNTY_LIST_SCAN: u64 = 100;
+
+/// Parse a bounty `id` argument (`#7` or `7`). Pure + testable.
+fn parse_bounty_id(raw: &str) -> Result<u64, String> {
+    raw.trim()
+        .trim_start_matches('#')
+        .parse::<u64>()
+        .map_err(|_| format!("invalid bounty id '{raw}'"))
+}
+
+/// Parsed `bounty post` arguments. The task is the joined positional remainder
+/// (so an unquoted multi-word task works, matching `schedule`/`persona`).
+struct ParsedBountyPost {
+    task: String,
+    reward_label: String,
+    reward_wei: u128,
+    ttl_secs: u64,
+}
+
+fn parse_bounty_post_args(rest: &[String]) -> Result<ParsedBountyPost, String> {
+    let mut positional: Vec<String> = Vec::new();
+    let mut reward: Option<String> = None;
+    let mut ttl: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--reward" => {
+                reward = Some(rest.get(i + 1).ok_or(BOUNTY_USAGE)?.clone());
+                i += 2;
+            }
+            "--ttl" => {
+                ttl = Some(rest.get(i + 1).ok_or(BOUNTY_USAGE)?.clone());
+                i += 2;
+            }
+            _ => {
+                positional.push(rest[i].clone());
+                i += 1;
+            }
+        }
+    }
+    if positional.is_empty() {
+        return Err(format!("bounty post needs a <task>\n{BOUNTY_USAGE}"));
+    }
+    let task = positional.join(" ");
+    let reward_label =
+        reward.ok_or_else(|| format!("bounty post needs --reward <X $LH>\n{BOUNTY_USAGE}"))?;
+    let reward_wei = match localharness::encoding::parse_token_amount(&reward_label) {
+        Some(w) if w > 0 => w,
+        _ => return Err(format!("--reward must be a positive $LH amount, got '{reward_label}'")),
+    };
+    // Reuse the invite TTL parser + 1h…90d bound (`parse_ttl`); same refundable
+    // escrow-expiry semantics.
+    let ttl_secs = match ttl {
+        None => INVITE_DEFAULT_TTL_SECS,
+        Some(raw) => parse_ttl(&raw)?,
+    };
+    Ok(ParsedBountyPost { task, reward_label, reward_wei, ttl_secs })
+}
+
+/// `localharness bounty <subcommand>` — the bounty-board router.
+async fn bounty(caller: Option<&str>, rest: &[String]) -> i32 {
+    match rest.first().map(String::as_str) {
+        Some("post") => bounty_post(caller, &rest[1..]).await,
+        Some("list") => bounty_list(&rest[1..]).await,
+        Some("claim") => match rest.get(1) {
+            Some(id) => bounty_claim(caller, id).await,
+            None => {
+                eprintln!("usage: localharness bounty claim [--as <me>] <id>");
+                2
+            }
+        },
+        Some("submit") => {
+            if rest.len() < 3 {
+                eprintln!("usage: localharness bounty submit [--as <me>] <id> <result...>");
+                return 2;
+            }
+            bounty_submit(caller, &rest[1], &rest[2..].join(" ")).await
+        }
+        Some("accept") => match rest.get(1) {
+            Some(id) => bounty_accept(caller, id).await,
+            None => {
+                eprintln!("usage: localharness bounty accept [--as <me>] <id>");
+                2
+            }
+        },
+        Some("cancel") => match rest.get(1) {
+            Some(id) => bounty_cancel(caller, id).await,
+            None => {
+                eprintln!("usage: localharness bounty cancel [--as <me>] <id>");
+                2
+            }
+        },
+        Some("mine") => bounty_mine(caller).await,
+        _ => {
+            eprintln!("{BOUNTY_USAGE}");
+            2
+        }
+    }
+}
+
+/// `bounty post <task> --reward <amt> [--ttl <dur>]` — escrow `$LH` behind a task
+/// (approve + postBounty in one sponsored tx), print the new bounty id + share
+/// link. The reward leaves the poster's balance the moment it mines; it pays the
+/// claimant on `accept` or is refunded on `cancel`.
+async fn bounty_post(caller: Option<&str>, rest: &[String]) -> i32 {
+    let ParsedBountyPost { task, reward_label, reward_wei, ttl_secs } =
+        match parse_bounty_post_args(rest) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("{e}");
+                return 2;
+            }
+        };
+    let _ = reward_label;
+    if task.trim().is_empty() {
+        eprintln!("bounty post: task is empty");
+        return 2;
+    }
+    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    println!(
+        "posting bounty: reward {}, expires in {} …",
+        fmt_lh(reward_wei),
+        fmt_ttl(ttl_secs)
+    );
+    match registry::post_bounty_sponsored(
+        &signer,
+        &sponsor,
+        task.as_bytes(),
+        reward_wei,
+        ttl_secs,
+        registry::ALPHA_USD_ADDRESS,
+    )
+    .await
+    {
+        Ok(tx) => {
+            // The new bounty id is the last entry in the poster's bountiesOf index.
+            let addr = addr_to_hex(wallet::address(&signer));
+            let id_note = match registry::bounties_of(&addr).await {
+                Ok(ids) if !ids.is_empty() => Some(ids[ids.len() - 1]),
+                _ => None,
+            };
+            match id_note {
+                Some(id) => {
+                    println!("✓ bounty #{id} posted — {} escrowed, expires in {}", fmt_lh(reward_wei), fmt_ttl(ttl_secs));
+                    println!("  link:  https://localharness.xyz/?bounty={id}");
+                    println!("  any agent can `bounty claim {id}`, do the work, and `bounty submit {id} <result>`.");
+                }
+                None => {
+                    println!("✓ bounty posted — {} escrowed, expires in {}", fmt_lh(reward_wei), fmt_ttl(ttl_secs));
+                    println!("  see it with `bounty mine`.");
+                }
+            }
+            println!("  tx: {tx}");
+            0
+        }
+        Err(e) => {
+            eprintln!("bounty post failed: {e}");
+            1
+        }
+    }
+}
+
+/// Render one open-board row for `bounty list`. Pure (no I/O) so the layout is
+/// unit-testable: id, reward, expiry (relative), task snippet.
+fn format_bounty_row(id: u64, b: &registry::Bounty, task: &str, now: u64) -> String {
+    let when = if b.expiry == 0 {
+        "—".to_string()
+    } else if b.expiry <= now {
+        "EXPIRED".to_string()
+    } else {
+        format!("in {}", fmt_interval(b.expiry - now))
+    };
+    let snippet: String = task.replace('\n', " ").chars().take(70).collect();
+    format!(
+        "  #{id}  reward {reward}  expires {when}  [{status}]\n      {snippet}",
+        reward = fmt_lh(b.reward_wei),
+        status = b.status_label(),
+    )
+}
+
+/// `bounty list [--search <q>]` — list OPEN bounties. With `--search`, rank by
+/// query-vs-task via `discover_bounties`; without, show the open board head.
+/// Read-only, no `$LH`.
+async fn bounty_list(rest: &[String]) -> i32 {
+    // Optional `--search <q>` (q may be multi-word).
+    let query = match rest.first().map(String::as_str) {
+        Some("--search") => {
+            let q = rest[1..].join(" ");
+            if q.trim().is_empty() {
+                eprintln!("usage: localharness bounty list [--search <query>]");
+                return 2;
+            }
+            Some(q)
+        }
+        Some(other) => {
+            eprintln!("unexpected argument '{other}'\nusage: localharness bounty list [--search <query>]");
+            return 2;
+        }
+        None => None,
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    if let Some(q) = query {
+        match registry::discover_bounties(&q, BOUNTY_LIST_SCAN).await {
+            Ok(hits) => {
+                if hits.is_empty() {
+                    println!("no open bounties match '{q}'");
+                    return 0;
+                }
+                println!("{} open bounty match(es) for '{q}':", hits.len());
+                for (id, task, reward) in hits {
+                    // A reward-only line keeps `discover_bounties`' (id, task,
+                    // reward) shape without a second per-id read.
+                    let snippet: String = task.replace('\n', " ").chars().take(70).collect();
+                    println!("  #{id}  reward {}\n      {snippet}", fmt_lh(reward));
+                }
+                0
+            }
+            Err(e) => {
+                eprintln!("bounty list failed: {e}");
+                1
+            }
+        }
+    } else {
+        let ids = match registry::open_bounties(0, BOUNTY_LIST_SCAN).await {
+            Ok(ids) => ids,
+            Err(e) => {
+                eprintln!("bounty list failed: {e}");
+                return 1;
+            }
+        };
+        if ids.is_empty() {
+            println!("no open bounties — post one with `bounty post <task> --reward <amt>`");
+            return 0;
+        }
+        println!("{} open bounty(ies):", ids.len());
+        for id in ids {
+            let b = match registry::get_bounty(id).await {
+                Ok(b) => b,
+                Err(e) => {
+                    println!("  #{id}  (could not read: {e})");
+                    continue;
+                }
+            };
+            let task = registry::task_of_bounty(id).await.unwrap_or_default();
+            println!("{}", format_bounty_row(id, &b, &task, now));
+        }
+        0
+    }
+}
+
+/// `bounty claim <id>` — claim an open bounty. Resolves the CALLER'S OWN tokenId
+/// as `claimantTokenId` (the identity that earns the reward), then calls
+/// `claimBounty(id, claimantTokenId)`.
+async fn bounty_claim(caller: Option<&str>, id_arg: &str) -> i32 {
+    let bounty_id = match parse_bounty_id(id_arg) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    // Resolve the caller's OWN registered tokenId (NOT the bounty poster's). The
+    // facet credits the reward to this identity, so it must be one the caller
+    // controls. See `resolve_own_token_id`.
+    let claimant_token_id = match resolve_own_token_id(caller, &signer).await {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("bounty claim: {e}");
+            return 1;
+        }
+    };
+    println!("claiming bounty #{bounty_id} as token #{claimant_token_id} …");
+    match registry::claim_bounty_sponsored(
+        &signer,
+        &sponsor,
+        bounty_id,
+        claimant_token_id,
+        registry::ALPHA_USD_ADDRESS,
+    )
+    .await
+    {
+        Ok(tx) => {
+            println!("✓ bounty #{bounty_id} claimed by token #{claimant_token_id}");
+            println!("  do the work, then `bounty submit {bounty_id} <result>`.  tx: {tx}");
+            0
+        }
+        Err(e) => {
+            eprintln!("bounty claim failed: {e}");
+            1
+        }
+    }
+}
+
+/// `bounty submit <id> <result>` — submit your result for a claimed bounty
+/// (`submitResult(id, result)`). The poster then `accept`s to pay you.
+async fn bounty_submit(caller: Option<&str>, id_arg: &str, result: &str) -> i32 {
+    let bounty_id = match parse_bounty_id(id_arg) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    if result.trim().is_empty() {
+        eprintln!("bounty submit: result is empty");
+        return 2;
+    }
+    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    println!("submitting result for bounty #{bounty_id} …");
+    match registry::submit_result_sponsored(
+        &signer,
+        &sponsor,
+        bounty_id,
+        result.as_bytes(),
+        registry::ALPHA_USD_ADDRESS,
+    )
+    .await
+    {
+        Ok(tx) => {
+            println!("✓ result submitted for bounty #{bounty_id} — awaiting the poster's accept  tx: {tx}");
+            0
+        }
+        Err(e) => {
+            eprintln!("bounty submit failed: {e}");
+            1
+        }
+    }
+}
+
+/// `bounty accept <id>` — the poster accepts the submitted result and pays the
+/// escrowed `$LH` out to the claimant (`acceptResult(id)`).
+async fn bounty_accept(caller: Option<&str>, id_arg: &str) -> i32 {
+    let bounty_id = match parse_bounty_id(id_arg) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    println!("accepting bounty #{bounty_id}'s result + paying the claimant …");
+    match registry::accept_result_sponsored(&signer, &sponsor, bounty_id, registry::ALPHA_USD_ADDRESS).await {
+        Ok(tx) => {
+            println!("✓ bounty #{bounty_id} accepted — the escrowed $LH is paid to the claimant  tx: {tx}");
+            0
+        }
+        Err(e) => {
+            eprintln!("bounty accept failed: {e}");
+            1
+        }
+    }
+}
+
+/// `bounty cancel <id>` — the poster cancels their bounty; the facet refunds the
+/// full escrow (`cancelBounty(id)`, allowed before payout).
+async fn bounty_cancel(caller: Option<&str>, id_arg: &str) -> i32 {
+    let bounty_id = match parse_bounty_id(id_arg) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    println!("cancelling bounty #{bounty_id} (refunding its escrow) …");
+    match registry::cancel_bounty_sponsored(&signer, &sponsor, bounty_id, registry::ALPHA_USD_ADDRESS).await {
+        Ok(tx) => {
+            println!("✓ bounty #{bounty_id} cancelled — the escrowed $LH is refunded to you  tx: {tx}");
+            0
+        }
+        Err(e) => {
+            eprintln!("bounty cancel failed: {e}");
+            1
+        }
+    }
+}
+
+/// `bounty mine [--as <me>]` — list the bounties the caller has POSTED
+/// (`bountiesOf` + a `getBounty`/`taskOf` per id). Read-only, no `$LH`.
+async fn bounty_mine(caller: Option<&str>) -> i32 {
+    let (key_file, key_hex) = match resolve_caller_key(caller) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let signer = match wallet::from_private_key_hex(&key_hex) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("bad key in {key_file}: {e}");
+            return 1;
+        }
+    };
+    let addr = addr_to_hex(wallet::address(&signer));
+    let ids = match registry::bounties_of(&addr).await {
+        Ok(ids) => ids,
+        Err(e) => {
+            eprintln!("RPC error: {e}");
+            return 1;
+        }
+    };
+    if ids.is_empty() {
+        println!("no bounties posted by {addr}");
+        return 0;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    println!("{} bounty(ies) posted by {addr}:", ids.len());
+    for id in ids {
+        let b = match registry::get_bounty(id).await {
+            Ok(b) => b,
+            Err(e) => {
+                println!("  #{id}  (could not read: {e})");
+                continue;
+            }
+        };
+        let task = registry::task_of_bounty(id).await.unwrap_or_default();
+        println!("{}", format_bounty_row(id, &b, &task, now));
+    }
+    0
+}
+
+/// Load the caller's identity signer + the embedded sponsor in one shot, mapping
+/// any failure to a process exit code. The shared front-half of every sponsored
+/// `bounty` write (post/claim/submit/accept/cancel).
+fn load_signer_and_sponsor(
+    caller: Option<&str>,
+) -> Result<(k256::ecdsa::SigningKey, k256::ecdsa::SigningKey), i32> {
+    let (key_file, key_hex) = resolve_caller_key(caller).map_err(|e| {
+        eprintln!("{e}");
+        2
+    })?;
+    let signer = wallet::from_private_key_hex(&key_hex).map_err(|e| {
+        eprintln!("bad key in {key_file}: {e}");
+        1
+    })?;
+    let sponsor = wallet::from_private_key_hex(SPONSOR_KEY).map_err(|e| {
+        eprintln!("sponsor key error: {e}");
+        1
+    })?;
+    Ok((signer, sponsor))
+}
+
+/// Resolve the caller's OWN registered tokenId — the `claimantTokenId` that earns
+/// a bounty reward. Resolution order (each a `name.localharness.xyz` NFT the
+/// caller controls):
+///   1. If `--as <name>` was given AND that name is registered → its tokenId
+///      (the explicit "act as THIS subdomain" intent).
+///   2. Else the caller's MAIN identity (`mainOf(address)`), their primary NFT.
+///   3. Else their single owned token (if they hold exactly one).
+/// A caller with NO registered identity can't claim — they must `create <name>`
+/// first (the reward needs an on-chain identity to be paid to).
+async fn resolve_own_token_id(
+    caller: Option<&str>,
+    signer: &k256::ecdsa::SigningKey,
+) -> Result<u64, String> {
+    // 1. Explicit --as <name> that is registered.
+    if let Some(name) = caller {
+        if let Ok(id) = registry::id_of_name(name).await {
+            if id != 0 {
+                return Ok(id);
+            }
+        }
+    }
+    let addr = addr_to_hex(wallet::address(signer));
+    // 2. The caller's MAIN identity.
+    if let Ok(main_id) = registry::main_of(&addr).await {
+        if main_id != 0 {
+            return Ok(main_id);
+        }
+    }
+    // 3. Their sole owned token (unambiguous), else a clear error.
+    match registry::list_owned_tokens(&addr).await {
+        Ok(tokens) if tokens.len() == 1 => Ok(tokens[0].token_id),
+        Ok(tokens) if tokens.is_empty() => Err(format!(
+            "no registered identity for {addr} — run `localharness create <name>` first \
+             (a bounty reward needs an on-chain identity to pay)"
+        )),
+        Ok(tokens) => Err(format!(
+            "{addr} owns {} subdomains and has no MAIN set — pass `--as <name>` to pick \
+             which identity claims the bounty",
+            tokens.len()
+        )),
+        Err(e) => Err(format!("RPC error resolving your tokenId: {e}")),
+    }
+}
+
 /// Render one job row for the `jobs` listing. Pure (no I/O) so the layout is
 /// unit-testable: id, target name, cadence, next run, budget remaining, runs
 /// left, status.
@@ -4391,6 +4942,7 @@ mod tests {
         for cmd in [
             "create", "compile", "publish", "face", "persona", "call", "list",
             "feedback", "probe", "triage", "threads", "forget", "whoami", "invite",
+            "bounty",
         ] {
             assert!(
                 USAGE.contains(cmd),
@@ -4858,5 +5410,84 @@ mod tests {
         assert!(parse_invite_create_args(&args(&["--amount", "10", "--ttl", "91d"])).is_err());
         // Unknown flag.
         assert!(parse_invite_create_args(&args(&["--amount", "10", "--bogus"])).is_err());
+    }
+
+    // ---- bounty arg parsing + row formatting --------------------------------
+
+    #[test]
+    fn parse_bounty_post_args_full_and_defaults() {
+        // Full: multi-word task joins; explicit reward + ttl.
+        let p = parse_bounty_post_args(&args(&[
+            "audit", "my", "contract", "--reward", "5", "--ttl", "30d",
+        ]))
+        .unwrap();
+        assert_eq!(p.task, "audit my contract"); // joined positional remainder
+        assert_eq!(p.reward_wei, 5 * 1_000_000_000_000_000_000); // 5 $LH in wei
+        assert_eq!(p.ttl_secs, 30 * 86_400);
+
+        // --ttl defaults to 7d; flags may precede the task; fractional reward.
+        let p = parse_bounty_post_args(&args(&["--reward", "0.5", "fix", "the", "bug"])).unwrap();
+        assert_eq!(p.task, "fix the bug");
+        assert_eq!(p.reward_wei, 500_000_000_000_000_000); // 0.5 $LH
+        assert_eq!(p.ttl_secs, INVITE_DEFAULT_TTL_SECS);
+    }
+
+    #[test]
+    fn parse_bounty_post_args_rejects_bad_input() {
+        // No task.
+        assert!(parse_bounty_post_args(&args(&["--reward", "5"])).is_err());
+        // Missing --reward.
+        assert!(parse_bounty_post_args(&args(&["do", "a", "thing"])).is_err());
+        // Zero / non-numeric reward.
+        assert!(parse_bounty_post_args(&args(&["task", "--reward", "0"])).is_err());
+        assert!(parse_bounty_post_args(&args(&["task", "--reward", "nope"])).is_err());
+        // Out-of-range ttl bubbles up from parse_ttl.
+        assert!(parse_bounty_post_args(&args(&["task", "--reward", "5", "--ttl", "30m"])).is_err());
+        assert!(parse_bounty_post_args(&args(&["task", "--reward", "5", "--ttl", "91d"])).is_err());
+    }
+
+    #[test]
+    fn parse_bounty_id_accepts_hash_and_bare() {
+        assert_eq!(parse_bounty_id("7"), Ok(7));
+        assert_eq!(parse_bounty_id("#42"), Ok(42));
+        assert_eq!(parse_bounty_id("  #3  "), Ok(3));
+        assert!(parse_bounty_id("nope").is_err());
+        assert!(parse_bounty_id("").is_err());
+    }
+
+    #[test]
+    fn format_bounty_row_contains_key_fields() {
+        let b = registry::Bounty {
+            poster: "0xposter".into(),
+            reward_wei: 5_000_000_000_000_000_000, // 5 $LH
+            expiry: 1_000 + 300,                   // 5m out from `now`
+            status: 0,
+            claimant_token_id: 0,
+        };
+        let row = format_bounty_row(7, &b, "audit\nthe vault", 1_000);
+        assert!(row.contains("#7"));
+        assert!(row.contains("reward 5.00 LH"));
+        assert!(row.contains("expires in 5m"));
+        assert!(row.contains("[open]"));
+        assert!(row.contains("audit the vault")); // newline flattened
+    }
+
+    #[test]
+    fn format_bounty_row_expired_and_no_expiry() {
+        let mut b = registry::Bounty {
+            poster: "0x0".into(),
+            reward_wei: 0,
+            expiry: 0, // unset → em-dash
+            status: 3, // paid
+            claimant_token_id: 9,
+        };
+        let row = format_bounty_row(1, &b, "", 5_000);
+        assert!(row.contains("expires —"));
+        assert!(row.contains("[paid]"));
+        // An expiry in the past reads EXPIRED.
+        b.expiry = 100;
+        b.status = 0;
+        let row = format_bounty_row(2, &b, "", 5_000);
+        assert!(row.contains("expires EXPIRED"));
     }
 }

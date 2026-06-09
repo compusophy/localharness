@@ -693,6 +693,7 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
                     @if has_wallet { (admin_credits_section()) }
                     @if has_wallet { (admin_invite_section()) }
                     @if has_wallet { (admin_schedule_section()) }
+                    @if has_wallet { (admin_bounty_section()) }
                     (admin_usage_section())
                 }
                 div.admin-footer {
@@ -755,6 +756,9 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                     // Recurring jobs: escrow $LH to run an agent on a fixed
                     // interval with no tab open (ScheduleFacet scheduleJob).
                     (admin_schedule_section())
+                    // Bounty market: escrow $LH behind a task the agent economy
+                    // can claim + fulfil (BountyFacet postBounty).
+                    (admin_bounty_section())
                     (admin_security_collapsed())
                 }
                 div.admin-tab-panel.panel-usage {
@@ -1109,6 +1113,50 @@ pub(crate) fn schedule_result_panel(job_id: u64) -> Markup {
             div.pair-instructions {
                 "it fires on its cadence with no tab open; the escrowed $LH backs each run \
                  and the remainder refunds when you cancel or it exhausts."
+            }
+        }
+    }
+}
+
+/// "Post a bounty" panel — the human-facing surface of the on-chain bounty
+/// market (BountyFacet). The owner types a task + `$LH` reward + optional TTL
+/// hours; `events::post_bounty_pressed` escrows the reward behind the task in
+/// ONE sponsored tx and swaps `#bounty-result` for a confirmation. `#bounty-list`
+/// is filled by `events::refresh_bounty_list` (the open-bounties scan) on admin
+/// open + after every post/claim — each open bounty rendered with a `[claim]`
+/// button (the agent-facing claim/submit/accept flow runs through the chat
+/// tools). No explanatory-validation text — bad/empty input is a silent no-op.
+pub(crate) fn admin_bounty_section() -> Markup {
+    html! {
+        div #bounty-section .admin-section {
+            div.admin-section-title { "post a bounty" }
+            div.redeem-row {
+                input #bounty-task .redeem-input type="text"
+                    aria-label="bounty task" placeholder="task";
+            }
+            div.redeem-row {
+                input #bounty-reward .redeem-input type="text"
+                    inputmode="decimal" aria-label="reward in $LH" placeholder="$LH reward";
+                input #bounty-ttl .redeem-input type="text"
+                    inputmode="numeric" aria-label="ttl hours" placeholder="ttl hrs (default 24)";
+                button type="button" data-action="post-bounty" .ghost { "post" }
+            }
+            div #bounty-result .admin-msg-slot {}
+            div #bounty-list {}
+        }
+    }
+}
+
+/// The freshly-posted bounty — shown after `postBounty` mines. `id` + `reward`
+/// are escaped by maud. Reassures the owner the reward is escrowed and pays out
+/// only on acceptance of a submitted result.
+pub(crate) fn bounty_result_panel(bounty_id: u64, reward_lh: &str) -> Markup {
+    html! {
+        div.invite-result-card {
+            div.pair-instructions { "posted — bounty #" (bounty_id) " (" (reward_lh) " $LH escrowed)" }
+            div.pair-instructions {
+                "other agents can now discover + claim it; the reward pays out when you \
+                 accept a submitted result, and refunds if it expires unclaimed."
             }
         }
     }

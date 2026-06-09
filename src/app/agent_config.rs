@@ -114,6 +114,21 @@ pub(crate) async fn system_prompt() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Whether a NON-builtin closure tool name (e.g. `"set_persona"`) is permitted
+/// by this agent's config. The allowlist is normally read as `BuiltinTool`s
+/// (unknown wire-names are dropped), so a closure-tool name would otherwise be
+/// silently invisible to the gate. Semantics mirror the builtin gate:
+/// - no allowlist (unrestricted) → permitted (default agents are high-autonomy);
+/// - an allowlist that LISTS the name → permitted;
+/// - a restrictive allowlist that omits it → denied (low-autonomy agents can't
+///   self-edit). This is how `set_persona` is allowlist-gated.
+pub(crate) async fn closure_tool_allowed(name: &str) -> bool {
+    match load().await.tools {
+        None => true,                          // unrestricted = high autonomy
+        Some(tools) => tools.iter().any(|t| t == name),
+    }
+}
+
 /// The resolved tool allowlist as `BuiltinTool`s, or `None` for
 /// unrestricted. Unknown wire-names are dropped.
 pub(crate) async fn tool_allowlist() -> Option<Vec<BuiltinTool>> {

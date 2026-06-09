@@ -40,6 +40,15 @@ pub(crate) async fn save(tools: &[BuiltinTool]) -> Result<(), String> {
     super::agent_config::set_tools(arg).await
 }
 
+/// Whether a NON-builtin closure tool (e.g. the `set_persona` self-edit tool)
+/// is permitted by this agent's config. Unrestricted agents get it; a
+/// restrictive allowlist must LIST the name to grant it — so a low-autonomy
+/// agent never receives `set_persona`. Thin wrapper over
+/// [`super::agent_config::closure_tool_allowed`].
+pub(crate) async fn closure_tool_allowed(name: &str) -> bool {
+    super::agent_config::closure_tool_allowed(name).await
+}
+
 /// Return a human-readable summary for the admin UI.
 pub(crate) fn summary(tools: &[BuiltinTool]) -> String {
     if tools.is_empty() {
