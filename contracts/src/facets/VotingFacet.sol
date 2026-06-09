@@ -42,14 +42,21 @@ import {LibVotingStorage} from "../libraries/LibVotingStorage.sol";
 ///         to the live GuildFacet); only VotingFacet's OWN selectors are
 ///         cut in (see script/AddVotingFacet.s.sol).
 ///
-///         QUORUM / THRESHOLD (documented constants, read live at execute
-///         time against the guild's CURRENT membership/treasury):
-///           • QUORUM = `ceil(memberCount / 2)` distinct members must have
-///             voted (for OR against). DIVIDE-BY-ZERO / degenerate guard:
-///             `_quorum` returns 1 for a 0- or 1-member guild, so a vote is
-///             ALWAYS required and a zero-member guild can never pass.
+///         QUORUM / THRESHOLD:
+///           • QUORUM = `ceil(snapshotMemberCount / 2)` distinct members must
+///             have voted (for OR against). The denominator is SNAPSHOTTED at
+///             PROPOSE (`Proposal.snapshotMemberCount`), NOT re-read live at
+///             execute — so members can't join/leave between propose and
+///             execute to move the bar (the governance-robustness fix; a
+///             leaver's already-cast vote no longer shrinks the denominator
+///             under it, and sybil-flooding can't inflate it). DIVIDE-BY-ZERO
+///             / degenerate guard: `_quorum` returns 1 for a 0- or 1-member
+///             snapshot, so a vote is ALWAYS required and a zero-member guild
+///             can never pass. Treasury affordability IS still re-checked live
+///             at execute (the balance can change while the vote runs).
 ///           • THRESHOLD = STRICT majority of cast votes (`for > against`);
-///             a tie FAILS. One-member-one-vote (weight 1) in the MVP.
+///             a tie FAILS. One-member-one-vote (weight 1) in the MVP. (Purely
+///             the cast tally — unaffected by churn regardless.)
 ///         A proposal that misses quorum OR fails the threshold by its
 ///         deadline goes Active → Failed with NO spend (idempotent).
 ///
@@ -155,6 +162,10 @@ contract VotingFacet is GuildFacet {
         LibVotingStorage.Storage storage vs = LibVotingStorage.load();
         proposalId = ++vs.nextProposalId; // ids start at 1
         uint64 deadline = uint64(block.timestamp) + votingPeriod;
+        // Snapshot the quorum denominator NOW (the governance-robustness fix):
+        // freeze the guild's member count at propose so churn between propose
+        // and execute can't shrink/inflate the quorum bar. See
+        // LibVotingStorage's QUORUM IS SNAPSHOTTED note.
         vs.proposals[proposalId] = LibVotingStorage.Proposal({
             guildId: guildId,
             proposer: msg.sender,
@@ -163,7 +174,8 @@ contract VotingFacet is GuildFacet {
             deadline: deadline,
             status: LibVotingStorage.VStatus.Active,
             forVotes: 0,
-            againstVotes: 0
+            againstVotes: 0,
+            snapshotMemberCount: gs.guilds[guildId].memberCount
         });
         if (memo.length != 0) vs.memo[proposalId] = memo;
         vs.proposalsOfGuild[guildId].push(proposalId);
@@ -175,9 +187,13 @@ contract VotingFacet is GuildFacet {
 
     /// Cast ONE vote on an Active proposal. `support == true` adds to
     /// `forVotes`, false to `againstVotes` (weight 1 — one-member-one-vote
-    /// MVP). Membership is read live from GuildFacet's storage, so a member
-    /// who joined after the proposal opened may still vote (documented; the
-    /// snapshot-at-propose upgrade is a follow-up).
+    /// MVP). VOTING ELIGIBILITY is read live from GuildFacet's storage — you
+    /// must be a CURRENT member to cast a ballot (a member who joined after
+    /// the proposal opened may vote; one who left may not). The QUORUM
+    /// DENOMINATOR, by contrast, is the member count snapshotted at propose
+    /// (`Proposal.snapshotMemberCount`), so the participation bar is fixed
+    /// when voting opens even as the live roster changes (the
+    /// governance-robustness fix).
     ///
     /// Reverts if: the proposal doesn't exist (`UnknownProposal`), it is not
     /// Active (`ProposalNotActive` — already executed/failed), voting has
@@ -357,7 +373,10 @@ contract VotingFacet is GuildFacet {
         LibGuildStorage.Storage storage gs = LibGuildStorage.load();
         forVotes = p.forVotes;
         againstVotes = p.againstVotes;
-        quorum = _quorum(gs.guilds[p.guildId].memberCount);
+        // Quorum is the SNAPSHOT taken at propose (frozen denominator), not
+        // the live member count — so the view agrees with the eventual
+        // execute outcome regardless of membership churn.
+        quorum = _quorum(p.snapshotMemberCount);
         votesCast = forVotes + againstVotes;
         passing = _passed(gs, p);
     }
@@ -379,17 +398,22 @@ contract VotingFacet is GuildFacet {
         return (uint256(memberCount) + 1) / 2; // ceil-of-half
     }
 
-    /// Whether a proposal passes against the CURRENT membership: quorum met
-    /// (distinct votes cast >= ceil(members/2)) AND a STRICT majority for
-    /// (for > against; a tie fails). Pure read of the tally + the live
-    /// member count.
+    /// Whether a proposal passes: quorum met (distinct votes cast >=
+    /// ceil(SNAPSHOT members / 2)) AND a STRICT majority for (for > against; a
+    /// tie fails). The quorum denominator is the member count SNAPSHOTTED at
+    /// propose (`p.snapshotMemberCount`), NOT the live count — membership
+    /// churn between propose and execute can't move the bar (the
+    /// governance-robustness fix). `gs` is retained in the signature for the
+    /// caller's storage-handle convention / future weight upgrades but the
+    /// quorum no longer reads from it.
     function _passed(LibGuildStorage.Storage storage gs, LibVotingStorage.Proposal storage p)
         internal
         view
         returns (bool)
     {
+        gs; // silence unused-parameter (weight is 1; quorum is the snapshot)
         uint256 votesCast = p.forVotes + p.againstVotes;
-        uint256 quorum = _quorum(gs.guilds[p.guildId].memberCount);
+        uint256 quorum = _quorum(p.snapshotMemberCount);
         if (votesCast < quorum) return false; // quorum not met
         return p.forVotes > p.againstVotes; // strict majority for
     }

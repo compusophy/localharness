@@ -54,11 +54,22 @@ library LibVotingStorage {
     //  so `forVotes + againstVotes` is exactly the number of distinct
     //  members who voted.
     //
-    //  Both are read at EXECUTE time against the membership/treasury as they
-    //  stand then — a member who leaves after voting no longer counts toward
-    //  the live `memberCount` quorum denominator (documented; the snapshot
-    //  upgrade is a follow-up). Membership/weight come from GuildFacet
-    //  (`isGuildMember` / `guildMembersOf` / the shared LibGuildStorage).
+    //  QUORUM IS SNAPSHOTTED AT PROPOSE (the governance-robustness fix). The
+    //  denominator is the guild's `memberCount` AT THE MOMENT the proposal is
+    //  created, frozen into `Proposal.snapshotMemberCount`. It is NOT re-read
+    //  against the live membership at vote/execute. This closes a
+    //  membership-churn class: previously members could LEAVE between propose
+    //  and execute to shrink the live `memberCount` so a thin minority met the
+    //  smaller quorum and drained the treasury (a voter could even vote FOR
+    //  then leave — their vote stayed counted while the denominator dropped),
+    //  OR a griefer could FLOOD sybil members to inflate the live quorum above
+    //  the honest cast votes and sink a legitimately-passing measure. With the
+    //  snapshot the bar is fixed when voting OPENS. (THRESHOLD is purely the
+    //  cast tally — `for > against` — so it is unaffected by membership
+    //  changes regardless; the only churn lever was the quorum denominator.)
+    //  Membership/weight at vote time still come from GuildFacet (`roleOf` —
+    //  you must be a CURRENT member to cast a ballot); only the quorum
+    //  DENOMINATOR is the snapshot.
 
     // --- Bounds (anti-grief). The voting period is the one window the
     //     contract MUST bound: a 0/sub-minute period is a flash-vote trap,
@@ -106,6 +117,15 @@ library LibVotingStorage {
         VStatus status; // Active | Failed | Executed (Passed/Expired reserved)
         uint256 forVotes; // weight voting support (== count of for-voters, MVP weight 1)
         uint256 againstVotes; // weight voting against
+        // --- APPEND-ONLY additions below this line ----------------------
+        /// The guild's `memberCount` AT PROPOSE TIME — the FROZEN quorum
+        /// denominator (`quorum = ceil(snapshotMemberCount / 2)`). Read by
+        /// `_passed` / `tallyOf` instead of the live member count so
+        /// membership churn between propose and execute can't move the bar
+        /// (the governance-robustness fix). A 0/1-member snapshot still maps
+        /// to quorum 1 via `_quorum` (the divide-by-zero guard), so a vote is
+        /// always required.
+        uint64 snapshotMemberCount;
     }
 
     struct Storage {
