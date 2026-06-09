@@ -19,7 +19,7 @@
 # is closed again in the same run (unschedule / self-accept), so re-runs never
 # accumulate state and the net $LH change is ~zero beyond per-call metering.
 #
-#   Flows asserted (all as the funded `claude` identity):
+#   Flows asserted (all as the funded `claude` identity unless noted):
 #     1. whoami      identity resolves on-chain (registered:true + address)
 #     2. discover    a hit returns >=1 agent; a miss returns 0 (both asserted)
 #     3. call        a headless turn to a live persona returns non-empty text
@@ -27,12 +27,28 @@
 #     5. schedule    schedule -> jobCount++ + job in `jobs`; unschedule -> refund
 #     6. invite      create -> escrowedOf rose; reclaim REJECTED (not expired);
 #                    self-accept -> escrow released (net-zero, no orphan escrow)
-#     7. send        OPTIONAL (off by default): tiny self-send asserts balance flow
+#   --- the agent-economy coordination ladder (bounty -> guild -> DAO) ---
+#     7. guild       create -> new guildId; fund 0.05 -> treasuryBalanceOf rose;
+#                    invite + (member) accept -> isGuildMember true + roster grew
+#     8. vote (DAO)  propose -> proposalId; cast `for` -> tallyOf for=1 + hasVoted
+#                    true + passing (NOT executed — needs the voting window)
+#     9. tba-exec    deploy (idempotent) -> code on-chain; fund the TBA, then
+#                    `tba exec` -> the recipient's $LH rose by the sent amount
+#    10. reputation  attest (fresh --ref) -> reputationOf count +1 and sum +rating
+#    11. colony      OPTIONAL (E2E_RUN_COLONY=1): one full cycle pays the worker's
+#                    TBA the reward (CYCLE asserted, not the LLM result text)
+#    12. send        OPTIONAL (E2E_RUN_SEND=1): tiny self-send asserts balance flow
+#
+# The ladder blocks create FRESH test guilds / proposals / attestations each run.
+# On testnet that's acceptable for an occasional regression gate (no cleanup of
+# the guild/proposal — they're cheap on-chain rows; the reputation attestation
+# uses a fresh --ref each run so it's a real write, not a dedup no-op).
 #
 # A non-zero exit means at least one shipped flow regressed. Run it by hand
 # (NOT from verify.sh — that gate must stay network-free):
-#     bash scripts/verify-e2e.sh                 # core suite
-#     E2E_RUN_SEND=1 bash scripts/verify-e2e.sh  # include the optional send flow
+#     bash scripts/verify-e2e.sh                    # core suite (+ ladder 7-10)
+#     E2E_RUN_SEND=1 bash scripts/verify-e2e.sh     # + the optional self-send
+#     E2E_RUN_COLONY=1 bash scripts/verify-e2e.sh   # + the full colony cycle (slow/LLM)
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -134,6 +150,63 @@ note "identity: $ME ($ME_ADDR)"
 read_uint() { # $1 = full "sig(args)(uint256)" ; $2.. = args
   local sig="$1"; shift
   cast call "$DIAMOND" "$sig" "$@" --rpc-url "$RPC" 2>/dev/null | awk '{print $1}'
+}
+
+# ---------------------------------------------------------------------------
+# Agent-economy ladder constants (blocks 7-11). The ladder needs a SECOND
+# identity for the member / worker / payout-recipient roles. Prefer a fleet
+# agent whose key is present (dex-qa for guild/vote/tba/reputation; vex-qa for
+# the colony worker), so the run is fully self-driving as `claude`.
+#   - $LH (the credit token) balances are read via `balanceOf` on the TOKEN
+#     contract, NOT the diamond — the diamond is the registry, $LH is its own
+#     TIP-20 at LH_TOKEN (canonical post-reset address, CLAUDE.md Tempo section).
+#   - PEER = the member/recipient identity; WORKER = the colony worker.
+# ---------------------------------------------------------------------------
+LH_TOKEN="0x90B84c7234Aae89BadA7f69160B9901B9bc37B17"
+PEER="dex-qa"     # guild member / vote recipient / tba-exec recipient / attestee
+WORKER="vex-qa"   # colony worker (its key must be local — it signs claim+submit)
+
+# Derive PEER's owner address (from its local key) — the address we assert
+# membership / balance deltas against. Empty (skipped) if the key is absent.
+PEER_KEY="${PEER}.localharness.key"
+PEER_ADDR=""
+if [[ -f "$PEER_KEY" ]]; then
+  PEER_ADDR="$(cast wallet address --private-key "0x$(tr -d '[:space:]' < "$PEER_KEY" | sed 's/^0x//')" 2>/dev/null || true)"
+fi
+
+# A `--as <peer>` runner (the member accepts the invite / could vote). Mirrors
+# `as` but for the PEER identity. Used only when PEER_KEY is present.
+as_peer() { "${CLI[@]}" "$@" --as "$PEER"; }
+
+# Read `balanceOf(addr)` off the $LH token contract (the credit-token balance,
+# the source of truth for every $LH delta in the ladder). Empty on RPC failure.
+read_lh() { # $1 = holder 0x address
+  cast call "$LH_TOKEN" "balanceOf(address)(uint256)" "$1" --rpc-url "$RPC" 2>/dev/null | awk '{print $1}'
+}
+
+# Resolve a name's token-bound account address (its on-chain wallet). Empty if
+# unregistered / RPC failure. Used to assert the colony worker's TBA payout.
+tba_of() { # $1 = subdomain name
+  cast call "$DIAMOND" "tokenBoundAccountByName(string)(address)" "$1" --rpc-url "$RPC" 2>/dev/null | awk '{print $1}'
+}
+
+# Resolve a name's tokenId (for reputationOf / proposal recipient). Empty/0 if
+# unregistered.
+id_of() { # $1 = subdomain name
+  cast call "$DIAMOND" "idOfName(string)(uint256)" "$1" --rpc-url "$RPC" 2>/dev/null | awk '{print $1}'
+}
+
+# Integer delta of two decimal strings via awk (bignum-safe enough for wei here:
+# the values fit a double only loosely, so use awk's arbitrary-precision-ish
+# string subtraction guard — but $LH deltas in this gate are <= 0.05e18, which a
+# double represents exactly, and we compare to an exact expected literal). For
+# the exact-equality asserts we prefer python3 when present (as block 6 does).
+delta_wei() { # $1 = after  $2 = before  ->  echoes (after-before)
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c "print(int('${1:-0}') - int('${2:-0}'))" 2>/dev/null || echo ""
+  else
+    awk "BEGIN{printf \"%d\", ${1:-0} - ${2:-0}}" 2>/dev/null || echo ""
+  fi
 }
 
 # ===========================================================================
@@ -326,12 +399,243 @@ else
 fi
 
 # ===========================================================================
-# 7. send — OPTIONAL, off by default (E2E_RUN_SEND=1 to enable). A tiny self-
+# 7. guild — PARTY/GUILD rung of the coordination ladder. Create a fresh guild
+#    (claude becomes its admin), fund its on-chain treasury, invite the PEER and
+#    have the PEER accept. Each step asserts a CONCRETE on-chain delta:
+#      create  -> a NEW guildId appears (guildsOf(claude) grew, last id is new)
+#      fund    -> treasuryBalanceOf(id) rose by exactly 0.05 $LH
+#      invite+accept -> isGuildMember(id, peer)==true AND guildMembersOf grew
+#    Fresh guild per run (testnet — a cheap append-only row; not cleaned up).
+# ===========================================================================
+step "7. guild — create / fund / invite+accept (the guild rung)"
+GUILD_NAME="e2e-guild-$(date +%s)"
+GUILDS_BEFORE="$(cast call "$DIAMOND" "guildsOf(address)(uint256[])" "$ME_ADDR" --rpc-url "$RPC" 2>/dev/null | tr -d '[] ')"
+GC_OUT="$(as guild create "$GUILD_NAME" 2>&1)"; GC_RC=$?
+note "$(printf '%s' "$GC_OUT" | grep -E '✓|guild #' | head -1)"
+# The new guildId is the LAST entry in the creator's guildsOf index (the CLI
+# reads it the same way; we re-read the chain to assert, not the CLI output).
+GUILD_ID="$(cast call "$DIAMOND" "guildsOf(address)(uint256[])" "$ME_ADDR" --rpc-url "$RPC" 2>/dev/null | tr -d '[]' | awk '{print $NF}')"
+note "new guildId: ${GUILD_ID:-?}  (guildsOf before: [${GUILDS_BEFORE:-}])"
+if [[ -n "${GUILD_ID:-}" && "$GUILD_ID" =~ ^[0-9]+$ ]] && [[ ",$GUILDS_BEFORE," != *",$GUILD_ID,"* ]]; then
+  pass "guild create -> new guildId #$GUILD_ID (not in guildsOf before)"
+else
+  fail "guild create did NOT yield a new guildId (got '$GUILD_ID', exit $GC_RC)"
+fi
+if [[ -n "${GUILD_ID:-}" && "$GUILD_ID" =~ ^[0-9]+$ ]]; then
+  # fund: treasuryBalanceOf must rise by exactly 0.05 $LH (5e16 wei).
+  TREAS_BEFORE="$(read_uint 'treasuryBalanceOf(uint256)(uint256)' "$GUILD_ID")"
+  FUND_OUT="$(as guild fund "$GUILD_ID" 0.05 2>&1)"; FUND_RC=$?
+  note "$(printf '%s' "$FUND_OUT" | grep -E '✓|deposited' | head -1)"
+  TREAS_AFTER="$(read_uint 'treasuryBalanceOf(uint256)(uint256)' "$GUILD_ID")"
+  TREAS_DELTA="$(delta_wei "${TREAS_AFTER:-0}" "${TREAS_BEFORE:-0}")"
+  note "treasuryBalanceOf $TREAS_BEFORE -> $TREAS_AFTER  (delta $TREAS_DELTA wei)"
+  if [[ "$TREAS_DELTA" == "50000000000000000" ]]; then
+    pass "guild fund 0.05 -> treasuryBalanceOf rose by exactly 5e16 wei"
+  else
+    fail "guild fund: treasury delta=$TREAS_DELTA wei, expected 5e16 (0.05 \$LH) (exit $FUND_RC)"
+  fi
+
+  # invite + (peer) accept: assert the PEER joins the on-chain roster. Needs the
+  # PEER's key (it signs its own accept). Skip cleanly when the key is absent.
+  if [[ -z "$PEER_ADDR" ]]; then
+    skip "guild invite/accept ($PEER key not present — cannot sign the member's accept)"
+  else
+    MEMBERS_BEFORE_RAW="$(cast call "$DIAMOND" "guildMembersOf(uint256)(address[])" "$GUILD_ID" --rpc-url "$RPC" 2>/dev/null | tr ',' '\n' | grep -ciE '0x[0-9a-f]+' || echo 0)"
+    INVITE_OUT="$(as guild invite "$GUILD_ID" "$PEER" 2>&1)"; INVITE_RC=$?
+    note "$(printf '%s' "$INVITE_OUT" | grep -E '✓|invited' | head -1)"
+    ACCEPT_OUT="$(as_peer guild accept "$GUILD_ID" 2>&1)"; GACC_RC=$?
+    note "$(printf '%s' "$ACCEPT_OUT" | grep -E '✓|joined' | head -1)"
+    IS_MEMBER="$(cast call "$DIAMOND" "isGuildMember(uint256,address)(bool)" "$GUILD_ID" "$PEER_ADDR" --rpc-url "$RPC" 2>/dev/null)"
+    if [[ "$IS_MEMBER" == "true" ]]; then
+      pass "guild invite+accept -> isGuildMember(#$GUILD_ID, $PEER)==true"
+    else
+      fail "isGuildMember(#$GUILD_ID, $PEER)=$IS_MEMBER after accept (invite rc $INVITE_RC / accept rc $GACC_RC)"
+    fi
+    MEMBERS_AFTER_RAW="$(cast call "$DIAMOND" "guildMembersOf(uint256)(address[])" "$GUILD_ID" --rpc-url "$RPC" 2>/dev/null | tr ',' '\n' | grep -ciE '0x[0-9a-f]+' || echo 0)"
+    note "guildMembersOf count $MEMBERS_BEFORE_RAW -> $MEMBERS_AFTER_RAW"
+    if [[ "${MEMBERS_AFTER_RAW:-0}" -gt "${MEMBERS_BEFORE_RAW:-0}" ]]; then
+      pass "guildMembersOf(#$GUILD_ID) grew ($MEMBERS_BEFORE_RAW -> $MEMBERS_AFTER_RAW)"
+    else
+      fail "guildMembersOf(#$GUILD_ID) did not grow ($MEMBERS_BEFORE_RAW -> $MEMBERS_AFTER_RAW)"
+    fi
+  fi
+fi
+
+# ===========================================================================
+# 8. vote (DAO) — the GOVERNANCE rung. A guild MEMBER opens a treasury-spend
+#    proposal, then casts a `for` ballot. Asserts the on-chain governance state:
+#      propose -> a NEW proposalId appears in proposalsOf(guildId)
+#      cast for -> tallyOf(pid).forVotes == 1 AND hasVoted(pid, claude)==true
+#                  AND tallyOf(pid).passing == true (quorum=ceil(members/2) met,
+#                  for > against)  AND getProposal(pid).status == 0 (Active)
+#    We do NOT execute: execute needs the --period window to close (1h here), and
+#    execution-when-passed is Foundry-proven on the facet. The point of the LIVE
+#    gate is the propose+vote tallying, asserted on-chain.
+# ===========================================================================
+step "8. vote (DAO) — propose + cast 'for' (tally asserted, not executed)"
+if [[ -z "${GUILD_ID:-}" || ! "$GUILD_ID" =~ ^[0-9]+$ ]]; then
+  fail "vote: no guild from block 7 to propose into"
+else
+  PROPS_BEFORE="$(cast call "$DIAMOND" "proposalsOf(uint256,uint256,uint256)(uint256[],uint256)" "$GUILD_ID" 0 100 --rpc-url "$RPC" 2>/dev/null | head -1 | tr -d '[] ')"
+  # propose a tiny 0.01 $LH spend to the PEER, voting window 1h (== MIN period).
+  VP_OUT="$(as vote propose "$GUILD_ID" "$PEER" 0.01 --period 1h e2e regression proposal 2>&1)"; VP_RC=$?
+  note "$(printf '%s' "$VP_OUT" | grep -E '✓|proposal #' | head -1)"
+  PROP_ID="$(cast call "$DIAMOND" "proposalsOf(uint256,uint256,uint256)(uint256[],uint256)" "$GUILD_ID" 0 100 --rpc-url "$RPC" 2>/dev/null | head -1 | tr -d '[]' | tr ',' '\n' | grep -E '[0-9]' | tail -1 | tr -d ' ')"
+  note "new proposalId: ${PROP_ID:-?}"
+  if [[ -n "${PROP_ID:-}" && "$PROP_ID" =~ ^[0-9]+$ && ",$PROPS_BEFORE," != *",$PROP_ID,"* ]]; then
+    pass "vote propose -> new proposalId #$PROP_ID"
+  else
+    fail "vote propose did NOT yield a new proposalId (got '$PROP_ID', exit $VP_RC)"
+  fi
+  if [[ -n "${PROP_ID:-}" && "$PROP_ID" =~ ^[0-9]+$ ]]; then
+    VC_OUT="$(as vote cast "$PROP_ID" for 2>&1)"; VC_RC=$?
+    note "$(printf '%s' "$VC_OUT" | grep -E '✓|voted' | head -1)"
+    # tallyOf returns (forVotes, againstVotes, quorum, votesCast, passing) — one
+    # value per line. forVotes is line 1, passing is line 5.
+    TALLY="$(cast call "$DIAMOND" "tallyOf(uint256)(uint256,uint256,uint256,uint256,bool)" "$PROP_ID" --rpc-url "$RPC" 2>/dev/null)"
+    FOR_VOTES="$(printf '%s' "$TALLY" | awk 'NR==1{print $1}')"
+    PASSING="$(printf '%s' "$TALLY" | awk 'NR==5{print $1}')"
+    HAS_VOTED="$(cast call "$DIAMOND" "hasVoted(uint256,address)(bool)" "$PROP_ID" "$ME_ADDR" --rpc-url "$RPC" 2>/dev/null)"
+    # getProposal: status is field 6 (uint8) — guild_id, proposer, to, amount,
+    # deadline, status, forVotes, againstVotes.
+    PSTATUS="$(cast call "$DIAMOND" "getProposal(uint256)(uint256,address,address,uint256,uint64,uint8,uint256,uint256)" "$PROP_ID" --rpc-url "$RPC" 2>/dev/null | awk 'NR==6{print $1}')"
+    note "tally: for=$FOR_VOTES passing=$PASSING hasVoted=$HAS_VOTED status=$PSTATUS (cast rc $VC_RC)"
+    if [[ "$FOR_VOTES" == "1" ]]; then
+      pass "vote cast for -> tallyOf(#$PROP_ID).forVotes == 1"
+    else
+      fail "tallyOf(#$PROP_ID).forVotes=$FOR_VOTES, expected 1 (cast exit $VC_RC)"
+    fi
+    if [[ "$HAS_VOTED" == "true" ]]; then
+      pass "hasVoted(#$PROP_ID, claude) == true"
+    else
+      fail "hasVoted(#$PROP_ID, claude)=$HAS_VOTED, expected true"
+    fi
+    if [[ "$PASSING" == "true" && "$PSTATUS" == "0" ]]; then
+      pass "proposal #$PROP_ID is Active (status 0) AND passing (quorum met, for>against)"
+    else
+      fail "proposal #$PROP_ID passing=$PASSING status=$PSTATUS (expected passing=true, status=0 Active)"
+    fi
+  fi
+fi
+
+# ===========================================================================
+# 9. tba-exec — the agent's WALLET acts. Deploy claude's token-bound account
+#    (idempotent), fund it a little, then have it EXECUTE a $LH transfer to the
+#    PEER. Asserts the EXECUTION had an on-chain effect:
+#      deploy -> eth_getCode(claude TBA) is non-empty (the account exists)
+#      exec   -> the recipient's $LH balance rose by exactly the sent 0.01 $LH
+#                (`tba exec <name> <amt>` sends to the NAME's OWNER address, so we
+#                 assert the PEER's owner-EOA balance delta).
+# ===========================================================================
+step "9. tba-exec — deploy + execute a \$LH transfer from the agent's TBA"
+CLAUDE_TBA="$(tba_of "$ME")"
+note "claude TBA: ${CLAUDE_TBA:-?}"
+DEP_OUT="$(as tba deploy 2>&1)"; DEP_RC=$?
+note "$(printf '%s' "$DEP_OUT" | grep -iE '✓|deployed|already' | head -1)"
+TBA_CODE="$(cast code "$CLAUDE_TBA" --rpc-url "$RPC" 2>/dev/null)"
+if [[ -n "$TBA_CODE" && "$TBA_CODE" != "0x" ]]; then
+  pass "tba deploy -> eth_getCode(claude TBA) non-empty (account deployed)"
+else
+  fail "claude TBA has no code after deploy (code='$TBA_CODE', exit $DEP_RC)"
+fi
+if [[ -z "$PEER_ADDR" ]]; then
+  skip "tba exec ($PEER key not present — cannot resolve/assert the recipient delta)"
+else
+  # Fund claude's TBA a little so it can pay (a self-send from claude's EOA to
+  # its own TBA — the TBA must hold $LH to forward it). Idempotent + cheap.
+  as send "$CLAUDE_TBA" 0.02 >/dev/null 2>&1 || true
+  PEER_LH_BEFORE="$(read_lh "$PEER_ADDR")"
+  EXEC_OUT="$(as tba exec "$PEER" 0.01 2>&1)"; EXEC_RC=$?
+  note "$(printf '%s' "$EXEC_OUT" | grep -iE '✓|executed|send' | head -1)"
+  PEER_LH_AFTER="$(read_lh "$PEER_ADDR")"
+  PEER_LH_DELTA="$(delta_wei "${PEER_LH_AFTER:-0}" "${PEER_LH_BEFORE:-0}")"
+  note "$PEER \$LH $PEER_LH_BEFORE -> $PEER_LH_AFTER  (delta $PEER_LH_DELTA wei)"
+  if [[ "$PEER_LH_DELTA" == "10000000000000000" ]]; then
+    pass "tba exec -> $PEER's \$LH rose by exactly 1e16 wei (0.01 \$LH) — the TBA executed a transfer"
+  else
+    fail "tba exec: $PEER \$LH delta=$PEER_LH_DELTA wei, expected 1e16 (0.01 \$LH) (exit $EXEC_RC)"
+  fi
+fi
+
+# ===========================================================================
+# 10. reputation — the ERC-8004-style attestation rung. claude attests a rating
+#     to the PEER with a FRESH workRef each run (so it's a real write, never a
+#     dedup no-op — the facet dedups (attester, subject, workRef)). Asserts the
+#     on-chain reputation accumulator moved:
+#       reputationOf(peerTokenId).count rose by exactly 1
+#       reputationOf(peerTokenId).sum   rose by exactly the rating (5)
+# ===========================================================================
+step "10. reputation — attest (fresh ref) -> count +1 + sum +rating"
+PEER_TOKEN="$(id_of "$PEER")"
+note "$PEER tokenId: ${PEER_TOKEN:-?}"
+if [[ -z "${PEER_TOKEN:-}" || "$PEER_TOKEN" == "0" ]]; then
+  fail "reputation: could not resolve $PEER tokenId on-chain"
+else
+  REP_BEFORE="$(cast call "$DIAMOND" "reputationOf(uint256)(uint256,uint256)" "$PEER_TOKEN" --rpc-url "$RPC" 2>/dev/null)"
+  REP_C_BEFORE="$(printf '%s' "$REP_BEFORE" | awk 'NR==1{print $1}')"
+  REP_S_BEFORE="$(printf '%s' "$REP_BEFORE" | awk 'NR==2{print $1}')"
+  # A fresh ref each run: the current epoch seconds (so the (attester,subject,ref)
+  # dedup key is unique per run — a real on-chain attestation, not a no-op).
+  REP_REF="$(date +%s)"
+  RATING=5
+  ATT_OUT="$(as reputation attest "$PEER" "$RATING" --ref "$REP_REF" 2>&1)"; ATT_RC=$?
+  note "$(printf '%s' "$ATT_OUT" | grep -E '✓|attested' | head -1)"
+  REP_AFTER="$(cast call "$DIAMOND" "reputationOf(uint256)(uint256,uint256)" "$PEER_TOKEN" --rpc-url "$RPC" 2>/dev/null)"
+  REP_C_AFTER="$(printf '%s' "$REP_AFTER" | awk 'NR==1{print $1}')"
+  REP_S_AFTER="$(printf '%s' "$REP_AFTER" | awk 'NR==2{print $1}')"
+  C_DELTA="$(delta_wei "${REP_C_AFTER:-0}" "${REP_C_BEFORE:-0}")"
+  S_DELTA="$(delta_wei "${REP_S_AFTER:-0}" "${REP_S_BEFORE:-0}")"
+  note "reputationOf count $REP_C_BEFORE -> $REP_C_AFTER (Δ$C_DELTA)  sum $REP_S_BEFORE -> $REP_S_AFTER (Δ$S_DELTA)"
+  if [[ "$C_DELTA" == "1" ]]; then
+    pass "reputation attest -> count rose by exactly 1"
+  else
+    fail "reputation count delta=$C_DELTA, expected 1 (attest exit $ATT_RC — was the ref fresh?)"
+  fi
+  if [[ "$S_DELTA" == "$RATING" ]]; then
+    pass "reputation attest -> sum rose by exactly the rating ($RATING)"
+  else
+    fail "reputation sum delta=$S_DELTA, expected $RATING (attest exit $ATT_RC)"
+  fi
+fi
+
+# ===========================================================================
+# 11. colony — the FULL autonomous cycle (OPTIONAL, E2E_RUN_COLONY=1). `colony
+#     run` composes post->claim->work(LLM)->submit->judge(LLM)->accept->payout->
+#     attest into one self-driving turn. It makes TWO headless LLM `call`s (work
+#     + judge), so it's SLOW and the result/judge TEXT is non-deterministic — we
+#     assert the CYCLE, not the text: exit 0 AND the worker's TBA $LH rose by the
+#     escrowed reward (the accept settled the payout to the worker's TBA). Off by
+#     default (mirrors how `send` is guarded); keep the reward tiny.
+# ===========================================================================
+step "11. colony — one full autonomous cycle pays the worker (optional)"
+if [[ "${E2E_RUN_COLONY:-0}" != "1" ]]; then
+  skip "colony (set E2E_RUN_COLONY=1 to exercise; it makes 2 LLM calls — slow — and pays a tiny reward)"
+elif [[ ! -f "${WORKER}.localharness.key" ]]; then
+  skip "colony ($WORKER key not present — the worker must sign its own claim+submit)"
+else
+  WORKER_TBA="$(tba_of "$WORKER")"
+  note "worker $WORKER TBA: ${WORKER_TBA:-?}"
+  COLONY_REWARD="0.01"
+  WORKER_LH_BEFORE="$(read_lh "$WORKER_TBA")"
+  COLONY_OUT="$(as colony run "e2e probe: reply with the single word pong" --reward "$COLONY_REWARD" --worker "$WORKER" 2>&1)"; COLONY_RC=$?
+  note "$(printf '%s' "$COLONY_OUT" | grep -iE '✓|accepted|settl|payout|attest' | tail -2 | tr '\n' ' ')"
+  WORKER_LH_AFTER="$(read_lh "$WORKER_TBA")"
+  WORKER_LH_DELTA="$(delta_wei "${WORKER_LH_AFTER:-0}" "${WORKER_LH_BEFORE:-0}")"
+  note "$WORKER TBA \$LH $WORKER_LH_BEFORE -> $WORKER_LH_AFTER  (delta $WORKER_LH_DELTA wei)"
+  if [[ $COLONY_RC -eq 0 && "$WORKER_LH_DELTA" == "10000000000000000" ]]; then
+    pass "colony run -> cycle completed (exit 0) AND worker TBA paid exactly 1e16 wei (0.01 \$LH)"
+  else
+    fail "colony run: exit $COLONY_RC, worker TBA delta=$WORKER_LH_DELTA wei (expected exit 0 + 1e16 reward)"
+  fi
+fi
+
+# ===========================================================================
+# 12. send — OPTIONAL, off by default (E2E_RUN_SEND=1 to enable). A tiny self-
 #    send is wasteful (a no-op on net balance, only burns sponsor gas), so it's
 #    guarded. When enabled, assert the CLI reports success (the $LH transfer is
 #    a self-transfer; balance is unchanged but the tx must land).
 # ===========================================================================
-step "7. send — tiny self-transfer (optional)"
+step "12. send — tiny self-transfer (optional)"
 if [[ "${E2E_RUN_SEND:-0}" == "1" ]]; then
   SEND_OUT="$(as send "$ME_ADDR" 0.001 2>&1)"; SEND_RC=$?
   note "$(printf '%s' "$SEND_OUT" | head -1)"
