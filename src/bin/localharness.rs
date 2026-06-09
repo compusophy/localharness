@@ -171,7 +171,8 @@ USAGE:
   localharness bounty claim [--as <me>] <id>     claim an open bounty (you do the work)
   localharness bounty submit [--as <me>] <id> <result>  submit your result for a claim
   localharness bounty accept [--as <me>] <id>    accept a result + pay the claimant (poster)
-  localharness bounty cancel [--as <me>] <id>    cancel your bounty (refunds the escrow)
+  localharness bounty cancel [--as <me>] <id>    cancel your OPEN bounty (refunds the escrow)
+  localharness bounty reclaim [--as <me>] <id>   refund an EXPIRED claimed/submitted bounty
   localharness bounty mine [--as <me>]   list the bounties you've posted
   localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent>] [--judges <N>] [--judge <agent>] [--ttl <dur>]
                                          run ONE autonomous agent-economy cycle:
@@ -3510,7 +3511,8 @@ usage: localharness bounty <post|list|claim|submit|accept|cancel|mine> ...
   bounty claim [--as <me>] <id>                        claim an open bounty (you do the work)
   bounty submit [--as <me>] <id> <result...>           submit your result for a claim
   bounty accept [--as <me>] <id>                       accept a result + pay out (poster)
-  bounty cancel [--as <me>] <id>                       cancel your bounty (refunds escrow)
+  bounty cancel [--as <me>] <id>                       cancel your OPEN bounty (refunds escrow)
+  bounty reclaim [--as <me>] <id>                      refund an EXPIRED claimed/submitted bounty
   bounty mine [--as <me>]                              list bounties you've posted
   dur: 1h / 7d / 30d   (1h … 90d, default 7d)   amount: $LH (e.g. 5 or 0.5)";
 
@@ -3606,6 +3608,13 @@ async fn bounty(caller: Option<&str>, rest: &[String]) -> i32 {
             Some(id) => bounty_cancel(caller, id).await,
             None => {
                 eprintln!("usage: localharness bounty cancel [--as <me>] <id>");
+                2
+            }
+        },
+        Some("reclaim") => match rest.get(1) {
+            Some(id) => bounty_reclaim(caller, id).await,
+            None => {
+                eprintln!("usage: localharness bounty reclaim [--as <me>] <id>");
                 2
             }
         },
@@ -3910,6 +3919,40 @@ async fn bounty_cancel(caller: Option<&str>, id_arg: &str) -> i32 {
         }
         Err(e) => {
             eprintln!("bounty cancel failed: {e}");
+            1
+        }
+    }
+}
+
+/// `bounty reclaim <id>` — refund an EXPIRED bounty whose work was never accepted
+/// (`reclaimExpired(id)`). This is the recovery path for a bounty stranded in
+/// Claimed/Submitted (where `bounty cancel` reverts `NotOpen`): once the TTL has
+/// elapsed the escrow refunds 100% to the poster. Permissionless to call on-chain,
+/// but the facet always pays the POSTER, so a non-poster gains nothing.
+async fn bounty_reclaim(caller: Option<&str>, id_arg: &str) -> i32 {
+    let bounty_id = match parse_bounty_id(id_arg) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    println!("reclaiming expired bounty #{bounty_id} (refunding its escrow to the poster) …");
+    match registry::reclaim_expired_sponsored(&signer, &sponsor, bounty_id, registry::ALPHA_USD_ADDRESS).await {
+        Ok(tx) => {
+            println!("✓ bounty #{bounty_id} reclaimed — the escrowed $LH is refunded to its poster  tx: {tx}");
+            0
+        }
+        Err(e) => {
+            eprintln!(
+                "bounty reclaim failed: {e}\n  \
+                 (a bounty can only be reclaimed AFTER its ttl expires, and only while it has \
+                 not been accepted/cancelled/already-reclaimed)"
+            );
             1
         }
     }
@@ -4236,8 +4279,9 @@ usage: localharness colony run [--as <me>] <task> --reward <lh> [--worker <agent
   The worker MUST be a fleet/owned agent whose key is in your keys dir
   (it signs its own claim + submit). The neutral panel makes the reputation signal
   TRUSTWORTHY — which matters because reputation now DRIVES the PICK step. On any
-  step failure the bounty id is printed so it can be `bounty cancel`ed / `bounty`
-  reclaimed — never a silent half-state. ACCEPT still pays even on a low median
+  step failure the bounty id + the CORRECT recovery command is printed (`bounty
+  cancel` while OPEN, else `bounty reclaim` after the ttl) — never a silent
+  half-state. ACCEPT still pays even on a low median
   score (the worker did work; reputation, not payment, is the quality signal —
   payment-gating a failing result is a documented further refinement). If no
   neutral agent exists the caller acts as a lone fallback judge; if ALL judge
@@ -4699,6 +4743,56 @@ where
     }
 }
 
+/// Surface a mid-cycle `colony run` failure with the CORRECT escrow-recovery
+/// command for the bounty's LIVE on-chain status. `cancelBounty` only works while
+/// the bounty is OPEN — once a worker has CLAIMED it (status ≥ 1) cancel reverts
+/// `NotOpen`, and the only recovery is the ttl-gated `reclaimExpired`
+/// (`bounty reclaim`). Re-reading `getBounty(id).status` makes the advice right
+/// even when a claim's tx mined but its RESPONSE decode failed (status = Claimed).
+/// Returns the process exit code (always `1` — a failed cycle).
+async fn colony_bail(bounty_id: u64, caller_label: &str, stage: &str, err: &str) -> i32 {
+    eprintln!("[{stage}] {err}");
+    let status = registry::get_bounty(bounty_id).await.ok().map(|b| b.status);
+    eprintln!("{}", colony_recovery_hint(bounty_id, caller_label, status));
+    eprintln!("  Inspect: localharness bounty mine --as {caller_label}");
+    1
+}
+
+/// Pure: pick the CORRECT escrow-recovery hint for a stranded bounty given its
+/// live on-chain `status` (`None` = the status read itself failed). The crux:
+/// `bounty cancel` (`cancelBounty`) is accepted ONLY while OPEN (status 0) — once
+/// CLAIMED/SUBMITTED (1/2) it reverts `NotOpen`, so the only recovery is the
+/// ttl-gated `bounty reclaim` (`reclaimExpired`). Paid (3) / Cancelled (4) /
+/// Reclaimed (5) are terminal (nothing to recover). On an unknown/unreadable
+/// status, advise BOTH so the user is never stuck. Testable with no network.
+fn colony_recovery_hint(bounty_id: u64, caller_label: &str, status: Option<u8>) -> String {
+    match status {
+        Some(0) => format!(
+            "  ⚠ bounty #{bounty_id} is OPEN and unsettled. Recover the $LH now with:\n    \
+             localharness bounty cancel --as {caller_label} {bounty_id}"
+        ),
+        Some(s @ (1 | 2)) => {
+            let st = if s == 1 { "claimed" } else { "submitted" };
+            format!(
+                "  ⚠ bounty #{bounty_id} is {st} (already past OPEN) so `bounty cancel` would \
+                 revert — the escrow refunds only after the ttl. Recover the $LH with:\n    \
+                 localharness bounty reclaim --as {caller_label} {bounty_id}   (works once the ttl has expired)"
+            )
+        }
+        Some(3) => format!(
+            "  bounty #{bounty_id} is already PAID — the reward settled to the worker; nothing to recover."
+        ),
+        Some(4) | Some(5) => format!(
+            "  bounty #{bounty_id} is already refunded (cancelled/reclaimed); nothing to recover."
+        ),
+        _ => format!(
+            "  ⚠ bounty #{bounty_id} is escrowed and unsettled. If it is still OPEN: \
+             `localharness bounty cancel --as {caller_label} {bounty_id}`; if a worker has already \
+             claimed it, wait for the ttl then `localharness bounty reclaim --as {caller_label} {bounty_id}`."
+        ),
+    }
+}
+
 /// `colony run` — drive ONE autonomous post→claim→work→submit→JUDGE→accept→
 /// payout→attest cycle. Each on-chain step reuses the bounty helpers; the work
 /// AND the judge both reuse `run_agent_turn`. The [6/8] JUDGE step scores the
@@ -4789,16 +4883,17 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     println!();
 
     // From here on, any failure must surface the bounty id so the escrow can be
-    // reclaimed — never a silent half-state.
-    let bail = |stage: &str, err: &str| -> i32 {
-        eprintln!("[{stage}] {err}");
-        eprintln!(
-            "  ⚠ bounty #{bounty_id} is escrowed and unsettled. Recover the $LH with:\n    \
-             localharness bounty cancel --as {caller_label} {bounty_id}   (refunds you now, if not yet paid)\n  \
-             or let it expire and reclaim it after the ttl. Inspect: localharness bounty mine --as {caller_label}"
-        );
-        1
-    };
+    // reclaimed — never a silent half-state. The recovery COMMAND depends on the
+    // bounty's live on-chain status: `cancelBounty` only works while OPEN (it
+    // reverts `NotOpen` once a worker has CLAIMED), so a failure AFTER the claim
+    // mined must steer the user to the EXPIRY → `bounty reclaim` path instead.
+    // `colony_bail` re-reads `getBounty(id).status` so the advice is correct even
+    // when a claim's tx mined but its response decode failed (status = Claimed).
+    macro_rules! bail {
+        ($stage:expr, $err:expr) => {
+            return colony_bail(bounty_id, &caller_label, $stage, &$err).await
+        };
+    }
 
     // -- STEP 2: pick + resolve the WORKER. --------------------------------
     let worker_name = match worker {
@@ -4810,7 +4905,7 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
                     println!("      ✓ {why}");
                     w
                 }
-                Err(e) => return bail("2/8", &format!("PICK failed: {e}")),
+                Err(e) => bail!("2/8", format!("PICK failed: {e}")),
             }
         }
     };
@@ -4818,29 +4913,29 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     let (worker_key_file, worker_key_hex) = match resolve_caller_key(Some(&worker_name)) {
         Ok(c) => c,
         Err(e) => {
-            return bail(
+            bail!(
                 "2/8",
-                &format!(
+                format!(
                     "worker '{worker_name}' has no local identity key ({e}). The worker must be a \
                      fleet/owned agent whose key is in your keys dir — it signs its own claim + submit."
-                ),
+                )
             )
         }
     };
     let worker_signer = match wallet::from_private_key_hex(&worker_key_hex) {
         Ok(s) => s,
-        Err(e) => return bail("2/8", &format!("bad worker key in {worker_key_file}: {e}")),
+        Err(e) => bail!("2/8", format!("bad worker key in {worker_key_file}: {e}")),
     };
     // The worker's tokenId (the identity that earns the reward) + its TBA wallet
     // (where the reward lands) — resolve both up front so the payout is verifiable.
     let worker_token_id = match resolve_own_token_id(Some(&worker_name), &worker_signer).await {
         Ok(id) => id,
-        Err(e) => return bail("2/8", &format!("could not resolve worker '{worker_name}' identity: {e}")),
+        Err(e) => bail!("2/8", format!("could not resolve worker '{worker_name}' identity: {e}")),
     };
     let worker_tba = match registry::tba_of_token_id(worker_token_id).await {
         Ok(Some(a)) => a,
-        Ok(None) => return bail("2/8", &format!("worker token #{worker_token_id} has no token-bound account")),
-        Err(e) => return bail("2/8", &format!("RPC error resolving worker TBA: {e}")),
+        Ok(None) => bail!("2/8", format!("worker token #{worker_token_id} has no token-bound account")),
+        Err(e) => bail!("2/8", format!("RPC error resolving worker TBA: {e}")),
     };
     let tba_before = registry::token_balance_of(&worker_tba).await.unwrap_or(0);
     println!("      worker {worker_name} = token #{worker_token_id}, TBA {worker_tba}");
@@ -4861,7 +4956,7 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     .await
     {
         Ok(tx) => println!("      ✓ claimed by token #{worker_token_id}  (tx {tx})"),
-        Err(e) => return bail("3/8", &format!("CLAIM failed: {e}")),
+        Err(e) => bail!("3/8", format!("CLAIM failed: {e}")),
     }
     println!();
 
@@ -4885,13 +4980,13 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
         Ok((text, _hist)) => {
             let trimmed = text.trim().to_string();
             if trimmed.is_empty() {
-                return bail("4/8", "WORK produced an empty result — nothing to submit.");
+                bail!("4/8", "WORK produced an empty result — nothing to submit.".to_string());
             }
             trimmed
         }
         Err(e) => {
             report_call_error("[4/8] WORK failed", &e);
-            return bail("4/8", "the worker's persona turn failed — see the hint above.");
+            bail!("4/8", "the worker's persona turn failed — see the hint above.".to_string());
         }
     };
     println!("      ✓ {worker_name} produced a result:");
@@ -4916,7 +5011,7 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     .await
     {
         Ok(tx) => println!("      ✓ result submitted  (tx {tx})"),
-        Err(e) => return bail("5/8", &format!("SUBMIT failed: {e}")),
+        Err(e) => bail!("5/8", format!("SUBMIT failed: {e}")),
     }
     println!();
 
@@ -5036,7 +5131,7 @@ async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     .await
     {
         Ok(tx) => println!("      ✓ accepted — {} settled  (tx {tx})", fmt_lh(reward_wei)),
-        Err(e) => return bail("7/8", &format!("ACCEPT failed: {e}")),
+        Err(e) => bail!("7/8", format!("ACCEPT failed: {e}")),
     }
     println!();
 
@@ -7465,6 +7560,43 @@ mod tests {
         let line = colony_pick_reasoning(&single);
         assert!(line.contains("4.0 from 1 attestation"));
         assert!(!line.contains("attestations"));
+    }
+
+    #[test]
+    fn colony_recovery_hint_matches_the_working_command_per_status() {
+        // OPEN (0): `bounty cancel` is the recovery — and it WORKS while Open.
+        let h = colony_recovery_hint(7, "me", Some(0));
+        assert!(h.contains("bounty cancel --as me 7"), "open → cancel: {h}");
+        assert!(!h.contains("bounty reclaim"), "open must NOT steer to reclaim: {h}");
+
+        // CLAIMED (1) / SUBMITTED (2): `cancelBounty` reverts `NotOpen`, so the
+        // ONLY working recovery is the ttl-gated `bounty reclaim`. The earlier bug
+        // headlined `bounty cancel` here, which always reverts mid-cycle.
+        for st in [1u8, 2] {
+            let h = colony_recovery_hint(7, "me", Some(st));
+            assert!(h.contains("bounty reclaim --as me 7"), "status {st} → reclaim: {h}");
+            // Must NOT headline the cancel command that would revert.
+            assert!(
+                !h.contains("bounty cancel --as me 7"),
+                "status {st} must not advise the reverting cancel: {h}"
+            );
+        }
+
+        // PAID (3): nothing to recover (the worker was paid).
+        let h = colony_recovery_hint(7, "me", Some(3));
+        assert!(h.to_lowercase().contains("paid"));
+        assert!(!h.contains("bounty cancel") && !h.contains("bounty reclaim"));
+
+        // Cancelled (4) / Reclaimed (5): already refunded, nothing to do.
+        for st in [4u8, 5] {
+            let h = colony_recovery_hint(7, "me", Some(st));
+            assert!(h.to_lowercase().contains("refunded"), "status {st}: {h}");
+        }
+
+        // Unknown / unreadable status → surface BOTH so the user is never stuck.
+        let h = colony_recovery_hint(7, "me", None);
+        assert!(h.contains("bounty cancel --as me 7"));
+        assert!(h.contains("bounty reclaim --as me 7"));
     }
 
     #[test]
