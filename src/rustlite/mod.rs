@@ -217,6 +217,49 @@ mod tests {
         )
         .is_err());
     }
+
+    #[test]
+    fn array_params_and_repeat_init() {
+        // `[T; N]` is now a TYPE — an array can be a fn PARAMETER (passed as its
+        // i32 base pointer). A helper reads through the array param.
+        assert!(compile(
+            "fn sum3(a: [i32; 3]) -> i32 { a[0] + a[1] + a[2] } \
+             fn frame(t: i32) { let g = [10, 20, 30]; host::display::clear(sum3(g)); host::display::present(); }"
+        )
+        .is_ok());
+        // An array param can be MUTATED in the callee (shared backing — the
+        // base pointer aliases the caller's region, C-style).
+        assert!(compile(
+            "fn set0(a: [i32; 3], v: i32) { a[0] = v; } \
+             fn frame(t: i32) { let mut g = [0, 0, 0]; set0(g, 7); host::display::clear(g[0]); host::display::present(); }"
+        )
+        .is_ok());
+        // `[v; N]` sized repeat init typechecks + the result is indexable.
+        assert!(compile(
+            "fn frame(t: i32) { let mut g = [0; 64]; g[5] = 9; host::display::clear(g[5]); host::display::present(); }"
+        )
+        .is_ok());
+        // The repeat value need not be a literal (any i32 expr).
+        assert!(compile(
+            "fn frame(t: i32) { let g = [t * 2; 8]; host::display::clear(g[3]); host::display::present(); }"
+        )
+        .is_ok());
+        // `[v; 0]` is rejected (empty arrays unsupported, same as `[]`).
+        assert!(compile(
+            "fn frame(t: i32) { let g = [0; 0]; host::display::present(); }"
+        )
+        .is_err());
+        // Non-i32 array param element type is rejected (i32-only, v1).
+        assert!(compile(
+            "fn f(a: [bool; 2]) {} fn frame(t: i32) { host::display::present(); }"
+        )
+        .is_err());
+        // Array repeat with a non-i32 value is rejected.
+        assert!(compile(
+            "fn frame(t: i32) { let g = [true; 4]; host::display::present(); }"
+        )
+        .is_err());
+    }
 }
 
 /// Emit the indexed-array-write cartridges that the node run-proof
@@ -258,6 +301,35 @@ mod array_write_run_proof {
             (
                 "overwrite.wasm",
                 "fn frame(t: i32) { let mut a = [0, 0]; a[0] = 7; a[0] = 99; host::display::clear(a[0]); host::display::present(); }",
+            ),
+            // 4) ARRAY PARAM — read through it in a helper. sum([3,4,5]) = 12.
+            //    Proves an array typed `[i32; N]` lowers to its base pointer and
+            //    the callee indexes it correctly.
+            (
+                "param_read.wasm",
+                "fn sum(a: [i32; 3]) -> i32 { a[0] + a[1] + a[2] } \
+                 fn frame(t: i32) { let g = [3, 4, 5]; host::display::clear(sum(g)); host::display::present(); }",
+            ),
+            // 5) ARRAY PARAM — SHARED BACKING. A write IN THE CALLEE through the
+            //    array param is visible to the CALLER (the pointer aliases the
+            //    same static region, C-style). set(g, 77); read g[1] => 77.
+            (
+                "param_shared_write.wasm",
+                "fn set1(a: [i32; 3], v: i32) { a[1] = v; } \
+                 fn frame(t: i32) { let mut g = [0, 0, 0]; set1(g, 77); host::display::clear(g[1]); host::display::present(); }",
+            ),
+            // 6) `[v; N]` SIZED REPEAT INIT — every slot is filled with v.
+            //    let g = [9; 16]; read g[7] => 9 (a slot the literal didn't
+            //    special-case), proving the fill loop covers the whole region.
+            (
+                "repeat_fill.wasm",
+                "fn frame(t: i32) { let g = [9; 16]; host::display::clear(g[7]); host::display::present(); }",
+            ),
+            // 7) `[v; N]` then WRITE one cell — the rest stay at the fill value.
+            //    let mut g = [5; 8]; g[2] = 88; read g[t] (t picks the cell).
+            (
+                "repeat_then_write.wasm",
+                "fn frame(t: i32) { let mut g = [5; 8]; g[2] = 88; host::display::clear(g[t]); host::display::present(); }",
             ),
         ];
 

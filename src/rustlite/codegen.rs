@@ -299,6 +299,7 @@ impl WasmEmitter {
                     self.scan_expr_imports(e);
                 }
             }
+            TypedExprKind::ArrayRepeat { value, .. } => self.scan_expr_imports(value),
             TypedExprKind::Index { base, index } => {
                 self.scan_expr_imports(base);
                 self.scan_expr_imports(index);
@@ -726,6 +727,35 @@ impl WasmEmitter {
                     code.push(OP_I32_CONST);
                     leb128_i32((base + i as u32 * 4) as i32, code);
                     self.emit_expr(elem, code)?;
+                    code.push(OP_I32_STORE);
+                    leb128_u32(2, code); // align = 4 bytes (2^2)
+                    leb128_u32(0, code); // static offset
+                }
+                code.push(OP_I32_CONST);
+                leb128_i32(base as i32, code);
+            }
+            TypedExprKind::ArrayRepeat { value, count } => {
+                // `[value; count]` — same static-region model as ArrayLit, but
+                // every slot gets the SAME value. Evaluate `value` ONCE into a
+                // temp local (it may be a host call / non-constant), then store
+                // it into each of the `count` i32 slots. The expression's value
+                // is the region's base pointer.
+                let n = *count as u32;
+                let pad = (4 - (self.data_offset % 4)) % 4;
+                self.data_offset += pad;
+                let base = self.data_offset;
+                self.data_offset += n * 4;
+
+                let val_local = self.alloc_local("__array_repeat_val", &ResolvedType::I32);
+                self.emit_expr(value, code)?;
+                code.push(OP_LOCAL_SET);
+                leb128_u32(val_local, code);
+
+                for i in 0..n {
+                    code.push(OP_I32_CONST);
+                    leb128_i32((base + i * 4) as i32, code);
+                    code.push(OP_LOCAL_GET);
+                    leb128_u32(val_local, code);
                     code.push(OP_I32_STORE);
                     leb128_u32(2, code); // align = 4 bytes (2^2)
                     leb128_u32(0, code); // static offset

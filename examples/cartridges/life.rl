@@ -1,6 +1,5 @@
 // CORPUS: Conway's GAME OF LIFE on an 8x8 grid — the capstone "stateful grid
-// game" (Tetris / Game-of-Life class) that rustlite could not express before
-// indexed ARRAY WRITES landed. It is a real cellular automaton, not a demo:
+// game" (Tetris / Game-of-Life class). It is a real cellular automaton:
 //
 //   - The 64 cells live in the 64 host STATE SLOTS (slot = y*8 + x), so the
 //     grid PERSISTS across frame() calls — each frame steps one generation.
@@ -21,38 +20,46 @@
 // (scripts/test-cartridges.mjs) drives several frames against a SHARED state
 // map and asserts exactly this oscillation — a deterministic correctness check.
 //
-// Exercises in one cartridge: indexed array WRITES to a named local
-// (`next[i] = v`), array READS (`cur[i]`), the 64 state slots for cross-frame
-// persistence, NESTED loops (the per-cell 3x3 neighbour scan inside the grid
-// scan), and `if a < b {` style bounded comparisons.
-//
-// LANGUAGE NOTE: rustlite has no ARRAY TYPE in the type grammar, so an array
-// cannot be a fn parameter or return type — `fn f(cur: [i32; 64])` fails to
-// parse (LH0102). The whole next-generation step (including the neighbour
-// count) therefore lives INLINE in frame(), operating on the local `cur`.
+// LANGUAGE PROOF: rustlite now has an ARRAY TYPE (`[i32; N]`), so the per-cell
+// neighbour count is FACTORED INTO A REAL HELPER `live_neighbours(cur, cx, cy)`
+// taking the grid as an array PARAMETER (passed by its base pointer — the
+// callee reads the caller's backing region directly, C-style). The `cur`/`next`
+// grids use the SIZED REPEAT INIT `[0; 64]` instead of a 64-element literal.
+// This is the end-to-end proof: a game factored into helpers compiles + runs.
+
+// Count the live neighbours of cell (cx, cy) in the 3x3 block around it,
+// skipping the centre. Off-grid neighbours count as dead (bounded grid).
+// `cur` is the grid as an array PARAMETER — read through its base pointer.
+fn live_neighbours(cur: [i32; 64], cx: i32, cy: i32) -> i32 {
+    let mut nbrs: i32 = 0;
+    let mut dy: i32 = -1;
+    while dy <= 1 {
+        let mut dx: i32 = -1;
+        while dx <= 1 {
+            if dx != 0 || dy != 0 {
+                let nx: i32 = cx + dx;
+                let ny: i32 = cy + dy;
+                if nx >= 0 && nx < 8 && ny >= 0 && ny < 8 {
+                    let nidx: i32 = ny * 8 + nx;
+                    nbrs = nbrs + cur[nidx];
+                }
+            }
+            dx = dx + 1;
+        }
+        dy = dy + 1;
+    }
+    nbrs
+}
 
 fn frame(t: i32) {
     // --- 1. Read the persisted grid out of the 64 state slots into `cur`. ---
-    // The literal reserves a fresh 64-i32 region; we overwrite every slot, so
-    // the initial zeros are immaterial (this is the [0; 64] workaround — see
-    // the cartridge corpus notes; sized-array repeat init is not in rustlite).
-    let mut cur = [0, 0, 0, 0, 0, 0, 0, 0,
-                   0, 0, 0, 0, 0, 0, 0, 0,
-                   0, 0, 0, 0, 0, 0, 0, 0,
-                   0, 0, 0, 0, 0, 0, 0, 0,
-                   0, 0, 0, 0, 0, 0, 0, 0,
-                   0, 0, 0, 0, 0, 0, 0, 0,
-                   0, 0, 0, 0, 0, 0, 0, 0,
-                   0, 0, 0, 0, 0, 0, 0, 0];
+    // `[0; 64]` reserves a fresh 64-i32 region (sized repeat init); we overwrite
+    // every slot below, so the initial zeros are immaterial.
+    let mut cur = [0; 64];
 
     // On the very first frame, SEED the horizontal blinker instead of reading
     // the (still-empty) slots: cells (2,4), (3,4), (4,4) -> y*8 + x.
     if t == 0 {
-        let mut z: i32 = 0;
-        while z < 64 {
-            cur[z] = 0;
-            z = z + 1;
-        }
         cur[34] = 1; // (2,4)
         cur[35] = 1; // (3,4)
         cur[36] = 1; // (4,4)
@@ -65,14 +72,7 @@ fn frame(t: i32) {
     }
 
     // --- 2. Compute the next generation into `next` via array WRITES. ---
-    let mut next = [0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 0];
+    let mut next = [0; 64];
 
     let mut y: i32 = 0;
     while y < 8 {
@@ -81,25 +81,8 @@ fn frame(t: i32) {
             let idx: i32 = y * 8 + x;
             let alive: i32 = cur[idx];
 
-            // Count live neighbours in the 3x3 block around (x, y), skipping
-            // the centre. Off-grid neighbours count as dead (bounded grid).
-            let mut nbrs: i32 = 0;
-            let mut dy: i32 = -1;
-            while dy <= 1 {
-                let mut dx: i32 = -1;
-                while dx <= 1 {
-                    if dx != 0 || dy != 0 {
-                        let nx: i32 = x + dx;
-                        let ny: i32 = y + dy;
-                        if nx >= 0 && nx < 8 && ny >= 0 && ny < 8 {
-                            let nidx: i32 = ny * 8 + nx;
-                            nbrs = nbrs + cur[nidx];
-                        }
-                    }
-                    dx = dx + 1;
-                }
-                dy = dy + 1;
-            }
+            // Neighbour count is now a real HELPER call over the array param.
+            let nbrs: i32 = live_neighbours(cur, x, y);
 
             // Conway's rules, branchless-ish via explicit cases.
             let mut born: i32 = 0;

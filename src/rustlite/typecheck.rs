@@ -123,6 +123,9 @@ pub enum TypedExprKind {
     /// `[e0, e1, …]` — stored to a static linear-memory region at codegen time;
     /// the expression's value is the region's base pointer (i32).
     ArrayLit(Vec<TypedExpr>),
+    /// `[value; count]` — reserve `count` i32 slots in a static region, fill each
+    /// with `value`; the expression's value is the region's base pointer (i32).
+    ArrayRepeat { value: Box<TypedExpr>, count: usize },
     /// `base[index]` — reads `i32.load(base + index*4)`.
     Index { base: Box<TypedExpr>, index: Box<TypedExpr> },
 
@@ -218,6 +221,18 @@ impl TypeContext {
             Ty::Tuple(tys) => {
                 let resolved: Result<Vec<_>, _> = tys.iter().map(|t| self.resolve_ty(t)).collect();
                 Ok(ResolvedType::Tuple(resolved?))
+            }
+            Ty::Array(elem, n) => {
+                // v1: i32 elements only (matches the array-literal restriction);
+                // the runtime value is an i32 base pointer.
+                let elem_ty = self.resolve_ty(elem)?;
+                if elem_ty != ResolvedType::I32 {
+                    return Err(CompileError::new_code(
+                        codes::BAD_INDEX,
+                        format!("arrays support i32 elements for now, got {elem_ty:?}"),
+                    ));
+                }
+                Ok(ResolvedType::Array(Box::new(elem_ty), *n))
             }
         }
     }
@@ -326,7 +341,13 @@ impl TypeContext {
         self.push_scope();
         let mut params = Vec::new();
         for (param, ty) in f.params.iter().zip(sig.params.iter()) {
-            self.define_local(&param.name, ty.clone(), false);
+            // An array param is an i32 base pointer aliasing the caller's
+            // backing region (rustlite has no `&`/`&mut` distinction), so an
+            // indexed write THROUGH it mutates shared memory — like C. Mark the
+            // binding mutable so `a[i] = v` in the callee is allowed and visible
+            // to the caller. Scalar params stay immutable (no reassignment).
+            let mutable = matches!(ty, ResolvedType::Array(_, _));
+            self.define_local(&param.name, ty.clone(), mutable);
             params.push((param.name.clone(), ty.clone()));
         }
 
@@ -656,6 +677,26 @@ impl TypeContext {
                 Ok(TypedExpr {
                     ty: ResolvedType::Array(Box::new(elem_ty), n),
                     kind: TypedExprKind::ArrayLit(typed),
+                    span,
+                })
+            }
+
+            ExprKind::ArrayRepeat { value, count } => {
+                let val = self.check_expr(value)?;
+                // v1: i32 elements only, mirroring the array-literal restriction.
+                if val.ty != ResolvedType::I32 {
+                    return Err(CompileError::at_code(
+                        codes::BAD_INDEX,
+                        format!("arrays support i32 elements for now, got {:?}", val.ty),
+                        span,
+                    ));
+                }
+                if *count == 0 {
+                    return Err(CompileError::at_code(codes::BAD_INDEX, "empty array (`[v; 0]`) is unsupported", span));
+                }
+                Ok(TypedExpr {
+                    ty: ResolvedType::Array(Box::new(val.ty.clone()), *count),
+                    kind: TypedExprKind::ArrayRepeat { value: Box::new(val), count: *count },
                     span,
                 })
             }

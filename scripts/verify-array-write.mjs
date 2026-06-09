@@ -97,6 +97,22 @@ assertEq('loop-fill a[1]=1*10', runCartridge('loopfill_t.wasm', 1), 10);
 //    let mut a = [0,0]; a[0] = 7; a[0] = 99; clear(a[0]);
 assertEq('overwrite a[0]=99', runCartridge('overwrite.wasm', 0), 99);
 
+// 4) ARRAY PARAM read: sum([3,4,5]) through a helper typed `[i32; 3]` == 12.
+//    Proves an array param lowers to a base pointer the callee can index.
+assertEq('array-param read sum([3,4,5])', runCartridge('param_read.wasm', 0), 12);
+
+// 5) ARRAY PARAM shared backing: a write in the callee through the array param
+//    is visible to the caller (C-style aliasing). set1(g,77); g[1] == 77.
+assertEq('array-param shared write g[1]=77', runCartridge('param_shared_write.wasm', 0), 77);
+
+// 6) `[v; N]` repeat init: every slot filled. [9;16]; g[7] == 9.
+assertEq('repeat-init [9;16] g[7]=9', runCartridge('repeat_fill.wasm', 0), 9);
+
+// 7) `[v; N]` then write one cell: g=[5;8]; g[2]=88; the rest stay 5.
+assertEq('repeat+write g[2]=88', runCartridge('repeat_then_write.wasm', 2), 88);
+assertEq('repeat+write g[0]=5 (fill)', runCartridge('repeat_then_write.wasm', 0), 5);
+assertEq('repeat+write g[7]=5 (fill)', runCartridge('repeat_then_write.wasm', 7), 5);
+
 if (failures > 0) {
   console.error(`\n${failures} assertion(s) FAILED`);
   process.exit(1);

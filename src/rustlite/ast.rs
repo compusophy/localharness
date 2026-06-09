@@ -89,6 +89,10 @@ pub enum Ty {
     String,
     Named(String),
     Tuple(Vec<Ty>),
+    /// `[T; N]` — a fixed-size array. At runtime the value is an i32 base
+    /// pointer into linear memory (so an array PARAMETER is passed by its base
+    /// pointer, C-style: the callee shares the caller's backing region).
+    Array(Box<Ty>, usize),
 }
 
 #[derive(Debug, Clone)]
@@ -176,6 +180,13 @@ pub enum ExprKind {
 
     /// `[e0, e1, …]` — a fixed-size array literal (stored in linear memory).
     ArrayLit(Vec<Expr>),
+
+    /// `[value; count]` — a sized-array repeat init: reserve `count` slots, each
+    /// initialised to `value`. `count` is a compile-time constant integer.
+    ArrayRepeat {
+        value: Box<Expr>,
+        count: usize,
+    },
 
     /// `base[index]` — array element access (read).
     Index {

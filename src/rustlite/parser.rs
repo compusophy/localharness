@@ -352,6 +352,28 @@ impl<'a> Parser<'a> {
                     Ok(first)
                 }
             }
+            // `[T; N]` — fixed-size array type. Enables array fn parameters /
+            // returns (`fn f(cur: [i32; 64], …)`), passed as an i32 base pointer.
+            TokenKind::LBracket => {
+                self.advance();
+                let elem = self.parse_type()?;
+                self.expect(&TokenKind::Semi)?;
+                let n = match self.peek().clone() {
+                    TokenKind::IntLit(n) if n >= 0 => {
+                        self.advance();
+                        n as usize
+                    }
+                    other => {
+                        return Err(CompileError::at_code(
+                            codes::EXPECTED_TYPE,
+                            format!("array length must be a non-negative integer literal, got {other:?}"),
+                            self.span(),
+                        ))
+                    }
+                };
+                self.expect(&TokenKind::RBracket)?;
+                Ok(Ty::Array(Box::new(elem), n))
+            }
             _ => Err(CompileError::at_code(
                 codes::EXPECTED_TYPE,
                 format!("expected type, got {:?}", self.peek()),
@@ -745,19 +767,47 @@ impl<'a> Parser<'a> {
                 self.advance();
                 // Inside `[ … ]` a struct literal is unambiguous — lift the
                 // no-struct-literal restriction for the elements.
-                let elems = self.with_no_struct_literal(false, |p| {
-                    let mut elems = Vec::new();
-                    while !matches!(p.peek(), TokenKind::RBracket) {
-                        elems.push(p.parse_expr()?);
-                        if !matches!(p.peek(), TokenKind::Comma) {
-                            break;
-                        }
-                        p.advance();
+                //
+                // Two forms share the `[`: the comma LITERAL `[a, b, c]` and the
+                // sized REPEAT init `[value; N]`. Parse the first element, then
+                // disambiguate on the next token: `;` → repeat, else → literal.
+                let array = self.with_no_struct_literal(false, |p| {
+                    // Empty literal `[]` (rejected later in typecheck, but parse it).
+                    if matches!(p.peek(), TokenKind::RBracket) {
+                        return Ok(ExprKind::ArrayLit(Vec::new()));
                     }
-                    Ok(elems)
+                    let first = p.parse_expr()?;
+                    if matches!(p.peek(), TokenKind::Semi) {
+                        // `[value; N]` — repeat init. N is a constant int literal.
+                        p.advance();
+                        let count = match p.peek().clone() {
+                            TokenKind::IntLit(n) if n >= 0 => {
+                                p.advance();
+                                n as usize
+                            }
+                            other => {
+                                return Err(CompileError::at_code(
+                                    codes::EXPECTED_EXPRESSION,
+                                    format!("array repeat count must be a non-negative integer literal, got {other:?}"),
+                                    p.span(),
+                                ))
+                            }
+                        };
+                        return Ok(ExprKind::ArrayRepeat { value: Box::new(first), count });
+                    }
+                    // `[a, b, c]` — comma literal.
+                    let mut elems = vec![first];
+                    while matches!(p.peek(), TokenKind::Comma) {
+                        p.advance();
+                        if matches!(p.peek(), TokenKind::RBracket) {
+                            break; // trailing comma
+                        }
+                        elems.push(p.parse_expr()?);
+                    }
+                    Ok(ExprKind::ArrayLit(elems))
                 })?;
                 self.expect(&TokenKind::RBracket)?;
-                Ok(Expr { kind: ExprKind::ArrayLit(elems), span: Span { start: start.start, end: self.tokens[self.pos - 1].span.end } })
+                Ok(Expr { kind: array, span: Span { start: start.start, end: self.tokens[self.pos - 1].span.end } })
             }
 
             TokenKind::If => self.parse_if_expr(),
