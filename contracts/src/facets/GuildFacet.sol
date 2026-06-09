@@ -290,15 +290,35 @@ contract GuildFacet {
         _spend(gs, guildId, to, amount, memo);
     }
 
-    /// The single treasury-debit path. Internal so a future VotingFacet can
-    /// vote-gate the spend (Rung 4) by calling the same CEI-safe core. CEI:
-    /// validate → debit ledger → external transfer LAST.
+    /// The single treasury-debit path (calldata-memo entry — what
+    /// `spendTreasury` calls). Internal so a future VotingFacet can vote-gate
+    /// the spend (Rung 4) by calling the same CEI-safe core. Forwards to
+    /// `_spendCore` so the calldata (Admin path) and memory (VotingFacet
+    /// path) callers share ONE implementation — a single source of treasury
+    /// accounting truth.
     function _spend(
         LibGuildStorage.Storage storage gs,
         uint256 guildId,
         address to,
         uint256 amount,
         bytes calldata memo
+    ) internal {
+        _spendCore(gs, guildId, to, amount, memo);
+    }
+
+    /// The ACTUAL treasury-debit core, `memory`-memo so BOTH the Admin
+    /// `spendTreasury` path (via `_spend`, calldata→memory) AND the
+    /// vote-gated VotingFacet path (which has only `storage`/`memory` memo at
+    /// the call site — `execute` has no calldata bytes argument) reuse it.
+    /// CEI: validate → debit ledger → external transfer LAST. The single
+    /// place `guildBalance` is debited — same slot, same ordering, same
+    /// reentrancy guarantee, whoever calls it.
+    function _spendCore(
+        LibGuildStorage.Storage storage gs,
+        uint256 guildId,
+        address to,
+        uint256 amount,
+        bytes memory memo
     ) internal {
         if (amount == 0) revert ZeroAmount();
         if (to == address(0)) revert ZeroRecipient();
