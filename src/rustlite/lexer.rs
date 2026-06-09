@@ -1,3 +1,4 @@
+use crate::error_codes as codes;
 use crate::rustlite::{CompileError, Span};
 use crate::rustlite::token::{Token, TokenKind};
 
@@ -234,7 +235,7 @@ impl<'a> Lexer<'a> {
 
             b'\'' => self.lex_char(start)?,
 
-            _ => return Err(CompileError::at(format!("unexpected byte 0x{b:02x}"), Span { start, end: self.pos })),
+            _ => return Err(CompileError::at_code(codes::UNEXPECTED_BYTE, format!("unexpected byte 0x{b:02x}"), Span { start, end: self.pos })),
         };
 
         Ok(Token { kind, span: Span { start, end: self.pos } })
@@ -245,7 +246,7 @@ impl<'a> Lexer<'a> {
         loop {
             match self.peek() {
                 None | Some(b'\n') => {
-                    return Err(CompileError::at("unterminated string", Span { start, end: self.pos }));
+                    return Err(CompileError::at_code(codes::UNTERMINATED_STRING, "unterminated string", Span { start, end: self.pos }));
                 }
                 Some(b'"') => {
                     self.advance();
@@ -260,13 +261,14 @@ impl<'a> Lexer<'a> {
                         Some(b'"') => { self.advance(); s.push('"'); }
                         Some(b'0') => { self.advance(); s.push('\0'); }
                         Some(c) => {
-                            return Err(CompileError::at(
+                            return Err(CompileError::at_code(
+                                codes::UNKNOWN_ESCAPE,
                                 format!("unknown escape \\{}", c as char),
                                 Span { start: self.pos - 1, end: self.pos + 1 },
                             ));
                         }
                         None => {
-                            return Err(CompileError::at("unterminated escape", Span { start, end: self.pos }));
+                            return Err(CompileError::at_code(codes::UNTERMINATED_STRING, "unterminated escape", Span { start, end: self.pos }));
                         }
                     }
                 }
@@ -294,13 +296,15 @@ impl<'a> Lexer<'a> {
                     Some(b'\'') => b'\'',
                     Some(b'0') => 0,
                     Some(c) => {
-                        return Err(CompileError::at(
+                        return Err(CompileError::at_code(
+                            codes::UNKNOWN_ESCAPE,
                             format!("unknown escape \\{}", c as char),
                             Span { start, end: self.pos + 1 },
                         ));
                     }
                     None => {
-                        return Err(CompileError::at(
+                        return Err(CompileError::at_code(
+                            codes::BAD_CHAR_LITERAL,
                             "unterminated char literal",
                             Span { start, end: self.pos },
                         ));
@@ -310,7 +314,8 @@ impl<'a> Lexer<'a> {
                 e
             }
             Some(b'\'') => {
-                return Err(CompileError::at(
+                return Err(CompileError::at_code(
+                    codes::BAD_CHAR_LITERAL,
                     "empty char literal",
                     Span { start, end: self.pos },
                 ));
@@ -320,14 +325,16 @@ impl<'a> Lexer<'a> {
                 c
             }
             None => {
-                return Err(CompileError::at(
+                return Err(CompileError::at_code(
+                    codes::BAD_CHAR_LITERAL,
                     "unterminated char literal",
                     Span { start, end: self.pos },
                 ));
             }
         };
         if self.peek() != Some(b'\'') {
-            return Err(CompileError::at(
+            return Err(CompileError::at_code(
+                codes::BAD_CHAR_LITERAL,
                 "char literal must be a single byte (use a \"string\" for text)",
                 Span { start, end: self.pos },
             ));
@@ -361,7 +368,8 @@ impl<'a> Lexer<'a> {
                 self.advance();
             }
             if self.pos == digits_start {
-                return Err(CompileError::at(
+                return Err(CompileError::at_code(
+                    codes::BAD_NUMBER,
                     "hex literal `0x` has no digits".to_string(),
                     Span { start: _start, end: self.pos },
                 ));
@@ -378,7 +386,7 @@ impl<'a> Lexer<'a> {
                 .unwrap()
                 .replace('_', "");
             let val = u64::from_str_radix(&raw, 16).map_err(|e| {
-                CompileError::at(format!("bad hex int: {e}"), Span { start: _start, end: self.pos })
+                CompileError::at_code(codes::BAD_NUMBER, format!("bad hex int: {e}"), Span { start: _start, end: self.pos })
             })? as i64;
             return Ok(TokenKind::IntLit(val));
         }
@@ -402,7 +410,7 @@ impl<'a> Lexer<'a> {
             }
             let text = std::str::from_utf8(&self.src[_start..self.pos]).unwrap();
             let text = text.trim_end_matches("f32").trim_end_matches("f64");
-            let val: f64 = text.parse().map_err(|e| CompileError::at(format!("bad float: {e}"), Span { start: _start, end: self.pos }))?;
+            let val: f64 = text.parse().map_err(|e| CompileError::at_code(codes::BAD_NUMBER, format!("bad float: {e}"), Span { start: _start, end: self.pos }))?;
             Ok(TokenKind::FloatLit(val))
         } else {
             // optional i32/i64 suffix
@@ -415,7 +423,7 @@ impl<'a> Lexer<'a> {
             }
             let text = std::str::from_utf8(&self.src[_start..self.pos]).unwrap();
             let text = text.trim_end_matches("i32").trim_end_matches("i64");
-            let val: i64 = text.parse().map_err(|e| CompileError::at(format!("bad int: {e}"), Span { start: _start, end: self.pos }))?;
+            let val: i64 = text.parse().map_err(|e| CompileError::at_code(codes::BAD_NUMBER, format!("bad int: {e}"), Span { start: _start, end: self.pos }))?;
             Ok(TokenKind::IntLit(val))
         }
     }

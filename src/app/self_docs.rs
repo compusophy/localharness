@@ -85,6 +85,15 @@ generics, references, heap types (Vec/String building), array writes, or globals
 — state lives in state_get/state_set slots. Don't emit a whole untested app in \
 one shot.\n\
 \n\
+Error codes (LHxxxx) — every failure carries a STABLE code you learn once \
+(full index: docs/error-codes.md). LH0xxx = rustlite COMPILE errors (the \
+compile_rustlite tool returns the code + a fix hint — read it, fix at the \
+[start..end] span, recompile). LH1xxx = cartridge RUNTIME errors (a hung \
+frame=LH1001, a wasm trap=LH1002, instantiate failure=LH1003, no frame/render \
+entry=LH1004 — the 'CARTRIDGE STOPPED' overlay shows the code). LH2xxx = on-chain \
+TX REVERTS (e.g. LH2003 SpendExceedsBudget, LH2017 Expired — the message names \
+the facet error + what to do).\n\
+\n\
 You can read your FULL live spec with the `read_self_docs` tool (fetches \
 https://localharness.xyz/llms.txt). Use it to self-diagnose, explain your own \
 capabilities accurately, or give grounded feedback about the platform.";
@@ -94,7 +103,9 @@ capabilities accurately, or give grounded feedback about the platform.";
 /// injection site can be tuned without editing the prompt string.
 pub(crate) fn system_prompt_digest() -> String {
     format!(
-        "=== Your runtime (localharness self-knowledge) ===\n{RUNTIME_SUMMARY}"
+        "=== Your runtime (localharness self-knowledge) ===\n{RUNTIME_SUMMARY}\n\n\
+         === Error-code index (LHxxxx) ===\n{}",
+        crate::error_codes::compact_index()
     )
 }
 
@@ -144,6 +155,7 @@ pub(crate) fn read_self_docs_tool() -> Arc<dyn crate::tools::Tool> {
             Ok(serde_json::json!({
                 "source": source,
                 "summary": RUNTIME_SUMMARY,
+                "error_codes": crate::error_codes::compact_index(),
                 "llms_txt": live,
             }))
         },

@@ -1,3 +1,4 @@
+use crate::error_codes as codes;
 use crate::rustlite::{CompileError, Span};
 use crate::rustlite::ast::*;
 use crate::rustlite::token::{Token, TokenKind};
@@ -38,7 +39,8 @@ impl<'a> Parser<'a> {
     fn enter(&mut self) -> Result<(), CompileError> {
         self.depth += 1;
         if self.depth > MAX_RECURSION_DEPTH {
-            return Err(CompileError::at(
+            return Err(CompileError::at_code(
+                codes::NESTING_TOO_DEEP,
                 "nesting too deep".to_string(),
                 self.span(),
             ));
@@ -78,7 +80,8 @@ impl<'a> Parser<'a> {
         if self.at(kind) {
             Ok(self.advance())
         } else {
-            Err(CompileError::at(
+            Err(CompileError::at_code(
+                codes::UNEXPECTED_TOKEN,
                 format!("expected {kind:?}, got {:?}", self.peek()),
                 self.span(),
             ))
@@ -92,7 +95,8 @@ impl<'a> Parser<'a> {
                 self.advance();
                 Ok(name)
             }
-            _ => Err(CompileError::at(
+            _ => Err(CompileError::at_code(
+                codes::UNEXPECTED_TOKEN,
                 format!("expected identifier, got {:?}", self.peek()),
                 self.span(),
             )),
@@ -168,7 +172,8 @@ impl<'a> Parser<'a> {
             TokenKind::Enum => Ok(Item::Enum(self.parse_enum()?)),
             TokenKind::Fn => Ok(Item::Fn(self.parse_fn()?)),
             TokenKind::Const => Ok(Item::Const(self.parse_const()?)),
-            _ => Err(CompileError::at(
+            _ => Err(CompileError::at_code(
+                codes::EXPECTED_ITEM,
                 format!("expected item (fn/struct/enum/const), got {:?}", self.peek()),
                 self.span(),
             )),
@@ -321,7 +326,8 @@ impl<'a> Parser<'a> {
                     Ok(first)
                 }
             }
-            _ => Err(CompileError::at(
+            _ => Err(CompileError::at_code(
+                codes::EXPECTED_TYPE,
                 format!("expected type, got {:?}", self.peek()),
                 self.span(),
             )),
@@ -429,7 +435,8 @@ impl<'a> Parser<'a> {
                         let span = expr.span;
                         stmts.push(Stmt::Expr { expr, span });
                     } else {
-                        return Err(CompileError::at(
+                        return Err(CompileError::at_code(
+                            codes::MISSING_SEMICOLON,
                             format!("expected ';' or '}}' after expression, got {:?}", self.peek()),
                             self.span(),
                         ));
@@ -785,7 +792,8 @@ impl<'a> Parser<'a> {
                 }
             }
 
-            _ => Err(CompileError::at(
+            _ => Err(CompileError::at_code(
+                codes::EXPECTED_EXPRESSION,
                 format!("expected expression, got {:?}", self.peek()),
                 self.span(),
             )),
@@ -882,7 +890,8 @@ impl<'a> Parser<'a> {
                             h
                         }
                         _ => {
-                            return Err(CompileError::at(
+                            return Err(CompileError::at_code(
+                                codes::EXPECTED_PATTERN,
                                 "range pattern needs an integer upper bound",
                                 self.span(),
                             ))
@@ -956,7 +965,8 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
-            _ => Err(CompileError::at(
+            _ => Err(CompileError::at_code(
+                codes::EXPECTED_PATTERN,
                 format!("expected pattern, got {:?}", self.peek()),
                 self.span(),
             )),
@@ -1116,7 +1126,7 @@ fn expr_to_place(expr: &Expr) -> Result<Place, CompileError> {
             place.span = expr.span;
             Ok(place)
         }
-        _ => Err(CompileError::at("invalid assignment target", expr.span)),
+        _ => Err(CompileError::at_code(codes::INVALID_ASSIGN_TARGET, "invalid assignment target", expr.span)),
     }
 }
 

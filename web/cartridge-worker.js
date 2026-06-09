@@ -35,10 +35,31 @@
 //   worker -> main:
 //     { type: 'frame', fb: ArrayBuffer, w, h }  framebuffer for this tick (xfer)
 //     { type: 'audio', op, args: [...] }        play a tone/noise on the main AudioContext
-//     { type: 'error', detail }                 instantiate / fatal error
+//     { type: 'error', code, detail }           instantiate / fatal error (code = LH1xxx)
 //     { type: 'log',   level, msg }             console passthrough
+//
+//   The `code` on an error message is a stable LH1xxx runtime code from the
+//   localharness error registry (the LH-prefixed integer; see src/error_codes.rs
+//   + docs/error-codes.md). It mirrors LH_RUNTIME below so display.rs can show
+//   the code + meaning in the "CARTRIDGE STOPPED" overlay. (The watchdog-timeout
+//   code LH1001 is assigned on the MAIN thread, since a hung worker can't post.)
 
 'use strict';
+
+// Stable LH1xxx runtime error codes (mirror of the LH1xxx block in
+// src/error_codes.rs / docs/error-codes.md). LH1001 (frame timeout) is the
+// watchdog's; the worker reports the trap / instantiate / no-entry ones.
+const LH_RUNTIME = {
+  WASM_TRAP: 1002,
+  INSTANTIATE_FAILED: 1003,
+  NO_ENTRY: 1004,
+};
+function lhLabel(code) {
+  return 'LH' + String(code).padStart(4, '0');
+}
+function postError(code, detail) {
+  self.postMessage({ type: 'error', code, detail });
+}
 
 // Logical framebuffer resolution. MUST match FB_W/FB_H in src/app/display.rs.
 const FB_W = 256;
@@ -487,7 +508,7 @@ function tick() {
   } catch (e) {
     // A wasm trap (unreachable / OOB) ends the run cleanly rather than spinning.
     running = false;
-    self.postMessage({ type: 'error', detail: 'cartridge trapped: ' + (e && e.message ? e.message : String(e)) });
+    postError(LH_RUNTIME.WASM_TRAP, 'cartridge trapped: ' + (e && e.message ? e.message : String(e)));
     return;
   }
   present();
@@ -511,7 +532,7 @@ async function load(wasmBuf) {
     const result = await WebAssembly.instantiate(wasmBuf, buildImports());
     instance = result.instance;
   } catch (e) {
-    self.postMessage({ type: 'error', detail: 'instantiate failed: ' + (e && e.message ? e.message : String(e)) });
+    postError(LH_RUNTIME.INSTANTIATE_FAILED, 'instantiate failed: ' + (e && e.message ? e.message : String(e)));
     return;
   }
   const exp = instance.exports;
@@ -524,7 +545,7 @@ async function load(wasmBuf) {
     frameFn = exp.render;
     isAnimated = false;
   } else {
-    self.postMessage({ type: 'error', detail: 'cartridge exports neither frame nor render' });
+    postError(LH_RUNTIME.NO_ENTRY, 'cartridge exports neither frame nor render');
     return;
   }
 
@@ -540,7 +561,7 @@ async function load(wasmBuf) {
     try {
       frameFn();
     } catch (e) {
-      self.postMessage({ type: 'error', detail: 'cartridge trapped: ' + (e && e.message ? e.message : String(e)) });
+      postError(LH_RUNTIME.WASM_TRAP, 'cartridge trapped: ' + (e && e.message ? e.message : String(e)));
       running = false;
       return;
     }
@@ -588,6 +609,8 @@ if (typeof module !== 'undefined' && module.exports) {
     host_display, // the re-implemented draw ABI under test
     glyph5x7, // expose the font table for a byte-for-byte vs-Rust check
     packRgb,
+    LH_RUNTIME, // the LH1xxx runtime codes the worker reports (headless check)
+    lhLabel,
     // Hand-instantiate a cartridge against this host (no Worker, no postMessage)
     // and return the presented framebuffer as a fresh Uint8ClampedArray. Drives
     // the present-after-frame model: frame(t) draws, then we snapshot.

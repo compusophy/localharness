@@ -62,6 +62,8 @@ pub mod content;
 pub mod conversation;
 /// Typed error hierarchy.
 pub mod error;
+/// The one `LHxxxx` error-code registry (compile / runtime / tx-revert).
+pub mod error_codes;
 /// Filesystem abstraction for built-in fs tools.
 pub mod filesystem;
 pub(crate) mod runtime;

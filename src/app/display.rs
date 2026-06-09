@@ -822,8 +822,22 @@ mod worker {
                             .ok()
                             .and_then(|v| v.as_string())
                             .unwrap_or_default();
+                        // The worker tags each fatal error with a stable LH1xxx
+                        // runtime code (trap / instantiate / no-entry); paint it
+                        // into the overlay so the canvas shows the coded reason
+                        // instead of just going dark. The watchdog handles the
+                        // hang code (LH1001) on its own path.
+                        let code = Reflect::get(&data, &JsValue::from_str("code"))
+                            .ok()
+                            .and_then(|v| v.as_f64())
+                            .map(|n| n as u16);
+                        if let Some(code) = code {
+                            paint_stopped_overlay_coded(&ctx, code);
+                        }
                         web_sys::console::warn_1(&JsValue::from_str(&format!(
-                            "cartridge error: {detail}"
+                            "cartridge error{}: {detail}",
+                            code.map(|c| format!(" {}", crate::error_codes::fmt_label(c)))
+                                .unwrap_or_default()
                         )));
                     }
                     "log" => {
@@ -987,7 +1001,8 @@ mod worker {
                 if js_sys::Date::now() - last_frame.get() > WATCHDOG_MS {
                     terminated.set(true);
                     worker.terminate();
-                    paint_stopped_overlay(&ctx);
+                    // LH1001 = frame timeout (the hang the watchdog catches).
+                    paint_stopped_overlay_coded(&ctx, crate::error_codes::FRAME_TIMEOUT);
                     // Self-clear the interval (don't drop the handle here).
                     if let Some(id) = interval_id.take() {
                         if let Ok(win) = dom::window() {
@@ -1010,14 +1025,24 @@ mod worker {
 
     /// Paint a monochrome "cartridge stopped" message into the framebuffer
     /// (pixels, via the shared 5x7 font — no DOM), so the canvas shows WHY it
-    /// went dark instead of just freezing. The rest of the app is reachable.
-    fn paint_stopped_overlay(ctx: &CanvasRenderingContext2d) {
+    /// went dark instead of just freezing — now carrying the stable LH1xxx
+    /// runtime code + its registry meaning. The rest of the app is reachable.
+    /// The font has only uppercase/digits/limited punctuation, so we uppercase
+    /// the meaning and keep the lines short.
+    fn paint_stopped_overlay_coded(ctx: &CanvasRenderingContext2d, code: u16) {
         let mut buf = vec![0u8; (FB_W * FB_H * 4) as usize];
         for px in buf.chunks_exact_mut(4) {
             px[3] = 255; // opaque black
         }
         let vp = crate::raster::Viewport::full(FB_W as i32, FB_H as i32);
-        let lines = ["CARTRIDGE STOPPED", "IT HUNG - RELOAD TO RETRY"];
+        // Line 1: "CARTRIDGE STOPPED LHxxxx"; line 2: the code's meaning.
+        let label = crate::error_codes::fmt_label(code);
+        let meaning = crate::error_codes::lookup(code)
+            .map(|e| e.meaning.to_uppercase())
+            .unwrap_or_else(|| "RELOAD TO RETRY".to_string());
+        let header = format!("CARTRIDGE STOPPED {label}");
+        let owned = [header, meaning];
+        let lines: [&str; 2] = [owned[0].as_str(), owned[1].as_str()];
         let mut y = (FB_H as i32) / 2 - 8;
         for line in lines {
             let advance = 6; // 5px glyph + 1px gap at scale 1

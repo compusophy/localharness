@@ -5404,44 +5404,73 @@ async fn eth_send_raw_transaction(raw_hex: &str) -> Result<String, String> {
 ///
 /// `None` for an unrecognised selector so the caller can fall back to the
 /// generic hint — never a misleading guess.
-fn decode_known_revert(selector_bytes: [u8; 4]) -> Option<&'static str> {
-    // (error signature, friendly message). The signature is keccak'd to its
-    // 4-byte selector exactly as Solidity does (same `selector()` the encoders
-    // use), so this list is the source of truth, not hand-copied hex.
-    const KNOWN: &[(&str, &str)] = &[
+///
+/// Each entry also carries its stable `LH2xxx` code from the central
+/// [`crate::error_codes`] registry; [`decode_known_revert`] returns the bare
+/// message (back-compat), while [`decode_known_revert_coded`] prefixes the
+/// `LH2xxx:` label so a surfaced revert reads "LH2003: SpendExceedsBudget — …".
+/// `KNOWN` (signature, LH-code, friendly message). The signature is keccak'd to
+/// its 4-byte selector exactly as Solidity does (same `selector()` the encoders
+/// use), so this list is the source of truth, not hand-copied hex.
+const KNOWN_REVERTS: &[(&str, u16, &str)] = {
+    use crate::error_codes as c;
+    &[
         // --- ScheduleFacet (schedule / unschedule / pause / resume / topup) ---
-        ("NotDue()", "this job isn't due yet — the scheduler only fires on the interval. Check `localharness jobs` for its next run."),
-        ("StaleNextRun()", "this run was already fired by the scheduler — nothing to do (the on-chain clock already advanced)."),
-        ("SpendExceedsBudget()", "the run would spend more $LH than the job's remaining budget — top it up or it will be marked exhausted."),
-        ("NotScheduler()", "only the scheduler worker can record a run — this isn't a user action."),
-        ("NotJobOwner()", "you don't own this job — only its scheduler can cancel/pause/top it up. Check `localharness jobs` under the right `--as` identity."),
-        ("UnknownJob()", "no job with that id — list yours with `localharness jobs` (the id is the `#N`)."),
-        ("JobNotActive()", "the job is already cancelled or exhausted — there's nothing to cancel. See `localharness jobs`."),
-        ("JobNotPaused()", "the job isn't paused, so it can't be resumed."),
-        ("UnregisteredTarget()", "the target isn't a registered agent — run `localharness whoami <target>` to confirm it exists first."),
-        ("ZeroInterval()", "the interval is below the 60s minimum the facet allows — use `--every 60s` or more."),
-        ("ZeroRuns()", "max-runs must be at least 1 — drop `--runs 0`."),
+        ("NotDue()", c::TX_NOT_DUE, "this job isn't due yet — the scheduler only fires on the interval. Check `localharness jobs` for its next run."),
+        ("StaleNextRun()", c::TX_STALE_NEXT_RUN, "this run was already fired by the scheduler — nothing to do (the on-chain clock already advanced)."),
+        ("SpendExceedsBudget()", c::TX_SPEND_EXCEEDS_BUDGET, "the run would spend more $LH than the job's remaining budget — top it up or it will be marked exhausted."),
+        ("NotScheduler()", c::TX_NOT_SCHEDULER, "only the scheduler worker can record a run — this isn't a user action."),
+        ("NotJobOwner()", c::TX_NOT_JOB_OWNER, "you don't own this job — only its scheduler can cancel/pause/top it up. Check `localharness jobs` under the right `--as` identity."),
+        ("UnknownJob()", c::TX_UNKNOWN_JOB, "no job with that id — list yours with `localharness jobs` (the id is the `#N`)."),
+        ("JobNotActive()", c::TX_JOB_NOT_ACTIVE, "the job is already cancelled or exhausted — there's nothing to cancel. See `localharness jobs`."),
+        ("JobNotPaused()", c::TX_JOB_NOT_PAUSED, "the job isn't paused, so it can't be resumed."),
+        ("UnregisteredTarget()", c::TX_UNREGISTERED_TARGET, "the target isn't a registered agent — run `localharness whoami <target>` to confirm it exists first."),
+        ("ZeroInterval()", c::TX_ZERO_INTERVAL, "the interval is below the 60s minimum the facet allows — use `--every 60s` or more."),
+        ("ZeroRuns()", c::TX_ZERO_RUNS, "max-runs must be at least 1 — drop `--runs 0`."),
         // --- InviteFacet (invite create / accept / reclaim) ---
-        ("CodeTaken()", "that invite code already exists on-chain — generate a fresh one (`invite create` makes a new code each time)."),
-        ("BadTtl()", "the invite TTL is outside the allowed 1h..90d window — use e.g. `--ttl 7d`."),
-        ("EscrowCapExceeded()", "this would push your locked invite escrow past the per-funder cap — reclaim an expired invite (`invite reclaim <code>`) or use a smaller amount."),
-        ("UnknownInvite()", "no invite matches that code — double-check you copied the full code, including the `inv-` prefix."),
-        ("NotOpen()", "this invite was already accepted or reclaimed — it's spent."),
-        ("Expired()", "this invite has expired — it can no longer be accepted, only reclaimed by its funder (`invite reclaim <code>`)."),
-        ("NotYetExpired()", "this invite hasn't expired yet — reclaim only works AFTER the TTL elapses. Until then it can still be accepted."),
+        ("CodeTaken()", c::TX_CODE_TAKEN, "that invite code already exists on-chain — generate a fresh one (`invite create` makes a new code each time)."),
+        ("BadTtl()", c::TX_BAD_TTL, "the invite TTL is outside the allowed 1h..90d window — use e.g. `--ttl 7d`."),
+        ("EscrowCapExceeded()", c::TX_ESCROW_CAP_EXCEEDED, "this would push your locked invite escrow past the per-funder cap — reclaim an expired invite (`invite reclaim <code>`) or use a smaller amount."),
+        ("UnknownInvite()", c::TX_UNKNOWN_INVITE, "no invite matches that code — double-check you copied the full code, including the `inv-` prefix."),
+        ("NotOpen()", c::TX_NOT_OPEN, "this invite was already accepted or reclaimed — it's spent."),
+        ("Expired()", c::TX_EXPIRED, "this invite has expired — it can no longer be accepted, only reclaimed by its funder (`invite reclaim <code>`)."),
+        ("NotYetExpired()", c::TX_NOT_YET_EXPIRED, "this invite hasn't expired yet — reclaim only works AFTER the TTL elapses. Until then it can still be accepted."),
         // --- Shared (both facets + the cost/escrow path) ---
-        ("ZeroBudget()", "the budget/amount must be greater than 0."),
-        ("ZeroAmount()", "the amount must be greater than 0."),
-        ("NotConfigured()", "the on-chain credits token isn't configured — this is a platform-side misconfiguration, not your input. Report it via `localharness feedback`."),
+        ("ZeroBudget()", c::TX_ZERO_BUDGET, "the budget/amount must be greater than 0."),
+        ("ZeroAmount()", c::TX_ZERO_AMOUNT, "the amount must be greater than 0."),
+        ("NotConfigured()", c::TX_NOT_CONFIGURED, "the on-chain credits token isn't configured — this is a platform-side misconfiguration, not your input. Report it via `localharness feedback`."),
         // --- Generic ERC-20 transferFrom failure (escrow pull) ---
         // The facets `require(transferFrom(...))` with these reason strings; if
         // the require trips it surfaces as Error(string). The selector branch
         // below decodes the actual string, but map the bare selector too.
-        ("Error(string)", "the on-chain call reverted with a reason string (decoded above when available)."),
-    ];
-    for (sig, msg) in KNOWN {
+        ("Error(string)", c::TX_REASON_STRING, "the on-chain call reverted with a reason string (decoded above when available)."),
+    ]
+};
+
+// The bare (uncoded) accessor — the back-compat surface returning just the
+// friendly message. Production now surfaces via `decode_known_revert_coded`, so
+// on non-test wasm builds this is only kept for the native unit tests; silence
+// the dead-code lint there rather than drop a documented helper.
+#[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
+fn decode_known_revert(selector_bytes: [u8; 4]) -> Option<&'static str> {
+    for (sig, _code, msg) in KNOWN_REVERTS {
         if selector(sig) == selector_bytes {
             return Some(msg);
+        }
+    }
+    None
+}
+
+/// Like [`decode_known_revert`] but prefixes the stable `LH2xxx:` code +
+/// the facet error name, e.g. "LH2003: SpendExceedsBudget — the run would spend
+/// more $LH …". `None` for an unrecognised selector. This is what surfaces to
+/// the user so a revert is coded + named instead of a bare 4-byte selector.
+fn decode_known_revert_coded(selector_bytes: [u8; 4]) -> Option<String> {
+    for (sig, code, msg) in KNOWN_REVERTS {
+        if selector(sig) == selector_bytes {
+            // "Name" from "Name()"; the registry label from the code.
+            let name = sig.split('(').next().unwrap_or(sig);
+            return Some(format!("{}: {name} — {msg}", crate::error_codes::fmt_label(*code)));
         }
     }
     None
@@ -5464,6 +5493,7 @@ fn decode_revert_data(data: &[u8]) -> Option<String> {
     // human-readable (and often the most actionable: an escrow-pull failure
     // means "you don't have enough $LH / haven't approved the diamond").
     if sel == [0x08, 0xc3, 0x79, 0xa0] {
+        let label = crate::error_codes::fmt_label(crate::error_codes::TX_REASON_STRING);
         let hex = format!("0x{}", bytes_to_hex(&data[4..]));
         if let Some(reason) = decode_string(&hex) {
             let reason = reason.trim();
@@ -5473,20 +5503,24 @@ fn decode_revert_data(data: &[u8]) -> Option<String> {
                 // single most common cause — say what to DO about it.
                 if lower.contains("balance") || lower.contains("allowance") || lower.contains("escrow") {
                     return Some(format!(
-                        "{reason} — you likely don't have enough $LH for the escrow. \
+                        "{label}: {reason} — you likely don't have enough $LH for the escrow. \
                          Fund it (`localharness redeem <code>` or have another agent \
                          `send` you $LH), then retry."
                     ));
                 }
-                return Some(reason.to_string());
+                return Some(format!("{label}: {reason}"));
             }
         }
     }
     // Panic(uint256) (0x4e487b71) → arithmetic/assert; rare here, generic.
     if sel == [0x4e, 0x48, 0x7b, 0x71] {
-        return Some("the contract hit an internal assertion (Panic) — this is a platform bug, not your input; please `localharness feedback` it.".to_string());
+        return Some(format!(
+            "{}: the contract hit an internal assertion (Panic) — this is a platform bug, \
+             not your input; please `localharness feedback` it.",
+            crate::error_codes::fmt_label(crate::error_codes::TX_PANIC)
+        ));
     }
-    decode_known_revert(sel).map(|m| m.to_string())
+    decode_known_revert_coded(sel)
 }
 
 /// Best-effort fetch + decode of WHY a sponsored tx reverted: re-run the same
@@ -5761,11 +5795,34 @@ mod tests {
     }
 
     #[test]
+    fn decode_known_revert_coded_prefixes_lh2xxx_and_name() {
+        // The coded decoder must carry the stable LH2xxx code + the facet error
+        // name so a revert surfaces "LH2003: SpendExceedsBudget — …".
+        let cases = [
+            ("SpendExceedsBudget()", "LH2003", "SpendExceedsBudget"),
+            ("NotScheduler()", "LH2004", "NotScheduler"),
+            ("NotDue()", "LH2001", "NotDue"),
+            ("CodeTaken()", "LH2012", "CodeTaken"),
+            ("Expired()", "LH2017", "Expired"),
+        ];
+        for (sig, code, name) in cases {
+            let out = decode_known_revert_coded(selector(sig))
+                .unwrap_or_else(|| panic!("no coded mapping for {sig}"));
+            assert!(out.starts_with(code), "expected {code} prefix, got {out:?}");
+            assert!(out.contains(name), "expected name {name} in {out:?}");
+        }
+        // Unknown selector → None (caller keeps the bare hash + generic hint).
+        assert_eq!(decode_known_revert_coded([0xde, 0xad, 0xbe, 0xef]), None);
+    }
+
+    #[test]
     fn decode_revert_data_maps_custom_error_and_handles_empty() {
-        // A bare custom-error selector (no args) → its friendly message.
+        // A bare custom-error selector (no args) → its friendly message,
+        // now prefixed with its stable LH2xxx code.
         let sel = selector("NotYetExpired()");
         let out = decode_revert_data(&sel).expect("maps custom error");
         assert!(out.to_lowercase().contains("hasn't expired"), "got {out:?}");
+        assert!(out.starts_with("LH2018"), "expected the LH2018 code prefix, got {out:?}");
         // Empty / too-short data → None (caller keeps the hash + generic hint).
         assert_eq!(decode_revert_data(&[]), None);
         assert_eq!(decode_revert_data(&[0x01, 0x02]), None);

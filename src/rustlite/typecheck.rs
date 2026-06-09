@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use crate::error_codes as codes;
 use crate::rustlite::{CompileError, Span};
 use crate::rustlite::ast::*;
 
@@ -209,7 +210,7 @@ impl TypeContext {
             Ty::String => Ok(ResolvedType::String),
             Ty::Named(name) => {
                 self.types.get(name).cloned()
-                    .ok_or_else(|| CompileError::new(format!("unknown type '{name}'")))
+                    .ok_or_else(|| CompileError::new_code(codes::UNKNOWN_TYPE, format!("unknown type '{name}'")))
             }
             Ty::Tuple(tys) => {
                 let resolved: Result<Vec<_>, _> = tys.iter().map(|t| self.resolve_ty(t)).collect();
@@ -282,7 +283,8 @@ impl TypeContext {
                 let value = self.check_expr(&c.value)?;
                 self.pop_scope();
                 if value.ty != ty {
-                    return Err(CompileError::at(
+                    return Err(CompileError::at_code(
+                        codes::TYPE_MISMATCH,
                         format!("const type mismatch: expected {ty:?}, got {:?}", value.ty),
                         c.span,
                     ));
@@ -329,7 +331,8 @@ impl TypeContext {
         self.pop_scope();
 
         if sig.ret != ResolvedType::Void && body.ty != sig.ret && body.ty != ResolvedType::Never {
-            return Err(CompileError::at(
+            return Err(CompileError::at_code(
+                codes::TYPE_MISMATCH,
                 format!("fn '{}': body returns {:?}, expected {:?}", f.name, body.ty, sig.ret),
                 f.span,
             ));
@@ -365,7 +368,8 @@ impl TypeContext {
                 let resolved_ty = if let Some(declared) = ty {
                     let declared = self.resolve_ty(declared)?;
                     if init_typed.ty != declared {
-                        return Err(CompileError::at(
+                        return Err(CompileError::at_code(
+                            codes::TYPE_MISMATCH,
                             format!("let type mismatch: declared {:?}, got {:?}", declared, init_typed.ty),
                             *span,
                         ));
@@ -379,10 +383,10 @@ impl TypeContext {
             }
             Stmt::Assign { place, value, span } => {
                 let (local_ty, is_mut) = self.lookup_local(&place.root)
-                    .ok_or_else(|| CompileError::at(format!("undefined variable '{}'", place.root), *span))?
+                    .ok_or_else(|| CompileError::at_code(codes::UNDEFINED_VARIABLE, format!("undefined variable '{}'", place.root), *span))?
                     .clone();
                 if !is_mut {
-                    return Err(CompileError::at(format!("'{}' is not mutable", place.root), *span));
+                    return Err(CompileError::at_code(codes::NOT_MUTABLE, format!("'{}' is not mutable", place.root), *span));
                 }
                 let mut target_ty = local_ty;
                 for field in &place.fields {
@@ -390,7 +394,8 @@ impl TypeContext {
                 }
                 let val = self.check_expr(value)?;
                 if val.ty != target_ty {
-                    return Err(CompileError::at(
+                    return Err(CompileError::at_code(
+                        codes::TYPE_MISMATCH,
                         format!("assignment type mismatch: expected {:?}, got {:?}", target_ty, val.ty),
                         *span,
                     ));
@@ -401,7 +406,8 @@ impl TypeContext {
                 let val = value.as_ref().map(|v| self.check_expr(v)).transpose()?;
                 let ret_ty = val.as_ref().map(|v| v.ty.clone()).unwrap_or(ResolvedType::Void);
                 if ret_ty != self.current_return {
-                    return Err(CompileError::at(
+                    return Err(CompileError::at_code(
+                        codes::TYPE_MISMATCH,
                         format!("return type mismatch: expected {:?}, got {:?}", self.current_return, ret_ty),
                         *span,
                     ));
@@ -421,9 +427,9 @@ impl TypeContext {
                 fields.iter()
                     .find(|(name, _)| name == field)
                     .map(|(_, ty)| ty.clone())
-                    .ok_or_else(|| CompileError::at(format!("no field '{field}' on struct"), span))
+                    .ok_or_else(|| CompileError::at_code(codes::BAD_FIELD_ACCESS, format!("no field '{field}' on struct"), span))
             }
-            _ => Err(CompileError::at(format!("field access on non-struct type {:?}", ty), span)),
+            _ => Err(CompileError::at_code(codes::BAD_FIELD_ACCESS, format!("field access on non-struct type {:?}", ty), span)),
         }
     }
 
@@ -445,7 +451,7 @@ impl TypeContext {
                     // Could be a function name
                     Ok(TypedExpr { kind: TypedExprKind::Var(name.clone()), ty: ResolvedType::Void, span })
                 } else {
-                    Err(CompileError::at(format!("undefined variable '{name}'"), span))
+                    Err(CompileError::at_code(codes::UNDEFINED_VARIABLE, format!("undefined variable '{name}'"), span))
                 }
             }
 
@@ -491,12 +497,13 @@ impl TypeContext {
                 let fn_name = match &func.kind {
                     ExprKind::Var(name) => name.clone(),
                     ExprKind::Path(segments) => segments.join("::"),
-                    _ => return Err(CompileError::at("cannot call non-function", span)),
+                    _ => return Err(CompileError::at_code(codes::UNKNOWN_FUNCTION, "cannot call non-function", span)),
                 };
 
                 if let Some(sig) = self.functions.get(&fn_name).cloned() {
                     if checked_args.len() != sig.params.len() {
-                        return Err(CompileError::at(
+                        return Err(CompileError::at_code(
+                            codes::ARITY_MISMATCH,
                             format!("fn '{fn_name}' expects {} args, got {}", sig.params.len(), checked_args.len()),
                             span,
                         ));
@@ -509,14 +516,16 @@ impl TypeContext {
                     })
                 } else if let Some((module, func_name, params, ret)) = resolve_host_fn(&fn_name) {
                     if checked_args.len() != params.len() {
-                        return Err(CompileError::at(
+                        return Err(CompileError::at_code(
+                            codes::ARITY_MISMATCH,
                             format!("host fn '{fn_name}' expects {} args, got {}", params.len(), checked_args.len()),
                             span,
                         ));
                     }
                     for (i, (arg, expected)) in checked_args.iter().zip(params.iter()).enumerate() {
                         if arg.ty != *expected {
-                            return Err(CompileError::at(
+                            return Err(CompileError::at_code(
+                                codes::TYPE_MISMATCH,
                                 format!("host fn '{fn_name}' arg {i}: expected {expected:?}, got {:?}", arg.ty),
                                 span,
                             ));
@@ -551,7 +560,7 @@ impl TypeContext {
             ExprKind::StructLit { path, fields } => {
                 let type_name = path.last().unwrap().clone();
                 let struct_ty = self.types.get(&type_name)
-                    .ok_or_else(|| CompileError::at(format!("unknown struct '{type_name}'"), span))?
+                    .ok_or_else(|| CompileError::at_code(codes::UNKNOWN_STRUCT, format!("unknown struct '{type_name}'"), span))?
                     .clone();
 
                 let mut typed_fields = Vec::new();
@@ -585,20 +594,21 @@ impl TypeContext {
 
             ExprKind::ArrayLit(elems) => {
                 if elems.is_empty() {
-                    return Err(CompileError::at("empty array literal is unsupported", span));
+                    return Err(CompileError::at_code(codes::BAD_INDEX, "empty array literal is unsupported", span));
                 }
                 let typed: Result<Vec<_>, _> = elems.iter().map(|e| self.check_expr(e)).collect();
                 let typed = typed?;
                 let elem_ty = typed[0].ty.clone();
                 // v1: i32 elements only (colours, coords, tile/lookup tables).
                 if elem_ty != ResolvedType::I32 {
-                    return Err(CompileError::at(
+                    return Err(CompileError::at_code(
+                        codes::BAD_INDEX,
                         format!("arrays support i32 elements for now, got {elem_ty:?}"),
                         span,
                     ));
                 }
                 if typed.iter().any(|e| e.ty != elem_ty) {
-                    return Err(CompileError::at("array elements must all be the same type", span));
+                    return Err(CompileError::at_code(codes::BAD_INDEX, "array elements must all be the same type", span));
                 }
                 let n = typed.len();
                 Ok(TypedExpr {
@@ -614,14 +624,16 @@ impl TypeContext {
                 let elem_ty = match &base_t.ty {
                     ResolvedType::Array(elem, _) => (**elem).clone(),
                     other => {
-                        return Err(CompileError::at(
+                        return Err(CompileError::at_code(
+                            codes::BAD_INDEX,
                             format!("cannot index into {other:?} (only arrays are indexable)"),
                             span,
                         ))
                     }
                 };
                 if index_t.ty != ResolvedType::I32 {
-                    return Err(CompileError::at(
+                    return Err(CompileError::at_code(
+                        codes::BAD_INDEX,
                         format!("array index must be i32, got {:?}", index_t.ty),
                         span,
                     ));
@@ -640,7 +652,8 @@ impl TypeContext {
                 let result_ty = match op {
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
                         if l.ty != r.ty {
-                            return Err(CompileError::at(
+                            return Err(CompileError::at_code(
+                                codes::TYPE_MISMATCH,
                                 format!("binary op type mismatch: {:?} vs {:?}", l.ty, r.ty),
                                 span,
                             ));
@@ -649,13 +662,15 @@ impl TypeContext {
                     }
                     BinOp::Shl | BinOp::Shr | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor => {
                         if l.ty != r.ty {
-                            return Err(CompileError::at(
+                            return Err(CompileError::at_code(
+                                codes::TYPE_MISMATCH,
                                 format!("bitwise op type mismatch: {:?} vs {:?}", l.ty, r.ty),
                                 span,
                             ));
                         }
                         if l.ty != ResolvedType::I32 && l.ty != ResolvedType::I64 {
-                            return Err(CompileError::at(
+                            return Err(CompileError::at_code(
+                                codes::TYPE_MISMATCH,
                                 format!("bitwise/shift ops require integers, got {:?}", l.ty),
                                 span,
                             ));
@@ -698,7 +713,8 @@ impl TypeContext {
                     )
                 };
                 if !numeric(&inner.ty) || !numeric(&target) {
-                    return Err(CompileError::at(
+                    return Err(CompileError::at_code(
+                        codes::BAD_CAST,
                         format!("`as` converts between numbers, not {:?} -> {:?}", inner.ty, target),
                         span,
                     ));

@@ -31,6 +31,10 @@ pub struct CompileError {
     pub message: String,
     /// Source location, if available.
     pub span: Option<Span>,
+    /// Stable `LH0xxx` registry code (see [`crate::error_codes`]). `None` only
+    /// for the rare uncoded internal error; `Display` prefixes the `LHxxxx:`
+    /// label when present so every surfaced compile error carries its code.
+    pub code: Option<u16>,
 }
 
 /// A byte-offset range in the source text.
@@ -44,8 +48,13 @@ pub struct Span {
 
 impl std::fmt::Display for CompileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Prefix the stable `LHxxxx:` code when known, so a surfaced compile
+        // error reads e.g. "LH0204: type mismatch: ... [12..18]".
+        if let Some(code) = self.code {
+            write!(f, "{}: ", crate::error_codes::fmt_label(code))?;
+        }
         if let Some(span) = self.span {
-            write!(f, "[{}..{}] {}", span.start, span.end, self.message)
+            write!(f, "{} [{}..{}]", self.message, span.start, span.end)
         } else {
             write!(f, "{}", self.message)
         }
@@ -55,13 +64,27 @@ impl std::fmt::Display for CompileError {
 impl std::error::Error for CompileError {}
 
 impl CompileError {
-    /// Create an error with no source span.
+    /// Create an error with no source span and no code.
     pub fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into(), span: None }
+        Self { message: message.into(), span: None, code: None }
     }
-    /// Create an error pinned to a source span.
+    /// Create an error pinned to a source span (no code).
     pub fn at(message: impl Into<String>, span: Span) -> Self {
-        Self { message: message.into(), span: Some(span) }
+        Self { message: message.into(), span: Some(span), code: None }
+    }
+    /// Create a coded error pinned to a source span — the canonical
+    /// constructor. `code` is an `LH0xxx` value from [`crate::error_codes`].
+    pub fn at_code(code: u16, message: impl Into<String>, span: Span) -> Self {
+        Self { message: message.into(), span: Some(span), code: Some(code) }
+    }
+    /// Create a coded error with no source span.
+    pub fn new_code(code: u16, message: impl Into<String>) -> Self {
+        Self { message: message.into(), span: None, code: Some(code) }
+    }
+    /// Attach (or replace) the stable code on an existing error.
+    pub fn with_code(mut self, code: u16) -> Self {
+        self.code = Some(code);
+        self
     }
 }
 
@@ -71,7 +94,57 @@ impl From<String> for CompileError {
 
 #[cfg(test)]
 mod tests {
-    use super::compile;
+    use super::{compile, lexer, parser, typecheck};
+    use crate::error_codes as codes;
+
+    /// Drive the full pipeline and return the `CompileError` (so the test can
+    /// inspect its `.code`). Each snippet below is crafted to fail at exactly
+    /// one stage.
+    fn compile_err(src: &str) -> super::CompileError {
+        lexer::lex(src)
+            .and_then(|toks| parser::parse(&toks))
+            .and_then(|m| typecheck::check(&m))
+            .and_then(|t| super::codegen::emit(&t))
+            .expect_err("expected a compile error")
+    }
+
+    #[test]
+    fn compile_errors_carry_their_lh0xxx_code() {
+        // A representative bad snippet per stage → its expected LH0xxx code.
+        // type mismatch (typecheck): bool + i32.
+        let e = compile_err("fn frame(t: i32) { let x = true + 1; host::display::present(); }");
+        assert_eq!(e.code, Some(codes::TYPE_MISMATCH), "{e}");
+        assert!(e.to_string().starts_with("LH0204:"), "surfaced: {e}");
+
+        // undefined variable (typecheck).
+        let e = compile_err("fn frame(t: i32) { host::display::clear(NOPE); host::display::present(); }");
+        assert_eq!(e.code, Some(codes::UNDEFINED_VARIABLE), "{e}");
+
+        // unexpected token (parser): missing the fn name.
+        let e = compile_err("fn (t: i32) {}");
+        assert_eq!(e.code, Some(codes::UNEXPECTED_TOKEN), "{e}");
+
+        // invalid assignment target / array write (parser).
+        let e = compile_err("fn frame(t: i32) { let a = [1, 2, 3]; a[0] = 9; host::display::present(); }");
+        assert_eq!(e.code, Some(codes::INVALID_ASSIGN_TARGET), "{e}");
+
+        // unknown function (codegen): a host fn path that doesn't resolve —
+        // an unknown `host::` name falls through to "undefined function" rather
+        // than the registered-but-missing host-import path (LH0301).
+        let e = compile_err("fn frame(t: i32) { host::display::nope(1); host::display::present(); }");
+        assert_eq!(e.code, Some(codes::UNKNOWN_FUNCTION), "{e}");
+
+        // unexpected byte (lexer).
+        let e = compile_err("fn frame(t: i32) { let x = `; }");
+        assert_eq!(e.code, Some(codes::UNEXPECTED_BYTE), "{e}");
+
+        // bad cast (typecheck): bool as i32.
+        let e = compile_err("fn frame(t: i32) { let x = true as i32; host::display::clear(x); host::display::present(); }");
+        assert_eq!(e.code, Some(codes::BAD_CAST), "{e}");
+
+        // Every surfaced compile error string is LHxxxx-prefixed.
+        assert!(e.to_string().starts_with("LH0"), "surfaced: {e}");
+    }
 
     #[test]
     fn const_resolves_and_is_order_independent() {

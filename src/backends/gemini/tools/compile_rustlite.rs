@@ -86,19 +86,31 @@ impl Tool for CompileRustlite {
         let wasm_bytes = match crate::rustlite::compile(&source) {
             Ok(bytes) => bytes,
             Err(err) => {
-                // Surface the compiler message verbatim (it carries a
-                // `[start..end]` source byte span) PLUS a steady hint so the
-                // model fixes-and-recompiles in the loop instead of giving up
-                // or, worse, publishing the broken source anyway.
+                // Surface the stable `LH0xxx` code + the compiler message
+                // verbatim (Display already prefixes the code and carries a
+                // `[start..end]` source byte span) PLUS a steady, code-aware
+                // hint so the model fixes-and-recompiles in the loop instead of
+                // giving up or, worse, publishing the broken source anyway.
+                let code = err.code;
+                // The per-code fix hint from the central registry (`docs/
+                // error-codes.md` is the human index of the same table), falling
+                // back to the generic loop discipline when the code is unknown.
+                let code_hint = code
+                    .and_then(crate::error_codes::lookup)
+                    .map(|e| e.hint);
                 return Ok(json!({
                     "error": "compilation failed",
+                    // e.g. "LH0204" — the stable code (see docs/error-codes.md).
+                    "code": code.map(crate::error_codes::fmt_label),
+                    // e.g. "LH0204: type mismatch: ... [12..18]".
                     "detail": err.to_string(),
-                    "hint": "Fix the issue at the reported source span and call \
-                             compile_rustlite again. Common causes: a feature \
-                             rustlite lacks (traits, generics, references, \
-                             Vec/String building, array writes, Option/Result) or \
-                             a wrong host fn name/arity. Do NOT run_cartridge or \
-                             publish until this compiles clean.",
+                    "hint": code_hint.unwrap_or(
+                        "Fix the issue at the reported source span and call \
+                         compile_rustlite again. Common causes: a feature \
+                         rustlite lacks (traits, generics, references, \
+                         Vec/String building, array writes, Option/Result) or \
+                         a wrong host fn name/arity. Do NOT run_cartridge or \
+                         publish until this compiles clean."),
                     "exports": []
                 }));
             }

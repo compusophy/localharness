@@ -1,3 +1,4 @@
+use crate::error_codes as codes;
 use crate::rustlite::CompileError;
 use crate::rustlite::ast::{BinOp, UnaryOp};
 use crate::rustlite::typecheck::*;
@@ -433,7 +434,7 @@ impl WasmEmitter {
             TypedStmt::Assign { place, value, .. } => {
                 self.emit_expr(value, code)?;
                 let local_idx = *self.local_map.last().unwrap().get(&place.root)
-                    .ok_or_else(|| CompileError::new(format!("undefined local '{}'", place.root)))?;
+                    .ok_or_else(|| CompileError::new_code(codes::UNDEFINED_VARIABLE, format!("undefined local '{}'", place.root)))?;
                 code.push(OP_LOCAL_SET);
                 leb128_u32(local_idx, code);
             }
@@ -475,7 +476,7 @@ impl WasmEmitter {
             }
             TypedExprKind::Var(name) => {
                 let local_idx = *self.local_map.last().unwrap().get(name)
-                    .ok_or_else(|| CompileError::new(format!("undefined local '{name}'")))?;
+                    .ok_or_else(|| CompileError::new_code(codes::UNDEFINED_VARIABLE, format!("undefined local '{name}'")))?;
                 code.push(OP_LOCAL_GET);
                 leb128_u32(local_idx, code);
             }
@@ -503,10 +504,10 @@ impl WasmEmitter {
                 let fn_name = match &func.kind {
                     TypedExprKind::Var(name) => name.clone(),
                     TypedExprKind::Path(p) => p.join("::"),
-                    _ => return Err(CompileError::new("cannot call non-function")),
+                    _ => return Err(CompileError::new_code(codes::UNKNOWN_FUNCTION, "cannot call non-function")),
                 };
                 let fn_idx = *self.fn_map.get(&fn_name)
-                    .ok_or_else(|| CompileError::new(format!("undefined function '{fn_name}'")))?;
+                    .ok_or_else(|| CompileError::new_code(codes::UNKNOWN_FUNCTION, format!("undefined function '{fn_name}'")))?;
                 code.push(OP_CALL);
                 leb128_u32(self.import_count + fn_idx, code);
             }
@@ -516,7 +517,7 @@ impl WasmEmitter {
                 }
                 let key = format!("{module}::{func}");
                 let import_idx = *self.host_import_map.get(&key)
-                    .ok_or_else(|| CompileError::new(format!("unregistered host import '{key}'")))?;
+                    .ok_or_else(|| CompileError::new_code(codes::UNKNOWN_HOST_IMPORT, format!("unregistered host import '{key}'")))?;
                 code.push(OP_CALL);
                 leb128_u32(import_idx, code);
             }
@@ -621,7 +622,7 @@ impl WasmEmitter {
                     (ResolvedType::F64, BinOp::Le) => OP_F64_LE,
                     (ResolvedType::F64, BinOp::Ge) => OP_F64_GE,
                     // And/Or are handled by the short-circuit arm above.
-                    _ => return Err(CompileError::new(format!("unsupported binop {:?} for {:?}", op, lhs.ty))),
+                    _ => return Err(CompileError::new_code(codes::UNSUPPORTED_FEATURE, format!("unsupported binop {:?} for {:?}", op, lhs.ty))),
                 };
                 code.push(opcode);
             }
@@ -645,7 +646,7 @@ impl WasmEmitter {
                                 self.emit_expr(operand, code)?;
                                 code.push(OP_F64_NEG);
                             }
-                            _ => return Err(CompileError::new("neg on non-numeric")),
+                            _ => return Err(CompileError::new_code(codes::UNSUPPORTED_FEATURE, "neg on non-numeric")),
                         }
                     }
                     UnaryOp::Not => {
