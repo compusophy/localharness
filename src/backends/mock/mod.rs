@@ -80,9 +80,7 @@ use crate::content::Content;
 use crate::error::{Error, Result};
 use crate::hooks::{HookRunner, SessionContext};
 use crate::tools::ToolRunner;
-use crate::types::{
-    Step, StepSource, StepStatus, StepTarget, StepType, ToolCall, ToolResult, UsageMetadata,
-};
+use crate::types::{Step, StepStatus, ToolCall, ToolResult, UsageMetadata};
 
 const STEP_BROADCAST_CAPACITY: usize = 256;
 
@@ -345,7 +343,7 @@ impl MockInner {
         for action in &turn.actions {
             match action {
                 ScriptAction::Text(delta) => {
-                    self.emit(text_delta_step(&traj, self.alloc_step_index(), delta));
+                    self.emit(Step::text_delta(&traj, self.alloc_step_index(), delta));
                 }
                 ScriptAction::ToolCall { name, args } => {
                     let tool_call = ToolCall {
@@ -356,7 +354,21 @@ impl MockInner {
                     };
                     // Surface the call on the stream (UIs flip the tool block to
                     // "running"), exactly like the live loop's tool-call step.
-                    self.emit(tool_call_step(self.alloc_step_index(), tool_call.clone()));
+                    // `Done` (not `Active`) is deliberate: the mock ALREADY
+                    // dispatches this tool call inline (matching the live
+                    // backends), so the step exists only for OBSERVABILITY —
+                    // `ChatResponse::tool_calls()` reads `tool_calls` regardless
+                    // of status. The Agent's `spawn_tool_dispatcher` SKIPS
+                    // `Done` steps, so this step does NOT trigger a redundant
+                    // second dispatch. (It is non-terminal —
+                    // `is_complete_response: Some(false)` and
+                    // `target: Environment` — so it never ends the
+                    // `ChatResponse`.)
+                    self.emit(Step::tool_call(
+                        self.alloc_step_index(),
+                        tool_call.clone(),
+                        StepStatus::Done,
+                    ));
 
                     // Dispatch inline through hooks + policies + the runner when
                     // the Agent injected them. This is what makes a scripted
@@ -370,10 +382,13 @@ impl MockInner {
             }
         }
 
-        self.emit(terminal_step(
+        self.emit(Step::turn_complete(
             traj,
             self.alloc_step_index(),
-            &turn.content(),
+            StepStatus::Done,
+            turn.content(),
+            "",
+            None,
             turn.usage,
         ));
 
@@ -478,77 +493,6 @@ impl Connection for MockConnection {
         self.inner.idle.store(true, Ordering::Release);
         self.inner.idle_notify.notify_waiters();
         Ok(())
-    }
-}
-
-// =============================================================================
-// Step constructors (mirror backends/gemini/loop.rs)
-// =============================================================================
-
-fn text_delta_step(traj: &str, idx: u32, delta: &str) -> Step {
-    Step {
-        id: traj.to_string(),
-        step_index: idx,
-        kind: StepType::TextResponse,
-        source: StepSource::Model,
-        target: StepTarget::User,
-        status: StepStatus::Active,
-        content: String::new(),
-        content_delta: delta.to_string(),
-        thinking: String::new(),
-        thinking_delta: String::new(),
-        tool_calls: Vec::new(),
-        error: String::new(),
-        is_complete_response: Some(false),
-        structured_output: None,
-        usage_metadata: None,
-    }
-}
-
-fn tool_call_step(idx: u32, tc: ToolCall) -> Step {
-    Step {
-        id: String::new(),
-        step_index: idx,
-        kind: StepType::ToolCall,
-        source: StepSource::Model,
-        target: StepTarget::Environment,
-        // `Done` (not `Active`) is deliberate: the mock ALREADY dispatches this
-        // tool call inline (matching the live backends), so the step exists only
-        // for OBSERVABILITY — `ChatResponse::tool_calls()` reads `tool_calls`
-        // regardless of status. The Agent's `spawn_tool_dispatcher` SKIPS
-        // `Done` steps, so this step does NOT trigger a redundant second
-        // dispatch. (It is non-terminal — `is_complete_response: Some(false)`
-        // and `target: Environment` — so it never ends the `ChatResponse`.)
-        status: StepStatus::Done,
-        content: String::new(),
-        content_delta: String::new(),
-        thinking: String::new(),
-        thinking_delta: String::new(),
-        tool_calls: vec![tc],
-        error: String::new(),
-        is_complete_response: Some(false),
-        structured_output: None,
-        usage_metadata: None,
-    }
-}
-
-fn terminal_step(traj: String, idx: u32, content: &str, usage: Option<UsageMetadata>) -> Step {
-    Step {
-        id: traj,
-        step_index: idx,
-        kind: StepType::TextResponse,
-        source: StepSource::Model,
-        target: StepTarget::User,
-        status: StepStatus::Done,
-        content: content.to_string(),
-        content_delta: String::new(),
-        thinking: String::new(),
-        thinking_delta: String::new(),
-        tool_calls: Vec::new(),
-        error: String::new(),
-        is_complete_response: Some(true),
-        structured_output: None,
-        usage_metadata: usage,
     }
 }
 

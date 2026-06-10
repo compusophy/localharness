@@ -37,8 +37,8 @@ use crate::error::{Error, Result};
 use crate::hooks::{HookRunner, SessionContext};
 use crate::tools::ToolRunner;
 use crate::types::{
-    Step, StepSource, StepStatus, StepTarget, StepType, StreamChunk, SystemInstructions,
-    ThinkingLevel, ToolCall, ToolResult, UsageMetadata,
+    Step, StepStatus, StreamChunk, SystemInstructions, ThinkingLevel, ToolCall, ToolResult,
+    UsageMetadata,
 };
 
 /// Maximum dispatch rounds per turn. The model can loop indefinitely
@@ -279,7 +279,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content) -> Result<()> 
                                 if !text.is_empty() {
                                     accumulated_text.push_str(&text);
                                     deps.state
-                                        .emit(text_delta_step(&trajectory_id, step_index, &text));
+                                        .emit(Step::text_delta(&trajectory_id, step_index, &text));
                                 }
                             }
                             Part::Thought {
@@ -289,7 +289,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content) -> Result<()> 
                             } => {
                                 if !t.is_empty() {
                                     accumulated_thought.push_str(&t);
-                                    deps.state.emit(thought_delta_step(
+                                    deps.state.emit(Step::thought_delta(
                                         &trajectory_id,
                                         step_index,
                                         &t,
@@ -311,7 +311,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content) -> Result<()> 
                                 if !t.is_empty() {
                                     accumulated_text.push_str(&t);
                                     deps.state
-                                        .emit(text_delta_step(&trajectory_id, step_index, &t));
+                                        .emit(Step::text_delta(&trajectory_id, step_index, &t));
                                 }
                             }
                             Part::FunctionCall { function_call } => {
@@ -500,27 +500,15 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content) -> Result<()> 
     };
 
     let structured = deps.state.last_structured_output.lock().clone();
-    let terminal = Step {
-        id: trajectory_id,
-        step_index: deps.state.alloc_step_index(),
-        kind: if structured.is_some() {
-            StepType::Finish
-        } else {
-            StepType::TextResponse
-        },
-        source: StepSource::Model,
-        target: StepTarget::User,
+    let terminal = Step::turn_complete(
+        trajectory_id,
+        deps.state.alloc_step_index(),
         status,
-        content: last_text,
-        content_delta: String::new(),
-        thinking: String::new(),
-        thinking_delta: String::new(),
-        tool_calls: Vec::new(),
-        error: error_msg.to_string(),
-        is_complete_response: Some(true),
-        structured_output: structured,
-        usage_metadata: usage_opt,
-    };
+        last_text,
+        error_msg,
+        structured,
+        usage_opt,
+    );
     deps.state.emit(terminal);
 
     // Compaction: if the turn pushed total tokens over the configured
@@ -621,64 +609,7 @@ fn extract_canonical_path(args: &Value) -> Option<String> {
 }
 
 fn emit_error(state: &LoopState, message: String) {
-    let step = Step {
-        id: String::new(),
-        step_index: state.alloc_step_index(),
-        kind: StepType::TextResponse,
-        source: StepSource::System,
-        target: StepTarget::User,
-        status: StepStatus::Error,
-        content: String::new(),
-        content_delta: String::new(),
-        thinking: String::new(),
-        thinking_delta: String::new(),
-        tool_calls: Vec::new(),
-        error: message,
-        is_complete_response: Some(true),
-        structured_output: None,
-        usage_metadata: None,
-    };
-    state.emit(step);
-}
-
-fn text_delta_step(traj: &str, idx: u32, delta: &str) -> Step {
-    Step {
-        id: traj.to_string(),
-        step_index: idx,
-        kind: StepType::TextResponse,
-        source: StepSource::Model,
-        target: StepTarget::User,
-        status: StepStatus::Active,
-        content: String::new(),
-        content_delta: delta.to_string(),
-        thinking: String::new(),
-        thinking_delta: String::new(),
-        tool_calls: Vec::new(),
-        error: String::new(),
-        is_complete_response: Some(false),
-        structured_output: None,
-        usage_metadata: None,
-    }
-}
-
-fn thought_delta_step(traj: &str, idx: u32, delta: &str) -> Step {
-    Step {
-        id: traj.to_string(),
-        step_index: idx,
-        kind: StepType::TextResponse,
-        source: StepSource::Model,
-        target: StepTarget::User,
-        status: StepStatus::Active,
-        content: String::new(),
-        content_delta: String::new(),
-        thinking: String::new(),
-        thinking_delta: delta.to_string(),
-        tool_calls: Vec::new(),
-        error: String::new(),
-        is_complete_response: Some(false),
-        structured_output: None,
-        usage_metadata: None,
-    }
+    state.emit(Step::turn_error(state.alloc_step_index(), message));
 }
 
 impl LoopState {
@@ -687,24 +618,11 @@ impl LoopState {
         // broadcast. Today we only do this for ToolCall — the dispatched
         // tool result is reflected in the model's next turn.
         if let StreamChunk::ToolCall(tc) = chunk {
-            let step = Step {
-                id: String::new(),
-                step_index: self.alloc_step_index(),
-                kind: StepType::ToolCall,
-                source: StepSource::Model,
-                target: StepTarget::Environment,
-                status: StepStatus::Active,
-                content: String::new(),
-                content_delta: String::new(),
-                thinking: String::new(),
-                thinking_delta: String::new(),
-                tool_calls: vec![tc],
-                error: String::new(),
-                is_complete_response: Some(false),
-                structured_output: None,
-                usage_metadata: None,
-            };
-            self.emit(step);
+            self.emit(Step::tool_call(
+                self.alloc_step_index(),
+                tc,
+                StepStatus::Active,
+            ));
         }
     }
 }

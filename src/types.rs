@@ -665,6 +665,143 @@ impl Step {
         StepStatus::Unknown
     }
 
+    // -------------------------------------------------------------------------
+    // Constructors — the backend loops all emit the same handful of Step
+    // shapes. Building them here (field-for-field what the loops used to
+    // hand-roll as 16-field literals) keeps a new backend from drifting.
+    // -------------------------------------------------------------------------
+
+    /// Common skeleton: every field empty/`None` except the four enums.
+    fn base(kind: StepType, source: StepSource, target: StepTarget, status: StepStatus) -> Self {
+        Self {
+            id: String::new(),
+            step_index: 0,
+            kind,
+            source,
+            target,
+            status,
+            content: String::new(),
+            content_delta: String::new(),
+            thinking: String::new(),
+            thinking_delta: String::new(),
+            tool_calls: Vec::new(),
+            error: String::new(),
+            is_complete_response: None,
+            structured_output: None,
+            usage_metadata: None,
+        }
+    }
+
+    /// A streamed text delta (model → user, `Active`, non-terminal).
+    pub fn text_delta(trajectory_id: &str, step_index: u32, delta: &str) -> Self {
+        let mut s = Self::base(
+            StepType::TextResponse,
+            StepSource::Model,
+            StepTarget::User,
+            StepStatus::Active,
+        );
+        s.id = trajectory_id.to_string();
+        s.step_index = step_index;
+        s.content_delta = delta.to_string();
+        s.is_complete_response = Some(false);
+        s
+    }
+
+    /// A streamed thinking (reasoning) delta (model → user, `Active`,
+    /// non-terminal).
+    pub fn thought_delta(trajectory_id: &str, step_index: u32, delta: &str) -> Self {
+        let mut s = Self::base(
+            StepType::TextResponse,
+            StepSource::Model,
+            StepTarget::User,
+            StepStatus::Active,
+        );
+        s.id = trajectory_id.to_string();
+        s.step_index = step_index;
+        s.thinking_delta = delta.to_string();
+        s.is_complete_response = Some(false);
+        s
+    }
+
+    /// A tool-call step (model → environment, non-terminal) surfacing `call`
+    /// on the stream. `status` is [`StepStatus::Active`] when emitted ahead of
+    /// dispatch (the live backends) or [`StepStatus::Done`] when the call was
+    /// already dispatched inline and the step is observability-only (the mock
+    /// backend — the Agent's step dispatcher skips `Done` steps).
+    pub fn tool_call(step_index: u32, call: ToolCall, status: StepStatus) -> Self {
+        let mut s = Self::base(
+            StepType::ToolCall,
+            StepSource::Model,
+            StepTarget::Environment,
+            status,
+        );
+        s.step_index = step_index;
+        s.tool_calls = vec![call];
+        s.is_complete_response = Some(false);
+        s
+    }
+
+    /// A resolved-tool-result marker step (model → environment, `Done`,
+    /// non-terminal, NO tool_calls) carrying only the optional error message —
+    /// lets a UI flip a tool block from "running" to ok/err without tripping
+    /// a System+Error turn-failure translation in `subscribe_steps`.
+    pub fn tool_result(step_index: u32, error: impl Into<String>) -> Self {
+        let mut s = Self::base(
+            StepType::ToolCall,
+            StepSource::Model,
+            StepTarget::Environment,
+            StepStatus::Done,
+        );
+        s.step_index = step_index;
+        s.error = error.into();
+        s.is_complete_response = Some(false);
+        s
+    }
+
+    /// The turn-terminating step (model → user, terminal). `kind` derives
+    /// from `structured_output`: [`StepType::Finish`] when present (the model
+    /// called `finish`), else [`StepType::TextResponse`].
+    pub fn turn_complete(
+        trajectory_id: impl Into<String>,
+        step_index: u32,
+        status: StepStatus,
+        content: impl Into<String>,
+        error: impl Into<String>,
+        structured_output: Option<serde_json::Value>,
+        usage_metadata: Option<UsageMetadata>,
+    ) -> Self {
+        let kind = if structured_output.is_some() {
+            StepType::Finish
+        } else {
+            StepType::TextResponse
+        };
+        let mut s = Self::base(kind, StepSource::Model, StepTarget::User, status);
+        s.id = trajectory_id.into();
+        s.step_index = step_index;
+        s.content = content.into();
+        s.error = error.into();
+        s.is_complete_response = Some(true);
+        s.structured_output = structured_output;
+        s.usage_metadata = usage_metadata;
+        s
+    }
+
+    /// A System-sourced turn-failure step (terminal, status `Error`) carrying
+    /// `message`. Backends whose `subscribe_steps` translates turn failures
+    /// convert exactly this shape into a stream `Err`.
+    pub fn turn_error(step_index: u32, message: impl Into<String>) -> Self {
+        let mut s = Self::base(
+            StepType::TextResponse,
+            StepSource::System,
+            StepTarget::User,
+            StepStatus::Error,
+        );
+        s.step_index = step_index;
+        s.error = message.into();
+        s.is_complete_response = Some(true);
+        s
+    }
+
     /// A turn-terminating step: model-sourced, user-facing, status DONE, with
     /// content. Mirrors `is_complete_response` semantics in the Python SDK.
     pub fn is_terminal_response(&self) -> bool {

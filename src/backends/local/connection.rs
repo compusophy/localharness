@@ -52,8 +52,8 @@ use crate::error::{Error, Result};
 use crate::hooks::{HookRunner, SessionContext};
 use crate::tools::ToolRunner;
 use crate::types::{
-    CapabilitiesConfig, Step, StepSource, StepStatus, StepTarget, StepType, SystemInstructions,
-    ToolCall, ToolResult, TranscriptEntry, TranscriptRole,
+    CapabilitiesConfig, Step, StepSource, StepStatus, SystemInstructions, ToolCall, ToolResult,
+    TranscriptEntry, TranscriptRole,
 };
 
 use super::gemma::{GemmaConfig, GemmaModel};
@@ -302,23 +302,11 @@ impl LoopState {
     /// Emit a `ToolCall` step (model → environment, Active) so a UI can render
     /// the in-flight tool block. Mirrors the Gemini loop's `emit_chunk_step`.
     fn emit_tool_call_step(&self, tc: &ToolCall) {
-        self.emit(Step {
-            id: String::new(),
-            step_index: self.alloc_step_index(),
-            kind: StepType::ToolCall,
-            source: StepSource::Model,
-            target: StepTarget::Environment,
-            status: StepStatus::Active,
-            content: String::new(),
-            content_delta: String::new(),
-            thinking: String::new(),
-            thinking_delta: String::new(),
-            tool_calls: vec![tc.clone()],
-            error: String::new(),
-            is_complete_response: Some(false),
-            structured_output: None,
-            usage_metadata: None,
-        });
+        self.emit(Step::tool_call(
+            self.alloc_step_index(),
+            tc.clone(),
+            StepStatus::Active,
+        ));
     }
 
     /// Emit a `ToolCall`-kind step carrying the resolved [`ToolResult`] so a UI
@@ -330,23 +318,10 @@ impl LoopState {
     /// reflected back into history as a ```` ```tool_output ```` turn for the
     /// next model round.
     fn emit_tool_result_step(&self, result: &ToolResult) {
-        self.emit(Step {
-            id: String::new(),
-            step_index: self.alloc_step_index(),
-            kind: StepType::ToolCall,
-            source: StepSource::Model,
-            target: StepTarget::Environment,
-            status: StepStatus::Done,
-            content: String::new(),
-            content_delta: String::new(),
-            thinking: String::new(),
-            thinking_delta: String::new(),
-            tool_calls: Vec::new(),
-            error: result.error.clone().unwrap_or_default(),
-            is_complete_response: Some(false),
-            structured_output: None,
-            usage_metadata: None,
-        });
+        self.emit(Step::tool_result(
+            self.alloc_step_index(),
+            result.error.clone().unwrap_or_default(),
+        ));
     }
 }
 
@@ -594,46 +569,22 @@ pub fn decode_transcript_bytes(bytes: &[u8]) -> Result<Vec<TranscriptEntry>> {
 /// Build the turn-terminating step (model-sourced, user-facing, DONE) carrying
 /// the generated text.
 fn terminal_step(state: &LoopState, traj: &str, text: String) -> Step {
-    Step {
-        id: traj.to_string(),
-        step_index: state.alloc_step_index(),
-        kind: StepType::TextResponse,
-        source: StepSource::Model,
-        target: StepTarget::User,
-        status: StepStatus::Done,
-        content: text,
-        content_delta: String::new(),
-        thinking: String::new(),
-        thinking_delta: String::new(),
-        tool_calls: Vec::new(),
-        error: String::new(),
-        is_complete_response: Some(true),
-        structured_output: None,
-        usage_metadata: None,
-    }
+    Step::turn_complete(
+        traj,
+        state.alloc_step_index(),
+        StepStatus::Done,
+        text,
+        "",
+        None,
+        None,
+    )
 }
 
 /// Build a System/Error terminal step. `subscribe_steps` translates this into a
 /// stream `Err` so the failure surfaces to `chat()`/`text()` instead of being
 /// swallowed as an empty success (same convention as the Anthropic backend).
 fn error_step(state: &LoopState, message: String) -> Step {
-    Step {
-        id: String::new(),
-        step_index: state.alloc_step_index(),
-        kind: StepType::TextResponse,
-        source: StepSource::System,
-        target: StepTarget::User,
-        status: StepStatus::Error,
-        content: String::new(),
-        content_delta: String::new(),
-        thinking: String::new(),
-        thinking_delta: String::new(),
-        tool_calls: Vec::new(),
-        error: message,
-        is_complete_response: Some(true),
-        structured_output: None,
-        usage_metadata: None,
-    }
+    Step::turn_error(state.alloc_step_index(), message)
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]

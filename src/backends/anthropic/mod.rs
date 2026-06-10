@@ -556,7 +556,6 @@ mod tests {
     use super::*;
     use crate::filesystem::NativeFilesystem;
     use crate::tools::ToolRunner;
-    use crate::types::{StepTarget, StepType};
 
     /// Parity guard: every builtin tool declared to Anthropic must carry a
     /// single-`type` JSON schema (no nullable unions / `additionalProperties`
@@ -732,23 +731,7 @@ mod tests {
         // Mirror `loop.rs::emit_error`: System + Error + message.
         conn.state
             .steps
-            .send(Step {
-                id: String::new(),
-                step_index: 0,
-                kind: StepType::TextResponse,
-                source: StepSource::System,
-                target: StepTarget::User,
-                status: StepStatus::Error,
-                content: String::new(),
-                content_delta: String::new(),
-                thinking: String::new(),
-                thinking_delta: String::new(),
-                tool_calls: Vec::new(),
-                error: "anthropic HTTP 500: boom".to_string(),
-                is_complete_response: Some(true),
-                structured_output: None,
-                usage_metadata: None,
-            })
+            .send(Step::turn_error(0, "anthropic HTTP 500: boom"))
             .expect("subscriber is live");
 
         let item = stream.next().await.expect("a stream item");
@@ -772,23 +755,15 @@ mod tests {
 
         conn.state
             .steps
-            .send(Step {
-                id: "traj".into(),
-                step_index: 0,
-                kind: StepType::TextResponse,
-                source: StepSource::Model,
-                target: StepTarget::User,
-                status: StepStatus::Done,
-                content: "all good".to_string(),
-                content_delta: String::new(),
-                thinking: String::new(),
-                thinking_delta: String::new(),
-                tool_calls: Vec::new(),
-                error: String::new(),
-                is_complete_response: Some(true),
-                structured_output: None,
-                usage_metadata: None,
-            })
+            .send(Step::turn_complete(
+                "traj",
+                0,
+                StepStatus::Done,
+                "all good",
+                "",
+                None,
+                None,
+            ))
             .expect("subscriber is live");
 
         let item = stream.next().await.expect("a stream item");
