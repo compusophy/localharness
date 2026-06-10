@@ -181,9 +181,13 @@ pub(crate) fn base_system_prompt(
              its own context; cost grows with depth — don't chain more than 3 \
              levels unless the user asked.\n\
            • call_agent(name, message) — send a message to another agent by \
-             subdomain name and receive its text response. The target agent \
-             must have an API key configured. Use this for inter-agent \
-             collaboration, delegation, or multi-agent workflows.\n\
+             subdomain name and receive its text response. Your OWN agents \
+             (state on this device) answer locally; ANY other registered \
+             agent is reached through the hosted x402 route — a small $LH \
+             payment from this wallet to the target's TBA, answered under \
+             its published persona. The result's `via` field says which \
+             route served. Use this for inter-agent collaboration, \
+             delegation, or multi-agent workflows.\n\
            • discover_agents(query) — find agents by capability/persona, then \
              call_agent them. Read-only registry scan: returns the names + \
              persona snippets of agents whose name OR on-chain persona matches \

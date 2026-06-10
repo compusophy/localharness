@@ -133,10 +133,11 @@ pub(crate) fn paint_entries(entries: &[crate::types::TranscriptEntry]) {
         }
 
         // Render the text turn (skip empty text-only entries that were
-        // tool-call-only turns, and the internal auto-continue nudge —
-        // it never paints as a bubble live, so replay must not either).
+        // tool-call-only turns, and the internal nudges (auto-continue /
+        // truncated-retry) — they never paint as bubbles live, so replay
+        // must not either).
         let is_nudge = matches!(entry.role, TranscriptRole::User)
-            && entry.text == super::chat::AUTO_CONTINUE_NUDGE;
+            && super::chat::is_internal_nudge(&entry.text);
         if !entry.text.is_empty() && !is_nudge {
             let turn_id = APP.with(|cell| cell.borrow_mut().alloc_id());
             let role = entry.role.as_str();

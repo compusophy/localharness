@@ -29,9 +29,8 @@ use crate::runtime::sleep_ms;
 use crate::wallet;
 
 use super::signer_protocol::{
-    challenge_prehash, MSG_CLAIM_NAME, MSG_CREATE_WALLET, MSG_IMPORT_SEED, MSG_OPEN_KEY,
-    MSG_REVEAL_SEED, MSG_SEAL_KEY, MSG_SIGNER_READY, MSG_SIGN_CHALLENGE, MSG_SIGN_DIGEST,
-    MSG_SIGN_RESPONSE,
+    challenge_prehash, MSG_CLAIM_NAME, MSG_CREATE_WALLET, MSG_OPEN_KEY, MSG_REVEAL_SEED,
+    MSG_SEAL_KEY, MSG_SIGNER_READY, MSG_SIGN_CHALLENGE, MSG_SIGN_DIGEST, MSG_SIGN_RESPONSE,
 };
 
 const SIGNER_URL: &str = "https://localharness.xyz/?signer=1";
@@ -382,19 +381,6 @@ pub(crate) async fn open_key_via_iframe(ciphertext_hex: &str) -> Result<String, 
     )
     .await?;
     reply_str(&data, "plaintext")
-}
-
-/// Ask the apex signer to import a user-supplied seed phrase and
-/// persist it. Returns the new address. Overwrites any existing wallet.
-pub(crate) async fn import_seed_via_iframe(phrase: &str) -> Result<String, String> {
-    let data = signer_request(
-        MSG_IMPORT_SEED,
-        "import",
-        &[("phrase", JsValue::from_str(phrase))],
-        IDENTITY_TIMEOUT_MS,
-    )
-    .await?;
-    reply_str(&data, "address")
 }
 
 /// How long to wait for the signer iframe's `lh-signer-ready` ping

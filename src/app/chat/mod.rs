@@ -318,7 +318,8 @@ const ANTHROPIC_MAX_OUTPUT_TOKENS: u32 = 16_384;
 /// the model was mid-reasoning and ran out of output budget without emitting a
 /// final answer. Ask it to resume CONCISELY so the continuation fits. Distinct
 /// from [`AUTO_CONTINUE_NUDGE`] (which assumes prior tool activity to build on).
-const TRUNCATED_RETRY_NUDGE: &str = "Your previous response was cut off before \
+/// `pub(crate)` so [`is_internal_nudge`] callers see one surface for both.
+pub(crate) const TRUNCATED_RETRY_NUDGE: &str = "Your previous response was cut off before \
 you finished (it hit the output limit). Continue and finish your answer now, \
 concisely. If the task is large, break it into smaller steps and take just the \
 next one.";
@@ -326,12 +327,18 @@ next one.";
 /// Internal nudge fed to the model on an auto-continuation. Kept terse so
 /// it doesn't derail the goal; instructs the model to either keep working
 /// or call `finish` / ask a question when it's actually done or blocked.
-/// `pub(crate)`: `history::paint_entries` skips replayed user turns that
-/// match it — live turns never paint a nudge bubble, so a restored
-/// transcript must not either.
 pub(crate) const AUTO_CONTINUE_NUDGE: &str = "Continue toward the user's goal. If the task is \
 fully complete, call the `finish` tool. If you're blocked or need a decision, ask \
 the user a question. Otherwise take the next step now without waiting.";
+
+/// True when `text` is one of the INTERNAL nudges ([`AUTO_CONTINUE_NUDGE`] /
+/// [`TRUNCATED_RETRY_NUDGE`]) injected between turns. Nudges never paint a
+/// user bubble live, so transcript replay (`history::paint_entries`) must
+/// skip them too — register any future nudge constant HERE so replay can't
+/// leak it as a ghost user turn.
+pub(crate) fn is_internal_nudge(text: &str) -> bool {
+    text == AUTO_CONTINUE_NUDGE || text == TRUNCATED_RETRY_NUDGE
+}
 
 /// What a single streamed turn carries in.
 enum TurnInput {

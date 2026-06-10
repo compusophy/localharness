@@ -843,7 +843,15 @@ mod worker {
                         // runtime code (trap / instantiate / no-entry); paint it
                         // into the overlay so the canvas shows the coded reason
                         // instead of just going dark. The watchdog handles the
-                        // hang code (LH1001) on its own path.
+                        // hang code (LH1001) on its own path — DISARM it here
+                        // (same one-shot `take()` as the `done` arm), or it
+                        // fires ~1.5s later (no frames after a fatal error) and
+                        // repaints the coded overlay as a false LH1001.
+                        if let Some(id) = watchdog_id.take() {
+                            if let Ok(win) = dom::window() {
+                                win.clear_interval_with_handle(id);
+                            }
+                        }
                         let code = Reflect::get(&data, &JsValue::from_str("code"))
                             .ok()
                             .and_then(|v| v.as_f64())

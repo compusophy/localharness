@@ -592,46 +592,45 @@ fn dispatch(action: Action) {
             });
         }
         Action::RevealSeed => {
-            // Apex: read mnemonic directly from cached wallet (sync).
-            // Tenant: round-trip through the apex signer iframe so the
-            // seed never leaves apex OPFS unannounced.
-            match super::tenant::current() {
-                super::tenant::Host::Apex => {
-                    let phrase = super::APP.with(|cell| {
-                        cell.borrow()
-                            .wallet
-                            .as_ref()
-                            .map(|w| w.mnemonic.to_string())
-                    });
-                    if let Some(p) = phrase {
-                        dom::swap_inner(
+            // Local-first (local-seed-per-origin, see `verify::local_master`):
+            // when THIS origin holds the seed — apex always, a subdomain
+            // after `seed_pull` — read the mnemonic straight off the cached
+            // `APP.wallet`. The signer-iframe round-trip is only the
+            // fallback for a seedless tenant origin: its `lh-reveal-seed`
+            // handler is apex-origin-only and the iframe is partitioned
+            // (dead) on mobile, so it must never be the primary path.
+            let phrase = super::APP.with(|cell| {
+                cell.borrow()
+                    .wallet
+                    .as_ref()
+                    .map(|w| w.mnemonic.to_string())
+            });
+            if let Some(p) = phrase {
+                dom::swap_inner(
+                    "seed-reveal",
+                    &super::templates::seed_phrase(&p).into_string(),
+                );
+            } else if !matches!(super::tenant::current(), super::tenant::Host::Apex) {
+                dom::swap_inner(
+                    "seed-reveal",
+                    "<span style=\"color:var(--muted)\">fetching…</span>",
+                );
+                wasm_bindgen_futures::spawn_local(async move {
+                    match super::verify::reveal_seed_via_iframe().await {
+                        Ok(phrase) => dom::swap_inner(
                             "seed-reveal",
-                            &super::templates::seed_phrase(&p).into_string(),
-                        );
+                            &super::templates::seed_phrase(&phrase).into_string(),
+                        ),
+                        Err(err) => dom::swap_inner(
+                            "seed-reveal",
+                            &maud::html! {
+                                span style="color:var(--error)" { "reveal failed: " (err) }
+                                button type="button" data-action="reveal-seed" class="ghost" { "retry" }
+                            }
+                            .into_string(),
+                        ),
                     }
-                }
-                _ => {
-                    dom::swap_inner(
-                        "seed-reveal",
-                        "<span style=\"color:var(--muted)\">fetching…</span>",
-                    );
-                    wasm_bindgen_futures::spawn_local(async move {
-                        match super::verify::reveal_seed_via_iframe().await {
-                            Ok(phrase) => dom::swap_inner(
-                                "seed-reveal",
-                                &super::templates::seed_phrase(&phrase).into_string(),
-                            ),
-                            Err(err) => dom::swap_inner(
-                                "seed-reveal",
-                                &maud::html! {
-                                    span style="color:var(--error)" { "reveal failed: " (err) }
-                                    button type="button" data-action="reveal-seed" class="ghost" { "retry" }
-                                }
-                                .into_string(),
-                            ),
-                        }
-                    });
-                }
+                });
             }
         }
         Action::HideSeed => {
@@ -708,10 +707,13 @@ fn dispatch(action: Action) {
                 return;
             }
             // Apex: write directly to apex OPFS, re-paint apex.
-            // Tenant: route through signer iframe so the seed lands at
-            // apex OPFS even though we're on a subdomain origin. This is
-            // how cross-device pairing works — paste your desktop seed on
-            // mobile and the master identity now lives on both devices.
+            // Tenant: write THIS origin's OPFS directly too — a tenant
+            // import intentionally affects only this origin (that IS the
+            // local-seed-per-origin model; other origins adopt the seed
+            // via the apex QR `?adopt=1` flow or `seed_pull`). The old
+            // signer-iframe route always failed here: the iframe's
+            // `lh-import-seed` handler is apex-origin-only and the iframe
+            // itself is partitioned (dead) on mobile.
             match super::tenant::current() {
                 super::tenant::Host::Apex => {
                     wasm_bindgen_futures::spawn_local(async move {
@@ -730,8 +732,10 @@ fn dispatch(action: Action) {
                 }
                 host => {
                     wasm_bindgen_futures::spawn_local(async move {
-                        match super::verify::import_seed_via_iframe(&phrase).await {
-                            Ok(_addr) => {
+                        match super::wallet_store::import(&phrase).await {
+                            Ok(wallet) => {
+                                super::APP
+                                    .with(|cell| cell.borrow_mut().wallet = Some(wallet));
                                 if let super::tenant::Host::Tenant(name) = &host {
                                     super::paint_tenant(host.clone(), name.clone()).await;
                                 }
