@@ -167,7 +167,7 @@ pub(crate) async fn call(rest: &[String]) -> i32 {
     };
 
     // Resolve the caller's identity key — it signs proxy auth + pays $LH.
-    let (key_file, key_hex) = match resolve_caller_key(caller.as_deref()) {
+    let (_key_file, key_hex) = match resolve_caller_key(caller.as_deref()) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("{e}");
@@ -175,21 +175,22 @@ pub(crate) async fn call(rest: &[String]) -> i32 {
         }
     };
     // Conversations persist per (caller, target, backend) so repeated calls
-    // continue the same thread; `--fresh` starts over. Label by the key-file
-    // stem. Keying on the backend too keeps a Gemini thread and an Anthropic
-    // thread to the same target in SEPARATE files — their on-disk history
-    // formats are incompatible (a Gemini thread loaded into the Anthropic
-    // backend dies with `missing field 'content'`).
-    // Label by the bare key-file stem (basename), so a cwd key and a config-home
-    // key for the same name share one history thread.
-    let caller_base = std::path::Path::new(&key_file)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or(&key_file);
-    let caller_label = caller_base
-        .strip_suffix(".localharness.key")
-        .unwrap_or(caller_base)
-        .to_string();
+    // continue the same thread; `--fresh` starts over. Label by the bare
+    // key-file stem (`resolve_caller_label` — basename minus KEY_SUFFIX), so a
+    // cwd key and a config-home key for the same name share one history thread.
+    // Keying on the backend too keeps a Gemini thread and an Anthropic thread
+    // to the same target in SEPARATE files — their on-disk history formats are
+    // incompatible (a Gemini thread loaded into the Anthropic backend dies with
+    // `missing field 'content'`).
+    let caller_label = match resolve_caller_label(caller.as_deref()) {
+        Ok(l) => l,
+        Err(e) => {
+            // Unreachable in practice: resolve_caller_key above already resolved
+            // the same identity. Mirror its exit code if the fs raced us.
+            eprintln!("{e}");
+            return 2;
+        }
+    };
     let backend = model_backend_tag(model.as_deref());
     let hist_file = history_path(&caller_label, &target, backend);
     let prior_history = if fresh {
