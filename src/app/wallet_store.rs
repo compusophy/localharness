@@ -1,11 +1,11 @@
-//! Master wallet persistence at the apex origin.
+//! Master wallet persistence — one seed per ORIGIN.
 //!
-//! Per-origin OPFS sandbox makes this naturally apex-only: the
-//! `.lh_wallet` file written by this module lives at
-//! `localharness.xyz`'s OPFS and is invisible to every subdomain.
-//! That's exactly the boundary we want — the wallet is the master
-//! identity; subdomains will eventually authenticate against it via
-//! an iframe-signer (M8), not by importing the key.
+//! The per-origin OPFS sandbox scopes the `.lh_wallet` file: the apex
+//! origin always holds the seed, and a subdomain holds its OWN copy
+//! after pulling it in via [`super::seed_pull`] (the local-seed-per-origin
+//! model that keeps mobile working — cross-origin iframe storage is
+//! partitioned there, so seed ops must run LOCAL-FIRST off this store,
+//! never through an iframe-only path).
 //!
 //! Storage format is a single line of 12 BIP-39 words. Plain text,
 //! no encryption-at-rest yet (matches the API key situation — same
@@ -19,10 +19,8 @@ const WALLET_FILE: &str = ".lh_wallet";
 
 pub(crate) struct MasterWallet {
     pub(crate) mnemonic: bip39::Mnemonic,
-    /// Held for M8 (iframe-signer): used to sign authentication
-    /// challenges from subdomain origins so they can verify the
-    /// visitor is the registered owner.
-    #[allow(dead_code)]
+    /// Signs owner proofs, sponsored Tempo txs, and key seal/open —
+    /// local-first off `APP.wallet` (see `verify.rs` / `signer.rs`).
     pub(crate) signer: k256::ecdsa::SigningKey,
     pub(crate) address: [u8; 20],
 }
@@ -82,19 +80,11 @@ pub(crate) async fn import(phrase: &str) -> Result<MasterWallet, String> {
     })
 }
 
-/// Wipe the wallet file — the "I want a new identity" affordance.
-#[allow(dead_code)]
-pub(crate) async fn forget() {
-    let fs = super::shared_opfs();
-    let _ = fs.delete(WALLET_FILE).await;
-}
-
-/// Per-device signer key, used by the device-pairing flow. This lives at
-/// the TENANT origin (the phone opened `<name>.localharness.xyz/?pair=…`)
-/// and is NOT the master seed — it's a fresh random key enrolled as an
-/// additional signer on the MAIN's TBA, so the device can act as the
-/// agent without ever importing the 12-word seed. Stored as a raw hex
-/// private key (no mnemonic; it's not meant for human backup).
+/// Per-origin signer key for seedless origins — the CREDIT identity
+/// (`chat::credit_signer`) on a device/origin that doesn't hold the
+/// master seed, and the signer key a previously-linked device persisted.
+/// NOT the master seed — a fresh random key, stored as raw hex (no
+/// mnemonic; it's not meant for human backup).
 const DEVICE_KEY_FILE: &str = ".lh_device_key";
 
 /// Persist a device signer's private key (hex) to this origin's OPFS.
@@ -102,8 +92,8 @@ const DEVICE_KEY_FILE: &str = ".lh_device_key";
 /// Encrypted at rest with the per-origin device key (see
 /// [`super::encryption`]) — same model as the API key / history: OPFS
 /// holds ciphertext, doesn't defend against XSS, and is safe to lose
-/// (re-pair / re-open a session, not an identity-loss like the seed
-/// would be — which is why the seed is deliberately left plaintext).
+/// (a fresh key is generated on demand, not an identity-loss like the
+/// seed would be — which is why the seed is deliberately left plaintext).
 pub(crate) async fn persist_device_key(private_key_hex: &str) -> Result<(), String> {
     let fs = super::shared_opfs();
     let bytes = private_key_hex.as_bytes();
@@ -115,8 +105,7 @@ pub(crate) async fn persist_device_key(private_key_hex: &str) -> Result<(), Stri
         .map_err(|e| format!("device key save: {e}"))
 }
 
-/// Load this origin's device signer key, if one was enrolled here.
-#[allow(dead_code)]
+/// Load this origin's device signer key, if one was persisted here.
 pub(crate) async fn load_device_key() -> Option<k256::ecdsa::SigningKey> {
     let fs = super::shared_opfs();
     let bytes = fs.read(DEVICE_KEY_FILE).await.ok()?;
@@ -131,11 +120,11 @@ pub(crate) async fn load_device_key() -> Option<k256::ecdsa::SigningKey> {
 }
 
 /// Pointer to the on-chain OWNER address this device is linked to. A
-/// linked device (paired phone / second browser) holds only a per-origin
-/// signer key, not the seed — so the apex has no master wallet to key on.
-/// This tiny PUBLIC pointer (a plaintext 0x address) tells the apex which
-/// identity to render; everything shown is then read live on-chain
-/// (subdomains, linked devices, MAIN). Set during pairing.
+/// linked device (second browser holding only a per-origin signer key,
+/// not the seed) gives the apex no master wallet to key on. This tiny
+/// PUBLIC pointer (a plaintext 0x address) tells the apex which identity
+/// to render; everything shown is then read live on-chain (subdomains,
+/// linked devices, MAIN). Written by the apex `?link_device=` hand-off.
 const LINKED_OWNER_FILE: &str = ".lh_linked_owner";
 
 /// Persist the on-chain owner address this device is linked to.
@@ -157,14 +146,6 @@ pub(crate) async fn load_linked_owner() -> Option<String> {
     } else {
         Some(t.to_string())
     }
-}
-
-/// Drop the linked-owner pointer (e.g. when the user creates/imports their
-/// own seed on this origin and becomes a first-class identity).
-#[allow(dead_code)]
-pub(crate) async fn clear_linked_owner() {
-    let fs = super::shared_opfs();
-    let _ = fs.delete(LINKED_OWNER_FILE).await;
 }
 
 fn restore_from_phrase(phrase: &str) -> Result<MasterWallet, String> {

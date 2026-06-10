@@ -84,11 +84,8 @@ enum Action {
     ToggleView,
     ShowTab(String),
     FeedbackSubmit,
-    PairStart,
+    /// Dismiss the QR seed-adoption panel back to the "add a device" button.
     PairCancel,
-    PairApprove,
-    PairReject,
-    PairJoin,
     /// Option A: desktop shows a QR carrying its seed (encrypted under a
     /// one-time code) so another device can adopt the same identity.
     AddDevice,
@@ -212,15 +209,11 @@ impl Action {
             "toggle-view" => Action::ToggleView,
             "show-tab" => Action::ShowTab(arg.unwrap_or_default()),
             "feedback-submit" => Action::FeedbackSubmit,
-            "pair-start" => Action::PairStart,
             "add-device" => Action::AddDevice,
             "sync-devices" => Action::SyncDevices,
             "adopt-device" => Action::AdoptDevice,
             "create-new-claim" => Action::CreateNewClaim(arg.unwrap_or_default()),
             "pair-cancel" => Action::PairCancel,
-            "pair-approve" => Action::PairApprove,
-            "pair-reject" => Action::PairReject,
-            "pair-join" => Action::PairJoin,
             "agent-act-toggle" => Action::AgentActToggle(arg.unwrap_or_default()),
             "agent-send-lh" => Action::AgentSendLh(arg.unwrap_or_default()),
             "save-prompt" => Action::SavePrompt,
@@ -936,18 +929,10 @@ fn dispatch(action: Action) {
         Action::ToggleView => layout::toggle_layout_class("view-collapsed"),
         Action::ShowTab(name) => admin::show_mobile_tab(&name),
         Action::FeedbackSubmit => super::feedback::feedback_submit(),
-        Action::PairStart => devices::pair_start_pressed(),
         Action::AddDevice => devices::add_device_pressed(),
         Action::SyncDevices => devices::run_sync_devices(),
         Action::AdoptDevice => devices::adopt_device_pressed(),
         Action::PairCancel => devices::pair_cancel_pressed(),
-        Action::PairApprove => devices::pair_approve_pressed(),
-        Action::PairReject => devices::pair_reject_pressed(),
-        Action::PairJoin => {
-            if let Some(code) = super::read_query_param("pair") {
-                devices::pair_join_pressed(code);
-            }
-        }
         Action::AgentActToggle(token_id) => act::agent_act_toggle_pressed(token_id),
         Action::AgentSendLh(token_id) => act::agent_send_lh_pressed(token_id),
         Action::SavePrompt => admin::save_prompt_pressed(),

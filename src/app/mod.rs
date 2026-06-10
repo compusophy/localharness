@@ -422,38 +422,6 @@ fn mount() -> Result<(), JsValue> {
             return Ok(());
         }
         tenant::Host::Tenant(name) => {
-            // Device-pairing short-circuit: `?pair=CODE` means a second
-            // device is enrolling itself as a signer for this subdomain.
-            // Paint the minimal join chrome — no identity, no chat.
-            if read_query_param("pair").is_some() {
-                root.set_inner_html(&templates::pair_join(name).into_string());
-                // Single source of truth, read ONCE on load: if this device
-                // is already enrolled in this subdomain's MAIN device index,
-                // there's nothing to pair — send it straight to the subdomain
-                // (where owner-by-signer lands it in the studio).
-                let n = name.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    if let Some(sk) = wallet_store::load_device_key().await {
-                        let addr = crate::encoding::bytes_to_hex_str(&crate::wallet::address(&sk));
-                        if let Ok(Some(owner)) = registry::owner_of_name(&n).await {
-                            if let Ok(main_id) = registry::main_of(&owner).await {
-                                if main_id != 0
-                                    && registry::is_device_linked(main_id, &addr).await.unwrap_or(false)
-                                {
-                                    if let Ok(window) = dom::window() {
-                                        // Via the apex so it records the linked
-                                        // identity, then on to the subdomain.
-                                        let _ = window.location().set_href(&format!(
-                                            "https://localharness.xyz/?link_device={owner}&then={n}"
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                });
-                return Ok(());
-            }
             // Seed-pull return leg: apex sealed the master seed to this
             // origin's ephemeral key. Import it into THIS origin's OPFS, then
             // paint the tenant normally — now with a LOCAL seed, so every
