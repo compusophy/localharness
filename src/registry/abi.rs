@@ -96,47 +96,11 @@ pub(crate) fn address_to_hex(addr: &[u8; 20]) -> String {
     s
 }
 
-pub(crate) fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
-    let trimmed = hex.trim().trim_start_matches("0x").trim_start_matches("0X");
-    if trimmed.len() % 2 != 0 {
-        return Err("hex odd length".into());
-    }
-    let mut out = Vec::with_capacity(trimmed.len() / 2);
-    let bytes = trimmed.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let hi = nibble_value(bytes[i])?;
-        let lo = nibble_value(bytes[i + 1])?;
-        out.push((hi << 4) | lo);
-        i += 2;
-    }
-    Ok(out)
-}
-
-pub(crate) fn nibble_value(b: u8) -> Result<u8, String> {
-    match b {
-        b'0'..=b'9' => Ok(b - b'0'),
-        b'a'..=b'f' => Ok(b - b'a' + 10),
-        b'A'..=b'F' => Ok(b - b'A' + 10),
-        _ => Err(format!("non-hex byte {b}")),
-    }
-}
-
-pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
-
-pub(crate) fn parse_hex_quantity(hex: &str) -> Result<u128, String> {
-    let trimmed = hex.trim().trim_start_matches("0x");
-    if trimmed.is_empty() {
-        return Ok(0);
-    }
-    u128::from_str_radix(trimmed, 16).map_err(|e| e.to_string())
-}
+// Hex primitives — thin re-uses of the crate-canonical `crate::encoding`
+// codecs (byte-identical behavior AND error texts: "hex odd length" /
+// "non-hex byte {b}"; `parse_hex_quantity` treats empty/`0x` as zero). The
+// registry's former local copies were verbatim duplicates.
+pub(crate) use crate::encoding::{bytes_to_hex, hex_to_bytes, parse_hex_quantity};
 
 
 #[cfg(test)]

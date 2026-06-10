@@ -567,27 +567,12 @@ pub(crate) async fn wait_for_receipt(tx_hash: &str) -> Result<(), String> {
     Err(format!("receipt timeout for {tx_hash}"))
 }
 
-/// Cross-target sleep — `tokio::time::sleep` on native, a Promise
-/// around `setTimeout` on wasm. Used by `claim_name` to poll the
-/// transaction receipt every second.
-#[cfg(not(target_arch = "wasm32"))]
-pub async fn sleep_ms(ms: u32) {
-    tokio::time::sleep(std::time::Duration::from_millis(ms as u64)).await;
-}
-
-#[cfg(target_arch = "wasm32")]
-pub async fn sleep_ms(ms: u32) {
-    use wasm_bindgen_futures::JsFuture;
-    let promise = js_sys::Promise::new(&mut |resolve, _| {
-        if let Some(window) = web_sys::window() {
-            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                &resolve,
-                ms as i32,
-            );
-        }
-    });
-    let _ = JsFuture::from(promise).await;
-}
+/// Cross-target sleep — `tokio::time::sleep` on native, a Promise around
+/// `setTimeout` on wasm. Re-exported from the crate-canonical
+/// [`crate::runtime::sleep_ms`] (identical semantics + signature) so
+/// `registry::sleep_ms` keeps working for existing callers; the receipt
+/// poll above uses it every second.
+pub use crate::runtime::sleep_ms;
 
 
 #[cfg(target_arch = "wasm32")]
