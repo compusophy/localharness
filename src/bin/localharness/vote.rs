@@ -66,21 +66,7 @@ pub(crate) struct ParsedVotePropose {
 }
 
 pub(crate) fn parse_vote_propose_args(rest: &[String]) -> Result<ParsedVotePropose, String> {
-    let mut positional: Vec<String> = Vec::new();
-    let mut period: Option<String> = None;
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--period" => {
-                period = Some(rest.get(i + 1).ok_or(VOTE_USAGE)?.clone());
-                i += 2;
-            }
-            _ => {
-                positional.push(rest[i].clone());
-                i += 1;
-            }
-        }
-    }
+    let ([period], positional) = collect_flags(rest, ["--period"], VOTE_USAGE)?;
     if positional.len() < 3 {
         return Err(format!("vote propose needs <guildId> <to> <amount>\n{VOTE_USAGE}"));
     }

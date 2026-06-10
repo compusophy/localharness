@@ -79,31 +79,8 @@ pub(crate) fn fmt_interval(secs: u64) -> String {
 }
 
 pub(crate) fn parse_schedule_args(rest: &[String]) -> Result<ParsedSchedule, String> {
-    let mut positional: Vec<String> = Vec::new();
-    let mut every: Option<String> = None;
-    let mut budget: Option<String> = None;
-    let mut runs: Option<String> = None;
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--every" => {
-                every = Some(rest.get(i + 1).ok_or(SCHEDULE_USAGE)?.clone());
-                i += 2;
-            }
-            "--budget" => {
-                budget = Some(rest.get(i + 1).ok_or(SCHEDULE_USAGE)?.clone());
-                i += 2;
-            }
-            "--runs" => {
-                runs = Some(rest.get(i + 1).ok_or(SCHEDULE_USAGE)?.clone());
-                i += 2;
-            }
-            _ => {
-                positional.push(rest[i].clone());
-                i += 1;
-            }
-        }
-    }
+    let ([every, budget, runs], positional) =
+        collect_flags(rest, ["--every", "--budget", "--runs"], SCHEDULE_USAGE)?;
     if positional.len() < 2 {
         return Err(SCHEDULE_USAGE.to_string());
     }

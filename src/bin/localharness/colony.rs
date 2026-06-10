@@ -166,46 +166,11 @@ pub(crate) const COLONY_DEFAULT_PANEL: usize = 3;
 /// Parse `colony run` flags. Pure/testable — mirrors `parse_bounty_post_args`
 /// plus a `--worker` override.
 pub(crate) fn parse_colony_run_args(rest: &[String]) -> Result<ParsedColonyRun, String> {
-    let mut positional: Vec<String> = Vec::new();
-    let mut reward: Option<String> = None;
-    let mut worker: Option<String> = None;
-    let mut judge: Option<String> = None;
-    let mut judges: Option<String> = None;
-    let mut min_accept: Option<String> = None;
-    let mut ttl: Option<String> = None;
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--reward" => {
-                reward = Some(rest.get(i + 1).ok_or(COLONY_USAGE)?.clone());
-                i += 2;
-            }
-            "--worker" => {
-                worker = Some(rest.get(i + 1).ok_or(COLONY_USAGE)?.clone());
-                i += 2;
-            }
-            "--judge" => {
-                judge = Some(rest.get(i + 1).ok_or(COLONY_USAGE)?.clone());
-                i += 2;
-            }
-            "--judges" => {
-                judges = Some(rest.get(i + 1).ok_or(COLONY_USAGE)?.clone());
-                i += 2;
-            }
-            "--min-accept-rating" => {
-                min_accept = Some(rest.get(i + 1).ok_or(COLONY_USAGE)?.clone());
-                i += 2;
-            }
-            "--ttl" => {
-                ttl = Some(rest.get(i + 1).ok_or(COLONY_USAGE)?.clone());
-                i += 2;
-            }
-            _ => {
-                positional.push(rest[i].clone());
-                i += 1;
-            }
-        }
-    }
+    let ([reward, worker, judge, judges, min_accept, ttl], positional) = collect_flags(
+        rest,
+        ["--reward", "--worker", "--judge", "--judges", "--min-accept-rating", "--ttl"],
+        COLONY_USAGE,
+    )?;
     if positional.is_empty() {
         return Err(format!("colony run needs a <task>\n{COLONY_USAGE}"));
     }

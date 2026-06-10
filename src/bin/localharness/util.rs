@@ -1,34 +1,44 @@
 #[allow(unused_imports)]
 use crate::*;
 
-/// Extract a `--as <name>` flag from ANYWHERE in the arg list (not just the
-/// first position) and return `(caller, remaining_args_without_the_flag)`. The
-/// remainder is owned so the flag can be removed from the middle. Position-
-/// fragile parsing was a real bug: `probe --deep --as fleet` failed because
-/// `--as` wasn't first, so the fleet name was never resolved and the call
-/// errored with "multiple identities". A second `--as` is an error.
-pub(crate) fn take_as_flag(args: &[String]) -> Result<(Option<String>, Vec<String>), String> {
-    let mut caller: Option<String> = None;
+/// Extract a single `<flag> <value>` pair from ANYWHERE in the arg list and
+/// return `(value, remaining_args_without_the_pair)`. The remainder is owned so
+/// the pair can be removed from the middle — position-fragile parsing was a real
+/// bug (`probe --deep --as fleet` missed a non-leading `--as`). A repeated flag
+/// is an error ("{flag} given more than once"); a dangling flag errs with the
+/// caller-supplied `usage` line. The shared engine behind
+/// [`take_as_flag`] / [`take_tba_flag`] / [`take_data_flag`].
+pub(crate) fn take_value_flag(
+    args: &[String],
+    flag: &str,
+    usage: &str,
+) -> Result<(Option<String>, Vec<String>), String> {
+    let mut value: Option<String> = None;
     let mut rest: Vec<String> = Vec::with_capacity(args.len());
     let mut i = 0;
     while i < args.len() {
-        if args[i] == "--as" {
-            if caller.is_some() {
-                return Err("--as given more than once".to_string());
+        if args[i] == flag {
+            if value.is_some() {
+                return Err(format!("{flag} given more than once"));
             }
             match args.get(i + 1) {
-                Some(n) => {
-                    caller = Some(n.clone());
+                Some(v) => {
+                    value = Some(v.clone());
                     i += 2;
                 }
-                None => return Err("usage: --as <name> requires a name".to_string()),
+                None => return Err(usage.to_string()),
             }
         } else {
             rest.push(args[i].clone());
             i += 1;
         }
     }
-    Ok((caller, rest))
+    Ok((value, rest))
+}
+
+/// Extract a `--as <name>` flag (the acting identity) from anywhere in the args.
+pub(crate) fn take_as_flag(args: &[String]) -> Result<(Option<String>, Vec<String>), String> {
+    take_value_flag(args, "--as", "usage: --as <name> requires a name")
 }
 
 /// Format `$LH` wei as a 2-decimal LH string.
@@ -38,12 +48,19 @@ pub(crate) fn fmt_lh(wei: u128) -> String {
     format!("{whole}.{cents:02} LH")
 }
 
-/// Parse a bounty `id` argument (`#7` or `7`). Pure + testable.
-pub(crate) fn parse_bounty_id(raw: &str) -> Result<u64, String> {
+/// Parse a numeric `id` argument (`#7` or `7`) for the given `noun` (the error
+/// reads "invalid {noun} id '{raw}'"). Pure + testable — the shared engine
+/// behind [`parse_bounty_id`] / [`parse_guild_id`] / [`parse_proposal_id`].
+pub(crate) fn parse_id(raw: &str, noun: &str) -> Result<u64, String> {
     raw.trim()
         .trim_start_matches('#')
         .parse::<u64>()
-        .map_err(|_| format!("invalid bounty id '{raw}'"))
+        .map_err(|_| format!("invalid {noun} id '{raw}'"))
+}
+
+/// Parse a bounty `id` argument (`#7` or `7`).
+pub(crate) fn parse_bounty_id(raw: &str) -> Result<u64, String> {
+    parse_id(raw, "bounty")
 }
 
 /// Load the caller's identity signer alone, mapping any failure to a process
@@ -146,58 +163,46 @@ pub(crate) async fn resolve_own_token_id(
     }
 }
 
-/// Extract an optional `--tba <name-or-0xaddr>` flag (from anywhere) and return
-/// `(Option<value>, remaining)`. A second `--tba` is an error. Pure + testable;
-/// `tba exec` uses it to OVERRIDE the acting TBA (default = caller's-main) with
-/// an arbitrary owned TBA — a name (→ `tokenBoundAccountByName`) or a raw 0x addr.
+/// Extract an optional `--tba <name-or-0xaddr>` flag (from anywhere). `tba exec`
+/// uses it to OVERRIDE the acting TBA (default = caller's-main) with an arbitrary
+/// owned TBA — a name (→ `tokenBoundAccountByName`) or a raw 0x addr.
 pub(crate) fn take_tba_flag(args: &[String]) -> Result<(Option<String>, Vec<String>), String> {
-    let mut tba: Option<String> = None;
-    let mut rest: Vec<String> = Vec::with_capacity(args.len());
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == "--tba" {
-            if tba.is_some() {
-                return Err("--tba given more than once".to_string());
-            }
-            match args.get(i + 1) {
-                Some(v) => {
-                    tba = Some(v.clone());
-                    i += 2;
-                }
-                None => return Err("usage: --tba <name-or-0xaddr> requires a value".to_string()),
-            }
-        } else {
-            rest.push(args[i].clone());
-            i += 1;
-        }
-    }
-    Ok((tba, rest))
+    take_value_flag(args, "--tba", "usage: --tba <name-or-0xaddr> requires a value")
 }
 
-/// Extract an optional `--data <hex>` flag (from anywhere) and return
-/// `(Option<hex>, remaining_positionals)`. A second `--data` is an error.
+/// Extract an optional `--data <hex>` flag (from anywhere).
 pub(crate) fn take_data_flag(args: &[String]) -> Result<(Option<String>, Vec<String>), String> {
-    let mut data: Option<String> = None;
-    let mut rest: Vec<String> = Vec::with_capacity(args.len());
+    take_value_flag(args, "--data", "usage: --data <hex> requires a value")
+}
+
+/// Walk an arg list ONCE, extracting the values of the named `flags` (returned
+/// in the same order; a repeated flag's LAST value wins, matching the old
+/// per-command loops) and collecting everything else as positionals in order.
+/// A flag missing its value errs with the caller's `usage` line — exactly the
+/// `ok_or(USAGE)?` each loop used. The shared flag-walk skeleton behind
+/// `parse_schedule_args` / `parse_colony_run_args` / `parse_bounty_post_args` /
+/// `parse_vote_propose_args`. (NOT used by `parse_invite_create_args`, which
+/// REJECTS unknown args instead of collecting them, nor by the leading-flag
+/// parsers `parse_call_args` / `parse_mcp_call_args`, which stop at the first
+/// positional.)
+pub(crate) fn collect_flags<const N: usize>(
+    rest: &[String],
+    flags: [&str; N],
+    usage: &str,
+) -> Result<([Option<String>; N], Vec<String>), String> {
+    let mut values: [Option<String>; N] = std::array::from_fn(|_| None);
+    let mut positional: Vec<String> = Vec::new();
     let mut i = 0;
-    while i < args.len() {
-        if args[i] == "--data" {
-            if data.is_some() {
-                return Err("--data given more than once".to_string());
-            }
-            match args.get(i + 1) {
-                Some(h) => {
-                    data = Some(h.clone());
-                    i += 2;
-                }
-                None => return Err("usage: --data <hex> requires a value".to_string()),
-            }
+    while i < rest.len() {
+        if let Some(slot) = flags.iter().position(|f| *f == rest[i]) {
+            values[slot] = Some(rest.get(i + 1).ok_or(usage)?.clone());
+            i += 2;
         } else {
-            rest.push(args[i].clone());
+            positional.push(rest[i].clone());
             i += 1;
         }
     }
-    Ok((data, rest))
+    Ok((values, positional))
 }
 
 /// Decode a `--data` hex argument into bytes. Accepts an optional `0x` prefix;
@@ -220,22 +225,14 @@ pub(crate) fn decode_hex_arg(raw: &str) -> Result<Vec<u8>, String> {
         .collect()
 }
 
-/// Parse a guild `id` argument (`#7` or `7`). Pure + testable (mirrors
-/// `parse_bounty_id`).
+/// Parse a guild `id` argument (`#7` or `7`).
 pub(crate) fn parse_guild_id(raw: &str) -> Result<u64, String> {
-    raw.trim()
-        .trim_start_matches('#')
-        .parse::<u64>()
-        .map_err(|_| format!("invalid guild id '{raw}'"))
+    parse_id(raw, "guild")
 }
 
-/// Parse a proposal `id` argument (`#7` or `7`). Pure + testable (mirrors
-/// `parse_bounty_id` / `parse_guild_id`).
+/// Parse a proposal `id` argument (`#7` or `7`).
 pub(crate) fn parse_proposal_id(raw: &str) -> Result<u64, String> {
-    raw.trim()
-        .trim_start_matches('#')
-        .parse::<u64>()
-        .map_err(|_| format!("invalid proposal id '{raw}'"))
+    parse_id(raw, "proposal")
 }
 
 /// Registry name rule = a valid DNS label: 1-63 chars, lowercase a-z / 0-9 /

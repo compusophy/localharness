@@ -37,26 +37,7 @@ pub(crate) struct ParsedBountyPost {
 }
 
 pub(crate) fn parse_bounty_post_args(rest: &[String]) -> Result<ParsedBountyPost, String> {
-    let mut positional: Vec<String> = Vec::new();
-    let mut reward: Option<String> = None;
-    let mut ttl: Option<String> = None;
-    let mut i = 0;
-    while i < rest.len() {
-        match rest[i].as_str() {
-            "--reward" => {
-                reward = Some(rest.get(i + 1).ok_or(BOUNTY_USAGE)?.clone());
-                i += 2;
-            }
-            "--ttl" => {
-                ttl = Some(rest.get(i + 1).ok_or(BOUNTY_USAGE)?.clone());
-                i += 2;
-            }
-            _ => {
-                positional.push(rest[i].clone());
-                i += 1;
-            }
-        }
-    }
+    let ([reward, ttl], positional) = collect_flags(rest, ["--reward", "--ttl"], BOUNTY_USAGE)?;
     if positional.is_empty() {
         return Err(format!("bounty post needs a <task>\n{BOUNTY_USAGE}"));
     }
