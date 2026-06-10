@@ -26,3 +26,17 @@
 #            target's TBA after a successful reply
 21  f971ce0  path-traversal names rejected by the same DNS-label gate (no key
 #            file is written for an invalid name)
+11  11aa6e5  #transcript is a role=log aria-live=polite region — streamed agent
+#            replies announce to screen readers (+ 7f3caf8 input labels)
+27  65de539  USAGE tab + RPC row removed; credits as label:value row (39af477)
+28  65de539  nudge-replay ghost turns: history replay skips auto-continue
+#            nudges; FILES-tab half was a boot-deadclick false alarm (see 29)
+29  996b222  file editor takes the full DISPLAY pane (dead sizing rule removed)
+30  —        no fix needed — #31 measured the dialog at 85vh; #30 judged a
+#            cropped screenshot
+31  —        self-correction of 30; lesson recorded in docs/SMOKE (measure with
+#            getBoundingClientRect, don't eyeball crops)
+23  HEAD     subagent tiers documented honestly — tool description + system
+#            prompt + llms.txt now state spawn_recursive_subagent's REDUCED
+#            surface (fs builtins, create tools, recursion; no value-moving
+#            tools, no call_agent) vs text-only start_subagent

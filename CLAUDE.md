@@ -114,13 +114,16 @@ src/bin/localharness/  — agent-onboarding CLI (feature wallet+native). main.rs
   dispatcher + one module per command family (identity publish call mcp status
   credits schedule invite bounty reputation colony tba guild vote probe) +
   util.rs (load_signer*/take_value_flag/parse_id shared helpers). Commands:
-  create / compile / publish / persona / call / list / redeem / mcp-call /
-  schedule / jobs / unschedule / invite{create,accept,reclaim,list} /
-  bounty{post,list,claim,submit,accept,cancel,mine} / threads / forget /
+  create / compile / publish / face / persona / price / call / status / list /
+  redeem / mcp-call / schedule / jobs / unschedule /
+  invite{create,accept,reclaim,list} /
+  bounty{post,list,claim,submit,accept,cancel,mine} /
+  release{--confirm <name>, typed-confirmation} / threads / forget /
   whoami / version. Harness-agnostic, server-free; what web/skill.md tells
   external agents to run. `call` = HEADLESS turn via the credit proxy (NOT the
-  ?rpc=1 path), persists per caller/target under .localharness/history. Smoke:
-  scripts/smoke-cli.sh.
+  ?rpc=1 path), persists per caller/target under .localharness/history;
+  `--pay <amt|auto>` settles a caller-signed x402 payment to the target's TBA.
+  Smoke: scripts/smoke-cli.sh.
 
 contracts/   Foundry project (EIP-2535 diamond)
 ├── src/      Diamond.sol + interfaces/ + libraries/(LibDiamond + one
@@ -312,8 +315,12 @@ device WITHOUT `.lh_owner` is treated as a visitor; `paint_tenant` fires
 **Cross-visitor publishing (on-chain).** Local `app.rl`/`index.html` are
 owner-device working copies; *visitors* see published bytes in the diamond under
 `setMetadata(uint256,bytes32,bytes)` (no new facet). Keys:
-`keccak256("localharness.{app.wasm, public.html, public_face, persona}")`. Generic
-`registry::{metadata_bytes_of, encode_set_metadata_bytes}` back the typed accessors.
+`keccak256("localharness.{app.wasm, public.html, public_face, persona, x402_price}")`.
+`x402_price` = the agent's advertised per-call `$LH` price (decimal-wei UTF-8;
+default 0.01 `$LH` unset; `registry::{x402_price_of, x402_ask_price_of,
+encode_set_x402_price}`; enforced as a floor by the proxy's ask_agent gate).
+Generic `registry::{metadata_bytes_of, encode_set_metadata_bytes}` back the
+typed accessors.
 
 **Identity-gate invariant.** `wallet_store::load_or_create` is GONE. Two callers:
 `load()` (pure read → `Option<MasterWallet>`) and `create_and_persist()` (only from
@@ -396,8 +403,18 @@ semantics live in `contracts/README.md`** — this list is one line each.
   `bountyTaskOf`, NOT `taskOf` — ScheduleFacet already owns `taskOf(uint256)` (a
   diamond can't share a selector).** 50 Foundry tests incl. a 256-run
   escrow-conservation fuzz; proven E2E.
+- **GuildFacet** — durable agent orgs (rung 3). `createGuild(name)` mints the
+  guild its OWN identity + TBA treasury; consent-gated membership
+  (`inviteToGuild`/`acceptGuildInvite`), roles Member/Officer/Admin, `fundGuild` /
+  `spendTreasury`. Members may be other guilds' TBAs → guilds nest.
+- **VotingFacet** — guild DAO governance (rung 4). `propose` (treasury spend) /
+  `vote` (one-member-one-vote) / `execute` pays IFF passed quorum (member-count
+  SNAPSHOT at propose-time — churn can't drain).
+- **ReputationFacet** — `attest(subject, rating 1..5, workRef)` with per-work
+  dedup + self-attestation rejection; paged `attestationsOf`. ERC-8004
+  validation staking still open.
 - **PairingFacet** (dormant — superseded by QR seed-adoption). Event-only
-  `announcePairing(bytes32,bytes)`.
+  `announcePairing(bytes32,bytes)`. Client helpers removed as dead code.
 - **OwnedTokens** (`tokensOfOwner` enumerable index) — DRAFT, not cut.
 
 **ERC-6551 account** (`MultiSignerAccount`): CALL-only; additional-signer set on top
@@ -428,7 +445,7 @@ Bundle helpers (`registry.rs`): `redeem_sponsored`, `open_session_sponsored`,
 `credit_balance_of`. x402 helpers: `x402_domain_separator`, `x402_digest`,
 `sign_x402`, `settle_x402_sponsored`, `x402_authorization_state`. Release/device:
 `release_name_sponsored`, `consolidate_into_main_sponsored`, `devices_of`,
-`is_device_linked`, `remove_signer_sponsored`.
+`remove_signer_sponsored`.
 
 ## Agent tools + destructive-action convention
 
@@ -518,17 +535,18 @@ must come from the root key, which is why a sponsor key must be embedded in wasm
 ## What's pending
 
 Shipped: SDK runtime, browser IDE, platform layer, Tempo native AA, second backend
-(Anthropic, 0.23.0), tool-call replay in transcripts, agent scheduling + recursion,
-bounty board (rung 1), offline Mock backend (0.29.0). Still open:
+(Anthropic, 0.23.0), tool-call replay, agent scheduling + recursion, offline Mock
+backend (0.29.0), economy ladder rungs 1–4 (bounty → guild → DAO voting) +
+ReputationFacet + colony (0.30.0), x402 agent-pays-agent (caller-pays call_agent
+fallback + advertised/enforced on-chain pricing, unreleased). Still open:
 
-- **MPP / x402 payment hooks** — pre-tool-call hook requiring payment to the agent's
-  TBA, or agent-pays-agent over Stripe MPP / Coinbase x402. Fits the `Hook` trait.
-- **ERC-8004 reputation + validation facets** — agents accrue reputation; validators
-  stake to re-execute claims.
+- **Stripe MPP** — fiat agent-payments rail beside the live x402 `$LH` path.
+- **ERC-8004 validation staking** — validators stake to re-execute claims
+  (ReputationFacet attestations are live; the stake-escrow half isn't).
 - **TBA-driven actions in the bundle** — UX for "send this tx from your agent's TBA"
   (contract surface ready, mostly UI).
-- **Agent economy ladder** — bounty (done) → party → guild → DAO + recursive
-  DAOs-of-DAOs (`design/agent-coordination.md`). On-chain voting is the next rung.
+- **Economy ladder, next rungs** — party (ad-hoc squads) + recursive DAOs-of-DAOs
+  UX (`design/agent-coordination.md`; nesting already works at the contract level).
 - **More backends** — OpenAI / local-WebGPU finish + own coding model
   (`design/model-agnostic.md` Phases D–F).
 - **At-rest encryption** — wallet-derived sym key over OPFS contents.

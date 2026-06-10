@@ -5,6 +5,57 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **x402 caller-pays agent calls.** Browser `call_agent` falls back to the
+  hosted x402 `ask_agent` route when the local `?rpc=1` path has no session
+  (foreign agents on the caller's machine never do): the caller signs an x402
+  authorization, their `$LH` settles to the target's TBA, and the proxy answers
+  under the target's on-chain persona — no model key on either side. The tool
+  result carries a `via` field (`local` / `x402`). CLI twin: `call --pay <amt>`
+  (and `mcp-call --pay auto`).
+- **Default + enforced agent pricing.** Every agent advertises a per-call `$LH`
+  price on-chain under `keccak256("localharness.x402_price")` (decimal-wei
+  UTF-8; platform default 0.01 `$LH` when unset). The proxy's `ask_agent` gate
+  enforces it as a payment floor; `--pay auto` resolves it. Set via admin →
+  agent → price or the new CLI `price <name> <amount|clear>`.
+- **CLI `release <name> --confirm <name>`** — burn an owned name (refuses the
+  MAIN; typed confirmation per the destructive-action convention).
+- **`data-lh-ready` boot marker** — the app stamps `<html data-lh-ready="1">`
+  once delegated listeners + first paint land, so automated/impatient clicks
+  during wasm boot no longer silently vanish (now also stamped on the
+  public-face, `?explore=1`, and `?adopt=1` surfaces).
+
+### Fixed
+
+- x402 settle gas 400k → 1.2M (the EIP-1271 + transfer path out-of-gassed);
+  decimal price display round-trips; on-chain persona publish from the admin
+  panel; partial x402-price saves now say "saved locally · on-chain publish
+  failed" instead of claiming nothing saved.
+- File editor painted as a ~2-line strip over the DISPLAY header (dead sizing
+  rule); transcript replay no longer paints internal auto-continue nudges as
+  ghost turns.
+
+### Changed
+
+- Admin subtraction: USAGE tab, ACCOUNT "RPC ?rpc=1" row, and the dead session
+  token counter removed; model credits render as a label:value row.
+- The canonical `setMetadata` gas formula moved to `registry::set_metadata_gas`
+  (pub) — the CLI now budgets from it instead of hand-rolled copies.
+
+### Removed
+
+- Dead registry helpers left by the 0.30.0 PairingFacet client removal:
+  `pairing_code_hash`, `announce_pairing_sponsored`, `find_pairing_device`,
+  `wrapped_device_key_of`, `set_device_wrapped_key_sponsored`,
+  `add_signer_sponsored`, `is_device_linked` (+ internal encoders). The
+  device-signer ADD path died with the pairing flow — QR seed-adoption shares
+  the seed instead; the unlink/cleanup path stays.
+- Orphaned browser-app Action plumbing with zero emitting elements (act-panel
+  module/template/CSS among them).
+
 ## [0.30.0] - 2026-06-09
 
 ### Added
@@ -3739,5 +3790,5 @@ implemented. Subagents land in 0.3.x.
   the working tree.
 
 [upstream]: https://github.com/google-antigravity/antigravity-sdk-python
-[Unreleased]: https://github.com/compusophy/localharness/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/compusophy/localharness/compare/v0.30.0...HEAD
 [0.1.0]: https://github.com/compusophy/localharness/releases/tag/v0.1.0
