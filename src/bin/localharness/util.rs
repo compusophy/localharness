@@ -72,25 +72,60 @@ pub(crate) fn decode_hex_even(hex: &str) -> Result<Vec<u8>, String> {
         .collect()
 }
 
-/// Load the caller's identity signer + the embedded sponsor in one shot, mapping
-/// any failure to a process exit code. The shared front-half of every sponsored
-/// `bounty` write (post/claim/submit/accept/cancel).
-pub(crate) fn load_signer_and_sponsor(
-    caller: Option<&str>,
-) -> Result<(k256::ecdsa::SigningKey, k256::ecdsa::SigningKey), i32> {
+/// Load the caller's identity signer alone, mapping any failure to a process
+/// exit code (resolve failure = 2, unparseable key = 1). The shared front-half
+/// of every READ-ONLY command that still needs a local key (credits / status /
+/// list / jobs / `* mine` / probe) — the sponsored-write twin is
+/// [`load_signer_and_sponsor`].
+pub(crate) fn load_signer(caller: Option<&str>) -> Result<k256::ecdsa::SigningKey, i32> {
     let (key_file, key_hex) = resolve_caller_key(caller).map_err(|e| {
         eprintln!("{e}");
         2
     })?;
-    let signer = wallet::from_private_key_hex(&key_hex).map_err(|e| {
+    wallet::from_private_key_hex(&key_hex).map_err(|e| {
         eprintln!("bad key in {key_file}: {e}");
         1
-    })?;
-    let sponsor = wallet::from_private_key_hex(SPONSOR_KEY).map_err(|e| {
+    })
+}
+
+/// Load the embedded sponsor key (exit 1 on a parse failure — never happens in
+/// practice; the const is guarded by a unit test).
+pub(crate) fn load_sponsor() -> Result<k256::ecdsa::SigningKey, i32> {
+    wallet::from_private_key_hex(SPONSOR_KEY).map_err(|e| {
         eprintln!("sponsor key error: {e}");
         1
-    })?;
-    Ok((signer, sponsor))
+    })
+}
+
+/// Load `<name>`'s identity signer from its key file (cwd or config home),
+/// mapping any failure to exit 1. The NAME-keyed flavor `face`/`persona` use
+/// (vs the caller-keyed [`load_signer`]): a missing key here is a "run create
+/// first" error, not a resolve/usage error.
+pub(crate) fn load_name_signer(name: &str) -> Result<k256::ecdsa::SigningKey, i32> {
+    let Some(key_file) = resolve_key_read_path(name) else {
+        eprintln!("no identity key for {name} — run `localharness create {name}` first");
+        return Err(1);
+    };
+    let key_hex = match std::fs::read_to_string(&key_file) {
+        Ok(s) => s.trim().to_string(),
+        Err(_) => {
+            eprintln!("no identity key at {key_file} — run `localharness create {name}` first");
+            return Err(1);
+        }
+    };
+    wallet::from_private_key_hex(&key_hex).map_err(|e| {
+        eprintln!("bad key in {key_file}: {e}");
+        1
+    })
+}
+
+/// Load the caller's identity signer + the embedded sponsor in one shot, mapping
+/// any failure to a process exit code. The shared front-half of every sponsored
+/// write (bounty / guild / vote / invite / schedule / credits / …).
+pub(crate) fn load_signer_and_sponsor(
+    caller: Option<&str>,
+) -> Result<(k256::ecdsa::SigningKey, k256::ecdsa::SigningKey), i32> {
+    Ok((load_signer(caller)?, load_sponsor()?))
 }
 
 /// Resolve the caller's OWN registered tokenId — the `claimantTokenId` that earns

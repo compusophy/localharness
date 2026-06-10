@@ -328,12 +328,9 @@ pub(crate) async fn mcp_call(rest: &[String]) -> i32 {
         Ok(allowance) if allowance >= value_wei => {}
         Ok(_) => {
             println!("approving the diamond to spend $LH (one-time) …");
-            let sponsor = match wallet::from_private_key_hex(SPONSOR_KEY) {
+            let sponsor = match load_sponsor() {
                 Ok(s) => s,
-                Err(e) => {
-                    eprintln!("sponsor key error: {e}");
-                    return 1;
-                }
+                Err(code) => return code,
             };
             match registry::approve_lh_sponsored(
                 &signer,

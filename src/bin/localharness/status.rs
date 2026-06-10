@@ -168,19 +168,9 @@ pub(crate) async fn status(caller: Option<&str>, name: Option<&str>) -> i32 {
             (n.to_string(), owner, id)
         }
         None => {
-            let (key_file, key_hex) = match resolve_caller_key(caller) {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("{e}");
-                    return 2;
-                }
-            };
-            let signer = match wallet::from_private_key_hex(&key_hex) {
+            let signer = match load_signer(caller) {
                 Ok(s) => s,
-                Err(e) => {
-                    eprintln!("bad key in {key_file}: {e}");
-                    return 1;
-                }
+                Err(code) => return code,
             };
             let addr = addr_to_hex(wallet::address(&signer));
             // Prefer the caller's MAIN identity for the tokenId-keyed sections;
@@ -411,19 +401,9 @@ pub(crate) fn format_owned(addr: &str, tokens: &[registry::OwnedToken], json: bo
 /// List the subdomains the caller's identity owns (read-only — no `$LH`).
 /// Mirrors the browser `list_subdomains` tool.
 pub(crate) async fn list_mine(caller_name: Option<&str>, json: bool) -> i32 {
-    let (key_file, key_hex) = match resolve_caller_key(caller_name) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            return 2;
-        }
-    };
-    let signer = match wallet::from_private_key_hex(&key_hex) {
+    let signer = match load_signer(caller_name) {
         Ok(s) => s,
-        Err(e) => {
-            eprintln!("bad key in {key_file}: {e}");
-            return 1;
-        }
+        Err(code) => return code,
     };
     let addr = format!("0x{}", to_hex(&wallet::address(&signer)));
     match registry::list_owned_tokens(&addr).await {
@@ -679,26 +659,9 @@ pub(crate) async fn feedback_submit(caller_name: Option<&str>, text: &str) -> i3
         eprintln!("feedback too long: {} bytes (max 2048)", text.len());
         return 1;
     }
-    let (key_file, key_hex) = match resolve_caller_key(caller_name) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            return 2;
-        }
-    };
-    let signer = match wallet::from_private_key_hex(&key_hex) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("bad key in {key_file}: {e}");
-            return 1;
-        }
-    };
-    let sponsor = match wallet::from_private_key_hex(SPONSOR_KEY) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("sponsor key error: {e}");
-            return 1;
-        }
+    let (signer, sponsor) = match load_signer_and_sponsor(caller_name) {
+        Ok(pair) => pair,
+        Err(code) => return code,
     };
     println!("submitting {}-byte feedback on-chain …", text.len());
     match registry::submit_feedback_sponsored(&signer, &sponsor, text, registry::ALPHA_USD_ADDRESS)

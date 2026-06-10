@@ -84,19 +84,9 @@ pub(crate) async fn tba_show(caller: Option<&str>, name: Option<&str>) -> i32 {
         }
     } else {
         // No name → resolve the caller's OWN identity (needs a local key).
-        let (key_file, key_hex) = match resolve_caller_key(caller) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("{e}");
-                return 2;
-            }
-        };
-        let signer = match wallet::from_private_key_hex(&key_hex) {
+        let signer = match load_signer(caller) {
             Ok(s) => s,
-            Err(e) => {
-                eprintln!("bad key in {key_file}: {e}");
-                return 1;
-            }
+            Err(code) => return code,
         };
         match tba_target_token(caller, None, &signer).await {
             Ok(t) => t,

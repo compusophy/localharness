@@ -34,19 +34,9 @@ pub(crate) fn run_qa_checks() -> Vec<String> {
 /// policy (0b enforcement) probes the rustlite compiler via the credit proxy
 /// and files concrete findings on-chain. Needs a live run (proxy + Gemini).
 pub(crate) async fn probe_agent(caller_name: Option<&str>) -> i32 {
-    let (key_file, key_hex) = match resolve_caller_key(caller_name) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            return 2;
-        }
-    };
-    let caller = match wallet::from_private_key_hex(&key_hex) {
+    let caller = match load_signer(caller_name) {
         Ok(s) => s,
-        Err(e) => {
-            eprintln!("bad key in {key_file}: {e}");
-            return 1;
-        }
+        Err(code) => return code,
     };
     // Pay PER REQUEST (fund the meter), not a 10-$LH hour-long session.
     if let Ok(sponsor) = wallet::from_private_key_hex(SPONSOR_KEY) {

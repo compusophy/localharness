@@ -157,26 +157,9 @@ pub(crate) async fn invite_create(caller: Option<&str>, rest: &[String]) -> i32 
             return 2;
         }
     };
-    let (key_file, key_hex) = match resolve_caller_key(caller) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            return 2;
-        }
-    };
-    let signer = match wallet::from_private_key_hex(&key_hex) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("bad key in {key_file}: {e}");
-            return 1;
-        }
-    };
-    let sponsor = match wallet::from_private_key_hex(SPONSOR_KEY) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("sponsor key error: {e}");
-            return 1;
-        }
+    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+        Ok(pair) => pair,
+        Err(code) => return code,
     };
 
     let code = gen_invite_code(&amount_label);
@@ -220,26 +203,9 @@ pub(crate) async fn invite_accept(caller: Option<&str>, code: &str) -> i32 {
         eprintln!("invite accept: empty code");
         return 2;
     }
-    let (key_file, key_hex) = match resolve_caller_key(caller) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            return 2;
-        }
-    };
-    let signer = match wallet::from_private_key_hex(&key_hex) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("bad key in {key_file}: {e}");
-            return 1;
-        }
-    };
-    let sponsor = match wallet::from_private_key_hex(SPONSOR_KEY) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("sponsor key error: {e}");
-            return 1;
-        }
+    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+        Ok(pair) => pair,
+        Err(code) => return code,
     };
     match registry::accept_invite_sponsored(&signer, &sponsor, code, registry::ALPHA_USD_ADDRESS).await {
         Ok(tx) => {
@@ -262,26 +228,9 @@ pub(crate) async fn invite_reclaim(caller: Option<&str>, code: &str) -> i32 {
         eprintln!("invite reclaim: empty code");
         return 2;
     }
-    let (key_file, key_hex) = match resolve_caller_key(caller) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            return 2;
-        }
-    };
-    let signer = match wallet::from_private_key_hex(&key_hex) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("bad key in {key_file}: {e}");
-            return 1;
-        }
-    };
-    let sponsor = match wallet::from_private_key_hex(SPONSOR_KEY) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("sponsor key error: {e}");
-            return 1;
-        }
+    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+        Ok(pair) => pair,
+        Err(code) => return code,
     };
     let code_hash = registry::invite_code_hash(code);
     match registry::reclaim_invite_sponsored(&signer, &sponsor, code_hash, registry::ALPHA_USD_ADDRESS).await {
@@ -300,19 +249,9 @@ pub(crate) async fn invite_reclaim(caller: Option<&str>, code: &str) -> i32 {
 /// (`escrowedOf`). The MVP facet doesn't index invites by funder, so this is the
 /// outstanding-escrow total, not a per-invite enumeration.
 pub(crate) async fn invite_list(caller: Option<&str>) -> i32 {
-    let (key_file, key_hex) = match resolve_caller_key(caller) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            return 2;
-        }
-    };
-    let signer = match wallet::from_private_key_hex(&key_hex) {
+    let signer = match load_signer(caller) {
         Ok(s) => s,
-        Err(e) => {
-            eprintln!("bad key in {key_file}: {e}");
-            return 1;
-        }
+        Err(code) => return code,
     };
     let addr = addr_to_hex(wallet::address(&signer));
     match registry::escrowed_of(&addr).await {

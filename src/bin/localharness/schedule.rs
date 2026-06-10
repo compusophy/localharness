@@ -157,19 +157,9 @@ pub(crate) async fn schedule(caller_name: Option<&str>, rest: &[String]) -> i32 
         return 2;
     }
 
-    let (key_file, key_hex) = match resolve_caller_key(caller_name) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            return 2;
-        }
-    };
-    let signer = match wallet::from_private_key_hex(&key_hex) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("bad key in {key_file}: {e}");
-            return 1;
-        }
+    let (signer, sponsor) = match load_signer_and_sponsor(caller_name) {
+        Ok(pair) => pair,
+        Err(code) => return code,
     };
 
     // Resolve the target agent's tokenId (the facet rejects an unregistered
@@ -182,14 +172,6 @@ pub(crate) async fn schedule(caller_name: Option<&str>, rest: &[String]) -> i32 
         }
         Err(e) => {
             eprintln!("schedule: RPC error resolving '{target}': {e}");
-            return 1;
-        }
-    };
-
-    let sponsor = match wallet::from_private_key_hex(SPONSOR_KEY) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("sponsor key error: {e}");
             return 1;
         }
     };
@@ -254,19 +236,9 @@ pub(crate) fn format_job_row(id: u64, target: &str, job: &registry::ScheduledJob
 /// `localharness jobs [--as <me>]` — list the caller's scheduled jobs
 /// (`jobsOf` + a `getJob`/`taskOf` per id). Read-only, no `$LH`.
 pub(crate) async fn list_jobs(caller_name: Option<&str>) -> i32 {
-    let (key_file, key_hex) = match resolve_caller_key(caller_name) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            return 2;
-        }
-    };
-    let signer = match wallet::from_private_key_hex(&key_hex) {
+    let signer = match load_signer(caller_name) {
         Ok(s) => s,
-        Err(e) => {
-            eprintln!("bad key in {key_file}: {e}");
-            return 1;
-        }
+        Err(code) => return code,
     };
     let addr = addr_to_hex(wallet::address(&signer));
     let ids = match registry::jobs_of(&addr).await {
@@ -315,26 +287,9 @@ pub(crate) async fn unschedule(caller_name: Option<&str>, job_id_arg: &str) -> i
             return 2;
         }
     };
-    let (key_file, key_hex) = match resolve_caller_key(caller_name) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            return 2;
-        }
-    };
-    let signer = match wallet::from_private_key_hex(&key_hex) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("bad key in {key_file}: {e}");
-            return 1;
-        }
-    };
-    let sponsor = match wallet::from_private_key_hex(SPONSOR_KEY) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("sponsor key error: {e}");
-            return 1;
-        }
+    let (signer, sponsor) = match load_signer_and_sponsor(caller_name) {
+        Ok(pair) => pair,
+        Err(code) => return code,
     };
     match registry::cancel_job_sponsored(&signer, &sponsor, job_id, registry::ALPHA_USD_ADDRESS).await
     {

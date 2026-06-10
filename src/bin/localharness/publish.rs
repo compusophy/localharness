@@ -57,12 +57,9 @@ pub(crate) async fn create(name: &str, persona: Option<&str>) -> i32 {
         }
     }
 
-    let sponsor = match wallet::from_private_key_hex(SPONSOR_KEY) {
+    let sponsor = match load_sponsor() {
         Ok(s) => s,
-        Err(e) => {
-            eprintln!("sponsor key error: {e}");
-            return 1;
-        }
+        Err(code) => return code,
     };
 
     println!("claiming {name}.localharness.xyz for {addr} …");
@@ -117,26 +114,9 @@ pub(crate) async fn set_face(name: &str, choice: &str) -> i32 {
         eprintln!("face must be one of: directory, app, html (got '{choice}')");
         return 2;
     }
-    let key_file = match resolve_key_read_path(name) {
-        Some(p) => p,
-        None => {
-            eprintln!("no identity key for {name} — run `localharness create {name}` first");
-            return 1;
-        }
-    };
-    let key_hex = match std::fs::read_to_string(&key_file) {
-        Ok(s) => s.trim().to_string(),
-        Err(_) => {
-            eprintln!("no identity key at {key_file} — run `localharness create {name}` first");
-            return 1;
-        }
-    };
-    let signer = match wallet::from_private_key_hex(&key_hex) {
+    let signer = match load_name_signer(name) {
         Ok(s) => s,
-        Err(e) => {
-            eprintln!("bad key in {key_file}: {e}");
-            return 1;
-        }
+        Err(code) => return code,
     };
     let addr = format!("0x{}", to_hex(&wallet::address(&signer)));
     let id = match registry::id_of_name(name).await {
@@ -173,12 +153,9 @@ pub(crate) async fn set_face(name: &str, choice: &str) -> i32 {
         value_wei: 0,
         input: registry::encode_set_public_face(id, choice),
     }];
-    let sponsor = match wallet::from_private_key_hex(SPONSOR_KEY) {
+    let sponsor = match load_sponsor() {
         Ok(s) => s,
-        Err(e) => {
-            eprintln!("sponsor key error: {e}");
-            return 1;
-        }
+        Err(code) => return code,
     };
     match registry::submit_tempo_sponsored(
         &signer,
@@ -474,12 +451,9 @@ pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
     // only consumed gas. Practically this caps useful apps at a couple KB.
     let gas = 1_200_000 + (wasm.len() as u128) * 8_500;
 
-    let sponsor = match wallet::from_private_key_hex(SPONSOR_KEY) {
+    let sponsor = match load_sponsor() {
         Ok(s) => s,
-        Err(e) => {
-            eprintln!("sponsor key error: {e}");
-            return 1;
-        }
+        Err(code) => return code,
     };
     println!("publishing {} bytes as the public face of {name}.localharness.xyz …", wasm.len());
     match registry::submit_tempo_sponsored(
@@ -519,26 +493,9 @@ pub(crate) fn default_persona(name: &str) -> String {
 /// `setMetadata`, sponsored. `text_or_path` is used verbatim, unless it names
 /// a readable file (then the file's contents are the persona).
 pub(crate) async fn set_persona(name: &str, text_or_path: &str) -> i32 {
-    let key_file = match resolve_key_read_path(name) {
-        Some(p) => p,
-        None => {
-            eprintln!("no identity key for {name} — run `localharness create {name}` first");
-            return 1;
-        }
-    };
-    let key_hex = match std::fs::read_to_string(&key_file) {
-        Ok(s) => s.trim().to_string(),
-        Err(_) => {
-            eprintln!("no identity key at {key_file} — run `localharness create {name}` first");
-            return 1;
-        }
-    };
-    let signer = match wallet::from_private_key_hex(&key_hex) {
+    let signer = match load_name_signer(name) {
         Ok(s) => s,
-        Err(e) => {
-            eprintln!("bad key in {key_file}: {e}");
-            return 1;
-        }
+        Err(code) => return code,
     };
     let addr = format!("0x{}", to_hex(&wallet::address(&signer)));
 
@@ -599,12 +556,9 @@ pub(crate) async fn set_persona(name: &str, text_or_path: &str) -> i32 {
     // On-chain byte storage ~7.6k gas/byte (same as app/html); base + 8.5k/byte.
     let gas = 1_200_000 + (persona.len() as u128) * 8_500;
 
-    let sponsor = match wallet::from_private_key_hex(SPONSOR_KEY) {
+    let sponsor = match load_sponsor() {
         Ok(s) => s,
-        Err(e) => {
-            eprintln!("sponsor key error: {e}");
-            return 1;
-        }
+        Err(code) => return code,
     };
     println!("publishing {}-byte persona for {name}.localharness.xyz …", persona.len());
     match registry::submit_tempo_sponsored(

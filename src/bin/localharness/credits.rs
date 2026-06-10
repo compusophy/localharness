@@ -5,19 +5,9 @@ use crate::*;
 /// `$LH`, the per-request meter (`creditOf`, what per-call billing debits), and
 /// any session window. Read-only; these are the exact numbers the proxy gates on.
 pub(crate) async fn credits_show(caller_name: Option<&str>) -> i32 {
-    let (key_file, key_hex) = match resolve_caller_key(caller_name) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            return 2;
-        }
-    };
-    let signer = match wallet::from_private_key_hex(&key_hex) {
+    let signer = match load_signer(caller_name) {
         Ok(s) => s,
-        Err(e) => {
-            eprintln!("bad key in {key_file}: {e}");
-            return 1;
-        }
+        Err(code) => return code,
     };
     let addr = addr_to_hex(wallet::address(&signer));
     let token = registry::token_balance_of(&addr).await.unwrap_or(0);
@@ -59,26 +49,9 @@ pub(crate) async fn redeem(caller_name: Option<&str>, code: &str) -> i32 {
         eprintln!("redeem: empty code");
         return 2;
     }
-    let (key_file, key_hex) = match resolve_caller_key(caller_name) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            return 2;
-        }
-    };
-    let signer = match wallet::from_private_key_hex(&key_hex) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("bad key in {key_file}: {e}");
-            return 1;
-        }
-    };
-    let sponsor = match wallet::from_private_key_hex(SPONSOR_KEY) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("sponsor key error: {e}");
-            return 1;
-        }
+    let (signer, sponsor) = match load_signer_and_sponsor(caller_name) {
+        Ok(pair) => pair,
+        Err(code) => return code,
     };
     match registry::redeem_sponsored(&signer, &sponsor, code, registry::ALPHA_USD_ADDRESS).await {
         Ok(tx) => {
@@ -123,26 +96,9 @@ pub(crate) async fn send_lh(caller_name: Option<&str>, recipient: &str, amount: 
             return 2;
         }
     };
-    let (key_file, key_hex) = match resolve_caller_key(caller_name) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            return 2;
-        }
-    };
-    let signer = match wallet::from_private_key_hex(&key_hex) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("bad key in {key_file}: {e}");
-            return 1;
-        }
-    };
-    let sponsor = match wallet::from_private_key_hex(SPONSOR_KEY) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("sponsor key error: {e}");
-            return 1;
-        }
+    let (signer, sponsor) = match load_signer_and_sponsor(caller_name) {
+        Ok(pair) => pair,
+        Err(code) => return code,
     };
     match registry::transfer_lh_sponsored(
         &signer,
@@ -169,26 +125,9 @@ pub(crate) async fn send_lh(caller_name: Option<&str>, recipient: &str, amount: 
 /// access without per-request metering. Needs `$LH` in your WALLET (redeem a code
 /// or receive `send`).
 pub(crate) async fn open_session(caller_name: Option<&str>) -> i32 {
-    let (key_file, key_hex) = match resolve_caller_key(caller_name) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            return 2;
-        }
-    };
-    let signer = match wallet::from_private_key_hex(&key_hex) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("bad key in {key_file}: {e}");
-            return 1;
-        }
-    };
-    let sponsor = match wallet::from_private_key_hex(SPONSOR_KEY) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("sponsor key error: {e}");
-            return 1;
-        }
+    let (signer, sponsor) = match load_signer_and_sponsor(caller_name) {
+        Ok(pair) => pair,
+        Err(code) => return code,
     };
     match registry::open_session_sponsored(&signer, &sponsor, registry::ALPHA_USD_ADDRESS).await {
         Ok(tx) => {
@@ -203,26 +142,9 @@ pub(crate) async fn open_session(caller_name: Option<&str>) -> i32 {
 }
 
 pub(crate) async fn topup(caller_name: Option<&str>) -> i32 {
-    let (key_file, key_hex) = match resolve_caller_key(caller_name) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            return 2;
-        }
-    };
-    let signer = match wallet::from_private_key_hex(&key_hex) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("bad key in {key_file}: {e}");
-            return 1;
-        }
-    };
-    let sponsor = match wallet::from_private_key_hex(SPONSOR_KEY) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("sponsor key error: {e}");
-            return 1;
-        }
+    let (signer, sponsor) = match load_signer_and_sponsor(caller_name) {
+        Ok(pair) => pair,
+        Err(code) => return code,
     };
     let addr = addr_to_hex(wallet::address(&signer));
     // 1. Claim the daily allowance (mints $LH) if eligible. The allowance is

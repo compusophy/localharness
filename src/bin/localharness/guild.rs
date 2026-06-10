@@ -479,19 +479,9 @@ pub(crate) async fn guild_treasury(id_arg: &str) -> i32 {
 /// `guild mine [--as <me>]` — list the guilds the caller belongs to
 /// (`guildsOf` + a `guildName`/`roleOf` per id). Read-only, no `$LH`.
 pub(crate) async fn guild_mine(caller: Option<&str>) -> i32 {
-    let (key_file, key_hex) = match resolve_caller_key(caller) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            return 2;
-        }
-    };
-    let signer = match wallet::from_private_key_hex(&key_hex) {
+    let signer = match load_signer(caller) {
         Ok(s) => s,
-        Err(e) => {
-            eprintln!("bad key in {key_file}: {e}");
-            return 1;
-        }
+        Err(code) => return code,
     };
     let addr = addr_to_hex(wallet::address(&signer));
     let ids = match registry::guilds_of(&addr).await {
