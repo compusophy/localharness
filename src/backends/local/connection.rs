@@ -323,30 +323,9 @@ impl LoopState {
     }
 }
 
-/// Flatten `SystemInstructions` into a plain preamble string (mirrors the
-/// Anthropic backend's `render_system`, minus the network-specific framing).
-fn render_system(s: &SystemInstructions) -> String {
-    match s {
-        SystemInstructions::Custom(c) => c.text.clone(),
-        SystemInstructions::Templated(t) => {
-            let mut buf = String::new();
-            if let Some(id) = &t.identity {
-                buf.push_str(id);
-                buf.push_str("\n\n");
-            }
-            for section in &t.sections {
-                if !section.title.is_empty() {
-                    buf.push_str("## ");
-                    buf.push_str(&section.title);
-                    buf.push('\n');
-                }
-                buf.push_str(&section.content);
-                buf.push_str("\n\n");
-            }
-            buf.trim().to_string()
-        }
-    }
-}
+// Flatten `SystemInstructions` into a plain preamble string — the shared
+// backend-neutral renderer (also used by the Anthropic backend).
+use crate::backends::render_system;
 
 /// Extract the user prompt text from a `Content`. Media parts are dropped (the
 /// local text model has no multimodal path).

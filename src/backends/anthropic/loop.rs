@@ -92,29 +92,9 @@ impl LoopConfig {
     }
 }
 
-/// Flatten `SystemInstructions` into Anthropic's top-level `system` String.
-pub(crate) fn render_system(s: &SystemInstructions) -> String {
-    match s {
-        SystemInstructions::Custom(c) => c.text.clone(),
-        SystemInstructions::Templated(t) => {
-            let mut buf = String::new();
-            if let Some(id) = &t.identity {
-                buf.push_str(id);
-                buf.push_str("\n\n");
-            }
-            for section in &t.sections {
-                if !section.title.is_empty() {
-                    buf.push_str("## ");
-                    buf.push_str(&section.title);
-                    buf.push('\n');
-                }
-                buf.push_str(&section.content);
-                buf.push_str("\n\n");
-            }
-            buf.trim().to_string()
-        }
-    }
-}
+// Flatten `SystemInstructions` into Anthropic's top-level `system` String —
+// the shared backend-neutral renderer (also used by the local backend).
+pub(crate) use crate::backends::render_system;
 
 /// Per-connection mutable state. History is `Vec<Message>` (Anthropic's
 /// shape) — analogous to Gemini's `Vec<wire::Content>`.

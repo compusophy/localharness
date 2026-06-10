@@ -57,6 +57,36 @@ use crate::connections::StepStream;
 use crate::error::Error;
 use crate::types::{Step, StepSource, StepStatus};
 
+/// Flatten [`SystemInstructions`](crate::types::SystemInstructions) into a
+/// plain system-preamble string. Shared VERBATIM by the Anthropic backend
+/// (top-level `system`) and the local backend (prompt preamble); the Gemini
+/// backend keeps its own near-variant, which wraps the same flattening in a
+/// wire `Content` instead of returning the string.
+#[cfg(any(feature = "anthropic", feature = "local"))]
+pub(crate) fn render_system(s: &crate::types::SystemInstructions) -> String {
+    use crate::types::SystemInstructions;
+    match s {
+        SystemInstructions::Custom(c) => c.text.clone(),
+        SystemInstructions::Templated(t) => {
+            let mut buf = String::new();
+            if let Some(id) = &t.identity {
+                buf.push_str(id);
+                buf.push_str("\n\n");
+            }
+            for section in &t.sections {
+                if !section.title.is_empty() {
+                    buf.push_str("## ");
+                    buf.push_str(&section.title);
+                    buf.push('\n');
+                }
+                buf.push_str(&section.content);
+                buf.push_str("\n\n");
+            }
+            buf.trim().to_string()
+        }
+    }
+}
+
 /// Shared `subscribe_steps` plumbing: wrap a broadcast receiver as a
 /// [`StepStream`] — boxed `Send` on native, boxed local on wasm — with the
 /// backend's lag error labelled `"{label} step lag: ..."`.
