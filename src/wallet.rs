@@ -232,6 +232,40 @@ pub fn ecdh_shared_key(my: &SigningKey, their_pubkey_sec1: &[u8]) -> Result<[u8;
     Ok(out)
 }
 
+/// Derive the 32-byte AES key that seals/opens the on-chain Gemini key,
+/// from a master wallet's BIP-39 entropy (tag `localharness/v0/keysync`).
+/// Deterministic from the seed, so any device holding it derives the same
+/// key — a byte-for-byte cross-device contract. SHARED source of truth for
+/// both the apex signer iframe (`app::signer`) and the local-first path in
+/// `app::verify` (a subdomain that pulled the seed in via `seed_pull`);
+/// they MUST agree, hence one impl here (next to the sibling
+/// `localharness/v0/ecies` tag in [`ecdh_shared_key`]) where native tests
+/// can pin it. Re-exported through `app::encryption` for app call sites.
+pub fn keysync_key_from_entropy(entropy: &[u8]) -> [u8; 32] {
+    let mut hasher = Keccak256::new();
+    hasher.update(b"localharness/v0/keysync");
+    hasher.update(entropy);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&hasher.finalize());
+    out
+}
+
+/// Derive the 32-byte AES key sealing the cross-subdomain **shared folder**
+/// at rest in apex OPFS (`.lh_shared/`, see `app::shared_fs`).
+/// Domain-separated from [`keysync_key_from_entropy`] (tag
+/// `localharness/v0/sharedfs`) so the shared-folder key and the
+/// Gemini-keysync key can never collide. Deterministic from the master
+/// seed, so the apex broker — the only origin that holds the seed — always
+/// derives the same key across devices.
+pub fn sharedfs_key_from_entropy(entropy: &[u8]) -> [u8; 32] {
+    let mut hasher = Keccak256::new();
+    hasher.update(b"localharness/v0/sharedfs");
+    hasher.update(entropy);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&hasher.finalize());
+    out
+}
+
 fn finalize(signer: SigningKey) -> GeneratedWallet {
     let address = address(&signer);
     let private_key_hex = format!("0x{}", hex_encode(&signer.to_bytes()));
@@ -426,6 +460,113 @@ mod tests {
             enc,
             vec![0xc8, 0x83, b'c', b'a', b't', 0x83, b'd', b'o', b'g']
         );
+    }
+
+    /// PINNED derivation vectors. `signer_from_mnemonic` is a CUSTOM
+    /// stretch — `keccak256("localharness/v0/identity" || entropy)` — and
+    /// the seed IS the identity: `wallet_store` re-derives the key from the
+    /// mnemonic on every load, so ANY change to the tag, the hash, or the
+    /// entropy handling silently re-keys every returning user (new address,
+    /// orphaned names, lost $LH). The round-trip tests above can't catch
+    /// that — a changed derivation still round-trips. Do NOT regenerate
+    /// these constants to make the test pass; a mismatch means the identity
+    /// derivation CHANGED and existing users would be locked out.
+    #[test]
+    fn mnemonic_known_vector_pins_identity_derivation() {
+        // The standard BIP-39 zero-entropy phrase (entropy = [0u8; 16]).
+        let phrase = "abandon abandon abandon abandon abandon abandon \
+                      abandon abandon abandon abandon abandon about";
+        let m = mnemonic_from_phrase(phrase).unwrap();
+        assert_eq!(m.to_entropy(), vec![0u8; 16]);
+        let signer = signer_from_mnemonic(&m);
+        // Generated ONCE from the live implementation (2026-06-10) — pins
+        // the localharness/v0/identity tag + keccak stretch + entropy input.
+        assert_eq!(
+            format!("0x{}", hex_encode(&address(&signer))),
+            "0x4800ae69a4855281a1251f8c3beab064eb7da012",
+            "identity derivation changed — this re-keys EVERY returning user"
+        );
+
+        // Independent check of the keccak-of-pubkey ADDRESS path: private
+        // key 0x…01 has an externally-known address (any EVM tool agrees:
+        // 0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf), so this leg doesn't
+        // depend on our own impl having been correct when pinned.
+        let k1 = from_private_key_hex(
+            "0x0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .unwrap();
+        assert_eq!(
+            format!("0x{}", hex_encode(&address(&k1))),
+            "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf",
+            "address derivation no longer matches the EVM standard"
+        );
+    }
+
+    /// PINNED ECDH contract — the ECIES core under mobile seed transport
+    /// (`seed_pull`), sealed SDP, and the Gemini-key handoff. Pins: (1)
+    /// ECDH symmetry (sealer and opener derive the same bytes), (2) the
+    /// exact output (the `localharness/v0/ecies` tag + keccak + input
+    /// order — change any and every existing ECIES blob becomes
+    /// undecryptable), (3) the 33-byte compressed-pubkey framing that
+    /// `ecies_open`'s `split_at(33)` relies on, (4) graceful Err (not a
+    /// panic) on garbage pubkey bytes.
+    #[test]
+    fn ecdh_shared_key_is_symmetric_and_pinned() {
+        let a = from_private_key_hex(
+            "0x000000000000000000000000000000000000000000000000000000000000000a",
+        )
+        .unwrap();
+        let b = from_private_key_hex(
+            "0x000000000000000000000000000000000000000000000000000000000000000b",
+        )
+        .unwrap();
+        let pub_a = pubkey_compressed(&a);
+        let pub_b = pubkey_compressed(&b);
+
+        // (1) Symmetry: ECDH(a, pub_b) == ECDH(b, pub_a).
+        let k_ab = ecdh_shared_key(&a, &pub_b).unwrap();
+        let k_ba = ecdh_shared_key(&b, &pub_a).unwrap();
+        assert_eq!(k_ab, k_ba);
+
+        // (2) Generated ONCE from the live implementation (2026-06-10).
+        // A mismatch means existing sealed blobs can no longer be opened.
+        assert_eq!(
+            hex_encode(&k_ab),
+            "3225f3c45abcb834b362af592bdcb9b999380d22521627ae7e71f9bbce614e47",
+            "ECIES shared-key derivation changed"
+        );
+
+        // (3) Compressed SEC1 framing: 33 bytes, 0x02/0x03 prefix.
+        assert_eq!(pub_a.len(), 33);
+        assert!(matches!(pub_a[0], 0x02 | 0x03));
+
+        // (4) Garbage pubkey is an Err, never a panic.
+        assert!(ecdh_shared_key(&a, &[0u8; 33]).is_err());
+    }
+
+    /// PINNED AES key derivations with a byte-for-byte CROSS-DEVICE
+    /// contract: `keysync` seals the on-chain Gemini key (apex signer
+    /// iframe + the subdomain local-first path must agree) and `sharedfs`
+    /// seals `.lh_shared/` at rest. A changed output orphans everything
+    /// already sealed under the old key. Also pins that the two tags
+    /// actually domain-separate (distinct outputs for the same entropy).
+    #[test]
+    fn keysync_and_sharedfs_keys_pinned_and_distinct() {
+        let entropy = [0u8; 16];
+        let keysync = keysync_key_from_entropy(&entropy);
+        let sharedfs = sharedfs_key_from_entropy(&entropy);
+        // Generated ONCE from the live implementation (2026-06-10).
+        assert_eq!(
+            hex_encode(&keysync),
+            "d3ddc0e89ef28726b10fa9aed5fdb086d9dd79aad14b37c9b8fb7b49c9cf77f5",
+            "keysync key derivation changed — sealed Gemini keys orphaned"
+        );
+        assert_eq!(
+            hex_encode(&sharedfs),
+            "5d0d6e8c644245c728b0248c30ab02f0a2492f982c99c572ce54210592ca739b",
+            "sharedfs key derivation changed — sealed shared folders orphaned"
+        );
+        assert_ne!(keysync, sharedfs);
     }
 
     #[test]

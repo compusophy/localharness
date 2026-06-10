@@ -154,6 +154,29 @@ pub const X402_PRICE_LABEL: &[u8] = b"localharness.x402_price";
 /// unpriced agent still earns something instead of answering for tips.
 pub const DEFAULT_ASK_PRICE_WEI: u128 = 10_000_000_000_000_000;
 
+/// Ceiling on what `call_agent` will pay WITHOUT a human in the loop:
+/// 1 `$LH`. The target's advertised price is on-chain data a FOREIGN owner
+/// controls, so an unbounded auto-pay would let a malicious agent drain
+/// the caller one tool-call at a time. Enforced by [`auto_pay_amount`];
+/// above the cap the call errs with the price so the owner can decide.
+pub const REMOTE_CALL_MAX_AUTO_PAY_WEI: u128 = 1_000_000_000_000_000_000;
+
+/// Resolve what an UNATTENDED agent-to-agent call may auto-pay: the
+/// advertised on-chain price (pass [`x402_price_of`]'s output — `None` /
+/// zero are already filtered to `None` there) falling back to
+/// [`DEFAULT_ASK_PRICE_WEI`], then REFUSED when above `cap` — `Err`
+/// carries the over-cap price so the caller can surface it to the human.
+/// Fallback-then-cap order matters: a missing price must never bypass the
+/// cap check.
+pub fn auto_pay_amount(advertised: Option<u128>, cap: u128) -> Result<u128, u128> {
+    let pay_wei = advertised.unwrap_or(DEFAULT_ASK_PRICE_WEI);
+    if pay_wei > cap {
+        Err(pay_wei)
+    } else {
+        Ok(pay_wei)
+    }
+}
+
 /// Read an agent's advertised per-call price (wei). `None` when never
 /// set (callers should fall back to [`DEFAULT_ASK_PRICE_WEI`]).
 pub async fn x402_price_of(token_id: u64) -> Result<Option<u128>, String> {
@@ -408,6 +431,27 @@ mod x402_tests {
         // Neither result nor error, and result-without-text, both fail.
         assert!(parse_mcp_tool_reply(&serde_json::json!({})).is_err());
         assert!(parse_mcp_tool_reply(&serde_json::json!({ "result": {} })).is_err());
+    }
+
+    /// The auto-pay cap is the ONLY guard between a foreign agent's
+    /// advertised on-chain price and the caller's $LH balance — `call_agent`
+    /// pays it unattended. Pins the exact boundary (at-cap pays, one wei
+    /// over refuses), the None → default fallback, and that the default
+    /// itself fits under the cap (otherwise every unpriced agent would be
+    /// unreachable).
+    #[test]
+    fn auto_pay_cap_boundary() {
+        let cap = REMOTE_CALL_MAX_AUTO_PAY_WEI;
+        // Exactly at the cap: pays.
+        assert_eq!(auto_pay_amount(Some(cap), cap), Ok(cap));
+        // One wei over: refused, Err carries the over-cap price.
+        assert_eq!(auto_pay_amount(Some(cap + 1), cap), Err(cap + 1));
+        // No advertised price: falls back to the platform default…
+        assert_eq!(auto_pay_amount(None, cap), Ok(DEFAULT_ASK_PRICE_WEI));
+        // …which must itself be payable under the cap.
+        assert!(DEFAULT_ASK_PRICE_WEI <= cap);
+        // The fallback is still capped (fallback-then-cap order).
+        assert_eq!(auto_pay_amount(None, 1), Err(DEFAULT_ASK_PRICE_WEI));
     }
 
     #[test]

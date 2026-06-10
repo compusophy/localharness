@@ -597,4 +597,166 @@ mod tests {
             tx.fee_payer_hash(&other_sender)
         );
     }
+
+    // === GOLDEN VECTORS ==================================================
+    //
+    // Every constant below was generated ONCE from the implementation as it
+    // was LIVE-PROVEN against Tempo Moderato (`examples/tempo_tx_live.rs`,
+    // sponsored mints landing on-chain). They pin the 0x76 WIRE FORMAT:
+    //
+    //   - the 0x76 sender / 0x78 fee_payer domain bytes,
+    //   - the exact field order of the common 10-item prefix,
+    //   - the sponsored sender-hash branch (fee_token → 0x80 empty,
+    //     fee_payer-sig slot → literal 0x00 placeholder),
+    //   - the self-paid sender-hash branch (real fee_token, 0x80 sig slot),
+    //   - the fee_payer hash including aa_authorization_list at position 13
+    //     (the spec page OMITS it — found by diffing wevm/ox),
+    //   - key_authorization OMISSION when None (no 0x80 stuffed in),
+    //   - sender signature as FLAT 65 bytes vs fee_payer signature as
+    //     rlp([v, r, s]) — the asymmetry that only shows up on-wire,
+    //   - RLP long-form string header (0xb8) for >55-byte calldata.
+    //
+    // k256's RFC6979 signing is deterministic, so the raw-tx bytes are
+    // byte-stable across runs/platforms. A MISMATCH MEANS THE WIRE FORMAT
+    // CHANGED: a sender-hash preimage drift executes silently (ecrecover
+    // returns a phantom address → mints land on an unspendable identity
+    // while the sponsor keeps paying). Do NOT casually regenerate these to
+    // make the test pass — first prove the new bytes against the live chain
+    // via `examples/tempo_tx_live.rs`, then update them deliberately.
+
+    /// `keccak256(0x76 || rlp(..))` for [`golden_tx`] in SPONSORED mode:
+    /// fee_token slot empty (0x80), fee_payer-sig slot the 0x00 placeholder.
+    const GOLDEN_SPONSORED_SENDER_HASH: &str =
+        "3e6d7f767fb15c062735b045126a54e9ea8f4d098cebe942cb18761532242d17";
+    /// `keccak256(0x76 || rlp(..))` for [`golden_tx`] in SELF-PAID mode:
+    /// real fee_token (AlphaUSD), fee_payer-sig slot 0x80 (empty).
+    const GOLDEN_SELF_PAID_SENDER_HASH: &str =
+        "3c842190b039b46368cfe5d12268bce7a539274d88c48ae43d0f7ef230f164d7";
+    /// `keccak256(0x78 || rlp(..))` — the fee_payer commitment over the
+    /// real fee_token + the 0x…01 sender's address + aa_authorization_list.
+    const GOLDEN_FEE_PAYER_HASH: &str =
+        "a6e9b8ae237b8711335dad82bdcb3cda9b52278f4a479392bbc153e888a4b5b5";
+    /// Full `sign_sponsored` output (0x76-prefixed raw tx): flat-65-byte
+    /// sender sig trailing, rlp([v,r,s]) fee_payer sig in field 12,
+    /// key_authorization omitted.
+    const GOLDEN_SPONSORED_RAW_TX: &str =
+        "76f9011482a5bf843b9aca0084773594008316e360f85ef85c94d7d7d7d7d7d7d7d7d7d7\
+         d7d7d7d7d7d7d7d7d7d780b844a9059cbb000102030405060708090a0b0c0d0e0f101112\
+         131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f30313233343536\
+         3738393a3b3c3d3e3fc0800780809420c0000000000000000000000000000000000001f8\
+         4380a0bedf191eaaaa41e9b67003e472eed8eb0577b09a96a337158819aee742f8b951a0\
+         3352b344cad1fadc97aee9f08ddbc42d1648e76f6e16a937f6aa8703636b79c1c0b8419b\
+         46f696dddfbd4739b1bbf7a108ee4cde2de6826dcf49079fba621ca473a5f51f20fd463c\
+         4c1573accb51f4021bc108a1bfb44d2fbecd2bff45faf9969dcf6900";
+    /// Full `sign_self_paid` output: fee_payer slot 0x80, same trailing
+    /// flat sender sig encoding.
+    const GOLDEN_SELF_PAID_RAW_TX: &str =
+        "76f8d082a5bf843b9aca0084773594008316e360f85ef85c94d7d7d7d7d7d7d7d7d7d7d7\
+         d7d7d7d7d7d7d7d7d780b844a9059cbb000102030405060708090a0b0c0d0e0f10111213\
+         1415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f3031323334353637\
+         38393a3b3c3d3e3fc0800780809420c000000000000000000000000000000000000180c0\
+         b8413f550f9766ba12e152f0a9ea828f3eaa45363c80278c98706d773d1b5f359c71538a\
+         9dbdd8140c8e7c6df77c6593727d34ecf36150484f59ae24912f759e3ce800";
+
+    /// Deterministic fixture: chain 42431, nonce 7, gas 1.5M, AlphaUSD
+    /// fee_token, ONE call whose 68-byte calldata (selector + 2 ABI words)
+    /// exceeds RLP's 55-byte short-string limit — pinning the long-form
+    /// (0xb8) branch every real `setMetadata`/`settle` call rides on.
+    fn golden_tx() -> TempoTx {
+        // AlphaUSD on Tempo Moderato: 0x20c0…0001 (the sponsor fee_token).
+        let mut alpha_usd = [0u8; 20];
+        alpha_usd[0] = 0x20;
+        alpha_usd[1] = 0xc0;
+        alpha_usd[19] = 0x01;
+        let mut input = vec![0xa9, 0x05, 0x9c, 0xbb];
+        input.extend(0u8..64);
+        debug_assert!(input.len() > 55);
+        TempoTxBuilder::new(42431)
+            .max_priority_fee_per_gas(1_000_000_000)
+            .max_fee_per_gas(2_000_000_000)
+            .gas_limit(1_500_000)
+            .nonce(7)
+            .fee_token(alpha_usd)
+            .call(TempoCall {
+                to: [0xd7; 20],
+                value_wei: 0,
+                input,
+            })
+            .build()
+    }
+
+    /// Fixed keys — k256 RFC6979 makes every signature over them
+    /// deterministic, so the golden raw-tx constants are byte-stable.
+    fn golden_keys() -> (k256::ecdsa::SigningKey, k256::ecdsa::SigningKey) {
+        let sender = wallet::from_private_key_hex(
+            "0x0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .unwrap();
+        let fee_payer = wallet::from_private_key_hex(
+            "0x0000000000000000000000000000000000000000000000000000000000000002",
+        )
+        .unwrap();
+        (sender, fee_payer)
+    }
+
+    fn hex(b: &[u8]) -> String {
+        crate::encoding::bytes_to_hex(b)
+    }
+
+    #[test]
+    fn sponsored_tx_golden_vector() {
+        let (sender, fee_payer) = golden_keys();
+        let tx = golden_tx().set_sponsored(true);
+        let sender_addr = wallet::address(&sender);
+
+        assert_eq!(
+            hex(&tx.sender_hash()),
+            GOLDEN_SPONSORED_SENDER_HASH,
+            "sponsored sender-hash preimage changed — on-chain ecrecover \
+             would now yield a PHANTOM sender (identity brick + sponsor drain)"
+        );
+        assert_eq!(
+            hex(&tx.fee_payer_hash(&sender_addr)),
+            GOLDEN_FEE_PAYER_HASH,
+            "fee_payer-hash preimage changed — sponsor signature would no \
+             longer validate"
+        );
+
+        let raw = sign_sponsored(tx, &sender, &fee_payer);
+        assert_eq!(raw[0], 0x76);
+        assert_eq!(
+            hex(&raw),
+            GOLDEN_SPONSORED_RAW_TX,
+            "serialized sponsored 0x76 tx changed — the WIRE FORMAT moved; \
+             prove the new bytes via examples/tempo_tx_live.rs before \
+             regenerating"
+        );
+    }
+
+    #[test]
+    fn self_paid_tx_golden_vector() {
+        let (sender, _) = golden_keys();
+        let tx = golden_tx();
+
+        assert_eq!(
+            hex(&tx.sender_hash()),
+            GOLDEN_SELF_PAID_SENDER_HASH,
+            "self-paid sender-hash preimage changed — signatures would \
+             recover to a phantom address"
+        );
+        // The two branches MUST diverge — sponsored hides fee_token and
+        // stuffs the 0x00 placeholder; identical hashes would mean the
+        // branch collapsed.
+        assert_ne!(GOLDEN_SPONSORED_SENDER_HASH, GOLDEN_SELF_PAID_SENDER_HASH);
+
+        let raw = sign_self_paid(tx, &sender);
+        assert_eq!(raw[0], 0x76);
+        assert_eq!(
+            hex(&raw),
+            GOLDEN_SELF_PAID_RAW_TX,
+            "serialized self-paid 0x76 tx changed — the WIRE FORMAT moved; \
+             prove the new bytes via examples/tempo_tx_live.rs before \
+             regenerating"
+        );
+    }
 }

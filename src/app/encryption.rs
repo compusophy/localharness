@@ -42,37 +42,14 @@ pub(crate) async fn open(data: &[u8]) -> Option<Vec<u8>> {
     decrypt(&key, data).await.ok()
 }
 
-/// Derive the 32-byte AES key that seals/opens the on-chain Gemini key,
-/// from a master wallet's BIP-39 entropy. Deterministic from the seed, so
-/// any device holding it derives the same key. SHARED source of truth for
-/// both the apex signer iframe (`signer::seed_sync_key`) and the
-/// local-first path in `verify.rs` (a subdomain that pulled the seed in
-/// via `seed_pull`) — they MUST agree byte-for-byte, hence one impl here.
-pub(crate) fn keysync_key_from_entropy(entropy: &[u8]) -> [u8; 32] {
-    use sha3::{Digest, Keccak256};
-    let mut hasher = Keccak256::new();
-    hasher.update(b"localharness/v0/keysync");
-    hasher.update(entropy);
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&hasher.finalize());
-    out
-}
-
-/// Derive the 32-byte AES key sealing the cross-subdomain **shared folder**
-/// at rest in apex OPFS (`.lh_shared/`). Domain-separated from
-/// [`keysync_key_from_entropy`] (tag `localharness/v0/sharedfs`) so the
-/// shared-folder key and the Gemini-keysync key can never collide.
-/// Deterministic from the master seed, so the apex broker — the only origin
-/// that holds the seed — always derives the same key. See `app::shared_fs`.
-pub(crate) fn sharedfs_key_from_entropy(entropy: &[u8]) -> [u8; 32] {
-    use sha3::{Digest, Keccak256};
-    let mut hasher = Keccak256::new();
-    hasher.update(b"localharness/v0/sharedfs");
-    hasher.update(entropy);
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&hasher.finalize());
-    out
-}
+// The two seed-derived AES key derivations (Gemini keysync, tag
+// `localharness/v0/keysync`; shared folder, tag `localharness/v0/sharedfs`)
+// are pure keccak with a byte-for-byte cross-device contract, so they live
+// in `crate::wallet` (beside the sibling `v0/ecies` tag in
+// `ecdh_shared_key`) where native tests pin their outputs. Re-exported here
+// so app call sites (`signer`, `verify`, `shared_fs`, `key_sync`) keep
+// their historical `encryption::` path unchanged.
+pub(crate) use crate::wallet::{keysync_key_from_entropy, sharedfs_key_from_entropy};
 
 /// Seal with an explicit 32-byte key (e.g. a wallet-seed-derived key)
 /// rather than the per-origin device key. Used by the on-chain API-key
@@ -154,7 +131,14 @@ fn load_or_create_key_bytes() -> Result<[u8; 32], String> {
     crypto
         .get_random_values_with_u8_array(&mut bytes)
         .map_err(|_| "getRandomValues failed")?;
-    let _ = storage.set_item(STORAGE_KEY, &hex32(&bytes));
+    // The persist MUST succeed before this key is ever used: a key that
+    // fails to land in localStorage regenerates DIFFERENTLY on the next
+    // load, silently orphaning everything sealed under it. Erring here
+    // makes `device_key()` fail, so `seal`/`open` return `None` and the
+    // callers take their documented plaintext fallback instead.
+    storage
+        .set_item(STORAGE_KEY, &hex32(&bytes))
+        .map_err(|_| "localStorage persist of the device key failed")?;
     Ok(bytes)
 }
 

@@ -12,12 +12,10 @@
 
 use crate::registry;
 
-/// Ceiling on what `call_agent` will pay WITHOUT a human in the loop —
-/// the target's advertised price is on-chain data a foreign owner
-/// controls, so an unbounded auto-pay would let a malicious agent drain
-/// the caller one tool-call at a time. Above this, the call errs with
-/// the price so the owner can decide.
-pub(crate) const REMOTE_CALL_MAX_AUTO_PAY_WEI: u128 = 1_000_000_000_000_000_000;
+// The auto-pay ceiling + the fallback-then-cap decision live in
+// `registry::{REMOTE_CALL_MAX_AUTO_PAY_WEI, auto_pay_amount}` — pure and
+// natively testable there (this module is wasm-gated). Only the error
+// FORMATTING stays here.
 
 /// How long to wait for the proxy's reply. The proxy settles on-chain and
 /// then runs a full (non-streaming) model turn, so this is generous.
@@ -52,21 +50,25 @@ pub(crate) async fn ask_via_proxy(target: &str, message: &str) -> Result<String,
 
     // Pay the target's effective price (advertised on-chain, else the
     // platform default) — the proxy enforces it as a floor, so paying the
-    // old flat tip would just 402. Capped: see REMOTE_CALL_MAX_AUTO_PAY_WEI.
+    // old flat tip would just 402. Capped by `registry::auto_pay_amount`.
     let token_id = registry::id_of_name(target)
         .await
         .map_err(|e| format!("price lookup: {e}"))?;
-    let pay_wei = registry::x402_ask_price_of(token_id)
+    let advertised = registry::x402_price_of(token_id)
         .await
         .map_err(|e| format!("price lookup: {e}"))?;
-    if pay_wei > REMOTE_CALL_MAX_AUTO_PAY_WEI {
-        return Err(format!(
+    let pay_wei = registry::auto_pay_amount(
+        advertised,
+        registry::REMOTE_CALL_MAX_AUTO_PAY_WEI,
+    )
+    .map_err(|over_cap_wei| {
+        format!(
             "'{target}' charges {} $LH per call — above the {} $LH auto-pay cap; \
              call it yourself if you accept the price",
-            crate::app::format_wei_as_test_eth(pay_wei),
-            crate::app::format_wei_as_test_eth(REMOTE_CALL_MAX_AUTO_PAY_WEI),
-        ));
-    }
+            crate::app::format_wei_as_test_eth(over_cap_wei),
+            crate::app::format_wei_as_test_eth(registry::REMOTE_CALL_MAX_AUTO_PAY_WEI),
+        )
+    })?;
 
     // `settle` pulls the $LH from the payer via `transferFrom`, so the payer
     // must have approved the diamond once. Sponsored, so a fresh identity
