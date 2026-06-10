@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import {LibGuildStorage} from "../libraries/LibGuildStorage.sol";
 import {LibRegistryStorage} from "../libraries/LibRegistryStorage.sol";
 import {LibCreditsStorage} from "../libraries/LibCreditsStorage.sol";
+import {LibRegistrationCostStorage} from "../libraries/LibRegistrationCostStorage.sol";
 
 interface IERC20Min {
     function transferFrom(address from, address to, uint256 amount) external returns (bool);
@@ -90,6 +91,18 @@ contract GuildFacet {
     // --- Events ---------------------------------------------------------
 
     event GuildCreated(uint256 indexed guildId, address indexed founder, string name);
+
+    /// Mirrors of `LocalharnessRegistryFacet`'s mint events — IDENTICAL
+    /// signatures, therefore identical topic0, so event consumers (ERC-721
+    /// indexers key on `Transfer`; registry indexers on `Registered`) see a
+    /// guild mint exactly like an ordinary `register` mint. Events are not
+    /// part of diamond selector routing, so re-declaring them here cannot
+    /// collide with the registry facet (and VotingFacet, which inherits this
+    /// contract, declares only its own events — no conflict).
+    /// NOTE: the GuildFacet currently cut on the live diamond predates these
+    /// emissions; they take effect on the next re-cut.
+    event Registered(uint256 indexed agentId, address indexed owner, string name);
+    event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
     event GuildInvited(uint256 indexed guildId, address indexed member, address indexed by);
     event GuildJoined(uint256 indexed guildId, address indexed member);
     event GuildLeft(uint256 indexed guildId, address indexed member);
@@ -121,15 +134,27 @@ contract GuildFacet {
     /// as a guild, and make the caller its first Admin. Returns the new
     /// `guildId` (== the registry tokenId).
     ///
-    /// Replicates `LocalharnessRegistryFacet.register`'s EXACT writes
-    /// against the shared `LibRegistryStorage` slot — NOT an external
+    /// Replicates `LocalharnessRegistryFacet.register`'s EXACT STORAGE
+    /// writes against the shared `LibRegistryStorage` slot — NOT an external
     /// self-call, because a self-call's `msg.sender` would be the diamond,
     /// recording the DIAMOND as the holder. Writing the lib directly keeps
     /// the ORIGINAL caller as the owner (the guild's founder), so the
-    /// resulting NFT + its TBA are indistinguishable from an ordinary
-    /// `register`. The name validation + token-id-starts-at-1 invariants are
-    /// reproduced verbatim (a guild name is a DNS label like any other; a
-    /// token 0 would read as unclaimed).
+    /// resulting NFT + its TBA are STORAGE-indistinguishable from an
+    /// ordinary `register`. The name validation + token-id-starts-at-1
+    /// invariants are reproduced verbatim (a guild name is a DNS label like
+    /// any other; a token 0 would read as unclaimed).
+    ///
+    /// The EVENT surface is mirrored too: `register` emits
+    /// `Registered(guildId, msg.sender, name)` + `Transfer(0, msg.sender,
+    /// guildId)` (ERC-721 requires Transfer on every mint), so this does as
+    /// well — earlier revisions emitted only `GuildCreated`, leaving guild
+    /// mints invisible to ERC-721/registry indexers. Likewise the
+    /// REGISTRATION COST gate (`register` ends with a `registrationCost()`
+    /// pull in `$LH`) is mirrored at the end — earlier revisions skipped it,
+    /// which would have been a free name-mint bypass had the cost knob ever
+    /// been armed (it is 0 today). NOTE: the GuildFacet currently cut on the
+    /// live diamond predates both fixes; they take effect on the next
+    /// re-cut.
     function createGuild(string calldata name) external returns (uint256 guildId) {
         if (!_isValidName(name)) revert InvalidName();
 
@@ -144,6 +169,10 @@ contract GuildFacet {
         rs.nameOfId[guildId] = name;
         rs.idOf[msg.sender] = guildId;
         rs.balanceOf[msg.sender] += 1;
+        // Mirror register()'s mint events (same order): registry indexers
+        // key on Registered; ERC-721 consumers REQUIRE Transfer-from-zero.
+        emit Registered(guildId, msg.sender, name);
+        emit Transfer(address(0), msg.sender, guildId);
 
         // --- record the guild + seat the founder as Admin ---------------
         LibGuildStorage.Storage storage gs = LibGuildStorage.load();
@@ -153,6 +182,29 @@ contract GuildFacet {
         _setRoleInternal(gs, guildId, msg.sender, LibGuildStorage.Role.Admin);
 
         emit GuildCreated(guildId, msg.sender, name);
+
+        // Mirror register()'s cost gate LAST (CEI — the only external call
+        // in this function). No-op while registrationCost() is 0 / the
+        // credits token is unset, exactly like the registry's.
+        _chargeRegistrationCost();
+    }
+
+    /// EXACT mirror of `LocalharnessRegistryFacet._chargeRegistrationCost`:
+    /// reads the same `LibRegistrationCostStorage.costWei` knob + the same
+    /// `LibCreditsStorage.creditsToken`, and pulls the cost from the caller
+    /// to the diamond via `transferFrom` (caller approves the diamond ahead
+    /// of time, typically batched into the same sponsored Tempo tx). A
+    /// revert here (under-allowance / under-balance) unwinds the whole
+    /// createGuild atomically — no name without payment.
+    function _chargeRegistrationCost() internal {
+        uint256 costWei = LibRegistrationCostStorage.load().costWei;
+        if (costWei == 0) return;
+        address creditsToken = LibCreditsStorage.load().creditsToken;
+        if (creditsToken == address(0)) return;
+        require(
+            IERC20Min(creditsToken).transferFrom(msg.sender, address(this), costWei),
+            "registration: transfer failed"
+        );
     }
 
     // --- Membership (consent-gated: Officer+ invites, invitee accepts) --

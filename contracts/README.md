@@ -1,40 +1,37 @@
 # `contracts/` — Localharness on-chain registry
 
-Two contract stacks live here:
+The **EIP-2535 Diamond** under `src/{Diamond,facets,interfaces,
+libraries,upgradeInitializers}/` is the LIVE deployment:
+`0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c` on Tempo Moderato
+(chain 42431) — what `src/registry/mod.rs::REGISTRY_ADDRESS` in the
+Rust crate reads. New capability lands as facets cut into that one
+stable address without redeploying-the-world each time: identity +
+ERC-721 + ERC-6551, credits/sessions/x402 payments, scheduling,
+bounties — and, live since 0.30.0, ERC-8004-flavored reputation
+(`ReputationFacet`) plus guild DAO governance (`GuildFacet` +
+`VotingFacet`). The ERC-8004 *validation* half (validator stake
+escrow) remains future work.
 
-1. **Flat `LocalharnessRegistry`** at `src/LocalharnessRegistry.sol`
-   — the original ~110-line monolith. Currently deployed at
-   `0x42c8D4EaF99bA80F6B6FCA8E163E077D9FC2F9db` on Tempo Moderato.
-   This is what `src/app/registry.rs::REGISTRY_ADDRESS` in the wasm
-   bundle reads.
+The flat `LocalharnessRegistry` monolith at
+`src/LocalharnessRegistry.sol` (~110 lines) is HISTORICAL reference
+only — the diamond's predecessor. Its pre-reset deployment was
+abandoned in the 2026-06-01 full reset (every prior address dropped;
+see CLAUDE.md "Canonical addresses"); nothing reads it.
 
-2. **EIP-2535 Diamond** under `src/{Diamond,facets,interfaces,
-   libraries,upgradeInitializers}/` — the live architecture.
-   Replaces the flat contract so new capability lands as facets
-   without redeploying-the-world each time: ERC-721, ERC-6551
-   helpers, payments — and, live since 0.30.0, ERC-8004-flavored
-   reputation (`ReputationFacet`) plus guild DAO governance
-   (`GuildFacet` + `VotingFacet`). The ERC-8004 *validation* half
-   (validator stake escrow) remains future work.
-
-The flat contract stays in-tree as historical reference. The
-diamond is the path forward; the cutover is "deploy diamond → swap
-the address constant in the wasm bundle → redeploy bundle." Names
-registered against the flat contract are NOT migrated automatically
-(small enough population that this is fine for testnet).
+> Facet SOURCE here can be ahead of the facets CUT on the live
+> diamond: a source fix takes effect only on a future re-cut
+> (`FacetCutAction.Replace`). Such gaps are called out in the facet
+> sections below.
 
 ## Deploy (Tempo Moderato testnet)
 
-Requirements:
+The canonical diamond is already deployed (address above). These
+steps are for a FRESH deployment (a new testnet, or post-reset):
 
 - `foundry` installed (`forge --version` works).
-- An EVM private key with some testnet TMP for gas. Faucet via
-  `tempo_fundAddress` RPC: see `src/app/registry.rs::request_faucet_funds`
-  for the exact JSON-RPC shape.
+- An EVM private key with some testnet TMP for gas.
 - `forge-std` installed: `forge install foundry-rs/forge-std --no-git`
   from this directory (one-time).
-
-### Diamond (new)
 
 ```sh
 cd contracts
@@ -46,17 +43,9 @@ forge script script/DeployDiamond.s.sol \
 ```
 
 Prints the diamond address + each facet's address. Bake the
-**diamond** address into `src/app/registry.rs::REGISTRY_ADDRESS`,
-rebuild + deploy the wasm bundle.
-
-### Flat (legacy)
-
-```sh
-forge script script/Deploy.s.sol \
-    --rpc-url tempo_moderato \
-    --private-key $EVM_PRIVATE_KEY \
-    --broadcast
-```
+**diamond** address into `src/registry/mod.rs::REGISTRY_ADDRESS`,
+rebuild + deploy the wasm bundle, then cut the remaining facets via
+their `script/Add<Facet>.s.sol` scripts.
 
 ## Diamond architecture
 
@@ -152,12 +141,23 @@ member enumeration).
 **A guild IS an identity.** `createGuild(string name) → uint256
 guildId` registers `name` as a normal identity NFT owned by the
 caller — it replicates `LocalharnessRegistryFacet.register`'s exact
-writes against the shared `LibRegistryStorage` slot (an external
-self-call would record the DIAMOND as holder), so `guildId` == the
-registry tokenId, name validation is the same DNS-label rule, and
-the guild's ADDRESS is its ERC-6551 token-bound account
+STORAGE writes against the shared `LibRegistryStorage` slot (an
+external self-call would record the DIAMOND as holder), so `guildId`
+== the registry tokenId, name validation is the same DNS-label rule,
+and the guild's ADDRESS is its ERC-6551 token-bound account
 (`guildAddress(guildId)` resolves `TbaFacet.tokenBoundAccount` via a
 self-call). The founder is seated as the first Admin.
+
+The "indistinguishable from an ordinary `register`" claim holds for
+STORAGE only on the currently-cut facet: the live GuildFacet emits
+neither `Transfer(0, owner, id)` (ERC-721 requires it on every mint)
+nor `Registered(id, owner, name)`, so event consumers / indexers do
+NOT see guild mints. It also skips `register`'s trailing
+`registrationCost()` pull — latent today (the cost knob is 0 / not
+armed on the canonical diamond) but a free-mint bypass if the gate
+is ever armed. BOTH are fixed in source (`GuildFacet.sol` now emits
+the two mint events and mirrors `_chargeRegistrationCost`, pinned by
+Foundry tests) and take effect on the next re-cut.
 
 **Roles** (`LibGuildStorage.Role`, strictly ordered for `>=`
 gating): `None(0)` · `Member(1)` · `Officer(2)` · `Admin(3)`.
@@ -201,7 +201,9 @@ owns `membersOf(uint256)` and a diamond can't share a selector),
 `guildsOf(member)`, `isGuild(tokenId)`, `guildCount()`.
 
 **Events:** `GuildCreated`, `GuildInvited`, `GuildJoined`,
-`GuildLeft`, `RoleSet`, `GuildFunded`, `TreasurySpent`.
+`GuildLeft`, `RoleSet`, `GuildFunded`, `TreasurySpent` — plus, from
+the next re-cut, the mint mirrors `Registered` + `Transfer`
+(identical signatures to the registry facet's, so identical topic0).
 
 Cut via `script/AddGuildFacet.s.sol` (16 selectors). No post-cut
 config: the credits token is read from the shared CreditsFacet slot;

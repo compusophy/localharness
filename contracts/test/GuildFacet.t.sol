@@ -6,6 +6,7 @@ import {GuildFacet} from "../src/facets/GuildFacet.sol";
 import {LibGuildStorage} from "../src/libraries/LibGuildStorage.sol";
 import {LibCreditsStorage} from "../src/libraries/LibCreditsStorage.sol";
 import {LibRegistryStorage} from "../src/libraries/LibRegistryStorage.sol";
+import {LibRegistrationCostStorage} from "../src/libraries/LibRegistrationCostStorage.sol";
 
 /// Minimal `$LH`-shaped TIP-20 mock: 18-decimal balances + the
 /// approve/transferFrom/transfer surface GuildFacet escrows + spends +
@@ -122,11 +123,24 @@ contract GuildHarness is GuildFacet {
         LibCreditsStorage.load().creditsToken = token;
     }
 
+    /// Write the registration-cost knob the live diamond sets via
+    /// `LocalharnessRegistryFacet.setRegistrationCost` (owner-only there;
+    /// here the harness writes the shared slot directly, same as
+    /// `_setCreditsToken`).
+    function _setRegistrationCost(uint256 costWei) external {
+        LibRegistrationCostStorage.load().costWei = costWei;
+    }
+
     /// Read the registry holder of a tokenId from THIS harness's storage
     /// (a lib `load()` in the test contract would read the test's own slot,
     /// not the harness's — registry storage lives where createGuild wrote it).
     function _ownerOfId(uint256 tokenId) external view returns (address) {
         return LibRegistryStorage.load().ownerOfId[tokenId];
+    }
+
+    /// Registry name lookup against THIS harness's storage (same reason).
+    function _idOfName(string calldata name) external view returns (uint256) {
+        return LibRegistryStorage.load().idOfName[name];
     }
 
     /// Deterministic, NON-ZERO TBA for any registered tokenId — mirrors the
@@ -247,6 +261,78 @@ contract GuildFacetTest is Test {
     // an ordinary tokenId (not created via createGuild) is NOT a guild
     function test_isGuild_false_for_unknown() public {
         assertFalse(g.isGuild(999));
+    }
+
+    /// createGuild's mint must be event-indistinguishable from register()'s:
+    /// `Registered(id, owner, name)` + the ERC-721-required
+    /// `Transfer(address(0), owner, id)` (identical signatures to the
+    /// registry facet's, so identical topic0 — what indexers key on), plus
+    /// the guild's own `GuildCreated`. Pins the FIX 1 emissions (the live
+    /// cut predates them; they ship with the next re-cut).
+    function test_createGuild_emits_register_mint_events() public {
+        // First mint in this harness → tokenId 1, in register()'s order:
+        // Registered, then Transfer, then GuildCreated.
+        vm.expectEmit(true, true, false, true, address(g));
+        emit GuildFacet.Registered(1, founder, "eventguild");
+        vm.expectEmit(true, true, true, true, address(g));
+        emit GuildFacet.Transfer(address(0), founder, 1);
+        vm.expectEmit(true, true, false, true, address(g));
+        emit GuildFacet.GuildCreated(1, founder, "eventguild");
+
+        vm.prank(founder);
+        uint256 id = g.createGuild("eventguild");
+        assertEq(id, 1);
+    }
+
+    // =====================================================================
+    // createGuild: registration-cost gate (FIX 2 — mirror of register()'s
+    // _chargeRegistrationCost; latent while the live cost knob is 0)
+    // =====================================================================
+
+    /// When the owner arms `registrationCost()`, createGuild must pull the
+    /// SAME cost register() does (transferFrom caller→diamond) — otherwise
+    /// it is a free name-mint bypass of the gate.
+    function test_createGuild_charges_registration_cost_when_set() public {
+        uint256 cost = 25 ether;
+        g._setRegistrationCost(cost);
+
+        uint256 founderBefore = lh.balanceOf(founder);
+        uint256 diamondBefore = lh.balanceOf(address(g));
+
+        // founder pre-approved the diamond in setUp (the live flow batches
+        // approve + createGuild into one sponsored Tempo tx).
+        vm.prank(founder);
+        uint256 id = g.createGuild("paidguild");
+
+        assertEq(lh.balanceOf(founder), founderBefore - cost, "cost pulled from creator");
+        assertEq(lh.balanceOf(address(g)), diamondBefore + cost, "diamond holds the fee");
+        // The mint itself still landed.
+        assertTrue(g.isGuild(id));
+        assertEq(g._ownerOfId(id), founder);
+    }
+
+    /// Companion: while the cost knob is 0 (the live default — the knob
+    /// isn't even armed on the canonical diamond), creation is FREE: no
+    /// `$LH` moves at all.
+    function test_createGuild_free_when_cost_zero() public {
+        uint256 founderBefore = lh.balanceOf(founder);
+        vm.prank(founder);
+        uint256 id = g.createGuild("freeguild");
+        assertEq(lh.balanceOf(founder), founderBefore, "no $LH pulled at cost 0");
+        assertEq(lh.balanceOf(address(g)), 0, "diamond received nothing");
+        assertTrue(g.isGuild(id));
+    }
+
+    /// With the cost armed, a creator who hasn't approved (or can't cover)
+    /// the cost gets NO name: the transferFrom revert unwinds the whole
+    /// createGuild atomically — exactly register()'s behavior.
+    function test_createGuild_reverts_unpaid_when_cost_set() public {
+        g._setRegistrationCost(25 ether);
+        // alice never approved the diamond (and holds no $LH).
+        vm.prank(alice);
+        vm.expectRevert(); // MockLH "allowance"
+        g.createGuild("deadbeat");
+        assertEq(g._idOfName("deadbeat"), 0, "no name without payment");
     }
 
     // =====================================================================
