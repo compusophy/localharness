@@ -92,7 +92,7 @@ src/app/ (browser IDE):
   mod.rs(mount routing) templates.rs(all maud HTML) dom.rs(web-sys swaps)
   events/(Action enum + parse + the ONE delegated click/keydown/submit/input
     listener set + dispatch in mod.rs; handler bodies per domain: claim admin
-    act credits schedule bounty guild governance devices subdomains key_sync
+    credits schedule bounty guild governance devices subdomains key_sync
     public_face layout) chat/(turn loop in mod.rs; session.rs prompt.rs
     access.rs tools/{platform,bounty,guild,governance,misc})
   history.rs(OPFS conversation + tool-call replay) opfs.rs(file browser/editor)

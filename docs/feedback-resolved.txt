@@ -50,3 +50,13 @@
 14  HEAD     create scaffolds a starter ./app.rl (compile-pinned, never
 #            overwrites); publish already auto-claimed unowned names — the
 #            create→publish path is one command each with zero boilerplate
+15  HEAD     misdirected persona: the no-terminal path EXISTS (localharness.xyz
+#            → create identity → claim → chat); skill.md now routes humans
+#            there up top — the terminal docs are the AGENT path
+17  —        no #[tool] macro exists in this crate (tools are ClosureTool::new
+#            with explicit strings); a #[tool]/// derive needs a separate
+#            proc-macro crate, which the single-crate rule rejects
+19  —        self-hosting already exists four ways: BYOK (own key, no proxy),
+#            with_base_url overrides on both backends, the offline Mock
+#            backend, and the in-browser local Gemma backend (feature local);
+#            on-chain state lives on Tempo, not our servers

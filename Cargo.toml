@@ -17,6 +17,15 @@ exclude = [
     ".github/**",
     "web/**",
     "contracts/**",
+    "design/**",
+    "proxy/**",
+    "bitmask.rl",
+    # docs/error-codes.md stays packaged: the `index_doc_lists_every_code`
+    # lib test reads it via CARGO_MANIFEST_DIR at test runtime.
+    "docs/SOP-QA-001-autonomous-feedback.md",
+    "docs/TESTING-0.24.0.md",
+    "docs/feedback-resolved.txt",
+    "docs/browser-smoke.md",
     "vercel.json",
     ".vercelignore",
     ".env",

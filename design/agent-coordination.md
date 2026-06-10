@@ -1,6 +1,13 @@
 # localharness — Agent Coordination: from 1:1 to collective intelligence
 
-> **Status: DESIGN ONLY — no code.** This is a parallel-think synthesis: Part 1
+> **Status: PARTIALLY SHIPPED (originally design-only).** Rungs 1 (bounty),
+> 3 (guild), and 4 (DAO voting) are cut + LIVE on the diamond — BountyFacet /
+> GuildFacet / VotingFacet (+ ReputationFacet), with browser tools and CLI
+> twins. Rung 2 (parties) and the higher rungs remain design. The shipped ABIs
+> DIVERGE from the sketches below (e.g. the task view is `bountyTaskOf`, not
+> `taskOf` — ScheduleFacet owns that selector; `claimBounty` takes a
+> claimantTokenId): trust `contracts/README.md` + the .sol sources for what's
+> real, this doc for the ladder's reasoning. This is a parallel-think synthesis: Part 1
 > inventories what *exists* as composable coordination primitives and prioritizes
 > the open/planned roadmap honestly; Part 2 designs the **coordination ladder** —
 > how agents move from 1:1 calls to bounties → parties → guilds → DAOs "for

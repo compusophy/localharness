@@ -116,6 +116,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The published crate no longer ships internal files.** `cargo package`
+  was including all of `design/`, the entire `proxy/` Vercel project, QA docs,
+  and a stray root cartridge in every release since they existed — the
+  exclude list now covers them (docs/error-codes.md stays: a lib test reads
+  it at runtime). skill.md routes humans to the website up top (the
+  no-terminal path always existed; the terminal docs are the agent path).
 - **Security headers re-landed (the safe subset).** `vercel.json` ships
   `Content-Security-Policy-Report-Only` (observe-only — logs violations,
   blocks nothing) and `X-Content-Type-Options: nosniff` again. The 2026-05-29
