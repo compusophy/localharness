@@ -611,6 +611,541 @@ pub(crate) fn colony_recovery_hint(bounty_id: u64, caller_label: &str, status: O
     }
 }
 
+/// The [2/8] PICK step's output: the resolved, drivable worker — its name, its
+/// OWN signing key (it signs its own claim + submit), the identity (tokenId)
+/// that earns the reward, the TBA the reward lands in, and that TBA's `$LH`
+/// balance BEFORE the cycle (for the final payout verification).
+struct ColonyWorker {
+    name: String,
+    signer: k256::ecdsa::SigningKey,
+    token_id: u64,
+    tba: String,
+    tba_before: u128,
+}
+
+/// [1/8] POST — the caller escrows the reward behind the task and the new
+/// bounty id is read back from its `bountiesOf` index. Returns the bounty id,
+/// or the process exit code when the post (or the id read-back) failed —
+/// before an id exists there is no escrow to recover, so this step prints its
+/// own errors instead of bailing through `colony_bail`.
+async fn colony_step_post(
+    caller_signer: &k256::ecdsa::SigningKey,
+    sponsor: &k256::ecdsa::SigningKey,
+    caller_addr: &str,
+    task: &str,
+    reward_wei: u128,
+    ttl_secs: u64,
+) -> Result<u64, i32> {
+    println!("[1/8] POST  — escrowing {} behind the task …", fmt_lh(reward_wei));
+    let post_tx = match registry::post_bounty_sponsored(
+        caller_signer,
+        sponsor,
+        task.as_bytes(),
+        reward_wei,
+        ttl_secs,
+        registry::ALPHA_USD_ADDRESS,
+    )
+    .await
+    {
+        Ok(tx) => tx,
+        Err(e) => {
+            eprintln!("[1/8] POST failed: {e}");
+            eprintln!("  no escrow was created — nothing to clean up.");
+            return Err(1);
+        }
+    };
+    // The new bounty id is the last entry in the poster's bountiesOf index.
+    let bounty_id = match registry::bounties_of(caller_addr).await {
+        Ok(ids) if !ids.is_empty() => ids[ids.len() - 1],
+        Ok(_) => {
+            eprintln!(
+                "[1/8] POST mined (tx {post_tx}) but the new bounty id could not be read back \
+                 from bountiesOf — re-run `bounty mine` to find + manage it."
+            );
+            return Err(1);
+        }
+        Err(e) => {
+            eprintln!(
+                "[1/8] POST mined (tx {post_tx}) but reading the bounty id failed: {e} \
+                 — re-run `bounty mine` to find + manage it."
+            );
+            return Err(1);
+        }
+    };
+    println!("      ✓ bounty #{bounty_id} posted  (tx {post_tx})");
+    println!();
+    Ok(bounty_id)
+}
+
+/// [2/8] PICK — resolve the worker (an explicit `--worker`, else the
+/// reputation-aware auto-pick), guard the `--judge`-names-the-worker self-deal,
+/// and load the worker's OWN key + tokenId + TBA (with its before-balance for
+/// the final payout check). `Err` carries the stage-2 bail message.
+async fn colony_step_pick(
+    worker: Option<String>,
+    judge: &Option<String>,
+    task: &str,
+    caller_label: &str,
+) -> Result<ColonyWorker, String> {
+    let worker_name = match worker {
+        Some(w) => w,
+        None => {
+            println!("[2/8] PICK  — auto-selecting the best worker (reputation-aware, excluding the caller) …");
+            match colony_pick_worker(task, caller_label).await {
+                Ok((w, why)) => {
+                    println!("      ✓ {why}");
+                    w
+                }
+                Err(e) => return Err(format!("PICK failed: {e}")),
+            }
+        }
+    };
+    // FIX 3: an explicit `--judge <agent>` must NOT name the WORKER. The auto-panel
+    // already excludes the worker (+ caller), but the override bypassed that — a
+    // caller could force the worker to judge its OWN work (self-inflated rating).
+    // Reject up front (clearest), keeping `--judge <neutral-agent>` working.
+    if let Some(j) = judge {
+        if judge_equals_worker(j, &worker_name) {
+            return Err(format!(
+                "--judge '{j}' is the WORKER — a worker can't judge its own work (self-inflated \
+                 rating). Pass --judge <neutral-agent> (NOT the worker), or drop --judge to use \
+                 the auto-selected neutral panel."
+            ));
+        }
+    }
+    // The worker signs its OWN claim + submit, so its key must be local.
+    let (worker_key_file, worker_key_hex) = match resolve_caller_key(Some(&worker_name)) {
+        Ok(c) => c,
+        Err(e) => {
+            return Err(format!(
+                "worker '{worker_name}' has no local identity key ({e}). The worker must be a \
+                 fleet/owned agent whose key is in your keys dir — it signs its own claim + submit."
+            ))
+        }
+    };
+    let signer = match wallet::from_private_key_hex(&worker_key_hex) {
+        Ok(s) => s,
+        Err(e) => return Err(format!("bad worker key in {worker_key_file}: {e}")),
+    };
+    // The worker's tokenId (the identity that earns the reward) + its TBA wallet
+    // (where the reward lands) — resolve both up front so the payout is verifiable.
+    let worker_token_id = match resolve_own_token_id(Some(&worker_name), &signer).await {
+        Ok(id) => id,
+        Err(e) => return Err(format!("could not resolve worker '{worker_name}' identity: {e}")),
+    };
+    let worker_tba = match registry::tba_of_token_id(worker_token_id).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return Err(format!("worker token #{worker_token_id} has no token-bound account")),
+        Err(e) => return Err(format!("RPC error resolving worker TBA: {e}")),
+    };
+    let tba_before = registry::token_balance_of(&worker_tba).await.unwrap_or(0);
+    println!("      worker {worker_name} = token #{worker_token_id}, TBA {worker_tba}");
+    println!("      worker TBA $LH before: {}", fmt_lh(tba_before));
+    println!();
+    Ok(ColonyWorker {
+        name: worker_name,
+        signer,
+        token_id: worker_token_id,
+        tba: worker_tba,
+        tba_before,
+    })
+}
+
+/// [3/8] CLAIM — the worker claims the bounty under its own key (one
+/// transient-retry via [`colony_write_step`]). `Err` = the stage-3 bail message.
+async fn colony_step_claim(
+    worker: &ColonyWorker,
+    sponsor: &k256::ecdsa::SigningKey,
+    bounty_id: u64,
+) -> Result<(), String> {
+    println!(
+        "[3/8] CLAIM — {worker_name} claims bounty #{bounty_id} (reward → its TBA) …",
+        worker_name = worker.name
+    );
+    match colony_write_step(bounty_id, "3/8", "CLAIM", 1, || {
+        registry::claim_bounty_sponsored(
+            &worker.signer,
+            sponsor,
+            bounty_id,
+            worker.token_id,
+            registry::ALPHA_USD_ADDRESS,
+        )
+    })
+    .await
+    {
+        Ok(tx) => {
+            println!("      ✓ claimed by token #{}  (tx {tx})", worker.token_id);
+            println!();
+            Ok(())
+        }
+        Err(e) => Err(format!("CLAIM failed: {e}")),
+    }
+}
+
+/// [4/8] WORK — run the worker's on-chain persona on the task (a headless
+/// `call` turn, paid by the caller key). Retries ONCE on an empty reply or a
+/// transient failure; returns the trimmed result text, or the stage-4 bail
+/// message.
+async fn colony_step_work(
+    caller_key_hex: &str,
+    worker_name: &str,
+    task: &str,
+) -> Result<String, String> {
+    println!("[4/8] WORK  — running {worker_name}'s persona on the task (headless `call`) …");
+    let work_prompt = format!(
+        "{task}\n\nSubmit your concrete result / deliverable as your reply \
+         (it will be recorded on-chain as your bounty submission)."
+    );
+    // The caller pays for the work turn (same as `call --as caller worker …`),
+    // running the WORKER's on-chain persona. No prior history (a one-shot job).
+    // Retry ONCE on an EMPTY reply or a TRANSIENT failure: tick-14's dogfood saw
+    // the WORK turn return an empty model reply (a transient proxy/model hiccup)
+    // that bailed the whole cycle and stranded the claimed bounty. A non-empty
+    // result is NEVER retried; a genuine (non-transient) error bails as before.
+    let mut work_outcome =
+        run_agent_turn(caller_key_hex, worker_name, &work_prompt, None, None).await;
+    if work_result_needs_retry(&work_outcome) {
+        match &work_outcome {
+            Ok(_) => println!(
+                "      ⚠ WORK returned an empty reply (transient model hiccup) — retrying once …"
+            ),
+            Err(e) => println!(
+                "      ⚠ WORK turn failed transiently ({e}) — retrying once …"
+            ),
+        }
+        work_outcome =
+            run_agent_turn(caller_key_hex, worker_name, &work_prompt, None, None).await;
+    }
+    let result_text = match work_outcome {
+        Ok((text, _hist)) => {
+            let trimmed = text.trim().to_string();
+            if trimmed.is_empty() {
+                return Err("WORK produced an empty result (even after one retry) — nothing to submit.".to_string());
+            }
+            trimmed
+        }
+        Err(e) => {
+            report_call_error("[4/8] WORK failed", &e);
+            return Err("the worker's persona turn failed (even after one retry) — see the hint above.".to_string());
+        }
+    };
+    println!("      ✓ {worker_name} produced a result:");
+    println!("      ┌─────────────────────────────────────────────────────────");
+    for line in result_text.lines() {
+        println!("      │ {line}");
+    }
+    println!("      └─────────────────────────────────────────────────────────");
+    println!();
+    Ok(result_text)
+}
+
+/// [5/8] SUBMIT — the worker submits its result (one transient-retry via
+/// [`colony_write_step`]). `Err` = the stage-5 bail message.
+async fn colony_step_submit(
+    worker: &ColonyWorker,
+    sponsor: &k256::ecdsa::SigningKey,
+    bounty_id: u64,
+    result_text: &str,
+) -> Result<(), String> {
+    println!(
+        "[5/8] SUBMIT — {worker_name} submits its result for bounty #{bounty_id} …",
+        worker_name = worker.name
+    );
+    match colony_write_step(bounty_id, "5/8", "SUBMIT", 2, || {
+        registry::submit_result_sponsored(
+            &worker.signer,
+            sponsor,
+            bounty_id,
+            result_text.as_bytes(),
+            registry::ALPHA_USD_ADDRESS,
+        )
+    })
+    .await
+    {
+        Ok(tx) => {
+            println!("      ✓ result submitted  (tx {tx})");
+            println!();
+            Ok(())
+        }
+        Err(e) => Err(format!("SUBMIT failed: {e}")),
+    }
+}
+
+/// [6/8] JUDGE — a NEUTRAL JUDGE PANEL scores the result; returns the MEDIAN.
+/// This is what makes the attestation MEANINGFUL and TRUSTWORTHY: the rating
+/// is the MEDIAN of N neutral judges (default 3), not one self-interested
+/// score. The panel EXCLUDES the worker (don't grade your own work) AND the
+/// caller (the poster has skin in the game — its score would bias the
+/// reputation signal that now DRIVES the PICK step). `--judge <agent>` forces a
+/// panel of exactly that one named agent. Each judge signs + funds its OWN turn
+/// (its key is local); the judge agent's PERSONA is embodied but the impartial
+/// PROMPT overrides its framing. A failed judge turn doesn't bail (the payout
+/// still happens) — and if ALL judges fail the median falls back to a neutral 3
+/// so the cycle completes with an honest, non-inflated rating.
+async fn colony_step_judge(
+    judge: &Option<String>,
+    judges: usize,
+    worker_name: &str,
+    caller_label: &str,
+    caller_key_hex: &str,
+    task: &str,
+    result_text: &str,
+) -> u8 {
+    // Build the panel: an explicit `--judge X` = the single agent X; else
+    // auto-select up to `judges` neutral local agents (excluding worker + caller).
+    let panel: Vec<String> = match judge {
+        Some(j) => vec![j.clone()],
+        None => resolve_judge_panel(worker_name, caller_label, judges),
+    };
+    println!(
+        "[6/8] JUDGE — neutral panel scores {worker_name}'s result 1-5 (accuracy-checked) …"
+    );
+    if judge.is_none() {
+        if panel.is_empty() {
+            // No neutral local agent — fall back to the caller as a single judge
+            // (better an interested score than stranding the cycle). Loud note.
+            println!(
+                "      ⚠ no neutral local agent (excluding the worker + caller) to form a panel; \
+                 falling back to the caller ({caller_label}) as a single judge."
+            );
+        } else if panel.len() < judges {
+            println!(
+                "      note: only {} neutral local agent(s) available (asked for {judges}); \
+                 running a panel of {}.",
+                panel.len(),
+                panel.len()
+            );
+        }
+    }
+    // Run each judge in turn, collecting (label, rating, rationale). A judge whose
+    // turn FAILS is skipped (logged) — it doesn't pollute the median with a
+    // fabricated score. The caller key pays the fallback (caller-as-judge) turn.
+    let judge_prompt = colony_judge_prompt(task, result_text);
+    let mut panel_results: Vec<(String, u8, String)> = Vec::new();
+    // The effective panel: the resolved neutral agents, or — when empty — the
+    // caller acting as the lone judge (paid by the caller key already loaded).
+    let effective_panel: Vec<String> =
+        if panel.is_empty() { vec![caller_label.to_string()] } else { panel.clone() };
+    for judge_name in &effective_panel {
+        // Each neutral judge funds + signs its own turn; the caller-fallback judge
+        // reuses the caller key (so a missing-key judge can't strand the escrow).
+        let judge_key_hex = if judge_name.as_str() == caller_label {
+            caller_key_hex.to_string()
+        } else {
+            match resolve_caller_key(Some(judge_name)) {
+                Ok((_, hex)) => hex,
+                Err(e) => {
+                    eprintln!(
+                        "      ⚠ judge '{judge_name}' has no local identity key ({e}); skipping it."
+                    );
+                    continue;
+                }
+            }
+        };
+        match run_agent_turn(&judge_key_hex, judge_name, &judge_prompt, None, None).await {
+            Ok((reply, _hist)) => {
+                let (rating, rationale) = parse_judge_rating(&reply);
+                let rating = rating.clamp(1, 5);
+                println!("      • {judge_name}: {rating}★");
+                if !rationale.is_empty() {
+                    println!("        {rationale}");
+                }
+                panel_results.push((judge_name.clone(), rating, rationale));
+            }
+            Err(e) => {
+                report_call_error(&format!("[6/8] JUDGE turn failed ({judge_name})"), &e);
+                println!("      ⚠ judge '{judge_name}' turn failed — excluded from the median.");
+            }
+        }
+    }
+    // Aggregate to the MEDIAN. If EVERY judge turn failed, `median_rating([])`
+    // returns the neutral 3 default — the cycle still completes with an honest,
+    // non-inflated rating (the worker is never credited a false 5★).
+    let panel_ratings: Vec<u8> = panel_results.iter().map(|(_, r, _)| *r).collect();
+    let judged_rating = median_rating(&panel_ratings).clamp(1, 5);
+    if panel_ratings.is_empty() {
+        println!(
+            "      ⚠ every judge turn failed — defaulting to a neutral {judged_rating}★ \
+             (the cycle still completes; the worker is not credited a false 5★)."
+        );
+    } else {
+        // Echo the panel + the median, e.g. "panel: dex-qa 5★, iris-qa 4★ → median 5★".
+        let summary = panel_results
+            .iter()
+            .map(|(n, r, _)| format!("{n} {r}★"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("      ✓ panel: {summary} → median {judged_rating}★");
+    }
+    println!();
+    judged_rating
+}
+
+/// [7/8] the PAYMENT GATE — ACCEPT (pay) the work or REJECT it, per the
+/// already-computed `accept` decision ([`should_accept`]). The colony is
+/// economically rational: it pays ONLY for work the NEUTRAL panel rates at or
+/// above the `--min-accept-rating` bar (default 2). A median BELOW the bar is
+/// REJECTED — the caller does NOT accept, so the worker is NOT paid and the
+/// escrow stays locked, recoverable by the poster via `reclaimExpired`
+/// (`bounty reclaim`) after the ttl. NO contract change: a reject is simply the
+/// absence of an accept on a Submitted bounty. `Err` = the stage-7 bail message
+/// (only the accept write can fail; a reject never touches the chain).
+#[allow(clippy::too_many_arguments)]
+async fn colony_step_settle(
+    accept: bool,
+    caller_signer: &k256::ecdsa::SigningKey,
+    sponsor: &k256::ecdsa::SigningKey,
+    bounty_id: u64,
+    worker_name: &str,
+    caller_label: &str,
+    reward_wei: u128,
+    judged_rating: u8,
+    min_accept: u8,
+) -> Result<(), String> {
+    if accept {
+        println!(
+            "[7/8] ACCEPT — median {judged_rating}★ ≥ min {min_accept}★ → caller accepts + pays the \
+             escrow to {worker_name}'s TBA …"
+        );
+        match colony_write_step(bounty_id, "7/8", "ACCEPT", 3, || {
+            registry::accept_result_sponsored(
+                caller_signer,
+                sponsor,
+                bounty_id,
+                registry::ALPHA_USD_ADDRESS,
+            )
+        })
+        .await
+        {
+            Ok(tx) => println!("      ✓ accepted — {} settled  (tx {tx})", fmt_lh(reward_wei)),
+            Err(e) => return Err(format!("ACCEPT failed: {e}")),
+        }
+    } else {
+        // REJECT: the work scored below the bar. Do NOT accept/pay — the worker
+        // keeps NOTHING. The escrow remains locked on the Submitted bounty; the
+        // poster recovers it via the ttl-gated `bounty reclaim`. This is a NORMAL
+        // outcome (a rational colony refusing sub-quality work), not an error.
+        println!(
+            "[7/8] REJECT — median {judged_rating}★ < min {min_accept}★ → caller does NOT accept; \
+             {worker_name} is NOT paid."
+        );
+        println!("      ✗ result REJECTED ({judged_rating}★ below the {min_accept}★ bar).");
+        println!("      ✗ the escrow ({}) was NOT released — the worker keeps NOTHING.", fmt_lh(reward_wei));
+        println!(
+            "      the escrow is reclaimable by the poster AFTER the ttl with:\n        \
+             localharness bounty reclaim --as {caller_label} {bounty_id}"
+        );
+    }
+    println!();
+    Ok(())
+}
+
+/// [8/8] ATTEST — the caller attests the JUDGE's median rating to the worker
+/// (workRef = the bounty id). ALWAYS runs, accept OR reject: reputation must
+/// reflect the work's true quality (a rejected 1★ result is recorded as 1★, so
+/// the bad worker's reputation drops and the PICK step routes around it next
+/// time). Attestation is reputation, not payment, so it is the SAME on both
+/// branches. A failure here WARNS but does NOT fail the cycle (and never
+/// triggers a bail — on the accept branch the escrow is settled; on the reject
+/// branch it is reclaimable).
+async fn colony_step_attest(
+    caller_signer: &k256::ecdsa::SigningKey,
+    sponsor: &k256::ecdsa::SigningKey,
+    worker: &ColonyWorker,
+    bounty_id: u64,
+    judged_rating: u8,
+    caller_label: &str,
+) {
+    let (worker_name, worker_token_id) = (&worker.name, worker.token_id);
+    println!(
+        "[8/8] ATTEST — caller attests {judged_rating}★ (the JUDGE's rating) to {worker_name} \
+         (workRef = bounty #{bounty_id}) …"
+    );
+    let work_ref = bounty_work_ref(bounty_id);
+    match registry::attest_sponsored(
+        caller_signer,
+        sponsor,
+        worker_token_id,
+        judged_rating,
+        work_ref,
+        registry::ALPHA_USD_ADDRESS,
+    )
+    .await
+    {
+        Ok(tx) => println!(
+            "      ✓ attested {judged_rating}★ to {worker_name} (token #{worker_token_id})  (tx {tx})"
+        ),
+        Err(e) => println!(
+            "      ⚠ ATTEST failed: {e}\n      \
+             (attestation is a bonus; not failing the cycle. \
+             Retry later with: localharness reputation attest --as {caller_label} {worker_name} {judged_rating} --ref {bounty_id})"
+        ),
+    }
+    println!();
+}
+
+/// The closing report — verify the outcome against the worker's TBA `$LH` and
+/// print the ACCEPTED / REJECTED cycle summary (the reject branch's delta check
+/// is the KEY PROOF of the payment gate: a rejected result never moves `$LH`).
+async fn colony_report_outcome(
+    accept: bool,
+    bounty_id: u64,
+    worker: &ColonyWorker,
+    reward_wei: u128,
+    judged_rating: u8,
+    min_accept: u8,
+    caller_label: &str,
+) {
+    let (worker_name, worker_tba, tba_before) = (&worker.name, &worker.tba, worker.tba_before);
+    let tba_after = registry::token_balance_of(worker_tba).await.unwrap_or(tba_before);
+    let delta = tba_after.saturating_sub(tba_before);
+    if accept {
+        println!("=== CYCLE COMPLETE (ACCEPTED) ===");
+        println!("  bounty #{bounty_id}: open → claimed → submitted → accepted → PAID");
+        println!("  worker TBA {worker_tba}");
+        println!("    before: {}", fmt_lh(tba_before));
+        println!("    after:  {}", fmt_lh(tba_after));
+        println!("    delta:  +{}  (reward {})", fmt_lh(delta), fmt_lh(reward_wei));
+        if delta == reward_wei {
+            println!("  ✓ payout verified — the worker's TBA rose by exactly the reward.");
+        } else {
+            // The cycle COMPLETED on-chain (accept mined); a balance read can lag a
+            // block or another tx can touch the TBA. Report honestly, don't fail the
+            // accepted cycle — the escrow is settled either way.
+            println!(
+                "  ⚠ TBA delta ({}) != reward ({}). The accept tx mined (the bounty is PAID), \
+                 but the balance check didn't line up exactly — a read can lag a block or another \
+                 tx touched the TBA. Re-check with: localharness tba show {worker_name}",
+                fmt_lh(delta),
+                fmt_lh(reward_wei)
+            );
+        }
+    } else {
+        // The KEY PROOF of the gate: a rejected result NEVER moves $LH to the
+        // worker's TBA. The cycle ended on a Submitted (not Paid) bounty.
+        println!("=== CYCLE COMPLETE (REJECTED — NOT PAID) ===");
+        println!("  bounty #{bounty_id}: open → claimed → submitted → REJECTED (still Submitted, escrow locked)");
+        println!("  worker TBA {worker_tba}");
+        println!("    before: {}", fmt_lh(tba_before));
+        println!("    after:  {}", fmt_lh(tba_after));
+        println!("    delta:  +{}  (NO payout — median {judged_rating}★ < min {min_accept}★)", fmt_lh(delta));
+        if delta == 0 {
+            println!("  ✓ reject verified — the worker's TBA did NOT rise (it was not paid).");
+        } else {
+            println!(
+                "  ⚠ the worker's TBA rose by {} despite the reject — the colony did NOT accept \
+                 this bounty, so this delta came from ANOTHER tx, not this reward. Re-check with: \
+                 localharness tba show {worker_name}",
+                fmt_lh(delta)
+            );
+        }
+        println!(
+            "  the escrow stays locked on the Submitted bounty; reclaim it after the ttl with:\n    \
+             localharness bounty reclaim --as {caller_label} {bounty_id}"
+        );
+    }
+}
+
 /// `colony run` — drive ONE autonomous post→claim→work→submit→JUDGE→
 /// (accept-or-reject)→attest cycle. Each on-chain step reuses the bounty helpers;
 /// the work AND the judge both reuse `run_agent_turn`. The [6/8] JUDGE step scores
@@ -666,44 +1201,19 @@ pub(crate) async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     println!();
 
     // -- STEP 1: the caller POSTS the bounty (escrows the reward). ----------
-    println!("[1/8] POST  — escrowing {} behind the task …", fmt_lh(reward_wei));
-    let post_tx = match registry::post_bounty_sponsored(
+    let bounty_id = match colony_step_post(
         &caller_signer,
         &sponsor,
-        task.as_bytes(),
+        &caller_addr,
+        &task,
         reward_wei,
         ttl_secs,
-        registry::ALPHA_USD_ADDRESS,
     )
     .await
     {
-        Ok(tx) => tx,
-        Err(e) => {
-            eprintln!("[1/8] POST failed: {e}");
-            eprintln!("  no escrow was created — nothing to clean up.");
-            return 1;
-        }
+        Ok(id) => id,
+        Err(code) => return code,
     };
-    // The new bounty id is the last entry in the poster's bountiesOf index.
-    let bounty_id = match registry::bounties_of(&caller_addr).await {
-        Ok(ids) if !ids.is_empty() => ids[ids.len() - 1],
-        Ok(_) => {
-            eprintln!(
-                "[1/8] POST mined (tx {post_tx}) but the new bounty id could not be read back \
-                 from bountiesOf — re-run `bounty mine` to find + manage it."
-            );
-            return 1;
-        }
-        Err(e) => {
-            eprintln!(
-                "[1/8] POST mined (tx {post_tx}) but reading the bounty id failed: {e} \
-                 — re-run `bounty mine` to find + manage it."
-            );
-            return 1;
-        }
-    };
-    println!("      ✓ bounty #{bounty_id} posted  (tx {post_tx})");
-    println!();
 
     // From here on, any failure must surface the bounty id so the escrow can be
     // reclaimed — never a silent half-state. The recovery COMMAND depends on the
@@ -719,379 +1229,72 @@ pub(crate) async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
     }
 
     // -- STEP 2: pick + resolve the WORKER. --------------------------------
-    let worker_name = match worker {
-        Some(w) => w,
-        None => {
-            println!("[2/8] PICK  — auto-selecting the best worker (reputation-aware, excluding the caller) …");
-            match colony_pick_worker(&task, &caller_label).await {
-                Ok((w, why)) => {
-                    println!("      ✓ {why}");
-                    w
-                }
-                Err(e) => bail!("2/8", format!("PICK failed: {e}")),
-            }
-        }
+    let worker = match colony_step_pick(worker, &judge, &task, &caller_label).await {
+        Ok(w) => w,
+        Err(e) => bail!("2/8", e),
     };
-    // FIX 3: an explicit `--judge <agent>` must NOT name the WORKER. The auto-panel
-    // already excludes the worker (+ caller), but the override bypassed that — a
-    // caller could force the worker to judge its OWN work (self-inflated rating).
-    // Reject up front (clearest), keeping `--judge <neutral-agent>` working.
-    if let Some(j) = &judge {
-        if judge_equals_worker(j, &worker_name) {
-            bail!(
-                "2/8",
-                format!(
-                    "--judge '{j}' is the WORKER — a worker can't judge its own work (self-inflated \
-                     rating). Pass --judge <neutral-agent> (NOT the worker), or drop --judge to use \
-                     the auto-selected neutral panel."
-                )
-            )
-        }
-    }
-    // The worker signs its OWN claim + submit, so its key must be local.
-    let (worker_key_file, worker_key_hex) = match resolve_caller_key(Some(&worker_name)) {
-        Ok(c) => c,
-        Err(e) => {
-            bail!(
-                "2/8",
-                format!(
-                    "worker '{worker_name}' has no local identity key ({e}). The worker must be a \
-                     fleet/owned agent whose key is in your keys dir — it signs its own claim + submit."
-                )
-            )
-        }
-    };
-    let worker_signer = match wallet::from_private_key_hex(&worker_key_hex) {
-        Ok(s) => s,
-        Err(e) => bail!("2/8", format!("bad worker key in {worker_key_file}: {e}")),
-    };
-    // The worker's tokenId (the identity that earns the reward) + its TBA wallet
-    // (where the reward lands) — resolve both up front so the payout is verifiable.
-    let worker_token_id = match resolve_own_token_id(Some(&worker_name), &worker_signer).await {
-        Ok(id) => id,
-        Err(e) => bail!("2/8", format!("could not resolve worker '{worker_name}' identity: {e}")),
-    };
-    let worker_tba = match registry::tba_of_token_id(worker_token_id).await {
-        Ok(Some(a)) => a,
-        Ok(None) => bail!("2/8", format!("worker token #{worker_token_id} has no token-bound account")),
-        Err(e) => bail!("2/8", format!("RPC error resolving worker TBA: {e}")),
-    };
-    let tba_before = registry::token_balance_of(&worker_tba).await.unwrap_or(0);
-    println!("      worker {worker_name} = token #{worker_token_id}, TBA {worker_tba}");
-    println!("      worker TBA $LH before: {}", fmt_lh(tba_before));
-    println!();
 
     // -- STEP 3: the worker CLAIMS the bounty. -----------------------------
-    println!("[3/8] CLAIM — {worker_name} claims bounty #{bounty_id} (reward → its TBA) …");
-    match colony_write_step(bounty_id, "3/8", "CLAIM", 1, || {
-        registry::claim_bounty_sponsored(
-            &worker_signer,
-            &sponsor,
-            bounty_id,
-            worker_token_id,
-            registry::ALPHA_USD_ADDRESS,
-        )
-    })
-    .await
-    {
-        Ok(tx) => println!("      ✓ claimed by token #{worker_token_id}  (tx {tx})"),
-        Err(e) => bail!("3/8", format!("CLAIM failed: {e}")),
+    if let Err(e) = colony_step_claim(&worker, &sponsor, bounty_id).await {
+        bail!("3/8", e);
     }
-    println!();
 
     // -- STEP 4: run the WORK — a headless turn as the worker's persona. ----
-    println!("[4/8] WORK  — running {worker_name}'s persona on the task (headless `call`) …");
-    let work_prompt = format!(
-        "{task}\n\nSubmit your concrete result / deliverable as your reply \
-         (it will be recorded on-chain as your bounty submission)."
-    );
-    // The caller pays for the work turn (same as `call --as caller worker …`),
-    // running the WORKER's on-chain persona. No prior history (a one-shot job).
-    // Retry ONCE on an EMPTY reply or a TRANSIENT failure: tick-14's dogfood saw
-    // the WORK turn return an empty model reply (a transient proxy/model hiccup)
-    // that bailed the whole cycle and stranded the claimed bounty. A non-empty
-    // result is NEVER retried; a genuine (non-transient) error bails as before.
-    let mut work_outcome =
-        run_agent_turn(&caller_key_hex, &worker_name, &work_prompt, None, None).await;
-    if work_result_needs_retry(&work_outcome) {
-        match &work_outcome {
-            Ok(_) => println!(
-                "      ⚠ WORK returned an empty reply (transient model hiccup) — retrying once …"
-            ),
-            Err(e) => println!(
-                "      ⚠ WORK turn failed transiently ({e}) — retrying once …"
-            ),
-        }
-        work_outcome =
-            run_agent_turn(&caller_key_hex, &worker_name, &work_prompt, None, None).await;
-    }
-    let result_text = match work_outcome {
-        Ok((text, _hist)) => {
-            let trimmed = text.trim().to_string();
-            if trimmed.is_empty() {
-                bail!("4/8", "WORK produced an empty result (even after one retry) — nothing to submit.".to_string());
-            }
-            trimmed
-        }
-        Err(e) => {
-            report_call_error("[4/8] WORK failed", &e);
-            bail!("4/8", "the worker's persona turn failed (even after one retry) — see the hint above.".to_string());
-        }
+    let result_text = match colony_step_work(&caller_key_hex, &worker.name, &task).await {
+        Ok(r) => r,
+        Err(e) => bail!("4/8", e),
     };
-    println!("      ✓ {worker_name} produced a result:");
-    println!("      ┌─────────────────────────────────────────────────────────");
-    for line in result_text.lines() {
-        println!("      │ {line}");
-    }
-    println!("      └─────────────────────────────────────────────────────────");
-    println!();
 
     // -- STEP 5: the worker SUBMITS the result. ----------------------------
-    println!("[5/8] SUBMIT — {worker_name} submits its result for bounty #{bounty_id} …");
-    match colony_write_step(bounty_id, "5/8", "SUBMIT", 2, || {
-        registry::submit_result_sponsored(
-            &worker_signer,
-            &sponsor,
-            bounty_id,
-            result_text.as_bytes(),
-            registry::ALPHA_USD_ADDRESS,
-        )
-    })
-    .await
-    {
-        Ok(tx) => println!("      ✓ result submitted  (tx {tx})"),
-        Err(e) => bail!("5/8", format!("SUBMIT failed: {e}")),
+    if let Err(e) = colony_step_submit(&worker, &sponsor, bounty_id, &result_text).await {
+        bail!("5/8", e);
     }
-    println!();
 
     // -- STEP 6: a NEUTRAL JUDGE PANEL scores the result; take the MEDIAN. ---
-    // This is what makes the attestation MEANINGFUL and TRUSTWORTHY: the rating
-    // below is the MEDIAN of N neutral judges (default 3), not one self-interested
-    // score. The panel EXCLUDES the worker (don't grade your own work) AND the
-    // caller (the poster has skin in the game — its score would bias the
-    // reputation signal that now DRIVES the PICK step). `--judge <agent>` forces a
-    // panel of exactly that one named agent. Each judge signs + funds its OWN turn
-    // (its key is local); the judge agent's PERSONA is embodied but the impartial
-    // PROMPT overrides its framing. A failed judge turn doesn't bail (the payout
-    // still happens) — and if ALL judges fail the median falls back to a neutral 3
-    // so the cycle completes with an honest, non-inflated rating.
-    //
-    // Build the panel: an explicit `--judge X` = the single agent X; else
-    // auto-select up to `judges` neutral local agents (excluding worker + caller).
-    let panel: Vec<String> = match &judge {
-        Some(j) => vec![j.clone()],
-        None => resolve_judge_panel(&worker_name, &caller_label, judges),
-    };
-    println!(
-        "[6/8] JUDGE — neutral panel scores {worker_name}'s result 1-5 (accuracy-checked) …"
-    );
-    if judge.is_none() {
-        if panel.is_empty() {
-            // No neutral local agent — fall back to the caller as a single judge
-            // (better an interested score than stranding the cycle). Loud note.
-            println!(
-                "      ⚠ no neutral local agent (excluding the worker + caller) to form a panel; \
-                 falling back to the caller ({caller_label}) as a single judge."
-            );
-        } else if panel.len() < judges {
-            println!(
-                "      note: only {} neutral local agent(s) available (asked for {judges}); \
-                 running a panel of {}.",
-                panel.len(),
-                panel.len()
-            );
-        }
-    }
-    // Run each judge in turn, collecting (label, rating, rationale). A judge whose
-    // turn FAILS is skipped (logged) — it doesn't pollute the median with a
-    // fabricated score. The caller key pays the fallback (caller-as-judge) turn.
-    let judge_prompt = colony_judge_prompt(&task, &result_text);
-    let mut panel_results: Vec<(String, u8, String)> = Vec::new();
-    // The effective panel: the resolved neutral agents, or — when empty — the
-    // caller acting as the lone judge (paid by the caller key already loaded).
-    let effective_panel: Vec<String> =
-        if panel.is_empty() { vec![caller_label.clone()] } else { panel.clone() };
-    for judge_name in &effective_panel {
-        // Each neutral judge funds + signs its own turn; the caller-fallback judge
-        // reuses the caller key (so a missing-key judge can't strand the escrow).
-        let judge_key_hex = if judge_name == &caller_label {
-            caller_key_hex.clone()
-        } else {
-            match resolve_caller_key(Some(judge_name)) {
-                Ok((_, hex)) => hex,
-                Err(e) => {
-                    eprintln!(
-                        "      ⚠ judge '{judge_name}' has no local identity key ({e}); skipping it."
-                    );
-                    continue;
-                }
-            }
-        };
-        match run_agent_turn(&judge_key_hex, judge_name, &judge_prompt, None, None).await {
-            Ok((reply, _hist)) => {
-                let (rating, rationale) = parse_judge_rating(&reply);
-                let rating = rating.clamp(1, 5);
-                println!("      • {judge_name}: {rating}★");
-                if !rationale.is_empty() {
-                    println!("        {rationale}");
-                }
-                panel_results.push((judge_name.clone(), rating, rationale));
-            }
-            Err(e) => {
-                report_call_error(&format!("[6/8] JUDGE turn failed ({judge_name})"), &e);
-                println!("      ⚠ judge '{judge_name}' turn failed — excluded from the median.");
-            }
-        }
-    }
-    // Aggregate to the MEDIAN. If EVERY judge turn failed, `median_rating([])`
-    // returns the neutral 3 default — the cycle still completes with an honest,
-    // non-inflated rating (the worker is never credited a false 5★).
-    let panel_ratings: Vec<u8> = panel_results.iter().map(|(_, r, _)| *r).collect();
-    let judged_rating = median_rating(&panel_ratings).clamp(1, 5);
-    if panel_ratings.is_empty() {
-        println!(
-            "      ⚠ every judge turn failed — defaulting to a neutral {judged_rating}★ \
-             (the cycle still completes; the worker is not credited a false 5★)."
-        );
-    } else {
-        // Echo the panel + the median, e.g. "panel: dex-qa 5★, iris-qa 4★ → median 5★".
-        let summary = panel_results
-            .iter()
-            .map(|(n, r, _)| format!("{n} {r}★"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        println!("      ✓ panel: {summary} → median {judged_rating}★");
-    }
-    println!();
+    let judged_rating = colony_step_judge(
+        &judge,
+        judges,
+        &worker.name,
+        &caller_label,
+        &caller_key_hex,
+        &task,
+        &result_text,
+    )
+    .await;
 
     // -- STEP 7: the PAYMENT GATE — ACCEPT (pay) the work OR REJECT it. -----
-    // The colony is economically rational: it pays ONLY for work the NEUTRAL
-    // panel rates at or above the `--min-accept-rating` bar (default 2). A median
-    // BELOW the bar (e.g. 1 = clear failure / hallucination) is REJECTED — the
-    // caller does NOT accept, so the worker is NOT paid and the escrow stays
-    // locked, recoverable by the poster via `reclaimExpired` (`bounty reclaim`)
-    // after the ttl. NO contract change: a reject is simply the absence of an
-    // accept on a Submitted bounty (BountyFacet.reclaimExpired accepts the
-    // Submitted state once expired). Either branch STILL attests the panel median
-    // in step 8 — reputation must record the bad work even when payment is denied.
     let accept = should_accept(judged_rating, min_accept);
-    if accept {
-        println!(
-            "[7/8] ACCEPT — median {judged_rating}★ ≥ min {min_accept}★ → caller accepts + pays the \
-             escrow to {worker_name}'s TBA …"
-        );
-        match colony_write_step(bounty_id, "7/8", "ACCEPT", 3, || {
-            registry::accept_result_sponsored(
-                &caller_signer,
-                &sponsor,
-                bounty_id,
-                registry::ALPHA_USD_ADDRESS,
-            )
-        })
-        .await
-        {
-            Ok(tx) => println!("      ✓ accepted — {} settled  (tx {tx})", fmt_lh(reward_wei)),
-            Err(e) => bail!("7/8", format!("ACCEPT failed: {e}")),
-        }
-    } else {
-        // REJECT: the work scored below the bar. Do NOT accept/pay — the worker
-        // keeps NOTHING. The escrow remains locked on the Submitted bounty; the
-        // poster recovers it via the ttl-gated `bounty reclaim`. This is a NORMAL
-        // outcome (a rational colony refusing sub-quality work), not an error.
-        println!(
-            "[7/8] REJECT — median {judged_rating}★ < min {min_accept}★ → caller does NOT accept; \
-             {worker_name} is NOT paid."
-        );
-        println!("      ✗ result REJECTED ({judged_rating}★ below the {min_accept}★ bar).");
-        println!("      ✗ the escrow ({}) was NOT released — the worker keeps NOTHING.", fmt_lh(reward_wei));
-        println!(
-            "      the escrow is reclaimable by the poster AFTER the ttl with:\n        \
-             localharness bounty reclaim --as {caller_label} {bounty_id}"
-        );
-    }
-    println!();
-
-    // -- STEP 8: the caller ATTESTS the JUDGE'S rating → on-chain reputation. -
-    // ALWAYS runs, accept OR reject: reputation must reflect the work's true
-    // quality (a rejected 1★ result is recorded as 1★, so the bad worker's
-    // reputation drops and the PICK step routes around it next time). Attestation
-    // is reputation, not payment, so it is the SAME on both branches. A failure
-    // here WARNS but does NOT fail the cycle (and never triggers `bail` — on the
-    // accept branch the escrow is settled; on the reject branch it is reclaimable).
-    println!(
-        "[8/8] ATTEST — caller attests {judged_rating}★ (the JUDGE's rating) to {worker_name} \
-         (workRef = bounty #{bounty_id}) …"
-    );
-    let work_ref = bounty_work_ref(bounty_id);
-    match registry::attest_sponsored(
+    if let Err(e) = colony_step_settle(
+        accept,
         &caller_signer,
         &sponsor,
-        worker_token_id,
+        bounty_id,
+        &worker.name,
+        &caller_label,
+        reward_wei,
         judged_rating,
-        work_ref,
-        registry::ALPHA_USD_ADDRESS,
+        min_accept,
     )
     .await
     {
-        Ok(tx) => println!(
-            "      ✓ attested {judged_rating}★ to {worker_name} (token #{worker_token_id})  (tx {tx})"
-        ),
-        Err(e) => println!(
-            "      ⚠ ATTEST failed: {e}\n      \
-             (attestation is a bonus; not failing the cycle. \
-             Retry later with: localharness reputation attest --as {caller_label} {worker_name} {judged_rating} --ref {bounty_id})"
-        ),
+        bail!("7/8", e);
     }
-    println!();
+
+    // -- STEP 8: the caller ATTESTS the JUDGE'S rating → on-chain reputation. -
+    colony_step_attest(&caller_signer, &sponsor, &worker, bounty_id, judged_rating, &caller_label)
+        .await;
 
     // -- Verify the outcome against the worker's TBA $LH. -------------------
-    let tba_after = registry::token_balance_of(&worker_tba).await.unwrap_or(tba_before);
-    let delta = tba_after.saturating_sub(tba_before);
-    if accept {
-        println!("=== CYCLE COMPLETE (ACCEPTED) ===");
-        println!("  bounty #{bounty_id}: open → claimed → submitted → accepted → PAID");
-        println!("  worker TBA {worker_tba}");
-        println!("    before: {}", fmt_lh(tba_before));
-        println!("    after:  {}", fmt_lh(tba_after));
-        println!("    delta:  +{}  (reward {})", fmt_lh(delta), fmt_lh(reward_wei));
-        if delta == reward_wei {
-            println!("  ✓ payout verified — the worker's TBA rose by exactly the reward.");
-        } else {
-            // The cycle COMPLETED on-chain (accept mined); a balance read can lag a
-            // block or another tx can touch the TBA. Report honestly, don't fail the
-            // accepted cycle — the escrow is settled either way.
-            println!(
-                "  ⚠ TBA delta ({}) != reward ({}). The accept tx mined (the bounty is PAID), \
-                 but the balance check didn't line up exactly — a read can lag a block or another \
-                 tx touched the TBA. Re-check with: localharness tba show {worker_name}",
-                fmt_lh(delta),
-                fmt_lh(reward_wei)
-            );
-        }
-    } else {
-        // The KEY PROOF of the gate: a rejected result NEVER moves $LH to the
-        // worker's TBA. The cycle ended on a Submitted (not Paid) bounty.
-        println!("=== CYCLE COMPLETE (REJECTED — NOT PAID) ===");
-        println!("  bounty #{bounty_id}: open → claimed → submitted → REJECTED (still Submitted, escrow locked)");
-        println!("  worker TBA {worker_tba}");
-        println!("    before: {}", fmt_lh(tba_before));
-        println!("    after:  {}", fmt_lh(tba_after));
-        println!("    delta:  +{}  (NO payout — median {judged_rating}★ < min {min_accept}★)", fmt_lh(delta));
-        if delta == 0 {
-            println!("  ✓ reject verified — the worker's TBA did NOT rise (it was not paid).");
-        } else {
-            println!(
-                "  ⚠ the worker's TBA rose by {} despite the reject — the colony did NOT accept \
-                 this bounty, so this delta came from ANOTHER tx, not this reward. Re-check with: \
-                 localharness tba show {worker_name}",
-                fmt_lh(delta)
-            );
-        }
-        println!(
-            "  the escrow stays locked on the Submitted bounty; reclaim it after the ttl with:\n    \
-             localharness bounty reclaim --as {caller_label} {bounty_id}"
-        );
-    }
+    colony_report_outcome(
+        accept,
+        bounty_id,
+        &worker,
+        reward_wei,
+        judged_rating,
+        min_accept,
+        &caller_label,
+    )
+    .await;
     // A reject is a NORMAL outcome (the colony rationally declined sub-quality
     // work), not an error — exit 0 on both branches.
     0
