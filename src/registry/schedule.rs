@@ -104,18 +104,6 @@ pub async fn schedule_job_sponsored(
     max_runs: u32,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let token_addr = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
-    let approve_call = crate::tempo_tx::TempoCall {
-        to: token_addr,
-        value_wei: 0,
-        input: encode_approve(&diamond_addr, budget_wei),
-    };
-    let schedule_call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: encode_schedule_job(target_id, task, interval_secs, budget_wei, max_runs),
-    };
     // approve (~46k) + scheduleJob + ~275k sponsorship overhead. MEASURED via
     // `cast estimate`: scheduleJob alone is ~2.88M for a ~45-byte task (3 packed
     // cold job slots + the cold `task` bytes ~7.6k/BYTE + the two enumerable-index
@@ -124,7 +112,15 @@ pub async fn schedule_job_sponsored(
     // comfortable headroom; the sponsor only pays gas USED, so over-budgeting is
     // free. (See the CLAUDE.md "cast estimate, never guess" gotcha.)
     let gas = 3_500_000 + (task.len() as u128) * 9_000;
-    submit_tempo_sponsored(sender, fee_payer, vec![approve_call, schedule_call], fee_token, gas).await
+    sponsored_escrow_diamond_call(
+        sender,
+        fee_payer,
+        budget_wei,
+        encode_schedule_job(target_id, task, interval_secs, budget_wei, max_runs),
+        fee_token,
+        gas,
+    )
+    .await
 }
 
 /// Cancel a scheduled job via a sponsored Tempo tx — REFUNDS the job's full
@@ -135,14 +131,8 @@ pub async fn cancel_job_sponsored(
     job_id: u64,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: encode_cancel_job(job_id),
-    };
     // status flip + budget zero (1 SSTORE) + the refund `transfer` + event.
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 400_000).await
+    sponsored_diamond_call(sender, fee_payer, encode_cancel_job(job_id), fee_token, 400_000).await
 }
 
 /// Read `jobsOf(address)` — every job id the owner has scheduled (Active +

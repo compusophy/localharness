@@ -165,12 +165,6 @@ pub async fn create_guild_sponsored(
     name: &str,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: encode_create_guild(name),
-    };
     // The guild struct's cold SSTOREs (id↔owner, name `bytes`, the creator's
     // Admin role + the `guildsOf` enumerable push) + ~275k sponsorship. Cold
     // writes dominate (CLAUDE.md "cast estimate, never guess"); budget the same
@@ -181,7 +175,7 @@ pub async fn create_guild_sponsored(
     // scheduleJob (comfortably above 2.87M + sponsorship overhead). Sponsor billed
     // on gas USED, so the headroom is free.
     let gas = 3_500_000 + (name.len() as u128) * 9_000;
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, gas).await
+    sponsored_diamond_call(sender, fee_payer, encode_create_guild(name), fee_token, gas).await
 }
 
 /// Invite an address to a guild via a sponsored Tempo tx
@@ -194,15 +188,16 @@ pub async fn invite_to_guild_sponsored(
     member_hex: &str,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
     let member = parse_eth_address(member_hex)?;
-    let call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: encode_invite_to_guild(guild_id, &member),
-    };
     // A pending-invite SSTORE + event. 400k mirrors the bounty-claim budget.
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 400_000).await
+    sponsored_diamond_call(
+        sender,
+        fee_payer,
+        encode_invite_to_guild(guild_id, &member),
+        fee_token,
+        400_000,
+    )
+    .await
 }
 
 /// Accept a pending guild invite via a sponsored Tempo tx
@@ -214,17 +209,18 @@ pub async fn accept_guild_invite_sponsored(
     guild_id: u64,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: call_uint_bytes("acceptGuildInvite(uint256)", guild_id),
-    };
     // Role SSTORE + the roster + `guildsOf` enumerable pushes + event — cold
     // index writes dominate. Measured: `cast estimate acceptGuildInvite` ≈ 1.33M
     // (a 1.0M limit OOG'd live, gasUsed pinned at the cap). Budget 2M (sponsor
     // billed on gas USED, so the headroom is free).
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 2_000_000).await
+    sponsored_diamond_call(
+        sender,
+        fee_payer,
+        call_uint_bytes("acceptGuildInvite(uint256)", guild_id),
+        fee_token,
+        2_000_000,
+    )
+    .await
 }
 
 /// Leave a guild via a sponsored Tempo tx (`leaveGuild(guildId)`): the caller's
@@ -235,16 +231,17 @@ pub async fn leave_guild_sponsored(
     guild_id: u64,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: call_uint_bytes("leaveGuild(uint256)", guild_id),
-    };
     // Role clear + the roster/index removals (swap-and-pop array writes, symmetric
     // to accept's pushes) + event. Budget 1.5M like accept (the 600k guess was the
     // same under-estimate class as the createGuild/accept OOGs).
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 1_500_000).await
+    sponsored_diamond_call(
+        sender,
+        fee_payer,
+        call_uint_bytes("leaveGuild(uint256)", guild_id),
+        fee_token,
+        1_500_000,
+    )
+    .await
 }
 
 /// Set a member's role via a sponsored Tempo tx (`setRole(guildId, member,
@@ -258,15 +255,16 @@ pub async fn set_role_sponsored(
     role: u8,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
     let member = parse_eth_address(member_hex)?;
-    let call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: encode_set_role(guild_id, &member, role),
-    };
     // A single role SSTORE + event.
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 400_000).await
+    sponsored_diamond_call(
+        sender,
+        fee_payer,
+        encode_set_role(guild_id, &member, role),
+        fee_token,
+        400_000,
+    )
+    .await
 }
 
 /// Fund a guild's treasury via a sponsored Tempo tx. Batches `approve(diamond,
@@ -282,22 +280,17 @@ pub async fn fund_guild_sponsored(
     amount_wei: u128,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let token_addr = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
-    let approve_call = crate::tempo_tx::TempoCall {
-        to: token_addr,
-        value_wei: 0,
-        input: encode_approve(&diamond_addr, amount_wei),
-    };
-    let fund_call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: encode_fund_guild(guild_id, amount_wei),
-    };
     // approve (~46k) + fundGuild (transferFrom pull + the treasury-balance
     // SSTORE + event) + ~275k sponsorship. Mirror the invite escrow budget.
-    submit_tempo_sponsored(sender, fee_payer, vec![approve_call, fund_call], fee_token, 2_000_000)
-        .await
+    sponsored_escrow_diamond_call(
+        sender,
+        fee_payer,
+        amount_wei,
+        encode_fund_guild(guild_id, amount_wei),
+        fee_token,
+        2_000_000,
+    )
+    .await
 }
 
 /// Spend from a guild's treasury via a sponsored Tempo tx
@@ -313,17 +306,18 @@ pub async fn spend_treasury_sponsored(
     memo: &[u8],
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
     let to = parse_eth_address(to_hex)?;
-    let call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: encode_spend_treasury(guild_id, &to, amount_wei, memo),
-    };
     // treasury-balance debit + the payout `transfer` (cold token balances) + the
     // cold `memo` bytes (~9k/byte) + event. Base mirrors the redeem/payout budget.
     let gas = 2_000_000 + (memo.len() as u128) * 9_000;
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, gas).await
+    sponsored_diamond_call(
+        sender,
+        fee_payer,
+        encode_spend_treasury(guild_id, &to, amount_wei, memo),
+        fee_token,
+        gas,
+    )
+    .await
 }
 
 /// Read `membersOf(guildId)` → the guild's member roster as lowercase `0x…`

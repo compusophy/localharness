@@ -99,13 +99,15 @@ pub async fn announce_sponsored(
 ) -> Result<String, String> {
     let digest = announce_digest(topic, ephemeral, pubkey);
     let sig = crate::wallet::sign_hash(owner_key, &digest); // low-s r‖s‖v, v∈{27,28}
-    let call = crate::tempo_tx::TempoCall {
-        to: parse_eth_address(REGISTRY_ADDRESS)?,
-        value_wei: 0,
-        input: encode_announce(topic, owner, ephemeral, pubkey, &sig),
-    };
     let gas = 1_200_000u128 + (pubkey.len() as u128) * 9_000;
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, gas).await
+    sponsored_diamond_call(
+        sender,
+        fee_payer,
+        encode_announce(topic, owner, ephemeral, pubkey, &sig),
+        fee_token,
+        gas,
+    )
+    .await
 }
 
 pub(crate) fn encode_post_signal(to: &[u8; 20], blob: &[u8]) -> Vec<u8> {
@@ -125,13 +127,8 @@ pub async fn post_signal_sponsored(
     blob: &[u8],
     fee_token: &str,
 ) -> Result<String, String> {
-    let call = crate::tempo_tx::TempoCall {
-        to: parse_eth_address(REGISTRY_ADDRESS)?,
-        value_wei: 0,
-        input: encode_post_signal(to, blob),
-    };
     let gas = 1_200_000u128 + (blob.len() as u128) * 9_000;
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, gas).await
+    sponsored_diamond_call(sender, fee_payer, encode_post_signal(to, blob), fee_token, gas).await
 }
 
 /// One discovered/received entry. `peersOf` → (ephemeral, ts, pubkey);

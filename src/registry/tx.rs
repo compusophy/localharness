@@ -297,6 +297,71 @@ pub(crate) fn parse_eth_address(hex_str: &str) -> Result<[u8; 20], String> {
     Ok(out)
 }
 
+// --- sponsored-write skeletons ----------------------------------------
+//
+// Every `*_sponsored` wrapper repeated the same parse-address → TempoCall →
+// submit_tempo_sponsored skeleton; the wrappers now keep ONLY what differs
+// per facet call: the calldata encoding and the gas budget.
+
+/// ONE sponsored Tempo call to `to_hex` (zero value). The shared body of
+/// every single-call `*_sponsored` wrapper; non-diamond targets ($LH token
+/// approve/transfer, TBA execute) pass their own address.
+pub(crate) async fn sponsored_call_to(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    to_hex: &str,
+    input: Vec<u8>,
+    fee_token: &str,
+    gas_limit: u128,
+) -> Result<String, String> {
+    let call = crate::tempo_tx::TempoCall {
+        to: parse_eth_address(to_hex)?,
+        value_wei: 0,
+        input,
+    };
+    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, gas_limit).await
+}
+
+/// ONE sponsored call to the registry diamond — the most common wrapper
+/// shape (claimDaily / redeem / cancelJob / acceptInvite / attest / vote /
+/// announce / submitFeedback / …).
+pub(crate) async fn sponsored_diamond_call(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    input: Vec<u8>,
+    fee_token: &str,
+    gas_limit: u128,
+) -> Result<String, String> {
+    sponsored_call_to(sender, fee_payer, REGISTRY_ADDRESS, input, fee_token, gas_limit).await
+}
+
+/// `$LH.approve(diamond, amount)` + a diamond call batched in ONE sponsored
+/// tx — the approve→`transferFrom`-pull ESCROW shape shared by scheduleJob /
+/// createInvite / postBounty / fundGuild / depositCredits and the cost-gated
+/// register/registerMain/openSession paths.
+pub(crate) async fn sponsored_escrow_diamond_call(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    amount_wei: u128,
+    input: Vec<u8>,
+    fee_token: &str,
+    gas_limit: u128,
+) -> Result<String, String> {
+    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
+    let token_addr = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
+    let approve_call = crate::tempo_tx::TempoCall {
+        to: token_addr,
+        value_wei: 0,
+        input: encode_approve(&diamond_addr, amount_wei),
+    };
+    let call = crate::tempo_tx::TempoCall {
+        to: diamond_addr,
+        value_wei: 0,
+        input,
+    };
+    submit_tempo_sponsored(sender, fee_payer, vec![approve_call, call], fee_token, gas_limit).await
+}
+
 
 // --- legacy / EIP-155 transaction RLP --------------------------------
 

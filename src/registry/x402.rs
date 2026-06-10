@@ -129,13 +129,14 @@ pub async fn settle_x402_sponsored(
     signature: &[u8; 65],
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: encode_settle(from, to, value_wei, valid_after, valid_before, nonce, signature),
-    };
-    submit_tempo_sponsored(submitter, fee_payer, vec![call], fee_token, 400_000).await
+    sponsored_diamond_call(
+        submitter,
+        fee_payer,
+        encode_settle(from, to, value_wei, valid_after, valid_before, nonce, signature),
+        fee_token,
+        400_000,
+    )
+    .await
 }
 
 /// Read `authorizationState(from, nonce)` — true if that x402 nonce was

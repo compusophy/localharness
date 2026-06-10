@@ -117,18 +117,6 @@ pub async fn post_bounty_sponsored(
     ttl_secs: u64,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let token_addr = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
-    let approve_call = crate::tempo_tx::TempoCall {
-        to: token_addr,
-        value_wei: 0,
-        input: encode_approve(&diamond_addr, reward_wei),
-    };
-    let post_call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: encode_post_bounty(task, reward_wei, ttl_secs),
-    };
     // approve (~46k) + postBounty (transferFrom pull + the bounty struct's cold
     // SSTOREs + the cold `task` bytes ~7.6k/BYTE + the bountiesOf enumerable push
     // + event) + ~275k sponsorship overhead. Cold writes dominate (CLAUDE.md
@@ -136,7 +124,15 @@ pub async fn post_bounty_sponsored(
     // scheduleJob escrow uses (also a struct + bytes + index push). The sponsor
     // is billed on gas USED, so over-budgeting is free.
     let gas = 3_500_000 + (task.len() as u128) * 9_000;
-    submit_tempo_sponsored(sender, fee_payer, vec![approve_call, post_call], fee_token, gas).await
+    sponsored_escrow_diamond_call(
+        sender,
+        fee_payer,
+        reward_wei,
+        encode_post_bounty(task, reward_wei, ttl_secs),
+        fee_token,
+        gas,
+    )
+    .await
 }
 
 /// Claim an Open bounty via a sponsored Tempo tx. `claimant_token_id` is the
@@ -151,14 +147,15 @@ pub async fn claim_bounty_sponsored(
     claimant_token_id: u64,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: encode_claim_bounty(bounty_id, claimant_token_id),
-    };
     // status flip + claimant SSTORE + event. 400k mirrors the cancelJob budget.
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 400_000).await
+    sponsored_diamond_call(
+        sender,
+        fee_payer,
+        encode_claim_bounty(bounty_id, claimant_token_id),
+        fee_token,
+        400_000,
+    )
+    .await
 }
 
 /// Submit a result for a Claimed bounty via a sponsored Tempo tx. Stores the
@@ -171,16 +168,17 @@ pub async fn submit_result_sponsored(
     result: &[u8],
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: encode_submit_result(bounty_id, result),
-    };
     // status flip + the cold `result` bytes SSTOREs (~7.6k/byte) + event. Scale
     // the same 1.2M base + 9k/byte the on-chain `bytes` writes use elsewhere.
     let gas = 1_200_000 + (result.len() as u128) * 9_000;
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, gas).await
+    sponsored_diamond_call(
+        sender,
+        fee_payer,
+        encode_submit_result(bounty_id, result),
+        fee_token,
+        gas,
+    )
+    .await
 }
 
 /// Accept a Submitted bounty's result via a sponsored Tempo tx: the poster (only)
@@ -192,15 +190,16 @@ pub async fn accept_result_sponsored(
     bounty_id: u64,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: call_uint_bytes("acceptResult(uint256)", bounty_id),
-    };
     // status flip (1 SSTORE) + the payout `transfer` (cold token balances) +
     // event. Mirror the redeem/accept-invite payout budget for headroom.
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 2_000_000).await
+    sponsored_diamond_call(
+        sender,
+        fee_payer,
+        call_uint_bytes("acceptResult(uint256)", bounty_id),
+        fee_token,
+        2_000_000,
+    )
+    .await
 }
 
 /// Cancel a bounty via a sponsored Tempo tx: the poster (only) calls
@@ -212,14 +211,15 @@ pub async fn cancel_bounty_sponsored(
     bounty_id: u64,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: call_uint_bytes("cancelBounty(uint256)", bounty_id),
-    };
     // status flip + the refund `transfer` + event.
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 600_000).await
+    sponsored_diamond_call(
+        sender,
+        fee_payer,
+        call_uint_bytes("cancelBounty(uint256)", bounty_id),
+        fee_token,
+        600_000,
+    )
+    .await
 }
 
 /// Reclaim an expired, unaccepted bounty via a sponsored Tempo tx:
@@ -231,14 +231,15 @@ pub async fn reclaim_expired_sponsored(
     bounty_id: u64,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: call_uint_bytes("reclaimExpired(uint256)", bounty_id),
-    };
     // status flip + the refund `transfer` + event.
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 600_000).await
+    sponsored_diamond_call(
+        sender,
+        fee_payer,
+        call_uint_bytes("reclaimExpired(uint256)", bounty_id),
+        fee_token,
+        600_000,
+    )
+    .await
 }
 
 /// Read `openBounties(uint256 startAfter, uint256 limit)` → `(uint256[] ids,

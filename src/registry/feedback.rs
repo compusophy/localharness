@@ -38,14 +38,8 @@ pub async fn submit_feedback_sponsored(
     text: &str,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond = parse_eth_address(REGISTRY_ADDRESS)?;
-    let call = crate::tempo_tx::TempoCall {
-        to: diamond,
-        value_wei: 0,
-        input: encode_submit_feedback(text),
-    };
     let gas = 1_500_000u128 + (text.len() as u128) * 9_000;
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, gas).await
+    sponsored_diamond_call(sender, fee_payer, encode_submit_feedback(text), fee_token, gas).await
 }
 
 /// Read recent `FeedbackSubmitted(address indexed sender, uint256

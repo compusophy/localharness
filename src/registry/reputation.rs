@@ -46,16 +46,18 @@ pub async fn attest_sponsored(
     work_ref: [u8; 32],
     fee_token: &str,
 ) -> Result<String, String> {
-    let call = crate::tempo_tx::TempoCall {
-        to: parse_eth_address(REGISTRY_ADDRESS)?,
-        value_wei: 0,
-        input: encode_attest(subject_token_id, rating, &work_ref),
-    };
     // One struct push (attester/rating/workRef) into the subject's enumerable
     // list + two counter SSTOREs (count, sum) + an event. The FIRST attestation to a
     // subject writes all-COLD storage (the array + both counters + the dedup slot,
     // never-touched) so 600k OOG'd live — bump to 2M (over-budget is free, billed on USED).
-    submit_tempo_sponsored(attester_signer, fee_payer, vec![call], fee_token, 2_000_000).await
+    sponsored_diamond_call(
+        attester_signer,
+        fee_payer,
+        encode_attest(subject_token_id, rating, &work_ref),
+        fee_token,
+        2_000_000,
+    )
+    .await
 }
 
 /// Read `reputationOf(uint256 tokenId)` → `(attestationCount, ratingSum)`. Both

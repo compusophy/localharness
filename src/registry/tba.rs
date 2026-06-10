@@ -44,32 +44,16 @@ pub async fn register_main_sponsored(
     token_id: u64,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let token_addr = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
-
     let cost = main_cost().await.unwrap_or(0);
-
-    let main_call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: encode_register_main(token_id),
-    };
-
-    let calls = if cost > 0 {
-        let approve_call = crate::tempo_tx::TempoCall {
-            to: token_addr,
-            value_wei: 0,
-            input: encode_approve(&diamond_addr, cost),
-        };
-        vec![approve_call, main_call]
-    } else {
-        vec![main_call]
-    };
-
+    let input = encode_register_main(token_id);
     // registerMain inner: storage write + event (~50k). +approve
     // (~50k) + transferFrom (~30k) when cost > 0. + ~275k Tempo
     // sponsorship. 700k gives headroom either way.
-    submit_tempo_sponsored(sender, fee_payer, calls, fee_token, 700_000).await
+    if cost > 0 {
+        sponsored_escrow_diamond_call(sender, fee_payer, cost, input, fee_token, 700_000).await
+    } else {
+        sponsored_diamond_call(sender, fee_payer, input, fee_token, 700_000).await
+    }
 }
 
 pub(crate) fn encode_register_main(token_id: u64) -> Vec<u8> {
@@ -321,16 +305,11 @@ pub async fn release_name_sponsored(
     token_id: u64,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: encode_release_name(token_id),
-    };
     // 1M, not a flat 400k: a name burn runs ~375-425k all-in (cold-slot clears
     // + ~275k sponsorship), so 400k OOG-reverted while the UI reported success.
     // Over-budget is free — the sponsor pays gas USED, not the limit.
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 1_000_000).await
+    sponsored_diamond_call(sender, fee_payer, encode_release_name(token_id), fee_token, 1_000_000)
+        .await
 }
 
 /// Batch-release (burn) several names in ONE sponsored tx. `sender` must
@@ -430,14 +409,9 @@ pub async fn announce_pairing_sponsored(
     input.extend_from_slice(&u256_be(pubkey.len() as u128));
     input.extend_from_slice(pubkey);
     input.resize(4 + 32 + 32 + 32 + padded, 0);
-    let call = crate::tempo_tx::TempoCall {
-        to: parse_eth_address(REGISTRY_ADDRESS)?,
-        value_wei: 0,
-        input,
-    };
     // announcePairing inner is one event emit (~30k). Plus ~275k Tempo
     // sponsorship overhead.
-    submit_tempo_sponsored(device, fee_payer, vec![call], fee_token, 450_000).await
+    sponsored_diamond_call(device, fee_payer, input, fee_token, 450_000).await
 }
 
 /// Desktop side. Poll for a `PairingAnnounced` log matching `code_hash`
@@ -568,13 +542,8 @@ pub async fn set_device_wrapped_key_sponsored(
     input.extend_from_slice(&u256_be(len as u128));
     input.extend_from_slice(blob);
     input.resize(4 + 96 + 32 + padded, 0);
-    let call = crate::tempo_tx::TempoCall {
-        to: parse_eth_address(REGISTRY_ADDRESS)?,
-        value_wei: 0,
-        input,
-    };
     let words = (padded / 32 + 4) as u128;
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 1_200_000 + words * 40_000).await
+    sponsored_diamond_call(sender, fee_payer, input, fee_token, 1_200_000 + words * 40_000).await
 }
 
 // --- Registration cost (LocalharnessRegistryFacet on the diamond) ---
@@ -748,13 +717,7 @@ pub async fn tba_execute_call_sponsored(
     data: &[u8],
     fee_token: &str,
 ) -> Result<String, String> {
-    let tba = parse_eth_address(tba_addr)?;
     let target = parse_eth_address(to)?;
-    let execute_call = crate::tempo_tx::TempoCall {
-        to: tba,
-        value_wei: 0,
-        input: encode_tba_execute(&target, value_wei, data),
-    };
     // execute (~30k) + the inner call + Tempo sponsorship (~275k). The inner
     // call varies WIDELY: an ERC-20 transfer ~52k, a vote ~80k, but a GUILD
     // JOIN (`acceptGuildInvite` — cold roster + `guildsOf` enumerable pushes +
@@ -764,10 +727,11 @@ pub async fn tba_execute_call_sponsored(
     // call with headroom; the sponsor is billed on gas USED, not the limit, so
     // the headroom is free. The cold first-deploy cost lives in
     // create_token_bound_account_sponsored (a separate tx).
-    submit_tempo_sponsored(
+    sponsored_call_to(
         owner_signer,
         fee_payer,
-        vec![execute_call],
+        tba_addr,
+        encode_tba_execute(&target, value_wei, data),
         fee_token,
         2_000_000,
     )
@@ -787,13 +751,14 @@ pub async fn create_token_bound_account_sponsored(
     token_id: u64,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond = parse_eth_address(REGISTRY_ADDRESS)?;
-    let create_call = crate::tempo_tx::TempoCall {
-        to: diamond,
-        value_wei: 0,
-        input: encode_create_tba(token_id),
-    };
-    submit_tempo_sponsored(owner_signer, fee_payer, vec![create_call], fee_token, 1_200_000).await
+    sponsored_diamond_call(
+        owner_signer,
+        fee_payer,
+        encode_create_tba(token_id),
+        fee_token,
+        1_200_000,
+    )
+    .await
 }
 
 /// Make a TBA send `$LH` — `execute($LH_token, 0, transfer(recipient, amount))`
@@ -931,44 +896,22 @@ pub async fn claim_and_maybe_set_main_sponsored(
     name: &str,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let token_addr = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
-
     let cost = registration_cost().await.unwrap_or(0);
-
     let register_input = hex_to_bytes(&encode_register(name))?;
-    let register_call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: register_input,
-    };
 
-    let calls = if cost > 0 {
-        let approve_call = crate::tempo_tx::TempoCall {
-            to: token_addr,
-            value_wei: 0,
-            input: encode_approve(&diamond_addr, cost),
-        };
-        vec![approve_call, register_call]
+    // `eth_estimateGas` on `register(name)` against the live diamond
+    // reports ~1.32M gas for the inner call (ERC-721 mint + storage
+    // writes + counterfactual TBA address derivation). Sponsorship
+    // (fee_payer recovery + AlphaUSD transfer) adds ~275k. The
+    // approve+transferFrom pair adds ~80k. Budget 2.2M for
+    // headroom; sponsor pays in AlphaUSD and only consumed gas is
+    // debited, so over-budgeting is free.
+    let tx_hash = if cost > 0 {
+        sponsored_escrow_diamond_call(sender, fee_payer, cost, register_input, fee_token, 2_200_000)
+            .await?
     } else {
-        vec![register_call]
+        sponsored_diamond_call(sender, fee_payer, register_input, fee_token, 2_200_000).await?
     };
-
-    let tx_hash = submit_tempo_sponsored(
-        sender,
-        fee_payer,
-        calls,
-        fee_token,
-        // `eth_estimateGas` on `register(name)` against the live diamond
-        // reports ~1.32M gas for the inner call (ERC-721 mint + storage
-        // writes + counterfactual TBA address derivation). Sponsorship
-        // (fee_payer recovery + AlphaUSD transfer) adds ~275k. The
-        // approve+transferFrom pair adds ~80k. Budget 2.2M for
-        // headroom; sponsor pays in AlphaUSD and only consumed gas is
-        // debited, so over-budgeting is free.
-        2_200_000,
-    )
-    .await?;
 
     // After register, fetch the new tokenId and set MAIN if none.
     let sender_addr = address_to_hex(&wallet::address(sender));

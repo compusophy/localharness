@@ -14,14 +14,10 @@ pub async fn claim_daily_sponsored(
     fee_payer: &SigningKey,
     fee_token: &str,
 ) -> Result<String, String> {
-    let call = crate::tempo_tx::TempoCall {
-        to: parse_eth_address(REGISTRY_ADDRESS)?,
-        value_wei: 0,
-        input: selector("claimDaily()").to_vec(),
-    };
     // claimDaily inner: a single SSTORE + mint (token Transfer event +
     // memo event) — ~120k. Plus ~275k Tempo sponsorship overhead.
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 600_000).await
+    sponsored_diamond_call(sender, fee_payer, selector("claimDaily()").to_vec(), fee_token, 600_000)
+        .await
 }
 
 /// `eth_call canClaim(account)` — true iff `account` is eligible to
@@ -95,18 +91,12 @@ pub async fn redeem_sponsored(
     code: &str,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: encode_redeem(code),
-    };
     // redeem mints on the credits token (cold balanceOf + totalSupply
     // SSTOREs, AccessControl role checks, memo event) plus the claimed-flag
     // SSTORE — empirically ~1.07M inner, NOT the ~120k first assumed (a 600k
     // limit silently out-of-gassed every redeem). Plus ~275k sponsorship.
     // 2M gives headroom; sponsor is billed on gas used, not the limit.
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 2_000_000).await
+    sponsored_diamond_call(sender, fee_payer, encode_redeem(code), fee_token, 2_000_000).await
 }
 
 /// Read `sessionExpiryOf(address)` — unix-seconds expiry of the
@@ -135,31 +125,15 @@ pub async fn open_session_sponsored(
     fee_payer: &SigningKey,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let token_addr = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
-
     let price = session_price().await.unwrap_or(0);
-
-    let open_call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: selector("openSession()").to_vec(),
-    };
-
-    let calls = if price > 0 {
-        let approve_call = crate::tempo_tx::TempoCall {
-            to: token_addr,
-            value_wei: 0,
-            input: encode_approve(&diamond_addr, price),
-        };
-        vec![approve_call, open_call]
-    } else {
-        vec![open_call]
-    };
-
+    let input = selector("openSession()").to_vec();
     // approve (~46k) + openSession (transferFrom + 1 SSTORE + event,
     // ~90k) + ~275k sponsorship. 600k headroom.
-    submit_tempo_sponsored(sender, fee_payer, calls, fee_token, 600_000).await
+    if price > 0 {
+        sponsored_escrow_diamond_call(sender, fee_payer, price, input, fee_token, 600_000).await
+    } else {
+        sponsored_diamond_call(sender, fee_payer, input, fee_token, 600_000).await
+    }
 }
 
 pub(crate) fn encode_deposit_credits(amount_wei: u128) -> Vec<u8> {
@@ -186,23 +160,18 @@ pub async fn deposit_credits_sponsored(
     amount_wei: u128,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let token_addr = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
-    let approve_call = crate::tempo_tx::TempoCall {
-        to: token_addr,
-        value_wei: 0,
-        input: encode_approve(&diamond_addr, amount_wei),
-    };
-    let deposit_call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: encode_deposit_credits(amount_wei),
-    };
     // approve + transferFrom (pull $LH into the diamond) + cold meter-
     // balance SSTORE + event. Like redeem, comfortably more than the old
     // 600k once cold SSTOREs are counted — 1.5M gives headroom.
-    submit_tempo_sponsored(sender, fee_payer, vec![approve_call, deposit_call], fee_token, 1_500_000)
-        .await
+    sponsored_escrow_diamond_call(
+        sender,
+        fee_payer,
+        amount_wei,
+        encode_deposit_credits(amount_wei),
+        fee_token,
+        1_500_000,
+    )
+    .await
 }
 
 /// `eth_call allowance(owner, spender)` on [`LOCALHARNESS_TOKEN_ADDRESS`] —
@@ -234,16 +203,18 @@ pub async fn approve_lh_sponsored(
     amount_wei: u128,
     fee_token: &str,
 ) -> Result<String, String> {
-    let token_addr = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
     let spender = parse_eth_address(spender_hex)?;
-    let approve_call = crate::tempo_tx::TempoCall {
-        to: token_addr,
-        value_wei: 0,
-        input: encode_approve(&spender, amount_wei),
-    };
     // approve is a single SSTORE (cold the first time) + event. 300k is
     // ample headroom on top of the AA-settlement overhead.
-    submit_tempo_sponsored(sender, fee_payer, vec![approve_call], fee_token, 300_000).await
+    sponsored_call_to(
+        sender,
+        fee_payer,
+        LOCALHARNESS_TOKEN_ADDRESS,
+        encode_approve(&spender, amount_wei),
+        fee_token,
+        300_000,
+    )
+    .await
 }
 
 /// Transfer `amount_wei` `$LH` from `sender` to `to_hex` as a sponsored Tempo tx
@@ -257,14 +228,16 @@ pub async fn transfer_lh_sponsored(
     amount_wei: u128,
     fee_token: &str,
 ) -> Result<String, String> {
-    let token_addr = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
     let to = parse_eth_address(to_hex)?;
-    let transfer_call = crate::tempo_tx::TempoCall {
-        to: token_addr,
-        value_wei: 0,
-        input: encode_transfer(&to, amount_wei),
-    };
-    submit_tempo_sponsored(sender, fee_payer, vec![transfer_call], fee_token, 300_000).await
+    sponsored_call_to(
+        sender,
+        fee_payer,
+        LOCALHARNESS_TOKEN_ADDRESS,
+        encode_transfer(&to, amount_wei),
+        fee_token,
+        300_000,
+    )
+    .await
 }
 
 

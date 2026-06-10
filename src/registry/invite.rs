@@ -76,25 +76,20 @@ pub async fn create_invite_sponsored(
     ttl_secs: u64,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let token_addr = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
-    let approve_call = crate::tempo_tx::TempoCall {
-        to: token_addr,
-        value_wei: 0,
-        input: encode_approve(&diamond_addr, amount_wei),
-    };
-    let create_call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: encode_create_invite(&code_hash, amount_wei, ttl_secs),
-    };
     // approve (~46k) + createInvite (transferFrom pull + the invite struct's TWO
     // cold SSTOREs + the `escrowedOf` SSTORE + event) + ~275k sponsorship. These
     // are cold writes (CLAUDE.md "cold SSTOREs dominate; never guess — cast
     // estimate"); budget generously at 2.5M. The sponsor is billed on gas USED,
     // not the limit, so over-budgeting is free.
-    submit_tempo_sponsored(sender, fee_payer, vec![approve_call, create_call], fee_token, 2_500_000)
-        .await
+    sponsored_escrow_diamond_call(
+        sender,
+        fee_payer,
+        amount_wei,
+        encode_create_invite(&code_hash, amount_wei, ttl_secs),
+        fee_token,
+        2_500_000,
+    )
+    .await
 }
 
 /// Accept an invite via a sponsored Tempo tx: `acceptInvite(code)` pays the
@@ -108,16 +103,11 @@ pub async fn accept_invite_sponsored(
     code: &str,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: encode_accept_invite(code),
-    };
     // status flip (1 SSTORE) + the payout `transfer` + `escrowedOf` decrement +
     // event — cheaper than create. Mirror redeem's mint-path budget for
     // headroom (cold token-balance SSTOREs on the payout).
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 2_000_000).await
+    sponsored_diamond_call(sender, fee_payer, encode_accept_invite(code), fee_token, 2_000_000)
+        .await
 }
 
 /// Reclaim an expired, unclaimed invite via a sponsored Tempo tx:
@@ -131,14 +121,15 @@ pub async fn reclaim_invite_sponsored(
     code_hash: [u8; 32],
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: encode_reclaim_invite(&code_hash),
-    };
     // status flip + the refund `transfer` + `escrowedOf` decrement + event.
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 600_000).await
+    sponsored_diamond_call(
+        sender,
+        fee_payer,
+        encode_reclaim_invite(&code_hash),
+        fee_token,
+        600_000,
+    )
+    .await
 }
 
 /// Read `escrowedOf(address)` — total `$LH` (18-decimal wei) the funder

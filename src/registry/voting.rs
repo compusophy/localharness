@@ -132,19 +132,20 @@ pub async fn propose_sponsored(
     voting_period_secs: u64,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
     let to = parse_eth_address(to_hex)?;
-    let call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: encode_propose(guild_id, &to, amount_wei, memo, voting_period_secs),
-    };
     // The proposal struct's cold SSTOREs (3 packed scalar slots + the
     // proposalsOfGuild enumerable push) + the cold `memo` bytes (~9k/byte) +
     // event + ~275k sponsorship. Measured: cast estimate propose ~= 2.35M, so a 2M
     // base OOG'd live — bump to 3M (sponsor billed on gas USED, headroom is free).
     let gas = 3_000_000 + (memo.len() as u128) * 9_000;
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, gas).await
+    sponsored_diamond_call(
+        sender,
+        fee_payer,
+        encode_propose(guild_id, &to, amount_wei, memo, voting_period_secs),
+        fee_token,
+        gas,
+    )
+    .await
 }
 
 /// Cast one ballot on an Active proposal via a sponsored Tempo tx
@@ -158,15 +159,16 @@ pub async fn vote_sponsored(
     support: bool,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: encode_vote(proposal_id, support),
-    };
     // voted-flag SSTORE + the forVotes/againstVotes tally bump + event. 800k for
     // headroom (the propose/createGuild OOGs showed estimates run high; free on USED).
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 800_000).await
+    sponsored_diamond_call(
+        sender,
+        fee_payer,
+        encode_vote(proposal_id, support),
+        fee_token,
+        800_000,
+    )
+    .await
 }
 
 /// Resolve a proposal after its voting period ends via a sponsored Tempo tx
@@ -181,16 +183,17 @@ pub async fn execute_proposal_sponsored(
     proposal_id: u64,
     fee_token: &str,
 ) -> Result<String, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let call = crate::tempo_tx::TempoCall {
-        to: diamond_addr,
-        value_wei: 0,
-        input: call_uint_bytes("execute(uint256)", proposal_id),
-    };
     // status flip (1 SSTORE) + on the PASS path the treasury debit + payout
     // `transfer` (cold token balances) + event. Mirror the accept-result /
     // payout budget for headroom (sponsor billed on gas USED).
-    submit_tempo_sponsored(sender, fee_payer, vec![call], fee_token, 3_000_000).await
+    sponsored_diamond_call(
+        sender,
+        fee_payer,
+        call_uint_bytes("execute(uint256)", proposal_id),
+        fee_token,
+        3_000_000,
+    )
+    .await
 }
 
 /// Read `getProposal(uint256)` → the full [`Proposal`] record. The returned
