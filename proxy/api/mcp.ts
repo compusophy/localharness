@@ -1252,6 +1252,49 @@ async function handleAskAgent(
   };
 }
 
+// ---- body reading (size-capped; canonical sibling in gemini.ts) ------------
+
+/** Thrown by `readTextCapped` when the streamed body exceeds `MAX_BODY_BYTES`. */
+class BodyTooLargeError extends Error {}
+
+/**
+ * Read a request body to a string, ABORTING past `MAX_BODY_BYTES`. The
+ * up-front `Content-Length` check is advisory only — a chunked request (no
+ * declared length) bypasses it, so without this a caller could stream an
+ * unbounded body into the Edge function's memory BEFORE we ever reach the
+ * auth/x402 gate (the JSON-RPC envelope must be parsed first to know the
+ * method). This streams the reader and throws the moment the running total
+ * crosses the cap, so the buffer can never exceed it regardless of headers.
+ * Copied from gemini.ts (the canonical sibling — the two files deliberately
+ * share patterns this way); fix bugs in BOTH.
+ */
+async function readTextCapped(req: Request): Promise<string> {
+  const body = req.body;
+  if (!body) return '';
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      total += value.length;
+      if (total > MAX_BODY_BYTES) {
+        await reader.cancel().catch(() => {});
+        throw new BodyTooLargeError('request body too large');
+      }
+      chunks.push(value);
+    }
+  }
+  const merged = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    merged.set(c, off);
+    off += c.length;
+  }
+  return new TextDecoder().decode(merged);
+}
+
 // ---- handler ---------------------------------------------------------------
 
 export default async function handler(req: Request): Promise<Response> {
@@ -1266,6 +1309,8 @@ export default async function handler(req: Request): Promise<Response> {
       headers: { 'content-type': 'application/json', ...corsHeaders(origin) },
     });
   }
+  // Advisory only — a chunked body declares no Content-Length; the real
+  // guard is `readTextCapped` below.
   const declaredLen = Number(req.headers.get('content-length') ?? '0');
   if (Number.isFinite(declaredLen) && declaredLen > MAX_BODY_BYTES) {
     return new Response(JSON.stringify({ error: 'request body too large' }), {
@@ -1282,8 +1327,11 @@ export default async function handler(req: Request): Promise<Response> {
 
   let rpc: JsonRpcReq;
   try {
-    rpc = (await req.json()) as JsonRpcReq;
-  } catch {
+    rpc = JSON.parse(await readTextCapped(req)) as JsonRpcReq;
+  } catch (e) {
+    if (e instanceof BodyTooLargeError) {
+      return respond({ error: 'request body too large' }, 413);
+    }
     return respond(
       { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error: invalid JSON' } },
       200,
