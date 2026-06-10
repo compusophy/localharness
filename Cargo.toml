@@ -339,3 +339,11 @@ panic = "abort"
 # on a moving toolchain target.
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false
+
+# docs.rs builds DEFAULT features unless told otherwise — which hid the
+# entire feature-gated platform surface (wallet/registry + the Anthropic
+# backend) from the published docs through 0.31.0. browser-app is
+# wasm32-only chrome and `local` pulls the heavy Burn stack; neither adds
+# documentable API on docs.rs's native builder, so neither is enabled.
+[package.metadata.docs.rs]
+features = ["wallet", "anthropic"]
