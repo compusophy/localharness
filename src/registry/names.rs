@@ -1,7 +1,4 @@
 use k256::ecdsa::SigningKey;
-use sha3::{Digest, Keccak256};
-
-use crate::wallet;
 
 use super::*;
 
@@ -653,96 +650,11 @@ pub fn proxy_auth_token(signer: &SigningKey, now_secs: u64) -> String {
     format!("{addr}:{now_secs}:0x{}", bytes_to_hex(&sig))
 }
 
-/// Register `name` on the contract under the given signer's address.
-/// Returns the transaction hash once it's been included in a block.
-/// The wallet needs testnet TMP for gas — the apex page is expected
-/// to faucet-fund it on first claim attempt.
-pub async fn claim_name(signer: &SigningKey, name: &str) -> Result<String, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Err("registry not deployed".into());
-    }
-    let from = wallet::address(signer);
-    let from_hex = address_to_hex(&from);
-
-    // Pull live tx parameters in parallel-ish (they're cheap reads).
-    let nonce = eth_get_transaction_count(&from_hex).await?;
-    let gas_price = eth_gas_price().await?;
-    let calldata_hex = encode_register(name);
-    let gas_limit = eth_estimate_gas(&from_hex, REGISTRY_ADDRESS, &calldata_hex).await?;
-
-    // EIP-155 legacy tx: keccak the unsigned RLP, sign, RLP the
-    // signed envelope. v = chain_id*2 + 35 + recoveryId.
-    let calldata_bytes = hex_to_bytes(&calldata_hex)?;
-    let unsigned = rlp_legacy_unsigned(
-        nonce,
-        gas_price,
-        gas_limit,
-        REGISTRY_ADDRESS,
-        0,
-        &calldata_bytes,
-        CHAIN_ID,
-    )?;
-    let mut hasher = Keccak256::new();
-    hasher.update(&unsigned);
-    let mut prehash = [0u8; 32];
-    prehash.copy_from_slice(&hasher.finalize());
-
-    let sig = wallet::sign_hash(signer, &prehash);
-    let r = &sig[..32];
-    let s = &sig[32..64];
-    // sig[64] is 27 + recoveryId in our wallet's output; lift it back
-    // to a 0/1 recovery id for EIP-155 v derivation.
-    let rec_id = (sig[64] - 27) as u64;
-    let v = CHAIN_ID * 2 + 35 + rec_id;
-
-    let signed = rlp_legacy_signed(
-        nonce,
-        gas_price,
-        gas_limit,
-        REGISTRY_ADDRESS,
-        0,
-        &calldata_bytes,
-        v,
-        r,
-        s,
-    )?;
-    let raw_hex = format!("0x{}", bytes_to_hex(&signed));
-
-    let tx_hash = eth_send_raw_transaction(&raw_hex).await?;
-    // Wait for the receipt — claim should be confirmed before the
-    // UI navigates the user away.
-    wait_for_receipt(&tx_hash).await?;
-    Ok(tx_hash)
-}
-
-/// Best-effort: hit the Tempo `tempo_fundAddress` faucet for the
-/// supplied address. The faucet returns the funding tx hashes on
-/// success. Bundled here because the apex claim flow uses it
-/// pre-emptively before a brand-new wallet tries to send its first tx.
-pub async fn request_faucet_funds(address_hex: &str) -> Result<(), String> {
-    let body = RpcRequest {
-        jsonrpc: "2.0",
-        id: 1,
-        method: "tempo_fundAddress",
-        params: serde_json::json!([address_hex]),
-    };
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(RPC_URL)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("faucet send: {e}"))?;
-    let parsed: RpcResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("faucet decode: {e}"))?;
-    if let Some(err) = parsed.error {
-        return Err(format!("faucet: {}", err.message));
-    }
-    Ok(())
-}
-
+// `claim_name` (the legacy SELF-PAID EIP-155 register) and
+// `request_faucet_funds` (the Tempo native-gas faucet it depended on) were
+// removed as dead code — every live claim path is the SPONSORED Tempo flow
+// (`claim_and_maybe_set_main_sponsored`), where the user holds zero of
+// anything.
 
 #[cfg(test)]
 mod tests {

@@ -65,13 +65,10 @@ pub const REGISTRY_ADDRESS: &str = "0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c";
 /// Tempo Moderato chain id — used in EIP-155 v computation.
 pub const CHAIN_ID: u64 = 42431;
 
-/// `BootstrapFaucet.sol` — DORMANT. Deployed at
-/// `0xA439c7C31fa8DeD94d90D3fD3958438A4876dc0f` but unusable on
-/// Tempo Moderato because the chain refuses EOA↔contract native
-/// value transfers ("value transfer not allowed"). Kept as a
-/// historical breadcrumb; all distribution flows through
-/// [`LOCALHARNESS_TOKEN_ADDRESS`] now.
-pub const BOOTSTRAP_FAUCET_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
+// `BOOTSTRAP_FAUCET_ADDRESS` (the dormant BootstrapFaucet.sol breadcrumb —
+// unusable on Tempo Moderato, which refuses EOA↔contract native value
+// transfers) was removed as dead code; all distribution flows through
+// [`LOCALHARNESS_TOKEN_ADDRESS`].
 
 /// `LocalharnessCredits` — TIP-20-shaped credit token (currency =
 /// "credits", explicitly NOT USD so it's NOT fee-token-eligible).

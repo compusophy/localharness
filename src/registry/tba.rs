@@ -21,14 +21,10 @@ pub async fn main_of(holder_hex: &str) -> Result<u64, String> {
     decode_u256_as_u64(&result)
 }
 
-/// Sign + submit `MainIdentityFacet.registerMain(tokenId)`. Caller pays
-/// gas. Idempotent on-chain if the caller already has this tokenId as
-/// their MAIN; switches MAIN if they declare a different owned tokenId.
-pub async fn register_main(signer: &SigningKey, token_id: u64) -> Result<String, String> {
-    sign_and_submit_call(signer, REGISTRY_ADDRESS, 0, &encode_register_main(token_id)).await
-}
+// `register_main` (the legacy SELF-PAID variant) was removed as dead code —
+// the sponsored counterpart below is the only live MAIN-registration path.
 
-/// Sponsored counterpart to [`register_main`]. `sender` (the holder
+/// Sponsored `MainIdentityFacet.registerMain(tokenId)`. `sender` (the holder
 /// authorizing the MAIN change) signs the intent and needs zero balance;
 /// `fee_payer` pays the gas in `fee_token` (typically AlphaUSD). Use this
 /// from bundle paths where the user shouldn't need to hold native gas
@@ -851,35 +847,15 @@ pub(crate) fn encode_remove_signer(addr: &[u8; 20]) -> Vec<u8> {
     out
 }
 
-/// Convenience for the first-claim flow: register `name` on-chain, then
-/// IF the caller has no MAIN registered yet, set the newly-minted token
-/// as their MAIN in a second tx. Idempotent on the MAIN side — re-runs
-/// after the user already has a MAIN are a no-op. Errors on the MAIN
-/// leg are logged and swallowed (the name claim is what matters for
-/// correctness; the MAIN flag is an enhancement).
-pub async fn claim_and_maybe_set_main(
-    signer: &SigningKey,
-    name: &str,
-) -> Result<String, String> {
-    let tx_hash = claim_name(signer, name).await?;
-    let addr_hex = address_to_hex(&wallet::address(signer));
-    match main_of(&addr_hex).await {
-        Ok(0) => {
-            // No MAIN yet — find the freshly-minted token id and set it.
-            if let Ok(Status::Taken { agent_id }) = check_name(name).await {
-                if let Err(err) = register_main(signer, agent_id).await {
-                    log_main_warning(&err);
-                }
-            }
-        }
-        Ok(_) => {} // already has a MAIN; leave it alone
-        Err(err) => log_main_warning(&err),
-    }
-    Ok(tx_hash)
-}
+// `claim_and_maybe_set_main` (the legacy SELF-PAID first-claim) was removed
+// as dead code together with `claim_name` — the sponsored flow below is the
+// only live first-claim path.
 
-/// Same as `claim_and_maybe_set_main` but uses Tempo's sponsored-tx
-/// flow: the `sender` signs the intent (and needs zero balance);
+/// First-claim convenience over Tempo's sponsored-tx flow: register `name`
+/// on-chain, then IF the caller has no MAIN registered yet, set the
+/// newly-minted token as their MAIN in a second tx (errors on the MAIN leg
+/// are logged and swallowed — the claim is what matters for correctness).
+/// The `sender` signs the intent (and needs zero balance);
 /// `fee_payer` signs to cover gas in `fee_token` (typically AlphaUSD).
 /// This is what the bundle uses for first-claim onboarding — the user
 /// who just visited the page can claim a subdomain without holding
@@ -928,56 +904,9 @@ pub async fn claim_and_maybe_set_main_sponsored(
 }
 
 
-/// Get the list of authorized signers for a TBA by reading
-/// SignerAdded / SignerRemoved events and computing the current set.
-pub async fn tba_signers(tba_hex: &str) -> Result<Vec<String>, String> {
-    use sha3::{Digest, Keccak256};
-
-    let added_topic = format!("0x{}", bytes_to_hex(
-        &Keccak256::digest(b"SignerAdded(address,address)")
-    ));
-    let removed_topic = format!("0x{}", bytes_to_hex(
-        &Keccak256::digest(b"SignerRemoved(address,address)")
-    ));
-
-    // DEPRECATED: log-scraping signers is wrong (and Tempo caps
-    // eth_getLogs at 100k blocks anyway). Use `devices_of` — the on-chain
-    // enumerable index in DeviceRegistryFacet — read in a single call.
-    let added_logs = eth_get_logs(
-        tba_hex,
-        vec![serde_json::json!(added_topic)],
-        "0x0",
-    ).await.unwrap_or_default();
-
-    let removed_logs = eth_get_logs(
-        tba_hex,
-        vec![serde_json::json!(removed_topic)],
-        "0x0",
-    ).await.unwrap_or_default();
-
-    let mut signers = std::collections::HashSet::new();
-
-    for log in &added_logs {
-        if let Some(topics) = log.get("topics").and_then(|t| t.as_array()) {
-            // topic[1] = indexed signer address (32 bytes, address in last 20)
-            if let Some(topic) = topics.get(1).and_then(|t| t.as_str()) {
-                let addr = format!("0x{}", &topic.trim_start_matches("0x")[24..]);
-                signers.insert(addr.to_lowercase());
-            }
-        }
-    }
-
-    for log in &removed_logs {
-        if let Some(topics) = log.get("topics").and_then(|t| t.as_array()) {
-            if let Some(topic) = topics.get(1).and_then(|t| t.as_str()) {
-                let addr = format!("0x{}", &topic.trim_start_matches("0x")[24..]);
-                signers.remove(&addr.to_lowercase());
-            }
-        }
-    }
-
-    Ok(signers.into_iter().collect())
-}
+// `tba_signers` (deprecated SignerAdded/SignerRemoved log-scraping — Tempo
+// caps eth_getLogs at 100k blocks) was removed as dead code; `devices_of`
+// reads the DeviceRegistryFacet's enumerable index in ONE call instead.
 
 #[cfg(test)]
 mod tests {

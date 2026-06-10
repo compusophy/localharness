@@ -287,16 +287,9 @@ pub(crate) async fn eth_gas_price() -> Result<u128, String> {
     parse_hex_quantity(&hex)
 }
 
-pub(crate) async fn eth_estimate_gas(from: &str, to: &str, data_hex: &str) -> Result<u128, String> {
-    let hex = rpc(
-        "eth_estimateGas",
-        serde_json::json!([{ "from": from, "to": to, "data": data_hex }]),
-    )
-    .await?;
-    // Add a 25% buffer so we don't get caught by gas-estimation jitter.
-    let estimate = parse_hex_quantity(&hex)?;
-    Ok(estimate + estimate / 4)
-}
+// `eth_estimate_gas` was removed with the legacy self-paid lineage (its only
+// callers): sponsored Tempo writes carry explicit, per-facet gas budgets
+// (see the CLAUDE.md "cast estimate, never guess" gotcha).
 
 pub(crate) async fn eth_send_raw_transaction(raw_hex: &str) -> Result<String, String> {
     match rpc("eth_sendRawTransaction", serde_json::json!([raw_hex])).await {
