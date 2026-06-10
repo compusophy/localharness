@@ -77,6 +77,11 @@ pub struct TypedBlock {
     pub ty: ResolvedType,
 }
 
+// Variants carry whole `TypedExpr`s of differing arity (`Assign` holds two,
+// `Return` an `Option`), so their sizes differ. Boxing to equalize would force
+// a Box at every construction + match site across the codegen pass for no real
+// gain — rustlite programs are tiny, so the per-stmt slack is irrelevant.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum TypedStmt {
     Let { name: String, mutable: bool, ty: ResolvedType, init: TypedExpr },

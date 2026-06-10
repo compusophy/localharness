@@ -639,10 +639,10 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
     // device has no master seed anywhere (a linked device acting via a
     // device key): the apex side returns `seed_import=none` and the studio
     // paints with the device key — at most one guarded redirect.
-    if APP.with(|cell| cell.borrow().wallet.is_none()) {
-        if seed_pull::maybe_auto_kick(&name).await {
-            return; // navigating to the apex round-trip; it re-enters paint_tenant
-        }
+    if APP.with(|cell| cell.borrow().wallet.is_none())
+        && seed_pull::maybe_auto_kick(&name).await
+    {
+        return; // navigating to the apex round-trip; it re-enters paint_tenant
     }
 
     // Paint the Studio — we own this name on this device (or a deliberate

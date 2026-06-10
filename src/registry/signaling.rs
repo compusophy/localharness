@@ -40,7 +40,7 @@ pub(crate) fn push_abi_bytes(d: &mut Vec<u8>, bytes: &[u8]) {
     d.extend_from_slice(&u256_be(bytes.len() as u128));
     d.extend_from_slice(bytes);
     let pad = (32 - (bytes.len() % 32)) % 32;
-    d.extend(std::iter::repeat(0u8).take(pad));
+    d.extend(std::iter::repeat_n(0u8, pad));
 }
 
 /// The 32-byte digest the OWNER signs to authorize an `announce`:
@@ -72,7 +72,7 @@ pub(crate) fn encode_announce(
     // 5 head words = 0xa0 bytes before the first dynamic payload.
     d.extend_from_slice(&u256_be(0xa0)); // offset to `pubkey`
     // pubkey tail = len word + padded data; sig follows it.
-    let pubkey_tail = 32 + ((pubkey.len() + 31) / 32) * 32;
+    let pubkey_tail = 32 + pubkey.len().div_ceil(32) * 32;
     d.extend_from_slice(&u256_be((0xa0 + pubkey_tail) as u128)); // offset to `sig`
     push_abi_bytes(&mut d, pubkey);
     push_abi_bytes(&mut d, sig);

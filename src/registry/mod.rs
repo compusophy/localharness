@@ -84,6 +84,13 @@ pub const CHAIN_ID: u64 = 42431;
 /// name: "localharness credits", symbol: "LH", decimals: 18.
 pub const LOCALHARNESS_TOKEN_ADDRESS: &str = "0x90B84c7234Aae89BadA7f69160B9901B9bc37B17";
 
+// Shared test helpers re-exported for the facet submodules' own test mods. The
+// `use` precedes the module so `test_support` stays the file's LAST item (Rust
+// resolves the re-export regardless of order) — clippy's items-after-test-module
+// lint fires on anything declared after a `#[cfg(test)] mod`.
+#[cfg(test)]
+pub(crate) use test_support::*;
+
 #[cfg(test)]
 mod test_support {
     // ─── ABI dynamic-decode edge cases (untrusted RPC hex must never panic) ──
@@ -107,5 +114,3 @@ mod test_support {
         format!("{:048x}{:016x}", 0u64, u64::MAX)
     }
 }
-#[cfg(test)]
-pub(crate) use test_support::*;

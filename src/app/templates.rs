@@ -1943,6 +1943,7 @@ pub(crate) fn display_surface() -> Markup {
 /// aligned 1:1 with `siblings` (a short on-chain persona preview per agent,
 /// `None` when unset) — each sibling renders as a discoverable portfolio
 /// card: name + a truncated persona blurb, degrading to name-only.
+#[allow(clippy::too_many_arguments)] // a flat landing-page render; a struct would just be unpacked here
 pub(crate) fn public_landing(
     name: &str,
     owner: Option<&str>,

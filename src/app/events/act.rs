@@ -123,7 +123,7 @@ pub(super) fn agent_send_lh_pressed(token_id_str: String) {
             Err(err) => {
                 dom::swap_inner(
                     &msg_id,
-                    &dom::msg_span(dom::Msg::Error, &format!("{err}")),
+                    &dom::msg_span(dom::Msg::Error, &err.to_string()),
                 );
             }
         }

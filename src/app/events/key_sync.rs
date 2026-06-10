@@ -10,7 +10,7 @@ use crate::app::dom;
 /// can then `restore` it without re-pasting.
 pub(super) async fn run_sync_key() {
     let msg = "key-sync-msg";
-    let set_err = |m: &str| dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, &format!("{m}")));
+    let set_err = |m: &str| dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, m));
 
     let Some(name) = crate::app::tenant::current_name() else {
         set_err("only on a subdomain");
@@ -80,7 +80,7 @@ pub(super) async fn run_sync_key() {
 /// present on this device), and set it as the active Gemini key.
 pub(super) async fn run_restore_key() {
     let msg = "key-sync-msg";
-    let set_err = |m: &str| dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, &format!("{m}")));
+    let set_err = |m: &str| dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, m));
 
     let Some(name) = crate::app::tenant::current_name() else {
         set_err("only on a subdomain");

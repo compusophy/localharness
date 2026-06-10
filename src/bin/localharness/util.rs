@@ -126,6 +126,7 @@ pub(crate) fn load_signer_and_sponsor(
 ///      (the explicit "act as THIS subdomain" intent).
 ///   2. Else the caller's MAIN identity (`mainOf(address)`), their primary NFT.
 ///   3. Else their single owned token (if they hold exactly one).
+///
 /// A caller with NO registered identity can't claim — they must `create <name>`
 /// first (the reward needs an on-chain identity to be paid to).
 pub(crate) async fn resolve_own_token_id(

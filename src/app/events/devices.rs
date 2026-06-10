@@ -66,7 +66,7 @@ pub(super) async fn refresh_signer_list() {
 pub(super) fn pair_cancel_pressed() {
     dom::swap_outer(
         "pair-slot",
-        &r#"<div id="pair-slot" class="pair-slot"><button id="pair-btn" type="button" data-action="add-device" class="ghost">add a device</button></div>"#,
+        r#"<div id="pair-slot" class="pair-slot"><button id="pair-btn" type="button" data-action="add-device" class="ghost">add a device</button></div>"#,
     );
     dom::swap_inner("pair-msg", "");
 }

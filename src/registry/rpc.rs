@@ -406,6 +406,7 @@ pub(crate) fn decode_known_revert_coded(selector_bytes: [u8; 4]) -> Option<Strin
 ///     `require("...")` reason, e.g. "schedule: escrow failed" / "ERC20:
 ///     transfer amount exceeds balance" (an under-funded escrow);
 ///   - a known custom-error selector via `decode_known_revert`.
+///
 /// Returns `None` for empty/unrecognised data so the caller keeps the bare hash
 /// plus a generic hint. PURE — unit-tested.
 pub(crate) fn decode_revert_data(data: &[u8]) -> Option<String> {

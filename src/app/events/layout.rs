@@ -77,7 +77,7 @@ pub(super) fn pricing_save_pressed() {
         Err(err) => {
             dom::swap_inner(
                 "pricing-msg",
-                &dom::msg_span(dom::Msg::Error, &format!("{err}")),
+                &dom::msg_span(dom::Msg::Error, &err.to_string()),
             );
             return;
         }

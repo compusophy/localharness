@@ -110,6 +110,8 @@ struct CartridgeRuntime {
     draw_char: Closure<dyn FnMut(i32, i32, i32, i32, i32)>,
     draw_number: Closure<dyn FnMut(i32, i32, i32, i32, i32)>,
     draw_line: Closure<dyn FnMut(i32, i32, i32, i32, i32)>,
+    // host_display::fill_triangle's ABI is genuinely 7 i32s (x0,y0,x1,y1,x2,y2,z).
+    #[allow(clippy::type_complexity)]
     fill_triangle: Closure<dyn FnMut(i32, i32, i32, i32, i32, i32, i32)>,
     present: Closure<dyn FnMut()>,
     width: Closure<dyn FnMut() -> i32>,
@@ -510,6 +512,7 @@ fn build_host_display(
     // refactor); a composed child reads ITS OWN cells (`Local`), which the
     // compositor populates per frame, focus-gated, so a click in one panel
     // can't drive a sibling and each child keeps its own 64-slot register file.
+    #[allow(clippy::type_complexity)] // 5 distinct host-input closures bound at once
     let (pointer_x, pointer_y, pointer_down, state_get, state_set): (
         Closure<dyn FnMut() -> i32>,
         Closure<dyn FnMut() -> i32>,
@@ -1384,6 +1387,7 @@ mod net {
     ///     and it's cleartext exfil otherwise.
     ///   * host must not be empty, an IP literal, `localhost`, `*.localhost`,
     ///     or a `.local` mDNS name (no LAN / loopback reach).
+    ///
     /// This is a deliberately conservative allowlist-by-shape — public TLS
     /// endpoints only — matching the multiplayer/sync use case. (`design/
     /// host-compose.md` A4 tracked a per-child variant; this lands the base

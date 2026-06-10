@@ -193,7 +193,7 @@ impl Peer {
 impl Drop for Peer {
     fn drop(&mut self) {
         self.channel.set_onmessage(None);
-        let _ = self.channel.close();
+        self.channel.close();
         self.pc.close();
     }
 }

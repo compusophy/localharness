@@ -264,6 +264,7 @@ pub(crate) const COLONY_TASK_FIT_BAND: usize = 3;
 ///      avg ties (a 5.0 from 3 beats a 5.0 from 1).
 ///   4. **Discover rank** (final tiebreak) — the original task-fit order, so the
 ///      result is deterministic.
+///
 /// An agent with NO attestations (avg 0) is eligible but ranks below a proven one
 /// in the same tier. Returns `None` only for an empty slice.
 pub(crate) fn pick_reputation_aware(candidates: &[WorkerCandidate]) -> Option<&WorkerCandidate> {

@@ -28,13 +28,13 @@ pub(super) fn save_prompt_pressed() {
                 };
                 dom::swap_inner(
                     "prompt-msg",
-                    &dom::msg_span(dom::Msg::Accent, &format!("{summary}")),
+                    &dom::msg_span(dom::Msg::Accent, summary),
                 );
             }
             Err(err) => {
                 dom::swap_inner(
                     "prompt-msg",
-                    &dom::msg_span(dom::Msg::Error, &format!("{err}")),
+                    &dom::msg_span(dom::Msg::Error, &err.to_string()),
                 );
             }
         }
@@ -76,7 +76,7 @@ pub(super) fn save_tool_allowlist_pressed() {
             Err(err) => {
                 dom::swap_inner(
                     "tool-allowlist-msg",
-                    &dom::msg_span(dom::Msg::Error, &format!("{err}")),
+                    &dom::msg_span(dom::Msg::Error, &err.to_string()),
                 );
             }
         }
@@ -109,7 +109,7 @@ pub(super) fn reset_tool_allowlist_pressed() {
             Err(err) => {
                 dom::swap_inner(
                     "tool-allowlist-msg",
-                    &dom::msg_span(dom::Msg::Error, &format!("{err}")),
+                    &dom::msg_span(dom::Msg::Error, &err.to_string()),
                 );
             }
         }

@@ -1381,11 +1381,11 @@ mod tests {
         );
         assert_eq!(&wasm[0..4], WASM_MAGIC);
         assert!(
-            wasm.iter().any(|&b| b == OP_I32_STORE),
+            wasm.contains(&OP_I32_STORE),
             "indexed array write must emit an i32.store opcode (0x36)",
         );
         // And the address math (i32.mul by 4 then i32.add) the read side uses.
-        assert!(wasm.iter().any(|&b| b == OP_I32_MUL), "addr math: index*4");
+        assert!(wasm.contains(&OP_I32_MUL), "addr math: index*4");
     }
 
     #[test]

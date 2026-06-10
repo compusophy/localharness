@@ -341,8 +341,8 @@ mod tests {
         let m = merged_set(&a, &b);
         let contents: std::collections::BTreeSet<Vec<u8>> =
             m.iter().map(|(_, h)| h.clone()).collect();
-        assert!(contents.contains(&b"\xaa".to_vec()), "loser preserved");
-        assert!(contents.contains(&b"\xbb".to_vec()), "winner preserved");
+        assert!(contents.contains(b"\xaa".as_slice()), "loser preserved");
+        assert!(contents.contains(b"\xbb".as_slice()), "winner preserved");
         assert_eq!(m.len(), 2);
     }
 
