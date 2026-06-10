@@ -98,6 +98,11 @@ pub mod encoding;
 /// symmetry property runs under `cargo test`. See `src/sharedfs_reconcile.rs`.
 pub mod sharedfs_reconcile;
 
+/// Pure turn-outcome classification for the continuous-execution chat loop
+/// (native-testable). Hoisted out of `app::chat` so its guard tests run under
+/// `cargo test`. See `src/turn_flow.rs`.
+pub mod turn_flow;
+
 // The browser-resident IDE. Gated on the `browser-app` feature AND a
 // wasm target, so a native `cargo add localharness` never compiles it.
 #[cfg(all(feature = "browser-app", target_arch = "wasm32"))]
