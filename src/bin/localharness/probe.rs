@@ -39,18 +39,7 @@ pub(crate) async fn probe_agent(caller_name: Option<&str>) -> i32 {
         Err(code) => return code,
     };
     // Pay PER REQUEST (fund the meter), not a 10-$LH hour-long session.
-    if let Ok(sponsor) = wallet::from_private_key_hex(SPONSOR_KEY) {
-        let addr = bytes_to_hex_str(&wallet::address(&caller));
-        if registry::credit_balance_of(&addr).await.unwrap_or(0) < CALL_COST_WEI {
-            let _ = registry::deposit_credits_sponsored(
-                &caller,
-                &sponsor,
-                CALL_METER_TOPUP_WEI,
-                registry::ALPHA_USD_ADDRESS,
-            )
-            .await;
-        }
-    }
+    crate::call::ensure_meter_funded(&caller).await;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())

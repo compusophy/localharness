@@ -386,6 +386,42 @@ async fn settle_call_payment(
 /// session). Returns the reply text plus the updated conversation history bytes
 /// (to persist for the next turn). Shared by the CLI `call` command and the
 /// `mcp` server's `call_agent` tool, so both reach an agent identically.
+/// Best-effort lazy meter funding shared by `call` / `run_agent_turn` /
+/// `probe`: when the caller's per-request meter is below one call's cost,
+/// deposit [`CALL_METER_TOPUP_WEI`] from their own wallet (sponsored gas).
+/// One retry on the known-transient Tempo RPC flake, and a WARN (not
+/// silence) on final failure — a silently-skipped deposit surfaces minutes
+/// later as an unexplained 402 (seen live: colony judges quietly dropping
+/// out of the panel). Still best-effort: an unfunded wallet stays unfunded.
+pub(crate) async fn ensure_meter_funded(caller: &k256::ecdsa::SigningKey) {
+    let Ok(sponsor) = wallet::from_private_key_hex(SPONSOR_KEY) else {
+        return;
+    };
+    let addr = bytes_to_hex_str(&wallet::address(caller));
+    if registry::credit_balance_of(&addr).await.unwrap_or(0) >= CALL_COST_WEI {
+        return;
+    }
+    let deposit = || {
+        registry::deposit_credits_sponsored(
+            caller,
+            &sponsor,
+            CALL_METER_TOPUP_WEI,
+            registry::ALPHA_USD_ADDRESS,
+        )
+    };
+    match deposit().await {
+        Ok(_) => {}
+        Err(e) if crate::colony::is_transient_rpc_error(&e) => {
+            if let Err(e2) = deposit().await {
+                eprintln!("warning: meter top-up failed twice ({e2}) — the call may 402");
+            }
+        }
+        Err(e) => {
+            eprintln!("warning: meter top-up failed ({e}) — the call may 402");
+        }
+    }
+}
+
 pub(crate) async fn run_agent_turn(
     key_hex: &str,
     target: &str,
@@ -411,18 +447,7 @@ pub(crate) async fn run_agent_turn(
     // debits ~CALL_COST_WEI per call. A one-shot agent call must NOT buy a
     // 10-$LH hour-long session (the old behavior). Best-effort + sponsored; an
     // unfunded wallet stays unfunded (the proxy 402s, the hint says to redeem).
-    if let Ok(sponsor) = wallet::from_private_key_hex(SPONSOR_KEY) {
-        let addr = bytes_to_hex_str(&wallet::address(&caller));
-        if registry::credit_balance_of(&addr).await.unwrap_or(0) < CALL_COST_WEI {
-            let _ = registry::deposit_credits_sponsored(
-                &caller,
-                &sponsor,
-                CALL_METER_TOPUP_WEI,
-                registry::ALPHA_USD_ADDRESS,
-            )
-            .await;
-        }
-    }
+    ensure_meter_funded(&caller).await;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

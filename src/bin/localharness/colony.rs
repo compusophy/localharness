@@ -159,6 +159,12 @@ pub(crate) struct ParsedColonyRun {
     ttl_secs: u64,
 }
 
+/// Wallet floor below which the colony tops a judge up before its turn:
+/// the lazy meter deposit pulls 0.2 `$LH` from the judge's own wallet, so a
+/// judge under ~0.25 can't pay its metered turn and would 402 out of the
+/// panel.
+pub(crate) const JUDGE_FUND_FLOOR_WEI: u128 = 250_000_000_000_000_000;
+
 /// Default neutral-judge panel size for `colony run` (median of N). Odd so the
 /// median is a clean middle value with no even-split tie.
 pub(crate) const COLONY_DEFAULT_PANEL: usize = 3;
@@ -933,7 +939,7 @@ async fn colony_step_judge(
         let judge_key_hex = if judge_name.as_str() == caller_label {
             caller_key_hex.to_string()
         } else {
-            match resolve_caller_key(Some(judge_name)) {
+            let hex = match resolve_caller_key(Some(judge_name)) {
                 Ok((_, hex)) => hex,
                 Err(e) => {
                     eprintln!(
@@ -941,7 +947,27 @@ async fn colony_step_judge(
                     );
                     continue;
                 }
+            };
+            // A judge with an empty wallet 402s its metered turn and SILENTLY
+            // shrinks the panel (seen live: 2 of 3 judges excluded → a 1-judge
+            // "panel"). Best-effort top-up from the CALLER — who already pays
+            // for the cycle — when the judge's wallet is under the metering
+            // floor (the lazy meter deposit pulls 0.2 $LH from the judge's own
+            // wallet). A failed send degrades to today's behavior (excluded).
+            if let Ok(signer) = wallet::from_private_key_hex(&hex) {
+                let judge_addr = bytes_to_hex_str(&wallet::address(&signer));
+                if matches!(
+                    registry::token_balance_of(&judge_addr).await,
+                    Ok(b) if b < JUDGE_FUND_FLOOR_WEI
+                ) {
+                    println!(
+                        "      · judge '{judge_name}' wallet is under the metering floor — \
+                         funding 0.5 $LH from {caller_label}"
+                    );
+                    let _ = credits::send_lh(Some(caller_label), judge_name, "0.5").await;
+                }
             }
+            hex
         };
         match run_agent_turn(&judge_key_hex, judge_name, &judge_prompt, None, None).await {
             Ok((reply, _hist)) => {

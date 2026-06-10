@@ -47,6 +47,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The fleet runner funds EXISTING personas too: a probe that 402s on an
   empty meter best-effort funds 0.5 `$LH` from `claude` and retries once
   (the create-branch funding only covered new personas). Proven live.
+- **Colony judge panels no longer silently shrink.** A judge with an empty
+  wallet 402'd its metered turn and dropped out of the accuracy panel (seen
+  live: 2 of 3 judges excluded → a 1-judge "panel"). The colony now tops a
+  judge up from the caller before its turn when its wallet is under the
+  metering floor. The lazy meter deposit shared by `call`/`run_agent_turn`/
+  `probe` (one `ensure_meter_funded` home) also stopped failing silently —
+  it retries once on the known-transient Tempo RPC flake and WARNS with the
+  real error instead of surfacing minutes later as an unexplained 402.
 - Zero rustdoc warnings: 16 broken intra-doc links / unescaped-HTML warnings
   fixed across the SSE docs, sharedfs_reconcile, builtins, guild, signaling,
   tools, and error-codes modules.
