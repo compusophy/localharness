@@ -21,7 +21,6 @@ use crate::filesystem::Filesystem;
 use super::dom;
 use super::templates;
 
-mod act;
 mod admin;
 mod bounty;
 mod claim;
@@ -46,8 +45,6 @@ pub(crate) use subdomains::{run_batch_create_subdomains, run_bulk_release, run_r
 enum Action {
     Send,
     SyncDevices,
-    ClearKey,
-    OpfsRefresh,
     OpfsWipe,
     OpfsWipeConfirm,
     OpfsWipeCancel,
@@ -58,9 +55,7 @@ enum Action {
     OpfsEdit(String),
     OpfsSave(String),
     ApexClaim,
-    ClaimHere,
     ClaimOnChain,
-    ImportOwner,
     RevealSeed,
     HideSeed,
     ImportSeed,
@@ -70,8 +65,6 @@ enum Action {
     HeaderAdminToggle,
     HeaderAdminClose,
     ShowAdminTab(String),
-    SyncKey,
-    RestoreKey,
     RevealSecurity,
     HideSecurity,
     ResetArm,
@@ -79,9 +72,7 @@ enum Action {
     ResetCancel,
     PricingSave,
     ToggleFiles,
-    ToggleFinancial,
     ToggleTerminal,
-    ToggleView,
     ShowTab(String),
     FeedbackSubmit,
     /// Dismiss the QR seed-adoption panel back to the "add a device" button.
@@ -96,8 +87,6 @@ enum Action {
     /// from the no-wallet identity-choice interstitial, carrying the name
     /// the user was trying to claim.
     CreateNewClaim(String),
-    AgentActToggle(String),
-    AgentSendLh(String),
     SavePrompt,
     SaveToolAllowlist,
     ResetToolAllowlist,
@@ -115,14 +104,10 @@ enum Action {
     /// Download the in-browser local model (Gemma 3 270M weights + tokenizer)
     /// from the HF CDN into OPFS — the one-time opt-in for on-device inference.
     DownloadLocalModel,
-    /// Open (or renew) the caller's on-chain credit session.
-    OpenSession,
     /// Redeem a one-time code for `$LH` credits.
     RedeemCode,
     /// Redeem a one-time code from the inline no-funds banner above the prompt.
     RedeemBanner,
-    /// Prepay `$LH` into the per-request credit meter.
-    DepositCredits,
     /// Escrow the owner's `$LH` behind a fresh bearer code + surface the
     /// `?invite=` share link (InviteFacet `createInvite`).
     CreateInvite,
@@ -158,8 +143,6 @@ enum Action {
     ExecuteProposal(String),
     /// Save this agent's per-call x402 price (`.lh_x402_price`).
     SaveX402Price,
-    /// Consolidate this identity's subdomains into its MAIN's TBA.
-    Consolidate,
     /// Unlink a device (remove its signer + index entry) — the X opens a
     /// typed confirmation; UnlinkConfirm performs it; UnlinkCancel aborts.
     UnlinkDevice(String),
@@ -171,8 +154,6 @@ impl Action {
     fn parse(name: &str, arg: Option<String>) -> Option<Action> {
         Some(match name {
             "send" => Action::Send,
-            "clear-key" => Action::ClearKey,
-            "opfs-refresh" => Action::OpfsRefresh,
             "opfs-wipe" => Action::OpfsWipe,
             "opfs-wipe-confirm" => Action::OpfsWipeConfirm,
             "opfs-wipe-cancel" => Action::OpfsWipeCancel,
@@ -183,9 +164,7 @@ impl Action {
             "opfs-edit" => Action::OpfsEdit(arg.unwrap_or_default()),
             "opfs-save" => Action::OpfsSave(arg.unwrap_or_default()),
             "apex-claim" => Action::ApexClaim,
-            "claim-here" => Action::ClaimHere,
             "claim-on-chain" => Action::ClaimOnChain,
-            "import-owner" => Action::ImportOwner,
             "reveal-seed" => Action::RevealSeed,
             "hide-seed" => Action::HideSeed,
             "import-seed" => Action::ImportSeed,
@@ -195,8 +174,6 @@ impl Action {
             "header-admin-toggle" => Action::HeaderAdminToggle,
             "header-admin-close" => Action::HeaderAdminClose,
             "show-admin-tab" => Action::ShowAdminTab(arg.unwrap_or_default()),
-            "sync-key" => Action::SyncKey,
-            "restore-key" => Action::RestoreKey,
             "reveal-security" => Action::RevealSecurity,
             "hide-security" => Action::HideSecurity,
             "reset-arm" => Action::ResetArm,
@@ -204,9 +181,7 @@ impl Action {
             "reset-cancel" => Action::ResetCancel,
             "pricing-save" => Action::PricingSave,
             "toggle-files" => Action::ToggleFiles,
-            "toggle-financial" => Action::ToggleFinancial,
             "toggle-terminal" => Action::ToggleTerminal,
-            "toggle-view" => Action::ToggleView,
             "show-tab" => Action::ShowTab(arg.unwrap_or_default()),
             "feedback-submit" => Action::FeedbackSubmit,
             "add-device" => Action::AddDevice,
@@ -214,8 +189,6 @@ impl Action {
             "adopt-device" => Action::AdoptDevice,
             "create-new-claim" => Action::CreateNewClaim(arg.unwrap_or_default()),
             "pair-cancel" => Action::PairCancel,
-            "agent-act-toggle" => Action::AgentActToggle(arg.unwrap_or_default()),
-            "agent-send-lh" => Action::AgentSendLh(arg.unwrap_or_default()),
             "save-prompt" => Action::SavePrompt,
             "save-tool-allowlist" => Action::SaveToolAllowlist,
             "reset-tool-allowlist" => Action::ResetToolAllowlist,
@@ -226,10 +199,8 @@ impl Action {
             "set-model-access" => Action::SetModelAccess(arg.unwrap_or_default()),
             "set-model" => Action::SetModel(arg.unwrap_or_default()),
             "download-local-model" => Action::DownloadLocalModel,
-            "open-session" => Action::OpenSession,
             "redeem-code" => Action::RedeemCode,
             "redeem-banner" => Action::RedeemBanner,
-            "deposit-credits" => Action::DepositCredits,
             "create-invite" => Action::CreateInvite,
             "schedule-job" => Action::ScheduleJob,
             "cancel-job" => Action::CancelJob(arg.unwrap_or_default()),
@@ -242,7 +213,6 @@ impl Action {
             "vote" => Action::Vote(arg.unwrap_or_default()),
             "execute-proposal" => Action::ExecuteProposal(arg.unwrap_or_default()),
             "save-x402-price" => Action::SaveX402Price,
-            "consolidate" => Action::Consolidate,
             "unlink-device" => Action::UnlinkDevice(arg.unwrap_or_default()),
             "unlink-confirm" => Action::UnlinkConfirm(arg.unwrap_or_default()),
             "unlink-cancel" => Action::UnlinkCancel,
@@ -523,12 +493,6 @@ fn dispatch(action: Action) {
                 super::chat::run_send().await;
             });
         }
-        Action::ClearKey => layout::clear_key_pressed(),
-        Action::OpfsRefresh => {
-            wasm_bindgen_futures::spawn_local(async move {
-                super::opfs::refresh().await;
-            });
-        }
         Action::OpfsCloseViewer => super::opfs::close_viewer(),
         Action::ToggleDisplay => super::opfs::toggle_display(),
         Action::StopTurn => super::chat::request_stop_turn(),
@@ -582,36 +546,6 @@ fn dispatch(action: Action) {
                 claim::run_apex_claim(cleaned, true).await;
             });
         }
-        Action::ClaimHere => {
-            wasm_bindgen_futures::spawn_local(async move {
-                let Some(name) = super::tenant::current_name() else {
-                    return;
-                };
-                // The hint is the on-chain owner address this device
-                // controls. Resolve it from the chain (authoritative) and
-                // remember it so the next load paints the studio first.
-                let addr = super::registry::owner_of_name(&name)
-                    .await
-                    .ok()
-                    .flatten();
-                match addr {
-                    Some(addr) => {
-                        let _ = super::owner::remember(&addr).await;
-                        super::paint_tenant(
-                            super::tenant::Host::Tenant(name.clone()),
-                            name,
-                        )
-                        .await;
-                    }
-                    None => {
-                        dom::swap_inner(
-                            "claim-msg",
-                            &dom::msg_span(dom::Msg::Error, "claim failed: name has no on-chain owner"),
-                        );
-                    }
-                }
-            });
-        }
         Action::ClaimOnChain => {
             // Tenant-side first-claim: ensure apex wallet exists (without
             // overwriting an existing one — that would nuke other NFTs),
@@ -654,31 +588,6 @@ fn dispatch(action: Action) {
                             &dom::msg_span(dom::Msg::Error, &format!("claim failed: {err}")),
                         );
                     }
-                }
-            });
-        }
-        Action::ImportOwner => {
-            let raw = dom::input_by_id("import-uuid")
-                .map(|i| i.value().trim().to_string())
-                .unwrap_or_default();
-            if raw.len() < 32 {
-                dom::swap_inner(
-                    "claim-msg",
-                    "<span style=\"color:var(--error)\">paste a full UUID (36 chars with dashes)</span>",
-                );
-                return;
-            }
-            wasm_bindgen_futures::spawn_local(async move {
-                let fs = super::shared_opfs();
-                if let Err(err) = fs.write_atomic(".lh_owner", raw.as_bytes()).await {
-                    dom::swap_inner(
-                        "claim-msg",
-                        &dom::msg_span(dom::Msg::Error, &format!("import failed: {err}")),
-                    );
-                    return;
-                }
-                if let Some(name) = super::tenant::current_name() {
-                    super::paint_tenant(super::tenant::Host::Tenant(name.clone()), name).await;
                 }
             });
         }
@@ -888,12 +797,6 @@ fn dispatch(action: Action) {
         Action::HeaderAdminToggle => admin::header_admin_toggle(),
         Action::HeaderAdminClose => admin::header_admin_close(),
         Action::ShowAdminTab(name) => admin::show_admin_tab(&name),
-        Action::SyncKey => {
-            wasm_bindgen_futures::spawn_local(async move { key_sync::run_sync_key().await });
-        }
-        Action::RestoreKey => {
-            wasm_bindgen_futures::spawn_local(async move { key_sync::run_restore_key().await });
-        }
         Action::RevealSecurity => {
             dom::swap_outer(
                 "security-slot",
@@ -921,17 +824,13 @@ fn dispatch(action: Action) {
         Action::ResetConfirm => layout::reset_confirm_pressed(),
         Action::PricingSave => layout::pricing_save_pressed(),
         Action::ToggleFiles => layout::toggle_layout_class("files-collapsed"),
-        Action::ToggleFinancial => layout::toggle_layout_class("financial-collapsed"),
         Action::ToggleTerminal => layout::toggle_layout_class("terminal-collapsed"),
-        Action::ToggleView => layout::toggle_layout_class("view-collapsed"),
         Action::ShowTab(name) => admin::show_mobile_tab(&name),
         Action::FeedbackSubmit => super::feedback::feedback_submit(),
         Action::AddDevice => devices::add_device_pressed(),
         Action::SyncDevices => devices::run_sync_devices(),
         Action::AdoptDevice => devices::adopt_device_pressed(),
         Action::PairCancel => devices::pair_cancel_pressed(),
-        Action::AgentActToggle(token_id) => act::agent_act_toggle_pressed(token_id),
-        Action::AgentSendLh(token_id) => act::agent_send_lh_pressed(token_id),
         Action::SavePrompt => admin::save_prompt_pressed(),
         Action::SaveToolAllowlist => admin::save_tool_allowlist_pressed(),
         Action::ResetToolAllowlist => admin::reset_tool_allowlist_pressed(),
@@ -939,10 +838,8 @@ fn dispatch(action: Action) {
         Action::SetModelAccess(mode) => credits::run_set_model_access(mode),
         Action::SetModel(model) => credits::run_set_model(model),
         Action::DownloadLocalModel => credits::run_download_local_model(),
-        Action::OpenSession => credits::open_session_pressed(),
         Action::RedeemCode => credits::redeem_code_pressed(),
         Action::RedeemBanner => credits::redeem_banner_pressed(),
-        Action::DepositCredits => credits::deposit_credits_pressed(),
         Action::CreateInvite => credits::create_invite_pressed(),
         Action::ScheduleJob => schedule::schedule_job_pressed(),
         Action::CancelJob(id) => schedule::cancel_job_pressed(id),
@@ -955,7 +852,6 @@ fn dispatch(action: Action) {
         Action::Vote(arg) => governance::vote_pressed(arg),
         Action::ExecuteProposal(id) => governance::execute_proposal_pressed(id),
         Action::SaveX402Price => admin::save_x402_price_pressed(),
-        Action::Consolidate => devices::consolidate_pressed(),
         Action::UnlinkDevice(addr) => devices::unlink_device_prompt(addr),
         Action::UnlinkConfirm(addr) => devices::unlink_confirm_pressed(addr),
         Action::UnlinkCancel => devices::unlink_cancel_pressed(),

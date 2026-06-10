@@ -1606,9 +1606,7 @@ pub(crate) fn agents_list(
             div #agents-list .agents-list .agents-empty {}
         };
     }
-    // Bare list: subdomain name as a link, a small `main` chip on the
-    // MAIN row, plus an [act] toggle that expands the inline act-panel
-    // (per-agent send-LH form, runs via the agent's TBA.execute).
+    // Bare list: subdomain name as a link plus a small main/alt chip.
     html! {
         div #agents-list .agents-list {
             ul.agents-rows {
@@ -1633,59 +1631,6 @@ pub(crate) fn agents_list(
                 }
             }
         }
-    }
-}
-
-/// Inline panel that opens under an agent row when [act] is clicked.
-/// Shows the agent's TBA balance + a "send LH" form. Submit hits
-/// `tba_transfer_lh_sponsored`. Hidden by default; populated on
-/// first toggle and re-painted after each action.
-pub(crate) fn agent_act_panel(
-    token_id: u64,
-    tba_address: &str,
-    lh_balance_wei: u128,
-) -> Markup {
-    let lh_whole = lh_balance_wei / 1_000_000_000_000_000_000u128;
-    html! {
-        div.agent-act-rows {
-            div.agent-act-row {
-                span.agent-act-label { "wallet" }
-                a.agent-act-value
-                    href=(format!("https://moderato.tempo.xyz/address/{tba_address}"))
-                    target="_blank" rel="noopener"
-                    title=(tba_address) {
-                    (short_addr(tba_address))
-                }
-            }
-            div.agent-act-row {
-                span.agent-act-label { "balance" }
-                code.agent-act-value { (lh_whole) " LH" }
-            }
-        }
-        form.agent-act-form
-            data-action="agent-send-lh"
-            data-arg=(token_id) {
-            input
-                id=(format!("agent-send-to-{token_id}"))
-                type="text"
-                aria-label="recipient address"
-                placeholder="recipient 0x…"
-                autocomplete="off"
-                spellcheck="false"
-                maxlength="42" {}
-            input
-                id=(format!("agent-send-amt-{token_id}"))
-                type="text"
-                aria-label="amount in LH"
-                placeholder="amount LH"
-                autocomplete="off"
-                spellcheck="false"
-                inputmode="decimal" {}
-            button type="submit" .ghost { "send" }
-        }
-        div
-            id=(format!("agent-act-msg-{token_id}"))
-            .admin-msg-slot {}
     }
 }
 

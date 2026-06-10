@@ -39,9 +39,3 @@ pub(crate) async fn save(key: &str) {
         )));
     }
 }
-
-/// Delete the persisted key (the "clear" button).
-pub(crate) async fn clear() {
-    let fs = super::shared_opfs();
-    let _ = fs.delete(KEY_FILE).await;
-}

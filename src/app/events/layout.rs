@@ -1,5 +1,5 @@
 //! Layout + reset + pricing — panel toggles, the typed-confirmation reset,
-//! pricing save, and key clear.
+//! and pricing save.
 
 use crate::app::{dom, templates};
 use crate::filesystem::Filesystem;
@@ -152,23 +152,4 @@ fn parse_eth_to_wei(s: &str) -> Result<u128, String> {
         .checked_mul(1_000_000_000_000_000_000)
         .and_then(|w| w.checked_add(frac))
         .ok_or_else(|| "price too large".into())
-}
-
-// --- Action handlers ---------------------------------------------------
-
-pub(super) fn clear_key_pressed() {
-    if let Some(input) = dom::input_by_id("key") {
-        input.set_value("");
-    }
-    if let Ok(Some(storage)) = dom::session_storage() {
-        let _ = storage.remove_item("gemini_api_key");
-    }
-    super::refresh_keymeta();
-    if let Some(input) = dom::input_by_id("key") {
-        input.focus().ok();
-    }
-    wasm_bindgen_futures::spawn_local(async move {
-        crate::app::key_store::clear().await;
-    });
-    dom::set_status("key cleared (sessionStorage + OPFS)", false);
 }

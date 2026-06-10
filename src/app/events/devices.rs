@@ -1,7 +1,5 @@
 //! Devices — QR seed-adoption (Option A), P2P device sync, signer list,
-//! consolidate, and unlink.
-
-use wasm_bindgen::prelude::*;
+//! and unlink.
 
 use crate::encoding::short_addr;
 
@@ -191,7 +189,7 @@ fn generate_pair_code() -> String {
 }
 
 /// Resolve (local owner signer, owner hex, MAIN id, MAIN TBA). The
-/// shared preamble for consolidate/unlink — both act on the MAIN's TBA.
+/// preamble for unlink, which acts on the MAIN's TBA.
 async fn owner_main_tba() -> Result<(k256::ecdsa::SigningKey, String, u64, String), String> {
     let (signer, owner_hex) = crate::app::APP
         .with(|c| {
@@ -215,55 +213,6 @@ async fn owner_main_tba() -> Result<(k256::ecdsa::SigningKey, String, u64, Strin
         .map_err(|e| format!("tba: {e}"))?
         .ok_or_else(|| "no MAIN TBA".to_string())?;
     Ok((signer, owner_hex, main_id, main_tba))
-}
-
-/// Consolidate this identity's OTHER subdomains into its MAIN's TBA — one
-/// account owns them all, every linked device controls them. Moves NFTs,
-/// so it's an explicit user action.
-pub(super) fn consolidate_pressed() {
-    dom::swap_inner(
-        "consolidate-msg",
-        "<span style=\"color:var(--muted)\">consolidating…</span>",
-    );
-    wasm_bindgen_futures::spawn_local(async move {
-        let result = async {
-            let (signer, owner_hex, main_id, main_tba) = owner_main_tba().await?;
-            let tokens = crate::app::registry::list_owned_tokens(&owner_hex)
-                .await
-                .map_err(|e| format!("list: {e}"))?;
-            let ids: Vec<u64> = tokens
-                .iter()
-                .map(|t| t.token_id)
-                .filter(|id| *id != main_id)
-                .collect();
-            if ids.is_empty() {
-                return Err("nothing to consolidate — only your MAIN".into());
-            }
-            let fee_payer = crate::app::sponsor::signer()?;
-            crate::app::registry::consolidate_into_main_sponsored(
-                &signer,
-                &fee_payer,
-                &main_tba,
-                &ids,
-                crate::app::registry::ALPHA_USD_ADDRESS,
-            )
-            .await
-        }
-        .await;
-        match result {
-            Ok(_) => dom::swap_inner(
-                "consolidate-msg",
-                "<span style=\"color:var(--muted)\">✓ subdomains consolidated under your MAIN</span>",
-            ),
-            Err(e) => {
-                web_sys::console::warn_1(&JsValue::from_str(&format!("consolidate: {e}")));
-                dom::swap_inner(
-                    "consolidate-msg",
-                    "<span style=\"color:var(--error)\">consolidate failed</span>",
-                );
-            }
-        }
-    });
 }
 
 /// The X on a linked device. Removing a device's access is destructive

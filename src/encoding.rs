@@ -400,16 +400,17 @@ mod tests {
         );
     }
 
-    /// The address-ONLY acceptance contract the browser "act" panel relies on
-    /// (`agent_send_lh_pressed`): it transfers `$LH` out of an agent's TBA to a
-    /// raw address and so accepts the recipient ONLY when `classify_recipient`
-    /// yields an `Address` — empty, the funds-burning zero address, or anything
-    /// that classifies as a `Name` (wrong-length / non-hex) is rejected before
-    /// any sponsored tx. This pins that filter so the zero-address guard can't
-    /// regress on that surface (the act panel does not resolve names).
+    /// The address-ONLY acceptance contract for `$LH`-moving surfaces that
+    /// funnel recipients through `classify_recipient` (`send_lh`, guild
+    /// spends, the CLI's `tba exec`): a caller that accepts the recipient
+    /// ONLY when classification yields an `Address` must see empty input,
+    /// the funds-burning zero address, and anything that classifies as a
+    /// `Name` (wrong-length / non-hex) rejected before any sponsored tx.
+    /// This pins that filter so the zero-address guard can't regress.
     #[test]
     fn act_panel_address_only_filter() {
-        // Helper mirroring the act panel's `let Ok(Address(_)) = ... else return`.
+        // Helper mirroring an address-only caller's
+        // `let Ok(Address(_)) = ... else return`.
         fn accepts(raw: &str) -> bool {
             matches!(classify_recipient(raw), Ok(Recipient::Address(_)))
         }
@@ -422,8 +423,8 @@ mod tests {
         // Reject: empty / whitespace.
         assert!(!accepts(""));
         assert!(!accepts("   "));
-        // Reject: a name (the act panel can't resolve names; it must error out
-        // rather than send to a name-shaped string).
+        // Reject: a name (an address-only caller can't resolve names; it must
+        // error out rather than send to a name-shaped string).
         assert!(!accepts("alice"));
         // Reject: off-by-one hex length (classifies as a doomed Name, not an
         // Address) — would otherwise have passed the old `is_address_hex`-only

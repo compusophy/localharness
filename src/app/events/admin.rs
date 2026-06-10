@@ -220,7 +220,7 @@ pub(super) fn save_x402_price_pressed() {
     wasm_bindgen_futures::spawn_local(async move {
         use crate::filesystem::Filesystem;
         let fs = crate::app::shared_opfs();
-        let result: Result<bool, String> = async {
+        let local: Result<u128, String> = async {
             let wei = if raw.is_empty() {
                 0
             } else {
@@ -234,10 +234,24 @@ pub(super) fn save_x402_price_pressed() {
                     .await
                     .map_err(|e| e.to_string())?;
             }
-            publish_x402_price_onchain(wei).await
+            Ok(wei)
         }
         .await;
-        match result {
+        let wei = match local {
+            Ok(wei) => wei,
+            Err(e) => {
+                dom::swap_inner(
+                    "x402-price-msg",
+                    &dom::msg_span(dom::Msg::Error, &format!("save failed: {e}")),
+                );
+                return;
+            }
+        };
+        // Local state is already written; a publish failure leaves the old
+        // on-chain price live for callers, so the message must say PARTIAL
+        // (mirrors save_prompt_pressed) — "save failed" here would hide a
+        // local/on-chain divergence the prefill then displays as saved.
+        match publish_x402_price_onchain(wei).await {
             Ok(true) => dom::swap_inner(
                 "x402-price-msg",
                 "<span style=\"color:var(--muted)\">saved + published on-chain</span>",
@@ -248,7 +262,10 @@ pub(super) fn save_x402_price_pressed() {
             ),
             Err(e) => dom::swap_inner(
                 "x402-price-msg",
-                &dom::msg_span(dom::Msg::Error, &format!("save failed: {e}")),
+                &dom::msg_span(
+                    dom::Msg::Error,
+                    &format!("saved locally · on-chain publish failed: {e}"),
+                ),
             ),
         }
     });

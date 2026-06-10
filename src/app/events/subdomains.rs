@@ -42,7 +42,7 @@ pub(crate) async fn run_bulk_release(
         return Err("no subdomains to release".into());
     }
     // Resolve owner + MAIN from the current tenant, same preamble as
-    // consolidate (owner_main_tba) but we only need the owner hex + MAIN id.
+    // unlink (owner_main_tba) but we only need the owner hex + MAIN id.
     let (_, owner) = crate::app::tenant::current_tenant_owner().await?;
     let main_id = crate::app::registry::main_of(&owner)
         .await

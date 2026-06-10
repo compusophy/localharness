@@ -3,17 +3,16 @@ use crate::*;
 
 // ---- tba (token-bound account: make YOUR agent's wallet EXECUTE a call) ------
 //
-// The headless / agent equivalent of the browser act-panel. Every identity NFT
-// has a deterministic token-bound account (ERC-6551 `MultiSignerAccount`) — a
-// smart wallet the NFT holder controls. This command lets an agent ACT through
-// it from a shell, with no browser tab: deploy it, see its `$LH`, and make it
-// EXECUTE an arbitrary call (a `$LH` transfer, or any `to` + `--data <hex>`).
+// Every identity NFT has a deterministic token-bound account (ERC-6551
+// `MultiSignerAccount`) — a smart wallet the NFT holder controls. This command
+// lets an agent ACT through it from a shell, with no browser tab: deploy it,
+// see its `$LH`, and make it EXECUTE an arbitrary call (a `$LH` transfer, or
+// any `to` + `--data <hex>`).
 // Authorization is enforced on-chain by the account (only the NFT holder or an
 // enrolled signer can `execute`); the embedded sponsor pays the fee. Unblocks a
 // guild's TBA voting in a parent DAO, an agent's TBA paying/calling, etc.
-// Mirrors `registry::tba_execute_call_sponsored` / `tba_send_lh_sponsored` /
-// `create_token_bound_account_sponsored` — the same flat sponsored path as the
-// browser `agent_send_lh_pressed` act-panel.
+// Built on `registry::tba_execute_call_sponsored` / `tba_send_lh_sponsored` /
+// `create_token_bound_account_sponsored`.
 
 pub(crate) const TBA_USAGE: &str = "\
 usage: localharness tba <show|deploy|exec> ...

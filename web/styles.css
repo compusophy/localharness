@@ -1106,32 +1106,6 @@ input, textarea {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.agent-act-btn { font-size: 10px; padding: 4px 8px; }
-.agent-act-panel {
-  margin-top: 8px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  background: var(--panel);
-}
-.agent-act-panel[hidden] { display: none; }
-.agent-act-rows {
-  display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px;
-}
-.agent-act-row {
-  display: flex; justify-content: space-between; align-items: baseline;
-  gap: 12px;
-}
-.agent-act-label {
-  font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em;
-  color: var(--muted);
-}
-.agent-act-value { font-size: 12px; color: var(--fg); text-decoration: none; }
-.agent-act-value:hover { text-decoration: underline; }
-.agent-act-form {
-  display: flex; gap: 6px;
-}
-.agent-act-form input { flex: 1; min-width: 0; }
-
 /* --- Studio: custom system prompt --- */
 .prompt-form { display: flex; flex-direction: column; gap: 8px; }
 .prompt-input {

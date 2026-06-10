@@ -1,5 +1,5 @@
 //! Credits / funding — fund banner, model access + selection, local-model
-//! download, sessions, redeem codes, meter deposits, and invites.
+//! download, redeem codes, and invites.
 
 use wasm_bindgen::prelude::*;
 
@@ -199,47 +199,6 @@ pub(super) async fn refresh_model_selector() {
     }
 }
 
-/// Open (or renew) the caller's credit session — local key signs the
-/// sponsored tx (no iframe), sponsor pays fees.
-pub(super) fn open_session_pressed() {
-    dom::swap_inner(
-        "credits-msg",
-        "<span style=\"color:var(--muted)\">opening session…</span>",
-    );
-    wasm_bindgen_futures::spawn_local(async move {
-        let result = async {
-            super::sponsor_rate_guard()?;
-            let (signer, _) = crate::app::chat::credit_signer()
-                .await
-                .ok_or_else(|| "no identity".to_string())?;
-            let fee_payer = crate::app::sponsor::signer()?;
-            crate::app::registry::open_session_sponsored(
-                &signer,
-                &fee_payer,
-                crate::app::registry::ALPHA_USD_ADDRESS,
-            )
-            .await
-        }
-        .await;
-        match result {
-            Ok(_) => {
-                dom::swap_inner(
-                    "credits-msg",
-                    "<span style=\"color:var(--muted)\">session opened</span>",
-                );
-                super::refresh_credits_pill().await;
-            }
-            Err(e) => {
-                web_sys::console::warn_1(&JsValue::from_str(&format!("open session: {e}")));
-                dom::swap_inner(
-                    "credits-msg",
-                    "<span style=\"color:var(--error)\">couldn't open session</span>",
-                );
-            }
-        }
-    });
-}
-
 /// Redeem a one-time code from the admin credits section (`#redeem-code`),
 /// writing status into `#credits-msg`.
 pub(super) fn redeem_code_pressed() {
@@ -417,60 +376,6 @@ pub(crate) async fn try_redeem_pending_invite(allow_generate: bool) {
             refresh_fund_banner().await;
         }
     }
-}
-
-/// Prepay `$LH` into the per-request credit meter (whole-LH amount).
-pub(super) fn deposit_credits_pressed() {
-    let Some(input) = dom::input_by_id("deposit-amount") else {
-        return;
-    };
-    // Silent no-op on empty/invalid (no explanatory-validation text).
-    let Ok(whole) = input.value().trim().parse::<u128>() else {
-        return;
-    };
-    if whole == 0 {
-        return;
-    }
-    let Some(amount_wei) = whole.checked_mul(1_000_000_000_000_000_000u128) else {
-        return;
-    };
-    dom::swap_inner(
-        "credits-msg",
-        "<span style=\"color:var(--muted)\">depositing…</span>",
-    );
-    wasm_bindgen_futures::spawn_local(async move {
-        let result = async {
-            super::sponsor_rate_guard()?;
-            let (signer, _) = crate::app::chat::credit_signer()
-                .await
-                .ok_or_else(|| "no identity".to_string())?;
-            let fee_payer = crate::app::sponsor::signer()?;
-            crate::app::registry::deposit_credits_sponsored(
-                &signer,
-                &fee_payer,
-                amount_wei,
-                crate::app::registry::ALPHA_USD_ADDRESS,
-            )
-            .await
-        }
-        .await;
-        match result {
-            Ok(_) => {
-                dom::swap_inner(
-                    "credits-msg",
-                    "<span style=\"color:var(--muted)\">credits added</span>",
-                );
-                super::refresh_credits_pill().await;
-            }
-            Err(e) => {
-                web_sys::console::warn_1(&JsValue::from_str(&format!("deposit: {e}")));
-                dom::swap_inner(
-                    "credits-msg",
-                    "<span style=\"color:var(--error)\">deposit failed</span>",
-                );
-            }
-        }
-    });
 }
 
 /// Default invite lifetime when the owner doesn't specify one: 7 days
