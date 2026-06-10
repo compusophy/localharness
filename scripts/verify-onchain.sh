@@ -57,7 +57,9 @@ step "3/3  clean up the disposable name"
 # There is intentionally NO `release` / burn subcommand in the CLI today, so this
 # script does NOT invent one. The name is left registered on-chain.
 KEY_FILE="${NAME}.localharness.key"
-rm -f "$KEY_FILE"  # the local identity key is safe to drop (the name was disposable)
+# New creates write the key to the config home; older CLIs wrote the cwd —
+# drop the disposable key from BOTH so neither location accumulates strays.
+rm -f "$KEY_FILE" "${LOCALHARNESS_HOME:-$HOME/.localharness/keys}/$KEY_FILE"
 printf "  no 'release' subcommand exists — '%s' is LEFT REGISTERED on-chain.\n" "$NAME"
 printf "  manual cleanup: burn it from the studio (or via ReleaseFacet) when a\n"
 printf "  release command lands. Removed the local key %s.\n" "$KEY_FILE"

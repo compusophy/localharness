@@ -103,25 +103,32 @@ note "binary: $BIN"
 
 # ---------------------------------------------------------------------------
 # Resolve the funded identity key. The CLI reads `<name>.localharness.key` from
-# the cwd (or the config home), so a key must be present. In a clean worktree
-# the keys live in the main checkout — fall back to a sibling that has it, and
-# run the suite from there (so the CLI's cwd key resolution finds it).
+# the cwd first, else the config home (`$LOCALHARNESS_HOME`, default
+# `~/.localharness/keys` — where keys live since the keys-out-of-cwd change).
+# Mirror that precedence here for every key the suite reads directly.
 # ---------------------------------------------------------------------------
-KEY="${ME}.localharness.key"
+KEY_HOME="${LOCALHARNESS_HOME:-$HOME/.localharness/keys}"
+key_path() { # $1 = identity name -> the readable key path (cwd wins, else home)
+  local f="$1.localharness.key"
+  if [[ -f "$f" ]]; then printf '%s' "$f"; else printf '%s' "$KEY_HOME/$f"; fi
+}
+KEY="$(key_path "$ME")"
 if [[ ! -f "$KEY" ]]; then
-  # Common case: this is an isolated git worktree; the keys are in the primary
-  # working tree. Resolve it via git and re-home the suite there.
+  # Legacy case: an isolated git worktree with cwd-local keys in the primary
+  # working tree. Resolve it via git and re-home the suite there. (Config-home
+  # keys are per-user, so they already work from any checkout.)
   PRIMARY="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | sed 's#/\.git$##')"
-  if [[ -n "$PRIMARY" && -f "$PRIMARY/$KEY" ]]; then
-    note "no $KEY in the cwd — using the primary checkout at $PRIMARY"
+  if [[ -n "$PRIMARY" && -f "$PRIMARY/${ME}.localharness.key" ]]; then
+    note "no $KEY — using the primary checkout at $PRIMARY"
     # Re-resolve the binary as an absolute path BEFORE we leave this dir.
     case "$BIN" in /*|?:*) : ;; *) BIN="$PWD/$BIN" ;; esac
     cd "$PRIMARY"
+    KEY="$(key_path "$ME")"
   fi
 fi
 if [[ ! -f "$KEY" ]]; then
-  printf "\n${R}E2E SETUP FAILED${N} — no %s in %s (the funded test identity).\n" "$KEY" "$PWD" >&2
-  printf "  Run the suite from a checkout that holds the claude identity key.\n" >&2
+  printf "\n${R}E2E SETUP FAILED${N} — no %s key (cwd of %s, or %s).\n" "$ME" "$PWD" "$KEY_HOME" >&2
+  printf "  Run the suite where the claude identity key resolves.\n" >&2
   exit 1
 fi
 
@@ -168,7 +175,7 @@ WORKER="vex-qa"   # colony worker (its key must be local — it signs claim+subm
 
 # Derive PEER's owner address (from its local key) — the address we assert
 # membership / balance deltas against. Empty (skipped) if the key is absent.
-PEER_KEY="${PEER}.localharness.key"
+PEER_KEY="$(key_path "$PEER")"
 PEER_ADDR=""
 if [[ -f "$PEER_KEY" ]]; then
   PEER_ADDR="$(cast wallet address --private-key "0x$(tr -d '[:space:]' < "$PEER_KEY" | sed 's/^0x//')" 2>/dev/null || true)"
@@ -610,7 +617,7 @@ fi
 step "11. colony — one full autonomous cycle pays the worker (optional)"
 if [[ "${E2E_RUN_COLONY:-0}" != "1" ]]; then
   skip "colony (set E2E_RUN_COLONY=1 to exercise; it makes 2 LLM calls — slow — and pays a tiny reward)"
-elif [[ ! -f "${WORKER}.localharness.key" ]]; then
+elif [[ ! -f "$(key_path "$WORKER")" ]]; then
   skip "colony ($WORKER key not present — the worker must sign its own claim+submit)"
 else
   WORKER_TBA="$(tba_of "$WORKER")"

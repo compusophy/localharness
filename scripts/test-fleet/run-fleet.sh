@@ -67,7 +67,7 @@ for NAME in "${SELECT[@]}"; do
   # 1. create on-chain identity + persona. Idempotent on the LOCAL KEY: we
   # control a persona iff we hold its key (`whoami` is a read that returns
   # registered:false with exit 0, so it can't tell ownership).
-  if [ -f "${NAME}.localharness.key" ]; then
+  if [ -f "${NAME}.localharness.key" ] || [ -f "${LOCALHARNESS_HOME:-$HOME/.localharness/keys}/${NAME}.localharness.key" ]; then
     echo "  · identity exists (reusing local key)"
   else
     echo "  · creating on-chain identity + persona…"
