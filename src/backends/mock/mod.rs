@@ -78,7 +78,6 @@ pub use crate::agent::MockAgentConfig;
 use crate::connections::{Connection, ConnectionStrategy, StepStream};
 use crate::content::Content;
 use crate::error::{Error, Result};
-use crate::hooks::{HookRunner, SessionContext};
 use crate::tools::ToolRunner;
 use crate::types::{Step, StepStatus, ToolCall, ToolResult, UsageMetadata};
 
@@ -229,20 +228,13 @@ impl MockConnectionBuilder {
 }
 
 // =============================================================================
-// Runners (mirrors GeminiRunners — injected by Agent::start_mock)
+// Runners (injected by Agent::start_mock)
 // =============================================================================
 
 /// Runners the Agent injects so the mock can dispatch tool calls inline
-/// through the same hooks + policies + [`ToolRunner`] the live backends use.
-#[derive(Default, Clone)]
-pub struct MockRunners {
-    /// Tool runner for custom + built-in tool execution.
-    pub tool_runner: Option<Arc<ToolRunner>>,
-    /// Hook runner for pre/post tool-call hooks.
-    pub hook_runner: Option<Arc<HookRunner>>,
-    /// Session context for hook dispatch.
-    pub session_ctx: Option<SessionContext>,
-}
+/// through the same hooks + policies + [`ToolRunner`] the live backends use —
+/// an alias of the shared [`BackendRunners`](crate::backends::BackendRunners).
+pub type MockRunners = crate::backends::BackendRunners;
 
 // =============================================================================
 // Strategy

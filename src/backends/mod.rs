@@ -23,6 +23,11 @@ mod stream_timeout;
 /// streaming clients. Backend event parsing stays in each backend's `api.rs`.
 pub(crate) mod sse;
 
+/// The shared tool/hook/session runner bundle the Agent injects into every
+/// backend strategy ([`BackendRunners`]).
+mod runners;
+pub use runners::BackendRunners;
+
 pub mod gemini;
 /// Deterministic, offline mock backend for testing agents — a scripted
 /// `ConnectionStrategy` that replays fixed model turns with no network, key,

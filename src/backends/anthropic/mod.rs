@@ -46,7 +46,6 @@ use crate::backends::gemini::tools::{register_builtins, BuiltinDeps};
 use crate::connections::{Connection, ConnectionStrategy, StepStream};
 use crate::content::Content;
 use crate::error::{Error, Result};
-use crate::hooks::{HookRunner, SessionContext};
 use crate::tools::ToolRunner;
 use crate::types::{
     CapabilitiesConfig, Step, StepSource, StepStatus, SystemInstructions, ThinkingLevel,
@@ -164,16 +163,9 @@ impl AnthropicBackendConfig {
 // Strategy
 // =============================================================================
 
-/// Injected runners for inline tool dispatch in the Anthropic backend.
-#[derive(Default)]
-pub struct AnthropicRunners {
-    /// Tool runner for custom + built-in tool execution.
-    pub tool_runner: Option<Arc<ToolRunner>>,
-    /// Hook runner for pre/post tool-call hooks.
-    pub hook_runner: Option<Arc<HookRunner>>,
-    /// Session context for hook dispatch.
-    pub session_ctx: Option<SessionContext>,
-}
+/// Injected runners for inline tool dispatch in the Anthropic backend — an
+/// alias of the shared [`BackendRunners`](crate::backends::BackendRunners).
+pub type AnthropicRunners = crate::backends::BackendRunners;
 
 /// Factory that opens an [`AnthropicConnection`].
 pub struct AnthropicConnectionStrategy {

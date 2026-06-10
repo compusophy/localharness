@@ -366,16 +366,9 @@ fn content_to_text(content: Content) -> String {
 // Strategy
 // =============================================================================
 
-/// Injected runners for inline tool dispatch in the local backend.
-#[derive(Default)]
-pub struct LocalRunners {
-    /// Tool runner for custom + built-in (fs) tool execution.
-    pub tool_runner: Option<Arc<ToolRunner>>,
-    /// Hook runner for pre/post tool-call hooks.
-    pub hook_runner: Option<Arc<HookRunner>>,
-    /// Session context for hook dispatch.
-    pub session_ctx: Option<SessionContext>,
-}
+/// Injected runners for inline tool dispatch in the local backend — an
+/// alias of the shared [`BackendRunners`](crate::backends::BackendRunners).
+pub type LocalRunners = crate::backends::BackendRunners;
 
 /// Factory that opens a [`LocalConnection`].
 pub struct LocalConnectionStrategy {
