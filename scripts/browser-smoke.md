@@ -44,6 +44,19 @@ that window silently vanish.
   window can resize mid-session — raw-coordinate clicks then land hundreds
   of px off-target and "do nothing". If a click mysteriously no-ops while
   `lhReady` is set, compare `window.innerWidth` to the screenshot width.
+- **Measure layout with `getBoundingClientRect`, never eyeball a
+  screenshot.** Zooms are cropped + scaled — a zoom of the top 500px of a
+  778px panel looks like the whole panel floating with dead space below.
+  Burned us twice (FILES "doesn't open", admin panel "short floating box")
+  — both were false alarms from cropped views. To verify a layout claim,
+  read the actual numbers: `el.getBoundingClientRect()` vs
+  `window.innerWidth/innerHeight`.
+- **Mobile:** Chrome-MCP `resize_window` does NOT change the page's
+  `innerWidth` (the layout viewport stays desktop, so `<900px` CSS never
+  fires). Use DevTools device emulation (responsive mode) instead — then
+  `innerWidth` reports the emulated width and the mobile tab bar appears.
+  Under emulation, CDP mouse-clicks (`computer left_click`) may time out —
+  drive via `javascript_tool` (`el.click()`), which stays reliable.
 
 - Sponsor "fee-token LOW" warning: AlphaUSD has 6 decimals — verify with
   `cast call` before believing any balance warning.
