@@ -24,6 +24,7 @@ use tokio::sync::{broadcast, Notify};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
+use crate::backends::dispatch::dispatch_tool_call;
 use crate::backends::gemini::api::SharedClient;
 use crate::backends::gemini::compaction::{self, should_compact};
 use crate::backends::stream_timeout::{idle_timeout_ms, next_with_idle_timeout, NextChunk};
@@ -37,8 +38,7 @@ use crate::error::{Error, Result};
 use crate::hooks::{HookRunner, SessionContext};
 use crate::tools::ToolRunner;
 use crate::types::{
-    Step, StepStatus, StreamChunk, SystemInstructions, ThinkingLevel, ToolCall, ToolResult,
-    UsageMetadata,
+    Step, StepStatus, StreamChunk, SystemInstructions, ThinkingLevel, ToolCall, UsageMetadata,
 };
 
 /// Maximum dispatch rounds per turn. The model can loop indefinitely
@@ -405,52 +405,19 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content) -> Result<()> 
             };
             deps.state.emit_chunk_step(StreamChunk::ToolCall(tool_call.clone()));
 
-            let (decision, op_ctx) = if let Some(hooks) = deps.hook_runner.as_ref() {
-                hooks.dispatch_pre_tool_call(&turn_ctx, &tool_call).await
-            } else {
-                (crate::types::HookResult::allow(), turn_ctx.clone())
-            };
-
-            // Resolve to (value_for_wire, error_string_for_typed_result).
-            // The wire side always gets a JSON value (Gemini needs to see
-            // errors as part of the conversation); the typed ToolResult
-            // gets `error: Some(msg)` whenever execution didn't produce
-            // a real result, so consumers (UI, hooks) can branch cleanly.
-            let (result_value, post_result_error): (Value, Option<String>) =
-                if !decision.allow {
-                    let msg = decision.message.clone();
-                    (json!({ "error": msg.clone() }), Some(msg))
-                } else if let Some(runner) = deps.tool_runner.as_ref() {
-                    match runner.execute(&call.name, call.args.clone()).await {
-                        Ok(v) => {
-                            // Convention: built-in tools encode failures
-                            // as `{"error": "..."}`. Lift that into the
-                            // typed result so the UI can render an error.
-                            let err = v
-                                .get("error")
-                                .and_then(|e| e.as_str())
-                                .map(String::from);
-                            (v, err)
-                        }
-                        Err(e) => {
-                            let s = e.to_string();
-                            (json!({ "error": s.clone() }), Some(s))
-                        }
-                    }
-                } else {
-                    let s = format!("no tool runner registered for '{}'", call.name);
-                    (json!({ "error": s.clone() }), Some(s))
-                };
-
-            let post_result = ToolResult {
-                name: tool_call.name.clone(),
-                id: None,
-                result: Some(result_value.clone()),
-                error: post_result_error,
-            };
-            if let Some(hooks) = deps.hook_runner.as_ref() {
-                hooks.dispatch_post_tool_call(&op_ctx, &post_result).await;
-            }
+            // The shared pipeline: pre-hooks → execute → error-lift →
+            // post-hooks. The wire side always gets a JSON value (Gemini
+            // needs to see errors as part of the conversation); the typed
+            // ToolResult gets `error: Some(msg)` whenever execution didn't
+            // produce a real result, so consumers (UI, hooks) branch cleanly.
+            let post_result = dispatch_tool_call(
+                deps.tool_runner.as_ref(),
+                deps.hook_runner.as_ref(),
+                &turn_ctx,
+                &tool_call,
+            )
+            .await;
+            let result_value = post_result.result.clone().unwrap_or(Value::Null);
             // Surface the result on the stream so UIs can flip the
             // tool block from "running" to ok/err. Until 0.7.1 this
             // emit was missing — the result panel stayed empty.

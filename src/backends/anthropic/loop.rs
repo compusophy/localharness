@@ -31,6 +31,7 @@ use tokio::sync::{broadcast, Notify};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
+use crate::backends::dispatch::dispatch_tool_call;
 use crate::backends::anthropic::api::SharedClient;
 use crate::backends::anthropic::wire::{
     Block, BlockDelta, ImageSource, Message, MessagesRequest, Role, StopReason, StreamEvent,
@@ -534,47 +535,25 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message) -> Result<()> {
             deps.state
                 .emit_chunk_step(StreamChunk::ToolCall(tool_call.clone()));
 
-            let (decision, op_ctx) = if let Some(hooks) = deps.hook_runner.as_ref() {
-                hooks.dispatch_pre_tool_call(&turn_ctx, &tool_call).await
-            } else {
-                (crate::types::HookResult::allow(), turn_ctx.clone())
-            };
-
-            let (result_value, post_result_error): (Value, Option<String>) = if !decision.allow {
-                let msg = decision.message.clone();
-                (json!({ "error": msg.clone() }), Some(msg))
-            } else if let Some(runner) = deps.tool_runner.as_ref() {
-                match runner.execute(&name, args.clone()).await {
-                    Ok(v) => {
-                        let err = v.get("error").and_then(|e| e.as_str()).map(String::from);
-                        (v, err)
-                    }
-                    Err(e) => {
-                        let s = e.to_string();
-                        (json!({ "error": s.clone() }), Some(s))
-                    }
-                }
-            } else {
-                let s = format!("no tool runner registered for '{name}'");
-                (json!({ "error": s.clone() }), Some(s))
-            };
-
-            let post_result = ToolResult {
-                name: name.clone(),
-                id: Some(id.clone()),
-                result: Some(result_value.clone()),
-                error: post_result_error.clone(),
-            };
-            if let Some(hooks) = deps.hook_runner.as_ref() {
-                hooks.dispatch_post_tool_call(&op_ctx, &post_result).await;
-            }
+            // The shared pipeline: pre-hooks → execute → error-lift →
+            // post-hooks. `post_result.id` carries the tool_use id (set on
+            // `tool_call` above) so results correlate Anthropic-style.
+            let post_result = dispatch_tool_call(
+                deps.tool_runner.as_ref(),
+                deps.hook_runner.as_ref(),
+                &turn_ctx,
+                &tool_call,
+            )
+            .await;
+            let result_value = post_result.result.clone().unwrap_or(Value::Null);
+            let is_error = post_result.error.is_some();
             deps.state
                 .emit_chunk_step(StreamChunk::ToolResult(post_result.clone()));
 
             result_blocks.push(Block::ToolResult {
                 tool_use_id: id,
                 content: tool_result_content(&result_value),
-                is_error: post_result_error.map(|_| true),
+                is_error: is_error.then_some(true),
             });
         }
 

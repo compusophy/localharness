@@ -671,56 +671,26 @@ impl Connection for LocalConnection {
 
                 let tool_call = ToolCall {
                     name: name.clone(),
-                    args: args.clone(),
+                    args,
                     id: None,
                     canonical_path: None,
                 };
                 state.emit_tool_call_step(&tool_call);
 
-                // Pre-tool-call hooks + policy (mirror the Gemini loop).
-                let (decision, op_ctx) = if let Some(hooks) = hook_runner.as_ref() {
-                    hooks.dispatch_pre_tool_call(&turn_ctx, &tool_call).await
-                } else {
-                    (crate::types::HookResult::allow(), turn_ctx.clone())
-                };
-
-                // Resolve to a JSON result value (built-in tools encode failures
-                // as `{"error": "..."}`; lift that into the typed result).
-                let (result_value, post_error): (Value, Option<String>) = if !decision.allow {
-                    let msg = decision.message.clone();
-                    (json!({ "error": msg.clone() }), Some(msg))
-                } else if let Some(runner) = tool_runner.as_ref() {
-                    match runner.execute(&name, args).await {
-                        Ok(v) => {
-                            let err = v
-                                .get("error")
-                                .and_then(|e| e.as_str())
-                                .map(String::from);
-                            (v, err)
-                        }
-                        Err(e) => {
-                            let s = e.to_string();
-                            (json!({ "error": s.clone() }), Some(s))
-                        }
-                    }
-                } else {
-                    let s = format!("no tool runner registered for '{name}'");
-                    (json!({ "error": s.clone() }), Some(s))
-                };
-
-                let post_result = ToolResult {
-                    name: name.clone(),
-                    id: None,
-                    result: Some(result_value.clone()),
-                    error: post_error,
-                };
-                if let Some(hooks) = hook_runner.as_ref() {
-                    hooks.dispatch_post_tool_call(&op_ctx, &post_result).await;
-                }
+                // The shared pipeline (mirror the Gemini loop): pre-hooks +
+                // policy → execute → `{"error": ...}` lift → post-hooks.
+                let post_result = crate::backends::dispatch::dispatch_tool_call(
+                    tool_runner.as_ref(),
+                    hook_runner.as_ref(),
+                    &turn_ctx,
+                    &tool_call,
+                )
+                .await;
                 state.emit_tool_result_step(&post_result);
 
                 // Feed the result back as a ```tool_output``` user turn and
                 // re-loop so the model can react.
+                let result_value = post_result.result.unwrap_or(Value::Null);
                 let out = serde_json::to_string(&result_value).unwrap_or_default();
                 state.history.lock().push(Turn {
                     role: TurnRole::User,

@@ -28,6 +28,10 @@ pub(crate) mod sse;
 mod runners;
 pub use runners::BackendRunners;
 
+/// The shared tool-dispatch pipeline (pre-hook → execute → error-lift →
+/// post-hook) every backend funnels its inline tool calls through.
+pub(crate) mod dispatch;
+
 pub mod gemini;
 /// Deterministic, offline mock backend for testing agents — a scripted
 /// `ConnectionStrategy` that replays fixed model turns with no network, key,

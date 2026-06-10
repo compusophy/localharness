@@ -78,7 +78,6 @@ pub use crate::agent::MockAgentConfig;
 use crate::connections::{Connection, ConnectionStrategy, StepStream};
 use crate::content::Content;
 use crate::error::{Error, Result};
-use crate::tools::ToolRunner;
 use crate::types::{Step, StepStatus, ToolCall, ToolResult, UsageMetadata};
 
 const STEP_BROADCAST_CAPACITY: usize = 256;
@@ -93,7 +92,7 @@ enum ScriptAction {
     /// Stream a conversational text delta (a `content_delta` step). The
     /// terminal step's `content` is the concatenation of every `Text`.
     Text(String),
-    /// Request a tool call. When a [`ToolRunner`] is injected (the Agent path)
+    /// Request a tool call. When a [`ToolRunner`](crate::ToolRunner) is injected (the Agent path)
     /// the mock dispatches it inline through hooks + policies, exactly like the
     /// live backends; otherwise it only surfaces the call on the step stream.
     ToolCall {
@@ -129,7 +128,7 @@ impl ScriptedTurn {
     }
 
     /// Append a tool call the model "requests" at this point in the turn.
-    /// `args` is the JSON the tool receives. With a [`ToolRunner`] injected,
+    /// `args` is the JSON the tool receives. With a [`ToolRunner`](crate::ToolRunner) injected,
     /// the mock executes it inline through the agent's hooks + policies.
     pub fn tool_call(mut self, name: impl Into<String>, args: serde_json::Value) -> Self {
         self.actions.push(ScriptAction::ToolCall {
@@ -232,7 +231,7 @@ impl MockConnectionBuilder {
 // =============================================================================
 
 /// Runners the Agent injects so the mock can dispatch tool calls inline
-/// through the same hooks + policies + [`ToolRunner`] the live backends use —
+/// through the same hooks + policies + [`ToolRunner`](crate::ToolRunner) the live backends use —
 /// an alias of the shared [`BackendRunners`](crate::backends::BackendRunners).
 pub type MockRunners = crate::backends::BackendRunners;
 
@@ -367,8 +366,8 @@ impl MockInner {
                     // tool-call flow actually RUN the tool offline — like the
                     // live backends, the result feeds the conversation rather
                     // than being re-broadcast as its own step.
-                    if let Some(runner) = self.runners.tool_runner.as_ref() {
-                        let _result = self.dispatch_tool(&tool_call, runner).await;
+                    if self.runners.tool_runner.is_some() {
+                        let _result = self.dispatch_tool(&tool_call).await;
                     }
                 }
             }
@@ -389,36 +388,26 @@ impl MockInner {
     }
 
     /// Run a scripted tool call through the injected hooks + policies + tool
-    /// runner — the same pipeline the live backends use — and return the typed
-    /// result. A denied call (policy / pre-tool-call hook) yields an error
-    /// result without executing the tool.
-    async fn dispatch_tool(&self, call: &ToolCall, runner: &ToolRunner) -> ToolResult {
+    /// runner — the SAME shared pipeline the live backends use
+    /// ([`crate::backends::dispatch::dispatch_tool_call`]) — and return the
+    /// typed result. A denied call (policy / pre-tool-call hook) yields an
+    /// error result without executing the tool; an `Ok` value carrying
+    /// `{"error": ...}` is lifted into `ToolResult::error` exactly like the
+    /// live backends.
+    async fn dispatch_tool(&self, call: &ToolCall) -> ToolResult {
         let turn_ctx = self
             .runners
             .session_ctx
             .as_ref()
             .map(|s| s.child())
             .unwrap_or_default();
-
-        let (decision, op_ctx) = if let Some(hooks) = self.runners.hook_runner.as_ref() {
-            hooks.dispatch_pre_tool_call(&turn_ctx, call).await
-        } else {
-            (crate::types::HookResult::allow(), turn_ctx.clone())
-        };
-
-        let result = if !decision.allow {
-            ToolResult::err(call.name.clone(), call.id.clone(), decision.message.clone())
-        } else {
-            match runner.execute(&call.name, call.args.clone()).await {
-                Ok(v) => ToolResult::ok(call.name.clone(), call.id.clone(), v),
-                Err(e) => ToolResult::err(call.name.clone(), call.id.clone(), e.to_string()),
-            }
-        };
-
-        if let Some(hooks) = self.runners.hook_runner.as_ref() {
-            hooks.dispatch_post_tool_call(&op_ctx, &result).await;
-        }
-        result
+        crate::backends::dispatch::dispatch_tool_call(
+            self.runners.tool_runner.as_ref(),
+            self.runners.hook_runner.as_ref(),
+            &turn_ctx,
+            call,
+        )
+        .await
     }
 }
 
