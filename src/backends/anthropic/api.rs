@@ -5,10 +5,10 @@
 //! and [`messages`][AnthropicClient::messages] (non-streaming one-shot,
 //! used by `start_subagent` / compaction summary).
 //!
-//! The SSE decoder ([`MessagesSseStream`]) reuses the wire-agnostic
-//! frame-buffering skeleton from the Gemini backend: CRLF+LF-tolerant
-//! `take_frame`, partial-chunk buffering. The only Anthropic-specific
-//! piece is payload decoding — Anthropic frames are
+//! The SSE decoder ([`MessagesSseStream`]) delegates the wire-agnostic
+//! frame-buffering skeleton to the shared [`crate::backends::sse`] module:
+//! CRLF+LF-tolerant frame splitting, partial-chunk buffering. The only
+//! Anthropic-specific piece is payload decoding — Anthropic frames are
 //! `event: <name>\ndata: <json>\n\n`; we ignore the `event:` line and
 //! decode the `data:` JSON as a [`StreamEvent`] (the JSON carries the
 //! event name in its `"type"` field, so the `event:` line is redundant).
@@ -23,15 +23,14 @@ use std::task::{Context, Poll};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
-use bytes::{Bytes, BytesMut};
 use futures_core::Stream;
 use futures_util::stream::StreamExt;
 use reqwest::{Client, Url};
-use tracing::trace;
 
 use crate::backends::anthropic::wire::{
     MessagesRequest, MessagesResponse, StreamEvent, ANTHROPIC_VERSION,
 };
+use crate::backends::sse::{ByteStream, SseFrameStream};
 use crate::error::{Error, Result};
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
@@ -170,77 +169,25 @@ impl AnthropicClient {
 // SSE stream
 // =============================================================================
 
-// On native, the SSE byte stream must be `Send` so it can move into a
-// `tokio::spawn`'d turn. On wasm32, browser fetch streams aren't Send —
-// fine, everything single-threads through `spawn_local`.
-#[cfg(not(target_arch = "wasm32"))]
-type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes>> + Send + 'static>>;
-#[cfg(target_arch = "wasm32")]
-type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes>> + 'static>>;
-
 /// Decodes an Anthropic Messages SSE byte stream into [`StreamEvent`]s.
 ///
-/// Frame format: `event: <name>\ndata: <json>\n\n`. A frame ends at the
-/// first blank line — `\n\n` (LF) or `\r\n\r\n` (CRLF; browser fetch
-/// surfaces CRLF, the wasm gotcha). We concatenate every `data:` line in
-/// a frame and decode the result as a [`StreamEvent`], ignoring the
-/// `event:` line (the JSON's own `"type"` field carries the same name).
+/// Frame format: `event: <name>\ndata: <json>\n\n`. The wire-agnostic frame
+/// splitting (CRLF+LF-tolerant boundaries — browser fetch surfaces CRLF, the
+/// wasm gotcha — partial-chunk buffering, EOF flush of a final unterminated
+/// frame) is the shared [`SseFrameStream`]; this type only decodes each
+/// `data:` payload as a [`StreamEvent`], ignoring the `event:` line (the
+/// JSON's own `"type"` field carries the same name). No `[DONE]` sentinel —
+/// Anthropic ends streams with a `message_stop` event.
 pub struct MessagesSseStream {
-    upstream: ByteStream,
-    buffer: BytesMut,
-    done: bool,
+    frames: SseFrameStream,
 }
 
 impl MessagesSseStream {
     /// Wrap a raw byte stream. Public so unit tests can feed canned bytes.
     pub fn new(upstream: ByteStream) -> Self {
         Self {
-            upstream,
-            buffer: BytesMut::with_capacity(8 * 1024),
-            done: false,
+            frames: SseFrameStream::new(upstream, None, "anthropic"),
         }
-    }
-
-    /// Pull a complete frame's `data:` payload from `self.buffer` if one
-    /// is fully buffered. Returns `None` when no frame boundary is present
-    /// yet (partial chunk). Boundary = first blank line, CRLF or LF.
-    fn take_frame(&mut self) -> Option<Vec<u8>> {
-        let bytes = &self.buffer[..];
-        let mut i = 0;
-        while i < bytes.len() {
-            // Prefer the longer CRLF boundary so we consume it whole.
-            if i + 3 < bytes.len()
-                && bytes[i] == b'\r'
-                && bytes[i + 1] == b'\n'
-                && bytes[i + 2] == b'\r'
-                && bytes[i + 3] == b'\n'
-            {
-                let frame = self.buffer.split_to(i + 4);
-                return Some(extract_data_payload(&frame));
-            }
-            if i + 1 < bytes.len() && bytes[i] == b'\n' && bytes[i + 1] == b'\n' {
-                let frame = self.buffer.split_to(i + 2);
-                return Some(extract_data_payload(&frame));
-            }
-            i += 1;
-        }
-        None
-    }
-
-    /// Consume the ENTIRE remaining buffer as one final frame, regardless of
-    /// whether it ends in a blank line. Called ONLY at upstream EOF: the
-    /// WHATWG event-stream rule is that a stream's last event need not be
-    /// terminated by a trailing blank line, so a complete final
-    /// `data: {...}` with no `\n\n` would otherwise be silently dropped — and
-    /// for Anthropic that frame can be the `message_delta` (carrying
-    /// `stop_reason` + cumulative `output_tokens`) or the `message_stop`.
-    /// Returns `None` once the buffer is empty.
-    fn take_remaining(&mut self) -> Option<Vec<u8>> {
-        if self.buffer.is_empty() {
-            return None;
-        }
-        let frame = self.buffer.split_to(self.buffer.len());
-        Some(extract_data_payload(&frame))
     }
 }
 
@@ -248,64 +195,13 @@ impl Stream for MessagesSseStream {
     type Item = Result<StreamEvent>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        loop {
-            if self.done {
-                // Flush any remaining buffered frame even after upstream EOF.
-                // First drain blank-line-terminated frames; once those are
-                // gone, treat whatever is left as the final UNTERMINATED frame
-                // (SSE permits the last event to omit the trailing blank line
-                // — see `take_remaining`). Without this, a final
-                // `message_delta` / `message_stop` with no trailing `\n\n`
-                // would be silently dropped.
-                let payload = match self.take_frame() {
-                    Some(p) => p,
-                    None => match self.take_remaining() {
-                        Some(p) => p,
-                        None => return Poll::Ready(None),
-                    },
-                };
-                if payload.is_empty() {
-                    continue;
-                }
-                return Poll::Ready(Some(decode_event(&payload)));
-            }
-
-            if let Some(payload) = self.take_frame() {
-                if payload.is_empty() {
-                    continue;
-                }
-                return Poll::Ready(Some(decode_event(&payload)));
-            }
-
-            match self.upstream.as_mut().poll_next(cx) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(Some(Ok(bytes))) => {
-                    trace!(len = bytes.len(), "anthropic sse bytes");
-                    self.buffer.extend_from_slice(&bytes);
-                }
-                Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e))),
-                Poll::Ready(None) => self.done = true,
-            }
+        match Pin::new(&mut self.frames).poll_next(cx) {
+            Poll::Ready(Some(Ok(payload))) => Poll::Ready(Some(decode_event(&payload))),
+            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
         }
     }
-}
-
-fn extract_data_payload(frame: &[u8]) -> Vec<u8> {
-    // Concatenate every `data:` line in this frame, trimming the prefix
-    // and any single leading space. `event:`/`id:`/`retry:` lines ignored.
-    let mut out = Vec::with_capacity(frame.len());
-    let text = std::str::from_utf8(frame).unwrap_or("");
-    for line in text.split('\n') {
-        let line = line.trim_end_matches('\r');
-        if let Some(rest) = line.strip_prefix("data:") {
-            let rest = rest.strip_prefix(' ').unwrap_or(rest);
-            if !out.is_empty() {
-                out.push(b'\n');
-            }
-            out.extend_from_slice(rest.as_bytes());
-        }
-    }
-    out
 }
 
 fn decode_event(payload: &[u8]) -> Result<StreamEvent> {
@@ -325,6 +221,7 @@ pub type SharedClient = Arc<AnthropicClient>;
 mod tests {
     use super::*;
     use crate::backends::anthropic::wire::{Block, BlockDelta, StopReason};
+    use bytes::Bytes;
     use futures_util::stream;
 
     fn bytes_from(parts: &[&[u8]]) -> ByteStream {

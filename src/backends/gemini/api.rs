@@ -16,13 +16,12 @@ use std::task::{Context, Poll};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
-use bytes::{Bytes, BytesMut};
 use futures_core::Stream;
 use futures_util::stream::StreamExt;
 use reqwest::{Client, Url};
-use tracing::trace;
 
 use crate::backends::gemini::wire::{GenerateChunk, GenerateContentRequest};
+use crate::backends::sse::{ByteStream, SseFrameStream};
 use crate::error::{Error, Result};
 
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
@@ -152,81 +151,23 @@ impl GeminiClient {
 // SSE stream
 // =============================================================================
 
-// On native, the SSE byte stream must be `Send` so it can move into a
-// `tokio::spawn`'d turn. On wasm32, reqwest's browser fetch stream isn't
-// Send — that's fine because everything single-threads through
-// `wasm_bindgen_futures::spawn_local`.
-#[cfg(not(target_arch = "wasm32"))]
-type ByteStream =
-    Pin<Box<dyn Stream<Item = Result<Bytes>> + Send + 'static>>;
-#[cfg(target_arch = "wasm32")]
-type ByteStream =
-    Pin<Box<dyn Stream<Item = Result<Bytes>> + 'static>>;
-
 /// Decodes a Gemini SSE byte stream into parsed [`GenerateChunk`]s.
 ///
 /// Gemini's SSE format is conventional: lines starting with `data:`
 /// carry JSON; blank lines separate frames; an optional `data: [DONE]`
-/// closes the stream. We tolerate CR/LF and partial chunks; the decoder
-/// buffers until it sees a frame boundary.
+/// closes the stream. The wire-agnostic frame splitting (CRLF+LF-tolerant
+/// boundaries, partial-chunk buffering, `[DONE]` sentinel, EOF flush) is
+/// the shared [`SseFrameStream`]; this type only decodes each payload as
+/// a [`GenerateChunk`].
 pub struct GeminiSseStream {
-    upstream: ByteStream,
-    buffer: BytesMut,
-    done: bool,
+    frames: SseFrameStream,
 }
 
 impl GeminiSseStream {
     fn new(upstream: ByteStream) -> Self {
         Self {
-            upstream,
-            buffer: BytesMut::with_capacity(8 * 1024),
-            done: false,
+            frames: SseFrameStream::new(upstream, Some(b"[DONE]"), "gemini"),
         }
-    }
-
-    /// Pull a complete frame's bytes from `self.buffer` if one is
-    /// present. Returns the JSON payload (without the `data:` prefix
-    /// or trailing newlines), or `None` if no full frame is buffered.
-    ///
-    /// A frame ends at the first blank line. Two byte sequences mark
-    /// that boundary: `\n\n` (LF) or `\r\n\r\n` (CRLF). Browser fetch
-    /// surfaces Gemini's SSE with CRLF, so we must accept both.
-    fn take_frame(&mut self) -> Option<Vec<u8>> {
-        let bytes = &self.buffer[..];
-        let mut i = 0;
-        while i < bytes.len() {
-            // Prefer the longer CRLF boundary so we consume it whole.
-            if i + 3 < bytes.len()
-                && bytes[i] == b'\r'
-                && bytes[i + 1] == b'\n'
-                && bytes[i + 2] == b'\r'
-                && bytes[i + 3] == b'\n'
-            {
-                let frame = self.buffer.split_to(i + 4);
-                return Some(extract_data_payload(&frame));
-            }
-            if i + 1 < bytes.len() && bytes[i] == b'\n' && bytes[i + 1] == b'\n' {
-                let frame = self.buffer.split_to(i + 2);
-                return Some(extract_data_payload(&frame));
-            }
-            i += 1;
-        }
-        None
-    }
-
-    /// Consume the ENTIRE remaining buffer as one final frame, regardless
-    /// of whether it ends in a blank line. Called only at upstream EOF: the
-    /// SSE/WHATWG event-stream rule is that a stream's last event need NOT
-    /// be terminated by a trailing blank line, so a complete final
-    /// `data: {...}` with no `\n\n` would otherwise be silently dropped —
-    /// and for Gemini that frame is exactly the one carrying `finishReason`
-    /// + `usageMetadata`. Returns `None` once the buffer is empty.
-    fn take_remaining(&mut self) -> Option<Vec<u8>> {
-        if self.buffer.is_empty() {
-            return None;
-        }
-        let frame = self.buffer.split_to(self.buffer.len());
-        Some(extract_data_payload(&frame))
     }
 }
 
@@ -234,74 +175,13 @@ impl Stream for GeminiSseStream {
     type Item = Result<GenerateChunk>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        loop {
-            if self.done {
-                // Flush any remaining buffered frame even after upstream EOF.
-                // First drain blank-line-terminated frames; once those are
-                // gone, treat whatever is left as the final unterminated
-                // frame (SSE permits the last event to omit the trailing
-                // blank line — see `take_remaining`).
-                let payload = match self.take_frame() {
-                    Some(p) => p,
-                    None => match self.take_remaining() {
-                        Some(p) => p,
-                        None => return Poll::Ready(None),
-                    },
-                };
-                if payload.is_empty() {
-                    continue;
-                }
-                if payload == b"[DONE]" {
-                    continue;
-                }
-                return Poll::Ready(Some(decode_chunk(&payload)));
-            }
-
-            if let Some(payload) = self.take_frame() {
-                if payload.is_empty() {
-                    continue;
-                }
-                if payload == b"[DONE]" {
-                    // `[DONE]` is authoritative: terminate the stream and drop
-                    // anything buffered after it, rather than letting the EOF
-                    // flush leak post-sentinel frames as chunks.
-                    self.done = true;
-                    self.buffer.clear();
-                    continue;
-                }
-                return Poll::Ready(Some(decode_chunk(&payload)));
-            }
-
-            match self.upstream.as_mut().poll_next(cx) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(Some(Ok(bytes))) => {
-                    trace!(len = bytes.len(), "gemini sse bytes");
-                    self.buffer.extend_from_slice(&bytes);
-                }
-                Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e))),
-                Poll::Ready(None) => self.done = true,
-            }
+        match Pin::new(&mut self.frames).poll_next(cx) {
+            Poll::Ready(Some(Ok(payload))) => Poll::Ready(Some(decode_chunk(&payload))),
+            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
         }
     }
-}
-
-fn extract_data_payload(frame: &[u8]) -> Vec<u8> {
-    // Concatenate every `data:` line in this frame, trimming the prefix
-    // and any single leading space.
-    let mut out = Vec::with_capacity(frame.len());
-    let text = std::str::from_utf8(frame).unwrap_or("");
-    for line in text.split('\n') {
-        let line = line.trim_end_matches('\r');
-        if let Some(rest) = line.strip_prefix("data:") {
-            let rest = rest.strip_prefix(' ').unwrap_or(rest);
-            if !out.is_empty() {
-                out.push(b'\n');
-            }
-            out.extend_from_slice(rest.as_bytes());
-        }
-        // Other SSE fields (event:, id:, retry:) are ignored.
-    }
-    out
 }
 
 fn decode_chunk(payload: &[u8]) -> Result<GenerateChunk> {
@@ -316,6 +196,7 @@ pub type SharedClient = Arc<GeminiClient>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
     use futures_util::stream;
 
     fn bytes_from(parts: &[&[u8]]) -> ByteStream {

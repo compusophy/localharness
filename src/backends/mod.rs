@@ -18,6 +18,11 @@
 /// forever, while a steadily streaming response is unaffected.
 mod stream_timeout;
 
+/// Shared SSE frame decoder (blank-line frame splitting, `data:` payload
+/// extraction, CRLF+LF tolerance, EOF flush) used by the Gemini and Anthropic
+/// streaming clients. Backend event parsing stays in each backend's `api.rs`.
+pub(crate) mod sse;
+
 pub mod gemini;
 /// Deterministic, offline mock backend for testing agents — a scripted
 /// `ConnectionStrategy` that replays fixed model turns with no network, key,
