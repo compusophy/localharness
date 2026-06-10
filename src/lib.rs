@@ -178,8 +178,7 @@ pub use policy::{
 pub use tools::{ClosureTool, Tool, ToolContext, ToolRunner};
 pub use triggers::{every, Trigger, TriggerContext, TriggerRunner};
 pub use types::{
-    BuiltinTool, CapabilitiesConfig, GeminiConfig, GenerationConfig, HookResult, ModelConfig,
-    ModelEntry, Step, StepSource, StepStatus, StepTarget, StepType, StreamChunk,
-    SystemInstructions, ThinkingLevel, ToolCall, ToolResult, TranscriptEntry, TranscriptRole,
-    TriggerDelivery, UsageMetadata,
+    BuiltinTool, CapabilitiesConfig, HookResult, Step, StepSource, StepStatus, StepTarget,
+    StepType, StreamChunk, SystemInstructions, ThinkingLevel, ToolCall, ToolResult,
+    TranscriptEntry, TranscriptRole, TriggerDelivery, UsageMetadata,
 };

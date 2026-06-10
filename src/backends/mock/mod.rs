@@ -320,12 +320,42 @@ impl MockInner {
         let _ = self.steps.send(step);
     }
 
-    /// Replay one scripted turn: stream its text deltas, dispatch its tool
-    /// calls inline through hooks + policies + the tool runner (when injected),
-    /// then emit the turn-terminal step. Faithful to the live `run_turn` shape:
-    /// streamed `Active` deltas + a single `Done` terminal carrying the full
-    /// `content` (and, if scripted, the turn's usage).
-    async fn run_turn(&self, turn: ScriptedTurn) {
+    /// Replay one scripted turn: gate the prompt through the pre-turn hooks,
+    /// stream the turn's text deltas, dispatch its tool calls inline through
+    /// hooks + policies + the tool runner (when injected), then emit the
+    /// turn-terminal step and fire the post-turn hooks. Faithful to the live
+    /// `run_turn` shape: streamed `Active` deltas + a single `Done` terminal
+    /// carrying the full `content` (and, if scripted, the turn's usage).
+    async fn run_turn(&self, prompt: Content) {
+        // ONE turn context shared by the pre-turn gate, the per-call tool
+        // hooks, and the post-turn hooks of this turn.
+        let turn_ctx = self
+            .runners
+            .session_ctx
+            .as_ref()
+            .map(|s| s.child())
+            .unwrap_or_default();
+
+        // Pre-turn gate — like the live backends, a denied prompt never runs
+        // the "model": the next scripted turn is NOT consumed, and the deny
+        // surfaces as a turn_error Step (→ stream `Err` for `chat()`/`text()`).
+        if let Some(denied) = crate::backends::dispatch::gate_pre_turn(
+            self.runners.hook_runner.as_ref(),
+            &turn_ctx,
+            &prompt,
+        )
+        .await
+        {
+            self.emit(Step::turn_error(self.alloc_step_index(), denied));
+            return;
+        }
+
+        // Consume the next scripted turn AFTER the gate. Past the end of the
+        // script, every send is an empty terminal turn (a model with nothing
+        // left to say) — so an over-sending test terminates cleanly.
+        let idx = self.next_turn.fetch_add(1, Ordering::Relaxed);
+        let turn = self.turns.get(idx).cloned().unwrap_or_default();
+
         self.idle.store(false, Ordering::Release);
         let traj = uuid::Uuid::new_v4().to_string();
 
@@ -365,21 +395,32 @@ impl MockInner {
                     // live backends, the result feeds the conversation rather
                     // than being re-broadcast as its own step.
                     if self.runners.tool_runner.is_some() {
-                        let _result = self.dispatch_tool(&tool_call).await;
+                        let _result = self.dispatch_tool(&turn_ctx, &tool_call).await;
                     }
                 }
             }
         }
 
+        let content = turn.content();
         self.emit(Step::turn_complete(
             traj,
             self.alloc_step_index(),
             StepStatus::Done,
-            turn.content(),
+            content.as_str(),
             "",
             None,
             turn.usage,
         ));
+
+        // Post-turn hooks observe the completed turn's final text — fired
+        // after the terminal step, never on denied turns (the gate above
+        // returned early). Same placement as the live backends.
+        crate::backends::dispatch::dispatch_post_turn(
+            self.runners.hook_runner.as_ref(),
+            &turn_ctx,
+            &content,
+        )
+        .await;
 
         self.idle.store(true, Ordering::Release);
         self.idle_notify.notify_waiters();
@@ -391,18 +432,17 @@ impl MockInner {
     /// typed result. A denied call (policy / pre-tool-call hook) yields an
     /// error result without executing the tool; an `Ok` value carrying
     /// `{"error": ...}` is lifted into `ToolResult::error` exactly like the
-    /// live backends.
-    async fn dispatch_tool(&self, call: &ToolCall) -> ToolResult {
-        let turn_ctx = self
-            .runners
-            .session_ctx
-            .as_ref()
-            .map(|s| s.child())
-            .unwrap_or_default();
+    /// live backends. `turn_ctx` is the turn's shared hook context, so
+    /// per-call operation contexts hang off the turn like the live loops.
+    async fn dispatch_tool(
+        &self,
+        turn_ctx: &crate::hooks::TurnContext,
+        call: &ToolCall,
+    ) -> ToolResult {
         crate::backends::dispatch::dispatch_tool_call(
             self.runners.tool_runner.as_ref(),
             self.runners.hook_runner.as_ref(),
-            &turn_ctx,
+            turn_ctx,
             call,
         )
         .await
@@ -420,17 +460,14 @@ impl Connection for MockConnection {
         &self.inner.conversation_id
     }
 
-    async fn send(&self, _content: Content) -> Result<()> {
-        // Consume the next scripted turn. Past the end of the script, every
-        // send is an empty terminal turn (a model with nothing left to say) —
-        // so an over-sending test terminates cleanly instead of hanging.
-        let idx = self.inner.next_turn.fetch_add(1, Ordering::Relaxed);
-        let turn = self.inner.turns.get(idx).cloned().unwrap_or_default();
+    async fn send(&self, content: Content) -> Result<()> {
         // Spawn the turn so `send` returns once dispatched (the live backends
-        // do the same), letting streaming consumers subscribe before steps land.
+        // do the same), letting streaming consumers subscribe before steps
+        // land. `run_turn` gates the prompt through the pre-turn hooks and
+        // only consumes the next scripted turn when the gate allows.
         let inner = self.inner.clone();
         crate::runtime::spawn(async move {
-            inner.run_turn(turn).await;
+            inner.run_turn(content).await;
         });
         Ok(())
     }

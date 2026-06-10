@@ -31,7 +31,7 @@ use tokio::sync::{broadcast, Notify};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use crate::backends::dispatch::dispatch_tool_call;
+use crate::backends::dispatch::{dispatch_post_turn, dispatch_tool_call, gate_pre_turn};
 use crate::backends::anthropic::api::SharedClient;
 use crate::backends::anthropic::wire::{
     Block, BlockDelta, ImageSource, Message, MessagesRequest, Role, StopReason, StreamEvent,
@@ -187,21 +187,34 @@ struct ThinkingAccum {
     signature: String,
 }
 
-pub(crate) async fn run_turn(deps: TurnDeps, user: Message) -> Result<()> {
+pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> Result<()> {
     deps.state.idle.store(false, Ordering::Release);
     deps.state.cancel.store(false, Ordering::Release);
+
+    // ONE turn context shared by the pre-turn gate, the per-call tool hooks,
+    // and the post-turn hooks of this turn.
+    let turn_ctx = deps
+        .session_ctx
+        .as_ref()
+        .map(|s| s.child())
+        .unwrap_or_default();
+
+    // Pre-turn gate — BEFORE the prompt enters history, so a denied prompt
+    // never pollutes context. On deny the model is never called; the
+    // turn_error Step becomes a stream `Err` via `subscribe_step_stream`.
+    if let Some(denied) = gate_pre_turn(deps.hook_runner.as_ref(), &turn_ctx, &prompt).await {
+        emit_error(&deps.state, denied.clone());
+        deps.state.idle.store(true, Ordering::Release);
+        deps.state.idle_notify.notify_waiters();
+        return Err(Error::other(denied));
+    }
+
     {
         let mut hist = deps.state.history.lock();
         hist.push(user);
     }
     *deps.state.last_turn_usage.lock() = Some(UsageMetadata::default());
     *deps.state.last_structured_output.lock() = None;
-
-    let turn_ctx = deps
-        .session_ctx
-        .as_ref()
-        .map(|s| s.child())
-        .unwrap_or_default();
 
     let mut rounds = 0u32;
     let mut last_text = String::new();
@@ -568,12 +581,16 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message) -> Result<()> {
         trajectory_id,
         deps.state.alloc_step_index(),
         status,
-        last_text,
+        last_text.as_str(),
         error_msg,
         structured,
         usage_opt,
     );
     deps.state.emit(terminal);
+
+    // Post-turn hooks observe the completed turn's final text — fired after
+    // the terminal step, never on denied or errored turns.
+    dispatch_post_turn(deps.hook_runner.as_ref(), &turn_ctx, &last_text).await;
 
     // Compaction: if the turn pushed prompt tokens over the threshold,
     // summarize the old prefix before the next turn starts.

@@ -569,14 +569,33 @@ impl Connection for LocalConnection {
     }
 
     async fn send(&self, content: Content) -> Result<()> {
-        let prompt = content_to_text(content);
         let state = self.state.clone();
         let engine = self.engine.clone();
         let tool_runner = self.tool_runner.clone();
         let hook_runner = self.hook_runner.clone();
-        let session_ctx = self.session_ctx.clone();
         let traj = uuid::Uuid::new_v4().to_string();
 
+        // ONE turn context shared by the pre-turn gate, the per-call tool
+        // hooks, and the post-turn hooks (mirrors the network backends'
+        // `session_ctx.child()`).
+        let turn_ctx = self
+            .session_ctx
+            .as_ref()
+            .map(|s| s.child())
+            .unwrap_or_default();
+
+        // Pre-turn gate — BEFORE the prompt enters history, so a denied
+        // prompt never pollutes context. On deny the model is never run; the
+        // turn_error Step becomes a stream `Err` via `subscribe_step_stream`.
+        if let Some(denied) =
+            crate::backends::dispatch::gate_pre_turn(hook_runner.as_ref(), &turn_ctx, &content)
+                .await
+        {
+            state.emit(error_step(&state, denied));
+            return Ok(());
+        }
+
+        let prompt = content_to_text(content);
         state.idle.store(false, Ordering::Release);
         state.cancel.store(false, Ordering::Release);
         state.history.lock().push(Turn {
@@ -595,13 +614,6 @@ impl Connection for LocalConnection {
                 state.idle_notify.notify_waiters();
                 return;
             };
-
-            // A fresh op context per turn for hook dispatch (mirrors the
-            // network backends' `session_ctx.child()`).
-            let turn_ctx = session_ctx
-                .as_ref()
-                .map(|s| s.child())
-                .unwrap_or_default();
 
             // Bounded generate → parse-tool → dispatch → feed-result → re-loop.
             // Best-effort: any round whose output has no `tool_code` fence (the
@@ -675,7 +687,18 @@ impl Connection for LocalConnection {
                 });
             }
 
-            state.emit(terminal_step(&state, &traj, final_text));
+            state.emit(terminal_step(&state, &traj, final_text.clone()));
+
+            // Post-turn hooks observe the completed turn's final text — fired
+            // after the terminal step, never on denied or failed turns (the
+            // gate / not-downloaded branches returned before this point).
+            crate::backends::dispatch::dispatch_post_turn(
+                hook_runner.as_ref(),
+                &turn_ctx,
+                &final_text,
+            )
+            .await;
+
             state.idle.store(true, Ordering::Release);
             state.idle_notify.notify_waiters();
         });

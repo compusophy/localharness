@@ -49,8 +49,7 @@ use crate::backends::mcp::McpBridge;
 #[cfg(feature = "native")]
 use crate::types::McpServerConfig;
 use crate::types::{
-    BuiltinTool, CapabilitiesConfig, GeminiConfig, StepStatus,
-    SystemInstructions, ToolCall,
+    BuiltinTool, CapabilitiesConfig, StepStatus, SystemInstructions, ToolCall,
 };
 
 // =============================================================================
@@ -77,8 +76,6 @@ pub struct AgentConfig {
     pub mcp_servers: Vec<McpServerConfig>,
     /// Resume an existing conversation by ID.
     pub conversation_id: Option<String>,
-    /// Gemini-specific model and API key settings.
-    pub gemini: GeminiConfig,
     /// JSON schema string for structured output via the `finish` tool.
     pub response_schema: Option<String>,
 }
@@ -122,18 +119,6 @@ impl AgentConfig {
     /// Register a background trigger.
     pub fn with_trigger(mut self, trigger: Arc<dyn Trigger>) -> Self {
         self.triggers.push(trigger);
-        self
-    }
-
-    /// Set Gemini-specific configuration (model, API key).
-    pub fn with_gemini(mut self, gemini: GeminiConfig) -> Self {
-        self.gemini = gemini;
-        self
-    }
-
-    /// Set the Gemini API key.
-    pub fn with_api_key(mut self, key: impl Into<String>) -> Self {
-        self.gemini.api_key = Some(key.into());
         self
     }
 

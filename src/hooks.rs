@@ -108,6 +108,12 @@ pub trait OnSessionEndHook: MaybeSendSync {
 }
 
 /// Gates each user turn. Return `HookResult::deny` to block the prompt.
+///
+/// Dispatched by every backend's turn loop BEFORE the prompt enters
+/// conversation history, so a denied prompt never pollutes context. On deny
+/// the model is not called; the turn surfaces as a stream error carrying
+/// `"turn denied by hook: {reason}"`, so `chat()`/`text()` return `Err`.
+/// First deny wins; subsequent hooks of this kind do not run.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait PreTurnHook: MaybeSendSync {
@@ -120,6 +126,10 @@ pub trait PreTurnHook: MaybeSendSync {
 }
 
 /// Fires after each model turn completes. Inspect-only.
+///
+/// Dispatched after the turn's terminal step is emitted, with the model's
+/// final text for the turn. Does NOT fire for denied (pre-turn) or failed
+/// (errored) turns.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait PostTurnHook: MaybeSendSync {

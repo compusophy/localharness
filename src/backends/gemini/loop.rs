@@ -24,7 +24,7 @@ use tokio::sync::{broadcast, Notify};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use crate::backends::dispatch::dispatch_tool_call;
+use crate::backends::dispatch::{dispatch_post_turn, dispatch_tool_call, gate_pre_turn};
 use crate::backends::gemini::api::SharedClient;
 use crate::backends::gemini::compaction::{self, should_compact};
 use crate::backends::stream_timeout::{idle_timeout_ms, next_with_idle_timeout, NextChunk};
@@ -183,22 +183,35 @@ pub(crate) struct TurnDeps {
     pub session_ctx: Option<SessionContext>,
 }
 
-pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content) -> Result<()> {
+pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content, prompt: Content) -> Result<()> {
     deps.state.idle.store(false, Ordering::Release);
     // Fresh turn starts uncancelled — clear any stale stop from before.
     deps.state.cancel.store(false, Ordering::Release);
+
+    // ONE turn context shared by the pre-turn gate, the per-call tool hooks,
+    // and the post-turn hooks of this turn.
+    let turn_ctx = deps
+        .session_ctx
+        .as_ref()
+        .map(|s| s.child())
+        .unwrap_or_default();
+
+    // Pre-turn gate — BEFORE the prompt enters history, so a denied prompt
+    // never pollutes context. On deny the model is never called; the
+    // turn_error Step becomes a stream `Err` via `subscribe_step_stream`.
+    if let Some(denied) = gate_pre_turn(deps.hook_runner.as_ref(), &turn_ctx, &prompt).await {
+        emit_error(&deps.state, denied.clone());
+        deps.state.idle.store(true, Ordering::Release);
+        deps.state.idle_notify.notify_waiters();
+        return Err(Error::other(denied));
+    }
+
     {
         let mut hist = deps.state.history.lock();
         hist.push(user);
     }
     *deps.state.last_turn_usage.lock() = Some(UsageMetadata::default());
     *deps.state.last_structured_output.lock() = None;
-
-    let turn_ctx = deps
-        .session_ctx
-        .as_ref()
-        .map(|s| s.child())
-        .unwrap_or_default();
 
     let mut rounds = 0u32;
     let mut last_text = String::new();
@@ -471,12 +484,16 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content) -> Result<()> 
         trajectory_id,
         deps.state.alloc_step_index(),
         status,
-        last_text,
+        last_text.as_str(),
         error_msg,
         structured,
         usage_opt,
     );
     deps.state.emit(terminal);
+
+    // Post-turn hooks observe the completed turn's final text — fired after
+    // the terminal step, never on denied or errored turns.
+    dispatch_post_turn(deps.hook_runner.as_ref(), &turn_ctx, &last_text).await;
 
     // Compaction: if the turn pushed total tokens over the configured
     // threshold, summarize the old prefix of history before the next
@@ -591,5 +608,82 @@ impl LoopState {
                 StepStatus::Active,
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backends::gemini::api::GeminiClient;
+    use crate::hooks::TurnContext;
+    use crate::types::{HookResult, StepSource};
+
+    struct DenyAllTurns;
+
+    #[async_trait::async_trait]
+    impl crate::hooks::PreTurnHook for DenyAllTurns {
+        fn name(&self) -> &str {
+            "test::deny_all_turns"
+        }
+        async fn run(&self, _ctx: &TurnContext, _prompt: &Content) -> Result<HookResult> {
+            Ok(HookResult::deny("nope"))
+        }
+    }
+
+    /// THE history-pollution invariant: a turn denied by a `PreTurnHook` must
+    /// (1) never push the prompt into wire history, (2) never call the model
+    /// (this test is OFFLINE — a real request would error differently),
+    /// (3) emit a System/Error `turn_error` Step carrying
+    /// `"turn denied by hook: {reason}"`, and (4) release the one-turn idle
+    /// guard.
+    #[tokio::test]
+    async fn pre_turn_deny_keeps_prompt_out_of_history() {
+        let (tx, mut rx) = broadcast::channel::<Step>(8);
+        let state = Arc::new(LoopState::new(tx));
+        let hooks = Arc::new(HookRunner::new());
+        hooks.register_pre_turn(Arc::new(DenyAllTurns));
+
+        let deps = TurnDeps {
+            client: Arc::new(GeminiClient::new("offline-test-key").expect("client builds")),
+            config: LoopConfig::from_system(
+                "gemini-test".into(),
+                None,
+                None,
+                None,
+                Vec::new(),
+                None,
+            )
+            .expect("config builds"),
+            state: state.clone(),
+            tool_runner: None,
+            hook_runner: Some(hooks),
+            session_ctx: None,
+        };
+
+        let prompt = Content::text("a prompt that must never reach history");
+        let user = to_wire_user_content(prompt.clone()).expect("wire content");
+        let err = run_turn(deps, user, prompt)
+            .await
+            .expect_err("a denied turn returns Err");
+        assert!(
+            err.to_string().contains("turn denied by hook: nope"),
+            "deny reason must surface, got: {err}"
+        );
+
+        assert!(
+            state.history.lock().is_empty(),
+            "the denied prompt must NOT enter wire history"
+        );
+        assert!(
+            state.idle.load(Ordering::Acquire),
+            "the idle guard must release after a denied turn"
+        );
+
+        // The deny surfaced as the System/Error turn_error shape that
+        // `subscribe_step_stream` translates into a stream `Err`.
+        let step = rx.recv().await.expect("a step was broadcast");
+        assert_eq!(step.source, StepSource::System);
+        assert_eq!(step.status, StepStatus::Error);
+        assert!(step.error.contains("turn denied by hook: nope"));
     }
 }

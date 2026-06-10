@@ -468,10 +468,12 @@ impl Connection for AnthropicConnection {
     }
 
     async fn send(&self, content: Content) -> Result<()> {
-        let user = to_wire_user_content(content)?;
+        // Clone is cheap (media parts are `Bytes`); the original rides along
+        // so pre-turn hooks inspect the SDK-level prompt, not wire JSON.
+        let user = to_wire_user_content(content.clone())?;
         let deps = self.deps_template.clone();
         crate::runtime::spawn(async move {
-            if let Err(e) = run_turn(deps, user).await {
+            if let Err(e) = run_turn(deps, user, content).await {
                 warn!(error = %e, "anthropic turn failed");
             }
         });

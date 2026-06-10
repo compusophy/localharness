@@ -230,6 +230,7 @@ impl Trigger for PeriodicTrigger {
     fn name(&self) -> &str {
         &self.name
     }
+    #[cfg(not(target_arch = "wasm32"))]
     async fn run(&self, ctx: TriggerContext) -> Result<()> {
         let mut ticker = tokio::time::interval(self.period);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -237,6 +238,21 @@ impl Trigger for PeriodicTrigger {
         ticker.tick().await;
         loop {
             ticker.tick().await;
+            if let Err(e) = (self.handler)(ctx.clone()).await {
+                warn!(name = %self.name, error = %e, "periodic trigger handler errored");
+            }
+        }
+    }
+    // wasm32: `tokio::time::interval` needs `Instant::now()` + a tokio reactor —
+    // neither exists on wasm32-unknown-unknown, so the native flavor ABORTS at
+    // first poll ("time not implemented on this platform"). Drive the period
+    // off the browser event loop via `runtime::sleep_ms` instead. Sleeping
+    // BEFORE each handler call preserves the native skip-first-tick semantics.
+    #[cfg(target_arch = "wasm32")]
+    async fn run(&self, ctx: TriggerContext) -> Result<()> {
+        let ms = u32::try_from(self.period.as_millis()).unwrap_or(u32::MAX);
+        loop {
+            crate::runtime::sleep_ms(ms).await;
             if let Err(e) = (self.handler)(ctx.clone()).await {
                 warn!(name = %self.name, error = %e, "periodic trigger handler errored");
             }

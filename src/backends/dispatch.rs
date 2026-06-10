@@ -1,17 +1,61 @@
-//! Shared tool-dispatch pipeline: pre-hook → execute → error-lift → post-hook.
+//! Shared hook-dispatch pipelines: the per-tool-call gate
+//! (pre-hook → execute → error-lift → post-hook) and the per-turn gate
+//! (pre-turn deny / post-turn observe).
 //!
 //! Every backend funnels its inline tool calls through
 //! [`dispatch_tool_call`], so policies, hooks, and the `{"error": ...}`
 //! lifting convention behave identically regardless of which model backend
-//! requested the call.
+//! requested the call. Likewise every backend's turn loop calls
+//! [`gate_pre_turn`] BEFORE the prompt enters history and
+//! [`dispatch_post_turn`] after a completed turn's terminal step, so turn
+//! hooks have ONE deny/observe semantic across gemini / anthropic / mock /
+//! local.
 
 use std::sync::Arc;
 
 use serde_json::json;
 
+use crate::content::Content;
 use crate::hooks::{HookRunner, TurnContext};
 use crate::tools::ToolRunner;
 use crate::types::{HookResult, ToolCall, ToolResult};
+
+/// Run the registered [`PreTurnHook`](crate::hooks::PreTurnHook)s for a turn.
+///
+/// MUST be called BEFORE the turn loop pushes the user prompt into history —
+/// a denied prompt never pollutes context. Returns `None` when the turn may
+/// proceed; `Some(message)` — the full `"turn denied by hook: {reason}"`
+/// string — when a hook denied it. On deny the caller must not call the
+/// model: it emits a [`Step::turn_error`](crate::types::Step::turn_error)
+/// carrying the message, which the uniform error-step translation
+/// (`backends::subscribe_step_stream`) turns into a stream `Err` for
+/// `chat()`/`text()`.
+pub(crate) async fn gate_pre_turn(
+    hook_runner: Option<&Arc<HookRunner>>,
+    turn_ctx: &TurnContext,
+    prompt: &Content,
+) -> Option<String> {
+    let hooks = hook_runner?;
+    let decision = hooks.dispatch_pre_turn(turn_ctx, prompt).await;
+    if decision.allow {
+        None
+    } else {
+        Some(format!("turn denied by hook: {}", decision.message))
+    }
+}
+
+/// Run the registered [`PostTurnHook`](crate::hooks::PostTurnHook)s with the
+/// completed turn's final text. Called after the turn-terminal step is
+/// emitted; never called for denied (pre-turn) or failed (errored) turns.
+pub(crate) async fn dispatch_post_turn(
+    hook_runner: Option<&Arc<HookRunner>>,
+    turn_ctx: &TurnContext,
+    response: &str,
+) {
+    if let Some(hooks) = hook_runner {
+        hooks.dispatch_post_turn(turn_ctx, response).await;
+    }
+}
 
 /// Run one tool call through the full dispatch pipeline the backends share:
 ///
