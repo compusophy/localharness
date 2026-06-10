@@ -570,9 +570,13 @@ async function authorizationState(from: string, nonce: string): Promise<boolean>
  * submitter only pays gas and earns nothing. We do NOT need the Tempo-AA
  * sponsor envelope here because the proxy's account is itself gas-funded.
  *
- * Returns when the receipt is `success`; throws on revert (replayed nonce /
- * expired / bad sig / insufficient $LH / missing allowance all revert in
- * `settle`) or on a definitive submission failure.
+ * Returns when the receipt is `success` OR when the receipt wait timed out
+ * but `authorizationState` shows the nonce consumed (the payment landed; a
+ * slow receipt must not fail a PAID call). Throws `SettlementError` on revert
+ * (replayed nonce / expired / bad sig / insufficient $LH / missing allowance
+ * all revert in `settle`), `SettlementUnconfirmedError` when the outcome is
+ * genuinely unknown (tx submitted, no receipt, nonce not yet consumed — it
+ * may STILL settle), or a plain error on a definitive submission failure.
  */
 async function settleOnChain(a: X402Auth): Promise<`0x${string}`> {
   const pk = process.env.PROXY_METER_KEY;
@@ -604,11 +608,34 @@ async function settleOnChain(a: X402Auth): Promise<`0x${string}`> {
     value: 0n,
   });
   const pub = createPublicClient({ chain: TEMPO_CHAIN, transport: http(TEMPO_RPC) });
-  const { status } = await pub.waitForTransactionReceipt({
-    hash,
-    timeout: 30_000,
-    pollingInterval: 500,
-  });
+  let status: 'success' | 'reverted';
+  try {
+    // 12s (matches gemini.ts::meterDebit / scheduler.ts::recordRun) — NOT 30s:
+    // ask_agent still has to run the model AFTER this, and a 30s wait alone
+    // could blow Edge's ~25s wall clock. Keep the wait bounded and resolve any
+    // ambiguity against the chain below instead of waiting longer.
+    ({ status } = await pub.waitForTransactionReceipt({
+      hash,
+      timeout: 12_000,
+      pollingInterval: 500,
+    }));
+  } catch {
+    // Ambiguous: the settle was SUBMITTED but no receipt arrived in time (slow
+    // RPC / Edge clock). The payer's $LH may ALREADY have moved and the
+    // one-shot nonce burned — propagating a generic error here made
+    // handleAskAgent 502 a PAID call, after which a same-auth retry 402'd
+    // ("replayed nonce") and a fresh-nonce retry DOUBLE-PAID. Disambiguate
+    // against the chain itself: `authorizationState` flips true the moment
+    // `settle` consumes the nonce, so one poll tells us whether it landed.
+    try {
+      if (await authorizationState(a.from, a.nonce)) {
+        return hash; // payment landed — receipt was just slow; run the agent.
+      }
+    } catch {
+      // the state read failed too — stay ambiguous and report it as such.
+    }
+    throw new SettlementUnconfirmedError(hash);
+  }
   if (status === 'reverted') {
     throw new SettlementError('x402 settle reverted (replayed/expired nonce, bad sig, or insufficient $LH allowance)');
   }
@@ -617,6 +644,24 @@ async function settleOnChain(a: X402Auth): Promise<`0x${string}`> {
 
 /** Thrown when settlement definitively fails on-chain (maps to JSON-RPC 402). */
 class SettlementError extends Error {}
+
+/**
+ * Thrown when the settle tx was SUBMITTED but its fate is UNKNOWN: the receipt
+ * wait timed out and `authorizationState` does not (yet) show the nonce as
+ * consumed. The authorization MAY STILL SETTLE — the payer must not blindly
+ * sign a fresh nonce (double-pay risk if this one lands) nor assume the $LH
+ * never moved. Carries the tx hash so the caller can watch it, or retry the
+ * SAME authorization (a later "replayed nonce" 402 is proof this one settled).
+ */
+class SettlementUnconfirmedError extends Error {
+  readonly txHash: `0x${string}`;
+  constructor(txHash: `0x${string}`) {
+    super(
+      `x402 settlement unconfirmed: settle tx ${txHash} was submitted but its receipt did not arrive and the nonce is not yet marked used — the authorization may still settle. Do NOT sign a new nonce; check the tx, or retry the SAME authorization (a "replayed nonce" rejection means it settled).`,
+    );
+    this.txHash = txHash;
+  }
+}
 
 // ---- MCP JSON-RPC ----------------------------------------------------------
 
@@ -697,7 +742,7 @@ const PERSONA_EXCERPT_LEN = 240;
 const DISCOVER_AGENTS_TOOL = {
   name: 'discover_agents',
   description:
-    'Find localharness on-chain agents by a free-text query (the agent yellow-pages). Scans the most recently registered agents and ranks them by how well the query matches their subdomain name and published persona. Returns the top matches as {name, tokenId, persona_excerpt}. FREE / read-only — no payment. Use this to locate an agent (e.g. "a solidity auditor"), then ask_agent it.',
+    'Find localharness on-chain agents by a free-text query (the agent yellow-pages). Scans the most recently registered agents and ranks them by how well the query matches their subdomain name and published persona — several keywords are ORed and ranked by overlap, so ONE call with "game tool puzzle" replaces a call per keyword. Returns the top matches as {name, tokenId, persona_excerpt}. FREE / read-only — no payment. Use this to locate an agent (e.g. "a solidity auditor"), then ask_agent it.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -723,12 +768,13 @@ const LIST_BOUNTIES_TOOL = {
 } as const;
 
 /**
- * Rank `(name, persona)` agents against a query — mirrors the spirit of
- * `src/registry.rs::rank_agent_matches`: name substring hits rank ABOVE persona
- * substring hits, original order preserved within each bucket. Beyond that exact
- * Rust behavior we add a light token-overlap tiebreak (more shared query tokens →
- * higher) so a richer query surfaces the best of several name OR persona hits
- * first. An empty query returns the input order unchanged (most-recent first).
+ * Rank `(name, persona)` agents against a query — the EXACT mirror of
+ * `src/registry/names.rs::rank_agent_matches` (keep the two in lockstep; the
+ * Rust side has the unit tests). Multi-keyword: whitespace-split tokens, an
+ * agent matches the whole phrase OR any token; name hits rank above
+ * persona-only hits; within a tier a whole-phrase hit (+100) outranks token
+ * hits, then more matched tokens rank higher, then original order (recency).
+ * An empty query returns the input order unchanged (most-recent first).
  */
 function rankAgentMatches(
   agents: { name: string; tokenId: bigint; persona: string }[],
@@ -1155,6 +1201,17 @@ async function handleAskAgent(
   } catch (e) {
     if (e instanceof SettlementError) {
       return rpcError(id, -32002, 'x402 settlement failed: ' + e.message, 402);
+    }
+    if (e instanceof SettlementUnconfirmedError) {
+      // DISTINCT from both the definitive 402 above and the generic 502 below:
+      // the settle tx exists and may still land. Message + data carry the tx
+      // hash so the client knows NOT to re-sign a fresh nonce blindly
+      // (double-pay if this one settles) and can retry the SAME authorization
+      // once the chain catches up.
+      return rpcError(id, -32002, e.message, 502, {
+        txHash: e.txHash,
+        settlement: 'unconfirmed',
+      });
     }
     return rpcError(id, -32603, 'x402 settlement error: ' + (e as Error).message, 502);
   }

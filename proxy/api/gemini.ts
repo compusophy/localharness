@@ -400,10 +400,17 @@ export default async function handler(req: Request): Promise<Response> {
     // (model/method allowlisted so nothing the caller controls reshapes the
     // key-bearing upstream URL — H3). Anthropic: /v1/messages (model is in the
     // JSON body; read once here and forwarded verbatim).
+    //
+    // BOTH branches read the body HERE, before auth/metering. `readTextCapped`
+    // throws past MAX_BODY_BYTES (a chunked body declares no Content-Length, so
+    // the up-front header check can't catch it) — and that throw must land
+    // BEFORE the $LH debit. The Gemini body used to be read lazily in the
+    // forward block, AFTER `meterDebit`: an oversized chunked body got charged,
+    // then 413'd via the outer catch without ever reaching the upstream.
     const reqUrl = new URL(req.url);
     let provider: 'gemini' | 'anthropic';
     let model: string;
-    let anthropicBody: string | null = null;
+    let requestBody: string;
 
     const gem = reqUrl.pathname.match(/^\/v1beta\/models\/([^:/]+):([^:/]+)$/);
     if (gem) {
@@ -412,12 +419,13 @@ export default async function handler(req: Request): Promise<Response> {
       }
       provider = 'gemini';
       model = gem[1];
+      requestBody = await readTextCapped(req);
     } else if (reqUrl.pathname === '/v1/messages') {
       provider = 'anthropic';
-      anthropicBody = await readTextCapped(req);
+      requestBody = await readTextCapped(req);
       let parsed: { model?: unknown };
       try {
-        parsed = JSON.parse(anthropicBody);
+        parsed = JSON.parse(requestBody);
       } catch {
         return json({ error: 'invalid JSON body' }, 400, origin);
       }
@@ -476,6 +484,30 @@ export default async function handler(req: Request): Promise<Response> {
       return json({ error: 'signature does not match address' }, 401, origin);
     }
 
+    // PROVIDER-KEY presence — checked BEFORE the metering section. A missing
+    // server key is a proxy misconfiguration and must surface as a 500 WITHOUT
+    // debiting: this check used to live in the forward block, AFTER
+    // `meterDebit`, so a misconfigured proxy charged callers for requests it
+    // could never forward. Invariant: nothing proxy-side may fail after the
+    // user is charged except the upstream call itself. (Kept after auth so an
+    // unauthenticated probe can't learn the proxy's key configuration.)
+    const upstreamKey =
+      provider === 'gemini'
+        ? process.env.GEMINI_API_KEY
+        : process.env.ANTHROPIC_API_KEY;
+    if (!upstreamKey) {
+      return json(
+        {
+          error:
+            provider === 'gemini'
+              ? 'proxy misconfigured: missing GEMINI_API_KEY'
+              : 'proxy missing ANTHROPIC_API_KEY — add it to the proxy env to enable Claude on credits',
+        },
+        500,
+        origin,
+      );
+    }
+
     // On-chain gate: serve if the caller has an active TIME session OR a
     // funded PER-REQUEST balance. Both modes supported transparently.
     const cost = priceOf(provider, model);
@@ -489,7 +521,7 @@ export default async function handler(req: Request): Promise<Response> {
       return json(
         {
           error:
-            'no $LH credit or active session for this identity. In the free beta a session opens automatically — if this persists, redeem an invite/$LH or fund the per-request meter. See https://localharness.xyz/llms.txt',
+            'no $LH credit or active session for this identity — fund the per-request meter (localharness redeem / send / topup) or open a session explicitly (localharness session). See https://localharness.xyz/llms.txt',
         },
         402,
         origin,
@@ -527,13 +559,12 @@ export default async function handler(req: Request): Promise<Response> {
     }
 
     // Forward to the right upstream with the SERVER-held key in the HEADER
-    // (never the URL). Stream the SSE body straight back.
+    // (never the URL). Stream the SSE body straight back. The body was read
+    // (and size-capped) at routing time and the key checked before metering —
+    // from here the only thing that can fail is the upstream call itself,
+    // which is the one failure a debited caller legitimately pays for.
     let upstream: Response;
     if (provider === 'gemini') {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        return json({ error: 'proxy misconfigured: missing GEMINI_API_KEY' }, 500, origin);
-      }
       // Rebuild the upstream query from an ALLOWLIST instead of forwarding the
       // caller-controlled `reqUrl.search` verbatim. The real client sends only
       // `alt=sse` (GeminiClient::stream_generate). Passing the raw search string
@@ -546,32 +577,21 @@ export default async function handler(req: Request): Promise<Response> {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-goog-api-key': apiKey,
+          'x-goog-api-key': upstreamKey,
           accept: req.headers.get('accept') ?? 'text/event-stream',
         },
-        body: await readTextCapped(req),
+        body: requestBody,
       });
     } else {
-      const apiKey = process.env.ANTHROPIC_API_KEY;
-      if (!apiKey) {
-        return json(
-          {
-            error:
-              'proxy missing ANTHROPIC_API_KEY — add it to the proxy env to enable Claude on credits',
-          },
-          500,
-          origin,
-        );
-      }
       upstream = await fetch(ANTHROPIC_BASE + '/v1/messages', {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-api-key': apiKey,
+          'x-api-key': upstreamKey,
           'anthropic-version': ANTHROPIC_VERSION,
           accept: req.headers.get('accept') ?? 'text/event-stream',
         },
-        body: anthropicBody as string,
+        body: requestBody,
       });
     }
 
