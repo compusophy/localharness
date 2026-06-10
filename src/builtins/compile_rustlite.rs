@@ -108,7 +108,7 @@ impl Tool for CompileRustlite {
                         "Fix the issue at the reported source span and call \
                          compile_rustlite again. Common causes: a feature \
                          rustlite lacks (traits, generics, references, \
-                         Vec/String building, array writes, Option/Result) or \
+                         Vec/String building, Option/Result) or \
                          a wrong host fn name/arity. Do NOT run_cartridge or \
                          publish until this compiles clean."),
                     "exports": []

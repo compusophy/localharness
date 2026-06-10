@@ -56,7 +56,7 @@ returns the code plus a fix hint, and the compiler message reads
 | `LH0103` | expected an expression | a dangling operator or empty position | an expression is required here |
 | `LH0104` | expected a pattern | a malformed `match` arm / `let` pattern (incl. a range with no upper bound) | use a binding, literal, path, or range pattern |
 | `LH0105` | missing `;` after a statement | two statements run together | terminate the statement with `;` (or close the block with `}`) |
-| `LH0106` | invalid assignment target | assigning to a non-place, incl. `arr[i] = v` | assign to a variable or struct field; array writes are unsupported |
+| `LH0106` | invalid assignment target | assigning to a non-place (`5 = 9`), or an indexed write through a struct field (`s.arr[i] = v`) | assign to a variable, struct field, or `arr[i]` |
 | `LH0107` | nesting too deep | deeply-nested expressions/blocks past the recursion cap | flatten the nesting |
 
 ### Typecheck (`LH02xx`)
@@ -70,7 +70,7 @@ returns the code plus a fix hint, and the compiler message reads
 | `LH0204` | type mismatch | operand/argument/binding types disagree | convert with an `as` cast or fix the operand types |
 | `LH0205` | assignment to a non-`mut` binding | reassigning a `let` without `mut` | declare it `let mut` to reassign |
 | `LH0206` | field access on a non-struct / missing field | `.field` on a non-struct or unknown field | access a real field of a struct value |
-| `LH0207` | invalid index expression | indexing a non-array, a non-i32 index, or an empty/non-i32 array | index an array with an i32; only arrays of i32 are indexable (read-only) |
+| `LH0207` | invalid index expression | indexing a non-array, a non-i32 index, or an empty/non-i32 array | index an array with an i32; only arrays of i32 are indexable |
 | `LH0208` | invalid `as` cast | `as` between non-numeric types | `as` only converts between numbers (`i32`/`i64`/`f32`/`f64`) |
 | `LH0209` | unknown struct in a literal | constructing an undeclared struct | declare the struct before constructing it |
 
@@ -78,13 +78,13 @@ returns the code plus a fix hint, and the compiler message reads
 
 | Code | Meaning | Common cause | Fix |
 |------|---------|--------------|-----|
-| `LH0300` | unsupported language feature | a construct codegen can't lower | rustlite lacks traits/generics/references/heap types (`Vec`/`String`/`Box`)/array writes/globals |
+| `LH0300` | unsupported language feature | a construct codegen can't lower | rustlite lacks traits/generics/references/heap types (`Vec`/`String`/`Box`)/globals |
 | `LH0301` | unknown host import | a wrong `host::` path/name | use a registered host fn — check the `host::display` / `host::net` / `host::audio` names + arity |
 | `LH0302` | no `frame`/`render` entry export | the cartridge defines no entry point | add `fn frame(t: i32)` (animated) or `fn render()` (one-shot) |
 | `LH0303` | cartridge exceeds the publish size cap | the compiled wasm is too big to publish on-chain | shrink the cartridge below the publish cap |
 
 > Note: `LH0302`/`LH0303` are enforced at the **publish/CLI** boundary
-> (`bin/localharness.rs`, the loader) rather than inside `compile()` — a bare
+> (the `src/bin/localharness/` CLI, the loader) rather than inside `compile()` — a bare
 > `compile()` succeeds for an entry-less or oversize module; the codes label the
 > check that rejects it on the way to a public face.
 

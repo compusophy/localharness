@@ -27,9 +27,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   once delegated listeners + first paint land, so automated/impatient clicks
   during wasm boot no longer silently vanish (now also stamped on the
   public-face, `?explore=1`, and `?adopt=1` surfaces).
+- **Multi-keyword agent discovery.** `discover_agents` / `localharness
+  discover` / the proxy's MCP `discover_agents` now OR whitespace-split
+  keywords and rank by overlap (whole-phrase hits highest, name tier above
+  persona tier) — one "game tool puzzle" query replaces a sequential scan per
+  keyword (on-chain feedback #33/34). Rust ranker and the proxy's TS ranker
+  are now exact mirrors; `discover_bounties` inherits the same ranking over
+  task text.
 
 ### Fixed
 
+- **Turn failures no longer swallowed as empty successes.** The Gemini and
+  Mock backends passed System-sourced turn-failure Steps (HTTP non-200,
+  stream decode errors) through as `Ok`, so `chat()`/`text()` returned an
+  empty string and the browser app painted "(empty response)" with no cause.
+  Error-step translation is now uniform across all four backends — the real
+  error message surfaces (on-chain feedback #22). Model-sourced safety/refusal
+  terminals still pass through as answers.
+- **Proxy: no more charge-without-service.** The Gemini path debited `$LH`
+  BEFORE reading the request body or checking the provider key, so an
+  oversized body or missing platform key returned 413/500 after the caller
+  was already charged. Body read + key checks now precede the debit (both
+  providers) — after the debit only the upstream call itself can fail. The
+  MCP `ask_agent` settle no longer reports a generic 502 on an ambiguous
+  receipt timeout: it re-checks the nonce on-chain and either serves the
+  answer (payment landed) or returns a distinct tx-hash-bearing error so
+  clients don't double-pay with a fresh nonce. The 402 message no longer
+  claims sessions open automatically.
+- **`release.ps1` now runs the proof-of-spec gate.** The Windows release path
+  skipped `scripts/verify.sh` (all-config tests, wasm guardrails, cartridge
+  corpus) that `release.sh` has run since 0.30.0 — a wasm-only breakage could
+  ship silently. bash/node added to pre-flight.
+- Stale agent-facing hints: rustlite `arr[i] = v` writes shipped but
+  LH0106/LH0207/LH0300 hints (and the `compile_rustlite` fallback) still said
+  array writes were unsupported; `verify-onchain.sh` no longer deletes the
+  disposable key that makes cleanup impossible; the fleet scripts no longer
+  claim model calls are free (per-request metering + best-effort funding for
+  new personas); README dependency pin 0.29 → 0.30; skill.md gains the
+  funding-check / earn-via-bounty / price / `--pay` / release commands.
+- **GuildFacet source (effective on next re-cut):** `createGuild` now emits
+  ERC-721 `Transfer(0, owner, id)` + `Registered` like an ordinary register,
+  and charges `registrationCost()` (no-op while 0) so arming the cost gate
+  can't ship a free-mint bypass. TeamFacet gained its first test suite
+  (20 characterization tests pinning live behavior, three known quirks
+  included); contracts/README intro rewritten off the pre-diamond world.
 - x402 settle gas 400k → 1.2M (the EIP-1271 + transfer path out-of-gassed);
   decimal price display round-trips; on-chain persona publish from the admin
   panel; partial x402-price saves now say "saved locally · on-chain publish
@@ -40,6 +81,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Security headers re-landed (the safe subset).** `vercel.json` ships
+  `Content-Security-Policy-Report-Only` (observe-only — logs violations,
+  blocks nothing) and `X-Content-Type-Options: nosniff` again. The 2026-05-29
+  revert (c0393e0) dropped all three headers on a suspected BYOK
+  Gemini-key-referrer break; the actual suspect, `Referrer-Policy`, stays out
+  until that path is tested. Policy updated for the Anthropic backend, the
+  credit proxy, cartridge WebSockets, and the cartridge worker.
 - Admin subtraction: USAGE tab, ACCOUNT "RPC ?rpc=1" row, and the dead session
   token counter removed; model credits render as a label:value row.
 - The canonical `setMetadata` gas formula moved to `registry::set_metadata_gas`

@@ -40,3 +40,10 @@
 #            prompt + llms.txt now state spawn_recursive_subagent's REDUCED
 #            surface (fs builtins, create tools, recursion; no value-moving
 #            tools, no call_agent) vs text-only start_subagent
+22  HEAD     turn failures no longer swallowed as empty successes — gemini/mock
+#            now translate System/Error turn-failure Steps into stream Errs
+#            (uniform across backends), so the UI shows the real error instead
+#            of "(empty response)"
+33  HEAD     multi-keyword discover — query tokens ORed + ranked by overlap in
+#            rank_agent_matches (Rust) at exact parity with the proxy's ranker
+34  HEAD     (dup of 33) category-tag ask deferred; multi-keyword shipped
