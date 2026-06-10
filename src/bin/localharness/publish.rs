@@ -443,13 +443,10 @@ pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
         mk(registry::encode_set_app_wasm(id, &wasm)),
         mk(registry::encode_set_public_face(id, "app")),
     ];
-    // Gas budget. setMetadata stores the wasm bytes ON-CHAIN at ~7.6k gas/BYTE
-    // (measured via debug_traceTransaction: a 476-byte app's storage call used
-    // 3.61M gas — the same byte-storage inefficiency as the FeedbackFacet, NOT
-    // the ~430k a replay misleadingly reports). Budget ~1.2M base (the
-    // public_face call + AA settlement) + 8.5k/byte with headroom. Sponsor pays
-    // only consumed gas. Practically this caps useful apps at a couple KB.
-    let gas = 1_200_000 + (wasm.len() as u128) * 8_500;
+    // setMetadata stores the wasm bytes ON-CHAIN; the public_face call fits
+    // in the formula's base headroom. Practically this caps useful apps at a
+    // couple KB.
+    let gas = registry::set_metadata_gas(wasm.len());
 
     let sponsor = match load_sponsor() {
         Ok(s) => s,
@@ -553,8 +550,7 @@ pub(crate) async fn set_persona(name: &str, text_or_path: &str) -> i32 {
         value_wei: 0,
         input: registry::encode_set_persona(id, persona),
     }];
-    // On-chain byte storage ~7.6k gas/byte (same as app/html); base + 8.5k/byte.
-    let gas = 1_200_000 + (persona.len() as u128) * 8_500;
+    let gas = registry::set_metadata_gas(persona.len());
 
     let sponsor = match load_sponsor() {
         Ok(s) => s,

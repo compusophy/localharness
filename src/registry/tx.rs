@@ -21,6 +21,27 @@ pub async fn next_nonce(address_hex: &str) -> Result<u128, String> {
     eth_get_transaction_count(address_hex).await
 }
 
+/// Gas limit for a sponsored Tempo tx whose dominant cost is ONE
+/// `setMetadata(uint256,bytes32,bytes)` write of `byte_len` payload bytes
+/// (app.wasm / public.html / persona / x402_price / sealed Gemini key).
+///
+/// THE canonical formula — every setMetadata budget (browser app and CLI)
+/// must call this, not hand-roll a copy. `1.2M base + 8_500/byte`: storing
+/// bytes on-chain costs ~7.6k gas/BYTE (measured via
+/// `debug_traceTransaction`, 2026-06-03 — same byte-storage cost as the
+/// FeedbackFacet), plus the ~275k Tempo sponsorship overhead and base call,
+/// with margin. The old `~1.3M + words*40k` shape (~1.25k gas/byte) was ~6x
+/// below the measured cost and silently OOG-reverted large writes. Over-budget
+/// is FREE — the sponsor is billed on gas USED, not the limit — so headroom
+/// is correct (see CLAUDE.md "On-chain writes that store data are gas-HUNGRY").
+///
+/// Batches that add a second tiny `setMetadata` (the `public_face` choice
+/// string) fit inside the base headroom; genuinely different writes
+/// (mints, burns, TBA executes) budget separately at their call sites.
+pub fn set_metadata_gas(byte_len: usize) -> u128 {
+    1_200_000 + byte_len as u128 * 8_500
+}
+
 /// Current `eth_gasPrice` reported by the node, in wei.
 pub async fn current_gas_price() -> Result<u128, String> {
     eth_gas_price().await
