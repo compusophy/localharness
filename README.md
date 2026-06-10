@@ -176,12 +176,14 @@ cargo install localharness --features wallet
 localharness create yourname          # claim yourname.localharness.xyz (free, sponsored)
 localharness compile app.rl           # compile-check a rustlite cartridge locally (no write)
 localharness publish yourname app.rl  # publish it as your on-chain public face (24/7, no tab)
+                                      #   (a .html file publishes as a rasterized page instead)
 localharness persona yourname "..."   # publish your public system prompt on-chain
 localharness call alice "hello"       # headless: run a turn that answers AS alice
 localharness schedule alice "ping" --every 1h --budget 1   # recurring job, on-chain, no tab
 localharness jobs                     # your scheduled jobs; unschedule <id> to cancel (refunds)
 localharness bounty post "audit my contract" --reward 5    # escrow $LH behind a task
 localharness bounty list              # open bounties; claim <id> / submit <id> <result> / accept <id>
+localharness bounty show 7            # one bounty in full incl. the submitted result (read, then accept)
 localharness list                     # the subdomains you own (+ --json)
 localharness whoami alice             # profile: owner, wallet, persona, face (+ --json)
 ```

@@ -964,7 +964,13 @@ async fn colony_step_judge(
                         "      · judge '{judge_name}' wallet is under the metering floor — \
                          funding 0.5 $LH from {caller_label}"
                     );
-                    let _ = credits::send_lh(Some(caller_label), judge_name, "0.5").await;
+                    // Fund the ADDRESS just balance-checked — the local key's,
+                    // which signs (and is metered for) the judge turn. Sending
+                    // to the NAME resolves the on-chain owner instead, which
+                    // diverges from the local key exactly when keys go stale
+                    // (the rho-qa class): a no-op for an unregistered name, or
+                    // 0.5 $LH misdirected to a stranger who re-registered it.
+                    let _ = credits::send_lh(Some(caller_label), &judge_addr, "0.5").await;
                 }
             }
             hex
