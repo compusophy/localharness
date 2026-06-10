@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.30.0] - 2026-06-09
 
 ### Added
 
@@ -101,7 +101,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`verify.sh` now runs the whole suite** — default + anthropic + wallet test
   configs (the wallet config alone holds the 111 CLI tests it previously
   skipped) and all three wasm guardrails; the workspace builds with ZERO
-  compiler warnings in every feature config.
+  compiler warnings AND is `clippy -D warnings` clean in every feature config
+  (default / wallet / anthropic / browser-app — the wallet-gated registry/CLI
+  and the wasm-only `app/` had never been linted before).
 
 - **Incremental, recency-weighted context compaction.** The in-tab agent now has
   auto-compaction enabled (long conversations stopped overflowing into empty
