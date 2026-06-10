@@ -615,7 +615,12 @@ main.layout .transcript > * { flex-shrink: 0; }
 }
 .editor-actions { display: flex; gap: 12px; }
 .editor-textarea {
-  flex: 1; min-height: 0;
+  /* min-height keeps the editor usable even when the DISPLAY panel it
+     shares is short — without it the flex child collapsed to ~2 lines
+     wedged under the panel header (the orphaned `textarea.fs-editor`
+     rule below USED to carry this, but it targets a class the element
+     never had after an id/class rename, so it silently did nothing). */
+  flex: 1; min-height: 320px;
   background: var(--bg);
   border: 0; outline: none; resize: none;
   color: var(--fg);
@@ -1616,17 +1621,6 @@ button.danger:hover { color: var(--bg); background: var(--error); }
   cursor: default;
 }
 .fs-list .empty:hover { background: transparent; }
-
-textarea.fs-editor {
-  min-height: 240px;
-  max-height: 480px;
-  resize: vertical;
-  width: 100%;
-  border-color: var(--fg);
-  background: var(--bg);
-  color: var(--fg);
-  font: 12px 'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
-}
 
 /* Tool allowlist — compact grid */
 .tool-allowlist-grid {
