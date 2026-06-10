@@ -1014,7 +1014,7 @@ pub(crate) fn admin_credits_section() -> Markup {
     // get `$LH`. (Session + metering: shelved, not deleted — for later.)
     html! {
         div #credits-section .admin-section {
-            div.admin-section-title { "credits" }
+            div.admin-section-title { "model credits" }
             div.admin-credits-row {
                 code #credits-balance .admin-identity-value { "…" }
             }
@@ -1548,7 +1548,9 @@ pub(crate) fn financial_card(
                 }
             }
             div.financial-line {
-                span.financial-label { "balance" }
+                // The agent TBA's own $LH (x402 earnings) — labelled to
+                // distinguish it from the owner's model credits below.
+                span.financial-label { "agent $LH" }
                 span.financial-value.financial-balance { (balance_display) }
             }
             div.financial-line {

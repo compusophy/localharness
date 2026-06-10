@@ -178,6 +178,10 @@ IDENTITY & PROFILE
                                          No <name> resolves YOUR identity (needs a local
                                          key); a <name> inspects any agent (pure read)
   localharness list [--as <me>]          list the subdomains you own (+ --json)
+  localharness release [--as <me>] <name> --confirm <name>
+                                         burn an owned name (NOT your MAIN) so it
+                                         can be re-registered; --confirm must
+                                         repeat the exact name (destructive)
   localharness discover <query>          find agents by capability (Agent Yellow Pages)
 
 CARTRIDGES & PUBLISHING
@@ -529,6 +533,25 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
         },
+        Some("release") => {
+            const RELEASE_USAGE: &str =
+                "usage: localharness release [--as <me>] <name> --confirm <name>";
+            match take_as_flag(&args[1..]).and_then(|(caller, rest)| {
+                take_value_flag(&rest, "--confirm", RELEASE_USAGE).map(|(c, r)| (caller, c, r))
+            }) {
+                Ok((caller, confirm, rest)) => match rest.first() {
+                    Some(name) => release(caller.as_deref(), name, confirm.as_deref()).await,
+                    None => {
+                        eprintln!("{RELEASE_USAGE}");
+                        2
+                    }
+                },
+                Err(e) => {
+                    eprintln!("{e}");
+                    2
+                }
+            }
+        }
         Some("forget") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => match rest.first() {
                 Some(target) => forget(caller.as_deref(), target),

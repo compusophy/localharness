@@ -333,7 +333,10 @@ pub(super) fn header_admin_toggle() {
                     textarea.set_value(&prompt);
                 }
             }
-            // Prefill the x402 price (stored as wei → shown as whole LH).
+            // Prefill the x402 price (stored as wei → shown as decimal LH).
+            // Must round-trip what `save_x402_price_pressed` parses — the old
+            // integer division showed a saved 0.1 as "0", and re-saving that
+            // "0" would silently delete the price.
             {
                 use crate::filesystem::Filesystem;
                 if let Ok(bytes) = crate::app::shared_opfs().read(".lh_x402_price").await {
@@ -342,7 +345,7 @@ pub(super) fn header_admin_toggle() {
                         .and_then(|s| s.trim().parse::<u128>().ok())
                     {
                         if let Some(input) = dom::input_by_id("x402-price-input") {
-                            input.set_value(&(wei / 1_000_000_000_000_000_000u128).to_string());
+                            input.set_value(&crate::app::format_wei_as_test_eth(wei));
                         }
                     }
                 }

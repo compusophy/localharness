@@ -1164,6 +1164,11 @@ button {
 button:hover { color: var(--fg); border-color: var(--fg); }
 button:disabled { opacity: 0.4; cursor: not-allowed; }
 button.ghost { /* legacy alias — same as base now */ }
+/* Selected chip in a picker row (model selector). The dispatcher sets
+   `ghost active` on the persisted choice — without this rule the active
+   model is visually indistinguishable from the rest. Inverted, like the
+   MAIN badge. */
+button.ghost.active { background: var(--fg); color: var(--bg); border-color: var(--fg); }
 
 /* `.ready` — applied by JS when an action is fully valid and the
    user should click. Used by the apex claim flow: the create

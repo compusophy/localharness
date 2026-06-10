@@ -582,6 +582,64 @@ pub(crate) async fn set_persona(name: &str, text_or_path: &str) -> i32 {
     }
 }
 
+/// `release <name> --confirm <name>` — burn an owned subdomain NFT and free
+/// the name (ReleaseFacet). DESTRUCTIVE: per the house convention the typed
+/// confirmation is required and never auto-filled — `--confirm` must repeat
+/// the exact name. Refuses the caller's MAIN client-side (the facet refuses
+/// it on-chain too). The browser twin is the `release_subdomain` chat tool.
+pub(crate) async fn release(caller: Option<&str>, name: &str, confirm: Option<&str>) -> i32 {
+    if confirm != Some(name) {
+        eprintln!("releasing burns {name}.localharness.xyz permanently.");
+        eprintln!("re-run with the typed confirmation: localharness release {name} --confirm {name}");
+        return 2;
+    }
+    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+        Ok(p) => p,
+        Err(code) => return code,
+    };
+    let addr = bytes_to_hex_str(&wallet::address(&signer));
+    let token_id = match registry::id_of_name(name).await {
+        Ok(id) if id != 0 => id,
+        Ok(_) => {
+            eprintln!("'{name}' is not registered — nothing to release");
+            return 2;
+        }
+        Err(e) => {
+            eprintln!("RPC error: {e}");
+            return 1;
+        }
+    };
+    match registry::owner_of_name(name).await {
+        Ok(Some(o)) if o.eq_ignore_ascii_case(&addr) => {}
+        Ok(Some(o)) => {
+            eprintln!("'{name}' is owned by {o}, not your identity {addr}");
+            return 2;
+        }
+        Ok(None) | Err(_) => {
+            eprintln!("could not resolve '{name}'s owner");
+            return 1;
+        }
+    }
+    if registry::main_of(&addr).await.unwrap_or(0) == token_id {
+        eprintln!("'{name}' is your MAIN identity — it cannot be released");
+        return 2;
+    }
+    println!("releasing {name}.localharness.xyz (token #{token_id}) …");
+    match registry::release_name_sponsored(&signer, &sponsor, token_id, registry::ALPHA_USD_ADDRESS)
+        .await
+    {
+        Ok(tx) => {
+            println!("✓ released — '{name}' is free to register again");
+            println!("  tx: {tx}");
+            0
+        }
+        Err(e) => {
+            eprintln!("release failed: {e}");
+            1
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
