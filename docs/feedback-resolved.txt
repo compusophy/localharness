@@ -5,20 +5,24 @@
 # Record a line in the SAME commit that lands the fix (SOP-QA-001 §5.6 Close).
 # `harvest-feedback --unresolved` (sh) / `-Unresolved` (ps1) hides every index
 # listed here. Absent/empty => nothing hidden. NEVER renumber: indices are
-# immutable on-chain array positions.
+# immutable on-chain array positions —
+# ⚠️ EXCEPT across a clearFeedback(): the owner-only clear RESETS the on-chain
+# array, so indices restart at 0. When the inbox is cleared, START THIS FILE
+# OVER (git history archives the previous epoch — the last pre-clear state is
+# commit 555c3af). Stale entries silently hide the WRONG current items.
+#
+# Epoch: post-clear inbox, first entry ts 1780908751 (2026-06-08).
 #
 # index  fixed-in   note
-0   v0.23.0  QA: clean fs errors + position-robust --as
-1   5f9fbc5  mass-registration → batch_create_subdomains (sanctioned one-tx path)
-2   5f9fbc5  (dup of 1) mass-registration batch path
-3   2ee0f4e  bulk_release_subdomains tool (single master-confirmed batch burn)
-4   2ee0f4e  QA v0.22.0: --as anywhere (0.23.0) + programmatic bulk-release
-5   5f9fbc5  batch/multicall: batch_create + bulk_release pack N calls into one tx
-6   5f9fbc5  (dup of 5) batch/multicall transactions
-7   e7753dd  clear_context / compact_context agent tools
-8   2ee0f4e  alt-subdomain credits — kick seed_pull on the owner-device studio path
-9   2ee0f4e  mobile header on keyboard — visualViewport + interactive-widget
-12  5f9fbc5  cartridge host::audio + software-3D primitives (z-buffer deferred to v2)
-13  5f9fbc5  feedback hygiene = this file + harvest --unresolved (append-only by design)
-14  2ee0f4e  feedback button moved from header into an admin-modal tab
-# 10, 11 (cross-subdomain secure folder) = DESIGN + scaffold only, NOT resolved yet.
+3   ddcf483  browser call_agent falls back to the hosted x402 ask_agent route —
+#            caller's $LH pays the target's TBA, the proxy answers under its
+#            persona; no model key needed on either side
+4   ddcf483  (dup of 3) x402 browser flow without a local key
+7   04eaa54  keys: 0600 perms + auto-.gitignore on create
+9   ec5f8de  `localharness discover` + browser discover_agents (Agent Yellow Pages)
+13  f971ce0  create/publish gate names to a valid DNS label (1-63, a-z 0-9 hyphen)
+16  7d13fc8  (dup of 7) keys default to ~/.localharness/keys/ (out of cwd)
+18  ddcf483  `call --pay <amt>` settles a caller-signed x402 payment to the
+#            target's TBA after a successful reply
+21  f971ce0  path-traversal names rejected by the same DNS-label gate (no key
+#            file is written for an invalid name)
