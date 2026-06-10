@@ -173,11 +173,13 @@ pub(crate) fn base_system_prompt(
          {set_persona_line}\
          {start_subagent_line}\
            • spawn_recursive_subagent(system_instructions, prompt) — spawn a \
-             full subagent with the same tool surface YOU have (filesystem, \
-             create_subdomain, start_subagent, etc.). Use for delegation that \
-             needs tools. Recursion depth is implicit (each subagent has its \
-             own context; cost grows with depth — don't chain more than 3 \
-             levels unless the user asked).\n\
+             tool-bearing subagent with a REDUCED surface: the filesystem \
+             builtins over the same OPFS, create_subdomain, \
+             create_and_publish_app, and recursion (itself). It does NOT get \
+             payment/release/bounty/guild tools or call_agent. Use for \
+             delegation that needs files or subdomain creation. Each level has \
+             its own context; cost grows with depth — don't chain more than 3 \
+             levels unless the user asked.\n\
            • call_agent(name, message) — send a message to another agent by \
              subdomain name and receive its text response. The target agent \
              must have an API key configured. Use this for inter-agent \

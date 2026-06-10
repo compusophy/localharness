@@ -318,6 +318,7 @@ fn mount() -> Result<(), JsValue> {
     if has_explore_hint() {
         let host_for_explore = host.clone();
         root.set_inner_html(&templates::explore_chrome(&host_for_explore).into_string());
+        dom::mark_ready();
         wasm_bindgen_futures::spawn_local(async move {
             paint_explore().await;
         });
@@ -413,6 +414,7 @@ fn mount() -> Result<(), JsValue> {
             if read_query_param("adopt").is_some() {
                 let ct_hex = read_fragment_param("s").unwrap_or_default();
                 root.set_inner_html(&templates::adopt_join(&ct_hex).into_string());
+                dom::mark_ready();
                 return Ok(());
             }
 
@@ -571,13 +573,13 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
 
     // Owner-by-signer (linked device): if this device's LOCAL key is an
     // authorized signer of this name's TBA, treat the device as an owner.
-    // A paired phone is enrolled as a signer on the name's MultiSigner TBA
-    // (run_add_device → addSigner on tokenBoundAccountByName), so we must
-    // check the TBA — NOT the NFT owner, which is normally an EOA with no
-    // isAuthorizedSigner (that always returned false, so paired phones were
-    // wrongly treated as visitors). Falls back to the on-chain owner for the
-    // consolidation case where the owner itself is a TBA. ONE on-load
-    // on-chain read = the source of truth; no polling.
+    // Devices enrolled as signers on the name's MultiSigner TBA (under the
+    // retired pairing flow) live there, so we must check the TBA — NOT the
+    // NFT owner, which is normally an EOA with no isAuthorizedSigner (that
+    // always returned false, so paired phones were wrongly treated as
+    // visitors). Falls back to the on-chain owner for the consolidation case
+    // where the owner itself is a TBA. ONE on-load on-chain read = the
+    // source of truth; no polling.
     let signer_owner = if owner.is_none() {
         match chat::credit_address_existing().await {
             Some(my_addr) => {
@@ -1347,6 +1349,7 @@ async fn paint_public_face(host: &tenant::Host, name: &str, owner_overlay: bool)
             paint_public_landing(host, name, owner_overlay).await;
         }
     }
+    dom::mark_ready();
 }
 
 /// Local-only fullscreen cartridge for `Host::Other` (localhost / preview),

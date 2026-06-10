@@ -190,9 +190,11 @@ pub(crate) fn submit_feedback_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     )
 }
 
-/// `spawn_recursive_subagent(system_instructions, prompt)` — full subagent
-/// with the same tool surface as the parent (filesystem, create_subdomain,
-/// itself). Runs the supplied prompt as a single conversation, drives it
+/// `spawn_recursive_subagent(system_instructions, prompt)` — tool-bearing
+/// subagent with a REDUCED surface: the builtins (filesystem over the same
+/// OPFS, start_subagent, generate_image), create_subdomain,
+/// create_and_publish_app, and itself. No payment/release/bounty/guild tools,
+/// no call_agent. Runs the supplied prompt as a single conversation, drives it
 /// to completion via streaming chunks, returns the assistant's final text.
 ///
 /// Implementation: builds a fresh `Agent::start_gemini` with the SAME
@@ -222,12 +224,14 @@ pub(crate) fn spawn_recursive_subagent_tool(
     });
     ClosureTool::new(
         "spawn_recursive_subagent",
-        "Spawn a subagent with the SAME tool surface as you (filesystem, \
-         create_subdomain, start_subagent, spawn_recursive_subagent itself). \
-         The subagent has its own conversation context — it cannot see your \
-         history. Drives the subagent through one full conversation turn (which \
-         may itself involve internal tool calls) and returns the subagent's final \
-         text response.",
+        "Spawn a tool-bearing subagent with a REDUCED tool surface: the builtin \
+         filesystem tools over the same OPFS, start_subagent, create_subdomain, \
+         create_and_publish_app, and spawn_recursive_subagent itself. It does \
+         NOT get payment/release/bounty/guild tools or call_agent. The subagent \
+         has its own conversation context — it cannot see your history. Drives \
+         the subagent through one full conversation turn (which may itself \
+         involve internal tool calls) and returns the subagent's final text \
+         response.",
         schema,
         move |args: serde_json::Value, _ctx| {
             let api_key = api_key.clone();
