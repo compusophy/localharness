@@ -172,7 +172,7 @@ pub(crate) async fn status(caller: Option<&str>, name: Option<&str>) -> i32 {
                 Ok(s) => s,
                 Err(code) => return code,
             };
-            let addr = addr_to_hex(wallet::address(&signer));
+            let addr = bytes_to_hex_str(&wallet::address(&signer));
             // Prefer the caller's MAIN identity for the tokenId-keyed sections;
             // fall back to the key-file stem as the display label.
             let main_id = registry::main_of(&addr).await.unwrap_or(0);
@@ -405,7 +405,7 @@ pub(crate) async fn list_mine(caller_name: Option<&str>, json: bool) -> i32 {
         Ok(s) => s,
         Err(code) => return code,
     };
-    let addr = format!("0x{}", to_hex(&wallet::address(&signer)));
+    let addr = bytes_to_hex_str(&wallet::address(&signer));
     match registry::list_owned_tokens(&addr).await {
         Ok(tokens) => {
             print!("{}", format_owned(&addr, &tokens, json));

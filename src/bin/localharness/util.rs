@@ -1,12 +1,6 @@
 #[allow(unused_imports)]
 use crate::*;
 
-/// Lowercase hex of a byte slice (local mirror of the registry's encoder so the
-/// bin needn't reach into private fns).
-pub(crate) fn to_hex_str(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 /// Extract a `--as <name>` flag from ANYWHERE in the arg list (not just the
 /// first position) and return `(caller, remaining_args_without_the_flag)`. The
 /// remainder is owned so the flag can be removed from the middle. Position-
@@ -37,16 +31,6 @@ pub(crate) fn take_as_flag(args: &[String]) -> Result<(Option<String>, Vec<Strin
     Ok((caller, rest))
 }
 
-/// Lowercase 0x string of a 20-byte address (the credit identity the proxy
-/// authenticates + meters).
-pub(crate) fn addr_to_hex(a: [u8; 20]) -> String {
-    let mut s = String::from("0x");
-    for b in a {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
-
 /// Format `$LH` wei as a 2-decimal LH string.
 pub(crate) fn fmt_lh(wei: u128) -> String {
     let whole = wei / 1_000_000_000_000_000_000u128;
@@ -60,16 +44,6 @@ pub(crate) fn parse_bounty_id(raw: &str) -> Result<u64, String> {
         .trim_start_matches('#')
         .parse::<u64>()
         .map_err(|_| format!("invalid bounty id '{raw}'"))
-}
-
-/// Decode an even-length hex string (no `0x`) into bytes, left-padding an odd
-/// nibble count by prefixing a `0`. Helper for [`parse_work_ref`].
-pub(crate) fn decode_hex_even(hex: &str) -> Result<Vec<u8>, String> {
-    let padded = if hex.len() % 2 == 1 { format!("0{hex}") } else { hex.to_string() };
-    (0..padded.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&padded[i..i + 2], 16).map_err(|e| e.to_string()))
-        .collect()
 }
 
 /// Load the caller's identity signer alone, mapping any failure to a process
@@ -149,7 +123,7 @@ pub(crate) async fn resolve_own_token_id(
             }
         }
     }
-    let addr = addr_to_hex(wallet::address(signer));
+    let addr = bytes_to_hex_str(&wallet::address(signer));
     // 2. The caller's MAIN identity.
     if let Ok(main_id) = registry::main_of(&addr).await {
         if main_id != 0 {
@@ -262,23 +236,6 @@ pub(crate) fn parse_proposal_id(raw: &str) -> Result<u64, String> {
         .trim_start_matches('#')
         .parse::<u64>()
         .map_err(|_| format!("invalid proposal id '{raw}'"))
-}
-
-pub(crate) fn to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// Parse a `0x`-optional 20-byte hex address into bytes.
-pub(crate) fn parse_addr20(s: &str) -> Option<[u8; 20]> {
-    let t = s.trim().trim_start_matches("0x").trim_start_matches("0X");
-    if t.len() != 40 {
-        return None;
-    }
-    let mut out = [0u8; 20];
-    for (i, slot) in out.iter_mut().enumerate() {
-        *slot = u8::from_str_radix(t.get(i * 2..i * 2 + 2)?, 16).ok()?;
-    }
-    Some(out)
 }
 
 /// Registry name rule = a valid DNS label: 1-63 chars, lowercase a-z / 0-9 /
@@ -407,11 +364,14 @@ mod tests {
 
     #[test]
     fn parse_addr20_roundtrips_registry_address() {
-        let a = parse_addr20(registry::REGISTRY_ADDRESS).expect("valid registry addr");
+        // The CLI parses addresses via the crate-root `encoding::parse_address`
+        // (the old local `parse_addr20` duplicate is gone); pin the behavior the
+        // call sites rely on against the canonical registry address.
+        let a = parse_address(registry::REGISTRY_ADDRESS).expect("valid registry addr");
         assert_eq!(a.len(), 20);
         // Case-insensitive, 0x-optional.
-        assert_eq!(parse_addr20("0x00"), None); // wrong length
-        assert!(parse_addr20(&"0".repeat(40)).is_some());
+        assert!(parse_address("0x00").is_err()); // wrong length
+        assert!(parse_address(&"0".repeat(40)).is_ok());
     }
 
     #[test]

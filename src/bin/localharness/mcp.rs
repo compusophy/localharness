@@ -207,8 +207,8 @@ pub(crate) fn mcp_x402_header_json(
         "value": value_wei.to_string(),
         "validAfter": valid_after,
         "validBefore": valid_before,
-        "nonce": format!("0x{}", to_hex_str(nonce)),
-        "signature": format!("0x{}", to_hex_str(signature)),
+        "nonce": format!("0x{}", bytes_to_hex(nonce)),
+        "signature": format!("0x{}", bytes_to_hex(signature)),
     })
 }
 
@@ -271,7 +271,7 @@ pub(crate) async fn mcp_call(rest: &[String]) -> i32 {
         }
     };
     let from_bytes = wallet::address(&signer);
-    let from_hex = format!("0x{}", to_hex_str(&from_bytes));
+    let from_hex = bytes_to_hex_str(&from_bytes);
 
     // Resolve the payee = the target agent's token-bound account.
     let to_hex = match registry::tba_of_name(&target).await {
@@ -288,9 +288,9 @@ pub(crate) async fn mcp_call(rest: &[String]) -> i32 {
             return 1;
         }
     };
-    let to_bytes = match parse_addr20(&to_hex) {
-        Some(b) => b,
-        None => {
+    let to_bytes = match parse_address(&to_hex) {
+        Ok(b) => b,
+        Err(_) => {
             eprintln!("internal: bad TBA address for {target}: {to_hex}");
             return 1;
         }

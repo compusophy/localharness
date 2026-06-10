@@ -136,7 +136,7 @@ pub(crate) async fn guild_create(caller: Option<&str>, name: &str) -> i32 {
     {
         Ok(tx) => {
             // The new guildId is the last entry in the creator's guildsOf index.
-            let addr = addr_to_hex(wallet::address(&signer));
+            let addr = bytes_to_hex_str(&wallet::address(&signer));
             let id_note = match registry::guilds_of(&addr).await {
                 Ok(ids) if !ids.is_empty() => Some(ids[ids.len() - 1]),
                 _ => None,
@@ -483,7 +483,7 @@ pub(crate) async fn guild_mine(caller: Option<&str>) -> i32 {
         Ok(s) => s,
         Err(code) => return code,
     };
-    let addr = addr_to_hex(wallet::address(&signer));
+    let addr = bytes_to_hex_str(&wallet::address(&signer));
     let ids = match registry::guilds_of(&addr).await {
         Ok(ids) => ids,
         Err(e) => {

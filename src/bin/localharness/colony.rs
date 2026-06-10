@@ -677,7 +677,7 @@ pub(crate) async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
         Ok(pair) => pair,
         Err(code) => return code,
     };
-    let caller_addr = addr_to_hex(wallet::address(&caller_signer));
+    let caller_addr = bytes_to_hex_str(&wallet::address(&caller_signer));
     let caller_label = match resolve_caller_label(caller) {
         Ok(l) => l,
         Err(e) => {

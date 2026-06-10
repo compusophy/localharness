@@ -118,7 +118,7 @@ pub(crate) async fn set_face(name: &str, choice: &str) -> i32 {
         Ok(s) => s,
         Err(code) => return code,
     };
-    let addr = format!("0x{}", to_hex(&wallet::address(&signer)));
+    let addr = bytes_to_hex_str(&wallet::address(&signer));
     let id = match registry::id_of_name(name).await {
         Ok(i) if i != 0 => i,
         Ok(_) => {
@@ -141,9 +141,9 @@ pub(crate) async fn set_face(name: &str, choice: &str) -> i32 {
             return 1;
         }
     }
-    let diamond = match parse_addr20(registry::REGISTRY_ADDRESS) {
-        Some(a) => a,
-        None => {
+    let diamond = match parse_address(registry::REGISTRY_ADDRESS) {
+        Ok(a) => a,
+        Err(_) => {
             eprintln!("internal: bad registry address constant");
             return 1;
         }
@@ -372,7 +372,7 @@ pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
             return 1;
         }
     };
-    let addr = format!("0x{}", to_hex(&wallet::address(&signer)));
+    let addr = bytes_to_hex_str(&wallet::address(&signer));
 
     // Only the owner can set metadata — fail early with a clear message.
     match registry::owner_of_name(name).await {
@@ -431,9 +431,9 @@ pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
             return 1;
         }
     };
-    let diamond = match parse_addr20(registry::REGISTRY_ADDRESS) {
-        Some(a) => a,
-        None => {
+    let diamond = match parse_address(registry::REGISTRY_ADDRESS) {
+        Ok(a) => a,
+        Err(_) => {
             eprintln!("internal: bad registry address constant");
             return 1;
         }
@@ -497,7 +497,7 @@ pub(crate) async fn set_persona(name: &str, text_or_path: &str) -> i32 {
         Ok(s) => s,
         Err(code) => return code,
     };
-    let addr = format!("0x{}", to_hex(&wallet::address(&signer)));
+    let addr = bytes_to_hex_str(&wallet::address(&signer));
 
     match registry::owner_of_name(name).await {
         Ok(Some(o)) if o.eq_ignore_ascii_case(&addr) => {}
@@ -541,9 +541,9 @@ pub(crate) async fn set_persona(name: &str, text_or_path: &str) -> i32 {
             return 1;
         }
     };
-    let diamond = match parse_addr20(registry::REGISTRY_ADDRESS) {
-        Some(a) => a,
-        None => {
+    let diamond = match parse_address(registry::REGISTRY_ADDRESS) {
+        Ok(a) => a,
+        Err(_) => {
             eprintln!("internal: bad registry address constant");
             return 1;
         }

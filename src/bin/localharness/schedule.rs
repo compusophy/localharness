@@ -195,7 +195,7 @@ pub(crate) async fn schedule(caller_name: Option<&str>, rest: &[String]) -> i32 
     {
         Ok(tx) => {
             // The new job id is the last entry in the owner's jobsOf index.
-            let addr = addr_to_hex(wallet::address(&signer));
+            let addr = bytes_to_hex_str(&wallet::address(&signer));
             let id_note = match registry::jobs_of(&addr).await {
                 Ok(ids) if !ids.is_empty() => format!("job #{}", ids[ids.len() - 1]),
                 _ => "scheduled".to_string(),
@@ -240,7 +240,7 @@ pub(crate) async fn list_jobs(caller_name: Option<&str>) -> i32 {
         Ok(s) => s,
         Err(code) => return code,
     };
-    let addr = addr_to_hex(wallet::address(&signer));
+    let addr = bytes_to_hex_str(&wallet::address(&signer));
     let ids = match registry::jobs_of(&addr).await {
         Ok(ids) => ids,
         Err(e) => {

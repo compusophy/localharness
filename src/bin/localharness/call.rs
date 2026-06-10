@@ -251,7 +251,7 @@ pub(crate) async fn run_agent_turn(
     // 10-$LH hour-long session (the old behavior). Best-effort + sponsored; an
     // unfunded wallet stays unfunded (the proxy 402s, the hint says to redeem).
     if let Ok(sponsor) = wallet::from_private_key_hex(SPONSOR_KEY) {
-        let addr = addr_to_hex(wallet::address(&caller));
+        let addr = bytes_to_hex_str(&wallet::address(&caller));
         if registry::credit_balance_of(&addr).await.unwrap_or(0) < CALL_COST_WEI {
             let _ = registry::deposit_credits_sponsored(
                 &caller,

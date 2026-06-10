@@ -256,7 +256,7 @@ pub(crate) async fn tba_exec(caller: Option<&str>, rest: &[String]) -> i32 {
         Ok(pair) => pair,
         Err(code) => return code,
     };
-    let caller_addr = addr_to_hex(wallet::address(&signer));
+    let caller_addr = bytes_to_hex_str(&wallet::address(&signer));
 
     // Resolve the ACTING TBA. Default (no --tba) = the caller's OWN main TBA, as
     // before. With --tba it's an arbitrary owned TBA: a name → its

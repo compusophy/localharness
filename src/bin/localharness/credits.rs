@@ -9,7 +9,7 @@ pub(crate) async fn credits_show(caller_name: Option<&str>) -> i32 {
         Ok(s) => s,
         Err(code) => return code,
     };
-    let addr = addr_to_hex(wallet::address(&signer));
+    let addr = bytes_to_hex_str(&wallet::address(&signer));
     let token = registry::token_balance_of(&addr).await.unwrap_or(0);
     let meter = registry::credit_balance_of(&addr).await.unwrap_or(0);
     let expiry = registry::session_expiry_of(&addr).await.unwrap_or(0);
@@ -146,7 +146,7 @@ pub(crate) async fn topup(caller_name: Option<&str>) -> i32 {
         Ok(pair) => pair,
         Err(code) => return code,
     };
-    let addr = addr_to_hex(wallet::address(&signer));
+    let addr = bytes_to_hex_str(&wallet::address(&signer));
     // 1. Claim the daily allowance (mints $LH) if eligible. The allowance is
     //    DISABLED on-chain (dailyAllowance=0 — a sybil risk), so this is a
     //    no-op in practice; the dormant path stays in case it's re-enabled.

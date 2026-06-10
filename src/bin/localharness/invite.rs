@@ -253,7 +253,7 @@ pub(crate) async fn invite_list(caller: Option<&str>) -> i32 {
         Ok(s) => s,
         Err(code) => return code,
     };
-    let addr = addr_to_hex(wallet::address(&signer));
+    let addr = bytes_to_hex_str(&wallet::address(&signer));
     match registry::escrowed_of(&addr).await {
         Ok(escrowed) => {
             println!("{addr}");

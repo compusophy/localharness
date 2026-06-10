@@ -32,7 +32,7 @@ pub(crate) fn parse_work_ref(raw: Option<&str>) -> Result<[u8; 32], String> {
             return Err(format!("--ref hex must be 1..32 bytes of hex, got '{raw}'"));
         }
         // Right-align the supplied bytes (left-pad with zeros) into the 32-byte word.
-        let bytes = decode_hex_even(hex)?;
+        let bytes = hex_to_bytes_padded(hex)?;
         out[32 - bytes.len()..].copy_from_slice(&bytes);
         return Ok(out);
     }

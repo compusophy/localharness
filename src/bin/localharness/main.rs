@@ -86,6 +86,7 @@
 //!                            and forwards <amount> as the value
 //!   help                     this text
 
+use localharness::encoding::{bytes_to_hex, bytes_to_hex_str, hex_to_bytes_padded, parse_address};
 use localharness::registry;
 use localharness::tempo_tx;
 use localharness::wallet;
@@ -626,7 +627,7 @@ mod tests {
         // sponsor address (the dedicated low-budget key, rotated 2026-05-25) —
         // so a future rotation that forgets the bin won't ship broken.
         let signer = wallet::from_private_key_hex(SPONSOR_KEY).expect("SPONSOR_KEY must parse");
-        let addr = format!("0x{}", to_hex(&wallet::address(&signer)));
+        let addr = bytes_to_hex_str(&wallet::address(&signer));
         assert_eq!(
             addr.to_ascii_lowercase(),
             "0x0aff88ad13ef24cac5befd0f9dc3a05df79a922c",
