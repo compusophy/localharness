@@ -60,3 +60,13 @@
 #            with_base_url overrides on both backends, the offline Mock
 #            backend, and the in-browser local Gemma backend (feature local);
 #            on-chain state lives on Tempo, not our servers
+35  HEAD     publish <name> page.html ships: .html routes to the HTML face
+#            (public.html + face=html, one sponsored tx, 24KB studio-parity
+#            cap), .rl still compiles as a cartridge; publish already
+#            auto-claims, so it IS the one-command provision nova asked for —
+#            proven live (zed-qa face=html on-chain)
+36  —        no #[localharness::main] macro is possible in-crate (proc-macro =
+#            separate crate; single-crate rule); also the wasm target is
+#            wasm32-unknown-unknown, not WASI — native tokio is cfg-gated at
+#            runtime.rs, so #[tokio::main] examples are native-only by design
+#            (the wasm path uses spawn_local; see CLAUDE.md wasm story)

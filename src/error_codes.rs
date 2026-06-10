@@ -10,7 +10,7 @@
 //!     the "CARTRIDGE STOPPED" overlay shows it.
 //!   * `LH2xxx` — **on-chain TX REVERTS** (the known facet custom-error
 //!     selectors). [`crate::registry`]'s revert decoder maps a 4-byte selector
-//!     to its code so a revert surfaces "LH2xxx: <name> — <meaning>" instead of
+//!     to its code so a revert surfaces `LH2xxx: <name> — <meaning>` instead of
 //!     a bare hash.
 //!
 //! Numbering scheme (stable — codes are NEVER renumbered, only appended):

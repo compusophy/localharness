@@ -157,8 +157,8 @@ impl GeminiClient {
 /// carry JSON; blank lines separate frames; an optional `data: [DONE]`
 /// closes the stream. The wire-agnostic frame splitting (CRLF+LF-tolerant
 /// boundaries, partial-chunk buffering, `[DONE]` sentinel, EOF flush) is
-/// the shared [`SseFrameStream`]; this type only decodes each payload as
-/// a [`GenerateChunk`].
+/// the shared `SseFrameStream` (crate-private, in `backends::sse`); this
+/// type only decodes each payload as a [`GenerateChunk`].
 pub struct GeminiSseStream {
     frames: SseFrameStream,
 }

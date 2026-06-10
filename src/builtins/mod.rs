@@ -1,11 +1,11 @@
 //! The crate-wide built-in tool registry — backend-NEUTRAL.
 //!
 //! Each tool implements [`Tool`] and is registered into a [`ToolRunner`] by
-//! [`register_builtins`] according to the [`CapabilitiesConfig`]. EVERY
-//! backend (Gemini, Anthropic, local — and the mock when an Agent injects a
-//! runner) registers from here; only the two Gemini-client-coupled tools
-//! (`start_subagent`, `generate_image`) skip when no client is supplied in
-//! [`BuiltinDeps`].
+//! [`register_builtins`](crate::builtins::register_builtins) according to the
+//! [`CapabilitiesConfig`]. EVERY backend (Gemini, Anthropic, local — and the
+//! mock when an Agent injects a runner) registers from here; only the two
+//! Gemini-client-coupled tools (`start_subagent`, `generate_image`) skip when
+//! no client is supplied in [`BuiltinDeps`](crate::builtins::BuiltinDeps).
 //!
 //! Lived at `backends/gemini/tools/` until 0.29.x (the Gemini backend was
 //! written first); a re-export shim remains there so old paths compile.

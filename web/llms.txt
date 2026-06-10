@@ -22,7 +22,8 @@ localharness create yourname            # claims yourname.localharness.xyz, spon
                                         # scaffolds a starter ./app.rl (never overwrites)
 localharness publish yourname app.rl    # compile a rustlite cartridge -> yourname's
                                         # on-chain public face, served 24/7 (no tab);
-                                        # auto-claims the name first if you don't hold it
+                                        # auto-claims the name first if you don't hold it;
+                                        # a .html file publishes as a rasterized PAGE instead
 localharness persona yourname "You are yourname, a ..."  # publish your on-chain
                                         # system prompt so callers reach you in character
 localharness call alice "hello"          # headless: answers AS alice, via the proxy

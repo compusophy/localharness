@@ -445,31 +445,6 @@ pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
             return 1;
         }
     };
-    let wasm = match localharness::rustlite::compile(&src) {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("compile failed: {e}");
-            return 1;
-        }
-    };
-    // A cartridge with no entry point compiles but renders nothing — refuse to
-    // publish a dead face (the visitor would see a blank canvas forever).
-    if !cartridge_has_entry(&wasm) {
-        eprintln!(
-            "compiled cartridge has no `frame`/`render` export — it would render \
-             nothing as a face; aborting before the on-chain write"
-        );
-        return 1;
-    }
-    // On-chain storage is metered per word; the studio caps published apps
-    // at 16 KB. Mirror it so a too-big app fails locally, not after gas.
-    if wasm.len() > PUBLISH_CAP {
-        eprintln!(
-            "compiled app is {} bytes; max {PUBLISH_CAP} to publish on-chain",
-            wasm.len()
-        );
-        return 1;
-    }
 
     let id = match registry::id_of_name(name).await {
         Ok(i) if i != 0 => i,
@@ -486,20 +461,83 @@ pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
         }
     };
     let mk = |input: Vec<u8>| tempo_tx::TempoCall { to: diamond, value_wei: 0, input };
-    let calls = vec![
-        mk(registry::encode_set_app_wasm(id, &wasm)),
-        mk(registry::encode_set_public_face(id, "app")),
-    ];
-    // setMetadata stores the wasm bytes ON-CHAIN; the public_face call fits
-    // in the formula's base headroom. Practically this caps useful apps at a
-    // couple KB.
-    let gas = registry::set_metadata_gas(wasm.len());
+
+    // Route by extension: .html/.htm publishes the raw bytes as the HTML face
+    // (rasterized to every visitor's framebuffer); anything else compiles as a
+    // rustlite cartridge (the app face). Mirrors the browser studio's picker,
+    // which publishes content + choice in ONE sponsored tx either way.
+    let (calls, gas, byte_len, face) = if publishes_as_html(source_path) {
+        let html = src.as_bytes();
+        if html.is_empty() {
+            eprintln!("{source_path} is empty — nothing to publish");
+            return 1;
+        }
+        // The studio caps published HTML at 24 KB; mirror it so a too-big
+        // page fails locally, not after gas.
+        if html.len() > HTML_PUBLISH_CAP {
+            eprintln!(
+                "{source_path} is {} bytes; max {HTML_PUBLISH_CAP} to publish on-chain",
+                html.len()
+            );
+            return 1;
+        }
+        (
+            vec![
+                mk(registry::encode_set_public_html(id, html)),
+                mk(registry::encode_set_public_face(id, "html")),
+            ],
+            registry::set_metadata_gas(html.len()),
+            html.len(),
+            "html",
+        )
+    } else {
+        let wasm = match localharness::rustlite::compile(&src) {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("compile failed: {e}");
+                return 1;
+            }
+        };
+        // A cartridge with no entry point compiles but renders nothing — refuse
+        // to publish a dead face (the visitor would see a blank canvas forever).
+        if !cartridge_has_entry(&wasm) {
+            eprintln!(
+                "compiled cartridge has no `frame`/`render` export — it would render \
+                 nothing as a face; aborting before the on-chain write"
+            );
+            return 1;
+        }
+        // On-chain storage is metered per word; the studio caps published apps
+        // at 16 KB. Mirror it so a too-big app fails locally, not after gas.
+        if wasm.len() > PUBLISH_CAP {
+            eprintln!(
+                "compiled app is {} bytes; max {PUBLISH_CAP} to publish on-chain",
+                wasm.len()
+            );
+            return 1;
+        }
+        let len = wasm.len();
+        (
+            vec![
+                mk(registry::encode_set_app_wasm(id, &wasm)),
+                mk(registry::encode_set_public_face(id, "app")),
+            ],
+            // setMetadata stores the bytes ON-CHAIN; the public_face call fits
+            // in the formula's base headroom. Practically this caps useful
+            // apps at a couple KB.
+            registry::set_metadata_gas(len),
+            len,
+            "app",
+        )
+    };
 
     let sponsor = match load_sponsor() {
         Ok(s) => s,
         Err(code) => return code,
     };
-    println!("publishing {} bytes as the public face of {name}.localharness.xyz …", wasm.len());
+    println!(
+        "publishing {byte_len} bytes as the {face} face of {name}.localharness.xyz …"
+    );
     match registry::submit_tempo_sponsored(
         &signer,
         &sponsor,
@@ -510,7 +548,7 @@ pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
     .await
     {
         Ok(tx) => {
-            println!("✓ published — https://{name}.localharness.xyz/ now serves your app");
+            println!("✓ published — https://{name}.localharness.xyz/ now serves your {face}");
             println!("  to every visitor, 24/7, with no browser tab running.");
             println!("  tx: {tx}");
             0
@@ -521,6 +559,18 @@ pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
         }
     }
 }
+
+/// `publish` routes by extension: `.html`/`.htm` (case-insensitive) publishes
+/// the raw bytes as the HTML public face; everything else compiles as a
+/// rustlite cartridge. Pure/testable.
+pub(crate) fn publishes_as_html(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".html") || lower.ends_with(".htm")
+}
+
+/// Max bytes of HTML `publish` puts on-chain — mirrors the browser studio's
+/// 24 KB cap (`events/public_face.rs`), so a too-big page fails locally.
+const HTML_PUBLISH_CAP: usize = 24_576;
 
 /// System prompt for a target that hasn't published a persona on-chain.
 pub(crate) fn default_persona(name: &str) -> String {
@@ -790,6 +840,19 @@ mod tests {
         assert!(parse_create_args(&args(&[])).is_err()); // no name
         assert!(parse_create_args(&args(&["alice", "--persona"])).is_err()); // empty persona
         assert!(parse_create_args(&args(&["alice", "bob"])).is_err()); // stray positional
+    }
+
+    /// `publish` routes .html/.htm (any case) to the HTML face and everything
+    /// else through the rustlite compiler — a mis-route either feeds HTML to
+    /// the compiler (confusing error) or publishes source text as a "page".
+    #[test]
+    fn publish_routes_by_extension() {
+        assert!(publishes_as_html("index.html"));
+        assert!(publishes_as_html("path/to/Page.HTML"));
+        assert!(publishes_as_html("a.htm"));
+        assert!(!publishes_as_html("app.rl"));
+        assert!(!publishes_as_html("html")); // no extension — not a match
+        assert!(!publishes_as_html("page.html.rl")); // suffix wins
     }
 
     /// The scaffold `create` writes must always compile AND carry an entry

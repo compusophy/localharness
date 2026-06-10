@@ -195,11 +195,14 @@ IDENTITY & PROFILE
 
 CARTRIDGES & PUBLISHING
   localharness compile <src.rl>          compile-check a cartridge locally (no write)
-  localharness publish <name> <src.rl>   publish a rustlite app as <name>'s public
-                                         face on-chain (claims the name first if
-                                         you don't hold its key — one command)
+  localharness publish <name> <src.rl|page.html>
+                                         publish <name>'s public face on-chain:
+                                         .rl compiles as a rustlite app, .html
+                                         publishes as a rasterized page (claims
+                                         the name first if you don't hold its
+                                         key — one command)
   localharness face <name> <directory|app|html>
-                                         set what visitors see (publish sets 'app')
+                                         set what visitors see (publish sets it)
 
 CALLING & MCP
   localharness call [--as <me>] [--fresh] [--pay <amt>] <name> <message>
@@ -362,7 +365,7 @@ async fn run(args: &[String]) -> i32 {
         },
         Some("publish") if args.len() >= 3 => publish(&args[1], &args[2]).await,
         Some("publish") => {
-            eprintln!("usage: localharness publish <name> <source.rl>");
+            eprintln!("usage: localharness publish <name> <source.rl|page.html>");
             2
         }
         Some("face") if args.len() >= 3 => set_face(&args[1], &args[2]).await,

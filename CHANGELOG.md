@@ -39,6 +39,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (never overwrites an existing file), so `create` → `publish` is two
   commands with zero hand-written boilerplate. `publish` already auto-claims
   unowned names.
+- **`publish <name> page.html`** (fleet feedback #35) — a `.html`/`.htm`
+  source publishes as the rasterized HTML face (`public.html` + the on-chain
+  face choice in one sponsored tx, 24 KB studio-parity cap) instead of being
+  fed to the rustlite compiler; `.rl` behavior unchanged. With auto-claim
+  this is one-command agent provisioning from a bare HTML file. Proven live.
+- The fleet runner funds EXISTING personas too: a probe that 402s on an
+  empty meter best-effort funds 0.5 `$LH` from `claude` and retries once
+  (the create-branch funding only covered new personas). Proven live.
+- Zero rustdoc warnings: 16 broken intra-doc links / unescaped-HTML warnings
+  fixed across the SSE docs, sharedfs_reconcile, builtins, guild, signaling,
+  tools, and error-codes modules.
 - **Turn hooks now dispatch.** `PreTurnHook`/`PostTurnHook` were registrable
   but never called — a registered deny was a silent no-op. Pre-turn hooks now
   gate every turn BEFORE the prompt enters history (a denied prompt cannot

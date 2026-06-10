@@ -87,10 +87,24 @@ for NAME in "${SELECT[@]}"; do
     fi
   fi
 
-  # 2. real interaction with a live agent
+  # 2. real interaction with a live agent. On a 402 (existing persona with an
+  # empty meter — the create-branch funding above only covers NEW personas),
+  # best-effort fund from claude and retry ONCE; a funded persona never pays
+  # the extra read, and a failed send degrades to today's failure.
   echo "  · probing $TARGET…"
-  EXPERIENCE="$($CLI call --as "$NAME" --fresh "$TARGET" "$PROBE" 2>&1)" \
-    || { echo "  ✗ probe failed: $EXPERIENCE"; continue; }
+  EXPERIENCE="$($CLI call --as "$NAME" --fresh "$TARGET" "$PROBE" 2>&1)"
+  RC=$?
+  if [ $RC -ne 0 ] && printf '%s' "$EXPERIENCE" | grep -q "402"; then
+    echo "  · probe 402'd (empty meter) — funding 0.5 \$LH from claude + retrying"
+    if $CLI send --as claude "$NAME" 0.5 >/dev/null 2>&1; then
+      EXPERIENCE="$($CLI call --as "$NAME" --fresh "$TARGET" "$PROBE" 2>&1)" \
+        || { echo "  ✗ probe failed after funding: $EXPERIENCE"; continue; }
+    else
+      echo "  ✗ probe failed (and could not fund from claude): $EXPERIENCE"; continue
+    fi
+  elif [ $RC -ne 0 ]; then
+    echo "  ✗ probe failed: $EXPERIENCE"; continue
+  fi
 
   # 3. reflect IN PERSONA on the ACTUAL experience → one grounded item
   REFLECT="You just used localharness. You asked: \"$PROBE\" and the agent replied: \"$EXPERIENCE\". Based on your personality and this REAL experience, write exactly ONE concrete piece of feedback for the localharness maintainers. Start it with [BUG], [FEATURE], or [FEEDBACK]. One item only, under 280 characters, in your own voice, no preamble or sign-off."

@@ -6,7 +6,7 @@
 //! used by `start_subagent` / compaction summary).
 //!
 //! The SSE decoder ([`MessagesSseStream`]) delegates the wire-agnostic
-//! frame-buffering skeleton to the shared [`crate::backends::sse`] module:
+//! frame-buffering skeleton to the shared `backends::sse` module (crate-private):
 //! CRLF+LF-tolerant frame splitting, partial-chunk buffering. The only
 //! Anthropic-specific piece is payload decoding — Anthropic frames are
 //! `event: <name>\ndata: <json>\n\n`; we ignore the `event:` line and
@@ -174,7 +174,7 @@ impl AnthropicClient {
 /// Frame format: `event: <name>\ndata: <json>\n\n`. The wire-agnostic frame
 /// splitting (CRLF+LF-tolerant boundaries — browser fetch surfaces CRLF, the
 /// wasm gotcha — partial-chunk buffering, EOF flush of a final unterminated
-/// frame) is the shared [`SseFrameStream`]; this type only decodes each
+/// frame) is the shared `SseFrameStream` (crate-private); this type only decodes each
 /// `data:` payload as a [`StreamEvent`], ignoring the `event:` line (the
 /// JSON's own `"type"` field carries the same name). No `[DONE]` sentinel —
 /// Anthropic ends streams with a `message_stop` event.

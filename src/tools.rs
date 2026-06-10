@@ -258,7 +258,7 @@ impl ClosureTool {
     /// receives a fresh clone as its first argument on every call. The handler
     /// stays clean — no manual clone, no double-move.
     ///
-    /// # Before (stateless [`new`] — the double-move workaround)
+    /// # Before (stateless [`ClosureTool::new`] — the double-move workaround)
     ///
     /// ```rust,no_run
     /// use std::sync::Arc;

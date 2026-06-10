@@ -56,7 +56,8 @@ impl GuildRole {
         }
     }
 
-    /// The on-chain `uint8` value for this role (the inverse of [`from_u8`]).
+    /// The on-chain `uint8` value for this role (the inverse of
+    /// [`GuildRole::from_u8`]).
     pub fn as_u8(self) -> u8 {
         match self {
             GuildRole::None => 0,

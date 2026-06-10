@@ -46,7 +46,7 @@ pub(crate) fn push_abi_bytes(d: &mut Vec<u8>, bytes: &[u8]) {
 /// The 32-byte digest the OWNER signs to authorize an `announce`:
 /// `keccak256(topic || ephemeral || pubkey)` — `abi.encodePacked(bytes32,
 /// address, bytes)` on-chain. MUST match `SignalingFacet.announce`'s digest
-/// byte-for-byte (topic[32] ‖ ephemeral_addr[20] ‖ raw pubkey).
+/// byte-for-byte (`topic[32] ‖ ephemeral_addr[20] ‖ raw pubkey`).
 pub fn announce_digest(topic: &[u8; 32], ephemeral: &[u8; 20], pubkey: &[u8]) -> [u8; 32] {
     let mut pre = Vec::with_capacity(32 + 20 + pubkey.len());
     pre.extend_from_slice(topic);

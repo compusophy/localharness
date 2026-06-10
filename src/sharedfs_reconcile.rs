@@ -1,5 +1,6 @@
 //! Pure, deterministic CONVERGENT reconcile for the cross-device shared-folder
-//! sync ([`crate::app::sharedfs_sync`]).
+//! sync (`crate::app::sharedfs_sync` — cfg-gated out of non-browser doc
+//! builds, so plain code formatting here, not links).
 //!
 //! ## The bug this fixes
 //! The v1 sync merged two devices' folders by FILENAME only: each peer
@@ -10,7 +11,7 @@
 //!
 //! ## Why content-hash + conflict-copy (NOT last-write-wins)
 //! LWW needs a clock. Our data model has NONE: a shared file is just
-//! `{name, bytes}` — [`crate::app::shared_fs::SharedEntry`] carries only
+//! `{name, bytes}` — `crate::app::shared_fs::SharedEntry` carries only
 //! `name + size`, OPFS [`crate::filesystem::Metadata`] carries only `kind +
 //! size`, and the seal format stores no timestamp. There is no mtime/version to
 //! compare, so LWW is unimplementable here without inventing (and trusting) a
@@ -22,7 +23,7 @@
 //!   - Same name, DIFFERENT content → the file whose content hash is
 //!     **lexicographically greater** keeps the plain name (the "winner"); the
 //!     other is preserved as a CONFLICT COPY named `name.conflict-<shorthash>`
-//!     (the short hash of the LOSER's content, [`CONFLICT_HASH_HEX_LEN`] hex
+//!     (the short hash of the LOSER's content, [`CONFLICT_HASH_HEX_LEN`](crate::sharedfs_reconcile::CONFLICT_HASH_HEX_LEN) hex
 //!     chars). No edit is silently lost.
 //!   - Distinct names → union, exactly as before.
 //!
@@ -40,8 +41,9 @@
 //! it already depends on; the tests pass arbitrary bytes). That keeps the
 //! convergence logic unit-testable under a plain native `cargo test`, the same
 //! way [`crate::encoding`] was hoisted out of `app::events`. The wasm sync path
-//! ([`crate::app::sharedfs_sync`]) calls [`plan_pulls`] to decide what to fetch
-//! from a peer and what conflict-copies to write.
+//! (`crate::app::sharedfs_sync`) calls
+//! [`plan_pulls`](crate::sharedfs_reconcile::plan_pulls) to decide what to
+//! fetch from a peer and what conflict-copies to write.
 
 /// Number of hex chars of the loser's content hash appended to a conflict copy
 /// (`name.conflict-<shorthash>`). 8 hex = 32 bits of the hash — enough to make
