@@ -57,40 +57,6 @@ const SPONSOR_PRIVATE_KEY_HEX: &str =
 /// Return the sponsor's `SigningKey` for `fee_payer` signing on
 /// Tempo txs. Cheap to call repeatedly — k256 keys clone cheaply.
 pub(crate) fn signer() -> Result<SigningKey, String> {
-    let trimmed = SPONSOR_PRIVATE_KEY_HEX
-        .trim_start_matches("0x")
-        .trim_start_matches("0X");
-    let bytes = decode_hex(trimmed)?;
-    if bytes.len() != 32 {
-        return Err(format!(
-            "sponsor private key must be 32 bytes, got {}",
-            bytes.len()
-        ));
-    }
-    SigningKey::from_slice(&bytes).map_err(|e| format!("sponsor key invalid: {e}"))
-}
-
-fn decode_hex(s: &str) -> Result<Vec<u8>, String> {
-    if s.len() % 2 != 0 {
-        return Err("sponsor key hex odd length".into());
-    }
-    let mut out = Vec::with_capacity(s.len() / 2);
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let hi = nibble(bytes[i])?;
-        let lo = nibble(bytes[i + 1])?;
-        out.push((hi << 4) | lo);
-        i += 2;
-    }
-    Ok(out)
-}
-
-fn nibble(b: u8) -> Result<u8, String> {
-    match b {
-        b'0'..=b'9' => Ok(b - b'0'),
-        b'a'..=b'f' => Ok(b - b'a' + 10),
-        b'A'..=b'F' => Ok(b - b'A' + 10),
-        _ => Err(format!("non-hex byte {b}")),
-    }
+    crate::wallet::from_private_key_hex(SPONSOR_PRIVATE_KEY_HEX)
+        .map_err(|e| format!("sponsor key invalid: {e}"))
 }
