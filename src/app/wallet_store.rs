@@ -29,12 +29,7 @@ pub(crate) struct MasterWallet {
 
 impl MasterWallet {
     pub(crate) fn address_hex(&self) -> String {
-        let mut s = String::with_capacity(42);
-        s.push_str("0x");
-        for b in &self.address {
-            s.push_str(&format!("{b:02x}"));
-        }
-        s
+        crate::encoding::bytes_to_hex_str(&self.address)
     }
 }
 

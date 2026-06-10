@@ -24,6 +24,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{HtmlIFrameElement, MessageEvent};
 
+use crate::encoding::{bytes_to_hex, bytes_to_hex_str, hex_to_bytes};
 use crate::runtime::sleep_ms;
 use crate::wallet;
 
@@ -83,7 +84,7 @@ pub(crate) async fn verify_owner(name: &str) -> Result<VerifyResult, String> {
     // own address — no challenge round-trip needed. Skips the iframe (dead
     // on mobile). Compare the local address to the on-chain owner directly.
     if let Some((_, address, _)) = local_master() {
-        let local_hex = format!("0x{}", bytes_to_hex(&address));
+        let local_hex = bytes_to_hex_str(&address);
         return Ok(if local_hex.eq_ignore_ascii_case(&expected) {
             VerifyResult::VerifiedOwner { address: local_hex }
         } else {
@@ -125,7 +126,7 @@ pub(crate) async fn verify_owner(name: &str) -> Result<VerifyResult, String> {
     let mut sig_arr = [0u8; 65];
     sig_arr.copy_from_slice(&sig_bytes);
     let recovered = wallet::recover_address(&sig_arr, &prehash)?;
-    let recovered_hex = format!("0x{}", bytes_to_hex(&recovered));
+    let recovered_hex = bytes_to_hex_str(&recovered);
 
     if recovered_hex.to_lowercase() != signer_address.to_lowercase() {
         return Err(format!(
@@ -229,11 +230,11 @@ pub(crate) async fn sign_tempo_tx_via_iframe(
     if let Some((signer, address, _)) = local_master() {
         let sig = wallet::sign_hash(&signer, &digest);
         let _ = purpose;
-        return Ok((format!("0x{}", bytes_to_hex(&address)), sig));
+        return Ok((bytes_to_hex_str(&address), sig));
     }
 
     let id = format!("digest-{}", random_id_hex());
-    let digest_hex = format!("0x{}", bytes_to_hex(&digest));
+    let digest_hex = bytes_to_hex_str(&digest);
 
     let payload = js_sys::Object::new();
     let set_str = |obj: &js_sys::Object, k: &str, v: &str| {
@@ -256,7 +257,7 @@ pub(crate) async fn sign_tempo_tx_via_iframe(
     set_str(&txo, "gasLimit", &format!("0x{:x}", tx.gas_limit));
     set_str(&txo, "nonce", &format!("0x{:x}", tx.nonce));
     match tx.fee_token {
-        Some(addr) => set_str(&txo, "feeToken", &format!("0x{}", bytes_to_hex(&addr))),
+        Some(addr) => set_str(&txo, "feeToken", &bytes_to_hex_str(&addr)),
         None => {
             let _ = js_sys::Reflect::set(&txo, &JsValue::from_str("feeToken"), &JsValue::NULL);
         }
@@ -269,9 +270,9 @@ pub(crate) async fn sign_tempo_tx_via_iframe(
     let calls = js_sys::Array::new();
     for c in &tx.calls {
         let co = js_sys::Object::new();
-        set_str(&co, "to", &format!("0x{}", bytes_to_hex(&c.to)));
+        set_str(&co, "to", &bytes_to_hex_str(&c.to));
         set_str(&co, "value", &format!("0x{:x}", c.value_wei));
-        set_str(&co, "input", &format!("0x{}", bytes_to_hex(&c.input)));
+        set_str(&co, "input", &bytes_to_hex_str(&c.input));
         calls.push(&co);
     }
     let _ = js_sys::Reflect::set(&txo, &JsValue::from_str("calls"), &calls);
@@ -401,7 +402,7 @@ pub(crate) async fn seal_key_via_iframe(plaintext: &str) -> Result<String, Strin
         let ct = super::encryption::seal_with_raw_key(&key, plaintext.as_bytes())
             .await
             .ok_or_else(|| "seal failed".to_string())?;
-        return Ok(format!("0x{}", bytes_to_hex(&ct)));
+        return Ok(bytes_to_hex_str(&ct));
     }
     let id = format!("seal-{}", random_id_hex());
     let payload = js_sys::Object::new();
@@ -652,39 +653,4 @@ fn random_id_hex() -> String {
     let mut bytes = [0u8; 8];
     rand_core::OsRng.fill_bytes(&mut bytes);
     bytes_to_hex(&bytes)
-}
-
-fn bytes_to_hex(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
-
-fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
-    let trimmed = hex.trim().trim_start_matches("0x").trim_start_matches("0X");
-    if trimmed.len() % 2 != 0 {
-        return Err("hex odd length".into());
-    }
-    let mut out = Vec::with_capacity(trimmed.len() / 2);
-    let bytes = trimmed.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let hi = match bytes[i] {
-            b'0'..=b'9' => bytes[i] - b'0',
-            b'a'..=b'f' => bytes[i] - b'a' + 10,
-            b'A'..=b'F' => bytes[i] - b'A' + 10,
-            _ => return Err(format!("non-hex byte {}", bytes[i])),
-        };
-        let lo = match bytes[i + 1] {
-            b'0'..=b'9' => bytes[i + 1] - b'0',
-            b'a'..=b'f' => bytes[i + 1] - b'a' + 10,
-            b'A'..=b'F' => bytes[i + 1] - b'A' + 10,
-            _ => return Err(format!("non-hex byte {}", bytes[i + 1])),
-        };
-        out.push((hi << 4) | lo);
-        i += 2;
-    }
-    Ok(out)
 }

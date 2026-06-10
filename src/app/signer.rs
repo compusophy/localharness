@@ -80,6 +80,7 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::MessageEvent;
 
+use crate::encoding::{bytes_to_hex_str, hex_to_bytes, parse_hex_quantity};
 use crate::wallet;
 
 const DOMAIN_TAG: &[u8] = b"localharness-auth-v0:";
@@ -383,7 +384,7 @@ fn spawn_seal_key(id: String, plaintext: String, source: JsValue, origin: String
                         let obj = js_sys::Object::new();
                         set(&obj, "type", JsValue::from_str("lh-sign-response"));
                         set(&obj, "id", JsValue::from_str(&id));
-                        set(&obj, "ciphertext", JsValue::from_str(&hex_bytes(&ct)));
+                        set(&obj, "ciphertext", JsValue::from_str(&bytes_to_hex_str(&ct)));
                         JsValue::from(obj)
                     }
                     None => error_response(&id, "seal failed"),
@@ -400,7 +401,7 @@ fn spawn_seal_key(id: String, plaintext: String, source: JsValue, origin: String
 /// Open seed-sealed ciphertext and return the plaintext (the Gemini key).
 fn spawn_open_key(id: String, ciphertext_hex: String, source: JsValue, origin: String) {
     wasm_bindgen_futures::spawn_local(async move {
-        let reply = match (seed_sync_key(), decode_hex(&ciphertext_hex)) {
+        let reply = match (seed_sync_key(), hex_to_bytes(&ciphertext_hex)) {
             (Ok(key), Ok(ct)) => match super::encryption::open_with_raw_key(&key, &ct).await {
                 Some(pt) => match String::from_utf8(pt) {
                     Ok(s) => {
@@ -450,7 +451,7 @@ fn spawn_claim_name(id: String, name: String, source: JsValue, origin: String) {
 
 async fn run_claim_name(name: &str) -> Result<(String, String), String> {
     let (signer, address) = wallet_handle()?;
-    let address_hex = hex_addr(&address);
+    let address_hex = bytes_to_hex_str(&address);
     // Sponsored path: sender (user's wallet) holds zero, fee_payer
     // (bundle's sponsor) pays gas in AlphaUSD. No faucet drip
     // required — users get on-chain in one click with no native gas.
@@ -488,7 +489,7 @@ fn spawn_import_seed(id: String, phrase: String, source: JsValue, origin: String
 }
 
 fn build_challenge_response(id: &str, nonce_hex: &str, name: &str) -> Result<JsValue, String> {
-    let nonce = parse_nonce(nonce_hex)?;
+    let nonce = hex_to_bytes(nonce_hex)?;
     // Domain-separated digest the signer commits to. Binds the subdomain
     // `name` (and a random nonce) so a captured owner-proof for one name
     // can't be replayed as proof for another name held by the same
@@ -508,8 +509,8 @@ fn build_challenge_response(id: &str, nonce_hex: &str, name: &str) -> Result<JsV
     let obj = js_sys::Object::new();
     set(&obj, "type", JsValue::from_str("lh-sign-response"));
     set(&obj, "id", JsValue::from_str(id));
-    set(&obj, "address", JsValue::from_str(&hex_addr(&address)));
-    set(&obj, "signature", JsValue::from_str(&hex_bytes(&signature)));
+    set(&obj, "address", JsValue::from_str(&bytes_to_hex_str(&address)));
+    set(&obj, "signature", JsValue::from_str(&bytes_to_hex_str(&signature)));
     Ok(JsValue::from(obj))
 }
 
@@ -542,10 +543,10 @@ fn build_sponsored_tx_response(id: &str, data: &JsValue, purpose: &str) -> Resul
     }
 
     let fee_priority =
-        parse_u128_hex(&get_str("maxPriorityFeePerGas").ok_or("maxPriorityFeePerGas missing")?)?;
-    let fee_max = parse_u128_hex(&get_str("maxFeePerGas").ok_or("maxFeePerGas missing")?)?;
-    let gas_limit = parse_u128_hex(&get_str("gasLimit").ok_or("gasLimit missing")?)?;
-    let nonce = parse_u128_hex(&get_str("nonce").ok_or("nonce missing")?)?;
+        parse_hex_quantity(&get_str("maxPriorityFeePerGas").ok_or("maxPriorityFeePerGas missing")?)?;
+    let fee_max = parse_hex_quantity(&get_str("maxFeePerGas").ok_or("maxFeePerGas missing")?)?;
+    let gas_limit = parse_hex_quantity(&get_str("gasLimit").ok_or("gasLimit missing")?)?;
+    let nonce = parse_hex_quantity(&get_str("nonce").ok_or("nonce missing")?)?;
     let fee_token = match get_str("feeToken") {
         Some(s) if !s.trim().trim_start_matches("0x").is_empty() => Some(parse_addr20(&s)?),
         _ => None,
@@ -582,17 +583,17 @@ fn build_sponsored_tx_response(id: &str, data: &JsValue, purpose: &str) -> Resul
         if to != registry_addr && to != token_addr {
             return Err(format!(
                 "refusing to sign: call target {} is not allowlisted",
-                hex_addr(&to)
+                bytes_to_hex_str(&to)
             ));
         }
-        let value_wei = parse_u128_hex(&cval)?;
+        let value_wei = parse_hex_quantity(&cval)?;
         if value_wei != 0 {
             return Err("refusing to sign: native value transfer not permitted".into());
         }
         let input = if cinput.trim().trim_start_matches("0x").is_empty() {
             Vec::new()
         } else {
-            decode_hex(&cinput)?
+            hex_to_bytes(&cinput)?
         };
         calls.push(crate::tempo_tx::TempoCall { to, value_wei, input });
     }
@@ -622,7 +623,7 @@ fn build_sponsored_tx_response(id: &str, data: &JsValue, purpose: &str) -> Resul
         .ok()
         .and_then(|v| v.as_string())
     {
-        if let Ok(claimed_bytes) = decode_hex(&claimed) {
+        if let Ok(claimed_bytes) = hex_to_bytes(&claimed) {
             if claimed_bytes.as_slice() != sender_hash {
                 return Err("provided digest does not match reconstructed sender_hash".into());
             }
@@ -639,46 +640,16 @@ fn build_sponsored_tx_response(id: &str, data: &JsValue, purpose: &str) -> Resul
     let obj = js_sys::Object::new();
     set(&obj, "type", JsValue::from_str("lh-sign-response"));
     set(&obj, "id", JsValue::from_str(id));
-    set(&obj, "address", JsValue::from_str(&hex_addr(&address)));
-    set(&obj, "signature", JsValue::from_str(&hex_bytes(&sig)));
+    set(&obj, "address", JsValue::from_str(&bytes_to_hex_str(&address)));
+    set(&obj, "signature", JsValue::from_str(&bytes_to_hex_str(&sig)));
     Ok(JsValue::from(obj))
 }
 
-/// Parse a `0x`-optional hex string into a `u128`. Empty ⇒ 0.
-fn parse_u128_hex(s: &str) -> Result<u128, String> {
-    let t = s.trim().trim_start_matches("0x").trim_start_matches("0X");
-    if t.is_empty() {
-        return Ok(0);
-    }
-    u128::from_str_radix(t, 16).map_err(|e| format!("bad u128 hex '{s}': {e}"))
-}
-
-/// Parse a `0x`-optional 20-byte hex address.
+/// Parse a `0x`-optional 20-byte hex address. Thin fixed-length wrapper over
+/// [`crate::encoding::parse_address`] that also tolerates surrounding
+/// whitespace (the fields arrive as JS strings).
 fn parse_addr20(s: &str) -> Result<[u8; 20], String> {
-    let bytes = decode_hex(s)?;
-    if bytes.len() != 20 {
-        return Err(format!("address must be 20 bytes, got {}", bytes.len()));
-    }
-    let mut a = [0u8; 20];
-    a.copy_from_slice(&bytes);
-    Ok(a)
-}
-
-fn decode_hex(hex: &str) -> Result<Vec<u8>, String> {
-    let trimmed = hex.trim().trim_start_matches("0x").trim_start_matches("0X");
-    if trimmed.len() % 2 != 0 {
-        return Err("data hex odd length".into());
-    }
-    let mut out = Vec::with_capacity(trimmed.len() / 2);
-    let bytes = trimmed.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let hi = nibble(bytes[i])?;
-        let lo = nibble(bytes[i + 1])?;
-        out.push((hi << 4) | lo);
-        i += 2;
-    }
-    Ok(out)
+    crate::encoding::parse_address(s.trim())
 }
 
 fn wallet_handle() -> Result<(k256::ecdsa::SigningKey, [u8; 20]), String> {
@@ -713,46 +684,3 @@ fn is_trusted_origin(origin: &str) -> bool {
     super::tenant::is_trusted_lh_origin(origin)
 }
 
-fn parse_nonce(hex: &str) -> Result<Vec<u8>, String> {
-    let trimmed = hex.trim().trim_start_matches("0x").trim_start_matches("0X");
-    if trimmed.len() % 2 != 0 {
-        return Err("nonce hex odd length".into());
-    }
-    let mut out = Vec::with_capacity(trimmed.len() / 2);
-    let bytes = trimmed.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let hi = nibble(bytes[i])?;
-        let lo = nibble(bytes[i + 1])?;
-        out.push((hi << 4) | lo);
-        i += 2;
-    }
-    Ok(out)
-}
-
-fn nibble(b: u8) -> Result<u8, String> {
-    match b {
-        b'0'..=b'9' => Ok(b - b'0'),
-        b'a'..=b'f' => Ok(b - b'a' + 10),
-        b'A'..=b'F' => Ok(b - b'A' + 10),
-        _ => Err(format!("non-hex byte {b}")),
-    }
-}
-
-fn hex_addr(addr: &[u8; 20]) -> String {
-    let mut s = String::with_capacity(42);
-    s.push_str("0x");
-    for b in addr {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
-
-fn hex_bytes(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(2 + bytes.len() * 2);
-    s.push_str("0x");
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}

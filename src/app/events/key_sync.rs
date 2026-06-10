@@ -1,19 +1,8 @@
 //! Gemini key sync — seal / restore the key on-chain under the owner MAIN slot.
 
-use crate::encoding::parse_address;
+use crate::encoding::{bytes_to_hex_str, hex_to_bytes, parse_address};
 
 use crate::app::dom;
-
-fn decode_hex_local(s: &str) -> Option<Vec<u8>> {
-    let t = s.trim().trim_start_matches("0x").trim_start_matches("0X");
-    if t.len() % 2 != 0 {
-        return None;
-    }
-    (0..t.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(t.get(i..i + 2)?, 16).ok())
-        .collect()
-}
 
 /// #18: seal the current Gemini key with the seed-derived key (via the
 /// apex iframe) and store the ciphertext on-chain under the gemini-key
@@ -55,7 +44,7 @@ pub(super) async fn run_sync_key() {
             return;
         }
     };
-    let Some(ct) = decode_hex_local(&ct_hex) else {
+    let Ok(ct) = hex_to_bytes(&ct_hex) else {
         set_err("bad ciphertext from signer");
         return;
     };
@@ -123,10 +112,7 @@ pub(super) async fn run_restore_key() {
             return;
         }
     };
-    let ct_hex = format!(
-        "0x{}",
-        ct.iter().map(|b| format!("{b:02x}")).collect::<String>()
-    );
+    let ct_hex = bytes_to_hex_str(&ct);
     let plaintext = match crate::app::verify::open_key_via_iframe(&ct_hex).await {
         Ok(p) => p,
         Err(e) => {
@@ -185,7 +171,7 @@ pub(super) async fn auto_sync_gemini_key(name: String, key: String) {
         Ok(h) => h,
         Err(_) => return,
     };
-    let Some(ct) = decode_hex_local(&ct_hex) else { return };
+    let Ok(ct) = hex_to_bytes(&ct_hex) else { return };
     let Ok(registry_addr) = parse_address(crate::app::registry::REGISTRY_ADDRESS) else { return };
     let call = crate::tempo_tx::TempoCall {
         to: registry_addr,
@@ -225,10 +211,7 @@ pub(crate) async fn try_auto_restore_gemini_key(name: &str) -> bool {
         Ok(Some(b)) => b,
         _ => return false,
     };
-    let ct_hex = format!(
-        "0x{}",
-        ct.iter().map(|b| format!("{b:02x}")).collect::<String>()
-    );
+    let ct_hex = bytes_to_hex_str(&ct);
     let plaintext = match crate::app::verify::open_key_via_iframe(&ct_hex).await {
         Ok(p) => p,
         Err(_) => return false,

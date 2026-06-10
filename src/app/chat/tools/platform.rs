@@ -2,7 +2,8 @@
 // Platform-level closure tools (browser-specific; not in the SDK builtins).
 // =============================================================================
 
-use crate::app::chat::access::{build_actor_setup, parse_address, transfer_selector, u256_be};
+use crate::app::chat::access::{build_actor_setup, transfer_selector, u256_be};
+use crate::encoding::parse_address;
 use crate::tools::ClosureTool;
 
 /// `create_subdomain(name)` — register `<name>.localharness.xyz` on the

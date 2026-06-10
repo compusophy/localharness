@@ -93,7 +93,7 @@ async fn wait_for_ice(pc: &RtcPeerConnection) {
         if pc.ice_gathering_state() == RtcIceGatheringState::Complete {
             return;
         }
-        crate::registry::sleep_ms(50).await;
+        crate::runtime::sleep_ms(50).await;
     }
 }
 

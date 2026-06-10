@@ -29,6 +29,7 @@
 //! sessionStorage — so the value in browser history is useless to anyone
 //! else, and the apex hands nothing back unless it owns the name.
 
+use crate::encoding::bytes_to_hex as hex;
 use crate::wallet;
 
 /// sessionStorage slot for the ephemeral ECIES private key (hex), held by
@@ -44,35 +45,8 @@ fn session() -> Option<web_sys::Storage> {
     web_sys::window().and_then(|w| w.session_storage().ok().flatten())
 }
 
-fn hex(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
-
 fn unhex(s: &str) -> Option<Vec<u8>> {
-    let t = s.trim().trim_start_matches("0x").trim_start_matches("0X");
-    if t.len() % 2 != 0 {
-        return None;
-    }
-    let b = t.as_bytes();
-    let mut out = Vec::with_capacity(t.len() / 2);
-    let nib = |c: u8| -> Option<u8> {
-        match c {
-            b'0'..=b'9' => Some(c - b'0'),
-            b'a'..=b'f' => Some(c - b'a' + 10),
-            b'A'..=b'F' => Some(c - b'A' + 10),
-            _ => None,
-        }
-    };
-    let mut i = 0;
-    while i < b.len() {
-        out.push((nib(b[i])? << 4) | nib(b[i + 1])?);
-        i += 2;
-    }
-    Some(out)
+    crate::encoding::hex_to_bytes(s).ok()
 }
 
 /// Subdomain side. Kick the top-level round-trip to fetch the seed from

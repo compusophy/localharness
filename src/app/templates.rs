@@ -7,6 +7,7 @@
 
 use maud::{html, Markup, PreEscaped};
 
+use crate::encoding::short_addr;
 use crate::filesystem::{DirEntry, EntryKind};
 use crate::types::{BuiltinTool, ToolCall, ToolResult};
 
@@ -247,14 +248,6 @@ pub(crate) fn verify_pill(state: &VerifyState) -> Markup {
         // fuller description (otherwise only on hover via `title`).
         span #verify-pill class=(class) title=(title) role="status" aria-label=(title) { (label) }
     }
-}
-
-fn short_addr(addr: &str) -> String {
-    let stripped = addr.trim_start_matches("0x");
-    if stripped.len() < 8 {
-        return addr.to_string();
-    }
-    format!("0x{}…{}", &stripped[..4], &stripped[stripped.len() - 4..])
 }
 
 /// One-line preview of an agent's persona for a portfolio card. Collapses

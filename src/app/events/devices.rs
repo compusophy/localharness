@@ -137,7 +137,7 @@ pub(super) fn pair_start_pressed() {
                 }
                 _ => {}
             }
-            crate::app::registry::sleep_ms(3000).await;
+            crate::runtime::sleep_ms(3000).await;
         }
 
         let Some((device, device_pubkey)) = found else {
@@ -261,15 +261,10 @@ fn code_key(code: &str) -> [u8; 32] {
     out
 }
 
+/// Thin wrapper over [`crate::encoding::hex_to_bytes`]: the adopt-link
+/// ciphertext must be non-empty (an empty fragment means a mangled QR link).
 fn hex_to_bytes(s: &str) -> Option<Vec<u8>> {
-    let s = s.trim().trim_start_matches("0x");
-    if s.is_empty() || s.len() % 2 != 0 {
-        return None;
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
-        .collect()
+    crate::encoding::hex_to_bytes(s).ok().filter(|v| !v.is_empty())
 }
 
 /// Desktop side of Option A "add a device". Encrypt this device's seed
@@ -316,7 +311,7 @@ pub(super) fn add_device_pressed() {
             dom::swap_inner("pair-msg", &dom::msg_span(dom::Msg::Error, "encrypt failed"));
             return;
         };
-        let hex: String = ct.iter().map(|b| format!("{b:02x}")).collect();
+        let hex = crate::encoding::bytes_to_hex(&ct);
         let url = format!("https://localharness.xyz/?adopt=1#s={hex}");
         dom::swap_outer("pair-slot", &templates::adopt_panel(&code, &url).into_string());
         dom::swap_inner("pair-msg", "");
@@ -513,7 +508,7 @@ async fn run_pair_join(code: &str) -> Result<String, String> {
                     &dom::msg_span(dom::Msg::Accent, "✓ linked — opening your subdomain…"),
                 );
             }
-            crate::app::registry::sleep_ms(3000).await;
+            crate::runtime::sleep_ms(3000).await;
         }
     });
 

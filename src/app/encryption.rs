@@ -250,20 +250,11 @@ async fn decrypt(key: &web_sys::CryptoKey, encrypted: &[u8]) -> Result<Vec<u8>, 
 }
 
 fn hex32(b: &[u8; 32]) -> String {
-    let mut s = String::with_capacity(64);
-    for x in b {
-        s.push_str(&format!("{x:02x}"));
-    }
-    s
+    crate::encoding::bytes_to_hex(b)
 }
 
+/// Fixed-length decode — thin wrapper over [`crate::encoding::hex_to_bytes`]
+/// that requires exactly 32 bytes (the persisted per-origin AES key).
 fn hex_to_32(s: &str) -> Option<[u8; 32]> {
-    if s.len() != 64 {
-        return None;
-    }
-    let mut out = [0u8; 32];
-    for (i, b) in out.iter_mut().enumerate() {
-        *b = u8::from_str_radix(s.get(i * 2..i * 2 + 2)?, 16).ok()?;
-    }
-    Some(out)
+    crate::encoding::hex_to_bytes(s).ok()?.try_into().ok()
 }

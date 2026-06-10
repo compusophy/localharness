@@ -67,8 +67,6 @@ thread_local! {
     static ACTIVE: RefCell<Vec<SharedFsSync>> = const { RefCell::new(Vec::new()) };
 }
 
-const HEXD: &[u8; 16] = b"0123456789abcdef";
-
 /// How recent a roster `announce` must be to be treated as ONLINE. Devices
 /// re-announce at the start of every sync pass, so a peer that genuinely wants
 /// to connect has a `ts` within seconds of now. Entries older than this are
@@ -106,26 +104,12 @@ fn address_of_pubkey(pubkey_sec1: &[u8]) -> Option<String> {
 }
 
 fn hex20(a: &[u8; 20]) -> String {
-    let mut s = String::with_capacity(42);
-    s.push_str("0x");
-    for b in a {
-        s.push(HEXD[(b >> 4) as usize] as char);
-        s.push(HEXD[(b & 0xf) as usize] as char);
-    }
-    s
+    crate::encoding::bytes_to_hex_str(a)
 }
 
 /// Parse a `0x…` 40-hex-char address into 20 bytes.
 fn addr20(hex: &str) -> Option<[u8; 20]> {
-    let h = hex.trim().trim_start_matches("0x");
-    if h.len() != 40 {
-        return None;
-    }
-    let mut out = [0u8; 20];
-    for (i, slot) in out.iter_mut().enumerate() {
-        *slot = u8::from_str_radix(h.get(i * 2..i * 2 + 2)?, 16).ok()?;
-    }
-    Some(out)
+    crate::encoding::parse_address(hex.trim()).ok()
 }
 
 /// Build a signaling blob: the plaintext `<sender_eph_hex>` correlation prefix,
@@ -293,7 +277,7 @@ async fn connect_and_sync(
         if session.is_open() {
             break;
         }
-        registry::sleep_ms(100).await;
+        crate::runtime::sleep_ms(100).await;
     }
     session.start().await;
     ACTIVE.with(|a| a.borrow_mut().push(session));
@@ -322,7 +306,7 @@ async fn poll_inbox_from(
                 }
             }
         }
-        registry::sleep_ms(1000).await;
+        crate::runtime::sleep_ms(1000).await;
     }
     None
 }

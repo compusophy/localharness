@@ -4,7 +4,7 @@
 
 use futures_util::StreamExt;
 
-use crate::app::chat::access::parse_address;
+use crate::encoding::parse_address;
 use crate::policy;
 use crate::tools::ClosureTool;
 use crate::{Agent, CapabilitiesConfig, GeminiAgentConfig, StreamChunk};

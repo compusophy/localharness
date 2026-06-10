@@ -10,7 +10,7 @@
 //! `loading…` pill or a frozen verify state with no error.
 //!
 //! [`with_timeout`] caps any such future: it races the work against
-//! [`registry::sleep_ms`] (a `setTimeout` Promise on wasm) and returns
+//! [`crate::runtime::sleep_ms`] (a `setTimeout` Promise on wasm) and returns
 //! `Err("timeout")` if the deadline wins. Callers then degrade to a usable
 //! fallback (a dash, a hidden pill, the embedded docs) instead of spinning.
 //!
@@ -22,8 +22,6 @@ use std::future::Future;
 
 use futures_util::future::{select, Either};
 
-use super::registry;
-
 /// Default deadline for a single on-chain read used during a paint/refresh.
 /// Long enough to absorb a slow-but-alive RPC round-trip, short enough that a
 /// dead node degrades to a fallback within a couple seconds rather than
@@ -33,16 +31,16 @@ pub(crate) const READ_TIMEOUT_MS: u32 = 8_000;
 /// Race `fut` against a `ms`-millisecond timer. Returns `Ok(fut output)` if
 /// the work finishes first, or `Err("timeout")` if the timer wins.
 ///
-/// Pure combinator over [`registry::sleep_ms`] + [`futures_util::future::select`]
-/// — no `tokio`, so it compiles + runs on wasm (single-threaded, no `Send`).
-/// The losing future is simply dropped (browser `fetch` is cancelled when its
-/// future drops).
+/// Pure combinator over [`crate::runtime::sleep_ms`] +
+/// [`futures_util::future::select`] — no `tokio`, so it compiles + runs on wasm
+/// (single-threaded, no `Send`). The losing future is simply dropped (browser
+/// `fetch` is cancelled when its future drops).
 pub(crate) async fn with_timeout<F, T>(ms: u32, fut: F) -> Result<T, &'static str>
 where
     F: Future<Output = T>,
 {
     let work = std::pin::pin!(fut);
-    let timer = std::pin::pin!(registry::sleep_ms(ms));
+    let timer = std::pin::pin!(crate::runtime::sleep_ms(ms));
     match select(work, timer).await {
         Either::Left((out, _)) => Ok(out),
         Either::Right(((), _)) => Err("timeout"),

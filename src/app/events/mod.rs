@@ -1059,10 +1059,7 @@ pub(crate) async fn warn_if_sponsor_low() {
         return;
     };
     let addr = crate::wallet::address(&signer);
-    let addr_hex = format!(
-        "0x{}",
-        addr.iter().map(|b| format!("{b:02x}")).collect::<String>()
-    );
+    let addr_hex = bytes_to_hex_str(&addr);
     if let Ok(bal) =
         super::registry::erc20_balance_of(super::registry::ALPHA_USD_ADDRESS, &addr_hex).await
     {
@@ -1122,8 +1119,8 @@ pub(crate) async fn run_sponsored_tempo_call(
         .map_err(|e| format!("recover: {e}"))?;
     if recovered != sender_address {
         return Err(format!(
-            "sender sig recovered 0x{} but expected {claimed_addr} ({from_hex})",
-            recovered.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            "sender sig recovered {} but expected {claimed_addr} ({from_hex})",
+            bytes_to_hex_str(&recovered),
         ));
     }
 

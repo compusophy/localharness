@@ -433,10 +433,7 @@ fn mount() -> Result<(), JsValue> {
                 let n = name.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     if let Some(sk) = wallet_store::load_device_key().await {
-                        let addr = format!(
-                            "0x{}",
-                            crate::wallet::address(&sk).iter().map(|b| format!("{b:02x}")).collect::<String>()
-                        );
+                        let addr = crate::encoding::bytes_to_hex_str(&crate::wallet::address(&sk));
                         if let Ok(Some(owner)) = registry::owner_of_name(&n).await {
                             if let Ok(main_id) = registry::main_of(&owner).await {
                                 if main_id != 0

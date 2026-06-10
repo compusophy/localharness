@@ -3,6 +3,7 @@
 use wasm_bindgen::prelude::*;
 
 use crate::app::{dom, templates};
+use crate::encoding::{bytes_to_hex_str, tx_short_hash};
 
 /// States for the submit button. `Disabled` = grey, not clickable
 /// (length out of range, registry check pending, name taken).
@@ -146,7 +147,7 @@ pub(super) async fn run_apex_claim(name: String, create_if_missing: bool) {
             cell.borrow()
                 .wallet
                 .as_ref()
-                .map(|w| (w.signer.clone(), wallet_address_hex(&w.address)))
+                .map(|w| (w.signer.clone(), bytes_to_hex_str(&w.address)))
         });
         let (signer, addr_hex) = match cached {
             Some(pair) => pair,
@@ -196,7 +197,7 @@ pub(super) async fn run_apex_claim(name: String, create_if_missing: bool) {
         Ok(tx_hash) => {
             web_sys::console::log_1(&JsValue::from_str(&format!(
                 "claimed {name} (tx {})",
-                short_hash(&tx_hash)
+                tx_short_hash(&tx_hash)
             )));
             let target = format!("https://{name}.localharness.xyz/?claim=1");
             if let Ok(window) = dom::window() {
@@ -239,19 +240,3 @@ fn set_create_button_busy(busy: bool) {
     }
 }
 
-fn wallet_address_hex(addr: &[u8; 20]) -> String {
-    let mut s = String::with_capacity(42);
-    s.push_str("0x");
-    for b in addr {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
-
-fn short_hash(tx_hash: &str) -> String {
-    let stripped = tx_hash.trim_start_matches("0x");
-    if stripped.len() < 12 {
-        return tx_hash.to_string();
-    }
-    format!("{}…{}", &stripped[..6], &stripped[stripped.len() - 4..])
-}

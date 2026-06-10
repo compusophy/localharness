@@ -141,10 +141,7 @@ pub(super) async fn run_set_public_face(choice: &str) {
     let local = crate::app::chat::credit_signer().await;
     let is_signer = match &local {
         Some((_, addr)) => {
-            let addr_hex = format!(
-                "0x{}",
-                addr.iter().map(|b| format!("{b:02x}")).collect::<String>()
-            );
+            let addr_hex = crate::encoding::bytes_to_hex_str(addr);
             crate::app::registry::is_authorized_signer(&on_chain_owner, &addr_hex)
                 .await
                 .unwrap_or(false)

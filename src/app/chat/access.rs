@@ -1,10 +1,10 @@
-//! Credit access + per-turn payment + ABI/hex helpers for the chat path: how a
+//! Credit access + per-turn payment + ABI helpers for the chat path: how a
 //! turn reaches the model (platform `$LH` credits via the proxy vs BYOK), the
 //! visitor payment gate, and the calldata builders the platform tools share.
-//! (The hex helpers intentionally duplicate `crate::encoding` — dedupe is a
-//! follow-up, out of scope for the mechanical split.)
+//! Hex/address codecs come from `crate::encoding`.
 
 use crate::app::{dom, APP};
+use crate::encoding::{bytes_to_hex_str, parse_address};
 
 /// Returns `Ok(Some(tx_hash))` if a payment was collected, `Ok(None)`
 /// if no payment was required (free agent, owner sending, unverified
@@ -111,16 +111,6 @@ pub(crate) struct ModelAccess {
     pub(crate) identity: String,
 }
 
-/// Lowercase 0x-hex of bytes.
-fn hex_of(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(2 + bytes.len() * 2);
-    s.push_str("0x");
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
-}
-
 /// The LOCAL signing key for the credit path — master wallet on the
 /// apex / seed-bearing origin, else a local per-origin key (loaded or
 /// generated + persisted on first use). NEVER the cross-origin iframe
@@ -151,7 +141,7 @@ pub(crate) async fn credit_address_existing() -> Option<String> {
         return Some(a);
     }
     let sk = crate::app::wallet_store::load_device_key().await?;
-    Some(hex_of(&crate::wallet::address(&sk)))
+    Some(bytes_to_hex_str(&crate::wallet::address(&sk)))
 }
 
 /// Resolve how this turn reaches the model. Credits mode mints a fresh
@@ -161,12 +151,12 @@ pub(crate) async fn credit_address_existing() -> Option<String> {
 pub(crate) async fn resolve_credit_access() -> Option<ModelAccess> {
     if model_access_is_credits() {
         let (signer, addr) = credit_signer().await?;
-        let addr_hex = hex_of(&addr); // lowercase 0x — matches the proxy
+        let addr_hex = bytes_to_hex_str(&addr); // lowercase 0x — matches the proxy
         let ts = (js_sys::Date::now() / 1000.0) as u64;
         let msg = format!("localharness-proxy:{addr_hex}:{ts}");
         let sig = crate::wallet::personal_sign(&signer, msg.as_bytes());
         return Some(ModelAccess {
-            cfg_auth: format!("{addr_hex}:{ts}:{}", hex_of(&sig)),
+            cfg_auth: format!("{addr_hex}:{ts}:{}", bytes_to_hex_str(&sig)),
             base_url: url::Url::parse(CREDIT_PROXY_URL).ok(),
             identity: format!("credits:{addr_hex}"),
         });
@@ -195,7 +185,7 @@ pub(crate) async fn ensure_credit_meter() {
     let Some((signer, addr)) = credit_signer().await else {
         return;
     };
-    let addr_hex = hex_of(&addr);
+    let addr_hex = bytes_to_hex_str(&addr);
     let wallet = crate::app::registry::token_balance_of(&addr_hex)
         .await
         .unwrap_or(0);
@@ -239,30 +229,6 @@ async fn read_api_key() -> Option<String> {
         }
     }
     None
-}
-
-pub(crate) fn parse_address(hex: &str) -> Result<[u8; 20], String> {
-    let trimmed = hex.trim().trim_start_matches("0x").trim_start_matches("0X");
-    if trimmed.len() != 40 {
-        return Err(format!("address must be 20 bytes hex, got {}", trimmed.len()));
-    }
-    let mut out = [0u8; 20];
-    let bytes = trimmed.as_bytes();
-    for i in 0..20 {
-        let hi = hex_nibble(bytes[i * 2])?;
-        let lo = hex_nibble(bytes[i * 2 + 1])?;
-        out[i] = (hi << 4) | lo;
-    }
-    Ok(out)
-}
-
-fn hex_nibble(b: u8) -> Result<u8, String> {
-    match b {
-        b'0'..=b'9' => Ok(b - b'0'),
-        b'a'..=b'f' => Ok(b - b'a' + 10),
-        b'A'..=b'F' => Ok(b - b'A' + 10),
-        _ => Err(format!("non-hex byte {b}")),
-    }
 }
 
 pub(crate) fn u256_be(value: u128) -> [u8; 32] {

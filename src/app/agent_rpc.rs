@@ -167,23 +167,14 @@ async fn x402_price() -> u128 {
     }
 }
 
-fn hex0x(b: &[u8]) -> String {
-    let mut s = String::with_capacity(2 + b.len() * 2);
-    s.push_str("0x");
-    for x in b {
-        s.push_str(&format!("{x:02x}"));
-    }
-    s
-}
-
+/// Fixed-length hex decode — thin wrapper over [`crate::encoding::hex_to_bytes`]
+/// that also enforces an exact byte count (addresses, nonces, signatures).
 fn parse_hex(s: &str, n: usize) -> Result<Vec<u8>, String> {
-    let t = s.trim().trim_start_matches("0x");
-    if t.len() != n * 2 {
-        return Err(format!("expected {n} bytes, got {}", t.len() / 2));
+    let bytes = crate::encoding::hex_to_bytes(s)?;
+    if bytes.len() != n {
+        return Err(format!("expected {n} bytes, got {}", bytes.len()));
     }
-    (0..n)
-        .map(|i| u8::from_str_radix(&t[i * 2..i * 2 + 2], 16).map_err(|e| e.to_string()))
-        .collect()
+    Ok(bytes)
 }
 
 fn build_response(id: &str, result: Result<String, String>) -> JsValue {
@@ -220,7 +211,7 @@ async fn build_payment_required(id: &str, price: u128, my_name: &str) -> JsValue
     let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("to"), &JsValue::from_str(&to));
     let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("value"), &JsValue::from_str(&price.to_string()));
     let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("validBefore"), &JsValue::from_f64((now + 300) as f64));
-    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("nonce"), &JsValue::from_str(&hex0x(&nonce)));
+    let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("nonce"), &JsValue::from_str(&crate::encoding::bytes_to_hex_str(&nonce)));
     obj.into()
 }
 
