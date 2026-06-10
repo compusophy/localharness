@@ -67,8 +67,7 @@ pub(super) async fn run_sync_key() {
         value_wei: 0,
         input: crate::app::registry::encode_set_gemini_key(id, &ct),
     };
-    let words = (ct.len() / 32 + 1) as u128;
-    let gas = 1_200_000 + words * 40_000;
+    let gas = crate::app::gas::set_metadata_gas(ct.len());
     dom::swap_inner(msg, "<span style=\"color:var(--muted)\">syncing on-chain…</span>");
     match super::run_sponsored_tempo_call(&owner_hex, vec![call], gas, "sync key").await {
         Ok(_) => dom::swap_inner(
@@ -178,8 +177,7 @@ pub(super) async fn auto_sync_gemini_key(name: String, key: String) {
         value_wei: 0,
         input: crate::app::registry::encode_set_gemini_key(slot_id, &ct),
     };
-    let words = (ct.len() / 32 + 1) as u128;
-    let gas = 1_200_000 + words * 40_000;
+    let gas = crate::app::gas::set_metadata_gas(ct.len());
     let _ = super::run_sponsored_tempo_call(&owner, vec![call], gas, "auto-sync key").await;
 }
 

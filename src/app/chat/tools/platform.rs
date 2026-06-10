@@ -241,8 +241,10 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
                 mk(crate::app::registry::encode_set_app_wasm(token_id, &wasm)),
                 mk(crate::app::registry::encode_set_public_face(token_id, "app")),
             ];
-            let words = (wasm.len() / 32 + 1) as u128;
-            let mut gas = 1_300_000 + words * 40_000;
+            // Length-scaled: the old `1.3M + words*40k` here was ~6x below
+            // the measured ~7.6k gas/BYTE and silently OOG-reverted any
+            // non-trivial publish (see `gas::set_metadata_gas`).
+            let mut gas = crate::app::gas::set_metadata_gas(wasm.len());
             // ACTOR MODEL: fold optional persona + prefund into the SAME tx.
             let setup =
                 build_actor_setup(&owner, token_id, &cleaned, persona, prefund_lh).await?;

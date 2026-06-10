@@ -321,8 +321,8 @@ pub(crate) async fn build_actor_setup(
 
     // PERSONA — publish the new subdomain's on-chain system prompt under the
     // persona metadata key (keccak256("localharness.persona")), the same slot
-    // the CLI `persona` cmd + headless `call` read. setMetadata is gas-hungry
-    // (~8.5k/byte; see CLAUDE.md), so scale the budget by length.
+    // the CLI `persona` cmd + headless `call` read. setMetadata is gas-hungry,
+    // so the budget scales with length (see `gas::set_metadata_gas`).
     if let Some(p) = persona {
         let p = p.trim();
         if !p.is_empty() {
@@ -331,7 +331,7 @@ pub(crate) async fn build_actor_setup(
                 value_wei: 0,
                 input: crate::app::registry::encode_set_persona(token_id, p),
             });
-            extra_gas += 1_200_000 + (p.len() as u128) * 8_500;
+            extra_gas += crate::app::gas::set_metadata_gas(p.len());
             persona_set = true;
         }
     }

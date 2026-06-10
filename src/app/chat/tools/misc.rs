@@ -76,7 +76,7 @@ pub(crate) fn set_persona_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 value_wei: 0,
                 input: crate::app::registry::encode_set_persona(token_id, text),
             };
-            let gas = 1_200_000 + (text.len() as u128) * 8_500;
+            let gas = crate::app::gas::set_metadata_gas(text.len());
             let tx_hash = crate::app::events::run_sponsored_tempo_call(
                 &owner,
                 vec![call],

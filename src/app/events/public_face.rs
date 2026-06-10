@@ -90,11 +90,7 @@ pub(super) async fn run_set_public_face(choice: &str) {
                     mk(crate::app::registry::encode_set_app_wasm(id, &wasm)),
                     mk(crate::app::registry::encode_set_public_face(id, "app")),
                 ],
-                // setMetadata stores bytes on-chain at ~7.6k gas/BYTE (measured
-                // via debug_traceTransaction, 2026-06-03; same byte-storage cost
-                // as the FeedbackFacet). The old `1.3M + words*40k` (~1.25k/byte)
-                // was ~6x too low and OOG-reverted any non-trivial app publish.
-                1_200_000 + wasm.len() as u128 * 8_500,
+                crate::app::gas::set_metadata_gas(wasm.len()),
             )
         }
         "html" => {
@@ -115,8 +111,7 @@ pub(super) async fn run_set_public_face(choice: &str) {
                     mk(crate::app::registry::encode_set_public_html(id, &html)),
                     mk(crate::app::registry::encode_set_public_face(id, "html")),
                 ],
-                // Same ~7.6k gas/byte on-chain storage cost as the app branch.
-                1_200_000 + html.len() as u128 * 8_500,
+                crate::app::gas::set_metadata_gas(html.len()),
             )
         }
         _ => {

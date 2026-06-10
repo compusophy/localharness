@@ -32,6 +32,7 @@ mod dom;
 mod embed;
 mod events;
 mod feedback;
+mod gas;
 mod history;
 mod key_store;
 mod model;
