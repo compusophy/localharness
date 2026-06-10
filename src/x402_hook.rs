@@ -1,10 +1,11 @@
-//! App-injected x402 signing hook.
+//! App-injected x402 hooks.
 //!
 //! `call_agent` (the inter-agent RPC tool) lives in the backend layer,
-//! but signing an x402 payment needs the wallet, which lives in the app
-//! layer. To avoid a backend→app dependency, the app installs a signer
-//! closure here at mount, and `call_agent` invokes it when a callee
-//! demands payment. Single-threaded (wasm) — `Rc` + a local future.
+//! but signing an x402 payment — and routing a paid call through the
+//! hosted proxy — needs the wallet, which lives in the app layer. To
+//! avoid a backend→app dependency, the app installs closures here at
+//! mount, and `call_agent` invokes them. Single-threaded (wasm) — `Rc`
+//! + local futures.
 
 use std::cell::RefCell;
 use std::future::Future;
@@ -49,5 +50,35 @@ pub async fn sign(challenge: X402Challenge) -> Result<X402Payment, String> {
     match signer {
         Some(f) => f(challenge).await,
         None => Err("no x402 signer installed".into()),
+    }
+}
+
+// --- remote (proxy-mediated) paid agent call --------------------------------
+//
+// The `?rpc=1` iframe path only reaches agents with state on THIS machine
+// (OPFS is per-origin but per-DEVICE). For a foreign agent, the app installs
+// this route: an x402-paid `ask_agent` call to the hosted MCP endpoint —
+// the caller's $LH pays the target's TBA, the proxy settles on-chain and
+// answers under the target's published persona.
+
+type RemoteFut = Pin<Box<dyn Future<Output = Result<String, String>>>>;
+type RemoteCall = Rc<dyn Fn(String, String) -> RemoteFut>;
+
+thread_local! {
+    static REMOTE: RefCell<Option<RemoteCall>> = const { RefCell::new(None) };
+}
+
+/// Install the app's proxy-mediated agent-call route (once, at mount).
+pub fn install_remote_call(route: RemoteCall) {
+    REMOTE.with(|r| *r.borrow_mut() = Some(route));
+}
+
+/// Call `target` through the installed proxy route (caller pays in `$LH`).
+/// Errors if the app never installed one (e.g. native builds).
+pub async fn remote_call(target: &str, message: &str) -> Result<String, String> {
+    let route = REMOTE.with(|r| r.borrow().clone());
+    match route {
+        Some(f) => f(target.to_string(), message.to_string()).await,
+        None => Err("no remote agent route installed".into()),
     }
 }

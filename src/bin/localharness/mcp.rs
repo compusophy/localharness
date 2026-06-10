@@ -187,45 +187,52 @@ pub(crate) fn parse_mcp_call_args(rest: &[String]) -> Result<ParsedMcpCall, Stri
     }
 }
 
-/// Build the JSON the `x-x402-authorization` header carries, matching the shape
-/// `proxy/api/mcp.ts::parseAuth` expects EXACTLY: addresses as 0x-hex, `value`
-/// as a decimal string of `$LH` wei, `nonce` as 0x + 32-byte hex, `signature`
-/// as 0x + 65-byte hex, `validAfter`/`validBefore` as numbers. Pure — the
-/// signature/nonce are passed in so this is deterministic and testable.
-pub(crate) fn mcp_x402_header_json(
+/// Ensure the diamond can pull at least `value_wei` `$LH` from `from_hex` —
+/// x402 `settle` moves the payment via `transferFrom`, so the payer must have
+/// approved the diamond once. Approves `u128::MAX` (sponsored) when short.
+/// Prints its own messages; `Err` carries the process exit code. A read
+/// failure only warns — settle is the authoritative gate. Shared by
+/// `mcp-call` and `call --pay`.
+pub(crate) async fn ensure_diamond_allowance(
+    signer: &k256::ecdsa::SigningKey,
     from_hex: &str,
-    to_hex: &str,
     value_wei: u128,
-    valid_after: u64,
-    valid_before: u64,
-    nonce: &[u8; 32],
-    signature: &[u8; 65],
-) -> serde_json::Value {
-    serde_json::json!({
-        "from": from_hex,
-        "to": to_hex,
-        "value": value_wei.to_string(),
-        "validAfter": valid_after,
-        "validBefore": valid_before,
-        "nonce": format!("0x{}", bytes_to_hex(nonce)),
-        "signature": format!("0x{}", bytes_to_hex(signature)),
-    })
-}
-
-/// The `tools/call` JSON-RPC body the hosted endpoint expects: it routes the
-/// single `ask_agent` tool, with the target name + message in `arguments`
-/// (see `proxy/api/mcp.ts` — `params.name` is the TOOL name "ask_agent", and
-/// `params.arguments = { name: <target>, message }`).
-pub(crate) fn mcp_tools_call_body(target: &str, message: &str) -> serde_json::Value {
-    serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {
-            "name": "ask_agent",
-            "arguments": { "name": target, "message": message }
+) -> Result<(), i32> {
+    match registry::lh_allowance(from_hex, registry::REGISTRY_ADDRESS).await {
+        Ok(allowance) if allowance >= value_wei => Ok(()),
+        Ok(_) => {
+            println!("approving the diamond to spend $LH (one-time) …");
+            let sponsor = load_sponsor()?;
+            match registry::approve_lh_sponsored(
+                signer,
+                &sponsor,
+                registry::REGISTRY_ADDRESS,
+                u128::MAX,
+                registry::ALPHA_USD_ADDRESS,
+            )
+            .await
+            {
+                Ok(tx) => {
+                    println!("  approved (tx {tx})");
+                    Ok(())
+                }
+                Err(e) => {
+                    eprintln!("could not approve $LH spend automatically: {e}");
+                    eprintln!(
+                        "  fix it once, then retry: approve {} to spend $LH \
+                         (token {}) for {from_hex}.",
+                        registry::REGISTRY_ADDRESS,
+                        registry::LOCALHARNESS_TOKEN_ADDRESS
+                    );
+                    Err(1)
+                }
+            }
         }
-    })
+        Err(e) => {
+            eprintln!("warning: could not read $LH allowance ({e}); attempting anyway");
+            Ok(())
+        }
+    }
 }
 
 /// Client for the hosted MCP-over-HTTP + x402 endpoint (`<proxy>/mcp`). Resolve
@@ -322,47 +329,13 @@ pub(crate) async fn mcp_call(rest: &[String]) -> i32 {
     };
 
     // 3. ALLOWANCE: `settle` pulls $LH from the payer via the diamond's
-    //    `transferFrom`, so the payer must have approved the diamond. If the
-    //    current allowance is short, approve once (sponsored) up to u128::MAX.
-    match registry::lh_allowance(&from_hex, registry::REGISTRY_ADDRESS).await {
-        Ok(allowance) if allowance >= value_wei => {}
-        Ok(_) => {
-            println!("approving the diamond to spend $LH (one-time) …");
-            let sponsor = match load_sponsor() {
-                Ok(s) => s,
-                Err(code) => return code,
-            };
-            match registry::approve_lh_sponsored(
-                &signer,
-                &sponsor,
-                registry::REGISTRY_ADDRESS,
-                u128::MAX,
-                registry::ALPHA_USD_ADDRESS,
-            )
-            .await
-            {
-                Ok(tx) => println!("  approved (tx {tx})"),
-                Err(e) => {
-                    eprintln!("could not approve $LH spend automatically: {e}");
-                    eprintln!(
-                        "  fix it once, then retry: approve {} to spend $LH \
-                         (token {}) for {from_hex}.",
-                        registry::REGISTRY_ADDRESS,
-                        registry::LOCALHARNESS_TOKEN_ADDRESS
-                    );
-                    return 1;
-                }
-            }
-        }
-        Err(e) => {
-            // A read failure shouldn't hard-block the attempt — settle is the
-            // authoritative gate — but warn so an opaque revert is explicable.
-            eprintln!("warning: could not read $LH allowance ({e}); attempting the call anyway");
-        }
+    //    `transferFrom`, so the payer must have approved the diamond once.
+    if let Err(code) = ensure_diamond_allowance(&signer, &from_hex, value_wei).await {
+        return code;
     }
 
     // 4. POST the tools/call to <proxy>/mcp with the x402 header.
-    let header_json = mcp_x402_header_json(
+    let header_json = registry::x402_authorization_json(
         &from_hex,
         &to_hex,
         value_wei,
@@ -371,8 +344,8 @@ pub(crate) async fn mcp_call(rest: &[String]) -> i32 {
         &nonce,
         &signature,
     );
-    let body = mcp_tools_call_body(&target, &message);
-    let endpoint = mcp_endpoint_url();
+    let body = registry::x402_ask_agent_body(&target, &message);
+    let endpoint = registry::mcp_endpoint_url();
 
     let client = reqwest::Client::new();
     let resp = match client
@@ -397,53 +370,19 @@ pub(crate) async fn mcp_call(rest: &[String]) -> i32 {
         }
     };
 
-    // 5. Parse the JSON-RPC envelope.
-    if let Some(err) = json.get("error") {
-        let code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
-        let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("(no message)");
-        eprintln!("mcp-call error {code}: {msg}");
-        if let Some(hint) = hint_for_call_error(&format!("{code} {msg}")) {
-            eprintln!("  hint: {hint}");
-        }
-        return 1;
-    }
-    let result = match json.get("result") {
-        Some(r) => r,
-        None => {
-            eprintln!("mcp-call failed: response has neither result nor error: {json}");
-            return 1;
-        }
-    };
-    // A tool-level failure (e.g. the agent settled-but-errored) rides in
-    // `result.isError` with the text in `content[0].text`.
-    let text = result
-        .get("content")
-        .and_then(|c| c.as_array())
-        .and_then(|a| a.first())
-        .and_then(|c| c.get("text"))
-        .and_then(|t| t.as_str());
-    let is_error = result.get("isError").and_then(|b| b.as_bool()).unwrap_or(false);
-    match text {
-        Some(t) if is_error => {
-            eprintln!("{}", t.trim());
-            1
-        }
-        Some(t) => {
-            println!("{}", t.trim());
+    // 5. Parse the JSON-RPC envelope (shared with the browser's proxy
+    //    fallback — a protocol error or a tool-level `isError` both land in
+    //    the Err arm, with the agent's reply text in Ok).
+    match registry::parse_mcp_tool_reply(&json) {
+        Ok(text) => {
+            println!("{text}");
             0
         }
-        None => {
-            eprintln!("mcp-call: response had no text content: {result}");
+        Err(e) => {
+            report_call_error("mcp-call failed", &e);
             1
         }
     }
-}
-
-/// The hosted MCP endpoint URL: `<CREDIT_PROXY_URL>/mcp`. Joins safely whether
-/// or not the base has a trailing slash.
-pub(crate) fn mcp_endpoint_url() -> String {
-    let base = registry::CREDIT_PROXY_URL.trim_end_matches('/');
-    format!("{base}/mcp")
 }
 
 #[cfg(test)]
@@ -494,41 +433,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn mcp_x402_header_json_matches_proxy_shape() {
-        // The exact field names + types `proxy/api/mcp.ts::parseAuth` requires.
-        let from = "0x00000000000000000000000000000000000000aa";
-        let to = "0x00000000000000000000000000000000000000bb";
-        let nonce = [0x11u8; 32];
-        let sig = [0x22u8; 65];
-        let j = mcp_x402_header_json(from, to, 1_000_000_000_000_000, 0, 1_999_999_999, &nonce, &sig);
-
-        assert_eq!(j["from"], from);
-        assert_eq!(j["to"], to);
-        // value is a DECIMAL STRING of $LH wei (not a number).
-        assert_eq!(j["value"], "1000000000000000");
-        assert!(j["value"].is_string());
-        assert_eq!(j["validAfter"], 0);
-        assert_eq!(j["validBefore"], 1_999_999_999u64);
-        // nonce: 0x + 32 bytes = 64 hex chars. signature: 0x + 65 bytes = 130 hex.
-        let nonce_s = j["nonce"].as_str().unwrap();
-        let sig_s = j["signature"].as_str().unwrap();
-        assert_eq!(nonce_s.len(), 2 + 64);
-        assert!(nonce_s.starts_with("0x"));
-        assert_eq!(sig_s.len(), 2 + 130);
-        assert!(sig_s.starts_with("0x"));
-    }
-
-    #[test]
-    fn mcp_tools_call_body_is_ask_agent_jsonrpc() {
-        let b = mcp_tools_call_body("claude", "hello");
-        assert_eq!(b["jsonrpc"], "2.0");
-        assert_eq!(b["method"], "tools/call");
-        // params.name is the TOOL ("ask_agent"); the target rides in arguments.
-        assert_eq!(b["params"]["name"], "ask_agent");
-        assert_eq!(b["params"]["arguments"]["name"], "claude");
-        assert_eq!(b["params"]["arguments"]["message"], "hello");
-    }
+    // (The x402 header / tools-call body / reply-envelope shape tests live
+    // with the shared builders in `registry::x402` — the browser's proxy
+    // fallback uses the same functions.)
 
     #[test]
     fn mcp_random_nonce_is_32_bytes_and_fresh() {
@@ -540,10 +447,4 @@ mod tests {
         assert_ne!(a, b);
     }
 
-    #[test]
-    fn mcp_endpoint_is_proxy_slash_mcp() {
-        let url = mcp_endpoint_url();
-        assert!(url.ends_with("/mcp"));
-        assert!(!url.contains("//mcp")); // no double slash from the base
-    }
 }

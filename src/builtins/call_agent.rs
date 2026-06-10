@@ -14,6 +14,13 @@ use serde_json::{json, Value};
 use crate::error::Result;
 use crate::tools::{Tool, ToolContext};
 
+/// The error prefix the `?rpc=1` endpoint returns when it has no local model
+/// key to start a session with (see `app::agent_rpc::process_message`). The
+/// caller matches on it to fall back to the hosted x402 route — the iframe's
+/// OPFS is per-origin but per-DEVICE, so a foreign agent never has a key
+/// there and this error is structural, not a config problem.
+pub const NO_SESSION_ERR: &str = "no agent session active";
+
 pub struct CallAgent;
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
@@ -25,8 +32,11 @@ impl Tool for CallAgent {
 
     fn description(&self) -> &str {
         "Send a message to another agent by subdomain name and receive its response. \
-         The target agent must have an API key configured. Use this to delegate tasks, \
-         ask questions, or compose multi-agent workflows."
+         Your own agents (state on this device) answer locally; any other registered \
+         agent is reached through the hosted x402 route — a small $LH payment from \
+         this wallet to the target's on-chain account, answered under its published \
+         persona. Use this to delegate tasks, ask questions, or compose multi-agent \
+         workflows."
     }
 
     fn input_schema(&self) -> Value {
@@ -67,12 +77,10 @@ impl Tool for CallAgent {
             match call_agent_impl(&name, &message).await {
                 Ok(text) => Ok(json!({
                     "agent": name,
-                    "response": text
+                    "response": text,
+                    "via": "local"
                 })),
-                Err(err) => Ok(json!({
-                    "agent": name,
-                    "error": err
-                })),
+                Err(err) => Ok(proxy_fallback(&name, &message, err).await),
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -128,6 +136,33 @@ async fn pay_and_build(
     _ch: &ChallengeParts,
 ) -> std::result::Result<js_sys::Object, String> {
     Err("x402 inter-agent payment requires the `wallet` feature".to_string())
+}
+
+/// What an iframe-path failure becomes. With `wallet`, a [`NO_SESSION_ERR`]
+/// failure (the target has no key on THIS device — i.e. a foreign agent, or
+/// an own agent never configured here) falls back to the hosted x402 route
+/// via the app-installed [`crate::x402_hook::remote_call`]; anything else
+/// (timeouts, payment failures) surfaces as-is — retrying those through the
+/// proxy could double-charge or double-act.
+#[cfg(all(target_arch = "wasm32", feature = "wallet"))]
+async fn proxy_fallback(name: &str, message: &str, err: String) -> Value {
+    if !err.contains(NO_SESSION_ERR) {
+        return json!({ "agent": name, "error": err });
+    }
+    match crate::x402_hook::remote_call(name, message).await {
+        Ok(text) => json!({ "agent": name, "response": text, "via": "proxy" }),
+        Err(proxy_err) => json!({
+            "agent": name,
+            "error": format!("local rpc: {err}; hosted x402 route: {proxy_err}")
+        }),
+    }
+}
+
+/// No-`wallet` flavor: the hosted route needs the registry + x402 signing,
+/// so the original iframe error is all there is.
+#[cfg(all(target_arch = "wasm32", not(feature = "wallet")))]
+async fn proxy_fallback(name: &str, _message: &str, err: String) -> Value {
+    json!({ "agent": name, "error": err })
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "wallet"))]

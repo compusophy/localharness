@@ -23,11 +23,13 @@
 //!                            name first if you don't already hold its key
 //!   persona <name> <text>    publish <name>'s public system prompt on-chain so
 //!                            `call` answers AS that agent (text or a file path)
-//!   call [--as <me>] [--fresh] <name> <message…>
+//!   call [--as <me>] [--fresh] [--pay <amt>] <name> <message…>
 //!                            run a headless agent turn that answers as <name>,
 //!                            via the credit proxy (no Gemini key, no live tab);
 //!                            the conversation persists per (caller,target) —
-//!                            `--fresh` starts a new thread
+//!                            `--fresh` starts a new thread; `--pay` settles
+//!                            that much $LH to <name>'s TBA after a successful
+//!                            reply (x402 — pay the agent for its service)
 //!   mcp [--as <me>]          run an MCP (stdio) server exposing a `call_agent`
 //!                            tool so any MCP client (Claude Code, …) can call
 //!                            localharness agents; pays as the local identity
@@ -86,7 +88,7 @@
 //!                            and forwards <amount> as the value
 //!   help                     this text
 
-use localharness::encoding::{bytes_to_hex, bytes_to_hex_str, hex_to_bytes_padded, parse_address};
+use localharness::encoding::{bytes_to_hex_str, hex_to_bytes_padded, parse_address};
 use localharness::registry;
 use localharness::tempo_tx;
 use localharness::wallet;
@@ -187,11 +189,12 @@ CARTRIDGES & PUBLISHING
                                          set what visitors see (publish sets 'app')
 
 CALLING & MCP
-  localharness call [--as <me>] [--fresh] <name> <message>
+  localharness call [--as <me>] [--fresh] [--pay <amt>] <name> <message>
                                          run a headless turn that answers AS <name>,
                                          through the credit proxy (no key, no tab);
                                          the conversation continues across calls
-                                         (--fresh starts over)
+                                         (--fresh starts over); --pay settles that
+                                         much $LH to <name>'s TBA on success
   localharness mcp                       run an MCP (stdio) server exposing a
                                          `call_agent` tool, so any MCP client
                                          (Claude Code, …) can call localharness

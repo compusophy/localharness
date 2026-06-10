@@ -164,6 +164,93 @@ pub fn random_x402_nonce() -> [u8; 32] {
     n
 }
 
+// --- the hosted x402-gated MCP endpoint (`<proxy>/mcp`) ---------------
+//
+// The credit proxy exposes an `ask_agent` tool over MCP-over-HTTP: the
+// caller signs a `PaymentAuthorization` paying the TARGET's TBA, the proxy
+// verifies + settles it on-chain, then answers under the target's
+// published persona with the proxy's own model key — so neither side
+// needs a model key of its own. These builders/parser are shared by the
+// CLI `mcp-call` client and the browser `call_agent` proxy fallback.
+
+/// The hosted MCP endpoint URL: `<CREDIT_PROXY_URL>/mcp`. Joins safely
+/// whether or not the base has a trailing slash.
+pub fn mcp_endpoint_url() -> String {
+    let base = CREDIT_PROXY_URL.trim_end_matches('/');
+    format!("{base}/mcp")
+}
+
+/// Build the JSON the `x-x402-authorization` header carries, matching the
+/// shape `proxy/api/mcp.ts::parseAuth` expects EXACTLY: addresses as 0x-hex,
+/// `value` as a decimal string of `$LH` wei, `nonce` as 0x + 32-byte hex,
+/// `signature` as 0x + 65-byte hex, `validAfter`/`validBefore` as numbers.
+/// Pure — the signature/nonce are passed in so this is deterministic.
+#[allow(clippy::too_many_arguments)]
+pub fn x402_authorization_json(
+    from_hex: &str,
+    to_hex: &str,
+    value_wei: u128,
+    valid_after: u64,
+    valid_before: u64,
+    nonce: &[u8; 32],
+    signature: &[u8; 65],
+) -> serde_json::Value {
+    serde_json::json!({
+        "from": from_hex,
+        "to": to_hex,
+        "value": value_wei.to_string(),
+        "validAfter": valid_after,
+        "validBefore": valid_before,
+        "nonce": format!("0x{}", bytes_to_hex(nonce)),
+        "signature": format!("0x{}", bytes_to_hex(signature)),
+    })
+}
+
+/// The `tools/call` JSON-RPC body the hosted endpoint expects: it routes
+/// the `ask_agent` tool, with the target name + message in `arguments`
+/// (see `proxy/api/mcp.ts` — `params.name` is the TOOL name "ask_agent",
+/// and `params.arguments = { name: <target>, message }`).
+pub fn x402_ask_agent_body(target: &str, message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "ask_agent",
+            "arguments": { "name": target, "message": message }
+        }
+    })
+}
+
+/// Parse the hosted endpoint's JSON-RPC reply for a `tools/call`: the text
+/// content on success, `Err` for protocol errors, missing content, or a
+/// tool-level failure (`result.isError` with the reason in
+/// `content[0].text`). Pure.
+pub fn parse_mcp_tool_reply(json: &serde_json::Value) -> Result<String, String> {
+    if let Some(err) = json.get("error") {
+        let code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
+        let msg = err
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("(no message)");
+        return Err(format!("mcp error {code}: {msg}"));
+    }
+    let result = json
+        .get("result")
+        .ok_or_else(|| format!("response has neither result nor error: {json}"))?;
+    let text = result
+        .get("content")
+        .and_then(|c| c.as_array())
+        .and_then(|a| a.first())
+        .and_then(|c| c.get("text"))
+        .and_then(|t| t.as_str())
+        .ok_or_else(|| format!("response had no text content: {result}"))?;
+    if result.get("isError").and_then(|b| b.as_bool()).unwrap_or(false) {
+        return Err(text.trim().to_string());
+    }
+    Ok(text.trim().to_string())
+}
+
 
 #[cfg(test)]
 mod x402_tests {
@@ -221,5 +308,73 @@ mod x402_tests {
         // The 65 signature bytes follow, then zero padding to a 32-multiple.
         assert_eq!(&cd[4 + 8 * 32..4 + 8 * 32 + 65], &sig);
         assert_eq!(&cd[4 + 8 * 32 + 65..], &[0u8; 31]);
+    }
+
+    #[test]
+    fn x402_authorization_json_matches_proxy_shape() {
+        // The exact field names + types `proxy/api/mcp.ts::parseAuth` requires.
+        let from = "0x00000000000000000000000000000000000000aa";
+        let to = "0x00000000000000000000000000000000000000bb";
+        let nonce = [0x11u8; 32];
+        let sig = [0x22u8; 65];
+        let j = x402_authorization_json(from, to, 1_000_000_000_000_000, 0, 1_999_999_999, &nonce, &sig);
+
+        assert_eq!(j["from"], from);
+        assert_eq!(j["to"], to);
+        // value is a DECIMAL STRING of $LH wei (not a number).
+        assert_eq!(j["value"], "1000000000000000");
+        assert!(j["value"].is_string());
+        assert_eq!(j["validAfter"], 0);
+        assert_eq!(j["validBefore"], 1_999_999_999u64);
+        // nonce: 0x + 32 bytes = 64 hex chars. signature: 0x + 65 bytes = 130 hex.
+        let nonce_s = j["nonce"].as_str().unwrap();
+        let sig_s = j["signature"].as_str().unwrap();
+        assert_eq!(nonce_s.len(), 2 + 64);
+        assert!(nonce_s.starts_with("0x"));
+        assert_eq!(sig_s.len(), 2 + 130);
+        assert!(sig_s.starts_with("0x"));
+    }
+
+    #[test]
+    fn x402_ask_agent_body_is_jsonrpc_tools_call() {
+        let b = x402_ask_agent_body("claude", "hello");
+        assert_eq!(b["jsonrpc"], "2.0");
+        assert_eq!(b["method"], "tools/call");
+        // params.name is the TOOL ("ask_agent"); the target rides in arguments.
+        assert_eq!(b["params"]["name"], "ask_agent");
+        assert_eq!(b["params"]["arguments"]["name"], "claude");
+        assert_eq!(b["params"]["arguments"]["message"], "hello");
+    }
+
+    #[test]
+    fn parse_mcp_tool_reply_extracts_text_and_failures() {
+        // Success: trimmed text content.
+        let ok = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "content": [{ "type": "text", "text": "  hi there\n" }], "isError": false }
+        });
+        assert_eq!(parse_mcp_tool_reply(&ok).unwrap(), "hi there");
+
+        // Tool-level failure rides in isError + the text.
+        let tool_err = serde_json::json!({
+            "result": { "content": [{ "type": "text", "text": "agent exploded" }], "isError": true }
+        });
+        assert_eq!(parse_mcp_tool_reply(&tool_err).unwrap_err(), "agent exploded");
+
+        // Protocol error envelope.
+        let rpc_err = serde_json::json!({ "error": { "code": -32602, "message": "payment required" } });
+        let e = parse_mcp_tool_reply(&rpc_err).unwrap_err();
+        assert!(e.contains("-32602") && e.contains("payment required"), "{e}");
+
+        // Neither result nor error, and result-without-text, both fail.
+        assert!(parse_mcp_tool_reply(&serde_json::json!({})).is_err());
+        assert!(parse_mcp_tool_reply(&serde_json::json!({ "result": {} })).is_err());
+    }
+
+    #[test]
+    fn mcp_endpoint_is_proxy_slash_mcp() {
+        let url = mcp_endpoint_url();
+        assert!(url.ends_with("/mcp"));
+        assert!(!url.contains("//mcp")); // no double slash from the base
     }
 }

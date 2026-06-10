@@ -20,26 +20,36 @@ pub(crate) struct ParsedCall {
     caller: Option<String>,
     fresh: bool,
     model: Option<String>,
+    pay: Option<String>,
     target: String,
     message: String,
 }
 
 pub(crate) const CALL_USAGE: &str =
-    "usage: localharness call [--as <yourname>] [--fresh] [--model <id>] <target> <message>";
+    "usage: localharness call [--as <yourname>] [--fresh] [--model <id>] [--pay <amount>] <target> <message>";
 
 pub(crate) fn parse_call_args(rest: &[String]) -> Result<ParsedCall, String> {
     // `--as` is pulled from ANY position (via take_as_flag — consistent with
     // schedule/invite/send), so `call <target> "msg" --as me` works, not just
-    // the leading form. --model/--fresh stay leading flags before the target.
+    // the leading form. --model/--fresh/--pay stay leading flags before the
+    // target.
     let (caller, rest) = take_as_flag(rest)?;
     let mut fresh = false;
     let mut model = None;
+    let mut pay = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
             "--model" => match rest.get(i + 1) {
                 Some(m) => {
                     model = Some(m.clone());
+                    i += 2;
+                }
+                None => return Err(CALL_USAGE.to_string()),
+            },
+            "--pay" => match rest.get(i + 1) {
+                Some(p) => {
+                    pay = Some(p.clone());
                     i += 2;
                 }
                 None => return Err(CALL_USAGE.to_string()),
@@ -56,6 +66,7 @@ pub(crate) fn parse_call_args(rest: &[String]) -> Result<ParsedCall, String> {
             caller,
             fresh,
             model,
+            pay,
             target: t.clone(),
             message: msg.join(" "),
         }),
@@ -156,6 +167,7 @@ pub(crate) async fn call(rest: &[String]) -> i32 {
         caller,
         fresh,
         model,
+        pay,
         target,
         message,
     } = match parse_call_args(rest) {
@@ -164,6 +176,18 @@ pub(crate) async fn call(rest: &[String]) -> i32 {
             eprintln!("{usage}");
             return 2;
         }
+    };
+
+    // `--pay`: validate the amount BEFORE running (and paying for) the turn.
+    let pay_wei = match pay.as_deref() {
+        None => None,
+        Some(p) => match localharness::encoding::parse_token_amount(p) {
+            Some(v) if v > 0 => Some(v),
+            _ => {
+                eprintln!("--pay must be a positive $LH amount (e.g. 0.001), got '{p}'");
+                return 2;
+            }
+        },
     };
 
     // Resolve the caller's identity key — it signs proxy auth + pays $LH.
@@ -211,10 +235,115 @@ pub(crate) async fn call(rest: &[String]) -> i32 {
                 }
                 let _ = std::fs::write(&hist_file, bytes);
             }
-            0
+            // `--pay`: settle the $LH to the target AFTER a successful reply —
+            // a failed call costs the caller nothing.
+            match pay_wei {
+                Some(value_wei) => {
+                    settle_call_payment(&key_hex, &target, value_wei, pay.as_deref().unwrap_or(""))
+                        .await
+                }
+                None => 0,
+            }
         }
         Err(e) => {
             report_call_error("call failed", &e);
+            1
+        }
+    }
+}
+
+/// Settle a caller-signed x402 payment of `value_wei` `$LH` to `target`'s
+/// token-bound account — the `call --pay` tail: the demand-side "paid
+/// agent-to-agent service" primitive (the headless sibling of the browser's
+/// x402 flow, and of `mcp-call` where the PROXY settles). Sign the
+/// `PaymentAuthorization` with the caller key, ensure the diamond's `$LH`
+/// allowance, submit the sponsored `settle`. Returns the process exit code.
+async fn settle_call_payment(
+    key_hex: &str,
+    target: &str,
+    value_wei: u128,
+    human_amount: &str,
+) -> i32 {
+    let signer = match wallet::from_private_key_hex(key_hex) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("--pay: bad identity key: {e}");
+            return 1;
+        }
+    };
+    let from = wallet::address(&signer);
+    let from_hex = bytes_to_hex_str(&from);
+
+    // The payee is the target's on-chain TBA (same rule as mcp-call / the
+    // browser: payment goes to the agent's registered account, nowhere else).
+    let to_hex = match registry::tba_of_name(target).await {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            eprintln!("--pay: '{target}' has no token-bound account to receive payment");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("--pay: RPC error resolving {target}: {e}");
+            return 1;
+        }
+    };
+    let to = match parse_address(&to_hex) {
+        Ok(b) => b,
+        Err(_) => {
+            eprintln!("internal: bad TBA address for {target}: {to_hex}");
+            return 1;
+        }
+    };
+
+    if let Err(code) = ensure_diamond_allowance(&signer, &from_hex, value_wei).await {
+        return code;
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let valid_before = now + 3600;
+    let nonce = registry::random_x402_nonce();
+    let signature = match registry::sign_x402(
+        &signer,
+        &from,
+        &to,
+        value_wei,
+        0,
+        valid_before,
+        &nonce,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("--pay: could not sign x402 authorization: {e}");
+            return 1;
+        }
+    };
+    let sponsor = match load_sponsor() {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    match registry::settle_x402_sponsored(
+        &signer,
+        &sponsor,
+        &from,
+        &to,
+        value_wei,
+        0,
+        valid_before,
+        &nonce,
+        &signature,
+        registry::ALPHA_USD_ADDRESS,
+    )
+    .await
+    {
+        Ok(tx) => {
+            println!("paid {human_amount} $LH to {target}'s account {to_hex} (tx {tx})");
+            0
+        }
+        Err(e) => {
+            report_call_error("--pay settlement failed", &e);
             1
         }
     }
@@ -538,6 +667,26 @@ mod tests {
     fn parse_call_defaults_to_not_fresh() {
         let p = parse_call_args(&args(&["alice", "hi"])).unwrap();
         assert!(!p.fresh);
+    }
+
+    #[test]
+    fn parse_call_pay_flag() {
+        // No --pay → None (no settlement attempted).
+        let p = parse_call_args(&args(&["alice", "hi"])).unwrap();
+        assert_eq!(p.pay, None);
+        // --pay before the target, in any order with the other flags.
+        for parts in [
+            vec!["--pay", "0.05", "alice", "hi"],
+            vec!["--fresh", "--pay", "0.05", "alice", "hi"],
+            vec!["--pay", "0.05", "--fresh", "alice", "hi"],
+        ] {
+            let p = parse_call_args(&args(&parts)).unwrap();
+            assert_eq!(p.pay.as_deref(), Some("0.05"));
+            assert_eq!(p.target, "alice");
+            assert_eq!(p.message, "hi");
+        }
+        // `--pay` requires a value.
+        assert!(parse_call_args(&args(&["--pay"])).is_err());
     }
 
     #[test]

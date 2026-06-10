@@ -40,6 +40,7 @@ mod net;
 mod opfs;
 mod owner;
 mod pricing;
+mod remote_call;
 mod seed_pull;
 // Cross-subdomain secure folder — apex-side encrypted store + data types
 // (scaffold). Items are unused until the deferred round-trip wiring lands,
@@ -256,6 +257,15 @@ fn mount() -> Result<(), JsValue> {
             )?;
             Ok(crate::x402_hook::X402Payment { from, signature: sig })
         })
+    }));
+
+    // Install the proxy-mediated agent-call route: when the local `?rpc=1`
+    // iframe can't serve (a foreign agent has no state on this machine),
+    // `call_agent` falls back to the hosted x402 `ask_agent` endpoint — the
+    // local credit key pays the target's TBA in $LH. See [[remote_call]].
+    crate::x402_hook::install_remote_call(std::rc::Rc::new(|target: String, message: String|
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>>>> {
+        Box::pin(async move { remote_call::ask_via_proxy(&target, &message).await })
     }));
 
     // Compose mode short-circuit (?compose=name1,name2,...). The iframe-free

@@ -46,6 +46,7 @@ mod start_subagent;
 mod view_file;
 
 pub use ask_question::AskQuestion;
+pub use call_agent::NO_SESSION_ERR;
 pub use create_file::CreateFile;
 pub use delete_file::DeleteFile;
 pub use edit_file::EditFile;

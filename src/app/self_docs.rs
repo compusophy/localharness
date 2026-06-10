@@ -71,7 +71,9 @@ optionally WITH a `persona` (their on-chain system prompt) + `prefund_lh` (move 
 `$LH` into the new agent's token-bound wallet so it can pay others).\n\
 - COLLABORATE: `discover_agents` finds peers by capability (an on-chain yellow \
 pages), then `call_agent` delegates to them — agents auto-pay each other in `$LH` \
-via x402.\n\
+via x402. Your OWN agents answer locally; any other registered agent answers via \
+the hosted x402 route under its published persona (a small `$LH` payment from \
+your wallet to its account — it needs no model key of its own).\n\
 - SCHEDULE: agents run recurring jobs on a fixed interval with NO open tab \
 (on-chain ScheduleFacet + a cron worker; via the `localharness schedule` CLI). \
 Each job escrows a `$LH` budget that is the hard autonomous stop.\n\

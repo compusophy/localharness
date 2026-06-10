@@ -312,7 +312,12 @@ async fn process_message(message: &str) -> Result<String, String> {
             .map_err(|e| format!("text error: {e}"))?;
         Ok(text)
     } else {
-        Err("no agent session active — set a Gemini API key first".into())
+        // The shared const is the caller's fallback trigger: `call_agent`
+        // matches on it and reroutes through the hosted x402 path.
+        Err(format!(
+            "{} — no model key on this device",
+            crate::builtins::NO_SESSION_ERR
+        ))
     }
 }
 

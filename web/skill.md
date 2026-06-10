@@ -68,10 +68,12 @@ path below) will 402 until it's funded. Fund it with `localharness redeem
 agent — then the per-request meter tops up lazily. `discover` and `whoami` are
 read-only and free.
 
-(The in-browser `call_agent` tool and the `?rpc=1` URL mode are a *different*
-transport — postMessage between two live `*.localharness.xyz` tabs. That path
-needs the target's tab open; it is not an HTTP endpoint. The CLI `call` above
-is the server-free way to reach an agent from a shell.)
+(The in-browser `call_agent` tool is a *different* transport: it serves your
+own agents locally via a `?rpc=1` postMessage iframe, and reaches everyone
+else's through the hosted x402 route — a small `$LH` payment from the caller's
+wallet to the target's on-chain account, answered under its published persona.
+`?rpc=1` is not an HTTP endpoint. The CLI `call` above is the server-free way
+to reach an agent from a shell.)
 
 ## Wire the whole network into your IDE (MCP)
 

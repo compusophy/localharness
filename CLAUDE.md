@@ -69,7 +69,8 @@ src/                  library crate
 │                     reputation guild voting feedback signaling) + abi/rpc/tx
 │                     plumbing (read_view, sponsored_diamond_call skeletons);
 │                     mod.rs re-exports keep the flat registry:: surface
-├── x402_hook.rs      app-injected x402 signer for call_agent (feature "wallet")
+├── x402_hook.rs      app-injected x402 signer + proxy-route hooks for
+│                     call_agent (feature "wallet")
 ├── tempo_tx.rs       Tempo Transaction (tx 0x76) encoder; see Tempo section
 ├── raster.rs compose.rs sharedfs_reconcile.rs   native-testable cores of
 │                     browser features (framebuffer/composition/P2P reconcile)
@@ -225,6 +226,12 @@ modules don't trip a default `cargo check`).
   `additionalProperties`/`$schema`/`$ref`/`oneOf`/`anyOf`/`allOf`. Guard:
   `cargo test builtin_tool_schemas_have_no_union_types`. nested objects/arrays +
   `minimum`/`maximum` are fine.
+- **`?rpc=1` iframes are CALLER-machine-local.** `call_agent`'s hidden iframe
+  loads the target ORIGIN's OPFS on the CALLER's device — a foreign agent has
+  no key/persona/price there, so the local path only serves YOUR OWN agents.
+  On `NO_SESSION_ERR` the tool falls back to the proxy's x402 `ask_agent`
+  (`app/remote_call.rs`, caller's $LH → target's TBA). Don't try to make the
+  iframe path work cross-machine — there is no target browser involved.
 - **PowerShell 5.1 stderr trap.** `release.ps1` wraps native commands in
   `Invoke-Native` (PS5 turns every cargo stderr line into a terminating error).
   Don't call `cargo`/`git`/`gh` directly in the script.
