@@ -9,6 +9,9 @@ pub(crate) struct WhoamiInfo {
     tba: Option<String>,
     has_persona: bool,
     public_face: Option<String>,
+    /// Advertised per-call price (wei); `None` = never set (callers pay
+    /// the platform default through the hosted gate).
+    price_wei: Option<u128>,
 }
 
 /// Render a `WhoamiInfo` as the terminal report. Pure (no I/O) so the layout
@@ -26,13 +29,18 @@ pub(crate) fn format_whoami(info: &WhoamiInfo) -> String {
         .public_face
         .clone()
         .unwrap_or_else(|| "unset (directory)".to_string());
+    let price = match info.price_wei {
+        Some(wei) => format!("{}/call", fmt_lh(wei)),
+        None => format!("{}/call (default)", fmt_lh(registry::DEFAULT_ASK_PRICE_WEI)),
+    };
     format!(
         "{name}.localharness.xyz\n  \
          owner    {owner}\n  \
          tokenId  {id}\n  \
          wallet   {wallet}\n  \
          persona  {persona}\n  \
-         face     {face}",
+         face     {face}\n  \
+         price    {price}",
         name = info.name,
         id = info.token_id,
     )
@@ -49,6 +57,8 @@ pub(crate) fn format_whoami_json(info: &WhoamiInfo) -> String {
         "wallet": info.tba,
         "persona": info.has_persona,
         "face": info.public_face,
+        "priceWei": info.price_wei.map(|w| w.to_string()),
+        "defaultPriceWei": registry::DEFAULT_ASK_PRICE_WEI.to_string(),
     });
     serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".to_string())
 }
@@ -66,11 +76,12 @@ pub(crate) async fn resolve_whoami(name: &str) -> Result<WhoamiInfo, String> {
             tba: None,
             has_persona: false,
             public_face: None,
+            price_wei: None,
         });
     }
     let token_id = registry::id_of_name(name).await.unwrap_or(0);
     let tba = registry::tba_of_name(name).await.ok().flatten();
-    let (has_persona, public_face) = if token_id != 0 {
+    let (has_persona, public_face, price_wei) = if token_id != 0 {
         (
             registry::persona_of(token_id)
                 .await
@@ -78,9 +89,10 @@ pub(crate) async fn resolve_whoami(name: &str) -> Result<WhoamiInfo, String> {
                 .flatten()
                 .is_some(),
             registry::public_face_of(token_id).await.ok().flatten(),
+            registry::x402_price_of(token_id).await.ok().flatten(),
         )
     } else {
-        (false, None)
+        (false, None, None)
     };
     Ok(WhoamiInfo {
         name: name.to_string(),
@@ -89,6 +101,7 @@ pub(crate) async fn resolve_whoami(name: &str) -> Result<WhoamiInfo, String> {
         tba,
         has_persona,
         public_face,
+        price_wei,
     })
 }
 
@@ -714,6 +727,7 @@ mod tests {
             tba: None,
             has_persona: false,
             public_face: None,
+            price_wei: None,
         };
         assert_eq!(format_whoami(&info), "ghost is unregistered");
     }
@@ -727,6 +741,7 @@ mod tests {
             tba: Some("0xdef".into()),
             has_persona: true,
             public_face: Some("app".into()),
+            price_wei: Some(100_000_000_000_000_000),
         };
         let out = format_whoami(&info);
         assert!(out.starts_with("claude.localharness.xyz\n"));
@@ -735,6 +750,7 @@ mod tests {
         assert!(out.contains("wallet   0xdef  (token-bound account)"));
         assert!(out.contains("persona  published"));
         assert!(out.contains("face     app"));
+        assert!(out.contains("price    0.10 LH/call"));
     }
 
     #[test]
@@ -746,11 +762,14 @@ mod tests {
             tba: None,
             has_persona: false,
             public_face: None,
+            price_wei: None,
         };
         let out = format_whoami(&info);
         assert!(out.contains("persona  none"));
         assert!(out.contains("face     unset (directory)"));
         assert!(out.contains("wallet   —"));
+        // No advertised price → the hosted-gate default, labelled as such.
+        assert!(out.contains("price    0.01 LH/call (default)"));
     }
 
     #[test]
@@ -762,6 +781,7 @@ mod tests {
             tba: Some("0xdef".into()),
             has_persona: true,
             public_face: Some("app".into()),
+            price_wei: Some(100_000_000_000_000_000),
         };
         let v: serde_json::Value = serde_json::from_str(&format_whoami_json(&info)).unwrap();
         assert_eq!(v["name"], "claude");
@@ -782,6 +802,7 @@ mod tests {
             tba: None,
             has_persona: false,
             public_face: None,
+            price_wei: None,
         };
         let v: serde_json::Value = serde_json::from_str(&format_whoami_json(&info)).unwrap();
         assert_eq!(v["registered"], false);

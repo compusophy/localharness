@@ -125,6 +125,14 @@ pub(crate) fn thread_file_target(caller_label: &str, file_name: &str) -> Option<
 /// transport error isn't the whole story.
 pub(crate) fn hint_for_call_error(err: &str) -> Option<&'static str> {
     let e = err.to_ascii_lowercase();
+    // Below-the-agent's-price 402s are NOT a credits problem — hint the
+    // price mechanism, not funding (checked before the generic 402 arm).
+    if e.contains("below") && e.contains("price") {
+        return Some(
+            "your --pay is under the agent's advertised price — use `--pay auto` \
+             (the default) to pay exactly its price, or `whoami <name>` to see it.",
+        );
+    }
     if e.contains("402")
         || e.contains("payment")
         || e.contains("no session")
@@ -179,12 +187,35 @@ pub(crate) async fn call(rest: &[String]) -> i32 {
     };
 
     // `--pay`: validate the amount BEFORE running (and paying for) the turn.
+    // `--pay auto` resolves the target's effective price (advertised
+    // on-chain, else the platform default) — the same number the hosted
+    // ask_agent gate would enforce.
     let pay_wei = match pay.as_deref() {
         None => None,
+        Some("auto") => match registry::id_of_name(&target).await {
+            Ok(id) if id != 0 => match registry::x402_ask_price_of(id).await {
+                Ok(wei) => {
+                    println!("--pay auto: '{target}' charges {}/call", fmt_lh(wei));
+                    Some(wei)
+                }
+                Err(e) => {
+                    eprintln!("--pay auto: price lookup failed: {e}");
+                    return 1;
+                }
+            },
+            Ok(_) => {
+                eprintln!("--pay auto: '{target}' is not a registered agent");
+                return 2;
+            }
+            Err(e) => {
+                eprintln!("--pay auto: RPC error: {e}");
+                return 1;
+            }
+        },
         Some(p) => match localharness::encoding::parse_token_amount(p) {
             Some(v) if v > 0 => Some(v),
             _ => {
-                eprintln!("--pay must be a positive $LH amount (e.g. 0.001), got '{p}'");
+                eprintln!("--pay must be a positive $LH amount (e.g. 0.001) or 'auto', got '{p}'");
                 return 2;
             }
         },

@@ -141,8 +141,11 @@ pub(crate) fn mcp_text_result(text: &str, is_error: bool) -> serde_json::Value {
 // against the live `x402DomainSeparator()` and runs `X402Facet.settle(...)`
 // on-chain BEFORE answering. This command is the round-trip that had no client.
 
-/// Default `$LH` paid per `mcp-call` when `--pay` is omitted (0.001 $LH).
-pub(crate) const MCP_CALL_DEFAULT_PAY: &str = "0.001";
+/// Default `--pay` for `mcp-call`: resolve the target's effective price
+/// (advertised on-chain, else `registry::DEFAULT_ASK_PRICE_WEI`) — the
+/// exact floor the hosted gate enforces, so the default never 402s. The
+/// old flat 0.001 default sat BELOW the floor.
+pub(crate) const MCP_CALL_DEFAULT_PAY: &str = "auto";
 
 /// Parsed `mcp-call` arguments: optional `--as` caller, optional `--pay`
 /// amount (human-typed $LH, e.g. "0.001"), the target agent name, and the
@@ -254,11 +257,36 @@ pub(crate) async fn mcp_call(rest: &[String]) -> i32 {
     };
 
     // The amount to pay, in 18-decimal $LH wei (same parse the bundle uses).
-    let value_wei = match localharness::encoding::parse_token_amount(&pay) {
-        Some(v) if v > 0 => v,
-        _ => {
-            eprintln!("--pay must be a positive $LH amount (e.g. 0.001), got '{pay}'");
-            return 2;
+    // "auto" (the default) pays the target's effective price — the number
+    // the hosted gate will demand anyway.
+    let value_wei = if pay == "auto" {
+        match registry::id_of_name(&target).await {
+            Ok(id) if id != 0 => match registry::x402_ask_price_of(id).await {
+                Ok(wei) => {
+                    println!("paying '{target}'s price: {}", fmt_lh(wei));
+                    wei
+                }
+                Err(e) => {
+                    eprintln!("price lookup failed: {e}");
+                    return 1;
+                }
+            },
+            Ok(_) => {
+                eprintln!("'{target}' is not a registered agent");
+                return 2;
+            }
+            Err(e) => {
+                eprintln!("RPC error resolving {target}: {e}");
+                return 1;
+            }
+        }
+    } else {
+        match localharness::encoding::parse_token_amount(&pay) {
+            Some(v) if v > 0 => v,
+            _ => {
+                eprintln!("--pay must be a positive $LH amount (e.g. 0.01) or 'auto', got '{pay}'");
+                return 2;
+            }
         }
     };
 
@@ -422,10 +450,13 @@ mod tests {
 
     #[test]
     fn mcp_call_pay_parses_to_18_decimal_wei() {
-        // The default + a few human amounts map to the bundle's 18-dec wei.
+        // The default is the price-resolving sentinel (NOT a parseable
+        // amount — `mcp_call` branches on it before parse); explicit human
+        // amounts map to the bundle's 18-dec wei.
+        assert_eq!(MCP_CALL_DEFAULT_PAY, "auto");
         assert_eq!(
-            localharness::encoding::parse_token_amount(MCP_CALL_DEFAULT_PAY),
-            Some(1_000_000_000_000_000) // 0.001 * 1e18
+            localharness::encoding::parse_token_amount("0.001"),
+            Some(1_000_000_000_000_000)
         );
         assert_eq!(
             localharness::encoding::parse_token_amount("1"),

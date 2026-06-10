@@ -143,6 +143,41 @@ pub async fn settle_x402_sponsored(
     .await
 }
 
+/// Metadata label for an agent's advertised per-call `$LH` price — the
+/// payload is the wei amount as a decimal UTF-8 string. Read by the
+/// hosted `ask_agent` gate (and anyone choosing what to pay).
+pub const X402_PRICE_LABEL: &[u8] = b"localharness.x402_price";
+
+/// Floor applied by the hosted `ask_agent` path when an agent has NOT
+/// advertised a price on-chain: 0.01 `$LH`. Advertising a price (any
+/// value > 0) overrides it; the proxy enforces `max(advertised, …)` — an
+/// unpriced agent still earns something instead of answering for tips.
+pub const DEFAULT_ASK_PRICE_WEI: u128 = 10_000_000_000_000_000;
+
+/// Read an agent's advertised per-call price (wei). `None` when never
+/// set (callers should fall back to [`DEFAULT_ASK_PRICE_WEI`]).
+pub async fn x402_price_of(token_id: u64) -> Result<Option<u128>, String> {
+    match metadata_bytes_of(token_id, keccak_key(X402_PRICE_LABEL)).await? {
+        Some(b) => Ok(String::from_utf8(b)
+            .ok()
+            .and_then(|s| s.trim().parse::<u128>().ok())
+            .filter(|w| *w > 0)),
+        None => Ok(None),
+    }
+}
+
+/// An agent's effective per-call price: advertised, else the default.
+pub async fn x402_ask_price_of(token_id: u64) -> Result<u128, String> {
+    Ok(x402_price_of(token_id).await?.unwrap_or(DEFAULT_ASK_PRICE_WEI))
+}
+
+/// Encode `setMetadata` publishing the advertised price. `wei == 0`
+/// writes an empty payload (clears the slot → callers see the default).
+pub fn encode_set_x402_price(token_id: u64, wei: u128) -> Vec<u8> {
+    let payload = if wei == 0 { String::new() } else { wei.to_string() };
+    encode_set_metadata_bytes(token_id, keccak_key(X402_PRICE_LABEL), payload.as_bytes())
+}
+
 /// Read `authorizationState(from, nonce)` — true if that x402 nonce was
 /// already settled (lets a payee detect replays before serving).
 pub async fn x402_authorization_state(

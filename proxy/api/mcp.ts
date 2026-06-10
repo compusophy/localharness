@@ -353,6 +353,31 @@ async function personaOf(tokenId: bigint): Promise<string | null> {
   return text.length ? text : null;
 }
 
+/** Floor applied when an agent has NOT advertised a price on-chain:
+ * 0.01 $LH. Mirrors `registry::DEFAULT_ASK_PRICE_WEI`. */
+const DEFAULT_ASK_PRICE_WEI = 10_000_000_000_000_000n;
+
+/** `metadata(tokenId, keccak256("localharness.x402_price")) -> bytes`,
+ * a decimal-wei UTF-8 string. null = never advertised (use the default).
+ * Mirrors `registry::x402_price_of`. */
+async function x402PriceOf(tokenId: bigint): Promise<bigint | null> {
+  const key = keccak32(new TextEncoder().encode('localharness.x402_price'));
+  const sel = selectorHex('metadata(uint256,bytes32)');
+  const data = '0x' + sel + bytesToHex(uintWord(tokenId)) + bytesToHex(key);
+  const res = await ethCall(REGISTRY, data);
+  const b = hexToBytes(stripHex(res));
+  if (b.length < 64) return null;
+  let len = 0;
+  for (let i = 56; i < 64; i++) len = len * 256 + b[i];
+  if (len === 0) return null;
+  const payload = b.slice(64, 64 + len);
+  if (payload.length < len) return null;
+  const text = new TextDecoder().decode(payload).trim();
+  if (!/^[0-9]+$/.test(text)) return null;
+  const wei = BigInt(text);
+  return wei > 0n ? wei : null;
+}
+
 /** `nextId() -> uint256`. The next token id to mint; registered ids are
  * `1..nextId()-1` (ids start at 1 and are monotonic). 0/empty = nothing minted. */
 async function nextId(): Promise<bigint> {
@@ -1028,7 +1053,19 @@ async function handleAskAgent(
     );
   }
 
-  // 2. Require an x402 authorization (this is the payment-gated path).
+  // 2. Resolve the agent's effective price: advertised on-chain, else the
+  //    platform default. This is the FLOOR the authorization must meet —
+  //    without it, an owner's published price gated nothing and callers
+  //    named their own tip. A read failure falls back to the default
+  //    (never blocks on a flaky eth_call; settle stays authoritative).
+  let required = DEFAULT_ASK_PRICE_WEI;
+  try {
+    required = (await x402PriceOf(tokenId)) ?? DEFAULT_ASK_PRICE_WEI;
+  } catch {
+    // default stands
+  }
+
+  // 3. Require an x402 authorization (this is the payment-gated path).
   let auth: X402Auth | null;
   try {
     auth = parseAuth(headerAuth, params);
@@ -1039,13 +1076,13 @@ async function handleAskAgent(
     return rpcError(
       id,
       -32602,
-      `payment required: supply an x402 authorization (x-x402-authorization header or params._x402) paying $LH to ${name}'s account ${payee}`,
+      `payment required: supply an x402 authorization (x-x402-authorization header or params._x402) paying at least ${required} wei $LH to ${name}'s account ${payee}`,
       402,
-      { payTo: payee, scheme: 'x402-exact', asset: '$LH', chainId: CHAIN_ID },
+      { payTo: payee, scheme: 'x402-exact', asset: '$LH', chainId: CHAIN_ID, minValue: required.toString() },
     );
   }
 
-  // 3. The authorization MUST pay the resolved agent TBA. If the client
+  // 4. The authorization MUST pay the resolved agent TBA. If the client
   //    supplied a `to`, it must match; otherwise we fill it in.
   if (auth.to && auth.to.toLowerCase() !== payee.toLowerCase()) {
     return rpcError(
@@ -1059,8 +1096,17 @@ async function handleAskAgent(
   if (auth.value <= 0n) {
     return rpcError(id, -32602, 'x402 authorization: value must be > 0', 402);
   }
+  if (auth.value < required) {
+    return rpcError(
+      id,
+      -32602,
+      `payment below "${name}"'s price: authorized ${auth.value} wei, requires ${required} wei $LH`,
+      402,
+      { payTo: payee, scheme: 'x402-exact', asset: '$LH', chainId: CHAIN_ID, minValue: required.toString() },
+    );
+  }
 
-  // 4. Validity window + replay checks (the contract enforces these too, but we
+  // 5. Validity window + replay checks (the contract enforces these too, but we
   //    fail fast and with a clear 402 before spending gas on a doomed settle).
   const now = BigInt(Math.floor(Date.now() / 1000));
   if (now <= auth.validAfter) {
@@ -1070,7 +1116,7 @@ async function handleAskAgent(
     return rpcError(id, -32602, 'x402 authorization expired', 402);
   }
 
-  // 5. Verify the EIP-712 signature against the LIVE domain separator.
+  // 6. Verify the EIP-712 signature against the LIVE domain separator.
   let domain: Uint8Array;
   try {
     domain = await liveDomainSeparator();
@@ -1093,7 +1139,7 @@ async function handleAskAgent(
     );
   }
 
-  // 6. Replay guard (best-effort pre-check; settle is the authoritative one).
+  // 7. Replay guard (best-effort pre-check; settle is the authoritative one).
   try {
     if (await authorizationState(auth.from, auth.nonce)) {
       return rpcError(id, -32602, 'x402 authorization already used (replayed nonce)', 402);
@@ -1102,7 +1148,7 @@ async function handleAskAgent(
     // ignore — settle will revert AuthAlreadyUsed if so.
   }
 
-  // 7. SETTLE on-chain BEFORE running the agent. Await the receipt.
+  // 8. SETTLE on-chain BEFORE running the agent. Await the receipt.
   let txHash: string;
   try {
     txHash = await settleOnChain(auth);

@@ -170,6 +170,12 @@ IDENTITY & PROFILE
                                          so the name ships configured in one command
   localharness persona <name> <text>     publish <name>'s public system prompt so
                                          `call` answers as that agent (text or file)
+  localharness price <name> <amount|clear>
+                                         advertise <name>'s per-call $LH price
+                                         on-chain — the hosted ask_agent gate
+                                         enforces it as the payment floor;
+                                         unset names cost callers the platform
+                                         default (0.01 $LH)
   localharness whoami [--json] <name>    profile of <name> (owner, wallet, …; alias: lookup)
   localharness status [--as <me>] [<name>]
                                          ONE read-only economy dashboard for an agent:
@@ -364,6 +370,11 @@ async fn run(args: &[String]) -> i32 {
         Some("compile") if args.len() >= 2 => compile_check(&args[1], args.get(2).map(String::as_str)),
         Some("compile") => {
             eprintln!("usage: localharness compile <source.rl> [out.wasm]");
+            2
+        }
+        Some("price") if args.len() >= 3 => set_price(&args[1], &args[2]).await,
+        Some("price") => {
+            eprintln!("usage: localharness price <name> <amount|clear>");
             2
         }
         Some("persona") if args.len() >= 3 => set_persona(&args[1], &args[2..].join(" ")).await,

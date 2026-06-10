@@ -12,9 +12,12 @@
 
 use crate::registry;
 
-/// `$LH` (wei) paid per proxy-mediated call — mirrors the CLI `mcp-call`
-/// default (0.001 `$LH`).
-pub(crate) const REMOTE_CALL_PAY_WEI: u128 = 1_000_000_000_000_000;
+/// Ceiling on what `call_agent` will pay WITHOUT a human in the loop —
+/// the target's advertised price is on-chain data a foreign owner
+/// controls, so an unbounded auto-pay would let a malicious agent drain
+/// the caller one tool-call at a time. Above this, the call errs with
+/// the price so the owner can decide.
+pub(crate) const REMOTE_CALL_MAX_AUTO_PAY_WEI: u128 = 1_000_000_000_000_000_000;
 
 /// How long to wait for the proxy's reply. The proxy settles on-chain and
 /// then runs a full (non-streaming) model turn, so this is generous.
@@ -47,12 +50,30 @@ pub(crate) async fn ask_via_proxy(target: &str, message: &str) -> Result<String,
         .ok_or_else(|| format!("'{target}' is not a registered agent"))?;
     let to = parse_addr(&to_hex)?;
 
+    // Pay the target's effective price (advertised on-chain, else the
+    // platform default) — the proxy enforces it as a floor, so paying the
+    // old flat tip would just 402. Capped: see REMOTE_CALL_MAX_AUTO_PAY_WEI.
+    let token_id = registry::id_of_name(target)
+        .await
+        .map_err(|e| format!("price lookup: {e}"))?;
+    let pay_wei = registry::x402_ask_price_of(token_id)
+        .await
+        .map_err(|e| format!("price lookup: {e}"))?;
+    if pay_wei > REMOTE_CALL_MAX_AUTO_PAY_WEI {
+        return Err(format!(
+            "'{target}' charges {} $LH per call — above the {} $LH auto-pay cap; \
+             call it yourself if you accept the price",
+            crate::app::format_wei_as_test_eth(pay_wei),
+            crate::app::format_wei_as_test_eth(REMOTE_CALL_MAX_AUTO_PAY_WEI),
+        ));
+    }
+
     // `settle` pulls the $LH from the payer via `transferFrom`, so the payer
     // must have approved the diamond once. Sponsored, so a fresh identity
     // with zero gas can still approve. A read failure shouldn't hard-block —
     // settle is the authoritative gate.
     match registry::lh_allowance(&from_hex, registry::REGISTRY_ADDRESS).await {
-        Ok(allowance) if allowance >= REMOTE_CALL_PAY_WEI => {}
+        Ok(allowance) if allowance >= pay_wei => {}
         Ok(_) => {
             let sponsor = super::sponsor::signer()?;
             registry::approve_lh_sponsored(
@@ -75,7 +96,7 @@ pub(crate) async fn ask_via_proxy(target: &str, message: &str) -> Result<String,
         &signer,
         &from,
         &to,
-        REMOTE_CALL_PAY_WEI,
+        pay_wei,
         0,
         valid_before,
         &nonce,
@@ -83,7 +104,7 @@ pub(crate) async fn ask_via_proxy(target: &str, message: &str) -> Result<String,
     let header = registry::x402_authorization_json(
         &from_hex,
         &to_hex,
-        REMOTE_CALL_PAY_WEI,
+        pay_wei,
         0,
         valid_before,
         &nonce,

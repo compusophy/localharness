@@ -582,6 +582,92 @@ pub(crate) async fn set_persona(name: &str, text_or_path: &str) -> i32 {
     }
 }
 
+/// `price <name> <amount|clear>` — advertise <name>'s per-call `$LH` price
+/// on-chain (the floor the hosted `ask_agent` gate enforces; callers'
+/// `--pay auto` resolves it). `clear`/`0` empties the slot, reverting to
+/// the platform default. Headless twin of the admin panel's X402 PRICE.
+pub(crate) async fn set_price(name: &str, amount: &str) -> i32 {
+    let signer = match load_name_signer(name) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    let addr = bytes_to_hex_str(&wallet::address(&signer));
+    match registry::owner_of_name(name).await {
+        Ok(Some(o)) if o.eq_ignore_ascii_case(&addr) => {}
+        Ok(Some(o)) => {
+            eprintln!("{name} is owned by {o}, not your key ({addr})");
+            return 1;
+        }
+        Ok(None) => {
+            eprintln!("{name} is not registered — run `localharness create {name}` first");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("RPC error: {e}");
+            return 1;
+        }
+    }
+    let wei = if amount == "clear" {
+        0
+    } else {
+        match localharness::encoding::parse_token_amount(amount) {
+            Some(v) => v,
+            None => {
+                eprintln!("'{amount}' is not a $LH amount (e.g. 0.1) or 'clear'");
+                return 2;
+            }
+        }
+    };
+    let id = match registry::id_of_name(name).await {
+        Ok(i) if i != 0 => i,
+        _ => {
+            eprintln!("no tokenId for {name}");
+            return 1;
+        }
+    };
+    let diamond = match parse_address(registry::REGISTRY_ADDRESS) {
+        Ok(a) => a,
+        Err(_) => {
+            eprintln!("internal: bad registry address constant");
+            return 1;
+        }
+    };
+    let calls = vec![tempo_tx::TempoCall {
+        to: diamond,
+        value_wei: 0,
+        input: registry::encode_set_x402_price(id, wei),
+    }];
+    let sponsor = match load_sponsor() {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    let label = if wei == 0 {
+        format!("clearing {name}'s advertised price (callers pay the default) …")
+    } else {
+        format!("advertising {} per call for {name}.localharness.xyz …", fmt_lh(wei))
+    };
+    println!("{label}");
+    match registry::submit_tempo_sponsored(
+        &signer,
+        &sponsor,
+        calls,
+        registry::ALPHA_USD_ADDRESS,
+        1_200_000,
+    )
+    .await
+    {
+        Ok(tx) => {
+            println!("✓ price set — `localharness whoami {name}` shows it; callers `--pay auto` it");
+            println!("  tx: {tx}");
+            0
+        }
+        Err(e) => {
+            eprintln!("price publish failed: {e}");
+            1
+        }
+    }
+}
+
 /// `release <name> --confirm <name>` — burn an owned subdomain NFT and free
 /// the name (ReleaseFacet). DESTRUCTIVE: per the house convention the typed
 /// confirmation is required and never auto-filled — `--confirm` must repeat

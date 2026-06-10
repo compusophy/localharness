@@ -208,7 +208,10 @@ async fn gemini_key_is_valid(key: &str) -> Option<bool> {
 }
 
 /// Save this agent's per-call x402 price (decimal `$LH` → wei in
-/// `.lh_x402_price`). Empty / 0 deletes the file (free).
+/// `.lh_x402_price`) AND publish it on-chain — the hosted `ask_agent`
+/// gate enforces the on-chain price, so a local-only save would be a
+/// price nobody pays. Empty / 0 clears both (callers then pay the
+/// platform default, `registry::DEFAULT_ASK_PRICE_WEI`).
 pub(super) fn save_x402_price_pressed() {
     let Some(input) = dom::input_by_id("x402-price-input") else {
         return;
@@ -217,24 +220,29 @@ pub(super) fn save_x402_price_pressed() {
     wasm_bindgen_futures::spawn_local(async move {
         use crate::filesystem::Filesystem;
         let fs = crate::app::shared_opfs();
-        let result: Result<(), String> = async {
-            if raw.is_empty() {
-                let _ = fs.delete(".lh_x402_price").await;
-                return Ok(());
-            }
-            let wei = crate::encoding::parse_token_amount(&raw)
-                .ok_or_else(|| format!("'{raw}' is not a $LH amount"))?;
+        let result: Result<bool, String> = async {
+            let wei = if raw.is_empty() {
+                0
+            } else {
+                crate::encoding::parse_token_amount(&raw)
+                    .ok_or_else(|| format!("'{raw}' is not a $LH amount"))?
+            };
             if wei == 0 {
                 let _ = fs.delete(".lh_x402_price").await;
-                return Ok(());
+            } else {
+                fs.write_atomic(".lh_x402_price", wei.to_string().as_bytes())
+                    .await
+                    .map_err(|e| e.to_string())?;
             }
-            fs.write_atomic(".lh_x402_price", wei.to_string().as_bytes())
-                .await
-                .map_err(|e| e.to_string())
+            publish_x402_price_onchain(wei).await
         }
         .await;
         match result {
-            Ok(()) => dom::swap_inner(
+            Ok(true) => dom::swap_inner(
+                "x402-price-msg",
+                "<span style=\"color:var(--muted)\">saved + published on-chain</span>",
+            ),
+            Ok(false) => dom::swap_inner(
                 "x402-price-msg",
                 "<span style=\"color:var(--muted)\">saved</span>",
             ),
@@ -244,6 +252,30 @@ pub(super) fn save_x402_price_pressed() {
             ),
         }
     });
+}
+
+/// Publish the advertised per-call price to the on-chain slot the hosted
+/// `ask_agent` gate reads. `Ok(false)` = not on a registered subdomain.
+async fn publish_x402_price_onchain(wei: u128) -> Result<bool, String> {
+    let Some(tenant) = crate::app::tenant::current_name() else {
+        return Ok(false);
+    };
+    let token_id = match crate::app::registry::id_of_name(&tenant).await {
+        Ok(id) if id != 0 => id,
+        Ok(_) => return Ok(false),
+        Err(e) => return Err(format!("id_of_name: {e}")),
+    };
+    let (_, owner) = crate::app::tenant::current_tenant_owner().await?;
+    let registry_addr = crate::encoding::parse_address(crate::app::registry::REGISTRY_ADDRESS)?;
+    let call = crate::tempo_tx::TempoCall {
+        to: registry_addr,
+        value_wei: 0,
+        input: crate::app::registry::encode_set_x402_price(token_id, wei),
+    };
+    let gas = crate::app::gas::set_metadata_gas(40);
+    super::run_sponsored_tempo_call(&owner, vec![call], gas, "publish x402 price")
+        .await
+        .map(|_| true)
 }
 
 /// Toggle the header admin dropdown. Origin determines content —
