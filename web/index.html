@@ -19,7 +19,11 @@
     directive can't brick the app. Validate against the running app, then
     flip the header name to `Content-Security-Policy` to enforce. The init
     script is external (boot.js) so enforcing `script-src 'self'` won't need
-    'unsafe-inline'.
+    'unsafe-inline'. X-Content-Type-Options: nosniff ships alongside it.
+    Referrer-Policy is DELIBERATELY absent: a stricter referrer was the
+    suspected breaker of BYOK Gemini keys carrying HTTP-referrer
+    restrictions (commit c0393e0) — don't re-add it without testing that
+    path against the live Gemini API.
   -->
   <link rel="stylesheet" href="./styles.css" />
 </head>

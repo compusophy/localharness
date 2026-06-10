@@ -39,6 +39,16 @@
         { "key": "Content-Type", "value": "application/javascript" },
         { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }
       ]
+    },
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        {
+          "key": "Content-Security-Policy-Report-Only",
+          "value": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://generativelanguage.googleapis.com https://api.anthropic.com https://rpc.moderato.tempo.xyz https://proxy-tau-ten-15.vercel.app wss:; frame-src 'self' https://localharness.xyz https://*.localharness.xyz; frame-ancestors 'self' https://localharness.xyz https://*.localharness.xyz; base-uri 'self'; form-action 'self'; object-src 'none'; worker-src 'self' blob:"
+        }
+      ]
     }
   ]
 }
