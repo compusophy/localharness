@@ -269,27 +269,50 @@ pub async fn list_recent_agents(limit: u64) -> Result<Vec<(u64, String)>, String
     Ok(out)
 }
 
-/// Pure: filter + rank `(name, persona)` pairs by a query (case-insensitive
-/// substring against the name OR the persona). Name matches rank above
-/// persona-only matches; input order (recency) is preserved within each tier.
-/// Empty query returns all. The matching core of [`discover_agents`], split out
-/// for testing.
+/// Pure: filter + rank `(name, persona)` pairs by a query, case-insensitive.
+/// Multi-keyword: the query is whitespace-split into tokens and an agent
+/// matches if the WHOLE phrase or ANY token appears in its name or persona —
+/// so one `discover` for "game tool puzzle" replaces a sequential scan per
+/// keyword. Ranking: name hits above persona-only hits; within a tier, a
+/// whole-phrase hit outranks token hits, then more matched tokens rank
+/// higher, then input order (recency) breaks ties. Empty query returns all.
+/// Mirrors the proxy's `rankAgentMatches` (api/mcp.ts) EXACTLY — keep the two
+/// in lockstep. The matching core of [`discover_agents`] (and
+/// `discover_bounties`' task ranking), split out for testing.
 pub fn rank_agent_matches(agents: &[(String, String)], query: &str) -> Vec<(String, String)> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
         return agents.to_vec();
     }
-    let mut name_hits = Vec::new();
-    let mut persona_hits = Vec::new();
-    for (name, persona) in agents {
-        if name.to_lowercase().contains(&q) {
-            name_hits.push((name.clone(), persona.clone()));
-        } else if persona.to_lowercase().contains(&q) {
-            persona_hits.push((name.clone(), persona.clone()));
+    let tokens: Vec<&str> = q.split_whitespace().collect();
+    let overlap = |text_lower: &str| tokens.iter().filter(|t| text_lower.contains(**t)).count();
+
+    // (score, input order, pair) per tier; phrase hit = +100 over token hits.
+    let mut name_hits: Vec<(usize, usize, (String, String))> = Vec::new();
+    let mut persona_hits: Vec<(usize, usize, (String, String))> = Vec::new();
+    for (order, (name, persona)) in agents.iter().enumerate() {
+        let name_lower = name.to_lowercase();
+        let persona_lower = persona.to_lowercase();
+        let name_overlap = overlap(&name_lower);
+        if name_lower.contains(&q) || name_overlap > 0 {
+            let score = if name_lower.contains(&q) { 100 } else { 0 } + name_overlap;
+            name_hits.push((score, order, (name.clone(), persona.clone())));
+        } else {
+            let persona_overlap = overlap(&persona_lower);
+            if persona_lower.contains(&q) || persona_overlap > 0 {
+                let score = if persona_lower.contains(&q) { 100 } else { 0 } + persona_overlap;
+                persona_hits.push((score, order, (name.clone(), persona.clone())));
+            }
         }
     }
-    name_hits.extend(persona_hits);
+    // Stable per tier: higher score first, input order (recency) as tiebreak.
+    name_hits.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    persona_hits.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     name_hits
+        .into_iter()
+        .chain(persona_hits)
+        .map(|(_, _, pair)| pair)
+        .collect()
 }
 
 /// Discover agents by capability/keyword — the "Agent Yellow Pages". Scans the
@@ -713,6 +736,51 @@ mod tests {
         // empty / whitespace query returns all, order preserved
         assert_eq!(rank_agent_matches(&agents, "").len(), 4);
         assert_eq!(rank_agent_matches(&agents, "   ").len(), 4);
+    }
+
+    /// Multi-keyword queries (on-chain feedback #33/34): ONE discover call
+    /// covers several keywords instead of a sequential scan per keyword.
+    /// Semantics mirror the proxy's `rankAgentMatches` (api/mcp.ts): an agent
+    /// matches if the whole phrase OR any token hits; more matched tokens
+    /// rank higher; a whole-phrase hit outranks token hits; name tier still
+    /// beats persona tier; recency breaks ties.
+    #[test]
+    fn rank_agent_matches_multi_keyword() {
+        let agents = vec![
+            ("chess-game".to_string(), "plays chess".to_string()),
+            ("toolsmith".to_string(), "builds developer tools".to_string()),
+            (
+                "arcade".to_string(),
+                "a game tool for retro arcade fun".to_string(),
+            ),
+            ("dave".to_string(), "writes haikus".to_string()),
+        ];
+
+        // "game tool" — every agent matching EITHER token comes back in one
+        // call; both name-token hits rank above the persona hit.
+        let hits = rank_agent_matches(&agents, "game tool");
+        assert_eq!(hits.len(), 3);
+        assert_eq!(hits[0].0, "chess-game"); // name token, earlier (recency)
+        assert_eq!(hits[1].0, "toolsmith"); // name token
+        assert_eq!(hits[2].0, "arcade"); // persona-only (both tokens, phrase)
+        // dave matches nothing → excluded.
+
+        // Within the persona tier, a whole-phrase hit + more tokens outranks
+        // a single-token hit.
+        let personas = vec![
+            ("a".to_string(), "tool things".to_string()),
+            ("b".to_string(), "a game tool combo".to_string()),
+        ];
+        let hits = rank_agent_matches(&personas, "game tool");
+        assert_eq!(hits[0].0, "b"); // phrase (100) + 2 tokens
+        assert_eq!(hits[1].0, "a"); // 1 token
+
+        // Single-token queries keep the old behavior exactly: tiers by
+        // name-vs-persona, recency within a tier.
+        let hits = rank_agent_matches(&agents, "game");
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].0, "chess-game");
+        assert_eq!(hits[1].0, "arcade");
     }
 
     #[test]

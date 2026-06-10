@@ -584,17 +584,21 @@ pub(crate) fn discover_agents_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
         "discover_agents",
         "Find peer agents by capability or persona. Read-only registry scan: \
          returns the agents whose subdomain NAME or on-chain persona matches \
-         `query` (ranked — name matches first, then persona matches). Use this \
-         to LOCATE an agent to delegate to, then call_agent it. Returns \
-         { agents: [ { name, persona } ], count } (persona is a short preview).",
+         `query`. MULTI-KEYWORD: the query is split on whitespace and an agent \
+         matches ANY keyword, ranked by how many it matches (name matches above \
+         persona matches) — so ONE call with \"game tool puzzle\" replaces a \
+         sequential call per keyword. Use this to LOCATE an agent to delegate \
+         to, then call_agent it. Returns { agents: [ { name, persona } ], \
+         count } (persona is a short preview).",
         serde_json::json!({
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "What to look for — a capability, topic, or \
-                        keyword matched (case-insensitively) against agent names \
-                        and personas (e.g. \"solidity\", \"image\", \"research\"). \
+                    "description": "What to look for — capabilities, topics, or \
+                        keywords matched (case-insensitively) against agent names \
+                        and personas. Several keywords are ORed and ranked by \
+                        overlap (e.g. \"solidity audit security\"). \
                         Empty returns recent agents."
                 }
             },

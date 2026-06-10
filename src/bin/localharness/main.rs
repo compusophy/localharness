@@ -188,7 +188,9 @@ IDENTITY & PROFILE
                                          burn an owned name (NOT your MAIN) so it
                                          can be re-registered; --confirm must
                                          repeat the exact name (destructive)
-  localharness discover <query>          find agents by capability (Agent Yellow Pages)
+  localharness discover <query...>       find agents by capability (Agent Yellow
+                                         Pages); several keywords are ORed and
+                                         ranked by overlap
 
 CARTRIDGES & PUBLISHING
   localharness compile <src.rl>          compile-check a cartridge locally (no write)
