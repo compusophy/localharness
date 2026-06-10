@@ -52,10 +52,19 @@ if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$') {
 # ---------------------------------------------------------------------------
 
 Step "pre-flight: tooling"
-# bash + node are required by the proof-of-spec gate (scripts/verify.sh runs
-# the cartridge corpus proofs in node) — fail here, not mid-verify.
-foreach ($cmd in @("cargo", "gh", "git", "bash", "node")) {
+# node is required by the proof-of-spec gate (scripts/verify.sh runs the
+# cartridge corpus proofs in node) — fail here, not mid-verify.
+foreach ($cmd in @("cargo", "gh", "git", "node")) {
     if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) { Fail "$cmd not on PATH" }
+}
+# Resolve GIT-BASH explicitly: a bare `bash` on Windows PATH often resolves to
+# the WSL launcher (System32\bash.exe), which dies with "no installed
+# distributions" on machines without a WSL distro — exactly what aborted the
+# first 0.31.0 attempt mid-gate. verify.sh needs git-bash, which ships beside
+# git.exe (…\Git\cmd\git.exe → …\Git\bin\bash.exe).
+$script:GitBash = Join-Path (Split-Path (Split-Path (Get-Command git).Source)) "bin\bash.exe"
+if (-not (Test-Path $script:GitBash)) {
+    Fail "git-bash not found at $script:GitBash (verify.sh needs git-bash, not WSL bash)"
 }
 try { gh auth status 2>&1 | Out-Null } catch { Fail "gh not authenticated (run: gh auth login)" }
 if ($LASTEXITCODE -ne 0) { Fail "gh not authenticated (run: gh auth login)" }
@@ -138,7 +147,7 @@ Step "proof-of-spec gate (scripts/verify.sh)"
 # browser app's wasm runtime never executes under the cargo suite. The gate
 # runs the default-feature tests itself, so there is no separate `cargo test`
 # step here.
-Invoke-Native "scripts/verify.sh" { bash "$PSScriptRoot/verify.sh" }
+Invoke-Native "scripts/verify.sh" { & $script:GitBash "$PSScriptRoot/verify.sh" }
 
 Step "cargo clippy"
 Invoke-Native "cargo clippy" { cargo clippy --all-targets -- -D warnings }
