@@ -1,15 +1,18 @@
 //! Admin panel — config handlers (prompt / allowlist / api key / x402 price)
 //! plus the header dropdown shell, tabs, and usage slot.
 
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::app::{dom, templates};
 
 /// Persist the textarea content as the per-origin custom system
-/// prompt. Empty/whitespace-only content deletes the file, reverting
-/// to the bundle's default. The change takes effect on the next
-/// session start — surfaced inline so the user knows what to expect.
+/// prompt AND publish it as the on-chain persona. The local file drives
+/// THIS tab's sessions; the on-chain persona slot is what the hosted
+/// x402 `ask_agent` path answers from — saving only locally let owners
+/// believe callers would see their prompt when they never did. Off a
+/// registered subdomain (localhost/preview) the publish is skipped.
+/// Empty/whitespace-only content deletes the file, reverting to the
+/// bundle's default (the on-chain slot is left as-is).
 pub(super) fn save_prompt_pressed() {
     let Some(textarea) = dom::textarea_by_id("prompt-input") else { return };
     let content = textarea.value();
@@ -20,15 +23,24 @@ pub(super) fn save_prompt_pressed() {
     wasm_bindgen_futures::spawn_local(async move {
         match crate::app::system_prompt::save(&content).await {
             Ok(()) => {
-                let trimmed = content.trim();
-                let summary = if trimmed.is_empty() {
-                    "✓ saved · using default on next session"
-                } else {
-                    "✓ saved · takes effect on next session"
+                let trimmed = content.trim().to_string();
+                if trimmed.is_empty() {
+                    dom::swap_inner(
+                        "prompt-msg",
+                        &dom::msg_span(dom::Msg::Accent, "✓ saved · using default on next session"),
+                    );
+                    return;
+                }
+                let summary = match publish_persona_onchain(&trimmed).await {
+                    Ok(true) => {
+                        "✓ saved + published on-chain · takes effect on next session".to_string()
+                    }
+                    Ok(false) => "✓ saved · takes effect on next session".to_string(),
+                    Err(e) => format!("✓ saved locally · on-chain publish failed: {e}"),
                 };
                 dom::swap_inner(
                     "prompt-msg",
-                    &dom::msg_span(dom::Msg::Accent, summary),
+                    &dom::msg_span(dom::Msg::Accent, &summary),
                 );
             }
             Err(err) => {
@@ -39,6 +51,31 @@ pub(super) fn save_prompt_pressed() {
             }
         }
     });
+}
+
+/// Publish `text` to this subdomain's on-chain persona slot (the same
+/// sponsored `setMetadata` path as the `set_persona` self-edit tool).
+/// `Ok(false)` = not on a registered subdomain, publish skipped.
+async fn publish_persona_onchain(text: &str) -> Result<bool, String> {
+    let Some(tenant) = crate::app::tenant::current_name() else {
+        return Ok(false);
+    };
+    let token_id = match crate::app::registry::id_of_name(&tenant).await {
+        Ok(id) if id != 0 => id,
+        Ok(_) => return Ok(false),
+        Err(e) => return Err(format!("id_of_name: {e}")),
+    };
+    let (_, owner) = crate::app::tenant::current_tenant_owner().await?;
+    let registry_addr = crate::encoding::parse_address(crate::app::registry::REGISTRY_ADDRESS)?;
+    let call = crate::tempo_tx::TempoCall {
+        to: registry_addr,
+        value_wei: 0,
+        input: crate::app::registry::encode_set_persona(token_id, text),
+    };
+    let gas = crate::app::gas::set_metadata_gas(text.len());
+    super::run_sponsored_tempo_call(&owner, vec![call], gas, "publish persona")
+        .await
+        .map(|_| true)
 }
 
 pub(super) fn save_tool_allowlist_pressed() {
@@ -170,7 +207,7 @@ async fn gemini_key_is_valid(key: &str) -> Option<bool> {
     }
 }
 
-/// Save this agent's per-call x402 price (whole `$LH` → wei in
+/// Save this agent's per-call x402 price (decimal `$LH` → wei in
 /// `.lh_x402_price`). Empty / 0 deletes the file (free).
 pub(super) fn save_x402_price_pressed() {
     let Some(input) = dom::input_by_id("x402-price-input") else {
@@ -181,14 +218,16 @@ pub(super) fn save_x402_price_pressed() {
         use crate::filesystem::Filesystem;
         let fs = crate::app::shared_opfs();
         let result: Result<(), String> = async {
-            if raw.is_empty() || raw == "0" {
+            if raw.is_empty() {
                 let _ = fs.delete(".lh_x402_price").await;
                 return Ok(());
             }
-            let whole: u128 = raw.parse().map_err(|_| "bad amount".to_string())?;
-            let wei = whole
-                .checked_mul(1_000_000_000_000_000_000u128)
-                .ok_or_else(|| "overflow".to_string())?;
+            let wei = crate::encoding::parse_token_amount(&raw)
+                .ok_or_else(|| format!("'{raw}' is not a $LH amount"))?;
+            if wei == 0 {
+                let _ = fs.delete(".lh_x402_price").await;
+                return Ok(());
+            }
             fs.write_atomic(".lh_x402_price", wei.to_string().as_bytes())
                 .await
                 .map_err(|e| e.to_string())
@@ -199,13 +238,10 @@ pub(super) fn save_x402_price_pressed() {
                 "x402-price-msg",
                 "<span style=\"color:var(--muted)\">saved</span>",
             ),
-            Err(e) => {
-                web_sys::console::warn_1(&JsValue::from_str(&format!("x402 price: {e}")));
-                dom::swap_inner(
-                    "x402-price-msg",
-                    "<span style=\"color:var(--error)\">save failed</span>",
-                );
-            }
+            Err(e) => dom::swap_inner(
+                "x402-price-msg",
+                &dom::msg_span(dom::Msg::Error, &format!("save failed: {e}")),
+            ),
         }
     });
 }

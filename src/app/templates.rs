@@ -587,6 +587,10 @@ pub(crate) fn apex(host: &Host, wallet_address_hex: Option<&str>) -> Markup {
         main.apex-main {
             div.col-chat {
                 @if fresh { (apex_hero()) }
+                // Dispatcher/status messages (invite auto-redeem lands here —
+                // without this node `dom::set_status` is silently dropped on
+                // the apex and $LH moves with zero acknowledgment).
+                div #status .terminal-status role="status" aria-live="polite" {}
                 (apex_claim())
                 div.apex-explore-link {
                     a href="?explore=1" { "explore all agents →" }

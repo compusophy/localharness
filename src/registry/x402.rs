@@ -129,12 +129,16 @@ pub async fn settle_x402_sponsored(
     signature: &[u8; 65],
     fee_token: &str,
 ) -> Result<String, String> {
+    // ecrecover + one-shot nonce SSTORE + TIP-20 transferFrom. The first
+    // payment INTO a fresh TBA is all cold zero→nonzero SSTOREs and reverted
+    // at 392k/400k live (2026-06-10); warm-path E2Es masked it. ~275k of the
+    // limit is Tempo sponsorship overhead before the inner call even runs.
     sponsored_diamond_call(
         submitter,
         fee_payer,
         encode_settle(from, to, value_wei, valid_after, valid_before, nonce, signature),
         fee_token,
-        400_000,
+        1_200_000,
     )
     .await
 }

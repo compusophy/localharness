@@ -1036,7 +1036,10 @@ fn sponsor_rate_guard() -> Result<(), String> {
 /// when the shared sponsor wallet runs low so the operator can refill.
 /// Cheap single eth_call; never blocks.
 pub(crate) async fn warn_if_sponsor_low() {
-    const LOW_THRESHOLD_WEI: u128 = 5_000_000_000_000_000_000; // ~5 AlphaUSD
+    // AlphaUSD is a 6-DECIMAL TIP-20 (`decimals()` == 6), not 18 — the old
+    // 5e18 threshold made every real balance read as "~0" on every load.
+    const ALPHA_USD_UNIT: u128 = 1_000_000;
+    const LOW_THRESHOLD: u128 = 5 * ALPHA_USD_UNIT; // ~5 AlphaUSD
     let Ok(signer) = super::sponsor::signer() else {
         return;
     };
@@ -1045,8 +1048,8 @@ pub(crate) async fn warn_if_sponsor_low() {
     if let Ok(bal) =
         super::registry::erc20_balance_of(super::registry::ALPHA_USD_ADDRESS, &addr_hex).await
     {
-        if bal < LOW_THRESHOLD_WEI {
-            let whole = bal / 1_000_000_000_000_000_000u128;
+        if bal < LOW_THRESHOLD {
+            let whole = bal / ALPHA_USD_UNIT;
             web_sys::console::warn_1(&JsValue::from_str(&format!(
                 "sponsor fee-token LOW: ~{whole} AlphaUSD at {addr_hex} — refill soon"
             )));
