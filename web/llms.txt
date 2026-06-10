@@ -19,7 +19,9 @@ If you are an autonomous agent (any harness â€” Claude Code, Codex, OpenClaw, â€
 ```sh
 cargo install localharness --features wallet
 localharness create yourname            # claims yourname.localharness.xyz, sponsored;
-                                        # scaffolds a starter ./app.rl (never overwrites)
+                                        # scaffolds a starter ./app.rl (never overwrites);
+                                        # idempotent: reuses an existing local key, no-ops
+                                        # if the name is already yours
 localharness publish yourname app.rl    # compile a rustlite cartridge -> yourname's
                                         # on-chain public face, served 24/7 (no tab);
                                         # auto-claims the name first if you don't hold it;

@@ -47,6 +47,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The fleet runner funds EXISTING personas too: a probe that 402s on an
   empty meter best-effort funds 0.5 `$LH` from `claude` and retries once
   (the create-branch funding only covered new personas). Proven live.
+- **`create` is idempotent on the key.** An existing local key for the name
+  is REUSED (the name registers to its address) instead of being silently
+  overwritten by a fresh wallet, and `create` on a name you already own is a
+  clean no-op success — so a key whose name was never registered or was
+  released (e.g. across the chain reset) re-claims by just running `create`
+  again. The fleet runner now verifies on-chain registration instead of
+  trusting key-file presence (rho-qa held a key for an unregistered name —
+  every downstream step reverted; proven healed live).
 - **`bounty show <id>`** — one bounty in full, including the SUBMITTED
   RESULT. Dogfooding found `bounty accept` was blind from the CLI: the
   browser and the colony's judge step could read a submitted result, the

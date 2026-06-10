@@ -237,7 +237,15 @@ modules don't trip a default `cargo check`).
   iframe path work cross-machine — there is no target browser involved.
 - **PowerShell 5.1 stderr trap.** `release.ps1` wraps native commands in
   `Invoke-Native` (PS5 turns every cargo stderr line into a terminating error).
-  Don't call `cargo`/`git`/`gh` directly in the script.
+  Don't call `cargo`/`git`/`gh` directly in the script. ALSO: a DOUBLE QUOTE
+  inside a here-string commit message breaks PS5's native-arg quoting (`git
+  commit -m @'…"x"…'@` shreds into pathspecs) — keep `"` out of messages.
+- **Wallet vs meter — two $LH pots.** The proxy debits the per-request METER
+  (`CreditMeterFacet.creditOf`); `send`/`redeem` fund the WALLET. The CLI's
+  lazy deposit (`call.rs::ensure_meter_funded`) moves wallet→meter (0.2)
+  before a call, so "has $LH but 402s" = the deposit failed (it now WARNS
+  with the cause) or the wallet itself is empty. Colony judges pre-fund from
+  the caller; the fleet runner funds on 402 + retries.
 - **Gemini 3.x `thought: false` parts.** The wire `Part` enum is untagged;
   `Part::Thought` is declared BEFORE `Part::Text`. 3.x stamps every part with
   `thought`, so normal text deserializes into `Part::Thought { thought: false,

@@ -54,35 +54,79 @@ fn frame(t: i32) {
 }
 "#;
 
-/// Claim `<name>.localharness.xyz` — fresh identity, sponsored register,
-/// on-chain verify, key persisted. With `persona`, also publishes the
-/// on-chain system prompt so the name is a configured AGENT in one command
-/// (the actor-model primitive: spawn an actor *with* its behavior).
+/// Claim `<name>.localharness.xyz` — sponsored register, on-chain verify,
+/// key persisted. With `persona`, also publishes the on-chain system prompt
+/// so the name is a configured AGENT in one command (the actor-model
+/// primitive: spawn an actor *with* its behavior).
+///
+/// IDEMPOTENT on the key: an existing local key for `name` is REUSED (the
+/// name registers to its address) instead of being overwritten by a fresh
+/// wallet — so a key whose name was never registered (or was released, e.g.
+/// across the chain reset) can be re-claimed by just running `create` again,
+/// and `create` on a name you already own is a clean no-op success.
 pub(crate) async fn create(name: &str, persona: Option<&str>) -> i32 {
     if !name_is_valid(name) {
         eprintln!("invalid name '{name}' — use 1-63 chars of a-z, 0-9, hyphen");
         return 2;
     }
-    let agent = wallet::generate();
+    // Reuse an existing local key (cwd first, then config home) — never
+    // silently overwrite one; the key IS the identity, and a stale-but-keyed
+    // name (registered pre-reset, then reset away) must re-register to the
+    // SAME address its owner already holds.
+    let (agent, reused_key, key_file) = match resolve_key_read_path(name) {
+        Some(path) => match std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| wallet::from_private_key_hex(s.trim()).ok())
+        {
+            Some(signer) => {
+                let agent = wallet::from_signing_key(signer);
+                println!("reusing the existing local key for '{name}' ({path})");
+                (agent, true, path)
+            }
+            None => {
+                eprintln!(
+                    "a key file for '{name}' exists at {path} but doesn't parse — refusing to \
+                     overwrite it; move it aside and re-run"
+                );
+                return 1;
+            }
+        },
+        // NEW keys go to the config home (the safe location, out of any
+        // project repo); falls back to the cwd if no home dir is resolvable.
+        None => (wallet::generate(), false, key_write_path(name)),
+    };
     let addr = agent.address_hex();
-    // NEW keys go to the config home (the safe location, out of any project
-    // repo); falls back to the cwd if no home dir is resolvable. Existing cwd
-    // keys keep working — `resolve_key_read_path` reads cwd first.
-    let key_file = key_write_path(name);
 
-    // Persist BEFORE the on-chain write so the key is never lost even if
-    // registration fails — the key IS the controllable identity.
-    if let Err(e) = std::fs::write(&key_file, format!("{}\n", agent.private_key_hex)) {
-        eprintln!("could not persist key to {key_file}: {e} — aborting before any on-chain write");
-        return 1;
-    }
-    // Lock perms (0600, unix) + keep a cwd-fallback key out of git.
-    let gitignored = secure_key_file(&key_file);
+    let gitignored = if reused_key {
+        false
+    } else {
+        // Persist BEFORE the on-chain write so the key is never lost even if
+        // registration fails — the key IS the controllable identity.
+        if let Err(e) = std::fs::write(&key_file, format!("{}\n", agent.private_key_hex)) {
+            eprintln!(
+                "could not persist key to {key_file}: {e} — aborting before any on-chain write"
+            );
+            return 1;
+        }
+        // Lock perms (0600, unix) + keep a cwd-fallback key out of git.
+        secure_key_file(&key_file)
+    };
 
     match registry::owner_of_name(name).await {
+        Ok(Some(o)) if o.eq_ignore_ascii_case(&addr) => {
+            // Idempotent success: the name is already registered to THIS key.
+            println!("'{name}' is already registered to your key ({addr}) — nothing to do");
+            if let Some(p) = persona {
+                println!("  publishing persona …");
+                return set_persona(name, p).await;
+            }
+            return 0;
+        }
         Ok(Some(o)) => {
             eprintln!("'{name}' is already taken (owner {o}) — pick another name");
-            let _ = std::fs::remove_file(&key_file);
+            if !reused_key {
+                let _ = std::fs::remove_file(&key_file);
+            }
             return 2;
         }
         Ok(None) => {}

@@ -68,11 +68,22 @@ for NAME in "${SELECT[@]}"; do
   [ -n "$PERSONA" ] || { echo "?? unknown persona '$NAME' — skipping"; continue; }
   echo "== $NAME — $FOCUS =="
 
-  # 1. create on-chain identity + persona. Idempotent on the LOCAL KEY: we
-  # control a persona iff we hold its key (`whoami` is a read that returns
-  # registered:false with exit 0, so it can't tell ownership).
+  # 1. create on-chain identity + persona. A LOCAL KEY alone doesn't prove the
+  # name is registered (pre-reset keys, released names) — verify on-chain and
+  # re-claim when stale; `create` is idempotent and REUSES an existing key.
   if [ -f "${NAME}.localharness.key" ] || [ -f "${LOCALHARNESS_HOME:-$HOME/.localharness/keys}/${NAME}.localharness.key" ]; then
-    echo "  · identity exists (reusing local key)"
+    if $CLI whoami "$NAME" 2>/dev/null | grep -q "unregistered"; then
+      echo "  · key exists but '$NAME' is UNREGISTERED — re-claiming with the existing key…"
+      $CLI create "$NAME" --persona "$PERSONA" >/dev/null 2>&1 \
+        || { echo "  ✗ re-claim failed — skipping"; continue; }
+      if $CLI send --as claude "$NAME" 0.5 >/dev/null 2>&1; then
+        echo "  · funded with 0.5 \$LH (from claude)"
+      else
+        echo "  !! could not fund $NAME from claude — probe may 402"
+      fi
+    else
+      echo "  · identity exists (reusing local key)"
+    fi
   else
     echo "  · creating on-chain identity + persona…"
     $CLI create "$NAME" --persona "$PERSONA" >/dev/null 2>&1 || { echo "  ✗ create failed (name taken?) — skipping"; continue; }

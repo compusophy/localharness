@@ -54,6 +54,14 @@ pub fn generate() -> GeneratedWallet {
     finalize(signer)
 }
 
+/// Wrap an EXISTING [`SigningKey`] as a [`GeneratedWallet`] (address + hex
+/// derived from it). The reuse counterpart of [`generate`] — e.g. the CLI's
+/// idempotent `create`, which re-claims a name with the key it already holds
+/// instead of overwriting the key file with a fresh wallet.
+pub fn from_signing_key(signer: SigningKey) -> GeneratedWallet {
+    finalize(signer)
+}
+
 /// Generate a BIP-39 12-word mnemonic (English wordlist) AND the
 /// SigningKey derived from its 32-byte seed. We use the seed
 /// directly as the private key — no HD derivation path — because
