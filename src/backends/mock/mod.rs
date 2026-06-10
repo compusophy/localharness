@@ -66,9 +66,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
-use futures_util::stream::StreamExt;
 use tokio::sync::{broadcast, Notify};
-use tokio_stream::wrappers::BroadcastStream;
 
 // Re-exported here so consumers can `use localharness::backends::mock::{
 // MockAgentConfig, MockConnection}` in one line. The config itself lives in
@@ -77,7 +75,7 @@ pub use crate::agent::MockAgentConfig;
 
 use crate::connections::{Connection, ConnectionStrategy, StepStream};
 use crate::content::Content;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::types::{Step, StepStatus, ToolCall, ToolResult, UsageMetadata};
 
 const STEP_BROADCAST_CAPACITY: usize = 256;
@@ -448,17 +446,9 @@ impl Connection for MockConnection {
     }
 
     fn subscribe_steps(&self) -> StepStream {
-        let rx = self.inner.steps.subscribe();
-        let mapped = BroadcastStream::new(rx)
-            .map(|r| r.map_err(|e| Error::other(format!("mock step lag: {e}"))));
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            mapped.boxed()
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            mapped.boxed_local()
-        }
+        // No error-step translation (matches the Gemini backend) — see
+        // `backends::subscribe_step_stream` for the per-backend difference.
+        crate::backends::subscribe_step_stream(self.inner.steps.subscribe(), "mock", false)
     }
 
     async fn wait_for_idle(&self) -> Result<()> {

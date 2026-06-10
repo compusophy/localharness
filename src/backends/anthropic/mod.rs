@@ -29,9 +29,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
-use futures_util::stream::StreamExt;
 use tokio::sync::broadcast;
-use tokio_stream::wrappers::BroadcastStream;
 use tracing::warn;
 
 use crate::backends::anthropic::api::{AnthropicClient, SharedClient};
@@ -48,8 +46,7 @@ use crate::content::Content;
 use crate::error::{Error, Result};
 use crate::tools::ToolRunner;
 use crate::types::{
-    CapabilitiesConfig, Step, StepSource, StepStatus, SystemInstructions, ThinkingLevel,
-    ToolResult,
+    CapabilitiesConfig, Step, SystemInstructions, ThinkingLevel, ToolResult,
 };
 
 pub use wire::{DEFAULT_MODEL, OPUS_MODEL, SONNET_MODEL};
@@ -491,36 +488,17 @@ impl Connection for AnthropicConnection {
     }
 
     fn subscribe_steps(&self) -> StepStream {
-        let rx = self.state.steps.subscribe();
-        let mapped = BroadcastStream::new(rx).map(|r| match r {
-            // A turn-failure Step (HTTP non-200, SSE decode error, in-stream
-            // `error` event) is emitted by `loop.rs::emit_error` as a
-            // System-sourced, Error-status Step. The shared `conversation.rs`
-            // only surfaces an error to `chat()`/`text()` when the *stream
-            // item itself* is `Err` (its `PollDecision::Error`) — a successful
-            // Step with `status: Error` is otherwise swallowed (empty content →
-            // no chunk → silent `Ok("")`). Translate that error Step into a
-            // stream `Err` carrying the real message so the failure propagates
-            // instead of returning an empty success. Refusal/safety terminal
-            // Steps are Model-sourced and pass through untouched.
-            Ok(step)
-                if step.source == StepSource::System
-                    && step.status == StepStatus::Error
-                    && !step.error.is_empty() =>
-            {
-                Err(Error::other(step.error))
-            }
-            Ok(step) => Ok(step),
-            Err(e) => Err(Error::other(format!("anthropic step lag: {e}"))),
-        });
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            mapped.boxed()
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            mapped.boxed_local()
-        }
+        // A turn-failure Step (HTTP non-200, SSE decode error, in-stream
+        // `error` event) is emitted by `loop.rs::emit_error` as a
+        // System-sourced, Error-status Step. The shared `conversation.rs`
+        // only surfaces an error to `chat()`/`text()` when the *stream
+        // item itself* is `Err` (its `PollDecision::Error`) — a successful
+        // Step with `status: Error` is otherwise swallowed (empty content →
+        // no chunk → silent `Ok("")`). So translate=true: the error Step
+        // becomes a stream `Err` carrying the real message and the failure
+        // propagates instead of returning an empty success. Refusal/safety
+        // terminal Steps are Model-sourced and pass through untouched.
+        crate::backends::subscribe_step_stream(self.state.steps.subscribe(), "anthropic", true)
     }
 
     async fn wait_for_idle(&self) -> Result<()> {
@@ -548,6 +526,8 @@ mod tests {
     use super::*;
     use crate::filesystem::NativeFilesystem;
     use crate::tools::ToolRunner;
+    use crate::types::StepStatus;
+    use futures_util::stream::StreamExt;
 
     /// Parity guard: every builtin tool declared to Anthropic must carry a
     /// single-`type` JSON schema (no nullable unions / `additionalProperties`

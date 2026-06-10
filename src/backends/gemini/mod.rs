@@ -16,9 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
-use futures_util::stream::StreamExt;
 use tokio::sync::broadcast;
-use tokio_stream::wrappers::BroadcastStream;
 use tracing::warn;
 
 use crate::backends::gemini::api::{GeminiClient, SharedClient};
@@ -526,17 +524,10 @@ impl Connection for GeminiConnection {
     }
 
     fn subscribe_steps(&self) -> StepStream {
-        let rx = self.state.steps.subscribe();
-        let mapped = BroadcastStream::new(rx)
-            .map(|r| r.map_err(|e| Error::other(format!("gemini step lag: {e}"))));
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            mapped.boxed()
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            mapped.boxed_local()
-        }
+        // No error-step translation here (System/Error Steps pass through as
+        // `Ok`) — see `backends::subscribe_step_stream` for the per-backend
+        // difference.
+        crate::backends::subscribe_step_stream(self.state.steps.subscribe(), "gemini", false)
     }
 
     async fn wait_for_idle(&self) -> Result<()> {

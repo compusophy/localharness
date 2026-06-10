@@ -34,12 +34,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use async_trait::async_trait;
-use futures_util::stream::StreamExt;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, Notify};
-use tokio_stream::wrappers::BroadcastStream;
 
 // Reuse the Gemini backend's built-in tool registration so the 8 fs builtins
 // (and the portable ones) run over the supplied filesystem (OPFS on wasm),
@@ -52,7 +50,7 @@ use crate::error::{Error, Result};
 use crate::hooks::{HookRunner, SessionContext};
 use crate::tools::ToolRunner;
 use crate::types::{
-    CapabilitiesConfig, Step, StepSource, StepStatus, SystemInstructions, ToolCall, ToolResult,
+    CapabilitiesConfig, Step, StepStatus, SystemInstructions, ToolCall, ToolResult,
     TranscriptEntry, TranscriptRole,
 };
 
@@ -716,26 +714,10 @@ impl Connection for LocalConnection {
     }
 
     fn subscribe_steps(&self) -> StepStream {
-        let rx = self.state.steps.subscribe();
-        let mapped = BroadcastStream::new(rx).map(|r| match r {
-            Ok(step)
-                if step.source == StepSource::System
-                    && step.status == StepStatus::Error
-                    && !step.error.is_empty() =>
-            {
-                Err(Error::other(step.error))
-            }
-            Ok(step) => Ok(step),
-            Err(e) => Err(Error::other(format!("local step lag: {e}"))),
-        });
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            mapped.boxed()
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            mapped.boxed_local()
-        }
+        // translate=true: a System/Error turn-failure Step (e.g. "model not
+        // downloaded") surfaces as a stream `Err` — same convention as the
+        // Anthropic backend.
+        crate::backends::subscribe_step_stream(self.state.steps.subscribe(), "local", true)
     }
 
     async fn wait_for_idle(&self) -> Result<()> {

@@ -49,3 +49,52 @@ pub mod anthropic;
 pub mod local;
 #[cfg(feature = "native")]
 pub mod mcp;
+
+use futures_util::stream::StreamExt;
+use tokio_stream::wrappers::BroadcastStream;
+
+use crate::connections::StepStream;
+use crate::error::Error;
+use crate::types::{Step, StepSource, StepStatus};
+
+/// Shared `subscribe_steps` plumbing: wrap a broadcast receiver as a
+/// [`StepStream`] — boxed `Send` on native, boxed local on wasm — with the
+/// backend's lag error labelled `"{label} step lag: ..."`.
+///
+/// `translate_error_steps` selects each backend's CURRENT error-step
+/// behavior, preserved exactly as found:
+///
+/// * `true` (anthropic, local) — a System-sourced, Error-status Step with a
+///   non-empty message (a turn failure from `emit_error`) converts into a
+///   stream `Err` carrying the real message, so the failure propagates to
+///   `chat()`/`text()` instead of being swallowed as an empty success.
+/// * `false` (gemini, mock) — such Steps pass through as `Ok`.
+///
+/// The inconsistency is deliberate-as-found; unifying it is a behavior
+/// decision, not plumbing.
+pub(crate) fn subscribe_step_stream(
+    rx: tokio::sync::broadcast::Receiver<Step>,
+    label: &'static str,
+    translate_error_steps: bool,
+) -> StepStream {
+    let mapped = BroadcastStream::new(rx).map(move |r| match r {
+        Ok(step)
+            if translate_error_steps
+                && step.source == StepSource::System
+                && step.status == StepStatus::Error
+                && !step.error.is_empty() =>
+        {
+            Err(Error::other(step.error))
+        }
+        Ok(step) => Ok(step),
+        Err(e) => Err(Error::other(format!("{label} step lag: {e}"))),
+    });
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        mapped.boxed()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        mapped.boxed_local()
+    }
+}
