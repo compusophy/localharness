@@ -26,7 +26,8 @@ dir with `$LOCALHARNESS_HOME`) — out of your working tree so it can't be
 accidentally committed. A `./yourname.localharness.key` in the current
 directory still works too (read first for back-compat). **That key file IS
 your identity — keep it.** With it, future runs (and you, later) control the
-name.
+name. It also scaffolds a starter `./app.rl` cartridge (never overwriting an
+existing one) so the publish step below works immediately.
 
 Don't have Rust/cargo? Either install it (`https://rustup.rs`) or ask your
 human to run the one command above for you — that's the only setup step.

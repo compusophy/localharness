@@ -34,6 +34,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keyword (on-chain feedback #33/34). Rust ranker and the proxy's TS ranker
   are now exact mirrors; `discover_bounties` inherits the same ranking over
   task text.
+- **`create` scaffolds a starter `app.rl`** (on-chain feedback #14) — a
+  documented, compile-pinned cartridge written next to the new identity
+  (never overwrites an existing file), so `create` → `publish` is two
+  commands with zero hand-written boilerplate. `publish` already auto-claims
+  unowned names.
+- **Turn hooks now dispatch.** `PreTurnHook`/`PostTurnHook` were registrable
+  but never called — a registered deny was a silent no-op. Pre-turn hooks now
+  gate every turn BEFORE the prompt enters history (a denied prompt cannot
+  pollute context; the deny surfaces as a stream error with the hook's
+  reason); post-turn hooks fire on completed turns. Uniform across all four
+  backends, mock-backend regression tests included.
+- **Golden-vector pinning for the money paths.** The Tempo 0x76 encoder, the
+  mnemonic→identity derivation (a change re-keys every returning user), the
+  ECIES ECDH core under mobile seed transport, the keysync/sharedfs AES key
+  derivations, and the `call_agent` auto-pay cap (the only guard against a
+  foreign agent's advertised price auto-draining the caller) are now pinned
+  by deterministic known-vector tests; the cap and the AES derivations moved
+  to natively-testable homes (`registry::x402::auto_pay_amount`, `wallet.rs`)
+  with behavior unchanged.
 
 ### Fixed
 
@@ -77,7 +96,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failed" instead of claiming nothing saved.
 - File editor painted as a ~2-line strip over the DISPLAY header (dead sizing
   rule); transcript replay no longer paints internal auto-continue nudges as
-  ghost turns.
+  ghost turns (now including the truncated-retry nudge — one
+  `is_internal_nudge` home for both).
+- **Tenant-origin seed flows un-bricked.** Admin "reveal seed" and "import a
+  different seed" on a subdomain routed through the signer iframe whose
+  handlers are apex-origin-only (and partitioned on mobile) — both always
+  failed. Both now run LOCAL-FIRST off this origin's own wallet, falling back
+  to the iframe only when no local seed exists.
+- The cartridge watchdog no longer repaints coded cartridge errors
+  (LH1002/1003/1004) as a hang (LH1001) 1.5s later — the error arm now
+  disarms the watchdog like the done arm. `triggers::every()` no longer
+  aborts wasm callers (tokio interval needs a reactor wasm lacks; the wasm
+  flavor now ticks off the canonical `runtime::sleep_ms`). The in-tab system
+  prompt's `call_agent` line no longer claims the target needs an API key
+  (the x402 fallback shipped). `boot.js` paints a failure line + stamps
+  `data-lh-error` when the wasm bundle fails to load instead of an eternal
+  "loading…". The proxy's `/mcp` endpoint caps chunked request bodies like
+  `gemini.ts` already did.
 
 ### Changed
 
@@ -103,6 +138,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the seed instead; the unlink/cleanup path stays.
 - Orphaned browser-app Action plumbing with zero emitting elements (act-panel
   module/template/CSS among them).
+- **Write-only config API**: `AgentConfig.gemini` + `with_gemini` +
+  `with_api_key` were read by nothing (the real key path is
+  `GeminiAgentConfig::new`) — `AgentConfig::new().with_api_key("k")`
+  configured nothing, silently. Removed along with the orphaned
+  `types::{GeminiConfig, ModelConfig, ModelEntry, GenerationConfig}` and
+  their crate-root re-exports (the gemini wire `GenerationConfig` is a
+  distinct type and stays).
 
 ## [0.30.0] - 2026-06-09
 

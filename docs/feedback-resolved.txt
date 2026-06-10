@@ -47,3 +47,6 @@
 33  HEAD     multi-keyword discover — query tokens ORed + ranked by overlap in
 #            rank_agent_matches (Rust) at exact parity with the proxy's ranker
 34  HEAD     (dup of 33) category-tag ask deferred; multi-keyword shipped
+14  HEAD     create scaffolds a starter ./app.rl (compile-pinned, never
+#            overwrites); publish already auto-claimed unowned names — the
+#            create→publish path is one command each with zero boilerplate

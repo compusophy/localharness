@@ -19,6 +19,41 @@ pub(crate) fn parse_create_args(rest: &[String]) -> Result<(String, Option<Strin
     Ok((name, persona))
 }
 
+/// The starter cartridge `create` scaffolds as `./app.rl` so a fresh agent can
+/// `publish` immediately instead of hand-writing boilerplate (on-chain
+/// feedback #14). Pinned by `starter_cartridge_compiles_with_entry` so
+/// compiler drift can never ship a scaffold that `publish` itself refuses.
+const STARTER_CARTRIDGE: &str = r#"// app.rl — your agent's public face (a rustlite cartridge).
+//
+// `localharness publish <name> app.rl` compiles this and publishes it
+// on-chain as what every visitor sees at <name>.localharness.xyz —
+// served 24/7, no tab needed. Edit, publish again to update.
+//
+// The display is a 256x144 framebuffer. Draw via host::display:
+//   clear(rgb)  fill_rect(x, y, w, h, rgb)  set_pixel(x, y, rgb)
+//   draw_line(x0, y0, x1, y1, rgb)  fill_triangle(x0, y0, x1, y1, x2, y2, rgb)
+//   draw_char(x, y, code, rgb, scale)  draw_number(x, y, value, rgb, scale)
+//   present()
+// Input:   host::display::pointer_x() / pointer_y() / pointer_down()
+// State:   host::display::state_get(slot) / state_set(slot, value)
+// Full reference: https://localharness.xyz/llms.txt
+//
+// Export `frame(t)` (animated; t ticks up every frame) or `render()` (one-shot).
+
+fn frame(t: i32) {
+    host::display::clear(0);
+
+    // A scanline sweeping the field — replace with your app.
+    let y: i32 = t % 144;
+    host::display::fill_rect(0, y, 256, 2, 16777215);
+
+    // Frame counter, bottom-right.
+    host::display::draw_number(206, 130, t, 8421504, 1);
+
+    host::display::present();
+}
+"#;
+
 /// Claim `<name>.localharness.xyz` — fresh identity, sponsored register,
 /// on-chain verify, key persisted. With `persona`, also publishes the
 /// on-chain system prompt so the name is a configured AGENT in one command
@@ -94,6 +129,18 @@ pub(crate) async fn create(name: &str, persona: Option<&str>) -> i32 {
                 if code != 0 {
                     return code;
                 }
+            }
+            // Scaffold a starter cartridge so `publish` works immediately
+            // (feedback #14: create → publish required hand-written
+            // boilerplate). Never overwrites — an existing app.rl is the
+            // user's working copy. Best-effort: a write failure only loses
+            // the convenience, not the claim.
+            if !std::path::Path::new("app.rl").exists()
+                && std::fs::write("app.rl", STARTER_CARTRIDGE).is_ok()
+            {
+                println!(
+                    "  wrote starter app.rl — edit it, then: localharness publish {name} app.rl"
+                );
             }
             println!("  tip: `localharness mcp` exposes a call_agent tool to your IDE (Claude Code, …)");
             println!("  next: read https://localharness.xyz/llms.txt for the full API");
@@ -743,6 +790,23 @@ mod tests {
         assert!(parse_create_args(&args(&[])).is_err()); // no name
         assert!(parse_create_args(&args(&["alice", "--persona"])).is_err()); // empty persona
         assert!(parse_create_args(&args(&["alice", "bob"])).is_err()); // stray positional
+    }
+
+    /// The scaffold `create` writes must always compile AND carry an entry
+    /// point — otherwise `publish` itself refuses it (no-entry guard) and the
+    /// one-command onboarding the scaffold exists for is broken.
+    #[test]
+    fn starter_cartridge_compiles_with_entry() {
+        let wasm = localharness::rustlite::compile(STARTER_CARTRIDGE)
+            .expect("starter cartridge must compile");
+        assert!(
+            cartridge_has_entry(&wasm),
+            "starter cartridge must export frame/render"
+        );
+        assert!(
+            wasm.len() <= PUBLISH_CAP,
+            "starter cartridge must fit the publish cap"
+        );
     }
 
     #[test]

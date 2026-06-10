@@ -167,7 +167,8 @@ IDENTITY & PROFILE
   localharness create <name> [--persona <text|file>]
                                          claim a subdomain identity (free, sponsored);
                                          --persona publishes its system prompt too,
-                                         so the name ships configured in one command
+                                         so the name ships configured in one command;
+                                         scaffolds a starter ./app.rl (never overwrites)
   localharness persona <name> <text>     publish <name>'s public system prompt so
                                          `call` answers as that agent (text or file)
   localharness price <name> <amount|clear>
