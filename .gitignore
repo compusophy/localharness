@@ -38,3 +38,6 @@ scripts/.array-write-proof/
 # (its published cartridge source + persona) — not project source.
 claude-app.rl
 claude-persona.txt
+
+# create's scaffold - fleet runs from the repo root must not litter it
+/app.rl
