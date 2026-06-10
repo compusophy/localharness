@@ -667,9 +667,12 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
                     button #admin-tab-btn-account type="button"
                         data-action="show-admin-tab" data-arg="account"
                         .admin-tab-button.active { "account" }
+                    // The tab arg/class stays "usage" (one CSS/dispatch
+                    // surface for both panels); the label says what the
+                    // panel actually holds — the $LH economy controls.
                     button #admin-tab-btn-usage type="button"
                         data-action="show-admin-tab" data-arg="usage"
-                        .admin-tab-button { "usage" }
+                        .admin-tab-button { "economy" }
                     button #admin-tab-btn-feedback type="button"
                         data-action="show-admin-tab" data-arg="feedback"
                         .admin-tab-button { "feedback" }
@@ -693,7 +696,6 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
                     @if has_wallet { (admin_bounty_section()) }
                     @if has_wallet { (admin_guild_section()) }
                     @if has_wallet { (admin_governance_section()) }
-                    (admin_usage_section())
                 }
                 div.admin-footer {
                     span.admin-version { (APP_VERSION) }
@@ -722,9 +724,6 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                     button #admin-tab-btn-account type="button"
                         data-action="show-admin-tab" data-arg="account"
                         .admin-tab-button.active { "account" }
-                    button #admin-tab-btn-usage type="button"
-                        data-action="show-admin-tab" data-arg="usage"
-                        .admin-tab-button { "usage" }
                     button #admin-tab-btn-feedback type="button"
                         data-action="show-admin-tab" data-arg="feedback"
                         .admin-tab-button { "feedback" }
@@ -766,30 +765,9 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                     (admin_governance_section())
                     (admin_security_collapsed())
                 }
-                div.admin-tab-panel.panel-usage {
-                    (admin_usage_section())
-                }
                 div.admin-footer {
                     span.admin-version { (APP_VERSION) }
                 }
-            }
-        }
-    }
-}
-
-/// Usage tab body — registered-subdomain count, filled async on admin
-/// open by `events::refresh_usage_slot` (mirrors the credits pill).
-pub(crate) fn admin_usage_section() -> Markup {
-    html! {
-        div.admin-section {
-            div.admin-section-title { "usage" }
-            div.admin-identity-row {
-                span.admin-identity-label { "subdomains" }
-                code #usage-subdomains .admin-identity-value { "…" }
-            }
-            div.admin-identity-row {
-                span.admin-identity-label { "tokens (session)" }
-                code #usage-tokens .admin-identity-value { "0" }
             }
         }
     }
@@ -1015,7 +993,10 @@ pub(crate) fn admin_credits_section() -> Markup {
     html! {
         div #credits-section .admin-section {
             div.admin-section-title { "model credits" }
-            div.admin-credits-row {
+            // A label:value row like every other stat — the bare centered
+            // number read as orphaned from its section title.
+            div.admin-identity-row {
+                span.admin-identity-label { "balance" }
                 code #credits-balance .admin-identity-value { "…" }
             }
             div.redeem-row {
@@ -1525,7 +1506,6 @@ pub(crate) fn financial_card(
     let tba_url = format!("https://moderato.tempo.xyz/address/{tba_hex}");
     let owner_url = format!("https://moderato.tempo.xyz/address/{owner_hex}");
     let balance_display = super::format_wei_as_test_eth(lh_balance_wei);
-    let rpc_url = format!("https://{name}.localharness.xyz/?rpc=1");
     let tool_count = BuiltinTool::ALL.len();
     html! {
         section #financial-slot .financial-card {
@@ -1557,13 +1537,9 @@ pub(crate) fn financial_card(
                 span.financial-label { "tools" }
                 span #tools-count .financial-value { (tool_count) }
             }
-            div.financial-line {
-                span.financial-label { "rpc" }
-                a.financial-tba href=(rpc_url) target="_blank" rel="noopener"
-                    title="inter-agent RPC endpoint" {
-                    "?rpc=1"
-                }
-            }
+            // (No `?rpc=1` row — the inter-agent RPC endpoint is wire
+            // plumbing agents discover via llms.txt, not a human control;
+            // showing it here read as a broken link.)
         }
     }
 }

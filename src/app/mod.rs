@@ -125,9 +125,6 @@ pub(crate) struct App {
     /// admin Account tab (folded in from the old right rail), which isn't
     /// in the DOM until the admin opens — `header_admin_toggle` injects it.
     pub(crate) financial_card_html: Option<String>,
-    /// Total Gemini tokens used this session (cumulative across turns),
-    /// updated by `chat::run_send` after each turn; shown in the Usage tab.
-    pub(crate) total_tokens: u64,
 }
 
 /// Surface-level summary of the cross-origin verification flow,
@@ -175,7 +172,6 @@ impl App {
             tba_address: None,
             pricing_wei: None,
             financial_card_html: None,
-            total_tokens: 0,
         }
     }
 

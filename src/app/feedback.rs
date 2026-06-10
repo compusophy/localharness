@@ -85,8 +85,11 @@ pub(crate) fn feedback_submit() {
                     "feedback-msg",
                     &dom::msg_span(dom::Msg::Accent, &format!("✓ on-chain (tx {short})")),
                 );
-                // Inline in the admin tab — no overlay to dismiss; the
-                // success message stays in #feedback-msg.
+                // Clear the textarea — leaving the sent text in place made a
+                // second SUBMIT click double-file the same note on-chain.
+                if let Some(textarea) = dom::textarea_by_id("feedback-text") {
+                    textarea.set_value("");
+                }
             }
             Err(err) => {
                 web_sys::console::warn_1(&JsValue::from_str(&format!(

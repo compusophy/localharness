@@ -326,7 +326,10 @@ next one.";
 /// Internal nudge fed to the model on an auto-continuation. Kept terse so
 /// it doesn't derail the goal; instructs the model to either keep working
 /// or call `finish` / ask a question when it's actually done or blocked.
-const AUTO_CONTINUE_NUDGE: &str = "Continue toward the user's goal. If the task is \
+/// `pub(crate)`: `history::paint_entries` skips replayed user turns that
+/// match it — live turns never paint a nudge bubble, so a restored
+/// transcript must not either.
+pub(crate) const AUTO_CONTINUE_NUDGE: &str = "Continue toward the user's goal. If the task is \
 fully complete, call the `finish` tool. If you're blocked or need a decision, ask \
 the user a question. Otherwise take the next step now without waiting.";
 
@@ -519,11 +522,6 @@ async fn stream_turn(agent: &Agent, input: TurnInput) -> TurnOutcome {
     } else {
         None
     };
-
-    // Stash cumulative token usage for the admin Usage tab.
-    if let Some(total) = agent.cumulative_usage().total_token_count {
-        APP.with(|cell| cell.borrow_mut().total_tokens = total.max(0) as u64);
-    }
 
     // If the user hit stop, append a short redirect prompt.
     if TURN_CANCEL.with(|c| c.get()) {

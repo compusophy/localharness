@@ -300,12 +300,6 @@ pub(super) fn header_admin_toggle() {
         }
     }
 
-    // Fill the Usage tab's subdomain count + token total. No-ops if the
-    // slots aren't there.
-    wasm_bindgen_futures::spawn_local(async move {
-        refresh_usage_slot().await;
-    });
-
     // Credit balance — on EVERY host (apex AND subdomains). Credits are
     // master-EOA-scoped, so a subdomain shows the SAME balance as the apex; the
     // old apex-only gate is exactly why subdomains showed a blank "…" / "—".
@@ -462,41 +456,6 @@ pub(super) fn show_admin_tab(name: &str) {
             classes.push("active");
         }
         el.set_class_name(&classes.join(" "));
-    }
-}
-
-/// Fill the admin Usage tab's `#usage-subdomains` slot with the on-chain
-/// registered-subdomain count. Soft-fail (leaves a dash). No-op if the
-/// slot isn't present.
-pub(crate) async fn refresh_usage_slot() {
-    // Tokens — synchronous read from App state (updated after each turn).
-    if dom::by_id("usage-tokens").is_some() {
-        let total = crate::app::APP.with(|c| c.borrow().total_tokens);
-        dom::swap_inner("usage-tokens", &format!("{total}"));
-    }
-    if dom::by_id("usage-subdomains").is_none() {
-        return;
-    }
-    // YOUR owned subdomains — NOT the global registry total. `subdomain_count`
-    // (nextId-1) counts every name ever minted, including released/burned ones,
-    // so after a reset it stays high (the "still says 30" bug). Resolve the
-    // owner from the current tenant (else the local wallet) and count what they
-    // actually hold (released ids have ownerOfId=0, so they drop out).
-    let owner = match crate::app::tenant::current() {
-        crate::app::tenant::Host::Tenant(name) => {
-            crate::app::registry::owner_of_name(&name).await.ok().flatten()
-        }
-        _ => crate::app::APP.with(|c| c.borrow().wallet.as_ref().map(|w| w.address_hex())),
-    };
-    let count = match owner {
-        Some(owner_hex) => crate::app::registry::list_owned_tokens(&owner_hex)
-            .await
-            .map(|t| t.len()),
-        None => Ok(0),
-    };
-    match count {
-        Ok(n) => dom::swap_inner("usage-subdomains", &format!("{n}")),
-        Err(_) => dom::swap_inner("usage-subdomains", "—"),
     }
 }
 
