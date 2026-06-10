@@ -11,9 +11,12 @@ use crate::*;
 // `mine` lists the caller's posted bounties. Mirrors `registry::*_bounty_*`.
 
 pub(crate) const BOUNTY_USAGE: &str = "\
-usage: localharness bounty <post|list|claim|submit|accept|cancel|mine> ...
+usage: localharness bounty <post|list|show|claim|submit|accept|cancel|mine> ...
   bounty post [--as <me>] <task...> --reward <amt> [--ttl <dur>]   escrow $LH behind a task
   bounty list [--search <q>]                          list OPEN bounties (--search ranks)
+  bounty show <id>                                     one bounty in full: task, status,
+                                                       claimant, and the SUBMITTED RESULT
+                                                       (read before you accept)
   bounty claim [--as <me>] <id>                        claim an open bounty (you do the work)
   bounty submit [--as <me>] <id> <result...>           submit your result for a claim
   bounty accept [--as <me>] <id>                       accept a result + pay out (poster)
@@ -98,6 +101,13 @@ pub(crate) async fn bounty(caller: Option<&str>, rest: &[String]) -> i32 {
             }
         },
         Some("mine") => bounty_mine(caller).await,
+        Some("show") => match rest.get(1) {
+            Some(id) => bounty_show(id).await,
+            None => {
+                eprintln!("usage: localharness bounty show <id>");
+                2
+            }
+        },
         _ => {
             eprintln!("{BOUNTY_USAGE}");
             2
@@ -168,6 +178,63 @@ pub(crate) async fn bounty_post(caller: Option<&str>, rest: &[String]) -> i32 {
             1
         }
     }
+}
+
+/// `bounty show <id>` — full read-only detail of ONE bounty: task, status,
+/// reward, poster, claimant (resolved to a name when possible), expiry, and
+/// — the reason this exists — the SUBMITTED RESULT, so a poster can READ
+/// what they're paying for before `bounty accept`. Dogfooding found accept
+/// was BLIND from the CLI: the browser and the colony's judge step could
+/// read results, the poster's shell could not. Pure read; no `$LH`, no key.
+pub(crate) async fn bounty_show(id_raw: &str) -> i32 {
+    let id = match parse_id(id_raw, "bounty id") {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let b = match registry::get_bounty(id).await {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("RPC error: {e}");
+            return 1;
+        }
+    };
+    // A never-posted id decodes as all-zero words — say "no such bounty",
+    // not a zeroed ghost row.
+    if b.poster.trim_start_matches("0x").chars().all(|c| c == '0') {
+        eprintln!("no bounty #{id}");
+        return 1;
+    }
+    let task = registry::task_of_bounty(id).await.unwrap_or_default();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    println!("{}", format_bounty_row(id, &b, &task, now));
+    println!("      poster    {}", b.poster);
+    if b.claimant_token_id != 0 {
+        let label = match registry::name_of_id(b.claimant_token_id).await {
+            Ok(n) if !n.is_empty() => format!("{n} (token #{})", b.claimant_token_id),
+            _ => format!("token #{}", b.claimant_token_id),
+        };
+        println!("      claimant  {label}");
+    }
+    match registry::result_of_bounty(id).await {
+        Ok(r) if !r.trim().is_empty() => {
+            println!("      result:");
+            for line in r.trim().lines() {
+                println!("        {line}");
+            }
+        }
+        _ => {
+            if b.status_label() == "submitted" {
+                println!("      result:   (submitted but unreadable — RPC error?)");
+            }
+        }
+    }
+    0
 }
 
 /// Render one open-board row for `bounty list`. Pure (no I/O) so the layout is

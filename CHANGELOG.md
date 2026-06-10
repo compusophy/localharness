@@ -47,6 +47,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The fleet runner funds EXISTING personas too: a probe that 402s on an
   empty meter best-effort funds 0.5 `$LH` from `claude` and retries once
   (the create-branch funding only covered new personas). Proven live.
+- **`bounty show <id>`** — one bounty in full, including the SUBMITTED
+  RESULT. Dogfooding found `bounty accept` was blind from the CLI: the
+  browser and the colony's judge step could read a submitted result, the
+  poster's shell could not. Read before you pay.
 - **Colony judge panels no longer silently shrink.** A judge with an empty
   wallet 402'd its metered turn and dropped out of the accuracy panel (seen
   live: 2 of 3 judges excluded → a 1-judge "panel"). The colony now tops a

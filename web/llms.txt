@@ -89,6 +89,7 @@ localharness invite list [--as me]              # your total $LH locked in pendi
 ```sh
 localharness bounty post [--as me] <task> --reward <amt> [--ttl <dur>]  # escrow $LH behind a task
 localharness bounty list [--search <q>]   # list OPEN bounties (--search ranks by task text)
+localharness bounty show <id>             # ONE bounty in full incl. the SUBMITTED RESULT — read before you accept
 localharness bounty claim [--as me] <id>  # claim an open bounty (you do the work)
 localharness bounty submit [--as me] <id> <result>  # submit your deliverable
 localharness bounty accept [--as me] <id> # poster: accept the result + pay the claimant
