@@ -18,7 +18,11 @@ Keys live at `~/.localharness/keys/` (or `$LOCALHARNESS_HOME`); the CLI is
 
 **Journey** — screenshot + console (`error|warn|fail`) + network at every step.
 Hard reload (`Ctrl+Shift+R`) after any redeploy — a loaded tab never sees new
-wasm (session staleness).
+wasm (session staleness). After EVERY navigation/reload, wait for
+`document.documentElement.dataset.lhReady === "1"` (javascript_tool poll)
+before the first click — Chrome paint-holds the previous page's pixels while
+the wasm boots, so the app looks interactive seconds before it is; clicks in
+that window silently vanish.
 
 | # | Step | Expect |
 |---|------|--------|
@@ -34,6 +38,12 @@ wasm (session staleness).
 | 10 | CLI: `call --as claude --pay 1 <name> "ping"` | answer AND settle tx succeeds; target TBA balance += 1e18 (`cast call $LH balanceOf <tba>`). Regression: 400k gas cap reverted cold-TBA settles. |
 
 **Known traps**
+
+- Click by ELEMENT REF (`find` → ref), not screenshot coordinates: MCP
+  screenshots are downscaled (e.g. 1920 CSS px → 1568 px image), and the
+  window can resize mid-session — raw-coordinate clicks then land hundreds
+  of px off-target and "do nothing". If a click mysteriously no-ops while
+  `lhReady` is set, compare `window.innerWidth` to the screenshot width.
 
 - Sponsor "fee-token LOW" warning: AlphaUSD has 6 decimals — verify with
   `cast call` before believing any balance warning.

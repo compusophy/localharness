@@ -117,6 +117,20 @@ pub(crate) fn scroll_to_bottom_soon(id: &str) {
     }
 }
 
+/// Stamp `data-lh-ready` on `<html>` once an interactive surface is in
+/// the DOM. Chrome's paint-holding keeps the PREVIOUS page's pixels on
+/// screen across a reload, so the app can LOOK interactive seconds before
+/// this bundle has mounted — clicks in that window land on a
+/// not-yet-listening document and vanish. Automation (and the smoke drive,
+/// `scripts/browser-smoke.md`) polls this attribute instead of guessing.
+pub(crate) fn mark_ready() {
+    if let Ok(doc) = document() {
+        if let Some(el) = doc.document_element() {
+            let _ = el.set_attribute("data-lh-ready", "1");
+        }
+    }
+}
+
 pub(crate) fn set_status(message: &str, is_error: bool) {
     if let Some(el) = by_id("status") {
         el.set_text_content(Some(message));

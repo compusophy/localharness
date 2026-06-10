@@ -495,6 +495,7 @@ async fn paint_workshop(host: &tenant::Host) {
     let Ok(doc) = dom::document() else { return };
     let Some(root) = doc.get_element_by_id("root") else { return };
     root.set_inner_html(&templates::chrome(host).into_string());
+    dom::mark_ready();
 
     // Auto-redeem a pending `?invite=CODE` into the local credit identity.
     wasm_bindgen_futures::spawn_local(events::try_redeem_pending_invite(true));
@@ -568,6 +569,7 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
     };
     if owner.is_none() && on_chain.is_none() {
         root.set_inner_html(&templates::unclaimed(&host, &name).into_string());
+        dom::mark_ready();
         return;
     }
 
@@ -658,6 +660,7 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
     // Paint the Studio — we own this name on this device (or a deliberate
     // preview fell through with nothing published).
     root.set_inner_html(&templates::chrome(&host).into_string());
+    dom::mark_ready();
 
     // No-funds onboarding: surface the inline redeem CTA above the prompt
     // when this credit identity holds zero `$LH` (gated access means an
@@ -837,6 +840,7 @@ pub(crate) async fn paint_apex(host: tenant::Host) {
     root.set_inner_html(
         &templates::apex(&host, addr_hex.as_deref()).into_string(),
     );
+    dom::mark_ready();
 
     // Pre-fill the claim input + trigger the live-check if the user
     // landed here via `?prefill=<name>` (e.g. from a tenant subdomain's
