@@ -17,12 +17,9 @@ pub(super) async fn run_set_public_face(choice: &str) {
         dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, m));
     };
 
-    let name = match crate::app::tenant::current() {
-        crate::app::tenant::Host::Tenant(n) => n,
-        _ => {
-            set_err("only on a subdomain");
-            return;
-        }
+    let Some(name) = crate::app::tenant::current_name() else {
+        set_err("only on a subdomain");
+        return;
     };
 
     // The verified-EOA address IF this device verified as the on-chain

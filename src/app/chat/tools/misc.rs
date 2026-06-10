@@ -56,16 +56,9 @@ pub(crate) fn set_persona_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             }
             // Resolve this subdomain's own tokenId for the on-chain publish.
             let token_id = own_token_id().await?;
-            let owner = {
-                let tenant = match crate::app::tenant::current() {
-                    crate::app::tenant::Host::Tenant(n) => n,
-                    _ => return Err(crate::error::Error::other("not running on a subdomain")),
-                };
-                crate::app::registry::owner_of_name(&tenant)
-                    .await
-                    .map_err(crate::error::Error::other)?
-                    .ok_or_else(|| crate::error::Error::other("no on-chain owner"))?
-            };
+            let (_, owner) = crate::app::tenant::current_tenant_owner()
+                .await
+                .map_err(crate::error::Error::other)?;
             // 1) Publish on-chain via setMetadata(persona) — gas scales with length
             //    (~8.5k/byte; see CLAUDE.md). Same path as create_subdomain's actor
             //    persona + the admin publish flow.

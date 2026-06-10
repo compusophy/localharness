@@ -115,10 +115,7 @@ pub(super) fn claim_bounty_pressed(bounty_id_raw: String) {
         let result = async {
             super::sponsor_rate_guard()?;
             // Claimant = this subdomain's own tokenId.
-            let tenant = match crate::app::tenant::current() {
-                crate::app::tenant::Host::Tenant(n) => n,
-                _ => return Err("not running on a subdomain".to_string()),
-            };
+            let tenant = crate::app::tenant::require_tenant()?;
             let claimant_token_id = crate::app::registry::id_of_name(&tenant).await?;
             if claimant_token_id == 0 {
                 return Err("this subdomain isn't registered on-chain yet".to_string());

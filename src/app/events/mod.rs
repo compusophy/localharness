@@ -584,7 +584,7 @@ fn dispatch(action: Action) {
         }
         Action::ClaimHere => {
             wasm_bindgen_futures::spawn_local(async move {
-                let super::tenant::Host::Tenant(name) = super::tenant::current() else {
+                let Some(name) = super::tenant::current_name() else {
                     return;
                 };
                 // The hint is the on-chain owner address this device
@@ -618,10 +618,7 @@ fn dispatch(action: Action) {
             // run the on-chain register tx via the signer iframe, then
             // set the local OPFS marker + re-paint as owner. This kills
             // the previous "bounce to apex first" interstitial.
-            let Some(name) = (match super::tenant::current() {
-                super::tenant::Host::Tenant(n) => Some(n),
-                _ => None,
-            }) else {
+            let Some(name) = super::tenant::current_name() else {
                 return;
             };
             dom::swap_inner(
@@ -680,7 +677,7 @@ fn dispatch(action: Action) {
                     );
                     return;
                 }
-                if let super::tenant::Host::Tenant(name) = super::tenant::current() {
+                if let Some(name) = super::tenant::current_name() {
                     super::paint_tenant(super::tenant::Host::Tenant(name.clone()), name).await;
                 }
             });

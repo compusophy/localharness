@@ -12,12 +12,9 @@ pub(super) async fn run_sync_key() {
     let msg = "key-sync-msg";
     let set_err = |m: &str| dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, &format!("{m}")));
 
-    let name = match crate::app::tenant::current() {
-        crate::app::tenant::Host::Tenant(n) => n,
-        _ => {
-            set_err("only on a subdomain");
-            return;
-        }
+    let Some(name) = crate::app::tenant::current_name() else {
+        set_err("only on a subdomain");
+        return;
     };
     let owner_hex = crate::app::APP.with(|cell| {
         use crate::app::VerifyState;
@@ -85,12 +82,9 @@ pub(super) async fn run_restore_key() {
     let msg = "key-sync-msg";
     let set_err = |m: &str| dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, &format!("{m}")));
 
-    let name = match crate::app::tenant::current() {
-        crate::app::tenant::Host::Tenant(n) => n,
-        _ => {
-            set_err("only on a subdomain");
-            return;
-        }
+    let Some(name) = crate::app::tenant::current_name() else {
+        set_err("only on a subdomain");
+        return;
     };
     let id = match gemini_key_slot_id(&name).await {
         Ok(id) => id,

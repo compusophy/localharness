@@ -276,14 +276,11 @@ async fn handle_agent_call(
     let price = x402_price().await;
     if price > 0 {
         // Charging needs a registered identity to bill to.
-        let my_name = match super::tenant::current() {
-            super::tenant::Host::Tenant(n) => n,
-            _ => {
-                return build_response(
-                    id,
-                    Err("agent is not a registered subdomain — cannot charge".into()),
-                )
-            }
+        let Some(my_name) = super::tenant::current_name() else {
+            return build_response(
+                id,
+                Err("agent is not a registered subdomain — cannot charge".into()),
+            );
         };
         match payment {
             None => return build_payment_required(id, price, &my_name).await,
@@ -322,10 +319,7 @@ async fn process_message(message: &str) -> Result<String, String> {
 /// Paint the minimal RPC endpoint chrome. Starts a headless agent
 /// session (same config as the chat UI but no transcript rendering).
 pub(crate) async fn paint_rpc() {
-    let name = match super::tenant::current() {
-        super::tenant::Host::Tenant(n) => n,
-        _ => "rpc".to_string(),
-    };
+    let name = super::tenant::current_name().unwrap_or_else(|| "rpc".to_string());
 
     if let Some(root) = dom::by_id("root") {
         // maud escapes `name` (a hostname-derived subdomain). DNS labels

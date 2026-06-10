@@ -126,6 +126,35 @@ pub(crate) fn current() -> Host {
     classify(&hostname)
 }
 
+/// The current tenant subdomain name, or `None` off a tenant host (apex /
+/// preview / localhost) — the Option-shaped gate for paths that silently
+/// no-op or fall back when not on a subdomain.
+pub(crate) fn current_name() -> Option<String> {
+    match current() {
+        Host::Tenant(name) => Some(name),
+        _ => None,
+    }
+}
+
+/// The current tenant name, or the shared "not running on a subdomain"
+/// error — the Result-shaped gate the on-chain write paths repeat.
+pub(crate) fn require_tenant() -> Result<String, String> {
+    current_name().ok_or_else(|| "not running on a subdomain".to_string())
+}
+
+/// `(tenant name, on-chain owner address)` for the current host — the
+/// shared preamble of the owner-authorized write paths. Errors when not
+/// on a subdomain, on RPC failure (`owner: …`), or when the name has no
+/// on-chain owner.
+pub(crate) async fn current_tenant_owner() -> Result<(String, String), String> {
+    let name = require_tenant()?;
+    let owner = super::registry::owner_of_name(&name)
+        .await
+        .map_err(|e| format!("owner: {e}"))?
+        .ok_or_else(|| "no on-chain owner".to_string())?;
+    Ok((name, owner))
+}
+
 /// Normalise a user-typed subdomain candidate to the same character
 /// set the on-chain registry enforces: lowercase ASCII alphanumeric +
 /// dash. Mirrors the `[^a-z0-9-]` filter the contract applies before

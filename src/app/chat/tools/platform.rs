@@ -376,14 +376,9 @@ pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                 .to_lowercase();
 
             // Resolve the kill-list: explicit subset, else all non-MAIN holdings.
-            let tenant = match crate::app::tenant::current() {
-                crate::app::tenant::Host::Tenant(n) => n,
-                _ => return Err(crate::error::Error::other("not running on a subdomain")),
-            };
-            let owner = crate::app::registry::owner_of_name(&tenant)
+            let (_, owner) = crate::app::tenant::current_tenant_owner()
                 .await
-                .map_err(crate::error::Error::other)?
-                .ok_or_else(|| crate::error::Error::other("no on-chain owner"))?;
+                .map_err(crate::error::Error::other)?;
             let main_id = crate::app::registry::main_of(&owner)
                 .await
                 .map_err(crate::error::Error::other)?;
@@ -540,14 +535,9 @@ pub(crate) fn list_subdomains_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          the registry). Read-only. Use when the user asks what subdomains/agents they have.",
         serde_json::json!({ "type": "object", "properties": {} }),
         |_args: serde_json::Value, _ctx| async move {
-            let name = match crate::app::tenant::current() {
-                crate::app::tenant::Host::Tenant(n) => n,
-                _ => return Err(crate::error::Error::other("not running on a subdomain")),
-            };
-            let owner = crate::app::registry::owner_of_name(&name)
+            let (_, owner) = crate::app::tenant::current_tenant_owner()
                 .await
-                .map_err(crate::error::Error::other)?
-                .ok_or_else(|| crate::error::Error::other("no on-chain owner"))?;
+                .map_err(crate::error::Error::other)?;
             let tokens = crate::app::registry::list_owned_tokens(&owner)
                 .await
                 .map_err(crate::error::Error::other)?;
@@ -722,18 +712,9 @@ pub(crate) fn send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 
             // Sender = this subdomain's on-chain owner (the apex wallet that
             // signs via the iframe), matching list_subdomains / bulk_release.
-            let tenant = match crate::app::tenant::current() {
-                crate::app::tenant::Host::Tenant(n) => n,
-                _ => {
-                    return Err(crate::error::Error::other(
-                        "not running on a subdomain — no owner wallet to send from",
-                    ))
-                }
-            };
-            let from = crate::app::registry::owner_of_name(&tenant)
+            let (_, from) = crate::app::tenant::current_tenant_owner()
                 .await
-                .map_err(crate::error::Error::other)?
-                .ok_or_else(|| crate::error::Error::other("no on-chain owner"))?;
+                .map_err(crate::error::Error::other)?;
 
             // ERC-20 transfer(to, amount_wei) against the $LH token — the exact
             // calldata shape the per-turn payment + act panel build.

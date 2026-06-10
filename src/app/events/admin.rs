@@ -152,7 +152,7 @@ pub(super) fn save_api_key_pressed() {
         // Auto-sync to the MAIN slot on-chain (best-effort, seed-bearing
         // devices only) so other subdomains + linked devices pick it up
         // without re-entry. Fire-and-forget after the modal closes.
-        if let crate::app::tenant::Host::Tenant(name) = crate::app::tenant::current() {
+        if let Some(name) = crate::app::tenant::current_name() {
             super::key_sync::auto_sync_gemini_key(name, value).await;
         }
     });
@@ -340,10 +340,7 @@ pub(super) fn header_admin_toggle() {
 /// in the `#public-face-status` slot. No-op off a tenant or if the slot
 /// isn't mounted.
 pub(super) async fn refresh_public_face_status() {
-    let name = match crate::app::tenant::current() {
-        crate::app::tenant::Host::Tenant(n) => n,
-        _ => return,
-    };
+    let Some(name) = crate::app::tenant::current_name() else { return };
     if dom::by_id("public-face-status").is_none() {
         return;
     }

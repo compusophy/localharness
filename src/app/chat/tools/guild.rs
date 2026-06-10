@@ -342,14 +342,9 @@ pub(crate) async fn resolve_account(arg: &str) -> Result<String, crate::error::E
 /// Resolve THIS subdomain's own on-chain tokenId (the claimant id for
 /// `claim_bounty`). Errors clearly off-subdomain or pre-registration.
 pub(crate) async fn own_token_id() -> Result<u64, crate::error::Error> {
-    let tenant = match crate::app::tenant::current() {
-        crate::app::tenant::Host::Tenant(n) => n,
-        _ => {
-            return Err(crate::error::Error::other(
-                "not running on a subdomain — no agent identity to claim as",
-            ))
-        }
-    };
+    let tenant = crate::app::tenant::current_name().ok_or_else(|| {
+        crate::error::Error::other("not running on a subdomain — no agent identity to claim as")
+    })?;
     match crate::app::registry::id_of_name(&tenant).await {
         Ok(id) if id != 0 => Ok(id),
         Ok(_) => Err(crate::error::Error::other(

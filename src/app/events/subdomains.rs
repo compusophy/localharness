@@ -43,14 +43,7 @@ pub(crate) async fn run_bulk_release(
     }
     // Resolve owner + MAIN from the current tenant, same preamble as
     // consolidate (owner_main_tba) but we only need the owner hex + MAIN id.
-    let tenant = match crate::app::tenant::current() {
-        crate::app::tenant::Host::Tenant(n) => n,
-        _ => return Err("not running on a subdomain".into()),
-    };
-    let owner = crate::app::registry::owner_of_name(&tenant)
-        .await
-        .map_err(|e| format!("owner: {e}"))?
-        .ok_or_else(|| "no on-chain owner".to_string())?;
+    let (_, owner) = crate::app::tenant::current_tenant_owner().await?;
     let main_id = crate::app::registry::main_of(&owner)
         .await
         .map_err(|e| format!("mainOf: {e}"))?;
@@ -114,14 +107,7 @@ pub(crate) async fn run_batch_create_subdomains(
     // Resolve the owner EOA from the current tenant (same preamble as
     // run_bulk_release) — run_sponsored_tempo_call recovers + verifies the
     // sender address against this, so it must be the master wallet's address.
-    let tenant = match crate::app::tenant::current() {
-        crate::app::tenant::Host::Tenant(n) => n,
-        _ => return Err("not running on a subdomain".into()),
-    };
-    let owner = crate::app::registry::owner_of_name(&tenant)
-        .await
-        .map_err(|e| format!("owner: {e}"))?
-        .ok_or_else(|| "no on-chain owner".to_string())?;
+    let (_, owner) = crate::app::tenant::current_tenant_owner().await?;
 
     let diamond = parse_address(crate::app::registry::REGISTRY_ADDRESS)?;
     let mut registered: Vec<String> = Vec::with_capacity(names.len());
