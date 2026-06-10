@@ -281,7 +281,10 @@ pub(crate) async fn run_agent_turn(
     // Route by model: a `claude-*` id uses the Anthropic backend; anything else
     // (or none) uses Gemini. BOTH reach the model the same way — through the
     // credit proxy with the same signed token — so a subsidized identity calls
-    // either provider with no provider key of its own.
+    // either provider with no provider key of its own. Only the config build +
+    // start call differ per backend; the start-with-history-fallback and the
+    // chat/harvest/shutdown tail are shared (`start_with_history_fallback` /
+    // `run_turn_and_persist`).
     if model.map(|m| m.starts_with("claude")).unwrap_or(false) {
         #[cfg(feature = "anthropic")]
         {
@@ -299,29 +302,12 @@ pub(crate) async fn run_agent_turn(
                 }
                 cfg
             };
-            let agent = match localharness::Agent::start_anthropic(build(prior_history.clone())).await
-            {
-                Ok(a) => a,
-                Err(_) if prior_history.is_some() => {
-                    // Incompatible/corrupt saved thread → warn + start fresh
-                    // rather than failing the whole call.
-                    eprintln!(
-                        "warning: could not load saved conversation with {target} \
-                         (incompatible or corrupt) — starting a fresh thread"
-                    );
-                    localharness::Agent::start_anthropic(build(None))
-                        .await
-                        .map_err(|e| format!("could not start anthropic session: {e}"))?
-                }
-                Err(e) => return Err(format!("could not start anthropic session: {e}")),
-            };
-            let reply = match agent.chat(message).await {
-                Ok(resp) => resp.text().await.map_err(|e| format!("response error: {e}")),
-                Err(e) => Err(e.to_string()),
-            };
-            let new_history = agent.history_bytes().ok().flatten();
-            let _ = agent.shutdown().await;
-            return reply.map(|text| (text, new_history));
+            let agent =
+                start_with_history_fallback(target, prior_history, "anthropic session", |h| {
+                    localharness::Agent::start_anthropic(build(h))
+                })
+                .await?;
+            return run_turn_and_persist(agent, message).await;
         }
         #[cfg(not(feature = "anthropic"))]
         {
@@ -339,8 +325,31 @@ pub(crate) async fn run_agent_turn(
         }
         cfg
     };
-    let agent = match localharness::Agent::start_gemini(build(prior_history.clone())).await {
-        Ok(a) => a,
+    let agent = start_with_history_fallback(target, prior_history, "agent session", |h| {
+        localharness::Agent::start_gemini(build(h))
+    })
+    .await?;
+    run_turn_and_persist(agent, message).await
+}
+
+/// Start an agent seeded with `prior_history`, falling back to a FRESH start
+/// (with a warning) when the saved thread is incompatible/corrupt — rather than
+/// failing the whole call. `label` names the backend in the could-not-start
+/// error ("anthropic session" / "agent session"); `start` runs the backend's
+/// actual start call on a given history. The shared start-half of both
+/// `run_agent_turn` branches.
+async fn start_with_history_fallback<F, Fut>(
+    target: &str,
+    prior_history: Option<Vec<u8>>,
+    label: &str,
+    start: F,
+) -> Result<localharness::Agent, String>
+where
+    F: Fn(Option<Vec<u8>>) -> Fut,
+    Fut: std::future::Future<Output = localharness::Result<localharness::Agent>>,
+{
+    match start(prior_history.clone()).await {
+        Ok(a) => Ok(a),
         Err(_) if prior_history.is_some() => {
             // Incompatible/corrupt saved thread → warn + start fresh rather than
             // failing the whole call.
@@ -348,12 +357,21 @@ pub(crate) async fn run_agent_turn(
                 "warning: could not load saved conversation with {target} \
                  (incompatible or corrupt) — starting a fresh thread"
             );
-            localharness::Agent::start_gemini(build(None))
+            start(None)
                 .await
-                .map_err(|e| format!("could not start agent session: {e}"))?
+                .map_err(|e| format!("could not start {label}: {e}"))
         }
-        Err(e) => return Err(format!("could not start agent session: {e}")),
-    };
+        Err(e) => Err(format!("could not start {label}: {e}")),
+    }
+}
+
+/// Run ONE chat turn on a started agent, harvest the reply text + the updated
+/// conversation-history bytes, and shut the agent down. The shared tail of both
+/// `run_agent_turn` branches.
+async fn run_turn_and_persist(
+    agent: localharness::Agent,
+    message: &str,
+) -> Result<(String, Option<Vec<u8>>), String> {
     let reply = match agent.chat(message).await {
         Ok(resp) => resp.text().await.map_err(|e| format!("response error: {e}")),
         Err(e) => Err(e.to_string()),
