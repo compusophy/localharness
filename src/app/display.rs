@@ -1869,10 +1869,14 @@ mod audio {
             let _ = src.connect_with_audio_node(&gain);
             let _ = gain.connect_with_audio_node(&eng.master);
             let _ = src.start_with_when(t0);
-            let _ = src.stop_with_when(t0 + dur);
+            // stop_with_when/set_onended live on the AudioScheduledSourceNode
+            // base class in current web-sys; the same-named methods directly on
+            // AudioBufferSourceNode are deprecated duplicates.
+            let scheduled: &web_sys::AudioScheduledSourceNode = src.as_ref();
+            let _ = scheduled.stop_with_when(t0 + dur);
             let node: JsValue = src.clone().into();
             let onended = Closure::<dyn FnMut()>::new(move || {});
-            src.set_onended(Some(onended.as_ref().unchecked_ref()));
+            scheduled.set_onended(Some(onended.as_ref().unchecked_ref()));
             push_voice(eng, Voice { node, _onended: onended })
         })
         .unwrap_or(-1)

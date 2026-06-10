@@ -84,6 +84,10 @@ impl Tool for CallAgent {
 
 #[cfg(target_arch = "wasm32")]
 /// A callee's `lh-payment-required` challenge (raw strings off the wire).
+/// The fields are only READ by the `wallet` flavor of `pay_and_build`; the
+/// stub flavor ignores them, hence the cfg_attr (the struct itself must exist
+/// in both configs — it's stored in the listener's payment slot either way).
+#[cfg_attr(not(feature = "wallet"), allow(dead_code))]
 struct ChallengeParts {
     to: String,
     value: String,
@@ -91,24 +95,20 @@ struct ChallengeParts {
     // (security: it sets its own window + nonce), so they aren't stored.
 }
 
-#[cfg(target_arch = "wasm32")]
+/// Exact-length hex decode (`n` BYTES, optional 0x) — a strict-length gate on
+/// top of [`crate::encoding::hex_to_bytes`], used only by the paying flavor.
+#[cfg(all(target_arch = "wasm32", feature = "wallet"))]
 fn parse_hex_n(s: &str, n: usize) -> std::result::Result<Vec<u8>, String> {
     let t = s.trim().trim_start_matches("0x");
     if t.len() != n * 2 {
         return Err(format!("hex len {} != {}", t.len(), n * 2));
     }
-    (0..n)
-        .map(|i| u8::from_str_radix(&t[i * 2..i * 2 + 2], 16).map_err(|e| e.to_string()))
-        .collect()
+    crate::encoding::hex_to_bytes(t)
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "wallet"))]
 fn hex0x(b: &[u8]) -> String {
-    let mut s = String::from("0x");
-    for x in b {
-        s.push_str(&format!("{x:02x}"));
-    }
-    s
+    crate::encoding::bytes_to_hex_str(b)
 }
 
 /// Sign the challenge via the app-injected x402 hook and build the

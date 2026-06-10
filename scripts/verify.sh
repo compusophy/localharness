@@ -8,8 +8,11 @@
 # how features shipped on "it compiles, therefore it's done". Stages 3-7 do REAL
 # wasm instantiation + framebuffer assertions. A release must pass all seven.
 #
-#   1. native test suite             cargo test
-#   2. wasm32 browser-app guardrail   cargo check (the live app must compile)
+#   1. native test suites            cargo test for EVERY feature config that
+#                                    carries tests: default, anthropic, wallet
+#                                    (wallet alone holds the 111 CLI tests)
+#   2. wasm32 guardrails             cargo check x3: bare SDK, wallet, browser-app
+#                                    (gated modules don't trip the bare check)
 #   3. compile a real cartridge       rustlite .rl -> .wasm via the CLI
 #   4. instantiate + run              validate-cartridge.js (catch runtime traps)
 #   5. single-cartridge render        render-cartridge.js  (present-after-frame)
@@ -33,10 +36,14 @@ trap 'rm -f "$CART_WASM"' EXIT
 if [[ -t 1 ]]; then B='\033[1m'; G='\033[1;32m'; N='\033[0m'; else B=''; G=''; N=''; fi
 step() { printf "\n${B}== %s ==${N}\n" "$1"; }
 
-step "1/8  native test suite"
+step "1/8  native test suites (default + anthropic + wallet)"
 cargo test --quiet
+cargo test --quiet --features anthropic
+cargo test --quiet --features wallet
 
-step "2/8  wasm32 browser-app guardrail"
+step "2/8  wasm32 guardrails (bare SDK + wallet + browser-app)"
+cargo check --quiet --no-default-features --target wasm32-unknown-unknown
+cargo check --quiet --no-default-features --features wallet --target wasm32-unknown-unknown
 cargo check --quiet --no-default-features --target wasm32-unknown-unknown --features browser-app
 
 step "3/8  compile a real cartridge ($CART_SRC)"

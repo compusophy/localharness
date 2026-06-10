@@ -373,10 +373,10 @@ pub(crate) const KNOWN_REVERTS: &[(&str, u16, &str)] = {
 };
 
 // The bare (uncoded) accessor — the back-compat surface returning just the
-// friendly message. Production now surfaces via `decode_known_revert_coded`, so
-// on non-test wasm builds this is only kept for the native unit tests; silence
-// the dead-code lint there rather than drop a documented helper.
-#[cfg_attr(all(target_arch = "wasm32", not(test)), allow(dead_code))]
+// friendly message. Production surfaces via `decode_known_revert_coded` on
+// every target, so outside the unit tests this is dead on native AND wasm;
+// silence the dead-code lint there rather than drop a documented helper.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn decode_known_revert(selector_bytes: [u8; 4]) -> Option<&'static str> {
     for (sig, _code, msg) in KNOWN_REVERTS {
         if selector(sig) == selector_bytes {
