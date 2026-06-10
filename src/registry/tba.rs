@@ -236,30 +236,8 @@ pub async fn devices_of(main_id: u64) -> Result<Vec<String>, String> {
     let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
     let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
     let bytes = hex_to_bytes(&result)?;
-    // ABI dynamic address[]: [offset(32)][len(32)][addr0(32)]...
-    if bytes.len() < 64 {
-        return Ok(Vec::new());
-    }
-    let mut len_buf = [0u8; 8];
-    len_buf.copy_from_slice(&bytes[56..64]); // low 8 bytes of the length word
-    let len = u64::from_be_bytes(len_buf) as usize;
-    // Don't pre-allocate `len` (attacker-controlled, up to u64::MAX → OOM); the
-    // index math below is checked so a hostile length just stops the decode.
-    let mut out = Vec::new();
-    for i in 0..len {
-        let start = match i.checked_mul(32).and_then(|o| o.checked_add(64)) {
-            Some(s) => s,
-            None => break,
-        };
-        let Some(word) = start
-            .checked_add(32)
-            .and_then(|end| bytes.get(start + 12..end))
-        else {
-            break;
-        };
-        out.push(format!("0x{}", bytes_to_hex(word)));
-    }
-    Ok(out)
+    // ABI dynamic address[]: [offset(32)][len(32)][addr0(32)]... — shared decode.
+    Ok(decode_address_array(&bytes))
 }
 
 /// Single-read link check — `isDeviceLinked(mainId, addr)` on the index.

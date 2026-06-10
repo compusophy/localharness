@@ -72,13 +72,8 @@ pub async fn reputation_of(token_id: u64) -> Result<(u64, u64), String> {
     if bytes.len() < 64 {
         return Ok((0, 0));
     }
-    let low_u64 = |w: &[u8]| {
-        let mut b = [0u8; 8];
-        b.copy_from_slice(&w[24..32]);
-        u64::from_be_bytes(b)
-    };
-    let count = low_u64(&bytes[0..32]);
-    let sum = low_u64(&bytes[32..64]);
+    let count = u64_low(&bytes[0..32]);
+    let sum = u64_low(&bytes[32..64]);
     Ok((count, sum))
 }
 

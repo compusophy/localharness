@@ -171,12 +171,8 @@ pub async fn get_invite(code_hash: [u8; 32]) -> Result<(String, u128, u64, u8), 
     }
     let word = |i: usize| &bytes[i * 32..(i + 1) * 32];
     let funder = format!("0x{}", bytes_to_hex(&word(0)[12..32])); // address, low 20 bytes
-    let mut amt = [0u8; 16];
-    amt.copy_from_slice(&word(1)[16..32]); // uint128, low 16 bytes
-    let amount = u128::from_be_bytes(amt);
-    let mut exp = [0u8; 8];
-    exp.copy_from_slice(&word(2)[24..32]); // uint64, low 8 bytes
-    let expiry = u64::from_be_bytes(exp);
+    let amount = u128_low(word(1)); // uint128, low 16 bytes
+    let expiry = u64_low(word(2)); // uint64, low 8 bytes
     let status = word(3)[31]; // uint8 enum in the low byte
     Ok((funder, amount, expiry, status))
 }

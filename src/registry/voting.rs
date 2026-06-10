@@ -205,16 +205,6 @@ pub async fn get_proposal(proposal_id: u64) -> Result<Proposal, String> {
         return Err(format!("getProposal: short response {} bytes", bytes.len()));
     }
     let word = |i: usize| &bytes[i * 32..(i + 1) * 32];
-    let u64_low = |w: &[u8]| {
-        let mut b = [0u8; 8];
-        b.copy_from_slice(&w[24..32]);
-        u64::from_be_bytes(b)
-    };
-    let u128_low = |w: &[u8]| {
-        let mut b = [0u8; 16];
-        b.copy_from_slice(&w[16..32]);
-        u128::from_be_bytes(b)
-    };
     Ok(Proposal {
         guild_id: u64_low(word(0)),
         proposer: format!("0x{}", bytes_to_hex(&word(1)[12..32])), // address, low 20 bytes
@@ -239,11 +229,6 @@ pub async fn tally_of(proposal_id: u64) -> Result<Tally, String> {
         return Err(format!("tallyOf: short response {} bytes", bytes.len()));
     }
     let word = |i: usize| &bytes[i * 32..(i + 1) * 32];
-    let u128_low = |w: &[u8]| {
-        let mut b = [0u8; 16];
-        b.copy_from_slice(&w[16..32]);
-        u128::from_be_bytes(b)
-    };
     Ok(Tally {
         for_votes: u128_low(word(0)),
         against_votes: u128_low(word(1)),

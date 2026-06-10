@@ -314,28 +314,9 @@ pub async fn bounties_of(account_hex: &str) -> Result<Vec<u64>, String> {
     let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
     let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
     let bytes = hex_to_bytes(&result)?;
-    // Bare dynamic uint256[]: [offset(32)][len(32)][id0(32)]… — same decode as
-    // `jobs_of`.
-    if bytes.len() < 64 {
-        return Ok(Vec::new());
-    }
-    let mut len_buf = [0u8; 8];
-    len_buf.copy_from_slice(&bytes[56..64]);
-    let len = u64::from_be_bytes(len_buf) as usize;
-    let mut out = Vec::new();
-    for i in 0..len {
-        let start = match i.checked_mul(32).and_then(|o| o.checked_add(64)) {
-            Some(s) => s,
-            None => break,
-        };
-        let Some(word) = start.checked_add(32).and_then(|end| bytes.get(start + 24..end)) else {
-            break;
-        };
-        let mut id_buf = [0u8; 8];
-        id_buf.copy_from_slice(word);
-        out.push(u64::from_be_bytes(id_buf));
-    }
-    Ok(out)
+    // Bare dynamic uint256[]: [offset(32)][len(32)][id0(32)]… — same shared
+    // decode as `jobs_of`.
+    Ok(decode_u64_array(&bytes))
 }
 
 /// Read `getBounty(uint256)` → the full [`Bounty`] record. The returned tuple is
@@ -352,16 +333,9 @@ pub async fn get_bounty(bounty_id: u64) -> Result<Bounty, String> {
     }
     let word = |i: usize| &bytes[i * 32..(i + 1) * 32];
     let poster = format!("0x{}", bytes_to_hex(&word(0)[12..32])); // address, low 20 bytes
-    let u64_low = |w: &[u8]| {
-        let mut b = [0u8; 8];
-        b.copy_from_slice(&w[24..32]);
-        u64::from_be_bytes(b)
-    };
-    let mut amt = [0u8; 16];
-    amt.copy_from_slice(&word(1)[16..32]); // uint128, low 16 bytes
     Ok(Bounty {
         poster,
-        reward_wei: u128::from_be_bytes(amt),
+        reward_wei: u128_low(word(1)), // uint128, low 16 bytes
         expiry: u64_low(word(2)),
         status: bytes[3 * 32 + 31], // uint8 enum in the low byte of word 3
         claimant_token_id: u64_low(word(4)),

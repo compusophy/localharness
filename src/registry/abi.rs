@@ -87,6 +87,86 @@ pub(crate) fn zero_address() -> &'static str {
     "0x0000000000000000000000000000000000000000"
 }
 
+// --- shared word / dynamic-array decoders -------------------------------
+//
+// Solidity right-aligns scalar values in their 32-byte word, so a u64-scale
+// value (id / timestamp / counter / enum) lives in the LOW 8 bytes and a
+// token-wei u128 in the LOW 16. These were re-declared as local closures in
+// every tuple decoder (getJob / getBounty / getProposal / tallyOf /
+// reputationOf); the bare dynamic-array decoders below were copied verbatim
+// across jobs_of / bounties_of / guilds_of (uint256[]) and devices_of /
+// members_of_guild (address[]).
+
+/// The LOW 8 bytes of a 32-byte ABI word as a `u64`. Panics if `w` is shorter
+/// than 32 bytes — callers slice exact words out of a length-checked buffer.
+pub(crate) fn u64_low(w: &[u8]) -> u64 {
+    let mut b = [0u8; 8];
+    b.copy_from_slice(&w[24..32]);
+    u64::from_be_bytes(b)
+}
+
+/// The LOW 16 bytes of a 32-byte ABI word as a `u128` (token-wei amounts).
+pub(crate) fn u128_low(w: &[u8]) -> u128 {
+    let mut b = [0u8; 16];
+    b.copy_from_slice(&w[16..32]);
+    u128::from_be_bytes(b)
+}
+
+/// Decode a bare ABI dynamic `uint256[]` return — `[offset(32)][len(32)]
+/// [elem0(32)]…` — reading the low 8 bytes of each element (ids are monotonic
+/// u64-scale counters, never near 2^64). Hostile-length-safe: no pre-alloc
+/// (`len` is attacker-controlled, up to u64::MAX → OOM) and checked index
+/// math stops the decode at the buffer edge instead of panicking.
+pub(crate) fn decode_u64_array(bytes: &[u8]) -> Vec<u64> {
+    if bytes.len() < 64 {
+        return Vec::new();
+    }
+    let mut len_buf = [0u8; 8];
+    len_buf.copy_from_slice(&bytes[56..64]); // low 8 bytes of the length word
+    let len = u64::from_be_bytes(len_buf) as usize;
+    let mut out = Vec::new();
+    for i in 0..len {
+        let start = match i.checked_mul(32).and_then(|o| o.checked_add(64)) {
+            Some(s) => s,
+            None => break,
+        };
+        let Some(word) = start.checked_add(32).and_then(|end| bytes.get(start + 24..end)) else {
+            break;
+        };
+        let mut id_buf = [0u8; 8];
+        id_buf.copy_from_slice(word);
+        out.push(u64::from_be_bytes(id_buf));
+    }
+    out
+}
+
+/// Decode a bare ABI dynamic `address[]` return — `[offset(32)][len(32)]
+/// [addr0(32)]…` — into lowercase `0x…` strings (each address right-aligned
+/// in its word). Same hostile-length discipline as [`decode_u64_array`].
+pub(crate) fn decode_address_array(bytes: &[u8]) -> Vec<String> {
+    if bytes.len() < 64 {
+        return Vec::new();
+    }
+    let mut len_buf = [0u8; 8];
+    len_buf.copy_from_slice(&bytes[56..64]); // low 8 bytes of the length word
+    let len = u64::from_be_bytes(len_buf) as usize;
+    let mut out = Vec::new();
+    for i in 0..len {
+        let start = match i.checked_mul(32).and_then(|o| o.checked_add(64)) {
+            Some(s) => s,
+            None => break,
+        };
+        let Some(word) = start
+            .checked_add(32)
+            .and_then(|end| bytes.get(start + 12..end))
+        else {
+            break;
+        };
+        out.push(format!("0x{}", bytes_to_hex(word)));
+    }
+    out
+}
+
 pub(crate) fn address_to_hex(addr: &[u8; 20]) -> String {
     let mut s = String::with_capacity(42);
     s.push_str("0x");
@@ -157,5 +237,62 @@ mod tests {
         assert!(hex_to_bytes("0x").unwrap().is_empty()); // empty is ok
         assert_eq!(hex_to_bytes("0xAaBb").unwrap(), vec![0xAA, 0xBB]); // case-insensitive
         assert_eq!(hex_to_bytes("deadbeef").unwrap(), vec![0xDE, 0xAD, 0xBE, 0xEF]); // no prefix
+    }
+
+    #[test]
+    fn word_low_extractors_read_right_aligned_values() {
+        // u64 in the low 8 bytes; u128 in the low 16 — the Solidity layout.
+        let w = u256_be(0x1234_5678_9ABC_DEF0_u64 as u128);
+        assert_eq!(u64_low(&w), 0x1234_5678_9ABC_DEF0);
+        let big = u256_be(u128::MAX);
+        assert_eq!(u128_low(&big), u128::MAX);
+        // High-byte garbage above the extracted range is ignored.
+        let mut noisy = u256_be(7);
+        noisy[0] = 0xFF;
+        assert_eq!(u64_low(&noisy), 7);
+        assert_eq!(u128_low(&noisy), 7);
+    }
+
+    #[test]
+    fn decode_u64_array_roundtrip_and_hostile() {
+        // Canonical [offset][len][ids…].
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&u256_be(0x20));
+        bytes.extend_from_slice(&u256_be(3));
+        for id in [5u64, 8, 13] {
+            bytes.extend_from_slice(&u256_be(id as u128));
+        }
+        assert_eq!(decode_u64_array(&bytes), vec![5, 8, 13]);
+        // Short / empty → empty, no panic.
+        assert!(decode_u64_array(&[]).is_empty());
+        assert!(decode_u64_array(&[0u8; 32]).is_empty());
+        // Lying length (u64::MAX) with one real element → stops at the edge,
+        // no pre-alloc OOM, no overflow.
+        let mut lying = Vec::new();
+        lying.extend_from_slice(&u256_be(0x20));
+        lying.extend_from_slice(&u64::MAX.to_be_bytes().repeat(4)); // huge len word
+        lying.extend_from_slice(&u256_be(7));
+        assert_eq!(decode_u64_array(&lying), vec![7]);
+    }
+
+    #[test]
+    fn decode_address_array_roundtrip_and_hostile() {
+        let addr = [0xABu8; 20];
+        let mut word = [0u8; 32];
+        word[12..].copy_from_slice(&addr);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&u256_be(0x20));
+        bytes.extend_from_slice(&u256_be(1));
+        bytes.extend_from_slice(&word);
+        let out = decode_address_array(&bytes);
+        assert_eq!(out, vec![format!("0x{}", "ab".repeat(20))]);
+        // Short / hostile-length inputs degrade to what's available.
+        assert!(decode_address_array(&[]).is_empty());
+        assert!(decode_address_array(&[0u8; 63]).is_empty());
+        let mut lying = Vec::new();
+        lying.extend_from_slice(&u256_be(0x20));
+        lying.extend_from_slice(&u256_be(1000)); // claims 1000 entries
+        lying.extend_from_slice(&word); // only one present
+        assert_eq!(decode_address_array(&lying).len(), 1);
     }
 }

@@ -157,31 +157,8 @@ pub async fn jobs_of(owner_hex: &str) -> Result<Vec<u64>, String> {
     let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
     let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
     let bytes = hex_to_bytes(&result)?;
-    // ABI dynamic uint256[]: [offset(32)][len(32)][id0(32)]...
-    if bytes.len() < 64 {
-        return Ok(Vec::new());
-    }
-    let mut len_buf = [0u8; 8];
-    len_buf.copy_from_slice(&bytes[56..64]); // low 8 bytes of the length word
-    let len = u64::from_be_bytes(len_buf) as usize;
-    // Don't pre-allocate `len` (attacker-controlled → OOM); checked index math
-    // below just stops the decode on a hostile length.
-    let mut out = Vec::new();
-    for i in 0..len {
-        let start = match i.checked_mul(32).and_then(|o| o.checked_add(64)) {
-            Some(s) => s,
-            None => break,
-        };
-        // Each id is a uint256; we read the low 8 bytes (ids are monotonic
-        // u64-scale counters, never near 2^64).
-        let Some(word) = start.checked_add(32).and_then(|end| bytes.get(start + 24..end)) else {
-            break;
-        };
-        let mut id_buf = [0u8; 8];
-        id_buf.copy_from_slice(word);
-        out.push(u64::from_be_bytes(id_buf));
-    }
-    Ok(out)
+    // ABI dynamic uint256[]: [offset(32)][len(32)][id0(32)]... — shared decode.
+    Ok(decode_u64_array(&bytes))
 }
 
 /// Read `getJob(uint256)` → the full [`ScheduledJob`] record. The returned
@@ -197,16 +174,6 @@ pub async fn get_job(job_id: u64) -> Result<ScheduledJob, String> {
     }
     let word = |i: usize| &bytes[i * 32..(i + 1) * 32];
     let owner = format!("0x{}", bytes_to_hex(&word(0)[12..32])); // address, low 20 bytes
-    let u64_low = |w: &[u8]| {
-        let mut b = [0u8; 8];
-        b.copy_from_slice(&w[24..32]);
-        u64::from_be_bytes(b)
-    };
-    let u128_low = |w: &[u8]| {
-        let mut b = [0u8; 16];
-        b.copy_from_slice(&w[16..32]);
-        u128::from_be_bytes(b)
-    };
     Ok(ScheduledJob {
         owner,
         interval: u64_low(word(1)),
