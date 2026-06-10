@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use tokio::sync::{broadcast, Notify};
 
 // Reuse the Gemini backend's built-in tool registration so the 8 fs builtins
@@ -723,6 +723,7 @@ impl Connection for LocalConnection {
 mod tests {
     use super::*;
     use crate::conversation::Conversation;
+    use serde_json::json;
 
     /// With no weights present, a turn surfaces a clear "not downloaded" error
     /// through the shared `Conversation` rather than an empty success.
