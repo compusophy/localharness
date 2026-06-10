@@ -224,27 +224,24 @@ pub(crate) fn decode_addr_ts_bytes_array(result_hex: &str) -> Vec<AddrTsBytes> {
 /// The ephemeral peers announced under `topic` (peersOf). Callers filter stale
 /// entries by the `ts` field.
 pub async fn peers_of(topic: &[u8; 32]) -> Result<Vec<AddrTsBytes>, String> {
-    let mut data = selector("peersOf(bytes32)").to_vec();
-    data.extend_from_slice(topic);
-    let res = eth_call(REGISTRY_ADDRESS, &format!("0x{}", bytes_to_hex(&data))).await?;
+    let res = read_view(selector("peersOf(bytes32)"), &[*topic]).await?;
     Ok(decode_addr_ts_bytes_array(&res))
 }
 
 /// `peer`'s signaling inbox from `from_index` onward (inboxOf). The caller
 /// tracks its own cursor.
 pub async fn inbox_of(peer: &[u8; 20], from_index: u64) -> Result<Vec<AddrTsBytes>, String> {
-    let mut data = selector("inboxOf(address,uint256)").to_vec();
-    data.extend_from_slice(&address_word(peer));
-    data.extend_from_slice(&u256_be(from_index as u128));
-    let res = eth_call(REGISTRY_ADDRESS, &format!("0x{}", bytes_to_hex(&data))).await?;
+    let res = read_view(
+        selector("inboxOf(address,uint256)"),
+        &[address_word(peer), u256_be(from_index as u128)],
+    )
+    .await?;
     Ok(decode_addr_ts_bytes_array(&res))
 }
 
 /// `peer`'s inbox length (a cheap cursor poll).
 pub async fn inbox_length(peer: &[u8; 20]) -> Result<u64, String> {
-    let mut data = selector("inboxLength(address)").to_vec();
-    data.extend_from_slice(&address_word(peer));
-    let res = eth_call(REGISTRY_ADDRESS, &format!("0x{}", bytes_to_hex(&data))).await?;
+    let res = read_view(selector("inboxLength(address)"), &[address_word(peer)]).await?;
     let raw = hex_to_bytes(&res)?;
     if raw.len() < 32 {
         return Ok(0);

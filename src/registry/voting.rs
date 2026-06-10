@@ -198,8 +198,11 @@ pub async fn execute_proposal_sponsored(
 /// [`proposal_memo_of`]), so it decodes as 8 consecutive ABI words in struct
 /// order: guildId, proposer, to, amount, deadline, status, forVotes, againstVotes.
 pub async fn get_proposal(proposal_id: u64) -> Result<Proposal, String> {
-    let calldata = call_uint("getProposal(uint256)", proposal_id);
-    let result = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result = read_view(
+        selector("getProposal(uint256)"),
+        &[u256_be(proposal_id as u128)],
+    )
+    .await?;
     let bytes = hex_to_bytes(&result)?;
     if bytes.len() < 8 * 32 {
         return Err(format!("getProposal: short response {} bytes", bytes.len()));
@@ -222,8 +225,7 @@ pub async fn get_proposal(proposal_id: u64) -> Result<Proposal, String> {
 /// votesCast, passing) — decode each in its native width; `passing` is the low
 /// byte of word 4.
 pub async fn tally_of(proposal_id: u64) -> Result<Tally, String> {
-    let calldata = call_uint("tallyOf(uint256)", proposal_id);
-    let result = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result = read_view(selector("tallyOf(uint256)"), &[u256_be(proposal_id as u128)]).await?;
     let bytes = hex_to_bytes(&result)?;
     if bytes.len() < 5 * 32 {
         return Err(format!("tallyOf: short response {} bytes", bytes.len()));
@@ -242,15 +244,12 @@ pub async fn tally_of(proposal_id: u64) -> Result<Tally, String> {
 /// a ballot on the proposal (the double-vote guard). Two static args (the
 /// address right-aligned in word 1).
 pub async fn has_voted(proposal_id: u64, voter_hex: &str) -> Result<bool, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(false);
-    }
     let voter = parse_eth_address(voter_hex)?;
-    let mut calldata = selector("hasVoted(uint256,address)").to_vec();
-    calldata.extend_from_slice(&u256_be(proposal_id as u128));
-    calldata.extend_from_slice(&addr_word(&voter));
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    let result = read_view(
+        selector("hasVoted(uint256,address)"),
+        &[u256_be(proposal_id as u128), addr_word(&voter)],
+    )
+    .await?;
     decode_u256_as_u64(&result).map(|v| v != 0)
 }
 
@@ -261,15 +260,15 @@ pub async fn has_voted(proposal_id: u64, voter_hex: &str) -> Result<bool, String
 /// the facet's internal pagination detail), decoded via the SAME
 /// `(uint256[], uint256)` cursor decoder as `open_bounties`.
 pub async fn proposals_of(guild_id: u64, start_after: u64, limit: u64) -> Result<Vec<u64>, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(Vec::new());
-    }
-    let mut calldata = selector("proposalsOf(uint256,uint256,uint256)").to_vec();
-    calldata.extend_from_slice(&u256_be(guild_id as u128));
-    calldata.extend_from_slice(&u256_be(start_after as u128));
-    calldata.extend_from_slice(&u256_be(limit as u128));
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    let result = read_view(
+        selector("proposalsOf(uint256,uint256,uint256)"),
+        &[
+            u256_be(guild_id as u128),
+            u256_be(start_after as u128),
+            u256_be(limit as u128),
+        ],
+    )
+    .await?;
     let bytes = hex_to_bytes(&result)?;
     decode_uint_array_with_cursor(&bytes)
 }
@@ -283,11 +282,7 @@ pub async fn proposal_memo_of(proposal_id: u64) -> Result<String, String> {
 /// Read `proposalCount()` → total proposals ever created (== the highest
 /// proposalId; ids are monotonic from 1).
 pub async fn proposal_count() -> Result<u64, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(0);
-    }
-    let calldata = format!("0x{}", bytes_to_hex(&selector("proposalCount()")));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result = read_view(selector("proposalCount()"), &[]).await?;
     decode_u256_as_u64(&result)
 }
 

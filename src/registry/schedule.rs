@@ -148,14 +148,8 @@ pub async fn cancel_job_sponsored(
 /// Read `jobsOf(address)` — every job id the owner has scheduled (Active +
 /// terminal). The enumerable index backing the "my jobs" view.
 pub async fn jobs_of(owner_hex: &str) -> Result<Vec<u64>, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(Vec::new());
-    }
     let owner = parse_eth_address(owner_hex)?;
-    let mut calldata = selector("jobsOf(address)").to_vec();
-    calldata.extend_from_slice(&addr_word(&owner));
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    let result = read_view(selector("jobsOf(address)"), &[addr_word(&owner)]).await?;
     let bytes = hex_to_bytes(&result)?;
     // ABI dynamic uint256[]: [offset(32)][len(32)][id0(32)]... — shared decode.
     Ok(decode_u64_array(&bytes))
@@ -166,8 +160,7 @@ pub async fn jobs_of(owner_hex: &str) -> Result<Vec<u64>, String> {
 /// [`task_of`]), so it decodes as 7 consecutive ABI words in `Job` order:
 /// owner, interval, status, nextRun, budgetWei, runsLeft, targetId.
 pub async fn get_job(job_id: u64) -> Result<ScheduledJob, String> {
-    let calldata = call_uint("getJob(uint256)", job_id);
-    let result = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result = read_view(selector("getJob(uint256)"), &[u256_be(job_id as u128)]).await?;
     let bytes = hex_to_bytes(&result)?;
     if bytes.len() < 7 * 32 {
         return Err(format!("getJob: short response {} bytes", bytes.len()));
@@ -189,8 +182,7 @@ pub async fn get_job(job_id: u64) -> Result<ScheduledJob, String> {
 /// on-chain `bytes` (same ABI shape as a `string` return: offset + length +
 /// body); we interpret it as UTF-8 since the MVP task is an inline prompt.
 pub async fn task_of(job_id: u64) -> Result<String, String> {
-    let calldata = call_uint("taskOf(uint256)", job_id);
-    let result = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result = read_view(selector("taskOf(uint256)"), &[u256_be(job_id as u128)]).await?;
     let raw = hex_to_bytes(&result)?;
     if raw.len() < 64 {
         return Err(format!("taskOf: short response {} bytes", raw.len()));

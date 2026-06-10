@@ -66,6 +66,21 @@ pub(crate) fn u256_be(value: u128) -> [u8; 32] {
     out
 }
 
+/// `0x`-hex calldata for the universal static-args call shape:
+/// `selector ++ word0 ++ word1 ++ …`. Every read view whose arguments are
+/// plain 32-byte words (uint256 / address / bytes32 / bool) encodes exactly
+/// like this; the per-site `Vec::with_capacity` + `extend_from_slice` +
+/// `format!` boilerplate collapsed into one place. Dynamic args (string /
+/// bytes) still use their dedicated encoders.
+pub(crate) fn encode_call_hex(sel: [u8; 4], words: &[[u8; 32]]) -> String {
+    let mut data = Vec::with_capacity(4 + 32 * words.len());
+    data.extend_from_slice(&sel);
+    for w in words {
+        data.extend_from_slice(w);
+    }
+    format!("0x{}", bytes_to_hex(&data))
+}
+
 pub(crate) fn decode_u256_as_u64(hex: &str) -> Result<u64, String> {
     let stripped = hex.trim().trim_start_matches("0x");
     if stripped.is_empty() {

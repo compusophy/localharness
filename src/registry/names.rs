@@ -36,9 +36,6 @@ pub struct OwnedToken {
 /// `nameOfId` + `tokenBoundAccount` of just the matches. For the O(holdings)
 /// fix (one call, your tokens only) see the `tokensOfOwner` facet draft.
 pub async fn list_owned_tokens(owner_hex: &str) -> Result<Vec<OwnedToken>, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(Vec::new());
-    }
     let total = next_id().await?;
     if total <= 1 {
         return Ok(Vec::new());
@@ -100,8 +97,7 @@ pub async fn list_owned_tokens(owner_hex: &str) -> Result<Vec<OwnedToken>, Strin
 }
 
 pub(crate) async fn next_id() -> Result<u64, String> {
-    let calldata = format!("0x{}", bytes_to_hex(&selector("nextId()")));
-    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result_hex = read_view(selector("nextId()"), &[]).await?;
     decode_u256_as_u64(&result_hex)
 }
 
@@ -112,11 +108,7 @@ pub async fn subdomain_count() -> Result<u64, String> {
 }
 
 pub async fn name_of_id(id: u64) -> Result<String, String> {
-    let mut data = Vec::with_capacity(4 + 32);
-    data.extend_from_slice(&selector("nameOfId(uint256)"));
-    data.extend_from_slice(&u256_be(id as u128));
-    let calldata = format!("0x{}", bytes_to_hex(&data));
-    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result_hex = read_view(selector("nameOfId(uint256)"), &[u256_be(id as u128)]).await?;
     // ABI-encoded string: offset (32 bytes, value 0x20) + length (32 bytes) + bytes
     let raw = hex_to_bytes(&result_hex)?;
     if raw.len() < 64 {
@@ -135,14 +127,12 @@ pub async fn name_of_id(id: u64) -> Result<String, String> {
 /// account address. None when the token isn't registered. The address
 /// is deterministic — counterfactual even before deployment.
 pub async fn tba_of_token_id(token_id: u64) -> Result<Option<String>, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(None);
-    }
-    let mut data = Vec::with_capacity(4 + 32);
-    data.extend_from_slice(&selector("tokenBoundAccount(uint256)"));
-    data.extend_from_slice(&u256_be(token_id as u128));
-    let calldata = format!("0x{}", bytes_to_hex(&data));
-    let result_hex = match eth_call(REGISTRY_ADDRESS, &calldata).await {
+    let result_hex = match read_view(
+        selector("tokenBoundAccount(uint256)"),
+        &[u256_be(token_id as u128)],
+    )
+    .await
+    {
         Ok(h) => h,
         Err(err) => {
             if err.contains("nonexistent token") || err.contains("registry unset") {
@@ -167,9 +157,6 @@ pub async fn tba_of_token_id(token_id: u64) -> Result<Option<String>, String> {
 /// is deterministic — it exists counterfactually even if the account
 /// hasn't been deployed yet.
 pub async fn tba_of_name(name: &str) -> Result<Option<String>, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(None);
-    }
     let calldata = encode_string_call("tokenBoundAccountByName(string)", name);
     let result_hex = match eth_call(REGISTRY_ADDRESS, &calldata).await {
         Ok(h) => h,
@@ -198,9 +185,6 @@ pub async fn tba_of_name(name: &str) -> Result<Option<String>, String> {
 /// `0x`-prefixed lowercase hex string. `None` if the name has no
 /// on-chain owner (returns the zero address).
 pub async fn owner_of_name(name: &str) -> Result<Option<String>, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(None);
-    }
     let calldata = encode_owner_of_name(name);
     let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
     // Address is the last 20 bytes of a 32-byte uint256 return.
@@ -244,10 +228,6 @@ pub(crate) fn encode_string_call(signature: &str, value: &str) -> String {
 
 /// `eth_call idOfName(name)` and classify the result. Single round trip.
 pub async fn check_name(name: &str) -> Result<Status, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(Status::Unknown);
-    }
-
     let calldata = encode_id_of_name(name);
     let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
     let id = decode_u256_as_u64(&result_hex)?;
@@ -260,9 +240,6 @@ pub async fn check_name(name: &str) -> Result<Status, String> {
 
 /// `eth_call idOfName(name)` → the token id (0 if unregistered).
 pub async fn id_of_name(name: &str) -> Result<u64, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(0);
-    }
     let calldata = encode_id_of_name(name);
     let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
     decode_u256_as_u64(&result_hex)
@@ -358,12 +335,11 @@ pub(crate) fn app_metadata_key() -> [u8; 32] {
 /// Read a subdomain's published app wasm from on-chain metadata, if any.
 pub async fn app_wasm_of(token_id: u64) -> Result<Option<Vec<u8>>, String> {
     let key = app_metadata_key();
-    let mut data = Vec::with_capacity(4 + 64);
-    data.extend_from_slice(&selector("metadata(uint256,bytes32)"));
-    data.extend_from_slice(&u256_be(token_id as u128));
-    data.extend_from_slice(&key);
-    let calldata = format!("0x{}", bytes_to_hex(&data));
-    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result_hex = read_view(
+        selector("metadata(uint256,bytes32)"),
+        &[u256_be(token_id as u128), key],
+    )
+    .await?;
     let bytes = hex_to_bytes(&result_hex)?;
     // ABI-encoded `bytes`: [offset(32)][length(32)][payload...].
     if bytes.len() < 64 {
@@ -414,12 +390,11 @@ pub(crate) fn gemini_key_metadata_key() -> [u8; 32] {
 /// Read a subdomain's on-chain seed-encrypted Gemini key ciphertext, if
 /// any. Same ABI-`bytes` decode as `app_wasm_of`.
 pub async fn gemini_key_of(token_id: u64) -> Result<Option<Vec<u8>>, String> {
-    let mut data = Vec::with_capacity(4 + 64);
-    data.extend_from_slice(&selector("metadata(uint256,bytes32)"));
-    data.extend_from_slice(&u256_be(token_id as u128));
-    data.extend_from_slice(&gemini_key_metadata_key());
-    let calldata = format!("0x{}", bytes_to_hex(&data));
-    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result_hex = read_view(
+        selector("metadata(uint256,bytes32)"),
+        &[u256_be(token_id as u128), gemini_key_metadata_key()],
+    )
+    .await?;
     let bytes = hex_to_bytes(&result_hex)?;
     if bytes.len() < 64 {
         return Ok(None);
@@ -475,12 +450,11 @@ pub(crate) fn keccak_key(label: &[u8]) -> [u8; 32] {
 /// Read raw `bytes` metadata stored under `key` for `token_id`. `None`
 /// when the slot is empty. Shared ABI-`bytes` decode (offset+len+payload).
 pub(crate) async fn metadata_bytes_of(token_id: u64, key: [u8; 32]) -> Result<Option<Vec<u8>>, String> {
-    let mut data = Vec::with_capacity(4 + 64);
-    data.extend_from_slice(&selector("metadata(uint256,bytes32)"));
-    data.extend_from_slice(&u256_be(token_id as u128));
-    data.extend_from_slice(&key);
-    let calldata = format!("0x{}", bytes_to_hex(&data));
-    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result_hex = read_view(
+        selector("metadata(uint256,bytes32)"),
+        &[u256_be(token_id as u128), key],
+    )
+    .await?;
     let bytes = hex_to_bytes(&result_hex)?;
     if bytes.len() < 64 {
         return Ok(None);
@@ -571,8 +545,8 @@ pub fn encode_set_persona(token_id: u64, persona: &str) -> Vec<u8> {
 /// per-call RPC failed (graceful degradation — a single bad slot never
 /// fails the whole batch). Backs the public-landing agent portfolio cards.
 pub async fn personas_of(token_ids: &[u64]) -> Vec<Option<String>> {
-    if token_ids.is_empty() || REGISTRY_ADDRESS == zero_address() {
-        return token_ids.iter().map(|_| None).collect();
+    if token_ids.is_empty() {
+        return Vec::new();
     }
     let key = keccak_key(PERSONA_LABEL);
     let calls: Vec<(&str, String)> = token_ids
@@ -598,11 +572,10 @@ pub async fn personas_of(token_ids: &[u64]) -> Vec<Option<String>> {
 
 /// `metadata(tokenId, key)` calldata (hex) for batching.
 pub(crate) fn call_metadata(token_id: u64, key: [u8; 32]) -> String {
-    let mut data = Vec::with_capacity(4 + 64);
-    data.extend_from_slice(&selector("metadata(uint256,bytes32)"));
-    data.extend_from_slice(&u256_be(token_id as u128));
-    data.extend_from_slice(&key);
-    format!("0x{}", bytes_to_hex(&data))
+    encode_call_hex(
+        selector("metadata(uint256,bytes32)"),
+        &[u256_be(token_id as u128), key],
+    )
 }
 
 /// Decode an ABI `bytes` return (offset + length + payload). `None` when

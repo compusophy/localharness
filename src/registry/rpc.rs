@@ -131,15 +131,22 @@ pub(crate) async fn eth_call(to: &str, data_hex: &str) -> Result<String, String>
     .await
 }
 
+/// `eth_call` the registry diamond with `selector ++ words` — THE read-view
+/// helper for every static-args view (`fn()`, `fn(uint256)`, `fn(address)`,
+/// `fn(bytes32)`, multi-word combinations). Encodes via
+/// [`encode_call_hex`] and returns the raw result hex for the caller's
+/// decoder. Views with dynamic args (string) or non-diamond targets keep
+/// using [`eth_call`] with their dedicated encoders.
+pub(crate) async fn read_view(sel: [u8; 4], words: &[[u8; 32]]) -> Result<String, String> {
+    eth_call(REGISTRY_ADDRESS, &encode_call_hex(sel, words)).await
+}
+
 /// `true` if `address` has deployed bytecode (i.e. is a contract, not a
 /// counterfactual / EOA). A token-bound account is deterministic — it
 /// exists as an address even before `createTokenBoundAccount` deploys it,
 /// so this distinguishes a live TBA from a not-yet-deployed one. Reads
 /// `eth_getCode`; an empty result (`0x` / `0x0`) means undeployed.
 pub async fn is_contract_deployed(address: &str) -> Result<bool, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(false);
-    }
     // Validate the address shape so a malformed string surfaces a clear
     // error rather than an opaque RPC fault.
     let _ = parse_eth_address(address)?;
@@ -152,12 +159,10 @@ pub async fn is_contract_deployed(address: &str) -> Result<bool, String> {
     Ok(!trimmed.is_empty() && !trimmed.chars().all(|c| c == '0'))
 }
 
-/// Build calldata for a `fn(uint256)` selector with a single id argument.
+/// Build calldata for a `fn(uint256)` selector with a single id argument —
+/// the hex-string flavor the BATCH read paths (`eth_call_batch`) consume.
 pub(crate) fn call_uint(sig: &str, id: u64) -> String {
-    let mut data = Vec::with_capacity(4 + 32);
-    data.extend_from_slice(&selector(sig));
-    data.extend_from_slice(&u256_be(id as u128));
-    format!("0x{}", bytes_to_hex(&data))
+    encode_call_hex(selector(sig), &[u256_be(id as u128)])
 }
 
 /// Decode an ABI `address` return (right-aligned in 32 bytes). `None` for the

@@ -145,14 +145,8 @@ pub async fn reclaim_invite_sponsored(
 /// currently has locked across all their `Open` invites (the running sum the
 /// facet maintains on create/accept/reclaim). The "pending invites" total.
 pub async fn escrowed_of(account_hex: &str) -> Result<u128, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(0);
-    }
     let account = parse_eth_address(account_hex)?;
-    let mut calldata = selector("escrowedOf(address)").to_vec();
-    calldata.extend_from_slice(&addr_word(&account));
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    let result = read_view(selector("escrowedOf(address)"), &[addr_word(&account)]).await?;
     decode_u256_as_u128(&result)
 }
 
@@ -161,10 +155,7 @@ pub async fn escrowed_of(account_hex: &str) -> Result<u128, String> {
 /// invite returns the zero record (funder `0x0…0`, amount 0). All four fields
 /// pack into 4 consecutive ABI words (each value right-aligned in its word).
 pub async fn get_invite(code_hash: [u8; 32]) -> Result<(String, u128, u64, u8), String> {
-    let mut calldata = selector("getInvite(bytes32)").to_vec();
-    calldata.extend_from_slice(&code_hash);
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    let result = read_view(selector("getInvite(bytes32)"), &[code_hash]).await?;
     let bytes = hex_to_bytes(&result)?;
     if bytes.len() < 4 * 32 {
         return Err(format!("getInvite: short response {} bytes", bytes.len()));

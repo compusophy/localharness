@@ -7,10 +7,10 @@
 //! already have `reqwest` in the bundle. Avoiding alloy also sidesteps
 //! the `serde::__private` compat snag we hit during the M6 spike.
 //!
-//! When `REGISTRY_ADDRESS` is the zero address the contract isn't
-//! deployed yet — every query returns `Status::Unknown` so the UI can
-//! degrade gracefully ("(registry pending deploy)") instead of
-//! erroring.
+//! `REGISTRY_ADDRESS` is a baked-in non-zero constant; the historical
+//! per-view "registry pending deploy" zero-address guards (which could
+//! never fire) are gone — every read view goes straight to the chain
+//! via the crate-internal `read_view` (`selector ++ words`) helper.
 
 mod abi;
 mod bounty;

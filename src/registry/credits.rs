@@ -28,20 +28,13 @@ pub async fn claim_daily_sponsored(
 /// call `claimDaily()` right now (token configured, allowance > 0,
 /// not yet claimed this UTC day).
 pub async fn can_claim_credits(account_hex: &str) -> Result<bool, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(false);
-    }
-    let mut data = Vec::with_capacity(4 + 32);
-    data.extend_from_slice(&selector("canClaim(address)"));
     let account_bytes = hex_to_bytes(account_hex)?;
     if account_bytes.len() != 20 {
         return Err(format!("account must be 20 bytes, got {}", account_bytes.len()));
     }
     let mut padded = [0u8; 32];
     padded[12..].copy_from_slice(&account_bytes);
-    data.extend_from_slice(&padded);
-    let calldata = format!("0x{}", bytes_to_hex(&data));
-    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result_hex = read_view(selector("canClaim(address)"), &[padded]).await?;
     let trimmed = result_hex.trim().trim_start_matches("0x");
     Ok(trimmed.chars().last().map(|c| c == '1').unwrap_or(false))
 }
@@ -49,31 +42,20 @@ pub async fn can_claim_credits(account_hex: &str) -> Result<bool, String> {
 /// `eth_call dailyAllowance()` — the current per-claim amount in
 /// 18-decimal token wei.
 pub async fn daily_allowance() -> Result<u128, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(0);
-    }
-    let calldata = format!("0x{}", bytes_to_hex(&selector("dailyAllowance()")));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result = read_view(selector("dailyAllowance()"), &[]).await?;
     decode_u256_as_u128(&result)
 }
 
 /// `eth_call lastClaimDay(account)` — the UTC day number (block.timestamp / 86400)
 /// of the account's most recent claimDaily(). Returns 0 if never claimed.
 pub async fn last_claim_day(account_hex: &str) -> Result<u64, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(0);
-    }
-    let mut data = Vec::with_capacity(4 + 32);
-    data.extend_from_slice(&selector("lastClaimDay(address)"));
     let account_bytes = hex_to_bytes(account_hex)?;
     if account_bytes.len() != 20 {
         return Err(format!("account must be 20 bytes, got {}", account_bytes.len()));
     }
     let mut padded = [0u8; 32];
     padded[12..].copy_from_slice(&account_bytes);
-    data.extend_from_slice(&padded);
-    let calldata = format!("0x{}", bytes_to_hex(&data));
-    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result_hex = read_view(selector("lastClaimDay(address)"), &[padded]).await?;
     let val = decode_u256_as_u128(&result_hex)?;
     Ok(val as u64)
 }
@@ -131,27 +113,14 @@ pub async fn redeem_sponsored(
 /// account's current credit session (0 / past = none). The credit
 /// proxy makes this same call on every request.
 pub async fn session_expiry_of(account_hex: &str) -> Result<u64, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(0);
-    }
     let account = parse_eth_address(account_hex)?;
-    let mut padded = [0u8; 32];
-    padded[12..].copy_from_slice(&account);
-    let mut calldata = Vec::with_capacity(4 + 32);
-    calldata.extend_from_slice(&selector("sessionExpiryOf(address)"));
-    calldata.extend_from_slice(&padded);
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    let result = read_view(selector("sessionExpiryOf(address)"), &[addr_word(&account)]).await?;
     decode_u256_as_u64(&result)
 }
 
 /// Read `sessionPrice()` — `$LH` (wei) required to open one session.
 pub async fn session_price() -> Result<u128, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(0);
-    }
-    let calldata = format!("0x{}", bytes_to_hex(&selector("sessionPrice()")));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result = read_view(selector("sessionPrice()"), &[]).await?;
     decode_u256_as_u128(&result)
 }
 
@@ -203,17 +172,8 @@ pub(crate) fn encode_deposit_credits(amount_wei: u128) -> Vec<u8> {
 /// Read `creditOf(address)` — the user's prepaid per-request `$LH`
 /// balance in the credit meter (the proxy reads this to gate a call).
 pub async fn credit_balance_of(account_hex: &str) -> Result<u128, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(0);
-    }
     let account = parse_eth_address(account_hex)?;
-    let mut padded = [0u8; 32];
-    padded[12..].copy_from_slice(&account);
-    let mut calldata = Vec::with_capacity(4 + 32);
-    calldata.extend_from_slice(&selector("creditOf(address)"));
-    calldata.extend_from_slice(&padded);
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    let result = read_view(selector("creditOf(address)"), &[addr_word(&account)]).await?;
     decode_u256_as_u128(&result)
 }
 
@@ -252,16 +212,12 @@ pub async fn deposit_credits_sponsored(
 /// (`REGISTRY_ADDRESS`) for at least the payment value; this lets the client
 /// check before paying and approve if short.
 pub async fn lh_allowance(owner_hex: &str, spender_hex: &str) -> Result<u128, String> {
-    if LOCALHARNESS_TOKEN_ADDRESS == zero_address() {
-        return Ok(0);
-    }
     let owner = parse_eth_address(owner_hex)?;
     let spender = parse_eth_address(spender_hex)?;
-    let mut calldata = Vec::with_capacity(4 + 64);
-    calldata.extend_from_slice(&selector("allowance(address,address)"));
-    calldata.extend_from_slice(&addr_word(&owner));
-    calldata.extend_from_slice(&addr_word(&spender));
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
+    let calldata_hex = encode_call_hex(
+        selector("allowance(address,address)"),
+        &[addr_word(&owner), addr_word(&spender)],
+    );
     let result = eth_call(LOCALHARNESS_TOKEN_ADDRESS, &calldata_hex).await?;
     decode_u256_as_u128(&result)
 }

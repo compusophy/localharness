@@ -116,23 +116,7 @@ pub async fn wait_for_min_balance(
 /// holder's $localharness balance in 18-decimal token wei. Useful for
 /// confirming the faucet/transfer flows actually landed funds.
 pub async fn token_balance_of(holder_hex: &str) -> Result<u128, String> {
-    if LOCALHARNESS_TOKEN_ADDRESS == zero_address() {
-        return Err("localharness token not deployed".into());
-    }
-    let selector = selector("balanceOf(address)");
-    let holder_bytes = hex_to_bytes(holder_hex)?;
-    if holder_bytes.len() != 20 {
-        return Err(format!("holder must be 20 bytes, got {}", holder_bytes.len()));
-    }
-    let mut padded = [0u8; 32];
-    padded[12..].copy_from_slice(&holder_bytes);
-    let mut calldata = Vec::with_capacity(36);
-    calldata.extend_from_slice(&selector);
-    calldata.extend_from_slice(&padded);
-
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
-    let result = eth_call(LOCALHARNESS_TOKEN_ADDRESS, &calldata_hex).await?;
-    decode_u256_as_u128(&result)
+    erc20_balance_of(LOCALHARNESS_TOKEN_ADDRESS, holder_hex).await
 }
 
 /// `balanceOf(holder)` on an arbitrary ERC-20/TIP-20 token. Used by the
@@ -145,10 +129,7 @@ pub async fn erc20_balance_of(token_hex: &str, holder_hex: &str) -> Result<u128,
     }
     let mut padded = [0u8; 32];
     padded[12..].copy_from_slice(&holder_bytes);
-    let mut calldata = Vec::with_capacity(36);
-    calldata.extend_from_slice(&selector("balanceOf(address)"));
-    calldata.extend_from_slice(&padded);
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
+    let calldata_hex = encode_call_hex(selector("balanceOf(address)"), &[padded]);
     let result = eth_call(token_hex, &calldata_hex).await?;
     decode_u256_as_u128(&result)
 }

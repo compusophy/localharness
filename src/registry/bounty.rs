@@ -250,14 +250,11 @@ pub async fn reclaim_expired_sponsored(
 /// word) followed by the cursor; we decode the array (low 8 bytes of each id,
 /// monotonic u64-scale counters).
 pub async fn open_bounties(start_after: u64, limit: u64) -> Result<Vec<u64>, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(Vec::new());
-    }
-    let mut calldata = selector("openBounties(uint256,uint256)").to_vec();
-    calldata.extend_from_slice(&u256_be(start_after as u128));
-    calldata.extend_from_slice(&u256_be(limit as u128));
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    let result = read_view(
+        selector("openBounties(uint256,uint256)"),
+        &[u256_be(start_after as u128), u256_be(limit as u128)],
+    )
+    .await?;
     let bytes = hex_to_bytes(&result)?;
     decode_uint_array_with_cursor(&bytes)
 }
@@ -305,14 +302,8 @@ pub(crate) fn decode_uint_array_with_cursor(bytes: &[u8]) -> Result<Vec<u64>, St
 /// terminal). The enumerable index backing the "my bounties" view. Same ABI
 /// shape as `jobsOf` (a bare dynamic `uint256[]`).
 pub async fn bounties_of(account_hex: &str) -> Result<Vec<u64>, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(Vec::new());
-    }
     let account = parse_eth_address(account_hex)?;
-    let mut calldata = selector("bountiesOf(address)").to_vec();
-    calldata.extend_from_slice(&addr_word(&account));
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    let result = read_view(selector("bountiesOf(address)"), &[addr_word(&account)]).await?;
     let bytes = hex_to_bytes(&result)?;
     // Bare dynamic uint256[]: [offset(32)][len(32)][id0(32)]… — same shared
     // decode as `jobs_of`.
@@ -325,8 +316,7 @@ pub async fn bounties_of(account_hex: &str) -> Result<Vec<u64>, String> {
 /// ABI words: poster, rewardWei, expiry, status, claimantTokenId. Returns the
 /// poster as a 0x-hex address and each numeric in its native width.
 pub async fn get_bounty(bounty_id: u64) -> Result<Bounty, String> {
-    let calldata = call_uint("getBounty(uint256)", bounty_id);
-    let result = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result = read_view(selector("getBounty(uint256)"), &[u256_be(bounty_id as u128)]).await?;
     let bytes = hex_to_bytes(&result)?;
     if bytes.len() < 5 * 32 {
         return Err(format!("getBounty: short response {} bytes", bytes.len()));
@@ -359,8 +349,7 @@ pub async fn result_of_bounty(bounty_id: u64) -> Result<String, String> {
 /// the returned dynamic `bytes` (offset + length + body) as UTF-8. The decode is
 /// length-checked (attacker-controlled length can't overflow the slice).
 pub(crate) async fn decode_bytes_string_call(sig: &str, id: u64, what: &str) -> Result<String, String> {
-    let calldata = call_uint(sig, id);
-    let result = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result = read_view(selector(sig), &[u256_be(id as u128)]).await?;
     let raw = hex_to_bytes(&result)?;
     if raw.len() < 64 {
         return Err(format!("{what}: short response {} bytes", raw.len()));

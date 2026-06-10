@@ -63,11 +63,11 @@ pub async fn attest_sponsored(
 /// (sum <= 5 * count); decoded from the low 8 bytes of each word. `(0, 0)` for an
 /// unknown/never-attested token. Read-only, no `$LH`.
 pub async fn reputation_of(token_id: u64) -> Result<(u64, u64), String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok((0, 0));
-    }
-    let calldata = call_uint("reputationOf(uint256)", token_id);
-    let result = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result = read_view(
+        selector("reputationOf(uint256)"),
+        &[u256_be(token_id as u128)],
+    )
+    .await?;
     let bytes = hex_to_bytes(&result)?;
     if bytes.len() < 64 {
         return Ok((0, 0));
@@ -90,15 +90,15 @@ pub async fn attestations_of(
     start: u64,
     limit: u64,
 ) -> Result<Vec<(String, u8, String)>, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(Vec::new());
-    }
-    let mut calldata = selector("attestationsOf(uint256,uint256,uint256)").to_vec();
-    calldata.extend_from_slice(&u256_be(token_id as u128));
-    calldata.extend_from_slice(&u256_be(start as u128));
-    calldata.extend_from_slice(&u256_be(limit as u128));
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    let result = read_view(
+        selector("attestationsOf(uint256,uint256,uint256)"),
+        &[
+            u256_be(token_id as u128),
+            u256_be(start as u128),
+            u256_be(limit as u128),
+        ],
+    )
+    .await?;
     let bytes = hex_to_bytes(&result)?;
     Ok(decode_attestations(&bytes))
 }
@@ -163,16 +163,12 @@ pub async fn has_attested(
     subject: u64,
     work_ref: [u8; 32],
 ) -> Result<bool, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(false);
-    }
     let attester = parse_eth_address(attester_hex)?;
-    let mut calldata = selector("hasAttested(address,uint256,bytes32)").to_vec();
-    calldata.extend_from_slice(&addr_word(&attester));
-    calldata.extend_from_slice(&u256_be(subject as u128));
-    calldata.extend_from_slice(&work_ref);
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    let result = read_view(
+        selector("hasAttested(address,uint256,bytes32)"),
+        &[addr_word(&attester), u256_be(subject as u128), work_ref],
+    )
+    .await?;
     let bytes = hex_to_bytes(&result)?;
     // A bool return is a single right-aligned word: non-zero low byte = true.
     Ok(bytes.last().is_some_and(|&b| b != 0))

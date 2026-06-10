@@ -331,13 +331,11 @@ pub async fn spend_treasury_sponsored(
 /// SAME decode as `devices_of`. Hostile-length-safe (no pre-alloc; checked
 /// index math stops the decode on a bogus length).
 pub async fn members_of_guild(guild_id: u64) -> Result<Vec<String>, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(Vec::new());
-    }
-    let mut calldata = selector("guildMembersOf(uint256)").to_vec();
-    calldata.extend_from_slice(&u256_be(guild_id as u128));
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    let result = read_view(
+        selector("guildMembersOf(uint256)"),
+        &[u256_be(guild_id as u128)],
+    )
+    .await?;
     let bytes = hex_to_bytes(&result)?;
     Ok(decode_address_array(&bytes))
 }
@@ -345,15 +343,12 @@ pub async fn members_of_guild(guild_id: u64) -> Result<Vec<String>, String> {
 /// Read `roleOf(guildId, member)` → the member's [`GuildRole`] (decoded from the
 /// `uint8` enum; `None` for a non-member).
 pub async fn role_of_guild(guild_id: u64, addr_hex: &str) -> Result<GuildRole, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(GuildRole::None);
-    }
     let addr = parse_eth_address(addr_hex)?;
-    let mut calldata = selector("roleOf(uint256,address)").to_vec();
-    calldata.extend_from_slice(&u256_be(guild_id as u128));
-    calldata.extend_from_slice(&addr_word(&addr));
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    let result = read_view(
+        selector("roleOf(uint256,address)"),
+        &[u256_be(guild_id as u128), addr_word(&addr)],
+    )
+    .await?;
     // uint8 enum right-aligned in a 32-byte word — read the low byte via u64.
     let v = decode_u256_as_u64(&result)?;
     Ok(GuildRole::from_u8(v as u8))
@@ -362,25 +357,22 @@ pub async fn role_of_guild(guild_id: u64, addr_hex: &str) -> Result<GuildRole, S
 /// Read `isGuildMember(guildId, member)` → whether the address is on the roster.
 /// The single-read membership check (no roster walk).
 pub async fn is_guild_member(guild_id: u64, addr_hex: &str) -> Result<bool, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(false);
-    }
     let addr = parse_eth_address(addr_hex)?;
-    let mut calldata = selector("isGuildMember(uint256,address)").to_vec();
-    calldata.extend_from_slice(&u256_be(guild_id as u128));
-    calldata.extend_from_slice(&addr_word(&addr));
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    let result = read_view(
+        selector("isGuildMember(uint256,address)"),
+        &[u256_be(guild_id as u128), addr_word(&addr)],
+    )
+    .await?;
     decode_u256_as_u64(&result).map(|v| v != 0)
 }
 
 /// Read `treasuryBalanceOf(guildId)` → the guild's pooled `$LH` (18-decimal wei).
 pub async fn treasury_balance_of(guild_id: u64) -> Result<u128, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(0);
-    }
-    let calldata = call_uint("treasuryBalanceOf(uint256)", guild_id);
-    let result = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result = read_view(
+        selector("treasuryBalanceOf(uint256)"),
+        &[u256_be(guild_id as u128)],
+    )
+    .await?;
     decode_u256_as_u128(&result)
 }
 
@@ -389,22 +381,18 @@ pub async fn treasury_balance_of(guild_id: u64) -> Result<u128, String> {
 /// unset rather than `None` — guild treasury reads want the raw address either
 /// way (the CLI prints it verbatim).
 pub async fn guild_address(guild_id: u64) -> Result<String, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(zero_address().to_string());
-    }
-    let calldata = call_uint("guildAddress(uint256)", guild_id);
-    let result = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result = read_view(
+        selector("guildAddress(uint256)"),
+        &[u256_be(guild_id as u128)],
+    )
+    .await?;
     Ok(decode_address(&result).unwrap_or_else(|| zero_address().to_string()))
 }
 
 /// Read `guildName(guildId)` → the guild's display name (decoded `string`).
 /// Empty for an unknown guild.
 pub async fn guild_name(guild_id: u64) -> Result<String, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(String::new());
-    }
-    let calldata = call_uint("guildName(uint256)", guild_id);
-    let result = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result = read_view(selector("guildName(uint256)"), &[u256_be(guild_id as u128)]).await?;
     Ok(decode_string(&result).unwrap_or_default())
 }
 
@@ -412,14 +400,8 @@ pub async fn guild_name(guild_id: u64) -> Result<String, String> {
 /// dynamic `uint256[]` ABI return (`[offset][len][id0]…`), the SAME decode as
 /// `bounties_of`/`jobs_of`. Hostile-length-safe.
 pub async fn guilds_of(addr_hex: &str) -> Result<Vec<u64>, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(Vec::new());
-    }
     let account = parse_eth_address(addr_hex)?;
-    let mut calldata = selector("guildsOf(address)").to_vec();
-    calldata.extend_from_slice(&addr_word(&account));
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    let result = read_view(selector("guildsOf(address)"), &[addr_word(&account)]).await?;
     let bytes = hex_to_bytes(&result)?;
     Ok(decode_u64_array(&bytes))
 }
@@ -427,13 +409,7 @@ pub async fn guilds_of(addr_hex: &str) -> Result<Vec<u64>, String> {
 /// Read `guildCount()` → the total number of guilds created (the next-id - 1
 /// counter; informational).
 pub async fn guild_count() -> Result<u64, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(0);
-    }
-    let mut calldata = selector("guildCount()").to_vec();
-    let _ = &mut calldata; // no args
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    let result = read_view(selector("guildCount()"), &[]).await?;
     decode_u256_as_u64(&result)
 }
 

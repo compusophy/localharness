@@ -11,21 +11,13 @@ use super::*;
 /// decide whether to auto-register on first claim and to badge the
 /// MAIN entry in the apex agents list.
 pub async fn main_of(holder_hex: &str) -> Result<u64, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(0);
-    }
-    let selector = selector("mainOf(address)");
     let holder_bytes = hex_to_bytes(holder_hex)?;
     if holder_bytes.len() != 20 {
         return Err(format!("holder must be 20 bytes, got {}", holder_bytes.len()));
     }
     let mut padded = [0u8; 32];
     padded[12..].copy_from_slice(&holder_bytes);
-    let mut calldata = Vec::with_capacity(36);
-    calldata.extend_from_slice(&selector);
-    calldata.extend_from_slice(&padded);
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    let result = read_view(selector("mainOf(address)"), &[padded]).await?;
     decode_u256_as_u64(&result)
 }
 
@@ -93,16 +85,13 @@ pub(crate) fn encode_register_main(token_id: u64) -> Vec<u8> {
 /// `signer` is recognized by the TBA's MultiSignerAccount impl —
 /// either as the NFT holder (implicit) or as a previously-added device.
 pub async fn is_authorized_signer(tba_address: &str, signer_hex: &str) -> Result<bool, String> {
-    let mut data = Vec::with_capacity(4 + 32);
-    data.extend_from_slice(&selector("isAuthorizedSigner(address)"));
     let signer_bytes = hex_to_bytes(signer_hex)?;
     if signer_bytes.len() != 20 {
         return Err(format!("signer must be 20 bytes, got {}", signer_bytes.len()));
     }
     let mut padded = [0u8; 32];
     padded[12..].copy_from_slice(&signer_bytes);
-    data.extend_from_slice(&padded);
-    let calldata = format!("0x{}", bytes_to_hex(&data));
+    let calldata = encode_call_hex(selector("isAuthorizedSigner(address)"), &[padded]);
     let result_hex = eth_call(tba_address, &calldata).await?;
     let trimmed = result_hex.trim().trim_start_matches("0x");
     Ok(trimmed.chars().last().map(|c| c == '1').unwrap_or(false))
@@ -112,7 +101,7 @@ pub async fn is_authorized_signer(tba_address: &str, signer_hex: &str) -> Result
 /// returned word: chainId, tokenContract, tokenId). Lets us route owner
 /// actions through a TBA when we only know the TBA address.
 pub async fn tba_token_id_of(tba_hex: &str) -> Result<u64, String> {
-    let calldata = format!("0x{}", bytes_to_hex(&selector("token()")));
+    let calldata = encode_call_hex(selector("token()"), &[]);
     let result = eth_call(tba_hex, &calldata).await?;
     let bytes = hex_to_bytes(&result)?;
     if bytes.len() < 96 {
@@ -228,13 +217,7 @@ pub(crate) fn encode_link_device(main_id: u64, device: &[u8; 20]) -> Vec<u8> {
 /// on-chain enumerable index in ONE call (no log scraping). Returns
 /// lowercase `0x…` addresses.
 pub async fn devices_of(main_id: u64) -> Result<Vec<String>, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(Vec::new());
-    }
-    let mut calldata = selector("devicesOf(uint256)").to_vec();
-    calldata.extend_from_slice(&u256_be(main_id as u128));
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    let result = read_view(selector("devicesOf(uint256)"), &[u256_be(main_id as u128)]).await?;
     let bytes = hex_to_bytes(&result)?;
     // ABI dynamic address[]: [offset(32)][len(32)][addr0(32)]... — shared decode.
     Ok(decode_address_array(&bytes))
@@ -243,15 +226,12 @@ pub async fn devices_of(main_id: u64) -> Result<Vec<String>, String> {
 /// Single-read link check — `isDeviceLinked(mainId, addr)` on the index.
 /// THE source of truth a device reads on load (no polling, no scraping).
 pub async fn is_device_linked(main_id: u64, addr_hex: &str) -> Result<bool, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(false);
-    }
     let addr = parse_eth_address(addr_hex)?;
-    let mut calldata = selector("isDeviceLinked(uint256,address)").to_vec();
-    calldata.extend_from_slice(&u256_be(main_id as u128));
-    calldata.extend_from_slice(&addr_word(&addr));
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    let result = read_view(
+        selector("isDeviceLinked(uint256,address)"),
+        &[u256_be(main_id as u128), addr_word(&addr)],
+    )
+    .await?;
     decode_u256_as_u64(&result).map(|v| v != 0)
 }
 
@@ -468,9 +448,6 @@ pub async fn announce_pairing_sponsored(
 pub async fn find_pairing_device(
     code_hash: &[u8; 32],
 ) -> Result<Option<(String, Vec<u8>)>, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(None);
-    }
     use sha3::{Digest, Keccak256};
     let topic0 = format!(
         "0x{}",
@@ -544,12 +521,11 @@ pub async fn wrapped_device_key_of(
     device_addr_hex: &str,
 ) -> Result<Option<Vec<u8>>, String> {
     let device_addr = parse_eth_address(device_addr_hex)?;
-    let mut data = Vec::with_capacity(4 + 64);
-    data.extend_from_slice(&selector("metadata(uint256,bytes32)"));
-    data.extend_from_slice(&u256_be(token_id as u128));
-    data.extend_from_slice(&gemini_key_dev_metadata_key(&device_addr));
-    let calldata = format!("0x{}", bytes_to_hex(&data));
-    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result_hex = read_view(
+        selector("metadata(uint256,bytes32)"),
+        &[u256_be(token_id as u128), gemini_key_dev_metadata_key(&device_addr)],
+    )
+    .await?;
     let bytes = hex_to_bytes(&result_hex)?;
     if bytes.len() < 64 {
         return Ok(None);
@@ -607,11 +583,7 @@ pub async fn set_device_wrapped_key_sponsored(
 /// pulls from the caller via transferFrom on every MAIN change. Zero
 /// means the gate is off.
 pub async fn main_cost() -> Result<u128, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(0);
-    }
-    let calldata = format!("0x{}", bytes_to_hex(&selector("mainCost()")));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result = read_view(selector("mainCost()"), &[]).await?;
     decode_u256_as_u128(&result)
 }
 
@@ -619,11 +591,7 @@ pub async fn main_cost() -> Result<u128, String> {
 /// the credits token's `balanceOf(diamond)`. Useful for surfacing
 /// "X LH collected from registrations" in admin UIs.
 pub async fn treasury_balance() -> Result<u128, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(0);
-    }
-    let calldata = format!("0x{}", bytes_to_hex(&selector("treasuryBalance()")));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result = read_view(selector("treasuryBalance()"), &[]).await?;
     decode_u256_as_u128(&result)
 }
 
@@ -631,11 +599,7 @@ pub async fn treasury_balance() -> Result<u128, String> {
 /// decimals) the diamond's `register(name)` will pull from the sender
 /// via transferFrom. Zero means the cost gate is disabled.
 pub async fn registration_cost() -> Result<u128, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(0);
-    }
-    let calldata = format!("0x{}", bytes_to_hex(&selector("registrationCost()")));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result = read_view(selector("registrationCost()"), &[]).await?;
     decode_u256_as_u128(&result)
 }
 

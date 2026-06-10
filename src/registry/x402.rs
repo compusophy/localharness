@@ -144,16 +144,12 @@ pub async fn x402_authorization_state(
     from_hex: &str,
     nonce: &[u8; 32],
 ) -> Result<bool, String> {
-    if REGISTRY_ADDRESS == zero_address() {
-        return Ok(false);
-    }
     let from = parse_eth_address(from_hex)?;
-    let mut calldata = Vec::with_capacity(4 + 64);
-    calldata.extend_from_slice(&selector("authorizationState(address,bytes32)"));
-    calldata.extend_from_slice(&addr_word(&from));
-    calldata.extend_from_slice(nonce);
-    let calldata_hex = format!("0x{}", bytes_to_hex(&calldata));
-    let result = eth_call(REGISTRY_ADDRESS, &calldata_hex).await?;
+    let result = read_view(
+        selector("authorizationState(address,bytes32)"),
+        &[addr_word(&from), *nonce],
+    )
+    .await?;
     Ok(decode_u256_as_u64(&result).map(|v| v != 0).unwrap_or(false))
 }
 
