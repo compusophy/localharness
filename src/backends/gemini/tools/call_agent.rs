@@ -341,7 +341,7 @@ async fn call_agent_impl(name: &str, message: &str) -> std::result::Result<Strin
             cw = Some(w);
             break;
         }
-        sleep_ms(50).await;
+        crate::runtime::sleep_ms(50).await;
     }
     let target = cw.ok_or_else(|| "iframe content window unavailable".to_string())?;
 
@@ -426,15 +426,4 @@ async fn call_agent_impl(name: &str, message: &str) -> std::result::Result<Strin
         .borrow()
         .clone()
         .unwrap_or_else(|| Err("timeout waiting for agent response".into()))
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn sleep_ms(ms: u32) {
-    use wasm_bindgen_futures::JsFuture;
-    let p = js_sys::Promise::new(&mut |resolve, _| {
-        if let Some(w) = web_sys::window() {
-            let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms as i32);
-        }
-    });
-    let _ = JsFuture::from(p).await;
 }

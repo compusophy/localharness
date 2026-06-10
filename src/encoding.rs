@@ -133,6 +133,57 @@ pub fn bytes_to_hex_str(bytes: &[u8]) -> String {
     s
 }
 
+/// Encode bytes as bare lowercase hex — no `0x` prefix. The prefixed flavor
+/// is [`bytes_to_hex_str`]; calldata/RLP assembly wants the bare form.
+pub fn bytes_to_hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// Decode a hex string (optional `0x`/`0X` prefix, surrounding whitespace
+/// trimmed) into bytes. Rejects an odd nibble count and non-hex characters;
+/// empty input (`""` / `0x`) decodes to no bytes.
+pub fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
+    let trimmed = hex.trim().trim_start_matches("0x").trim_start_matches("0X");
+    if trimmed.len() % 2 != 0 {
+        return Err("hex odd length".into());
+    }
+    let bytes = trimmed.as_bytes();
+    let mut out = Vec::with_capacity(trimmed.len() / 2);
+    let mut i = 0;
+    while i < bytes.len() {
+        let hi = hex_nibble(bytes[i])?;
+        let lo = hex_nibble(bytes[i + 1])?;
+        out.push((hi << 4) | lo);
+        i += 2;
+    }
+    Ok(out)
+}
+
+/// Like [`hex_to_bytes`], but an odd nibble count is left-padded with one `0`
+/// instead of rejected — for refs/quantities where `0xabc` means `0x0abc`.
+pub fn hex_to_bytes_padded(hex: &str) -> Result<Vec<u8>, String> {
+    let trimmed = hex.trim().trim_start_matches("0x").trim_start_matches("0X");
+    if trimmed.len() % 2 == 1 {
+        hex_to_bytes(&format!("0{trimmed}"))
+    } else {
+        hex_to_bytes(trimmed)
+    }
+}
+
+/// Parse a hex quantity (optional `0x` prefix) into a `u128`. Empty input is
+/// zero — JSON-RPC returns `0x` for zero-valued quantities.
+pub fn parse_hex_quantity(hex: &str) -> Result<u128, String> {
+    let trimmed = hex.trim().trim_start_matches("0x");
+    if trimmed.is_empty() {
+        return Ok(0);
+    }
+    u128::from_str_radix(trimmed, 16).map_err(|e| e.to_string())
+}
+
 /// Shorten a tx hash to `ABCDEF…WXYZ` for display.
 pub fn tx_short_hash(tx_hash: &str) -> String {
     let stripped = tx_hash.trim_start_matches("0x");
@@ -224,6 +275,43 @@ mod tests {
         assert_eq!(bytes_to_hex_str(&bytes), addr);
         assert!(parse_address("0x1234").is_err()); // wrong length
         assert!(parse_address(&"z".repeat(40)).is_err()); // non-hex
+    }
+
+    #[test]
+    fn hex_codec_roundtrips_and_rejects() {
+        // Bare vs prefixed encoders agree modulo the prefix.
+        assert_eq!(bytes_to_hex(&[0x00, 0xab, 0xff]), "00abff");
+        assert_eq!(bytes_to_hex_str(&[0x00, 0xab, 0xff]), "0x00abff");
+        assert_eq!(bytes_to_hex(&[]), "");
+
+        // Strict decoder: optional prefix, trims, case-insensitive.
+        assert_eq!(hex_to_bytes("0x00abff").unwrap(), vec![0x00, 0xab, 0xff]);
+        assert_eq!(hex_to_bytes("  00ABFF  ").unwrap(), vec![0x00, 0xab, 0xff]);
+        assert_eq!(hex_to_bytes("0X00abff").unwrap(), vec![0x00, 0xab, 0xff]);
+        assert_eq!(hex_to_bytes("").unwrap(), Vec::<u8>::new());
+        assert_eq!(hex_to_bytes("0x").unwrap(), Vec::<u8>::new());
+        assert!(hex_to_bytes("abc").is_err()); // odd
+        assert!(hex_to_bytes("zz").is_err()); // non-hex
+
+        // Padded decoder: odd nibble count left-pads instead of rejecting.
+        assert_eq!(hex_to_bytes_padded("abc").unwrap(), vec![0x0a, 0xbc]);
+        assert_eq!(hex_to_bytes_padded("0xabc").unwrap(), vec![0x0a, 0xbc]);
+        assert_eq!(hex_to_bytes_padded("00abff").unwrap(), vec![0x00, 0xab, 0xff]);
+        assert!(hex_to_bytes_padded("zz").is_err());
+
+        // Round-trip.
+        let data: Vec<u8> = (0..=255).collect();
+        assert_eq!(hex_to_bytes(&bytes_to_hex(&data)).unwrap(), data);
+    }
+
+    #[test]
+    fn parse_hex_quantity_handles_rpc_shapes() {
+        assert_eq!(parse_hex_quantity("0x0"), Ok(0));
+        assert_eq!(parse_hex_quantity("0x"), Ok(0)); // RPC zero
+        assert_eq!(parse_hex_quantity(""), Ok(0));
+        assert_eq!(parse_hex_quantity("0xff"), Ok(255));
+        assert_eq!(parse_hex_quantity(" 0xDE "), Ok(222));
+        assert!(parse_hex_quantity("0xzz").is_err());
     }
 
     #[test]

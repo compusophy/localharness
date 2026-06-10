@@ -72,7 +72,7 @@ where
     S: Stream<Item = T> + Unpin,
 {
     let next = stream.next();
-    let sleep = sleep_ms(idle_ms);
+    let sleep = crate::runtime::sleep_ms(idle_ms);
     // Race the two without cancel-on-first-poll surprises: `select` polls the
     // chunk future first, so a ready chunk always wins over a co-ready timer.
     let next = pin!(next);
@@ -84,27 +84,4 @@ where
         // timer fired first — the stream produced nothing for the whole window
         futures_util::future::Either::Right((_elapsed, _next)) => NextChunk::IdleTimeout,
     }
-}
-
-/// Sleep for `ms` milliseconds. cfg-gated: tokio timer on native, a
-/// `setTimeout`-backed promise on wasm32 (mirrors `registry::sleep_ms` /
-/// `app::verify::sleep_ms`, but lives here so the backends don't depend on a
-/// feature-gated module).
-#[cfg(not(target_arch = "wasm32"))]
-async fn sleep_ms(ms: u32) {
-    tokio::time::sleep(std::time::Duration::from_millis(ms as u64)).await;
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn sleep_ms(ms: u32) {
-    use wasm_bindgen_futures::JsFuture;
-    let promise = js_sys::Promise::new(&mut |resolve, _| {
-        if let Some(window) = web_sys::window() {
-            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                &resolve,
-                ms as i32,
-            );
-        }
-    });
-    let _ = JsFuture::from(promise).await;
 }

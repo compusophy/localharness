@@ -47,3 +47,28 @@ where
 {
     wasm_bindgen_futures::spawn_local(f);
 }
+
+/// Sleep for `ms` milliseconds on either target.
+///
+/// Native: `tokio::time::sleep`. wasm32: a `setTimeout`-backed Promise on the
+/// browser event loop. The wasm flavor requires a `window` — inside a Web
+/// Worker the promise never resolves (identical to the historical per-module
+/// copies this canonicalizes; workers schedule via their own runtime).
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn sleep_ms(ms: u32) {
+    tokio::time::sleep(std::time::Duration::from_millis(ms as u64)).await;
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn sleep_ms(ms: u32) {
+    use wasm_bindgen_futures::JsFuture;
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        if let Some(window) = web_sys::window() {
+            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                &resolve,
+                ms as i32,
+            );
+        }
+    });
+    let _ = JsFuture::from(promise).await;
+}

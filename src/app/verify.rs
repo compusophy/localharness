@@ -24,6 +24,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{HtmlIFrameElement, MessageEvent};
 
+use crate::runtime::sleep_ms;
 use crate::wallet;
 
 const SIGNER_URL: &str = "https://localharness.xyz/?signer=1";
@@ -686,16 +687,4 @@ fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
         i += 2;
     }
     Ok(out)
-}
-
-async fn sleep_ms(ms: u32) {
-    let promise = js_sys::Promise::new(&mut |resolve, _| {
-        if let Some(window) = web_sys::window() {
-            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                &resolve,
-                ms as i32,
-            );
-        }
-    });
-    let _ = JsFuture::from(promise).await;
 }
