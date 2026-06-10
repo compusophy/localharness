@@ -64,6 +64,7 @@ mod sharedfs_sync;
 mod teams_sync;
 mod self_docs;
 mod signer;
+mod signer_protocol;
 mod sponsor;
 mod agent_rpc;
 mod encryption;
@@ -935,7 +936,7 @@ pub(crate) async fn paint_signer() {
             let _ = js_sys::Reflect::set(
                 &ready,
                 &JsValue::from_str("type"),
-                &JsValue::from_str("lh-signer-ready"),
+                &JsValue::from_str(signer_protocol::MSG_SIGNER_READY),
             );
             // Target "*" — the message carries no sensitive data, only
             // a presence ping. The PARENT enforces origin matching on

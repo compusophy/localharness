@@ -28,6 +28,12 @@ use crate::encoding::{bytes_to_hex, bytes_to_hex_str, hex_to_bytes};
 use crate::runtime::sleep_ms;
 use crate::wallet;
 
+use super::signer_protocol::{
+    challenge_prehash, MSG_CLAIM_NAME, MSG_CREATE_WALLET, MSG_IMPORT_SEED, MSG_OPEN_KEY,
+    MSG_REVEAL_SEED, MSG_SEAL_KEY, MSG_SIGNER_READY, MSG_SIGN_CHALLENGE, MSG_SIGN_DIGEST,
+    MSG_SIGN_RESPONSE,
+};
+
 const SIGNER_URL: &str = "https://localharness.xyz/?signer=1";
 const SIGNER_ORIGIN: &str = "https://localharness.xyz";
 /// How long to wait for the signer to reply before giving up.
@@ -148,59 +154,54 @@ pub(crate) async fn verify_owner(name: &str) -> Result<VerifyResult, String> {
     }
 }
 
-/// keccak256("localharness-auth-v0:" || name || ":" || nonce). Binds the
-/// owner-proof to BOTH the subdomain name and a random nonce, so a
-/// signature proving ownership of one name can't be replayed as proof for
-/// a different name held by the same address. MUST stay byte-for-byte
-/// identical to `signer.rs::build_challenge_response`.
-fn challenge_prehash(name: &str, nonce: &[u8]) -> [u8; 32] {
-    use sha3::{Digest, Keccak256};
-    let mut hasher = Keccak256::new();
-    hasher.update(b"localharness-auth-v0:");
-    hasher.update(name.as_bytes());
-    hasher.update(b":");
-    hasher.update(nonce);
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&hasher.finalize());
-    out
+/// Build a `{type, id, ...fields}` request payload (fresh `prefix`-tagged
+/// correlation id), run the signer-iframe round-trip with `timeout_ms`,
+/// and return the raw reply object — the scaffold every `*_via_iframe`
+/// wrapper used to copy-paste. `fields` are `JsValue`s so callers can pass
+/// strings, bools, and nested objects alike.
+async fn signer_request(
+    msg_type: &str,
+    prefix: &str,
+    fields: &[(&str, JsValue)],
+    timeout_ms: u32,
+) -> Result<JsValue, String> {
+    let id = format!("{prefix}-{}", random_id_hex());
+    let payload = js_sys::Object::new();
+    let set = |k: &str, v: &JsValue| {
+        let _ = js_sys::Reflect::set(&payload, &JsValue::from_str(k), v);
+    };
+    set("type", &JsValue::from_str(msg_type));
+    set("id", &JsValue::from_str(&id));
+    for (k, v) in fields {
+        set(k, v);
+    }
+    signer_iframe_request(&id, &payload.into(), timeout_ms).await
+}
+
+/// Non-empty string field off a signer reply, or a "missing" error.
+fn reply_str(data: &JsValue, key: &str) -> Result<String, String> {
+    js_sys::Reflect::get(data, &JsValue::from_str(key))
+        .ok()
+        .and_then(|v| v.as_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("signer reply missing {key}"))
 }
 
 /// Embed the signer iframe, send a sign challenge, wait for the
 /// reply. Cleans up the iframe before returning. `name` is the subdomain
 /// being verified — sent so the signer binds it into the signed preimage.
 async fn sign_via_iframe(nonce_hex: &str, name: &str) -> Result<(String, String), String> {
-    let id = format!("verify-{}", random_id_hex());
-    let payload = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("type"),
-        &JsValue::from_str("lh-sign-challenge"),
-    );
-    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("id"), &JsValue::from_str(&id));
-    let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("nonce"),
-        &JsValue::from_str(nonce_hex),
-    );
-    let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("name"),
-        &JsValue::from_str(name),
-    );
-
-    let data = signer_iframe_request(&id, &payload.into(), TIMEOUT_MS).await?;
-    let address = js_sys::Reflect::get(&data, &JsValue::from_str("address"))
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_default();
-    let signature = js_sys::Reflect::get(&data, &JsValue::from_str("signature"))
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_default();
-    if address.is_empty() || signature.is_empty() {
-        return Err("signer reply missing address or signature".into());
-    }
-    Ok((address, signature))
+    let data = signer_request(
+        MSG_SIGN_CHALLENGE,
+        "verify",
+        &[
+            ("nonce", JsValue::from_str(nonce_hex)),
+            ("name", JsValue::from_str(name)),
+        ],
+        TIMEOUT_MS,
+    )
+    .await?;
+    Ok((reply_str(&data, "address")?, reply_str(&data, "signature")?))
 }
 
 const TX_TIMEOUT_MS: u32 = 90_000;
@@ -233,17 +234,11 @@ pub(crate) async fn sign_tempo_tx_via_iframe(
         return Ok((bytes_to_hex_str(&address), sig));
     }
 
-    let id = format!("digest-{}", random_id_hex());
     let digest_hex = bytes_to_hex_str(&digest);
 
-    let payload = js_sys::Object::new();
     let set_str = |obj: &js_sys::Object, k: &str, v: &str| {
         let _ = js_sys::Reflect::set(obj, &JsValue::from_str(k), &JsValue::from_str(v));
     };
-    set_str(&payload, "type", "lh-sign-digest");
-    set_str(&payload, "id", &id);
-    set_str(&payload, "digest", &digest_hex);
-    set_str(&payload, "purpose", purpose);
 
     // Structured fields the signer reconstructs + validates against.
     let txo = js_sys::Object::new();
@@ -276,20 +271,20 @@ pub(crate) async fn sign_tempo_tx_via_iframe(
         calls.push(&co);
     }
     let _ = js_sys::Reflect::set(&txo, &JsValue::from_str("calls"), &calls);
-    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("tx"), &txo);
 
-    let data = signer_iframe_request(&id, &payload.into(), TX_TIMEOUT_MS).await?;
-    let address = js_sys::Reflect::get(&data, &JsValue::from_str("address"))
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_default();
-    let sig_hex = js_sys::Reflect::get(&data, &JsValue::from_str("signature"))
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_default();
-    if address.is_empty() || sig_hex.is_empty() {
-        return Err("signer reply missing address or signature".into());
-    }
+    let data = signer_request(
+        MSG_SIGN_DIGEST,
+        "digest",
+        &[
+            ("digest", JsValue::from_str(&digest_hex)),
+            ("purpose", JsValue::from_str(purpose)),
+            ("tx", txo.into()),
+        ],
+        TX_TIMEOUT_MS,
+    )
+    .await?;
+    let address = reply_str(&data, "address")?;
+    let sig_hex = reply_str(&data, "signature")?;
     let sig_bytes = hex_to_bytes(&sig_hex)?;
     if sig_bytes.len() != 65 {
         return Err(format!("signature must be 65 bytes, got {}", sig_bytes.len()));
@@ -307,23 +302,8 @@ const IDENTITY_TIMEOUT_MS: u32 = 20_000;
 /// Ask the apex signer for the cached mnemonic. Returns the 12-word
 /// phrase on success, or an error if no identity exists at apex.
 pub(crate) async fn reveal_seed_via_iframe() -> Result<String, String> {
-    let id = format!("reveal-{}", random_id_hex());
-    let payload = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("type"),
-        &JsValue::from_str("lh-reveal-seed"),
-    );
-    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("id"), &JsValue::from_str(&id));
-    let data = signer_iframe_request(&id, &payload.into(), TIMEOUT_MS).await?;
-    let phrase = js_sys::Reflect::get(&data, &JsValue::from_str("phrase"))
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_default();
-    if phrase.is_empty() {
-        return Err("signer reply missing phrase".into());
-    }
-    Ok(phrase)
+    let data = signer_request(MSG_REVEAL_SEED, "reveal", &[], TIMEOUT_MS).await?;
+    reply_str(&data, "phrase")
 }
 
 /// Ensure the apex origin has a master wallet, returning its address.
@@ -332,28 +312,14 @@ pub(crate) async fn reveal_seed_via_iframe() -> Result<String, String> {
 /// keypair. Pass `overwrite=true` from the explicit apex "create
 /// identity" path where the user is asking for a fresh wallet.
 pub(crate) async fn create_wallet_via_iframe(overwrite: bool) -> Result<String, String> {
-    let id = format!("create-{}", random_id_hex());
-    let payload = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("type"),
-        &JsValue::from_str("lh-create-wallet"),
-    );
-    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("id"), &JsValue::from_str(&id));
-    let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("overwrite"),
-        &JsValue::from_bool(overwrite),
-    );
-    let data = signer_iframe_request(&id, &payload.into(), IDENTITY_TIMEOUT_MS).await?;
-    let address = js_sys::Reflect::get(&data, &JsValue::from_str("address"))
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_default();
-    if address.is_empty() {
-        return Err("signer reply missing address".into());
-    }
-    Ok(address)
+    let data = signer_request(
+        MSG_CREATE_WALLET,
+        "create",
+        &[("overwrite", JsValue::from_bool(overwrite))],
+        IDENTITY_TIMEOUT_MS,
+    )
+    .await?;
+    reply_str(&data, "address")
 }
 
 /// Run the full apex claim flow (faucet → register → wait receipt) from
@@ -361,32 +327,14 @@ pub(crate) async fn create_wallet_via_iframe(overwrite: bool) -> Result<String, 
 /// can take ~10s and the faucet drip adds another ~5s. Returns
 /// `(owner_address, tx_hash)`.
 pub(crate) async fn claim_name_via_iframe(name: &str) -> Result<(String, String), String> {
-    let id = format!("claim-{}", random_id_hex());
-    let payload = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("type"),
-        &JsValue::from_str("lh-claim-name"),
-    );
-    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("id"), &JsValue::from_str(&id));
-    let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("name"),
-        &JsValue::from_str(name),
-    );
-    let data = signer_iframe_request(&id, &payload.into(), CLAIM_TIMEOUT_MS).await?;
-    let address = js_sys::Reflect::get(&data, &JsValue::from_str("address"))
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_default();
-    let tx_hash = js_sys::Reflect::get(&data, &JsValue::from_str("tx_hash"))
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_default();
-    if address.is_empty() || tx_hash.is_empty() {
-        return Err("signer reply missing address or tx_hash".into());
-    }
-    Ok((address, tx_hash))
+    let data = signer_request(
+        MSG_CLAIM_NAME,
+        "claim",
+        &[("name", JsValue::from_str(name))],
+        CLAIM_TIMEOUT_MS,
+    )
+    .await?;
+    Ok((reply_str(&data, "address")?, reply_str(&data, "tx_hash")?))
 }
 
 const CLAIM_TIMEOUT_MS: u32 = 90_000;
@@ -404,25 +352,14 @@ pub(crate) async fn seal_key_via_iframe(plaintext: &str) -> Result<String, Strin
             .ok_or_else(|| "seal failed".to_string())?;
         return Ok(bytes_to_hex_str(&ct));
     }
-    let id = format!("seal-{}", random_id_hex());
-    let payload = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("type"),
-        &JsValue::from_str("lh-seal-key"),
-    );
-    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("id"), &JsValue::from_str(&id));
-    let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("plaintext"),
-        &JsValue::from_str(plaintext),
-    );
-    let data = signer_iframe_request(&id, &payload.into(), IDENTITY_TIMEOUT_MS).await?;
-    js_sys::Reflect::get(&data, &JsValue::from_str("ciphertext"))
-        .ok()
-        .and_then(|v| v.as_string())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "signer reply missing ciphertext".to_string())
+    let data = signer_request(
+        MSG_SEAL_KEY,
+        "seal",
+        &[("plaintext", JsValue::from_str(plaintext))],
+        IDENTITY_TIMEOUT_MS,
+    )
+    .await?;
+    reply_str(&data, "ciphertext")
 }
 
 /// Ask the apex signer to open seed-sealed `ciphertext_hex` → plaintext.
@@ -437,52 +374,27 @@ pub(crate) async fn open_key_via_iframe(ciphertext_hex: &str) -> Result<String, 
             .ok_or_else(|| "open failed (wrong seed?)".to_string())?;
         return String::from_utf8(pt).map_err(|_| "decrypted value not utf-8".to_string());
     }
-    let id = format!("open-{}", random_id_hex());
-    let payload = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("type"),
-        &JsValue::from_str("lh-open-key"),
-    );
-    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("id"), &JsValue::from_str(&id));
-    let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("ciphertext"),
-        &JsValue::from_str(ciphertext_hex),
-    );
-    let data = signer_iframe_request(&id, &payload.into(), IDENTITY_TIMEOUT_MS).await?;
-    js_sys::Reflect::get(&data, &JsValue::from_str("plaintext"))
-        .ok()
-        .and_then(|v| v.as_string())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "signer reply missing plaintext".to_string())
+    let data = signer_request(
+        MSG_OPEN_KEY,
+        "open",
+        &[("ciphertext", JsValue::from_str(ciphertext_hex))],
+        IDENTITY_TIMEOUT_MS,
+    )
+    .await?;
+    reply_str(&data, "plaintext")
 }
 
 /// Ask the apex signer to import a user-supplied seed phrase and
 /// persist it. Returns the new address. Overwrites any existing wallet.
 pub(crate) async fn import_seed_via_iframe(phrase: &str) -> Result<String, String> {
-    let id = format!("import-{}", random_id_hex());
-    let payload = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("type"),
-        &JsValue::from_str("lh-import-seed"),
-    );
-    let _ = js_sys::Reflect::set(&payload, &JsValue::from_str("id"), &JsValue::from_str(&id));
-    let _ = js_sys::Reflect::set(
-        &payload,
-        &JsValue::from_str("phrase"),
-        &JsValue::from_str(phrase),
-    );
-    let data = signer_iframe_request(&id, &payload.into(), IDENTITY_TIMEOUT_MS).await?;
-    let address = js_sys::Reflect::get(&data, &JsValue::from_str("address"))
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_default();
-    if address.is_empty() {
-        return Err("signer reply missing address".into());
-    }
-    Ok(address)
+    let data = signer_request(
+        MSG_IMPORT_SEED,
+        "import",
+        &[("phrase", JsValue::from_str(phrase))],
+        IDENTITY_TIMEOUT_MS,
+    )
+    .await?;
+    reply_str(&data, "address")
 }
 
 /// How long to wait for the signer iframe's `lh-signer-ready` ping
@@ -546,7 +458,7 @@ async fn signer_iframe_request(
             .and_then(|v| v.as_string())
             .unwrap_or_default();
 
-        if msg_type == "lh-signer-ready" {
+        if msg_type == MSG_SIGNER_READY {
             *ready_for_handler.borrow_mut() = true;
             if let Some(waker) = ready_waker_for_handler.borrow_mut().take() {
                 let _ = waker.call0(&JsValue::NULL);
@@ -554,7 +466,7 @@ async fn signer_iframe_request(
             return;
         }
 
-        if msg_type != "lh-sign-response" {
+        if msg_type != MSG_SIGN_RESPONSE {
             return;
         }
         let id_match = js_sys::Reflect::get(&data, &JsValue::from_str("id"))
