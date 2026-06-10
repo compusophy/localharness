@@ -1,258 +1,51 @@
-//! Context-window compaction for the Anthropic backend —
-//! recency-weighted, incremental ("fold").
+//! Anthropic adapter for the shared compaction fold engine
+//! (`crate::backends::compaction`).
 //!
-//! Mirrors `backends/gemini/compaction.rs` exactly (keep them parallel). The
-//! model's context is `[ one rolling summary turn ] ++ [ recent raw window ]`.
-//! On each compaction we recognize the EXISTING rolling-summary turn at the
-//! head by its tag, and fold ONLY the newly-aged turns into it:
-//! `new_summary = summarize(prior_summary ++ newly_aged_turns)` — never
-//! re-summarizing the original raw turns (discarded at the first compaction).
-//! This keeps the synthetic prefix one turn no matter how long the chat runs
-//! (boundedness) and re-summarizes only a bounded delta each time
-//! (amortization). Never errors out of a turn — failures log at WARN and fall
-//! back to dropping the oldest turns (still preserving the prior summary).
-//!
-//! ONE rolling tier ships; a deeper "gist" tier (the two-prior Fibonacci fold)
-//! is a documented follow-up — see the Gemini module's header.
+//! ALL algorithm logic — the fold plan, keep-window split, prior-summary
+//! recognition, prompt build, install, drop-oldest fallback, thresholds —
+//! lives in the engine (see its module doc for the full strategy write-up).
+//! This module supplies only the Anthropic-specific bits: the wire-message
+//! seam (`CompactionModel` over `Message`/`Block`) and the one-shot
+//! Messages-API summarization request.
 
 use parking_lot::Mutex;
-use tracing::{debug, warn};
 
 use crate::backends::anthropic::api::SharedClient;
 use crate::backends::anthropic::wire::{Block, Message, MessagesRequest, Role, DEFAULT_MAX_TOKENS};
+use crate::backends::compaction::{self as engine, CompactionModel};
+pub use crate::backends::compaction::{should_compact, COMPACTION_TAG};
 use crate::error::Result;
 
-/// Tag prepended to the rolling-summary turn so the model (and humans) can tell
-/// what they're looking at AND so the next compaction can RECOGNIZE the prior
-/// summary and fold into it rather than re-summarize it. Recognition is
-/// load-bearing; don't change the tag without updating `extract_prior_summary`.
-pub const COMPACTION_TAG: &str = "[compacted prior context]";
+/// The Anthropic side of the [`CompactionModel`] seam — a zero-sized marker
+/// the engine is monomorphized over.
+struct AnthropicCompaction;
 
-/// How many recent user/assistant turn pairs we always keep verbatim.
-const KEEP_RECENT_TURNS: usize = 6;
+impl CompactionModel for AnthropicCompaction {
+    type Message = Message;
 
-/// Below this many history entries, compaction is a no-op.
-const MIN_HISTORY_TO_COMPACT: usize = 8;
-
-const SUMMARY_PROMPT: &str = "You maintain a rolling summary of a long agent conversation. \
-    Below is the PRIOR SUMMARY (already-distilled older context) followed by NEW TURNS that \
-    just aged out of the live window. Produce an UPDATED rolling summary in 200 words or less \
-    that folds the new turns into the prior summary: preserve key facts, decisions, file paths, \
-    and any open user requests; drop greetings, chit-chat, and redundant tool output. Do not \
-    lose information that was in the prior summary unless it is now obsolete. Output only the \
-    updated summary; no preamble.";
-
-/// The plan for a single fold, computed PURELY from a history snapshot — no
-/// network, no client. Splitting this out makes the amortization + boundedness
-/// guarantees unit-testable with a stub summarizer (see tests).
-struct FoldPlan {
-    split: usize,
-    prior_summary: Option<String>,
-    delta_start: usize,
-}
-
-/// Try to compact `history` in place. Returns `true` if anything changed.
-/// Safe to call from inside the agent loop — never errors, only logs.
-pub async fn try_compact(history: &Mutex<Vec<Message>>, client: &SharedClient, model: &str) -> bool {
-    let snapshot = history.lock().clone();
-    let total = snapshot.len();
-    if total < MIN_HISTORY_TO_COMPACT {
-        debug!(total, "compaction: history too short, skipping");
-        return false;
+    fn is_user(m: &Message) -> bool {
+        matches!(m.role, Role::User)
     }
 
-    let plan = match plan_fold(&snapshot) {
-        Some(p) => p,
-        None => {
-            debug!("compaction: nothing to fold before the keep-window");
-            return false;
+    fn sole_text(m: &Message) -> Option<&str> {
+        match m.content.as_slice() {
+            [Block::Text { text }] => Some(text),
+            _ => None,
         }
-    };
-
-    let delta = &snapshot[plan.delta_start..plan.split];
-    debug!(
-        prior_summary = plan.prior_summary.is_some(),
-        delta = delta.len(),
-        to_keep = total - plan.split,
-        "compaction: attempting incremental fold"
-    );
-
-    let summary = match summarize(client, model, plan.prior_summary.as_deref(), delta).await {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(error = %e, "compaction: summarization failed; folding to drop-oldest");
-            return drop_oldest_fallback(history, plan.split, plan.prior_summary.as_deref());
-        }
-    };
-
-    if summary.trim().is_empty() {
-        warn!("compaction: summarization returned empty text; folding to drop-oldest");
-        return drop_oldest_fallback(history, plan.split, plan.prior_summary.as_deref());
     }
 
-    let synthetic = Message {
-        role: Role::User,
-        content: vec![Block::Text {
-            text: format!("{COMPACTION_TAG}\n{summary}"),
-        }],
-    };
-    let mut hist = history.lock();
-    if hist.len() != total {
-        warn!("compaction: history changed under us; aborting install");
-        return false;
+    fn is_tool_result_turn(m: &Message) -> bool {
+        turn_is_tool_result(m)
     }
-    let kept: Vec<Message> = hist.split_off(plan.split);
-    hist.clear();
-    hist.push(synthetic);
-    hist.extend(kept);
-    debug!(new_len = hist.len(), "compaction: installed folded summary");
-    true
-}
 
-/// Compute the fold plan for `history`, or `None` if there's nothing worth
-/// folding. Recognizes a prior rolling-summary turn at index 0 by
-/// `COMPACTION_TAG`; when present, the delta to fold STARTS AFTER it, so the
-/// summarizer receives `(prior summary) + (only the newly-aged turns)` — the
-/// amortization.
-fn plan_fold(history: &[Message]) -> Option<FoldPlan> {
-    let split = pick_split(history, KEEP_RECENT_TURNS);
-    if split == 0 {
-        return None;
-    }
-    let prior_summary = extract_prior_summary(history.first());
-    let delta_start = if prior_summary.is_some() { 1 } else { 0 };
-    // Head-only prefix (just the prior summary) → empty delta → no re-fold.
-    if delta_start >= split {
-        return None;
-    }
-    Some(FoldPlan {
-        split,
-        prior_summary,
-        delta_start,
-    })
-}
-
-/// Recover the prior rolling summary text from a head turn iff it is the
-/// tagged synthetic summary. Returns the summary WITHOUT the tag line.
-fn extract_prior_summary(head: Option<&Message>) -> Option<String> {
-    let m = head?;
-    if !matches!(m.role, Role::User) {
-        return None;
-    }
-    let text = match m.content.as_slice() {
-        [Block::Text { text }] => text,
-        _ => return None,
-    };
-    let rest = text.strip_prefix(COMPACTION_TAG)?;
-    let body = rest.trim_start_matches('\n').to_string();
-    // A whitespace-only body is NOT a usable prior summary. Recognizing it as
-    // one would set `delta_start = 1` (excluding the head from the fold delta)
-    // while `fold_prompt`'s `!s.trim().is_empty()` guard would then refuse to
-    // emit it as PRIOR SUMMARY — so the head turn's content would be dropped
-    // from the summarizer input entirely (silent loss). Treat it as a normal
-    // turn instead, so it's folded verbatim into the delta. Keeps the two
-    // predicates consistent.
-    if body.trim().is_empty() {
-        return None;
-    }
-    Some(body)
-}
-
-/// Pick `i` such that history[..i] is summarized and history[i..] is kept.
-/// Honors `KEEP_RECENT_TURNS` and never orphans a tool_use from its matching
-/// tool_result.
-///
-/// The kept slice `history[i..]` is API-valid iff its first message is NOT a
-/// lone `tool_result` user turn — otherwise the matching `tool_use` (at `i-1`)
-/// would be in the summarized prefix and the request 400s on a dangling
-/// `tool_result`. (Linear history guarantees a `tool_use` is always followed
-/// by its `tool_result`, so a kept *tool_use* never dangles; only the leading
-/// `tool_result` can orphan.)
-///
-/// We therefore start at the keep-window boundary and walk the boundary
-/// EARLIER (toward 0) past any leading `tool_result`, absorbing the orphaned
-/// pair into the summary. Walking earlier keeps strictly MORE history than
-/// requested (never less) and can never run off the end — the old
-/// walk-FORWARD logic could chain through a long run of tool round-trips and
-/// keep ZERO messages, summarizing away the entire recent context including
-/// the turn being answered.
-fn pick_split(history: &[Message], keep_pairs: usize) -> usize {
-    let keep_entries = keep_pairs * 2;
-    if history.len() <= keep_entries {
-        return 0;
-    }
-    let mut split = history.len() - keep_entries;
-
-    while split > 0 && is_leading_orphan(history, split) {
-        split -= 1;
-    }
-    split
-}
-
-/// True if keeping `history[split..]` would orphan a leading `tool_result`:
-/// the first kept message is a user turn of only `tool_result` blocks, whose
-/// matching `tool_use` lives at `split-1` (and would be summarized away).
-fn is_leading_orphan(history: &[Message], split: usize) -> bool {
-    match history.get(split) {
-        Some(m) => matches!(m.role, Role::User) && turn_is_tool_result(m),
-        None => false,
-    }
-}
-
-fn turn_is_tool_result(m: &Message) -> bool {
-    !m.content.is_empty()
-        && m.content
-            .iter()
-            .all(|b| matches!(b, Block::ToolResult { .. }))
-}
-
-/// Build the one-shot summarizer prompt for an incremental fold: the prior
-/// rolling summary (if any) followed by the newly-aged delta transcript.
-/// Pure + network-free so tests can assert the summarizer's INPUT contains
-/// only `(prior summary + delta)`, proving the fold doesn't re-summarize the
-/// whole history.
-fn fold_prompt(prior_summary: Option<&str>, delta: &[Message]) -> String {
-    let mut body = String::new();
-    body.push_str(SUMMARY_PROMPT);
-    body.push_str("\n\n--- PRIOR SUMMARY ---\n");
-    match prior_summary {
-        Some(s) if !s.trim().is_empty() => body.push_str(s),
-        _ => body.push_str("(none — this is the first compaction)"),
-    }
-    body.push_str("\n\n--- NEW TURNS ---\n");
-    body.push_str(&render_transcript(delta));
-    body
-}
-
-async fn summarize(
-    client: &SharedClient,
-    model: &str,
-    prior_summary: Option<&str>,
-    delta: &[Message],
-) -> Result<String> {
-    let req = MessagesRequest {
-        model: model.to_string(),
-        max_tokens: DEFAULT_MAX_TOKENS,
-        system: None,
-        messages: vec![Message {
+    fn user_text(text: String) -> Message {
+        Message {
             role: Role::User,
-            content: vec![Block::Text {
-                text: fold_prompt(prior_summary, delta),
-            }],
-        }],
-        tools: Vec::new(),
-        tool_choice: None,
-        stream: false,
-        temperature: None,
-        thinking: None,
-    };
-    let resp = client.messages(&req).await?;
-    Ok(resp.text())
-}
+            content: vec![Block::Text { text }],
+        }
+    }
 
-fn render_transcript(history: &[Message]) -> String {
-    let mut out = String::with_capacity(history.len() * 64);
-    for entry in history {
+    fn render_message(entry: &Message, out: &mut String) {
         let role = match entry.role {
             Role::User => "USER",
             Role::Assistant => "ASSISTANT",
@@ -275,20 +68,7 @@ fn render_transcript(history: &[Message]) -> String {
                 }
                 Block::ToolResult { content, .. } => {
                     out.push_str("[tool_result] ");
-                    let body = content.to_string();
-                    if body.len() > 512 {
-                        // Truncate at a CHAR boundary — tool-result content is
-                        // arbitrary network text; a blind `[..512]` panics when
-                        // byte 512 lands inside a multibyte UTF-8 char.
-                        let mut end = 512;
-                        while end > 0 && !body.is_char_boundary(end) {
-                            end -= 1;
-                        }
-                        out.push_str(&body[..end]);
-                        out.push_str("…[truncated]");
-                    } else {
-                        out.push_str(&body);
-                    }
+                    engine::push_truncated(out, &content.to_string());
                 }
                 Block::Image { source } => {
                     out.push_str("[image ");
@@ -299,47 +79,80 @@ fn render_transcript(history: &[Message]) -> String {
             }
             out.push('\n');
         }
-        out.push('\n');
     }
-    out
 }
 
-/// Last-resort fallback when summarization isn't available. Drops the aged-out
-/// delta but PRESERVES the prior rolling summary if there is one — so a network
-/// blip doesn't throw away every prior fold. The head stays one turn either
-/// way, so boundedness still holds.
-fn drop_oldest_fallback(
-    history: &Mutex<Vec<Message>>,
-    split: usize,
-    prior_summary: Option<&str>,
-) -> bool {
-    let mut hist = history.lock();
-    if split >= hist.len() {
-        return false;
-    }
-    let kept: Vec<Message> = hist.split_off(split);
-    hist.clear();
-    let text = match prior_summary {
-        Some(s) if !s.trim().is_empty() => {
-            format!("{COMPACTION_TAG}\n{s}\n[some prior turns dropped without summary]")
-        }
-        _ => format!("{COMPACTION_TAG}\n[prior turns dropped]"),
+/// True iff every block of the turn is a `tool_result` (and there is at
+/// least one) — the shape `pick_split` must never orphan.
+fn turn_is_tool_result(m: &Message) -> bool {
+    !m.content.is_empty()
+        && m.content
+            .iter()
+            .all(|b| matches!(b, Block::ToolResult { .. }))
+}
+
+/// Try to compact `history` in place. Returns `true` if anything changed.
+/// Safe to call from inside the agent loop — never errors, only logs.
+pub async fn try_compact(history: &Mutex<Vec<Message>>, client: &SharedClient, model: &str) -> bool {
+    engine::try_compact::<AnthropicCompaction, _, _>(history, |prompt| {
+        summarize(client, model, prompt)
+    })
+    .await
+}
+
+/// One-shot summarization request: feed the fold prompt as a single user
+/// message — no system, no tools, no history.
+async fn summarize(client: &SharedClient, model: &str, prompt: String) -> Result<String> {
+    let req = MessagesRequest {
+        model: model.to_string(),
+        max_tokens: DEFAULT_MAX_TOKENS,
+        system: None,
+        messages: vec![Message {
+            role: Role::User,
+            content: vec![Block::Text { text: prompt }],
+        }],
+        tools: Vec::new(),
+        tool_choice: None,
+        stream: false,
+        temperature: None,
+        thinking: None,
     };
-    hist.push(Message {
-        role: Role::User,
-        content: vec![Block::Text { text }],
-    });
-    hist.extend(kept);
-    debug!(new_len = hist.len(), "compaction: drop-oldest fallback applied");
-    true
+    let resp = client.messages(&req).await?;
+    Ok(resp.text())
 }
 
-/// Decide whether to attempt compaction. `threshold` of `None` disables.
-pub fn should_compact(total_tokens: Option<i32>, threshold: Option<u32>) -> bool {
-    match (total_tokens, threshold) {
-        (Some(t), Some(th)) => t as u32 > th,
-        _ => false,
-    }
+// ---- test-only thin wrappers ----
+//
+// The tests below are the PINNED pre-extraction suite, kept byte-identical:
+// they exercise the SHARED engine through this adapter's seam. These wrappers
+// restore the original module-local names/signatures the tests call.
+
+#[cfg(test)]
+use crate::backends::compaction::KEEP_RECENT_TURNS;
+
+#[cfg(test)]
+fn pick_split(history: &[Message], keep_pairs: usize) -> usize {
+    engine::pick_split::<AnthropicCompaction>(history, keep_pairs)
+}
+
+#[cfg(test)]
+fn plan_fold(history: &[Message]) -> Option<engine::FoldPlan> {
+    engine::plan_fold::<AnthropicCompaction>(history)
+}
+
+#[cfg(test)]
+fn extract_prior_summary(head: Option<&Message>) -> Option<String> {
+    engine::extract_prior_summary::<AnthropicCompaction>(head)
+}
+
+#[cfg(test)]
+fn fold_prompt(prior_summary: Option<&str>, delta: &[Message]) -> String {
+    engine::fold_prompt::<AnthropicCompaction>(prior_summary, delta)
+}
+
+#[cfg(test)]
+fn render_transcript(history: &[Message]) -> String {
+    engine::render_transcript::<AnthropicCompaction>(history)
 }
 
 #[cfg(test)]

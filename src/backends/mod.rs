@@ -32,6 +32,12 @@ pub use runners::BackendRunners;
 /// post-hook) every backend funnels its inline tool calls through.
 pub(crate) mod dispatch;
 
+/// The generic context-compaction fold engine (rolling summary + recent
+/// keep-window) shared by the Gemini and Anthropic backends. Each backend's
+/// `compaction.rs` is a thin adapter supplying the wire-message seam
+/// ([`compaction::CompactionModel`]) and its summarization request.
+pub(crate) mod compaction;
+
 pub mod gemini;
 /// Deterministic, offline mock backend for testing agents — a scripted
 /// `ConnectionStrategy` that replays fixed model turns with no network, key,
