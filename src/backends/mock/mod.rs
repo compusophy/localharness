@@ -446,9 +446,9 @@ impl Connection for MockConnection {
     }
 
     fn subscribe_steps(&self) -> StepStream {
-        // No error-step translation (matches the Gemini backend) — see
-        // `backends::subscribe_step_stream` for the per-backend difference.
-        crate::backends::subscribe_step_stream(self.inner.steps.subscribe(), "mock", false)
+        // Turn-failure Steps surface as stream `Err` (uniform across
+        // backends) — see `backends::subscribe_step_stream`.
+        crate::backends::subscribe_step_stream(self.inner.steps.subscribe(), "mock")
     }
 
     async fn wait_for_idle(&self) -> Result<()> {

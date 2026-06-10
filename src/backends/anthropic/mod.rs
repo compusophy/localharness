@@ -494,11 +494,10 @@ impl Connection for AnthropicConnection {
         // only surfaces an error to `chat()`/`text()` when the *stream
         // item itself* is `Err` (its `PollDecision::Error`) — a successful
         // Step with `status: Error` is otherwise swallowed (empty content →
-        // no chunk → silent `Ok("")`). So translate=true: the error Step
-        // becomes a stream `Err` carrying the real message and the failure
-        // propagates instead of returning an empty success. Refusal/safety
-        // terminal Steps are Model-sourced and pass through untouched.
-        crate::backends::subscribe_step_stream(self.state.steps.subscribe(), "anthropic", true)
+        // no chunk → silent `Ok("")`). So the shared stream translates the
+        // error Step into a stream `Err` carrying the real message. Refusal/
+        // safety terminal Steps are Model-sourced and pass through untouched.
+        crate::backends::subscribe_step_stream(self.state.steps.subscribe(), "anthropic")
     }
 
     async fn wait_for_idle(&self) -> Result<()> {

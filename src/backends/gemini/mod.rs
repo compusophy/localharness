@@ -524,10 +524,10 @@ impl Connection for GeminiConnection {
     }
 
     fn subscribe_steps(&self) -> StepStream {
-        // No error-step translation here (System/Error Steps pass through as
-        // `Ok`) — see `backends::subscribe_step_stream` for the per-backend
-        // difference.
-        crate::backends::subscribe_step_stream(self.state.steps.subscribe(), "gemini", false)
+        // Turn-failure Steps (System/Error from `emit_error`) surface as
+        // stream `Err` — uniform across backends; previously gemini passed
+        // them through as `Ok`, which downstream read as an empty success.
+        crate::backends::subscribe_step_stream(self.state.steps.subscribe(), "gemini")
     }
 
     async fn wait_for_idle(&self) -> Result<()> {

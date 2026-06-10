@@ -97,26 +97,20 @@ pub(crate) fn render_system(s: &crate::types::SystemInstructions) -> String {
 /// [`StepStream`] — boxed `Send` on native, boxed local on wasm — with the
 /// backend's lag error labelled `"{label} step lag: ..."`.
 ///
-/// `translate_error_steps` selects each backend's CURRENT error-step
-/// behavior, preserved exactly as found:
-///
-/// * `true` (anthropic, local) — a System-sourced, Error-status Step with a
-///   non-empty message (a turn failure from `emit_error`) converts into a
-///   stream `Err` carrying the real message, so the failure propagates to
-///   `chat()`/`text()` instead of being swallowed as an empty success.
-/// * `false` (gemini, mock) — such Steps pass through as `Ok`.
-///
-/// The inconsistency is deliberate-as-found; unifying it is a behavior
-/// decision, not plumbing.
+/// A System-sourced, Error-status Step with a non-empty message (a turn
+/// failure from `emit_error` / `Step::turn_error`: HTTP non-200, stream
+/// decode failure, in-stream error event) converts into a stream `Err`
+/// carrying the real message, so the failure propagates to `chat()`/`text()`
+/// instead of being swallowed as an empty success — the "(empty response)"
+/// bug class. Uniform across ALL backends since the gemini/mock flip;
+/// Model-sourced terminal Steps (safety/refusal stops) pass through as `Ok`.
 pub(crate) fn subscribe_step_stream(
     rx: tokio::sync::broadcast::Receiver<Step>,
     label: &'static str,
-    translate_error_steps: bool,
 ) -> StepStream {
     let mapped = BroadcastStream::new(rx).map(move |r| match r {
         Ok(step)
-            if translate_error_steps
-                && step.source == StepSource::System
+            if step.source == StepSource::System
                 && step.status == StepStatus::Error
                 && !step.error.is_empty() =>
         {
@@ -132,5 +126,59 @@ pub(crate) fn subscribe_step_stream(
     #[cfg(target_arch = "wasm32")]
     {
         mapped.boxed_local()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::StreamExt;
+
+    /// REGRESSION (the gemini/mock unification): a System-sourced,
+    /// Error-status Step with a message — exactly what `Step::turn_error`
+    /// broadcasts on a turn failure — MUST become a stream `Err` for EVERY
+    /// backend, or `chat()`/`text()` swallow the failure as an empty
+    /// success ("(empty response)" with no cause). Gemini and mock used to
+    /// pass these through as `Ok`.
+    #[tokio::test]
+    async fn turn_error_step_translates_to_stream_err() {
+        let (tx, rx) = tokio::sync::broadcast::channel(8);
+        let mut stream = subscribe_step_stream(rx, "test");
+
+        tx.send(Step::turn_error(0, "gemini HTTP 500: boom"))
+            .expect("subscriber is live");
+
+        match stream.next().await.expect("a stream item") {
+            Ok(step) => panic!("error Step leaked as Ok: {step:?}"),
+            Err(Error::Other(msg)) => {
+                assert!(msg.contains("gemini HTTP 500: boom"), "got: {msg}")
+            }
+            Err(other) => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    /// Model-sourced terminal Steps (safety/refusal stops carry
+    /// `StepStatus::Error` but `StepSource::Model`) must pass through as
+    /// `Ok` — they are answers-with-caveats, not turn failures.
+    #[tokio::test]
+    async fn model_error_status_step_passes_through() {
+        let (tx, rx) = tokio::sync::broadcast::channel(8);
+        let mut stream = subscribe_step_stream(rx, "test");
+
+        let step = Step::turn_complete(
+            "t",
+            0,
+            StepStatus::Error,
+            "",
+            "stopped by safety policy",
+            None,
+            None,
+        );
+        tx.send(step).expect("subscriber is live");
+
+        match stream.next().await.expect("a stream item") {
+            Ok(step) => assert_eq!(step.status, StepStatus::Error),
+            Err(e) => panic!("Model-sourced step wrongly translated: {e:?}"),
+        }
     }
 }

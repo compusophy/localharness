@@ -693,10 +693,9 @@ impl Connection for LocalConnection {
     }
 
     fn subscribe_steps(&self) -> StepStream {
-        // translate=true: a System/Error turn-failure Step (e.g. "model not
-        // downloaded") surfaces as a stream `Err` — same convention as the
-        // Anthropic backend.
-        crate::backends::subscribe_step_stream(self.state.steps.subscribe(), "local", true)
+        // A System/Error turn-failure Step (e.g. "model not downloaded")
+        // surfaces as a stream `Err` — the uniform backend convention.
+        crate::backends::subscribe_step_stream(self.state.steps.subscribe(), "local")
     }
 
     async fn wait_for_idle(&self) -> Result<()> {
