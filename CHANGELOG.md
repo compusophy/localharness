@@ -167,6 +167,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **PairingFacet routing cut from the live diamond** (Remove cut,
+  `script/RemovePairingFacet.s.sol`, verified via loupe: `announcePairing` →
+  `0x0`, neighbors untouched). The device-pairing flow was superseded by QR
+  seed-adoption and its client helpers were already deleted; the facet
+  contract stays on-chain inert and re-cuttable if ever needed. Callers now
+  get a function-not-found revert — correct for a deprecated path.
 - Dead registry helpers left by the 0.30.0 PairingFacet client removal:
   `pairing_code_hash`, `announce_pairing_sponsored`, `find_pairing_device`,
   `wrapped_device_key_of`, `set_device_wrapped_key_sponsored`,

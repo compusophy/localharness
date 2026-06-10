@@ -421,8 +421,9 @@ semantics live in `contracts/README.md`** — this list is one line each.
 - **ReputationFacet** — `attest(subject, rating 1..5, workRef)` with per-work
   dedup + self-attestation rejection; paged `attestationsOf`. ERC-8004
   validation staking still open.
-- **PairingFacet** (dormant — superseded by QR seed-adoption). Event-only
-  `announcePairing(bytes32,bytes)`. Client helpers removed as dead code.
+- **PairingFacet** — REMOVED from the live diamond 2026-06-10 (Remove cut,
+  `script/RemovePairingFacet.s.sol`): superseded by QR seed-adoption, client
+  helpers already deleted. Source kept; re-cuttable via loupe if ever needed.
 - **OwnedTokens** (`tokensOfOwner` enumerable index) — DRAFT, not cut.
 
 **ERC-6551 account** (`MultiSignerAccount`): CALL-only; additional-signer set on top
