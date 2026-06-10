@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.31.0] - 2026-06-10
 
 ### Added
 
@@ -107,7 +107,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`release.ps1` now runs the proof-of-spec gate.** The Windows release path
   skipped `scripts/verify.sh` (all-config tests, wasm guardrails, cartridge
   corpus) that `release.sh` has run since 0.30.0 — a wasm-only breakage could
-  ship silently. bash/node added to pre-flight.
+  ship silently. node added to pre-flight, and GIT-BASH is resolved
+  explicitly (`…\Git\bin\bash.exe` beside git.exe): a bare `bash` on Windows
+  PATH resolves to the WSL launcher, which dies without an installed distro —
+  it aborted this release's own first attempt mid-gate. `verify.ps1` got the
+  same fix.
 - Stale agent-facing hints: rustlite `arr[i] = v` writes shipped but
   LH0106/LH0207/LH0300 hints (and the `compile_rustlite` fallback) still said
   array writes were unsupported; `verify-onchain.sh` no longer deletes the
@@ -3923,5 +3927,6 @@ implemented. Subagents land in 0.3.x.
   the working tree.
 
 [upstream]: https://github.com/google-antigravity/antigravity-sdk-python
-[Unreleased]: https://github.com/compusophy/localharness/compare/v0.30.0...HEAD
+[Unreleased]: https://github.com/compusophy/localharness/compare/v0.31.0...HEAD
+[0.31.0]: https://github.com/compusophy/localharness/compare/v0.30.0...v0.31.0
 [0.1.0]: https://github.com/compusophy/localharness/releases/tag/v0.1.0
