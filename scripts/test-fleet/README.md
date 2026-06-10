@@ -73,5 +73,10 @@ each (`[BUG]`→`bug`, `[FEATURE]`→`enhancement`, `[FEEDBACK]`→`feedback`, a
 timestamp. **Dry-run by default; `--create` is opt-in** — creating public issues
 is outward-facing. Idempotent, so it's safe to wire into a cron/CI later. **Cost:** the sponsor's AlphaUSD gas — one mint + one
 feedback write per *new* persona (reused personas pay only the feedback write).
-Model calls are free in the beta (a `$LH` session opens automatically for any
-identity). The personas are persistent, so re-runs only add fresh feedback.
+Model calls are metered: the proxy debits ~0.01 `$LH` per call (it gates on an
+active session OR a meter balance covering the cost, 402 otherwise), and the
+CLI deliberately does NOT auto-open the 10-`$LH`/hr session. A fresh persona
+holds 0 `$LH`, so `run-fleet.sh` best-effort sends each *new* persona 0.5 `$LH`
+from the funded `claude` identity after `create` (a missing claude key or a
+failed send only warns — already-funded personas keep working). The personas
+are persistent, so re-runs only add fresh feedback.

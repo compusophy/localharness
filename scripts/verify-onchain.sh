@@ -17,8 +17,11 @@
 #   2. create it on-chain (sponsored mint)  cargo run … -- create <name>
 #   3. ASSERT it registered, via a fresh    cargo run … -- whoami --json <name>
 #      read-only RPC ("registered": true)   (independent of create's own check)
-#   4. clean up                              (no release subcommand exists today —
-#                                            logs the leak + manual-cleanup note)
+#   4. clean up — attempt                   cargo run … -- release <name> --confirm <name>
+#      EXPECTED to refuse for a fresh name: `create` auto-sets the new name as
+#      the fresh wallet's MAIN identity, and `release` REFUSES the caller's MAIN
+#      (client-side exit 2 + the facet refuses on-chain too). The fallback logs
+#      the leak and KEEPS the key file so future cleanup stays possible.
 #
 # A non-zero exit means the sponsored tx did NOT land on-chain (the OOG/revert
 # case) — the failure mode this whole script exists to catch.
@@ -54,14 +57,23 @@ if ! printf '%s' "$PROFILE" | grep -q '"registered": *true'; then
 fi
 
 step "3/3  clean up the disposable name"
-# There is intentionally NO `release` / burn subcommand in the CLI today, so this
-# script does NOT invent one. The name is left registered on-chain.
+# `localharness release <name> --confirm <name>` exists (ReleaseFacet burn), so
+# try it. CAVEAT: `create` just auto-set $NAME as this fresh wallet's MAIN
+# identity, and `release` REFUSES the caller's MAIN (client-side exit 2; the
+# facet also refuses on-chain), so for a brand-new disposable wallet this is
+# EXPECTED to fall through to the leak-note below. It still cleans up when the
+# name is NOT the key's MAIN (e.g. a rerun against a key with another MAIN).
 KEY_FILE="${NAME}.localharness.key"
-# New creates write the key to the config home; older CLIs wrote the cwd —
-# drop the disposable key from BOTH so neither location accumulates strays.
-rm -f "$KEY_FILE" "${LOCALHARNESS_HOME:-$HOME/.localharness/keys}/$KEY_FILE"
-printf "  no 'release' subcommand exists — '%s' is LEFT REGISTERED on-chain.\n" "$NAME"
-printf "  manual cleanup: burn it from the studio (or via ReleaseFacet) when a\n"
-printf "  release command lands. Removed the local key %s.\n" "$KEY_FILE"
+if "${CLI[@]}" release --as "$NAME" "$NAME" --confirm "$NAME"; then
+  printf "  released '%s' on-chain — nothing leaked.\n" "$NAME"
+else
+  printf "  release refused (the name is this wallet's MAIN) — '%s' is LEFT\n" "$NAME"
+  printf "  REGISTERED on-chain. KEEPING the key file so future cleanup stays\n"
+  printf "  possible; it lives at one of:\n"
+  printf "    %s/%s   (config home — current CLIs)\n" "${LOCALHARNESS_HOME:-$HOME/.localharness/keys}" "$KEY_FILE"
+  printf "    ./%s   (cwd — older CLIs)\n" "$KEY_FILE"
+  printf "  manual cleanup: re-point the wallet's MAIN, then\n"
+  printf "    localharness release --as %s %s --confirm %s\n" "$NAME" "$NAME" "$NAME"
+fi
 
 printf "\n${G}ON-CHAIN PROOF OK${N} — sponsored create landed + verified on-chain (%s).\n" "$NAME"

@@ -52,7 +52,9 @@ if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$') {
 # ---------------------------------------------------------------------------
 
 Step "pre-flight: tooling"
-foreach ($cmd in @("cargo", "gh", "git")) {
+# bash + node are required by the proof-of-spec gate (scripts/verify.sh runs
+# the cartridge corpus proofs in node) — fail here, not mid-verify.
+foreach ($cmd in @("cargo", "gh", "git", "bash", "node")) {
     if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) { Fail "$cmd not on PATH" }
 }
 try { gh auth status 2>&1 | Out-Null } catch { Fail "gh not authenticated (run: gh auth login)" }
@@ -129,8 +131,14 @@ if (-not (Select-String -Path web/llms.txt -Pattern "^\*\*version:\*\* $([regex]
 Step "cargo build (refreshes Cargo.lock)"
 Invoke-Native "cargo build" { cargo build --quiet }
 
-Step "cargo test"
-Invoke-Native "cargo test" { cargo test --quiet }
+Step "proof-of-spec gate (scripts/verify.sh)"
+# Full end-to-end gate, mirroring release.sh: all feature-config tests (incl.
+# anthropic + wallet), the wasm32 guardrail checks, and REAL cartridge
+# instantiate/render/compose. Catches what a bare `cargo test` cannot — the
+# browser app's wasm runtime never executes under the cargo suite. The gate
+# runs the default-feature tests itself, so there is no separate `cargo test`
+# step here.
+Invoke-Native "scripts/verify.sh" { bash "$PSScriptRoot/verify.sh" }
 
 Step "cargo clippy"
 Invoke-Native "cargo clippy" { cargo clippy --all-targets -- -D warnings }
