@@ -73,12 +73,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **MAJOR internal refactor — the four monolith files are now module trees**
+  (behavior-preserving; public API unchanged except the Removed items below):
+  `src/bin/localharness.rs` (9.5k lines) → `src/bin/localharness/` (17 command
+  modules); `src/registry.rs` (7.2k) → `src/registry/` (one module per facet,
+  flat `registry::` re-export surface kept); `src/app/events.rs` (5.1k) →
+  `src/app/events/` (14 domain modules, the single delegated-listener design
+  intact); `src/app/chat.rs` (4.1k) → `src/app/chat/` (turn loop / session /
+  prompt / access / 5 tool groups).
+- **One backend core instead of four hand-kept copies.** Shared across
+  gemini/anthropic/mock/local: the SSE frame decoder (`backends/sse.rs`,
+  CRLF-safe), the hook-gated tool-dispatch pipeline (`backends/dispatch.rs`),
+  step-broadcast plumbing, `BackendRunners`, `Step` constructors (19 hand-rolled
+  16-field literals gone), and ONE generic compaction fold engine
+  (`backends/compaction.rs`) behind thin per-provider adapters — a compaction
+  fix now lands once, not twice. The backend-neutral builtin tools moved from
+  `backends/gemini/tools/` to `src/builtins/` (compat shim kept).
+- **Canonical helper homes.** `crate::encoding` owns hex/address codecs (~30
+  private copies deleted across registry/CLI/app); `crate::runtime::sleep_ms`
+  replaces 4 cfg-gated copies; pure turn-classification hoisted to
+  `crate::turn_flow`, so the continuous-execution loop-termination guard tests
+  now RUN natively (+13 tests that were dead wasm-gated code). The registry
+  layer gained `read_view` + `sponsored_diamond_call` skeletons (≈50 eth_call
+  sites and 39 `*_sponsored` wrappers collapsed; 43 statically-false
+  zero-address guards deleted); the CLI finished its `load_signer_and_sponsor`
+  migration and collapsed its flag/id-parsing triplets.
+- **`verify.sh` now runs the whole suite** — default + anthropic + wallet test
+  configs (the wallet config alone holds the 111 CLI tests it previously
+  skipped) and all three wasm guardrails; the workspace builds with ZERO
+  compiler warnings in every feature config.
+
 - **Incremental, recency-weighted context compaction.** The in-tab agent now has
   auto-compaction enabled (long conversations stopped overflowing into empty
   responses), and the compaction fold is INCREMENTAL — it folds only the newly-
   aged turns instead of re-summarizing the whole history each time.
 
 ### Fixed
+
+- **Sponsored `setMetadata` gas under-budgeting (the silent out-of-gas class).**
+  `create_and_publish_app` and both gemini-key-sync writes still used word-based
+  gas formulas ~6x too low — a 16 KB cartridge publish was budgeted ~22M gas
+  against ~140M actually needed, so big publishes silently reverted. All 7
+  sponsored-setMetadata sites now share `app::gas::set_metadata_gas`
+  (`1.2M + bytes×8500`).
+- **Mock backend tool-dispatch parity.** The mock backend dropped the
+  `{"error": ...}` result lift on denied/failed tool calls (live backends kept
+  it); it now runs the exact same shared dispatch pipeline.
 
 - **Convergent P2P shared-FS reconcile.** Device-sync previously reconciled by
   FILENAME only, so two devices holding the same name with DIFFERENT content
@@ -123,6 +163,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     can't silently drift.
   - The dormant `host_abort.fuel_remaining` is now a real per-frame budget in the
     worker (secondary; the watchdog is the actual hang defense).
+
+### Removed
+
+- **The dead legacy self-paid tx lineage in `registry`** (pre-Tempo-sponsorship,
+  zero callers anywhere in repo/examples/scripts): `claim_name`,
+  `claim_and_maybe_set_main`, `register_main`, `token_transfer`,
+  `request_faucet_funds`, `BOOTSTRAP_FAUCET_ADDRESS`, `tba_signers`,
+  `rlp_native_transfer_{unsigned,signed}`, `rlp_call_{unsigned,signed}`,
+  `NATIVE_TRANSFER_GAS_LIMIT`, `balance_of`, `wait_for_min_balance`. Every live
+  write is a Tempo 0x76 tx; `wallet::rlp_*` primitives stay.
+- **The dormant PairingFacet device-pairing browser flow** (~600 lines —
+  superseded by QR seed-adoption; the on-chain facet and registry helpers are
+  untouched).
 
 ## [0.29.0] - 2026-06-08
 

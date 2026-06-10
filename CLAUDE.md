@@ -53,20 +53,35 @@ src/                  library crate
 ├── hooks.rs          6 hook traits + HookRunner
 ├── policy.rs         Predicate / Policy / Decision + workspace_only
 ├── triggers.rs       Trigger trait + TriggerRunner + every()
-├── runtime.rs        cfg-gated spawn helper + MaybeSendSync marker
+├── runtime.rs        cfg-gated spawn + sleep_ms + MaybeSendSync marker
+├── encoding.rs       THE canonical hex/address/amount codecs (don't re-roll one)
+├── turn_flow.rs      pure turn-classification + MAX_AUTO_CONTINUATIONS (hoisted
+│                     from app::chat so its loop-guard tests run natively)
+├── builtins/         backend-NEUTRAL builtin tools (8 fs, ask_question, finish,
+│                     start_subagent, generate_image, call_agent, ...) + the two
+│                     schema-lint guard tests; shim left at backends/gemini/tools
 ├── filesystem/       Filesystem trait + Native + OPFS impls
-├── types.rs          wire-adjacent enums (BuiltinTool, Step, etc.)
-├── error.rs          Error + Result
+├── types.rs          wire-adjacent enums + Step constructors (no hand literals)
+├── error.rs          Error + Result · error_codes.rs stable LHxxxx registry
 ├── wallet.rs         secp256k1 + BIP-39 + RLP (feature "wallet"; all targets)
-├── registry.rs       Diamond JSON-RPC + Tempo tx + credit/session/x402/device/
-│                     bounty/signaling helpers (feature "wallet")
+├── registry/         Diamond JSON-RPC + Tempo tx (feature "wallet"): one module
+│                     per facet (names tba credits x402 schedule invite bounty
+│                     reputation guild voting feedback signaling) + abi/rpc/tx
+│                     plumbing (read_view, sponsored_diamond_call skeletons);
+│                     mod.rs re-exports keep the flat registry:: surface
 ├── x402_hook.rs      app-injected x402 signer for call_agent (feature "wallet")
 ├── tempo_tx.rs       Tempo Transaction (tx 0x76) encoder; see Tempo section
-├── rustlite/         Rust-subset → wasm compiler: mod.rs(compile) / token / ast /
+├── raster.rs compose.rs sharedfs_reconcile.rs   native-testable cores of
+│                     browser features (framebuffer/composition/P2P reconcile)
+├── rustlite/         Rust-subset → wasm compiler: lexer / parser / ast /
 │                     typecheck / codegen(wasm emitter) / loader(wasm32 cartridge)
 ├── app/              browser-resident IDE (browser-app + wasm32) — see below
 └── backends/
-    ├── gemini/       api.rs(client+SSE) wire.rs loop.rs compaction.rs tools/ mod.rs
+    ├── (shared)      sse.rs(frame decoder, CRLF-safe) dispatch.rs(hook-gated
+    │                 tool pipeline) runners.rs compaction.rs(ONE generic fold
+    │                 engine; per-backend compaction.rs are thin adapters)
+    │                 stream_timeout.rs — fix backend plumbing HERE, not per-backend
+    ├── gemini/       api.rs(client) wire.rs loop.rs compaction.rs mod.rs
     ├── anthropic/    Claude Messages API backend (feature "anthropic")
     ├── mock/         deterministic offline backend (Agent::start_mock; wasm-clean)
     ├── mcp/          stdio MCP client (native-only)
@@ -74,11 +89,19 @@ src/                  library crate
 
 src/app/ (browser IDE):
   mod.rs(mount routing) templates.rs(all maud HTML) dom.rs(web-sys swaps)
-  events.rs(delegated click/keydown/submit/input) chat.rs(turn streaming+prompt)
+  events/(Action enum + parse + the ONE delegated click/keydown/submit/input
+    listener set + dispatch in mod.rs; handler bodies per domain: claim admin
+    act credits schedule bounty guild governance devices subdomains key_sync
+    public_face layout) chat/(turn loop in mod.rs; session.rs prompt.rs
+    access.rs tools/{platform,bounty,guild,governance,misc})
   history.rs(OPFS conversation + tool-call replay) opfs.rs(file browser/editor)
   display.rs(framebuffer: runs wasm cartridges off-main-thread in a Web Worker +
     rasterizes HTML; main-thread WATCHDOG kills hung workers — the brick fix)
-  key_store.rs owner.rs(.lh_owner on-chain-derived hint) tenant.rs(host classifier)
+  gas.rs(set_metadata_gas — THE sponsored-setMetadata formula, one home)
+  signer_protocol.rs(lh-* postMessage consts + challenge preimage, used by BOTH
+    signer.rs and verify.rs — never re-fork it)
+  key_store.rs owner.rs(.lh_owner on-chain-derived hint) tenant.rs(host
+    classifier + require_tenant/current_tenant_owner)
   wallet_store.rs signer.rs(apex/?signer=1 postMessage service)
   seed_pull.rs(local-seed-per-origin — mobile fix) agent_rpc.rs(?rpc=1)
   encryption.rs(AES-256-GCM + ECIES) shared_fs.rs/webrtc.rs/sharedfs_sync.rs/
@@ -86,7 +109,10 @@ src/app/ (browser IDE):
   tool_allowlist.rs sponsor.rs(embedded fee_payer key, testnet) verify.rs(owner
     verify + iframe signer client, all LOCAL-FIRST off APP.wallet)
 
-src/bin/localharness.rs  — agent-onboarding CLI (feature wallet+native). Commands:
+src/bin/localharness/  — agent-onboarding CLI (feature wallet+native). main.rs
+  dispatcher + one module per command family (identity publish call mcp status
+  credits schedule invite bounty reputation colony tba guild vote probe) +
+  util.rs (load_signer*/take_value_flag/parse_id shared helpers). Commands:
   create / compile / publish / persona / call / list / redeem / mcp-call /
   schedule / jobs / unschedule / invite{create,accept,reclaim,list} /
   bounty{post,list,claim,submit,accept,cancel,mine} / threads / forget /
