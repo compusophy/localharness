@@ -1,9 +1,22 @@
-//! Built-in tools the Gemini backend exposes to the model.
+//! The crate-wide built-in tool registry — backend-NEUTRAL.
 //!
-//! Each tool implements [`Tool`] and is registered into a
-//! [`ToolRunner`] by [`register_builtins`] according to the
-//! [`CapabilitiesConfig`]. The runtime declares the tools to Gemini via
-//! `FunctionDeclaration`s built from `Tool::input_schema()`.
+//! Each tool implements [`Tool`] and is registered into a [`ToolRunner`] by
+//! [`register_builtins`] according to the [`CapabilitiesConfig`]. EVERY
+//! backend (Gemini, Anthropic, local — and the mock when an Agent injects a
+//! runner) registers from here; only the two Gemini-client-coupled tools
+//! (`start_subagent`, `generate_image`) skip when no client is supplied in
+//! [`BuiltinDeps`].
+//!
+//! Lived at `backends/gemini/tools/` until 0.29.x (the Gemini backend was
+//! written first); a re-export shim remains there so old paths compile.
+//!
+//! SCHEMA CONSTRAINT (load-bearing): every tool's `input_schema()` must use a
+//! single `type` (no `["string","null"]` unions) and none of
+//! `additionalProperties`/`$schema`/`$ref`/`oneOf`/`anyOf`/`allOf` — Gemini
+//! rejects union-type schemas with a 400 that bricks ALL chat, and Anthropic
+//! rejects them too. Guarded by `builtin_tool_schemas_have_no_union_types`
+//! below (plus the Anthropic-side declaration lint in
+//! `backends/anthropic/mod.rs`).
 
 use std::sync::Arc;
 

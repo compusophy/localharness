@@ -54,6 +54,10 @@
 pub mod agent;
 /// Backend implementations (Gemini, MCP).
 pub mod backends;
+/// The crate-wide built-in tool registry (fs tools, ask_question, finish,
+/// call_agent, ...) — backend-neutral; every backend registers from here.
+/// Formerly `backends::gemini::tools` (a re-export shim remains there).
+pub mod builtins;
 /// Transport abstraction traits.
 pub mod connections;
 /// Multimodal input primitives (text, images, documents, audio, video).
