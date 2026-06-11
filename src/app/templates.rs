@@ -101,12 +101,14 @@ pub(crate) fn rendered_markdown(raw: &str) -> Markup {
     html! { (PreEscaped(out)) }
 }
 
-/// Sticky header — brand left, the admin button right. Feedback used to
-/// sit here too but moved INTO the admin modal as a `feedback` tab
-/// (`admin_feedback_section`), leaving the header to a single admin
-/// affordance. The bottom of the viewport stays claimed by the terminal /
-/// active panel. The admin button uses a fixed min-width via
-/// `.header-button` so the header reads cleanly.
+/// Sticky header — brand left, bug-report glyph + admin button right.
+/// The insect icon (issue #15) sits immediately left of admin and opens
+/// the admin modal pre-switched to its `feedback` tab
+/// (`admin_feedback_section`) — same modal machinery, one click from the
+/// header to the report box. The bottom of the viewport stays claimed by
+/// the terminal / active panel. The admin button uses a fixed min-width
+/// via `.header-button`; the icon button opts out (`.feedback-button`)
+/// so it stays square-ish instead of 96px wide.
 pub(crate) fn site_header(_host: &Host) -> Markup {
     html! {
         header.site-header {
@@ -123,6 +125,11 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
                         }
                     }
                 }
+                button type="button"
+                    data-action="header-feedback"
+                    aria-label="report a bug"
+                    title="report a bug"
+                    .header-button.feedback-button { (bug_glyph()) }
                 div #header-admin .header-admin {
                     button type="button"
                         data-action="header-admin-toggle"
@@ -130,6 +137,31 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
                     div #header-admin-panel hidden {}
                 }
             }
+        }
+    }
+}
+
+/// Monochrome insect glyph for the header bug-report button — inline SVG
+/// (~14px, `currentColor` strokes) so it inherits the button's muted/fg
+/// hover palette. An SVG, not an emoji: emoji render colored, which the
+/// monochrome chrome bans. Marked `aria-hidden` — the button's own
+/// `aria-label` carries the accessible name.
+fn bug_glyph() -> Markup {
+    html! {
+        svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round" aria-hidden="true" {
+            path d="m8 2 1.88 1.88" {}
+            path d="M14.12 3.88 16 2" {}
+            path d="M9 7.13v-1a3.003 3.003 0 1 1 6 0v1" {}
+            path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6" {}
+            path d="M12 20v-9" {}
+            path d="M6.53 9C4.6 8.8 3 7.1 3 5" {}
+            path d="M6 13H2" {}
+            path d="M3 21c0-2.1 1.7-3.9 3.8-4" {}
+            path d="M20.97 5c0 2.1-1.6 3.8-3.5 4" {}
+            path d="M22 13h-4" {}
+            path d="M17.2 17c2.1.1 3.8 1.9 3.8 4" {}
         }
     }
 }

@@ -146,9 +146,9 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
 .brand-menu-items a:last-child { border-bottom: none; }
 .brand-menu-items a:hover { background: var(--border); }
 
-/* Header utility buttons — feedback + admin sit side by side at
-   the right of the header. Fixed min-width so the pair reads as
-   a uniform row regardless of label length, and a gap between
+/* Header utility buttons — feedback (insect glyph) + admin sit side
+   by side at the right of the header. Fixed min-width so the text
+   button reads cleanly regardless of label length, and a gap between
    them matching the header's own padding so they don't crowd. */
 .header-button {
   min-width: 96px;
@@ -161,7 +161,17 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
    empty markup now and `chrome` doesn't call it, but legacy CSS
    references can compile away cleanly here. */
 
-.feedback-button { letter-spacing: 0.12em; }
+/* Icon-only feedback button (issue #15) — opts out of the 96px text
+   min-width so it stays square-ish; the inline SVG inherits the
+   button's muted/fg palette via currentColor. */
+.feedback-button {
+  min-width: 0;
+  padding: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.feedback-button svg { display: block; }
 
 /* Mobile tab bar — shown only under 900px. Switches which
    panel is visible via `tab-<name>` class on #layout. */
