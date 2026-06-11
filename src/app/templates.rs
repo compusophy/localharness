@@ -1910,14 +1910,18 @@ pub(crate) fn agents_list(
 }
 
 /// The hidden seed-phrase view — swapped into `#seed-reveal` when the
-/// user confirms they're ready to write it down.
+/// user confirms they're ready to write it down. `[copy]` is the mobile
+/// lifeline: backgrounding the browser can refresh the tab and dismiss
+/// this view, so one tap must be enough to bank the words first.
 pub(crate) fn seed_phrase(words: &str) -> Markup {
     html! {
         div.seed-words { (words) }
         p.apex-fine {
-            "12 words above. close this page or click "
+            "stays on this device — copy it before switching apps. "
+            button #seed-copy type="button" data-action="copy-seed" data-arg=(words)
+                .link-button { "copy" }
+            " · "
             button type="button" data-action="hide-seed" .link-button { "hide" }
-            " when you're done."
         }
     }
 }
