@@ -445,10 +445,12 @@ async fn stream_turn(agent: &Agent, input: TurnInput) -> TurnOutcome {
 
     let assistant_body_id = format!("turn-body-{assistant_turn_id}");
 
-    // FIFO of pending tool-block ids. The Gemini backend emits
-    // ToolCall/ToolResult pairs sequentially (one result per call,
-    // in order), so popping the front always matches.
-    let mut pending_tools: VecDeque<u32> = VecDeque::new();
+    // FIFO of pending tool blocks: (block id, the call itself). The Gemini
+    // backend emits ToolCall/ToolResult pairs sequentially (one result per
+    // call, in order), so popping the front always matches. The call is
+    // retained because the inline result card needs its args at result time
+    // (create/edit results don't echo the written content).
+    let mut pending_tools: VecDeque<(u32, crate::types::ToolCall)> = VecDeque::new();
     // (seg_id, accumulated_raw_text) for every text segment we render
     // this turn — used for markdown rendering at end-of-stream.
     let mut text_segments: Vec<(u32, String)> = vec![(seg_id, String::new())];
@@ -505,7 +507,7 @@ async fn stream_turn(agent: &Agent, input: TurnInput) -> TurnOutcome {
                     &assistant_body_id,
                     &templates::tool_call_block(tool_seg_id, &call).into_string(),
                 );
-                pending_tools.push_back(tool_seg_id);
+                pending_tools.push_back((tool_seg_id, call));
 
                 // Open a fresh text segment for whatever the model
                 // says after the tool call.
@@ -518,12 +520,35 @@ async fn stream_turn(agent: &Agent, input: TurnInput) -> TurnOutcome {
                 dom::scroll_to_bottom("transcript");
             }
             Ok(StreamChunk::ToolResult(result)) => {
-                if let Some(tool_seg_id) = pending_tools.pop_front() {
+                if let Some((tool_seg_id, call)) = pending_tools.pop_front() {
                     let result_target = format!("tool-{tool_seg_id}-result");
                     dom::swap_inner(
                         &result_target,
                         &templates::tool_call_result(&result).into_string(),
                     );
+                    // Inline result card under the pill (file / directory /
+                    // display outputs) so the transcript stays chronological
+                    // without tab-hopping. For render_html the framebuffer is
+                    // already painted (synchronous render before the result
+                    // chunk), so a thumbnail is a cheap canvas snapshot;
+                    // run_cartridge frames arrive async from the worker, so
+                    // it gets the marker card only.
+                    let thumb = if call.name == "render_html" && result.error.is_none() {
+                        super::display::snapshot_data_url()
+                    } else {
+                        None
+                    };
+                    if let Some(card) = templates::inline_result_card(
+                        &call.name,
+                        &call.args,
+                        &result,
+                        thumb.as_deref(),
+                    ) {
+                        dom::swap_inner(
+                            &format!("tool-{tool_seg_id}-card"),
+                            &card.into_string(),
+                        );
+                    }
                     dom::scroll_to_bottom("transcript");
                 } else {
                     // No pending tool block to attach this result to — the
