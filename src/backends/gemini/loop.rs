@@ -244,7 +244,10 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content, prompt: Conten
         let step_index = deps.state.alloc_step_index();
         let mut accumulated_text = String::new();
         let mut accumulated_thought = String::new();
-        let mut pending_calls: Vec<FunctionCall> = Vec::new();
+        // Each call rides with its `thoughtSignature` (Gemini 3.x stamps
+        // functionCall parts and 400s if history echoes them back without
+        // it — "Function call is missing a thought_signature").
+        let mut pending_calls: Vec<(FunctionCall, Option<String>)> = Vec::new();
         let mut finish_reason: Option<FinishReason> = None;
         let mut last_usage: Option<wire::WireUsage> = None;
 
@@ -327,8 +330,11 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content, prompt: Conten
                                         .emit(Step::text_delta(&trajectory_id, step_index, &t));
                                 }
                             }
-                            Part::FunctionCall { function_call } => {
-                                pending_calls.push(function_call);
+                            Part::FunctionCall {
+                                function_call,
+                                thought_signature,
+                            } => {
+                                pending_calls.push((function_call, thought_signature));
                             }
                             _ => {}
                         }
@@ -350,9 +356,10 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content, prompt: Conten
                 text: accumulated_text.clone(),
             });
         }
-        for call in &pending_calls {
+        for (call, signature) in &pending_calls {
             model_parts.push(Part::FunctionCall {
                 function_call: call.clone(),
+                thought_signature: signature.clone(),
             });
         }
         if !model_parts.is_empty() {
@@ -392,7 +399,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content, prompt: Conten
         // unless `finish` was called (or we've hit the cap).
         let mut response_parts: Vec<Part> = Vec::with_capacity(pending_calls.len());
         let mut saw_finish = false;
-        for call in pending_calls {
+        for (call, _signature) in pending_calls {
             // `finish` is special: capture structured_output, mark the
             // turn complete, but still produce a function_response so
             // the model history is well-formed.

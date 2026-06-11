@@ -438,7 +438,7 @@ fn project_history(history: &[wire::Content]) -> Vec<crate::types::TranscriptEnt
                     text: Some(text),
                     ..
                 } => buf.push_str(text),
-                Part::FunctionCall { function_call } => {
+                Part::FunctionCall { function_call, .. } => {
                     calls_this_turn.push(TranscriptToolCall {
                         name: function_call.name.clone(),
                         args: function_call.args.clone(),
@@ -735,6 +735,7 @@ mod tests {
                             name: "view_file".into(),
                             args: json!({"path": "main.rs"}),
                         },
+                        thought_signature: None,
                     },
                 ],
             },
@@ -780,6 +781,7 @@ mod tests {
                         name: "view_file".into(),
                         args: json!({"path": "missing"}),
                     },
+                    thought_signature: None,
                 }],
             },
             Content {

@@ -63,7 +63,7 @@ impl CompactionModel for GeminiCompaction {
                     out.push_str("[thought] ");
                     out.push_str(t);
                 }
-                Part::FunctionCall { function_call } => {
+                Part::FunctionCall { function_call, .. } => {
                     out.push_str("[tool_call ");
                     out.push_str(&function_call.name);
                     out.push_str("] ");
@@ -202,6 +202,7 @@ mod tests {
                     name: name.into(),
                     args: json!({}),
                 },
+                thought_signature: None,
             }],
         }
     }
@@ -485,7 +486,7 @@ mod tests {
         let mut s = std::collections::HashSet::new();
         for c in cs {
             for p in &c.parts {
-                if let Part::FunctionCall { function_call } = p {
+                if let Part::FunctionCall { function_call, .. } = p {
                     s.insert(function_call.name.clone());
                 }
             }

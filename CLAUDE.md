@@ -246,10 +246,15 @@ modules don't trip a default `cargo check`).
   before a call, so "has $LH but 402s" = the deposit failed (it now WARNS
   with the cause) or the wallet itself is empty. Colony judges pre-fund from
   the caller; the fleet runner funds on 402 + retries.
-- **Gemini 3.x `thought: false` parts.** The wire `Part` enum is untagged;
-  `Part::Thought` is declared BEFORE `Part::Text`. 3.x stamps every part with
-  `thought`, so normal text deserializes into `Part::Thought { thought: false,
-  text: Some(...) }`. Handle it explicitly.
+- **Gemini 3.x `thought: false` parts + `thoughtSignature` echo.** The wire
+  `Part` enum is untagged; `Part::Thought` is declared BEFORE `Part::Text`. 3.x
+  stamps every part with `thought`, so normal text deserializes into
+  `Part::Thought { thought: false, text: Some(...) }`. Handle it explicitly.
+  ALSO: 3.x stamps every `functionCall` part with `thoughtSignature` and 400s
+  any replayed history missing it ("Function call is missing a
+  thought_signature") — bricked every multi-round tool turn until 0.31.x.
+  Capture + echo it verbatim (`wire.rs` field, `loop.rs` rebuild); live proof
+  `examples/thought_signature_live.rs`.
 - **SSE on wasm uses CRLF.** Browser fetch surfaces Gemini SSE with `\r\n\r\n`.
   `GeminiSseStream::take_frame` matches both `\n\n` and `\r\n\r\n`. Don't regress
   to LF-only.

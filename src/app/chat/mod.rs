@@ -618,7 +618,11 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
     } else if looks_like_credits {
         dom::set_status("no credits / session for this origin — see the account tab.", true);
     } else {
-        dom::set_status(&format!("{context}: {err}"), true);
+        // The bubble above already carries the full raw error — repeating it
+        // here painted the same wall of JSON twice (once in the transcript,
+        // once in the input container). Keep the status line to a short
+        // marker so the aria-live region still announces the failure.
+        dom::set_status("turn failed — see the message above", true);
     }
 }
 

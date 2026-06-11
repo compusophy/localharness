@@ -55,6 +55,17 @@ pub enum Part {
     FunctionCall {
         #[serde(rename = "functionCall")]
         function_call: FunctionCall,
+        // Gemini 3.x stamps every functionCall part with an opaque
+        // `thoughtSignature` and REJECTS (HTTP 400 INVALID_ARGUMENT) any
+        // replayed history whose functionCall parts lack it. Capture it on
+        // decode and echo it back verbatim on encode — see `loop.rs` where
+        // the model turn is rebuilt into history.
+        #[serde(
+            rename = "thoughtSignature",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        thought_signature: Option<String>,
     },
     /// Our response to a function call.
     FunctionResponse {
@@ -311,12 +322,46 @@ mod tests {
         let json = r#"{"functionCall":{"name":"view_file","args":{"path":"x.txt"}}}"#;
         let p: Part = serde_json::from_str(json).unwrap();
         match p {
-            Part::FunctionCall { function_call } => {
+            Part::FunctionCall { function_call, .. } => {
                 assert_eq!(function_call.name, "view_file");
                 assert_eq!(function_call.args["path"], "x.txt");
             }
             other => panic!("expected FunctionCall, got {other:?}"),
         }
+    }
+
+    /// THE thought-signature 400 regression (Gemini 3.x): a `functionCall`
+    /// part arrives stamped with an opaque `thoughtSignature`, and the API
+    /// rejects any replayed history whose functionCall parts lack it
+    /// ("Function call is missing a thought_signature in functionCall
+    /// parts" — bricked every multi-round tool turn). The signature must
+    /// survive a decode → re-encode round trip byte-for-byte.
+    #[test]
+    fn function_call_thought_signature_round_trips() {
+        let json =
+            r#"{"functionCall":{"name":"f","args":{}},"thoughtSignature":"AbC123="}"#;
+        let p: Part = serde_json::from_str(json).unwrap();
+        match &p {
+            Part::FunctionCall {
+                thought_signature, ..
+            } => assert_eq!(thought_signature.as_deref(), Some("AbC123=")),
+            other => panic!("expected FunctionCall, got {other:?}"),
+        }
+        let out = serde_json::to_value(&p).unwrap();
+        assert_eq!(out["thoughtSignature"], "AbC123=");
+        assert_eq!(out["functionCall"]["name"], "f");
+    }
+
+    /// A functionCall WITHOUT a signature (pre-3.x histories persisted in
+    /// OPFS) must keep decoding, and re-encoding must omit the key entirely
+    /// (not emit `"thoughtSignature":null`, which the API also rejects).
+    #[test]
+    fn function_call_without_signature_omits_key_on_encode() {
+        let p: Part =
+            serde_json::from_str(r#"{"functionCall":{"name":"f","args":{}}}"#).unwrap();
+        let out = serde_json::to_value(&p).unwrap();
+        assert!(matches!(p, Part::FunctionCall { ref thought_signature, .. } if thought_signature.is_none()));
+        assert!(out.get("thoughtSignature").is_none());
     }
 
     /// THE documented Gemini 3.x quirk: a *visible-text* part arrives stamped

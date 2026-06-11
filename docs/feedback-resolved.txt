@@ -70,3 +70,12 @@
 #            wasm32-unknown-unknown, not WASI — native tokio is cfg-gated at
 #            runtime.rs, so #[tokio::main] examples are native-only by design
 #            (the wasm path uses spawn_local; see CLAUDE.md wasm story)
+44  HEAD     Gemini 3.x thoughtSignature 400 — functionCall parts now carry
+#            thoughtSignature through decode -> history -> re-encode
+#            (wire.rs field + loop.rs echo); multi-round tool turns were
+#            bricked (every 2nd round 400d, CLI + browser + phone). Proven
+#            live: examples/thought_signature_live.rs (4 tool rounds via the
+#            credit proxy, no 400)
+45  HEAD     turn errors no longer painted twice — the status line (inside the
+#            input container) now shows a short marker instead of mirroring
+#            the full raw error already rendered in the transcript bubble

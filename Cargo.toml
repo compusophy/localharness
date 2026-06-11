@@ -291,6 +291,12 @@ required-features = ["wallet"]
 name = "create_subagent_live"
 required-features = ["wallet"]
 
+# LIVE regression proof for the Gemini 3.x thoughtSignature 400: a real
+# multi-round tool turn through the credit proxy (funded identity, no key).
+[[example]]
+name = "thought_signature_live"
+required-features = ["wallet"]
+
 # Minimal getting-started example: one agent turn with a custom tool. Needs only
 # the default `native` feature (tokio) + a GEMINI_API_KEY at runtime — no wallet,
 # no chain. The smallest end-to-end use of the core agent loop.
