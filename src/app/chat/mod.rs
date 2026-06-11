@@ -128,6 +128,9 @@ impl Drop for TurnGuard {
         TURN_ACTIVE.with(|c| c.set(false));
         TURN_CANCEL.with(|c| c.set(false));
         PROMOTE_REQUESTED.with(|c| c.set(false));
+        // Run over (any exit path): refund a still-pending auto-background
+        // insurance job (zero-click backgrounding, feedback #61/#65).
+        crate::app::events::auto_job_run_ended();
         // Never leave a stage line pulsing after the run — every exit path
         // (including panics-as-aborts aside, early returns) clears it.
         stage::end();

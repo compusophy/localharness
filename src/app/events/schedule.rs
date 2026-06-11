@@ -421,3 +421,122 @@ pub(crate) async fn refresh_jobs_list() {
     .into_string();
     dom::swap_inner("schedule-jobs", &html);
 }
+
+// ---------------------------------------------------------------------------
+// Zero-click backgrounding (feedback #61/#65): the INSURANCE-JOB model.
+//
+// When the page goes HIDDEN mid-run (mobile screen lock, app switch), we
+// silently schedule the run's request as an on-chain goal job — the in-tab
+// turn KEEPS RUNNING (the job is insurance, not a handoff). Three outcomes:
+//   * user returns        → insurance cancelled, escrow refunded
+//   * tab finishes hidden → insurance cancelled at run end, refunded
+//   * tab is killed       → the job survives, the scheduler finishes the
+//                           work, the owner gets the push
+// The brief overlap window (tab + job both stepping) is bounded by the
+// insurance budget and absorbed by the ralph frame's inspect-state-first
+// discipline. One auto-promote per run.
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// The pending insurance job id for the current run, if one was armed.
+    static AUTO_JOB: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    /// Latch: at most one auto-promote per run (reset at run end).
+    static AUTO_ARMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+const AUTO_BUDGET_WEI: u128 = 250_000_000_000_000_000; // 0.25 $LH
+const AUTO_MAX_RUNS: u32 = 10;
+
+/// Page went hidden. Arm the insurance job iff a run is active on a tenant
+/// and none was armed this run. Fire-and-forget — the user is away; outcomes
+/// surface on return (status) or via push.
+pub(crate) fn visibility_hidden() {
+    let Some(name) = crate::app::tenant::current_name() else {
+        return;
+    };
+    let Some(prompt) = crate::app::chat::active_run_prompt() else {
+        return;
+    };
+    if AUTO_ARMED.with(|c| c.replace(true)) {
+        return;
+    }
+    wasm_bindgen_futures::spawn_local(async move {
+        let task = format!(
+            "{GOAL_TASK_PREFIX}{prompt} (auto-backgrounded from an in-tab run \
+             that may also still be running or already complete — inspect \
+             current state FIRST and only continue if the goal is unmet)"
+        );
+        match submit_schedule_job(&name, &task, PROMOTE_INTERVAL_SECS, AUTO_BUDGET_WEI, AUTO_MAX_RUNS)
+            .await
+        {
+            Ok(job_id) => {
+                AUTO_JOB.with(|c| c.set(Some(job_id)));
+                web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&format!(
+                    "auto-background insurance armed: job #{job_id}"
+                )));
+            }
+            Err(e) => {
+                AUTO_ARMED.with(|c| c.set(false)); // failed — allow a retry on next hide
+                web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
+                    "auto-background failed: {e}"
+                )));
+            }
+        }
+    });
+}
+
+/// Page is visible again. If insurance is pending, cancel it (refund) — the
+/// tab owns the work again. A cancel revert means the job already ran to a
+/// terminal state (e.g. finish_goal fired while we were away) — say so.
+pub(crate) fn visibility_visible() {
+    let Some(job_id) = AUTO_JOB.with(|c| c.take()) else {
+        return;
+    };
+    wasm_bindgen_futures::spawn_local(async move {
+        match cancel_job_quiet(job_id).await {
+            Ok(()) => dom::set_status(
+                &format!("back — background insurance job #{job_id} refunded"),
+                false,
+            ),
+            Err(_) => dom::set_status(
+                &format!("background job #{job_id} already completed while you were away"),
+                false,
+            ),
+        }
+        refresh_jobs_list().await;
+    });
+}
+
+/// The in-tab run ended (any path). Reset the per-run latch and cancel a
+/// still-pending insurance job — the work is done (or stopped), the escrow
+/// comes home. Called from the chat turn guard.
+pub(crate) fn auto_job_run_ended() {
+    AUTO_ARMED.with(|c| c.set(false));
+    let Some(job_id) = AUTO_JOB.with(|c| c.take()) else {
+        return;
+    };
+    wasm_bindgen_futures::spawn_local(async move {
+        let _ = cancel_job_quiet(job_id).await;
+        refresh_jobs_list().await;
+    });
+}
+
+/// `cancelJob(job_id)` without any UI painting — the insurance paths manage
+/// their own terse status lines.
+async fn cancel_job_quiet(job_id: u64) -> Result<(), String> {
+    super::sponsor_rate_guard()?;
+    let (signer, _) = crate::app::chat::credit_signer()
+        .await
+        .ok_or_else(|| "no identity".to_string())?;
+    let fee_payer = crate::app::sponsor::signer()?;
+    crate::app::registry::cancel_job_sponsored(
+        &signer,
+        &fee_payer,
+        job_id,
+        crate::app::registry::ALPHA_USD_ADDRESS,
+    )
+    .await
+    .map(|_| ())?;
+    super::refresh_credits_pill().await;
+    Ok(())
+}
