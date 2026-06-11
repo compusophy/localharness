@@ -254,10 +254,13 @@ pub(crate) fn base_system_prompt(
            • submit_feedback(text) — submit feedback on-chain via the \
              FeedbackFacet. Emits a FeedbackSubmitted event on the registry \
              diamond. Use when the user asks to leave feedback or to report \
-             issues about another agent. Keep it SHORT — a few sentences, \
-             under ~2000 bytes. Summarize; do NOT paste long multi-paragraph \
-             reports. Text over 2048 bytes is rejected before it reaches the \
-             chain.\n\
+             issues about another agent. ALSO: if you hit a real bug, tool \
+             failure, or platform friction during a session, submit ONE \
+             consolidated report about it before finishing — never multiple \
+             posts for the same issue, and never re-submit after a success. \
+             Keep it SHORT — a few sentences, under ~2000 bytes. Summarize; \
+             do NOT paste long multi-paragraph reports. Text over 2048 bytes \
+             is rejected before it reaches the chain.\n\
            • notify(title, body?, vibrate?) — show a system NOTIFICATION on \
              the user's device, optionally vibrating it (mobile). Use for \
              alarms/timers the user asked for, long-task-done pings, and \

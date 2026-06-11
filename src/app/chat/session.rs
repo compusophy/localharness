@@ -186,6 +186,7 @@ pub(crate) async fn start_session(
             .with_model(model.clone())
             .with_capabilities(capabilities)
             .with_policies(vec![policy::allow_all()])
+            .with_pre_tool_hook(std::sync::Arc::new(super::dedup::DuplicateActionGuard))
             .with_filesystem(crate::app::shared_opfs())
             .with_system_instructions(system_instructions)
             // Parity with the Gemini path: give a hard task room to answer in
@@ -253,6 +254,7 @@ pub(crate) async fn start_session(
             .with_model(model.clone())
             .with_capabilities(capabilities)
             .with_policies(vec![policy::allow_all()])
+            .with_pre_tool_hook(std::sync::Arc::new(super::dedup::DuplicateActionGuard))
             .with_filesystem(crate::app::shared_opfs())
             .with_system_instructions(system_instructions)
             // Give a hard task room to BOTH reason and answer in one call, and

@@ -78,6 +78,10 @@ pub struct AgentConfig {
     pub conversation_id: Option<String>,
     /// JSON schema string for structured output via the `finish` tool.
     pub response_schema: Option<String>,
+    /// Custom pre-tool-call decide hooks, registered alongside the policy
+    /// enforcer. First deny wins — use for cross-cutting guards a static
+    /// `Policy` can't express (e.g. duplicate-action suppression).
+    pub pre_tool_hooks: Vec<Arc<dyn crate::hooks::PreToolCallDecideHook>>,
 }
 
 impl AgentConfig {
@@ -107,6 +111,17 @@ impl AgentConfig {
     /// Set the safety policies for tool execution.
     pub fn with_policies(mut self, policies: Vec<Policy>) -> Self {
         self.policies = policies;
+        self
+    }
+
+    /// Register a custom pre-tool-call decide hook (runs alongside the
+    /// policy enforcer; first deny wins). For cross-cutting guards a static
+    /// `Policy` can't express — e.g. duplicate-action suppression.
+    pub fn with_pre_tool_hook(
+        mut self,
+        hook: Arc<dyn crate::hooks::PreToolCallDecideHook>,
+    ) -> Self {
+        self.pre_tool_hooks.push(hook);
         self
     }
 
@@ -264,6 +279,16 @@ impl GeminiAgentConfig {
         self
     }
 
+    /// Register a custom pre-tool-call decide hook (see
+    /// [`AgentConfig::with_pre_tool_hook`]).
+    pub fn with_pre_tool_hook(
+        mut self,
+        hook: Arc<dyn crate::hooks::PreToolCallDecideHook>,
+    ) -> Self {
+        self.agent = self.agent.with_pre_tool_hook(hook);
+        self
+    }
+
     /// Add a workspace root for path-containment enforcement.
     pub fn with_workspace(mut self, ws: impl Into<PathBuf>) -> Self {
         self.agent = self.agent.with_workspace(ws);
@@ -365,6 +390,16 @@ impl MockAgentConfig {
     /// through these exactly as the live backends do.
     pub fn with_policies(mut self, policies: Vec<Policy>) -> Self {
         self.agent = self.agent.with_policies(policies);
+        self
+    }
+
+    /// Register a custom pre-tool-call decide hook (see
+    /// [`AgentConfig::with_pre_tool_hook`]).
+    pub fn with_pre_tool_hook(
+        mut self,
+        hook: Arc<dyn crate::hooks::PreToolCallDecideHook>,
+    ) -> Self {
+        self.agent = self.agent.with_pre_tool_hook(hook);
         self
     }
 
@@ -493,6 +528,16 @@ impl AnthropicAgentConfig {
         self
     }
 
+    /// Register a custom pre-tool-call decide hook (see
+    /// [`AgentConfig::with_pre_tool_hook`]).
+    pub fn with_pre_tool_hook(
+        mut self,
+        hook: Arc<dyn crate::hooks::PreToolCallDecideHook>,
+    ) -> Self {
+        self.agent = self.agent.with_pre_tool_hook(hook);
+        self
+    }
+
     /// Add a workspace root for path-containment enforcement.
     pub fn with_workspace(mut self, ws: impl Into<PathBuf>) -> Self {
         self.agent = self.agent.with_workspace(ws);
@@ -598,6 +643,16 @@ impl LocalAgentConfig {
     /// Set the safety policies for tool execution.
     pub fn with_policies(mut self, policies: Vec<Policy>) -> Self {
         self.agent = self.agent.with_policies(policies);
+        self
+    }
+
+    /// Register a custom pre-tool-call decide hook (see
+    /// [`AgentConfig::with_pre_tool_hook`]).
+    pub fn with_pre_tool_hook(
+        mut self,
+        hook: Arc<dyn crate::hooks::PreToolCallDecideHook>,
+    ) -> Self {
+        self.agent = self.agent.with_pre_tool_hook(hook);
         self
     }
 
@@ -945,6 +1000,9 @@ impl Agent {
         }
         if !active_policies.is_empty() {
             hook_runner.register_pre_tool_call_decide(policy::enforce(active_policies));
+        }
+        for hook in &agent_config.pre_tool_hooks {
+            hook_runner.register_pre_tool_call_decide(hook.clone());
         }
 
         // MCP servers: connect, register their tools BEFORE the

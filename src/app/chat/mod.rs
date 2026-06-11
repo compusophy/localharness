@@ -21,6 +21,7 @@ use super::templates;
 use super::APP;
 
 mod access;
+mod dedup;
 mod prompt;
 mod session;
 mod tools;
@@ -198,6 +199,8 @@ pub(crate) async fn run_send() {
     // iteration cooperatively honours the stop button (TURN_CANCEL).
     let mut next_input = TurnInput::User(prompt);
     let mut auto_continuations: u32 = 0;
+    // Fresh request — clear the duplicate-action ledger.
+    dedup::reset_run();
     loop {
         if TURN_CANCEL.with(|c| c.get()) {
             break;
@@ -271,6 +274,10 @@ pub(crate) async fn run_send() {
                     break;
                 }
                 auto_continuations += 1;
+                // From here on, the duplicate-action guard denies exact
+                // repeats of side-effecting calls (the double-notify /
+                // double-send bug — feedback #51).
+                dedup::mark_continuation();
                 // A truncated turn gets a "finish concisely" nudge; an
                 // incomplete (tool-active) turn gets the standard goal nudge.
                 next_input = if matches!(outcome, TurnOutcome::EmptyTruncated) {
@@ -327,9 +334,11 @@ next one.";
 /// Internal nudge fed to the model on an auto-continuation. Kept terse so
 /// it doesn't derail the goal; instructs the model to either keep working
 /// or call `finish` / ask a question when it's actually done or blocked.
-pub(crate) const AUTO_CONTINUE_NUDGE: &str = "Continue toward the user's goal. If the task is \
-fully complete, call the `finish` tool. If you're blocked or need a decision, ask \
-the user a question. Otherwise take the next step now without waiting.";
+pub(crate) const AUTO_CONTINUE_NUDGE: &str = "Continue toward the user's goal. First review \
+what you already did above — NEVER repeat an action that already succeeded (no duplicate \
+notifications, transfers, posts, or feedback). If the task is fully complete, call the \
+`finish` tool. If you're blocked or need a decision, ask the user a question. Otherwise \
+take the next step now without waiting.";
 
 /// True when `text` is one of the INTERNAL nudges ([`AUTO_CONTINUE_NUDGE`] /
 /// [`TRUNCATED_RETRY_NUDGE`]) injected between turns. Nudges never paint a
