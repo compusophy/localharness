@@ -567,6 +567,34 @@ pub(crate) fn turn(turn_id: u32, role: &str, body: Markup, streaming: bool) -> M
     }
 }
 
+/// Per-turn swap target for the turn-stage micro-pipeline (GitHub #19).
+/// Rendered as the FIRST child of a pending assistant body; `chat::stage`
+/// swaps [`stage_line`] fragments into it while the turn streams and
+/// empties it when the turn completes (`.stage-line:empty` hides it).
+pub(crate) fn stage_container(turn_id: u32) -> Markup {
+    let id_str = format!("stage-{turn_id}");
+    html! {
+        div id=(id_str) .stage-line {}
+    }
+}
+
+/// The stage pipeline line itself: lowercase stage words joined by `→`,
+/// the CURRENT one emphasized (`st-now`, pulses), crossed ones muted
+/// (`st-past`), re-walked ones dim (`st-dim`). Monochrome, terse, no prose.
+pub(crate) fn stage_line(slots: &[(crate::turn_stage::Stage, crate::turn_stage::Slot)]) -> Markup {
+    use crate::turn_stage::Slot;
+    html! {
+        @for (i, (stage, slot)) in slots.iter().enumerate() {
+            @if i > 0 { span.st-sep { " → " } }
+            span class=(match slot {
+                Slot::Past => "st-past",
+                Slot::Current => "st-now",
+                Slot::Idle => "st-dim",
+            }) { (stage.word()) }
+        }
+    }
+}
+
 /// A streaming text segment. `text` is the raw model output so far;
 /// maud escapes it. (Markdown rendering happens at end-of-turn via a
 /// separate `text_segment_final` template that takes pre-rendered HTML.)

@@ -42,6 +42,10 @@ pub(crate) async fn collect_payment_if_required() -> Result<Option<String>, Stri
         }
     };
 
+    // A real collection is happening — surface it in the pending turn's
+    // stage line (GitHub #19; free / owner turns never show "paying").
+    super::stage::enter(crate::turn_stage::Stage::Paying);
+
     let purpose = format!(
         "pay {} LH per turn to this agent",
         price_wei / 1_000_000_000_000_000_000u128,
