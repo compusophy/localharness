@@ -70,10 +70,36 @@ pub(crate) async fn ask_via_proxy(target: &str, message: &str) -> Result<String,
         )
     })?;
 
+    // Pre-flight the payer's WALLET balance. x402 `settle` pulls real $LH
+    // from the wallet pot via `transferFrom` — NOT from the chat meter
+    // (`creditOf`), which is a separate, deposit-only pot. A user can hold
+    // a fat meter (chat works fine) and still fail here with a bare
+    // "insufficient balance"; name both pots so the failure is diagnosable
+    // instead of looking like the platform lost their funds. A read failure
+    // shouldn't hard-block — settle is the authoritative gate.
+    if let Ok(wallet_wei) = registry::token_balance_of(&from_hex).await {
+        if wallet_wei < pay_wei {
+            let meter_note = match registry::credit_balance_of(&from_hex).await {
+                Ok(m) if m > 0 => format!(
+                    " (your chat meter holds {} $LH, but meter credits are a \
+                     separate pot and cannot pay other agents)",
+                    crate::app::format_wei_as_test_eth(m)
+                ),
+                _ => String::new(),
+            };
+            return Err(format!(
+                "calling '{target}' costs {} $LH but your wallet {from_hex} \
+                 holds {} $LH{meter_note}. Fund the wallet with a redeem code, \
+                 an invite, or a $LH transfer, then retry",
+                crate::app::format_wei_as_test_eth(pay_wei),
+                crate::app::format_wei_as_test_eth(wallet_wei),
+            ));
+        }
+    }
+
     // `settle` pulls the $LH from the payer via `transferFrom`, so the payer
     // must have approved the diamond once. Sponsored, so a fresh identity
-    // with zero gas can still approve. A read failure shouldn't hard-block —
-    // settle is the authoritative gate.
+    // with zero gas can still approve.
     match registry::lh_allowance(&from_hex, registry::REGISTRY_ADDRESS).await {
         Ok(allowance) if allowance >= pay_wei => {}
         Ok(_) => {
