@@ -229,25 +229,110 @@ pub(crate) async fn sponsored_escrow_diamond_call(
     fee_token: &str,
     gas_limit: u128,
 ) -> Result<String, String> {
+    sponsored_escrow_diamond_call_bridged(sender, fee_payer, amount_wei, input, fee_token, gas_limit, 0)
+        .await
+}
+
+/// [`sponsored_escrow_diamond_call`] with the METER AUTO-BRIDGE: when
+/// `bridge_wei > 0` a `withdrawCredits(bridge_wei)` call is PREPENDED to the
+/// SAME atomic Tempo tx (0x76 carries a calls array), pulling a wallet
+/// shortfall back out of the caller's unspent chat-meter credits before the
+/// approve→escrow pair runs — so "1057 $LH in the meter but the wallet is
+/// short" no longer blocks an escrow (on-chain feedback #63). Gas is bumped
+/// 150k when bridging (the same rider budget `send_lh` uses).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn sponsored_escrow_diamond_call_bridged(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    amount_wei: u128,
+    input: Vec<u8>,
+    fee_token: &str,
+    gas_limit: u128,
+    bridge_wei: u128,
+) -> Result<String, String> {
+    let calls = escrow_call_batch(amount_wei, input, bridge_wei)?;
+    let gas = if bridge_wei > 0 { gas_limit + 150_000 } else { gas_limit };
+    submit_tempo_sponsored(sender, fee_payer, calls, fee_token, gas).await
+}
+
+/// Build the calls array for a (possibly meter-bridged) escrow tx, in EXACT
+/// execution order: `withdrawCredits(bridge_wei)` on the diamond (only when
+/// `bridge_wei > 0`) → `$LH.approve(diamond, amount_wei)` → the escrow diamond
+/// call itself. Pure (no I/O) so the layout is natively testable.
+pub(crate) fn escrow_call_batch(
+    amount_wei: u128,
+    input: Vec<u8>,
+    bridge_wei: u128,
+) -> Result<Vec<crate::tempo_tx::TempoCall>, String> {
     let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
     let token_addr = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
-    let approve_call = crate::tempo_tx::TempoCall {
+    let mut calls = Vec::with_capacity(3);
+    if bridge_wei > 0 {
+        calls.push(crate::tempo_tx::TempoCall {
+            to: diamond_addr,
+            value_wei: 0,
+            input: encode_withdraw_credits(bridge_wei),
+        });
+    }
+    calls.push(crate::tempo_tx::TempoCall {
         to: token_addr,
         value_wei: 0,
         input: encode_approve(&diamond_addr, amount_wei),
-    };
-    let call = crate::tempo_tx::TempoCall {
+    });
+    calls.push(crate::tempo_tx::TempoCall {
         to: diamond_addr,
         value_wei: 0,
         input,
-    };
-    submit_tempo_sponsored(sender, fee_payer, vec![approve_call, call], fee_token, gas_limit).await
+    });
+    Ok(calls)
 }
 
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Bridged escrow batch: call ORDER must be withdrawCredits → approve →
+    /// escrow, with the bridge + escrow aimed at the DIAMOND and the approve
+    /// at the $LH token. A reordered batch would approve before the bridged
+    /// funds exist (revert) or escrow before the approve (revert).
+    #[test]
+    fn escrow_call_batch_bridged_order_and_targets() {
+        let escrow_input = vec![0xAA, 0xBB, 0xCC, 0xDD];
+        let calls = escrow_call_batch(700, escrow_input.clone(), 250).unwrap();
+        assert_eq!(calls.len(), 3);
+        let diamond = parse_eth_address(REGISTRY_ADDRESS).unwrap();
+        let token = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS).unwrap();
+        // 1. withdrawCredits(bridge_wei) on the diamond.
+        assert_eq!(calls[0].to, diamond);
+        assert_eq!(calls[0].input, encode_withdraw_credits(250));
+        // 2. $LH.approve(diamond, amount_wei) on the token.
+        assert_eq!(calls[1].to, token);
+        assert_eq!(calls[1].input, encode_approve(&diamond, 700));
+        // 3. The escrow call itself, untouched, on the diamond.
+        assert_eq!(calls[2].to, diamond);
+        assert_eq!(calls[2].input, escrow_input);
+        // Every call is zero-value (the $LH moves via calldata, never `value`).
+        assert!(calls.iter().all(|c| c.value_wei == 0));
+    }
+
+    /// `bridge_wei == 0` must be BYTE-IDENTICAL to the original two-call
+    /// approve+escrow shape — the bridged fn is a strict superset, so every
+    /// existing caller (CLI included) keeps its exact wire bytes.
+    #[test]
+    fn escrow_call_batch_zero_bridge_matches_original_shape() {
+        let escrow_input = vec![0x01, 0x02, 0x03];
+        let unbridged = escrow_call_batch(42, escrow_input.clone(), 0).unwrap();
+        let bridged = escrow_call_batch(42, escrow_input, 7).unwrap();
+        // No bridge call rides along when bridge_wei is 0.
+        assert_eq!(unbridged.len(), 2);
+        // The trailing approve+escrow pair is byte-identical either way.
+        for (a, b) in unbridged.iter().zip(&bridged[1..]) {
+            assert_eq!(a.to, b.to);
+            assert_eq!(a.value_wei, b.value_wei);
+            assert_eq!(a.input, b.input);
+        }
+    }
 
     #[test]
     fn decode_u256_as_u128_truncation_and_empty() {

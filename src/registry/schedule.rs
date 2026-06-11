@@ -104,6 +104,28 @@ pub async fn schedule_job_sponsored(
     max_runs: u32,
     fee_token: &str,
 ) -> Result<String, String> {
+    schedule_job_sponsored_bridged(
+        sender, fee_payer, target_id, task, interval_secs, budget_wei, max_runs, fee_token, 0,
+    )
+    .await
+}
+
+/// [`schedule_job_sponsored`] with the meter auto-bridge: `bridge_wei > 0`
+/// prepends `withdrawCredits(bridge_wei)` in the SAME atomic tx so unspent
+/// chat-meter credits can back the escrow (see
+/// `sponsored_escrow_diamond_call_bridged`).
+#[allow(clippy::too_many_arguments)]
+pub async fn schedule_job_sponsored_bridged(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    target_id: u64,
+    task: &[u8],
+    interval_secs: u64,
+    budget_wei: u128,
+    max_runs: u32,
+    fee_token: &str,
+    bridge_wei: u128,
+) -> Result<String, String> {
     // approve (~46k) + scheduleJob + ~275k sponsorship overhead. MEASURED via
     // `cast estimate`: scheduleJob alone is ~2.88M for a ~45-byte task (3 packed
     // cold job slots + the cold `task` bytes ~7.6k/BYTE + the two enumerable-index
@@ -112,13 +134,14 @@ pub async fn schedule_job_sponsored(
     // comfortable headroom; the sponsor only pays gas USED, so over-budgeting is
     // free. (See the CLAUDE.md "cast estimate, never guess" gotcha.)
     let gas = 3_500_000 + (task.len() as u128) * 9_000;
-    sponsored_escrow_diamond_call(
+    sponsored_escrow_diamond_call_bridged(
         sender,
         fee_payer,
         budget_wei,
         encode_schedule_job(target_id, task, interval_secs, budget_wei, max_runs),
         fee_token,
         gas,
+        bridge_wei,
     )
     .await
 }

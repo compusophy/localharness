@@ -281,15 +281,31 @@ pub async fn fund_guild_sponsored(
     amount_wei: u128,
     fee_token: &str,
 ) -> Result<String, String> {
+    fund_guild_sponsored_bridged(sender, fee_payer, guild_id, amount_wei, fee_token, 0).await
+}
+
+/// [`fund_guild_sponsored`] with the meter auto-bridge: `bridge_wei > 0`
+/// prepends `withdrawCredits(bridge_wei)` in the SAME atomic tx so unspent
+/// chat-meter credits can back the contribution (see
+/// `sponsored_escrow_diamond_call_bridged`).
+pub async fn fund_guild_sponsored_bridged(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    guild_id: u64,
+    amount_wei: u128,
+    fee_token: &str,
+    bridge_wei: u128,
+) -> Result<String, String> {
     // approve (~46k) + fundGuild (transferFrom pull + the treasury-balance
     // SSTORE + event) + ~275k sponsorship. Mirror the invite escrow budget.
-    sponsored_escrow_diamond_call(
+    sponsored_escrow_diamond_call_bridged(
         sender,
         fee_payer,
         amount_wei,
         encode_fund_guild(guild_id, amount_wei),
         fee_token,
         2_000_000,
+        bridge_wei,
     )
     .await
 }

@@ -117,6 +117,24 @@ pub async fn post_bounty_sponsored(
     ttl_secs: u64,
     fee_token: &str,
 ) -> Result<String, String> {
+    post_bounty_sponsored_bridged(sender, fee_payer, task, reward_wei, ttl_secs, fee_token, 0)
+        .await
+}
+
+/// [`post_bounty_sponsored`] with the meter auto-bridge: `bridge_wei > 0`
+/// prepends `withdrawCredits(bridge_wei)` in the SAME atomic tx so unspent
+/// chat-meter credits can back the escrow (see
+/// `sponsored_escrow_diamond_call_bridged`).
+#[allow(clippy::too_many_arguments)]
+pub async fn post_bounty_sponsored_bridged(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    task: &[u8],
+    reward_wei: u128,
+    ttl_secs: u64,
+    fee_token: &str,
+    bridge_wei: u128,
+) -> Result<String, String> {
     // approve (~46k) + postBounty (transferFrom pull + the bounty struct's cold
     // SSTOREs + the cold `task` bytes ~7.6k/BYTE + the bountiesOf enumerable push
     // + event) + ~275k sponsorship overhead. Cold writes dominate (CLAUDE.md
@@ -124,13 +142,14 @@ pub async fn post_bounty_sponsored(
     // scheduleJob escrow uses (also a struct + bytes + index push). The sponsor
     // is billed on gas USED, so over-budgeting is free.
     let gas = 3_500_000 + (task.len() as u128) * 9_000;
-    sponsored_escrow_diamond_call(
+    sponsored_escrow_diamond_call_bridged(
         sender,
         fee_payer,
         reward_wei,
         encode_post_bounty(task, reward_wei, ttl_secs),
         fee_token,
         gas,
+        bridge_wei,
     )
     .await
 }
