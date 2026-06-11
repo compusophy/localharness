@@ -25,8 +25,8 @@ use super::tools::guild::{
     spend_treasury_tool,
 };
 use super::tools::misc::{
-    clear_context_tool, compact_context_tool, set_persona_tool, spawn_recursive_subagent_tool,
-    submit_feedback_tool,
+    clear_context_tool, compact_context_tool, notify_tool, set_persona_tool,
+    spawn_recursive_subagent_tool, submit_feedback_tool,
 };
 use super::tools::platform::{
     batch_create_subdomains_tool, bulk_release_subdomains_tool, create_and_publish_app_tool,
@@ -216,6 +216,7 @@ pub(crate) async fn start_session(
             .with_tool(execute_proposal_tool())
             .with_tool(list_proposals_tool())
             .with_tool(submit_feedback_tool())
+            .with_tool(notify_tool())
             .with_tool(crate::app::self_docs::read_self_docs_tool())
             .with_tool(clear_context_tool())
             .with_tool(compact_context_tool())
@@ -291,6 +292,7 @@ pub(crate) async fn start_session(
             .with_tool(execute_proposal_tool())
             .with_tool(list_proposals_tool())
             .with_tool(submit_feedback_tool())
+            .with_tool(notify_tool())
             .with_tool(crate::app::self_docs::read_self_docs_tool())
             .with_tool(clear_context_tool())
             .with_tool(compact_context_tool())

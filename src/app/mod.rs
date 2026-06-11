@@ -37,6 +37,7 @@ mod history;
 mod key_store;
 mod model;
 mod net;
+mod notifications;
 mod opfs;
 mod owner;
 mod pricing;

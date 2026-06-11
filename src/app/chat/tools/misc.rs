@@ -92,6 +92,83 @@ pub(crate) fn set_persona_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     )
 }
 
+/// `notify(title, body?, vibrate?)` — show a system notification on the
+/// user's device (and optionally vibrate, on hardware that supports it).
+/// The agent's signal channel for alarms/timers, message-arrived, and
+/// long-task-done moments. Requests Notification permission on first use;
+/// some browsers only grant permission from a user gesture, so on denial
+/// this degrades to a permission report (the admin → account →
+/// notifications row is the reliable gesture path). Notifications render
+/// through the service-worker registration when available (the page
+/// constructor throws on Android).
+pub(crate) fn notify_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "Short notification title, e.g. \"timer done\" or \
+                    \"new message from dex\"."
+            },
+            "body": {
+                "type": "string",
+                "description": "Optional body text shown under the title. Keep it \
+                    to a sentence."
+            },
+            "vibrate": {
+                "type": "boolean",
+                "description": "Also vibrate the device (mobile only; silently \
+                    ignored where unsupported)."
+            }
+        },
+        "required": ["title"]
+    });
+    ClosureTool::new(
+        "notify",
+        "Show a system NOTIFICATION on the user's device, optionally vibrating it \
+         (mobile). Use when the user asks for an alarm/timer/reminder ping, when a \
+         long task finishes, or when something arrives they should see — it reaches \
+         them even when this tab is in the background. First use may trigger the \
+         browser's permission prompt; if permission is denied the result says so — \
+         then ask the user to press [enable notifications] under admin → account → \
+         notifications instead of retrying. Returns { notified, permission, \
+         vibrated }.",
+        schema,
+        |args: serde_json::Value, _ctx| async move {
+            let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if title.is_empty() {
+                return Err(crate::error::Error::other("notify title cannot be empty"));
+            }
+            let body = args.get("body").and_then(|v| v.as_str()).unwrap_or("");
+            let vibrate = args.get("vibrate").and_then(|v| v.as_bool()).unwrap_or(false);
+            // Vibration is independent of Notification permission — fire it
+            // even if the notification itself ends up blocked.
+            let vibrated = vibrate && crate::app::notifications::vibrate(200);
+            let granted = crate::app::notifications::ensure_permission()
+                .await
+                .map_err(crate::error::Error::other)?;
+            if !granted {
+                return Ok(serde_json::json!({
+                    "notified": false,
+                    "permission": "denied",
+                    "vibrated": vibrated,
+                    "note": "notification permission is denied or undecided — ask \
+                        the user to press [enable notifications] in admin → account \
+                        → notifications (a user gesture is required), then retry",
+                }));
+            }
+            crate::app::notifications::show(title, body)
+                .await
+                .map_err(crate::error::Error::other)?;
+            Ok(serde_json::json!({
+                "notified": true,
+                "permission": "granted",
+                "vibrated": vibrated,
+            }))
+        },
+    )
+}
+
 /// `clear_context()` — erase the entire conversation history and the visible
 /// chat, starting a fresh empty context. Deferred: sets `PENDING_CLEAR`,
 /// drained post-turn in [`run_send`] (clearing mid-turn would corrupt the
