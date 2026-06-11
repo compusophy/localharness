@@ -125,6 +125,16 @@ pub(crate) fn paint_entries(entries: &[crate::types::TranscriptEntry]) {
                 };
                 let result_html = templates::tool_call_result(&result).into_string();
                 block = inject_result(&block, seg_id, &result_html);
+                // Inline result card (file / directory / display outputs) —
+                // the SAME renderer the live path uses, so a replayed
+                // transcript looks like the live one. No framebuffer
+                // thumbnail on replay (the pixels are gone): the display
+                // card replays as the marker + [show].
+                if let Some(card) =
+                    templates::inline_result_card(&tc.name, &tc.args, &result, None)
+                {
+                    block = inject_card(&block, seg_id, &card.into_string());
+                }
             }
             // A tool with neither result nor error was in-flight when the
             // session ended; it replays with an empty result slot, matching the
@@ -160,9 +170,21 @@ pub(crate) fn paint_entries(entries: &[crate::types::TranscriptEntry]) {
 ///
 /// Pure (no DOM, no APP) so the splice can be unit-tested without a browser.
 fn inject_result(block: &str, seg_id: u32, result_html: &str) -> String {
-    let slot = format!("id=\"tool-{seg_id}-result\"");
+    inject_slot(block, &format!("tool-{seg_id}-result"), result_html)
+}
+
+/// Same splice for the inline-card slot (`#tool-{seg_id}-card`) that
+/// [`templates::tool_call_block`] renders right after the `<details>` pill.
+fn inject_card(block: &str, seg_id: u32, card_html: &str) -> String {
+    inject_slot(block, &format!("tool-{seg_id}-card"), card_html)
+}
+
+/// Shared core: fill the unique empty `<div id="{slot_id}"></div>` slot in a
+/// rendered block. Returns the block unchanged if the slot isn't found.
+fn inject_slot(block: &str, slot_id: &str, html: &str) -> String {
+    let slot = format!("id=\"{slot_id}\"");
     let empty = format!("{slot}></div>");
-    let filled = format!("{slot}>{result_html}</div>");
+    let filled = format!("{slot}>{html}</div>");
     block.replace(&empty, &filled)
 }
 
@@ -270,5 +292,187 @@ mod tests {
         let html = super::templates::tool_call_result(&result).into_string();
         assert!(html.contains("&lt;svg"), "svg not escaped: {html}");
         assert!(!html.contains("<svg onload"), "live <svg> leaked: {html}");
+    }
+
+    // --- inline result cards ---------------------------------------------
+
+    fn ok_result(name: &str, value: serde_json::Value) -> ToolResult {
+        ToolResult {
+            name: name.to_string(),
+            id: None,
+            result: Some(value),
+            error: None,
+        }
+    }
+
+    /// The real template must keep emitting BOTH empty slots the replay
+    /// splices target — result + card. Guards template/splice consistency.
+    #[test]
+    fn tool_call_block_emits_result_and_card_slots() {
+        let call = crate::types::ToolCall {
+            name: "view_file".to_string(),
+            args: serde_json::json!({"path": "a.txt"}),
+            id: None,
+            canonical_path: None,
+        };
+        let block = super::templates::tool_call_block(9, &call).into_string();
+        assert!(block.contains("id=\"tool-9-result\"></div>"), "result slot missing: {block}");
+        assert!(block.contains("id=\"tool-9-card\"></div>"), "card slot missing: {block}");
+    }
+
+    #[test]
+    fn inject_card_fills_the_card_slot() {
+        let block = "<details id=\"tool-3\"></details><div id=\"tool-3-card\"></div>";
+        let out = super::inject_card(block, 3, "<div class=\"inline-card\">x</div>");
+        assert!(out.contains("id=\"tool-3-card\"><div class=\"inline-card\">x</div></div>"));
+    }
+
+    #[test]
+    fn view_file_card_caps_lines_and_links_open() {
+        let content = (1..=50).map(|i| format!("line {i}\n")).collect::<String>();
+        let result = ok_result(
+            "view_file",
+            serde_json::json!({"path": "src/main.rs", "content": content}),
+        );
+        let card = super::templates::inline_result_card(
+            "view_file",
+            &serde_json::json!({"path": "src/main.rs"}),
+            &result,
+            None,
+        )
+        .expect("view_file success should card")
+        .into_string();
+        assert!(card.contains("src/main.rs"));
+        assert!(card.contains("data-action=\"opfs-open\""));
+        assert!(card.contains("data-arg=\"src/main.rs\""));
+        assert!(card.contains("line 40"), "40th line shown: {card}");
+        assert!(!card.contains("line 41"), "41st line must be cut: {card}");
+        assert!(card.contains("+10 more lines"), "trailer missing: {card}");
+    }
+
+    #[test]
+    fn create_file_card_renders_args_content() {
+        // create_file's result is just {ok, path, bytes} — the card body
+        // comes from the call args.
+        let result = ok_result(
+            "create_file",
+            serde_json::json!({"ok": true, "path": "notes.txt", "bytes": 6}),
+        );
+        let card = super::templates::inline_result_card(
+            "create_file",
+            &serde_json::json!({"path": "notes.txt", "content": "hello\n"}),
+            &result,
+            None,
+        )
+        .expect("create_file success should card")
+        .into_string();
+        assert!(card.contains("hello"));
+        assert!(card.contains("data-arg=\"notes.txt\""));
+    }
+
+    #[test]
+    fn errored_tool_gets_no_card() {
+        let result = ToolResult {
+            name: "view_file".to_string(),
+            id: None,
+            result: None,
+            error: Some("no such file".to_string()),
+        };
+        assert!(super::templates::inline_result_card(
+            "view_file",
+            &serde_json::json!({"path": "a.txt"}),
+            &result,
+            None
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn malicious_file_content_is_escaped_in_card() {
+        let result = ok_result(
+            "view_file",
+            serde_json::json!({
+                "path": "evil.html",
+                "content": "</pre><script>steal()</script>"
+            }),
+        );
+        let card = super::templates::inline_result_card(
+            "view_file",
+            &serde_json::json!({"path": "evil.html"}),
+            &result,
+            None,
+        )
+        .unwrap()
+        .into_string();
+        assert!(card.contains("&lt;script&gt;"), "script not escaped: {card}");
+        assert!(!card.contains("<script>"), "live <script> leaked: {card}");
+    }
+
+    #[test]
+    fn list_directory_card_rows_reuse_panel_actions() {
+        let result = ok_result(
+            "list_directory",
+            serde_json::json!({
+                "path": "src",
+                "count": 2,
+                "entries": [
+                    {"name": "app", "kind": "directory"},
+                    {"name": "lib.rs", "kind": "file", "size": 10},
+                ]
+            }),
+        );
+        let card = super::templates::inline_result_card(
+            "list_directory",
+            &serde_json::json!({"path": "src"}),
+            &result,
+            None,
+        )
+        .expect("list_directory success should card")
+        .into_string();
+        // Directory row navigates the FILES panel; file row opens the file —
+        // both with root-relative joined args.
+        assert!(card.contains("data-action=\"opfs-nav\" data-arg=\"src/app\""));
+        assert!(card.contains("data-action=\"opfs-open\" data-arg=\"src/lib.rs\""));
+    }
+
+    #[test]
+    fn display_card_marks_success_only() {
+        // Success shape → marker card with the [show] jump.
+        let ok = ok_result("render_html", serde_json::json!({"status": "rendered on display"}));
+        let card = super::templates::inline_result_card(
+            "render_html",
+            &serde_json::json!({"source": "<h1>hi</h1>"}),
+            &ok,
+            Some("data:image/png;base64,AAAA"),
+        )
+        .expect("render success should card")
+        .into_string();
+        assert!(card.contains("rendered to display"));
+        assert!(card.contains("data-action=\"toggle-display\""));
+        assert!(card.contains("data:image/png;base64,AAAA"), "thumb missing: {card}");
+
+        // Replay (no thumb) still cards, marker-only.
+        let replay = super::templates::inline_result_card(
+            "render_html",
+            &serde_json::json!({"source": "<h1>hi</h1>"}),
+            &ok,
+            None,
+        )
+        .unwrap()
+        .into_string();
+        assert!(!replay.contains("img"), "replay must not fabricate a thumb: {replay}");
+
+        // run_cartridge's Ok-with-`error` failure shape → no card.
+        let failed = ok_result(
+            "run_cartridge",
+            serde_json::json!({"error": "compilation failed", "detail": "boom"}),
+        );
+        assert!(super::templates::inline_result_card(
+            "run_cartridge",
+            &serde_json::json!({"source": "fn x() {}"}),
+            &failed,
+            None
+        )
+        .is_none());
     }
 }
