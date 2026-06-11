@@ -561,3 +561,40 @@ pub(crate) fn spawn_recursive_subagent_tool(
         },
     )
 }
+
+/// `dwell(seconds)` — clean in-loop waiting (on-chain feedback #67): agents
+/// were burning "dummy" read-only tool calls to let contract cooldowns (the
+/// 1-minute feedback rate limit, block confirmation windows) elapse. Capped
+/// at 300s so a confused model can't park a turn for an hour; not GUARDED
+/// (repeating a wait is legitimate).
+pub(crate) fn dwell_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "seconds": {
+                "type": "integer",
+                "description": "How long to wait, in seconds (1-300).",
+                "minimum": 1,
+                "maximum": 300
+            }
+        },
+        "required": ["seconds"]
+    });
+    ClosureTool::new(
+        "dwell",
+        "WAIT cleanly for `seconds` (max 300) before continuing — use this to \
+         respect contract cooldowns (e.g. the 1-minute feedback rate limit) or \
+         to let a transaction confirm, instead of burning dummy read calls to \
+         pass time. Returns { slept_seconds }.",
+        schema,
+        |args: serde_json::Value, _ctx| async move {
+            let seconds = args
+                .get("seconds")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                .clamp(1, 300);
+            crate::runtime::sleep_ms((seconds * 1000) as u32).await;
+            Ok(serde_json::json!({ "slept_seconds": seconds }))
+        },
+    )
+}

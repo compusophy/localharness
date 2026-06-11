@@ -179,6 +179,11 @@ pub(crate) async fn run_send() {
     // send button via Drop.
     let _turn_guard = TurnGuard;
 
+    // A fresh send wipes any stale status-line error (feedback #64: errors
+    // never cleared without a reload). Real errors land in the transcript;
+    // the status line is a transient mirror only.
+    dom::set_status("", false);
+
     // Payment gate. If the agent's owner has set a per-turn price AND
     // we know this visitor is *not* the owner, collect payment via
     // the cross-origin iframe signer before the LLM call runs.
@@ -193,7 +198,8 @@ pub(crate) async fn run_send() {
             );
         }
         Err(err) => {
-            dom::set_status(&format!("payment failed: {err}"), true);
+            transcript_system_error(&format!("payment failed: {err}"));
+            dom::set_status("payment failed — see the message above", true);
             return;
         }
     }
@@ -213,7 +219,8 @@ pub(crate) async fn run_send() {
     });
     if session_needs_start {
         if let Err(err) = start_session(&key, access.base_url.clone(), &access.identity).await {
-            dom::set_status(&format!("session start failed: {err:?}"), true);
+            transcript_system_error(&format!("session start failed: {err:?}"));
+            dom::set_status("session start failed — see the message above", true);
             return;
         }
     }
@@ -723,6 +730,21 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
         // marker so the aria-live region still announces the failure.
         dom::set_status("turn failed — see the message above", true);
     }
+}
+
+/// Surface a pre-turn failure IN THE STREAM (feedback #64): errors belong in
+/// the chronological transcript, not only the footer status line. Renders the
+/// same `.turn-error` shape `report_turn_error` uses, inside a bare assistant
+/// turn block, and scrolls it into view.
+fn transcript_system_error(text: &str) {
+    dom::append_html(
+        "transcript",
+        &format!(
+            "<div class=\"turn assistant\"><div class=\"body\"><div class=\"turn-error\">{}</div></div></div>",
+            dom::msg_span(dom::Msg::Error, text)
+        ),
+    );
+    dom::scroll_to_bottom("transcript");
 }
 
 /// The in-tab auto-compaction ceiling — shared by the session config and the
