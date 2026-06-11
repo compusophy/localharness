@@ -341,6 +341,13 @@ const PERSONA_KEY = ('0x' +
 const PUSH_SUB_KEY = ('0x' +
   bytesToHex(keccak_256(new TextEncoder().encode('localharness.push_sub')))) as `0x${string}`;
 
+// Self-recorded lessons slot — written by the browser app's record_lesson
+// tool (src/app/chat/tools/misc.rs; merge bounds in src/lessons.rs).
+// keccak256("localharness.lessons"), precomputed + inlined; pinned by the
+// Rust test `lessons_key_distinct_from_other_metadata_keys`.
+const LESSONS_KEY =
+  '0x08564cae936ec460c48a23578c7df5665bad18fe42f3c5dbde517ad67a9d9c89' as `0x${string}`;
+
 interface Job {
   owner: string;
   interval: bigint;
@@ -417,6 +424,32 @@ async function personaOf(tokenId: bigint): Promise<string | null> {
   })) as `0x${string}`;
   const text = decodeUtf8Bytes(raw).trim();
   return text.length ? text : null;
+}
+
+/** Self-recorded lessons blob for a tokenId. BEST-EFFORT: a read failure
+ * degrades to no lessons rather than failing the run. */
+async function lessonsOf(tokenId: bigint): Promise<string | null> {
+  try {
+    const raw = (await publicClient().readContract({
+      address: REGISTRY as `0x${string}`,
+      abi: METADATA_ABI,
+      functionName: 'metadata',
+      args: [tokenId, LESSONS_KEY],
+    })) as `0x${string}`;
+    const text = decodeUtf8Bytes(raw).trim();
+    return text.length ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Fold a target's self-recorded lessons into its persona — the SAME
+ * "=== Lessons (self-recorded) ===" section every other surface appends
+ * (browser session.rs, CLI call.rs), so a scheduled run embodies the same
+ * learned behavior. No-op when there are no lessons. */
+function withLessons(persona: string, lessons: string | null): string {
+  if (!lessons) return persona;
+  return persona + '\n\n=== Lessons (self-recorded) ===\n' + lessons;
 }
 
 async function nameOfId(tokenId: bigint): Promise<string> {
@@ -812,6 +845,7 @@ async function runSubAgent(name: string, message: string): Promise<string> {
   } catch {
     persona = defaultPersona(name);
   }
+  persona = withLessons(persona, await lessonsOf(targetId));
   const parts = await generateContent(
     persona,
     [{ role: 'user', parts: [{ text: message }] }],
@@ -1402,7 +1436,10 @@ async function processJob(id: bigint, tb: TickBudget): Promise<JobResult> {
   // to the facet's completeJob AFTER recordRun settles this run's debit.
   let goalReport: string | undefined;
   try {
-    const basePersona = (await personaOf(job.targetId)) ?? defaultPersona(name);
+    const basePersona = withLessons(
+      (await personaOf(job.targetId)) ?? defaultPersona(name),
+      await lessonsOf(job.targetId),
+    );
     const rawTask = (await taskOf(id)).trim();
     // The exact `GOAL: ` marker flags a ralph goal loop: wrap the persona with
     // the goal-loop frame (inspect state → one step → finish_goal only when
