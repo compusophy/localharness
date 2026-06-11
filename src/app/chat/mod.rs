@@ -29,7 +29,9 @@ mod tools;
 // The chat:: surface the rest of the app calls (events.rs, agent_rpc.rs,
 // app::mod, teams_sync.rs) — re-exported so the split keeps every external
 // call site at the same `crate::app::chat::` paths.
-pub(crate) use access::{credit_address_existing, credit_signer, ensure_credit_meter};
+pub(crate) use access::{
+    credit_address_existing, credit_signer, ensure_credit_meter, escrow_bridge_wei,
+};
 // Not currently called from outside `chat`, but part of the documented chat::
 // surface — keep it reachable at the same `crate::app::chat::` path.
 #[allow(unused_imports)]

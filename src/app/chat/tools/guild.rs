@@ -181,12 +181,21 @@ pub(crate) fn fund_guild_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 return Err(crate::error::Error::other("amount_lh must be greater than 0"));
             }
             let (signer, fee_payer) = bounty_signers().await?;
-            let tx_hash = crate::app::registry::fund_guild_sponsored(
+            // Escrow auto-bridge (feedback #63): a wallet shortfall covered by
+            // unspent chat-meter credits rides as a withdrawCredits call in the
+            // SAME atomic tx as approve+fundGuild.
+            let from_hex =
+                crate::encoding::bytes_to_hex_str(&crate::wallet::address(&signer));
+            let bridge_wei = crate::app::chat::escrow_bridge_wei(&from_hex, amount_wei)
+                .await
+                .map_err(crate::error::Error::other)?;
+            let tx_hash = crate::app::registry::fund_guild_sponsored_bridged(
                 &signer,
                 &fee_payer,
                 guild_id,
                 amount_wei,
                 crate::app::registry::ALPHA_USD_ADDRESS,
+                bridge_wei,
             )
             .await
             .map_err(|e| crate::error::Error::other(format!("fund_guild failed: {e}")))?;

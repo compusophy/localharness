@@ -58,24 +58,13 @@ async fn meter_bridge_call(
     from_hex: &str,
     needed_wei: u128,
 ) -> Result<Option<crate::tempo_tx::TempoCall>, crate::error::Error> {
-    let wallet = crate::app::registry::token_balance_of(from_hex)
+    // The pot math (0 = wallet covers / shortfall = meter covers / pot-aware
+    // error) is the SAME pre-flight every escrow path runs — never re-fork it.
+    let shortfall = crate::app::chat::access::escrow_bridge_wei(from_hex, needed_wei)
         .await
-        .unwrap_or(0);
-    if wallet >= needed_wei {
+        .map_err(crate::error::Error::other)?;
+    if shortfall == 0 {
         return Ok(None);
-    }
-    let shortfall = needed_wei - wallet;
-    let meter = crate::app::registry::credit_balance_of(from_hex)
-        .await
-        .unwrap_or(0);
-    if meter < shortfall {
-        return Err(crate::error::Error::other(format!(
-            "needs {} $LH but the wallet holds {} and the chat meter {} — \
-             fund up with a redeem code, an invite, or a $LH transfer first",
-            crate::app::format_wei_as_test_eth(needed_wei),
-            crate::app::format_wei_as_test_eth(wallet),
-            crate::app::format_wei_as_test_eth(meter),
-        )));
     }
     let mut calldata = Vec::with_capacity(4 + 32);
     calldata.extend_from_slice(&withdraw_credits_selector());

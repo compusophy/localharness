@@ -336,6 +336,12 @@ pub(crate) async fn guild_fund(caller: Option<&str>, id_arg: &str, amount: &str)
         Ok(pair) => pair,
         Err(code) => return code,
     };
+    // The contribution pulls from the WALLET pot — auto-bridge any shortfall
+    // out of the chat meter first (on-chain feedback #63).
+    let from_hex = bytes_to_hex_str(&wallet::address(&signer));
+    if let Err(code) = ensure_wallet_covers(&signer, &from_hex, amount_wei).await {
+        return code;
+    }
     println!("funding guild #{guild_id} with {} …", fmt_lh(amount_wei));
     match registry::fund_guild_sponsored(
         &signer,

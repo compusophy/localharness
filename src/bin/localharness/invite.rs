@@ -161,6 +161,12 @@ pub(crate) async fn invite_create(caller: Option<&str>, rest: &[String]) -> i32 
         Ok(pair) => pair,
         Err(code) => return code,
     };
+    // The escrow pulls the amount from the WALLET pot — auto-bridge any
+    // shortfall out of the chat meter first (on-chain feedback #63).
+    let from_hex = bytes_to_hex_str(&wallet::address(&signer));
+    if let Err(code) = ensure_wallet_covers(&signer, &from_hex, amount_wei).await {
+        return code;
+    }
 
     let code = gen_invite_code(&amount_label);
     let code_hash = registry::invite_code_hash(&code);

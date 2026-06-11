@@ -137,6 +137,12 @@ pub(crate) async fn bounty_post(caller: Option<&str>, rest: &[String]) -> i32 {
         Ok(pair) => pair,
         Err(code) => return code,
     };
+    // The escrow pulls the reward from the WALLET pot — auto-bridge any
+    // shortfall out of the chat meter first (on-chain feedback #63).
+    let from_hex = bytes_to_hex_str(&wallet::address(&signer));
+    if let Err(code) = ensure_wallet_covers(&signer, &from_hex, reward_wei).await {
+        return code;
+    }
     println!(
         "posting bounty: reward {}, expires in {} …",
         fmt_lh(reward_wei),

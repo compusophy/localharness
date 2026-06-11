@@ -149,9 +149,11 @@ pub(super) fn schedule_job_pressed() {
 /// the target name → credit signer + embedded fee payer → sponsored
 /// approve+`scheduleJob` tx → refresh the credits pill → read the new job id
 /// back from `jobsOf(caller)` (its last entry; 0 if unreadable). The budget
-/// is pulled from the caller's WALLET `$LH` by `transferFrom` — the
-/// per-request meter does NOT back this escrow, so "has metered credits but
-/// the escrow fails" means the wallet itself is short.
+/// is pulled from the caller's WALLET `$LH` by `transferFrom`; a wallet
+/// shortfall covered by unspent chat-METER credits rides as a
+/// `withdrawCredits` call in the SAME atomic tx (the escrow auto-bridge —
+/// on-chain feedback #63), so "has metered credits but the escrow fails"
+/// can only mean BOTH pots together are short.
 async fn submit_schedule_job(
     target: &str,
     task: &str,
@@ -164,11 +166,13 @@ async fn submit_schedule_job(
     if target_id == 0 {
         return Err("target agent not found".to_string());
     }
-    let (signer, _) = crate::app::chat::credit_signer()
+    let (signer, addr) = crate::app::chat::credit_signer()
         .await
         .ok_or_else(|| "no identity".to_string())?;
+    let from_hex = crate::encoding::bytes_to_hex_str(&addr);
+    let bridge_wei = crate::app::chat::escrow_bridge_wei(&from_hex, budget_wei).await?;
     let fee_payer = crate::app::sponsor::signer()?;
-    crate::app::registry::schedule_job_sponsored(
+    crate::app::registry::schedule_job_sponsored_bridged(
         &signer,
         &fee_payer,
         target_id,
@@ -177,6 +181,7 @@ async fn submit_schedule_job(
         budget_wei,
         max_runs,
         crate::app::registry::ALPHA_USD_ADDRESS,
+        bridge_wei,
     )
     .await?;
     // The escrow left the funder's spendable balance — reflect it.

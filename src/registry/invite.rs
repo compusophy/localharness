@@ -76,18 +76,37 @@ pub async fn create_invite_sponsored(
     ttl_secs: u64,
     fee_token: &str,
 ) -> Result<String, String> {
+    create_invite_sponsored_bridged(sender, fee_payer, code_hash, amount_wei, ttl_secs, fee_token, 0)
+        .await
+}
+
+/// [`create_invite_sponsored`] with the meter auto-bridge: `bridge_wei > 0`
+/// prepends `withdrawCredits(bridge_wei)` in the SAME atomic tx so unspent
+/// chat-meter credits can back the escrow (see
+/// `sponsored_escrow_diamond_call_bridged`).
+#[allow(clippy::too_many_arguments)]
+pub async fn create_invite_sponsored_bridged(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    code_hash: [u8; 32],
+    amount_wei: u128,
+    ttl_secs: u64,
+    fee_token: &str,
+    bridge_wei: u128,
+) -> Result<String, String> {
     // approve (~46k) + createInvite (transferFrom pull + the invite struct's TWO
     // cold SSTOREs + the `escrowedOf` SSTORE + event) + ~275k sponsorship. These
     // are cold writes (CLAUDE.md "cold SSTOREs dominate; never guess — cast
     // estimate"); budget generously at 2.5M. The sponsor is billed on gas USED,
     // not the limit, so over-budgeting is free.
-    sponsored_escrow_diamond_call(
+    sponsored_escrow_diamond_call_bridged(
         sender,
         fee_payer,
         amount_wei,
         encode_create_invite(&code_hash, amount_wei, ttl_secs),
         fee_token,
         2_500_000,
+        bridge_wei,
     )
     .await
 }

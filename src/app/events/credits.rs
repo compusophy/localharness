@@ -435,17 +435,24 @@ pub(super) fn create_invite_pressed() {
     wasm_bindgen_futures::spawn_local(async move {
         let result = async {
             super::sponsor_rate_guard()?;
-            let (signer, _) = crate::app::chat::credit_signer()
+            let (signer, addr) = crate::app::chat::credit_signer()
                 .await
                 .ok_or_else(|| "no identity".to_string())?;
+            // Escrow auto-bridge (feedback #63): a wallet shortfall covered by
+            // unspent chat-meter credits rides as a withdrawCredits call in the
+            // SAME atomic tx as approve+createInvite.
+            let from_hex = crate::encoding::bytes_to_hex_str(&addr);
+            let bridge_wei =
+                crate::app::chat::escrow_bridge_wei(&from_hex, amount_wei).await?;
             let fee_payer = crate::app::sponsor::signer()?;
-            crate::app::registry::create_invite_sponsored(
+            crate::app::registry::create_invite_sponsored_bridged(
                 &signer,
                 &fee_payer,
                 code_hash,
                 amount_wei,
                 INVITE_DEFAULT_TTL_SECS,
                 crate::app::registry::ALPHA_USD_ADDRESS,
+                bridge_wei,
             )
             .await
         }
