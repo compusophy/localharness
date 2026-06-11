@@ -1,7 +1,8 @@
 //! Session bootstrap — `start_session` builds the in-tab Agent: resolves the
 //! backend (Gemini / Anthropic / local), assembles the system prompt
-//! (`prompt::base_system_prompt` + self-docs digest + owner instructions),
-//! registers every closure tool, and seeds prior history.
+//! (`prompt::base_system_prompt` + self-docs digest + owner instructions +
+//! self-recorded lessons), registers every closure tool, and seeds prior
+//! history.
 
 use std::rc::Rc;
 
@@ -25,8 +26,8 @@ use super::tools::guild::{
     spend_treasury_tool,
 };
 use super::tools::misc::{
-    clear_context_tool, compact_context_tool, notify_tool, set_persona_tool,
-    spawn_recursive_subagent_tool, submit_feedback_tool,
+    clear_context_tool, compact_context_tool, notify_tool, record_lesson_tool,
+    set_persona_tool, spawn_recursive_subagent_tool, submit_feedback_tool,
 };
 use super::tools::platform::{
     batch_create_subdomains_tool, bulk_release_subdomains_tool, create_and_publish_app_tool,
@@ -88,6 +89,19 @@ pub(crate) async fn start_session(
         Some(custom) => {
             format!("{system_instructions}\n\n=== Owner instructions ===\n{custom}")
         }
+        None => system_instructions,
+    };
+
+    // Self-recorded lessons: fold in the bounded lessons blob (OPFS working
+    // copy, else the on-chain slot) so a mistake corrected once stays
+    // corrected across sessions and devices — the read half of the lessons
+    // loop (`record_lesson` is the write half).
+    let system_instructions = match crate::app::lessons::load()
+        .await
+        .as_deref()
+        .and_then(crate::lessons::compose_section)
+    {
+        Some(section) => format!("{system_instructions}\n\n{section}"),
         None => system_instructions,
     };
 
@@ -218,6 +232,7 @@ pub(crate) async fn start_session(
             .with_tool(list_proposals_tool())
             .with_tool(submit_feedback_tool())
             .with_tool(notify_tool())
+            .with_tool(record_lesson_tool())
             .with_tool(crate::app::self_docs::read_self_docs_tool())
             .with_tool(clear_context_tool())
             .with_tool(compact_context_tool())
@@ -295,6 +310,7 @@ pub(crate) async fn start_session(
             .with_tool(list_proposals_tool())
             .with_tool(submit_feedback_tool())
             .with_tool(notify_tool())
+            .with_tool(record_lesson_tool())
             .with_tool(crate::app::self_docs::read_self_docs_tool())
             .with_tool(clear_context_tool())
             .with_tool(compact_context_tool())
