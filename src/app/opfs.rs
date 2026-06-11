@@ -1,7 +1,9 @@
-//! OPFS file-browser panel. Reads through the public [`Filesystem`]
-//! trait so the same code would work against any backend. All DOM
-//! output goes through maud templates → `swap_inner` on fixed ids;
-//! the panel itself never builds a node manually.
+//! OPFS file browser — a modal overlay off the header [files] button
+//! (unified stream: chat is the app, files surface on demand). Reads
+//! through the public [`Filesystem`] trait so the same code would work
+//! against any backend. All DOM output goes through maud templates →
+//! `swap_inner` on fixed ids inside the modal; nothing here builds a
+//! node manually.
 //!
 //! [`Filesystem`]: crate::filesystem::Filesystem
 
@@ -11,8 +13,9 @@ use super::dom;
 use super::templates;
 use super::APP;
 
-/// Re-render the OPFS panel against the current cwd. Safe to call on
-/// every chat turn; if OPFS is unavailable we show an error row
+/// Re-render the file browser against the current cwd. Safe to call on
+/// every chat turn — a no-op while the modal is closed (`#fs-list` is
+/// not in the DOM); if OPFS is unavailable we show an error row
 /// instead of panicking.
 pub(crate) async fn refresh() {
     let cwd = APP.with(|cell| cell.borrow().opfs_cwd.clone());
@@ -56,6 +59,7 @@ pub(crate) async fn refresh() {
 /// path of segment names from the OPFS root (an empty string means
 /// "go to root").
 pub(crate) async fn navigate(target: &str) {
+    ensure_modal_open().await;
     let new_cwd: Vec<String> = if target.is_empty() {
         Vec::new()
     } else {
@@ -153,6 +157,7 @@ pub(crate) async fn render_html_file(name: &str) {
 /// files. Files larger than that won't load — we surface an error
 /// instead of letting an editor silently truncate.
 pub(crate) async fn edit_file(name: &str) {
+    ensure_modal_open().await;
     let (path, display_path) = resolve_path(name);
     let fs = super::shared_opfs();
     const MAX_EDIT: usize = 1024 * 1024;
@@ -170,10 +175,9 @@ pub(crate) async fn edit_file(name: &str) {
         Ok(bytes) => {
             let text = String::from_utf8_lossy(&bytes).into_owned();
             dom::swap_inner(
-                "view-content",
+                "fs-viewer",
                 &templates::opfs_editor(&display_path, name, &text).into_string(),
             );
-            set_view_collapsed(false);
             // Focus the textarea so the user can start typing immediately.
             if let Some(ta) = dom::textarea_by_id("fs-editor") {
                 let _ = ta.focus();
@@ -253,57 +257,56 @@ pub(crate) async fn wipe() {
 }
 
 pub(crate) fn close_viewer() {
-    // Stop any running display cartridge loop before tearing down the
-    // surface, so an orphaned rAF tick can't keep blitting.
-    super::display::stop();
-    // Collapse the view panel and clear its content — opening a file
-    // again re-renders fresh.
-    dom::swap_inner("view-content", "");
-    set_view_collapsed(true);
+    // Clear the editor slot inside the files modal — opening a file
+    // again re-renders fresh. (Display teardown moved to the display
+    // overlay's own close path — the two no longer share a surface.)
+    dom::swap_inner("fs-viewer", "");
 }
 
-/// Toggle the DISPLAY panel from the top rail. If the display canvas is
-/// already showing, tear it down (collapse + stop the cartridge);
-/// otherwise mount an idle framebuffer surface and open the panel. This
-/// lets the user open DISPLAY any time, not only when the agent runs a
-/// cartridge.
-pub(crate) fn toggle_display() {
-    let showing = dom::by_id("display-canvas").is_some() && !view_is_collapsed();
-    if showing {
-        close_viewer();
-    } else {
-        dom::swap_inner("view-content", &templates::display_surface().into_string());
-        set_view_collapsed(false);
-    }
+/// Whether the files modal is currently open (its list is in the DOM).
+fn files_modal_open() -> bool {
+    dom::by_id("fs-list").is_some()
 }
 
-/// Whether the center view-panel is currently collapsed.
-fn view_is_collapsed() -> bool {
-    dom::by_id("layout")
-        .map(|el| el.class_name().split_whitespace().any(|c| c == "view-collapsed"))
-        .unwrap_or(true)
-}
-
-/// Toggle the `view-collapsed` class on `#layout`. CSS hides
-/// `.view-panel` when this class is present.
-pub(crate) fn set_view_collapsed(collapsed: bool) {
-    let Some(layout) = dom::by_id("layout") else { return };
-    let cls = layout.class_name();
-    let parts: Vec<&str> = cls.split_whitespace().collect();
-    let has = parts.contains(&"view-collapsed");
-    if has == collapsed {
+/// Open the files modal if it isn't already, painting the browser
+/// against the current cwd. No-op when already open, or when the chrome
+/// has no `#files-modal` slot (apex / public-face pages).
+async fn ensure_modal_open() {
+    if files_modal_open() {
         return;
     }
-    let new_cls = if collapsed {
-        if parts.is_empty() {
-            "view-collapsed".to_string()
-        } else {
-            format!("{} view-collapsed", parts.join(" "))
-        }
+    dom::swap_outer("files-modal", &templates::files_modal().into_string());
+    refresh().await;
+}
+
+/// Header [files] / `Action::ToggleFiles`: open the file-browser modal,
+/// or dismiss it if it's already up.
+pub(crate) async fn toggle_files_modal() {
+    if files_modal_open() {
+        dom::swap_outer("files-modal", &templates::files_modal_closed().into_string());
     } else {
-        parts.iter().filter(|c| **c != "view-collapsed").copied().collect::<Vec<_>>().join(" ")
-    };
-    layout.set_class_name(&new_cls);
+        ensure_modal_open().await;
+    }
+}
+
+/// `Action::ToggleDisplay` (display card [show] / overlay ×): if the
+/// display overlay is up, tear it down (stop any running cartridge);
+/// otherwise mount an idle framebuffer surface as a fullscreen overlay.
+/// This lets the user open the DISPLAY any time, not only when the
+/// agent runs a cartridge.
+pub(crate) fn toggle_display() {
+    if dom::by_id("display-canvas").is_some() {
+        close_display();
+    } else {
+        dom::swap_outer("display-overlay", &templates::display_overlay().into_string());
+    }
+}
+
+/// Dismiss the display overlay: stop any running cartridge loop before
+/// tearing down the surface, so an orphaned rAF tick can't keep blitting.
+pub(crate) fn close_display() {
+    super::display::stop();
+    dom::swap_outer("display-overlay", &templates::display_overlay_closed().into_string());
 }
 
 fn cwd_path(cwd: &[String]) -> String {

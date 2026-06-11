@@ -72,9 +72,9 @@ enum Action {
     ResetConfirm,
     ResetCancel,
     PricingSave,
+    /// Open/close the OPFS file-browser modal (header [files] button +
+    /// the modal's own ×).
     ToggleFiles,
-    ToggleTerminal,
-    ShowTab(String),
     FeedbackSubmit,
     /// Dismiss the QR seed-adoption panel back to the "add a device" button.
     PairCancel,
@@ -205,8 +205,6 @@ impl Action {
             "reset-cancel" => Action::ResetCancel,
             "pricing-save" => Action::PricingSave,
             "toggle-files" => Action::ToggleFiles,
-            "toggle-terminal" => Action::ToggleTerminal,
-            "show-tab" => Action::ShowTab(arg.unwrap_or_default()),
             "feedback-submit" => Action::FeedbackSubmit,
             "add-device" => Action::AddDevice,
             "sync-devices" => Action::SyncDevices,
@@ -869,9 +867,11 @@ fn dispatch(action: Action) {
         }
         Action::ResetConfirm => layout::reset_confirm_pressed(),
         Action::PricingSave => layout::pricing_save_pressed(),
-        Action::ToggleFiles => layout::toggle_layout_class("files-collapsed"),
-        Action::ToggleTerminal => layout::toggle_layout_class("terminal-collapsed"),
-        Action::ShowTab(name) => admin::show_mobile_tab(&name),
+        Action::ToggleFiles => {
+            wasm_bindgen_futures::spawn_local(async move {
+                super::opfs::toggle_files_modal().await;
+            });
+        }
         Action::FeedbackSubmit => super::feedback::feedback_submit(),
         Action::AddDevice => devices::add_device_pressed(),
         Action::SyncDevices => devices::run_sync_devices(),

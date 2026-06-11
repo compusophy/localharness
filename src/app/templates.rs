@@ -101,15 +101,18 @@ pub(crate) fn rendered_markdown(raw: &str) -> Markup {
     html! { (PreEscaped(out)) }
 }
 
-/// Sticky header — brand left, bug-report glyph + admin button right.
-/// The insect icon (issue #15) sits immediately left of admin and opens
-/// the admin modal pre-switched to its `feedback` tab
+/// Sticky header — brand left, [files] + bug-report glyph + admin button
+/// right. The insect icon (issue #15) sits immediately left of admin and
+/// opens the admin modal pre-switched to its `feedback` tab
 /// (`admin_feedback_section`) — same modal machinery, one click from the
-/// header to the report box. The bottom of the viewport stays claimed by
-/// the terminal / active panel. The admin button uses a fixed min-width
-/// via `.header-button`; the icon button opts out (`.feedback-button`)
-/// so it stays square-ish instead of 96px wide.
-pub(crate) fn site_header(_host: &Host) -> Markup {
+/// header to the report box. `files` paints the [files] entry that opens
+/// the OPFS browser as a modal (`templates::files_modal`) — only the full
+/// app chrome passes `true`; apex/explore/unclaimed pages have no
+/// `#files-modal` slot so the button would be dead there. The admin
+/// button uses a fixed min-width via `.header-button`; the icon button
+/// opts out (`.feedback-button`) so it stays square-ish instead of 96px
+/// wide.
+pub(crate) fn site_header(_host: &Host, files: bool) -> Markup {
     html! {
         header.site-header {
             div.header-inner {
@@ -124,6 +127,11 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
                                 target="_blank" rel="noopener" { "crate" }
                         }
                     }
+                }
+                @if files {
+                    button type="button"
+                        data-action="toggle-files"
+                        .header-button { "files" }
                 }
                 button type="button"
                     data-action="header-feedback"
@@ -177,11 +185,8 @@ pub(crate) const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) fn terminal_input() -> Markup {
     html! {
         div.terminal-body {
-            // Context-fullness indicator (feedback #59): a 2px bar above the
-            // input whose fill = live prompt tokens / the compaction
-            // threshold. Filled by `chat::update_context_bar` after every
-            // turn; full means a compaction is imminent.
-            div #ctx-bar .ctx-bar title="context" { div #ctx-fill .ctx-fill {} }
+            // (The context-fullness bar `#ctx-bar` moved to the TOP of the
+            // chat area — see `chrome` — per feedback #62.)
             // Funding affordance — empty by default; `events::refresh_fund_banner`
             // fills it with a redeem CTA when the credit identity holds zero `$LH`
             // (so a new user with no funds sees the path to redeem instead of a
@@ -381,7 +386,7 @@ pub(crate) fn embed_card(
 /// `paint_explore`; this renders the header + a loading placeholder.
 pub(crate) fn explore_chrome(host: &Host) -> Markup {
     html! {
-        (site_header(host))
+        (site_header(host, false))
         main.explore-main {
             div.explore-header {
                 h1.explore-title { "agents" }
@@ -425,45 +430,24 @@ pub(crate) fn explore_grid(agents: &[(u64, String)], personas: &[Option<String>]
     }
 }
 
-/// The full app chrome (key + prompt + transcript + OPFS panel). Used
-/// when we're on a claimed tenant subdomain or any fallback
-/// (localhost, vercel preview).
+/// The full app chrome — UNIFIED STREAM (GitHub #28): chat IS the app.
+/// One chronological transcript takes the whole content area on every
+/// viewport; files and display surface INLINE (the `inline_result_card`s)
+/// and on demand via header-[files] → [`files_modal`] and ToggleDisplay →
+/// [`display_overlay`]. No mobile tab bar, no side panels. The two
+/// `hidden` divs are the swap targets the modal/overlay open into
+/// (admin-modal pattern: `swap_outer` by fixed id).
 pub(crate) fn chrome(host: &Host) -> Markup {
     html! {
-        (site_header(host))
-        (mobile_tabs())
-        main #layout .layout.view-collapsed.files-collapsed.financial-collapsed.tab-chat {
-            // Files (left) — files-rail wraps a col-side panel.
-            // No inner header: the rail label IS the panel title.
-            button type="button" data-action="toggle-files"
-                .side-rail.files-rail {
-                span.rail-label { "files" }
-            }
-            (col_side(
-                html! {
-                    div #fs-breadcrumb .fs-breadcrumb { "/" }
-                    ul #fs-list .fs-list {}
-                },
-                "col-fs",
-            ))
-
-            // Center column — vertical stack:
-            //   [view-panel?][transcript][terminal-panel?][terminal-rail]
-            // Clicking terminal-rail collapses transcript + terminal
-            // (so the editor can take the whole center). The view-panel
-            // is hidden by default and opens when a file is opened from
-            // the files panel.
+        (site_header(host, true))
+        main #layout .layout {
             div.col-chat {
-                // Display rail pinned to the top of the center column —
-                // always present, so the user can open the framebuffer
-                // any time, not only when the agent runs a cartridge.
-                button type="button" data-action="toggle-display"
-                    .top-rail.display-rail {
-                    span.rail-label { "display" }
-                }
-                section.view-panel {
-                    div #view-content .view-content {}
-                }
+                // Context-fullness indicator (feedback #59/#62): a 2px bar
+                // at the TOP of the chat area, directly under the site
+                // header, whose fill = live prompt tokens / the compaction
+                // threshold. Filled by `chat::update_context_bar` after
+                // every turn; full means a compaction is imminent.
+                div #ctx-bar .ctx-bar title="context" { div #ctx-fill .ctx-fill {} }
                 // Live region: streamed assistant turns are appended/swapped
                 // into here as the model replies, so screen readers must be
                 // told to announce mutations. `role=log` + `aria-live=polite`
@@ -475,30 +459,60 @@ pub(crate) fn chrome(host: &Host) -> Markup {
                 section.terminal-panel {
                     (terminal_input())
                 }
-                button type="button" data-action="toggle-terminal"
-                    .bottom-rail.terminal-rail {
-                    span.rail-label { "terminal" }
+            }
+        }
+        div #files-modal hidden {}
+        div #display-overlay hidden {}
+    }
+}
+
+/// The OPFS file browser as a modal overlay (header [files] /
+/// `Action::ToggleFiles`) — same overlay machinery as the admin modal.
+/// `opfs::refresh` paints into `#fs-breadcrumb` / `#fs-list`; the editor
+/// (`opfs::edit_file`) swaps into `#fs-viewer` below the list. Closing
+/// swaps the whole thing back to the `hidden` placeholder.
+pub(crate) fn files_modal() -> Markup {
+    html! {
+        div #files-modal .files-modal {
+            div.files-dialog {
+                div.files-head {
+                    span.files-title { "files" }
+                    button type="button" data-action="toggle-files"
+                        .modal-close aria-label="close files" { "×" }
+                }
+                div.files-body {
+                    div #fs-breadcrumb .fs-breadcrumb { "/" }
+                    ul #fs-list .fs-list {}
+                    div #fs-viewer .fs-viewer {}
                 }
             }
-
-            // The agent card moved into the admin Account tab (folded in
-            // from the old right rail), so there's no financial column or
-            // "agents" rail here anymore.
         }
     }
 }
 
-/// Mobile-only tab bar shown above main on narrow viewports.
-/// Switches the `tab-<name>` class on `#layout` so CSS shows
-/// exactly one panel at a time. Hidden on desktop.
-pub(crate) fn mobile_tabs() -> Markup {
+/// The closed state of the files modal — the hidden swap target.
+pub(crate) fn files_modal_closed() -> Markup {
+    html! { div #files-modal hidden {} }
+}
+
+/// The DISPLAY framebuffer as a fullscreen overlay (ToggleDisplay /
+/// the inline display card's [show] / mounted by `display::mount_canvas`
+/// when a cartridge or HTML render starts). Dismissable via `×`, which
+/// also stops a running cartridge. The cartridge keeps running in its
+/// Web Worker exactly as before — only the surface placement changed.
+pub(crate) fn display_overlay() -> Markup {
     html! {
-        nav.mobile-tabs {
-            button #tab-btn-files type="button" data-action="show-tab" data-arg="files" .tab-button { "files" }
-            button #tab-btn-chat type="button" data-action="show-tab" data-arg="chat" .tab-button.active { "chat" }
-            button #tab-btn-display type="button" data-action="show-tab" data-arg="display" .tab-button { "display" }
+        div #display-overlay .display-overlay {
+            button type="button" data-action="toggle-display"
+                .modal-close.display-close aria-label="close display" { "×" }
+            (display_surface())
         }
     }
+}
+
+/// The closed state of the display overlay — the hidden swap target.
+pub(crate) fn display_overlay_closed() -> Markup {
+    html! { div #display-overlay hidden {} }
 }
 
 // site_footer() retired — the feedback button moved into site_header,
@@ -532,18 +546,6 @@ pub(crate) fn admin_feedback_section() -> Markup {
 // feedback_list() removed — feedback is write-only in the UI now. The
 // on-chain log is still public; triage it off-chain via
 // scripts/harvest-feedback.
-
-/// SSOT side-panel archetype — used by both `col-fs` (files) and
-/// `col-financial` (agent). Just a body container; the rail label
-/// outside the panel is the SSOT name for the panel.
-fn col_side(body: Markup, extra_class: &str) -> Markup {
-    let cls = format!("col-side {extra_class}");
-    html! {
-        aside class=(cls) {
-            div.panel-body { (body) }
-        }
-    }
-}
 
 /// One assistant or user turn. `body_html` is already HTML (assistant
 /// turns inject their streaming segments and tool blocks here, so the
@@ -626,13 +628,13 @@ pub(crate) fn tool_call_result(result: &ToolResult) -> Markup {
 
 // --- Inline result cards -------------------------------------------------
 //
-// Compact transcript cards under a tool pill for the tools whose output the
-// user would otherwise chase across the FILES / DISPLAY tabs (GitHub #28).
-// Additive only: the tabs and their behavior are untouched — a card is a
-// chronological anchor with an [open]/[show] jump, not a replacement panel.
+// Compact transcript cards under a tool pill for file / directory / display
+// tool outputs (GitHub #28). With the unified stream these ARE the primary
+// surface: a card is a chronological anchor whose [open]/[show] jumps into
+// the files modal / display overlay.
 
 /// Cap on lines shown inside an inline result card; the rest is summarized
-/// by a "… +N more lines" trailer and reachable via [open] in FILES.
+/// by a "… +N more lines" trailer and reachable via [open] (files modal).
 const CARD_MAX_LINES: usize = 40;
 
 /// First [`CARD_MAX_LINES`] lines of `content` plus how many lines were cut.
@@ -715,8 +717,8 @@ pub(crate) fn inline_result_card(
     }
 }
 
-/// Filename header + capped monospace body + [open] into the FILES panel
-/// (reuses the panel's own `opfs-open` action).
+/// Filename header + capped monospace body + [open] into the files modal
+/// (reuses the browser's own `opfs-open` action, which opens the modal).
 fn file_card(path: &str, content: &str) -> Markup {
     let (shown, cut) = card_snippet(content);
     html! {
@@ -733,9 +735,9 @@ fn file_card(path: &str, content: &str) -> Markup {
     }
 }
 
-/// One-line-per-entry directory card. Directory rows navigate the FILES
-/// panel (`opfs-nav`); file rows open via the same `opfs-open` the panel
-/// rows use. `role=button` + `tabindex=0` match the panel's a11y convention
+/// One-line-per-entry directory card. Directory rows navigate the files
+/// modal (`opfs-nav`); file rows open via the same `opfs-open` its rows
+/// use. `role=button` + `tabindex=0` match the panel's a11y convention
 /// (the delegated keydown handler activates them on Enter/Space).
 fn dir_card(path: &str, entries: &[serde_json::Value]) -> Markup {
     let base = opfs_arg(path).trim_end_matches('/');
@@ -769,8 +771,8 @@ fn dir_card(path: &str, entries: &[serde_json::Value]) -> Markup {
     }
 }
 
-/// Marker card for a successful display render. The DISPLAY panel holds the
-/// live surface; this anchors the event in the transcript with a [show]
+/// Marker card for a successful display render. The display overlay holds
+/// the live surface; this anchors the event in the transcript with a [show]
 /// jump (reuses `toggle-display`). `thumb` is a live-path framebuffer
 /// snapshot — `None` on replay, where only the marker paints.
 fn display_card(thumb: Option<&str>) -> Markup {
@@ -803,7 +805,7 @@ fn display_card(thumb: Option<&str>) -> Markup {
 pub(crate) fn apex(host: &Host, wallet_address_hex: Option<&str>) -> Markup {
     let fresh = wallet_address_hex.is_none();
     html! {
-        (site_header(host))
+        (site_header(host, false))
         main.apex-main {
             div.col-chat {
                 @if fresh { (apex_hero()) }
@@ -1595,7 +1597,7 @@ pub(crate) fn adopt_panel(code: &str, url: &str) -> Markup {
 /// is stashed in a hidden input so the submit handler can read it.
 pub(crate) fn adopt_join(ct_hex: &str) -> Markup {
     html! {
-        (site_header(&Host::Apex))
+        (site_header(&Host::Apex, false))
         main.apex-main {
             div.col-chat {
                 section.step {
@@ -1985,7 +1987,7 @@ pub(crate) fn signer_chrome(address_hex: &str) -> Markup {
 /// names reuse the same wallet across the family of subdomains.
 pub(crate) fn unclaimed(host: &Host, name: &str) -> Markup {
     html! {
-        (site_header(host))
+        (site_header(host, false))
         main.apex-main {
             div.col-chat {
                 section.step.step-unclaimed {
@@ -2118,9 +2120,9 @@ pub(crate) fn opfs_editor(display_path: &str, name: &str, text: &str) -> Markup 
 /// DISPLAY surface — the framebuffer the cartridge loader blits into.
 /// Just a single `<canvas>` in a letterboxed stage; no toolbar. The
 /// canvas backing store is sized in `display::mount_canvas` and CSS
-/// letterboxes it 16:9. Toggling the DISPLAY rail closed tears the
-/// surface down (and stops any running cartridge). This is the "screen"
-/// half of the Orbital-style compositor.
+/// letterboxes it 16:9. Lives inside [`display_overlay`]; dismissing the
+/// overlay tears the surface down (and stops any running cartridge).
+/// This is the "screen" half of the Orbital-style compositor.
 pub(crate) fn display_surface() -> Markup {
     html! {
         div.display-wrap {

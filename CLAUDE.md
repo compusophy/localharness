@@ -95,9 +95,11 @@ src/app/ (browser IDE):
     credits schedule bounty guild governance devices subdomains key_sync
     public_face layout) chat/(turn loop in mod.rs; session.rs prompt.rs
     access.rs tools/{platform,bounty,guild,governance,misc})
-  history.rs(OPFS conversation + tool-call replay) opfs.rs(file browser/editor)
+  history.rs(OPFS conversation + tool-call replay) opfs.rs(file browser/editor
+    as a header-[files] MODAL — no files tab)
   display.rs(framebuffer: runs wasm cartridges off-main-thread in a Web Worker +
-    rasterizes HTML; main-thread WATCHDOG kills hung workers — the brick fix)
+    rasterizes HTML; main-thread WATCHDOG kills hung workers — the brick fix;
+    surface = a fullscreen dismissable OVERLAY, not a tab/panel)
   gas.rs(set_metadata_gas — THE sponsored-setMetadata formula, one home)
   notifications.rs(notify tool + Web Push subscribe; sub published under
     keccak256("localharness.push_sub") for the scheduler's tab-closed pushes;
@@ -288,6 +290,14 @@ are `set_inner_html`/`set_outer_html`/`insert_adjacent_html` at fixed element id
 (HTMX-style fragment swaps). ONE delegated `click`/`keydown`/`submit`/`input`
 listener at document level dispatches via `data-action`/`data-arg`. Zero
 `Closure::wrap` outside those four listeners.
+
+**UNIFIED STREAM (issue #28): chat IS the app.** One chronological transcript
+fills the content area on every viewport (no mobile FILES/CHAT/DISPLAY tab bar,
+no side panels). Tool outputs surface inline (`inline_result_card`); FILES is an
+admin-style modal off the header [files] button (`opfs::toggle_files_modal`,
+editor in `#fs-viewer`), DISPLAY a fullscreen overlay (ToggleDisplay /
+`display::mount_canvas`; × stops the cartridge). `#ctx-bar` sits at the TOP of
+the chat column (feedback #62).
 
 **Mount-time routing (`mod.rs::mount`):**
 1. `?signer=1` → minimal signer chrome + postMessage listener, return. No apex

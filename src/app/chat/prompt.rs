@@ -238,7 +238,7 @@ pub(crate) fn base_system_prompt(
              Each run is auto-saved to `cartridge.rl` (visible in files, \
              survives reload). This is what 'build/run/show me an app' (on \
              this tab) means — run_cartridge launches it live on the DISPLAY, \
-             non-fullscreen, no reload. ONLY when the user EXPLICITLY asks to make this \
+             in a dismissable overlay, no reload. ONLY when the user EXPLICITLY asks to make this \
              subdomain PERMANENTLY BECOME the app (fullscreen on every load, \
              no IDE chrome) should you ALSO save the same source to `app.rl` \
              via create_file. Never write `app.rl` for an ordinary app \
@@ -251,7 +251,7 @@ pub(crate) fn base_system_prompt(
              CSS, no images (headings just render bigger). For interactive or \
              animated apps use run_cartridge. Pair with create_file to also \
              save the HTML as `index.html`. (Opening an .html file from the \
-             files panel renders it here too.)\n\
+             files modal renders it here too.)\n\
            • submit_feedback(text) — submit feedback on-chain via the \
              FeedbackFacet. Emits a FeedbackSubmitted event on the registry \
              diamond. Use when the user asks to leave feedback or to report \
