@@ -90,13 +90,23 @@ pub(crate) fn post_bounty_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             }
             let ttl_secs = (ttl_hours * 3600.0) as u64;
             let (signer, fee_payer) = bounty_signers().await?;
-            let tx_hash = crate::app::registry::post_bounty_sponsored(
+            // Escrow auto-bridge (feedback #63): a wallet shortfall covered by
+            // unspent chat-meter credits rides as a withdrawCredits call in the
+            // SAME atomic tx as approve+postBounty. Pot-aware error when both
+            // pots together are short.
+            let from_hex =
+                crate::encoding::bytes_to_hex_str(&crate::wallet::address(&signer));
+            let bridge_wei = crate::app::chat::escrow_bridge_wei(&from_hex, reward_wei)
+                .await
+                .map_err(crate::error::Error::other)?;
+            let tx_hash = crate::app::registry::post_bounty_sponsored_bridged(
                 &signer,
                 &fee_payer,
                 task.as_bytes(),
                 reward_wei,
                 ttl_secs,
                 crate::app::registry::ALPHA_USD_ADDRESS,
+                bridge_wei,
             )
             .await
             .map_err(|e| crate::error::Error::other(format!("post_bounty failed: {e}")))?;

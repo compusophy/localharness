@@ -231,6 +231,36 @@ async fn read_api_key() -> Option<String> {
     None
 }
 
+/// Pre-flight for EVERY browser escrow path (scheduleJob / createInvite /
+/// postBounty / fundGuild — on-chain feedback #63): how much of `needed_wei`
+/// must be auto-bridged out of the chat METER (`withdrawCredits`, prepended in
+/// the same atomic tx) because the WALLET pot is short. Returns 0 when the
+/// wallet covers it, the shortfall when the meter covers the gap, and a
+/// pot-aware error (mirrors `remote_call::ask_via_proxy`'s wording) when both
+/// pots together can't cover the escrow.
+pub(crate) async fn escrow_bridge_wei(from_hex: &str, needed_wei: u128) -> Result<u128, String> {
+    let wallet = crate::app::registry::token_balance_of(from_hex)
+        .await
+        .unwrap_or(0);
+    if wallet >= needed_wei {
+        return Ok(0);
+    }
+    let shortfall = needed_wei - wallet;
+    let meter = crate::app::registry::credit_balance_of(from_hex)
+        .await
+        .unwrap_or(0);
+    if meter < shortfall {
+        return Err(format!(
+            "needs {} $LH but the wallet holds {} and the chat meter {} — \
+             fund up with a redeem code, an invite, or a $LH transfer first",
+            crate::app::format_wei_as_test_eth(needed_wei),
+            crate::app::format_wei_as_test_eth(wallet),
+            crate::app::format_wei_as_test_eth(meter),
+        ));
+    }
+    Ok(shortfall)
+}
+
 pub(crate) fn u256_be(value: u128) -> [u8; 32] {
     let mut out = [0u8; 32];
     out[16..].copy_from_slice(&value.to_be_bytes());

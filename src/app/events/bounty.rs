@@ -56,17 +56,24 @@ pub(super) fn post_bounty_pressed() {
     wasm_bindgen_futures::spawn_local(async move {
         let result = async {
             super::sponsor_rate_guard()?;
-            let (signer, _) = crate::app::chat::credit_signer()
+            let (signer, addr) = crate::app::chat::credit_signer()
                 .await
                 .ok_or_else(|| "no identity".to_string())?;
+            // Escrow auto-bridge (feedback #63): a wallet shortfall covered by
+            // unspent chat-meter credits rides as a withdrawCredits call in the
+            // SAME atomic tx as approve+postBounty.
+            let from_hex = crate::encoding::bytes_to_hex_str(&addr);
+            let bridge_wei =
+                crate::app::chat::escrow_bridge_wei(&from_hex, reward_wei).await?;
             let fee_payer = crate::app::sponsor::signer()?;
-            crate::app::registry::post_bounty_sponsored(
+            crate::app::registry::post_bounty_sponsored_bridged(
                 &signer,
                 &fee_payer,
                 task.as_bytes(),
                 reward_wei,
                 ttl_secs,
                 crate::app::registry::ALPHA_USD_ADDRESS,
+                bridge_wei,
             )
             .await
         }
