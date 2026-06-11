@@ -44,7 +44,12 @@ impl Tool for RunCartridge {
          for the label, and each frame check if pointer_down() and the \
          pointer is inside the box. Each run is auto-saved to `cartridge.rl` \
          so it shows up in the files panel and survives a reload (re-open it \
-         from files to run it again). This is the tool to use whenever the \
+         from files to run it again). The result reports the truth: success \
+         returns only after the FIRST frame actually renders; a failure \
+         returns { error, code: \"LHxxxx\", phase: \"instantiate\"|\"run\", \
+         detail, hint } (compile errors additionally carry location: \
+         \"line N, col M\" + a caret snippet) — read it and fix that exact \
+         spot. This is the tool to use whenever the \
          user wants to build, run, or see a visual app — it launches live \
          on the DISPLAY, no reload and no fullscreen takeover. ONLY when the \
          user EXPLICITLY asks to make this subdomain PERMANENTLY BECOME the \
@@ -78,10 +83,10 @@ impl Tool for RunCartridge {
         let wasm_bytes = match crate::rustlite::compile(source) {
             Ok(bytes) => bytes,
             Err(err) => {
-                return Ok(json!({
-                    "error": "compilation failed",
-                    "detail": err.to_string()
-                }));
+                // Same structured report as compile_rustlite: LH0xxx code,
+                // line/col locator, caret snippet, fix hint (issue #7 — this
+                // branch used to return only the bare message).
+                return Ok(crate::builtins::compile_failure_report(&err, source));
             }
         };
 
@@ -95,15 +100,27 @@ impl Tool for RunCartridge {
                 let fs = crate::app::shared_opfs();
                 fs.write_atomic("cartridge.rl", source.as_bytes()).await.is_ok()
             };
-            match crate::app::display::run_wasm(&wasm_bytes).await {
+            // AWAIT the cartridge's first lifecycle signal (issue #7): the
+            // old fire-and-forget run_wasm reported "running on display"
+            // even when instantiation failed, the first frame trapped, or
+            // the watchdog killed a hung loop — the agent only ever saw
+            // success while the user stared at "CARTRIDGE STOPPED".
+            match crate::app::display::run_wasm_reporting(&wasm_bytes).await {
                 Ok(()) => Ok(json!({
                     "status": "running on display",
                     "saved": if saved { "cartridge.rl" } else { "" },
                     "wasm_size": wasm_bytes.len()
                 })),
-                Err(err) => Ok(json!({
+                Err(f) => Ok(json!({
                     "error": "run failed",
-                    "detail": format!("{err:?}"),
+                    // Stable LH1xxx runtime code (docs/error-codes.md).
+                    "code": f.code.map(crate::error_codes::fmt_label),
+                    // Which lifecycle phase died: "instantiate" (recompile —
+                    // bad module / no frame()/render() export) or "run"
+                    // (trap / hang — fix the frame logic, bound the loops).
+                    "phase": f.code.map(crate::error_codes::runtime_phase).unwrap_or("run"),
+                    "detail": f.detail,
+                    "hint": f.code.and_then(crate::error_codes::lookup).map(|e| e.hint),
                     "wasm_size": wasm_bytes.len()
                 })),
             }

@@ -342,6 +342,18 @@ pub fn lookup(code: u16) -> Option<&'static ErrorCode> {
     REGISTRY.iter().find(|e| e.code == code)
 }
 
+/// The cartridge-lifecycle phase a runtime (`LH1xxx`) failure happened in:
+/// `"instantiate"` (the module never came up — bad wasm or no entry export)
+/// or `"run"` (it instantiated, then trapped or hung). Tool results carry
+/// this so an agent knows whether to recompile (instantiate) or fix its
+/// frame logic (run) without decoding the numeric code first.
+pub fn runtime_phase(code: u16) -> &'static str {
+    match code {
+        INSTANTIATE_FAILED | NO_ENTRY_RUNTIME => "instantiate",
+        _ => "run",
+    }
+}
+
 /// "LH0204: type mismatch" — the label + meaning, for prefixing a message.
 pub fn describe(code: u16) -> String {
     match lookup(code) {
@@ -392,6 +404,18 @@ mod tests {
         assert_eq!(fmt_label(204), "LH0204");
         assert_eq!(fmt_label(2001), "LH2001");
         assert_eq!(lookup(TYPE_MISMATCH).unwrap().label(), "LH0204");
+    }
+
+    #[test]
+    fn runtime_phase_maps_every_lh1xxx_code() {
+        assert_eq!(runtime_phase(INSTANTIATE_FAILED), "instantiate");
+        assert_eq!(runtime_phase(NO_ENTRY_RUNTIME), "instantiate");
+        assert_eq!(runtime_phase(WASM_TRAP), "run");
+        assert_eq!(runtime_phase(FRAME_TIMEOUT), "run");
+        // every registered runtime code yields one of the two phases
+        for e in REGISTRY.iter().filter(|e| e.family == Family::Runtime) {
+            assert!(matches!(runtime_phase(e.code), "instantiate" | "run"));
+        }
     }
 
     #[test]

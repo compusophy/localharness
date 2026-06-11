@@ -267,9 +267,11 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
                 return Err(crate::error::Error::other("source cannot be empty"));
             }
             // Compile FIRST so a bad cartridge fails before we register the
-            // name on-chain. Surface a clear error so the agent reports it.
-            let wasm = crate::rustlite::compile(source)
-                .map_err(|e| crate::error::Error::other(format!("compile failed: {e}")))?;
+            // name on-chain. Surface the FULL rendering (LH code + line/col
+            // locator + caret snippet) so the agent fixes the exact spot.
+            let wasm = crate::rustlite::compile(source).map_err(|e| {
+                crate::error::Error::other(format!("compile failed: {}", e.render(source)))
+            })?;
             if wasm.len() > 16_384 {
                 return Err(crate::error::Error::other(format!(
                     "app wasm too large to publish: {} bytes (max 16384)",

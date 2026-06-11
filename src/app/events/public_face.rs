@@ -74,7 +74,13 @@ pub(super) async fn run_set_public_face(choice: &str) {
             let wasm = match crate::rustlite::compile(&src) {
                 Ok(w) => w,
                 Err(e) => {
-                    set_err(&format!("compile: {e}"));
+                    // The status line is single-line — append the line/col
+                    // locator (the caret snippet wouldn't survive it).
+                    let loc = e
+                        .location(&src)
+                        .map(|l| format!(" ({l})"))
+                        .unwrap_or_default();
+                    set_err(&format!("compile: {e}{loc}"));
                     return;
                 }
             };

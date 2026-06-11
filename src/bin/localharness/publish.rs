@@ -419,7 +419,8 @@ pub(crate) fn compile_check(source_path: &str, out_path: Option<&str>) -> i32 {
             0
         }
         Err(e) => {
-            eprintln!("compile failed: {e}");
+            // Full rendering: LH code + message + line/col + caret snippet.
+            eprintln!("compile failed: {}", e.render(&src));
             1
         }
     }
@@ -538,7 +539,8 @@ pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
         let wasm = match localharness::rustlite::compile(&src) {
             Ok(w) => w,
             Err(e) => {
-                eprintln!("compile failed: {e}");
+                // Full rendering: LH code + line/col + caret snippet.
+                eprintln!("compile failed: {}", e.render(&src));
                 return 1;
             }
         };

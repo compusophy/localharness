@@ -26,8 +26,9 @@ impl Tool for CompileRustlite {
          display — your compile-in-the-loop tool. Use it after each addition while \
          building a cartridge: it returns either a clean compile (then run_cartridge \
          / create_and_publish_app) or, on failure, `{ error: \"compilation failed\", \
-         detail: \"<the exact compiler message, with a [start..end] source byte \
-         span>\" }` — READ that detail, fix the issue, and recompile before adding \
+         code: \"LHxxxx\", detail, location: \"line N, col M\", snippet: \"<the \
+         offending source line with a ^ caret under the error>\", hint }` — READ \
+         the location + snippet, fix that exact spot, and recompile before adding \
          more. rustlite supports structs, enums, fns, match (incl. ranges), \
          if/else, while/for/loop, arrays (read), const, recursion — but NO traits, \
          generics, references, heap types (Vec/String building/Box), or array \
@@ -86,33 +87,15 @@ impl Tool for CompileRustlite {
         let wasm_bytes = match crate::rustlite::compile(&source) {
             Ok(bytes) => bytes,
             Err(err) => {
-                // Surface the stable `LH0xxx` code + the compiler message
-                // verbatim (Display already prefixes the code and carries a
-                // `[start..end]` source byte span) PLUS a steady, code-aware
-                // hint so the model fixes-and-recompiles in the loop instead of
-                // giving up or, worse, publishing the broken source anyway.
-                let code = err.code;
-                // The per-code fix hint from the central registry (`docs/
-                // error-codes.md` is the human index of the same table), falling
-                // back to the generic loop discipline when the code is unknown.
-                let code_hint = code
-                    .and_then(crate::error_codes::lookup)
-                    .map(|e| e.hint);
-                return Ok(json!({
-                    "error": "compilation failed",
-                    // e.g. "LH0204" — the stable code (see docs/error-codes.md).
-                    "code": code.map(crate::error_codes::fmt_label),
-                    // e.g. "LH0204: type mismatch: ... [12..18]".
-                    "detail": err.to_string(),
-                    "hint": code_hint.unwrap_or(
-                        "Fix the issue at the reported source span and call \
-                         compile_rustlite again. Common causes: a feature \
-                         rustlite lacks (traits, generics, references, \
-                         Vec/String building, Option/Result) or \
-                         a wrong host fn name/arity. Do NOT run_cartridge or \
-                         publish until this compiles clean."),
-                    "exports": []
-                }));
+                // The shared structured report (`builtins::compile_failure_report`):
+                // stable LH0xxx code, the compiler message verbatim, a
+                // `line N, col M` locator, the offending source line with a
+                // caret marker, and the per-code fix hint — so the model
+                // fixes-and-recompiles in the loop instead of giving up or,
+                // worse, publishing the broken source anyway.
+                let mut report = crate::builtins::compile_failure_report(&err, &source);
+                report["exports"] = json!([]);
+                return Ok(report);
             }
         };
 
