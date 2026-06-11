@@ -93,6 +93,11 @@ enum Action {
     SaveApiKey,
     ToggleDisplay,
     StopTurn,
+    /// Promote the in-flight run to a HEADLESS on-chain goal job: stop the
+    /// in-tab turn, then escrow `$LH` behind a `GOAL: `-prefixed
+    /// `scheduleJob` targeting this tenant so the scheduler worker carries
+    /// the request to completion with the tab closed.
+    PromoteBackground,
     /// Set this subdomain's public face: "directory", "app", or "html".
     /// "app"/"html" also publish the device's local app.rl/index.html.
     SetPublicFace(String),
@@ -208,6 +213,7 @@ impl Action {
             "save-api-key" => Action::SaveApiKey,
             "toggle-display" => Action::ToggleDisplay,
             "stop-turn" => Action::StopTurn,
+            "promote-background" => Action::PromoteBackground,
             "set-public-face" => Action::SetPublicFace(arg.unwrap_or_default()),
             "copy-share-url" => Action::CopyShareUrl(arg.unwrap_or_default()),
             "set-model-access" => Action::SetModelAccess(arg.unwrap_or_default()),
@@ -513,6 +519,7 @@ fn dispatch(action: Action) {
         Action::OpfsCloseViewer => super::opfs::close_viewer(),
         Action::ToggleDisplay => super::opfs::toggle_display(),
         Action::StopTurn => super::chat::request_stop_turn(),
+        Action::PromoteBackground => schedule::promote_background_pressed(),
         Action::SetPublicFace(choice) => {
             wasm_bindgen_futures::spawn_local(async move {
                 public_face::run_set_public_face(&choice).await;

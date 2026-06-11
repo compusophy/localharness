@@ -181,12 +181,25 @@ pub(crate) fn send_button() -> Markup {
     }
 }
 
-/// The stop button (`■`) shown in place of the send button while a turn
-/// is in flight. Clicking it requests cooperative cancellation of the
-/// running turn.
-pub(crate) fn stop_button() -> Markup {
+/// The stop slot shown in place of the send button while a turn is in
+/// flight: the stop button (`■`, cooperative cancel) plus — on a tenant,
+/// where the run can be promoted to an on-chain goal job — a small
+/// [⇪ background] button that continues the work HEADLESS via the
+/// scheduler worker even after the tab closes. The group carries the
+/// `terminal-stop` id so the existing swap lifecycle (`chat::run_send` /
+/// `TurnGuard` restoring [`send_button`] by id) removes BOTH buttons in
+/// one `swap_outer` when the run ends.
+pub(crate) fn stop_button(can_promote: bool) -> Markup {
     html! {
-        button #terminal-stop .terminal-send.terminal-stop data-action="stop-turn" title="stop" aria-label="stop generating" { "■" }
+        span #terminal-stop style="display:flex;align-items:center;gap:8px;flex-shrink:0" {
+            @if can_promote {
+                button .terminal-send data-action="promote-background"
+                    style="font-size:11px;padding:0"
+                    title="continue in background — headless on-chain goal job; closing the tab won't kill the work"
+                    aria-label="continue in background" { "⇪ background" }
+            }
+            button .terminal-send.terminal-stop data-action="stop-turn" title="stop" aria-label="stop generating" { "■" }
+        }
     }
 }
 
