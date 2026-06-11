@@ -314,6 +314,81 @@ pub(super) fn enable_notifications_pressed() {
     });
 }
 
+/// Fire a LOCAL test notification (+ vibration) so the user verifies the
+/// permission + service-worker render path in one tap, without scheduling
+/// anything. This does NOT exercise the closed-tab Web Push leg (that needs
+/// a real push from the proxy); it proves the device-side half.
+pub(super) fn test_notification_pressed() {
+    wasm_bindgen_futures::spawn_local(async move {
+        let msg = "notify-msg";
+        crate::app::notifications::vibrate(200);
+        match crate::app::notifications::ensure_permission().await {
+            Ok(true) => match crate::app::notifications::show(
+                "localharness test",
+                "notifications are working on this device",
+            )
+            .await
+            {
+                Ok(()) => dom::swap_inner(
+                    msg,
+                    "<span style=\"color:var(--muted)\">test notification sent — check your shade</span>",
+                ),
+                Err(e) => dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, &e)),
+            },
+            Ok(false) => dom::swap_inner(
+                msg,
+                &dom::msg_span(
+                    dom::Msg::Error,
+                    "notification permission is blocked — allow notifications for this site in the browser settings, then retry",
+                ),
+            ),
+            Err(e) => dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, &e)),
+        }
+    });
+}
+
+/// Trigger the browser's PWA install prompt from INSIDE the app: boot.js
+/// stashes `beforeinstallprompt` on `window.__lhInstall`; this click (a user
+/// gesture) calls `.prompt()` on it. When the stash is empty the app is
+/// either already installed or the browser doesn't expose the prompt
+/// (iOS Safari) — say which path applies instead of failing silently.
+pub(super) fn install_app_pressed() {
+    wasm_bindgen_futures::spawn_local(async move {
+        let msg = "install-msg";
+        let window = web_sys::window().expect("window");
+        let stash = js_sys::Reflect::get(&window, &"__lhInstall".into()).ok();
+        let evt = stash.filter(|v| !v.is_null() && !v.is_undefined());
+        match evt {
+            Some(evt) => {
+                let prompt = js_sys::Reflect::get(&evt, &"prompt".into()).ok();
+                match prompt.and_then(|p| p.dyn_into::<js_sys::Function>().ok()) {
+                    Some(f) => {
+                        let _ = f.call0(&evt);
+                        dom::swap_inner(
+                            msg,
+                            "<span style=\"color:var(--muted)\">follow the browser's install dialog</span>",
+                        );
+                    }
+                    None => dom::swap_inner(
+                        msg,
+                        &dom::msg_span(dom::Msg::Error, "install prompt unavailable"),
+                    ),
+                }
+            }
+            None => {
+                // Either already installed (Chrome won't re-offer) or the
+                // browser never exposes the prompt (iOS Safari).
+                dom::swap_inner(
+                    msg,
+                    "<span style=\"color:var(--muted)\">already installed, or this \
+                     browser hides the prompt — use the browser menu's install / \
+                     add-to-home-screen entry</span>",
+                );
+            }
+        }
+    });
+}
+
 /// Toggle the header admin dropdown. Origin determines content —
 /// apex shows seed reveal + import + reset, tenant has the gemini
 /// api key input + reset. After opening, pre-fill the api key from

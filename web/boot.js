@@ -21,6 +21,20 @@ try {
   /* non-secure context / exotic browser — installability is best-effort */
 }
 
+// Stash Chrome's install prompt so the APP can offer an [install] button
+// (admin → account) instead of making the user dig through browser menus.
+// The event only fires when the PWA is installable AND not yet installed;
+// the wasm side reads window.__lhInstall via js_sys when the button is
+// pressed and calls .prompt() on it (the click is the user gesture).
+window.__lhInstall = null;
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  window.__lhInstall = e;
+});
+window.addEventListener("appinstalled", () => {
+  window.__lhInstall = null;
+});
+
 try {
   const { default: init } = await import("./pkg/localharness.js");
   await init();

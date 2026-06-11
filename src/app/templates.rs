@@ -1253,10 +1253,20 @@ pub(crate) fn governance_result_panel(proposal_id: u64, amount_lh: &str) -> Mark
 pub(crate) fn admin_notify_section() -> Markup {
     html! {
         div.admin-section {
+            div.admin-section-title { "app" }
+            div.pair-slot {
+                button type="button" data-action="install-app" .ghost {
+                    "install app"
+                }
+            }
+            div #install-msg .admin-msg-slot {}
             div.admin-section-title { "notifications" }
             div.pair-slot {
                 button type="button" data-action="enable-notifications" .ghost {
                     "enable notifications"
+                }
+                button type="button" data-action="test-notification" .ghost {
+                    "test"
                 }
             }
             div #notify-msg .admin-msg-slot {}

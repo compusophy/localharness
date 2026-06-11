@@ -62,22 +62,35 @@ function chunk(type, data) {
   return Buffer.concat([len, body, crc]);
 }
 
-/** Encode an 8-bit grayscale PNG from a width*height Uint8Array. */
+/** Encode an 8-bit TRUECOLOR-ALPHA (RGBA) PNG from a width*height
+ * luminance Uint8Array. RGBA (color type 6) rather than grayscale: the
+ * image is still monochrome by construction, but Chrome's WebAPK minting
+ * service (the thing that turns an installed PWA into a real app-drawer
+ * entry on Android) has choked on less-common color types — a Pixel
+ * install landed with no launcher icon until the icons were re-encoded
+ * as plain RGBA. Boring on purpose. */
 function encodePng(width, height, pixels) {
   const SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
   ihdr[8] = 8; // bit depth
-  ihdr[9] = 0; // color type 0 = grayscale
+  ihdr[9] = 6; // color type 6 = truecolor with alpha
   // compression / filter / interlace = 0
-  // raw image data: each scanline prefixed with filter byte 0 (None)
-  const raw = Buffer.alloc(height * (width + 1));
+  // raw image data: each scanline prefixed with filter byte 0 (None),
+  // 4 bytes (RGBA) per pixel, alpha always opaque
+  const stride = width * 4 + 1;
+  const raw = Buffer.alloc(height * stride);
   for (let y = 0; y < height; y++) {
-    raw[y * (width + 1)] = 0;
-    pixels.subarray(y * width, (y + 1) * width).forEach((v, x) => {
-      raw[y * (width + 1) + 1 + x] = v;
-    });
+    raw[y * stride] = 0;
+    for (let x = 0; x < width; x++) {
+      const v = pixels[y * width + x];
+      const o = y * stride + 1 + x * 4;
+      raw[o] = v;
+      raw[o + 1] = v;
+      raw[o + 2] = v;
+      raw[o + 3] = 255;
+    }
   }
   return Buffer.concat([
     SIG,

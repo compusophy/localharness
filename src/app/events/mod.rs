@@ -152,6 +152,12 @@ enum Action {
     /// subscribe Web Push, and publish the subscription on-chain so the
     /// scheduler worker can notify the owner with the tab closed.
     EnableNotifications,
+    /// Fire a local test notification (+vibration) so the user can verify the
+    /// permission + service-worker path without scheduling anything.
+    TestNotification,
+    /// Trigger the browser's PWA install prompt from inside the app (the
+    /// stashed `beforeinstallprompt` in boot.js) instead of the browser menu.
+    InstallApp,
 }
 
 impl Action {
@@ -221,6 +227,8 @@ impl Action {
             "unlink-confirm" => Action::UnlinkConfirm(arg.unwrap_or_default()),
             "unlink-cancel" => Action::UnlinkCancel,
             "enable-notifications" => Action::EnableNotifications,
+            "test-notification" => Action::TestNotification,
+            "install-app" => Action::InstallApp,
             _ => return None,
         })
     }
@@ -865,6 +873,8 @@ fn dispatch(action: Action) {
         Action::UnlinkConfirm(addr) => devices::unlink_confirm_pressed(addr),
         Action::UnlinkCancel => devices::unlink_cancel_pressed(),
         Action::EnableNotifications => admin::enable_notifications_pressed(),
+        Action::TestNotification => admin::test_notification_pressed(),
+        Action::InstallApp => admin::install_app_pressed(),
     }
 }
 
