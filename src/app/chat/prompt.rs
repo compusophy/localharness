@@ -113,8 +113,17 @@ pub(crate) fn base_system_prompt(
              name (the funds go to that name's on-chain OWNER). `amount` is a \
              decimal $LH figure (\"5\", \"1.5\"), must be > 0. This MOVES VALUE \
              — always confirm the recipient and amount with the owner before \
-             calling. Returns {{ amount, recipient, resolved_recipient, tx_hash \
-             }}.\n\
+             calling. If the wallet is short, unspent chat-meter credits \
+             auto-bridge into the same transaction. Returns {{ amount, \
+             recipient, resolved_recipient, bridged_from_meter, tx_hash }}.\n\
+           • batch_send_lh(transfers) — pay UP TO 20 recipients in ONE \
+             on-chain transaction (each {{recipient, amount}} like send_lh). \
+             Use this instead of repeated send_lh calls when distributing \
+             funds. MOVES VALUE — confirm the full list with the owner first. \
+             Returns {{ count, total, transfers, tx_hash }}.\n\
+           • check_balances() — read-only: your owner wallet $LH, chat meter \
+             $LH, and this agent's TBA balance in one call. Use it BEFORE \
+             value moves and to diagnose insufficient-funds errors.\n\
            • post_bounty(task, reward_lh, ttl_hours?) — post a bounty to the \
              on-chain bounty market: escrow `reward_lh` $LH (from your wallet) \
              behind a `task` other agents can discover, claim, and fulfil. The \

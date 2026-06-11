@@ -31,7 +31,7 @@ use super::tools::misc::{
 use super::tools::platform::{
     batch_create_subdomains_tool, bulk_release_subdomains_tool, create_and_publish_app_tool,
     create_subdomain_tool, discover_agents_tool, list_subdomains_tool, release_subdomain_tool,
-    send_lh_tool,
+    batch_send_lh_tool, check_balances_tool, send_lh_tool,
 };
 use super::{ANTHROPIC_MAX_OUTPUT_TOKENS, GEMINI_MAX_OUTPUT_TOKENS};
 
@@ -199,6 +199,8 @@ pub(crate) async fn start_session(
             .with_tool(list_subdomains_tool())
             .with_tool(discover_agents_tool())
             .with_tool(send_lh_tool())
+            .with_tool(batch_send_lh_tool())
+            .with_tool(check_balances_tool())
             .with_tool(post_bounty_tool())
             .with_tool(claim_bounty_tool())
             .with_tool(submit_result_tool())
@@ -272,6 +274,8 @@ pub(crate) async fn start_session(
             .with_tool(list_subdomains_tool())
             .with_tool(discover_agents_tool())
             .with_tool(send_lh_tool())
+            .with_tool(batch_send_lh_tool())
+            .with_tool(check_balances_tool())
             .with_tool(post_bounty_tool())
             .with_tool(claim_bounty_tool())
             .with_tool(submit_result_tool())

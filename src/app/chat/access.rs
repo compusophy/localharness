@@ -241,6 +241,10 @@ pub(crate) fn transfer_selector() -> [u8; 4] {
     selector4(b"transfer(address,uint256)")
 }
 
+pub(crate) fn withdraw_credits_selector() -> [u8; 4] {
+    selector4(b"withdrawCredits(uint256)")
+}
+
 /// First 4 bytes of keccak256 of an ABI function signature.
 fn selector4(sig: &[u8]) -> [u8; 4] {
     use sha3::{Digest, Keccak256};

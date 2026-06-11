@@ -2,9 +2,92 @@
 // Platform-level closure tools (browser-specific; not in the SDK builtins).
 // =============================================================================
 
-use crate::app::chat::access::{build_actor_setup, transfer_selector, u256_be};
+use crate::app::chat::access::{
+    build_actor_setup, transfer_selector, u256_be, withdraw_credits_selector,
+};
 use crate::encoding::parse_address;
 use crate::tools::ClosureTool;
+
+/// Resolve a `recipient` arg (raw 0x… address or subdomain name) to the
+/// 0x… address that receives $LH (a name pays its on-chain OWNER).
+async fn resolve_lh_recipient(recipient_arg: &str) -> Result<String, crate::error::Error> {
+    use crate::encoding::Recipient;
+    let kind = crate::encoding::classify_recipient(recipient_arg)
+        .map_err(crate::error::Error::other)?;
+    match kind {
+        Recipient::Address(addr) => Ok(addr),
+        Recipient::Name(name) => crate::app::registry::owner_of_name(&name)
+            .await
+            .map_err(crate::error::Error::other)?
+            .ok_or_else(|| {
+                crate::error::Error::other(format!(
+                    "no on-chain owner for subdomain \"{name}\" — is it registered?"
+                ))
+            }),
+    }
+}
+
+/// ERC-20 `transfer(to, amount)` TempoCall against the $LH token.
+fn lh_transfer_call(
+    to_hex: &str,
+    amount_wei: u128,
+) -> Result<crate::tempo_tx::TempoCall, crate::error::Error> {
+    let to_bytes = parse_address(to_hex).map_err(crate::error::Error::other)?;
+    let mut to_padded = [0u8; 32];
+    to_padded[12..].copy_from_slice(&to_bytes);
+    let mut calldata = Vec::with_capacity(4 + 64);
+    calldata.extend_from_slice(&transfer_selector());
+    calldata.extend_from_slice(&to_padded);
+    calldata.extend_from_slice(&u256_be(amount_wei));
+    let token_addr = parse_address(crate::registry::LOCALHARNESS_TOKEN_ADDRESS)
+        .map_err(crate::error::Error::other)?;
+    Ok(crate::tempo_tx::TempoCall {
+        to: token_addr,
+        value_wei: 0,
+        input: calldata,
+    })
+}
+
+/// The meter auto-bridge for direct transfers (on-chain feedback #48): when
+/// the sender's wallet can't cover `needed_wei` but their unspent chat-meter
+/// credits can, return a `withdrawCredits(shortfall)` call to PREPEND to the
+/// SAME Tempo tx — bridge + spend land atomically in one sponsored
+/// submission (0x76 carries a calls array). Pot-aware error when both pots
+/// together are short.
+async fn meter_bridge_call(
+    from_hex: &str,
+    needed_wei: u128,
+) -> Result<Option<crate::tempo_tx::TempoCall>, crate::error::Error> {
+    let wallet = crate::app::registry::token_balance_of(from_hex)
+        .await
+        .unwrap_or(0);
+    if wallet >= needed_wei {
+        return Ok(None);
+    }
+    let shortfall = needed_wei - wallet;
+    let meter = crate::app::registry::credit_balance_of(from_hex)
+        .await
+        .unwrap_or(0);
+    if meter < shortfall {
+        return Err(crate::error::Error::other(format!(
+            "needs {} $LH but the wallet holds {} and the chat meter {} — \
+             fund up with a redeem code, an invite, or a $LH transfer first",
+            crate::app::format_wei_as_test_eth(needed_wei),
+            crate::app::format_wei_as_test_eth(wallet),
+            crate::app::format_wei_as_test_eth(meter),
+        )));
+    }
+    let mut calldata = Vec::with_capacity(4 + 32);
+    calldata.extend_from_slice(&withdraw_credits_selector());
+    calldata.extend_from_slice(&u256_be(shortfall));
+    let diamond = parse_address(crate::registry::REGISTRY_ADDRESS)
+        .map_err(crate::error::Error::other)?;
+    Ok(Some(crate::tempo_tx::TempoCall {
+        to: diamond,
+        value_wei: 0,
+        input: calldata,
+    }))
+}
 
 /// `create_subdomain(name)` — register `<name>.localharness.xyz` on the
 /// LocalharnessRegistry diamond, signed by the owner's apex wallet via
@@ -670,7 +753,7 @@ pub(crate) fn send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            use crate::encoding::{parse_token_amount, Recipient};
+            use crate::encoding::parse_token_amount;
 
             let recipient_arg = args
                 .get("recipient")
@@ -700,19 +783,7 @@ pub(crate) fn send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             }
 
             // Recipient: address used directly; name → on-chain owner address.
-            let kind = crate::encoding::classify_recipient(&recipient_arg)
-                .map_err(crate::error::Error::other)?;
-            let to_hex = match kind {
-                Recipient::Address(addr) => addr,
-                Recipient::Name(name) => crate::app::registry::owner_of_name(&name)
-                    .await
-                    .map_err(crate::error::Error::other)?
-                    .ok_or_else(|| {
-                        crate::error::Error::other(format!(
-                            "no on-chain owner for subdomain \"{name}\" — is it registered?"
-                        ))
-                    })?,
-            };
+            let to_hex = resolve_lh_recipient(&recipient_arg).await?;
 
             // Sender = this subdomain's on-chain owner (the apex wallet that
             // signs via the iframe), matching list_subdomains / bulk_release.
@@ -720,44 +791,235 @@ pub(crate) fn send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .await
                 .map_err(crate::error::Error::other)?;
 
-            // ERC-20 transfer(to, amount_wei) against the $LH token — the exact
-            // calldata shape the per-turn payment + act panel build.
-            let to_bytes = crate::encoding::parse_address(&to_hex)
-                .map_err(crate::error::Error::other)?;
-            let mut to_padded = [0u8; 32];
-            to_padded[12..].copy_from_slice(&to_bytes);
-            let mut calldata = Vec::with_capacity(4 + 32 + 32);
-            calldata.extend_from_slice(&transfer_selector());
-            calldata.extend_from_slice(&to_padded);
-            calldata.extend_from_slice(&u256_be(amount_wei));
-
-            let token_addr =
-                crate::encoding::parse_address(crate::registry::LOCALHARNESS_TOKEN_ADDRESS)
-                    .map_err(crate::error::Error::other)?;
-            let call = crate::tempo_tx::TempoCall {
-                to: token_addr,
-                value_wei: 0,
-                input: calldata,
+            // Meter auto-bridge (feedback #48): a wallet shortfall covered by
+            // unspent chat credits rides as a withdrawCredits call in the SAME
+            // tx, so the transfer lands atomically. Then the ERC-20
+            // transfer(to, amount) — the same calldata shape the per-turn
+            // payment + act panel build.
+            let mut calls = Vec::with_capacity(2);
+            let bridged = match meter_bridge_call(&from, amount_wei).await? {
+                Some(bridge) => {
+                    calls.push(bridge);
+                    true
+                }
+                None => false,
             };
+            calls.push(lh_transfer_call(&to_hex, amount_wei)?);
 
             let amount_display = amount_arg.clone();
             let purpose = format!("send {amount_display} $LH to {to_hex}");
-            // 500k mirrors the per-turn payment's ERC-20 transfer budget; the
-            // sponsor is billed on gas USED, not the limit.
-            let tx_hash = crate::app::events::run_sponsored_tempo_call(
-                &from,
-                vec![call],
-                500_000,
-                &purpose,
-            )
-            .await
-            .map_err(|e| crate::error::Error::other(format!("send_lh failed: {e}")))?;
+            // 500k mirrors the per-turn payment's ERC-20 transfer budget (+150k
+            // when the bridge call rides along); the sponsor is billed on gas
+            // USED, not the limit.
+            let gas = if bridged { 650_000 } else { 500_000 };
+            let tx_hash =
+                crate::app::events::run_sponsored_tempo_call(&from, calls, gas, &purpose)
+                    .await
+                    .map_err(|e| crate::error::Error::other(format!("send_lh failed: {e}")))?;
 
             Ok(serde_json::json!({
                 "amount": amount_display,
                 "recipient": recipient_arg,
                 "resolved_recipient": to_hex,
+                "bridged_from_meter": bridged,
                 "tx_hash": tx_hash,
+            }))
+        },
+    )
+}
+
+/// `batch_send_lh(transfers)` — N transfers in ONE sponsored Tempo tx
+/// (feedback #49: tx type 0x76 natively carries a calls array, so batching
+/// costs one submission instead of N). The meter auto-bridge covers the
+/// TOTAL if the wallet is short.
+pub(crate) fn batch_send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "transfers": {
+                "type": "array",
+                "description": "Up to 20 transfers, executed atomically in one \
+                    on-chain transaction.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "recipient": {
+                            "type": "string",
+                            "description": "0x… address or subdomain name (funds \
+                                go to the name's on-chain owner)."
+                        },
+                        "amount": {
+                            "type": "string",
+                            "description": "Decimal $LH amount, e.g. \"1\" or \
+                                \"0.5\". Must be greater than 0."
+                        }
+                    },
+                    "required": ["recipient", "amount"]
+                }
+            }
+        },
+        "required": ["transfers"]
+    });
+    ClosureTool::new(
+        "batch_send_lh",
+        "Transfer $LH to MULTIPLE recipients in ONE on-chain transaction (up \
+         to 20). Each transfer names a 0x… address or a subdomain (paid to its \
+         on-chain owner). Far cheaper than repeated send_lh calls. Moves value: \
+         confirm the full list with the owner before calling. Returns \
+         { count, total, transfers: [{recipient, resolved, amount}], tx_hash }.",
+        schema,
+        |args: serde_json::Value, _ctx| async move {
+            use crate::encoding::parse_token_amount;
+
+            let items = args
+                .get("transfers")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if items.is_empty() {
+                return Err(crate::error::Error::other(
+                    "batch_send_lh: transfers must be a non-empty array",
+                ));
+            }
+            if items.len() > 20 {
+                return Err(crate::error::Error::other(
+                    "batch_send_lh: at most 20 transfers per batch",
+                ));
+            }
+
+            let mut resolved: Vec<(String, String, u128, String)> =
+                Vec::with_capacity(items.len());
+            let mut total_wei: u128 = 0;
+            for item in &items {
+                let recipient = item
+                    .get("recipient")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let amount_str = item
+                    .get("amount")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let amount_wei = parse_token_amount(&amount_str).ok_or_else(|| {
+                    crate::error::Error::other(format!(
+                        "could not parse amount \"{amount_str}\" for \"{recipient}\""
+                    ))
+                })?;
+                if amount_wei == 0 {
+                    return Err(crate::error::Error::other(format!(
+                        "amount for \"{recipient}\" must be greater than 0"
+                    )));
+                }
+                let to_hex = resolve_lh_recipient(&recipient).await?;
+                total_wei = total_wei.saturating_add(amount_wei);
+                resolved.push((recipient, to_hex, amount_wei, amount_str));
+            }
+
+            let (_, from) = crate::app::tenant::current_tenant_owner()
+                .await
+                .map_err(crate::error::Error::other)?;
+
+            let mut calls = Vec::with_capacity(resolved.len() + 1);
+            let bridged = match meter_bridge_call(&from, total_wei).await? {
+                Some(bridge) => {
+                    calls.push(bridge);
+                    true
+                }
+                None => false,
+            };
+            for (_, to_hex, amount_wei, _) in &resolved {
+                calls.push(lh_transfer_call(to_hex, *amount_wei)?);
+            }
+
+            let purpose = format!(
+                "batch-send {} $LH to {} recipients",
+                crate::app::format_wei_as_test_eth(total_wei),
+                resolved.len()
+            );
+            // 500k base (first transfer + sponsorship overhead) + ~80k per
+            // additional warm transfer + 150k when the bridge rides along.
+            let gas = 500_000
+                + 80_000 * (resolved.len() as u128 - 1)
+                + if bridged { 150_000 } else { 0 };
+            let tx_hash =
+                crate::app::events::run_sponsored_tempo_call(&from, calls, gas, &purpose)
+                    .await
+                    .map_err(|e| {
+                        crate::error::Error::other(format!("batch_send_lh failed: {e}"))
+                    })?;
+
+            let transfers: Vec<serde_json::Value> = resolved
+                .iter()
+                .map(|(recipient, to_hex, _, amount_str)| {
+                    serde_json::json!({
+                        "recipient": recipient,
+                        "resolved": to_hex,
+                        "amount": amount_str,
+                    })
+                })
+                .collect();
+            Ok(serde_json::json!({
+                "count": transfers.len(),
+                "total": crate::app::format_wei_as_test_eth(total_wei),
+                "bridged_from_meter": bridged,
+                "transfers": transfers,
+                "tx_hash": tx_hash,
+            }))
+        },
+    )
+}
+
+/// `check_balances()` — read-only snapshot of every $LH pot the agent can
+/// spend from (feedback #47: agents could not inspect their own balances,
+/// making insufficient-funds reverts undiagnosable). No arguments.
+pub(crate) fn check_balances_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {}
+    });
+    ClosureTool::new(
+        "check_balances",
+        "Read this agent's $LH balances: the owner WALLET (pays send_lh and \
+         x402 agent calls), the chat METER (pays model usage; auto-bridges \
+         into the wallet when it is short), and this subdomain's token-bound \
+         account (TBA — where bounty rewards and x402 earnings land). \
+         Read-only, costs nothing. Returns decimal $LH figures plus raw wei.",
+        schema,
+        |_args: serde_json::Value, _ctx| async move {
+            let (name, owner) = crate::app::tenant::current_tenant_owner()
+                .await
+                .map_err(crate::error::Error::other)?;
+            let wallet = crate::app::registry::token_balance_of(&owner)
+                .await
+                .unwrap_or(0);
+            let meter = crate::app::registry::credit_balance_of(&owner)
+                .await
+                .unwrap_or(0);
+            let tba_hex = crate::app::registry::tba_of_name(&name)
+                .await
+                .ok()
+                .flatten();
+            let tba_balance = match &tba_hex {
+                Some(addr) => crate::app::registry::token_balance_of(addr)
+                    .await
+                    .unwrap_or(0),
+                None => 0,
+            };
+            Ok(serde_json::json!({
+                "owner_address": owner,
+                "wallet_lh": crate::app::format_wei_as_test_eth(wallet),
+                "wallet_wei": wallet.to_string(),
+                "meter_lh": crate::app::format_wei_as_test_eth(meter),
+                "meter_wei": meter.to_string(),
+                "tba_address": tba_hex,
+                "tba_lh": crate::app::format_wei_as_test_eth(tba_balance),
+                "tba_wei": tba_balance.to_string(),
+                "spendable_total_lh": crate::app::format_wei_as_test_eth(
+                    wallet.saturating_add(meter)
+                ),
             }))
         },
     )
