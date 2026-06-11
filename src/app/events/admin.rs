@@ -530,12 +530,28 @@ pub(super) async fn refresh_public_face_status() {
             .flatten(),
         _ => None,
     };
-    let label = match face.as_deref() {
-        Some("app") => "currently: app",
-        Some("html") => "currently: html",
-        _ => "currently: directory (default)",
+    // Surface local-only working copies: an `app.rl`/`index.html` on this
+    // device that visitors can't see until published. Binary state
+    // (published vs local only) — no byte-level staleness diffing.
+    let label: String = match face.as_deref() {
+        Some("app") => "currently: app · published ✓".into(),
+        Some("html") => "currently: html · published ✓".into(),
+        _ => {
+            use crate::filesystem::Filesystem;
+            let fs = crate::app::shared_opfs();
+            let has_app = fs.read("app.rl").await.map(|v| !v.is_empty()).unwrap_or(false);
+            let has_html =
+                fs.read("index.html").await.map(|v| !v.is_empty()).unwrap_or(false);
+            if has_app {
+                "currently: directory · app.rl local only — publish to share".into()
+            } else if has_html {
+                "currently: directory · index.html local only — publish to share".into()
+            } else {
+                "currently: directory (default)".into()
+            }
+        }
     };
-    dom::swap_inner("public-face-status", label);
+    dom::swap_inner("public-face-status", &label);
 }
 
 pub(super) fn header_admin_close() {
