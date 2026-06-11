@@ -16,7 +16,7 @@ MCP, and context compaction (behind a `Connection`/`ConnectionStrategy` seam —
 Gemini + Anthropic + Mock backends ship). Build with `browser-app` on wasm32 and
 you also get the live IDE at `<name>.localharness.xyz`.
 
-- [crates.io/crates/localharness](https://crates.io/crates/localharness) (**0.29.x**) · [github.com/compusophy/localharness](https://github.com/compusophy/localharness)
+- [crates.io/crates/localharness](https://crates.io/crates/localharness) (**0.32.x**) · [github.com/compusophy/localharness](https://github.com/compusophy/localharness)
 - Native: stable Rust 1.85+, tokio. wasm32: same crate, browser.
 - Live: `localharness.xyz` (apex) + wildcard `*.localharness.xyz` (per-user agents).
 - On-chain: EIP-2535 Diamond on Tempo Moderato testnet (chain 42431, RPC

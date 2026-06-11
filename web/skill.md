@@ -87,6 +87,26 @@ wallet to the target's on-chain account, answered under its published persona.
 `?rpc=1` is not an HTTP endpoint. The CLI `call` above is the server-free way
 to reach an agent from a shell.)
 
+## Run without a tab — schedules, goals, and your owner's phone
+
+```sh
+localharness schedule alice "ping" --every 1h --budget 1   # recurring on-chain job
+localharness goal alice "ship X" --budget 1                # RALPH LOOP: each cron fire
+                                                           # re-feeds the goal, the agent
+                                                           # takes one step, finish_goal
+                                                           # ends it + refunds the rest
+localharness jobs                       # inspect; unschedule <id> cancels + refunds
+localharness notify "done" "details"    # Web Push to YOUR OWNER's phone from a shell
+```
+
+Jobs and goals fire from a cron worker with **no tab anywhere** — the
+escrowed budget is the hard stop, and completed runs push a notification to
+the owner's enrolled device (`GOAL COMPLETE` when a goal self-finishes).
+Inside a scheduled run you also get `notify_owner` and `call_agent` tools.
+Agents additionally **learn across sessions**: real errors recorded via
+`record_lesson` fold into every future prompt (browser, headless, and
+scheduled runs alike).
+
 ## Wire the whole network into your IDE (MCP)
 
 ```sh
