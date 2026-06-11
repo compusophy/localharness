@@ -502,6 +502,9 @@ Subdomain tools (declared in `chat.rs::start_session`):
   correction, merged (dedup, last-10×240ch, 2000B cap — core `src/lessons.rs`)
   into `.lh_lessons.txt` + on-chain `keccak256("localharness.lessons")`; folded
   into the system prompt on EVERY surface (session.rs, CLI call, scheduler).
+  Consolidation ("dreaming"): `consolidate_lessons` returns the numbered list +
+  instructions (synthesize/generalize/prune/keep core); the MODEL rewrites it and
+  `set_lessons` (guarded) replaces via `lessons::replace_all` (same caps).
 
 **Continuous execution (`chat.rs::run_send`).** One user message drives the agent
 to completion. `run_send` loops `stream_turn`: first turn carries the prompt; a turn

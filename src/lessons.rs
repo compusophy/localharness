@@ -76,6 +76,41 @@ pub fn merge_lesson(existing: &str, new_lesson: &str) -> String {
     lines.join("\n")
 }
 
+/// Sanitize a FULL replacement lessons blob (one lesson per line) through the
+/// SAME invariants as [`merge_lesson`] — the write half of the consolidation
+/// ("dreaming") pass, where the model rewrites the whole list at once
+/// (synthesize overlaps, generalize specifics, prune obsolete, keep core).
+///
+/// Each line is trimmed, internal whitespace-only lines drop, and every line
+/// truncates to [`MAX_LESSON_CHARS`] chars. Exact duplicate lines drop (first
+/// occurrence wins). Only the LAST [`MAX_LESSONS`] lines are kept, and the
+/// joined blob is capped at [`MAX_BLOB_BYTES`] bytes by dropping the oldest
+/// lines first — the newest line always survives. Returns the sanitized blob
+/// (possibly empty when `new_blob` had no usable lines).
+pub fn replace_all(new_blob: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for raw in new_blob.lines() {
+        let line = normalize(raw);
+        if line.is_empty() || lines.iter().any(|l| *l == line) {
+            continue;
+        }
+        lines.push(line);
+    }
+    // Keep only the LAST MAX_LESSONS entries (mirrors merge_lesson: newest win).
+    if lines.len() > MAX_LESSONS {
+        lines.drain(..lines.len() - MAX_LESSONS);
+    }
+    // Byte cap: drop the OLDEST lines until the joined blob fits. A single
+    // line is <= 240 chars (<= 960 bytes UTF-8), so this always terminates
+    // with at least the newest line retained.
+    let joined_len =
+        |ls: &[String]| ls.iter().map(|l| l.len()).sum::<usize>() + ls.len().saturating_sub(1);
+    while lines.len() > 1 && joined_len(&lines) > MAX_BLOB_BYTES {
+        lines.remove(0);
+    }
+    lines.join("\n")
+}
+
 /// Render the lessons blob as a system-prompt section under
 /// [`LESSONS_HEADER`]. `None` when the blob has no lessons — callers append
 /// nothing rather than an empty header.
@@ -201,6 +236,97 @@ mod tests {
         // Blank/padded lines in a hand-edited blob are dropped on merge.
         let merged = merge_lesson("  a  \n\n\nb\n", "c");
         assert_eq!(merged, "a\nb\nc");
+    }
+
+    #[test]
+    fn replace_all_empty_input_yields_empty() {
+        assert_eq!(replace_all(""), "");
+        assert_eq!(replace_all("   \n \r\n \n"), "");
+    }
+
+    #[test]
+    fn replace_all_trims_and_drops_blank_lines() {
+        assert_eq!(replace_all("  a  \n\n\nb\n"), "a\nb");
+    }
+
+    #[test]
+    fn replace_all_drops_exact_duplicates_keeping_first() {
+        assert_eq!(replace_all("a\nb\na\n  b  \nc"), "a\nb\nc");
+    }
+
+    #[test]
+    fn replace_all_caps_each_line_at_240_chars() {
+        let long = "x".repeat(500);
+        let blob = replace_all(&long);
+        assert_eq!(blob.chars().count(), MAX_LESSON_CHARS);
+        // Char-boundary safe with multibyte input (no panic, exact char count).
+        let emoji = "é".repeat(500);
+        let blob = replace_all(&emoji);
+        assert_eq!(blob.chars().count(), MAX_LESSON_CHARS);
+    }
+
+    #[test]
+    fn replace_all_truncation_then_duplicate_check() {
+        // Two long lines identical in their first 240 chars normalize to the
+        // same line — the second drops as a duplicate.
+        let a = format!("{}{}", "x".repeat(240), "AAA");
+        let b = format!("{}{}", "x".repeat(240), "BBB");
+        let blob = replace_all(&format!("{a}\n{b}"));
+        assert_eq!(blob, "x".repeat(240));
+    }
+
+    #[test]
+    fn replace_all_keeps_only_last_10() {
+        let input: Vec<String> = (0..12).map(|i| format!("lesson {i}")).collect();
+        let blob = replace_all(&input.join("\n"));
+        let lines: Vec<&str> = blob.lines().collect();
+        assert_eq!(lines.len(), MAX_LESSONS);
+        // Oldest two dropped; newest retained, order preserved.
+        assert_eq!(lines[0], "lesson 2");
+        assert_eq!(lines[9], "lesson 11");
+    }
+
+    #[test]
+    fn replace_all_caps_blob_at_2000_bytes_dropping_oldest() {
+        // Ten 240-char lines = 2409 bytes joined — over the cap, so the
+        // oldest lines must drop until the blob fits.
+        let input: Vec<String> = (0..10).map(|i| format!("{i}{}", "x".repeat(239))).collect();
+        let blob = replace_all(&input.join("\n"));
+        assert!(blob.len() <= MAX_BLOB_BYTES, "blob is {} bytes", blob.len());
+        let lines: Vec<&str> = blob.lines().collect();
+        assert_eq!(lines.len(), 8, "two oldest dropped to fit 2000 bytes");
+        assert!(lines[0].starts_with('2'), "oldest surviving line is #2");
+        assert!(lines[7].starts_with('9'), "newest line always survives");
+    }
+
+    #[test]
+    fn replace_all_never_drops_the_newest_line() {
+        let mut input: Vec<String> = (0..9).map(|i| format!("{i}{}", "y".repeat(239))).collect();
+        let newest = "z".repeat(240);
+        input.push(newest.clone());
+        let blob = replace_all(&input.join("\n"));
+        assert!(blob.lines().any(|l| l == newest));
+        assert!(blob.len() <= MAX_BLOB_BYTES);
+    }
+
+    #[test]
+    fn replace_all_is_idempotent_on_merge_output() {
+        // A blob built through merge_lesson passes through replace_all unchanged
+        // — the two write paths share one set of invariants.
+        let mut blob = String::new();
+        for i in 0..12 {
+            blob = merge_lesson(&blob, &format!("lesson {i}"));
+        }
+        assert_eq!(replace_all(&blob), blob);
+    }
+
+    #[test]
+    fn replace_all_then_compose_round_trip() {
+        let blob = replace_all("first\nsecond");
+        let section = compose_section(&blob).unwrap();
+        assert!(section.starts_with(LESSONS_HEADER));
+        assert!(section.contains("first"));
+        assert!(section.ends_with("second"));
     }
 
     #[test]
