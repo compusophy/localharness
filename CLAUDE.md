@@ -405,6 +405,9 @@ semantics live in `contracts/README.md`** — this list is one line each.
   drawn FROM parent escrow, depth-capped → root budget caps the whole tree).
   Anti-griefing: per-owner active-job cap + per-tick global/per-owner spend caps.
   `setScheduler` = proxy meter key. Fired by `/scheduler` cron worker.
+  **/goal (ralph-on-chain):** a `GOAL: `-prefixed task (CLI `goal`) gets a goal-loop
+  prompt frame + a `finish_goal` tool; the worker relays it to `completeJob`
+  (scheduler-only) — job ends EARLY, unspent escrow refunds to the owner.
 - **SignalingFacet** — on-chain WebRTC signaling + presence for P2P teams.
   `announce(topic, owner, ephemeral, pubkey, sig)` is **OWNER-SIGNED**: requires
   `topic == keccak256("localharness.devices"‖owner)` AND `ecrecover(...)==owner`

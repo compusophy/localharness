@@ -69,11 +69,14 @@ The stdio server above is local. The credit proxy ALSO hosts a **networked** MCP
 
 ```sh
 localharness schedule [--as me] <target> <task> --every <dur> --budget <amt> [--runs <n>]
+localharness goal [--as me] <target> <goal text> --budget <amt> [--every <dur>] [--runs <n>]
 localharness jobs [--as me]              # list your scheduled jobs (id, target, cadence, budget, runs-left, status)
 localharness unschedule [--as me] <jobId>  # cancel a job; refunds its remaining budget
 ```
 
 `schedule` makes `<target>` (any registered agent) run a `<task>` prompt on a fixed cadence WITHOUT a browser tab — the durable job + its `$LH` budget live ON-CHAIN in `ScheduleFacet`, so they survive any tab or process dying. `--every <dur>` is a duration like `5m`/`1h`/`30s` (60s minimum, enforced on-chain); `--budget <amt>` ESCROWS that much `$LH` from your wallet into the diamond to back the job (approve + `scheduleJob` in one sponsored tx); `--runs <n>` caps the total fires (default 100). The **per-job budget is the hard stop**: each fire debits ~0.01 `$LH`, and when the budget or run count is spent the facet marks the job `Exhausted` and refunds the unspent remainder; `unschedule` cancels early and refunds the full remainder. The engine that fires due jobs is the credit proxy's `/scheduler` Vercel-Cron worker (below). Each run executes under the target's on-chain persona, the SAME headless model path as `call`. Each fire is now a BOUNDED agent loop: the job's agent gets a `call_agent` tool (orchestrate OTHER agents tab-free — agent ping-pong) and a `schedule_task` tool (`scheduleChildJob`: spawn child jobs whose budget is drawn from THIS job's escrow — depth-capped recursion). The per-job budget bounds the entire ping-pong run AND the whole recursive job tree; the worker also enforces per-tick global + per-owner `$LH` spend caps (over-cap jobs spill to the next tick) so cost stays hard-bounded.
+
+`goal` is **ralph-on-chain**: a scheduled job that ends ITSELF when its goal is met. It is `schedule` sugar that prefixes the task with the exact `GOAL: ` marker (defaults `--every 5m`, `--runs 100`; only `--budget` is required). On every fire the worker re-feeds the SAME goal wrapped in a goal-loop frame — the agent has no memory between runs (durable progress is whatever it changed on-chain), so each iteration it inspects current state, takes the single most valuable next step with its tools, and ends with a progress note. It also gets a third tool, **`finish_goal(report)`**: called ONLY when the goal is verifiably complete, the worker relays it to the facet's scheduler-only `completeJob(jobId)` — the job goes terminal and the UNSPENT escrow refunds to the owner automatically. Until then the normal leashes hold: budget, `--runs`, and per-tick caps; `unschedule` still cancels early.
 
 ### Invites — fund a refundable onboarding link for a newcomer
 
@@ -258,6 +261,7 @@ scheduleJob(uint256 targetId,bytes task,uint64 interval,uint128 budgetWei,uint32
 scheduleChildJob(uint256 parentJobId,uint256 targetId,bytes task,uint64 interval,uint128 budgetWei,uint32 maxRuns) → uint256 id  # scheduler-only: child budget DRAWN FROM the parent escrow (no mint), depth-capped — the root budget caps the whole tree
 recordRun(uint256 id,uint64 expectedNextRun,uint128 spentWei) → uint64  # scheduler-role-only: debit budget + advance clock (CAS-guarded)
 cancelJob(uint256 id)                # owner-only: cancel + refund full remaining budget
+completeJob(uint256 id)              # scheduler-role-only: end a job EARLY (its run declared the GOAL met via finish_goal) + refund the unspent budget to the owner
 pauseJob(uint256 id) / resumeJob(uint256 id) / topUpJob(uint256 id,uint128 addWei)
 jobsDue(uint256 startAfter,uint256 limit) → (uint256[] ids,uint256 nextCursor)  # the worker's due-set scan (page forward via nextCursor)
 getJob(uint256 id) / taskOf(uint256 id) / jobsOf(address) / jobCount() / activeJobsOf(address)  # per-owner active-job cap = anti-sybil bound
