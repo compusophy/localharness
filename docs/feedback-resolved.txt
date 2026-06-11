@@ -96,3 +96,10 @@
 53  635ca8a  (dup of 52)
 54  635ca8a  (dup of 52)
 56  85576ef  user inputs no longer carry the left border; only AI turns do
+63  df5b8b1  universal escrow meter-bridge: schedule/invite/bounty/guild
+#            escrows auto-bridge from meter credits (atomic in-browser,
+#            two-tx CLI); proven live wallet-empty
+64  d74bd34  pre-turn errors render in-stream; status line clears on send
+67  d74bd34  dwell(seconds) tool (max 300s) for cooldowns
+69  14cb761  /api/notify + CLI notify + notify_owner goal tool (self-only
+#            PC-to-mobile push routing)
