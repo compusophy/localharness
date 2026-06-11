@@ -518,12 +518,38 @@ async function pushSubOf(
 }
 
 /**
- * Best-effort owner notification after a recorded run: read the owner's
- * on-chain push subscription and Web-Push a {title, body} JSON the service
- * worker (web/sw.js) renders. Silently skips when the VAPID env vars are
- * unset or no subscription is published; NEVER throws (a push failure must
- * not fail — or re-fire — the run, whose accounting already committed).
- * Bounded: one read + one 5s-capped POST per recorded run.
+ * Send ONE Web Push {title, body} to `owner`'s on-chain subscription (slot
+ * rule in [`pushSubOf`]). Returns true iff the push service accepted. NEVER
+ * throws: missing VAPID env / no subscription / a send failure all resolve
+ * to false. Bounded: one read + one 5s-capped POST. The shared plumbing
+ * behind both [`notifyOwnerOfRun`] (the post-run summary) and the agent's
+ * `notify_owner` tool (the in-run "buzz my owner" affordance, feedback #69).
+ */
+async function sendOwnerPush(
+  owner: string,
+  fallbackTokenId: bigint,
+  title: string,
+  body: string,
+): Promise<boolean> {
+  const publicKey = process.env.VAPID_PUBLIC_KEY;
+  const privateKey = process.env.VAPID_PRIVATE_KEY;
+  const subject = process.env.VAPID_SUBJECT;
+  if (!publicKey || !privateKey || !subject) return false; // push not configured
+  const sub = await pushSubOf(owner, fallbackTokenId);
+  if (!sub) return false; // owner never enabled notifications
+  return sendWebPush(sub, JSON.stringify({ title, body }), {
+    publicKey,
+    privateKey,
+    subject,
+  });
+}
+
+/**
+ * Best-effort owner notification after a recorded run: Web-Push a {title,
+ * body} JSON the service worker (web/sw.js) renders. Silently skips when push
+ * is unconfigured or no subscription is published; NEVER throws (a push
+ * failure must not fail — or re-fire — the run, whose accounting already
+ * committed).
  */
 async function notifyOwnerOfRun(
   owner: string,
@@ -533,18 +559,8 @@ async function notifyOwnerOfRun(
   output: string,
 ): Promise<void> {
   try {
-    const publicKey = process.env.VAPID_PUBLIC_KEY;
-    const privateKey = process.env.VAPID_PRIVATE_KEY;
-    const subject = process.env.VAPID_SUBJECT;
-    if (!publicKey || !privateKey || !subject) return; // push not configured
-    const sub = await pushSubOf(owner, targetId);
-    if (!sub) return; // owner never enabled notifications
     const body = output.length > 120 ? `${output.slice(0, 119)}…` : output;
-    await sendWebPush(
-      sub,
-      JSON.stringify({ title: `${targetName} job #${jobId}`, body }),
-      { publicKey, privateKey, subject },
-    );
+    await sendOwnerPush(owner, targetId, `${targetName} job #${jobId}`, body);
   } catch (e) {
     console.warn(`[scheduler] notify owner of job ${jobId} failed: ${(e as Error).message}`);
   }
@@ -564,10 +580,11 @@ function decodeUtf8Bytes(hex: `0x${string}`): string {
 // ---- the agent run: a BOUNDED tool loop with agent ping-pong ----------------
 //
 // AGENT PING-PONG. The old single-turn `runAgent` (one generateContent under the
-// target persona) is a BOUNDED tool loop: the scheduled agent gets TWO tools —
-// `call_agent(name, message)` (consult/delegate to another agent IN-TICK) and
+// target persona) is a BOUNDED tool loop: the scheduled agent gets
+// `call_agent(name, message)` (consult/delegate to another agent IN-TICK),
 // `schedule_task(target, task, interval_seconds, budget_lh, runs)` (spawn a
-// CROSS-TICK follow-up job). Each loop round is one generateContent under the
+// CROSS-TICK follow-up job), and `notify_owner(title, body)` (Web-Push the JOB
+// OWNER's registered device — feedback #69). Each loop round is one generateContent under the
 // JOB's target persona; a `call_agent` functionCall resolves that target's on-chain
 // persona and runs ONE generateContent for the sub-agent (sub-agents are SINGLE
 // turns — no nested loops, so the call tree is bounded to depth 1), feeding the
@@ -658,11 +675,14 @@ interface GeminiContent {
 }
 
 // The tools the scheduled agent gets. Single-`type` schemas with no union /
-// additionalProperties (Gemini 400s on those — see CLAUDE.md gotcha). THREE tools:
+// additionalProperties (Gemini 400s on those — see CLAUDE.md gotcha). FOUR tools:
 //   * call_agent      — consult/delegate to another agent THIS run (in-tick).
 //   * schedule_task   — spawn a FOLLOW-UP scheduled job funded from THIS job's
 //                       remaining budget (cross-tick recursion via
 //                       scheduleChildJob). The facet enforces budget draw + depth.
+//   * notify_owner    — Web-Push a note to the JOB OWNER's registered device
+//                       (feedback #69). Budget-counted like a model call so a
+//                       loop can't spam the owner's phone.
 //   * finish_goal     — declare the job's GOAL verifiably complete: ends the
 //                       recurring job on-chain (completeJob) and refunds the
 //                       remaining escrow to the owner. The /goal ralph-loop exit.
@@ -727,6 +747,25 @@ const AGENT_TOOLS = {
       },
     },
     {
+      name: 'notify_owner',
+      description:
+        'Send a push notification to YOUR OWNER\'s phone/device (their registered Web Push subscription). Use it to flag something that deserves the owner\'s attention NOW — a milestone reached, a blocking problem, a result they asked to be told about. It costs budget like a model call, so notify sparingly: at most one per run, only when genuinely useful.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: {
+            type: 'string',
+            description: 'Short notification headline (max 80 chars).',
+          },
+          body: {
+            type: 'string',
+            description: 'One-or-two-sentence detail line (max 200 chars).',
+          },
+        },
+        required: ['title'],
+      },
+    },
+    {
       name: 'finish_goal',
       description:
         'Declare this scheduled job\'s GOAL complete. This permanently ENDS the recurring job on-chain and refunds its remaining $LH budget to the owner — there are no more iterations after this. Call it ONLY when you have verified, against current on-chain state, that the goal is fully achieved. Pass a final report summarizing the outcome and the evidence.',
@@ -788,13 +827,14 @@ function partsText(parts: GeminiPart[]): string {
 }
 
 /** First functionCall part addressed to a known tool (call_agent /
- * schedule_task / finish_goal), if any. */
+ * schedule_task / notify_owner / finish_goal), if any. */
 function findToolCall(parts: GeminiPart[]): GeminiFunctionCall | null {
   for (const p of parts) {
     if (
       p.functionCall &&
       (p.functionCall.name === 'call_agent' ||
         p.functionCall.name === 'schedule_task' ||
+        p.functionCall.name === 'notify_owner' ||
         p.functionCall.name === 'finish_goal')
     ) {
       return p.functionCall;
@@ -925,11 +965,14 @@ interface PingPongResult {
  * `commitSpend` after counting it. A blocked action by EITHER gate halts the run.
  *
  * Tools the agent may call: `call_agent` (consult/delegate in-tick, depth-1 sub-
- * agents that never recurse) and `schedule_task` (spawn a child job funded from
+ * agents that never recurse), `schedule_task` (spawn a child job funded from
  * THIS job's remaining escrow via `scheduleChildJob`, with `parentJobId` pinned
- * to the running job — the facet enforces budget draw + MAX_DEPTH). A tool error
- * (bad args, unregistered target, facet revert) becomes an error functionResponse
- * — the loop continues, never hangs.
+ * to the running job — the facet enforces budget draw + MAX_DEPTH), and
+ * `notify_owner` (Web-Push a note to the JOB owner's registered device via
+ * `sendOwnerPush` — the owner is wired from the job record, never from model
+ * args, so a run can only ever buzz its OWN owner). A tool error (bad args,
+ * unregistered target, facet revert) becomes an error functionResponse — the
+ * loop continues, never hangs.
  *
  * Bounds: MAX_PINGPONG_ROUNDS on the agent's turns, single-turn sub-agents, the
  * per-job budget, the per-tick caps, and Edge's wall-clock. The caller guarantees
@@ -940,6 +983,7 @@ async function runPingPong(
   task: string,
   maxCalls: number,
   parentJobId: bigint,
+  targetId: bigint,
   owner: string,
   tb: TickBudget,
 ): Promise<PingPongResult> {
@@ -1077,6 +1121,54 @@ async function runPingPong(
         role: 'function',
         parts: [
           { functionResponse: { name: 'schedule_task', response: responsePayload } },
+        ],
+      });
+      if (tickCapped) break; // a per-tick cap halts the whole run (spills)
+      continue;
+    }
+
+    if (call.name === 'notify_owner') {
+      // OWNER PUSH (the goal-loop "notify my owner" affordance — feedback
+      // #69). Sends to the JOB OWNER's on-chain subscription via the same
+      // sendOwnerPush plumbing as the post-run summary; owner + targetId come
+      // from the job record, NOT from model args (a run can only buzz its own
+      // owner). Not a model call, but COUNTED through the same gate + ledger
+      // as one (mirrors schedule_task): each push costs COST_WEI from the
+      // job's budget, so a runaway loop can't spam the owner's phone for free.
+      const title =
+        typeof call.args?.title === 'string'
+          ? (call.args.title as string).trim().slice(0, 80)
+          : '';
+      const pushBody =
+        typeof call.args?.body === 'string'
+          ? (call.args.body as string).trim().slice(0, 200)
+          : '';
+      if (!title) {
+        responsePayload = { error: 'notify_owner requires a non-empty "title"' };
+      } else if (!mayMeterCall()) {
+        responsePayload = {
+          error: budgetCapped
+            ? 'budget exhausted: not enough remaining $LH to notify the owner'
+            : 'per-tick spend cap reached: cannot notify the owner this tick',
+        };
+      } else {
+        calls++;
+        commitSpend(tb, owner, COST_WEI);
+        // sendOwnerPush never throws; false = unconfigured push, no on-chain
+        // subscription, or the push service rejected — the agent can report
+        // that in its final answer instead of retrying.
+        const sent = await sendOwnerPush(owner, targetId, title, pushBody);
+        responsePayload = sent
+          ? { sent: true }
+          : {
+              sent: false,
+              note: 'push not delivered (owner has no on-chain push subscription, or the push service refused)',
+            };
+      }
+      contents.push({
+        role: 'function',
+        parts: [
+          { functionResponse: { name: 'notify_owner', response: responsePayload } },
         ],
       });
       if (tickCapped) break; // a per-tick cap halts the whole run (spills)
@@ -1453,7 +1545,7 @@ async function processJob(id: bigint, tb: TickBudget): Promise<JobResult> {
       ? `THE GOAL:\n${rawTask.slice(GOAL_PREFIX.length).trim()}`
       : rawTask || 'Perform your scheduled task and report concisely.';
     ranLoop = true;
-    const result = await runPingPong(persona, task, maxCalls, id, job.owner, tb);
+    const result = await runPingPong(persona, task, maxCalls, id, job.targetId, job.owner, tb);
     calls = result.calls;
     budgetCapped = result.budgetCapped;
     tickCapped = result.tickCapped;
