@@ -240,6 +240,7 @@ sessionExpiryOf(address) → uint256   # session expiry the proxy gates on
 sessionPrice() → uint256             # $LH cost per session (1e19 = 10 $LH/hr; duration 3600)
 # CreditMeterFacet
 depositCredits(uint256)              # top up a per-request $LH balance
+withdrawCredits(uint256)             # pull UNSPENT credits back out as wallet $LH (paid agent calls auto-bridge from this)
 creditOf(address) → uint256          # current metered balance
 # X402Facet
 settle(...)                          # x402 "exact" EIP-712 settlement in $LH (agent-to-agent)

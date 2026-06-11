@@ -240,12 +240,14 @@ modules don't trip a default `cargo check`).
   Don't call `cargo`/`git`/`gh` directly in the script. ALSO: a DOUBLE QUOTE
   inside a here-string commit message breaks PS5's native-arg quoting (`git
   commit -m @'…"x"…'@` shreds into pathspecs) — keep `"` out of messages.
-- **Wallet vs meter — two $LH pots.** The proxy debits the per-request METER
-  (`CreditMeterFacet.creditOf`); `send`/`redeem` fund the WALLET. The CLI's
-  lazy deposit (`call.rs::ensure_meter_funded`) moves wallet→meter (0.2)
-  before a call, so "has $LH but 402s" = the deposit failed (it now WARNS
-  with the cause) or the wallet itself is empty. Colony judges pre-fund from
-  the caller; the fleet runner funds on 402 + retries.
+- **Wallet vs meter — two $LH pots, AUTO-BRIDGED both ways.** The proxy debits
+  the per-request METER (`creditOf`); `send`/`redeem` fund the WALLET; x402
+  `settle` pulls from the WALLET. Bridges: wallet→meter lazy deposit
+  (`call.rs::ensure_meter_funded`, 0.2 before a call) and meter→wallet
+  `withdrawCredits` (paid calls auto-pull the shortfall — browser
+  `remote_call.rs` + CLI `mcp.rs::ensure_diamond_allowance`). "has $LH but
+  402s/insufficient" should no longer happen unless BOTH pots are empty.
+  Colony judges pre-fund from the caller; the fleet runner funds on 402.
 - **Gemini 3.x `thought: false` parts + `thoughtSignature` echo.** The wire
   `Part` enum is untagged; `Part::Thought` is declared BEFORE `Part::Text`. 3.x
   stamps every part with `thought`, so normal text deserializes into
@@ -383,7 +385,8 @@ semantics live in `contracts/README.md`** — this list is one line each.
   3600s / 1e19 (10 $LH/hr)** — was free, but free session = free model access
   (sybil bypass), so priced. `setSessionPrice(0)` reopens free.
 - **CreditMeterFacet** — per-request metering. `depositCredits` tops up; `creditOf`
-  reads; `meter(addr,amt)` debits (meter-key only).
+  reads; `meter(addr,amt)` debits (meter-key only); `withdrawCredits` pulls
+  UNSPENT credits back to the wallet (escrow is 1:1-backed; metered spend final).
 - **X402Facet** — x402 EIP-712 "exact" settlement in $LH (agent-to-agent).
   `settle(...)` (EOA ecrecover + EIP-1271, one-shot nonce) moves payer→payee;
   `x402DomainSeparator()` read live (binds chainId+diamond → the reset changed it).

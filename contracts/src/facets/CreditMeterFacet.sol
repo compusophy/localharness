@@ -7,6 +7,7 @@ import {LibCreditsStorage} from "../libraries/LibCreditsStorage.sol";
 
 interface IERC20Min {
     function transferFrom(address from, address to, uint256 amount) external returns (bool);
+    function transfer(address to, uint256 amount) external returns (bool);
 }
 
 /// @title CreditMeterFacet
@@ -23,6 +24,7 @@ interface IERC20Min {
 ///         the Gemini key.
 contract CreditMeterFacet {
     event CreditsDeposited(address indexed user, uint256 amount, uint256 newBalance);
+    event CreditsWithdrawn(address indexed user, uint256 amount, uint256 newBalance);
     event Metered(address indexed user, uint256 amount, uint256 newBalance);
     event MeterUpdated(address indexed meter);
 
@@ -45,6 +47,26 @@ contract CreditMeterFacet {
         LibCreditMeterStorage.Storage storage s = LibCreditMeterStorage.load();
         s.creditOf[msg.sender] += amount;
         emit CreditsDeposited(msg.sender, amount, s.creditOf[msg.sender]);
+    }
+
+    /// Pull `amount` of the caller's UNSPENT metered credits back out as
+    /// wallet `$LH`. Unspent credits are caller-owned escrow (every ledger
+    /// credit is backed 1:1 by `$LH` `depositCredits` pulled into the
+    /// diamond; `meter()` only finalizes spend by shrinking the ledger) —
+    /// so the two pots are one balance in practice: deposit to chat,
+    /// withdraw to pay agents (x402) or transfer. Ledger debit BEFORE the
+    /// token transfer (CEI).
+    function withdrawCredits(uint256 amount) external {
+        address token = LibCreditsStorage.load().creditsToken;
+        if (token == address(0)) revert NotConfigured();
+        LibCreditMeterStorage.Storage storage s = LibCreditMeterStorage.load();
+        uint256 bal = s.creditOf[msg.sender];
+        if (bal < amount) revert InsufficientCredits();
+        unchecked {
+            s.creditOf[msg.sender] = bal - amount;
+        }
+        require(IERC20Min(token).transfer(msg.sender, amount), "withdraw: transfer failed");
+        emit CreditsWithdrawn(msg.sender, amount, bal - amount);
     }
 
     // --- Metering (proxy only) ------------------------------------------

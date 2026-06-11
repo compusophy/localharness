@@ -71,29 +71,37 @@ pub(crate) async fn ask_via_proxy(target: &str, message: &str) -> Result<String,
     })?;
 
     // Pre-flight the payer's WALLET balance. x402 `settle` pulls real $LH
-    // from the wallet pot via `transferFrom` — NOT from the chat meter
-    // (`creditOf`), which is a separate, deposit-only pot. A user can hold
-    // a fat meter (chat works fine) and still fail here with a bare
-    // "insufficient balance"; name both pots so the failure is diagnosable
-    // instead of looking like the platform lost their funds. A read failure
-    // shouldn't hard-block — settle is the authoritative gate.
+    // from the wallet pot via `transferFrom`, NOT from the chat meter
+    // (`creditOf`) — but unspent meter credits are the user's own escrow,
+    // so when the wallet is short the AUTO-BRIDGE pulls the shortfall back
+    // out via `withdrawCredits` (sponsored) and the call just proceeds.
+    // One balance in practice; the error below only fires when BOTH pots
+    // together can't cover the price. A read failure shouldn't hard-block —
+    // settle is the authoritative gate.
     if let Ok(wallet_wei) = registry::token_balance_of(&from_hex).await {
         if wallet_wei < pay_wei {
-            let meter_note = match registry::credit_balance_of(&from_hex).await {
-                Ok(m) if m > 0 => format!(
-                    " (your chat meter holds {} $LH, but meter credits are a \
-                     separate pot and cannot pay other agents)",
-                    crate::app::format_wei_as_test_eth(m)
-                ),
-                _ => String::new(),
-            };
-            return Err(format!(
-                "calling '{target}' costs {} $LH but your wallet {from_hex} \
-                 holds {} $LH{meter_note}. Fund the wallet with a redeem code, \
-                 an invite, or a $LH transfer, then retry",
-                crate::app::format_wei_as_test_eth(pay_wei),
-                crate::app::format_wei_as_test_eth(wallet_wei),
-            ));
+            let shortfall = pay_wei - wallet_wei;
+            let meter_wei = registry::credit_balance_of(&from_hex).await.unwrap_or(0);
+            if meter_wei >= shortfall {
+                let sponsor = super::sponsor::signer()?;
+                registry::withdraw_credits_sponsored(
+                    &signer,
+                    &sponsor,
+                    shortfall,
+                    registry::ALPHA_USD_ADDRESS,
+                )
+                .await
+                .map_err(|e| format!("credit withdraw (meter -> wallet): {e}"))?;
+            } else {
+                return Err(format!(
+                    "calling '{target}' costs {} $LH but your wallet holds {} \
+                     $LH and your chat meter {} $LH — fund up with a redeem \
+                     code, an invite, or a $LH transfer, then retry",
+                    crate::app::format_wei_as_test_eth(pay_wei),
+                    crate::app::format_wei_as_test_eth(wallet_wei),
+                    crate::app::format_wei_as_test_eth(meter_wei),
+                ));
+            }
         }
     }
 

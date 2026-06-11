@@ -191,16 +191,56 @@ pub(crate) fn parse_mcp_call_args(rest: &[String]) -> Result<ParsedMcpCall, Stri
 }
 
 /// Ensure the diamond can pull at least `value_wei` `$LH` from `from_hex` —
-/// x402 `settle` moves the payment via `transferFrom`, so the payer must have
-/// approved the diamond once. Approves `u128::MAX` (sponsored) when short.
-/// Prints its own messages; `Err` carries the process exit code. A read
-/// failure only warns — settle is the authoritative gate. Shared by
+/// x402 `settle` moves the payment via `transferFrom`, so the payer needs
+/// (1) a wallet balance covering the price — when short, the AUTO-BRIDGE
+/// pulls the shortfall back out of the caller's unspent chat-meter credits
+/// via `withdrawCredits` (the meter and the wallet are one balance in
+/// practice) — and (2) a one-time `u128::MAX` approve (sponsored when
+/// short). Prints its own messages; `Err` carries the process exit code.
+/// Read failures only warn — settle is the authoritative gate. Shared by
 /// `mcp-call` and `call --pay`.
 pub(crate) async fn ensure_diamond_allowance(
     signer: &k256::ecdsa::SigningKey,
     from_hex: &str,
     value_wei: u128,
 ) -> Result<(), i32> {
+    if let Ok(wallet_wei) = registry::token_balance_of(from_hex).await {
+        if wallet_wei < value_wei {
+            let shortfall = value_wei - wallet_wei;
+            let meter_wei = registry::credit_balance_of(from_hex).await.unwrap_or(0);
+            if meter_wei >= shortfall {
+                println!(
+                    "wallet is short {} — pulling it from your unspent chat credits …",
+                    fmt_lh(shortfall)
+                );
+                let sponsor = load_sponsor()?;
+                match registry::withdraw_credits_sponsored(
+                    signer,
+                    &sponsor,
+                    shortfall,
+                    registry::ALPHA_USD_ADDRESS,
+                )
+                .await
+                {
+                    Ok(tx) => println!("  withdrawn (tx {tx})"),
+                    Err(e) => {
+                        eprintln!("could not withdraw credits automatically: {e}");
+                        return Err(1);
+                    }
+                }
+            } else {
+                eprintln!(
+                    "this call costs {} but your wallet holds {} and your \
+                     chat meter {} — fund up with `localharness redeem <code>` \
+                     or a $LH transfer first",
+                    fmt_lh(value_wei),
+                    fmt_lh(wallet_wei),
+                    fmt_lh(meter_wei),
+                );
+                return Err(1);
+            }
+        }
+    }
     match registry::lh_allowance(from_hex, registry::REGISTRY_ADDRESS).await {
         Ok(allowance) if allowance >= value_wei => Ok(()),
         Ok(_) => {

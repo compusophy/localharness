@@ -174,6 +174,37 @@ pub async fn deposit_credits_sponsored(
     .await
 }
 
+/// Pull `amount_wei` of UNSPENT metered credits back into the sender's
+/// wallet `$LH` via a sponsored Tempo tx (`withdrawCredits` — the reverse
+/// of [`deposit_credits_sponsored`], so the meter and the wallet are one
+/// balance in practice). The auto-bridge in paid agent calls uses this to
+/// cover an x402 price from chat credits when the wallet pot is short.
+pub async fn withdraw_credits_sponsored(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    amount_wei: u128,
+    fee_token: &str,
+) -> Result<String, String> {
+    // Ledger SSTORE + token transfer (warm balance SSTOREs) + event — well
+    // under deposit's cost, but sponsorship overhead is ~275k on its own;
+    // 1M keeps the same headroom policy as the other sponsored writes.
+    sponsored_diamond_call(
+        sender,
+        fee_payer,
+        encode_withdraw_credits(amount_wei),
+        fee_token,
+        1_000_000,
+    )
+    .await
+}
+
+pub(crate) fn encode_withdraw_credits(amount_wei: u128) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + 32);
+    out.extend_from_slice(&selector("withdrawCredits(uint256)"));
+    out.extend_from_slice(&u256_be(amount_wei));
+    out
+}
+
 /// `eth_call allowance(owner, spender)` on [`LOCALHARNESS_TOKEN_ADDRESS`] —
 /// how much `$LH` (18-decimal wei) `owner` has approved `spender` to pull
 /// via `transferFrom`. The x402 `settle` pulls `$LH` from the payer through
