@@ -173,31 +173,6 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
 }
 .feedback-button svg { display: block; }
 
-/* Mobile tab bar — shown only under 900px. Switches which
-   panel is visible via `tab-<name>` class on #layout. */
-.mobile-tabs {
-  flex-shrink: 0;
-  display: none;   /* desktop hides this entirely */
-  /* Sits directly under the sticky header and stays reachable while the
-     transcript scrolls (resilient pin — see .site-header). */
-  position: sticky;
-  top: 0;
-  z-index: 29;
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
-}
-.mobile-tabs .tab-button {
-  flex: 1;
-  border: 0;
-  border-right: 1px solid var(--border);
-  padding: 10px 0;
-}
-.mobile-tabs .tab-button:last-child { border-right: 0; }
-.mobile-tabs .tab-button.active {
-  color: var(--fg);
-  background: var(--panel);
-}
-
 /* Feedback modal — overlays everything at z-index:200 with a
    dimmed backdrop. Click outside the card to dismiss (handled
    client-side via .feedback-close). */
@@ -322,104 +297,25 @@ main {
   flex: 1;
   width: 100%;
 }
-/* Tenant chrome — main is a horizontal row:
-     [files-rail][col-fs][col-chat][col-financial][financial-rail]
-   Files and agent rails span the FULL height of main. The center
-   col-chat is itself a vertical stack of its own [view-panel]
-   [transcript][terminal-panel][terminal-rail] — so the view and
-   terminal stay strictly inset between the files and agent columns.
-   All four rails are <button>s; the whole strip is the click target. */
+/* Tenant chrome — UNIFIED STREAM: chat IS the app. main is a single
+   full-width chat column ([ctx-bar][transcript][terminal-panel]); files
+   open as a modal (header [files]), display as a fullscreen overlay.
+   No rails, no side columns, no tab bar — same layout on every
+   viewport. */
 main.layout {
   padding: 0;
   max-width: none;
   flex: 1;                /* claim the rest of the viewport after the header */
   display: flex;
-  flex-direction: row;
   align-items: stretch;
   gap: 0;
   min-height: 0;          /* let children's overflow:auto kick in  */
   overflow: hidden;       /* prevent the page from growing with chat */
 }
 
-/* All four rails — identical visual treatment. Same thickness
-   (32px), same label typography, same hover. The only difference
-   is orientation (side rails rotate the label vertically). */
-main.layout .side-rail, main.layout .top-rail, main.layout .bottom-rail {
-  background: transparent;
-  color: var(--muted);
-  border: 0;
-  padding: 0;
-  cursor: pointer;
-  font: inherit;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-main.layout .side-rail:hover, main.layout .top-rail:hover, main.layout .bottom-rail:hover {
-  background: var(--panel);
-  color: var(--fg);
-}
-main.layout .rail-label {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-}
-main.layout .side-rail {
-  width: 32px;
-}
-main.layout .side-rail .rail-label {
-  writing-mode: vertical-rl;
-  transform: rotate(180deg);
-}
-main.layout .top-rail, main.layout .bottom-rail {
-  width: 100%;
-  height: 32px;        /* matches side-rail width — same chrome */
-}
-main.layout .files-rail { border-right: 1px solid var(--border); }
-main.layout .financial-rail { border-left: 1px solid var(--border); }
-main.layout .top-rail { border-bottom: 1px solid var(--border); }
-main.layout .bottom-rail { border-top: 1px solid var(--border); }
-/* The terminal rail always sits at the bottom of the center column.
-   `margin-top:auto` absorbs free space above it, so when the
-   terminal (and/or view) panel collapses the rail stays pinned to
-   the bottom instead of floating up to the top. When the panels are
-   open the transcript's `flex:1` eats the free space, so this auto
-   margin is a no-op and the rail hugs the terminal as before. */
-main.layout .terminal-rail { margin-top: auto; }
-
-/* SSOT side-panel archetype — both files (col-fs) and agent
-   (col-financial) share .col-side. Same width, same padding,
-   same internal panel-header / panel-body treatment. The only
-   difference is which border edge they use. */
-main.layout .col-side {
-  flex-shrink: 0;
-  width: 260px;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  overflow: hidden;       /* contents handle their own overflow */
-}
-main.layout .col-fs { border-right: 1px solid var(--border); }
-main.layout .col-financial { border-left: 1px solid var(--border); }
-main.layout.files-collapsed .col-fs { display: none; }
-main.layout.financial-collapsed .col-financial { display: none; }
-
-/* .col-side .panel-button now inherits from the global button
-   style; no per-component overrides. */
-.col-side .panel-body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 12px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-/* Center column — vertical stack: view-panel /
-   transcript / terminal-panel / terminal-rail. Each panel
-   collapses via a class flip on #layout. */
+/* The chat column — vertical stack: ctx-bar / transcript /
+   terminal-panel. The transcript scrolls internally; the prompt input
+   stays pinned at the bottom. */
 main.layout .col-chat {
   flex: 1;
   min-width: 0;
@@ -428,24 +324,11 @@ main.layout .col-chat {
   flex-direction: column;
   overflow: hidden;
 }
-main.layout .view-panel {
-  flex-shrink: 0;
-  max-height: 40%;
-  overflow-y: auto;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel);
-}
-main.layout.view-collapsed .view-panel { display: none; }
 main.layout .terminal-panel {
   flex-shrink: 0;
   margin-top: auto;        /* always pin to bottom of col-chat */
   border-top: 1px solid var(--border);
 }
-/* Collapsing the terminal hides the WHOLE chat (transcript +
-   input) — clears the column so the editor above can take
-   the full vertical space. */
-main.layout.terminal-collapsed .terminal-panel, main.layout.terminal-collapsed .transcript { display: none; }
-main.layout.terminal-collapsed .view-panel { max-height: none; flex: 1; }
 
 /* Transcript fills available vertical space; scrolls internally.
    Content top-aligns; newest is kept in view by scroll_to_bottom()
@@ -464,10 +347,29 @@ main.layout .transcript {
 }
 main.layout .transcript > * { flex-shrink: 0; }
 
-/* DISPLAY surface — the framebuffer "screen" the cartridge loader
-   blits into. Black letterbox stage; the canvas is sized 16:9 and
-   scaled with crisp (pixelated) edges so individual framebuffer
-   pixels stay sharp instead of being smoothed by the browser. */
+/* DISPLAY overlay — the framebuffer "screen" the cartridge loader
+   blits into, presented as a fullscreen dismissable overlay (admin-
+   modal pattern; ToggleDisplay opens/closes it). Black letterbox
+   stage; the canvas is sized 16:9 and scaled with crisp (pixelated)
+   edges so individual framebuffer pixels stay sharp instead of being
+   smoothed by the browser. Sits above the files modal (z 100) and
+   below the api-key modal (z 150) / feedback modal (z 200). */
+.display-overlay {
+  position: fixed; inset: 0;
+  z-index: 140;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.display-overlay > .modal-close {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 1;
+}
+.display-overlay .display-wrap { max-width: 1100px; }
 /* Just the canvas stage — no toolbar. */
 .display-wrap {
   display: flex;
@@ -609,9 +511,8 @@ main.layout .transcript > * { flex-shrink: 0; }
 }
 .public-face-preview a:hover { color: var(--fg); }
 
-/* Edit panel — the editable text surface that opens when a file
-   is clicked in the file list. */
-.view-content { height: 100%; display: flex; flex-direction: column; }
+/* Editor — the editable text surface that opens (inside the files
+   modal's #fs-viewer) when a file is clicked in the file list. */
 .editor { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .editor-header {
   flex-shrink: 0;
@@ -625,12 +526,10 @@ main.layout .transcript > * { flex-shrink: 0; }
 }
 .editor-actions { display: flex; gap: 12px; }
 .editor-textarea {
-  /* min-height keeps the editor usable even when the DISPLAY panel it
-     shares is short — without it the flex child collapsed to ~2 lines
-     wedged under the panel header (the orphaned `textarea.fs-editor`
-     rule below USED to carry this, but it targets a class the element
-     never had after an id/class rename, so it silently did nothing). */
-  flex: 1; min-height: 320px;
+  /* min-height keeps the editor usable inside the height-bound files
+     dialog — without it the flex child collapses to ~2 lines wedged
+     under the editor header. */
+  flex: 1; min-height: 160px;
   background: var(--bg);
   border: 0; outline: none; resize: none;
   color: var(--fg);
@@ -638,60 +537,6 @@ main.layout .transcript > * { flex-shrink: 0; }
   padding: 12px 16px;
 }
 
-/* Mobile (<900px) — single-pane with a tab bar at the top.
-   The `tab-<name>` class on #layout selects which panel is
-   visible; everything else gets display:none. Rails are hidden
-   (the tab bar replaces them on mobile). Chat tab shows
-   transcript + terminal together. */
-@media (max-width: 900px) {
-  .mobile-tabs { display: flex; }
-  main.layout {
-    flex-direction: column;
-    overflow: hidden;       /* still viewport-locked */
-  }
-  /* Hide the desktop rails entirely on mobile — tab bar handles
-     panel switching, no need for the strip toggles. */
-  main.layout .side-rail, main.layout .top-rail, main.layout .bottom-rail { display: none; }
-
-  /* By default everything inside main is hidden; the active
-     tab-<name> class enables exactly one panel. */
-  main.layout .col-fs, main.layout .col-financial, main.layout .view-panel, main.layout .transcript, main.layout .terminal-panel { display: none; }
-
-  main.layout .col-fs, main.layout .col-financial {
-    width: 100%;
-    border: 0;
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-  }
-  main.layout .col-chat {
-    flex: 1;
-    min-height: 0;
-    overflow: hidden;
-    width: 100%;
-    display: flex;
-    flex-direction: column;
-  }
-
-  /* tab-files: just the file list. */
-  main.layout.tab-files .col-fs { display: flex; }
-
-  /* tab-chat: transcript + terminal stacked, transcript scrolls. */
-  main.layout.tab-chat .col-chat { display: flex; }
-  main.layout.tab-chat .transcript { display: flex; flex: 1; min-height: 0; }
-  main.layout.tab-chat .terminal-panel { display: block; }
-
-  /* tab-display: just the framebuffer surface, full height. */
-  main.layout.tab-display .col-chat { display: flex; }
-  main.layout.tab-display .view-panel { display: block; flex: 1; max-height: none; }
-
-  /* tab-agent: just the agent card. */
-  main.layout.tab-agent .col-financial { display: flex; }
-
-  /* Fix agent tab top spacing on mobile — col-financial should
-     start at the top of the remaining viewport, not pushed down. */
-  main.layout .col-financial { padding-top: 0; }
-}
 /* Uniform top gap under the site-header — matches the base `main`
    rule and `.explore-main` (32px). The old asymmetric 64px top made
    the apex-family pages (apex/claim/landing) sit visibly lower than
@@ -1597,9 +1442,70 @@ button.danger:hover { color: var(--bg); background: var(--error); }
 }
 .pricing-msg { font-size: 11px; margin-top: 6px; min-height: 14px; }
 
-/* Files panel internals — the .fs-panel wrapper is gone (SSOT
-   .col-side handles the chrome); these styles apply to the
-   breadcrumb + list living inside .panel-body. */
+/* Files modal — the OPFS browser as an overlay off the header [files]
+   button. Same overlay/dialog machinery as the admin modal; the body is
+   a column of breadcrumb / list / editor viewer. */
+.files-modal {
+  position: fixed; inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.files-dialog {
+  width: 100%;
+  max-width: 640px;
+  height: 85vh;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  padding: 0;
+}
+.files-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 8px 8px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.files-title {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.files-head > .modal-close { border: 0; }
+.files-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 20px 16px;
+}
+.files-body .fs-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+/* The editor viewer shares the dialog with the list when a file is
+   open; empty (closed) it takes no space at all. */
+.fs-viewer:empty { display: none; }
+.fs-viewer {
+  flex: 2 1 60%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+}
+
+/* File-browser internals — breadcrumb + list (inside the files
+   modal's body). */
 .fs-breadcrumb {
   font-size: 11px;
   color: var(--muted);

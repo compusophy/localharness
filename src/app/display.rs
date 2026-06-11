@@ -165,9 +165,9 @@ struct ChildHandle {
 /// `run_with_ctx` fills it in once the instance is live.
 type SharedMemory = Rc<RefCell<JsValue>>;
 
-/// Instantiate `wasm_bytes` as a display cartridge in the workshop's
-/// center view panel (swaps in the surface template). Used by the
-/// `run_cartridge` tool and opening a `.wasm` from the files panel.
+/// Instantiate `wasm_bytes` as a display cartridge in the display
+/// overlay (swaps in the overlay + surface). Used by the `run_cartridge`
+/// tool and opening a `.wasm`/`.rl` from the files modal.
 pub(crate) async fn run_wasm(wasm_bytes: &[u8]) -> Result<(), JsValue> {
     let ctx = mount_canvas()?;
     run_with_ctx(wasm_bytes, ctx).await
@@ -175,7 +175,7 @@ pub(crate) async fn run_wasm(wasm_bytes: &[u8]) -> Result<(), JsValue> {
 
 /// Instantiate `wasm_bytes` against an existing `#display-canvas`
 /// already in the DOM (app mode — the subdomain booted straight into a
-/// fullscreen cartridge, no view-panel swap).
+/// fullscreen cartridge, no overlay swap).
 pub(crate) async fn run_in_root_canvas(wasm_bytes: &[u8]) -> Result<(), JsValue> {
     let ctx = size_and_get_ctx()?;
     run_with_ctx(wasm_bytes, ctx).await
@@ -691,11 +691,12 @@ pub(crate) fn stop() {
     audio::stop_all();
 }
 
-/// Render the workshop canvas template into the center view-panel, then
-/// size + grab its 2D context.
+/// Mount the display overlay (fullscreen, dismissable — the unified
+/// stream's display surface) with a fresh canvas, then size + grab its
+/// 2D context. Re-mounting over an already-open overlay just swaps in a
+/// fresh surface, mirroring the old re-swap-the-panel behavior.
 fn mount_canvas() -> Result<CanvasRenderingContext2d, JsValue> {
-    dom::swap_inner("view-content", &templates::display_surface().into_string());
-    super::opfs::set_view_collapsed(false);
+    dom::swap_outer("display-overlay", &templates::display_overlay().into_string());
     size_and_get_ctx()
 }
 

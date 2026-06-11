@@ -573,7 +573,7 @@ pub(super) fn header_feedback_open() {
 
 /// Switch the active admin tab by flipping the `tab-<name>` class on
 /// `#admin-dialog` (CSS shows the matching `.panel-<name>`), and sync the
-/// `.active` state on the tab buttons. Mirrors `show_mobile_tab`.
+/// `.active` state on the tab buttons.
 pub(super) fn show_admin_tab(name: &str) {
     let Some(dialog) = dom::by_id("admin-dialog") else { return };
     let mut cls: Vec<String> = dialog
@@ -589,49 +589,6 @@ pub(super) fn show_admin_tab(name: &str) {
         let Some(el) = dom::by_id(&format!("admin-tab-btn-{tab}")) else { continue };
         let c = el.class_name();
         let mut classes: Vec<&str> = c.split_whitespace().filter(|x| *x != "active").collect();
-        if tab == name {
-            classes.push("active");
-        }
-        el.set_class_name(&classes.join(" "));
-    }
-}
-
-/// Mobile-only: swap which `tab-<name>` class is on `#layout`.
-/// CSS uses it to show exactly one panel at a time on narrow
-/// viewports. Tab button styling syncs by toggling `.active`.
-pub(super) fn show_mobile_tab(name: &str) {
-    let Some(layout) = dom::by_id("layout") else { return };
-    let parts: Vec<String> = layout
-        .class_name()
-        .split_whitespace()
-        .filter(|c| !c.starts_with("tab-"))
-        .map(String::from)
-        .collect();
-    let mut new_cls = parts.join(" ");
-    if !new_cls.is_empty() {
-        new_cls.push(' ');
-    }
-    new_cls.push_str(&format!("tab-{name}"));
-    layout.set_class_name(&new_cls);
-
-    // The display tab shows the framebuffer; mount an idle surface if
-    // nothing is already on it so the canvas exists when the tab opens.
-    if name == "display" && dom::by_id("display-canvas").is_none() {
-        dom::swap_inner(
-            "view-content",
-            &crate::app::templates::display_surface().into_string(),
-        );
-    }
-
-    // Reflect active state on each tab button by id — small fixed
-    // set of tabs, no need for query_selector_all (which needs the
-    // NodeList web-sys feature we don't enable).
-    for tab in ["files", "chat", "display", "agent"] {
-        let id = format!("tab-btn-{tab}");
-        let Some(el) = dom::by_id(&id) else { continue };
-        let cls = el.class_name();
-        let mut classes: Vec<&str> =
-            cls.split_whitespace().filter(|c| *c != "active").collect();
         if tab == name {
             classes.push("active");
         }

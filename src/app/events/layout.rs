@@ -1,27 +1,9 @@
-//! Layout + reset + pricing — panel toggles, the typed-confirmation reset,
-//! and pricing save.
+//! Reset + pricing — the typed-confirmation reset and pricing save.
+//! (The old panel-collapse class toggles died with the tabbed layout —
+//! the unified stream has no side panels to collapse.)
 
 use crate::app::{dom, templates};
 use crate::filesystem::Filesystem;
-
-/// Pure DOM class flip on `#layout` — used by the panel toggles
-/// (files-collapsed, financial-collapsed) so a collapse + expand
-/// doesn't lose any panel state (open file viewer, pricing edit
-/// in-flight, etc.). CSS handles the actual hide/show.
-pub(super) fn toggle_layout_class(class: &str) {
-    let Some(layout) = dom::by_id("layout") else { return };
-    let current = layout.class_name();
-    let trimmed = current.trim();
-    let parts: Vec<&str> = trimmed.split_whitespace().collect();
-    let new_cls = if parts.contains(&class) {
-        parts.iter().filter(|c| **c != class).copied().collect::<Vec<_>>().join(" ")
-    } else if parts.is_empty() {
-        class.to_string()
-    } else {
-        format!("{} {class}", parts.join(" "))
-    };
-    layout.set_class_name(&new_cls);
-}
 
 /// Inline-confirmed reset: clear local app data at OPFS root, reload.
 /// Identity-preserving — keeps the seed + owner hint (see the loop below).
