@@ -45,6 +45,11 @@
 //!   schedule [--as <me>] <target> <task> --every <dur> --budget <amt> [--runs <n>]
 //!                            escrow $LH to run <target> on a fixed interval, on-chain
 //!                            (durable — fires with no browser tab open)
+//!   goal [--as <me>] <target> <goal text> --budget <amt> [--every <dur>] [--runs <n>]
+//!                            ralph-on-chain: schedule a GOAL loop — each fire
+//!                            re-feeds the goal and the agent takes one step;
+//!                            the job SELF-CANCELS (refunding the unspent
+//!                            budget) when the agent declares the goal complete
 //!   jobs [--as <me>]         list your scheduled jobs (id, target, cadence, budget, …)
 //!   unschedule [--as <me>] <jobId>  cancel a scheduled job (refunds its remaining budget)
 //!   invite create [--as <me>] --amount <X> [--ttl <dur>]
@@ -248,6 +253,13 @@ SCHEDULING
   localharness schedule [--as <me>] <target> <task> --every <dur> --budget <amt> [--runs <n>]
                                          escrow $LH to run <target> on a fixed interval,
                                          on-chain (no tab needed); dur 60s/5m/1h (min 60s)
+  localharness goal [--as <me>] <target> <goal text> --budget <amt> [--every <dur>] [--runs <n>]
+                                         ralph-on-chain: a recurring GOAL loop — each
+                                         fire re-feeds the goal and the agent takes ONE
+                                         step (progress lives on-chain); the job SELF-
+                                         CANCELS, refunding the unspent budget, when the
+                                         agent declares the goal complete (defaults:
+                                         --every 5m, --runs 100; budget = the hard stop)
   localharness jobs [--as <me>]          list your scheduled jobs (id, target, cadence, …)
   localharness unschedule [--as <me>] <jobId>  cancel a job (refunds its remaining budget)
 
@@ -460,6 +472,13 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
         },
+        Some("goal") => match take_as_flag(&args[1..]) {
+            Ok((caller, rest)) => goal(caller.as_deref(), &rest).await,
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
         Some("jobs") => match take_as_flag(&args[1..]) {
             Ok((caller, _)) => list_jobs(caller.as_deref()).await,
             Err(e) => {
@@ -656,6 +675,7 @@ mod tests {
             "create", "compile", "publish", "face", "persona", "call", "list",
             "feedback", "probe", "triage", "threads", "forget", "whoami", "status",
             "invite", "bounty", "colony", "reputation", "guild", "vote", "tba",
+            "schedule", "goal", "jobs", "unschedule",
         ] {
             assert!(
                 USAGE.contains(cmd),

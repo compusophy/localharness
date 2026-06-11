@@ -24,6 +24,20 @@ pub(crate) const SCHEDULE_USAGE: &str = "usage: localharness schedule [--as <me>
                               --every <dur> --budget <amount> [--runs <n>]\n  \
                               dur: 60s / 5m / 1h (min 60s)   amount: $LH (e.g. 1 or 0.5)";
 
+pub(crate) const GOAL_USAGE: &str = "usage: localharness goal [--as <me>] <target> <goal text> \
+                              --budget <amount> [--every <dur>] [--runs <n>]\n  \
+                              defaults: --every 5m, --runs 100   dur: 60s / 5m / 1h (min 60s)";
+
+/// The EXACT on-chain task marker the scheduler worker recognises as a goal
+/// loop (ralph-on-chain): it wraps the run's persona with the goal-loop frame
+/// and offers the `finish_goal` tool, which ends the job via the facet's
+/// `completeJob` (refunding the unspent escrow) when the goal is met.
+pub(crate) const GOAL_TASK_PREFIX: &str = "GOAL: ";
+
+/// Default `--every` for `goal` — 5 minutes, the worker cron's MVP cadence
+/// (a tighter loop than the typical standing job; the budget is the leash).
+pub(crate) const GOAL_DEFAULT_INTERVAL_SECS: u64 = 300;
+
 /// Parse an interval like `60s` / `5m` / `1h` / `90` (bare = seconds) into
 /// seconds, enforcing the facet's 60s floor. Pure + testable. A unit suffix of
 /// `s`/`m`/`h` (case-insensitive) scales; anything else (or a sub-60s result,
@@ -111,25 +125,91 @@ pub(crate) fn parse_schedule_args(rest: &[String]) -> Result<ParsedSchedule, Str
     })
 }
 
+/// Parsed `goal` arguments — `schedule` sugar with goal-loop ergonomics:
+/// only `--budget` is required (`--every` defaults to 5m, `--runs` to the
+/// schedule default), and the task is the goal text behind the exact
+/// `GOAL: ` marker the worker keys the ralph frame + `finish_goal` tool on.
+/// Pure (no I/O) so it is unit-testable; `Err` carries the usage line.
+pub(crate) fn parse_goal_args(rest: &[String]) -> Result<ParsedSchedule, String> {
+    let ([every, budget, runs], positional) =
+        collect_flags(rest, ["--every", "--budget", "--runs"], GOAL_USAGE)?;
+    if positional.len() < 2 {
+        return Err(GOAL_USAGE.to_string());
+    }
+    let target = positional[0].clone();
+    // Everything after the target joins into the goal text (unquoted
+    // multi-word goals work, matching `schedule`/`call`).
+    let goal_text = positional[1..].join(" ");
+    let interval_secs = match every {
+        None => GOAL_DEFAULT_INTERVAL_SECS,
+        Some(e) => parse_interval(&e)?,
+    };
+    let budget_raw = budget.ok_or(GOAL_USAGE)?;
+    let budget_wei = match localharness::encoding::parse_token_amount(&budget_raw) {
+        Some(w) if w > 0 => w,
+        _ => return Err(format!("--budget must be a positive $LH amount, got '{budget_raw}'")),
+    };
+    let max_runs = match runs {
+        None => SCHEDULE_DEFAULT_RUNS,
+        Some(r) => r
+            .parse::<u32>()
+            .ok()
+            .filter(|&n| n > 0)
+            .ok_or_else(|| format!("--runs must be a positive integer, got '{r}'"))?,
+    };
+    Ok(ParsedSchedule {
+        target,
+        task: format!("{GOAL_TASK_PREFIX}{goal_text}"),
+        interval_secs,
+        budget_wei,
+        max_runs,
+    })
+}
+
 /// `localharness schedule [--as <me>] <target> <task> --every <dur> --budget
 /// <amount> [--runs <n>]` — escrow `$LH` to run `<target>` on a fixed interval,
 /// on-chain (no tab needed). Resolves the target name → tokenId, escrows the
 /// budget (approve + scheduleJob in one sponsored tx), and prints the schedule.
 pub(crate) async fn schedule(caller_name: Option<&str>, rest: &[String]) -> i32 {
+    match parse_schedule_args(rest) {
+        Ok(p) => submit_job(caller_name, p, false).await,
+        Err(usage) => {
+            eprintln!("{usage}");
+            2
+        }
+    }
+}
+
+/// `localharness goal [--as <me>] <target> <goal text> --budget <amount>
+/// [--every <dur>] [--runs <n>]` — ralph-on-chain: schedule a recurring job
+/// whose task carries the `GOAL: ` marker. Every fire re-feeds the SAME goal
+/// to the agent (progress lives on-chain, not in model memory); the job ends
+/// ITSELF — `finish_goal` → the facet's `completeJob`, refunding the unspent
+/// escrow to you — once the agent verifies the goal is complete. The budget
+/// and `--runs` remain the hard stops if it never is.
+pub(crate) async fn goal(caller_name: Option<&str>, rest: &[String]) -> i32 {
+    match parse_goal_args(rest) {
+        Ok(p) => submit_job(caller_name, p, true).await,
+        Err(usage) => {
+            eprintln!("{usage}");
+            2
+        }
+    }
+}
+
+/// Shared submission path for `schedule` + `goal`: resolve the target name →
+/// tokenId, escrow the budget (approve + scheduleJob in one sponsored tx),
+/// print the schedule. `goal_mode` only changes the confirmation copy (the
+/// on-chain difference is entirely the task's `GOAL: ` marker).
+async fn submit_job(caller_name: Option<&str>, parsed: ParsedSchedule, goal_mode: bool) -> i32 {
     let ParsedSchedule {
         target,
         task,
         interval_secs,
         budget_wei,
         max_runs,
-    } = match parse_schedule_args(rest) {
-        Ok(p) => p,
-        Err(usage) => {
-            eprintln!("{usage}");
-            return 2;
-        }
-    };
-    if task.trim().is_empty() {
+    } = parsed;
+    if task.trim().is_empty() || task.trim() == GOAL_TASK_PREFIX.trim() {
         eprintln!("schedule: task is empty");
         return 2;
     }
@@ -178,7 +258,13 @@ pub(crate) async fn schedule(caller_name: Option<&str>, rest: &[String]) -> i32 
                 _ => "scheduled".to_string(),
             };
             println!("✓ {id_note}: {target} every {every}, budget {}, ~{max_runs} runs", fmt_lh(budget_wei));
-            println!("  the escrowed $LH backs it 24/7 — it fires with no browser tab open.");
+            if goal_mode {
+                println!("  goal loop: each fire re-feeds the goal and the agent takes ONE step;");
+                println!("  the job SELF-CANCELS (refunding the unspent budget to your wallet) when");
+                println!("  the agent declares the goal complete — budget/runs are the hard stops.");
+            } else {
+                println!("  the escrowed $LH backs it 24/7 — it fires with no browser tab open.");
+            }
             println!("  tx: {tx}");
             0
         }
@@ -357,6 +443,51 @@ mod tests {
         );
         // Sub-minute interval bubbles up from parse_interval.
         assert!(parse_schedule_args(&args(&["t", "x", "--every", "10s", "--budget", "1"])).is_err());
+    }
+
+    #[test]
+    fn parse_goal_args_defaults_and_marker() {
+        // Only --budget is required: --every defaults to 5m, --runs to the
+        // schedule default, and the task gains the EXACT worker marker.
+        let p = parse_goal_args(&args(&[
+            "claude", "get", "my", "TBA", "to", "1", "$LH", "--budget", "0.5",
+        ]))
+        .unwrap();
+        assert_eq!(p.target, "claude");
+        assert_eq!(p.task, "GOAL: get my TBA to 1 $LH"); // marker + joined text
+        assert!(p.task.starts_with(GOAL_TASK_PREFIX));
+        assert_eq!(p.interval_secs, GOAL_DEFAULT_INTERVAL_SECS); // 5m default
+        assert_eq!(p.budget_wei, 500_000_000_000_000_000); // 0.5 $LH
+        assert_eq!(p.max_runs, SCHEDULE_DEFAULT_RUNS); // 100 default
+    }
+
+    #[test]
+    fn parse_goal_args_explicit_flags() {
+        // Explicit --every/--runs override the defaults; flags may precede
+        // the goal text (collect_flags order-independence, like schedule).
+        let p = parse_goal_args(&args(&[
+            "bot", "--every", "1h", "--budget", "2", "--runs", "10", "win",
+        ]))
+        .unwrap();
+        assert_eq!(p.target, "bot");
+        assert_eq!(p.task, "GOAL: win");
+        assert_eq!(p.interval_secs, 3600);
+        assert_eq!(p.budget_wei, 2_000_000_000_000_000_000);
+        assert_eq!(p.max_runs, 10);
+    }
+
+    #[test]
+    fn parse_goal_args_rejects_bad_input() {
+        // --budget is required.
+        assert!(parse_goal_args(&args(&["t", "goal"])).is_err());
+        // No goal text (only the target positional).
+        assert!(parse_goal_args(&args(&["t", "--budget", "1"])).is_err());
+        // Zero / non-numeric budget + bad runs.
+        assert!(parse_goal_args(&args(&["t", "x", "--budget", "0"])).is_err());
+        assert!(parse_goal_args(&args(&["t", "x", "--budget", "nope"])).is_err());
+        assert!(parse_goal_args(&args(&["t", "x", "--budget", "1", "--runs", "0"])).is_err());
+        // A sub-minute --every bubbles up from parse_interval.
+        assert!(parse_goal_args(&args(&["t", "x", "--budget", "1", "--every", "10s"])).is_err());
     }
 
     #[test]
