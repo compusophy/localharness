@@ -153,8 +153,7 @@ design/       launch-1.0.md beta-plan.md paymaster.md invites.md
               agent-writes-rust.md model-agnostic.md
 ```
 
-Historical design docs (`DESIGN.md`, `DESIGN_M5_PLUS.md`, `UPSTREAM.md`) dropped at
-0.10.1 — preserved under git tags `v0.1.0`–`v0.10.0`.
+Historical design docs dropped at 0.10.1 — see git tags `v0.1.0`–`v0.10.0`.
 
 ## Build / test / run
 
@@ -448,9 +447,8 @@ semantics live in `contracts/README.md`** — this list is one line each.
 - **ReputationFacet** — `attest(subject, rating 1..5, workRef)` with per-work
   dedup + self-attestation rejection; paged `attestationsOf`. ERC-8004
   validation staking still open.
-- **PairingFacet** — REMOVED from the live diamond 2026-06-10 (Remove cut,
-  `script/RemovePairingFacet.s.sol`): superseded by QR seed-adoption, client
-  helpers already deleted. Source kept; re-cuttable via loupe if ever needed.
+- **PairingFacet** — REMOVED from the live diamond 2026-06-10; superseded by
+  QR seed-adoption. Source kept, re-cuttable.
 - **OwnedTokens** (`tokensOfOwner` enumerable index) — DRAFT, not cut.
 
 **ERC-6551 account** (`MultiSignerAccount`): CALL-only; additional-signer set on top
