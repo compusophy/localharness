@@ -19,9 +19,13 @@
 // (EIP-712, signed by the payer) authorizing `$LH` payer -> the agent's
 // token-bound account. The proxy verifies the signature against the LIVE
 // `x402DomainSeparator()` of the diamond, reconstructs the digest exactly as
-// `src/registry.rs::x402_digest` / `X402Facet.sol`, ecrecovers, and submits
-// `X402Facet.settle(...)` on-chain — awaiting the receipt — BEFORE running the
-// agent. No payment, no answer.
+// `src/registry.rs::x402_digest` / `X402Facet.sol`, ecrecovers — and only
+// AFTER the agent's model produced a successful answer does it submit
+// `X402Facet.settle(...)` on-chain (SETTLE-ON-SUCCESS). Verification still
+// REJECTS before any model spend; but a model failure (timeout / 500) never
+// takes the payer's money — the one-shot authorization stays unused and
+// expires harmlessly. No answer, no payment. (Issue #25: the old order
+// settled first, so a failed paid call permanently charged the payer.)
 //
 // The mirror of the Rust client side is `src/registry.rs` (x402_domain_separator
 // / x402_digest / sign_x402 / encode_settle / settle_x402_sponsored) and
@@ -47,6 +51,14 @@ export const config = { runtime: 'edge' };
 
 const TEMPO_RPC = 'https://rpc.moderato.tempo.xyz';
 const REGISTRY = '0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c';
+// $LH token (LocalharnessCredits, TIP-20). `X402Facet.settle` moves $LH
+// payer->payee via `transferFrom`, so the payer needs BOTH a balance and an
+// allowance to the diamond. Under settle-on-success the model runs before the
+// money moves, so both are pre-flighted (free eth_calls) BEFORE any model
+// spend — without that, a $LH-less payer with a validly signed authorization
+// would farm free answers (every settle would fail into the serve-anyway
+// policy). Mirrors `registry::LH_TOKEN_ADDRESS`.
+const LH_TOKEN = '0x90B84c7234Aae89BadA7f69160B9901B9bc37B17';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
 const CHAIN_ID = 42431;
 // The non-streaming model used to answer `ask_agent`. Mirrors the headless
@@ -556,6 +568,24 @@ async function authorizationState(from: string, nonce: string): Promise<boolean>
   return BigInt(res) !== 0n;
 }
 
+/** `balanceOf(addr)` on the $LH token (TIP-20 exposes the ERC-20 read surface). */
+async function lhBalanceOf(addr: string): Promise<bigint> {
+  const data =
+    '0x' + selectorHex('balanceOf(address)') + bytesToHex(addrWord(addr));
+  return BigInt(await ethCall(LH_TOKEN, data));
+}
+
+/** `allowance(payer, diamond)` on the $LH token — `settle` pulls the payer's
+ * $LH via `transferFrom`, so the diamond must be approved for >= value. */
+async function lhAllowanceToDiamond(payer: string): Promise<bigint> {
+  const data =
+    '0x' +
+    selectorHex('allowance(address,address)') +
+    bytesToHex(addrWord(payer)) +
+    bytesToHex(addrWord(REGISTRY));
+  return BigInt(await ethCall(LH_TOKEN, data));
+}
+
 /**
  * Submit `X402Facet.settle(...)` and AWAIT the receipt. Signed by the proxy's
  * settlement account (env `PROXY_METER_KEY`, the same write key gemini.ts uses
@@ -611,9 +641,10 @@ async function settleOnChain(a: X402Auth): Promise<`0x${string}`> {
   let status: 'success' | 'reverted';
   try {
     // 12s (matches gemini.ts::meterDebit / scheduler.ts::recordRun) — NOT 30s:
-    // ask_agent still has to run the model AFTER this, and a 30s wait alone
-    // could blow Edge's ~25s wall clock. Keep the wait bounded and resolve any
-    // ambiguity against the chain below instead of waiting longer.
+    // under settle-on-success the model call has ALREADY consumed part of
+    // Edge's ~25s wall clock before we get here, so the receipt wait must
+    // stay tightly bounded. Resolve any ambiguity against the chain below
+    // instead of waiting longer.
     ({ status } = await pub.waitForTransactionReceipt({
       hash,
       timeout: 12_000,
@@ -622,14 +653,13 @@ async function settleOnChain(a: X402Auth): Promise<`0x${string}`> {
   } catch {
     // Ambiguous: the settle was SUBMITTED but no receipt arrived in time (slow
     // RPC / Edge clock). The payer's $LH may ALREADY have moved and the
-    // one-shot nonce burned — propagating a generic error here made
-    // handleAskAgent 502 a PAID call, after which a same-auth retry 402'd
-    // ("replayed nonce") and a fresh-nonce retry DOUBLE-PAID. Disambiguate
+    // one-shot nonce burned — a generic error here would hide that, and a
+    // fresh-nonce retry would DOUBLE-PAY if this tx lands. Disambiguate
     // against the chain itself: `authorizationState` flips true the moment
     // `settle` consumes the nonce, so one poll tells us whether it landed.
     try {
       if (await authorizationState(a.from, a.nonce)) {
-        return hash; // payment landed — receipt was just slow; run the agent.
+        return hash; // payment landed — the receipt was just slow.
       }
     } catch {
       // the state read failed too — stay ambiguous and report it as such.
@@ -642,7 +672,9 @@ async function settleOnChain(a: X402Auth): Promise<`0x${string}`> {
   return hash;
 }
 
-/** Thrown when settlement definitively fails on-chain (maps to JSON-RPC 402). */
+/** Thrown when settlement definitively fails on-chain. Under settle-on-success
+ * this fires AFTER the answer was produced, so it maps to the serve-anyway
+ * policy (handleAskAgent step 10(b)), not a 402. */
 class SettlementError extends Error {}
 
 /**
@@ -1194,29 +1226,65 @@ async function handleAskAgent(
     // ignore — settle will revert AuthAlreadyUsed if so.
   }
 
-  // 8. SETTLE on-chain BEFORE running the agent. Await the receipt.
-  let txHash: string;
+  // 8. Funds pre-flight (read-only, still BEFORE any model spend). Under
+  //    settle-on-success the model runs before money moves, so a payer with
+  //    no $LH balance — or no `approve(diamond, …)` allowance, since `settle`
+  //    pulls via `transferFrom` — must be rejected HERE, or every such call
+  //    would land in the serve-anyway branch below (free answers forever).
+  //    Best-effort: a flaky eth_call must not block a funded caller; settle
+  //    stays authoritative, and a balance drained between this check and the
+  //    settle is the step-10(b) race — bounded to one model call's cost.
   try {
-    txHash = await settleOnChain(auth);
-  } catch (e) {
-    if (e instanceof SettlementError) {
-      return rpcError(id, -32002, 'x402 settlement failed: ' + e.message, 402);
+    const [balance, allowance] = await Promise.all([
+      lhBalanceOf(auth.from),
+      lhAllowanceToDiamond(auth.from),
+    ]);
+    if (balance < auth.value) {
+      return rpcError(
+        id,
+        -32002,
+        `insufficient $LH: payer holds ${balance} wei, authorization is ${auth.value} wei — payment NOT taken`,
+        402,
+      );
     }
-    if (e instanceof SettlementUnconfirmedError) {
-      // DISTINCT from both the definitive 402 above and the generic 502 below:
-      // the settle tx exists and may still land. Message + data carry the tx
-      // hash so the client knows NOT to re-sign a fresh nonce blindly
-      // (double-pay if this one settles) and can retry the SAME authorization
-      // once the chain catches up.
-      return rpcError(id, -32002, e.message, 502, {
-        txHash: e.txHash,
-        settlement: 'unconfirmed',
-      });
+    if (allowance < auth.value) {
+      return rpcError(
+        id,
+        -32002,
+        `insufficient $LH allowance: payer approved ${allowance} wei to the diamond, authorization is ${auth.value} wei — approve(${REGISTRY}, value) first; payment NOT taken`,
+        402,
+      );
     }
-    return rpcError(id, -32603, 'x402 settlement error: ' + (e as Error).message, 502);
+  } catch {
+    // reads failed — proceed; `settle` remains the authoritative gate.
   }
 
-  // 8. Paid — now run the agent under its persona.
+  // 9. Run the agent FIRST — SETTLE-ON-SUCCESS (issue #25; the old order
+  //    settled before the model, so a timeout/500 permanently charged the
+  //    payer for nothing).
+  //
+  //    Ordering invariants — the contract of this handler:
+  //    * Everything ABOVE this line is reject-fast and irreversibly spends
+  //      NOTHING: signature, payee binding, price floor, validity window,
+  //      replay, funds — all checked before a single model token streams.
+  //    * (a) A model failure NEVER settles. The authorization is single-use
+  //      (its one-shot nonce only burns inside `settle`) and time-bounded
+  //      (`validBefore`), so an unsettled authorization expires HARMLESSLY on
+  //      its own — the payer may even retry the SAME authorization. The error
+  //      body states "payment NOT taken" explicitly.
+  //    * (b) If `settle` fails AFTER a successful model call, the answer was
+  //      produced but unpaid. Policy (testnet): SERVE THE ANSWER ANYWAY and
+  //      log loudly — the model cost becomes the platform's loss, never the
+  //      user's. This also covers an authorization that expires DURING a slow
+  //      model call, and the parallel-replay duplication (one auth POSTed N
+  //      times concurrently: one settle wins, the rest fall here) — exposure
+  //      is bounded to model-inference cost per replay, narrowed by the
+  //      step-7 replay pre-check and the step-8 funds pre-flight; accepted
+  //      on testnet.
+  //    * (c) Meter debit ordering: this route NEVER touches CreditMeterFacet —
+  //      the x402 settle IS the payment for ask_agent. The caller-meter debit
+  //      lives on gemini.ts's session/meter route, whose ordering is
+  //      unchanged by this fix.
   let persona: string;
   try {
     persona = (await personaOf(tokenId)) ?? defaultPersona(name);
@@ -1227,17 +1295,65 @@ async function handleAskAgent(
   try {
     answer = await runAgent(persona, message);
   } catch (e) {
-    // Payment already settled; surface the failure but the call is non-refundable
-    // (the agent was paid for the attempt). Report as a tool error, not a 402.
+    // Invariant (a): no answer, no payment. The nonce is still unused.
     return {
       body: rpcResult(id, {
         content: [
           {
             type: 'text',
-            text: `payment settled (tx ${txHash}) but the agent failed to respond: ${(e as Error).message}`,
+            text:
+              `the agent failed to respond: ${(e as Error).message} — ` +
+              `payment NOT taken: your x402 authorization was not settled ` +
+              `(its one-shot nonce is unused and it expires on its own at ` +
+              `validBefore). You may retry with the SAME authorization.`,
           },
         ],
         isError: true,
+        _meta: { settlement: 'not-attempted' },
+      }),
+      httpStatus: 200,
+    };
+  }
+
+  // 10. Answer in hand — settle NOW. Await the receipt.
+  let txHash: string;
+  try {
+    txHash = await settleOnChain(auth);
+  } catch (e) {
+    if (e instanceof SettlementUnconfirmedError) {
+      // The settle tx exists and MAY still land (receipt slow, nonce not yet
+      // visibly consumed). Serve the answer; surface the hash + state so the
+      // payer does NOT re-sign a fresh nonce (double-pay if this one settles).
+      console.error(
+        `x402 settle UNCONFIRMED after successful answer (tx ${e.txHash}) — payer ${auth.from} -> ${auth.to}, ${auth.value} wei`,
+      );
+      return {
+        body: rpcResult(id, {
+          content: [{ type: 'text', text: answer }],
+          _meta: {
+            settlement: 'unconfirmed',
+            x402SettlementTx: e.txHash,
+            paidTo: payee,
+            value: auth.value.toString(),
+          },
+        }),
+        httpStatus: 200,
+      };
+    }
+    // Invariant (b): definitive settle failure (revert / submission error)
+    // after a successful model call. Serve the answer anyway — platform eats
+    // the model cost — and log LOUDLY so the operator sees revenue leakage.
+    console.error(
+      `x402 settle FAILED after successful answer — serving unpaid (platform loss). payer ${auth.from} -> ${auth.to}, ${auth.value} wei: ${(e as Error).message}`,
+    );
+    return {
+      body: rpcResult(id, {
+        content: [{ type: 'text', text: answer }],
+        _meta: {
+          settlement: 'failed',
+          paidTo: payee,
+          value: auth.value.toString(),
+        },
       }),
       httpStatus: 200,
     };
@@ -1246,7 +1362,12 @@ async function handleAskAgent(
   return {
     body: rpcResult(id, {
       content: [{ type: 'text', text: answer }],
-      _meta: { x402SettlementTx: txHash, paidTo: payee, value: auth.value.toString() },
+      _meta: {
+        settlement: 'settled',
+        x402SettlementTx: txHash,
+        paidTo: payee,
+        value: auth.value.toString(),
+      },
     }),
     httpStatus: 200,
   };

@@ -405,6 +405,7 @@ semantics live in `contracts/README.md`** — this list is one line each.
 - **X402Facet** — x402 EIP-712 "exact" settlement in $LH (agent-to-agent).
   `settle(...)` (EOA ecrecover + EIP-1271, one-shot nonce) moves payer→payee;
   `x402DomainSeparator()` read live (binds chainId+diamond → the reset changed it).
+  Proxy ask_agent + CLI `--pay` settle only AFTER a successful reply (issue #25).
 - **DeviceRegistryFacet** — enumerable linked-device index in ONE call:
   `linkDevice / unlinkDevice / devicesOf / isDeviceLinked` (replaces log scraping;
   Tempo RPC caps at 100k blocks).
