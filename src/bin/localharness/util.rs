@@ -119,6 +119,61 @@ pub(crate) fn load_signer_and_sponsor(
     Ok((load_signer(caller)?, load_sponsor()?))
 }
 
+/// Ensure the caller's WALLET holds at least `needed_wei` `$LH` before a
+/// `transferFrom`-pulling write (x402 `settle`, or any escrow: bounty post /
+/// invite create / schedule / goal / guild fund). When the wallet is short,
+/// the AUTO-BRIDGE pulls the shortfall back out of the caller's unspent
+/// chat-meter credits via a sponsored `withdrawCredits` (the meter and the
+/// wallet are one balance in practice — on-chain feedback #63). Prints its
+/// own messages; `Err` carries the process exit code. A balance-read failure
+/// only falls through — the on-chain pull is the authoritative gate.
+pub(crate) async fn ensure_wallet_covers(
+    signer: &k256::ecdsa::SigningKey,
+    from_hex: &str,
+    needed_wei: u128,
+) -> Result<(), i32> {
+    let Ok(wallet_wei) = registry::token_balance_of(from_hex).await else {
+        return Ok(());
+    };
+    if wallet_wei >= needed_wei {
+        return Ok(());
+    }
+    let shortfall = needed_wei - wallet_wei;
+    let meter_wei = registry::credit_balance_of(from_hex).await.unwrap_or(0);
+    if meter_wei < shortfall {
+        eprintln!(
+            "this needs {} but your wallet holds {} and your chat meter {} — \
+             fund up with `localharness redeem <code>` or a $LH transfer first",
+            fmt_lh(needed_wei),
+            fmt_lh(wallet_wei),
+            fmt_lh(meter_wei),
+        );
+        return Err(1);
+    }
+    println!(
+        "wallet is short {} — pulling it from your unspent chat credits …",
+        fmt_lh(shortfall)
+    );
+    let sponsor = load_sponsor()?;
+    match registry::withdraw_credits_sponsored(
+        signer,
+        &sponsor,
+        shortfall,
+        registry::ALPHA_USD_ADDRESS,
+    )
+    .await
+    {
+        Ok(tx) => {
+            println!("  withdrawn (tx {tx})");
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("could not withdraw credits automatically: {e}");
+            Err(1)
+        }
+    }
+}
+
 /// Resolve the caller's OWN registered tokenId — the `claimantTokenId` that earns
 /// a bounty reward. Resolution order (each a `name.localharness.xyz` NFT the
 /// caller controls):

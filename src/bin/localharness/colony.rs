@@ -644,6 +644,9 @@ async fn colony_step_post(
     ttl_secs: u64,
 ) -> Result<u64, i32> {
     println!("[1/8] POST  — escrowing {} behind the task …", fmt_lh(reward_wei));
+    // The escrow pulls the reward from the WALLET pot — auto-bridge any
+    // shortfall out of the chat meter first (on-chain feedback #63).
+    ensure_wallet_covers(caller_signer, caller_addr, reward_wei).await?;
     let post_tx = match registry::post_bounty_sponsored(
         caller_signer,
         sponsor,

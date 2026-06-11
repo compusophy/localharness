@@ -218,6 +218,12 @@ async fn submit_job(caller_name: Option<&str>, parsed: ParsedSchedule, goal_mode
         Ok(pair) => pair,
         Err(code) => return code,
     };
+    // The escrow pulls the budget from the WALLET pot — auto-bridge any
+    // shortfall out of the chat meter first (on-chain feedback #63).
+    let from_hex = bytes_to_hex_str(&wallet::address(&signer));
+    if let Err(code) = ensure_wallet_covers(&signer, &from_hex, budget_wei).await {
+        return code;
+    }
 
     // Resolve the target agent's tokenId (the facet rejects an unregistered
     // target with `UnregisteredTarget`, so fail early with a clear message).
