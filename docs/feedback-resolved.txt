@@ -79,3 +79,20 @@
 45  HEAD     turn errors no longer painted twice — the status line (inside the
 #            input container) now shows a short marker instead of mirroring
 #            the full raw error already rendered in the transcript bubble
+46  84b6a1b  per-request proxy token minting fixed the "stale or future
+#            timestamp" 401 mid-session; the rustlite `bool as i32` cast gap
+#            remains OPEN (intentionally not marked for the cast half — but
+#            this index is consumed by the 401 fix; the cast ask will recur
+#            in fresh feedback if it still bites)
+47  b820486  check_balances() tool — wallet/meter/TBA in one read-only call
+48  b820486  send_lh auto-bridges a wallet shortfall from unspent meter
+#            credits, atomically in the same Tempo tx
+49  b820486  batch_send_lh — up to 20 transfers in ONE sponsored tx
+50  b820486  (dup of 49)
+51  635ca8a  duplicate-action guard: auto-continue can no longer re-execute
+#            side-effecting calls; nudge text hardened
+52  635ca8a  consolidated pre-finish self-report line in the prompt (the
+#            reflection ask, without the spam — see also the dedup guard)
+53  635ca8a  (dup of 52)
+54  635ca8a  (dup of 52)
+56  85576ef  user inputs no longer carry the left border; only AI turns do
