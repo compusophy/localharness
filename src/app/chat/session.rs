@@ -27,7 +27,7 @@ use super::tools::guild::{
 };
 use super::tools::misc::{
     clear_context_tool, compact_context_tool, notify_tool, record_lesson_tool,
-    set_persona_tool, spawn_recursive_subagent_tool, submit_feedback_tool,
+    set_persona_tool, spawn_recursive_subagent_tool, submit_feedback_tool, web_fetch_tool,
 };
 use super::tools::platform::{
     batch_create_subdomains_tool, bulk_release_subdomains_tool, create_and_publish_app_tool,
@@ -234,6 +234,7 @@ pub(crate) async fn start_session(
             .with_tool(notify_tool())
             .with_tool(record_lesson_tool())
             .with_tool(crate::app::self_docs::read_self_docs_tool())
+            .with_tool(web_fetch_tool())
             .with_tool(clear_context_tool())
             .with_tool(compact_context_tool())
             .with_tool(spawn_recursive_subagent_tool(captured_key, base_url.clone()));
@@ -312,6 +313,7 @@ pub(crate) async fn start_session(
             .with_tool(notify_tool())
             .with_tool(record_lesson_tool())
             .with_tool(crate::app::self_docs::read_self_docs_tool())
+            .with_tool(web_fetch_tool())
             .with_tool(clear_context_tool())
             .with_tool(compact_context_tool())
             .with_tool(spawn_recursive_subagent_tool(captured_key, base_url.clone()));
