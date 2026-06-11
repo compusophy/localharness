@@ -64,6 +64,7 @@ enum Action {
     CancelImport,
     HeaderAdminToggle,
     HeaderAdminClose,
+    HeaderFeedback,
     ShowAdminTab(String),
     RevealSecurity,
     HideSecurity,
@@ -186,6 +187,7 @@ impl Action {
             "cancel-import" => Action::CancelImport,
             "header-admin-toggle" => Action::HeaderAdminToggle,
             "header-admin-close" => Action::HeaderAdminClose,
+            "header-feedback" => Action::HeaderFeedback,
             "show-admin-tab" => Action::ShowAdminTab(arg.unwrap_or_default()),
             "reveal-security" => Action::RevealSecurity,
             "hide-security" => Action::HideSecurity,
@@ -822,6 +824,7 @@ fn dispatch(action: Action) {
         }
         Action::HeaderAdminToggle => admin::header_admin_toggle(),
         Action::HeaderAdminClose => admin::header_admin_close(),
+        Action::HeaderFeedback => admin::header_feedback_open(),
         Action::ShowAdminTab(name) => admin::show_admin_tab(&name),
         Action::RevealSecurity => {
             dom::swap_outer(

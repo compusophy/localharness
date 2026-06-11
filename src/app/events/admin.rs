@@ -561,6 +561,16 @@ pub(super) fn header_admin_close() {
     );
 }
 
+/// Header insect-glyph button (issue #15): open the admin modal
+/// pre-switched to its feedback tab — one click from the header to the
+/// report box. Reuses `header_admin_toggle` (full dropdown render +
+/// async refreshes) then flips the tab class, so the feedback submit
+/// path stays byte-identical to the admin-tab route.
+pub(super) fn header_feedback_open() {
+    header_admin_toggle();
+    show_admin_tab("feedback");
+}
+
 /// Switch the active admin tab by flipping the `tab-<name>` class on
 /// `#admin-dialog` (CSS shows the matching `.panel-<name>`), and sync the
 /// `.active` state on the tab buttons. Mirrors `show_mobile_tab`.
