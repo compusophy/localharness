@@ -268,6 +268,18 @@ const SCHEDULE_ABI = [
     ],
     outputs: [{ name: 'childJobId', type: 'uint256' }],
   },
+  // completeJob — SCHEDULER-ROLE-ONLY goal completion (the /goal ralph loop).
+  // When a run's agent calls its `finish_goal` tool, the worker relays it here:
+  // the job goes terminal and the FULL remaining escrow refunds to the owner.
+  // Called AFTER recordRun (so this run's calls are debited first; the refund
+  // is the post-debit remainder). Signature must match the facet EXACTLY.
+  {
+    name: 'completeJob',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'id', type: 'uint256' }],
+    outputs: [],
+  },
 ] as const;
 
 // metadata(uint256,bytes32) -> bytes — persona lookup (shared with mcp.ts).
@@ -449,6 +461,49 @@ function decodeUtf8Bytes(hex: `0x${string}`): string {
 // revert is fed back as a functionResponse error — never hangs. A schedule_task call
 // is budget/cap-gated exactly like a model call so an agent can't drain via spawning.
 
+// ---- /goal — the ralph-on-chain loop ----------------------------------------
+//
+// A job whose task begins with the exact marker `GOAL: ` is a GOAL LOOP (the
+// Ralph technique): the SAME goal prompt is re-fed every iteration, durable
+// progress lives in on-chain state (not the model's memory — there is none
+// across ticks), and the loop ends itself when the agent verifies the goal is
+// met and calls `finish_goal` — which the worker relays to the facet's
+// scheduler-only `completeJob(jobId)`, refunding the unspent escrow to the
+// owner. Until then, every fire is one bounded iteration: inspect state, take
+// the single most valuable next step, leave a progress note.
+
+const GOAL_PREFIX = 'GOAL: ';
+
+/** Render wei as a short decimal $LH string for prompt text (2dp, floor). */
+function weiToLhText(wei: bigint): string {
+  const hundredths = wei / 10_000_000_000_000_000n; // 1e16 = 0.01 $LH
+  return `${hundredths / 100n}.${(hundredths % 100n).toString().padStart(2, '0')}`;
+}
+
+/**
+ * Wrap a persona with the ralph-style goal-loop frame. `runsLeft` includes the
+ * current run; `budgetWei` is the job's remaining escrow (both straight off the
+ * just-read Job record — the iteration COUNT isn't stored on-chain, so the
+ * frame speaks in remaining-runs/budget terms rather than "iteration N of M").
+ */
+function goalSystemPrompt(persona: string, runsLeft: number, budgetWei: bigint): string {
+  return (
+    persona +
+    '\n\n--- RECURRING GOAL LOOP ---\n' +
+    'You are one iteration of a recurring goal loop: the SAME goal below is re-fed ' +
+    'to you every run, and you remember NOTHING between runs — all durable progress ' +
+    'lives in on-chain state. Runs remaining (including this one): ' +
+    `${runsLeft}. Budget remaining: ~${weiToLhText(budgetWei)} $LH; when either runs out the loop ends unfinished.\n` +
+    'This iteration: (1) INSPECT the current on-chain state relevant to the goal ' +
+    'using your tools; (2) take the SINGLE most valuable next step toward the goal; ' +
+    '(3) if and ONLY if you can verify against that state that the goal is fully ' +
+    'complete, call finish_goal with a final report — that permanently ends the loop ' +
+    'and refunds the remaining budget to your owner. Otherwise end your turn with a ' +
+    'brief progress note (what you did, what is left); the loop will fire again on ' +
+    'the next interval.'
+  );
+}
+
 function defaultPersona(name: string): string {
   return (
     `You are ${name}, an autonomous agent on the localharness platform ` +
@@ -477,11 +532,14 @@ interface GeminiContent {
 }
 
 // The tools the scheduled agent gets. Single-`type` schemas with no union /
-// additionalProperties (Gemini 400s on those — see CLAUDE.md gotcha). TWO tools:
+// additionalProperties (Gemini 400s on those — see CLAUDE.md gotcha). THREE tools:
 //   * call_agent      — consult/delegate to another agent THIS run (in-tick).
 //   * schedule_task   — spawn a FOLLOW-UP scheduled job funded from THIS job's
 //                       remaining budget (cross-tick recursion via
 //                       scheduleChildJob). The facet enforces budget draw + depth.
+//   * finish_goal     — declare the job's GOAL verifiably complete: ends the
+//                       recurring job on-chain (completeJob) and refunds the
+//                       remaining escrow to the owner. The /goal ralph-loop exit.
 const AGENT_TOOLS = {
   functionDeclarations: [
     {
@@ -542,6 +600,22 @@ const AGENT_TOOLS = {
         required: ['target', 'task', 'interval_seconds', 'budget_lh', 'runs'],
       },
     },
+    {
+      name: 'finish_goal',
+      description:
+        'Declare this scheduled job\'s GOAL complete. This permanently ENDS the recurring job on-chain and refunds its remaining $LH budget to the owner — there are no more iterations after this. Call it ONLY when you have verified, against current on-chain state, that the goal is fully achieved. Pass a final report summarizing the outcome and the evidence.',
+      parameters: {
+        type: 'object',
+        properties: {
+          report: {
+            type: 'string',
+            description:
+              'The final outcome summary: what was achieved, and the evidence (on-chain state) that proves the goal is complete.',
+          },
+        },
+        required: ['report'],
+      },
+    },
   ],
 } as const;
 
@@ -588,13 +662,14 @@ function partsText(parts: GeminiPart[]): string {
 }
 
 /** First functionCall part addressed to a known tool (call_agent /
- * schedule_task), if any. */
+ * schedule_task / finish_goal), if any. */
 function findToolCall(parts: GeminiPart[]): GeminiFunctionCall | null {
   for (const p of parts) {
     if (
       p.functionCall &&
       (p.functionCall.name === 'call_agent' ||
-        p.functionCall.name === 'schedule_task')
+        p.functionCall.name === 'schedule_task' ||
+        p.functionCall.name === 'finish_goal')
     ) {
       return p.functionCall;
     }
@@ -699,6 +774,10 @@ interface PingPongResult {
   /** True if the loop stopped because a per-TICK cap (global/per-owner) blocked
    * the next call (the job spills to the next tick). */
   tickCapped: boolean;
+  /** Set when the agent called `finish_goal`: its final report. The caller
+   * relays this to the facet's `completeJob` (after recordRun debits this
+   * run's calls) — the job ends + the remainder refunds to the owner. */
+  goalReport?: string;
 }
 
 /**
@@ -777,6 +856,25 @@ async function runPingPong(
         rounds: round + 1,
         budgetCapped,
         tickCapped,
+      };
+    }
+
+    // GOAL COMPLETE (finish_goal). Not metered — it's not a model call, and the
+    // on-chain completeJob (relayed by the caller AFTER recordRun settles this
+    // run's debit) only REFUNDS escrow, never spends it. The report is the
+    // run's final output; the loop stops HERE.
+    if (call.name === 'finish_goal') {
+      const report =
+        typeof call.args?.report === 'string' ? (call.args.report as string).trim() : '';
+      const output =
+        report || partsText(parts) || lastText || '(goal declared complete with no report)';
+      return {
+        output,
+        calls,
+        rounds: round + 1,
+        budgetCapped,
+        tickCapped,
+        goalReport: output,
       };
     }
 
@@ -1049,6 +1147,55 @@ async function scheduleChildJob(
   return result as bigint;
 }
 
+/**
+ * completeJob — the /goal exit write (scheduler-role, same plumbing as
+ * recordRun). Marks the job terminal + refunds the FULL remaining escrow to
+ * the owner. Called AFTER recordRun has settled this run's debit, so the
+ * refund is the post-debit remainder and the run's model calls are paid for.
+ *
+ * A revert is BENIGN-adjacent: if recordRun's debit just exhausted the job
+ * (budget drained on this very run), the facet already refunded via the
+ * exhaust path and completeJob reverts JobNotActive — the goal outcome is the
+ * same (job over, owner refunded), so we log + report 'failed' without
+ * throwing. Returns 'completed' on a confirmed success.
+ */
+async function completeJob(id: bigint): Promise<'completed' | 'failed'> {
+  const wallet = schedulerWallet();
+  let hash: `0x${string}`;
+  try {
+    hash = await wallet.writeContract({
+      address: REGISTRY as `0x${string}`,
+      abi: SCHEDULE_ABI,
+      functionName: 'completeJob',
+      args: [id],
+      account: wallet.account!,
+      chain: TEMPO_CHAIN,
+    });
+  } catch (e) {
+    console.warn(`[scheduler] completeJob(${id}) reverted on submit: ${(e as Error).message}`);
+    return 'failed';
+  }
+  try {
+    const { status } = await publicClient().waitForTransactionReceipt({
+      hash,
+      timeout: 12_000,
+      pollingInterval: 500,
+    });
+    if (status === 'reverted') {
+      console.warn(`[scheduler] completeJob(${id}) reverted on-chain (tx ${hash})`);
+      return 'failed';
+    }
+  } catch {
+    // Submitted but unconfirmed. completeJob is idempotent-safe (a replay on a
+    // terminal job reverts, never double-refunds); if it lands the job is done,
+    // if not the goal loop fires once more and the agent re-finishes. Report
+    // failed so the log reflects the unconfirmed state.
+    console.warn(`[scheduler] completeJob(${id}) submitted (tx ${hash}) but receipt wait timed out`);
+    return 'failed';
+  }
+  return 'completed';
+}
+
 // ---- one job ----------------------------------------------------------------
 
 interface JobResult {
@@ -1059,6 +1206,10 @@ interface JobResult {
   calls?: number;
   /** $LH wei actually debited (calls * COST_WEI, capped to budget). */
   spentWei?: string;
+  /** /goal: the agent called finish_goal. 'completed' = completeJob confirmed
+   * on-chain (job over, remainder refunded); 'complete-failed' = the relay
+   * didn't confirm (the loop fires again and the agent can re-finish). */
+  goal?: 'completed' | 'complete-failed';
   note?: string;
 }
 
@@ -1154,16 +1305,29 @@ async function processJob(id: bigint, tb: TickBudget): Promise<JobResult> {
   // ran and committed nothing — we charge ONE call below and must ALSO commit that
   // one call to the ledger ourselves so on-chain + ledger stay in lockstep.
   let ranLoop = false;
+  // /goal: set when the agent called finish_goal — its final report. Relayed
+  // to the facet's completeJob AFTER recordRun settles this run's debit.
+  let goalReport: string | undefined;
   try {
-    const persona = (await personaOf(job.targetId)) ?? defaultPersona(name);
+    const basePersona = (await personaOf(job.targetId)) ?? defaultPersona(name);
     const rawTask = (await taskOf(id)).trim();
+    // The exact `GOAL: ` marker flags a ralph goal loop: wrap the persona with
+    // the goal-loop frame (inspect state → one step → finish_goal only when
+    // verifiably done) and feed the goal text as the task each iteration.
+    const isGoal = rawTask.startsWith(GOAL_PREFIX);
+    const persona = isGoal
+      ? goalSystemPrompt(basePersona, job.runsLeft, job.budgetWei)
+      : basePersona;
     // An empty task = "run under the persona's standing instruction" (sentinel).
-    const task = rawTask || 'Perform your scheduled task and report concisely.';
+    const task = isGoal
+      ? `THE GOAL:\n${rawTask.slice(GOAL_PREFIX.length).trim()}`
+      : rawTask || 'Perform your scheduled task and report concisely.';
     ranLoop = true;
     const result = await runPingPong(persona, task, maxCalls, id, job.owner, tb);
     calls = result.calls;
     budgetCapped = result.budgetCapped;
     tickCapped = result.tickCapped;
+    goalReport = result.goalReport;
     runNote = result.output;
     // MVP output sink = the Vercel log. The reply is recorded here so a scheduled
     // run is observable in the function logs.
@@ -1205,20 +1369,38 @@ async function processJob(id: bigint, tb: TickBudget): Promise<JobResult> {
   if (spentWei > job.budgetWei) spentWei = job.budgetWei;
 
   const outcome = await recordRun(id, expectedNextRun, spentWei);
+
+  // /goal: the agent declared the goal complete — relay finish_goal to the
+  // facet's completeJob. Ordering matters: recordRun FIRST (debit this run's
+  // calls), completeJob SECOND (refund the post-debit remainder). If that very
+  // debit exhausted the job, the facet already refunded via the exhaust path
+  // and completeJob reports 'failed' on the JobNotActive revert — same outcome
+  // for the owner (job over, remainder refunded), logged either way.
+  let goal: 'completed' | 'complete-failed' | undefined;
+  if (goalReport !== undefined) {
+    goal = (await completeJob(id)) === 'completed' ? 'completed' : 'complete-failed';
+    console.log(
+      `[scheduler] job ${idStr} GOAL ${goal === 'completed' ? 'COMPLETE (job ended, remainder refunded)' : 'finish relay unconfirmed'} — report: ${goalReport.slice(0, 800)}`,
+    );
+  }
+
   return {
     id: idStr,
     outcome,
     ran,
     calls,
     spentWei: spentWei.toString(),
+    goal,
     note:
       ran === 'error'
         ? runNote.slice(0, 200)
-        : tickCapped
-          ? 'tick-capped mid-run (remaining work spills to next tick)'
-          : budgetCapped
-            ? 'budget-capped mid-run'
-            : undefined,
+        : goal
+          ? runNote.slice(0, 200)
+          : tickCapped
+            ? 'tick-capped mid-run (remaining work spills to next tick)'
+            : budgetCapped
+              ? 'budget-capped mid-run'
+              : undefined,
   };
 }
 
@@ -1327,6 +1509,8 @@ export default async function handler(req: Request): Promise<Response> {
   // SPILLED = blocked by a per-tick cap (#1); re-fires next tick (NOT dropped).
   const spilled = results.filter((r) => r.outcome === 'spilled').length;
   const errored = results.filter((r) => r.ran === 'error').length;
+  // /goal jobs that ended themselves this tick (finish_goal → completeJob).
+  const goalsCompleted = results.filter((r) => r.goal === 'completed').length;
   // Total generateContent calls across the tick (agent + sub-agent turns) — the
   // metered unit; lets a dogfood POST see the ping-pong fan-out at a glance.
   const totalCalls = results.reduce((acc, r) => acc + (r.calls ?? 0), 0);
@@ -1338,6 +1522,7 @@ export default async function handler(req: Request): Promise<Response> {
     skipped,
     spilled,
     errored,
+    goalsCompleted,
     totalCalls,
     // Real $LH the worker committed to spend this tick (the per-tick cap unit).
     tickSpentWei: tickBudget.global.toString(),
@@ -1347,7 +1532,7 @@ export default async function handler(req: Request): Promise<Response> {
     jobs: results,
   };
   console.log(
-    `[scheduler] tick: scanned=${scanned} recorded=${recorded} stale=${stale} skipped=${skipped} spilled=${spilled} errored=${errored} calls=${totalCalls} spentWei=${tickBudget.global} in ${summary.durationMs}ms`,
+    `[scheduler] tick: scanned=${scanned} recorded=${recorded} stale=${stale} skipped=${skipped} spilled=${spilled} errored=${errored} goalsCompleted=${goalsCompleted} calls=${totalCalls} spentWei=${tickBudget.global} in ${summary.durationMs}ms`,
   );
   return new Response(JSON.stringify(summary), {
     status: 200,
