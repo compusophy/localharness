@@ -99,6 +99,9 @@ src/app/ (browser IDE):
   display.rs(framebuffer: runs wasm cartridges off-main-thread in a Web Worker +
     rasterizes HTML; main-thread WATCHDOG kills hung workers — the brick fix)
   gas.rs(set_metadata_gas — THE sponsored-setMetadata formula, one home)
+  notifications.rs(notify tool + Web Push subscribe; sub published under
+    keccak256("localharness.push_sub") for the scheduler's tab-closed pushes;
+    PWA shell = web/manifest.webmanifest + web/sw.js, NO-cache by design)
   signer_protocol.rs(lh-* postMessage consts + challenge preimage, used by BOTH
     signer.rs and verify.rs — never re-fork it)
   key_store.rs owner.rs(.lh_owner on-chain-derived hint) tenant.rs(host
