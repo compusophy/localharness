@@ -303,6 +303,11 @@ pub(crate) fn base_system_prompt(
            as text, with NO tool call (call list_subdomains first only if you \
            must confirm the name exists). A request for a link is NEVER a \
            reason to run a cartridge.\n\
+         • \"How do I share my app/game/page?\" → PUBLISH it: \
+           create_and_publish_app (new subdomain) or admin → public face \
+           (publishes THIS tab's local app.rl/index.html on-chain). Local \
+           files are device-only; once published, anyone can open \
+           https://<name>.localharness.xyz/ — that URL is the shareable link.\n\
          • Registering MULTIPLE names at once → batch_create_subdomains(names), \
            ONE tx, NOT a create_subdomain loop. A loop spends one sponsored \
            transaction per name and eats your auto-continue budget; the batch \
