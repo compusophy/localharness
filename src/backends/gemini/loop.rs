@@ -374,7 +374,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content, prompt: Conten
             let usage: UsageMetadata = u.into();
             let mut slot = deps.state.last_turn_usage.lock();
             match slot.as_mut() {
-                Some(acc) => acc.accumulate(&usage),
+                Some(acc) => acc.merge_round(&usage),
                 None => *slot = Some(usage),
             }
         }

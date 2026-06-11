@@ -112,7 +112,7 @@ pub(crate) fn rendered_markdown(raw: &str) -> Markup {
 /// button uses a fixed min-width via `.header-button`; the icon button
 /// opts out (`.feedback-button`) so it stays square-ish instead of 96px
 /// wide.
-pub(crate) fn site_header(_host: &Host, files: bool) -> Markup {
+pub(crate) fn site_header(_host: &Host) -> Markup {
     html! {
         header.site-header {
             div.header-inner {
@@ -128,16 +128,9 @@ pub(crate) fn site_header(_host: &Host, files: bool) -> Markup {
                         }
                     }
                 }
-                @if files {
-                    button type="button"
-                        data-action="toggle-files"
-                        .header-button { "files" }
-                }
-                button type="button"
-                    data-action="header-feedback"
-                    aria-label="report a bug"
-                    title="report a bug"
-                    .header-button.feedback-button { (bug_glyph()) }
+                // Header carries ONLY brand + admin (feedback #71: the
+                // files + bug buttons cluttered the chrome). Files opens
+                // from the admin panel; feedback stays an admin tab.
                 div #header-admin .header-admin {
                     button type="button"
                         data-action="header-admin-toggle"
@@ -145,31 +138,6 @@ pub(crate) fn site_header(_host: &Host, files: bool) -> Markup {
                     div #header-admin-panel hidden {}
                 }
             }
-        }
-    }
-}
-
-/// Monochrome insect glyph for the header bug-report button — inline SVG
-/// (~14px, `currentColor` strokes) so it inherits the button's muted/fg
-/// hover palette. An SVG, not an emoji: emoji render colored, which the
-/// monochrome chrome bans. Marked `aria-hidden` — the button's own
-/// `aria-label` carries the accessible name.
-fn bug_glyph() -> Markup {
-    html! {
-        svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-            stroke="currentColor" stroke-width="2" stroke-linecap="round"
-            stroke-linejoin="round" aria-hidden="true" {
-            path d="m8 2 1.88 1.88" {}
-            path d="M14.12 3.88 16 2" {}
-            path d="M9 7.13v-1a3.003 3.003 0 1 1 6 0v1" {}
-            path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6" {}
-            path d="M12 20v-9" {}
-            path d="M6.53 9C4.6 8.8 3 7.1 3 5" {}
-            path d="M6 13H2" {}
-            path d="M3 21c0-2.1 1.7-3.9 3.8-4" {}
-            path d="M20.97 5c0 2.1-1.6 3.8-3.5 4" {}
-            path d="M22 13h-4" {}
-            path d="M17.2 17c2.1.1 3.8 1.9 3.8 4" {}
         }
     }
 }
@@ -386,7 +354,7 @@ pub(crate) fn embed_card(
 /// `paint_explore`; this renders the header + a loading placeholder.
 pub(crate) fn explore_chrome(host: &Host) -> Markup {
     html! {
-        (site_header(host, false))
+        (site_header(host))
         main.explore-main {
             div.explore-header {
                 h1.explore-title { "agents" }
@@ -439,7 +407,7 @@ pub(crate) fn explore_grid(agents: &[(u64, String)], personas: &[Option<String>]
 /// (admin-modal pattern: `swap_outer` by fixed id).
 pub(crate) fn chrome(host: &Host) -> Markup {
     html! {
-        (site_header(host, true))
+        (site_header(host))
         main #layout .layout {
             div.col-chat {
                 // Context-fullness indicator (feedback #59/#62): a 2px bar
@@ -833,7 +801,7 @@ fn display_card(thumb: Option<&str>) -> Markup {
 pub(crate) fn apex(host: &Host, wallet_address_hex: Option<&str>) -> Markup {
     let fresh = wallet_address_hex.is_none();
     html! {
-        (site_header(host, false))
+        (site_header(host))
         main.apex-main {
             div.col-chat {
                 @if fresh { (apex_hero()) }
@@ -1508,6 +1476,9 @@ pub(crate) fn admin_notify_section() -> Markup {
                 button type="button" data-action="install-app" .ghost {
                     "install app"
                 }
+                button type="button" data-action="toggle-files" .ghost {
+                    "files"
+                }
             }
             div #install-msg .admin-msg-slot {}
             div.admin-section-title { "notifications" }
@@ -1625,7 +1596,7 @@ pub(crate) fn adopt_panel(code: &str, url: &str) -> Markup {
 /// is stashed in a hidden input so the submit handler can read it.
 pub(crate) fn adopt_join(ct_hex: &str) -> Markup {
     html! {
-        (site_header(&Host::Apex, false))
+        (site_header(&Host::Apex))
         main.apex-main {
             div.col-chat {
                 section.step {
@@ -2015,7 +1986,7 @@ pub(crate) fn signer_chrome(address_hex: &str) -> Markup {
 /// names reuse the same wallet across the family of subdomains.
 pub(crate) fn unclaimed(host: &Host, name: &str) -> Markup {
     html! {
-        (site_header(host, false))
+        (site_header(host))
         main.apex-main {
             div.col-chat {
                 section.step.step-unclaimed {

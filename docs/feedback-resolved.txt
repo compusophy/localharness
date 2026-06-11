@@ -103,3 +103,11 @@
 67  d74bd34  dwell(seconds) tool (max 300s) for cooldowns
 69  14cb761  /api/notify + CLI notify + notify_owner goal tool (self-only
 #            PC-to-mobile push routing)
+71  HEAD     header decluttered: files + insect buttons removed; files opens
+#            from admin -> app; feedback stays the admin tab (reverses #15's
+#            header placement on the user's newer minimalism signal)
+72  HEAD     (dup of 71)
+73  HEAD     context bar no longer fluctuates: per-turn usage now merges
+#            rounds with LATEST prompt count (merge_round) instead of
+#            summing - also fixes auto-compaction firing early on
+#            tool-heavy turns; cross-turn cumulative_usage keeps summing

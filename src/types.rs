@@ -428,8 +428,43 @@ pub struct UsageMetadata {
 }
 
 impl UsageMetadata {
-    /// Fold `other` into `self`. Missing fields on either side are treated as
-    /// zero so the accumulator only advances when the backend reports usage.
+    /// Fold a SUCCESSIVE ROUND of the SAME turn into `self` — the per-turn
+    /// accumulator the backend loops use. `prompt_token_count` /
+    /// `cached_content_token_count` describe the LIVE CONTEXT SIZE, which the
+    /// model reports afresh each round of a multi-round tool turn, so they
+    /// take the LATEST value (summing them quadruple-counted the context on a
+    /// 4-round turn, made the context-fullness bar "fluctuate wildly", and
+    /// fired auto-compaction early — on-chain feedback #73). Output-side
+    /// counts (`candidates` / `thoughts` / `total`) are genuinely cumulative
+    /// and sum. For cross-turn billing-style totals use [`Self::accumulate`].
+    pub fn merge_round(&mut self, other: &UsageMetadata) {
+        fn add(a: &mut Option<i32>, b: Option<i32>) {
+            if let Some(v) = b {
+                *a = Some(a.unwrap_or(0).saturating_add(v));
+            }
+        }
+        fn latest(a: &mut Option<i32>, b: Option<i32>) {
+            if b.is_some() {
+                *a = b;
+            }
+        }
+        latest(&mut self.prompt_token_count, other.prompt_token_count);
+        latest(
+            &mut self.cached_content_token_count,
+            other.cached_content_token_count,
+        );
+        add(
+            &mut self.candidates_token_count,
+            other.candidates_token_count,
+        );
+        add(&mut self.thoughts_token_count, other.thoughts_token_count);
+        add(&mut self.total_token_count, other.total_token_count);
+    }
+
+    /// Fold `other` into `self`, summing EVERY field — the cross-turn
+    /// billing-style accumulator (`Conversation::cumulative_usage`). Missing
+    /// fields on either side are treated as zero so the accumulator only
+    /// advances when the backend reports usage.
     pub fn accumulate(&mut self, other: &UsageMetadata) {
         fn add(a: &mut Option<i32>, b: Option<i32>) {
             if let Some(v) = b {

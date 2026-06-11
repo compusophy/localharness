@@ -161,16 +161,6 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
    empty markup now and `chrome` doesn't call it, but legacy CSS
    references can compile away cleanly here. */
 
-/* Icon-only feedback button (issue #15) — opts out of the 96px text
-   min-width so it stays square-ish; the inline SVG inherits the
-   button's muted/fg palette via currentColor. */
-.feedback-button {
-  min-width: 0;
-  padding: 10px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
 .feedback-button svg { display: block; }
 
 /* Feedback modal — overlays everything at z-index:200 with a
