@@ -1070,6 +1070,11 @@ input, textarea {
   image-rendering: pixelated;
 }
 
+/* --- Post-publish share fragment (admin → public face) --- */
+.share-block { display: flex; flex-direction: column; gap: 8px; }
+.share-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.share-line a { color: var(--fg); }
+
 /* --- Agent row act panel (apex agents list) --- */
 .agent-row { display: block; }
 /* The whole row is one anchor (templates::agents_list) — give it the

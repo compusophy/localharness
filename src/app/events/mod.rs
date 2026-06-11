@@ -96,6 +96,9 @@ enum Action {
     /// Set this subdomain's public face: "directory", "app", or "html".
     /// "app"/"html" also publish the device's local app.rl/index.html.
     SetPublicFace(String),
+    /// Copy the published share URL (the `data-arg`) to the clipboard —
+    /// the [copy] button in the post-publish share fragment.
+    CopyShareUrl(String),
     /// Choose how the agent reaches the model: "credits" or "byok".
     SetModelAccess(String),
     /// Choose which LLM the in-tab agent uses (a `gemini-*` or `claude-*`
@@ -206,6 +209,7 @@ impl Action {
             "toggle-display" => Action::ToggleDisplay,
             "stop-turn" => Action::StopTurn,
             "set-public-face" => Action::SetPublicFace(arg.unwrap_or_default()),
+            "copy-share-url" => Action::CopyShareUrl(arg.unwrap_or_default()),
             "set-model-access" => Action::SetModelAccess(arg.unwrap_or_default()),
             "set-model" => Action::SetModel(arg.unwrap_or_default()),
             "download-local-model" => Action::DownloadLocalModel,
@@ -512,6 +516,11 @@ fn dispatch(action: Action) {
         Action::SetPublicFace(choice) => {
             wasm_bindgen_futures::spawn_local(async move {
                 public_face::run_set_public_face(&choice).await;
+            });
+        }
+        Action::CopyShareUrl(url) => {
+            wasm_bindgen_futures::spawn_local(async move {
+                public_face::run_copy_share_url(&url).await;
             });
         }
         Action::OpfsNav(target) => {

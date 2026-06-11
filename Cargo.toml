@@ -260,6 +260,9 @@ web-sys = { version = "0.3", features = [
     "RtcSdpType",
     "RtcIceGatheringState",
     "RtcPeerConnectionIceEvent",
+    # navigator.clipboard.writeText — the post-publish [copy] share button
+    # (src/app/events/public_face.rs).
+    "Clipboard",
     "History",
     "Location",
     "Storage",

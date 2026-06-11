@@ -1323,6 +1323,27 @@ fn pair_qr_svg(pair_url: &str) -> Option<String> {
     )
 }
 
+/// Post-publish share moment — swapped into `#publish-app-msg` after a
+/// successful app/html publish so the owner immediately sees the
+/// shareable URL: the live link, a [copy] button, and a QR (same inline
+/// SVG pipeline as device linking) for handing the page to a phone.
+pub(crate) fn publish_share_fragment(name: &str) -> Markup {
+    let url = format!("https://{name}.localharness.xyz/");
+    html! {
+        div.share-block {
+            div.share-line {
+                span { "live at" }
+                a href=(url) target="_blank" rel="noopener" { (url) }
+                button #share-copy .ghost type="button"
+                    data-action="copy-share-url" data-arg=(url) { "copy" }
+            }
+            @if let Some(svg) = pair_qr_svg(&url) {
+                div.pair-qr { (PreEscaped(svg)) }
+            }
+        }
+    }
+}
+
 /// Desktop "add a device" panel (Option A seed transport). The QR encodes
 /// an apex URL whose FRAGMENT carries this device's seed encrypted under a
 /// one-time `code`; the code is shown separately and typed on the other

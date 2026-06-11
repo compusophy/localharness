@@ -178,26 +178,40 @@ pub(super) async fn run_set_public_face(choice: &str) {
     };
     match result {
         Ok(_tx) => {
-            let head = if choice == "directory" {
-                "public face → directory ✓".to_string()
-            } else {
-                format!("published ✓ — {name}.localharness.xyz")
-            };
-            dom::swap_inner(
-                msg,
-                &maud::html! {
-                    span style="color:var(--fg)" {
-                        (head) " "
-                        a href=(format!("https://{name}.localharness.xyz/"))
-                          target="_blank" rel="noopener" style="color:var(--accent)" {
-                            "open →"
+            if choice == "directory" {
+                dom::swap_inner(
+                    msg,
+                    &maud::html! {
+                        span style="color:var(--fg)" {
+                            "public face → directory ✓ "
+                            a href=(format!("https://{name}.localharness.xyz/"))
+                              target="_blank" rel="noopener" style="color:var(--accent)" {
+                                "open →"
+                            }
                         }
                     }
-                }
-                .into_string(),
-            );
+                    .into_string(),
+                );
+            } else {
+                // The share moment: published app/html is live for every
+                // visitor — surface the URL + [copy] + QR right here.
+                dom::swap_inner(
+                    msg,
+                    &crate::app::templates::publish_share_fragment(&name).into_string(),
+                );
+            }
             super::admin::refresh_public_face_status().await;
         }
         Err(e) => set_err(&format!("failed: {e}")),
+    }
+}
+
+/// Copy a share URL to the clipboard (`navigator.clipboard.writeText`)
+/// and flip the [copy] button label as the only feedback.
+pub(super) async fn run_copy_share_url(url: &str) {
+    let Some(win) = web_sys::window() else { return };
+    let promise = win.navigator().clipboard().write_text(url);
+    if wasm_bindgen_futures::JsFuture::from(promise).await.is_ok() {
+        dom::swap_inner("share-copy", "copied ✓");
     }
 }
