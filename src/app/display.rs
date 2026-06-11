@@ -699,6 +699,17 @@ fn mount_canvas() -> Result<CanvasRenderingContext2d, JsValue> {
     size_and_get_ctx()
 }
 
+/// Snapshot the live `#display-canvas` as a PNG data URL — used by the
+/// inline display card in the transcript. `None` when no canvas is mounted
+/// or the encode fails. Cheap: the backing store is the 256x144 logical
+/// framebuffer, so the PNG is a few KB.
+pub(crate) fn snapshot_data_url() -> Option<String> {
+    let canvas = dom::by_id("display-canvas")?
+        .dyn_into::<HtmlCanvasElement>()
+        .ok()?;
+    canvas.to_data_url().ok()
+}
+
 /// Size the existing `#display-canvas` backing store to the logical
 /// framebuffer and return its 2D context. Assumes the canvas is already
 /// in the DOM.

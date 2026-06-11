@@ -534,9 +534,15 @@ pub(crate) fn text_segment(seg_id: u32, text: &str) -> Markup {
 /// signals "working", and the per-tool running/done text was both
 /// redundant and prone to sticking on "running". The result (including
 /// errors) is visible by expanding the block.
+///
+/// Followed by an empty card slot (`#tool-{id}-card`) that fills with an
+/// [`inline_result_card`] when the result warrants one (file / directory /
+/// display outputs), so the transcript shows what a tool produced inline,
+/// chronologically, without tab-hopping. Empty for every other tool.
 pub(crate) fn tool_call_block(seg_id: u32, call: &ToolCall) -> Markup {
     let block_id = format!("tool-{seg_id}");
     let result_id = format!("tool-{seg_id}-result");
+    let card_id = format!("tool-{seg_id}-card");
     let args_pretty = serde_json::to_string_pretty(&call.args).unwrap_or_else(|_| "{}".into());
     html! {
         details id=(block_id) .tool-call {
@@ -549,6 +555,7 @@ pub(crate) fn tool_call_block(seg_id: u32, call: &ToolCall) -> Markup {
                 div id=(result_id) {}
             }
         }
+        div id=(card_id) {}
     }
 }
 
@@ -567,6 +574,169 @@ pub(crate) fn tool_call_result(result: &ToolResult) -> Markup {
         } @else {
             div.tc-error {
                 pre { (result.error.as_deref().unwrap_or("(unknown error)")) }
+            }
+        }
+    }
+}
+
+// --- Inline result cards -------------------------------------------------
+//
+// Compact transcript cards under a tool pill for the tools whose output the
+// user would otherwise chase across the FILES / DISPLAY tabs (GitHub #28).
+// Additive only: the tabs and their behavior are untouched — a card is a
+// chronological anchor with an [open]/[show] jump, not a replacement panel.
+
+/// Cap on lines shown inside an inline result card; the rest is summarized
+/// by a "… +N more lines" trailer and reachable via [open] in FILES.
+const CARD_MAX_LINES: usize = 40;
+
+/// First [`CARD_MAX_LINES`] lines of `content` plus how many lines were cut.
+fn card_snippet(content: &str) -> (String, usize) {
+    let total = content.lines().count();
+    if total <= CARD_MAX_LINES {
+        (content.trim_end_matches('\n').to_string(), 0)
+    } else {
+        let shown = content
+            .lines()
+            .take(CARD_MAX_LINES)
+            .collect::<Vec<_>>()
+            .join("\n");
+        (shown, total - CARD_MAX_LINES)
+    }
+}
+
+/// Normalize a tool-supplied path into an `opfs-open`/`opfs-nav` data-arg.
+/// The panel actions resolve cwd-relative names; tool paths are
+/// OPFS-root-relative, so strip any leading slash (the panel default cwd is
+/// the root, where the two coincide).
+fn opfs_arg(path: &str) -> &str {
+    path.trim_start_matches('/')
+}
+
+/// Compact inline card for a SUCCESSFUL tool result, rendered into the
+/// `#tool-{id}-card` slot under the tool pill — `None` for tools / results
+/// that don't warrant one (then the slot stays empty). Shared by the live
+/// stream (`chat::stream_turn`) and history replay (`history::paint_entries`)
+/// so both paths paint identically. `display_thumb` is a data-URL snapshot of
+/// the framebuffer, live-path-only — replay can't reproduce pixels and
+/// passes `None` (marker card only).
+pub(crate) fn inline_result_card(
+    name: &str,
+    args: &serde_json::Value,
+    result: &ToolResult,
+    display_thumb: Option<&str>,
+) -> Option<Markup> {
+    if result.error.is_some() {
+        return None;
+    }
+    let value = result.result.as_ref()?;
+    match name {
+        "view_file" => {
+            let content = value.get("content")?.as_str()?;
+            let path = value
+                .get("path")
+                .and_then(|v| v.as_str())
+                .or_else(|| args.get("path").and_then(|v| v.as_str()))?;
+            Some(file_card(path, content))
+        }
+        // The result carries only `{ok, path, ...}`; the written content
+        // lives in the call args (create: the whole file, edit: the
+        // replacement text).
+        "create_file" => {
+            let path = args.get("path").and_then(|v| v.as_str())?;
+            let content = args.get("content").and_then(|v| v.as_str())?;
+            Some(file_card(path, content))
+        }
+        "edit_file" => {
+            let path = args.get("path").and_then(|v| v.as_str())?;
+            let content = args.get("new_string").and_then(|v| v.as_str())?;
+            Some(file_card(path, content))
+        }
+        "list_directory" => {
+            let entries = value.get("entries")?.as_array()?;
+            let path = value.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            Some(dir_card(path, entries))
+        }
+        "run_cartridge" | "render_html" => {
+            // These return Ok-with-`error` on compile/run failure and a
+            // `status` field only on the browser success shape — gate on
+            // both so a failed run never gets a "rendered" marker.
+            if value.get("error").is_some() || value.get("status").is_none() {
+                return None;
+            }
+            Some(display_card(display_thumb))
+        }
+        _ => None,
+    }
+}
+
+/// Filename header + capped monospace body + [open] into the FILES panel
+/// (reuses the panel's own `opfs-open` action).
+fn file_card(path: &str, content: &str) -> Markup {
+    let (shown, cut) = card_snippet(content);
+    html! {
+        div.inline-card {
+            div.ic-head {
+                span.ic-title { (path) }
+                button.ghost data-action="opfs-open" data-arg=(opfs_arg(path)) { "open" }
+            }
+            pre.ic-body { (shown) }
+            @if cut > 0 {
+                div.ic-more { "… +" (cut) " more lines" }
+            }
+        }
+    }
+}
+
+/// One-line-per-entry directory card. Directory rows navigate the FILES
+/// panel (`opfs-nav`); file rows open via the same `opfs-open` the panel
+/// rows use. `role=button` + `tabindex=0` match the panel's a11y convention
+/// (the delegated keydown handler activates them on Enter/Space).
+fn dir_card(path: &str, entries: &[serde_json::Value]) -> Markup {
+    let base = opfs_arg(path).trim_end_matches('/');
+    let base = if base == "." { "" } else { base };
+    html! {
+        div.inline-card {
+            div.ic-head {
+                span.ic-title { (if base.is_empty() { "/" } else { base }) }
+                span.ic-meta { (entries.len()) " entries" }
+            }
+            div.ic-rows {
+                @for entry in entries {
+                    @let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    @let is_dir = entry.get("kind").and_then(|v| v.as_str()) == Some("directory");
+                    @let arg = if base.is_empty() { name.to_string() } else { format!("{base}/{name}") };
+                    @if is_dir {
+                        div.ic-row role="button" tabindex="0"
+                            data-action="opfs-nav" data-arg=(arg) {
+                            (name) "/"
+                        }
+                    } @else {
+                        div.ic-row role="button" tabindex="0"
+                            data-action="opfs-open" data-arg=(arg) {
+                            (name)
+                        }
+                    }
+                }
+                @if entries.is_empty() { div.ic-more { "(empty)" } }
+            }
+        }
+    }
+}
+
+/// Marker card for a successful display render. The DISPLAY panel holds the
+/// live surface; this anchors the event in the transcript with a [show]
+/// jump (reuses `toggle-display`). `thumb` is a live-path framebuffer
+/// snapshot — `None` on replay, where only the marker paints.
+fn display_card(thumb: Option<&str>) -> Markup {
+    html! {
+        div.inline-card {
+            div.ic-head {
+                span.ic-title { "▶ rendered to display" }
+                button.ghost data-action="toggle-display" { "show" }
+            }
+            @if let Some(url) = thumb {
+                img.ic-thumb src=(url) alt="display framebuffer snapshot";
             }
         }
     }

@@ -1283,6 +1283,71 @@ button.ready:hover {
   color: var(--error);
 }
 
+/* Inline result cards under a tool pill (file / directory / display
+   outputs) — compact, bordered, height-capped; the transcript shows what
+   a tool produced without tab-hopping. Monochrome, no highlighting. */
+.inline-card {
+  margin: 6px 0 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  font-size: 12px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.inline-card .ic-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  position: sticky;
+  top: 0;
+}
+.inline-card .ic-title {
+  color: var(--fg);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.inline-card .ic-meta { color: var(--muted); font-size: 11px; }
+.inline-card .ic-head button {
+  margin-left: auto;
+  font-size: 11px;
+  padding: 1px 8px;
+}
+.inline-card .ic-body {
+  margin: 0;
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 0;
+  overflow-x: auto;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.inline-card .ic-more {
+  padding: 3px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  border-top: 1px solid var(--border);
+}
+.inline-card .ic-rows { display: grid; }
+.inline-card .ic-row {
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.inline-card .ic-row:hover, .inline-card .ic-row:focus-visible {
+  background: var(--panel);
+}
+.inline-card .ic-thumb {
+  display: block;
+  width: 256px;
+  max-width: calc(100% - 16px);
+  image-rendering: pixelated;
+  margin: 8px;
+  border: 1px solid var(--border);
+}
+
 .status { color: var(--muted); font-size: 11px; margin-top: 10px; min-height: 16px; }
 .err { color: var(--error); }
 
