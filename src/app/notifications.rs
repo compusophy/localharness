@@ -72,6 +72,11 @@ pub(crate) async fn show(title: &str, body: &str) -> Result<(), String> {
     let opts = web_sys::NotificationOptions::new();
     opts.set_body(body);
     opts.set_icon("/icons/icon-192.png");
+    // Same-content notifications COLLAPSE instead of stacking (Android
+    // shows untagged notifications separately — feedback #55 reported
+    // doubles): tag = the content itself, so an accidental second render
+    // replaces the first instead of buzzing twice.
+    opts.set_tag(&format!("lh-{title}-{body}"));
     if let Some(reg) = sw_registration().await {
         let promise = reg
             .show_notification_with_options(title, &opts)

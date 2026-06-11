@@ -47,6 +47,9 @@ self.addEventListener('push', (event) => {
       body,
       icon: '/icons/icon-192.png',
       badge: '/icons/icon-192.png',
+      // Same-content pushes collapse instead of stacking (feedback #55:
+      // double notifications on Android).
+      tag: 'lh-' + title + '-' + body,
     }),
   );
 });

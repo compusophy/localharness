@@ -1175,14 +1175,17 @@ button.ready:hover {
   margin-top: 24px;
   display: flex; flex-direction: column; gap: 4px;
 }
+/* AI turns carry the left border; user inputs stand bare (on-chain
+   feedback #56 — both bordered read as one undifferentiated stream). */
 .turn {
   background: transparent;
   border: 0;
-  border-left: 2px solid var(--border);
   padding: 4px 0 4px 12px;
 }
-.turn.user { border-left-color: var(--muted); }
-.turn.assistant { border-left-color: var(--fg); }
+.turn.user { padding-left: 0; }
+.turn.assistant {
+  border-left: 2px solid var(--fg);
+}
 .turn .role { display: none; }
 .turn .body {
   word-break: break-word;

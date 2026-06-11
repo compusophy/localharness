@@ -274,10 +274,6 @@ pub(crate) async fn run_send() {
                     break;
                 }
                 auto_continuations += 1;
-                // From here on, the duplicate-action guard denies exact
-                // repeats of side-effecting calls (the double-notify /
-                // double-send bug — feedback #51).
-                dedup::mark_continuation();
                 // A truncated turn gets a "finish concisely" nudge; an
                 // incomplete (tool-active) turn gets the standard goal nudge.
                 next_input = if matches!(outcome, TurnOutcome::EmptyTruncated) {

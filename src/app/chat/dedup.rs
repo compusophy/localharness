@@ -14,7 +14,7 @@
 //! blocked — "notify me twice" stays expressible; only the nudge-induced
 //! repeat class is suppressed.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
@@ -26,8 +26,6 @@ thread_local! {
     /// Hashes of guarded calls executed during the CURRENT user request
     /// (one `run_send` invocation, across all auto-continued turns).
     static RUN_HASHES: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
-    /// True once the current request has entered an auto-continuation.
-    static IN_CONTINUATION: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Tools where an exact repeat is harmful: user-visible side effects,
@@ -57,12 +55,6 @@ const GUARDED: &[&str] = &[
 /// Reset at the START of each user request (`run_send`).
 pub(crate) fn reset_run() {
     RUN_HASHES.with(|h| h.borrow_mut().clear());
-    IN_CONTINUATION.with(|c| c.set(false));
-}
-
-/// Mark that the current request is entering an auto-continued turn.
-pub(crate) fn mark_continuation() {
-    IN_CONTINUATION.with(|c| c.set(true));
 }
 
 fn call_hash(call: &ToolCall) -> u64 {
@@ -87,11 +79,17 @@ impl PreToolCallDecideHook for DuplicateActionGuard {
         }
         let h = call_hash(call);
         let already_ran = RUN_HASHES.with(|s| !s.borrow_mut().insert(h));
-        if already_ran && IN_CONTINUATION.with(|c| c.get()) {
+        // Deny exact repeats ANYWHERE in one request — originally only on
+        // auto-continued turns, but feedback #55 showed the model can also
+        // emit the same call TWICE in a single first turn (Gemini batches
+        // parallel functionCalls), double-firing notifications. A user who
+        // genuinely wants a repeat can vary the args or ask again.
+        if already_ran {
             return Ok(HookResult::deny(format!(
                 "duplicate suppressed: `{}` with these exact arguments already \
                  executed during this request — do NOT repeat side-effecting \
-                 actions. If the user's request is fulfilled, call `finish` now.",
+                 actions. If the user explicitly wants it again, vary the \
+                 arguments; if the request is fulfilled, call `finish` now.",
                 call.name
             )));
         }
