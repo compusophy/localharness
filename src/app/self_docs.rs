@@ -89,10 +89,12 @@ one shot.\n\
 \n\
 Error codes (LHxxxx) — every failure carries a STABLE code you learn once \
 (full index: docs/error-codes.md). LH0xxx = rustlite COMPILE errors (the \
-compile_rustlite tool returns the code + a fix hint — read it, fix at the \
-[start..end] span, recompile). LH1xxx = cartridge RUNTIME errors (a hung \
-frame=LH1001, a wasm trap=LH1002, instantiate failure=LH1003, no frame/render \
-entry=LH1004 — the 'CARTRIDGE STOPPED' overlay shows the code). LH2xxx = on-chain \
+compile_rustlite tool returns the code + a fix hint + a `line N, col M` \
+location and a caret-marked source snippet — fix that exact spot, recompile). \
+LH1xxx = cartridge RUNTIME errors (a hung frame=LH1001, a wasm trap=LH1002, \
+instantiate failure=LH1003, no frame/render entry=LH1004 — run_cartridge \
+returns { error, code, phase: instantiate|run, detail, hint } and the \
+'CARTRIDGE STOPPED' overlay shows the code). LH2xxx = on-chain \
 TX REVERTS (e.g. LH2003 SpendExceedsBudget, LH2017 Expired — the message names \
 the facet error + what to do).\n\
 \n\

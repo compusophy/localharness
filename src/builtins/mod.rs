@@ -148,6 +148,81 @@ fn instantiate_run_command() -> Option<Arc<dyn Tool>> {
     None
 }
 
+/// The ONE structured compile-failure report every rustlite-compiling tool
+/// returns (`compile_rustlite`, `run_cartridge` — and the shape
+/// `create_and_publish_app` folds into its error string). Fields:
+///
+/// * `error`    — always `"compilation failed"` (the dispatch discriminant).
+/// * `code`     — the stable `LHxxxx` label (`null` for an uncoded internal error).
+/// * `detail`   — the compiler message verbatim (code-prefixed, with the raw
+///   `[start..end]` byte span).
+/// * `location` — `"line N, col M"` resolved against `source` (`null` if spanless).
+/// * `snippet`  — the offending source line with a caret marker underneath
+///   (`null` if spanless), so the agent fixes the exact spot instead of
+///   hunting byte offsets.
+/// * `hint`     — the per-code fix hint from [`crate::error_codes`], falling
+///   back to the generic fix-and-recompile loop discipline.
+pub(crate) fn compile_failure_report(
+    err: &crate::rustlite::CompileError,
+    source: &str,
+) -> serde_json::Value {
+    let hint = err
+        .code
+        .and_then(crate::error_codes::lookup)
+        .map(|e| e.hint)
+        .unwrap_or(
+            "Fix the issue at the reported source location and recompile. Common \
+             causes: a feature rustlite lacks (traits, generics, references, \
+             Vec/String building, Option/Result) or a wrong host fn name/arity. \
+             Do NOT run_cartridge or publish until this compiles clean.",
+        );
+    serde_json::json!({
+        "error": "compilation failed",
+        "code": err.code.map(crate::error_codes::fmt_label),
+        "detail": err.to_string(),
+        "location": err.location(source),
+        "snippet": err.span.and_then(|s| crate::rustlite::render_snippet(source, s)),
+        "hint": hint,
+    })
+}
+
+#[cfg(test)]
+mod compile_failure_report_tests {
+    /// The structured report carries everything an agent needs to self-fix:
+    /// the stable code, the verbatim message, a line/col locator, the
+    /// offending line with a caret, and the registry fix hint — for every
+    /// stage of the pipeline (this exercises a typecheck failure on line 3).
+    #[test]
+    fn report_is_fully_populated_for_a_spanned_error() {
+        let src = "fn frame(t: i32) {\n  host::display::clear(0);\n  let x = true + 1;\n  host::display::present();\n}";
+        let err = crate::rustlite::compile(src).expect_err("must fail");
+        let r = super::compile_failure_report(&err, src);
+        assert_eq!(r["error"], "compilation failed");
+        assert_eq!(r["code"], "LH0204");
+        assert!(r["detail"].as_str().unwrap().starts_with("LH0204:"), "{r}");
+        assert!(r["location"].as_str().unwrap().starts_with("line 3, col "), "{r}");
+        let snippet = r["snippet"].as_str().unwrap();
+        assert!(snippet.contains("let x = true + 1;"), "{r}");
+        assert!(snippet.lines().last().unwrap().contains('^'), "{r}");
+        // the hint is the LH0204 registry hint, not the generic fallback
+        assert_eq!(r["hint"].as_str(), crate::error_codes::lookup(204).map(|e| e.hint), "{r}");
+    }
+
+    /// A spanless internal error still produces a valid report — null
+    /// location/snippet, generic hint — never a panic or an empty object.
+    #[test]
+    fn report_degrades_gracefully_without_a_span() {
+        let err = crate::rustlite::CompileError::new("internal: lowering invariant");
+        let r = super::compile_failure_report(&err, "fn frame(t: i32) {}");
+        assert_eq!(r["error"], "compilation failed");
+        assert!(r["code"].is_null());
+        assert_eq!(r["detail"], "internal: lowering invariant");
+        assert!(r["location"].is_null());
+        assert!(r["snippet"].is_null());
+        assert!(r["hint"].as_str().unwrap().contains("recompile"), "{r}");
+    }
+}
+
 #[cfg(test)]
 mod schema_lint_tests {
     use super::*;

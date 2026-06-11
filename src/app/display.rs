@@ -173,6 +173,65 @@ pub(crate) async fn run_wasm(wasm_bytes: &[u8]) -> Result<(), JsValue> {
     run_with_ctx(wasm_bytes, ctx).await
 }
 
+/// A cartridge run that never went live: the stable `LH1xxx` runtime code
+/// (when the worker/watchdog produced one) + the human detail. What the
+/// `run_cartridge` tool folds into its structured error result.
+pub(crate) struct RunFailure {
+    /// `LH1xxx` registry code (`error_codes::FRAME_TIMEOUT` etc); `None` for
+    /// a spawn-level failure the worker never got to classify.
+    pub code: Option<u16>,
+    /// The detail string (worker error message / watchdog reason).
+    pub detail: String,
+}
+
+/// How long [`run_wasm_reporting`] waits for the cartridge's FIRST lifecycle
+/// signal before giving up. Must exceed the worker watchdog's window
+/// (`WATCHDOG_MS` + one `WATCHDOG_TICK_MS` poll = 2000ms) so a first-frame
+/// hang is reported as the watchdog's coded LH1001 kill, not as this
+/// wrapper's vaguer timeout.
+const FIRST_SIGNAL_MS: u32 = 2600;
+
+/// [`run_wasm`], but AWAIT the cartridge's first lifecycle signal and report
+/// it (issue #7): `Ok(())` once the first frame (or a one-shot `done`)
+/// lands, `Err(RunFailure)` when the worker posts a coded fatal error
+/// (instantiate failure / trap / missing entry) or the watchdog kills a hung
+/// first frame. The old fire-and-forget `run_wasm` told the agent "running
+/// on display" even when the canvas was painting "CARTRIDGE STOPPED".
+///
+/// A healthy cartridge posts its first frame within a few ms, so the await
+/// costs success paths almost nothing; only failures wait (bounded by
+/// [`FIRST_SIGNAL_MS`]). Fire-and-forget callers (public-face boot, opening
+/// a file) keep using `run_wasm` — the overlay is their reporting surface.
+pub(crate) async fn run_wasm_reporting(wasm_bytes: &[u8]) -> Result<(), RunFailure> {
+    run_wasm(wasm_bytes).await.map_err(|e| RunFailure {
+        code: None,
+        detail: format!("worker spawn failed: {e:?}"),
+    })?;
+    let mut waited = 0u32;
+    loop {
+        match worker::current_outcome() {
+            worker::RunOutcome::Live => return Ok(()),
+            worker::RunOutcome::Failed { code, detail } => {
+                return Err(RunFailure { code, detail })
+            }
+            worker::RunOutcome::Pending => {}
+        }
+        if waited >= FIRST_SIGNAL_MS {
+            // Shouldn't happen (the watchdog classifies a silent worker
+            // first), but never hang the tool turn on a missing signal.
+            return Err(RunFailure {
+                code: None,
+                detail: format!(
+                    "no frame and no error within {FIRST_SIGNAL_MS}ms of spawning \
+                     the cartridge worker"
+                ),
+            });
+        }
+        crate::runtime::sleep_ms(50).await;
+        waited += 50;
+    }
+}
+
 /// Instantiate `wasm_bytes` against an existing `#display-canvas`
 /// already in the DOM (app mode — the subdomain booted straight into a
 /// fullscreen cartridge, no overlay swap).
@@ -767,6 +826,49 @@ mod worker {
         /// handle. Replaced on the next cartridge load (terminating the prior
         /// one) and cleared on `stop`/hang.
         static WORKER: RefCell<Option<WorkerHandle>> = const { RefCell::new(None) };
+        /// Spawn generation — bumped by every `spawn_cartridge` so a LATE
+        /// message from a torn-down worker (its onmessage may already be
+        /// queued when we terminate it) can't write an outcome that belongs
+        /// to the previous run.
+        static RUN_GEN: Cell<u32> = const { Cell::new(0) };
+        /// The FIRST lifecycle outcome of the current spawn (issue #7: the
+        /// run_cartridge tool used to return "running on display" no matter
+        /// what — instantiate failures / traps / watchdog kills only reached
+        /// the console + overlay, so the agent saw success on a dead run).
+        /// `await_first_outcome` polls this to report the truth instead.
+        static RUN_OUTCOME: RefCell<RunOutcome> = const { RefCell::new(RunOutcome::Pending) };
+    }
+
+    /// The first lifecycle signal a spawned cartridge produced.
+    #[derive(Clone)]
+    pub(super) enum RunOutcome {
+        /// Nothing posted yet (still instantiating / first frame in flight).
+        Pending,
+        /// A frame (or a one-shot `done`) arrived — the cartridge is live.
+        Live,
+        /// A fatal error: the worker's coded `{type:'error'}` message, or the
+        /// watchdog kill (`LH1001`). `code` is an `LH1xxx` registry value.
+        Failed { code: Option<u16>, detail: String },
+    }
+
+    /// Record the FIRST outcome for generation `gen` (later signals and
+    /// stale-generation writes are ignored — the first frame/error is the
+    /// truth the tool result wants).
+    fn record_outcome(generation: u32, outcome: RunOutcome) {
+        if RUN_GEN.with(|g| g.get()) != generation {
+            return;
+        }
+        RUN_OUTCOME.with(|o| {
+            let mut o = o.borrow_mut();
+            if matches!(*o, RunOutcome::Pending) {
+                *o = outcome;
+            }
+        });
+    }
+
+    /// The current spawn's first outcome so far (clone — cheap).
+    pub(super) fn current_outcome() -> RunOutcome {
+        RUN_OUTCOME.with(|o| o.borrow().clone())
     }
 
     /// Everything that must outlive a running worker: the `Worker` itself, the
@@ -818,6 +920,15 @@ mod worker {
         // Tear down the previous worker first (idempotent).
         stop_worker();
 
+        // New spawn generation: reset the first-outcome slot so this run's
+        // signals (and only this run's) populate it.
+        let run_gen = RUN_GEN.with(|g| {
+            let n = g.get().wrapping_add(1);
+            g.set(n);
+            n
+        });
+        RUN_OUTCOME.with(|o| *o.borrow_mut() = RunOutcome::Pending);
+
         let worker = Worker::new(&worker_url())
             .map_err(|e| JsValue::from_str(&format!("worker spawn failed: {e:?}")))?;
 
@@ -843,6 +954,7 @@ mod worker {
                 match ty.as_str() {
                     "frame" => {
                         last_frame.set(js_sys::Date::now());
+                        record_outcome(run_gen, RunOutcome::Live);
                         blit_frame(&data, &ctx);
                     }
                     "audio" => handle_audio(&data),
@@ -868,6 +980,14 @@ mod worker {
                             .ok()
                             .and_then(|v| v.as_f64())
                             .map(|n| n as u16);
+                        // Surface the failure to the agent too: the
+                        // run_cartridge tool awaits this outcome, so the
+                        // coded reason lands in the TOOL RESULT instead of
+                        // only the canvas overlay + console (issue #7).
+                        record_outcome(
+                            run_gen,
+                            RunOutcome::Failed { code, detail: detail.clone() },
+                        );
                         if let Some(code) = code {
                             paint_stopped_overlay_coded(&ctx, code);
                         }
@@ -885,6 +1005,7 @@ mod worker {
                         web_sys::console::log_1(&JsValue::from_str(&msg));
                     }
                     "done" => {
+                        record_outcome(run_gen, RunOutcome::Live);
                         // A one-shot `render()` finished and posted its single
                         // frame — it can't hang now (it already returned), so
                         // DISARM the watchdog. Otherwise it would fire ~1.5s
@@ -921,6 +1042,7 @@ mod worker {
             last_frame.clone(),
             terminated.clone(),
             watchdog_id.clone(),
+            run_gen,
         );
 
         WORKER.with(|cell| {
@@ -1046,6 +1168,7 @@ mod worker {
         last_frame: Rc<Cell<f64>>,
         terminated: Rc<Cell<bool>>,
         interval_id: Rc<Cell<Option<i32>>>,
+        run_gen: u32,
     ) -> Option<Closure<dyn FnMut()>> {
         let cb = {
             let interval_id = interval_id.clone();
@@ -1057,6 +1180,19 @@ mod worker {
                     terminated.set(true);
                     worker.terminate();
                     // LH1001 = frame timeout (the hang the watchdog catches).
+                    // Record it as the run outcome too, so a cartridge that
+                    // never produced its FIRST frame reports the kill to the
+                    // awaiting run_cartridge tool, not just the overlay.
+                    record_outcome(
+                        run_gen,
+                        RunOutcome::Failed {
+                            code: Some(crate::error_codes::FRAME_TIMEOUT),
+                            detail: format!(
+                                "no frame within {WATCHDOG_MS}ms — the watchdog \
+                                 terminated the hung cartridge"
+                            ),
+                        },
+                    );
                     paint_stopped_overlay_coded(&ctx, crate::error_codes::FRAME_TIMEOUT);
                     // Self-clear the interval (don't drop the handle here). The
                     // shared `take()` leaves `None` so `Drop` won't re-clear a

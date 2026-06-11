@@ -46,6 +46,75 @@ pub struct Span {
     pub end: usize,
 }
 
+/// 1-based `(line, column)` of a byte offset in `source`.
+///
+/// The column counts CHARACTERS from the start of the line (so a caret row
+/// of single-width spaces lines up). Offsets past the end of `source` clamp
+/// to its last position; an offset inside a multi-byte char floors to that
+/// char's start. Pure + native-testable — this is what turns the raw
+/// `[start..end]` byte span every [`CompileError`] carries into something a
+/// human (or an agent reading a tool result) can act on.
+pub fn line_col(source: &str, offset: usize) -> (usize, usize) {
+    let offset = offset.min(source.len());
+    let mut line = 1usize;
+    let mut col = 1usize;
+    for (i, ch) in source.char_indices() {
+        if i >= offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
+}
+
+/// Render a `line N, col M` + offending-source-line + caret-marker snippet
+/// for `span`, e.g.:
+///
+/// ```text
+/// line 2, col 11
+///   let x = true + 1;
+///           ^^^^^^^^
+/// ```
+///
+/// The caret row underlines the span where it intersects its FIRST line
+/// (multi-line spans clamp to that line; a zero-width or line-end span still
+/// gets one `^` so there is always a visible marker). Tabs in the shown line
+/// are widened to a single space so the caret row stays aligned. Returns
+/// `None` only when `source` is empty (nothing to point into).
+pub fn render_snippet(source: &str, span: Span) -> Option<String> {
+    if source.is_empty() {
+        return None;
+    }
+    let start = span.start.min(source.len());
+    let (line, col) = line_col(source, start);
+    // The full text of the line containing `start`.
+    let line_start = source[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line_end = source[line_start..]
+        .find('\n')
+        .map(|i| line_start + i)
+        .unwrap_or(source.len());
+    let line_text: String = source[line_start..line_end]
+        .chars()
+        .map(|c| if c == '\t' { ' ' } else { c })
+        .collect();
+    // Caret coverage: the span's char-width on this line, at least 1.
+    let span_end = span.end.clamp(start, line_end.max(start));
+    let width = source[start..span_end.min(source.len())].chars().count().max(1);
+    let line_chars = line_text.chars().count();
+    let pad = (col - 1).min(line_chars);
+    let carets = width.min((line_chars + 1).saturating_sub(pad)).max(1);
+    Some(format!(
+        "line {line}, col {col}\n  {line_text}\n  {}{}",
+        " ".repeat(pad),
+        "^".repeat(carets)
+    ))
+}
+
 impl std::fmt::Display for CompileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Prefix the stable `LHxxxx:` code when known, so a surfaced compile
@@ -85,6 +154,27 @@ impl CompileError {
     pub fn with_code(mut self, code: u16) -> Self {
         self.code = Some(code);
         self
+    }
+
+    /// `"line N, col M"` of this error's span in `source`, when it has one.
+    /// The human-readable counterpart of the raw `[start..end]` byte span.
+    pub fn location(&self, source: &str) -> Option<String> {
+        let span = self.span?;
+        let (line, col) = line_col(source, span.start.min(source.len()));
+        Some(format!("line {line}, col {col}"))
+    }
+
+    /// The full agent/user-facing rendering: the `Display` form (LHxxxx code +
+    /// message + byte span) plus, when the error carries a span, a
+    /// line/column locator with the offending source line and a caret marker
+    /// underneath. Every surface that has the source at hand (tool results,
+    /// the CLI compile-check, the studio publish flow) should prefer this
+    /// over bare `to_string()` — a byte offset alone makes the agent hunt.
+    pub fn render(&self, source: &str) -> String {
+        match self.span.and_then(|s| render_snippet(source, s)) {
+            Some(snippet) => format!("{self}\n{snippet}"),
+            None => self.to_string(),
+        }
     }
 }
 
@@ -146,6 +236,75 @@ mod tests {
 
         // Every surfaced compile error string is LHxxxx-prefixed.
         assert!(e.to_string().starts_with("LH0"), "surfaced: {e}");
+    }
+
+    #[test]
+    fn line_col_is_one_based_and_clamped() {
+        let src = "ab\ncde\nf";
+        assert_eq!(super::line_col(src, 0), (1, 1));
+        assert_eq!(super::line_col(src, 1), (1, 2));
+        assert_eq!(super::line_col(src, 3), (2, 1)); // first char after \n
+        assert_eq!(super::line_col(src, 5), (2, 3));
+        assert_eq!(super::line_col(src, 7), (3, 1));
+        // past-the-end clamps to the final position instead of panicking
+        assert_eq!(super::line_col(src, 999), (3, 2));
+        assert_eq!(super::line_col("", 0), (1, 1));
+    }
+
+    #[test]
+    fn render_snippet_places_the_caret_under_the_span() {
+        let src = "fn frame(t: i32) {\n  let x = true + 1;\n}";
+        // span covering `true + 1` on line 2 (col 11)
+        let start = src.find("true").unwrap();
+        let snip = super::render_snippet(src, super::Span { start, end: start + 8 }).unwrap();
+        let lines: Vec<&str> = snip.lines().collect();
+        assert_eq!(lines[0], "line 2, col 11", "{snip}");
+        // the shown line keeps its own leading whitespace under a 2-space indent
+        assert_eq!(lines[1], "    let x = true + 1;", "{snip}");
+        assert_eq!(lines[2], format!("  {}{}", " ".repeat(10), "^".repeat(8)), "{snip}");
+    }
+
+    #[test]
+    fn render_snippet_edge_cases_never_panic() {
+        // zero-width span still draws one caret
+        let snip = super::render_snippet("let x;", super::Span { start: 4, end: 4 }).unwrap();
+        assert!(snip.ends_with("^"), "{snip}");
+        // a multi-line span clamps its carets to the FIRST line
+        let src = "a\nbb\ncc";
+        let snip = super::render_snippet(src, super::Span { start: 2, end: 7 }).unwrap();
+        assert!(snip.contains("line 2, col 1"), "{snip}");
+        assert_eq!(snip.lines().last().unwrap().matches('^').count(), 2, "{snip}");
+        // span at EOF (the unterminated-string / unexpected-EOF shape)
+        let src = "fn f() {";
+        let snip = super::render_snippet(src, super::Span { start: 8, end: 8 }).unwrap();
+        assert!(snip.contains("line 1, col 9"), "{snip}");
+        // out-of-range span clamps
+        assert!(super::render_snippet("x", super::Span { start: 50, end: 60 }).is_some());
+        // empty source yields no snippet (nothing to point into)
+        assert!(super::render_snippet("", super::Span { start: 0, end: 1 }).is_none());
+        // tabs are widened to spaces so the caret row aligns
+        let snip = super::render_snippet("\tlet q = ;", super::Span { start: 9, end: 10 }).unwrap();
+        assert!(!snip.contains('\t'), "{snip}");
+    }
+
+    #[test]
+    fn compile_error_render_carries_code_location_and_caret() {
+        // Full pipeline: a type mismatch on line 2 renders the LH code, the
+        // line/col locator, the offending source line, and a caret row.
+        let src = "fn frame(t: i32) {\n  let x = true + 1;\n  host::display::present();\n}";
+        let err = compile(src).expect_err("type mismatch must fail");
+        let rendered = err.render(src);
+        assert!(rendered.starts_with("LH0204:"), "{rendered}");
+        assert!(rendered.contains("line 2, col"), "{rendered}");
+        assert!(rendered.contains("let x = true + 1;"), "{rendered}");
+        assert!(rendered.lines().last().unwrap().trim_start().starts_with('^'), "{rendered}");
+        // The exact column depends on which subexpression the checker pins;
+        // what matters is that the locator names LINE 2 (where the bug is).
+        assert!(err.location(src).expect("typed errors carry a span").starts_with("line 2, col "));
+        // A span-less error renders as its plain Display form.
+        let plain = super::CompileError::new("internal");
+        assert_eq!(plain.render(src), "internal");
+        assert_eq!(plain.location(src), None);
     }
 
     #[test]
