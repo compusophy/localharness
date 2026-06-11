@@ -131,7 +131,7 @@ pub(crate) async fn start_session(
     // ceiling — set well under any plausible window so it ALWAYS trips before an
     // overflow; tunable, and a recency-weighted summarization scheme can retain far
     // more at this same ceiling.
-    capabilities.compaction_threshold = Some(128_000);
+    capabilities.compaction_threshold = Some(super::COMPACTION_THRESHOLD);
 
     // `model` (the owner's per-subdomain `.lh_model` choice) was loaded above
     // so the prompt could be gated to the backend. A `claude-*` id routes to

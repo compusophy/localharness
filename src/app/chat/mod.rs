@@ -211,6 +211,7 @@ pub(crate) async fn run_send() {
         // history marker show up incrementally (not just at the very end).
         super::history::save_from_agent().await;
         super::opfs::refresh().await;
+        update_context_bar(&agent);
 
         // Drain any context-management a tool requested THIS turn. Deferred
         // to here (not run inside the tool) because clearing/summarising the
@@ -641,6 +642,32 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
         // once in the input container). Keep the status line to a short
         // marker so the aria-live region still announces the failure.
         dom::set_status("turn failed — see the message above", true);
+    }
+}
+
+/// The in-tab auto-compaction ceiling — shared by the session config and the
+/// context-fullness bar so the bar's "full" always means "compaction next".
+pub(crate) const COMPACTION_THRESHOLD: u32 = 128_000;
+
+/// Repaint the context-fullness bar (feedback #59): fill = the last turn's
+/// live prompt tokens vs [`COMPACTION_THRESHOLD`]. A full bar means the next
+/// turn will summarize the old history prefix.
+fn update_context_bar(agent: &crate::Agent) {
+    let tokens = agent
+        .conversation()
+        .last_turn_usage()
+        .and_then(|u| u.prompt_token_count)
+        .unwrap_or(0)
+        .max(0) as u64;
+    let pct = ((tokens as f64 / COMPACTION_THRESHOLD as f64) * 100.0).min(100.0);
+    if let Some(el) = dom::by_id("ctx-fill") {
+        let _ = el.set_attribute("style", &format!("width:{pct:.1}%"));
+    }
+    if let Some(el) = dom::by_id("ctx-bar") {
+        let _ = el.set_attribute(
+            "title",
+            &format!("context: {tokens} / {COMPACTION_THRESHOLD} tokens"),
+        );
     }
 }
 

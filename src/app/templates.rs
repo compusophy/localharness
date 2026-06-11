@@ -145,6 +145,11 @@ pub(crate) const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) fn terminal_input() -> Markup {
     html! {
         div.terminal-body {
+            // Context-fullness indicator (feedback #59): a 2px bar above the
+            // input whose fill = live prompt tokens / the compaction
+            // threshold. Filled by `chat::update_context_bar` after every
+            // turn; full means a compaction is imminent.
+            div #ctx-bar .ctx-bar title="context" { div #ctx-fill .ctx-fill {} }
             // Funding affordance — empty by default; `events::refresh_fund_banner`
             // fills it with a redeem CTA when the credit identity holds zero `$LH`
             // (so a new user with no funds sees the path to redeem instead of a
