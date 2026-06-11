@@ -255,9 +255,18 @@ pub(crate) fn spawn_recursive_subagent_tool(
                     .with_tool(create_subdomain_tool())
                     .with_tool(create_and_publish_app_tool())
                     .with_tool(spawn_recursive_subagent_tool(api_key.clone(), base_url.clone()));
-                // Credits mode: subagents reach Gemini through the same proxy.
+                // Credits mode: subagents reach Gemini through the same proxy —
+                // and mint their own fresh per-request tokens, because the
+                // captured session key may already be past the proxy's 5-minute
+                // freshness window by the time this subagent spawns.
                 if let Some(b) = &base_url {
                     cfg = cfg.with_base_url(b.clone());
+                    if let Some((signer, _)) = crate::app::chat::credit_signer().await {
+                        cfg = cfg.with_auth_provider(std::sync::Arc::new(move || {
+                            let now = (js_sys::Date::now() / 1000.0) as u64;
+                            crate::registry::proxy_auth_token(&signer, now)
+                        }));
+                    }
                 }
                 let sub = Agent::start_gemini(cfg)
                     .await

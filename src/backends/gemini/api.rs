@@ -28,9 +28,14 @@ const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
 #[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Per-request API-key provider (shared across backends — see
+/// [`crate::backends::KeyProvider`]).
+pub use crate::backends::KeyProvider;
+
 pub struct GeminiClient {
     http: Client,
     api_key: Box<str>,
+    key_provider: Option<KeyProvider>,
     base_url: Url,
 }
 
@@ -57,6 +62,7 @@ impl GeminiClient {
         Ok(Self {
             http,
             api_key: api_key.into().into_boxed_str(),
+            key_provider: None,
             base_url: Url::parse(DEFAULT_BASE_URL).expect("default base url is valid"),
         })
     }
@@ -64,6 +70,22 @@ impl GeminiClient {
     pub fn with_base_url(mut self, url: Url) -> Self {
         self.base_url = url;
         self
+    }
+
+    /// Install a per-request key provider (see [`KeyProvider`]). The static
+    /// key from [`new`][Self::new] becomes a fallback only.
+    pub fn with_key_provider(mut self, provider: KeyProvider) -> Self {
+        self.key_provider = Some(provider);
+        self
+    }
+
+    /// The credential for the NEXT request: freshly minted by the provider
+    /// when one is installed, else the static key.
+    fn current_key(&self) -> String {
+        match &self.key_provider {
+            Some(p) => p(),
+            None => self.api_key.to_string(),
+        }
     }
 
     /// Non-streaming `generateContent`. Use for one-shot endpoints like
@@ -82,7 +104,7 @@ impl GeminiClient {
         let response = self
             .http
             .post(url)
-            .header("x-goog-api-key", self.api_key.as_ref())
+            .header("x-goog-api-key", self.current_key())
             .json(req)
             .send()
             .await
@@ -124,7 +146,7 @@ impl GeminiClient {
         let response = self
             .http
             .post(url)
-            .header("x-goog-api-key", self.api_key.as_ref())
+            .header("x-goog-api-key", self.current_key())
             .header("accept", "text/event-stream")
             .json(req)
             .send()
@@ -202,6 +224,27 @@ mod tests {
     fn bytes_from(parts: &[&[u8]]) -> ByteStream {
         let owned: Vec<Bytes> = parts.iter().map(|b| Bytes::copy_from_slice(b)).collect();
         Box::pin(stream::iter(owned.into_iter().map(Ok)))
+    }
+
+    /// THE token-staleness regression (on-chain feedback #46): the credit
+    /// proxy rejects signed auth tokens older than 5 minutes, so a client
+    /// must mint a FRESH credential per request when a provider is set —
+    /// never cache the first one — and fall back to the static key without.
+    #[test]
+    fn key_provider_mints_fresh_credential_per_request() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let c = GeminiClient::new("static-key").unwrap();
+        assert_eq!(c.current_key(), "static-key");
+
+        let calls = Arc::new(AtomicU32::new(0));
+        let calls2 = calls.clone();
+        let c = c.with_key_provider(Arc::new(move || {
+            let n = calls2.fetch_add(1, Ordering::SeqCst) + 1;
+            format!("fresh-{n}")
+        }));
+        assert_eq!(c.current_key(), "fresh-1");
+        assert_eq!(c.current_key(), "fresh-2");
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "minted per request, never cached");
     }
 
     #[tokio::test]

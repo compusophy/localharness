@@ -41,6 +41,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 pub struct AnthropicClient {
     http: Client,
     api_key: Box<str>,
+    key_provider: Option<crate::backends::KeyProvider>,
     base_url: Url,
 }
 
@@ -69,8 +70,26 @@ impl AnthropicClient {
         Ok(Self {
             http,
             api_key: api_key.into().into_boxed_str(),
+            key_provider: None,
             base_url: Url::parse(DEFAULT_BASE_URL).expect("default base url is valid"),
         })
+    }
+
+    /// Install a per-request key provider (see
+    /// [`crate::backends::KeyProvider`]). The static key from
+    /// [`new`][Self::new] becomes a fallback only.
+    pub fn with_key_provider(mut self, provider: crate::backends::KeyProvider) -> Self {
+        self.key_provider = Some(provider);
+        self
+    }
+
+    /// The credential for the NEXT request: freshly minted by the provider
+    /// when one is installed, else the static key.
+    fn current_key(&self) -> String {
+        match &self.key_provider {
+            Some(p) => p(),
+            None => self.api_key.to_string(),
+        }
     }
 
     /// Override the base URL (e.g. the future localharness credit proxy,
@@ -97,7 +116,7 @@ impl AnthropicClient {
         let response = self
             .http
             .post(url)
-            .header("x-api-key", self.api_key.as_ref())
+            .header("x-api-key", self.current_key())
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("content-type", "application/json")
             .json(&body)
@@ -129,7 +148,7 @@ impl AnthropicClient {
         let response = self
             .http
             .post(url)
-            .header("x-api-key", self.api_key.as_ref())
+            .header("x-api-key", self.current_key())
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("content-type", "application/json")
             .header("accept", "text/event-stream")

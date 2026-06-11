@@ -129,6 +129,23 @@ pub(crate) async fn start_session(
     // model on BYOK would need a raw Anthropic key, so the credit proxy is the
     // intended Claude path.
     let captured_key = key.to_string();
+
+    // Credits mode signs a FRESH proxy auth token for EVERY request. The
+    // proxy enforces a 5-minute freshness window on the signed token, so a
+    // token baked in at session start dies mid-conversation — every later
+    // request 401s "stale or future timestamp" (on-chain feedback #46) and
+    // long thinking turns break in the middle. BYOK (no proxy base_url)
+    // keeps the static key.
+    let auth_provider: Option<crate::backends::KeyProvider> = if base_url.is_some() {
+        super::access::credit_signer().await.map(|(signer, _addr)| {
+            std::sync::Arc::new(move || {
+                let now = (js_sys::Date::now() / 1000.0) as u64;
+                crate::registry::proxy_auth_token(&signer, now)
+            }) as crate::backends::KeyProvider
+        })
+    } else {
+        None
+    };
     // History from a previous session (if any), consumed once here so a
     // backend switch doesn't lose the transcript.
     let pending_history = crate::app::history::take_pending();
@@ -212,6 +229,9 @@ pub(crate) async fn start_session(
         if let Some(b) = &base_url {
             cfg = cfg.with_base_url(b.clone());
         }
+        if let Some(p) = auth_provider.clone() {
+            cfg = cfg.with_auth_provider(p);
+        }
         // The on-disk history is the LAST backend's wire format. Only seed it
         // into Anthropic when it actually parses as Anthropic history —
         // otherwise (e.g. switching from a Gemini session) start fresh rather
@@ -279,6 +299,9 @@ pub(crate) async fn start_session(
         // leaves base_url None → direct to generativelanguage.googleapis.com.
         if let Some(b) = &base_url {
             cfg = cfg.with_base_url(b.clone());
+        }
+        if let Some(p) = auth_provider.clone() {
+            cfg = cfg.with_auth_provider(p);
         }
         // If a previous session left history on OPFS, restore it into the
         // new connection. Consumed once — subsequent key changes start

@@ -75,6 +75,10 @@ pub struct GeminiBackendConfig {
     /// native (and to `None` on wasm — so fs builtins simply don't
     /// register until a custom impl is supplied).
     pub filesystem: Option<crate::filesystem::SharedFilesystem>,
+    /// Per-request auth-token provider. When set, every HTTP request mints
+    /// a fresh credential instead of reusing `api_key` (which becomes a
+    /// fallback). Required for the credit proxy's 5-minute token window.
+    pub api_key_provider: Option<crate::backends::AuthTokenProvider>,
 }
 
 impl GeminiBackendConfig {
@@ -92,6 +96,7 @@ impl GeminiBackendConfig {
             conversation_id: None,
             capabilities: CapabilitiesConfig::default(),
             filesystem: None,
+            api_key_provider: None,
         }
     }
 
@@ -217,6 +222,9 @@ impl ConnectionStrategy for GeminiConnectionStrategy {
         let mut client = GeminiClient::new(self.config.api_key.clone())?;
         if let Some(base) = &self.config.base_url {
             client = client.with_base_url(base.clone());
+        }
+        if let Some(provider) = &self.config.api_key_provider {
+            client = client.with_key_provider(provider.0.clone());
         }
         let client: SharedClient = Arc::new(client);
 

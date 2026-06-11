@@ -233,6 +233,15 @@ impl GeminiAgentConfig {
         self
     }
 
+    /// Mint a fresh auth credential for EVERY request instead of reusing
+    /// the static api key (which becomes a fallback). Long-lived sessions
+    /// against the credit proxy need this — its signed tokens expire after
+    /// 5 minutes, so a session-baked token goes stale mid-conversation.
+    pub fn with_auth_provider(mut self, provider: crate::backends::KeyProvider) -> Self {
+        self.gemini.api_key_provider = Some(crate::backends::AuthTokenProvider(provider));
+        self
+    }
+
     /// Plug in a custom [`Filesystem`] impl for the 6 fs built-ins.
     /// Without this, native builds use `NativeFilesystem`; wasm builds
     /// have no filesystem and the fs builtins skip registration.
@@ -447,6 +456,14 @@ impl AnthropicAgentConfig {
     /// Route requests through an alternate base URL (future credit proxy).
     pub fn with_base_url(mut self, url: url::Url) -> Self {
         self.anthropic = self.anthropic.with_base_url(url);
+        self
+    }
+
+    /// Mint a fresh auth credential for EVERY request instead of reusing
+    /// the static api key (which becomes a fallback) — see
+    /// [`GeminiAgentConfig::with_auth_provider`].
+    pub fn with_auth_provider(mut self, provider: crate::backends::KeyProvider) -> Self {
+        self.anthropic.api_key_provider = Some(crate::backends::AuthTokenProvider(provider));
         self
     }
 

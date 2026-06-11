@@ -572,12 +572,18 @@ async fn stream_turn(agent: &Agent, input: TurnInput) -> TurnOutcome {
 fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
     mark_turn_done(assistant_turn_id);
     let lower = err.to_lowercase();
-    let looks_like_auth = lower.contains("api key")
+    // The proxy's token-freshness rejection is NOT an API-key problem —
+    // with per-request token minting the only remaining cause is a device
+    // clock off by more than the proxy's 5-minute window. Don't pop the
+    // Gemini key modal at a platform-credits user for it.
+    let stale_token = lower.contains("stale or future timestamp");
+    let looks_like_auth = !stale_token
+        && (lower.contains("api key")
         || lower.contains("api_key")
         || lower.contains("401")
         || lower.contains("403")
         || lower.contains("permission_denied")
-        || lower.contains("unauthenticated");
+        || lower.contains("unauthenticated"));
     // The credit proxy 402s when there's no active session / no $LH for the
     // signing address. On a subdomain that address is this origin's local
     // credit key — distinct from the apex wallet — so "I redeemed credits"
@@ -591,7 +597,12 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
 
     // Visible, escaped message in the transcript bubble. This is the
     // primary surface — the status line is a secondary mirror.
-    let bubble = if looks_like_credits {
+    let bubble = if stale_token {
+        format!(
+            "request auth went stale — your device clock looks off by more \
+             than 5 minutes; sync it and retry. Raw error: {err}"
+        )
+    } else if looks_like_credits {
         "request rejected (no credits / session for this origin). Open the \
          account tab → platform credits to redeem or open a session, or \
          switch to your own Gemini key. Raw error: "
@@ -612,7 +623,9 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
     );
     dom::scroll_to_bottom("transcript");
 
-    if looks_like_auth {
+    if stale_token {
+        dom::set_status("auth token went stale — check your device clock, then retry", true);
+    } else if looks_like_auth {
         dom::set_status("API key rejected — check your Gemini key.", true);
         super::show_api_key_modal();
     } else if looks_like_credits {

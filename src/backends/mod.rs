@@ -28,6 +28,28 @@ pub(crate) mod sse;
 mod runners;
 pub use runners::BackendRunners;
 
+/// Per-request API-key provider shared by the streaming clients. When set,
+/// a client calls it for EVERY HTTP request instead of using its static
+/// key — required for credential schemes with a freshness window (the `$LH`
+/// credit proxy rejects signed auth tokens older than 5 minutes, so a token
+/// baked in at session start goes stale mid-conversation; the provider
+/// re-signs per request).
+#[cfg(not(target_arch = "wasm32"))]
+pub type KeyProvider = std::sync::Arc<dyn Fn() -> String + Send + Sync>;
+#[cfg(target_arch = "wasm32")]
+pub type KeyProvider = std::sync::Arc<dyn Fn() -> String>;
+
+/// `Debug`-opaque, `Clone`-able wrapper for a [`KeyProvider`] so backend
+/// configs (which derive `Debug`) can carry one.
+#[derive(Clone)]
+pub struct AuthTokenProvider(pub KeyProvider);
+
+impl std::fmt::Debug for AuthTokenProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AuthTokenProvider(<closure>)")
+    }
+}
+
 /// The shared tool-dispatch pipeline (pre-hook → execute → error-lift →
 /// post-hook) every backend funnels its inline tool calls through.
 pub(crate) mod dispatch;
