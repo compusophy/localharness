@@ -65,6 +65,11 @@
 //!                            (no text; `--json` = machine-readable array)
 //!   probe [--as <fleet>]     autonomous QA self-checks; report failures on-chain
 //!   triage                   dedup + recurrence-rank the on-chain feedback log
+//!   notify [--as <me>] <title> [body...]
+//!                            Web-Push a note to YOUR OWN phone/device (the
+//!                            subscription enrolled via the app's "enable
+//!                            notifications") — "notify me when done" from a
+//!                            shell; metered like a call (~0.01 $LH)
 //!   threads [--as <me>]      list your saved call conversations
 //!   forget [--as <me>] <name>  drop a saved conversation (or `--all`)
 //!   whoami [--json] <name>   profile of <name>: owner, wallet, persona, face
@@ -106,6 +111,7 @@ mod guild;
 mod identity;
 mod invite;
 mod mcp;
+mod notify;
 mod probe;
 mod publish;
 mod reputation;
@@ -123,6 +129,7 @@ pub(crate) use guild::*;
 pub(crate) use identity::*;
 pub(crate) use invite::*;
 pub(crate) use mcp::*;
+pub(crate) use notify::*;
 pub(crate) use probe::*;
 pub(crate) use publish::*;
 pub(crate) use reputation::*;
@@ -350,6 +357,11 @@ CONVERSATIONS
   localharness forget [--as <me>] <name> drop a saved conversation (or --all)
 
 MISC
+  localharness notify [--as <me>] <title> [body...]
+                                         Web-Push a note to YOUR OWN phone (the
+                                         device enrolled via the app's \"enable
+                                         notifications\") — \"notify me when done\"
+                                         from a shell; metered like a call
   localharness version                   print the installed CLI version
   localharness help                      show this grouped command overview
 
@@ -564,6 +576,13 @@ async fn run(args: &[String]) -> i32 {
             }
         },
         Some("triage") => triage().await,
+        Some("notify") => match take_as_flag(&args[1..]) {
+            Ok((caller, rest)) => notify(caller.as_deref(), &rest).await,
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
         Some("threads") => match take_as_flag(&args[1..]) {
             Ok((caller, _)) => threads(caller.as_deref()),
             Err(e) => {
@@ -675,7 +694,7 @@ mod tests {
             "create", "compile", "publish", "face", "persona", "call", "list",
             "feedback", "probe", "triage", "threads", "forget", "whoami", "status",
             "invite", "bounty", "colony", "reputation", "guild", "vote", "tba",
-            "schedule", "goal", "jobs", "unschedule",
+            "schedule", "goal", "jobs", "unschedule", "notify",
         ] {
             assert!(
                 USAGE.contains(cmd),

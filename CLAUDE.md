@@ -120,7 +120,7 @@ src/bin/localharness/  — agent-onboarding CLI (feature wallet+native). main.rs
   credits schedule invite bounty reputation colony tba guild vote probe) +
   util.rs (load_signer*/take_value_flag/parse_id shared helpers). Commands:
   create / compile / publish / face / persona / price / call / status / list /
-  redeem / mcp-call / schedule / jobs / unschedule /
+  redeem / mcp-call / schedule / jobs / unschedule / notify /
   invite{create,accept,reclaim,list} /
   bounty{post,list,claim,submit,accept,cancel,mine} /
   release{--confirm <name>, typed-confirmation} / threads / forget /
@@ -142,7 +142,7 @@ web/          Vercel static site: index.html + boot.js + cartridge-worker.js
 proxy/        $LH credit proxy — SEPARATE Vercel project. The ONE off-chain
               component. api/gemini.ts(multi-provider passthrough) +
               api/mcp.ts(x402-gated MCP-over-HTTP) + api/scheduler.ts(Vercel-Cron
-              no-tab job worker)
+              no-tab job worker) + api/notify.ts(self-only web-push; CLI `notify`)
 scripts/      release.{ps1,sh} build-web.{ps1,sh} harvest-feedback.{sh,ps1}
               clear-feedback.sh issue-to-pr.sh test-fleet/(12 QA personas)
 examples/tempo_tx_live.rs  — live harness vs Moderato; source of truth for tempo_tx
