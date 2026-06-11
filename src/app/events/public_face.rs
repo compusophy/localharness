@@ -206,12 +206,13 @@ pub(super) async fn run_set_public_face(choice: &str) {
     }
 }
 
-/// Copy a share URL to the clipboard (`navigator.clipboard.writeText`)
-/// and flip the [copy] button label as the only feedback.
-pub(super) async fn run_copy_share_url(url: &str) {
+/// Copy `text` to the clipboard (`navigator.clipboard.writeText`) and
+/// flip the `flip_id` button's label to "copied ✓" as the only feedback.
+/// Shared by the share-URL and seed-reveal [copy] buttons.
+pub(super) async fn run_copy_to_clipboard(text: &str, flip_id: &str) {
     let Some(win) = web_sys::window() else { return };
-    let promise = win.navigator().clipboard().write_text(url);
+    let promise = win.navigator().clipboard().write_text(text);
     if wasm_bindgen_futures::JsFuture::from(promise).await.is_ok() {
-        dom::swap_inner("share-copy", "copied ✓");
+        dom::swap_inner(flip_id, "copied ✓");
     }
 }

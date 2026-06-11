@@ -105,6 +105,10 @@ enum Action {
     /// Copy the published share URL (the `data-arg`) to the clipboard —
     /// the [copy] button in the post-publish share fragment.
     CopyShareUrl(String),
+    /// Copy the revealed seed phrase (the `data-arg`) to the clipboard —
+    /// the [copy] button in the seed-reveal view. One tap banks the words
+    /// before a mobile app-switch can refresh the tab away.
+    CopySeed(String),
     /// Choose how the agent reaches the model: "credits" or "byok".
     SetModelAccess(String),
     /// Choose which LLM the in-tab agent uses (a `gemini-*` or `claude-*`
@@ -218,6 +222,7 @@ impl Action {
             "promote-background" => Action::PromoteBackground,
             "set-public-face" => Action::SetPublicFace(arg.unwrap_or_default()),
             "copy-share-url" => Action::CopyShareUrl(arg.unwrap_or_default()),
+            "copy-seed" => Action::CopySeed(arg.unwrap_or_default()),
             "set-model-access" => Action::SetModelAccess(arg.unwrap_or_default()),
             "set-model" => Action::SetModel(arg.unwrap_or_default()),
             "download-local-model" => Action::DownloadLocalModel,
@@ -529,7 +534,12 @@ fn dispatch(action: Action) {
         }
         Action::CopyShareUrl(url) => {
             wasm_bindgen_futures::spawn_local(async move {
-                public_face::run_copy_share_url(&url).await;
+                public_face::run_copy_to_clipboard(&url, "share-copy").await;
+            });
+        }
+        Action::CopySeed(phrase) => {
+            wasm_bindgen_futures::spawn_local(async move {
+                public_face::run_copy_to_clipboard(&phrase, "seed-copy").await;
             });
         }
         Action::OpfsNav(target) => {
