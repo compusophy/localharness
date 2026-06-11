@@ -269,6 +269,19 @@ web-sys = { version = "0.3", features = [
     "SubtleCrypto",
     "CryptoKey",
     "AesGcmParams",
+    # Notifications + Web Push (src/app/notifications.rs): the agent's
+    # `notify` tool (Notification / vibration) + the admin "enable
+    # notifications" push-subscription flow (ServiceWorker registration ->
+    # PushManager.subscribe under the VAPID applicationServerKey).
+    "Notification",
+    "NotificationOptions",
+    "NotificationPermission",
+    "ServiceWorker",
+    "ServiceWorkerContainer",
+    "ServiceWorkerRegistration",
+    "PushManager",
+    "PushSubscription",
+    "PushSubscriptionOptionsInit",
     "console",
 ] }
 

@@ -63,6 +63,7 @@
 
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex } from '@noble/hashes/utils';
+import { sendWebPush, type PushSubscriptionJson } from './_webpush';
 import {
   createPublicClient,
   createWalletClient,
@@ -307,6 +308,19 @@ const NAME_ABI = [
   },
 ] as const;
 
+// mainOf(address) -> uint256 — the owner's MAIN identity tokenId (0 = none).
+// The browser app publishes its Web Push subscription under the MAIN slot
+// (fallback: the name's own id), mirroring the Gemini-key-sync slot rule.
+const MAIN_OF_ABI = [
+  {
+    name: 'mainOf',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'owner', type: 'address' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+] as const;
+
 // idOfName(string) -> uint256 — resolves a `call_agent` target name to its token
 // id (0 = unregistered). Mirrors mcp.ts::idOfName / registry::id_of_name.
 const ID_OF_NAME_ABI = [
@@ -321,6 +335,11 @@ const ID_OF_NAME_ABI = [
 
 const PERSONA_KEY = ('0x' +
   bytesToHex(keccak_256(new TextEncoder().encode('localharness.persona')))) as `0x${string}`;
+
+// Web Push subscription slot — written by the browser app's admin
+// "enable notifications" flow (src/app/notifications.rs), v1 plaintext.
+const PUSH_SUB_KEY = ('0x' +
+  bytesToHex(keccak_256(new TextEncoder().encode('localharness.push_sub')))) as `0x${string}`;
 
 interface Job {
   owner: string;
@@ -422,6 +441,80 @@ async function idOfName(name: string): Promise<bigint> {
     functionName: 'idOfName',
     args: [name],
   })) as bigint;
+}
+
+/**
+ * The job owner's published Web Push subscription, or null. Slot rule mirrors
+ * the browser publisher: the owner's MAIN tokenId first, the job's own
+ * targetId as the fallback. Returns null on ANY failure (no MAIN, empty slot,
+ * malformed JSON, RPC hiccup) — push is strictly best-effort decoration.
+ */
+async function pushSubOf(
+  owner: string,
+  fallbackTokenId: bigint,
+): Promise<PushSubscriptionJson | null> {
+  try {
+    let tokenId = (await publicClient().readContract({
+      address: REGISTRY as `0x${string}`,
+      abi: MAIN_OF_ABI,
+      functionName: 'mainOf',
+      args: [owner as `0x${string}`],
+    })) as bigint;
+    if (tokenId === 0n) tokenId = fallbackTokenId;
+    const raw = (await publicClient().readContract({
+      address: REGISTRY as `0x${string}`,
+      abi: METADATA_ABI,
+      functionName: 'metadata',
+      args: [tokenId, PUSH_SUB_KEY],
+    })) as `0x${string}`;
+    const text = decodeUtf8Bytes(raw).trim();
+    if (!text) return null;
+    const sub = JSON.parse(text) as PushSubscriptionJson;
+    if (
+      typeof sub?.endpoint !== 'string' ||
+      !sub.endpoint.startsWith('https://') ||
+      typeof sub.keys?.p256dh !== 'string' ||
+      typeof sub.keys?.auth !== 'string'
+    ) {
+      return null;
+    }
+    return sub;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Best-effort owner notification after a recorded run: read the owner's
+ * on-chain push subscription and Web-Push a {title, body} JSON the service
+ * worker (web/sw.js) renders. Silently skips when the VAPID env vars are
+ * unset or no subscription is published; NEVER throws (a push failure must
+ * not fail — or re-fire — the run, whose accounting already committed).
+ * Bounded: one read + one 5s-capped POST per recorded run.
+ */
+async function notifyOwnerOfRun(
+  owner: string,
+  targetId: bigint,
+  jobId: string,
+  targetName: string,
+  output: string,
+): Promise<void> {
+  try {
+    const publicKey = process.env.VAPID_PUBLIC_KEY;
+    const privateKey = process.env.VAPID_PRIVATE_KEY;
+    const subject = process.env.VAPID_SUBJECT;
+    if (!publicKey || !privateKey || !subject) return; // push not configured
+    const sub = await pushSubOf(owner, targetId);
+    if (!sub) return; // owner never enabled notifications
+    const body = output.length > 120 ? `${output.slice(0, 119)}…` : output;
+    await sendWebPush(
+      sub,
+      JSON.stringify({ title: `${targetName} job #${jobId}`, body }),
+      { publicKey, privateKey, subject },
+    );
+  } catch (e) {
+    console.warn(`[scheduler] notify owner of job ${jobId} failed: ${(e as Error).message}`);
+  }
 }
 
 /** Decode an ABI-`bytes` 0x word (viem already unwraps to the raw 0x payload). */
@@ -1382,6 +1475,19 @@ async function processJob(id: bigint, tb: TickBudget): Promise<JobResult> {
     console.log(
       `[scheduler] job ${idStr} GOAL ${goal === 'completed' ? 'COMPLETE (job ended, remainder refunded)' : 'finish relay unconfirmed'} — report: ${goalReport.slice(0, 800)}`,
     );
+  }
+
+  // OWNER PUSH (best-effort, after the accounting). Only for a run WE
+  // recorded (a 'stale' CAS loss means a racing firer ran + will notify) and
+  // only when the agent actually produced output (`ran === 'ok'`). A goal
+  // completion rides the same channel with a louder title and the agent's
+  // final report as the body. Guarded inside: missing VAPID env or no
+  // on-chain subscription silently skips; a push failure can never fail
+  // the run.
+  if (outcome === 'recorded' && ran === 'ok') {
+    const pushBody = goalReport !== undefined ? goalReport : runNote;
+    const pushName = goal === 'completed' ? `GOAL COMPLETE: ${name}` : name;
+    await notifyOwnerOfRun(job.owner, job.targetId, idStr, pushName, pushBody);
   }
 
   return {

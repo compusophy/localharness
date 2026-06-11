@@ -295,6 +295,25 @@ async fn publish_x402_price_onchain(wei: u128) -> Result<bool, String> {
         .map(|_| true)
 }
 
+/// The admin "notifications" row: permission prompt (this click is the user
+/// gesture browsers require) → Web Push subscription → sponsored on-chain
+/// publish under `keccak256("localharness.push_sub")`. After this, the
+/// proxy's scheduler worker can push job results with the tab CLOSED, and
+/// the agent's `notify` tool fires without a mid-turn permission prompt.
+pub(super) fn enable_notifications_pressed() {
+    wasm_bindgen_futures::spawn_local(async move {
+        let msg = "notify-msg";
+        dom::swap_inner(msg, "<span style=\"color:var(--muted)\">enabling…</span>");
+        match crate::app::notifications::enable_and_publish().await {
+            Ok(_tx) => dom::swap_inner(
+                msg,
+                "<span style=\"color:var(--muted)\">notifications on — push subscription published on-chain</span>",
+            ),
+            Err(e) => dom::swap_inner(msg, &dom::msg_span(dom::Msg::Error, &e)),
+        }
+    });
+}
+
 /// Toggle the header admin dropdown. Origin determines content —
 /// apex shows seed reveal + import + reset, tenant has the gemini
 /// api key input + reset. After opening, pre-fill the api key from

@@ -258,6 +258,14 @@ pub(crate) fn base_system_prompt(
              under ~2000 bytes. Summarize; do NOT paste long multi-paragraph \
              reports. Text over 2048 bytes is rejected before it reaches the \
              chain.\n\
+           • notify(title, body?, vibrate?) — show a system NOTIFICATION on \
+             the user's device, optionally vibrating it (mobile). Use for \
+             alarms/timers the user asked for, long-task-done pings, and \
+             message-arrived alerts — it reaches the user even when the tab \
+             is backgrounded. First use may trigger the browser permission \
+             prompt; if the result says permission is denied, ask the user to \
+             press [enable notifications] under admin → account → \
+             notifications instead of retrying.\n\
          {generate_image_line}\
            • configure_agent(system_prompt?, tools?, reset?) — read or change \
              YOUR OWN config (custom system prompt + tool allowlist), stored in \

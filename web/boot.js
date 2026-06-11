@@ -9,6 +9,18 @@
 // with every click silently vanishing. Dynamic same-origin import is still
 // covered by `script-src 'self'` (no eval). Remaining gap: if boot.js
 // itself fails to load, nothing here runs — only the static shell shows.
+// PWA service worker (web/sw.js): installability + Web Push. Registered
+// FIRST and fire-and-forget so a wasm boot failure can't block install, and
+// a SW failure can't block boot. The worker does NO caching (no-op fetch
+// handler) — see the header comment in sw.js before changing that.
+try {
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("./sw.js").catch(() => {});
+  }
+} catch {
+  /* non-secure context / exotic browser — installability is best-effort */
+}
+
 try {
   const { default: init } = await import("./pkg/localharness.js");
   await init();
