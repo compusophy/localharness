@@ -35,6 +35,7 @@ mod feedback;
 mod gas;
 mod history;
 mod key_store;
+mod lessons;
 mod model;
 mod net;
 mod notifications;

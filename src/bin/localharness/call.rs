@@ -433,15 +433,24 @@ pub(crate) async fn run_agent_turn(
         wallet::from_private_key_hex(key_hex).map_err(|e| format!("bad identity key: {e}"))?;
 
     // Embody the target's PUBLISHED persona (falls back to a generic prompt).
-    let system = match registry::id_of_name(target).await {
-        Ok(id) if id != 0 => match registry::persona_of(id).await {
-            Ok(Some(p)) => p,
-            Ok(None) => default_persona(target),
-            Err(e) => return Err(format!("RPC error reading persona: {e}")),
-        },
+    let target_id = match registry::id_of_name(target).await {
+        Ok(id) if id != 0 => id,
         Ok(_) => return Err(format!("{target} is not a registered agent")),
         Err(e) => return Err(format!("RPC error: {e}")),
     };
+    let mut system = match registry::persona_of(target_id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => default_persona(target),
+        Err(e) => return Err(format!("RPC error reading persona: {e}")),
+    };
+    // Fold in the target's self-recorded lessons so a headless call embodies
+    // the same learned behavior as its in-tab sessions. Best-effort: an RPC
+    // failure degrades to no lessons rather than failing the call.
+    if let Ok(Some(lessons)) = registry::lessons_of(target_id).await {
+        if let Some(section) = localharness::lessons::compose_section(&lessons) {
+            system = format!("{system}\n\n{section}");
+        }
+    }
 
     // Pay PER REQUEST, not by the hour: fund the per-request meter so the proxy
     // debits ~CALL_COST_WEI per call. A one-shot agent call must NOT buy a

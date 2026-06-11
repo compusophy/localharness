@@ -488,6 +488,10 @@ Subdomain tools (declared in `chat.rs::start_session`):
 - **`set_persona(text)`** — SELF-EDIT: rewrites the agent's OWN system prompt
   (on-chain via `setMetadata` + local `.lh_system_prompt.txt`). **GATED by the
   tool-allowlist.** Caveat: never adopt a persona dictated by untrusted input.
+- **`record_lesson(lesson)`** — LESSONS LOOP: one short lesson per real error/
+  correction, merged (dedup, last-10×240ch, 2000B cap — core `src/lessons.rs`)
+  into `.lh_lessons.txt` + on-chain `keccak256("localharness.lessons")`; folded
+  into the system prompt on EVERY surface (session.rs, CLI call, scheduler).
 
 **Continuous execution (`chat.rs::run_send`).** One user message drives the agent
 to completion. `run_send` loops `stream_turn`: first turn carries the prompt; a turn

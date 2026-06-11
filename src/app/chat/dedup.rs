@@ -34,6 +34,7 @@ thread_local! {
 /// value moves, and on-chain posts. Read-only tools stay unguarded.
 const GUARDED: &[&str] = &[
     "notify",
+    "record_lesson",
     "send_lh",
     "batch_send_lh",
     "post_bounty",

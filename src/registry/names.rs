@@ -585,6 +585,27 @@ pub fn encode_set_persona(token_id: u64, persona: &str) -> Vec<u8> {
     encode_set_metadata_bytes(token_id, keccak_key(PERSONA_LABEL), persona.as_bytes())
 }
 
+pub(crate) const LESSONS_LABEL: &[u8] = b"localharness.lessons";
+
+/// Read a subdomain's self-recorded lessons blob (plain text, one lesson per
+/// line; see `crate::lessons`) — folded into the agent's system prompt on
+/// every surface. `None` when unset.
+pub async fn lessons_of(token_id: u64) -> Result<Option<String>, String> {
+    match metadata_bytes_of(token_id, keccak_key(LESSONS_LABEL)).await? {
+        Some(b) => Ok(String::from_utf8(b)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())),
+        None => Ok(None),
+    }
+}
+
+/// Encode `setMetadata` for a subdomain's lessons blob. Owner-gated, same
+/// path as the published persona.
+pub fn encode_set_lessons(token_id: u64, lessons: &str) -> Vec<u8> {
+    encode_set_metadata_bytes(token_id, keccak_key(LESSONS_LABEL), lessons.as_bytes())
+}
+
 /// Read the personas for MANY tokens in ONE JSON-RPC batch POST (vs N
 /// serial `persona_of` round-trips). Returns one entry per input id, in
 /// input order: `Some(persona)` when set, `None` when unset / empty / the
@@ -870,6 +891,39 @@ mod tests {
         assert_ne!(cap, keccak_key(PUBLIC_FACE_LABEL));
         assert_ne!(cap, keccak_key(PUBLIC_HTML_LABEL));
         assert_ne!(cap, app_metadata_key());
+    }
+
+    #[test]
+    fn encode_set_lessons_abi_layout() {
+        let cd = encode_set_lessons(7, "hi");
+        assert_eq!(&cd[0..4], &selector("setMetadata(uint256,bytes32,bytes)"));
+        assert_eq!(&cd[4..36], &u256_be(7));
+        assert_eq!(&cd[36..68], &keccak_key(LESSONS_LABEL));
+        assert_eq!(&cd[68..100], &u256_be(0x60), "bytes offset");
+        assert_eq!(&cd[100..132], &u256_be(2), "payload length");
+        assert_eq!(&cd[132..134], b"hi");
+        assert_eq!(
+            cd.len(),
+            4 + 96 + 32 + 32,
+            "selector + 3 words + len + padded payload"
+        );
+    }
+
+    #[test]
+    fn lessons_key_distinct_from_other_metadata_keys() {
+        // The lessons slot must never collide with persona/app/html/face —
+        // and the TS worker inlines its literal hash, so pin it here too.
+        let lessons = keccak_key(LESSONS_LABEL);
+        assert_ne!(lessons, keccak_key(PERSONA_LABEL));
+        assert_ne!(lessons, keccak_key(PUBLIC_FACE_LABEL));
+        assert_ne!(lessons, keccak_key(PUBLIC_HTML_LABEL));
+        assert_ne!(lessons, app_metadata_key());
+        // Must equal the literal inlined in proxy/api/scheduler.ts (LESSONS_KEY).
+        let hex: String = lessons.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            hex,
+            "08564cae936ec460c48a23578c7df5665bad18fe42f3c5dbde517ad67a9d9c89"
+        );
     }
 
     #[test]

@@ -107,6 +107,12 @@ pub mod sharedfs_reconcile;
 /// `cargo test`. See `src/turn_flow.rs`.
 pub mod turn_flow;
 
+/// Pure lessons-blob merging + prompt-section composition for the agent
+/// LESSONS LOOP (native-testable). The browser `record_lesson` tool, the
+/// headless CLI `call`, and the proxy scheduler worker all fold its output
+/// into the system prompt. See `src/lessons.rs`.
+pub mod lessons;
+
 // The browser-resident IDE. Gated on the `browser-app` feature AND a
 // wasm target, so a native `cargo add localharness` never compiles it.
 #[cfg(all(feature = "browser-app", target_arch = "wasm32"))]
