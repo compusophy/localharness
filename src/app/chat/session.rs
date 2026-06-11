@@ -27,7 +27,8 @@ use super::tools::guild::{
 };
 use super::tools::misc::{
     dwell_tool,
-    clear_context_tool, compact_context_tool, notify_tool, record_lesson_tool,
+    clear_context_tool, compact_context_tool, consolidate_lessons_tool, notify_tool,
+    record_lesson_tool, set_lessons_tool,
     set_persona_tool, spawn_recursive_subagent_tool, submit_feedback_tool, web_fetch_tool,
 };
 use super::tools::platform::{
@@ -234,6 +235,8 @@ pub(crate) async fn start_session(
             .with_tool(submit_feedback_tool())
             .with_tool(notify_tool())
             .with_tool(record_lesson_tool())
+            .with_tool(consolidate_lessons_tool())
+            .with_tool(set_lessons_tool())
             .with_tool(crate::app::self_docs::read_self_docs_tool())
             .with_tool(web_fetch_tool())
             .with_tool(dwell_tool())
@@ -314,6 +317,8 @@ pub(crate) async fn start_session(
             .with_tool(submit_feedback_tool())
             .with_tool(notify_tool())
             .with_tool(record_lesson_tool())
+            .with_tool(consolidate_lessons_tool())
+            .with_tool(set_lessons_tool())
             .with_tool(crate::app::self_docs::read_self_docs_tool())
             .with_tool(web_fetch_tool())
             .with_tool(dwell_tool())

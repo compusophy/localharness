@@ -33,6 +33,7 @@ thread_local! {
 const GUARDED: &[&str] = &[
     "notify",
     "record_lesson",
+    "set_lessons",
     "send_lh",
     "batch_send_lh",
     "post_bounty",
