@@ -499,7 +499,10 @@ that ends with tool activity but no completion signal (`Incomplete`) auto-contin
 with `AUTO_CONTINUE_NUDGE` (no user bubble). Outcomes: `Finished` (called `finish`),
 `FinalAnswer` (pure text → stop), `Incomplete`, `Empty`, `Error`, `Cancelled`.
 Bounded by `MAX_AUTO_CONTINUATIONS = 10`; respects `TURN_CANCEL` + the `TURN_ACTIVE`
-one-turn guard. History/opfs saved after every turn.
+one-turn guard. History/opfs saved after every turn. Mid-run, [⇪ background]
+(tenant-only) stops the turn + escrows 0.5 $LH behind a `GOAL: ` scheduleJob on
+this name (`events/schedule.rs::promote_background_pressed`) so the worker
+finishes it tab-free.
 
 **Ownership = on-chain, not a local cache.** `.lh_owner` stores the on-chain owner
 ADDRESS this device last *proved* it controls (written only after a

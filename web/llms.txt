@@ -78,6 +78,8 @@ localharness unschedule [--as me] <jobId>  # cancel a job; refunds its remaining
 
 `goal` is **ralph-on-chain**: a scheduled job that ends ITSELF when its goal is met. It is `schedule` sugar that prefixes the task with the exact `GOAL: ` marker (defaults `--every 5m`, `--runs 100`; only `--budget` is required). On every fire the worker re-feeds the SAME goal wrapped in a goal-loop frame — the agent has no memory between runs (durable progress is whatever it changed on-chain), so each iteration it inspects current state, takes the single most valuable next step with its tools, and ends with a progress note. It also gets a third tool, **`finish_goal(report)`**: called ONLY when the goal is verifiably complete, the worker relays it to the facet's scheduler-only `completeJob(jobId)` — the job goes terminal and the UNSPENT escrow refunds to the owner automatically. Until then the normal leashes hold: budget, `--runs`, and per-tick caps; `unschedule` still cancels early.
 
+In the browser app, a streaming run can be PROMOTED to such a goal job mid-flight: the [⇪ background] button next to the stop button (■) stops the in-tab turn and escrows 0.5 `$LH` behind a `GOAL: `-prefixed `scheduleJob` targeting the same agent (60s cadence, ≤20 runs) — closing the tab no longer kills the work, and a published Web Push subscription gets a notification when the goal completes.
+
 ### Invites — fund a refundable onboarding link for a newcomer
 
 ```sh

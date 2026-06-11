@@ -11,6 +11,19 @@ const SCHEDULE_MIN_INTERVAL_SECS: u64 = 60;
 /// CLI's `SCHEDULE_DEFAULT_RUNS`).
 const SCHEDULE_DEFAULT_RUNS: u32 = 100;
 
+/// The EXACT on-chain task marker the scheduler worker recognises as a goal
+/// loop (ralph-on-chain; mirrors the CLI's `GOAL_TASK_PREFIX` and the
+/// worker's `GOAL_PREFIX` in `proxy/api/scheduler.ts`): each fire re-feeds
+/// the goal, the agent takes one step, and `finish_goal` self-cancels the
+/// job (refunding the unspent escrow) when the goal is verifiably met.
+const GOAL_TASK_PREFIX: &str = "GOAL: ";
+/// Promote-to-background goal-job parameters: tight cadence (the on-chain
+/// 60s minimum — the work was already mid-flight), a bounded run count, and
+/// a 0.5 `$LH` escrow as the hard cost stop.
+const PROMOTE_INTERVAL_SECS: u64 = 60;
+const PROMOTE_MAX_RUNS: u32 = 20;
+const PROMOTE_BUDGET_WEI: u128 = 500_000_000_000_000_000; // 0.5 $LH
+
 /// Parse a human cadence (`60s` / `5m` / `1h`, bare number = seconds) into
 /// seconds, enforcing the 60s floor. Mirrors the CLI's `parse_interval`
 /// EXACTLY so the browser + CLI accept the same strings. `None` on garbage
@@ -108,43 +121,8 @@ pub(super) fn schedule_job_pressed() {
         "<span style=\"color:var(--muted)\">scheduling…</span>",
     );
     wasm_bindgen_futures::spawn_local(async move {
-        let result = async {
-            super::sponsor_rate_guard()?;
-            let target_id = crate::app::registry::id_of_name(&target).await?;
-            if target_id == 0 {
-                return Err("target agent not found".to_string());
-            }
-            let (signer, _) = crate::app::chat::credit_signer()
-                .await
-                .ok_or_else(|| "no identity".to_string())?;
-            let fee_payer = crate::app::sponsor::signer()?;
-            crate::app::registry::schedule_job_sponsored(
-                &signer,
-                &fee_payer,
-                target_id,
-                task.as_bytes(),
-                interval_secs,
-                budget_wei,
-                max_runs,
-                crate::app::registry::ALPHA_USD_ADDRESS,
-            )
-            .await
-        }
-        .await;
-        match result {
-            Ok(_) => {
-                // The escrow left the funder's spendable balance — reflect it.
-                super::refresh_credits_pill().await;
-                // New job id = the last entry in jobsOf(caller). Read it back so
-                // the success panel + list reflect the freshly-mined job.
-                let new_id = match crate::app::chat::credit_address_existing().await {
-                    Some(addr) => crate::app::registry::jobs_of(&addr)
-                        .await
-                        .ok()
-                        .and_then(|ids| ids.last().copied())
-                        .unwrap_or(0),
-                    None => 0,
-                };
+        match submit_schedule_job(&target, &task, interval_secs, budget_wei, max_runs).await {
+            Ok(new_id) => {
                 dom::swap_inner(
                     "schedule-result",
                     &templates::schedule_result_panel(new_id).into_string(),
@@ -163,6 +141,150 @@ pub(super) fn schedule_job_pressed() {
             }
         }
     });
+}
+
+/// The ONE escrow-backed `scheduleJob` submission core, shared by the admin
+/// schedule form ([`schedule_job_pressed`]) and the in-run [⇪ background]
+/// promote ([`promote_background_pressed`]): sponsor rate guard → resolve
+/// the target name → credit signer + embedded fee payer → sponsored
+/// approve+`scheduleJob` tx → refresh the credits pill → read the new job id
+/// back from `jobsOf(caller)` (its last entry; 0 if unreadable). The budget
+/// is pulled from the caller's WALLET `$LH` by `transferFrom` — the
+/// per-request meter does NOT back this escrow, so "has metered credits but
+/// the escrow fails" means the wallet itself is short.
+async fn submit_schedule_job(
+    target: &str,
+    task: &str,
+    interval_secs: u64,
+    budget_wei: u128,
+    max_runs: u32,
+) -> Result<u64, String> {
+    super::sponsor_rate_guard()?;
+    let target_id = crate::app::registry::id_of_name(target).await?;
+    if target_id == 0 {
+        return Err("target agent not found".to_string());
+    }
+    let (signer, _) = crate::app::chat::credit_signer()
+        .await
+        .ok_or_else(|| "no identity".to_string())?;
+    let fee_payer = crate::app::sponsor::signer()?;
+    crate::app::registry::schedule_job_sponsored(
+        &signer,
+        &fee_payer,
+        target_id,
+        task.as_bytes(),
+        interval_secs,
+        budget_wei,
+        max_runs,
+        crate::app::registry::ALPHA_USD_ADDRESS,
+    )
+    .await?;
+    // The escrow left the funder's spendable balance — reflect it.
+    super::refresh_credits_pill().await;
+    // New job id = the last entry in jobsOf(caller). Read it back so the
+    // caller's confirmation surface reflects the freshly-mined job.
+    let new_id = match crate::app::chat::credit_address_existing().await {
+        Some(addr) => crate::app::registry::jobs_of(&addr)
+            .await
+            .ok()
+            .and_then(|ids| ids.last().copied())
+            .unwrap_or(0),
+        None => 0,
+    };
+    Ok(new_id)
+}
+
+/// CONTINUE-IN-BACKGROUND (the [⇪ background] button next to ■ while a run
+/// streams): stop the in-tab turn cooperatively, then promote the run's
+/// ORIGINAL user request to a headless on-chain goal job targeting this
+/// tenant — the scheduler worker drives it to completion (and `finish_goal`
+/// self-cancels + refunds) with the tab closed. Partial in-tab progress is
+/// already durable: history persists per turn, and on-chain effects live in
+/// the diamond; the goal text tells the worker run to inspect + continue.
+pub(super) fn promote_background_pressed() {
+    // Tenant-only (the button only renders on a tenant; belt-and-braces).
+    let Some(name) = crate::app::tenant::current_name() else {
+        return;
+    };
+    // No active run → silent no-op (the lifecycle keeps the button absent).
+    let Some(prompt) = crate::app::chat::active_run_prompt() else {
+        return;
+    };
+    // Stop the in-tab turn (same TURN_CANCEL path as ■); false = already
+    // promoted this run or the run just ended — never schedule twice.
+    if !crate::app::chat::request_stop_for_promote() {
+        return;
+    }
+    // The run is over from the tab's perspective — restore the send button
+    // now (also removes this button, so a second press is impossible).
+    dom::swap_outer("terminal-stop", &templates::send_button().into_string());
+    dom::set_status("continuing in background — scheduling…", false);
+    wasm_bindgen_futures::spawn_local(async move {
+        let task = format!(
+            "{GOAL_TASK_PREFIX}{prompt} (promoted from an in-tab run; prior \
+             partial progress may exist — inspect state and continue)"
+        );
+        match submit_schedule_job(
+            &name,
+            &task,
+            PROMOTE_INTERVAL_SECS,
+            PROMOTE_BUDGET_WEI,
+            PROMOTE_MAX_RUNS,
+        )
+        .await
+        {
+            Ok(job_id) => {
+                let job = if job_id == 0 {
+                    "job scheduled".to_string()
+                } else {
+                    format!("job #{job_id}")
+                };
+                let ping = if push_ready().await {
+                    "you'll get a notification when it completes"
+                } else {
+                    "enable notifications to get pinged"
+                };
+                dom::set_status(&format!("continuing in background — {job}; {ping}"), false);
+                refresh_jobs_list().await;
+            }
+            Err(e) => {
+                web_sys::console::warn_1(&JsValue::from_str(&format!(
+                    "promote background: {e}"
+                )));
+                dom::set_status(
+                    "couldn't continue in background (need 0.5 $LH to escrow)",
+                    true,
+                );
+            }
+        }
+    });
+}
+
+/// Can the scheduler worker actually notify this user when the promoted job
+/// completes? True only when BOTH halves hold: notification permission is
+/// granted on this device (sync, free) AND a Web Push subscription is
+/// published on-chain under the owner's MAIN tokenId (one `push_sub_of`
+/// read; the slot rule mirrors `notifications::enable_and_publish`).
+/// Best-effort — any read failure reports false, and the caller's message
+/// degrades to "enable notifications" rather than promising a ping.
+async fn push_ready() -> bool {
+    if !matches!(
+        web_sys::Notification::permission(),
+        web_sys::NotificationPermission::Granted
+    ) {
+        return false;
+    }
+    let Ok((name, owner)) = crate::app::tenant::current_tenant_owner().await else {
+        return false;
+    };
+    let token_id = match crate::registry::main_of(&owner).await {
+        Ok(id) if id != 0 => id,
+        _ => match crate::registry::id_of_name(&name).await {
+            Ok(id) if id != 0 => id,
+            _ => return false,
+        },
+    };
+    matches!(crate::registry::push_sub_of(token_id).await, Ok(Some(_)))
 }
 
 /// Cancel a scheduled job from the admin list (ScheduleFacet `cancelJob`
