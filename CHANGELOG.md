@@ -5,6 +5,83 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+The first release whose changes include **colony-authored code**: five of the
+entries below were implemented end-to-end by on-chain worker agents (dex-qa,
+vex-qa, kit-qa, rho-qa, nova-qa) — feedback → GitHub issue → escrowed `$LH`
+bounty → agent PR → verify gate → merge → on-chain settlement to the worker's
+token-bound account.
+
+### Added
+
+- **`/goal` — ralph-on-chain.** `localharness goal <target> "<goal>" --budget X`
+  schedules a self-terminating goal loop: each cron fire re-feeds the goal, the
+  agent takes one step, and `finish_goal` ends the job on-chain via the new
+  scheduler-only `ScheduleFacet.completeJob` (refunding the remaining escrow).
+- **PWA + Web Push.** Installable manifest + icons + service worker; an
+  agent-facing `notify(title, body, vibrate)` tool; admin
+  `[enable notifications]` publishes the push subscription on-chain
+  (`keccak256("localharness.push_sub")`, MAIN slot); the scheduler worker
+  pushes job results — and `GOAL COMPLETE` — to the owner's device with every
+  tab closed. RFC 8291/8292 implemented on `crypto.subtle` (Edge-safe).
+- **PC-to-mobile notify routing.** `<proxy>/api/notify` (signed + metered,
+  self-only), CLI `localharness notify <title> [body…]`, and a budget-gated
+  `notify_owner` tool inside scheduled goal loops.
+- **`web_fetch(url)` grounding tool** over the proxy's new SSRF-guarded,
+  metered `/api/fetch` route (https-only, private-range denial, 200KB text cap).
+- **Lessons — persistent self-adaptation.** `record_lesson` captures
+  corrections (bounded list, local + on-chain under
+  `keccak256("localharness.lessons")`); lessons fold into the system prompt on
+  every surface (browser, headless `call`, scheduler loops). The "dreaming"
+  pass — `consolidate_lessons` + `set_lessons` — synthesizes, generalizes, and
+  prunes the list through the same invariants.
+- **Unified stream UI.** Chat is the app: FILES/DISPLAY tabs removed; files
+  open in a header modal, display renders in a fullscreen overlay, and file /
+  directory / display results appear as inline cards in the transcript (with
+  history replay). A context-fullness bar tops the chat column; a turn-stage
+  trail (`paying → thinking → streaming → tools`) shows execution state inside
+  the pending response.
+- **`[⇪ background]`** — promote a streaming in-tab run to an on-chain goal job
+  mid-flight; close the app, get the push when it completes.
+- **Agent balance + transfer tools:** `check_balances()` (wallet / meter / TBA
+  in one read), `batch_send_lh` (up to 20 transfers in ONE sponsored tx),
+  `dwell(seconds)` (clean cooldown waits).
+- **`CreditMeterFacet.withdrawCredits`** — unspent chat-meter credits are
+  caller-owned escrow and now withdraw back to the wallet; **every** escrow
+  path (x402 calls, sends, schedule/goal, invites, bounties, guild funding —
+  browser and CLI) auto-bridges a wallet shortfall from the meter.
+- **Colony pipeline** (`scripts/colony/`): `sync-issues` (on-chain feedback →
+  GitHub issues with provenance), `issue-to-bounty` (escrow per issue),
+  `settle-on-merge` (verify the merged PR + claimant before paying) + runbook.
+- **SDK:** `with_auth_provider` (per-request credential minting on both
+  backends) and `with_pre_tool_hook` (custom pre-tool-call decide hooks) on all
+  agent configs.
+
+### Fixed
+
+- **Gemini 3.x `thoughtSignature` 400** — functionCall parts now round-trip the
+  signature through history; multi-round tool turns were bricked on every
+  surface (the "tool usage not working" bug).
+- **5-minute proxy-token staleness 401** — credits-mode sessions sign a fresh
+  auth token per request instead of baking one at session start; long thinking
+  turns no longer die mid-conversation (and the failure no longer misdiagnoses
+  as a bad BYOK key).
+- **Duplicate side-effecting actions** — a pre-tool-call guard denies exact
+  repeats of notifications, transfers, posts, and feedback within one request
+  (both the auto-continue and parallel-functionCall vectors); notifications
+  additionally carry content-derived tags so Android collapses any residual
+  double render.
+- **Detailed rustlite/cartridge errors** — compile failures carry
+  `line:col` + a caret-marked source snippet on every surface; `run_cartridge`
+  awaits the first lifecycle signal and reports instantiate/run/watchdog
+  failures structurally instead of claiming success.
+- Pre-turn errors render in the chat stream and clear on the next send; user
+  turns dropped the left border (visual separation); seed reveal gained a
+  one-tap copy; the header gained an insect-icon bug-report button.
+- PWA icons re-encoded as RGBA (Android WebAPK minting rejected grayscale);
+  in-app `[install app]` button + notification `[test]` button.
+
 ## [0.31.0] - 2026-06-10
 
 ### Added
