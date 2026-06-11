@@ -438,6 +438,97 @@ contract ScheduleFacetTest is Test {
         assertEq(sched.schedulerAddress(), newWorker);
     }
 
+    // --- completeJob: scheduler-declared goal completion + refund --------
+
+    function test_completeJob_refunds_remainder_and_terminal() public {
+        uint256 id = _schedule();
+        // Run once so there's a partial spend — the refund must be EXACTLY
+        // the unspent remainder, not the original budget.
+        uint64 due = sched.getJob(id).nextRun;
+        vm.warp(due);
+        vm.prank(worker);
+        sched.recordRun(id, due, COST);
+
+        uint256 ownerBefore = lh.balanceOf(owner);
+        vm.prank(worker);
+        sched.completeJob(id);
+
+        LibScheduleStorage.Job memory j = sched.getJob(id);
+        assertEq(uint8(j.status), uint8(LibScheduleStorage.Status.Exhausted), "goal-complete is terminal");
+        assertEq(j.budgetWei, 0, "budget zeroed");
+        // Refund exactness: BUDGET - COST back to the owner; the spent COST
+        // stays in the diamond as treasury.
+        assertEq(lh.balanceOf(owner), ownerBefore + (BUDGET - COST), "exact unspent remainder refunded");
+        assertEq(lh.balanceOf(address(sched)), COST, "diamond keeps only the spent cost");
+        // The owner's active-job cap slot is returned.
+        assertEq(sched.activeJobCountOf(owner), 0, "active-job slot freed");
+    }
+
+    function test_completeJob_only_scheduler() public {
+        uint256 id = _schedule();
+        // Neither a stranger NOR the job's own owner may complete — only
+        // the scheduler role (the worker relaying the agent's finish_goal).
+        vm.prank(stranger);
+        vm.expectRevert(ScheduleFacet.NotScheduler.selector);
+        sched.completeJob(id);
+        vm.prank(owner);
+        vm.expectRevert(ScheduleFacet.NotScheduler.selector);
+        sched.completeJob(id);
+    }
+
+    function test_completeJob_double_complete_reverts_no_double_refund() public {
+        uint256 id = _schedule();
+        vm.prank(worker);
+        sched.completeJob(id);
+
+        uint256 ownerAfterFirst = lh.balanceOf(owner);
+        vm.prank(worker);
+        vm.expectRevert(ScheduleFacet.JobNotActive.selector);
+        sched.completeJob(id);
+        assertEq(lh.balanceOf(owner), ownerAfterFirst, "no second refund");
+    }
+
+    function test_completeJob_reverts_unknown_job() public {
+        vm.prank(worker);
+        vm.expectRevert(ScheduleFacet.UnknownJob.selector);
+        sched.completeJob(999);
+    }
+
+    function test_completeJob_reverts_on_cancelled_job() public {
+        // Cancel already refunded — a late complete must not refund again.
+        uint256 id = _schedule();
+        vm.prank(owner);
+        sched.cancelJob(id);
+        vm.prank(worker);
+        vm.expectRevert(ScheduleFacet.JobNotActive.selector);
+        sched.completeJob(id);
+    }
+
+    function test_completeJob_works_on_paused_job() public {
+        // An owner pausing mid-run must not strand a met goal's refund.
+        uint256 id = _schedule();
+        vm.prank(owner);
+        sched.pauseJob(id);
+
+        uint256 ownerBefore = lh.balanceOf(owner);
+        vm.prank(worker);
+        sched.completeJob(id);
+        assertEq(lh.balanceOf(owner), ownerBefore + BUDGET, "paused complete refunds full budget");
+    }
+
+    function test_recordRun_reverts_after_complete() public {
+        // A racing tick that finished its turn after the goal completed must
+        // not debit a terminal job.
+        uint256 id = _schedule();
+        uint64 due = sched.getJob(id).nextRun;
+        vm.prank(worker);
+        sched.completeJob(id);
+        vm.warp(due);
+        vm.prank(worker);
+        vm.expectRevert(ScheduleFacet.JobNotActive.selector);
+        sched.recordRun(id, due, COST);
+    }
+
     // --- jobsDue pagination ---------------------------------------------
 
     function test_jobsDue_returns_only_due_active_paged() public {

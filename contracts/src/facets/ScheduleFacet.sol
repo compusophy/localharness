@@ -68,6 +68,11 @@ contract ScheduleFacet {
     event JobRan(uint256 indexed id, uint32 runsLeft, uint128 spentWei, uint64 nextRun, uint8 status);
     event JobCancelled(uint256 indexed id, uint128 refundedWei);
     event JobExhausted(uint256 indexed id, uint128 refundedWei);
+    /// The job's GOAL was declared complete by the run itself (the worker
+    /// relayed the agent's `finish_goal`) — terminal, remainder refunded.
+    /// Distinguishable from JobExhausted (budget/runs ran dry) and
+    /// JobCancelled (the owner pulled the plug).
+    event JobCompleted(uint256 indexed id, uint128 refundedWei);
     event JobPaused(uint256 indexed id);
     event JobResumed(uint256 indexed id, uint64 nextRun);
     event JobToppedUp(uint256 indexed id, uint128 addWei, uint128 newBudget);
@@ -286,6 +291,44 @@ contract ScheduleFacet {
             j.nextRun = newNextRun;
             emit JobRan(id, runsLeft, spentWei, newNextRun, uint8(LibScheduleStorage.Status.Active));
         }
+    }
+
+    /// SCHEDULER-ROLE-ONLY goal completion — the on-chain half of the
+    /// `/goal` ralph loop. When a scheduled run's agent calls its
+    /// `finish_goal` tool (the goal is verifiably met), the worker relays
+    /// it here: the job is marked terminal (`Exhausted` — same terminal
+    /// semantics as a budget hard-stop) and the FULL remaining `budgetWei`
+    /// is refunded to the job's owner. This is the only way a job ends
+    /// EARLY without its owner acting: `cancelJob` is owner-only and
+    /// `recordRun` only exhausts when budget/runs run dry.
+    ///
+    /// Same trust envelope as `recordRun` (§2.6): the scheduler gains no
+    /// spend authority — completing a job can only REFUND escrow to its
+    /// owner, never move it anywhere else. Accepts Active OR Paused (an
+    /// owner pausing mid-run must not strand a met goal's refund);
+    /// terminal states revert `JobNotActive`, so a double-complete (or a
+    /// complete after cancel/exhaust) cannot double-refund. CEI: budget
+    /// zeroed + status terminal before the external transfer.
+    function completeJob(uint256 id) external {
+        LibScheduleStorage.Storage storage s = LibScheduleStorage.load();
+        if (msg.sender != s.scheduler) revert NotScheduler();
+
+        LibScheduleStorage.Job storage j = s.jobs[id];
+        if (j.owner == address(0)) revert UnknownJob();
+        if (
+            j.status != LibScheduleStorage.Status.Active
+                && j.status != LibScheduleStorage.Status.Paused
+        ) revert JobNotActive();
+
+        uint128 refund = j.budgetWei;
+        j.budgetWei = 0;
+        j.status = LibScheduleStorage.Status.Exhausted;
+        // #3: the job leaves the live (Active|Paused) set — return the
+        // owner's cap slot. (Underflow-safe: incremented on creation; the
+        // status guard above means a job completes at most once.)
+        s.activeJobsOf[j.owner] -= 1;
+        emit JobCompleted(id, refund);
+        if (refund > 0) _refund(j.owner, refund);
     }
 
     // --- Recursion (#4 cross-tick child jobs, parent-budget-funded) -----
