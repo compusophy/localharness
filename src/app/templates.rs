@@ -763,6 +763,9 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                     // DAO governance: propose + vote on treasury spends from a
                     // guild's pooled $LH (VotingFacet propose / vote / execute).
                     (admin_governance_section())
+                    // Notifications: permission + Web Push subscription,
+                    // published on-chain for the tab-closed scheduler pushes.
+                    (admin_notify_section())
                     (admin_security_collapsed())
                 }
                 div.admin-footer {
@@ -1236,6 +1239,27 @@ pub(crate) fn governance_result_panel(proposal_id: u64, amount_lh: &str) -> Mark
                 "guild members can now vote for/against; once it passes and the \
                  voting deadline elapses, it can be executed to pay out the treasury."
             }
+        }
+    }
+}
+
+/// Notifications — [enable notifications] asks the browser for Notification
+/// permission (this click IS the user gesture browsers require), subscribes
+/// Web Push against the service worker, and publishes the subscription
+/// on-chain (`keccak256("localharness.push_sub")`, MAIN tokenId) so the
+/// proxy's scheduler worker can notify the owner when a scheduled job runs —
+/// tab closed, app installed or not. Also unlocks the agent's `notify` tool
+/// without a mid-turn permission prompt.
+pub(crate) fn admin_notify_section() -> Markup {
+    html! {
+        div.admin-section {
+            div.admin-section-title { "notifications" }
+            div.pair-slot {
+                button type="button" data-action="enable-notifications" .ghost {
+                    "enable notifications"
+                }
+            }
+            div #notify-msg .admin-msg-slot {}
         }
     }
 }

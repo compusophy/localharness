@@ -148,6 +148,10 @@ enum Action {
     UnlinkDevice(String),
     UnlinkConfirm(String),
     UnlinkCancel,
+    /// Ask Notification permission (this click is the required user gesture),
+    /// subscribe Web Push, and publish the subscription on-chain so the
+    /// scheduler worker can notify the owner with the tab closed.
+    EnableNotifications,
 }
 
 impl Action {
@@ -216,6 +220,7 @@ impl Action {
             "unlink-device" => Action::UnlinkDevice(arg.unwrap_or_default()),
             "unlink-confirm" => Action::UnlinkConfirm(arg.unwrap_or_default()),
             "unlink-cancel" => Action::UnlinkCancel,
+            "enable-notifications" => Action::EnableNotifications,
             _ => return None,
         })
     }
@@ -859,6 +864,7 @@ fn dispatch(action: Action) {
         Action::UnlinkDevice(addr) => devices::unlink_device_prompt(addr),
         Action::UnlinkConfirm(addr) => devices::unlink_confirm_pressed(addr),
         Action::UnlinkCancel => devices::unlink_cancel_pressed(),
+        Action::EnableNotifications => admin::enable_notifications_pressed(),
     }
 }
 
