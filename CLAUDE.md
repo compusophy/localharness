@@ -57,6 +57,8 @@ src/                  library crate
 ├── encoding.rs       THE canonical hex/address/amount codecs (don't re-roll one)
 ├── turn_flow.rs      pure turn-classification + MAX_AUTO_CONTINUATIONS (hoisted
 │                     from app::chat so its loop-guard tests run natively)
+├── turn_stage.rs     pure stage state machine for the pending-turn "paying →
+│                     thinking → streaming" line (painted by app/chat/stage.rs)
 ├── builtins/         backend-NEUTRAL builtin tools (8 fs, ask_question, finish,
 │                     start_subagent, generate_image, call_agent, ...) + the two
 │                     schema-lint guard tests; shim left at backends/gemini/tools

@@ -24,6 +24,7 @@ mod access;
 mod dedup;
 mod prompt;
 mod session;
+mod stage;
 mod tools;
 
 // The chat:: surface the rest of the app calls (events.rs, agent_rpc.rs,
@@ -127,6 +128,9 @@ impl Drop for TurnGuard {
         TURN_ACTIVE.with(|c| c.set(false));
         TURN_CANCEL.with(|c| c.set(false));
         PROMOTE_REQUESTED.with(|c| c.set(false));
+        // Never leave a stage line pulsing after the run — every exit path
+        // (including panics-as-aborts aside, early returns) clears it.
+        stage::end();
         if dom::by_id("terminal-stop").is_some() {
             dom::swap_outer("terminal-stop", &templates::send_button().into_string());
         }
@@ -186,11 +190,58 @@ pub(crate) async fn run_send() {
     // the status line is a transient mirror only.
     dom::set_status("", false);
 
+    // Paint the user bubble + the PENDING assistant turn up front, BEFORE
+    // the payment gate / session boot, so the pre-model phases show as a
+    // stage line INSIDE the stream instead of an opaque pause (GitHub #19).
+    // `stream_turn` reuses these ids for the first turn.
+    let (user_turn_id, assistant_turn_id, first_seg_id) = APP.with(|cell| {
+        let mut app = cell.borrow_mut();
+        (app.alloc_id(), app.alloc_id(), app.alloc_id())
+    });
+    dom::append_html(
+        "transcript",
+        &templates::turn(user_turn_id, "user", html! { (prompt) }, false).into_string(),
+    );
+    dom::append_html(
+        "transcript",
+        &templates::turn(
+            assistant_turn_id,
+            "assistant",
+            html! {
+                (templates::stage_container(assistant_turn_id))
+                (templates::text_segment(first_seg_id, ""))
+            },
+            true,
+        )
+        .into_string(),
+    );
+    dom::scroll_to_bottom("transcript");
+    stage::begin(assistant_turn_id);
+
+    // Clear the prompt, keep focus — the value is already captured above.
+    prompt_area.set_value("");
+    let _ = prompt_area.focus();
+
+    // Swap the send arrow for the stop slot for the whole (possibly
+    // multi-turn) run; the guard / loop-end restores it. The [⇪ background]
+    // promote rides along only on a tenant — scheduling a goal job needs an
+    // on-chain name to target, which apex / Host::Other don't have.
+    let can_promote = matches!(
+        super::tenant::current(),
+        super::tenant::Host::Tenant(_)
+    );
+    dom::swap_outer(
+        "terminal-send",
+        &templates::stop_button(can_promote).into_string(),
+    );
+
     // Payment gate. If the agent's owner has set a per-turn price AND
     // we know this visitor is *not* the owner, collect payment via
     // the cross-origin iframe signer before the LLM call runs.
     // Owner-of-the-agent always sends free; verification-pending /
     // unregistered / failed states fall through without charging.
+    // (The "paying" stage is entered inside the gate, only when it
+    // actually collects.)
     match collect_payment_if_required().await {
         Ok(None) => {} // free or no gate
         Ok(Some(tx_hash)) => {
@@ -200,7 +251,7 @@ pub(crate) async fn run_send() {
             );
         }
         Err(err) => {
-            transcript_system_error(&format!("payment failed: {err}"));
+            fail_pending_turn(assistant_turn_id, &format!("payment failed: {err}"));
             dom::set_status("payment failed — see the message above", true);
             return;
         }
@@ -220,34 +271,19 @@ pub(crate) async fn run_send() {
         app.agent.is_none() || app.session_key.as_deref() != Some(access.identity.as_str())
     });
     if session_needs_start {
+        stage::enter(crate::turn_stage::Stage::Starting);
         if let Err(err) = start_session(&key, access.base_url.clone(), &access.identity).await {
-            transcript_system_error(&format!("session start failed: {err:?}"));
+            fail_pending_turn(assistant_turn_id, &format!("session start failed: {err:?}"));
             dom::set_status("session start failed — see the message above", true);
             return;
         }
     }
 
     let Some(agent) = APP.with(|cell| cell.borrow().agent.clone()) else {
+        fail_pending_turn(assistant_turn_id, "internal: agent not set after start_session");
         dom::set_status("internal: agent not set after start_session", true);
         return;
     };
-
-    // Clear the prompt, keep focus — the value is already captured above.
-    prompt_area.set_value("");
-    let _ = prompt_area.focus();
-
-    // Swap the send arrow for the stop slot for the whole (possibly
-    // multi-turn) run; the guard / loop-end restores it. The [⇪ background]
-    // promote rides along only on a tenant — scheduling a goal job needs an
-    // on-chain name to target, which apex / Host::Other don't have.
-    let can_promote = matches!(
-        super::tenant::current(),
-        super::tenant::Host::Tenant(_)
-    );
-    dom::swap_outer(
-        "terminal-send",
-        &templates::stop_button(can_promote).into_string(),
-    );
 
     // === Continuous execution ===
     // The first turn carries the user's prompt and renders a user bubble.
@@ -259,13 +295,16 @@ pub(crate) async fn run_send() {
     // iteration cooperatively honours the stop button (TURN_CANCEL).
     let mut next_input = TurnInput::User(prompt);
     let mut auto_continuations: u32 = 0;
+    // The pre-painted shell above feeds the FIRST turn; auto-continuations
+    // paint their own (one stage swap target per turn).
+    let mut preallocated = Some((assistant_turn_id, first_seg_id));
     // Fresh request — clear the duplicate-action ledger.
     dedup::reset_run();
     loop {
         if TURN_CANCEL.with(|c| c.get()) {
             break;
         }
-        let outcome = stream_turn(&agent, next_input).await;
+        let outcome = stream_turn(&agent, next_input, preallocated.take()).await;
 
         // Persist + refresh after every turn so tool-created files and the
         // history marker show up incrementally (not just at the very end).
@@ -346,6 +385,13 @@ pub(crate) async fn run_send() {
         }
     }
 
+    // Cancelled before the first turn ever streamed (stop pressed during the
+    // payment gate / session boot): the pre-painted shell was never consumed —
+    // finalize it so it doesn't pulse forever.
+    if let Some((turn_id, _)) = preallocated {
+        mark_turn_done(turn_id);
+    }
+
     // Restore the send button if the stop button is still showing.
     if dom::by_id("terminal-stop").is_some() {
         dom::swap_outer("terminal-stop", &templates::send_button().into_string());
@@ -418,39 +464,52 @@ enum TurnInput {
 }
 
 /// Stream ONE agent turn into the transcript and report how it ended.
-/// Renders a user bubble only for [`TurnInput::User`]; auto-continuations
-/// render just the assistant bubble so the internal nudge never shows.
-async fn stream_turn(agent: &Agent, input: TurnInput) -> TurnOutcome {
+/// The first turn of a run arrives with `pre` = the shell `run_send`
+/// pre-painted (user bubble already rendered, stage line already live for
+/// the pre-model phases); auto-continuations pass `None` and paint just an
+/// assistant bubble so the internal nudge never shows.
+async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -> TurnOutcome {
     let (prompt, render_user) = match input {
         TurnInput::User(p) => (p, true),
         TurnInput::AutoContinue => (AUTO_CONTINUE_NUDGE.to_string(), false),
         TurnInput::ResumeTruncated => (TRUNCATED_RETRY_NUDGE.to_string(), false),
     };
 
-    // Allocate ids for the (optional) user turn, assistant turn, and first
-    // text segment up front. Element identity is fixed before we touch the DOM.
-    let (user_turn_id, assistant_turn_id, mut seg_id) = APP.with(|cell| {
-        let mut app = cell.borrow_mut();
-        (app.alloc_id(), app.alloc_id(), app.alloc_id())
-    });
-
-    if render_user {
-        dom::append_html(
-            "transcript",
-            &templates::turn(user_turn_id, "user", html! { (prompt) }, false).into_string(),
-        );
-    }
-    dom::append_html(
-        "transcript",
-        &templates::turn(
-            assistant_turn_id,
-            "assistant",
-            templates::text_segment(seg_id, ""),
-            true,
-        )
-        .into_string(),
-    );
-    dom::scroll_to_bottom("transcript");
+    // Reuse the pre-painted shell, or allocate + paint a fresh one (element
+    // identity fixed before we touch the DOM). Each turn gets its OWN stage
+    // swap target; `stage::begin` arms it.
+    let (assistant_turn_id, mut seg_id) = match pre {
+        Some(ids) => ids,
+        None => {
+            let (user_turn_id, assistant_turn_id, seg_id) = APP.with(|cell| {
+                let mut app = cell.borrow_mut();
+                (app.alloc_id(), app.alloc_id(), app.alloc_id())
+            });
+            if render_user {
+                dom::append_html(
+                    "transcript",
+                    &templates::turn(user_turn_id, "user", html! { (prompt) }, false)
+                        .into_string(),
+                );
+            }
+            dom::append_html(
+                "transcript",
+                &templates::turn(
+                    assistant_turn_id,
+                    "assistant",
+                    html! {
+                        (templates::stage_container(assistant_turn_id))
+                        (templates::text_segment(seg_id, ""))
+                    },
+                    true,
+                )
+                .into_string(),
+            );
+            dom::scroll_to_bottom("transcript");
+            stage::begin(assistant_turn_id);
+            (assistant_turn_id, seg_id)
+        }
+    };
 
     let assistant_body_id = format!("turn-body-{assistant_turn_id}");
 
@@ -489,6 +548,7 @@ async fn stream_turn(agent: &Agent, input: TurnInput) -> TurnOutcome {
             Ok(StreamChunk::Text { text, .. }) => {
                 if !text.is_empty() {
                     any_visible = true;
+                    stage::enter(crate::turn_stage::Stage::Streaming);
                     let (cur_id, cur_text) = text_segments
                         .last_mut()
                         .expect("text_segments seeded at start of turn");
@@ -500,6 +560,7 @@ async fn stream_turn(agent: &Agent, input: TurnInput) -> TurnOutcome {
             }
             Ok(StreamChunk::ToolCall(call)) => {
                 any_visible = true;
+                stage::enter(crate::turn_stage::Stage::Tools);
                 // `finish` and `ask_question` are completion / blocking
                 // signals, NOT goal steps — they end the autonomous loop
                 // (finish = done, ask_question = waiting on the user). Only a
@@ -576,6 +637,7 @@ async fn stream_turn(agent: &Agent, input: TurnInput) -> TurnOutcome {
                 // (output budget exhausted) — that case is retried, not
                 // dead-ended as "(empty response)".
                 saw_thinking = true;
+                stage::enter(crate::turn_stage::Stage::Thinking);
             }
             Err(err) => {
                 report_turn_error("stream", &format!("{err}"), assistant_turn_id);
@@ -734,15 +796,18 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
     }
 }
 
-/// Surface a pre-turn failure IN THE STREAM (feedback #64): errors belong in
-/// the chronological transcript, not only the footer status line. Renders the
-/// same `.turn-error` shape `report_turn_error` uses, inside a bare assistant
-/// turn block, and scrolls it into view.
-fn transcript_system_error(text: &str) {
+/// Surface a PRE-MODEL failure (payment gate / session boot / internal) in
+/// the stream (feedback #64): errors belong in the chronological transcript,
+/// not only the footer status line. The pending turn `run_send` pre-painted
+/// is finalized (stage line cleared, spinner stopped) and the same
+/// `.turn-error` shape `report_turn_error` uses lands INSIDE its body — the
+/// error stays where the work was promised.
+fn fail_pending_turn(turn_id: u32, text: &str) {
+    mark_turn_done(turn_id);
     dom::append_html(
-        "transcript",
+        &format!("turn-body-{turn_id}"),
         &format!(
-            "<div class=\"turn assistant\"><div class=\"body\"><div class=\"turn-error\">{}</div></div></div>",
+            "<div class=\"turn-error\">{}</div>",
             dom::msg_span(dom::Msg::Error, text)
         ),
     );
@@ -776,6 +841,9 @@ fn update_context_bar(agent: &crate::Agent) {
 }
 
 fn mark_turn_done(turn_id: u32) {
+    // The pipeline line is a PENDING-turn affordance — it disappears the
+    // moment the turn completes; the final text / error remains.
+    stage::end();
     let id = format!("turn-{turn_id}");
     if let Some(el) = dom::by_id(&id) {
         let cls = el.class_name();

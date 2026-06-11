@@ -1110,6 +1110,34 @@ button.ready:hover {
   color: var(--muted);
   animation: lh-spin 800ms steps(1) infinite;
 }
+/* Turn-stage micro-pipeline (GitHub #19): one terse line at the top of a
+   PENDING assistant turn — lowercase stage words joined by →, the current
+   one emphasized + pulsing, crossed ones muted, re-walked ones dim. Emptied
+   (hidden) the moment the turn completes. Monochrome only. */
+.stage-line {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  margin: 1px 0 4px;
+  user-select: none;
+}
+.stage-line:empty { display: none; }
+.stage-line .st-past { color: var(--muted); }
+.stage-line .st-dim { color: var(--border); }
+.stage-line .st-sep { color: var(--border); }
+.stage-line .st-now {
+  color: var(--fg);
+  font-weight: 600;
+  animation: lh-stage-pulse 1.1s ease-in-out infinite;
+}
+@keyframes lh-stage-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+/* While the stage line is live it IS the working cue — drop the trailing
+   braille spinner so a pending turn carries exactly one indicator. */
+.turn.assistant.streaming:has(.stage-line:not(:empty)) .body::after {
+  display: none;
+}
 .tool-call .tc-body {
   padding: 8px 10px 10px;
   border-top: 1px solid var(--border);

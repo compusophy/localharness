@@ -107,6 +107,11 @@ pub mod sharedfs_reconcile;
 /// `cargo test`. See `src/turn_flow.rs`.
 pub mod turn_flow;
 
+/// Pure state machine for the turn-stage micro-pipeline ("paying → thinking
+/// → streaming") shown inside a pending assistant turn (native-testable,
+/// same hoisting pattern as `turn_flow`). See `src/turn_stage.rs`.
+pub mod turn_stage;
+
 /// Pure lessons-blob merging + prompt-section composition for the agent
 /// LESSONS LOOP (native-testable). The browser `record_lesson` tool, the
 /// headless CLI `call`, and the proxy scheduler worker all fold its output
