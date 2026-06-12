@@ -1,5 +1,13 @@
 # MAIN identity + multi-device linking
 
+> **STATUS: SHIPPED** — `MainIdentityFacet` (auto-MAIN on first claim) and the
+> multi-signer ERC-6551 `MultiSignerAccount` are live on the diamond. Recommended
+> Model 1 (TBA-of-TBA) is what shipped. NOTE: device linking is now QR
+> **seed-adoption** (`?adopt=1#s=<ciphertext>`), not the on-chain add-signer flow
+> sketched in "concrete next steps" — the seed IS the identity. Sybil-resistance
+> mechanisms (cost-to-be-MAIN, reputation-bound MAIN) remain a later, mainnet-gated
+> layer. Kept for the Key/Account/Identity layering + sybil analysis.
+
 Updated 2026-05-25 with the multi-device + account-linking thread.
 The original sybil-resistance framing is preserved at the bottom.
 
@@ -229,8 +237,10 @@ as the no-op baseline.
   a `main_token_id` and renders a small `[main]` chip on the row
   matching the holder's registered MAIN.
 - ⏳ Custom multi-signer ERC-6551 account impl + add-device flow
-  + paymaster integration: next commits. See `design/paymaster.md`
-  for the paymaster thread.
+  + paymaster integration: next commits. (Both later SHIPPED:
+  `MultiSignerAccount` is live, and sponsorship is Tempo native AA —
+  the old `paymaster.md` analysis was superseded and removed; see
+  `../../CLAUDE.md` *Tempo Transactions + sponsorship*.)
 
 ## Concrete next steps
 

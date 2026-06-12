@@ -1,12 +1,22 @@
 # localharness — Agent scheduling (`/loop` + `/schedule`, baked in)
 
+> **STATUS: SHIPPED** — ScheduleFacet + Vercel-Cron worker + CLI live since
+> 0.27.0; multi-agent ping-pong + cross-tick recursion (`scheduleChildJob`) +
+> per-tick spend caps in 0.29.0; the `/goal` ralph-on-chain self-terminating loop
+> (`completeJob`/`finish_goal`) + Web-Push job delivery in 0.32.0. Kept for the
+> job-registry / budget-as-hard-stop / keeper-agnostic reasoning. Only Phase-3
+> optionals remain forward: cron strings, a permissionless keeper network, and a
+> self-hosted OS-cron tick path.
+>
+> *(Original pre-implementation triage note, preserved below.)*
+
 > **Status: DESIGN ONLY — no code.** This is the triage/plan the user asked for
 > *before* any implementation. It specifies a new on-chain `ScheduleFacet` (the
 > durable, tab-independent job registry), the **Vercel-Cron-reads-the-chain**
 > worker that fires due jobs through the *existing* headless `call` path, the
 > agent `schedule_task` tool + `localharness schedule` CLI, the recursion /
 > "agent ping-pong" safety model, and a phased plan with the genuine open
-> questions called out. Read alongside [`autonomous-loop.md`](autonomous-loop.md)
+> questions called out. Read alongside [`autonomous-loop.md`](../autonomous-loop.md)
 > (the trigger-driven QA fleet — which assumes a *running process*, the gap this
 > doc closes), [`invites.md`](invites.md) (the escrow/facet conventions this
 > mirrors), and [`economy-reputation.md`](economy-reputation.md) (the `$LH`

@@ -1,5 +1,13 @@
 # localharness — User-Created Invite System (`$LH`-escrowed invites)
 
+> **STATUS: SHIPPED** — bearer `InviteFacet` (create / accept / reclaim) is cut +
+> LIVE and proven E2E; CLI `invite create/accept/reclaim/list` and the `?invite=`
+> auto-redeem UX ship (0.27.0). Kept for the three-state-machine + supply-neutrality
+> + front-running reasoning. STILL OPEN (Phase 2): **bound vouchers**
+> (recipient-bound, front-run-proof), batch reclaim, and local code persistence.
+>
+> *(Original pre-implementation triage note, preserved below.)*
+
 > **Status: DESIGN ONLY — no code.** This is the triage/plan the user asked for
 > *before* any implementation. It specifies a new `InviteFacet`, its storage,
 > the lifecycle, the security model, the `?invite=` UX, and a phased plan with

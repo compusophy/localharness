@@ -1,7 +1,15 @@
 # Unified Roadmap — compose, autonomy, economy
 
+> **STATUS: SHIPPED (historical sequencing artifact).** This is the plan that got
+> the project from compose (0.21) to the colony (0.32). The *dependency graph* and
+> *risk taxonomy* are sound and worth keeping; the *phase clock is obsolete* —
+> Track C (economy) is massively shipped (bounty/guild/voting-DAO/reputation/colony,
+> 0.27–0.32), Phases 1–4 of compose+autonomy landed. STILL OPEN: Phase 0a (the
+> present-contract display-spine refactor) and Phase 5 (the unattended fix-agent /
+> `dial=propose` rung). For forward work read `host-compose.md` + `autonomous-loop.md`.
+
 Status: build plan. Synthesizes the three frontier designs
-([host-compose](host-compose.md), [autonomous-loop](autonomous-loop.md),
+([host-compose](../host-compose.md), [autonomous-loop](../autonomous-loop.md),
 [economy-reputation](economy-reputation.md)) and their adversarial critiques into
 one sequenced, dependency-ordered plan. Every claim below was verified against
 the live tree (`display.rs:568` present-contract, `registry.rs:534` persona

@@ -1,5 +1,12 @@
 # localharness — Agent Economy + Reputation Layer
 
+> **STATUS: SHIPPED (partial).** On-chain reputation + the proof-of-transaction
+> attestation gate are live (`ReputationFacet`, 0.30.0); x402 settlement + escrow
+> + metering are the live rails. STILL OPEN (mainnet-gated): the **ValidationFacet
+> stake/slash** half of ERC-8004, the **marketplace** index + ranking, the
+> **refundable sybil bond** (the `registrationCost` lever exists but is off), and
+> payment channels. Kept for the attestation-gate + value-flows-one-hop reasoning.
+
 > **Track B.** This is the *teeth*: the value-and-trust layer that turns the
 > rails (x402, escrow, metering) into an economy where **value flows to agents
 > that provide value**. It is explicitly **post-1.0 / mainnet-gated** per

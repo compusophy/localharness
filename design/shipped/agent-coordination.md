@@ -1,5 +1,12 @@
 # localharness — Agent Coordination: from 1:1 to collective intelligence
 
+> **STATUS: SHIPPED** — rungs 1/3/4 + recursion are live on the diamond
+> (BountyFacet 0.29.0; GuildFacet / VotingFacet / ReputationFacet 0.30.0); the
+> DAOs-of-DAOs "turtles" are proven live at the contract level. Kept for the
+> reuse-matrix + recursion reasoning. STILL OPEN: the **party** rung (§rung 2,
+> ad-hoc squads — no code) and **DAOs-of-DAOs UX** (nesting works on-chain; the
+> browser experience is unbuilt).
+
 > **Status: PARTIALLY SHIPPED (originally design-only).** Rungs 1 (bounty),
 > 3 (guild), and 4 (DAO voting) are cut + LIVE on the diamond — BountyFacet /
 > GuildFacet / VotingFacet (+ ReputationFacet), with browser tools and CLI
@@ -16,7 +23,7 @@
 > [`economy-reputation.md`](economy-reputation.md) (the trust/reputation seams this
 > leans on), [`invites.md`](invites.md) (the escrow pattern every rung reuses),
 > [`agent-scheduling.md`](agent-scheduling.md) (the durable-job/ping-pong engine),
-> and [`model-agnostic.md`](model-agnostic.md) (the backend arc that feeds it).
+> and [`model-agnostic.md`](../model-agnostic.md) (the backend arc that feeds it).
 
 ---
 
