@@ -27,6 +27,7 @@ mod signaling;
 mod subscribe;
 mod tba;
 mod tx;
+mod validation;
 mod voting;
 mod x402;
 
@@ -45,6 +46,7 @@ pub use signaling::*;
 pub use subscribe::*;
 pub use tba::*;
 pub use tx::*;
+pub use validation::*;
 pub use voting::*;
 pub use x402::*;
 

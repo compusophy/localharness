@@ -10,7 +10,8 @@ ERC-721 + ERC-6551, credits/sessions/x402 payments, scheduling,
 bounties — and, live since 0.30.0, ERC-8004-flavored reputation
 (`ReputationFacet`) plus guild DAO governance (`GuildFacet` +
 `VotingFacet`). The ERC-8004 *validation* half (validator stake
-escrow) remains future work.
+escrow) now exists as `ValidationFacet` — source-complete + tested,
+awaiting its cut (see its section below).
 
 The flat `LocalharnessRegistry` monolith at
 `src/LocalharnessRegistry.sol` (~110 lines) is HISTORICAL reference
@@ -68,8 +69,10 @@ contracts/src/
 │   │                                 pooled $LH treasury escrow
 │   ├── VotingFacet.sol               guild DAO — propose / vote /
 │   │                                 execute a treasury spend
-│   └── ReputationFacet.sol           attestation-based reputation —
-│                                     attest / reputationOf / ...
+│   ├── ReputationFacet.sol           attestation-based reputation —
+│   │                                 attest / reputationOf / ...
+│   └── ValidationFacet.sol           ERC-8004-style validation staking —
+│                                     stake / challenge / resolve / reclaim
 ├── interfaces/
 │   ├── IDiamond.sol                  FacetCut + DiamondCut event
 │   ├── IDiamondCut.sol               diamondCut(...)
@@ -87,8 +90,10 @@ contracts/src/
 │   │                                 guild.storage.v1")
 │   ├── LibVotingStorage.sol          voting storage ("localharness.
 │   │                                 voting.storage.v1")
-│   └── LibReputationStorage.sol      reputation storage ("localharness.
-│                                     reputation.storage.v1")
+│   ├── LibReputationStorage.sol      reputation storage ("localharness.
+│   │                                 reputation.storage.v1")
+│   └── LibValidationStorage.sol      validation storage ("localharness.
+│                                     validation.storage.v1")
 └── upgradeInitializers/
     └── DiamondInit.sol               one-shot init: sets ERC-165 flags
                                       and `nextId = 1`
@@ -271,7 +276,7 @@ member-guild's TBA can cast a ballot in a parent DAO
 ### ReputationFacet — attestation-based agent trust
 
 The trust rung — ERC-8004-FLAVORED on-chain reputation (the
-ERC-8004 *validation* half, validator stake escrow, is NOT built).
+ERC-8004 *validation* half is `ValidationFacet`, next section).
 NON-FINANCIAL: no `$LH` escrow / payout / refund, and `attest` makes
 no external call, so re-entrancy is structurally impossible
 (Checks-Effects throughout). Storage: `LibReputationStorage` at
@@ -312,6 +317,70 @@ Cut via `script/AddReputationFacet.s.sol` (4 selectors). No post-cut
 config — it only READS `ownerOfId` from the shared registry storage
 slot.
 
+### ValidationFacet — ERC-8004-style validation staking
+
+The MONEY-BACKED half of the reputation system (ReputationFacet's
+attestations are the free-signal half). **Source-complete + tested;
+NOT yet cut into the live diamond.** Storage: `LibValidationStorage`
+at `keccak256("localharness.validation.storage.v1")`. FINANCIAL —
+the InviteFacet/BountyFacet escrow state-machine with TWO escrow
+legs (`transferFrom` staker→diamond on stake AND on challenge; the
+diamond escrows, NO minting; CEI before every payout/refund).
+
+**Lifecycle:**
+
+- `stakeValidation(bytes32 workRef, uint256 subjectTokenId, bool
+  valid, uint256 stakeWei) → id` — escrow a stake behind a verdict
+  about a subject's work. Open for a fixed `CHALLENGE_WINDOW`
+  (3 days; protocol-fixed so a validator can't pick an
+  unchallengeable 1-second window).
+- `challengeValidation(id)` — anyone but the validator counter-
+  stakes EXACTLY `stakeWei` behind the implicit opposite verdict
+  (while `now <= challengeDeadline`); starts the
+  `RESOLUTION_WINDOW` (7 days) clock.
+- `resolveValidation(id, validatorWins)` — RESOLVER-ONLY (while
+  `now <= resolveDeadline`): the POSTER of bounty
+  `uint256(workRef)` when one exists (the platform convention is
+  `workRef = bytes32(bountyId)` — the work's natural oracle, the
+  same trust model as `acceptResult`), or the DIAMOND OWNER as
+  arbiter fallback (the only resolver for non-bounty refs). The
+  winner is paid BOTH stakes.
+- `reclaimStake(id)` — permissionless poke, Open + past the
+  challenge deadline: the validator is refunded 100% (the verdict
+  stands unchallenged).
+- `reclaimUnresolved(id)` — permissionless poke, Challenged + past
+  the resolve deadline: BOTH sides take their own stake back (a
+  draw — the AWOL-resolver hard stop; nothing strands).
+
+**Windows are disjoint** (challenged XOR reclaimed; resolved XOR
+drawn). **Self-validation rules:** the subject's owner cannot STAKE
+about their own work (mirrors `SelfAttestation`) but CAN CHALLENGE
+a validation of it; the validator cannot challenge themself; one
+verdict per `(validator, subject, workRef)` EVER (the dedup
+survives reclaim/loss). Caps: `MAX_ACTIVE_PER_VALIDATOR = 64`,
+`MAX_STAKED = 1_000_000 ether` per address.
+
+**Views:** `getValidation(id)` (full record),
+`validationResolverOf(id)` (the bounty-poster half of the gate),
+`hasValidated(validator, subject, workRef)`,
+`validationsOfWork(workRef)`, `validationsOf(validator)`,
+`validationCount()`, `validationStakedOf(addr)`,
+`activeValidationCountOf(addr)`.
+
+**Events:** `ValidationStaked / ValidationChallenged /
+ValidationResolved / StakeReclaimed / ValidationDrawn`.
+
+50 Foundry tests incl. a 256-run escrow-conservation fuzz
+(diamond `$LH` == stake while Open + 2×stake while Challenged,
+asserted after every step) and reentrant-token probes on all three
+settlement paths. Cut via `script/AddValidationFacet.s.sol`
+(13 selectors). No post-cut config — credits token, identity
+owners, bounty posters, and the diamond owner are all shared
+storage already populated on the live diamond. V1-simple by
+design: the poster/owner is the oracle; staked juries,
+reputation-weighted resolution, and resolver fees are additive
+cuts later (the seam is the `resolveValidation` gate).
+
 ## Why a Diamond
 
 The flat contract works fine for a single-purpose registry. But the
@@ -323,8 +392,8 @@ M9–M12 roadmap layers in:
 - **ERC-8004-flavored reputation + DAO governance** — now LIVE as
   `ReputationFacet` (attestation-based trust) and `GuildFacet` +
   `VotingFacet` (member-governed treasuries); see the facet sections
-  above. The ERC-8004 *validation* half (validator stake escrow to
-  re-execute claims) remains future work.
+  above. The ERC-8004 *validation* half is `ValidationFacet`
+  (stake / challenge / resolve escrow) — built + tested, not yet cut.
 - **MPP / x402 payment hooks** — per-call settlement layer.
 - **Whatever else comes up.**
 

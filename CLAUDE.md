@@ -68,7 +68,7 @@ src/                  library crate
 ├── wallet.rs         secp256k1 + BIP-39 + RLP (feature "wallet"; all targets)
 ├── registry/         Diamond JSON-RPC + Tempo tx (feature "wallet"): one module
 │                     per facet (names tba credits x402 schedule invite bounty
-│                     reputation guild voting feedback signaling) + abi/rpc/tx
+│                     reputation validation guild voting feedback signaling) + abi/rpc/tx
 │                     plumbing (read_view, sponsored_diamond_call skeletons);
 │                     mod.rs re-exports keep the flat registry:: surface
 ├── x402_hook.rs      app-injected x402 signer + proxy-route hooks for
@@ -387,24 +387,23 @@ semantics live in `contracts/README.md`** — this list is one line each.
   identity NFT; auto-set on first-claim.
 - **FeedbackFacet** — `submitFeedback(string)` appends on-chain + emits event. Read
   views `feedbackCount/feedbackAt/feedbackRange`. 2048-byte cap; gas is the spam
-  filter. Owner-only `clearFeedback()` (it's a TRANSIENT inbox — harvest/bridge via
-  `test-fleet/feedback-to-issues.mjs` then `clear-feedback.sh`; the event log
-  survives a clear so `localharness feedback` still shows recent notes).
+  filter. Owner-only `clearFeedback()` — a TRANSIENT inbox (harvest via
+  `test-fleet/feedback-to-issues.mjs` + `clear-feedback.sh`; the event log
+  survives a clear).
 - **CreditsFacet** — `LocalharnessCredits` TIP-20 distribution. Diamond holds
-  `ISSUER_ROLE`. `dailyAllowance` set to **0 (DISABLED** — free-account × free
-  daily mint = sybil hole); facet stays cut. Funding = redeem codes + `send_lh`.
+  `ISSUER_ROLE`. `dailyAllowance` **0 (DISABLED** — free daily mint = sybil
+  hole); facet stays cut. Funding = redeem codes + `send_lh`.
 - **RedeemFacet** — bootstraps $LH: owner `addRedeemCodes(bytes32[],uint256)`,
   holder `redeem(string code)` (mints via ISSUER_ROLE, burns code).
-- **InviteFacet** — user-funded, refundable-on-expiry onboarding codes (growth
-  primitive; sibling of Redeem). PERMISSIONLESS: any holder `createInvite(codeHash,
-  amount, ttl)` ESCROWS their OWN `$LH` behind a bearer code. `acceptInvite(code)`
-  pays the first presenter; `reclaimInvite(codeHash)` always refunds the FUNDER
-  100% once Open+expired (accept/reclaim windows disjoint). SUPPLY-NEUTRAL (no
-  mint). Bearer MVP; bound vouchers = Phase 2.
+- **InviteFacet** — PERMISSIONLESS refundable onboarding codes: any holder
+  `createInvite(codeHash, amount, ttl)` ESCROWS their OWN `$LH` behind a bearer
+  code; `acceptInvite(code)` pays the first presenter; `reclaimInvite` refunds
+  the FUNDER 100% once Open+expired (disjoint windows). SUPPLY-NEUTRAL.
+  Bearer MVP; bound vouchers = Phase 2.
 - **SessionFacet** — coarse time-boxed sessions. `openSession()` pulls
   `sessionPrice()`, sets expiry = now + `sessionDuration()`. **Currently
-  3600s / 1e19 (10 $LH/hr)** — was free, but free session = free model access
-  (sybil bypass), so priced. `setSessionPrice(0)` reopens free.
+  3600s / 1e19 (10 $LH/hr)** — free session = sybil bypass on model access, so
+  priced; `setSessionPrice(0)` reopens free.
 - **CreditMeterFacet** — per-request metering. `depositCredits` tops up; `creditOf`
   reads; `meter(addr,amt)` debits (meter-key only); `withdrawCredits` pulls
   UNSPENT credits back to the wallet (escrow is 1:1-backed; metered spend final).
@@ -416,15 +415,15 @@ semantics live in `contracts/README.md`** — this list is one line each.
   `linkDevice / unlinkDevice / devicesOf / isDeviceLinked` (replaces log scraping;
   Tempo RPC caps at 100k blocks).
 - **ReleaseFacet** — `releaseName(tokenId)` holder burn (refuses caller's MAIN).
-  Plus diamond-owner-only `adminBurnNames` / `adminResetAll` (testnet clean slate);
-  shared `_burn` clears exactly what `register()` writes so names re-register cleanly.
+  Plus owner-only `adminBurnNames`/`adminResetAll` (testnet clean slate); `_burn`
+  clears exactly what `register()` writes so names re-register cleanly.
 - **ScheduleFacet** — durable, tab-independent recurring jobs. `scheduleJob(targetId,
   task, interval, budgetWei, maxRuns)` ESCROWS owner `$LH` (60s min). `recordRun`
   is SCHEDULER-ROLE-ONLY (the worker): atomically debits budget + advances `nextRun`
   (CAS-guarded vs double-fire). `budgetWei` is the HARD STOP; `cancelJob` refunds.
   **Multi-agent + recursion (SHIPPED):** each fire is a bounded loop with a
   `call_agent` tool (ping-pong) + `scheduleChildJob` (scheduler-only, child budget
-  drawn FROM parent escrow, depth-capped → root budget caps the whole tree).
+  FROM parent escrow, depth-capped — root budget caps the tree).
   Anti-griefing: per-owner active-job cap + per-tick global/per-owner spend caps.
   `setScheduler` = proxy meter key. Fired by `/scheduler` cron worker.
   **/goal (ralph-on-chain):** a `GOAL: `-prefixed task (CLI `goal`) gets a goal-loop
@@ -434,8 +433,8 @@ semantics live in `contracts/README.md`** — this list is one line each.
   `announce(topic, owner, ephemeral, pubkey, sig)` is **OWNER-SIGNED**: requires
   `topic == keccak256("localharness.devices"‖owner)` AND `ecrecover(...)==owner`
   (high-s rejected) — only the seed holder can populate their devices roster (closed
-  a folder-theft MITM). Preimages pinned across facet / `registry::announce_digest`+
-  `devices_topic` / `teams_sync`. Stale entries age out via 10-min `PRESENCE_TTL_SECS`.
+  a folder-theft MITM). Preimages pinned across facet / `registry::announce_digest`
+  / `teams_sync`; stale entries age out (10-min `PRESENCE_TTL_SECS`).
 - **BountyFacet** — agent-economy demand primitive (rung 1 of agent-coordination).
   `postBounty(task, rewardWei, ttl)` ESCROWS; `claimBounty(id, claimantTokenId)` +
   `submitResult(id, result)`; poster `acceptResult(id)` settles to the **worker's
@@ -452,8 +451,12 @@ semantics live in `contracts/README.md`** — this list is one line each.
   `vote` (one-member-one-vote) / `execute` pays IFF passed quorum (member-count
   SNAPSHOT at propose-time — churn can't drain).
 - **ReputationFacet** — `attest(subject, rating 1..5, workRef)` with per-work
-  dedup + self-attestation rejection; paged `attestationsOf`. ERC-8004
-  validation staking still open.
+  dedup + self-attestation rejection; paged `attestationsOf`.
+- **ValidationFacet** — ERC-8004-style validation STAKING: `stakeValidation`
+  escrows `$LH` behind a verdict on a workRef; `challengeValidation` counter-
+  stakes equal; the poster of bounty `uint256(workRef)` or the diamond owner
+  resolves (winner takes both); disjoint 3d/7d windows + two reclaim paths
+  (unchallenged refund; unresolved draw). **NOT yet cut.**
 - **PairingFacet** — REMOVED from the live diamond 2026-06-10 (QR seed-adoption
   superseded it); re-cuttable. **OwnedTokens** (`tokensOfOwner`) — DRAFT, not cut.
 
@@ -461,8 +464,8 @@ semantics live in `contracts/README.md`** — this list is one line each.
 of the NFT holder + EIP-1271 `isValidSignature`, so a MAIN can be controlled by
 multiple device EOAs without sharing the seed. Signers bound to the enrolling holder
 (`_signerEnroller[signer]==owner()`) → an NFT transfer revokes prior device signers;
-rejects high-s. Bundle reads TBA addrs via the diamond (registry/impl swap needs no
-bundle change — but TBAs minted under prior infra resolve differently).
+rejects high-s. Bundle reads TBA addrs via the diamond (impl swap needs no bundle
+change; prior-infra TBAs resolve differently).
 
 **Gemini key sync (per-MAIN, on-chain).** The sealed key lives under the owner's
 **MAIN tokenId** (`mainOf(owner)`, fallback the name's own id), NOT per-subdomain —
@@ -592,8 +595,8 @@ cartridge-in-cartridge, TBA act panel, at-rest OPFS encryption (unreleased).
 Still open:
 
 - **Stripe MPP** — fiat agent-payments rail beside the live x402 `$LH` path.
-- **ERC-8004 validation staking** — validators stake to re-execute claims
-  (ReputationFacet attestations are live; the stake-escrow half isn't).
+- **ERC-8004 validation staking** — ValidationFacet built+tested, NOT cut; CLI
+  and browser surfaces remain.
 - **Economy ladder, next rungs** — party (ad-hoc squads) + recursive DAOs-of-DAOs
   UX (`design/agent-coordination.md`; nesting already works at the contract level).
 - **More backends** — OpenAI / local-WebGPU finish (`design/model-agnostic.md`).
