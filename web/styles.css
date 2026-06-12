@@ -1,20 +1,39 @@
-:root {
-  color-scheme: dark;
-  --bg: #080808;
-  --panel: #0f0f0f;
-  --panel-2: #161616;
-  --border: #1e1e1e;
-  --fg: #c8c8c8;
-  --muted: #555;
-  --accent: #fff;
-  --user: #777;
-  --error: #a05050;
-  /* THE uniform chrome margin — the spacing around the header's admin
-     button (above / below / right of it). Every piece of app chrome
-     (header padding, footer padding, transcript gutters) derives from
-     this ONE constant so header and footer geometry can never drift. */
-  --chrome-pad: 16px;
-}
+/* ===========================================================================
+   localharness browser app — component stylesheet (monochrome brutalist).
+
+   DESIGN TOKENS LIVE IN RUST. The `:root { … }` block (palette, --font-mono,
+   --chrome-pad, the --space-* scale, the --z-* overlay layers) is the Rust
+   source of truth in `src/app/style.rs::root_tokens_css`, injected into
+   <head> as <style id="lh-tokens"> at mount, ahead of this file. Edit the
+   design system THERE (Rust consts), not by hand here. CSS custom properties
+   resolve at use-time, so the var() references below pick up the injected
+   block regardless of declaration order.
+
+   ---------------------------------------------------------------------------
+   TABLE OF CONTENTS
+     1. RESET + GLOBALS .......... box-sizing, body frame, #root, scrollbar,
+                                   global no-radius kill switch, boot loader
+     2. CHROME .................. sticky header, brand menu, header buttons
+     3. CHAT STREAM ............. main layout, transcript, turns, tool-calls,
+                                   stage line, inline cards, terminal input,
+                                   system/terminal status
+     4. OVERLAYS ................ DISPLAY framebuffer, app-fullscreen, admin
+                                   modal/tabs, files modal, api-key modal,
+                                   shared .modal-close
+     5. FORMS + BUTTONS ......... global button archetype + variants, inputs,
+                                   labels, key/device rows, pricing card,
+                                   tool allowlist
+     6. ECONOMY + IDENTITY ...... financial card, verify/tba pills, agents
+                                   list, badges, embed card, compose shell,
+                                   pairing, share, agent rows/cards, persona
+     7. PUBLIC FACE ............. public landing, explore directory
+     8. APEX ONBOARDING ......... apex chrome, wallet/seed reveal, step flow,
+                                   create-agent form, unclaimed
+   Sections are banner-marked inline below; rules are kept in their original
+   cascade order (no reordering — that would risk a specificity regression).
+   =========================================================================== */
+
+/* === 1. RESET + GLOBALS ================================================== */
 * { box-sizing: border-box; }
 /* Desktop-app frame: viewport-bound, no page scroll. Border-
    radius is zero everywhere — the user wants the ultra-minimal
@@ -25,7 +44,7 @@ html, body {
   /* Single body size — 13px mono. Chrome (rails, panel-titles,
      buttons) uses 11px uppercase via class-specific rules. No
      third or fourth size anywhere. */
-  font: 13px/1.5 'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
+  font: 13px/1.5 var(--font-mono);
   /* `100dvh` (dynamic viewport height) accounts for mobile
      browser chrome that resizes the viewport — Safari address bar
      growing/shrinking on scroll, Android navigation gesture
@@ -86,6 +105,7 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
 *::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 *::-webkit-scrollbar-corner { background: transparent; }
 
+/* === 2. CHROME ========================================================== */
 /* Sticky header — three zones via CSS grid:
    [brand left][subdomain center][admin right]. Each zone is its
    own column so the center stays centered even when the side
@@ -99,7 +119,7 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
      histories. */
   position: sticky;
   top: 0;
-  z-index: 30;
+  z-index: var(--z-header);
   background: var(--bg);
   padding: 0;
   min-height: 40px;
@@ -135,7 +155,7 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
   left: 0;
   margin-top: 8px;
   min-width: 140px;
-  z-index: 120;
+  z-index: var(--z-menu);
   display: flex;
   flex-direction: column;
   background: var(--bg);
@@ -162,37 +182,11 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
   margin-left: 8px;
 }
 
-/* Footer styles retained as a no-op — `site_footer()` returns an
-   empty markup now and `chrome` doesn't call it, but legacy CSS
-   references can compile away cleanly here. */
-
-.feedback-button svg { display: block; }
-
-/* Feedback modal — overlays everything at z-index:200 with a
-   dimmed backdrop. Click outside the card to dismiss (handled
-   client-side via .feedback-close). */
-.feedback-modal {
-  position: fixed; inset: 0;
-  z-index: 200;
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
-}
-.feedback-card {
-  position: relative;
-  width: 100%;
-  max-width: 480px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  padding: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-/* Borderless top-right close — unified across the feedback + admin
-   modals (no bounding box; a plain glyph). */
+/* Shared overlay close + admin feedback widget (the overlays that use
+   .modal-close are in section 4; the rule lives here so it precedes them in
+   the cascade as it always has). */
+/* Borderless top-right close — unified across the admin / files / display
+   overlays (no bounding box; a plain glyph). */
 .modal-close {
   background: none;
   border: none;
@@ -203,27 +197,6 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
   padding: 2px 6px;
 }
 .modal-close:hover { color: var(--fg); }
-.feedback-card > .modal-close {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-}
-.feedback-title {
-  font-size: 11px;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-.feedback-blurb {
-  margin: 0;
-  font-size: 12px;
-  color: var(--muted);
-  line-height: 1.5;
-}
-.feedback-blurb code {
-  font-size: 11px;
-  color: var(--accent);
-}
 .feedback-textarea {
   width: 100%;
   min-height: 120px;
@@ -236,55 +209,12 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
   resize: vertical;
 }
 .feedback-textarea:focus { border-color: var(--accent); }
-.feedback-actions {
-  display: flex;
-  justify-content: center;
-  gap: 8px;
-}
-/* Inline result message — only takes space when populated,
-   so the bottom of the card sits flush against the action row
-   most of the time. */
+/* Inline result message — only takes space when populated, so the bottom
+   of the admin feedback section stays flush most of the time. */
 .feedback-msg { font-size: 11px; }
 .feedback-msg:empty { display: none; }
-/* Submitted-feedback viewer inside the modal */
-.feedback-recent-title {
-  font-size: 10px;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  margin-top: 4px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-}
-.feedback-list {
-  max-height: 220px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  font-size: 12px;
-  color: var(--muted);
-}
-.feedback-empty { color: var(--muted); font-style: italic; }
-.feedback-item {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--border);
-}
-.feedback-item:last-child { border-bottom: 0; }
-.feedback-item-meta {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 10px;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-.feedback-item-text { color: var(--fg); line-height: 1.5; word-break: break-word; }
 
+/* === 3. CHAT STREAM ===================================================== */
 main {
   max-width: 1180px;
   margin: 0 auto;
@@ -368,16 +298,17 @@ main.layout .transcript > * { flex-shrink: 0; }
    stack 12px gaps into visible whitespace. */
 main.layout .transcript > *:empty { display: none; }
 
+/* === 4. OVERLAYS ======================================================== */
 /* DISPLAY overlay — the framebuffer "screen" the cartridge loader
    blits into, presented as a fullscreen dismissable overlay (admin-
    modal pattern; ToggleDisplay opens/closes it). Black letterbox
    stage; the canvas is sized 16:9 and scaled with crisp (pixelated)
    edges so individual framebuffer pixels stay sharp instead of being
-   smoothed by the browser. Sits above the files modal (z 100) and
-   below the api-key modal (z 150) / feedback modal (z 200). */
+   smoothed by the browser. Sits above the files modal (--z-modal) and
+   below the api-key modal (--z-api-key). */
 .display-overlay {
   position: fixed; inset: 0;
-  z-index: 140;
+  z-index: var(--z-display);
   background: rgba(0, 0, 0, 0.85);
   display: flex;
   align-items: center;
@@ -455,6 +386,7 @@ main.layout .transcript > *:empty { display: none; }
 }
 .app-edit:hover { opacity: 1; color: var(--fg); }
 
+/* === 7. PUBLIC FACE ===================================================== */
 /* --- Default public face (no cartridge published) --- */
 .public-face {
   position: relative;
@@ -554,10 +486,11 @@ main.layout .transcript > *:empty { display: none; }
   background: var(--bg);
   border: 0; outline: none; resize: none;
   color: var(--fg);
-  font: 13px/1.5 'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
+  font: 13px/1.5 var(--font-mono);
   padding: 12px 16px;
 }
 
+/* === 8. APEX ONBOARDING (page layouts: apex family + explore) =========== */
 /* Uniform top gap under the site-header — matches the base `main`
    rule and `.explore-main` (32px). The old asymmetric 64px top made
    the apex-family pages (apex/claim/landing) sit visibly lower than
@@ -612,6 +545,7 @@ main.layout .transcript > *:empty { display: none; }
   text-overflow: ellipsis;
 }
 
+/* === 3. CHAT STREAM (cont.): terminal input + status ==================== */
 /* Terminal interior — bare prompt, no chrome. Status renders
    empty by default; only fills when there's something to say.
    Vertical geometry MIRRORS the header: one content row wrapped in
@@ -687,6 +621,7 @@ main.layout .transcript > *:empty { display: none; }
 .terminal-stop { color: var(--error); font-size: 13px; }
 .terminal-stop:hover { color: var(--error); }
 
+/* === 6. ECONOMY + IDENTITY ============================================== */
 /* Financial column visuals */
 .financial-card, .financial-empty, .financial-placeholder {
   display: flex;
@@ -817,7 +752,7 @@ h1 a:hover { color: var(--accent); }
 .seed-words {
   padding: 16px; margin: 8px 0;
   background: var(--bg); border: 1px solid var(--accent); border-radius: 6px;
-  font-family: 'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 14px; color: var(--accent); line-height: 1.8;
   word-spacing: 0.5em; user-select: all;
 }
@@ -1001,6 +936,7 @@ input, textarea {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* === 5. FORMS + BUTTONS ================================================= */
 /* --- Studio: custom system prompt --- */
 .prompt-form { display: flex; flex-direction: column; gap: 8px; }
 .prompt-input {
@@ -1061,6 +997,7 @@ button.ready:hover {
   border-color: var(--fg);
 }
 
+/* === 3. CHAT STREAM (cont.): transcript, turns, tool-calls, cards ======= */
 .transcript {
   margin-top: 24px;
   display: flex; flex-direction: column; gap: 4px;
@@ -1287,13 +1224,14 @@ footer { color: var(--muted); font-size: 11px; margin-top: 48px; line-height: 1.
 footer a { color: var(--accent); text-decoration: none; }
 footer a:hover { text-decoration: underline; }
 
+/* === 4. OVERLAYS (cont.): admin modal/tabs, files modal, api-key ======== */
 /* Header admin dropdown — sits at top-right, click to expand.
    .header-admin { position: relative } is declared once near the top. */
 /* .admin-button inherits the global button style now */
 .header-admin-panel {
   position: fixed;
   inset: 0;
-  z-index: 100;
+  z-index: var(--z-modal);
   background: rgba(0, 0, 0, 0.6);
   display: flex;
   align-items: center;
@@ -1393,7 +1331,7 @@ footer a:hover { text-decoration: underline; }
 }
 .admin-identity-value {
   color: var(--fg);
-  font-family: 'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   text-decoration: none;
 }
@@ -1423,6 +1361,7 @@ button.danger:hover { color: var(--bg); background: var(--error); }
 .reset-confirm-actions { display: flex; gap: 6px; }
 .opfs-wipe-confirm { display: inline-flex; gap: 4px; }
 
+/* === 8. APEX ONBOARDING (cont.): step flow, seed/create, unclaimed ====== */
 /* Step-based apex onboarding */
 .step { margin: 48px 0 0; min-height: 200px; }
 .step-agents { margin-top: 48px; padding: 0 24px; }
@@ -1524,7 +1463,7 @@ button.danger:hover { color: var(--bg); background: var(--error); }
    a column of breadcrumb / list / editor viewer. */
 .files-modal {
   position: fixed; inset: 0;
-  z-index: 100;
+  z-index: var(--z-modal);
   background: rgba(0, 0, 0, 0.6);
   display: flex;
   align-items: center;
@@ -1682,7 +1621,7 @@ button.danger:hover { color: var(--bg); background: var(--error); }
 /* API key modal — centered overlay */
 .api-key-modal {
   position: fixed; inset: 0;
-  z-index: 150;
+  z-index: var(--z-api-key);
   background: rgba(0, 0, 0, 0.7);
   display: flex;
   align-items: center;
