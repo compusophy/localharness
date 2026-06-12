@@ -353,7 +353,7 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
     // pointer_x/pointer_y each frame, so we just keep the latest cursor
     // position fresh. No-op when the canvas isn't mounted.
     let mousemove = Closure::<dyn FnMut(_)>::new(move |event: MouseEvent| {
-        if dom::by_id("display-canvas").is_some() {
+        if super::display::cartridge_canvas_present() {
             super::display::set_pointer(event.client_x() as f64, event.client_y() as f64);
         }
     });
@@ -361,11 +361,12 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
     mousemove.forget();
 
     // Primary-button state for the display. Press counts only when it
-    // starts on the canvas; release clears regardless of where it lands.
+    // starts on a cartridge canvas (the fullscreen overlay OR an inline
+    // `embed_app` card); release clears regardless of where it lands.
     let mousedown = Closure::<dyn FnMut(_)>::new(move |event: MouseEvent| {
         if let Some(target) = event.target() {
             if let Ok(el) = target.dyn_into::<Element>() {
-                if el.id() == "display-canvas" {
+                if super::display::is_cartridge_canvas_id(&el.id()) {
                     super::display::set_pointer(event.client_x() as f64, event.client_y() as f64);
                     super::display::set_pointer_down(true);
                 }
@@ -388,7 +389,7 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
     let touchstart = Closure::<dyn FnMut(_)>::new(move |event: web_sys::TouchEvent| {
         if let Some(target) = event.target() {
             if let Ok(el) = target.dyn_into::<Element>() {
-                if el.id() == "display-canvas" {
+                if super::display::is_cartridge_canvas_id(&el.id()) {
                     if let Some(t) = event.touches().get(0) {
                         super::display::set_pointer(t.client_x() as f64, t.client_y() as f64);
                         super::display::set_pointer_down(true);
@@ -401,7 +402,7 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
     touchstart.forget();
 
     let touchmove = Closure::<dyn FnMut(_)>::new(move |event: web_sys::TouchEvent| {
-        if dom::by_id("display-canvas").is_some() {
+        if super::display::cartridge_canvas_present() {
             if let Some(t) = event.touches().get(0) {
                 super::display::set_pointer(t.client_x() as f64, t.client_y() as f64);
             }

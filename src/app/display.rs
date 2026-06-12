@@ -93,6 +93,13 @@ thread_local! {
     /// 1 while the primary mouse button is down over the canvas. Updated
     /// by the delegated mousedown/mouseup listeners, read by `pointer_down`.
     static POINTER_DOWN: Cell<i32> = const { Cell::new(0) };
+    /// The DOM id of the canvas the CURRENTLY-RUNNING cartridge draws into.
+    /// v1 is single-worker (one cartridge active at a time, OVERLAY or an
+    /// inline embed), so pointer input maps relative to THIS canvas's rect.
+    /// `run_with_ctx` sets it on each launch; defaults to the overlay canvas.
+    /// (Concurrent embeds — a per-canvas worker registry — would replace this
+    /// single id with per-worker input routing; see `run_in_canvas`.)
+    static ACTIVE_CANVAS_ID: RefCell<String> = RefCell::new(String::from("display-canvas"));
     /// A 64-slot integer register file the cartridge can read/write to
     /// keep state across frames (rustlite has no globals). Zeroed when a
     /// new cartridge loads.
@@ -170,7 +177,7 @@ type SharedMemory = Rc<RefCell<JsValue>>;
 /// tool and opening a `.wasm`/`.rl` from the files modal.
 pub(crate) async fn run_wasm(wasm_bytes: &[u8]) -> Result<(), JsValue> {
     let ctx = mount_canvas()?;
-    run_with_ctx(wasm_bytes, ctx).await
+    run_with_ctx(wasm_bytes, ctx, "display-canvas").await
 }
 
 /// A cartridge run that never went live: the stable `LH1xxx` runtime code
@@ -237,7 +244,51 @@ pub(crate) async fn run_wasm_reporting(wasm_bytes: &[u8]) -> Result<(), RunFailu
 /// fullscreen cartridge, no overlay swap).
 pub(crate) async fn run_in_root_canvas(wasm_bytes: &[u8]) -> Result<(), JsValue> {
     let ctx = size_and_get_ctx()?;
-    run_with_ctx(wasm_bytes, ctx).await
+    run_with_ctx(wasm_bytes, ctx, "display-canvas").await
+}
+
+/// THE EMBED SEAM: run `wasm_bytes` as a cartridge targeting ANY canvas in
+/// the DOM (not just the fullscreen `#display-canvas` overlay) — what the
+/// `embed_app` agent tool uses to render another subdomain's published
+/// cartridge as a live, interactive card INLINE in the chat transcript.
+/// `run_in_root_canvas` is the thin specialization (it just resolves
+/// `#display-canvas` first); both funnel into the SAME `run_with_ctx` →
+/// `mod worker` path, so an embed and the overlay share the single `WORKER`
+/// slot.
+///
+/// ## v1 constraint: ONE cartridge at a time (single worker)
+/// There is exactly one [`worker::WORKER`] slot, so starting a cartridge here
+/// REPLACES any cartridge already running — the overlay's, or a prior embed's.
+/// A second `embed_app` in the same transcript supersedes the first (the first
+/// card goes inert: its canvas keeps its last painted frame but stops
+/// updating). That's acceptable for v1 (one live interactive embed); true
+/// concurrent embeds need a per-canvas worker registry, tracked as follow-up.
+///
+/// ## Fixed framebuffer (v1) — the variable-resolution seam
+/// The canvas BACKING STORE is sized to [`FB_W`]×[`FB_H`] (256×144, 16:9) here,
+/// exactly like the overlay — the framebuffer the worker allocates is that
+/// fixed size, and CSS scales the canvas ELEMENT to the card box with
+/// `image-rendering: pixelated`. Variable framebuffer resolution + aspect
+/// (1:1, 9:16, 16:9, …) is the planned evolution: the cartridge will DECLARE
+/// its dims (e.g. an exported `dims() -> (w,h)` or a load-message field), the
+/// worker will allocate a framebuffer of that size, and THIS function is the
+/// seam where the host reads those dims and sizes the canvas backing store
+/// accordingly (instead of the hardcoded FB_W/FB_H below). Until then every
+/// cartridge — overlay or embed — renders at 256×144.
+pub(crate) async fn run_in_canvas(
+    canvas: HtmlCanvasElement,
+    wasm_bytes: &[u8],
+) -> Result<(), JsValue> {
+    // v1: fixed framebuffer. (The variable-resolution evolution reads the
+    // cartridge's declared dims here and sizes the backing store to match.)
+    canvas.set_width(FB_W);
+    canvas.set_height(FB_H);
+    let id = canvas.id();
+    let ctx = canvas
+        .get_context("2d")?
+        .ok_or_else(|| JsValue::from_str("no 2d context"))?
+        .dyn_into::<CanvasRenderingContext2d>()?;
+    run_with_ctx(wasm_bytes, ctx, &id).await
 }
 
 /// Render an HTML document into the framebuffer as pixels (no DOM, no
@@ -287,7 +338,13 @@ pub(crate) fn render_html_in_root_canvas(source: &str) -> Result<(), JsValue> {
 async fn run_with_ctx(
     wasm_bytes: &[u8],
     ctx: CanvasRenderingContext2d,
+    canvas_id: &str,
 ) -> Result<(), JsValue> {
+    // Record which canvas this cartridge owns so the delegated pointer
+    // listeners map client coords relative to ITS rect (overlay or an inline
+    // embed). v1 single-worker: the most-recent launch wins both the worker
+    // slot AND the pointer routing.
+    ACTIVE_CANVAS_ID.with(|c| *c.borrow_mut() = canvas_id.to_string());
     // Bump the generation first so any previous cartridge's loop stops, and
     // tear down the previous worker (terminate + drop its closures).
     FRAME_GEN.with(|g| g.set(g.get().wrapping_add(1)));
@@ -683,7 +740,12 @@ fn forward_pointer_to_worker() {
 /// of how the canvas is scaled. Called from the delegated listener in
 /// `events.rs`.
 pub(crate) fn set_pointer(client_x: f64, client_y: f64) {
-    let Some(el) = dom::by_id("display-canvas") else { return };
+    // Map relative to the ACTIVE cartridge's canvas — the overlay
+    // `#display-canvas` for a fullscreen run, or an inline `#embed-canvas`
+    // for an `embed_app` card. v1 is single-worker, so exactly one canvas is
+    // the live cartridge's at a time (`run_with_ctx` records its id).
+    let active_id = ACTIVE_CANVAS_ID.with(|c| c.borrow().clone());
+    let Some(el) = dom::by_id(&active_id) else { return };
     let Ok(canvas) = el.dyn_into::<HtmlCanvasElement>() else { return };
     let rect = canvas.get_bounding_client_rect();
     let (w, h) = (rect.width(), rect.height());
@@ -694,6 +756,54 @@ pub(crate) fn set_pointer(client_x: f64, client_y: f64) {
     let fy = (((client_y - rect.top()) / h) * FB_H as f64).clamp(0.0, (FB_H - 1) as f64) as i32;
     POINTER.with(|p| p.set((fx, fy)));
     forward_pointer_to_worker();
+}
+
+thread_local! {
+    /// Cartridge bytes the `embed_app` tool fetched, waiting for the chat
+    /// transcript to paint the `#embed-canvas` card so they can be launched
+    /// into it. The tool can't draw the card itself (the `#tool-{id}-card`
+    /// slot is filled by `chat::stream_turn` AFTER the tool returns), so it
+    /// stashes the wasm here and the ToolResult handler drains it via
+    /// [`launch_pending_embed`] once the canvas exists. NOT serialized into
+    /// history — replay paints a marker card only (no bytes, like the display
+    /// snapshot thumb).
+    static PENDING_EMBED: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+}
+
+/// Stash cartridge `wasm` for the next `#embed-canvas` card to pick up. The
+/// `embed_app` tool calls this just before returning its `{embedded:true}`
+/// result; `launch_pending_embed` (run from the ToolResult handler) drains it.
+pub(crate) fn stash_pending_embed(wasm: Vec<u8>) {
+    PENDING_EMBED.with(|c| *c.borrow_mut() = Some(wasm));
+}
+
+/// If an `embed_app` tool stashed cartridge bytes AND the transcript has
+/// painted its `#embed-canvas`, launch the cartridge into that canvas (the
+/// inline interactive card). No-op when nothing is pending. Called from
+/// `chat::stream_turn` right after the inline card swaps in. Drains the stash
+/// either way so a missing canvas can't leak bytes into a later embed.
+pub(crate) async fn launch_pending_embed() {
+    let Some(wasm) = PENDING_EMBED.with(|c| c.borrow_mut().take()) else { return };
+    let Some(el) = dom::by_id("embed-canvas") else { return };
+    let Ok(canvas) = el.dyn_into::<HtmlCanvasElement>() else { return };
+    if let Err(e) = run_in_canvas(canvas, &wasm).await {
+        web_sys::console::warn_1(&JsValue::from_str(&format!("embed launch failed: {e:?}")));
+    }
+}
+
+/// `true` if `id` is the DOM id of a cartridge canvas the delegated pointer
+/// listeners should route input from — the fullscreen overlay `display-canvas`
+/// or an inline `embed-canvas` (the `embed_app` card). Used by `events::mod`
+/// to gate `set_pointer`/`set_pointer_down` on a pointer event's target.
+pub(crate) fn is_cartridge_canvas_id(id: &str) -> bool {
+    id == "display-canvas" || id == "embed-canvas"
+}
+
+/// `true` when a cartridge canvas is currently mounted (overlay OR an embed
+/// card), so `mousemove`/`touchmove` know whether to bother updating the
+/// poll-model pointer. Cheap DOM presence check (no worker query).
+pub(crate) fn cartridge_canvas_present() -> bool {
+    dom::by_id("display-canvas").is_some() || dom::by_id("embed-canvas").is_some()
 }
 
 fn set_fn<T: ?Sized>(obj: &Object, name: &str, closure: &Closure<T>) -> Result<(), JsValue> {
