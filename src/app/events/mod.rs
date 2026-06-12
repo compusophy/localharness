@@ -111,6 +111,12 @@ enum Action {
     /// Download the in-browser local model (Gemma 3 270M weights + tokenizer)
     /// from the HF CDN into OPFS — the one-time opt-in for on-device inference.
     DownloadLocalModel,
+    /// First-time onboarding: redeem an invite code typed into the
+    /// fresh-visitor `invite_onboarding` surface. Ensures a credit identity
+    /// exists (the user's explicit redeem action — NOT silent generation),
+    /// accepts the invite escrow, then re-paints the now-funded apex so the
+    /// claim-a-name surface appears.
+    RedeemInviteOnboard,
     /// Redeem a one-time code for `$LH` credits.
     RedeemCode,
     /// Redeem a one-time code from the inline no-funds banner above the prompt.
@@ -216,6 +222,7 @@ impl Action {
             "set-model-access" => Action::SetModelAccess(arg.unwrap_or_default()),
             "set-model" => Action::SetModel(arg.unwrap_or_default()),
             "download-local-model" => Action::DownloadLocalModel,
+            "redeem-invite-onboard" => Action::RedeemInviteOnboard,
             "redeem-code" => Action::RedeemCode,
             "redeem-banner" => Action::RedeemBanner,
             "create-invite" => Action::CreateInvite,
@@ -876,6 +883,7 @@ fn dispatch(action: Action) {
         Action::SetModelAccess(mode) => credits::run_set_model_access(mode),
         Action::SetModel(model) => credits::run_set_model(model),
         Action::DownloadLocalModel => credits::run_download_local_model(),
+        Action::RedeemInviteOnboard => credits::redeem_invite_onboard_pressed(),
         Action::RedeemCode => credits::redeem_code_pressed(),
         Action::RedeemBanner => credits::redeem_banner_pressed(),
         Action::CreateInvite => credits::create_invite_pressed(),

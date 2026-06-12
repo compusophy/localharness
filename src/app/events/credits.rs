@@ -269,6 +269,93 @@ fn redeem_from(input_id: &'static str, msg_id: &'static str) {
     });
 }
 
+/// First-time onboarding redeem — the fresh-visitor `invite_onboarding`
+/// surface. The user types an invite code; this ensures a credit identity
+/// EXISTS (via `credit_signer`, which generates + persists a device key on
+/// first use). That generation is the user's EXPLICIT redeem action — not
+/// silent generation on a marketing visit — so the no-auto-create gate
+/// holds: no wallet is conjured until the user deliberately clicks redeem
+/// with a code. If one already exists it's reused (no second seed).
+///
+/// Accepts the invite escrow on-chain via the SAME `accept_invite_sponsored`
+/// path the `?invite=` auto-redeem uses (bearer `inv-…` codes); a non-`inv-`
+/// code falls through to `redeem_sponsored` (owner-minted) for symmetry with
+/// `try_redeem_pending_invite`. On success it re-paints the apex so the
+/// now-funded visitor sees the claim-a-name surface. Empty input is a silent
+/// no-op (no explanatory-validation prose).
+pub(super) fn redeem_invite_onboard_pressed() {
+    let Some(input) = dom::input_by_id("invite-onboard-input") else {
+        return;
+    };
+    let code = input.value().trim().to_string();
+    if code.is_empty() {
+        return;
+    }
+    let msg_id = "invite-onboard-msg";
+    let is_invite = code.starts_with("inv-");
+    dom::swap_inner(
+        msg_id,
+        "<span style=\"color:var(--muted)\">redeeming…</span>",
+    );
+    wasm_bindgen_futures::spawn_local(async move {
+        let result = async {
+            // Explicit user action → generating the device/credit key here is
+            // ALLOWED (not silent). Reuses `credit_signer` (master wallet if
+            // present, else load-or-generate the local key) so a returning
+            // user with a seed doesn't get a second identity.
+            let (signer, _) = crate::app::chat::credit_signer()
+                .await
+                .ok_or_else(|| "no identity".to_string())?;
+            let fee_payer = crate::app::sponsor::signer()?;
+            if is_invite {
+                crate::app::registry::accept_invite_sponsored(
+                    &signer,
+                    &fee_payer,
+                    &code,
+                    crate::app::registry::ALPHA_USD_ADDRESS,
+                )
+                .await
+            } else {
+                crate::app::registry::redeem_sponsored(
+                    &signer,
+                    &fee_payer,
+                    &code,
+                    crate::app::registry::ALPHA_USD_ADDRESS,
+                )
+                .await
+            }
+        }
+        .await;
+        match result {
+            Ok(_) => {
+                // Land them on platform credits (the default) so the new $LH
+                // is the model-access path, and move it into the meter now.
+                if let Some(s) = local_storage() {
+                    let _ = s.set_item("lh_model_access", "credits");
+                }
+                dom::swap_inner(
+                    msg_id,
+                    &dom::msg_span(dom::Msg::Accent, "redeemed — $LH added"),
+                );
+                crate::app::chat::ensure_credit_meter().await;
+                // Re-paint the apex: the visitor now has an identity, so
+                // `paint_apex` renders the claim-a-name surface (+ agents list).
+                crate::app::paint_apex(crate::app::tenant::Host::Apex).await;
+            }
+            Err(e) => {
+                web_sys::console::warn_1(&JsValue::from_str(&format!("invite redeem: {e}")));
+                dom::swap_inner(
+                    msg_id,
+                    &dom::msg_span(
+                        dom::Msg::Error,
+                        "couldn't redeem (it may be used or expired)",
+                    ),
+                );
+            }
+        }
+    });
+}
+
 /// localStorage handle (best-effort).
 fn local_storage() -> Option<web_sys::Storage> {
     web_sys::window().and_then(|w| w.local_storage().ok().flatten())

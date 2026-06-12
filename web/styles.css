@@ -757,6 +757,18 @@ h1 a:hover { color: var(--accent); }
 }
 .apex-sub { color: var(--muted); margin: 0 0 32px; max-width: 56ch; line-height: 1.6; }
 
+/* Secondary onboarding affordances (create identity / import seed) below
+   the invite-code form — de-emphasized so the invite redeem is primary. */
+.apex-onboard-alt {
+  display: flex; gap: 16px; margin-top: 20px;
+}
+.apex-onboard-alt button {
+  background: none; border: none; padding: 0;
+  color: var(--muted); font-size: 12px; cursor: pointer;
+  font-family: inherit; text-decoration: underline; text-underline-offset: 3px;
+}
+.apex-onboard-alt button:hover { color: var(--fg); }
+
 .apex-fine { color: var(--muted); font-size: 12px; line-height: 1.6; }
 .apex-fine a { color: var(--accent); }
 

@@ -822,38 +822,25 @@ pub(crate) fn apex(host: &Host, wallet_address_hex: Option<&str>) -> Markup {
         (site_header(host))
         main.apex-main {
             div.col-chat {
-                @if fresh { (apex_hero()) }
                 // Dispatcher/status messages (invite auto-redeem lands here —
                 // without this node `dom::set_status` is silently dropped on
                 // the apex and $LH moves with zero acknowledgment).
                 div #status .terminal-status role="status" aria-live="polite" {}
-                (apex_claim())
+                // Identity gate: a FRESH visitor (no wallet, no credits) leads
+                // with invite-code redemption — claiming a name before they're
+                // funded stranded them. The claim-a-name form only appears once
+                // an identity exists (after redeem / create / import).
+                @if fresh {
+                    (invite_onboarding())
+                } @else {
+                    (apex_claim())
+                }
                 div.apex-explore-link {
                     a href="?explore=1" { "explore all agents →" }
                 }
                 div.apex-explore-link {
                     a href="/skill.md" { "for agents: how to join →" }
                 }
-            }
-        }
-    }
-}
-
-/// Value-prop hero for FRESH visitors at the apex — the first thing the
-/// most users see. Without it the apex is a context-free "choose a name"
-/// input; with it the visitor knows WHAT localharness is and WHY to claim
-/// (free + sponsored), so the claim form below has a reason to exist. Copy
-/// is grounded in `web/skill.md`'s "what localharness is" — kept to one
-/// headline + one sentence so it reads, not walls. Monochrome, reuses the
-/// existing `apex-hero` styling.
-fn apex_hero() -> Markup {
-    html! {
-        section.apex-hero {
-            h2.apex-headline { "claim an agent" }
-            p.apex-sub {
-                "localharness is a self-sovereign agent network. every agent is \
-                 a subdomain — name.localharness.xyz — you own outright. pick a \
-                 name below to claim yours. free, no wallet or signup needed."
             }
         }
     }
@@ -881,6 +868,50 @@ fn apex_claim() -> Markup {
                     required {}
                 button #create-btn type="submit" .create-button disabled { "create" }
             }
+        }
+    }
+}
+
+/// Invite-code-FIRST onboarding — the PRIMARY surface for a fresh visitor
+/// with no identity. A brand-new visitor has no `$LH`, so leading with a
+/// "claim a name" form stranded them (claiming credit-gated nothing, but
+/// every other action needs credits). Instead: paste an invite code →
+/// `redeem` accepts the InviteFacet escrow (`acceptInvite`), funding their
+/// new identity with the inviter's `$LH`. THAT is the entry. The claim
+/// form only appears once funded (an identity exists).
+///
+/// The create-identity / import-seed affordances stay as de-emphasized
+/// secondary links for visitors who arrived without an invite (they know
+/// what they're doing). Both are EXPLICIT user actions wired to the
+/// existing `create-identity` / `show-import` handlers — never auto-fired,
+/// so the no-silent-generation gate holds. No explanatory-validation prose.
+fn invite_onboarding() -> Markup {
+    html! {
+        section.apex-hero {
+            h2.apex-headline { "have an invite code?" }
+            form.create-form data-action="redeem-invite-onboard" {
+                input #invite-onboard-input
+                    .create-input
+                    type="text"
+                    aria-label="invite code"
+                    placeholder="inv-…"
+                    autocomplete="off"
+                    spellcheck="false"
+                    required {}
+                button type="submit" .create-button { "redeem" }
+            }
+            div #invite-onboard-msg .step-msg {}
+            div.apex-onboard-alt {
+                button type="button" data-action="create-identity" .ghost {
+                    "create an identity"
+                }
+                button type="button" data-action="show-import" .ghost {
+                    "import seed"
+                }
+            }
+            div #import-slot {}
+            div #identity-msg .admin-msg-slot {}
+            div #seed-msg .admin-msg-slot {}
         }
     }
 }
