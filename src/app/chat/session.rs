@@ -202,6 +202,9 @@ pub(crate) async fn start_session(
             .with_model(model.clone())
             .with_capabilities(capabilities)
             .with_policies(vec![policy::allow_all()])
+            .with_pre_tool_hook(std::sync::Arc::new(
+                super::confirm_guard::TypedConfirmationGuard,
+            ))
             .with_pre_tool_hook(std::sync::Arc::new(super::dedup::DuplicateActionGuard))
             .with_filesystem(crate::app::shared_opfs())
             .with_system_instructions(system_instructions)
@@ -276,6 +279,9 @@ pub(crate) async fn start_session(
             .with_model(model.clone())
             .with_capabilities(capabilities)
             .with_policies(vec![policy::allow_all()])
+            .with_pre_tool_hook(std::sync::Arc::new(
+                super::confirm_guard::TypedConfirmationGuard,
+            ))
             .with_pre_tool_hook(std::sync::Arc::new(super::dedup::DuplicateActionGuard))
             .with_filesystem(crate::app::shared_opfs())
             .with_system_instructions(system_instructions)

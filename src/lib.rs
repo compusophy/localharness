@@ -109,6 +109,12 @@ pub mod sharedfs_reconcile;
 #[cfg(feature = "wallet")]
 pub mod signaling_seal;
 
+/// Pure typed-confirmation challenge gate for destructive tools
+/// (native-testable, `turn_flow` hoisting pattern): single-use random nonce
+/// bound to exact tool+args, valid only when typed by the USER. Enforced by
+/// `app::chat::confirm_guard` at the dispatch layer. See `src/confirm.rs`.
+pub mod confirm;
+
 /// Pure turn-outcome classification for the continuous-execution chat loop
 /// (native-testable). Hoisted out of `app::chat` so its guard tests run under
 /// `cargo test`. See `src/turn_flow.rs`.

@@ -186,7 +186,7 @@ wasm-opt rejects post-MVP features modern rustc emits).
 - wasm targets auto-drop walkdir/tempfile, add wasm-bindgen-futures, uuid/js,
   getrandom/js via target-cfg.
 
-SDK-only wasm: `default-features = false`, skip `browser-app`. Off-bundle registry
+SDK-only wasm: `default-features = false`, skip `browser-app`. Registry-only
 consumers: `default-features = false, features = ["wallet"]`.
 
 ## The wasm story
@@ -387,7 +387,7 @@ semantics live in `contracts/README.md`** — this list is one line each.
   identity NFT; auto-set on first-claim.
 - **FeedbackFacet** — `submitFeedback(string)` appends on-chain + emits event. Read
   views `feedbackCount/feedbackAt/feedbackRange`. 2048-byte cap; gas is the spam
-  filter. Owner-only `clearFeedback()` — a TRANSIENT inbox (harvest via
+  filter. Owner-only `clearFeedback()` (TRANSIENT inbox — harvest via
   `test-fleet/feedback-to-issues.mjs` + `clear-feedback.sh`; the event log
   survives a clear).
 - **CreditsFacet** — `LocalharnessCredits` TIP-20 distribution. Diamond holds
@@ -442,13 +442,12 @@ semantics live in `contracts/README.md`** — this list is one line each.
   claimed identity's TBA (claim-squatting just pays them). **The task view is
   `bountyTaskOf`, NOT `taskOf` — ScheduleFacet already owns `taskOf(uint256)` (a
   diamond can't share a selector).** Proven E2E.
-- **PartyFacet** — ad-hoc squads (rung 2). **BUILT + 59 tests; NOT YET CUT**
-  (`AddPartyFacet.s.sol` ready). `formParty(memberTokenIds, sharesBps, ttl)`
-  pins a 10000-bps split (creator-owned seats auto-consent); owners `joinParty`
-  (last consent → Active); anyone `fundParty`s; creator `completeParty`
-  (pre-expiry) splits the pot to member TBAs, remainder to LAST (escrow-exact);
+- **PartyFacet** — ad-hoc squads (rung 2). `formParty(memberTokenIds,
+  sharesBps, ttl)` pins a 10000-bps split (creator seats auto-consent); owners
+  `joinParty` (last consent → Active); anyone `fundParty`s; creator
+  `completeParty` (pre-expiry) splits the pot to member TBAs (escrow-exact);
   `disbandParty` (creator anytime; anyone post-expiry) refunds funders exactly.
-  Views `party`-prefixed. CLI `party` + `registry::*_party_*` ship now.
+  Views `party`-prefixed. CLI `party` + `registry::*_party_*`.
 - **GuildFacet** — durable agent orgs (rung 3). `createGuild(name)` mints the
   guild its OWN identity + TBA treasury; consent-gated membership
   (`inviteToGuild`/`acceptGuildInvite`), roles Member/Officer/Admin, `fundGuild` /
@@ -458,13 +457,12 @@ semantics live in `contracts/README.md`** — this list is one line each.
   SNAPSHOT at propose-time — churn can't drain).
 - **ReputationFacet** — `attest(subject, rating 1..5, workRef)` with per-work
   dedup + self-attestation rejection; paged `attestationsOf`.
-- **ValidationFacet** — ERC-8004-style validation STAKING: `stakeValidation`
-  escrows `$LH` behind a verdict on a workRef; `challengeValidation` counter-
-  stakes equal; the poster of bounty `uint256(workRef)` or the diamond owner
-  resolves (winner takes both); disjoint 3d/7d windows + two reclaim paths
-  (unchallenged refund; unresolved draw). **NOT yet cut.**
+- **ValidationFacet** — ERC-8004 validation STAKING: `stakeValidation` escrows
+  `$LH` behind a verdict on a workRef; `challengeValidation` counter-stakes;
+  bounty-poster-of-`uint256(workRef)` (or diamond owner) resolves, winner takes
+  both; disjoint 3d/7d windows; unchallenged-refund + unresolved-draw paths.
 - **PairingFacet** — REMOVED from the live diamond 2026-06-10 (QR seed-adoption
-  superseded it); re-cuttable. **OwnedTokens** (`tokensOfOwner`) — DRAFT, not cut.
+  superseded it). **OwnedTokens** (`tokensOfOwner`) — DRAFT, not cut.
 
 **ERC-6551 account** (`MultiSignerAccount`): CALL-only; additional-signer set on top
 of the NFT holder + EIP-1271 `isValidSignature`, so a MAIN can be controlled by
@@ -503,10 +501,10 @@ Subdomain tools (declared in `chat.rs::start_session`):
 - **`create_and_publish_app(name, source)`** — ONE-SHOT: compile rustlite, register,
   publish `app.wasm` + `public_face="app"` in ONE sponsored tx. Compiles FIRST.
 - **`list_subdomains()`** — read-only.
-- **`release_subdomain(name, confirmation)`** — DESTRUCTIVE. Burns the name;
-  requires `confirmation == name`, refuses MAIN, NOT granted to subagents.
-- **`send_lh(recipient, amount)`** — transfer real `$LH` to a `0x…` address or a
-  name's on-chain OWNER. Owner-only, NOT granted to subagents, amount > 0.
+- **`release_subdomain(name, confirmation)`** — DESTRUCTIVE, challenge-gated
+  (below). Burns the name; refuses MAIN, NOT granted to subagents.
+- **`send_lh(recipient, amount, confirmation)`** — transfer real `$LH` to a `0x…`
+  address or a name's OWNER. Owner-only, amount > 0, challenge-gated, no subagents.
 - **`read_self_docs()`** — read-only; fetches live llms.txt, falls back to embedded
   `self_docs::RUNTIME_SUMMARY` (also injected into every system prompt).
 - **Bounty tools** — `post_bounty` / `discover_bounties` / `claim_bounty` /
@@ -518,9 +516,8 @@ Subdomain tools (declared in `chat.rs::start_session`):
   correction, merged (dedup, last-10×240ch, 2000B cap — core `src/lessons.rs`)
   into `.lh_lessons.txt` + on-chain `keccak256("localharness.lessons")`; folded
   into the system prompt on EVERY surface (session.rs, CLI call, scheduler).
-  Consolidation ("dreaming"): `consolidate_lessons` returns the numbered list +
-  instructions (synthesize/generalize/prune/keep core); the MODEL rewrites it and
-  `set_lessons` (guarded) replaces via `lessons::replace_all` (same caps).
+  Consolidation ("dreaming"): `consolidate_lessons` lists + instructs; the MODEL
+  rewrites and `set_lessons` (guarded) replaces via `lessons::replace_all`.
 
 **Continuous execution (`chat.rs::run_send`).** One user message drives the agent
 to completion. `run_send` loops `stream_turn`: first turn carries the prompt; a turn
@@ -530,8 +527,7 @@ with `AUTO_CONTINUE_NUDGE` (no user bubble). Outcomes: `Finished` (called `finis
 Bounded by `MAX_AUTO_CONTINUATIONS = 10`; respects `TURN_CANCEL` + the `TURN_ACTIVE`
 one-turn guard. History/opfs saved after every turn. Mid-run, [⇪ background]
 (tenant-only) stops the turn + escrows 0.5 $LH behind a `GOAL: ` scheduleJob on
-this name (`events/schedule.rs::promote_background_pressed`) so the worker
-finishes it tab-free.
+this name (`events/schedule.rs`) so the worker finishes it tab-free.
 
 **Ownership = on-chain, not a local cache.** `.lh_owner` stores the on-chain owner
 ADDRESS this device last *proved* it controls (written only after a
@@ -539,9 +535,12 @@ ADDRESS this device last *proved* it controls (written only after a
 paints FIRST and `kick_verification` deletes it (`owner::forget`) the moment the
 chain disagrees. API: `owner::{remember, forget, current_owner}`.
 
-**Hard convention: destructive / irreversible actions require a typed confirmation
-that is never auto-filled** — the agent must ask the user to type the exact value
-first. Mirror this for future destructive tools.
+**Hard convention: typed confirmation for destructive / value-moving tools,
+enforced at the DISPATCH layer** (prompt-only "never auto-fill" failed).
+`chat::confirm_guard` (PreToolCall hook; pure core `src/confirm.rs`) denies the
+first call, issues a random single-use code (status line) bound to those exact
+args; the retry runs only if the code appears in the LATEST USER message (model
+echo rejected). New destructive tools → `confirm_guard::CONFIRM_GATED`.
 
 ## Tempo Transactions + sponsorship
 
@@ -599,10 +598,8 @@ backend, tool-call replay, scheduling + recursion, Mock backend, economy rungs
 panel, at-rest OPFS encryption (unreleased). Still open:
 
 - **Stripe MPP** — fiat agent-payments rail beside the live x402 `$LH` path.
-- **ERC-8004 validation staking** — ValidationFacet built+tested, NOT cut; CLI
-  and browser surfaces remain.
-- **Economy ladder** — PartyFacet (rung 2) built+tested, NOT cut; DAOs-of-DAOs
-  UX unbuilt (nesting works at the contract level).
+- **Validation staking surfaces** — ValidationFacet is cut; CLI + browser UIs remain.
+- **Economy ladder** — PartyFacet (rung 2) cut, CLI shipped; DAOs-of-DAOs UX unbuilt.
 - **More backends** — OpenAI / local-WebGPU finish (`design/model-agnostic.md`).
 - **P2P teams** — 2-device E2E test, mutable shared-FS, team UI. (SDP sealing
   DONE — `signaling_seal.rs` sender-signed envelope, hard-cut v2.)
@@ -640,9 +637,9 @@ Five surfaces — keep in sync on every change:
 | CHANGELOG.md | repo root | Per-version changes (Keep-a-Changelog) |
 
 **When to update what:** new pub API → `///` (+README if surface changes); new
-module → CLAUDE.md tree; new agent tool → `llms.txt` + `chat.rs::start_session`
-prompt; new facet → CLAUDE.md on-chain + `contracts/README.md` + `llms.txt`; browser
-UX → CLAUDE.md browser section; release → CHANGELOG.
+module → CLAUDE.md tree; new agent tool → `llms.txt` + the session prompt; new
+facet → CLAUDE.md on-chain + `contracts/README.md` + `llms.txt`; browser UX →
+CLAUDE.md browser section; release → CHANGELOG.
 
 **Verify before any release:** `cargo doc --no-deps 2>&1 | grep "warning.*missing"`
 + `curl -s https://localharness.xyz/llms.txt | head -5` (deployed?).

@@ -94,8 +94,8 @@ pub(crate) fn set_persona_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 
 /// `record_lesson(lesson)` — the write half of the LESSONS LOOP: append ONE
 /// short lesson learned from a REAL error / failed tool call / user correction.
-/// Merges via [`crate::lessons::merge_lesson`] (trim + newline-collapse +
-/// dedup + last-10 + 2000-byte blob cap), saves the OPFS working copy
+/// Merges via [`crate::lessons::merge_lesson`] (trim + newline-collapse + dedup
+/// plus last-10 + 2000-byte blob cap), saves the OPFS working copy
 /// (`.lh_lessons.txt`), and publishes the merged blob on-chain under
 /// `keccak256("localharness.lessons")` so it survives sessions and devices.
 /// Every surface (browser session, headless CLI `call`, scheduler worker)

@@ -21,6 +21,7 @@ use super::templates;
 use super::APP;
 
 mod access;
+mod confirm_guard;
 mod dedup;
 mod prompt;
 mod session;
@@ -242,6 +243,10 @@ pub(crate) async fn run_send() {
     // agent drives a multi-step goal to the end instead of stopping after
     // the first step. Bounded by `MAX_AUTO_CONTINUATIONS`, and every
     // iteration cooperatively honours the stop button (TURN_CANCEL).
+    // Record the user message for the typed-confirmation gate — a destructive
+    // call only executes when its challenge code appears in THIS text (the
+    // auto-continue nudges below never overwrite it).
+    confirm_guard::note_user_message(&prompt);
     let mut next_input = TurnInput::User(prompt);
     let mut auto_continuations: u32 = 0;
     // The pre-painted shell above feeds the FIRST turn; auto-continuations

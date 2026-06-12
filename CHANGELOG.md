@@ -63,6 +63,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (round-trip, tamper rejection, wrong key, legacy passthrough, exemptions,
   fresh-nonce, rename). Adds the RustCrypto `aes-gcm` dependency — the one
   cipher that runs identically on native (tests) and wasm32 (OPFS).
+- **Typed confirmation is now ENFORCED at the dispatch layer (challenge-nonce).**
+  A live E2E showed the model auto-filling the destructive-action confirmation
+  (`release_subdomain(name: "fsmoke", confirmation: "fsmoke")` in one turn) —
+  the prompt-level rule didn't actually guard. New pure `src/confirm.rs`
+  (`ConfirmGate`, natively unit-tested): the first call to a destructive /
+  value-moving tool (`release_subdomain`, `bulk_release_subdomains`, `send_lh`,
+  `batch_send_lh`) never executes — a `PreToolCall` hook
+  (`app::chat::confirm_guard::TypedConfirmationGuard`) denies it and issues a
+  random single-use 6-char code (CSPRNG, not derivable from the conversation),
+  bound to that exact tool + arguments and painted into the status line so the
+  user sees it even if the model paraphrases. The retry executes only when the
+  code matches AND appears in the latest USER message — a model echoing the
+  code out of the tool result is rejected. Codes are single-use and expire when
+  a new challenge is issued.
 - **Variable cartridge resolution + aspect ratios.** A cartridge opts into
   its own framebuffer size by exporting `dims() -> i32` returning a packed
   `(width << 16) | height` (each dimension clamped to `[16, 1024]`; the

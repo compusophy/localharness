@@ -427,9 +427,11 @@ pub(crate) fn embed_app_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 }
 
 /// `release_subdomain(name, confirmation)` — DESTRUCTIVE: burn the NFT +
-/// free the name. Gated: `confirmation` must EXACTLY equal `name`, which
-/// forces a typed confirmation in chat (the owner types the name). The
-/// system prompt also forbids auto-filling it.
+/// free the name. Gated by the dispatch-layer typed-confirmation challenge
+/// (`chat::confirm_guard`): the first call is denied with a single-use code
+/// the OWNER must type in chat; only the retry carrying that code executes.
+/// The model cannot auto-fill it (the code is random and must appear in the
+/// latest USER message).
 pub(crate) fn release_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     let schema = serde_json::json!({
         "type": "object",
@@ -440,34 +442,40 @@ pub(crate) fn release_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool>
             },
             "confirmation": {
                 "type": "string",
-                "description": "Must EXACTLY equal `name`. Pass ONLY after the owner has \
-                    TYPED the exact name in this chat. Never auto-fill or invent it."
+                "description": "Single-use confirmation code. OMIT (or pass \"\") on the \
+                    first call — it returns a challenge code that is shown to the owner. \
+                    Relay it, wait for the owner to TYPE that code in chat, then retry \
+                    with the code here. Never invent it; only the platform issues it."
             }
         },
-        "required": ["name", "confirmation"]
+        "required": ["name"]
     });
     ClosureTool::new(
         "release_subdomain",
-        "DESTRUCTIVE + IRREVERSIBLE: burn a subdomain NFT and free its name. Requires \
-         `confirmation` to exactly equal `name` (the owner must type the name). Refuses \
-         your MAIN. Returns the tx hash.",
+        "DESTRUCTIVE + IRREVERSIBLE: burn a subdomain NFT and free its name. The first \
+         call does NOT execute: it returns a single-use confirmation code (also shown to \
+         the owner in the UI). Ask the owner to TYPE that code in chat, then retry with \
+         `confirmation` set to it — the call only executes after the owner's message \
+         contains the code. Refuses your MAIN. Returns the tx hash.",
         schema,
         |args: serde_json::Value, _ctx| async move {
             let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-            let confirmation = args
-                .get("confirmation")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
             if name.is_empty() {
                 return Err(crate::error::Error::other("name is required"));
             }
-            if confirmation != name {
-                return Err(crate::error::Error::other(format!(
-                    "release_subdomain NOT executed — confirmation must exactly equal \"{name}\". \
-                     Ask the owner to TYPE \"{name}\" to confirm, then retry. Do not auto-fill it."
-                )));
+            // The typed-confirmation gate (confirm_guard) runs BEFORE this body
+            // and denies any call without a user-typed challenge code. This
+            // belt-and-suspenders check only guards a registration path that
+            // forgot the hook.
+            let confirmed = args
+                .get("confirmation")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if !confirmed {
+                return Err(crate::error::Error::other(
+                    "release_subdomain requires the platform-issued confirmation code",
+                ));
             }
             match crate::app::events::run_release_subdomain(&name).await {
                 Ok(tx) => Ok(serde_json::json!({ "released": name, "tx_hash": tx })),
@@ -479,11 +487,10 @@ pub(crate) fn release_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool>
 
 /// `bulk_release_subdomains(confirmation, names?)` — DESTRUCTIVE batch burn.
 /// With no `names`, targets EVERY non-MAIN subdomain the owner holds; with
-/// `names`, only that subset. Single master confirmation (NOT per-name): the
-/// owner must type the literal phrase `release all non-main`. An empty/absent
-/// confirmation returns the list it WOULD release (so the agent can show the
-/// user first) and performs NO write. Refuses the MAIN. Withheld from
-/// subagents (only registered on the main agent).
+/// `names`, only that subset. Gated by the dispatch-layer typed-confirmation
+/// challenge (`chat::confirm_guard`) — ONE single-use code for the whole
+/// batch, typed by the owner. Refuses the MAIN. Withheld from subagents
+/// (only registered on the main agent).
 pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     let schema = serde_json::json!({
         "type": "object",
@@ -496,11 +503,11 @@ pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
             },
             "confirmation": {
                 "type": "string",
-                "description": "Must EXACTLY equal `release all non-main`. Pass ONLY after \
-                    the owner has TYPED that exact phrase in this chat. First call this \
-                    tool with confirmation empty to GET the list of names that will be \
-                    released, show the user, and ask them to type the phrase. Never \
-                    auto-fill or invent it."
+                "description": "Single-use confirmation code. OMIT (or pass \"\") on the \
+                    first call — it returns a challenge code shown to the owner. Show the \
+                    owner the exact list that will be burned (list_subdomains is the \
+                    read-only source), ask them to TYPE the code, then retry with it. \
+                    Never invent it; only the platform issues it."
             }
         },
         "required": []
@@ -509,20 +516,26 @@ pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
         "bulk_release_subdomains",
         "DESTRUCTIVE + IRREVERSIBLE: burn MANY subdomain NFTs and free their names in \
          ONE batch. With no `names`, releases EVERY non-MAIN subdomain the owner holds; \
-         with `names`, only that subset. Requires a SINGLE master `confirmation` equal to \
-         \"release all non-main\" (the owner types it once — NOT one confirmation per \
-         name). ALWAYS call first with confirmation empty to receive the list of names it \
-         will release, show the user, then ask them to type the phrase and retry. Always \
-         refuses your MAIN. Returns the released names + tx hash.",
+         with `names`, only that subset. The first call does NOT execute: it returns a \
+         single-use confirmation code (also shown to the owner in the UI). Show the owner \
+         the exact list that will be burned (use list_subdomains), ask them to TYPE the \
+         code, then retry with `confirmation` set to it. ONE code for the whole batch. \
+         Always refuses your MAIN. Returns the released names + tx hash.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            const CONFIRM_PHRASE: &str = "release all non-main";
-            let confirmation = args
+            // The typed-confirmation gate (confirm_guard) runs BEFORE this
+            // body; an unconfirmed call never reaches it. Belt-and-suspenders
+            // for any registration path that forgot the hook.
+            let confirmed = args
                 .get("confirmation")
                 .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_lowercase();
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if !confirmed {
+                return Err(crate::error::Error::other(
+                    "bulk_release_subdomains requires the platform-issued confirmation code",
+                ));
+            }
 
             // Resolve the kill-list: explicit subset, else all non-MAIN holdings.
             let (_, owner) = crate::app::tenant::current_tenant_owner()
@@ -561,22 +574,6 @@ pub(crate) fn bulk_release_subdomains_tool() -> std::sync::Arc<dyn crate::tools:
                 return Ok(serde_json::json!({
                     "status": "nothing_to_release",
                     "note": "no non-MAIN subdomains to release"
-                }));
-            }
-
-            // REPORT-BEFORE-CONFIRM: no valid confirmation -> list + STOP.
-            if confirmation != CONFIRM_PHRASE {
-                return Ok(serde_json::json!({
-                    "status": "confirmation_required",
-                    "count": targets.len(),
-                    "will_release": targets,
-                    "instruction": format!(
-                        "These {} subdomain(s) will be PERMANENTLY released (burned). \
-                         Show this list to the owner. To proceed, the owner must TYPE the \
-                         exact phrase \"{}\" — then call bulk_release_subdomains again with \
-                         that confirmation. Do NOT auto-fill it.",
-                        targets.len(), CONFIRM_PHRASE
-                    )
                 }));
             }
 
@@ -789,8 +786,9 @@ pub(crate) fn discover_agents_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// SAME sponsored Tempo path as the per-turn payment + the "act" panel
 /// (`run_sponsored_tempo_call`): the owner's apex wallet signs the intent, the
 /// bundle sponsor pays gas in AlphaUSD. NOT granted to subagents (it moves
-/// value). No typed-confirmation gate — a transfer is an intended action, unlike
-/// the destructive `release_subdomain` burn — but the amount must parse to > 0.
+/// value). Gated by the dispatch-layer typed-confirmation challenge
+/// (`chat::confirm_guard`): the owner types a single-use code before any
+/// transfer executes. Amount must parse to > 0.
 pub(crate) fn send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     let schema = serde_json::json!({
         "type": "object",
@@ -805,6 +803,13 @@ pub(crate) fn send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 "type": "string",
                 "description": "Amount of $LH to send, as a decimal string \
                     (e.g. \"5\", \"1.5\", \"0.01\"). Must be greater than 0."
+            },
+            "confirmation": {
+                "type": "string",
+                "description": "Single-use confirmation code. OMIT (or pass \"\") on the \
+                    first call — it returns a challenge code shown to the owner. Relay \
+                    it, wait for the owner to TYPE the code in chat, then retry with it. \
+                    Never invent it; only the platform issues it."
             }
         },
         "required": ["recipient", "amount"]
@@ -814,9 +819,11 @@ pub(crate) fn send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
         "Transfer real $LH credits from the owner's wallet to a recipient. \
          `recipient` is a raw 0x… address OR a subdomain name (funds go to that \
          name's on-chain owner). `amount` is a decimal $LH figure (must be > 0). \
-         Moves value: confirm the recipient + amount with the owner before \
-         calling. Returns { amount, recipient (input), resolved_recipient, \
-         tx_hash }.",
+         MOVES VALUE — the first call does NOT execute: it returns a single-use \
+         confirmation code (also shown to the owner in the UI). State the \
+         recipient + amount, ask the owner to TYPE the code, then retry with \
+         `confirmation` set to it. Returns { amount, recipient (input), \
+         resolved_recipient, tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
             use crate::encoding::parse_token_amount;
@@ -897,7 +904,8 @@ pub(crate) fn send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// `batch_send_lh(transfers)` — N transfers in ONE sponsored Tempo tx
 /// (feedback #49: tx type 0x76 natively carries a calls array, so batching
 /// costs one submission instead of N). The meter auto-bridge covers the
-/// TOTAL if the wallet is short.
+/// TOTAL if the wallet is short. Gated by the dispatch-layer
+/// typed-confirmation challenge (`chat::confirm_guard`), same as `send_lh`.
 pub(crate) fn batch_send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     let schema = serde_json::json!({
         "type": "object",
@@ -922,6 +930,13 @@ pub(crate) fn batch_send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                     },
                     "required": ["recipient", "amount"]
                 }
+            },
+            "confirmation": {
+                "type": "string",
+                "description": "Single-use confirmation code. OMIT (or pass \"\") on the \
+                    first call — it returns a challenge code shown to the owner. Show the \
+                    full transfer list, ask the owner to TYPE the code in chat, then \
+                    retry with it. Never invent it; only the platform issues it."
             }
         },
         "required": ["transfers"]
@@ -930,9 +945,12 @@ pub(crate) fn batch_send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
         "batch_send_lh",
         "Transfer $LH to MULTIPLE recipients in ONE on-chain transaction (up \
          to 20). Each transfer names a 0x… address or a subdomain (paid to its \
-         on-chain owner). Far cheaper than repeated send_lh calls. Moves value: \
-         confirm the full list with the owner before calling. Returns \
-         { count, total, transfers: [{recipient, resolved, amount}], tx_hash }.",
+         on-chain owner). Far cheaper than repeated send_lh calls. MOVES VALUE \
+         — the first call does NOT execute: it returns a single-use confirmation \
+         code (also shown to the owner in the UI). Show the full list, ask the \
+         owner to TYPE the code, then retry with `confirmation` set to it. ONE \
+         code for the whole batch. Returns { count, total, transfers: \
+         [{recipient, resolved, amount}], tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
             use crate::encoding::parse_token_amount;
