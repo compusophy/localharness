@@ -108,7 +108,7 @@ src/app/ (browser IDE):
   gas.rs(set_metadata_gas — THE sponsored-setMetadata formula, one home)
   notifications.rs(notify tool: local + `to:` cross-agent; sub under
     keccak256("localharness.push_sub"); bell inbox persists to OPFS via sw.js
-    relay/stash → push_arrived)
+    relay/stash→push_arrived)
   signer_protocol.rs(lh-* postMessage consts + challenge preimage, used by BOTH
     signer.rs and verify.rs — never re-fork it)
   key_store.rs owner.rs(.lh_owner on-chain-derived hint) tenant.rs(host
