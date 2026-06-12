@@ -56,6 +56,18 @@ pub(crate) fn fmt_lh(wei: u128) -> String {
     format!("{whole}.{cents:02} LH")
 }
 
+/// Reject an empty / whitespace-only user text BEFORE any identity or meter
+/// work — a blank `call <name> ""` used to run (and BILL) a full metered turn.
+/// `label` names the offending input in the one-line error (e.g. "call:
+/// message"). Pure + testable; callers print the `Err` and exit 1.
+pub(crate) fn non_blank(text: &str, label: &str) -> Result<(), String> {
+    if text.trim().is_empty() {
+        Err(format!("{label} is empty — nothing to send"))
+    } else {
+        Ok(())
+    }
+}
+
 /// Parse a numeric `id` argument (`#7` or `7`) for the given `noun` (the error
 /// reads "invalid {noun} id '{raw}'"). Pure + testable — the shared engine
 /// behind [`parse_bounty_id`] / [`parse_guild_id`] / [`parse_proposal_id`].
@@ -365,6 +377,20 @@ mod tests {
         assert!(take_as_flag(&args(&["--deep", "--as"])).is_err());
         // A duplicated `--as` is an error, not a silent last-wins.
         assert!(take_as_flag(&args(&["--as", "a", "--as", "b"])).is_err());
+    }
+
+    #[test]
+    fn non_blank_rejects_empty_and_whitespace_only() {
+        // The billed-empty-call bug: `call <name> ""` ran a full metered turn.
+        assert!(non_blank("hi", "call: message").is_ok());
+        assert_eq!(
+            non_blank("", "call: message"),
+            Err("call: message is empty — nothing to send".to_string())
+        );
+        assert!(non_blank("   ", "mcp-call: message").is_err());
+        assert!(non_blank("\t\n", "schedule: task").is_err());
+        // Real content surrounded by whitespace is fine.
+        assert!(non_blank("  x  ", "goal: task").is_ok());
     }
 
     #[test]

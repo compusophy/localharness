@@ -38,6 +38,15 @@ pub(crate) const GOAL_TASK_PREFIX: &str = "GOAL: ";
 /// (a tighter loop than the typical standing job; the budget is the leash).
 pub(crate) const GOAL_DEFAULT_INTERVAL_SECS: u64 = 300;
 
+/// Whether a schedule/goal task is effectively empty: whitespace-only, or a
+/// bare `GOAL: ` marker with no goal text behind it. An empty task escrows
+/// real `$LH` behind a job that does nothing — rejected before any identity
+/// or escrow work. Pure + testable.
+pub(crate) fn task_is_blank(task: &str) -> bool {
+    let t = task.trim();
+    t.is_empty() || t == GOAL_TASK_PREFIX.trim()
+}
+
 /// Parse an interval like `60s` / `5m` / `1h` / `90` (bare = seconds) into
 /// seconds, enforcing the facet's 60s floor. Pure + testable. A unit suffix of
 /// `s`/`m`/`h` (case-insensitive) scales; anything else (or a sub-60s result,
@@ -209,9 +218,12 @@ async fn submit_job(caller_name: Option<&str>, parsed: ParsedSchedule, goal_mode
         budget_wei,
         max_runs,
     } = parsed;
-    if task.trim().is_empty() || task.trim() == GOAL_TASK_PREFIX.trim() {
-        eprintln!("schedule: task is empty");
-        return 2;
+    // An empty / whitespace-only task escrowed real $LH behind a no-op job —
+    // reject it BEFORE any identity/escrow work (same guard as call/mcp-call).
+    if task_is_blank(&task) {
+        let label = if goal_mode { "goal: goal text" } else { "schedule: task" };
+        eprintln!("{label} is empty — nothing to send");
+        return 1;
     }
 
     let (signer, sponsor) = match load_signer_and_sponsor(caller_name) {
@@ -377,6 +389,20 @@ pub(crate) async fn unschedule(caller_name: Option<&str>, job_id_arg: &str) -> i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_is_blank_catches_empty_and_bare_goal_marker() {
+        // Whitespace-only tasks must never reach an escrow tx.
+        assert!(task_is_blank(""));
+        assert!(task_is_blank("   \t"));
+        // A goal with no text behind the marker is blank too: `goal t ""`
+        // parses to exactly "GOAL: ".
+        assert!(task_is_blank(GOAL_TASK_PREFIX));
+        assert!(task_is_blank("  GOAL:  "));
+        // Real tasks pass.
+        assert!(!task_is_blank("check the price"));
+        assert!(!task_is_blank("GOAL: win"));
+    }
 
     #[test]
     fn parse_interval_units_and_floor() {

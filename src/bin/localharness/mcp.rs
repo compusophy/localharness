@@ -260,6 +260,13 @@ pub(crate) async fn mcp_call(rest: &[String]) -> i32 {
         }
     };
 
+    // An empty / whitespace-only message used to be accepted (and paid for) —
+    // reject it BEFORE any identity/payment work.
+    if let Err(e) = non_blank(&message, "mcp-call: message") {
+        eprintln!("{e}");
+        return 1;
+    }
+
     // The amount to pay, in 18-decimal $LH wei (same parse the bundle uses).
     // "auto" (the default) pays the target's effective price — the number
     // the hosted gate will demand anyway.

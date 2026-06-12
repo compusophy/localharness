@@ -186,6 +186,13 @@ pub(crate) async fn call(rest: &[String]) -> i32 {
         }
     };
 
+    // An empty / whitespace-only message used to run (and BILL) a full metered
+    // turn — reject it BEFORE any identity/meter/RPC work.
+    if let Err(e) = non_blank(&message, "call: message") {
+        eprintln!("{e}");
+        return 1;
+    }
+
     // `--pay`: validate the amount BEFORE running (and paying for) the turn.
     // `--pay auto` resolves the target's effective price (advertised
     // on-chain, else the platform default) — the same number the hosted
