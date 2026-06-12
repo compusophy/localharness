@@ -253,19 +253,32 @@ pub async fn list_recent_agents(limit: u64) -> Result<Vec<(u64, String)>, String
     }
     let max_id = next - 1;
     let start = max_id.saturating_sub(limit.saturating_sub(1)).max(1);
-    let mut out = Vec::new();
-    let mut id = max_id;
-    loop {
-        if let Ok(name) = name_of_id(id).await {
-            if !name.is_empty() {
-                out.push((id, name));
-            }
-        }
-        if id <= start {
-            break;
-        }
-        id -= 1;
-    }
+    // ids newest-first.
+    let ids: Vec<u64> = (start..=max_id).rev().collect();
+    // ONE batched JSON-RPC request instead of up to `limit` SERIAL round-trips.
+    // The old loop `await`ed `name_of_id` per id; at ~300ms/RTT on the public
+    // RPC a 60-name directory took ~20s to paint. `nameOfId` returns the same
+    // ABI-string layout `decode_metadata_bytes` already handles, so this mirrors
+    // `personas_of` exactly — index-aligned results, dead/empty slots dropped.
+    let sel = selector("nameOfId(uint256)");
+    let calls: Vec<(&str, String)> = ids
+        .iter()
+        .map(|&id| (REGISTRY_ADDRESS, encode_call_hex(sel, &[u256_be(id as u128)])))
+        .collect();
+    let results = eth_call_batch(&calls).await?;
+    let out = ids
+        .iter()
+        .zip(results.iter())
+        .filter_map(|(&id, r)| {
+            r.as_ref()
+                .ok()
+                .and_then(|hex| decode_metadata_bytes(hex))
+                .and_then(|b| String::from_utf8(b).ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .map(|name| (id, name))
+        })
+        .collect();
     Ok(out)
 }
 
