@@ -505,49 +505,16 @@ export default async function handler(req: Request): Promise<Response> {
       );
     }
 
-    // ---- credit gate + meter debit — charged ONCE, BEFORE the fan-out ---------
-    const cost = COST_PER_REQUEST_WEI;
-    const [expiry, credit] = await Promise.all([
-      sessionExpiryOf(address),
-      creditOf(address),
-    ]);
-    const hasSession = expiry > BigInt(now);
-    const hasCredit = credit >= cost;
-    if (!hasSession && !hasCredit) {
-      return json(
-        {
-          error:
-            'no $LH credit or active session for this identity — fund the per-request meter (localharness redeem / send / topup) or open a session explicitly (localharness session). See https://localharness.xyz/llms.txt',
-        },
-        402,
-        origin,
-      );
-    }
-    // Prefer per-request metering over a lingering free session (notify.ts
-    // rationale: a funded meter means the caller opted into per-call billing).
-    if (hasCredit) {
-      try {
-        await meterDebit(address, cost);
-      } catch (e) {
-        if (e instanceof InsufficientCreditError) {
-          if (!hasSession) {
-            return json(
-              {
-                error:
-                  'insufficient $LH credit — the on-chain debit reverted (balance changed since the gate read)',
-              },
-              402,
-              origin,
-            );
-          }
-          // else: covered by an active session — fall through and serve.
-        } else {
-          return json({ error: 'metering failed: ' + (e as Error).message }, 502, origin);
-        }
-      }
-    }
+    // ---- FREE (rate-limited + identity-gated) --------------------------------
+    // A Ready-Up broadcast is NOT metered: requiring $LH per tap would kill the
+    // viral, low-friction "anyone can ping the group" use case. The spam
+    // controls are the per-feed rate limit (above) + the identity gate (a valid
+    // signed identity is required to reach here). Metering can return behind a
+    // config flag if abuse appears; for now the floor is "have an identity,
+    // wait your 20s." (meterDebit / creditOf / sessionExpiryOf stay defined for
+    // a future re-enable.)
 
-    // The caller is now committed (charged or session-covered): mark the feed's
+    // Mark the feed's
     // last-broadcast time so the rate limit holds even if the fan-out is slow.
     lastBroadcastAt.set(feedKey, nowMs);
 

@@ -1,3 +1,30 @@
+/* STATIC design tokens — MUST be present so the boot shell paints correctly
+   BEFORE the wasm mounts (a missing :root made the page flash WHITE on load).
+   These mirror src/app/style.rs (the canonical values); keep them in sync. */
+:root {
+  color-scheme: dark;
+  --bg: #080808;
+  --panel: #0f0f0f;
+  --panel-2: #161616;
+  --border: #1e1e1e;
+  --fg: #c8c8c8;
+  --muted: #555;
+  --accent: #fff;
+  --user: #777;
+  --error: #a05050;
+  --font-mono: 'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
+  --chrome-pad: 16px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 20px;
+  --z-header: 30;
+  --z-modal: 100;
+  --z-menu: 120;
+  --z-display: 140;
+  --z-api-key: 150;
+}
+
 /* ===========================================================================
    localharness browser app — component stylesheet (monochrome brutalist).
 
