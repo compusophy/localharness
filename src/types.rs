@@ -726,19 +726,25 @@ impl Step {
         s
     }
 
-    /// The turn-terminating step (model → user, terminal). `kind` derives
-    /// from `structured_output`: [`StepType::Finish`] when present (the model
-    /// called `finish`), else [`StepType::TextResponse`].
+    /// The turn-terminating step (model → user, terminal). `kind` is
+    /// [`StepType::Finish`] when the model called the `finish` tool
+    /// (`finished == true`) OR carried structured output (a bare `finish`
+    /// with no `output` arg still flags `Finish`), else
+    /// [`StepType::TextResponse`]. The `Finish` kind is the canonical
+    /// "the model said it's done" signal — consumers (the in-tab loop)
+    /// read it to stop auto-continuing and to suppress an empty-response
+    /// bubble on a pure-tool/finish turn.
     pub fn turn_complete(
         trajectory_id: impl Into<String>,
         step_index: u32,
         status: StepStatus,
         content: impl Into<String>,
         error: impl Into<String>,
+        finished: bool,
         structured_output: Option<serde_json::Value>,
         usage_metadata: Option<UsageMetadata>,
     ) -> Self {
-        let kind = if structured_output.is_some() {
+        let kind = if finished || structured_output.is_some() {
             StepType::Finish
         } else {
             StepType::TextResponse

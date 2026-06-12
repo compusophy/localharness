@@ -1070,7 +1070,12 @@ button.ready:hover {
 .turn {
   background: transparent;
   border: 0;
-  padding: 4px 0 4px 12px;
+  /* The transcript's `gap: 12px` is the SINGLE source of inter-turn
+     spacing (on-chain feedback #99 — per-turn vertical padding stacked
+     ON TOP of the gap, reading as redundant blank space after every
+     reply). Keep only a hair of vertical room so the assistant border
+     isn't clipped; the horizontal indent for the border stays. */
+  padding: 1px 0 1px 12px;
 }
 .turn.user { padding-left: 0; }
 .turn.assistant {
@@ -1089,6 +1094,15 @@ button.ready:hover {
    one-line answer doesn't carry a blank line above/below it. */
 .turn .body > p:first-child, .turn .body .text-segment > p:first-child { margin-top: 0; }
 .turn .body > p:last-child, .turn .body .text-segment > p:last-child { margin-bottom: 0; }
+/* A turn that ends on a tool call leaves that block as the last VISIBLE
+   element — the empty text-segment opened after it is hidden by the
+   :empty rule above. Its 8px bottom margin stacked onto the transcript
+   gap as extra trailing space (feedback #99). Collapse it ONLY when no
+   non-empty text-segment follows (so a tool-then-text turn keeps its
+   separation): `:has` checks for a later segment that actually has
+   content. Mirror for the leading edge. */
+.turn .body > .tool-call:first-child { margin-top: 0; }
+.turn .body > .tool-call:not(:has(~ .text-segment:not(:empty))) { margin-bottom: 0; }
 
 /* Inline tool-call blocks inside an assistant turn. */
 .tool-call {

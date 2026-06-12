@@ -209,6 +209,48 @@ mod tests {
         );
     }
 
+    /// REGRESSION (on-chain feedback #100/#101): backends INTERCEPT `finish`
+    /// and never emit it as a ToolCall chunk, so the in-tab loop reads it off
+    /// `ChatResponse::finished()` and feeds it as `saw_finish`. These pin the
+    /// loop-control invariant the app relies on now that the signal flows:
+    /// a finished turn ALWAYS stops (no redundant auto-continue sign-off,
+    /// #100), and a finish-with-no-text turn is `Finished` — NOT `Empty` —
+    /// so it never paints an "(empty response)" bubble (#101).
+    #[test]
+    fn finish_stops_the_loop_in_every_shape() {
+        // finish + text → stop (a normal closing turn).
+        assert_eq!(
+            classify_turn(true, false, false, true, false),
+            TurnOutcome::Finished
+        );
+        // finish after a goal-step tool, no closing text → stop, NOT
+        // Incomplete (the #100 root cause: an undetected finish here used to
+        // auto-continue with the "continue toward the goal" nudge).
+        assert_eq!(
+            classify_turn(true, false, true, true, false),
+            TurnOutcome::Finished
+        );
+        // BARE finish — no text, no other tool, nothing visible → Finished,
+        // NOT Empty (the #101 root cause: a missed finish dead-ended as a
+        // "(empty response)" bubble).
+        assert_eq!(
+            classify_turn(true, false, false, false, false),
+            TurnOutcome::Finished
+        );
+    }
+
+    /// The contrast case to `finish_stops_the_loop_in_every_shape`: a turn that
+    /// ran a goal-step tool but did NOT call finish keeps going. This is the
+    /// behavior that must be PRESERVED — the finish fix can't kill legitimate
+    /// multi-step auto-continuation.
+    #[test]
+    fn pure_tool_without_finish_continues() {
+        assert_eq!(
+            classify_turn(false, false, true, true, false),
+            TurnOutcome::Incomplete
+        );
+    }
+
     #[test]
     fn pure_text_reply_is_final_answer() {
         assert_eq!(

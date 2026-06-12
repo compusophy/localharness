@@ -191,6 +191,12 @@ struct ChatBuf {
     chunks: Vec<StreamChunk>,
     done: bool,
     error: Option<String>,
+    /// The model called the `finish` tool this turn — the terminal step was
+    /// `StepType::Finish`. Backends intercept `finish` and DON'T emit it as a
+    /// `ToolCall` chunk, so this is the only signal a chunk-stream consumer
+    /// gets that the model explicitly declared the turn complete. `false`
+    /// when the turn ended on plain text / tools / an error.
+    finished: bool,
     /// The terminal step's `error` string — a non-fatal *finish-reason note*
     /// (e.g. "stopped at max tokens", "stopped by safety policy"), NOT a hard
     /// error. Backends stash the model's `finishReason`/`stop_reason` here so a
@@ -210,6 +216,7 @@ impl ChatResponse {
                 chunks: Vec::new(),
                 done: false,
                 error: None,
+                finished: false,
                 finish_note: None,
             }),
             notify: Notify::new(),
@@ -242,6 +249,14 @@ impl ChatResponse {
                             // via the `Err` arm below).
                             if !step.error.is_empty() {
                                 inner_clone.state.lock().finish_note = Some(step.error.clone());
+                            }
+                            // The model called `finish` → terminal step kind is
+                            // `Finish`. Record it so a chunk-stream consumer can
+                            // tell an explicit completion apart from a plain
+                            // text reply (backends don't emit `finish` as a
+                            // ToolCall chunk).
+                            if step.kind == crate::types::StepType::Finish {
+                                inner_clone.state.lock().finished = true;
                             }
                             let mut s = conv_state.lock();
                             let final_text = if !step.content.is_empty() {
@@ -286,6 +301,17 @@ impl ChatResponse {
     /// stream.
     pub fn finish_note(&self) -> Option<String> {
         self.inner.state.lock().finish_note.clone()
+    }
+
+    /// Whether the model called the `finish` tool this turn (the terminal step
+    /// was [`crate::types::StepType::Finish`]). Backends intercept `finish` and
+    /// do NOT surface it as a `ToolCall` chunk, so a consumer draining the
+    /// chunk stream can't see it any other way — read this after the stream
+    /// ends to know the model explicitly declared the turn complete (vs. a
+    /// plain text reply, a tool-only turn, or an error). `false` until the
+    /// terminal step arrives.
+    pub fn finished(&self) -> bool {
+        self.inner.state.lock().finished
     }
 
     /// A fresh cursor that replays every chunk from the start. Multiple
