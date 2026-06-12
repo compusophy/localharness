@@ -153,6 +153,12 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
   display: flex;
   align-items: center;
   border-bottom: 1px solid var(--border);
+  /* Override the base `header { margin-bottom: 4px }` (an old in-flow
+     header rule for unrelated templates). Without this, that 4px leaks
+     in as a phantom gap between the sticky header border and the chat
+     content below — the "extra px under the header" that no transcript
+     rule could reach. */
+  margin: 0;
 }
 .header-inner {
   width: 100%;
@@ -1121,7 +1127,16 @@ button.ready:hover {
   word-break: break-word;
 }
 .turn.user .body { white-space: pre-wrap; color: var(--muted); }
-.turn.assistant .body .text-segment { white-space: pre-wrap; }
+/* `pre-wrap` is ONLY correct while the turn STREAMS — the segment then
+   holds raw model text whose newlines must show. The instant streaming
+   ends the segment is replaced by block-level markdown HTML (and restored
+   history is markdown from the start), where pulldown-cmark's trailing /
+   inter-block "\n" text nodes would render as PHANTOM BLANK LINES under
+   pre-wrap (one full line-height of dead space below every reply, and
+   extra gaps between paragraphs — the long-standing "space under the
+   agent response"). Scope pre-wrap to `.streaming` so the final, rendered
+   turn uses normal whitespace and those literal newlines collapse. */
+.turn.assistant.streaming .body .text-segment { white-space: pre-wrap; }
 /* Empty segments (opened after a tool call but never written to)
    must not reserve vertical space. */
 .turn.assistant .body .text-segment:empty { display: none; }
