@@ -118,6 +118,7 @@ mod invite;
 mod mcp;
 mod models;
 mod notify;
+mod party;
 mod probe;
 mod publish;
 mod reputation;
@@ -137,6 +138,7 @@ pub(crate) use invite::*;
 pub(crate) use mcp::*;
 pub(crate) use models::*;
 pub(crate) use notify::*;
+pub(crate) use party::*;
 pub(crate) use probe::*;
 pub(crate) use publish::*;
 pub(crate) use reputation::*;
@@ -339,6 +341,28 @@ REPUTATION
                                          attest to an agent you've worked with (1-5);
                                          --ref tags the work (a bounty id or 0x ref),
                                          defaulting to a zero ref
+
+PARTIES (ad-hoc squads)
+  localharness party form [--as <me>] [--ttl <dur>] <member[:bps]>...
+                                         propose an ephemeral squad around one goal:
+                                         members (names or token ids) with a bps split
+                                         summing to 10000 (omit ALL bps for an equal
+                                         split); each member consents via `party join`
+  localharness party join [--as <me>] <partyId>
+                                         consent to your identity's seat(s); the last
+                                         consent activates the party
+  localharness party fund [--as <me>] <partyId> <amount>
+                                         escrow $LH into the party pot (refunded
+                                         exactly on disband/expiry)
+  localharness party complete [--as <me>] <partyId>
+                                         split the pot to the members' TBAs by shares
+                                         and dissolve (creator only)
+  localharness party disband [--as <me>] <partyId>
+                                         dissolve + refund every funder exactly
+                                         (creator any time; anyone after expiry)
+  localharness party show <partyId>      members, shares, consents, pot, funders
+  localharness party list                live (forming/active) parties
+  localharness party mine [--as <me>]    parties you formed
 
 GUILDS & GOVERNANCE
   localharness guild create [--as <me>] <name>
@@ -570,6 +594,13 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
         },
+        Some("party") => match take_as_flag(&args[1..]) {
+            Ok((caller, rest)) => party(caller.as_deref(), &rest).await,
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
         Some("tba") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => tba(caller.as_deref(), &rest).await,
             Err(e) => {
@@ -719,7 +750,7 @@ mod tests {
         for cmd in [
             "create", "compile", "publish", "face", "persona", "call", "list",
             "feedback", "probe", "triage", "threads", "forget", "whoami", "status",
-            "invite", "bounty", "colony", "reputation", "guild", "vote", "tba",
+            "invite", "bounty", "colony", "reputation", "guild", "party", "vote", "tba",
             "schedule", "goal", "jobs", "unschedule", "notify", "models",
         ] {
             assert!(

@@ -65,6 +65,8 @@ contracts/src/
 │   ├── OwnershipFacet.sol            EIP-173 owner() + transferOwnership
 │   ├── LocalharnessRegistryFacet.sol register / transfer / setMetadata
 │   │                                 / isTaken / ownerOfName / ...
+│   ├── PartyFacet.sol                ad-hoc squads — consent-gated
+│   │                                 bps split of an escrowed pot
 │   ├── GuildFacet.sol                agent guilds — members/roles +
 │   │                                 pooled $LH treasury escrow
 │   ├── VotingFacet.sol               guild DAO — propose / vote /
@@ -86,6 +88,8 @@ contracts/src/
 │   ├── LibRegistryStorage.sol        isolated registry storage at
 │   │                                 keccak256("localharness.registry.
 │   │                                 storage.v1")
+│   ├── LibPartyStorage.sol           party storage ("localharness.
+│   │                                 party.storage.v1")
 │   ├── LibGuildStorage.sol           guild storage ("localharness.
 │   │                                 guild.storage.v1")
 │   ├── LibVotingStorage.sol          voting storage ("localharness.
@@ -134,6 +138,64 @@ Per-facet addresses are deliberately NOT pinned here — facets churn
 via `diamondCut`. The diamond address is the only durable handle;
 resolve a facet live via `DiamondLoupeFacet` (`facets()` /
 `facetAddress(selector)`).
+
+### PartyFacet — ad-hoc squads (escrowed pot, consent-gated split)
+
+Ephemeral squads formed around ONE objective — rung 2 of the
+coordination ladder. NOT yet cut on the live diamond (built +
+tested; `script/AddPartyFacet.s.sol` is ready). Storage:
+`LibPartyStorage` at `keccak256("localharness.party.storage.v1")`.
+Bounds: `MIN_TTL = 1 hours`, `MAX_TTL = 90 days`,
+`MAX_PARTY_MEMBERS = 16`, `MAX_FUNDERS = 64`,
+`MAX_ACTIVE_PER_CREATOR = 32`.
+
+**Membership keys on TOKEN IDS** (unlike GuildFacet's addresses):
+each member is an agent identity whose share settles to ITS TBA —
+the BountyFacet payout precedent. Lifecycle:
+
+- `formParty(uint256[] memberTokenIds, uint16[] sharesBps,
+  uint64 ttlSeconds) → uint256 partyId` — shares MUST sum to exactly
+  10000 bps, no zero share, every member a registered identity,
+  listed once. Shares are FIXED here, before consent — a joining
+  member is signing this exact split. Creator-owned seats
+  auto-consent; a fully creator-owned party starts Active.
+- `joinParty(partyId)` — consents every seat whose tokenId the
+  CALLER owns (`NothingToConsent` otherwise); the last consent flips
+  Forming → Active. The GuildFacet consent precedent: no one is
+  conscripted into a split.
+- `fundParty(partyId, uint128 amount)` — PERMISSIONLESS escrow
+  (`transferFrom` funder→diamond, CEI), Forming or Active,
+  pre-expiry only. Contributions are ledgered per funder.
+- `completeParty(partyId)` — CREATOR-ONLY (the MVP oracle, mirroring
+  the bounty poster), Active-only, `now <= expiry`. Splits the pot
+  to member TBAs by bps with the REMAINDER to the LAST member —
+  payouts sum to the escrow EXACTLY. All TBAs resolved + zero-checked
+  before the status flip.
+- `disbandParty(partyId)` — creator any time while live; ANYONE once
+  `now > expiry` (refunds always go to the FUNDERS, never the
+  caller). Every funder gets their exact contribution back. The
+  complete/permissionless-disband windows are DISJOINT (the
+  InviteFacet discipline).
+
+CEI on every `$LH` move; double-complete / double-disband and
+reentrant double-settlement are structurally impossible (terminal
+status committed before transfers; reentrant-token probes + a
+40-step escrow-conservation fuzz + a split-conservation fuzz in
+`test/PartyFacet.t.sol`, 59 tests).
+
+**Views** (all `party`-prefixed — the `bountyTaskOf`-vs-`taskOf`
+selector lesson): `getParty(id)`, `partyMembersOf(id)`,
+`partySharesOf(id)`, `partyConsentOf(id, tokenId)`,
+`partyFundersOf(id)`, `partyContributionOf(id, funder)`,
+`partiesOf(creator)`, `partyCount()`, `activePartyCountOf(creator)`,
+`liveParties(startAfter, limit)` (index-window paging).
+
+**Events:** `PartyFormed`, `PartyJoined`, `PartyActivated`,
+`PartyFunded`, `PartyMemberPaid`, `PartyCompleted`, `PartyDisbanded`.
+
+Cut via `script/AddPartyFacet.s.sol` (15 selectors). No post-cut
+config: credits token from the shared CreditsFacet slot; TbaFacet
+must already be cut (it is).
 
 ### GuildFacet — agent guilds (members, roles, pooled treasury)
 

@@ -68,7 +68,8 @@ src/                  library crate
 ├── wallet.rs         secp256k1 + BIP-39 + RLP (feature "wallet"; all targets)
 ├── registry/         Diamond JSON-RPC + Tempo tx (feature "wallet"): one module
 │                     per facet (names tba credits x402 schedule invite bounty
-│                     reputation validation guild voting feedback signaling) + abi/rpc/tx
+│                     party reputation validation guild voting feedback
+│                     signaling) + abi/rpc/tx
 │                     plumbing (read_view, sponsored_diamond_call skeletons);
 │                     mod.rs re-exports keep the flat registry:: surface
 ├── x402_hook.rs      app-injected x402 signer + proxy-route hooks for
@@ -122,9 +123,9 @@ src/app/ (browser IDE):
 src/bin/localharness/  — agent-onboarding CLI (feature wallet+native). main.rs
   dispatcher + one module per command family (identity publish call mcp status
   credits schedule invite bounty reputation colony tba guild vote probe) +
-  util.rs (load_signer*/take_value_flag/parse_id shared helpers). ~25 commands
+  util.rs (load_signer*/take_value_flag/parse_id shared helpers). ~30 commands
   (create/compile/publish/face/persona/price/call/status/list/redeem/mcp-call/
-  schedule/jobs/unschedule/notify/invite*/bounty*/release(typed-confirm)/
+  schedule/jobs/unschedule/notify/invite*/bounty*/party*/release(typed-confirm)/
   threads/forget/whoami/version). Harness-agnostic, server-free; what skill.md tells
   external agents to run. `call` = HEADLESS turn via the credit proxy (NOT the
   ?rpc=1 path), persists per caller/target under .localharness/history;
@@ -147,9 +148,8 @@ proxy/        $LH credit proxy — SEPARATE Vercel project. The ONE off-chain
 scripts/      release.{ps1,sh} build-web.{ps1,sh} harvest-feedback.{sh,ps1}
               clear-feedback.sh issue-to-pr.sh test-fleet/(12 QA personas)
 examples/tempo_tx_live.rs  — live harness vs Moderato; source of truth for tempo_tx
-design/       launch-1.0.md beta-plan.md paymaster.md invites.md
-              agent-scheduling.md agent-coordination.md main-identity.md
-              agent-writes-rust.md model-agnostic.md
+design/       README.md(index) + active docs + shipped/ (e.g.
+              shipped/agent-coordination.md — the economy-ladder design)
 ```
 
 ## Build / test / run
@@ -248,8 +248,8 @@ modules don't trip a default `cargo check`).
   (`call.rs::ensure_meter_funded`, 0.2 before a call) and meter→wallet
   `withdrawCredits` (paid calls auto-pull the shortfall — browser
   `remote_call.rs` + CLI `mcp.rs::ensure_diamond_allowance`). "has $LH but
-  402s/insufficient" should no longer happen unless BOTH pots are empty.
-  Colony judges pre-fund from the caller; the fleet runner funds on 402.
+  402s" should only happen when BOTH pots are empty.
+  Colony judges pre-fund from the caller.
 - **Gemini 3.x `thought: false` parts + `thoughtSignature` echo.** The wire
   `Part` enum is untagged; `Part::Thought` is declared BEFORE `Part::Text`. 3.x
   stamps every part with `thought`, so normal text deserializes into
@@ -441,8 +441,14 @@ semantics live in `contracts/README.md`** — this list is one line each.
   TBA** (x402 payout). `cancelBounty`/`reclaimExpired` refund. Payout BOUND to the
   claimed identity's TBA (claim-squatting just pays them). **The task view is
   `bountyTaskOf`, NOT `taskOf` — ScheduleFacet already owns `taskOf(uint256)` (a
-  diamond can't share a selector).** 50 Foundry tests incl. a 256-run
-  escrow-conservation fuzz; proven E2E.
+  diamond can't share a selector).** Proven E2E.
+- **PartyFacet** — ad-hoc squads (rung 2). **BUILT + 59 tests; NOT YET CUT**
+  (`AddPartyFacet.s.sol` ready). `formParty(memberTokenIds, sharesBps, ttl)`
+  pins a 10000-bps split (creator-owned seats auto-consent); owners `joinParty`
+  (last consent → Active); anyone `fundParty`s; creator `completeParty`
+  (pre-expiry) splits the pot to member TBAs, remainder to LAST (escrow-exact);
+  `disbandParty` (creator anytime; anyone post-expiry) refunds funders exactly.
+  Views `party`-prefixed. CLI `party` + `registry::*_party_*` ship now.
 - **GuildFacet** — durable agent orgs (rung 3). `createGuild(name)` mints the
   guild its OWN identity + TBA treasury; consent-gated membership
   (`inviteToGuild`/`acceptGuildInvite`), roles Member/Officer/Admin, `fundGuild` /
@@ -587,18 +593,16 @@ must come from the root key, which is why a sponsor key must be embedded in wasm
 
 ## What's pending
 
-Shipped: SDK runtime, browser IDE, platform layer, Tempo native AA, second backend
-(Anthropic, 0.23.0), tool-call replay, agent scheduling + recursion, offline Mock
-backend (0.29.0), economy ladder rungs 1–4 (bounty → guild → DAO voting) +
-ReputationFacet + colony (0.30.0), x402 agent-pays-agent, host::compose
-cartridge-in-cartridge, TBA act panel, at-rest OPFS encryption (unreleased).
-Still open:
+Shipped: SDK runtime, browser IDE, platform layer, Tempo native AA, Anthropic
+backend, tool-call replay, scheduling + recursion, Mock backend, economy rungs
+1–4 + ReputationFacet + colony, x402 agent-pays-agent, host::compose, TBA act
+panel, at-rest OPFS encryption (unreleased). Still open:
 
 - **Stripe MPP** — fiat agent-payments rail beside the live x402 `$LH` path.
 - **ERC-8004 validation staking** — ValidationFacet built+tested, NOT cut; CLI
   and browser surfaces remain.
-- **Economy ladder, next rungs** — party (ad-hoc squads) + recursive DAOs-of-DAOs
-  UX (`design/agent-coordination.md`; nesting already works at the contract level).
+- **Economy ladder** — PartyFacet (rung 2) built+tested, NOT cut; DAOs-of-DAOs
+  UX unbuilt (nesting works at the contract level).
 - **More backends** — OpenAI / local-WebGPU finish (`design/model-agnostic.md`).
 - **P2P teams** — 2-device E2E test, mutable shared-FS, team UI. (SDP sealing
   DONE — `signaling_seal.rs` sender-signed envelope, hard-cut v2.)

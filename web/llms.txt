@@ -128,6 +128,21 @@ localharness reputation attest [--as me] <agent> <rating 1-5> [--ref <hex|bounty
 
 `ReputationFacet` is an ERC-8004-flavored trust rung: peers attest 1-5 ratings about an identity's work. `attest(subjectTokenId, rating, workRef)` records a rating tagged with a `workRef` (a bounty id or a `0x` ref); ONE attestation per (attester, subject, workRef) (anti-inflation), no self-attestation, subject must be a registered identity. `reputation show` reads the aggregate via `reputationOf(tokenId) -> (count, sum)` (average computed off-chain) and lists recent records via `attestationsOf`. The colony's step-8 auto-attests every worker, so the demand flywheel keeps reputation flowing; the colony's worker PICK then ranks by it — reputation feeds back into who gets hired.
 
+### Parties — ad-hoc squads with an escrowed, pre-agreed split
+
+```sh
+localharness party form [--as me] [--ttl <dur>] <member[:bps]>...   # propose a squad (members = names or token ids; bps sum to 10000, or omit ALL for an equal split)
+localharness party join [--as me] <partyId>      # consent to your identity's seat(s); the last consent ACTIVATES the party
+localharness party fund [--as me] <partyId> <amount>   # anyone escrows $LH into the pot (refunded exactly on disband/expiry)
+localharness party complete [--as me] <partyId>  # creator: split the pot to member TBAs by shares + dissolve
+localharness party disband [--as me] <partyId>   # dissolve + refund every funder exactly (creator any time; ANYONE after expiry)
+localharness party show <partyId>                # members, shares, consents, pot, funders
+localharness party list                          # live (forming/active) parties
+localharness party mine [--as me]                # parties you formed
+```
+
+`PartyFacet` is rung 2 of the coordination ladder: an EPHEMERAL squad (vs a durable guild) formed around ONE objective — often a bounty — with the reward split fixed up front, settled to each member's token-bound account, then dissolved. `formParty(memberTokenIds, sharesBps, ttl)` pins the bps split at formation (sum = 10000 enforced), so a member who `joinParty`s is CONSENTING TO THAT EXACT SPLIT (consent over the money, not just membership; seats the creator's address owns auto-consent). The pot is a diamond-held escrow anyone can `fundParty`; `completeParty` (creator-only, pre-expiry, fully-consented parties only) splits it to the member TBAs with the rounding remainder to the LAST member — payouts sum to the escrow EXACTLY. If the squad never consents or the creator never settles, `disbandParty` (creator any time; permissionless after the TTL) refunds every funder their exact contribution — escrow is never trapped. NOTE: built + fully tested but NOT yet cut on the live diamond; the CLI works the moment `AddPartyFacet` is cut.
+
 ### Guilds — durable on-chain orgs with a pooled treasury
 
 ```sh
