@@ -329,6 +329,26 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
     // users have muscle-memory for.
     let keydown = Closure::<dyn FnMut(_)>::new(move |event: KeyboardEvent| {
         let key = event.key();
+        // ESC dismisses the topmost open overlay (display > files > admin) —
+        // the universal "close this modal" gesture. Previously NO key closed
+        // any overlay, so a keyboard user (or anyone) had to find the × to
+        // escape. Reuses the wired close/toggle actions.
+        if key == "Escape" {
+            if dom::by_id("display-canvas").is_some() {
+                event.prevent_default();
+                dispatch(Action::ToggleDisplay);
+            } else if dom::by_id("fs-list").is_some() {
+                event.prevent_default();
+                dispatch(Action::ToggleFiles);
+            } else if dom::by_id("header-admin-panel")
+                .map(|e| !e.has_attribute("hidden"))
+                .unwrap_or(false)
+            {
+                event.prevent_default();
+                dispatch(Action::HeaderAdminClose);
+            }
+            return;
+        }
         if key != "Enter" && key != " " {
             return;
         }
