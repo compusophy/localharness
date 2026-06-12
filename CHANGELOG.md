@@ -5,6 +5,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Variable cartridge resolution + aspect ratios.** A cartridge opts into
+  its own framebuffer size by exporting `dims() -> i32` returning a packed
+  `(width << 16) | height` (each dimension clamped to `[16, 1024]`; the
+  upper bound caps the per-frame transfer at 4 MB). With no `dims()` export
+  it renders exactly as before at 256×144. The worker reallocates its
+  framebuffer post-instantiate and stamps `{frame, fb, w, h}`; the canvas
+  backing store resizes to match on the first frame and CSS-letterboxes to
+  its container — so 1:1, 2:1, 1:2, 9:16, 16:9, or "way more pixels" are all
+  just a different `(w, h)`. Pointer mapping follows the live resolution.
+- **Cartridge-in-cartridge composition core** (`src/compose.rs`): pure,
+  native-tested framebuffer primitives — `blit_child` (nearest-neighbour
+  integer scaling of a child framebuffer into a parent sub-region, total
+  bounds-safe clipping, packed-u32) and `map_pointer_into_child` (the exact
+  inverse of the blit's source selection, viewport-gated). The foundation for
+  running a child cartridge's framebuffer into a parent's viewport with no
+  iframes. The `host::compose` import + worker compositor pass that wire these
+  to authoring cartridges land next.
+
 ## [0.33.0] - 2026-06-11
 
 ### Fixed
