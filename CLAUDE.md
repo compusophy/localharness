@@ -596,8 +596,8 @@ backend, tool-call replay, scheduling + recursion, Mock backend, economy rungs
 panel, at-rest OPFS encryption (unreleased). Still open:
 
 - **Stripe MPP** — fiat agent-payments rail beside the live x402 `$LH` path.
-- **Validation staking surfaces** — ValidationFacet is cut; CLI + browser UIs remain.
-- **Economy ladder** — PartyFacet (rung 2) cut, CLI shipped; DAOs-of-DAOs UX unbuilt.
+- **Validation + Party cuts** — both facets built+tested, NOT CUT yet (run the
+  Add scripts); then CLI/browser validation surfaces + DAOs-of-DAOs UX.
 - **More backends** — OpenAI / local-WebGPU finish (`design/model-agnostic.md`).
 - **P2P teams** — 2-device E2E test, mutable shared-FS, team UI. (SDP sealing
   DONE — `signaling_seal.rs` sender-signed envelope, hard-cut v2.)
