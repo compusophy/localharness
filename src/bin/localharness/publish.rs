@@ -807,15 +807,29 @@ pub(crate) async fn set_price(name: &str, amount: &str) -> i32 {
     }
 }
 
+/// Whether `release`'s typed `--confirm` matches the name EXACTLY. Pure +
+/// testable — the gate of the destructive-action convention (typed, never
+/// auto-filled).
+pub(crate) fn release_confirmed(name: &str, confirm: Option<&str>) -> bool {
+    confirm == Some(name)
+}
+
+/// The refusal printed when the typed confirmation doesn't match. It
+/// DELIBERATELY names neither the correct `--confirm` value nor a ready-to-
+/// paste command — the old message echoed the exact working command line,
+/// a copy-paste bypass of the typed-confirmation friction.
+pub(crate) const RELEASE_REFUSAL: &str = "\
+release refused: this burns the name permanently. --confirm must exactly \
+match the name being released — type it out deliberately.";
+
 /// `release <name> --confirm <name>` — burn an owned subdomain NFT and free
 /// the name (ReleaseFacet). DESTRUCTIVE: per the house convention the typed
 /// confirmation is required and never auto-filled — `--confirm` must repeat
 /// the exact name. Refuses the caller's MAIN client-side (the facet refuses
 /// it on-chain too). The browser twin is the `release_subdomain` chat tool.
 pub(crate) async fn release(caller: Option<&str>, name: &str, confirm: Option<&str>) -> i32 {
-    if confirm != Some(name) {
-        eprintln!("releasing burns {name}.localharness.xyz permanently.");
-        eprintln!("re-run with the typed confirmation: localharness release {name} --confirm {name}");
+    if !release_confirmed(name, confirm) {
+        eprintln!("{RELEASE_REFUSAL}");
         return 2;
     }
     let (signer, sponsor) = match load_signer_and_sponsor(caller) {
@@ -868,6 +882,32 @@ pub(crate) async fn release(caller: Option<&str>, name: &str, confirm: Option<&s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_confirmation_must_match_exactly() {
+        assert!(release_confirmed("alice", Some("alice")));
+        // Anything but the exact name refuses: missing, case-shifted,
+        // whitespace-padded, or a different name.
+        assert!(!release_confirmed("alice", None));
+        assert!(!release_confirmed("alice", Some("Alice")));
+        assert!(!release_confirmed("alice", Some(" alice")));
+        assert!(!release_confirmed("alice", Some("bob")));
+        assert!(!release_confirmed("alice", Some("")));
+    }
+
+    #[test]
+    fn release_refusal_offers_no_copy_paste_bypass() {
+        // The old refusal echoed `localharness release <name> --confirm <name>`
+        // — the exact working command — defeating the typed-confirmation
+        // friction. The refusal must explain the rule WITHOUT handing back a
+        // pastable command or the correct value.
+        assert!(!RELEASE_REFUSAL.contains("localharness release"));
+        assert!(!RELEASE_REFUSAL.contains("re-run"), "must not coach a paste-and-retry");
+        assert!(RELEASE_REFUSAL.contains("--confirm"));
+        assert!(RELEASE_REFUSAL.contains("exactly"));
+        // And it is name-agnostic by construction (a const), so it can never
+        // leak the correct confirmation value.
+    }
 
     #[test]
     fn parse_create_args_name_only_and_with_persona() {
