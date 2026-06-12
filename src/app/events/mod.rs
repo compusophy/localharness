@@ -270,6 +270,13 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
         let Some(target) = event.target() else { return };
         let Ok(mut node) = target.dyn_into::<Element>() else { return };
 
+        // Standard dropdown dismissal: while the notification-bell panel is
+        // open, ANY click outside the bell/panel closes it (the click still
+        // dispatches normally below — e.g. opening ADMIN also shuts the bell).
+        if admin::notif_panel_open() && node.closest(".notif-bell-wrap").ok().flatten().is_none() {
+            admin::close_notif_panel();
+        }
+
         // Backdrop-click dismissal: a click whose RAW target IS the overlay
         // backdrop itself (the dark area, never a child inside the dialog —
         // those bubble up with a different target) closes the modal. Standard
@@ -353,7 +360,11 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
         // any overlay, so a keyboard user (or anyone) had to find the × to
         // escape. Reuses the wired close/toggle actions.
         if key == "Escape" {
-            if dom::by_id("display-canvas").is_some() {
+            // The bell dropdown is the lightest layer — ESC takes it first.
+            if admin::notif_panel_open() {
+                event.prevent_default();
+                admin::close_notif_panel();
+            } else if dom::by_id("display-canvas").is_some() {
                 event.prevent_default();
                 dispatch(Action::ToggleDisplay);
             } else if dom::by_id("fs-list").is_some() {

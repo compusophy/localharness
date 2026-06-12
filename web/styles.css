@@ -682,10 +682,12 @@ main.layout .transcript > *:empty { display: none; }
 .terminal-row {
   display: flex;
   align-items: center;
+  /* UNIFORM interior spacing — ONE 8px step everywhere: edge→prompt,
+     prompt→textarea, textarea→send, send→edge. */
   gap: 8px;
+  padding: 8px;
   background: var(--bg);
   border: 1px solid var(--border);
-  padding: 8px 12px;
   /* Outer height pinned to the header admin button's outer height
      (11px font × 1.5 line-height + 10px×2 padding + 1px×2 border) so
      header and footer bars are pixel-identical: same content-row
@@ -714,11 +716,15 @@ main.layout .transcript > *:empty { display: none; }
   line-height: 1.4;
 }
 .terminal-send {
-  /* No right padding — the row's own 12px right padding gives the
-     edge gap, so the glyph squares up symmetric with the left ">". */
-  padding: 0 0 0 8px;
-  font-size: 13px;
-  line-height: 1;
+  /* A SQUARE icon button (same treatment as the header bell): SVG glyph
+     centered in a fixed 20px box that fits the row's content height
+     without stretching it. Spacing around it is the row's uniform 8px. */
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   flex-shrink: 0;
   background: transparent;
   color: var(--muted);
@@ -726,8 +732,8 @@ main.layout .transcript > *:empty { display: none; }
   cursor: pointer;
 }
 .terminal-send:hover { color: var(--accent); }
-/* Stop button (■) occupies the play slot (▶) while a turn streams. */
-.terminal-stop { color: var(--error); font-size: 13px; }
+/* Stop button (square SVG) occupies the play slot while a turn streams. */
+.terminal-stop { color: var(--error); }
 .terminal-stop:hover { color: var(--error); }
 
 /* === 6. ECONOMY + IDENTITY ============================================== */
@@ -1140,6 +1146,13 @@ summary:focus-visible,
 .agent-row-line:focus-visible {
   outline: 1px solid var(--fg);
   outline-offset: 2px;
+}
+/* The terminal textarea is the ONE exception: its ROW carries the active
+   border (:focus-within accent above). Text inputs match :focus-visible even
+   on mouse focus, so the global ring drew a SECOND box inside the already-lit
+   row — one active border only, the row's. */
+.terminal-row textarea:focus-visible {
+  outline: none;
 }
 /* Hover/focus motion on the navigable cards + rows (same 90ms language). */
 .explore-card, .agent-card, .agent-row-line {

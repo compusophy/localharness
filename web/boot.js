@@ -45,12 +45,26 @@ window.addEventListener("appinstalled", () => {
 // cannot 404. Bust the shim AND the wasm (the shim drops the query when it
 // resolves the wasm relative to import.meta.url, so the wasm url is passed
 // explicitly to init).
-const LH_BUILD = "bd6b0db8a118";
+const LH_BUILD = "7ab921e94480";
 try {
-  const { default: init } = await import("./pkg/localharness.js?v=" + LH_BUILD);
+  const mod = await import("./pkg/localharness.js?v=" + LH_BUILD);
   // Object form (not a bare string) — the bare-path arg is deprecated in this
   // wasm-bindgen and warns in the console; `{ module_or_path }` is the current API.
-  await init({ module_or_path: "./pkg/localharness_bg.wasm?v=" + LH_BUILD });
+  await mod.default({ module_or_path: "./pkg/localharness_bg.wasm?v=" + LH_BUILD });
+  // Web Push → in-app inbox relay: sw.js posts {type:'lh-push', title, body}
+  // to open pages when a push arrives; hand it to the wasm side so the header
+  // bell inbox + badge update live. Registered HERE (the project's one JS
+  // file) — the app's no-per-element-closure rule stays intact in Rust.
+  if ("serviceWorker" in navigator && typeof mod.push_arrived === "function") {
+    navigator.serviceWorker.addEventListener("message", (e) => {
+      const d = e.data;
+      if (d && d.type === "lh-push") {
+        try {
+          mod.push_arrived(String(d.title || ""), String(d.body || ""));
+        } catch {}
+      }
+    });
+  }
 } catch (e) {
   // Boot failed (wasm/shim fetch 404 mid-deploy, instantiation failure,
   // network drop). Swap #root to a minimal monochrome failure line —

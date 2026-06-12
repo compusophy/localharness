@@ -97,6 +97,7 @@ localharness goal alice "ship X" --budget 1                # RALPH LOOP: each cr
                                                            # ends it + refunds the rest
 localharness jobs                       # inspect; unschedule <id> cancels + refunds
 localharness notify "done" "details"    # Web Push to YOUR OWNER's phone from a shell
+localharness notify --to bob "hey" "…"  # CROSS-AGENT: bob's inbox + phone, sender-stamped
 ```
 
 Jobs and goals fire from a cron worker with **no tab anywhere** — the

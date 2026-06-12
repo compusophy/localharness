@@ -1,19 +1,22 @@
-// localharness credit proxy — PC-TO-MOBILE NOTIFY route (Edge).
+// localharness credit proxy — NOTIFY route (Edge).
 //
-// POST /api/notify { title, body } → Web-Pushes a note to the CALLER's OWN
-// registered device. This is the headless "notify me when done" affordance
-// (on-chain feedback #69): an agent running in a shell (CLI / MCP / a script)
-// signs the standard proxy token and the proxy delivers the push to the phone
-// the caller's owner already enrolled via the browser app's "enable
-// notifications" flow — no tab, no new key, no new trust.
+// POST /api/notify { title, body, to? } → Web-Pushes a note.
 //
-// SELF-ONLY BY DESIGN: the push target is derived from the AUTHENTICATED
-// caller, never from the request — caller address → `mainOf(caller)` (no MAIN
-// → no fallback → 404) → the Web Push subscription published under
-// `metadata(mainTokenId, keccak256("localharness.push_sub"))` by
-// src/app/notifications.rs. There is deliberately NO cross-user targeting:
-// pushing to ANOTHER owner's phone is a consent-design problem (opt-in,
-// rate limits, blocklists — issue #68) and stays out of scope here.
+//   * No `to`  — the CALLER's OWN registered device ("notify me when done"
+//     from a shell, on-chain feedback #69).
+//   * `to: <name>` — CROSS-AGENT: deliver to the named agent's enrolled
+//     device(s). The sender is the AUTHENTICATED caller; the push title is
+//     prefixed `@<callerName>:` (resolved from chain, never from the request)
+//     so the recipient's inbox shows who pinged them and spoofing is
+//     impossible. The meter debit (caller pays per push, same price as a
+//     model call) is the spam leash; per-recipient blocklists are follow-up.
+//
+// Target resolution (both modes) tries every slot a device can enroll under:
+//   1. `metadata(mainOf(owner), keccak256("localharness.push_sub"))` — the
+//      admin "enable notifications" flow (src/app/notifications.rs);
+//   2. `metadata(tokenId, ...)` — same slot keyed by the name's own id;
+//   3. `pushSubOf(owner)` — the address-keyed PushFacet slot the header
+//      bell's device self-registration writes.
 //
 // AUTH + BILLING are byte-compatible with api/fetch.ts / api/gemini.ts: the
 // caller sends `<address>:<timestamp>:<signature>` (an Ethereum personal-sign
@@ -244,24 +247,8 @@ function decodeAbiBytesUtf8(resultHex: string): string {
   return new TextDecoder().decode(bytes);
 }
 
-/**
- * The CALLER's published Web Push subscription, or null. SELF-ONLY slot rule:
- * `mainOf(caller)` and NOTHING else — a caller with no MAIN identity (or an
- * empty/malformed slot) simply has no push target. (The scheduler worker's
- * `pushSubOf` falls back to a job's targetId; here there is no job, so no
- * fallback.)
- */
-async function pushSubOfCaller(address: string): Promise<PushSubscriptionJson | null> {
-  const main = BigInt(
-    await ethCall('0x' + selector('mainOf(address)') + encodeAddressWord(address)),
-  );
-  if (main === 0n) return null;
-  const data =
-    '0x' +
-    selector('metadata(uint256,bytes32)') +
-    main.toString(16).padStart(64, '0') +
-    PUSH_SUB_KEY;
-  const text = decodeAbiBytesUtf8(await ethCall(data)).trim();
+/** Parse + validate a push-subscription JSON string; null when malformed. */
+function parseSub(text: string): PushSubscriptionJson | null {
   if (!text) return null;
   let sub: PushSubscriptionJson;
   try {
@@ -278,6 +265,97 @@ async function pushSubOfCaller(address: string): Promise<PushSubscriptionJson | 
     return null;
   }
   return sub;
+}
+
+/** ABI-encode a single dynamic `string` argument (offset + len + padded). */
+function encodeStringArg(s: string): string {
+  const bytes = new TextEncoder().encode(s);
+  const padded = Math.ceil(bytes.length / 32) * 32;
+  let hex = '';
+  for (const b of bytes) hex += b.toString(16).padStart(2, '0');
+  return (
+    (32).toString(16).padStart(64, '0') +
+    bytes.length.toString(16).padStart(64, '0') +
+    hex.padEnd(padded * 2, '0')
+  );
+}
+
+/** `metadata(tokenId, push_sub_key)` → parsed subscription or null. */
+async function subFromMetadata(tokenId: bigint): Promise<PushSubscriptionJson | null> {
+  if (tokenId === 0n) return null;
+  const data =
+    '0x' +
+    selector('metadata(uint256,bytes32)') +
+    tokenId.toString(16).padStart(64, '0') +
+    PUSH_SUB_KEY;
+  return parseSub(decodeAbiBytesUtf8(await ethCall(data)).trim());
+}
+
+/** Address-keyed PushFacet slot (`pushSubOf(address)`) → sub or null. */
+async function subFromAddress(address: string): Promise<PushSubscriptionJson | null> {
+  const data = '0x' + selector('pushSubOf(address)') + encodeAddressWord(address);
+  return parseSub(decodeAbiBytesUtf8(await ethCall(data)).trim());
+}
+
+/**
+ * Resolve an OWNER ADDRESS to its enrolled push subscription, trying every
+ * slot a device registers under (see the header). `tokenId` is the name's
+ * own id when targeting by name (0n when targeting the caller).
+ */
+async function resolveSubForOwner(
+  owner: string,
+  tokenId: bigint,
+): Promise<PushSubscriptionJson | null> {
+  const main = BigInt(
+    await ethCall('0x' + selector('mainOf(address)') + encodeAddressWord(owner)),
+  );
+  return (
+    (await subFromMetadata(main)) ??
+    (await subFromMetadata(tokenId)) ??
+    (await subFromAddress(owner))
+  );
+}
+
+/** The CALLER's own subscription (self-notify), or null. */
+async function pushSubOfCaller(address: string): Promise<PushSubscriptionJson | null> {
+  return resolveSubForOwner(address, 0n);
+}
+
+/** Thrown by pushSubOfName when the name isn't registered at all. */
+class NoSuchAgentError extends Error {}
+
+/**
+ * A NAMED agent's subscription (cross-agent notify): name → tokenId →
+ * owner → the slot chain. Throws NoSuchAgentError for an unregistered name;
+ * returns null when the agent exists but no device ever enrolled.
+ */
+async function pushSubOfName(name: string): Promise<PushSubscriptionJson | null> {
+  const id = BigInt(
+    await ethCall('0x' + selector('idOfName(string)') + encodeStringArg(name)),
+  );
+  if (id === 0n) throw new NoSuchAgentError(`no agent named "${name}"`);
+  const ownerWord = await ethCall(
+    '0x' + selector('ownerOf(uint256)') + id.toString(16).padStart(64, '0'),
+  );
+  const owner = '0x' + stripHex(ownerWord).slice(-40);
+  return resolveSubForOwner(owner, id);
+}
+
+/**
+ * The CALLER's display name for cross-agent attribution: `mainNameOf(caller)`
+ * when a MAIN identity exists, else the short 0x address. Chain-derived from
+ * the AUTHENTICATED address — a sender cannot spoof who a push is from.
+ */
+async function callerDisplayName(address: string): Promise<string> {
+  try {
+    const name = decodeAbiBytesUtf8(
+      await ethCall('0x' + selector('mainNameOf(address)') + encodeAddressWord(address)),
+    ).trim();
+    if (name) return name;
+  } catch {
+    // fall through to the short address
+  }
+  return address.slice(0, 6) + '…' + address.slice(-4);
 }
 
 /** Thrown when the on-chain debit REVERTED (caller is genuinely out of $LH). */
@@ -347,15 +425,24 @@ export default async function handler(req: Request): Promise<Response> {
     }
     let title: string;
     let body: string;
+    let to: string;
     try {
-      const parsed = (await req.json()) as { title?: unknown; body?: unknown };
+      const parsed = (await req.json()) as {
+        title?: unknown;
+        body?: unknown;
+        to?: unknown;
+      };
       title = typeof parsed.title === 'string' ? parsed.title.trim() : '';
       body = typeof parsed.body === 'string' ? parsed.body.trim() : '';
+      to = typeof parsed.to === 'string' ? parsed.to.trim().toLowerCase() : '';
     } catch {
       return json({ error: 'invalid JSON body' }, 400, origin);
     }
     if (!title) {
       return json({ error: 'missing title' }, 400, origin);
+    }
+    if (to && !/^[a-z0-9-]{1,63}$/.test(to)) {
+      return json({ error: 'invalid `to` agent name' }, 400, origin);
     }
     title = title.slice(0, MAX_TITLE_CHARS);
     body = body.slice(0, MAX_BODY_CHARS);
@@ -402,20 +489,35 @@ export default async function handler(req: Request): Promise<Response> {
       return json({ error: 'signature does not match address' }, 401, origin);
     }
 
-    // ---- subscription lookup (BEFORE the debit — a caller with no enrolled
-    // device must not be charged for an undeliverable push) ----------------------
+    // ---- subscription lookup (BEFORE the debit — an undeliverable push must
+    // not be charged). Cross-agent (`to`) also stamps WHO it's from. ------------
     let sub: PushSubscriptionJson | null;
     try {
-      sub = await pushSubOfCaller(address);
+      if (to) {
+        sub = await pushSubOfName(to);
+      } else {
+        sub = await pushSubOfCaller(address);
+      }
     } catch (e) {
+      if (e instanceof NoSuchAgentError) {
+        return json({ error: e.message }, 404, origin);
+      }
       return json({ error: 'subscription lookup failed: ' + (e as Error).message }, 502, origin);
     }
     if (!sub) {
       return json(
-        { error: 'no push subscription on-chain — enable notifications in the app first' },
+        {
+          error: to
+            ? `"${to}" has no device enrolled for notifications — its owner must tap the bell (or admin → notifications) on a device first`
+            : 'no push subscription on-chain — enable notifications in the app first',
+        },
         404,
         origin,
       );
+    }
+    if (to) {
+      const from = await callerDisplayName(address);
+      title = `@${from}: ${title}`.slice(0, MAX_TITLE_CHARS);
     }
 
     // ---- credit gate + meter debit — same model as a Gemini model call ---------
@@ -471,7 +573,7 @@ export default async function handler(req: Request): Promise<Response> {
     if (!sent) {
       return json({ error: 'push send failed (service rejected or timed out)' }, 502, origin);
     }
-    return json({ sent: true }, 200, origin);
+    return json(to ? { sent: true, to } : { sent: true }, 200, origin);
   } catch (e) {
     return json({ error: (e as Error).message }, 500, origin);
   }

@@ -24,14 +24,22 @@ use wasm_bindgen_futures::JsFuture;
 thread_local! {
     /// In-app notification bell log (newest first, capped). The header
     /// `#notif-bell-panel` renders from this; `#notif-bell-badge` shows the
-    /// unread count. Fed by READY-UP broadcasts (the presser's own ding) and,
-    /// later, service-worker pushes relayed to the open page.
+    /// unread count. Fed by READY-UP broadcasts (the presser's own ding) and
+    /// service-worker pushes relayed to the open page (boot.js `lh-push`).
+    /// Persisted to OPFS so the inbox survives reloads.
     static BELL: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Append a notification to the in-app header bell (newest first, cap 30) and
-/// bump the unread badge. The panel content is refreshed (kept closed) so it's
-/// current when the bell is next opened.
+/// The persisted inbox (written by [`push_to_bell`], read at mount).
+const INBOX_FILE: &str = ".lh_notif_inbox.json";
+/// Pushes that arrived with NO page open, stashed by `web/sw.js` directly in
+/// OPFS; merged + deleted by [`load_inbox`] at the next boot.
+const PENDING_FILE: &str = ".lh_notif_pending.json";
+
+/// Append a notification to the in-app header bell (newest first, cap 30),
+/// bump the unread badge, and persist the inbox. The panel re-render keeps
+/// its CURRENT visibility — a push landing mid-read must not yank the
+/// dropdown shut (or open it uninvited).
 pub(crate) fn push_to_bell(title: &str, body: &str) {
     BELL.with(|b| {
         let mut v = b.borrow_mut();
@@ -43,6 +51,64 @@ pub(crate) fn push_to_bell(title: &str, body: &str) {
         "notif-bell-badge",
         &format!("<span id=\"notif-bell-badge\" class=\"notif-badge\">{n}</span>"),
     );
+    let hidden = crate::app::dom::by_id("notif-bell-panel")
+        .map(|e| e.has_attribute("hidden"))
+        .unwrap_or(true);
+    crate::app::dom::swap_outer(
+        "notif-bell-panel",
+        &crate::app::templates::notif_list_panel(&bell_items(), None, hidden).into_string(),
+    );
+    wasm_bindgen_futures::spawn_local(persist_inbox());
+}
+
+/// Service-worker push relay (boot.js → the `push_arrived` wasm export):
+/// a Web Push that arrived while this page is open lands in the bell inbox.
+pub(crate) fn push_arrived(title: &str, body: &str) {
+    let title = if title.is_empty() { "localharness" } else { title };
+    push_to_bell(title, body);
+}
+
+/// Persist the bell log to OPFS (best-effort; logs, never surfaces).
+async fn persist_inbox() {
+    let items = bell_items();
+    let Ok(bytes) = serde_json::to_vec(&items) else { return };
+    let fs = crate::app::shared_opfs();
+    if let Err(e) = fs.write_atomic(INBOX_FILE, &bytes).await {
+        web_sys::console::warn_1(&JsValue::from_str(&format!("notif inbox save: {e}")));
+    }
+}
+
+/// Restore the bell inbox at mount: closed-tab pushes stashed by the service
+/// worker (newest, still unread) first, then the persisted log from the last
+/// session. The unread badge counts ONLY the stashed arrivals — a reload must
+/// not re-flag entries the user already saw.
+pub(crate) async fn load_inbox() {
+    let fs = crate::app::shared_opfs();
+    let mut items: Vec<(String, String)> = Vec::new();
+    if let Ok(b) = fs.read(PENDING_FILE).await {
+        if let Ok(mut v) = serde_json::from_slice::<Vec<(String, String)>>(&b) {
+            items.append(&mut v);
+        }
+        let _ = fs.delete(PENDING_FILE).await;
+    }
+    let fresh = items.len();
+    if let Ok(b) = fs.read(INBOX_FILE).await {
+        if let Ok(mut v) = serde_json::from_slice::<Vec<(String, String)>>(&b) {
+            items.append(&mut v);
+        }
+    }
+    if items.is_empty() {
+        return;
+    }
+    items.truncate(30);
+    BELL.with(|b| *b.borrow_mut() = items);
+    if fresh > 0 {
+        crate::app::dom::swap_outer(
+            "notif-bell-badge",
+            &format!("<span id=\"notif-bell-badge\" class=\"notif-badge\">{fresh}</span>"),
+        );
+        persist_inbox().await; // fold the drained pending file into the log
+    }
     crate::app::dom::swap_outer(
         "notif-bell-panel",
         &crate::app::templates::notif_list_panel(&bell_items(), None, true).into_string(),

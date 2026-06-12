@@ -16,11 +16,21 @@
 #[allow(unused_imports)]
 use crate::*;
 
-/// `localharness notify [--as <me>] <title> [body...]` — Web-Push a note to
-/// the caller's OWN registered device via the proxy's `/api/notify`.
+/// `localharness notify [--as <me>] [--to <agent>] <title> [body...]` —
+/// Web-Push a note to the caller's OWN registered device, or with `--to` to
+/// ANOTHER agent's notification inbox + enrolled phone (cross-agent; the
+/// proxy stamps the push with the sender's chain-verified name).
 pub(crate) async fn notify(caller: Option<&str>, rest: &[String]) -> i32 {
+    const USAGE: &str = "usage: localharness notify [--as <me>] [--to <agent>] <title> [body...]";
+    let (to, rest) = match crate::util::take_value_flag(rest, "--to", USAGE) {
+        Ok(pair) => pair,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
     let Some(title) = rest.first().map(|s| s.trim()).filter(|s| !s.is_empty()) else {
-        eprintln!("usage: localharness notify [--as <me>] <title> [body...]");
+        eprintln!("{USAGE}");
         return 2;
     };
     let body = rest[1..].join(" ").trim().to_string();
@@ -43,11 +53,15 @@ pub(crate) async fn notify(caller: Option<&str>, rest: &[String]) -> i32 {
         registry::CREDIT_PROXY_URL.trim_end_matches('/')
     );
 
+    let mut payload = serde_json::json!({ "title": title, "body": body });
+    if let Some(target) = to.as_deref() {
+        payload["to"] = serde_json::Value::String(target.to_lowercase());
+    }
     let resp = match reqwest::Client::new()
         .post(&endpoint)
         .header("content-type", "application/json")
         .header("x-goog-api-key", token)
-        .json(&serde_json::json!({ "title": title, "body": body }))
+        .json(&payload)
         .send()
         .await
     {
@@ -61,7 +75,10 @@ pub(crate) async fn notify(caller: Option<&str>, rest: &[String]) -> i32 {
     let json: serde_json::Value = resp.json().await.unwrap_or_default();
 
     if status.is_success() {
-        println!("notification sent — check your device.");
+        match to.as_deref() {
+            Some(target) => println!("notification sent to {target}'s inbox/device."),
+            None => println!("notification sent — check your device."),
+        }
         return 0;
     }
     let msg = json
@@ -69,7 +86,7 @@ pub(crate) async fn notify(caller: Option<&str>, rest: &[String]) -> i32 {
         .and_then(|v| v.as_str())
         .unwrap_or("unknown proxy error");
     eprintln!("notify failed ({}): {msg}", status.as_u16());
-    if status.as_u16() == 404 {
+    if status.as_u16() == 404 && to.is_none() {
         // The actionable half: the push target is enrolled in the BROWSER app.
         eprintln!(
             "hint: open your subdomain in the app (admin → account → notifications → \

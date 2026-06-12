@@ -32,6 +32,27 @@ self.addEventListener('activate', (event) => {
 // respondWith keeps the default network behavior (zero cache surface).
 self.addEventListener('fetch', () => {});
 
+// A push that arrives with NO page open still has to land in the in-app
+// notification inbox (the header bell) — stash it in OPFS; the app merges
+// + deletes the pending file at boot (src/app/notifications.rs::load_inbox).
+// Best-effort: OPFS write support in SW contexts varies — the OS banner
+// above is the delivery guarantee, this is the inbox copy.
+async function stashPending(title, body) {
+  try {
+    const root = await navigator.storage.getDirectory();
+    const fh = await root.getFileHandle('.lh_notif_pending.json', { create: true });
+    let arr = [];
+    try {
+      arr = JSON.parse(await (await fh.getFile()).text());
+    } catch {}
+    if (!Array.isArray(arr)) arr = [];
+    arr.unshift([String(title), String(body)]);
+    const w = await fh.createWritable();
+    await w.write(JSON.stringify(arr.slice(0, 30)));
+    await w.close();
+  } catch {}
+}
+
 self.addEventListener('push', (event) => {
   let payload = {};
   try {
@@ -43,14 +64,24 @@ self.addEventListener('push', (event) => {
   const title = typeof payload.title === 'string' && payload.title ? payload.title : 'localharness';
   const body = typeof payload.body === 'string' ? payload.body : '';
   event.waitUntil(
-    self.registration.showNotification(title, {
-      body,
-      icon: '/icons/icon-192.png',
-      badge: '/icons/icon-192.png',
-      // Same-content pushes collapse instead of stacking (feedback #55:
-      // double notifications on Android).
-      tag: 'lh-' + title + '-' + body,
-    }),
+    (async () => {
+      await self.registration.showNotification(title, {
+        body,
+        icon: '/icons/icon-192.png',
+        badge: '/icons/icon-192.png',
+        // Same-content pushes collapse instead of stacking (feedback #55:
+        // double notifications on Android).
+        tag: 'lh-' + title + '-' + body,
+      });
+      // Relay into any OPEN page so the header-bell inbox updates live;
+      // with no page open, stash for the next boot instead.
+      const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      if (wins.length > 0) {
+        for (const client of wins) client.postMessage({ type: 'lh-push', title, body });
+      } else {
+        await stashPending(title, body);
+      }
+    })(),
   );
 });
 

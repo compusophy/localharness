@@ -304,7 +304,30 @@ async fn publish_x402_price_onchain(wei: u128) -> Result<bool, String> {
 /// permission prompt never fires on mobile). Enables Web Push for THIS device
 /// keyed by its ADDRESS (works with no MAIN identity) and opens the panel. This
 /// is the path that actually lets a phone register to be pinged.
+/// Whether the bell dropdown is currently showing.
+pub(super) fn notif_panel_open() -> bool {
+    dom::by_id("notif-bell-panel")
+        .map(|e| !e.has_attribute("hidden"))
+        .unwrap_or(false)
+}
+
+/// Close the bell dropdown (second bell tap, ESC, or any outside click).
+pub(super) fn close_notif_panel() {
+    dom::swap_outer(
+        "notif-bell-panel",
+        &templates::notif_list_panel(&crate::app::notifications::bell_items(), None, true)
+            .into_string(),
+    );
+}
+
 pub(super) fn notif_bell_pressed() {
+    // TOGGLE: a second tap closes the log (ESC and outside clicks do too —
+    // see the delegated listeners). Closing must NOT re-run the push
+    // registration side effect below.
+    if notif_panel_open() {
+        close_notif_panel();
+        return;
+    }
     // The bell is the notification LOG. Tap = open the log + clear the badge.
     let items = crate::app::notifications::bell_items();
     dom::swap_outer(

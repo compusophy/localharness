@@ -347,6 +347,16 @@ pub(crate) fn notify_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 "type": "boolean",
                 "description": "Also vibrate the device (mobile only; silently \
                     ignored where unsupported)."
+            },
+            "to": {
+                "type": "string",
+                "description": "CROSS-AGENT: deliver to ANOTHER agent's \
+                    notification inbox instead of this device — the target \
+                    subdomain name, e.g. \"krafto\". Routed via the platform \
+                    proxy (costs the per-request $LH like a model call); the \
+                    push title is stamped with YOUR identity so the recipient \
+                    sees who pinged them. Omit for a local notification on \
+                    this device."
             }
         },
         "required": ["title"]
@@ -356,11 +366,14 @@ pub(crate) fn notify_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
         "Show a system NOTIFICATION on the user's device, optionally vibrating it \
          (mobile). Use when the user asks for an alarm/timer/reminder ping, when a \
          long task finishes, or when something arrives they should see — it reaches \
-         them even when this tab is in the background. First use may trigger the \
-         browser's permission prompt; if permission is denied the result says so — \
-         then ask the user to press [enable notifications] under admin → account → \
-         notifications instead of retrying. Returns { notified, permission, \
-         vibrated }.",
+         them even when this tab is in the background. Pass `to: <name>` to instead \
+         send the notification to ANOTHER agent's inbox (and their enrolled phone) — \
+         metered like a model call, sender identity stamped on-chain-verified. \
+         Local use may trigger the browser's permission prompt; if permission is \
+         denied the result says so — then ask the user to press [enable \
+         notifications] under admin → account → notifications instead of retrying. \
+         Returns { notified, permission, vibrated } (local) or { sent, to } \
+         (cross-agent).",
         schema,
         |args: serde_json::Value, _ctx| async move {
             let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
@@ -368,6 +381,14 @@ pub(crate) fn notify_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 return Err(crate::error::Error::other("notify title cannot be empty"));
             }
             let body = args.get("body").and_then(|v| v.as_str()).unwrap_or("");
+            let to = args
+                .get("to")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_lowercase())
+                .filter(|s| !s.is_empty());
+            if let Some(to) = to {
+                return notify_cross_agent(&to, title, body).await;
+            }
             let vibrate = args.get("vibrate").and_then(|v| v.as_bool()).unwrap_or(false);
             // Vibration is independent of Notification permission — fire it
             // even if the notification itself ends up blocked.
@@ -395,6 +416,58 @@ pub(crate) fn notify_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             }))
         },
     )
+}
+
+/// Cross-agent notify: POST `{title, body, to}` to the proxy's `/api/notify`
+/// with a fresh credit-signed auth token. The proxy resolves the target's
+/// enrolled push subscription on-chain, stamps the sender's chain-verified
+/// name into the title, debits the caller's meter, and delivers the push —
+/// it lands in the target's notification inbox (header bell) and buzzes any
+/// phone they enrolled.
+async fn notify_cross_agent(
+    to: &str,
+    title: &str,
+    body: &str,
+) -> crate::error::Result<serde_json::Value> {
+    let (signer, _addr) = crate::app::chat::credit_signer().await.ok_or_else(|| {
+        crate::error::Error::other("no identity to authenticate the notify — claim a subdomain first")
+    })?;
+    let now = (js_sys::Date::now() / 1000.0) as u64;
+    let token = crate::registry::proxy_auth_token(&signer, now);
+    let endpoint = format!(
+        "{}/api/notify",
+        crate::registry::CREDIT_PROXY_URL.trim_end_matches('/')
+    );
+    let (status, resp_body) = crate::app::net::with_timeout(WEB_FETCH_TIMEOUT_MS, async {
+        let resp = reqwest::Client::new()
+            .post(&endpoint)
+            .header("content-type", "application/json")
+            .header("x-goog-api-key", token)
+            .json(&serde_json::json!({ "title": title, "body": body, "to": to }))
+            .send()
+            .await
+            .map_err(|e| format!("proxy request: {e}"))?;
+        let status = resp.status();
+        let body = resp
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|e| format!("proxy response decode: {e}"))?;
+        Ok::<_, String>((status, body))
+    })
+    .await
+    .map_err(|_| crate::error::Error::other("notify timed out"))?
+    .map_err(crate::error::Error::other)?;
+    if !status.is_success() {
+        let msg = resp_body
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown proxy error");
+        return Err(crate::error::Error::other(format!(
+            "notify {to} failed ({}): {msg}",
+            status.as_u16()
+        )));
+    }
+    Ok(serde_json::json!({ "sent": true, "to": to }))
 }
 
 /// How long the browser waits for the proxy's `/api/fetch` reply. The proxy

@@ -178,8 +178,15 @@ pub(crate) fn terminal_input() -> Markup {
 /// The terminal send button (`→`). Swapped out for [`stop_button`]
 /// while a turn is streaming so the same slot becomes the kill switch.
 pub(crate) fn send_button() -> Markup {
+    // Inline SVG triangle, NOT the "▶" text glyph — IBM Plex Mono has no
+    // geometric shapes, so the fallback font drew a misshapen blob. Same
+    // square-icon-button treatment as the header bell; centered by CSS.
+    let play = maud::PreEscaped(
+        "<svg viewBox=\"0 0 16 16\" width=\"12\" height=\"12\" fill=\"currentColor\" \
+         aria-hidden=\"true\"><path d=\"M4.5 2.5v11l9-5.5z\"/></svg>",
+    );
     html! {
-        button #terminal-send .terminal-send data-action="send" title="send" aria-label="send" { "▶" }
+        button #terminal-send .terminal-send data-action="send" title="send" aria-label="send" { (play) }
     }
 }
 
@@ -194,7 +201,9 @@ pub(crate) fn send_button() -> Markup {
 pub(crate) fn stop_button() -> Markup {
     html! {
         span #terminal-stop style="display:flex;align-items:center;flex-shrink:0" {
-            button .terminal-send.terminal-stop data-action="stop-turn" title="stop" aria-label="stop generating" { "■" }
+            button .terminal-send.terminal-stop data-action="stop-turn" title="stop" aria-label="stop generating" {
+                (maud::PreEscaped("<svg viewBox=\"0 0 16 16\" width=\"11\" height=\"11\" fill=\"currentColor\" aria-hidden=\"true\"><rect x=\"3\" y=\"3\" width=\"10\" height=\"10\"/></svg>"))
+            }
         }
     }
 }

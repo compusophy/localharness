@@ -70,11 +70,11 @@
 //!                            (no text; `--json` = machine-readable array)
 //!   probe [--as <fleet>]     autonomous QA self-checks; report failures on-chain
 //!   triage                   dedup + recurrence-rank the on-chain feedback log
-//!   notify [--as <me>] <title> [body...]
-//!                            Web-Push a note to YOUR OWN phone/device (the
-//!                            subscription enrolled via the app's "enable
-//!                            notifications") — "notify me when done" from a
-//!                            shell; metered like a call (~0.01 $LH)
+//!   notify [--as <me>] [--to <agent>] <title> [body...]
+//!                            Web-Push a note to YOUR OWN phone/device, or with
+//!                            `--to` to ANOTHER agent's notification inbox +
+//!                            enrolled phone (sender stamped on-chain-verified);
+//!                            metered like a call (~0.01 $LH)
 //!   threads [--as <me>]      list your saved call conversations
 //!   forget [--as <me>] <name>  drop a saved conversation (or `--all`)
 //!   whoami [--json] <name>   profile of <name>: owner, wallet, persona, face
@@ -402,11 +402,11 @@ CONVERSATIONS
   localharness forget [--as <me>] <name> drop a saved conversation (or --all)
 
 MISC
-  localharness notify [--as <me>] <title> [body...]
-                                         Web-Push a note to YOUR OWN phone (the
-                                         device enrolled via the app's \"enable
-                                         notifications\") — \"notify me when done\"
-                                         from a shell; metered like a call
+  localharness notify [--as <me>] [--to <agent>] <title> [body...]
+                                         Web-Push a note to YOUR OWN phone, or
+                                         with --to to ANOTHER agent's inbox +
+                                         enrolled phone (sender name stamped
+                                         on-chain-verified); metered like a call
   localharness version                   print the installed CLI version
   localharness help                      show this grouped command overview
 

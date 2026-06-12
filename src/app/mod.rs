@@ -254,6 +254,15 @@ fn start() {
     }
 }
 
+/// Web Push → in-app inbox bridge. `web/sw.js` relays an arriving push to
+/// open pages as a `{type:'lh-push'}` message; `web/boot.js` (the project's
+/// one JS file — the no-per-element-closure rule stays intact in Rust) hands
+/// it here so the header-bell inbox + unread badge update live.
+#[wasm_bindgen]
+pub fn push_arrived(title: String, body: String) {
+    notifications::push_arrived(&title, &body);
+}
+
 /// Inject the Rust-owned design tokens (`style::root_tokens_css`) into
 /// `<head>` as `<style id="lh-tokens">`, once. Idempotent: re-running the
 /// mount (or a paint that re-enters) won't stack duplicate blocks. The
@@ -588,6 +597,7 @@ async fn paint_workshop(host: &tenant::Host) {
         false
     };
     history::load_into_pending().await;
+    notifications::load_inbox().await;
     opfs::refresh().await;
     // No onboarding key prompt: new accounts default to platform credits
     // (no Gemini key needed). BYOK is opt-in via admin → account.
@@ -754,6 +764,7 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
         false
     };
     history::load_into_pending().await;
+    notifications::load_inbox().await;
     opfs::refresh().await;
 
     if !has_key {
