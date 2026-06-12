@@ -596,8 +596,7 @@ Still open:
   (ReputationFacet attestations are live; the stake-escrow half isn't).
 - **Economy ladder, next rungs** — party (ad-hoc squads) + recursive DAOs-of-DAOs
   UX (`design/agent-coordination.md`; nesting already works at the contract level).
-- **More backends** — OpenAI / local-WebGPU finish + own coding model
-  (`design/model-agnostic.md` Phases D–F).
+- **More backends** — OpenAI / local-WebGPU finish (`design/model-agnostic.md`).
 - **P2P teams** — 2-device E2E test, mutable shared-FS, team UI. (SDP sealing
   DONE — `signaling_seal.rs` sender-signed envelope, hard-cut v2.)
 
