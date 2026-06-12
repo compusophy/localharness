@@ -35,9 +35,20 @@ window.addEventListener("appinstalled", () => {
   window.__lhInstall = null;
 });
 
+// Per-build cache-buster. Chrome's WebAssembly compiled-module code cache is
+// keyed on the wasm URL, and serves a STALE compiled module for the unchanged
+// /pkg/localharness_bg.wasm path even under `max-age=0, must-revalidate` — so a
+// redeploy did not reach a returning visitor until a hard reload. Appending a
+// per-build token (stamped by scripts/build-web.sh from the wasm content hash;
+// "0" in dev) makes each deploy a NEW url = a guaranteed cache miss = fresh
+// wasm. A query string never changes which static file Vercel serves, so it
+// cannot 404. Bust the shim AND the wasm (the shim drops the query when it
+// resolves the wasm relative to import.meta.url, so the wasm url is passed
+// explicitly to init).
+const LH_BUILD = "6319a3b91298";
 try {
-  const { default: init } = await import("./pkg/localharness.js");
-  await init();
+  const { default: init } = await import("./pkg/localharness.js?v=" + LH_BUILD);
+  await init("./pkg/localharness_bg.wasm?v=" + LH_BUILD);
 } catch (e) {
   // Boot failed (wasm/shim fetch 404 mid-deploy, instantiation failure,
   // network drop). Swap #root to a minimal monochrome failure line —
