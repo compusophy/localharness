@@ -71,7 +71,12 @@
 
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex } from '@noble/hashes/utils';
-import { sendWebPush, type PushSubscriptionJson } from './_webpush';
+import {
+  parsePushSubs,
+  dedupeSubs,
+  sendWebPushAll,
+  type PushSubscriptionJson,
+} from './_webpush';
 import {
   createPublicClient,
   createWalletClient,
@@ -507,16 +512,31 @@ async function idOfName(name: string): Promise<bigint> {
   })) as bigint;
 }
 
+// pushSubOf(address) -> bytes — the address-keyed PushFacet slot (device
+// self-registration via the header bell).
+const PUSH_SUB_OF_ABI = [
+  {
+    name: 'pushSubOf',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'who', type: 'address' }],
+    outputs: [{ name: '', type: 'bytes' }],
+  },
+] as const;
+
 /**
- * The job owner's published Web Push subscription, or null. Slot rule mirrors
- * the browser publisher: the owner's MAIN tokenId first, the job's own
- * targetId as the fallback. Returns null on ANY failure (no MAIN, empty slot,
- * malformed JSON, RPC hiccup) — push is strictly best-effort decoration.
+ * ALL the job owner's published Web Push subscriptions ([] when none) — the
+ * UNION of the MAIN-tokenId metadata slot (falling back to the job's own
+ * targetId) and the address-keyed PushFacet slot; each slot holds a JSON
+ * array of per-device entries (src/registry/push.rs::merge_push_sub), so a
+ * phone AND a desktop both get buzzed. Best-effort: any failure contributes
+ * nothing rather than failing the run.
  */
-async function pushSubOf(
+async function pushSubsOf(
   owner: string,
   fallbackTokenId: bigint,
-): Promise<PushSubscriptionJson | null> {
+): Promise<PushSubscriptionJson[]> {
+  const out: PushSubscriptionJson[] = [];
   try {
     let tokenId = (await publicClient().readContract({
       address: REGISTRY as `0x${string}`,
@@ -531,21 +551,22 @@ async function pushSubOf(
       functionName: 'metadata',
       args: [tokenId, PUSH_SUB_KEY],
     })) as `0x${string}`;
-    const text = decodeUtf8Bytes(raw).trim();
-    if (!text) return null;
-    const sub = JSON.parse(text) as PushSubscriptionJson;
-    if (
-      typeof sub?.endpoint !== 'string' ||
-      !sub.endpoint.startsWith('https://') ||
-      typeof sub.keys?.p256dh !== 'string' ||
-      typeof sub.keys?.auth !== 'string'
-    ) {
-      return null;
-    }
-    return sub;
+    out.push(...parsePushSubs(decodeUtf8Bytes(raw).trim()));
   } catch {
-    return null;
+    /* best-effort */
   }
+  try {
+    const raw = (await publicClient().readContract({
+      address: REGISTRY as `0x${string}`,
+      abi: PUSH_SUB_OF_ABI,
+      functionName: 'pushSubOf',
+      args: [owner as `0x${string}`],
+    })) as `0x${string}`;
+    out.push(...parsePushSubs(decodeUtf8Bytes(raw).trim()));
+  } catch {
+    /* best-effort */
+  }
+  return dedupeSubs(out);
 }
 
 /**
@@ -566,13 +587,14 @@ async function sendOwnerPush(
   const privateKey = process.env.VAPID_PRIVATE_KEY;
   const subject = process.env.VAPID_SUBJECT;
   if (!publicKey || !privateKey || !subject) return false; // push not configured
-  const sub = await pushSubOf(owner, fallbackTokenId);
-  if (!sub) return false; // owner never enabled notifications
-  return sendWebPush(sub, JSON.stringify({ title, body }), {
+  const subs = await pushSubsOf(owner, fallbackTokenId);
+  if (subs.length === 0) return false; // owner never enabled notifications
+  const sent = await sendWebPushAll(subs, JSON.stringify({ title, body }), {
     publicKey,
     privateKey,
     subject,
   });
+  return sent > 0;
 }
 
 /**

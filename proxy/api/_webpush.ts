@@ -21,6 +21,62 @@ export interface PushSubscriptionJson {
   keys: { p256dh: string; auth: string };
 }
 
+/**
+ * Parse a push-sub SLOT value into validated subscriptions. Slots are
+ * MULTI-DEVICE: a JSON array of subscription objects (the browser merges one
+ * entry per device endpoint — src/registry/push.rs::merge_push_sub); legacy
+ * single-object values still parse as a one-element list. Malformed entries
+ * are skipped, never fatal. Returns [] for empty/unparsable input.
+ */
+export function parsePushSubs(text: string): PushSubscriptionJson[] {
+  if (!text) return [];
+  let v: unknown;
+  try {
+    v = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  const arr = Array.isArray(v) ? v : [v];
+  const out: PushSubscriptionJson[] = [];
+  for (const e of arr) {
+    const s = e as PushSubscriptionJson;
+    if (
+      typeof s?.endpoint === 'string' &&
+      s.endpoint.startsWith('https://') &&
+      typeof s.keys?.p256dh === 'string' &&
+      typeof s.keys?.auth === 'string'
+    ) {
+      out.push(s);
+    }
+  }
+  return out;
+}
+
+/** Drop duplicate subscriptions (same endpoint), preserving order. */
+export function dedupeSubs(subs: PushSubscriptionJson[]): PushSubscriptionJson[] {
+  const seen = new Set<string>();
+  return subs.filter((s) => {
+    if (seen.has(s.endpoint)) return false;
+    seen.add(s.endpoint);
+    return true;
+  });
+}
+
+/**
+ * Fan a payload out to EVERY subscription (one POST per device, concurrent).
+ * Returns the number of pushes the services accepted. Never throws.
+ */
+export async function sendWebPushAll(
+  subs: PushSubscriptionJson[],
+  payload: string,
+  vapid: VapidEnv,
+): Promise<number> {
+  const results = await Promise.all(
+    dedupeSubs(subs).map((s) => sendWebPush(s, payload, vapid)),
+  );
+  return results.filter(Boolean).length;
+}
+
 // ---- base64url <-> bytes ----------------------------------------------------
 
 export function b64urlToBytes(s: string): Uint8Array {

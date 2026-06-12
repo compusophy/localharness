@@ -283,12 +283,20 @@ pub(crate) async fn enable_device_push() -> Result<String, String> {
         return Err("notification permission is blocked — allow notifications for this site in your browser settings, then tap again".to_string());
     }
     let sub_json = subscribe_push().await?;
-    let (signer, _) = crate::app::chat::credit_signer()
+    let (signer, addr) = crate::app::chat::credit_signer()
         .await
         .ok_or_else(|| "no identity on this device yet".to_string())?;
+    // MULTI-DEVICE: merge into the existing slot (array, upsert by endpoint)
+    // instead of overwriting — a phone and a desktop share this address (same
+    // seed), and a bare replace silently de-registered the other device.
+    let addr_hex = crate::encoding::bytes_to_hex_str(&addr);
+    let slot = crate::registry::addr_push_sub_of(&addr_hex).await.ok().flatten();
+    let Some(merged) = crate::registry::merge_push_sub(slot.as_deref(), &sub_json) else {
+        return Ok("already registered".to_string());
+    };
     let sponsor = crate::app::sponsor::signer().map_err(|e| format!("sponsor: {e}"))?;
     let token = crate::registry::ALPHA_USD_ADDRESS;
-    crate::registry::set_push_sub_sponsored(&signer, &sponsor, sub_json.as_bytes(), token).await
+    crate::registry::set_push_sub_sponsored(&signer, &sponsor, merged.as_bytes(), token).await
 }
 
 pub(crate) async fn enable_and_publish() -> Result<String, String> {
@@ -307,13 +315,19 @@ pub(crate) async fn enable_and_publish() -> Result<String, String> {
         },
     };
 
+    // MULTI-DEVICE merge (see enable_device_push) — never overwrite siblings.
+    let slot = crate::registry::push_sub_of(token_id).await.ok().flatten();
+    let Some(merged) = crate::registry::merge_push_sub(slot.as_deref(), &sub_json) else {
+        return Ok("already registered".to_string());
+    };
+
     let registry_addr = crate::encoding::parse_address(crate::registry::REGISTRY_ADDRESS)?;
     let call = crate::tempo_tx::TempoCall {
         to: registry_addr,
         value_wei: 0,
-        input: crate::registry::encode_set_push_sub(token_id, sub_json.as_bytes()),
+        input: crate::registry::encode_set_push_sub(token_id, merged.as_bytes()),
     };
-    let gas = crate::app::gas::set_metadata_gas(sub_json.len());
+    let gas = crate::app::gas::set_metadata_gas(merged.len());
     crate::app::events::run_sponsored_tempo_call(&owner, vec![call], gas, "publish push subscription")
         .await
 }
@@ -345,22 +359,20 @@ pub(crate) async fn refresh_subscription_if_stale() {
             _ => return,
         },
     };
-    let published = crate::registry::push_sub_of(token_id)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    if published == current {
+    let published = crate::registry::push_sub_of(token_id).await.ok().flatten();
+    // MULTI-DEVICE merge: only write when THIS device's entry is missing or
+    // stale in the slot array (None = already current, no tx).
+    let Some(merged) = crate::registry::merge_push_sub(published.as_deref(), &current) else {
         return;
-    }
+    };
     let publish = async {
         let registry_addr = crate::encoding::parse_address(crate::registry::REGISTRY_ADDRESS)?;
         let call = crate::tempo_tx::TempoCall {
             to: registry_addr,
             value_wei: 0,
-            input: crate::registry::encode_set_push_sub(token_id, current.as_bytes()),
+            input: crate::registry::encode_set_push_sub(token_id, merged.as_bytes()),
         };
-        let gas = crate::app::gas::set_metadata_gas(current.len());
+        let gas = crate::app::gas::set_metadata_gas(merged.len());
         crate::app::events::run_sponsored_tempo_call(
             &owner,
             vec![call],
@@ -403,16 +415,16 @@ pub(crate) async fn auto_register_device_push() {
         return;
     };
     let addr_hex = crate::encoding::bytes_to_hex_str(&addr);
-    if let Ok(Some(published)) = crate::registry::addr_push_sub_of(&addr_hex).await {
-        if published == current {
-            return; // already up to date
-        }
-    }
+    let slot = crate::registry::addr_push_sub_of(&addr_hex).await.ok().flatten();
+    // MULTI-DEVICE merge: None = this device is already in the slot array.
+    let Some(merged) = crate::registry::merge_push_sub(slot.as_deref(), &current) else {
+        return; // already up to date
+    };
     let Ok(sponsor) = crate::app::sponsor::signer() else {
         return;
     };
     let token = crate::registry::ALPHA_USD_ADDRESS;
-    match crate::registry::set_push_sub_sponsored(&signer, &sponsor, current.as_bytes(), token).await
+    match crate::registry::set_push_sub_sponsored(&signer, &sponsor, merged.as_bytes(), token).await
     {
         Ok(_) => web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
             "[push] device auto-registered (address-keyed)",

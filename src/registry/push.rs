@@ -10,6 +10,45 @@ use super::*;
 // tokenId, no metadata slot required. The proxy resolves a feed subscriber's
 // address → subscription directly, so even a bare device key can be buzzed.
 
+/// Byte budget for a push-sub SLOT value. `PushFacet.setPushSub` hard-caps at
+/// 4096 bytes; stay under it (and keep metadata-slot gas sane — ~8.5k gas/byte)
+/// by evicting the OLDEST entries past this size.
+const SLOT_BYTE_BUDGET: usize = 4000;
+
+/// Merge THIS device's subscription JSON into a push-sub slot value, upserting
+/// by `endpoint`. Slots are MULTI-DEVICE: a JSON array of subscription objects,
+/// newest first (legacy single-object values are promoted to a one-element
+/// array — the fix for "my phone stopped buzzing": a single-sub slot meant the
+/// last device to register silently overwrote every other device's
+/// subscription). Returns `None` when the slot already contains exactly this
+/// subscription (no write needed), else the new slot JSON to publish.
+pub fn merge_push_sub(slot: Option<&str>, current: &str) -> Option<String> {
+    let cur: serde_json::Value = serde_json::from_str(current).ok()?;
+    let cur_ep = cur.get("endpoint")?.as_str()?.to_string();
+    let mut entries: Vec<serde_json::Value> = match slot.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Vec::new(),
+        Some(s) => match serde_json::from_str::<serde_json::Value>(s) {
+            Ok(serde_json::Value::Array(a)) => a,
+            Ok(v @ serde_json::Value::Object(_)) => vec![v],
+            _ => Vec::new(),
+        },
+    };
+    entries.retain(|e| e.get("endpoint").and_then(|v| v.as_str()).is_some());
+    if entries.iter().any(|e| *e == cur) {
+        return None; // this exact subscription is already published
+    }
+    entries.retain(|e| e.get("endpoint").and_then(|v| v.as_str()) != Some(cur_ep.as_str()));
+    entries.insert(0, cur);
+    // Evict oldest while over budget (never the just-added entry).
+    loop {
+        let json = serde_json::Value::Array(entries.clone()).to_string();
+        if json.len() <= SLOT_BYTE_BUDGET || entries.len() <= 1 {
+            return Some(json);
+        }
+        entries.pop();
+    }
+}
+
 /// Encode `PushFacet.setPushSub(bytes)` — register the CALLER's push
 /// subscription JSON, keyed by `msg.sender`'s address.
 pub fn encode_set_addr_push_sub(sub_json: &[u8]) -> Vec<u8> {
@@ -69,6 +108,69 @@ pub async fn set_push_sub_sponsored(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sub(ep: &str, key: &str) -> String {
+        format!(r#"{{"endpoint":"https://push.example/{ep}","keys":{{"p256dh":"{key}","auth":"a"}}}}"#)
+    }
+
+    #[test]
+    fn merge_into_empty_slot_makes_one_element_array() {
+        let cur = sub("phone", "k1");
+        let merged = merge_push_sub(None, &cur).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 1);
+        assert_eq!(v[0], serde_json::from_str::<serde_json::Value>(&cur).unwrap());
+    }
+
+    #[test]
+    fn merge_promotes_legacy_single_object_and_appends() {
+        // The desktop overwrote the phone pre-fix; now the phone ADDS itself.
+        let phone = sub("phone", "k1");
+        let desktop = sub("desktop", "k2");
+        let merged = merge_push_sub(Some(&desktop), &phone).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["endpoint"], "https://push.example/phone"); // newest first
+        assert_eq!(arr[1]["endpoint"], "https://push.example/desktop");
+    }
+
+    #[test]
+    fn merge_is_idempotent_when_already_present() {
+        let phone = sub("phone", "k1");
+        let slot = merge_push_sub(None, &phone).unwrap();
+        assert!(merge_push_sub(Some(&slot), &phone).is_none()); // no rewrite
+    }
+
+    #[test]
+    fn merge_replaces_same_endpoint_with_new_keys() {
+        // Reinstall/cleared site data → same-ish endpoint slot churns keys.
+        let old = sub("phone", "OLD");
+        let new = sub("phone", "NEW");
+        let slot = merge_push_sub(None, &old).unwrap();
+        let merged = merge_push_sub(Some(&slot), &new).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["keys"]["p256dh"], "NEW");
+    }
+
+    #[test]
+    fn merge_evicts_oldest_past_byte_budget() {
+        let mut slot: Option<String> = None;
+        for i in 0..40 {
+            // ~200 bytes each → 40 would be ~8KB; budget keeps it under 4000.
+            let s = sub(&format!("dev{i}-{}", "x".repeat(120)), "k");
+            if let Some(m) = merge_push_sub(slot.as_deref(), &s) {
+                slot = Some(m);
+            }
+        }
+        let out = slot.unwrap();
+        assert!(out.len() <= SLOT_BYTE_BUDGET);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        // Newest entry always survives eviction.
+        assert!(v[0]["endpoint"].as_str().unwrap().contains("dev39"));
+    }
 
     #[test]
     fn set_push_sub_calldata_layout() {

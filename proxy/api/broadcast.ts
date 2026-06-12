@@ -43,7 +43,12 @@ import {
   http,
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { sendWebPush, type PushSubscriptionJson } from './_webpush';
+import {
+  parsePushSubs,
+  dedupeSubs,
+  sendWebPushAll,
+  type PushSubscriptionJson,
+} from './_webpush';
 
 export const config = { runtime: 'edge' };
 
@@ -301,15 +306,13 @@ function decodeAbiBytesUtf8(resultHex: string): string {
 }
 
 /**
- * Resolve ONE subscriber address to its published Web Push subscription, or
- * null. Slot rule mirrors notify.ts / scheduler.ts: the subscriber's MAIN
- * tokenId (`mainOf(addr)`), falling back to its own subscriber id is NOT
- * possible here (we only have an address, not a token id) — so a subscriber
- * with no MAIN simply has no push target. (notify.ts is self-only and also
- * keys off `mainOf`; the scheduler's fallback is a job's targetId, which we
- * don't have per-subscriber.) Returns null on ANY failure — best-effort.
+ * Resolve ONE subscriber address to ALL its published Web Push subscriptions
+ * ([] when none). Slot rule mirrors notify.ts / scheduler.ts. Best-effort.
  */
-async function pushSubOf(address: string): Promise<PushSubscriptionJson | null> {
+async function pushSubsOf(address: string): Promise<PushSubscriptionJson[]> {
+  // UNION of both slots, ALL device entries (slots hold a JSON array — see
+  // src/registry/push.rs::merge_push_sub; legacy single objects still parse).
+  const out: PushSubscriptionJson[] = [];
   // 1) ADDRESS-KEYED (PushFacet.pushSubOf) — the device self-registered its own
   //    subscription, keyed by its address. This reaches a bare device key with
   //    NO registered MAIN identity (mainOf == 0), which the legacy slot below
@@ -317,53 +320,29 @@ async function pushSubOf(address: string): Promise<PushSubscriptionJson | null> 
   try {
     const data =
       '0x' + selector('pushSubOf(address)') + encodeAddressWord(address);
-    const parsed = parsePushJson(decodeAbiBytesUtf8(await ethCall(data)).trim());
-    if (parsed) return parsed;
+    out.push(...parsePushSubs(decodeAbiBytesUtf8(await ethCall(data)).trim()));
   } catch {
-    /* fall through to the legacy MAIN-keyed metadata slot */
+    /* best-effort — continue to the MAIN-keyed metadata slot */
   }
 
-  // 2) LEGACY: the subscriber's MAIN tokenId metadata slot (owner-published via
-  //    admin → notifications). Kept so existing published subs keep working.
-  let main: bigint;
+  // 2) The subscriber's MAIN tokenId metadata slot (owner-published via
+  //    admin → notifications).
   try {
-    main = BigInt(
+    const main = BigInt(
       await ethCall('0x' + selector('mainOf(address)') + encodeAddressWord(address)),
     );
+    if (main !== 0n) {
+      const data =
+        '0x' +
+        selector('metadata(uint256,bytes32)') +
+        encodeUint256Word(main) +
+        PUSH_SUB_KEY;
+      out.push(...parsePushSubs(decodeAbiBytesUtf8(await ethCall(data)).trim()));
+    }
   } catch {
-    return null;
+    /* best-effort */
   }
-  if (main === 0n) return null;
-  try {
-    const data =
-      '0x' +
-      selector('metadata(uint256,bytes32)') +
-      encodeUint256Word(main) +
-      PUSH_SUB_KEY;
-    return parsePushJson(decodeAbiBytesUtf8(await ethCall(data)).trim());
-  } catch {
-    return null;
-  }
-}
-
-/** Parse + validate a Web Push subscription JSON string; null if malformed. */
-function parsePushJson(text: string): PushSubscriptionJson | null {
-  if (!text) return null;
-  let sub: PushSubscriptionJson;
-  try {
-    sub = JSON.parse(text) as PushSubscriptionJson;
-  } catch {
-    return null;
-  }
-  if (
-    typeof sub?.endpoint !== 'string' ||
-    !sub.endpoint.startsWith('https://') ||
-    typeof sub.keys?.p256dh !== 'string' ||
-    typeof sub.keys?.auth !== 'string'
-  ) {
-    return null;
-  }
-  return sub;
+  return dedupeSubs(out);
 }
 
 /** Thrown when the on-chain debit REVERTED (caller is genuinely out of $LH). */
@@ -568,16 +547,17 @@ export default async function handler(req: Request): Promise<Response> {
       const batch = targets.slice(i, i + BATCH);
       const results = await Promise.all(
         batch.map(async (addr): Promise<'sent' | 'failed' | 'none'> => {
-          let sub: PushSubscriptionJson | null;
+          let subs: PushSubscriptionJson[];
           try {
-            sub = await pushSubOf(addr);
+            subs = await pushSubsOf(addr);
           } catch {
             return 'failed';
           }
-          if (!sub) return 'none'; // never enabled notifications — not a failure
-          // sendWebPush never throws: true on accept, false on any send failure.
-          const ok = await sendWebPush(sub, JSON.stringify({ title, body }), vapid);
-          return ok ? 'sent' : 'failed';
+          if (subs.length === 0) return 'none'; // never enabled — not a failure
+          // Fan out to EVERY device the subscriber enrolled; one acceptance
+          // counts the subscriber as reached. sendWebPushAll never throws.
+          const ok = await sendWebPushAll(subs, JSON.stringify({ title, body }), vapid);
+          return ok > 0 ? 'sent' : 'failed';
         }),
       );
       for (const r of results) {

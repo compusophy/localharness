@@ -11,7 +11,9 @@
 //     impossible. The meter debit (caller pays per push, same price as a
 //     model call) is the spam leash; per-recipient blocklists are follow-up.
 //
-// Target resolution (both modes) tries every slot a device can enroll under:
+// Target resolution (both modes) is the UNION of every slot a device can
+// enroll under, fanned out to ALL devices (each slot holds a JSON ARRAY of
+// per-device subscriptions — src/registry/push.rs::merge_push_sub):
 //   1. `metadata(mainOf(owner), keccak256("localharness.push_sub"))` — the
 //      admin "enable notifications" flow (src/app/notifications.rs);
 //   2. `metadata(tokenId, ...)` — same slot keyed by the name's own id;
@@ -42,7 +44,12 @@ import {
   http,
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { sendWebPush, type PushSubscriptionJson } from './_webpush';
+import {
+  parsePushSubs,
+  dedupeSubs,
+  sendWebPushAll,
+  type PushSubscriptionJson,
+} from './_webpush';
 
 export const config = { runtime: 'edge' };
 
@@ -247,26 +254,6 @@ function decodeAbiBytesUtf8(resultHex: string): string {
   return new TextDecoder().decode(bytes);
 }
 
-/** Parse + validate a push-subscription JSON string; null when malformed. */
-function parseSub(text: string): PushSubscriptionJson | null {
-  if (!text) return null;
-  let sub: PushSubscriptionJson;
-  try {
-    sub = JSON.parse(text) as PushSubscriptionJson;
-  } catch {
-    return null;
-  }
-  if (
-    typeof sub?.endpoint !== 'string' ||
-    !sub.endpoint.startsWith('https://') ||
-    typeof sub.keys?.p256dh !== 'string' ||
-    typeof sub.keys?.auth !== 'string'
-  ) {
-    return null;
-  }
-  return sub;
-}
-
 /** ABI-encode a single dynamic `string` argument (offset + len + padded). */
 function encodeStringArg(s: string): string {
   const bytes = new TextEncoder().encode(s);
@@ -280,56 +267,60 @@ function encodeStringArg(s: string): string {
   );
 }
 
-/** `metadata(tokenId, push_sub_key)` → parsed subscription or null. */
-async function subFromMetadata(tokenId: bigint): Promise<PushSubscriptionJson | null> {
-  if (tokenId === 0n) return null;
+/** `metadata(tokenId, push_sub_key)` → validated subscriptions ([] if none). */
+async function subsFromMetadata(tokenId: bigint): Promise<PushSubscriptionJson[]> {
+  if (tokenId === 0n) return [];
   const data =
     '0x' +
     selector('metadata(uint256,bytes32)') +
     tokenId.toString(16).padStart(64, '0') +
     PUSH_SUB_KEY;
-  return parseSub(decodeAbiBytesUtf8(await ethCall(data)).trim());
+  return parsePushSubs(decodeAbiBytesUtf8(await ethCall(data)).trim());
 }
 
-/** Address-keyed PushFacet slot (`pushSubOf(address)`) → sub or null. */
-async function subFromAddress(address: string): Promise<PushSubscriptionJson | null> {
+/** Address-keyed PushFacet slot (`pushSubOf(address)`) → subscriptions. */
+async function subsFromAddress(address: string): Promise<PushSubscriptionJson[]> {
   const data = '0x' + selector('pushSubOf(address)') + encodeAddressWord(address);
-  return parseSub(decodeAbiBytesUtf8(await ethCall(data)).trim());
+  return parsePushSubs(decodeAbiBytesUtf8(await ethCall(data)).trim());
 }
 
 /**
- * Resolve an OWNER ADDRESS to its enrolled push subscription, trying every
- * slot a device registers under (see the header). `tokenId` is the name's
- * own id when targeting by name (0n when targeting the caller).
+ * Resolve an OWNER ADDRESS to ALL its enrolled device subscriptions — the
+ * UNION of every slot a device registers under (see the header), deduped by
+ * endpoint. MULTI-DEVICE by design: a phone and a desktop on the same seed
+ * each hold an entry; a push fans out to every one (a first-match rule
+ * silently dropped every device but one). `tokenId` is the name's own id
+ * when targeting by name (0n when targeting the caller).
  */
-async function resolveSubForOwner(
+async function resolveSubsForOwner(
   owner: string,
   tokenId: bigint,
-): Promise<PushSubscriptionJson | null> {
+): Promise<PushSubscriptionJson[]> {
   const main = BigInt(
     await ethCall('0x' + selector('mainOf(address)') + encodeAddressWord(owner)),
   );
-  return (
-    (await subFromMetadata(main)) ??
-    (await subFromMetadata(tokenId)) ??
-    (await subFromAddress(owner))
-  );
+  const [a, b, c] = await Promise.all([
+    subsFromMetadata(main),
+    main === tokenId ? Promise.resolve([]) : subsFromMetadata(tokenId),
+    subsFromAddress(owner),
+  ]);
+  return dedupeSubs([...a, ...b, ...c]);
 }
 
-/** The CALLER's own subscription (self-notify), or null. */
-async function pushSubOfCaller(address: string): Promise<PushSubscriptionJson | null> {
-  return resolveSubForOwner(address, 0n);
+/** The CALLER's own device subscriptions (self-notify). */
+async function pushSubsOfCaller(address: string): Promise<PushSubscriptionJson[]> {
+  return resolveSubsForOwner(address, 0n);
 }
 
-/** Thrown by pushSubOfName when the name isn't registered at all. */
+/** Thrown by pushSubsOfName when the name isn't registered at all. */
 class NoSuchAgentError extends Error {}
 
 /**
- * A NAMED agent's subscription (cross-agent notify): name → tokenId →
- * owner → the slot chain. Throws NoSuchAgentError for an unregistered name;
- * returns null when the agent exists but no device ever enrolled.
+ * A NAMED agent's device subscriptions (cross-agent notify): name → tokenId →
+ * owner → the slot union. Throws NoSuchAgentError for an unregistered name;
+ * returns [] when the agent exists but no device ever enrolled.
  */
-async function pushSubOfName(name: string): Promise<PushSubscriptionJson | null> {
+async function pushSubsOfName(name: string): Promise<PushSubscriptionJson[]> {
   const id = BigInt(
     await ethCall('0x' + selector('idOfName(string)') + encodeStringArg(name)),
   );
@@ -338,7 +329,7 @@ async function pushSubOfName(name: string): Promise<PushSubscriptionJson | null>
     '0x' + selector('ownerOf(uint256)') + id.toString(16).padStart(64, '0'),
   );
   const owner = '0x' + stripHex(ownerWord).slice(-40);
-  return resolveSubForOwner(owner, id);
+  return resolveSubsForOwner(owner, id);
 }
 
 /**
@@ -491,20 +482,16 @@ export default async function handler(req: Request): Promise<Response> {
 
     // ---- subscription lookup (BEFORE the debit — an undeliverable push must
     // not be charged). Cross-agent (`to`) also stamps WHO it's from. ------------
-    let sub: PushSubscriptionJson | null;
+    let subs: PushSubscriptionJson[];
     try {
-      if (to) {
-        sub = await pushSubOfName(to);
-      } else {
-        sub = await pushSubOfCaller(address);
-      }
+      subs = to ? await pushSubsOfName(to) : await pushSubsOfCaller(address);
     } catch (e) {
       if (e instanceof NoSuchAgentError) {
         return json({ error: e.message }, 404, origin);
       }
       return json({ error: 'subscription lookup failed: ' + (e as Error).message }, 502, origin);
     }
-    if (!sub) {
+    if (subs.length === 0) {
       return json(
         {
           error: to
@@ -564,16 +551,21 @@ export default async function handler(req: Request): Promise<Response> {
 
     // ---- the push itself — the one failure a debited caller pays for -----------
     // Same { title, body } JSON the scheduler worker sends; the service worker
-    // (web/sw.js) renders it. sendWebPush never throws (5s-capped POST).
-    const sent = await sendWebPush(sub, JSON.stringify({ title, body }), {
+    // (web/sw.js) renders it. FAN-OUT to every enrolled device (phone AND
+    // desktop); success = at least one push service accepted.
+    const sent = await sendWebPushAll(subs, JSON.stringify({ title, body }), {
       publicKey,
       privateKey,
       subject,
     });
-    if (!sent) {
+    if (sent === 0) {
       return json({ error: 'push send failed (service rejected or timed out)' }, 502, origin);
     }
-    return json(to ? { sent: true, to } : { sent: true }, 200, origin);
+    return json(
+      to ? { sent: true, devices: sent, to } : { sent: true, devices: sent },
+      200,
+      origin,
+    );
   } catch (e) {
     return json({ error: (e as Error).message }, 500, origin);
   }
