@@ -211,16 +211,15 @@ modules don't trip a default `cargo check`).
 ## Common gotchas
 
 - **Signer iframe is DEAD on mobile (cross-origin storage partitioning).** Mobile
-  partitions cross-origin iframe storage → the embedded `apex/?signer=1` sees an
-  EMPTY OPFS → every seed-derived op fails. Fix: `seed_pull.rs` copies the seed
-  into the subdomain's own OPFS via a top-level apex round-trip; `verify.rs` runs
-  every op LOCAL-FIRST off `APP.wallet`. Don't reintroduce an iframe-only seed path.
+  partitions cross-origin iframe storage → embedded `apex/?signer=1` sees an EMPTY
+  OPFS → seed-derived ops fail. Fix: `seed_pull.rs` copies the seed into the
+  subdomain's own OPFS via a top-level apex round-trip; `verify.rs` runs ops
+  LOCAL-FIRST off `APP.wallet`. Don't reintroduce an iframe-only seed path.
 - **On-chain writes that store data are gas-HUNGRY — `cast estimate`, never guess.**
-  `submitFeedback` ~1.3M gas (short) to ~17M (near 2048-byte cap, cold SSTOREs). A
-  flat 800k cap silently out-of-gassed EVERY feedback. Sponsored gas is now
-  length-scaled. `setMetadata` (publish app/html) ≈ **7.6k gas/BYTE** — now
-  `1.2M + bytes*8500` (old `1.3M + words*40k` was ~6x too low). Block limit 500M,
-  so big writes fit — the bug is always an under-set client cap. **Trust
+  `submitFeedback` ~1.3M (short) to ~17M gas (near the 2048-byte cap, cold
+  SSTOREs); a flat 800k cap out-of-gassed EVERY feedback. `setMetadata` ≈ **7.6k
+  gas/BYTE** → `1.2M + bytes*8500`. Block limit 500M, so big writes fit — the bug
+  is always an under-set CLIENT cap; sponsored gas is now length-scaled. **Trust
   `debug_traceTransaction` (real exec) over `cast run` (replay) for gas.**
 - **Gemini model IDs flip — verify against the live API, never trust memory.**
   `DEFAULT_MODEL` = `gemini-3.5-flash` (2026-05-29); `gemini-2.5-flash` now 400s.
@@ -237,11 +236,10 @@ modules don't trip a default `cargo check`).
   On `NO_SESSION_ERR` the tool falls back to the proxy's x402 `ask_agent`
   (`app/remote_call.rs`, caller's $LH → target's TBA). Don't try to make the
   iframe path work cross-machine — there is no target browser involved.
-- **PowerShell 5.1 stderr trap.** `release.ps1` wraps native commands in
-  `Invoke-Native` (PS5 turns every cargo stderr line into a terminating error).
-  Don't call `cargo`/`git`/`gh` directly in the script. ALSO: a DOUBLE QUOTE
-  inside a here-string commit message breaks PS5's native-arg quoting (`git
-  commit -m @'…"x"…'@` shreds into pathspecs) — keep `"` out of messages.
+- **PowerShell 5.1 stderr trap.** `release.ps1` wraps native cmds in
+  `Invoke-Native` (PS5 turns cargo stderr into a terminating error) — don't call
+  `cargo`/`git`/`gh` directly there. ALSO a `"` inside a here-string commit
+  message shreds PS5 native-arg quoting into pathspecs — keep `"` out of messages.
 - **Wallet vs meter — two $LH pots, AUTO-BRIDGED both ways.** The proxy debits
   the per-request METER (`creditOf`); `send`/`redeem` fund the WALLET; x402
   `settle` pulls from the WALLET. Bridges: wallet→meter lazy deposit
@@ -250,22 +248,24 @@ modules don't trip a default `cargo check`).
   `remote_call.rs` + CLI `mcp.rs::ensure_diamond_allowance`). "has $LH but
   402s" should only happen when BOTH pots are empty.
   Colony judges pre-fund from the caller.
-- **Gemini 3.x `thought: false` parts + `thoughtSignature` echo.** The wire
-  `Part` enum is untagged; `Part::Thought` is declared BEFORE `Part::Text`. 3.x
-  stamps every part with `thought`, so normal text deserializes into
-  `Part::Thought { thought: false, text: Some(...) }`. Handle it explicitly.
-  ALSO: 3.x stamps every `functionCall` part with `thoughtSignature` and 400s
-  any replayed history missing it ("Function call is missing a
-  thought_signature") — bricked every multi-round tool turn until 0.31.x.
-  Capture + echo it verbatim (`wire.rs` field, `loop.rs` rebuild); live proof
+- **Gemini 3.x `thought` parts + `thoughtSignature` echo.** Untagged wire
+  `Part`; `Part::Thought` is BEFORE `Part::Text`, and 3.x stamps every part with
+  `thought`, so normal text deserializes into `Part::Thought{thought:false,
+  text:..}` — handle explicitly. ALSO 3.x stamps each `functionCall` with
+  `thoughtSignature` and 400s replayed history missing it (bricked multi-round
+  tool turns until 0.31.x) — capture + echo verbatim (`wire.rs`/`loop.rs`); proof
   `examples/thought_signature_live.rs`.
 - **SSE on wasm uses CRLF.** Browser fetch surfaces Gemini SSE with `\r\n\r\n`.
   `GeminiSseStream::take_frame` matches both `\n\n` and `\r\n\r\n`. Don't regress
   to LF-only.
-- **`/pkg/*` caching:** `vercel.json` = `max-age=0, must-revalidate` (immutable
-  was a footgun — redeploys needed hard-reloads).
-- **The release script only commits `Cargo.toml` + `Cargo.lock` + `CHANGELOG.md`.**
-  Commit anything else BEFORE invoking it. See RELEASING.md.
+- **`/pkg/*` needs a per-build CACHE-BUSTER, not just headers.** `max-age=0,
+  must-revalidate` was NOT enough — Chrome's WASM code cache served a stale
+  module for the unchanged wasm url (redeploys invisible until a hard reload).
+  `build-web.sh` stamps the wasm content hash into `boot.js` (`?v=` on the shim
+  import + the EXPLICIT `init()` wasm url — the shim drops the query otherwise)
+  and `index.html` (`boot.js?v=`). A query can't 404 a static file.
+- **`release.{ps1,sh}` commits ONLY `Cargo.toml`/`Cargo.lock`/`CHANGELOG.md`** —
+  commit everything else FIRST. See RELEASING.md.
 
 ## Release process
 
