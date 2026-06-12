@@ -1047,7 +1047,15 @@ async function runAgent(persona: string, message: string): Promise<string> {
     .map((p) => p.text ?? '')
     .join('')
     .trim();
-  return text.length ? text : '(the agent returned no text)';
+  // An empty model answer is NOT a billable success. THROW so ask_agent's
+  // settle-on-success path (invariant a) leaves the authorization unsettled —
+  // the caller is NOT charged for a zero-content reply. The old code returned
+  // a "(the agent returned no text)" placeholder, which is a non-empty string,
+  // so step 10 settled and the payer lost $LH for nothing (QA fleet repro:
+  // "charged 0.05 $LH, got zero response"). The handler's catch surfaces
+  // "payment NOT taken" and the one-shot nonce stays unused.
+  if (!text.length) throw new Error('the agent returned no text');
+  return text;
 }
 
 /**
@@ -1122,7 +1130,9 @@ async function handleAskAgent(
   const name = typeof args.name === 'string' ? args.name.trim() : '';
   const message = typeof args.message === 'string' ? args.message : '';
   if (!name) return rpcError(id, -32602, 'ask_agent: missing "name"');
-  if (!message) return rpcError(id, -32602, 'ask_agent: missing "message"');
+  // Trim: a whitespace-only message is empty input — reject it BEFORE any
+  // payment gate or model spend, not after charging for a blank prompt.
+  if (!message.trim()) return rpcError(id, -32602, 'ask_agent: missing "message"');
 
   // 1. Resolve the agent on-chain (tokenId + payee TBA).
   const tokenId = await idOfName(name);
