@@ -46,6 +46,10 @@ pub struct Content {
 #[serde(rename_all = "lowercase")]
 pub enum ContentRole {
     User,
+    // `assistant` alias so a Claude-backed agent's persisted history (which uses
+    // the Anthropic role name) decodes its model turns instead of failing with
+    // "unknown variant `assistant`" and blanking the restored transcript.
+    #[serde(alias = "assistant")]
     Model,
 }
 

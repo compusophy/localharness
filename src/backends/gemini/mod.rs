@@ -407,8 +407,16 @@ pub fn decode_transcript_bytes(bytes: &[u8]) -> Result<Vec<crate::types::Transcr
     if bytes.is_empty() {
         return Ok(Vec::new());
     }
-    let history: Vec<wire::Content> = serde_json::from_slice(bytes)
+    // Per-entry lenient: decode the array generically, then try each entry on
+    // its own and SKIP the ones that fail, rather than letting a single
+    // malformed/older-format entry blank the WHOLE restored transcript. Only a
+    // top-level "this isn't a JSON array" error is fatal.
+    let raw: Vec<serde_json::Value> = serde_json::from_slice(bytes)
         .map_err(|e| Error::other(format!("decode_transcript_bytes: {e}")))?;
+    let history: Vec<wire::Content> = raw
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect();
     Ok(project_history(&history))
 }
 
@@ -733,6 +741,19 @@ mod tests {
         let entries = decode_transcript_bytes(raw).expect("must not error on missing parts");
         assert_eq!(entries.len(), 1, "the part-less entry is skipped, the real one kept");
         assert_eq!(entries[0].text, "hi there");
+    }
+
+    /// A Claude-backed agent persists model turns with role `assistant`; the
+    /// Gemini decoder must accept it (alias for `model`) instead of blanking
+    /// the transcript. Also: a totally-unparseable entry is skipped, not fatal.
+    #[test]
+    fn decode_accepts_assistant_role_and_skips_garbage() {
+        let raw = br#"[{"role":"user","parts":[{"text":"q"}]},{"role":"assistant","parts":[{"text":"a"}]},{"garbage":true}]"#;
+        let entries = decode_transcript_bytes(raw).expect("must not error");
+        assert_eq!(entries.len(), 2, "user + assistant kept, garbage skipped");
+        assert_eq!(entries[0].text, "q");
+        assert_eq!(entries[1].text, "a");
+        assert!(matches!(entries[1].role, crate::types::TranscriptRole::Assistant));
     }
 
     #[test]
