@@ -249,7 +249,7 @@ mod tests {
         assert!(open_envelope(&legacy, &sender, &recipient).is_none());
         assert!(open_envelope(b"", &sender, &recipient).is_none());
         assert!(open_envelope(b"lhsdp2", &sender, &recipient).is_none()); // header-only
-        assert!(open_envelope(&vec![0xAAu8; 200], &sender, &recipient).is_none());
+        assert!(open_envelope(&[0xAAu8; 200], &sender, &recipient).is_none());
         // Right length, wrong magic.
         let (k, s) = keypair();
         let mut blob = seal_envelope(&k, &recipient, b"x");
