@@ -421,7 +421,13 @@ main.layout .transcript > *:empty { display: none; }
 .notif-bell-btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 3px;
+  /* Icon-only button: opt OUT of the .header-button 96px min-width (that's
+     for TEXT buttons like ADMIN). Without this the bell was a 96px-wide
+     empty box with a 15px glyph jammed in the left corner. Square it up. */
+  min-width: 0;
+  padding: 10px;
 }
 .notif-bell-btn svg { display: block; }
 .notif-badge {
