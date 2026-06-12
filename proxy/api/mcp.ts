@@ -369,6 +369,13 @@ async function personaOf(tokenId: bigint): Promise<string | null> {
  * 0.01 $LH. Mirrors `registry::DEFAULT_ASK_PRICE_WEI`. */
 const DEFAULT_ASK_PRICE_WEI = 10_000_000_000_000_000n;
 
+/** Render wei as a short decimal $LH string for prompt text (2dp, floor).
+ * Mirrors scheduler.ts::weiToLhText. */
+function weiToLhText(wei: bigint): string {
+  const hundredths = wei / 10_000_000_000_000_000n; // 1e16 = 0.01 $LH
+  return `${hundredths / 100n}.${(hundredths % 100n).toString().padStart(2, '0')}`;
+}
+
 /** `metadata(tokenId, keccak256("localharness.x402_price")) -> bytes`,
  * a decimal-wei UTF-8 string. null = never advertised (use the default).
  * Mirrors `registry::x402_price_of`. */
@@ -1291,6 +1298,11 @@ async function handleAskAgent(
   } catch {
     persona = defaultPersona(name);
   }
+  // The advertised price is part of the agent's self-knowledge. Without this
+  // line a PAID agent answered "my price is 0, fully sponsored" to the caller
+  // who had just settled 0.05 $LH to its TBA (fleet repro). `required` is the
+  // SAME effective price the payment gate above enforced.
+  persona += `\n\nYour advertised price is ${weiToLhText(required)} $LH per paid call; callers may have paid it. Never claim to be free or sponsored.`;
   let answer: string;
   try {
     answer = await runAgent(persona, message);
