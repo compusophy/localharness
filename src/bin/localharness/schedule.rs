@@ -293,23 +293,35 @@ async fn submit_job(caller_name: Option<&str>, parsed: ParsedSchedule, goal_mode
     }
 }
 
+/// True for a TERMINAL job status (Cancelled / Exhausted): no further fire is
+/// scheduled, so the row must not advertise a "next due" time. Pure + testable.
+pub(crate) fn job_is_terminal(status: u8) -> bool {
+    matches!(status, 2 | 3)
+}
+
 /// Render one job row for the `jobs` listing. Pure (no I/O) so the layout is
 /// unit-testable: id, target name, cadence, next run, budget remaining, runs
-/// left, status.
+/// left, status. A TERMINAL job (cancelled / exhausted) prints no "next" time —
+/// the old row showed "next due now" for a cancelled job that will never fire
+/// again, and the runs-left/budget of a dead job is noise, so both collapse to
+/// "—" (on-chain feedback #82).
 pub(crate) fn format_job_row(id: u64, target: &str, job: &registry::ScheduledJob, task: &str, now: u64) -> String {
-    let next = if job.next_run == 0 {
+    let terminal = job_is_terminal(job.status);
+    let next = if terminal || job.next_run == 0 {
         "—".to_string()
     } else if job.next_run <= now {
         "due now".to_string()
     } else {
         format!("in {}", fmt_interval(job.next_run - now))
     };
-    let snippet: String = task.replace('\n', " ").chars().take(60).collect();
+    // A live job shows its remaining runs + escrow; a terminal one shows neither
+    // (the budget refunded on cancel, the runs spent on exhaust).
+    let runs = if terminal { "—".to_string() } else { job.runs_left.to_string() };
+    let budget = if terminal { "—".to_string() } else { fmt_lh(job.budget_wei) };
+    let snippet = truncate_words(task, 60);
     format!(
         "  #{id}  {target}  every {interval}  next {next}  budget {budget}  runs-left {runs}  [{status}]\n      {snippet}",
         interval = fmt_interval(job.interval),
-        budget = fmt_lh(job.budget_wei),
-        runs = job.runs_left,
         status = job.status_label(),
     )
 }
@@ -541,6 +553,36 @@ mod tests {
         assert!(row.contains("runs-left 42"));
         assert!(row.contains("[active]"));
         assert!(row.contains("check the price")); // newline flattened
+    }
+
+    #[test]
+    fn job_is_terminal_flags_cancelled_and_exhausted() {
+        assert!(!job_is_terminal(0)); // active
+        assert!(!job_is_terminal(1)); // paused
+        assert!(job_is_terminal(2)); // cancelled
+        assert!(job_is_terminal(3)); // exhausted
+    }
+
+    #[test]
+    fn format_job_row_cancelled_does_not_advertise_next_due() {
+        // The bug: a cancelled job whose next_run is a stale past timestamp
+        // printed "next due now" — it will NEVER fire again. Terminal jobs show
+        // "next —" + collapse budget/runs to "—".
+        let job = registry::ScheduledJob {
+            owner: "0x0".into(),
+            interval: 300,
+            status: 2,       // cancelled
+            next_run: 100,   // stale past timestamp (not zeroed)
+            budget_wei: 1_000_000_000_000_000_000,
+            runs_left: 5,
+            target_id: 1,
+        };
+        let row = format_job_row(7, "bot", &job, "", 5_000);
+        assert!(row.contains("next —"), "cancelled job must not say due now: {row}");
+        assert!(!row.contains("due now"));
+        assert!(row.contains("[cancelled]"));
+        assert!(row.contains("runs-left —"), "terminal runs collapse to —: {row}");
+        assert!(row.contains("budget —"));
     }
 
     #[test]

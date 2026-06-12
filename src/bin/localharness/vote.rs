@@ -284,7 +284,7 @@ pub(crate) fn format_proposal_row(id: u64, p: &registry::Proposal, t: &registry:
     } else {
         format!("in {}", fmt_interval(p.deadline - now))
     };
-    let snippet: String = memo.replace('\n', " ").chars().take(60).collect();
+    let snippet = truncate_words(memo, 60);
     format!(
         "  #{id}  [{status}]  for {f} / against {a}  quorum {q}  closes {when}  {passing}\n      {snippet}",
         status = p.status_label(),
