@@ -294,27 +294,63 @@ pub(crate) async fn eth_gas_price() -> Result<u128, String> {
 pub(crate) async fn eth_send_raw_transaction(raw_hex: &str) -> Result<String, String> {
     match rpc("eth_sendRawTransaction", serde_json::json!([raw_hex])).await {
         Ok(hash) => Ok(hash),
-        Err(err) => {
-            // "already known" / "ALREADY_EXISTS" / "nonce too low" all
-            // mean a previous submit of the same signed bytes (or
-            // same-nonce sibling) is already in the mempool. Compute
-            // the tx hash locally and let the caller's receipt poll
-            // pick it up. Avoids spurious failures when the user
-            // double-clicks `create` or retries after a UI hiccup.
-            let lower = err.to_lowercase();
-            let is_duplicate = lower.contains("already known")
-                || lower.contains("already exists")
-                || lower.contains("nonce too low");
-            if is_duplicate {
+        Err(err) => match classify_submit_error(&err) {
+            // THESE EXACT signed bytes are already in the mempool (a genuine
+            // double-submit — a double-clicked `create`, or a retry after a
+            // UI hiccup). keccak256(raw) IS this tx's hash, so the receipt
+            // poll will still find it; recover by returning that hash.
+            SubmitError::Duplicate => {
                 let bytes = hex_to_bytes(raw_hex)?;
                 let mut hasher = Keccak256::new();
                 hasher.update(&bytes);
                 let digest = hasher.finalize();
                 Ok(format!("0x{}", bytes_to_hex(&digest)))
-            } else {
-                Err(err)
             }
-        }
+            // A DIFFERENT tx already occupies this nonce, so OUR bytes will
+            // never mine. Fabricating keccak256(raw) would yield a hash that
+            // points at nothing → a 30s receipt timeout (the meter-bridge
+            // "timed out on-chain" report). Tag it so `submit_tempo_*`
+            // re-reads the live nonce and resubmits once.
+            SubmitError::StaleNonce => Err(format!("{STALE_NONCE_ERR}: {err}")),
+            SubmitError::Other => Err(err),
+        },
+    }
+}
+
+/// Marker prefix the submit wrappers look for to trigger ONE fresh-nonce
+/// resubmit. A stale "pending" nonce read (the node's mempool view lagging a
+/// just-submitted sibling tx — e.g. the meter→wallet bridge that runs right
+/// before the x402 approve) is the only way two of our OWN sequential
+/// sponsored sends collide; re-reading the nonce and re-signing clears it.
+pub(crate) const STALE_NONCE_ERR: &str = "stale-nonce";
+
+/// How `eth_sendRawTransaction` should treat a node rejection.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SubmitError {
+    /// Identical signed bytes already known → keccak256(raw) is the real hash.
+    Duplicate,
+    /// A different tx holds this nonce → resubmit with a fresh nonce.
+    StaleNonce,
+    /// Anything else (basefee, revert-on-estimate, malformed, …) → surface.
+    Other,
+}
+
+/// Classify a node submit-rejection message. PURE + network-free so the
+/// duplicate-vs-stale-nonce decision (the call_agent x402-approve / meter-bridge
+/// fix) is unit-tested without an RPC. Reth/Tempo phrasings:
+/// `already known`, `already exists`, `nonce too low: next nonce N, tx nonce M`,
+/// `replacement transaction underpriced`.
+pub(crate) fn classify_submit_error(err: &str) -> SubmitError {
+    let lower = err.to_lowercase();
+    if lower.contains("already known") || lower.contains("already exists") {
+        SubmitError::Duplicate
+    } else if lower.contains("nonce too low")
+        || lower.contains("replacement transaction underpriced")
+        || lower.contains("already imported")
+    {
+        SubmitError::StaleNonce
+    } else {
+        SubmitError::Other
     }
 }
 
@@ -619,6 +655,33 @@ mod tests {
         }
         // An unknown selector → None (caller falls back to the generic hint).
         assert_eq!(decode_known_revert([0xde, 0xad, 0xbe, 0xef]), None);
+    }
+
+    #[test]
+    fn classify_submit_error_separates_duplicate_from_stale_nonce() {
+        // Identical-bytes resubmit → recover the real hash (no resubmit).
+        assert_eq!(classify_submit_error("already known"), SubmitError::Duplicate);
+        assert_eq!(
+            classify_submit_error("transaction already exists in pool"),
+            SubmitError::Duplicate
+        );
+        // A DIFFERENT tx holds this nonce (the meter-bridge → approve collision)
+        // → must trigger a fresh-nonce resubmit, NOT a fabricated-hash timeout.
+        assert_eq!(
+            classify_submit_error("nonce too low: next nonce 44, tx nonce 43"),
+            SubmitError::StaleNonce
+        );
+        assert_eq!(
+            classify_submit_error("replacement transaction underpriced"),
+            SubmitError::StaleNonce
+        );
+        // The on-chain-reported decode failure is NOT a nonce issue — it must
+        // surface verbatim, never be silently swallowed as a duplicate.
+        assert_eq!(
+            classify_submit_error("failed to decode signed transaction"),
+            SubmitError::Other
+        );
+        assert_eq!(classify_submit_error("gas price is less than basefee"), SubmitError::Other);
     }
 
     #[test]

@@ -118,23 +118,36 @@ pub async fn submit_tempo_self_paid(
     use crate::tempo_tx::{sign_self_paid, TempoTxBuilder};
     let sender_addr = wallet::address(sender);
     let sender_hex = address_to_hex(&sender_addr);
-    let nonce = eth_get_transaction_count(&sender_hex).await?;
+    let fee_token_addr = fee_token.map(parse_eth_address).transpose()?;
     let gas_price = eth_gas_price().await?;
-    let mut builder = TempoTxBuilder::new(CHAIN_ID)
-        .max_priority_fee_per_gas(gas_price)
-        .max_fee_per_gas(gas_price)
-        .gas_limit(gas_limit)
-        .nonce(nonce)
-        .calls(calls);
-    if let Some(token) = fee_token {
-        builder = builder.fee_token(parse_eth_address(token)?);
+    // See `submit_tempo_sponsored` for the stale-nonce resubmit rationale.
+    let mut last_err = String::new();
+    for attempt in 0..2 {
+        let nonce = eth_get_transaction_count(&sender_hex).await?;
+        let mut builder = TempoTxBuilder::new(CHAIN_ID)
+            .max_priority_fee_per_gas(gas_price)
+            .max_fee_per_gas(gas_price)
+            .gas_limit(gas_limit)
+            .nonce(nonce)
+            .calls(calls.clone());
+        if let Some(token) = fee_token_addr {
+            builder = builder.fee_token(token);
+        }
+        let raw = sign_self_paid(builder.build(), sender);
+        let raw_hex = format!("0x{}", bytes_to_hex(&raw));
+        match eth_send_raw_transaction(&raw_hex).await {
+            Ok(tx_hash) => {
+                wait_for_receipt(&tx_hash).await?;
+                return Ok(tx_hash);
+            }
+            Err(e) if e.starts_with(STALE_NONCE_ERR) && attempt == 0 => {
+                last_err = e;
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
     }
-    let tx = builder.build();
-    let raw = sign_self_paid(tx, sender);
-    let raw_hex = format!("0x{}", bytes_to_hex(&raw));
-    let tx_hash = eth_send_raw_transaction(&raw_hex).await?;
-    wait_for_receipt(&tx_hash).await?;
-    Ok(tx_hash)
+    Err(last_err)
 }
 
 /// Sign and submit a SPONSORED Tempo tx. `sender` signs the intent
@@ -151,22 +164,42 @@ pub async fn submit_tempo_sponsored(
     use crate::tempo_tx::{sign_sponsored, TempoTxBuilder};
     let sender_addr = wallet::address(sender);
     let sender_hex = address_to_hex(&sender_addr);
-    let nonce = eth_get_transaction_count(&sender_hex).await?;
+    let fee_token_addr = parse_eth_address(fee_token)?;
     let gas_price = eth_gas_price().await?;
-    let tx = TempoTxBuilder::new(CHAIN_ID)
-        .max_priority_fee_per_gas(gas_price)
-        .max_fee_per_gas(gas_price)
-        .gas_limit(gas_limit)
-        .nonce(nonce)
-        .calls(calls)
-        .fee_token(parse_eth_address(fee_token)?)
-        .sponsored()
-        .build();
-    let raw = sign_sponsored(tx, sender, fee_payer);
-    let raw_hex = format!("0x{}", bytes_to_hex(&raw));
-    let tx_hash = eth_send_raw_transaction(&raw_hex).await?;
-    wait_for_receipt(&tx_hash).await?;
-    Ok(tx_hash)
+    // Build + sign + submit with a freshly-read nonce; on a STALE-nonce
+    // rejection (a "pending" read that lagged a just-submitted sibling tx —
+    // e.g. the meter→wallet bridge that runs right before the x402 approve)
+    // re-read the live nonce and resubmit ONCE. Without this the colliding
+    // tx either timed out (the fabricated-hash receipt poll — meter-bridge
+    // "timed out on-chain" report) or surfaced a raw node decode/nonce error
+    // to the user (the call_agent "$LH approve: …" report).
+    let mut last_err = String::new();
+    for attempt in 0..2 {
+        let nonce = eth_get_transaction_count(&sender_hex).await?;
+        let tx = TempoTxBuilder::new(CHAIN_ID)
+            .max_priority_fee_per_gas(gas_price)
+            .max_fee_per_gas(gas_price)
+            .gas_limit(gas_limit)
+            .nonce(nonce)
+            .calls(calls.clone())
+            .fee_token(fee_token_addr)
+            .sponsored()
+            .build();
+        let raw = sign_sponsored(tx, sender, fee_payer);
+        let raw_hex = format!("0x{}", bytes_to_hex(&raw));
+        match eth_send_raw_transaction(&raw_hex).await {
+            Ok(tx_hash) => {
+                wait_for_receipt(&tx_hash).await?;
+                return Ok(tx_hash);
+            }
+            Err(e) if e.starts_with(STALE_NONCE_ERR) && attempt == 0 => {
+                last_err = e;
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_err)
 }
 
 pub(crate) fn parse_eth_address(hex_str: &str) -> Result<[u8; 20], String> {

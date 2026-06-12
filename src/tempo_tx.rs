@@ -759,4 +759,111 @@ mod tests {
              regenerating"
         );
     }
+
+    // --- envelope-decode regression for a u128::MAX approve --------------
+    //
+    // The call_agent x402 approve passes `u128::MAX` as the ERC-20 allowance,
+    // which `encode_approve` lays into the LOW 16 bytes of a 32-byte ABI word
+    // (`00…00ffffffffffffffffffffffffffffff`). A live submit of this exact tx
+    // mines fine (proven on Moderato), but the on-chain report claimed the node
+    // "failed to decode signed transaction" — reth's signal for a STRUCTURALLY
+    // malformed 0x76 envelope. This test pins that the serialized envelope is a
+    // COMPLETE, canonical RLP list (header length matches the body, 15 top-level
+    // items, the 0xFF allowance word intact) so an encoder regression that
+    // truncated the envelope or mangled the max-value word would fail HERE
+    // rather than as a confusing runtime node error.
+
+    /// Minimal RLP: read one item's header at `buf[i]`, return
+    /// `(payload_offset, payload_len, is_list)`. Panics on a truncated header.
+    fn rlp_header(buf: &[u8], i: usize) -> (usize, usize, bool) {
+        let b = buf[i];
+        match b {
+            0x00..=0x7f => (i, 1, false), // single byte is its own payload
+            0x80..=0xb7 => (i + 1, (b - 0x80) as usize, false),
+            0xb8..=0xbf => {
+                let n = (b - 0xb7) as usize;
+                let len = be_to_usize(&buf[i + 1..i + 1 + n]);
+                (i + 1 + n, len, false)
+            }
+            0xc0..=0xf7 => (i + 1, (b - 0xc0) as usize, true),
+            0xf8..=0xff => {
+                let n = (b - 0xf7) as usize;
+                let len = be_to_usize(&buf[i + 1..i + 1 + n]);
+                (i + 1 + n, len, true)
+            }
+        }
+    }
+
+    fn be_to_usize(bytes: &[u8]) -> usize {
+        bytes.iter().fold(0usize, |acc, &b| (acc << 8) | b as usize)
+    }
+
+    /// Count the top-level items inside the list whose body is `[start, end)`.
+    fn rlp_list_len(buf: &[u8], start: usize, end: usize) -> usize {
+        let mut i = start;
+        let mut count = 0;
+        while i < end {
+            let (off, len, _) = rlp_header(buf, i);
+            i = off + len;
+            count += 1;
+        }
+        assert_eq!(i, end, "RLP item ran past its parent list bound");
+        count
+    }
+
+    #[test]
+    fn approve_u128_max_envelope_is_well_formed() {
+        let (sender, fee_payer) = golden_keys();
+        // approve(address,uint256) with the diamond spender + u128::MAX.
+        let mut input = vec![0x09, 0x5e, 0xa7, 0xb3]; // approve selector
+        let mut spender = [0u8; 32];
+        spender[12..].copy_from_slice(&[0x6c; 20]);
+        input.extend_from_slice(&spender);
+        let mut amount = [0u8; 32];
+        amount[16..].copy_from_slice(&u128::MAX.to_be_bytes()); // 00..00ff..ff
+        input.extend_from_slice(&amount);
+        assert_eq!(input.len(), 68);
+
+        let tx = TempoTxBuilder::new(42431)
+            .max_priority_fee_per_gas(20_000_000_000)
+            .max_fee_per_gas(20_000_000_000)
+            .gas_limit(300_000)
+            .nonce(43)
+            .fee_token([0x20; 20])
+            .call(TempoCall { to: [0x90; 20], value_wei: 0, input: input.clone() })
+            .sponsored()
+            .build();
+        let raw = sign_sponsored(tx, &sender, &fee_payer);
+
+        // 1. Type byte present, body is one complete RLP list spanning the rest.
+        assert_eq!(raw[0], 0x76);
+        let (body_off, body_len, is_list) = rlp_header(&raw, 1);
+        assert!(is_list, "0x76 body must be an RLP list");
+        assert_eq!(
+            body_off + body_len,
+            raw.len(),
+            "RLP list header length must match the actual body — a mismatch is \
+             exactly what reth rejects as 'failed to decode signed transaction'"
+        );
+
+        // 2. Exactly 14 top-level fields: chain_id, mpfpg, mfpg, gas_limit,
+        //    calls, access_list, nonce_key, nonce, valid_before, valid_after,
+        //    fee_token, fee_payer_sig, aa_authorization_list, sender_signature
+        //    — key_authorization is OMITTED when None (no 0x80 stuffed in).
+        assert_eq!(
+            rlp_list_len(&raw, body_off, body_off + body_len),
+            14,
+            "sponsored 0x76 envelope must carry 14 top-level items \
+             (key_authorization omitted when None)"
+        );
+
+        // 3. The 0xFF max-value allowance word survives verbatim inside the
+        //    calldata byte string (no leading-zero stripping leaked into the
+        //    fixed-width ABI word).
+        let needle = &input[36..68]; // the uint256 amount word
+        assert!(
+            raw.windows(needle.len()).any(|w| w == needle),
+            "u128::MAX allowance word must be preserved verbatim in the envelope"
+        );
+    }
 }
