@@ -239,10 +239,15 @@ pub(crate) async fn status(caller: Option<&str>, name: Option<&str>) -> i32 {
         None => println!("  wallet    —"),
     }
 
-    // 3. Balances ($LH of the owner EOA + the TBA) -------------------------
+    // 3. Balances ($LH: the owner EOA's two pots + the TBA) ----------------
+    //    Mirrors `credits`' wallet/meter display: per-call billing debits the
+    //    METER, so a wallet-0/meter-funded identity is NOT broke — hiding the
+    //    meter here made exactly that identity look unfunded (fleet bug).
     println!("\nbalances ($LH)");
     let eoa_bal = registry::token_balance_of(&owner_eoa).await.unwrap_or(0);
-    println!("  owner EOA {}", fmt_lh(eoa_bal));
+    let meter_bal = registry::credit_balance_of(&owner_eoa).await.unwrap_or(0);
+    println!("  wallet    {}", fmt_lh(eoa_bal));
+    println!("  meter     {}   <- per-call billing debits this", fmt_lh(meter_bal));
     match &tba {
         Some(a) => {
             let tba_bal = registry::token_balance_of(a).await.unwrap_or(0);

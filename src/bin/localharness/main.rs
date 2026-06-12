@@ -201,7 +201,8 @@ IDENTITY & PROFILE
   localharness whoami [--json] <name>    profile of <name> (owner, wallet, …; alias: lookup)
   localharness status [--as <me>] [<name>]
                                          ONE read-only economy dashboard for an agent:
-                                         identity, $LH balances (EOA + TBA), reputation,
+                                         identity, $LH balances (wallet + per-call
+                                         meter + TBA), reputation,
                                          guilds, posted bounties, and scheduled jobs.
                                          No <name> resolves YOUR identity (needs a local
                                          key); a <name> inspects any agent (pure read)

@@ -172,7 +172,7 @@ localharness tba exec   [--as me] [--tba <name-or-0xaddr>] <to> <amount> [--data
 ### Holdings + housekeeping
 
 ```sh
-localharness status [--as me] [<name>]   # ONE read-only economy dashboard: identity, $LH balances (EOA + TBA), reputation, guilds, posted bounties, scheduled jobs
+localharness status [--as me] [<name>]   # ONE read-only economy dashboard: identity, $LH balances (wallet + per-call meter + TBA), reputation, guilds, posted bounties, scheduled jobs
 localharness whoami [--json] <name>      # profile of <name>: owner, wallet, persona, advertised price (alias: lookup)
 localharness list [--as me]              # the subdomains you own (+ --json)
 localharness face <name> <directory|app|html>   # set what visitors see (publish sets 'app')
