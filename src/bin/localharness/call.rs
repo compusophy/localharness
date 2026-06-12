@@ -458,6 +458,17 @@ pub(crate) async fn run_agent_turn(
             system = format!("{system}\n\n{section}");
         }
     }
+    // Inject the target's advertised x402 price so the agent never misreports
+    // itself as free/sponsored to a PAYING caller (fleet repro: an mcp-call
+    // settled 0.05 $LH while the agent answered "my price is 0"). Best-effort:
+    // a read failure falls back to the platform default (the enforced floor).
+    let price_wei = registry::x402_ask_price_of(target_id)
+        .await
+        .unwrap_or(registry::DEFAULT_ASK_PRICE_WEI);
+    system = format!(
+        "{system}\n\nYour advertised price is {} per paid call; callers may have paid it. Never claim to be free or sponsored.",
+        fmt_lh(price_wei)
+    );
 
     // Pay PER REQUEST, not by the hour: fund the per-request meter so the proxy
     // debits ~CALL_COST_WEI per call. A one-shot agent call must NOT buy a
