@@ -17,7 +17,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::filesystem::Filesystem;
 
 const PRICING_FILE: &str = ".lh_pricing.json";
 

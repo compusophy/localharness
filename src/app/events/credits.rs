@@ -122,12 +122,11 @@ pub(super) fn run_download_local_model() {
         // Fetch one URL, streaming chunks into a buffer and reporting progress
         // into `#local-model-msg`, then persist to OPFS via write_atomic.
         async fn fetch_to_opfs(
-            fs: &std::sync::Arc<crate::filesystem::OpfsFilesystem>,
+            fs: &crate::filesystem::SharedFilesystem,
             url: &str,
             opfs_path: &str,
             label: &str,
         ) -> Result<(), String> {
-            use crate::filesystem::Filesystem as _;
             let resp = reqwest::Client::new()
                 .get(url)
                 .send()

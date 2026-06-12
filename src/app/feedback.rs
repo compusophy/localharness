@@ -162,7 +162,6 @@ fn encode_submit_feedback_calldata(text: &str) -> Vec<u8> {
 /// local-first mirror (the canonical store is on-chain). One line per entry:
 /// `ISO-timestamp\tTEXT\n`.
 async fn append_feedback_local(text: &str) -> Result<(), String> {
-    use crate::filesystem::Filesystem;
     let fs = super::shared_opfs();
     let existing = fs.read(".lh_feedback.txt").await.unwrap_or_default();
     let now = js_sys::Date::new_0().to_iso_string().as_string().unwrap_or_default();

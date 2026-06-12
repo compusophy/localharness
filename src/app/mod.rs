@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use wasm_bindgen::prelude::*;
 
-use crate::filesystem::{Filesystem, OpfsFilesystem};
+use crate::filesystem::{EncryptedFilesystem, OpfsFilesystem, SharedFilesystem};
 use crate::Agent;
 
 mod chat;
@@ -101,6 +101,13 @@ pub(crate) struct App {
     /// Shared OPFS handle used by the panel. Built lazily so a missing
     /// browser-OPFS just leaves the panel idle rather than panicking.
     pub(crate) opfs: Option<Arc<OpfsFilesystem>>,
+    /// Seed-keyed at-rest encryption wrapper over `opfs`
+    /// ([`crate::filesystem::EncryptedFilesystem`]). Installed by
+    /// [`install_at_rest_encryption`] the moment a master wallet
+    /// materializes (`wallet_store::{load, create_and_persist, import}`);
+    /// while `None` (pre-identity, seedless origins) `shared_opfs` serves
+    /// the raw handle and everything stays plaintext, exactly as before.
+    pub(crate) opfs_at_rest: Option<SharedFilesystem>,
     /// Restored-from-OPFS history bytes from a previous session. Set
     /// once on mount (if the marker file exists) and consumed by the
     /// next `start_session`. None after first use so it doesn't get
@@ -169,6 +176,7 @@ impl App {
             next_id: 0,
             opfs_cwd: Vec::new(),
             opfs: None,
+            opfs_at_rest: None,
             pending_history: None,
             wallet: None,
             verify_state: VerifyState::Pending,
@@ -189,17 +197,47 @@ thread_local! {
     pub(crate) static APP: RefCell<App> = RefCell::new(App::new());
 }
 
-/// Shared `OpfsFilesystem` handle — one per tab. Lazily initialised on
-/// first use so the rest of the app doesn't have to care whether the
-/// browser supports OPFS until something actually touches it.
-pub(crate) fn shared_opfs() -> Arc<OpfsFilesystem> {
+/// Shared filesystem handle — one per tab. Lazily initialised on first
+/// use so the rest of the app doesn't have to care whether the browser
+/// supports OPFS until something actually touches it.
+///
+/// Once [`install_at_rest_encryption`] has run (a master wallet exists),
+/// this returns the seed-keyed [`EncryptedFilesystem`] wrapper instead of
+/// the raw OPFS handle — every caller transparently gets at-rest sealing
+/// on write and magic-sniffed decrypt-or-passthrough on read.
+pub(crate) fn shared_opfs() -> SharedFilesystem {
     APP.with(|cell| {
         let mut app = cell.borrow_mut();
+        if let Some(enc) = app.opfs_at_rest.as_ref() {
+            return enc.clone();
+        }
         if app.opfs.is_none() {
             app.opfs = Some(Arc::new(OpfsFilesystem::new()));
         }
-        app.opfs.as_ref().unwrap().clone()
+        let raw: SharedFilesystem = app.opfs.as_ref().unwrap().clone();
+        raw
     })
+}
+
+/// Install the at-rest encryption layer over the shared OPFS handle.
+/// Idempotent — the first install wins for the tab's lifetime (the key is
+/// deterministic from the seed, so repeated wallet loads derive the same
+/// key anyway). Called from `wallet_store::{load, create_and_persist,
+/// import}`, the three places a [`wallet_store::MasterWallet`]
+/// materializes; never called on seedless origins, which keep today's
+/// plaintext behavior.
+pub(crate) fn install_at_rest_encryption(key: [u8; 32]) {
+    APP.with(|cell| {
+        let mut app = cell.borrow_mut();
+        if app.opfs_at_rest.is_some() {
+            return;
+        }
+        if app.opfs.is_none() {
+            app.opfs = Some(Arc::new(OpfsFilesystem::new()));
+        }
+        let raw: SharedFilesystem = app.opfs.as_ref().unwrap().clone();
+        app.opfs_at_rest = Some(Arc::new(EncryptedFilesystem::new(raw, &key)));
+    });
 }
 
 /// Auto-runs at module load. Renders the initial chrome into `#root`

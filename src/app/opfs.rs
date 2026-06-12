@@ -7,7 +7,7 @@
 //!
 //! [`Filesystem`]: crate::filesystem::Filesystem
 
-use crate::filesystem::{EntryKind, Filesystem};
+use crate::filesystem::EntryKind;
 
 use super::dom;
 use super::templates;

@@ -2,10 +2,10 @@
 
 Project context for Claude Code sessions. Read this first.
 
-> Keep this file under **40K chars** (harness cap). It's a *map + gotchas*, not a
-> reference — detailed facet semantics live in `contracts/README.md`, wire details
-> in `examples/tempo_tx_live.rs`, agent-facing detail in `web/llms.txt`. When you
-> add a fact, cut or compress an older one; don't append.
+> Keep under **40K chars** (harness cap). A *map + gotchas*, not a reference —
+> facet semantics in `contracts/README.md`, wire detail in
+> `examples/tempo_tx_live.rs`, agent detail in `web/llms.txt`. Adding a fact?
+> Cut or compress an older one; don't append.
 
 ## What this is
 
@@ -62,7 +62,7 @@ src/                  library crate
 ├── builtins/         backend-NEUTRAL builtin tools (8 fs, ask_question, finish,
 │                     start_subagent, generate_image, call_agent, ...) + the two
 │                     schema-lint guard tests; shim left at backends/gemini/tools
-├── filesystem/       Filesystem trait + Native + OPFS impls
+├── filesystem/       Filesystem trait + Native/OPFS impls + at-rest Encrypted wrapper
 ├── types.rs          wire-adjacent enums + Step constructors (no hand literals)
 ├── error.rs          Error + Result · error_codes.rs stable LHxxxx registry
 ├── wallet.rs         secp256k1 + BIP-39 + RLP (feature "wallet"; all targets)
@@ -122,13 +122,10 @@ src/app/ (browser IDE):
 src/bin/localharness/  — agent-onboarding CLI (feature wallet+native). main.rs
   dispatcher + one module per command family (identity publish call mcp status
   credits schedule invite bounty reputation colony tba guild vote probe) +
-  util.rs (load_signer*/take_value_flag/parse_id shared helpers). Commands:
-  create / compile / publish / face / persona / price / call / status / list /
-  redeem / mcp-call / schedule / jobs / unschedule / notify /
-  invite{create,accept,reclaim,list} /
-  bounty{post,list,claim,submit,accept,cancel,mine} /
-  release{--confirm <name>, typed-confirmation} / threads / forget /
-  whoami / version. Harness-agnostic, server-free; what web/skill.md tells
+  util.rs (load_signer*/take_value_flag/parse_id shared helpers). ~25 commands
+  (create/compile/publish/face/persona/price/call/status/list/redeem/mcp-call/
+  schedule/jobs/unschedule/notify/invite*/bounty*/release(typed-confirm)/
+  threads/forget/whoami/version). Harness-agnostic, server-free; what skill.md tells
   external agents to run. `call` = HEADLESS turn via the credit proxy (NOT the
   ?rpc=1 path), persists per caller/target under .localharness/history;
   `--pay <amt|auto>` settles a caller-signed x402 payment to the target's TBA.
@@ -182,11 +179,10 @@ wasm-opt rejects post-MVP features modern rustc emits).
 - **`anthropic`** (off): Claude Messages API backend. PURELY ADDITIVE — no new
   deps. BYOK (`Agent::start_anthropic`) or platform `$LH` via the proxy.
 - **`local`** (off): in-browser Gemma 3 270M via Burn wgpu/WebGPU (no proxy/key).
-  HEAVY (burn 0.21 + ~570MB weights). NATIVE-VALIDATED. NOT pulled by browser-app;
-  build with `--features browser-app,local`. Gotchas: burn → getrandom 0.4 needs
-  `.cargo/config.toml getrandom_backend="wasm_js"` + a renamed `getrandom_v04`
-  dep; burn-store is a DIRECT dep (keeps wasm-broken memmap2 out); generate GPU
-  read-back MUST be `into_data_async().await` (sync panics on wasm).
+  HEAVY (~570MB weights); NOT in browser-app — build `--features browser-app,local`.
+  Gotchas: getrandom-0.4 needs `.cargo/config.toml getrandom_backend="wasm_js"` +
+  the renamed `getrandom_v04` dep; burn-store is DIRECT (memmap2 is wasm-broken);
+  GPU read-back MUST be `into_data_async().await` (sync panics on wasm).
 - wasm targets auto-drop walkdir/tempfile, add wasm-bindgen-futures, uuid/js,
   getrandom/js via target-cfg.
 
@@ -266,8 +262,8 @@ modules don't trip a default `cargo check`).
 - **SSE on wasm uses CRLF.** Browser fetch surfaces Gemini SSE with `\r\n\r\n`.
   `GeminiSseStream::take_frame` matches both `\n\n` and `\r\n\r\n`. Don't regress
   to LF-only.
-- **`max-age=immutable` on `/pkg/*` was a footgun.** `vercel.json` uses
-  `max-age=0, must-revalidate` so redeploys take effect without a hard-reload.
+- **`/pkg/*` caching:** `vercel.json` = `max-age=0, must-revalidate` (immutable
+  was a footgun — redeploys needed hard-reloads).
 - **The release script only commits `Cargo.toml` + `Cargo.lock` + `CHANGELOG.md`.**
   Commit anything else BEFORE invoking it. See RELEASING.md.
 
@@ -349,10 +345,9 @@ directory". `Host::Other` uses `try_paint_app` (local `app.rl` only).
 compile/read local `app.rl`/`index.html` and publish it **plus** set the choice in
 ONE sponsored Tempo tx (two `setMetadata` calls).
 
-**Second-device owner upgrade.** A seed-bearing owner on their own subdomain from a
-device WITHOUT `.lh_owner` is treated as a visitor; `paint_tenant` fires
-`redirect_to_studio_if_owner` (background) which navigates to `?edit=1` if
-`verify_owner` proves control. Skipped when the device already claims ownership.
+**Second-device owner upgrade.** A seed-bearing owner without `.lh_owner` paints
+as visitor; background `redirect_to_studio_if_owner` navigates to `?edit=1` once
+`verify_owner` proves control.
 
 **Cross-visitor publishing (on-chain).** Local `app.rl`/`index.html` are
 owner-device working copies; *visitors* see published bytes in the diamond under
@@ -372,7 +367,6 @@ generation on a marketing-page visit was the bug the gate fixes.
 **Device linking is seed-adoption via QR (Option A).** Desktop encrypts its seed
 under a one-time code; QR fragment carries the ciphertext to `localharness.xyz/
 ?adopt=1#s=...`; the other device types the code to import the SAME seed.
-Supersedes the dormant on-chain PairingFacet device-key flow.
 
 ## The on-chain stack
 
@@ -594,8 +588,8 @@ Shipped: SDK runtime, browser IDE, platform layer, Tempo native AA, second backe
 (Anthropic, 0.23.0), tool-call replay, agent scheduling + recursion, offline Mock
 backend (0.29.0), economy ladder rungs 1–4 (bounty → guild → DAO voting) +
 ReputationFacet + colony (0.30.0), x402 agent-pays-agent, host::compose
-cartridge-in-cartridge, TBA act panel (send $LH FROM the agent's 6551 account)
-(unreleased). Still open:
+cartridge-in-cartridge, TBA act panel, at-rest OPFS encryption (unreleased).
+Still open:
 
 - **Stripe MPP** — fiat agent-payments rail beside the live x402 `$LH` path.
 - **ERC-8004 validation staking** — validators stake to re-execute claims
@@ -604,7 +598,6 @@ cartridge-in-cartridge, TBA act panel (send $LH FROM the agent's 6551 account)
   UX (`design/agent-coordination.md`; nesting already works at the contract level).
 - **More backends** — OpenAI / local-WebGPU finish + own coding model
   (`design/model-agnostic.md` Phases D–F).
-- **At-rest encryption** — wallet-derived sym key over OPFS contents.
 - **P2P teams** — 2-device E2E test, mutable shared-FS, team UI. (SDP sealing
   DONE — `signaling_seal.rs` sender-signed envelope, hard-cut v2.)
 
@@ -618,6 +611,15 @@ tempfile+rename) and **`OpfsFilesystem`** (wasm32: OPFS via web-sys; atomic via
 honors a caller-supplied `Filesystem` via `with_filesystem`, else auto-installs
 `NativeFilesystem` on native (None on wasm — caller supplies OPFS).
 `SharedFilesystem = Arc<dyn Filesystem>`.
+
+**`EncryptedFilesystem`** (all targets) = seed-keyed AES-256-GCM at rest over any
+impl: `LHE1‖nonce‖ct`; read sniffs the magic → decrypt (tamper = clear error),
+else legacy plaintext passes through FOREVER. Key tag `localharness/v0/opfs-at-rest`
+(pinned); `wallet_store::{load,create_and_persist,import}` install it over OPFS;
+seedless origins stay plaintext. NEVER encrypts pinned `EXEMPT_FILES` —
+`.lh_wallet` (the seed IS the key root; sealing it bricks identity), the
+pre-wallet boot files (`.lh_owner`/`.lh_linked_owner`/`.lh_device_key`), the 2
+model artifacts.
 
 ## Documentation SOP
 
@@ -637,5 +639,4 @@ prompt; new facet → CLAUDE.md on-chain + `contracts/README.md` + `llms.txt`; b
 UX → CLAUDE.md browser section; release → CHANGELOG.
 
 **Verify before any release:** `cargo doc --no-deps 2>&1 | grep "warning.*missing"`
-(undocumented pub items) + `curl -s https://localharness.xyz/llms.txt | head -5`
-(llms.txt deployed).
++ `curl -s https://localharness.xyz/llms.txt | head -5` (deployed?).

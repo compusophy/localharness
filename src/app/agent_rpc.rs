@@ -156,7 +156,6 @@ fn extract_payment(data: &JsValue) -> Option<PaymentParts> {
 /// This agent's per-call x402 price in `$LH` wei (`.lh_x402_price` in OPFS;
 /// 0 / missing = free, current behavior).
 async fn x402_price() -> u128 {
-    use crate::filesystem::Filesystem;
     let fs = super::shared_opfs();
     match fs.read(".lh_x402_price").await {
         Ok(bytes) => String::from_utf8(bytes)

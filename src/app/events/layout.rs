@@ -3,7 +3,6 @@
 //! the unified stream has no side panels to collapse.)
 
 use crate::app::{dom, templates};
-use crate::filesystem::Filesystem;
 
 /// Inline-confirmed reset: clear local app data at OPFS root, reload.
 /// Identity-preserving — keeps the seed + owner hint (see the loop below).

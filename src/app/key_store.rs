@@ -12,7 +12,6 @@
 //! Legacy plaintext files are read transparently and re-encrypted on the
 //! next save.
 
-use crate::filesystem::Filesystem;
 
 const KEY_FILE: &str = ".lh_api_key";
 

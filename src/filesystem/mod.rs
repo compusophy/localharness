@@ -65,6 +65,10 @@ use async_trait::async_trait;
 use crate::error::Result;
 use crate::runtime::MaybeSendSync;
 
+pub mod encrypted;
+
+pub use encrypted::EncryptedFilesystem;
+
 #[cfg(feature = "native")]
 pub mod native;
 

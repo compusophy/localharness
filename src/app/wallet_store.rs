@@ -7,15 +7,30 @@
 //! partitioned there, so seed ops must run LOCAL-FIRST off this store,
 //! never through an iframe-only path).
 //!
-//! Storage format is a single line of 12 BIP-39 words. Plain text,
-//! no encryption-at-rest yet (matches the API key situation — same
-//! threat model: per-origin sandbox is the boundary, XSS-equivalent
-//! risk if anything ever runs in this origin uninvited).
+//! Storage format is a single line of 12 BIP-39 words. **Plain text, by
+//! design, forever**: the seed is the root every at-rest key derives
+//! from — sealing it under a key derived from itself bricks the identity
+//! (the 2026-06-05 reset-brick class of bug). It is on
+//! [`crate::filesystem::encrypted::EXEMPT_FILES`], and every function
+//! here that yields a `MasterWallet` also installs the seed-keyed
+//! at-rest encryption layer over the shared OPFS handle (see
+//! [`install_at_rest`]), so the REST of OPFS stops being plaintext the
+//! moment an identity exists.
 
-use crate::filesystem::Filesystem;
 use crate::wallet;
 
 const WALLET_FILE: &str = ".lh_wallet";
+
+/// Derive the at-rest OPFS key from this wallet's BIP-39 entropy (tag
+/// `localharness/v0/opfs-at-rest`, pinned in `crate::wallet`) and install
+/// the [`crate::filesystem::EncryptedFilesystem`] wrapper. Idempotent.
+fn install_at_rest(mnemonic: &bip39::Mnemonic) {
+    use zeroize::Zeroize as _;
+    let mut entropy = mnemonic.to_entropy();
+    let key = wallet::at_rest_key_from_entropy(&entropy);
+    entropy.zeroize();
+    super::install_at_rest_encryption(key);
+}
 
 pub(crate) struct MasterWallet {
     pub(crate) mnemonic: bip39::Mnemonic,
@@ -42,7 +57,9 @@ pub(crate) async fn load() -> Option<MasterWallet> {
         return None;
     }
     let phrase = String::from_utf8(bytes).ok()?;
-    restore_from_phrase(&phrase).ok()
+    let w = restore_from_phrase(&phrase).ok()?;
+    install_at_rest(&w.mnemonic);
+    Some(w)
 }
 
 /// Generate a fresh keypair, persist its mnemonic to OPFS, and return
@@ -54,6 +71,7 @@ pub(crate) async fn create_and_persist() -> Result<MasterWallet, String> {
     fs.write_atomic(WALLET_FILE, mnemonic.to_string().as_bytes())
         .await
         .map_err(|e| format!("wallet save: {e}"))?;
+    install_at_rest(&mnemonic);
     let address = wallet::address(&signer);
     Ok(MasterWallet {
         mnemonic,
@@ -71,6 +89,7 @@ pub(crate) async fn import(phrase: &str) -> Result<MasterWallet, String> {
     fs.write_atomic(WALLET_FILE, mnemonic.to_string().as_bytes())
         .await
         .map_err(|e| format!("wallet save: {e}"))?;
+    install_at_rest(&mnemonic);
     let signer = wallet::signer_from_mnemonic(&mnemonic);
     let address = wallet::address(&signer);
     Ok(MasterWallet {

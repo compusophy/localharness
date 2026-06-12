@@ -96,7 +96,6 @@ impl Tool for RunCartridge {
             // and survives a reload. Best-effort — a write failure must not
             // block the run itself.
             let saved = {
-                use crate::filesystem::Filesystem;
                 let fs = crate::app::shared_opfs();
                 fs.write_atomic("cartridge.rl", source.as_bytes()).await.is_ok()
             };

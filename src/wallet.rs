@@ -274,6 +274,24 @@ pub fn sharedfs_key_from_entropy(entropy: &[u8]) -> [u8; 32] {
     out
 }
 
+/// Derive the 32-byte AES key for **at-rest OPFS encryption** (the
+/// `filesystem::EncryptedFilesystem` wrapper) from a master wallet's
+/// BIP-39 entropy (tag `localharness/v0/opfs-at-rest`). Deterministic
+/// from the seed — every device/origin holding the seed derives the same
+/// key, so files sealed on one device decrypt on a linked one. Domain-
+/// separated from the sibling `keysync` / `sharedfs` tags so the at-rest
+/// key can never collide with the Gemini-key or shared-folder keys.
+/// Byte-for-byte pinned by `at_rest_key_pinned_and_distinct`; changing
+/// the output orphans every sealed OPFS file.
+pub fn at_rest_key_from_entropy(entropy: &[u8]) -> [u8; 32] {
+    let mut hasher = Keccak256::new();
+    hasher.update(b"localharness/v0/opfs-at-rest");
+    hasher.update(entropy);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&hasher.finalize());
+    out
+}
+
 fn finalize(signer: SigningKey) -> GeneratedWallet {
     let address = address(&signer);
     let private_key_hex = format!("0x{}", hex_encode(&signer.to_bytes()));
@@ -575,6 +593,26 @@ mod tests {
             "sharedfs key derivation changed — sealed shared folders orphaned"
         );
         assert_ne!(keysync, sharedfs);
+    }
+
+    /// PINNED at-rest OPFS key derivation (tag `localharness/v0/opfs-at-rest`,
+    /// the `filesystem::EncryptedFilesystem` key). Same cross-device contract
+    /// as its siblings: a changed output orphans every OPFS file sealed under
+    /// the old key — conversation history, system prompt, working files all
+    /// become unreadable ciphertext. Also pins domain separation from the
+    /// keysync and sharedfs tags.
+    #[test]
+    fn at_rest_key_pinned_and_distinct() {
+        let entropy = [0u8; 16];
+        let at_rest = at_rest_key_from_entropy(&entropy);
+        // Generated ONCE from the live implementation (2026-06-12).
+        assert_eq!(
+            hex_encode(&at_rest),
+            "a0c9c69ced27af86580487d0e3f487ef7143ecfbf69045335e9ea53809a92ced",
+            "at-rest key derivation changed — every sealed OPFS file orphaned"
+        );
+        assert_ne!(at_rest, keysync_key_from_entropy(&entropy));
+        assert_ne!(at_rest, sharedfs_key_from_entropy(&entropy));
     }
 
     #[test]

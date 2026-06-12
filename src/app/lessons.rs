@@ -7,7 +7,6 @@
 //! falls back to the on-chain slot for this tenant's tokenId — so lessons
 //! survive sessions AND devices.
 
-use crate::filesystem::Filesystem;
 
 const LESSONS_FILE: &str = ".lh_lessons.txt";
 

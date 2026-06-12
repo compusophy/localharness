@@ -16,7 +16,6 @@ use wasm_bindgen::JsCast;
 use web_sys::{Document, Element, HtmlElement, KeyboardEvent, MouseEvent};
 
 use crate::encoding::{bytes_to_hex_str, parse_address};
-use crate::filesystem::Filesystem;
 
 use super::dom;
 use super::templates;

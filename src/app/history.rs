@@ -14,7 +14,6 @@
 use maud::html;
 
 use crate::backends::gemini::decode_transcript_bytes;
-use crate::filesystem::Filesystem;
 use crate::types::TranscriptRole;
 
 use super::dom;

@@ -136,6 +136,14 @@ walkdir = { version = "2", optional = true }
 globset = "0.4"
 regex = "1"
 tempfile = { version = "3", optional = true }
+# AES-256-GCM for the at-rest OPFS encryption wrapper
+# (`filesystem::EncryptedFilesystem`). RustCrypto pure-Rust AEAD: the ONLY
+# cipher impl that runs identically on native (where the wrapper's unit
+# tests live) and wasm32 (where it seals OPFS) — WebCrypto (app/encryption.rs)
+# doesn't exist natively, so this is the strong-reason exception to "no new
+# crypto deps". `getrandom` feature supplies OsRng for fresh GCM nonces;
+# on wasm it unifies with the target-cfg getrandom/js below.
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc", "getrandom"] }
 # UI-only; pulled in only when --features browser-app is set. Maud is a
 # proc-macro that compiles HTML templates to string-builders — no runtime
 # framework, no vdom. Compiles on every target; only used by src/app/.

@@ -11,7 +11,6 @@
 //! Unlike the encrypted `.lh_api_key`, the model id is not a secret, so
 //! it's stored as plaintext UTF-8.
 
-use crate::filesystem::Filesystem;
 
 const MODEL_FILE: &str = ".lh_model";
 

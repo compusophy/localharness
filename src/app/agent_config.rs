@@ -14,7 +14,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::filesystem::Filesystem;
 use crate::types::BuiltinTool;
 
 const MANIFEST_PATH: &str = "agent.json";

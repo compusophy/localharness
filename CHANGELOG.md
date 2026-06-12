@@ -41,6 +41,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pubkey↔address self-consistency gating. Pre-v2 `"<eph_hex>\n<sealed>"`
   blobs are REJECTED outright — a deliberate hard cut (the layer has no
   production users) instead of a fallback that would keep the MITM open.
+- **At-rest encryption for OPFS contents (`filesystem::EncryptedFilesystem`).**
+  A transparent `Filesystem` wrapper that seals every `write_atomic` with
+  AES-256-GCM (`LHE1 || nonce(12) || ciphertext+tag` framing) and sniffs the
+  magic on `read` — sealed bytes decrypt (GCM auth failure is a clear error,
+  never garbage), anything else passes through unchanged, so pre-existing
+  plaintext profiles stay readable forever and re-encrypt naturally on their
+  next write. The key is derived from the master wallet's BIP-39 entropy
+  (`wallet::at_rest_key_from_entropy`, domain tag `localharness/v0/opfs-at-rest`,
+  byte-pinned next to the keysync/sharedfs siblings) and the browser app
+  installs the wrapper over the shared OPFS handle the moment a master wallet
+  materializes (`wallet_store::{load, create_and_persist, import}` →
+  `app::install_at_rest_encryption`) — so a stolen browser profile yields
+  ciphertext for conversation history, system prompt, lessons, and working
+  files. **Never encrypted** (pinned `EXEMPT_FILES`): `.lh_wallet` (the seed
+  is the key root — sealing it would brick the identity), `.lh_owner` /
+  `.lh_linked_owner` / `.lh_device_key` (pre-wallet boot reads), and the two
+  public local-model artifacts (~550 MB CDN downloads). Seedless origins
+  (visitors, linked devices without the seed) keep today's plaintext behavior.
+  Pure and natively tested: 10 unit tests in `src/filesystem/encrypted.rs`
+  (round-trip, tamper rejection, wrong key, legacy passthrough, exemptions,
+  fresh-nonce, rename). Adds the RustCrypto `aes-gcm` dependency — the one
+  cipher that runs identically on native (tests) and wasm32 (OPFS).
 - **Variable cartridge resolution + aspect ratios.** A cartridge opts into
   its own framebuffer size by exporting `dims() -> i32` returning a packed
   `(width << 16) | height` (each dimension clamped to `[16, 1024]`; the

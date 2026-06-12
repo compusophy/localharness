@@ -218,7 +218,6 @@ pub(super) fn save_x402_price_pressed() {
     };
     let raw = input.value().trim().to_string();
     wasm_bindgen_futures::spawn_local(async move {
-        use crate::filesystem::Filesystem;
         let fs = crate::app::shared_opfs();
         let local: Result<u128, String> = async {
             let wei = if raw.is_empty() {
@@ -512,7 +511,6 @@ pub(super) fn header_admin_toggle() {
             // integer division showed a saved 0.1 as "0", and re-saving that
             // "0" would silently delete the price.
             {
-                use crate::filesystem::Filesystem;
                 if let Ok(bytes) = crate::app::shared_opfs().read(".lh_x402_price").await {
                     if let Some(wei) = String::from_utf8(bytes)
                         .ok()
@@ -574,7 +572,6 @@ pub(super) async fn refresh_public_face_status() {
         Some("app") => "currently: app · published ✓".into(),
         Some("html") => "currently: html · published ✓".into(),
         _ => {
-            use crate::filesystem::Filesystem;
             let fs = crate::app::shared_opfs();
             let has_app = fs.read("app.rl").await.map(|v| !v.is_empty()).unwrap_or(false);
             let has_html =

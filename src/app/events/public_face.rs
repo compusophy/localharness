@@ -3,7 +3,6 @@
 use crate::encoding::parse_address;
 
 use crate::app::dom;
-use crate::filesystem::Filesystem;
 
 /// Set this subdomain's public face on-chain — `"directory"`, `"app"`, or
 /// `"html"`. The choice lives under `keccak256("localharness.public_face")`

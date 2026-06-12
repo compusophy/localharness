@@ -12,7 +12,6 @@
 //! It is per-origin (lives in the subdomain's OPFS sandbox). A different
 //! device starts with no hint and earns one by proving ownership.
 
-use crate::filesystem::Filesystem;
 
 const OWNER_FILE: &str = ".lh_owner";
 

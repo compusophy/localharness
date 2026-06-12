@@ -38,7 +38,7 @@
 //! durable, encrypted apex store + the authorization seal, which the
 //! deferred round-trip wiring builds on without reopening the crypto design.
 
-use crate::filesystem::{EntryKind, Filesystem};
+use crate::filesystem::EntryKind;
 
 /// Directory in apex OPFS holding the owner's shared folder, sibling of
 /// `.lh_wallet`. Every file under here is sealed at rest with the
