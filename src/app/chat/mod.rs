@@ -55,16 +55,6 @@ thread_local! {
     /// Set by the `compact_context` tool; drained post-turn like
     /// `PENDING_CLEAR`.
     static PENDING_COMPACT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// The user prompt that started the CURRENT run — stashed by [`run_send`]
-    /// so the [⇪ background] promote handler can re-issue it as an on-chain
-    /// goal-job task. Read via [`active_run_prompt`]; only meaningful while
-    /// `TURN_ACTIVE` (overwritten by the next run, never a durable record).
-    static RUN_PROMPT: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
-    /// Set by [`request_stop_for_promote`]: this cancellation is a promote-
-    /// to-background, so the "Stopped. What should I do instead?" redirect
-    /// note is skipped (the promote confirmation lands in the status line).
-    /// Cleared by `TurnGuard` on every run exit.
-    static PROMOTE_REQUESTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Schedule a full context clear for when the in-flight turn ends — set by
@@ -91,34 +81,6 @@ pub(crate) fn request_stop_turn() {
     }
 }
 
-/// The prompt that started the in-flight run, if one is active. The
-/// promote-to-background handler reads this to build the goal-job task;
-/// `None` once the run ends (lifecycle keeps the button absent then, this
-/// is the belt-and-braces guard).
-pub(crate) fn active_run_prompt() -> Option<String> {
-    if !TURN_ACTIVE.with(|c| c.get()) {
-        return None;
-    }
-    let p = RUN_PROMPT.with(|c| c.borrow().clone());
-    (!p.is_empty()).then_some(p)
-}
-
-/// Stop the running turn FOR A PROMOTE-TO-BACKGROUND: same cooperative
-/// cancel as the stop button, but flags the run so the cancel branch skips
-/// the "Stopped. What should I do instead?" redirect note. Returns false
-/// (no-op) when no run is active or a promote was already requested —
-/// a double-press can't schedule two jobs.
-pub(crate) fn request_stop_for_promote() -> bool {
-    if !TURN_ACTIVE.with(|c| c.get()) {
-        return false;
-    }
-    if PROMOTE_REQUESTED.with(|c| c.replace(true)) {
-        return false;
-    }
-    request_stop_turn();
-    true
-}
-
 /// RAII cleanup for a turn: clears the active/cancel flags and restores
 /// the send button (if the stop button is currently shown) on every
 /// exit path, including early returns and future cancellation.
@@ -127,10 +89,6 @@ impl Drop for TurnGuard {
     fn drop(&mut self) {
         TURN_ACTIVE.with(|c| c.set(false));
         TURN_CANCEL.with(|c| c.set(false));
-        PROMOTE_REQUESTED.with(|c| c.set(false));
-        // Run over (any exit path): refund a still-pending auto-background
-        // insurance job (zero-click backgrounding, feedback #61/#65).
-        crate::app::events::auto_job_run_ended();
         // Never leave a stage line pulsing after the run — every exit path
         // (including panics-as-aborts aside, early returns) clears it.
         stage::end();
@@ -181,9 +139,6 @@ pub(crate) async fn run_send() {
     }
     TURN_ACTIVE.with(|c| c.set(true));
     TURN_CANCEL.with(|c| c.set(false));
-    // Stash the prompt for the run's lifetime so [⇪ background] can promote
-    // this exact request to an on-chain goal job (see `active_run_prompt`).
-    RUN_PROMPT.with(|c| *c.borrow_mut() = prompt.clone());
     // From here, every return path resets the flags + restores the
     // send button via Drop.
     let _turn_guard = TurnGuard;
@@ -225,18 +180,9 @@ pub(crate) async fn run_send() {
     prompt_area.set_value("");
     let _ = prompt_area.focus();
 
-    // Swap the send arrow for the stop slot for the whole (possibly
-    // multi-turn) run; the guard / loop-end restores it. The [⇪ background]
-    // promote rides along only on a tenant — scheduling a goal job needs an
-    // on-chain name to target, which apex / Host::Other don't have.
-    let can_promote = matches!(
-        super::tenant::current(),
-        super::tenant::Host::Tenant(_)
-    );
-    dom::swap_outer(
-        "terminal-send",
-        &templates::stop_button(can_promote).into_string(),
-    );
+    // Swap the send arrow for the stop button for the whole (possibly
+    // multi-turn) run; the guard / loop-end restores it.
+    dom::swap_outer("terminal-send", &templates::stop_button().into_string());
 
     // Payment gate. If the agent's owner has set a per-turn price AND
     // we know this visitor is *not* the owner, collect payment via
@@ -313,7 +259,6 @@ pub(crate) async fn run_send() {
         // history marker show up incrementally (not just at the very end).
         super::history::save_from_agent().await;
         super::opfs::refresh().await;
-        update_context_bar(&agent);
 
         // Drain any context-management a tool requested THIS turn. Deferred
         // to here (not run inside the tool) because clearing/summarising the
@@ -686,11 +631,9 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
         None
     };
 
-    // If the user hit stop, append a short redirect prompt — unless this
-    // cancel is a promote-to-background, where the work CONTINUES headless
-    // and the confirmation lands in the status line instead.
+    // If the user hit stop, append a short redirect prompt.
     if TURN_CANCEL.with(|c| c.get()) {
-        if !PROMOTE_REQUESTED.with(|c| c.get()) {
+        {
             let note_id = APP.with(|cell| cell.borrow_mut().alloc_id());
             dom::append_html(
                 "transcript",
@@ -820,28 +763,6 @@ fn fail_pending_turn(turn_id: u32, text: &str) {
 /// The in-tab auto-compaction ceiling — shared by the session config and the
 /// context-fullness bar so the bar's "full" always means "compaction next".
 pub(crate) const COMPACTION_THRESHOLD: u32 = 128_000;
-
-/// Repaint the context-fullness bar (feedback #59): fill = the last turn's
-/// live prompt tokens vs [`COMPACTION_THRESHOLD`]. A full bar means the next
-/// turn will summarize the old history prefix.
-fn update_context_bar(agent: &crate::Agent) {
-    let tokens = agent
-        .conversation()
-        .last_turn_usage()
-        .and_then(|u| u.prompt_token_count)
-        .unwrap_or(0)
-        .max(0) as u64;
-    let pct = ((tokens as f64 / COMPACTION_THRESHOLD as f64) * 100.0).min(100.0);
-    if let Some(el) = dom::by_id("ctx-fill") {
-        let _ = el.set_attribute("style", &format!("width:{pct:.1}%"));
-    }
-    if let Some(el) = dom::by_id("ctx-bar") {
-        let _ = el.set_attribute(
-            "title",
-            &format!("context: {tokens} / {COMPACTION_THRESHOLD} tokens"),
-        );
-    }
-}
 
 fn mark_turn_done(turn_id: u32) {
     // The pipeline line is a PENDING-turn affordance — it disappears the

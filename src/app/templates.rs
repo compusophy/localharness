@@ -120,7 +120,7 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
                     details.brand-menu {
                         summary.brand-summary { "localharness" }
                         nav.brand-menu-items {
-                            a href="https://localharness.xyz/" { "home" }
+                            a href="/" { "home" }
                             a href="https://github.com/compusophy/localharness"
                                 target="_blank" rel="noopener" { "repo" }
                             a href="https://crates.io/crates/localharness"
@@ -162,10 +162,6 @@ pub(crate) fn terminal_input() -> Markup {
             // role=status announces the "no $LH — redeem" CTA when it appears, so a
             // screen-reader user isn't left to hit a silent rejection on first send.
             div #fund-banner .fund-banner role="status" aria-live="polite" {}
-            // `dom::set_status` writes transient dispatcher messages here
-            // (errors, payment notices). role=status is an implicit polite
-            // live region, so updates are announced without stealing focus.
-            div #status .terminal-status role="status" aria-live="polite" {}
             div.terminal-row {
                 // Decorative prompt glyph — hidden from the a11y tree so it
                 // isn't announced as stray content before the input.
@@ -194,15 +190,9 @@ pub(crate) fn send_button() -> Markup {
 /// `terminal-stop` id so the existing swap lifecycle (`chat::run_send` /
 /// `TurnGuard` restoring [`send_button`] by id) removes BOTH buttons in
 /// one `swap_outer` when the run ends.
-pub(crate) fn stop_button(can_promote: bool) -> Markup {
+pub(crate) fn stop_button() -> Markup {
     html! {
-        span #terminal-stop style="display:flex;align-items:center;gap:8px;flex-shrink:0" {
-            @if can_promote {
-                button .terminal-send data-action="promote-background"
-                    style="font-size:11px;padding:0"
-                    title="continue in background — headless on-chain goal job; closing the tab won't kill the work"
-                    aria-label="continue in background" { "⇪ background" }
-            }
+        span #terminal-stop style="display:flex;align-items:center;flex-shrink:0" {
             button .terminal-send.terminal-stop data-action="stop-turn" title="stop" aria-label="stop generating" { "■" }
         }
     }
@@ -410,12 +400,6 @@ pub(crate) fn chrome(host: &Host) -> Markup {
         (site_header(host))
         main #layout .layout {
             div.col-chat {
-                // Context-fullness indicator (feedback #59/#62): a 2px bar
-                // at the TOP of the chat area, directly under the site
-                // header, whose fill = live prompt tokens / the compaction
-                // threshold. Filled by `chat::update_context_bar` after
-                // every turn; full means a compaction is imminent.
-                div #ctx-bar .ctx-bar title="context" { div #ctx-fill .ctx-fill {} }
                 // Live region: streamed assistant turns are appended/swapped
                 // into here as the model replies, so screen readers must be
                 // told to announce mutations. `role=log` + `aria-live=polite`

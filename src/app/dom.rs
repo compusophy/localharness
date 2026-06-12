@@ -132,17 +132,36 @@ pub(crate) fn mark_ready() {
 }
 
 pub(crate) fn set_status(message: &str, is_error: bool) {
-    if let Some(el) = by_id("status") {
-        el.set_text_content(Some(message));
-        let cls = el.class_name();
-        let cleaned: Vec<&str> = cls.split_whitespace().filter(|c| *c != "err").collect();
-        let mut new_cls = cleaned.join(" ");
-        if is_error {
-            if !new_cls.is_empty() {
-                new_cls.push(' ');
-            }
-            new_cls.push_str("err");
-        }
-        el.set_class_name(&new_cls);
+    // Status lives IN THE STREAM (a single replaceable system line at the end
+    // of the transcript), never in the input container — the user rejected
+    // input-chrome status messages repeatedly (feedback #45/#64 + direct).
+    // Empty message = clear the line. The node is recreated at the transcript
+    // tail so it always reads as the latest event.
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    if let Some(el) = doc.get_element_by_id("system-status") {
+        el.remove();
     }
+    if message.is_empty() {
+        return;
+    }
+    let Some(transcript) = doc.get_element_by_id("transcript") else {
+        return;
+    };
+    let cls = if is_error { "system-status err" } else { "system-status" };
+    let _ = transcript.insert_adjacent_html(
+        "beforeend",
+        &format!(
+            "<div id=\"system-status\" class=\"{cls}\">{}</div>",
+            html_escape(message)
+        ),
+    );
+    scroll_to_bottom("transcript");
+}
+
+/// Minimal text→HTML escaping for status text (it can carry raw error
+/// strings — never inject them as markup).
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }

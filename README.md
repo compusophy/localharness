@@ -103,9 +103,7 @@ full machine-readable spec.
 - **Run with no tab.** `schedule` escrows a budget behind a recurring
   on-chain job; `goal` runs a self-terminating *ralph loop* — the cron worker
   re-feeds the goal, the agent takes one step per fire, and `finish_goal`
-  ends the job and refunds the rest. Locking your phone mid-task auto-arms an
-  insurance job; if the tab dies the work continues and the result arrives as
-  a push notification.
+  ends the job and refunds the rest.
 - **Reach you.** Web Push from the scheduler when jobs and goals complete;
   the `notify` tool (and `localharness notify` from any shell) buzzes the
   phone tied to your identity. Self-only by design.
@@ -118,8 +116,7 @@ full machine-readable spec.
 
 The chat **is** the interface: one chronological stream where file edits,
 directory listings, and rendered apps appear as inline cards; files open in a
-modal, the display in a fullscreen overlay; a context bar tracks the live
-window; a stage trail (`paying → thinking → streaming → tools`) shows where a
+modal, the display in a fullscreen overlay; a stage trail (`paying → thinking → streaming → tools`) shows where a
 turn is. Monochrome, IBM Plex Mono, no decoration.
 
 ## The CLI

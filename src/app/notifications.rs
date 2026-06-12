@@ -186,3 +186,64 @@ pub(crate) async fn enable_and_publish() -> Result<String, String> {
     crate::app::events::run_sponsored_tempo_call(&owner, vec![call], gas, "publish push subscription")
         .await
 }
+
+/// Silently refresh a STALE push subscription on app open. Reinstalling the
+/// PWA / clearing site data invalidates the browser's old push endpoint, but
+/// the on-chain slot keeps serving it — every worker push then dies with an
+/// FCM 410 and the owner silently stops getting buzzed (seen live 2026-06-12).
+/// When permission is already granted, re-subscribe (idempotent) and, if the
+/// endpoint differs from the published one, re-publish. Best-effort: any
+/// failure leaves the existing state untouched; never prompts.
+pub(crate) async fn refresh_subscription_if_stale() {
+    if !matches!(
+        web_sys::Notification::permission(),
+        web_sys::NotificationPermission::Granted
+    ) {
+        return;
+    }
+    let Ok(current) = subscribe_push().await else {
+        return;
+    };
+    let Ok((name, owner)) = crate::app::tenant::current_tenant_owner().await else {
+        return;
+    };
+    let token_id = match crate::registry::main_of(&owner).await {
+        Ok(id) if id != 0 => id,
+        _ => match crate::registry::id_of_name(&name).await {
+            Ok(id) if id != 0 => id,
+            _ => return,
+        },
+    };
+    let published = crate::registry::push_sub_of(token_id)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if published == current {
+        return;
+    }
+    let publish = async {
+        let registry_addr = crate::encoding::parse_address(crate::registry::REGISTRY_ADDRESS)?;
+        let call = crate::tempo_tx::TempoCall {
+            to: registry_addr,
+            value_wei: 0,
+            input: crate::registry::encode_set_push_sub(token_id, current.as_bytes()),
+        };
+        let gas = crate::app::gas::set_metadata_gas(current.len());
+        crate::app::events::run_sponsored_tempo_call(
+            &owner,
+            vec![call],
+            gas,
+            "refresh push subscription",
+        )
+        .await
+    };
+    match publish.await {
+        Err(e) => web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
+            "push subscription refresh failed: {e}"
+        ))),
+        Ok(_) => web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
+            "stale push subscription refreshed on-chain",
+        )),
+    }
+}

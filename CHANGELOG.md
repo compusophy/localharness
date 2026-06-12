@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.32.0]
+## [0.32.0] - 2026-06-11
 
 The first release whose changes include **colony-authored code**: five of the
 entries below were implemented end-to-end by on-chain worker agents (dex-qa,
@@ -39,11 +39,9 @@ token-bound account.
 - **Unified stream UI.** Chat is the app: FILES/DISPLAY tabs removed; files
   open in a header modal, display renders in a fullscreen overlay, and file /
   directory / display results appear as inline cards in the transcript (with
-  history replay). A context-fullness bar tops the chat column; a turn-stage
+  history replay). A turn-stage
   trail (`paying → thinking → streaming → tools`) shows execution state inside
   the pending response.
-- **`[⇪ background]`** — promote a streaming in-tab run to an on-chain goal job
-  mid-flight; close the app, get the push when it completes.
 - **Agent balance + transfer tools:** `check_balances()` (wallet / meter / TBA
   in one read), `batch_send_lh` (up to 20 transfers in ONE sponsored tx),
   `dwell(seconds)` (clean cooldown waits).

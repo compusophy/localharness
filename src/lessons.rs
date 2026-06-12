@@ -91,7 +91,7 @@ pub fn replace_all(new_blob: &str) -> String {
     let mut lines: Vec<String> = Vec::new();
     for raw in new_blob.lines() {
         let line = normalize(raw);
-        if line.is_empty() || lines.iter().any(|l| *l == line) {
+        if line.is_empty() || lines.contains(&line) {
             continue;
         }
         lines.push(line);

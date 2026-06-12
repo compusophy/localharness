@@ -37,7 +37,6 @@ mod subdomains;
 pub(crate) use credits::{refresh_fund_banner, try_redeem_pending_invite};
 pub(crate) use key_sync::{sync_local_key_to_main, try_auto_restore_gemini_key};
 pub(crate) use subdomains::{run_batch_create_subdomains, run_bulk_release, run_release_subdomain};
-pub(crate) use schedule::auto_job_run_ended;
 
 /// Every user interaction maps to one of these. The closed enum makes
 /// it obvious from one file what the app actually does. Variants with
@@ -94,11 +93,6 @@ enum Action {
     SaveApiKey,
     ToggleDisplay,
     StopTurn,
-    /// Promote the in-flight run to a HEADLESS on-chain goal job: stop the
-    /// in-tab turn, then escrow `$LH` behind a `GOAL: `-prefixed
-    /// `scheduleJob` targeting this tenant so the scheduler worker carries
-    /// the request to completion with the tab closed.
-    PromoteBackground,
     /// Set this subdomain's public face: "directory", "app", or "html".
     /// "app"/"html" also publish the device's local app.rl/index.html.
     SetPublicFace(String),
@@ -216,7 +210,6 @@ impl Action {
             "save-api-key" => Action::SaveApiKey,
             "toggle-display" => Action::ToggleDisplay,
             "stop-turn" => Action::StopTurn,
-            "promote-background" => Action::PromoteBackground,
             "set-public-face" => Action::SetPublicFace(arg.unwrap_or_default()),
             "copy-share-url" => Action::CopyShareUrl(arg.unwrap_or_default()),
             "copy-seed" => Action::CopySeed(arg.unwrap_or_default()),
@@ -425,25 +418,6 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
 
     install_keyboard_viewport_fix();
 
-    // Zero-click backgrounding (feedback #61/#65): page hidden mid-run →
-    // arm an on-chain insurance goal job; visible again → cancel + refund.
-    // A system listener like the visualViewport fix, not a data-action.
-    let visibility = Closure::<dyn FnMut()>::new(move || {
-        let hidden = web_sys::window()
-            .and_then(|w| w.document())
-            .map(|d| d.hidden())
-            .unwrap_or(false);
-        if hidden {
-            schedule::visibility_hidden();
-        } else {
-            schedule::visibility_visible();
-        }
-    });
-    doc.add_event_listener_with_callback(
-        "visibilitychange",
-        visibility.as_ref().unchecked_ref(),
-    )?;
-    visibility.forget();
 
     Ok(())
 }
@@ -543,7 +517,6 @@ fn dispatch(action: Action) {
         Action::OpfsCloseViewer => super::opfs::close_viewer(),
         Action::ToggleDisplay => super::opfs::toggle_display(),
         Action::StopTurn => super::chat::request_stop_turn(),
-        Action::PromoteBackground => schedule::promote_background_pressed(),
         Action::SetPublicFace(choice) => {
             wasm_bindgen_futures::spawn_local(async move {
                 public_face::run_set_public_face(&choice).await;

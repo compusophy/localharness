@@ -688,6 +688,12 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
         // No modal on miss: new accounts default to platform credits and
         // BYOK is opt-in via admin → account.
         let _ = events::try_auto_restore_gemini_key(&name).await;
+        // Self-heal a STALE push subscription (PWA reinstall invalidates the
+        // old endpoint; the chain kept serving it → every push died with an
+        // FCM 410). Background, best-effort, no prompt.
+        wasm_bindgen_futures::spawn_local(async {
+            notifications::refresh_subscription_if_stale().await;
+        });
     }
 
     // Background: try to verify the visitor against the on-chain
