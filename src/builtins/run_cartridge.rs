@@ -24,7 +24,9 @@ impl Tool for RunCartridge {
 
     fn description(&self) -> &str {
         "Compile rustlite source into a display cartridge and run it on \
-         the visual display (a 256x144 pixel framebuffer the user sees). \
+         the visual display (a pixel framebuffer the user sees — 256x144 by \
+         default, or export `fn dims() -> i32` returning (width<<16)|height, \
+         each dimension 16..1024, for a custom size/aspect). \
          The cartridge must export `fn frame(t: i32)` (animated; `t` is \
          elapsed milliseconds, driven every frame) or `fn render()` \
          (one-shot). Start with `use host::display;`. Drawing: \
