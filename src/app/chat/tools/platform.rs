@@ -351,6 +351,81 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
     )
 }
 
+/// `embed_app(name)` — fetch ANOTHER subdomain's published cartridge and
+/// render it INLINE in the chat transcript as a live, interactive card (NOT
+/// an iframe — cartridges are framebuffer wasm; an iframe of a subdomain that
+/// itself boots a cartridge hits recursion/partitioning limits). Resolves
+/// `name` → tokenId → on-chain `app.wasm`; if the subdomain has a published
+/// cartridge, stashes its bytes for the transcript's `#embed-canvas` card to
+/// launch (via `display::run_in_canvas`) and returns `{ name, url,
+/// embedded: true }`. A subdomain with no published app (directory/html face,
+/// or never published) returns a clear error.
+///
+/// v1 limitations (documented for the agent): (1) SINGLE-WORKER — embedding
+/// replaces any cartridge already running (a prior embed or the fullscreen
+/// overlay); only one live embed at a time. (2) The embedded cartridge's
+/// host_agent FEED context (subscribe/viewer_is_owner/…) resolves against the
+/// HOST page's subdomain, not the embedded one — cross-subdomain feed identity
+/// is a follow-up.
+pub(crate) fn embed_app_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Subdomain whose published cartridge to embed, \
+                    e.g. \"pong\" embeds pong.localharness.xyz's app inline."
+            }
+        },
+        "required": ["name"]
+    });
+    ClosureTool::new(
+        "embed_app",
+        "Embed another subdomain's published cartridge INLINE in this chat as a \
+         live, interactive card (the cartridge runs in the framebuffer, like the \
+         display — NOT an iframe). Use this to show/play <name>'s app right here \
+         (\"embed pong\", \"show me <name>'s app\"). Single live embed at a time: \
+         embedding replaces any cartridge already running. Only works when <name> \
+         has PUBLISHED a cartridge (an app public face) — directory/html faces or \
+         unpublished names return an error. Returns { name, url, embedded: true }.",
+        schema,
+        |args: serde_json::Value, _ctx| async move {
+            let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let cleaned = crate::app::tenant::sanitize(name);
+            if cleaned.is_empty() {
+                return Err(crate::error::Error::other("name cannot be empty"));
+            }
+            let token_id = match crate::app::registry::id_of_name(&cleaned).await {
+                Ok(id) if id != 0 => id,
+                Ok(_) => {
+                    return Err(crate::error::Error::other(format!(
+                        "\"{cleaned}\" is not registered"
+                    )))
+                }
+                Err(e) => return Err(crate::error::Error::other(format!("id_of_name: {e}"))),
+            };
+            let wasm = match crate::app::registry::app_wasm_of(token_id).await {
+                Ok(Some(bytes)) if !bytes.is_empty() => bytes,
+                Ok(_) => {
+                    return Err(crate::error::Error::other(format!(
+                        "{cleaned} has no published cartridge — only directory/html \
+                         faces or unpublished"
+                    )))
+                }
+                Err(e) => return Err(crate::error::Error::other(format!("app_wasm_of: {e}"))),
+            };
+            // Stash the bytes; `chat::stream_turn` launches them into the
+            // `#embed-canvas` card once the inline card has painted.
+            crate::app::display::stash_pending_embed(wasm);
+            Ok(serde_json::json!({
+                "name": cleaned,
+                "url": format!("https://{cleaned}.localharness.xyz/"),
+                "embedded": true,
+            }))
+        },
+    )
+}
+
 /// `release_subdomain(name, confirmation)` — DESTRUCTIVE: burn the NFT +
 /// free the name. Gated: `confirmation` must EXACTLY equal `name`, which
 /// forces a typed confirmation in chat (the owner types the name). The

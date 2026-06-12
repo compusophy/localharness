@@ -1244,6 +1244,25 @@ button.ready:hover {
   border: 1px solid var(--border);
 }
 
+/* Live inline cartridge embed (`embed_app` tool). The stage is a 16:9 box;
+   the canvas fills it and is CSS-scaled from the fixed 256x144 framebuffer
+   with crisp (pixelated) sampling, like the fullscreen display. v1: one live
+   embed at a time (single worker). */
+.embed-app-card { overflow: visible; }
+.embed-app-stage {
+  aspect-ratio: 16 / 9;
+  width: 100%;
+  background: #000;
+  display: flex;
+}
+.embed-app-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  image-rendering: pixelated;
+  touch-action: none;
+}
+
 .status { color: var(--muted); font-size: 11px; margin-top: 10px; min-height: 16px; }
 .err { color: var(--error); }
 

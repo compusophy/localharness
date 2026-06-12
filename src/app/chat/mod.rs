@@ -566,6 +566,14 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
                             &format!("tool-{tool_seg_id}-card"),
                             &card.into_string(),
                         );
+                        // embed_app paints a `#embed-canvas` card and stashed
+                        // the fetched cartridge bytes; now that the canvas is in
+                        // the DOM, launch the cartridge into it (live inline
+                        // run). No-op for every other tool / on replay (no
+                        // stash).
+                        if call.name == "embed_app" && result.error.is_none() {
+                            super::display::launch_pending_embed().await;
+                        }
                     }
                     dom::scroll_to_bottom("transcript");
                 } else {

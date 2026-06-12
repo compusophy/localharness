@@ -475,4 +475,35 @@ mod tests {
         )
         .is_none());
     }
+
+    #[test]
+    fn embed_app_card_carries_a_live_canvas() {
+        // Success shape (`embedded: true`) → a card with the #embed-canvas the
+        // ToolResult handler launches the cartridge into.
+        let ok = ok_result(
+            "embed_app",
+            serde_json::json!({"name": "pong", "url": "https://pong.localharness.xyz/", "embedded": true}),
+        );
+        let card = super::templates::inline_result_card(
+            "embed_app",
+            &serde_json::json!({"name": "pong"}),
+            &ok,
+            None,
+        )
+        .expect("embed success should card")
+        .into_string();
+        assert!(card.contains("id=\"embed-canvas\""), "no embed canvas: {card}");
+        assert!(card.contains("pong"));
+
+        // A result without `embedded: true` (shouldn't happen — the tool errors
+        // instead — but defend the gate) yields no card.
+        let not_embedded = ok_result("embed_app", serde_json::json!({"name": "pong"}));
+        assert!(super::templates::inline_result_card(
+            "embed_app",
+            &serde_json::json!({"name": "pong"}),
+            &not_embedded,
+            None
+        )
+        .is_none());
+    }
 }
