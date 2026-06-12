@@ -496,8 +496,12 @@ let fuel = FUEL_PER_FRAME;
 // only ever notifies the current viewer.
 let viewerIsOwner = 0;
 let viewerHasIdentity = 0;
+let feedIsSubscribed = 0;   // cached at load + refreshed after subscribe/unsubscribe
+let feedSubscriberCount = 0;
 let lastAgentNotify = 0;
+let lastAgentBroadcast = 0;
 const AGENT_NOTIFY_MIN_MS = 3000;
+const AGENT_BROADCAST_MIN_MS = 3000;
 const host_agent = {
   notify(titlePtr, bodyPtr) {
     const now = Date.now();
@@ -511,7 +515,47 @@ const host_agent = {
   },
   viewer_is_owner: () => viewerIsOwner,
   viewer_has_identity: () => viewerHasIdentity,
+  // --- subscriber feed (fire-and-forget writes; cached reads) ---------------
+  subscribe() {
+    if (!viewerHasIdentity) return 0;
+    feedIsSubscribed = 1; // optimistic; main re-reads + corrects
+    self.postMessage({ type: 'agent_subscribe' });
+    return 1;
+  },
+  unsubscribe() {
+    if (!viewerHasIdentity) return 0;
+    feedIsSubscribed = 0; // optimistic
+    self.postMessage({ type: 'agent_unsubscribe' });
+    return 1;
+  },
+  is_subscribed: () => feedIsSubscribed,
+  subscriber_count: () => feedSubscriberCount,
+  broadcast(titlePtr, bodyPtr) {
+    if (!viewerHasIdentity) return 0;
+    const now = Date.now();
+    if (now - lastAgentBroadcast < AGENT_BROADCAST_MIN_MS) return 0;
+    const title = (readString(titlePtr) || '').slice(0, 80);
+    const body = (readString(bodyPtr) || '').slice(0, 200);
+    if (!title) return 0;
+    lastAgentBroadcast = now;
+    self.postMessage({ type: 'agent_broadcast', title, body });
+    return 1;
+  },
+  request_identity() {
+    if (viewerHasIdentity) return 1;
+    self.postMessage({ type: 'agent_request_identity' });
+    return 0; // not yet — main creates it async; viewer_has_identity flips on the next refresh
+  },
 };
+
+// Main-thread updates the cached feed/context state (after a subscribe tx, an
+// identity creation, etc.) so the sync getters reflect reality next frame.
+function applyAgentContext(msg) {
+  if (typeof msg.viewerIsOwner === 'number') viewerIsOwner = msg.viewerIsOwner | 0;
+  if (typeof msg.viewerHasIdentity === 'number') viewerHasIdentity = msg.viewerHasIdentity | 0;
+  if (typeof msg.feedIsSubscribed === 'number') feedIsSubscribed = msg.feedIsSubscribed | 0;
+  if (typeof msg.feedSubscriberCount === 'number') feedSubscriberCount = msg.feedSubscriberCount | 0;
+}
 
 function buildImports() {
   return { host_display, host_net, host_audio, host_log, host_time, host_abort, host_agent };
@@ -617,9 +661,11 @@ if (IS_WORKER) {
     if (!msg || typeof msg.type !== 'string') return;
     switch (msg.type) {
       case 'load':
-        viewerIsOwner = msg.viewerIsOwner | 0;
-        viewerHasIdentity = msg.viewerHasIdentity | 0;
+        applyAgentContext(msg);
         load(msg.wasm);
+        break;
+      case 'agent_context':
+        applyAgentContext(msg);
         break;
       case 'input':
         ptr.x = msg.x | 0;

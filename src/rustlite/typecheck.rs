@@ -1067,6 +1067,31 @@ fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, 
         "agent::notify" => (vec![String, String], I32),
         "agent::viewer_is_owner" => (vec![], I32),
         "agent::viewer_has_identity" => (vec![], I32),
+        // --- subscriber feed (the "Ready Up" loop, feedback #103). The feed
+        // is THIS cartridge's own subdomain (SubscribeFacet on-chain). Writes
+        // are fire-and-forget (sponsored tx on the main thread); reads are
+        // load-time context refreshed after a subscribe/unsubscribe.
+        //
+        // `subscribe() -> i32`    subscribe the viewer to this feed; 1 if the
+        //   request went out, 0 if the viewer has no identity yet.
+        // `unsubscribe() -> i32`  leave the feed.
+        // `is_subscribed() -> i32` 1 if the viewer is on the feed (cached).
+        // `subscriber_count() -> i32`  members on the feed (cached) — the
+        //   "member count" for the UI.
+        // `broadcast(title, body) -> i32`  THE READY UP: push a notification
+        //   to EVERY subscriber's device (via the proxy). NOT owner-gated —
+        //   anyone with an identity can fire it; rate-limited per feed. 1 if
+        //   the request went out, 0 if no identity.
+        // `request_identity() -> i32`  ensure the viewer has a wallet (creates
+        //   a local one if missing — the "this app needs an identity" path);
+        //   returns 1 if they now have one. Gate subscribe/broadcast on this
+        //   for a sybil-resistant app.
+        "agent::subscribe" => (vec![], I32),
+        "agent::unsubscribe" => (vec![], I32),
+        "agent::is_subscribed" => (vec![], I32),
+        "agent::subscriber_count" => (vec![], I32),
+        "agent::broadcast" => (vec![String, String], I32),
+        "agent::request_identity" => (vec![], I32),
         _ => return None,
     };
     let (module, func) = key.split_once("::")?;

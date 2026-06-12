@@ -801,6 +801,115 @@ fn size_and_get_ctx() -> Result<CanvasRenderingContext2d, JsValue> {
 // loops forever: a previous build froze the whole tab on every reload; now the
 // reload spawns a worker, the watchdog fires after WATCHDOG_MS, the worker is
 // terminated, and an overlay invites a retry while the rest of the app works.
+// =============================================================================
+// host_agent feed bridge (the "Ready Up" loop, feedback #103)
+//
+// Cartridge feed calls cross the worker→main boundary as messages. WRITES
+// (subscribe/unsubscribe/broadcast) are async on-chain / proxy ops the worker
+// can't do; the main thread runs them and posts the refreshed context back so
+// the cartridge's sync getters (`is_subscribed`, `subscriber_count`,
+// `viewer_has_identity`) catch up next frame. The feed is THIS cartridge's own
+// subdomain — there are no cross-subdomain feeds in v1.
+// =============================================================================
+
+/// The current cartridge's feed tokenId = the tenant subdomain's NFT id.
+/// `None` off a tenant (apex / localhost) — a feed needs a subdomain.
+async fn feed_token_id() -> Option<u64> {
+    let name = crate::app::tenant::current_name()?;
+    match crate::app::registry::id_of_name(&name).await {
+        Ok(id) if id != 0 => Some(id),
+        _ => None,
+    }
+}
+
+/// Post a partial `agent_context` update to the worker (only the provided
+/// fields). The worker's `applyAgentContext` merges them into its cached state.
+fn post_agent_context(
+    worker: &web_sys::Worker,
+    has_identity: Option<bool>,
+    is_subscribed: Option<bool>,
+    subscriber_count: Option<u32>,
+) {
+    let msg = Object::new();
+    let _ = Reflect::set(&msg, &JsValue::from_str("type"), &JsValue::from_str("agent_context"));
+    if let Some(h) = has_identity {
+        let _ = Reflect::set(&msg, &JsValue::from_str("viewerHasIdentity"), &JsValue::from_f64(if h { 1.0 } else { 0.0 }));
+    }
+    if let Some(sub) = is_subscribed {
+        let _ = Reflect::set(&msg, &JsValue::from_str("feedIsSubscribed"), &JsValue::from_f64(if sub { 1.0 } else { 0.0 }));
+    }
+    if let Some(c) = subscriber_count {
+        let _ = Reflect::set(&msg, &JsValue::from_str("feedSubscriberCount"), &JsValue::from_f64(c as f64));
+    }
+    let _ = worker.post_message(&msg);
+}
+
+/// Read the live feed context (subscribed? count? identity?) and post it to
+/// the worker. Best-effort: any read failure leaves that field unsent.
+async fn refresh_feed_context(worker: web_sys::Worker) {
+    let Some(feed_id) = feed_token_id().await else { return };
+    let addr = crate::app::chat::credit_address_existing().await;
+    let has_identity = addr.is_some();
+    let is_sub = match &addr {
+        Some(a) => crate::app::registry::is_subscribed(feed_id, a).await.unwrap_or(false),
+        None => false,
+    };
+    let count = crate::app::registry::subscriber_count(feed_id).await.unwrap_or(0) as u32;
+    post_agent_context(&worker, Some(has_identity), Some(is_sub), Some(count));
+}
+
+/// subscribe / unsubscribe the viewer to this feed (sponsored), then refresh.
+async fn do_feed_subscribe(worker: web_sys::Worker, subscribe: bool) {
+    let Some(feed_id) = feed_token_id().await else { return };
+    let Some((signer, _)) = crate::app::chat::credit_signer().await else { return };
+    let Ok(sponsor) = crate::app::sponsor::signer() else { return };
+    let token = crate::app::registry::ALPHA_USD_ADDRESS;
+    let res = if subscribe {
+        crate::app::registry::subscribe_sponsored(&signer, &sponsor, feed_id, token).await
+    } else {
+        crate::app::registry::unsubscribe_sponsored(&signer, &sponsor, feed_id, token).await
+    };
+    if let Err(e) = res {
+        web_sys::console::warn_1(&JsValue::from_str(&format!("feed subscribe: {e}")));
+    }
+    refresh_feed_context(worker).await;
+}
+
+/// THE READY UP: POST /api/broadcast so the proxy pushes to every subscriber.
+async fn do_feed_broadcast(title: String, body: String) {
+    let Some(feed_id) = feed_token_id().await else { return };
+    let Some((signer, _)) = crate::app::chat::credit_signer().await else { return };
+    let now = (js_sys::Date::now() / 1000.0) as u64;
+    let token = crate::registry::proxy_auth_token(&signer, now);
+    let url = format!(
+        "{}api/broadcast",
+        crate::registry::CREDIT_PROXY_URL
+    );
+    let payload = serde_json::json!({ "targetId": feed_id, "title": title, "body": body });
+    let send = async {
+        reqwest::Client::new()
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("x-goog-api-key", token)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| format!("broadcast request: {e}"))
+    };
+    match crate::app::net::with_timeout(20_000, send).await {
+        Ok(Ok(_resp)) => {}
+        Ok(Err(e)) => web_sys::console::warn_1(&JsValue::from_str(&format!("broadcast: {e}"))),
+        Err(e) => web_sys::console::warn_1(&JsValue::from_str(&format!("broadcast timeout: {e}"))),
+    }
+}
+
+/// Ensure the viewer has a wallet (credit_signer generates + persists a device
+/// key if none), then refresh context so `viewer_has_identity` flips to 1.
+async fn do_feed_request_identity(worker: web_sys::Worker) {
+    let _ = crate::app::chat::credit_signer().await;
+    refresh_feed_context(worker).await;
+}
+
 mod worker {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
@@ -945,6 +1054,7 @@ mod worker {
             let ctx = ctx.clone();
             let last_frame = last_frame.clone();
             let watchdog_id = watchdog_id.clone();
+            let worker_for_msg = worker.clone();
             Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
                 let data = e.data();
                 let ty = Reflect::get(&data, &JsValue::from_str("type"))
@@ -1028,6 +1138,27 @@ mod worker {
                             }
                         }
                     }
+                    "agent_subscribe" => {
+                        let w = worker_for_msg.clone();
+                        wasm_bindgen_futures::spawn_local(super::do_feed_subscribe(w, true));
+                    }
+                    "agent_unsubscribe" => {
+                        let w = worker_for_msg.clone();
+                        wasm_bindgen_futures::spawn_local(super::do_feed_subscribe(w, false));
+                    }
+                    "agent_broadcast" => {
+                        let title = Reflect::get(&data, &JsValue::from_str("title"))
+                            .ok().and_then(|v| v.as_string()).unwrap_or_default();
+                        let body = Reflect::get(&data, &JsValue::from_str("body"))
+                            .ok().and_then(|v| v.as_string()).unwrap_or_default();
+                        if !title.is_empty() {
+                            wasm_bindgen_futures::spawn_local(super::do_feed_broadcast(title, body));
+                        }
+                    }
+                    "agent_request_identity" => {
+                        let w = worker_for_msg.clone();
+                        wasm_bindgen_futures::spawn_local(super::do_feed_request_identity(w));
+                    }
                     "done" => {
                         record_outcome(run_gen, RunOutcome::Live);
                         // A one-shot `render()` finished and posted its single
@@ -1079,6 +1210,14 @@ mod worker {
         worker
             .post_message(&msg)
             .map_err(|e| JsValue::from_str(&format!("worker post failed: {e:?}")))?;
+
+        // Best-effort: resolve the live feed context (subscribed? count?) and
+        // post it so host_agent::is_subscribed / subscriber_count reflect
+        // reality a beat after launch. Off a tenant this is a no-op.
+        {
+            let w = worker.clone();
+            wasm_bindgen_futures::spawn_local(super::refresh_feed_context(w));
+        }
 
         // Arm the watchdog: terminate the worker if no frame lands in time.
         let watchdog_cb = arm_watchdog(
