@@ -102,6 +102,13 @@ pub mod encoding;
 /// symmetry property runs under `cargo test`. See `src/sharedfs_reconcile.rs`.
 pub mod sharedfs_reconcile;
 
+/// Pure signed-envelope layer for on-chain WebRTC signaling blobs — the SDP
+/// sealing/sender-authentication core (native-testable; needs `wallet` for
+/// k256). Hoisted out of `app::teams_sync` so the seal/unseal round-trip and
+/// tamper/forgery rejection run under `cargo test`. See `src/signaling_seal.rs`.
+#[cfg(feature = "wallet")]
+pub mod signaling_seal;
+
 /// Pure turn-outcome classification for the continuous-execution chat loop
 /// (native-testable). Hoisted out of `app::chat` so its guard tests run under
 /// `cargo test`. See `src/turn_flow.rs`.

@@ -21,6 +21,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The calldata batch is the new pure `registry::tba_send_lh_calls` (+
   `TBA_SEND_LH_GAS`), shared with the native `tba_transfer_lh_sponsored`
   and pinned by native layout tests.
+- **P2P signaling: sender-AUTHENTICATED SDP sealing (hard-cut v2).** SDP
+  offers/answers over `SignalingFacet.postSignal` were already ECIES-sealed
+  to the peer's roster pubkey (confidentiality), but ECIES alone doesn't
+  authenticate the SENDER — `postSignal` is permissionless and the roster
+  pubkey is public, so an attacker could seal their own SDP, claim a legit
+  peer's ephemeral address in the blob prefix, and the victim would decrypt
+  it fine and connect to the attacker's WebRTC endpoint (shared-folder-theft
+  MITM). Every signaling blob is now a SIGNED envelope: the sender's
+  session-ephemeral key (whose address is on the OWNER-SIGNED roster) signs
+  `keccak256("localharness/v0/sdpseal" || sender || recipient || sealed)`;
+  the receiver verifies recovery against the expected roster peer BEFORE
+  decrypting, and the recipient binding blocks cross-inbox replay. The
+  envelope core is hoisted into native-testable `src/signaling_seal.rs`
+  (`seal_envelope` / `open_envelope` / `roster_entry_valid` — the
+  `sharedfs_reconcile` pattern) with 10 native tests: round-trip, every-byte
+  tamper rejection, forged-sender-claim rejection, cross-inbox replay
+  rejection, legacy/garbage blob rejection, and roster freshness +
+  pubkey↔address self-consistency gating. Pre-v2 `"<eph_hex>\n<sealed>"`
+  blobs are REJECTED outright — a deliberate hard cut (the layer has no
+  production users) instead of a fallback that would keep the MITM open.
 - **Variable cartridge resolution + aspect ratios.** A cartridge opts into
   its own framebuffer size by exporting `dims() -> i32` returning a packed
   `(width << 16) | height` (each dimension clamped to `[16, 1024]`; the

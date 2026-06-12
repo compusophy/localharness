@@ -74,8 +74,8 @@ src/                  library crate
 ├── x402_hook.rs      app-injected x402 signer + proxy-route hooks for
 │                     call_agent (feature "wallet")
 ├── tempo_tx.rs       Tempo Transaction (tx 0x76) encoder; see Tempo section
-├── raster.rs compose.rs sharedfs_reconcile.rs   native-testable cores of
-│                     browser features (framebuffer/composition/P2P reconcile)
+├── raster.rs compose.rs sharedfs_reconcile.rs signaling_seal.rs   native-
+│                     testable cores (framebuffer/compose/P2P reconcile/SDP seal)
 ├── rustlite/         Rust-subset → wasm compiler: lexer / parser / ast /
 │                     typecheck / codegen(wasm emitter) / loader(wasm32 cartridge)
 ├── app/              browser-resident IDE (browser-app + wasm32) — see below
@@ -154,8 +154,6 @@ design/       launch-1.0.md beta-plan.md paymaster.md invites.md
               agent-scheduling.md agent-coordination.md main-identity.md
               agent-writes-rust.md model-agnostic.md
 ```
-
-Historical design docs dropped at 0.10.1 — see git tags `v0.1.0`–`v0.10.0`.
 
 ## Build / test / run
 
@@ -607,7 +605,8 @@ cartridge-in-cartridge, TBA act panel (send $LH FROM the agent's 6551 account)
 - **More backends** — OpenAI / local-WebGPU finish + own coding model
   (`design/model-agnostic.md` Phases D–F).
 - **At-rest encryption** — wallet-derived sym key over OPFS contents.
-- **P2P teams** — 2-device E2E test, SDP sealing, mutable shared-FS, team UI.
+- **P2P teams** — 2-device E2E test, mutable shared-FS, team UI. (SDP sealing
+  DONE — `signaling_seal.rs` sender-signed envelope, hard-cut v2.)
 
 ## Filesystem trait
 

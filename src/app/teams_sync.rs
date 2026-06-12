@@ -14,16 +14,22 @@
 //!
 //! **Correlation:** `postSignal` records `from = msg.sender`, which is the MASTER
 //! (sponsored) — and own-device peers share one master, so `from` can't tell
-//! peers apart. The signaling blob therefore carries the sender's ephemeral
-//! address itself: `"<eph_hex>\n<sdp>"`.
+//! peers apart. The signaling envelope therefore carries the sender's ephemeral
+//! address itself (authenticated — see below).
 //!
-//! **SDP sealing:** each peer announces its ephemeral COMPRESSED PUBKEY in the
-//! presence roster; the SDP offer/answer is ECIES-sealed to the recipient's
-//! ephemeral pubkey before it touches the chain and opened with the matching
-//! ephemeral key on receipt (`encryption::ecies_seal`/`ecies_open`). So an
-//! on-chain observer sees only the sealed envelope — never the ICE candidates
-//! or topology. The `<eph_hex>` correlation prefix stays plaintext (it's just
-//! an address, already public in the roster); only the SDP payload is sealed.
+//! **SDP sealing (sealed + SIGNED, hard-cut v2):** each peer announces its
+//! ephemeral COMPRESSED PUBKEY in the presence roster; the SDP offer/answer is
+//! ECIES-sealed to the recipient's ephemeral pubkey
+//! (`encryption::ecies_seal`/`ecies_open` — confidentiality: an on-chain
+//! observer never sees ICE candidates/topology) and then wrapped in a
+//! SENDER-SIGNED envelope ([`crate::signaling_seal`] — authenticity: the
+//! sender's ephemeral key signs over `(sender, recipient, sealed)`, so a
+//! third party who seals a malicious SDP to our public roster pubkey and
+//! claims a legit peer's address fails recovery, and a blob can't be replayed
+//! into another inbox). Receipt order: verify the envelope (sender must be
+//! the roster peer we're handshaking with) BEFORE decrypting; anything that
+//! fails either step is silently skipped. Pre-v2 plaintext-prefix blobs are
+//! REJECTED (hard cut — no production users; see `signaling_seal` docs).
 //! A peer that announced no pubkey is skipped (we can't seal to it).
 //!
 //! ## Roster trust
@@ -82,27 +88,6 @@ fn now_secs() -> u64 {
     (js_sys::Date::now() / 1000.0) as u64
 }
 
-/// Ethereum address (lowercase `0x…`) of a compressed/uncompressed SEC1 public
-/// key, or `None` if it isn't a valid curve point. Lets us check that a roster
-/// entry's announced `pubkey` actually hashes to the `ephemeral` address it was
-/// announced under (so the SDP seal target is self-consistent, not a pubkey
-/// swapped in under someone else's address).
-fn address_of_pubkey(pubkey_sec1: &[u8]) -> Option<String> {
-    use k256::elliptic_curve::sec1::ToEncodedPoint;
-    use k256::PublicKey;
-    use sha3::{Digest, Keccak256};
-    let pk = PublicKey::from_sec1_bytes(pubkey_sec1).ok()?;
-    let uncompressed = pk.to_encoded_point(false); // 65 bytes, 0x04 prefix
-    let bytes = uncompressed.as_bytes();
-    if bytes.len() != 65 {
-        return None;
-    }
-    let digest = Keccak256::digest(&bytes[1..]); // drop the 0x04 tag
-    let mut addr = [0u8; 20];
-    addr.copy_from_slice(&digest[12..]);
-    Some(hex20(&addr))
-}
-
 fn hex20(a: &[u8; 20]) -> String {
     crate::encoding::bytes_to_hex_str(a)
 }
@@ -110,24 +95,6 @@ fn hex20(a: &[u8; 20]) -> String {
 /// Parse a `0x…` 40-hex-char address into 20 bytes.
 fn addr20(hex: &str) -> Option<[u8; 20]> {
     crate::encoding::parse_address(hex.trim()).ok()
-}
-
-/// Build a signaling blob: the plaintext `<sender_eph_hex>` correlation prefix,
-/// a `\n` separator, then the ECIES-sealed SDP bytes (binary, not UTF-8).
-fn make_blob(sender_eph_hex: &str, sealed_sdp: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(sender_eph_hex.len() + 1 + sealed_sdp.len());
-    out.extend_from_slice(sender_eph_hex.as_bytes());
-    out.push(b'\n');
-    out.extend_from_slice(sealed_sdp);
-    out
-}
-
-/// `(sender_eph_hex, sealed_sdp_bytes)` from a `"<eph>\n<sealed>"` blob. Splits
-/// on the FIRST newline only — the sealed tail is binary and may contain `\n`.
-fn parse_blob(bytes: &[u8]) -> Option<(String, Vec<u8>)> {
-    let nl = bytes.iter().position(|&b| b == b'\n')?;
-    let eph = std::str::from_utf8(&bytes[..nl]).ok()?.to_string();
-    Some((eph, bytes[nl + 1..].to_vec()))
 }
 
 /// One-shot: sync the shared folder with the owner's OTHER online devices.
@@ -180,27 +147,24 @@ async fn sync_topic(
         if peer_hex.eq_ignore_ascii_case(&me) {
             continue; // ourselves
         }
-        if peer_pubkey.is_empty() {
-            continue; // no pubkey announced → can't seal the SDP to them
-        }
-        // Freshness: skip dead/stale presence so we don't waste a sponsored
-        // offer tx + a ~60s poll on an offline ephemeral (and don't honour a
-        // long-stale forged entry). `ts` is a chain `block.timestamp`;
-        // `saturating_sub` tolerates a peer slightly ahead of our wall clock.
-        if now.saturating_sub(ts) > PRESENCE_TTL_SECS {
-            continue;
-        }
-        // Self-consistency: the announced pubkey MUST hash to the address it
-        // was announced under, or the seal target is forged/mismatched. (Does
-        // not authenticate the peer as a real device — see the module doc — but
-        // rejects the trivial pubkey-under-another's-address substitution.)
-        match address_of_pubkey(&peer_pubkey) {
-            Some(derived) if derived.eq_ignore_ascii_case(&peer_hex) => {}
-            _ => continue,
-        }
         let Some(peer_addr) = addr20(&peer_hex) else {
             continue;
         };
+        // Roster gate (pure, native-tested in `signaling_seal`): the entry
+        // must be FRESH (skip dead sessions — each costs a sponsored offer tx
+        // + a ~60s poll — and refuse a long-stale forged entry) and
+        // SELF-CONSISTENT (the announced pubkey hashes to the address it was
+        // announced under, so the SDP seal target isn't a pubkey swapped in
+        // under someone else's address). `ts` is a chain `block.timestamp`.
+        if !crate::signaling_seal::roster_entry_valid(
+            &peer_addr,
+            ts,
+            &peer_pubkey,
+            now,
+            PRESENCE_TTL_SECS,
+        ) {
+            continue;
+        }
         if connect_and_sync(
             master,
             fee_payer,
@@ -234,7 +198,8 @@ async fn connect_and_sync(
     peer_pubkey: &[u8],
 ) -> Result<(), String> {
     let session = if me_hex < peer_hex {
-        // OFFERER: create the offer, seal it to the peer, post, await the answer.
+        // OFFERER: create the offer, seal it to the peer, sign the envelope
+        // with OUR ephemeral key (the roster identity), post, await the answer.
         let (s, offer) = SharedFsSync::offer().await.map_err(|_| "offer failed")?;
         let sealed = super::encryption::ecies_seal(peer_pubkey, offer.as_bytes())
             .await
@@ -243,18 +208,18 @@ async fn connect_and_sync(
             master,
             fee_payer,
             peer_addr,
-            &make_blob(me_hex, &sealed),
+            &crate::signaling_seal::seal_envelope(eph_signer, peer_addr, &sealed),
             registry::ALPHA_USD_ADDRESS,
         )
         .await?;
-        let answer = poll_inbox_from(eph_signer, eph_addr, peer_hex)
+        let answer = poll_inbox_from(eph_signer, eph_addr, peer_addr)
             .await
             .ok_or("no answer")?;
         s.accept_answer(&answer).await.map_err(|_| "bad answer")?;
         s
     } else {
-        // ANSWERER: await the offer, answer it, seal the answer back to the peer.
-        let offer = poll_inbox_from(eph_signer, eph_addr, peer_hex)
+        // ANSWERER: await the offer, answer it, seal + sign the answer back.
+        let offer = poll_inbox_from(eph_signer, eph_addr, peer_addr)
             .await
             .ok_or("no offer")?;
         let (s, answer) = SharedFsSync::answer(&offer).await.map_err(|_| "answer failed")?;
@@ -265,7 +230,7 @@ async fn connect_and_sync(
             master,
             fee_payer,
             peer_addr,
-            &make_blob(me_hex, &sealed),
+            &crate::signaling_seal::seal_envelope(eph_signer, peer_addr, &sealed),
             registry::ALPHA_USD_ADDRESS,
         )
         .await?;
@@ -284,23 +249,27 @@ async fn connect_and_sync(
     Ok(())
 }
 
-/// Poll our ephemeral inbox until a blob whose EMBEDDED sender == `from_hex`
-/// arrives; ECIES-open its sealed SDP with our ephemeral key and return it.
-/// Capped (~60s) so a missing peer can't hang forever.
+/// Poll our ephemeral inbox until an envelope arrives that VERIFIES as coming
+/// from `from_addr` (the roster peer we're handshaking with) and addressed to
+/// US (`signaling_seal::open_envelope`: magic + claimed-sender match +
+/// signature recovery + recipient binding), then ECIES-open its sealed SDP
+/// with our ephemeral key. Blobs that fail any check — forged sender, wrong
+/// recipient (cross-inbox replay), tampered bytes, pre-v2 plaintext format —
+/// are skipped silently. Capped (~60s) so a missing peer can't hang forever.
 async fn poll_inbox_from(
     eph_signer: &k256::ecdsa::SigningKey,
     eph_addr: &[u8; 20],
-    from_hex: &str,
+    from_addr: &[u8; 20],
 ) -> Option<String> {
     for _ in 0..60 {
         if let Ok(signals) = registry::inbox_of(eph_addr, 0).await {
             for (_from_master, _ts, blob) in signals {
-                if let Some((sender_eph, sealed)) = parse_blob(&blob) {
-                    if sender_eph.eq_ignore_ascii_case(from_hex) {
-                        if let Some(sdp) = super::encryption::ecies_open(eph_signer, &sealed).await {
-                            if let Ok(s) = String::from_utf8(sdp) {
-                                return Some(s);
-                            }
+                if let Some(sealed) =
+                    crate::signaling_seal::open_envelope(&blob, from_addr, eph_addr)
+                {
+                    if let Some(sdp) = super::encryption::ecies_open(eph_signer, &sealed).await {
+                        if let Ok(s) = String::from_utf8(sdp) {
+                            return Some(s);
                         }
                     }
                 }
