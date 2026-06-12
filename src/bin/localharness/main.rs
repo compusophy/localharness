@@ -11,9 +11,11 @@
 //! Installed:  `cargo install localharness --features wallet`
 //!
 //! Commands:
-//!   create <name> [--persona <text|file>]
+//!   create <name> [--persona <text|file>] [--publish]
 //!                            claim <name>.localharness.xyz (persists the key);
-//!                            --persona ships its on-chain system prompt too
+//!                            --persona ships its on-chain system prompt too;
+//!                            --publish also publishes the scaffolded app.rl as
+//!                            the public face so a live URL exists immediately
 //!   face <name> <directory|app|html>
 //!                            set the subdomain's public face (visitor view)
 //!   compile <src.rl>         compile-check a rustlite cartridge locally (no write)
@@ -114,6 +116,7 @@ mod guild;
 mod identity;
 mod invite;
 mod mcp;
+mod models;
 mod notify;
 mod probe;
 mod publish;
@@ -132,6 +135,7 @@ pub(crate) use guild::*;
 pub(crate) use identity::*;
 pub(crate) use invite::*;
 pub(crate) use mcp::*;
+pub(crate) use models::*;
 pub(crate) use notify::*;
 pub(crate) use probe::*;
 pub(crate) use publish::*;
@@ -183,11 +187,14 @@ USAGE:
   localharness <command> [options]   (commands grouped by area below)
 
 IDENTITY & PROFILE
-  localharness create <name> [--persona <text|file>]
+  localharness create <name> [--persona <text|file>] [--publish]
                                          claim a subdomain identity (free, sponsored);
                                          --persona publishes its system prompt too,
                                          so the name ships configured in one command;
                                          scaffolds a starter ./app.rl (never overwrites);
+                                         --publish also compiles + publishes that
+                                         app.rl as the public face so a live URL
+                                         exists immediately (one extra sponsored tx);
                                          idempotent: reuses an existing local key and
                                          no-ops if the name is already yours
   localharness persona <name> <text>     publish <name>'s public system prompt so
@@ -233,6 +240,9 @@ CALLING & MCP
                                          the conversation continues across calls
                                          (--fresh starts over); --pay settles that
                                          much $LH to <name>'s TBA on success
+  localharness models                    list the valid --model ids for call /
+                                         mcp-call (gemini default + claude-* ids;
+                                         claude needs the anthropic-feature build)
   localharness mcp                       run an MCP (stdio) server exposing a
                                          `call_agent` tool, so any MCP client
                                          (Claude Code, …) can call localharness
@@ -394,7 +404,9 @@ async fn main() {
 async fn run(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         Some("create") => match parse_create_args(&args[1..]) {
-            Ok((name, persona)) => create(&name, persona.as_deref()).await,
+            Ok(ParsedCreate { name, persona, publish }) => {
+                create_publish(&name, persona.as_deref(), publish).await
+            }
             Err(e) => {
                 eprintln!("{e}");
                 2
@@ -428,6 +440,7 @@ async fn run(args: &[String]) -> i32 {
         Some("call") => call(&args[1..]).await,
         Some("mcp-call") => mcp_call(&args[1..]).await,
         Some("mcp") => mcp_serve(&args[1..]).await,
+        Some("models") => models(),
         Some("list") | Some("mine") => match parse_list_flags(&args[1..]) {
             Ok((caller, json)) => list_mine(caller.as_deref(), json).await,
             Err(e) => {
@@ -707,7 +720,7 @@ mod tests {
             "create", "compile", "publish", "face", "persona", "call", "list",
             "feedback", "probe", "triage", "threads", "forget", "whoami", "status",
             "invite", "bounty", "colony", "reputation", "guild", "vote", "tba",
-            "schedule", "goal", "jobs", "unschedule", "notify",
+            "schedule", "goal", "jobs", "unschedule", "notify", "models",
         ] {
             assert!(
                 USAGE.contains(cmd),

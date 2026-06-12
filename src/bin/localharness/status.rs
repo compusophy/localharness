@@ -21,7 +21,7 @@ pub(crate) fn format_whoami(info: &WhoamiInfo) -> String {
         return format!("{} is unregistered", info.name);
     };
     let wallet = match &info.tba {
-        Some(a) => format!("{a}  (token-bound account)"),
+        Some(a) => a.clone(),
         None => "—".to_string(),
     };
     let persona = if info.has_persona { "published" } else { "none" };
@@ -35,12 +35,12 @@ pub(crate) fn format_whoami(info: &WhoamiInfo) -> String {
     };
     format!(
         "{name}.localharness.xyz\n  \
-         owner    {owner}\n  \
-         tokenId  {id}\n  \
-         wallet   {wallet}\n  \
-         persona  {persona}\n  \
-         face     {face}\n  \
-         price    {price}",
+         owner         {owner}\n  \
+         tokenId       {id}\n  \
+         agent wallet  {wallet}\n  \
+         persona       {persona}\n  \
+         face          {face}\n  \
+         price         {price}",
         name = info.name,
         id = info.token_id,
     )
@@ -228,15 +228,15 @@ pub(crate) async fn status(caller: Option<&str>, name: Option<&str>) -> i32 {
             .unwrap_or_else(|| format!("token #{main_id}"));
         println!("  main      {main_name} (#{main_id})");
     }
-    println!("  owner     {owner_eoa}");
+    println!("  your wallet   {owner_eoa}");
     let tba = if token_id != 0 {
         registry::tba_of_token_id(token_id).await.ok().flatten()
     } else {
         None
     };
     match &tba {
-        Some(a) => println!("  wallet    {a}  (token-bound account)"),
-        None => println!("  wallet    —"),
+        Some(a) => println!("  agent wallet  {a}"),
+        None => println!("  agent wallet  —"),
     }
 
     // 3. Balances ($LH: the owner EOA's two pots + the TBA) ----------------
@@ -246,14 +246,14 @@ pub(crate) async fn status(caller: Option<&str>, name: Option<&str>) -> i32 {
     println!("\nbalances ($LH)");
     let eoa_bal = registry::token_balance_of(&owner_eoa).await.unwrap_or(0);
     let meter_bal = registry::credit_balance_of(&owner_eoa).await.unwrap_or(0);
-    println!("  wallet    {}", fmt_lh(eoa_bal));
-    println!("  meter     {}   <- per-call billing debits this", fmt_lh(meter_bal));
+    println!("  your wallet   {}", fmt_lh(eoa_bal));
+    println!("  meter         {}   <- per-call billing debits this", fmt_lh(meter_bal));
     match &tba {
         Some(a) => {
             let tba_bal = registry::token_balance_of(a).await.unwrap_or(0);
-            println!("  TBA       {}", fmt_lh(tba_bal));
+            println!("  agent wallet  {}   <- your agent's own funds (its TBA)", fmt_lh(tba_bal));
         }
-        None => println!("  TBA       —"),
+        None => println!("  agent wallet  —"),
     }
 
     // 4. Reputation (attestation count + average ★) ------------------------
@@ -310,8 +310,7 @@ pub(crate) async fn status(caller: Option<&str>, name: Option<&str>) -> i32 {
                 match registry::get_bounty(id).await {
                     Ok(b) => {
                         let task = registry::task_of_bounty(id).await.unwrap_or_default();
-                        let snippet: String =
-                            task.replace('\n', " ").chars().take(50).collect();
+                        let snippet = truncate_words(&task, 50);
                         println!(
                             "  #{id}  reward {}  [{}]  {snippet}",
                             fmt_lh(b.reward_wei),
@@ -340,17 +339,23 @@ pub(crate) async fn status(caller: Option<&str>, name: Option<&str>) -> i32 {
                             .ok()
                             .filter(|n| !n.is_empty())
                             .unwrap_or_else(|| format!("token#{}", job.target_id));
-                        let next = if job.next_run == 0 {
+                        // A terminal (cancelled/exhausted) job never fires again —
+                        // don't advertise a "next due" time for it (feedback #82).
+                        let next = if job_is_terminal(job.status) || job.next_run == 0 {
                             "—".to_string()
                         } else if job.next_run <= now {
                             "due now".to_string()
                         } else {
                             format!("in {}", fmt_interval(job.next_run - now))
                         };
+                        let budget = if job_is_terminal(job.status) {
+                            "—".to_string()
+                        } else {
+                            fmt_lh(job.budget_wei)
+                        };
                         println!(
-                            "  #{id}  -> {target}  every {}  next {next}  budget {}  [{}]",
+                            "  #{id}  -> {target}  every {}  next {next}  budget {budget}  [{}]",
                             fmt_interval(job.interval),
-                            fmt_lh(job.budget_wei),
                             job.status_label()
                         );
                     }
@@ -590,11 +595,10 @@ pub(crate) async fn discover(query: &str) -> i32 {
             println!("{} agent(s) matching \"{query}\":", matches.len());
             println!("(ordered by task match; reputation shown for context, not ranked on)");
             for (name, persona) in matches.iter().take(DISCOVER_SHOW) {
-                let snippet: String = persona.replace('\n', " ").chars().take(100).collect();
-                let snippet = if snippet.trim().is_empty() {
+                let snippet = if persona.trim().is_empty() {
                     "(no persona)".to_string()
                 } else {
-                    snippet
+                    truncate_words(persona, 100)
                 };
                 // Reputation is informational only — resolve this printed agent's
                 // tokenId (`discover_agents` discards it) and read its on-chain
@@ -750,12 +754,13 @@ mod tests {
         };
         let out = format_whoami(&info);
         assert!(out.starts_with("claude.localharness.xyz\n"));
-        assert!(out.contains("owner    0xabc"));
-        assert!(out.contains("tokenId  8"));
-        assert!(out.contains("wallet   0xdef  (token-bound account)"));
-        assert!(out.contains("persona  published"));
-        assert!(out.contains("face     app"));
-        assert!(out.contains("price    0.10 LH/call"));
+        assert!(out.contains("owner         0xabc"));
+        assert!(out.contains("tokenId       8"));
+        assert!(out.contains("agent wallet  0xdef"));
+        assert!(!out.contains("token-bound account"), "jargon should be gone");
+        assert!(out.contains("persona       published"));
+        assert!(out.contains("face          app"));
+        assert!(out.contains("price         0.10 LH/call"));
     }
 
     #[test]
@@ -770,11 +775,11 @@ mod tests {
             price_wei: None,
         };
         let out = format_whoami(&info);
-        assert!(out.contains("persona  none"));
-        assert!(out.contains("face     unset (directory)"));
-        assert!(out.contains("wallet   —"));
+        assert!(out.contains("persona       none"));
+        assert!(out.contains("face          unset (directory)"));
+        assert!(out.contains("agent wallet  —"));
         // No advertised price → the hosted-gate default, labelled as such.
-        assert!(out.contains("price    0.01 LH/call (default)"));
+        assert!(out.contains("price         0.01 LH/call (default)"));
     }
 
     #[test]

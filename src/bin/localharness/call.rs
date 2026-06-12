@@ -603,14 +603,24 @@ pub(crate) fn threads(caller_name: Option<&str>) -> i32 {
             return 2;
         }
     };
-    let mut found: Vec<(String, u64)> = match std::fs::read_dir(history_dir()) {
+    let now = std::time::SystemTime::now();
+    // (target, age_secs_since_last_active). The conversation history is a
+    // backend-specific serialized blob (not cheaply parseable to a text
+    // preview), so we surface the file's mtime as a relative "last active" —
+    // far more useful than the raw byte count (on-chain feedback #93/#95).
+    let mut found: Vec<(String, Option<u64>)> = match std::fs::read_dir(history_dir()) {
         Ok(rd) => rd
             .filter_map(|e| e.ok())
             .filter_map(|e| {
                 let name = e.file_name().into_string().ok()?;
                 let target = thread_file_target(&label, &name)?;
-                let size = e.metadata().map(|m| m.len()).unwrap_or(0);
-                Some((target, size))
+                let age = e
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| now.duration_since(t).ok())
+                    .map(|d| d.as_secs());
+                Some((target, age))
             })
             .collect(),
         Err(_) => Vec::new(),
@@ -621,8 +631,11 @@ pub(crate) fn threads(caller_name: Option<&str>) -> i32 {
         return 0;
     }
     println!("conversations for {label}:");
-    for (target, size) in found {
-        println!("  {target}  ({size} bytes)");
+    for (target, age) in found {
+        match age {
+            Some(secs) => println!("  {target}  (last active {} ago)", fmt_duration(secs)),
+            None => println!("  {target}"),
+        }
     }
     0
 }

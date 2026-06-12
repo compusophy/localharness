@@ -1,22 +1,49 @@
 #[allow(unused_imports)]
 use crate::*;
 
-/// Parse `create <name> [--persona <text|file>]`. Pure/testable. One-shot
-/// actor creation: a name plus, optionally, its on-chain system prompt.
-pub(crate) fn parse_create_args(rest: &[String]) -> Result<(String, Option<String>), String> {
-    const USAGE: &str = "usage: localharness create <name> [--persona <text|file>]";
+/// Parsed `create` arguments: the name, an optional persona, and whether
+/// `--publish` was given (publish the scaffolded `app.rl` in the same flow so a
+/// live URL exists immediately — on-chain feedback #75).
+pub(crate) struct ParsedCreate {
+    pub name: String,
+    pub persona: Option<String>,
+    pub publish: bool,
+}
+
+/// Parse `create <name> [--persona <text|file>] [--publish]`. Pure/testable.
+/// One-shot actor creation: a name plus, optionally, its on-chain system prompt,
+/// and optionally a one-command publish of the scaffolded face. `--publish` is a
+/// bare flag (no value) and may appear before or after `--persona`; the persona
+/// text stops collecting at `--publish` so `--persona a b --publish` works.
+pub(crate) fn parse_create_args(rest: &[String]) -> Result<ParsedCreate, String> {
+    const USAGE: &str = "usage: localharness create <name> [--persona <text|file>] [--publish]";
     let name = rest.first().ok_or(USAGE)?.clone();
-    let persona = match rest.get(1).map(String::as_str) {
-        None => None,
-        Some("--persona") => Some(
-            rest.get(2..)
-                .filter(|s| !s.is_empty())
-                .map(|s| s.join(" "))
-                .ok_or(USAGE)?,
-        ),
-        Some(other) => return Err(format!("unexpected argument '{other}' ({USAGE})")),
-    };
-    Ok((name, persona))
+    let mut persona: Option<String> = None;
+    let mut publish = false;
+    let mut i = 1;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--publish" => {
+                publish = true;
+                i += 1;
+            }
+            "--persona" => {
+                // Collect the persona text up to the next recognised flag.
+                let mut words: Vec<String> = Vec::new();
+                i += 1;
+                while i < rest.len() && rest[i] != "--publish" && rest[i] != "--persona" {
+                    words.push(rest[i].clone());
+                    i += 1;
+                }
+                if words.is_empty() {
+                    return Err(USAGE.to_string());
+                }
+                persona = Some(words.join(" "));
+            }
+            other => return Err(format!("unexpected argument '{other}' ({USAGE})")),
+        }
+    }
+    Ok(ParsedCreate { name, persona, publish })
 }
 
 /// The starter cartridge `create` scaffolds as `./app.rl` so a fresh agent can
@@ -65,6 +92,18 @@ fn frame(t: i32) {
 /// across the chain reset) can be re-claimed by just running `create` again,
 /// and `create` on a name you already own is a clean no-op success.
 pub(crate) async fn create(name: &str, persona: Option<&str>) -> i32 {
+    // Box the call: `create → create_publish → publish_scaffolded_face → publish`
+    // can re-enter `create` (publish claims a missing name), so the future is
+    // self-referential and needs indirection.
+    Box::pin(create_publish(name, persona, false)).await
+}
+
+/// [`create`] with an optional one-command publish (`create --publish`): after a
+/// successful claim, compile + publish the scaffolded `app.rl` as the agent's
+/// public face in the SAME flow so a live URL exists immediately (on-chain
+/// feedback #75). `--publish` is NOT the default — bare `create` stays cheap (a
+/// name-only mint); the publish is an extra opt-in sponsored tx.
+pub(crate) async fn create_publish(name: &str, persona: Option<&str>, do_publish: bool) -> i32 {
     if !name_is_valid(name) {
         eprintln!("invalid name '{name}' — use 1-63 chars of a-z, 0-9, hyphen");
         return 2;
@@ -118,7 +157,13 @@ pub(crate) async fn create(name: &str, persona: Option<&str>) -> i32 {
             println!("'{name}' is already registered to your key ({addr}) — nothing to do");
             if let Some(p) = persona {
                 println!("  publishing persona …");
-                return set_persona(name, p).await;
+                let code = set_persona(name, p).await;
+                if code != 0 {
+                    return code;
+                }
+            }
+            if do_publish {
+                return publish_scaffolded_face(name).await;
             }
             return 0;
         }
@@ -179,12 +224,21 @@ pub(crate) async fn create(name: &str, persona: Option<&str>) -> i32 {
             // boilerplate). Never overwrites — an existing app.rl is the
             // user's working copy. Best-effort: a write failure only loses
             // the convenience, not the claim.
-            if !std::path::Path::new("app.rl").exists()
-                && std::fs::write("app.rl", STARTER_CARTRIDGE).is_ok()
-            {
+            let scaffolded = !std::path::Path::new("app.rl").exists()
+                && std::fs::write("app.rl", STARTER_CARTRIDGE).is_ok();
+            if scaffolded {
                 println!(
                     "  wrote starter app.rl — edit it, then: localharness publish {name} app.rl"
                 );
+            }
+            // --publish: compile + publish the scaffolded (or pre-existing)
+            // app.rl now, so a live URL exists immediately (feedback #75).
+            if do_publish {
+                println!("  --publish: publishing the starter app.rl as your face …");
+                let code = publish_scaffolded_face(name).await;
+                if code != 0 {
+                    return code;
+                }
             }
             println!("  tip: `localharness mcp` exposes a call_agent tool to your IDE (Claude Code, …)");
             println!("  next: read https://localharness.xyz/llms.txt for the full API");
@@ -424,6 +478,20 @@ pub(crate) fn compile_check(source_path: &str, out_path: Option<&str>) -> i32 {
             1
         }
     }
+}
+
+/// Publish the local `app.rl` (the one `create` scaffolds) as `<name>`'s public
+/// face — the body of `create --publish`. Ensures `app.rl` exists (writing the
+/// starter if not), then delegates to the normal [`publish`] path so a fresh
+/// agent has a live URL the moment `create` returns (on-chain feedback #75).
+pub(crate) async fn publish_scaffolded_face(name: &str) -> i32 {
+    if !std::path::Path::new("app.rl").exists() {
+        if let Err(e) = std::fs::write("app.rl", STARTER_CARTRIDGE) {
+            eprintln!("  could not write starter app.rl to publish: {e}");
+            return 1;
+        }
+    }
+    publish(name, "app.rl").await
 }
 
 /// Compile a rustlite cartridge and publish it as `<name>`'s on-chain
@@ -911,20 +979,40 @@ mod tests {
 
     #[test]
     fn parse_create_args_name_only_and_with_persona() {
-        let (n, p) = parse_create_args(&args(&["alice"])).unwrap();
-        assert_eq!(n, "alice");
-        assert_eq!(p, None);
+        let c = parse_create_args(&args(&["alice"])).unwrap();
+        assert_eq!(c.name, "alice");
+        assert_eq!(c.persona, None);
+        assert!(!c.publish);
 
-        let (n, p) = parse_create_args(&args(&["alice", "--persona", "you", "are", "alice"]))
+        let c = parse_create_args(&args(&["alice", "--persona", "you", "are", "alice"]))
             .unwrap();
-        assert_eq!(n, "alice");
-        assert_eq!(p.as_deref(), Some("you are alice"));
+        assert_eq!(c.name, "alice");
+        assert_eq!(c.persona.as_deref(), Some("you are alice"));
+        assert!(!c.publish);
+    }
+
+    #[test]
+    fn parse_create_args_publish_flag_any_position() {
+        // Bare --publish.
+        let c = parse_create_args(&args(&["alice", "--publish"])).unwrap();
+        assert!(c.publish);
+        assert_eq!(c.persona, None);
+        // --publish AFTER a multi-word persona stops the persona collection.
+        let c = parse_create_args(&args(&["alice", "--persona", "you are alice", "--publish"]))
+            .unwrap();
+        assert_eq!(c.persona.as_deref(), Some("you are alice"));
+        assert!(c.publish);
+        // --publish BEFORE --persona.
+        let c = parse_create_args(&args(&["alice", "--publish", "--persona", "terse"])).unwrap();
+        assert_eq!(c.persona.as_deref(), Some("terse"));
+        assert!(c.publish);
     }
 
     #[test]
     fn parse_create_args_rejects_bad_forms() {
         assert!(parse_create_args(&args(&[])).is_err()); // no name
         assert!(parse_create_args(&args(&["alice", "--persona"])).is_err()); // empty persona
+        assert!(parse_create_args(&args(&["alice", "--persona", "--publish"])).is_err()); // empty persona before flag
         assert!(parse_create_args(&args(&["alice", "bob"])).is_err()); // stray positional
     }
 

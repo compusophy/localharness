@@ -56,6 +56,55 @@ pub(crate) fn fmt_lh(wei: u128) -> String {
     format!("{whole}.{cents:02} LH")
 }
 
+/// Render a duration in SECONDS as a compact human string: `57m` / `1h 2m` /
+/// `2d 3h` / `45s`. The shared duration renderer for everywhere a `$LH` op
+/// prints a TTL / expiry / cadence (on-chain feedback #82/#83: raw `3422s` and
+/// `--ttl 1h → seconds` were unreadable). Two units max, coarsest first, the
+/// finer unit dropped once it would read zero (e.g. exactly 2 days = `2d`, not
+/// `2d 0h`). Pure + testable.
+pub(crate) fn fmt_duration(secs: u64) -> String {
+    const MIN: u64 = 60;
+    const HOUR: u64 = 3600;
+    const DAY: u64 = 86_400;
+    if secs == 0 {
+        return "0s".to_string();
+    }
+    if secs < MIN {
+        return format!("{secs}s");
+    }
+    if secs < HOUR {
+        let (m, s) = (secs / MIN, secs % MIN);
+        return if s == 0 { format!("{m}m") } else { format!("{m}m {s}s") };
+    }
+    if secs < DAY {
+        let (h, m) = (secs / HOUR, (secs % HOUR) / MIN);
+        return if m == 0 { format!("{h}h") } else { format!("{h}h {m}m") };
+    }
+    let (d, h) = (secs / DAY, (secs % DAY) / HOUR);
+    if h == 0 { format!("{d}d") } else { format!("{d}d {h}h") }
+}
+
+/// Truncate `text` to at most `max` characters at a WORD BOUNDARY, appending an
+/// explicit `…` ellipsis when anything was cut. Newlines collapse to spaces
+/// first (a one-line preview). Cutting mid-word was an accessibility complaint
+/// (on-chain feedback #93/#95: a screen reader can't parse a clipped token), so
+/// we back up to the last whitespace within the budget; if a single word is
+/// longer than `max` we hard-cut it (rather than emit nothing). Pure + testable.
+pub(crate) fn truncate_words(text: &str, max: usize) -> String {
+    let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        return flat;
+    }
+    // Take `max` chars, then back up to the last space so we never split a word.
+    let head: String = flat.chars().take(max).collect();
+    let cut = match head.rfind(' ') {
+        Some(idx) if idx > 0 => head[..idx].trim_end().to_string(),
+        // No interior space (one long word) → hard cut at the char budget.
+        _ => head.trim_end().to_string(),
+    };
+    format!("{cut}…")
+}
+
 /// Reject an empty / whitespace-only user text BEFORE any identity or meter
 /// work — a blank `call <name> ""` used to run (and BILL) a full metered turn.
 /// `label` names the offending input in the one-line error (e.g. "call:
@@ -239,6 +288,24 @@ pub(crate) async fn resolve_own_token_id(
     }
 }
 
+/// Best-effort reverse-resolve a 0x ADDRESS to a display label: its MAIN
+/// identity's name (`main_of` → `name_of_id`) when it has one, else the bare
+/// address. So a poster / counterparty shown as a raw `0x…` gets the same
+/// human name a claimant does (on-chain feedback #82/#83). All reads degrade to
+/// the address on any failure — never sinks the caller.
+pub(crate) async fn resolve_address_label(addr_hex: &str) -> String {
+    if let Ok(main_id) = registry::main_of(addr_hex).await {
+        if main_id != 0 {
+            if let Ok(name) = registry::name_of_id(main_id).await {
+                if !name.is_empty() {
+                    return format!("{name} ({addr_hex})");
+                }
+            }
+        }
+    }
+    addr_hex.to_string()
+}
+
 /// Extract an optional `--tba <name-or-0xaddr>` flag (from anywhere). `tba exec`
 /// uses it to OVERRIDE the acting TBA (default = caller's-main) with an arbitrary
 /// owned TBA — a name (→ `tokenBoundAccountByName`) or a raw 0x addr.
@@ -343,6 +410,40 @@ mod tests {
         assert_eq!(fmt_lh(10_500_000_000_000_000_000), "10.50 LH");
         // Sub-cent residue on a non-dust amount still truncates (not false-zero).
         assert_eq!(fmt_lh(1_005_000_000_000_000_000), "1.00 LH");
+    }
+
+    #[test]
+    fn fmt_duration_renders_compact_two_unit_spans() {
+        assert_eq!(fmt_duration(0), "0s");
+        assert_eq!(fmt_duration(45), "45s");
+        // The exact complaint: a bare "3422s" must read as "57m 2s".
+        assert_eq!(fmt_duration(3422), "57m 2s");
+        assert_eq!(fmt_duration(60), "1m");
+        assert_eq!(fmt_duration(90), "1m 30s");
+        assert_eq!(fmt_duration(3600), "1h");
+        assert_eq!(fmt_duration(3720), "1h 2m");
+        assert_eq!(fmt_duration(86_400), "1d");
+        assert_eq!(fmt_duration(183_600), "2d 3h"); // 2d 3h exactly
+        // Coarsest-first, finer unit dropped at a clean boundary.
+        assert_eq!(fmt_duration(2 * 86_400), "2d");
+        assert_eq!(fmt_duration(7 * 86_400), "7d");
+    }
+
+    #[test]
+    fn truncate_words_cuts_at_word_boundary_with_ellipsis() {
+        // Under the budget → unchanged (just flattened).
+        assert_eq!(truncate_words("short task", 50), "short task");
+        // Newlines collapse to a single-line preview.
+        assert_eq!(truncate_words("line one\n  line two", 50), "line one line two");
+        // Over budget → cut at the last full word, never mid-word, with an ellipsis.
+        let out = truncate_words("audit the solidity contract for reentrancy bugs", 20);
+        assert_eq!(out, "audit the solidity…");
+        assert!(!out.contains("contrac"), "must not split a word: {out}");
+        // A single oversized word hard-cuts (better than emitting nothing).
+        let long = truncate_words("supercalifragilisticexpialidocious", 10);
+        assert_eq!(long, "supercalif…");
+        // Exactly at the budget → no ellipsis.
+        assert_eq!(truncate_words("12345", 5), "12345");
     }
 
     #[test]

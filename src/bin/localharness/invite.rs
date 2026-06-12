@@ -82,6 +82,107 @@ pub(crate) fn gen_invite_code(amount_label: &str) -> String {
     format!("inv-{amount_label}-{tail}")
 }
 
+/// The directory holding the CLIENT-SIDE invite-code records (`invite create`
+/// appends here so `invite list` can show per-invite rows). Sits beside the key
+/// home (`<home>/.localharness/invites`), falling back to a cwd dir when no home
+/// dir resolves — same precedence as the key store. The CHAIN is the source of
+/// truth for an invite's STATE; this file only remembers which codes you made
+/// (the plaintext is never on-chain). Keyed per funder address so multiple
+/// identities don't collide.
+pub(crate) fn invite_records_path(funder_hex: &str) -> std::path::PathBuf {
+    let dir = key_home_dir()
+        .and_then(|d| d.parent().map(|p| p.join("invites")))
+        .unwrap_or_else(|| std::path::Path::new(".localharness").join("invites"));
+    dir.join(format!("{}.tsv", funder_hex.to_ascii_lowercase()))
+}
+
+/// One locally-remembered invite a funder created: the bearer code, the amount
+/// escrowed (wei), and the absolute unix expiry. The on-chain STATE is read
+/// fresh per row (open/claimed/expired) — this is only the "which codes did I
+/// make" memory the MVP facet doesn't index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InviteRecord {
+    pub code: String,
+    pub amount_wei: u128,
+    pub expiry: u64,
+}
+
+/// Serialize an [`InviteRecord`] as one TSV line (`code\tamount_wei\texpiry`).
+/// Pure + testable — the on-disk wire shape `parse_invite_records` reads back.
+pub(crate) fn format_invite_record_line(r: &InviteRecord) -> String {
+    format!("{}\t{}\t{}\n", r.code, r.amount_wei, r.expiry)
+}
+
+/// Parse the records file body (newline-separated `code\tamount\texpiry` lines)
+/// into [`InviteRecord`]s, skipping any malformed/blank line rather than
+/// failing the whole listing. Pure + testable.
+pub(crate) fn parse_invite_records(body: &str) -> Vec<InviteRecord> {
+    body.lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\t');
+            let code = parts.next()?.trim();
+            let amount_wei = parts.next()?.trim().parse::<u128>().ok()?;
+            let expiry = parts.next()?.trim().parse::<u64>().ok()?;
+            if code.is_empty() {
+                return None;
+            }
+            Some(InviteRecord { code: code.to_string(), amount_wei, expiry })
+        })
+        .collect()
+}
+
+/// Append a freshly-created invite to the funder's local records (best-effort —
+/// a write failure only loses the `invite list` convenience, never the on-chain
+/// escrow). Creates the records dir on demand.
+pub(crate) fn record_invite(funder_hex: &str, r: &InviteRecord) {
+    let path = invite_records_path(funder_hex);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(mut existing) = std::fs::read_to_string(&path) {
+        if !existing.is_empty() && !existing.ends_with('\n') {
+            existing.push('\n');
+        }
+        existing.push_str(&format_invite_record_line(r));
+        let _ = std::fs::write(&path, existing);
+    } else {
+        let _ = std::fs::write(&path, format_invite_record_line(r));
+    }
+}
+
+/// Read the funder's locally-remembered invites (empty when none / unreadable).
+pub(crate) fn read_invite_records(funder_hex: &str) -> Vec<InviteRecord> {
+    std::fs::read_to_string(invite_records_path(funder_hex))
+        .map(|b| parse_invite_records(&b))
+        .unwrap_or_default()
+}
+
+/// A short, non-secret hint of a bearer code for a listing row: keep the
+/// `inv-<amount>-` prefix (already public in the share link) and the last 4
+/// chars of the random tail, masking the middle. Never prints the full bearer
+/// secret in a list. Pure + testable.
+pub(crate) fn code_hint(code: &str) -> String {
+    // Tail = everything after the second hyphen (the random part).
+    match code.rsplit_once('-') {
+        Some((prefix, tail)) if tail.len() > 4 => {
+            format!("{prefix}-…{}", &tail[tail.len() - 4..])
+        }
+        _ => code.to_string(),
+    }
+}
+
+/// Map an on-chain invite `status` (0 Open, 1 Accepted, 2 Reclaimed) + its
+/// `expiry` to a one-word listing state, distinguishing an Open-but-expired
+/// invite (reclaimable) from a live one. Pure + testable.
+pub(crate) fn invite_row_state(status: u8, expiry: u64, now: u64) -> &'static str {
+    match status {
+        1 => "claimed",
+        2 => "reclaimed",
+        _ if expiry != 0 && expiry <= now => "expired",
+        _ => "open",
+    }
+}
+
 /// Parsed `invite create` flags.
 pub(crate) struct ParsedInviteCreate {
     amount_label: String,
@@ -180,7 +281,7 @@ pub(crate) async fn invite_create(caller: Option<&str>, rest: &[String]) -> i32 
     println!(
         "creating invite for {} (expires in {}) …",
         fmt_lh(amount_wei),
-        fmt_ttl(ttl_secs)
+        fmt_duration(ttl_secs)
     );
     match registry::create_invite_sponsored(
         &signer,
@@ -193,7 +294,18 @@ pub(crate) async fn invite_create(caller: Option<&str>, rest: &[String]) -> i32 
     .await
     {
         Ok(tx) => {
-            println!("✓ invite created — {} escrowed, expires in {}", fmt_lh(amount_wei), fmt_ttl(ttl_secs));
+            // Remember this code locally so `invite list` can show a per-invite
+            // row (the chain stays the source of truth for STATE; the MVP facet
+            // doesn't index invites by funder). Best-effort.
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            record_invite(
+                &from_hex,
+                &InviteRecord { code: code.clone(), amount_wei, expiry: now + ttl_secs },
+            );
+            println!("✓ invite created — {} escrowed, expires in {}", fmt_lh(amount_wei), fmt_duration(ttl_secs));
             println!("  code:  {code}");
             println!("  link:  https://localharness.xyz/?invite={code}");
             println!("  share this with ONE person you trust — it's a bearer secret, shown only now.");
@@ -208,6 +320,36 @@ pub(crate) async fn invite_create(caller: Option<&str>, rest: &[String]) -> i32 
     }
 }
 
+/// The READ-ONLY preflight verdict for `invite accept`. `getInvite` returns the
+/// zero record (funder all-zero) for a code that was never created — the chain
+/// would revert generically, so we name "no such invite", "already claimed",
+/// and "expired" BEFORE broadcasting a tx that burns sponsor gas (feedback #85).
+/// `funder` / `amount` / `expiry` / `status` are the decoded `getInvite` tuple
+/// (status 0=Open, 1=Accepted, 2=Reclaimed); `now` is the current unix time.
+/// Pure + testable.
+pub(crate) fn invite_accept_preflight(
+    funder: &str,
+    expiry: u64,
+    status: u8,
+    now: u64,
+) -> Result<(), String> {
+    if funder.trim_start_matches("0x").chars().all(|c| c == '0') {
+        return Err("no such invite — check the code (it's case-sensitive)".to_string());
+    }
+    match status {
+        1 => return Err("this invite has already been claimed".to_string()),
+        2 => return Err("this invite was reclaimed by its funder (expired unclaimed)".to_string()),
+        _ => {}
+    }
+    if expiry != 0 && expiry <= now {
+        return Err(
+            "this invite has expired — its funder can reclaim it, but it can't be accepted"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// `invite accept <code>` — accept an invite; the escrowed `$LH` is paid to the
 /// caller. The plaintext `code` is hashed on-chain to find the invite.
 pub(crate) async fn invite_accept(caller: Option<&str>, code: &str) -> i32 {
@@ -215,6 +357,21 @@ pub(crate) async fn invite_accept(caller: Option<&str>, code: &str) -> i32 {
     if code.is_empty() {
         eprintln!("invite accept: empty code");
         return 2;
+    }
+    // Read-only preflight: a fake / already-claimed / expired code reverts
+    // on-chain and burns sponsor gas naming nothing (feedback #85). A failed
+    // read is non-fatal — it falls through to the write.
+    if let Ok((funder, _amount, expiry, status)) =
+        registry::get_invite(registry::invite_code_hash(code)).await
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if let Err(msg) = invite_accept_preflight(&funder, expiry, status, now) {
+            eprintln!("{msg}");
+            return 1;
+        }
     }
     let (signer, sponsor) = match load_signer_and_sponsor(caller) {
         Ok(pair) => pair,
@@ -258,32 +415,63 @@ pub(crate) async fn invite_reclaim(caller: Option<&str>, code: &str) -> i32 {
     }
 }
 
-/// `invite list` — show the caller's total `$LH` locked in pending invites
-/// (`escrowedOf`). The MVP facet doesn't index invites by funder, so this is the
-/// outstanding-escrow total, not a per-invite enumeration.
+/// `invite list` — the caller's invites. Prints the on-chain outstanding-escrow
+/// total (`escrowedOf`) AND, for each code this CLI remembers creating (the
+/// MVP facet doesn't index invites by funder — `record_invite` keeps a local
+/// list), a per-invite row: code hint, amount, expiry, and its live on-chain
+/// state (open/claimed/expired). The chain is the source of truth for STATE;
+/// the local file just remembers which codes you made (feedback #78/#81).
 pub(crate) async fn invite_list(caller: Option<&str>) -> i32 {
     let signer = match load_signer(caller) {
         Ok(s) => s,
         Err(code) => return code,
     };
     let addr = bytes_to_hex_str(&wallet::address(&signer));
-    match registry::escrowed_of(&addr).await {
-        Ok(escrowed) => {
-            println!("{addr}");
-            println!("  escrowed  {}   <- $LH locked in your pending (Open) invites", fmt_lh(escrowed));
-            if escrowed == 0 {
-                println!("  no outstanding invites.");
-            } else {
-                println!("  reclaim an expired one with `invite reclaim <code>` to get its $LH back.");
-            }
-            println!("  (per-invite listing isn't on-chain-indexed; keep the codes you create.)");
-            0
-        }
+    let escrowed = match registry::escrowed_of(&addr).await {
+        Ok(e) => e,
         Err(e) => {
             eprintln!("invite list failed: {e}");
-            1
+            return 1;
         }
+    };
+    println!("{addr}");
+    println!("  escrowed  {}   <- $LH locked in your pending (Open) invites", fmt_lh(escrowed));
+
+    // Per-invite rows from the local record (read each code's live on-chain
+    // state). A row whose read fails shows "?" rather than sinking the listing.
+    let records = read_invite_records(&addr);
+    if records.is_empty() {
+        if escrowed == 0 {
+            println!("  no outstanding invites.");
+        } else {
+            println!("  reclaim an expired one with `invite reclaim <code>` to get its $LH back.");
+        }
+        println!("  (codes created on another device aren't listed here — keep those codes.)");
+        return 0;
     }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    println!("  {} invite(s) you created from this device:", records.len());
+    for r in &records {
+        let state = match registry::get_invite(registry::invite_code_hash(&r.code)).await {
+            Ok((_funder, _amount, expiry, status)) => invite_row_state(status, expiry, now),
+            Err(_) => "?",
+        };
+        let expires = if r.expiry == 0 || r.expiry <= now {
+            "—".to_string()
+        } else {
+            format!("in {}", fmt_duration(r.expiry - now))
+        };
+        println!(
+            "    {hint}  {amount}  expires {expires}  [{state}]",
+            hint = code_hint(&r.code),
+            amount = fmt_lh(r.amount_wei),
+        );
+    }
+    println!("  reclaim an expired one with `invite reclaim <code>` to get its $LH back.");
+    0
 }
 
 #[cfg(test)]
@@ -395,6 +583,67 @@ mod tests {
         assert!(parse_invite_create_args(&args(&["--amount", "10", "--ttl", "91d"])).is_err());
         // Unknown flag.
         assert!(parse_invite_create_args(&args(&["--amount", "10", "--bogus"])).is_err());
+    }
+
+    #[test]
+    fn invite_records_roundtrip_and_skip_malformed() {
+        let r1 = InviteRecord { code: "inv-100-abcdefghij".into(), amount_wei: 100_000_000_000_000_000_000, expiry: 1_700_000_000 };
+        let r2 = InviteRecord { code: "inv-0.5-zyxwvutsrq".into(), amount_wei: 500_000_000_000_000_000, expiry: 0 };
+        let body = format!("{}{}", format_invite_record_line(&r1), format_invite_record_line(&r2));
+        let parsed = parse_invite_records(&body);
+        assert_eq!(parsed, vec![r1, r2]);
+        // Malformed / blank lines are skipped, not fatal.
+        let messy = "inv-1-aaaa\t1\t100\nnonsense\n\ninv-2-bbbb\tnotanumber\t9\n";
+        let parsed = parse_invite_records(messy);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].code, "inv-1-aaaa");
+    }
+
+    #[test]
+    fn code_hint_masks_the_secret_tail() {
+        // Keeps the public prefix + last 4 of the random tail; masks the middle.
+        assert_eq!(code_hint("inv-100-abcdefghij"), "inv-100-…ghij");
+        assert_eq!(code_hint("inv-10.5-zyxwvutsrq"), "inv-10.5-…tsrq");
+        // A short / odd code is returned whole rather than over-masked.
+        assert_eq!(code_hint("inv-1-ab"), "inv-1-ab");
+        assert_eq!(code_hint("weird"), "weird");
+    }
+
+    #[test]
+    fn invite_row_state_distinguishes_open_expired_terminal() {
+        let now = 1_000u64;
+        // Open + future expiry → open; Open + past → expired (reclaimable).
+        assert_eq!(invite_row_state(0, now + 100, now), "open");
+        assert_eq!(invite_row_state(0, now - 1, now), "expired");
+        // Unset expiry never reads expired.
+        assert_eq!(invite_row_state(0, 0, now), "open");
+        // Terminal states win regardless of expiry.
+        assert_eq!(invite_row_state(1, now - 1, now), "claimed");
+        assert_eq!(invite_row_state(2, now + 100, now), "reclaimed");
+    }
+
+    #[test]
+    fn invite_accept_preflight_names_the_revert_cause() {
+        let real = "0xabc0000000000000000000000000000000000001";
+        let zero = "0x0000000000000000000000000000000000000000";
+        let now = 1_000_000u64;
+        // Open + unexpired → accept may proceed.
+        assert!(invite_accept_preflight(real, now + 3600, 0, now).is_ok());
+        // No funder → "no such invite".
+        let e = invite_accept_preflight(zero, 0, 0, now).unwrap_err();
+        assert!(e.contains("no such invite"), "got: {e}");
+        // Already accepted / reclaimed are named distinctly.
+        assert!(invite_accept_preflight(real, now + 3600, 1, now)
+            .unwrap_err()
+            .contains("already been claimed"));
+        assert!(invite_accept_preflight(real, 0, 2, now)
+            .unwrap_err()
+            .contains("reclaimed"));
+        // Open but past its expiry → can't be accepted.
+        let e = invite_accept_preflight(real, now - 1, 0, now).unwrap_err();
+        assert!(e.contains("expired"), "got: {e}");
+        // expiry == 0 (unset) never trips the expiry branch.
+        assert!(invite_accept_preflight(real, 0, 0, now).is_ok());
     }
 
     // ---- bounty arg parsing + row formatting --------------------------------
