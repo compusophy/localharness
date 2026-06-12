@@ -69,6 +69,7 @@ mod self_docs;
 mod signer;
 mod signer_protocol;
 mod sponsor;
+mod style;
 mod agent_rpc;
 mod encryption;
 mod system_prompt;
@@ -215,11 +216,37 @@ fn start() {
     }
 }
 
+/// Inject the Rust-owned design tokens (`style::root_tokens_css`) into
+/// `<head>` as `<style id="lh-tokens">`, once. Idempotent: re-running the
+/// mount (or a paint that re-enters) won't stack duplicate blocks. The
+/// static `web/styles.css` consumes the emitted `var()`s; CSS custom
+/// properties resolve at use-time, so injecting before or after the
+/// stylesheet link is equivalent.
+fn inject_token_styles(doc: &web_sys::Document) {
+    if doc.get_element_by_id("lh-tokens").is_some() {
+        return;
+    }
+    let Some(head) = doc.head() else { return };
+    if let Ok(style_el) = doc.create_element("style") {
+        let _ = style_el.set_attribute("id", "lh-tokens");
+        style_el.set_text_content(Some(&style::root_tokens_css()));
+        let _ = head.append_child(&style_el);
+    }
+}
+
 fn mount() -> Result<(), JsValue> {
     let doc = dom::document()?;
     let root = doc
         .get_element_by_id("root")
         .ok_or_else(|| JsValue::from_str("missing <div id=\"root\"> in the host page"))?;
+
+    // Design tokens are the Rust source of truth. Inject the `:root { … }`
+    // block (from `style::root_tokens_css`) into <head> ahead of the static
+    // `styles.css` — the stylesheet's component rules read these `var()`s.
+    // One-shot + idempotent (`#lh-tokens`), and it precedes every short-
+    // circuit return below so the signer / rpc / embed chromes get tokens
+    // too. Best-effort: a missing <head> never blocks the mount.
+    inject_token_styles(&doc);
 
     // Resolve which tenant we're being served as. On apex, we paint a
     // marketing chrome with a single "claim a subdomain" CTA. On a

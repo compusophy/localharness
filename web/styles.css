@@ -1,20 +1,10 @@
-:root {
-  color-scheme: dark;
-  --bg: #080808;
-  --panel: #0f0f0f;
-  --panel-2: #161616;
-  --border: #1e1e1e;
-  --fg: #c8c8c8;
-  --muted: #555;
-  --accent: #fff;
-  --user: #777;
-  --error: #a05050;
-  /* THE uniform chrome margin — the spacing around the header's admin
-     button (above / below / right of it). Every piece of app chrome
-     (header padding, footer padding, transcript gutters) derives from
-     this ONE constant so header and footer geometry can never drift. */
-  --chrome-pad: 16px;
-}
+/* The `:root { … }` design-token block (palette, font stack, --chrome-pad,
+   the --space-* scale, the --z-* overlay layers) is NOT declared here — it
+   is the Rust source of truth in `src/app/style.rs::root_tokens_css`,
+   injected into <head> as <style id="lh-tokens"> at mount, ahead of this
+   stylesheet. Edit the design tokens THERE (Rust consts), not by hand here.
+   CSS custom properties resolve at use-time, so the var() references below
+   pick up the injected block regardless of order. */
 * { box-sizing: border-box; }
 /* Desktop-app frame: viewport-bound, no page scroll. Border-
    radius is zero everywhere — the user wants the ultra-minimal
