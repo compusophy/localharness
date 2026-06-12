@@ -1682,14 +1682,16 @@ async function processJob(
     );
   }
 
-  // OWNER PUSH (best-effort, after the accounting). Only for a run WE
-  // recorded (a 'stale' CAS loss means a racing firer ran + will notify) and
-  // only when the agent actually produced output (`ran === 'ok'`). A goal
-  // completion rides the same channel with a louder title and the agent's
-  // final report as the body. Guarded inside: missing VAPID env or no
-  // on-chain subscription silently skips; a push failure can never fail
-  // the run.
-  if (outcome === 'recorded' && ran === 'ok') {
+  // OWNER PUSH — TERMINAL OUTCOMES ONLY (a real user got buzzed once a
+  // minute by a multi-run job that pushed on EVERY run while it flailed):
+  // a goal completing, or this run exhausting the job (last run / budget
+  // drained). A single-run job still pushes on its only run; a recurring
+  // job buzzes when it finishes, not while it works. Still only for runs
+  // WE recorded with output; missing VAPID env / subscription silently
+  // skips; a push failure can never fail the run.
+  const exhaustedNow =
+    outcome === 'recorded' && (job.runsLeft <= 1 || spentWei >= job.budgetWei);
+  if (outcome === 'recorded' && ran === 'ok' && (goal === 'completed' || exhaustedNow)) {
     const pushBody = goalReport !== undefined ? goalReport : runNote;
     const pushName = goal === 'completed' ? `GOAL COMPLETE: ${name}` : name;
     await notifyOwnerOfRun(job.owner, job.targetId, idStr, pushName, pushBody);
