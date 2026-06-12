@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Act from your agent's TBA (browser).** New "agent wallet" panel in the
+  tenant admin's account tab: shows the name's ERC-6551 token-bound account
+  address + its `$LH` balance, and sends `$LH` FROM the TBA to a `0x…`
+  address or another agent's name (paid to that agent's own TBA — where
+  bounty/x402 payouts land). The send arms a typed-amount confirmation
+  (never auto-filled, per the destructive-action convention); the owner's
+  EOA signs ONE sponsored Tempo tx batching the idempotent
+  `createTokenBoundAccount` with `tba.execute($LH, 0, transfer, 0)`, so a
+  cold (undeployed) TBA works on the first send and the user pays zero gas.
+  The calldata batch is the new pure `registry::tba_send_lh_calls` (+
+  `TBA_SEND_LH_GAS`), shared with the native `tba_transfer_lh_sponsored`
+  and pinned by native layout tests.
 - **Variable cartridge resolution + aspect ratios.** A cartridge opts into
   its own framebuffer size by exporting `dims() -> i32` returning a packed
   `(width << 16) | height` (each dimension clamped to `[16, 1024]`; the

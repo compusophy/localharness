@@ -33,6 +33,7 @@ mod layout;
 mod public_face;
 mod schedule;
 mod subdomains;
+mod tba;
 
 pub(crate) use credits::{refresh_fund_banner, try_redeem_pending_invite};
 pub(crate) use key_sync::{sync_local_key_to_main, try_auto_restore_gemini_key};
@@ -156,6 +157,15 @@ enum Action {
     ExecuteProposal(String),
     /// Save this agent's per-call x402 price (`.lh_x402_price`).
     SaveX402Price,
+    /// Arm a `$LH` send FROM this agent's token-bound account (the act
+    /// panel): resolve the recipient (0x… address, or a name → its TBA) and
+    /// swap in a typed-amount confirmation. Never submits by itself.
+    TbaSend,
+    /// Execute the armed TBA send once the typed amount matches; the
+    /// `data-arg` is `"<resolved 0x…>:<amount wei>"` stamped by the panel.
+    TbaSendConfirm(String),
+    /// Abort the armed TBA send.
+    TbaSendCancel,
     /// Unlink a device (remove its signer + index entry) — the X opens a
     /// typed confirmation; UnlinkConfirm performs it; UnlinkCancel aborts.
     UnlinkDevice(String),
@@ -241,6 +251,9 @@ impl Action {
             "vote" => Action::Vote(arg.unwrap_or_default()),
             "execute-proposal" => Action::ExecuteProposal(arg.unwrap_or_default()),
             "save-x402-price" => Action::SaveX402Price,
+            "tba-send" => Action::TbaSend,
+            "tba-send-confirm" => Action::TbaSendConfirm(arg.unwrap_or_default()),
+            "tba-send-cancel" => Action::TbaSendCancel,
             "unlink-device" => Action::UnlinkDevice(arg.unwrap_or_default()),
             "unlink-confirm" => Action::UnlinkConfirm(arg.unwrap_or_default()),
             "unlink-cancel" => Action::UnlinkCancel,
@@ -909,6 +922,9 @@ fn dispatch(action: Action) {
         Action::Vote(arg) => governance::vote_pressed(arg),
         Action::ExecuteProposal(id) => governance::execute_proposal_pressed(id),
         Action::SaveX402Price => admin::save_x402_price_pressed(),
+        Action::TbaSend => tba::tba_send_pressed(),
+        Action::TbaSendConfirm(arg) => tba::tba_send_confirm_pressed(arg),
+        Action::TbaSendCancel => tba::tba_send_cancel_pressed(),
         Action::UnlinkDevice(addr) => devices::unlink_device_prompt(addr),
         Action::UnlinkConfirm(addr) => devices::unlink_confirm_pressed(addr),
         Action::UnlinkCancel => devices::unlink_cancel_pressed(),

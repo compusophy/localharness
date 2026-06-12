@@ -95,7 +95,8 @@ src/app/ (browser IDE):
   events/(Action enum + parse + the ONE delegated click/keydown/submit/input
     listener set + dispatch in mod.rs; handler bodies per domain: claim admin
     credits schedule bounty guild governance devices subdomains key_sync
-    public_face layout) chat/(turn loop in mod.rs; session.rs prompt.rs
+    public_face layout tba(act-from-TBA: send $LH, typed-amount
+    confirm)) chat/(turn loop in mod.rs; session.rs prompt.rs
     access.rs tools/{platform,bounty,guild,governance,misc})
   history.rs(OPFS conversation + tool-call replay) opfs.rs(file browser/editor
     as a header-[files] MODAL — no files tab)
@@ -595,13 +596,12 @@ Shipped: SDK runtime, browser IDE, platform layer, Tempo native AA, second backe
 (Anthropic, 0.23.0), tool-call replay, agent scheduling + recursion, offline Mock
 backend (0.29.0), economy ladder rungs 1–4 (bounty → guild → DAO voting) +
 ReputationFacet + colony (0.30.0), x402 agent-pays-agent, host::compose
-cartridge-in-cartridge (unreleased). Still open:
+cartridge-in-cartridge, TBA act panel (send $LH FROM the agent's 6551 account)
+(unreleased). Still open:
 
 - **Stripe MPP** — fiat agent-payments rail beside the live x402 `$LH` path.
 - **ERC-8004 validation staking** — validators stake to re-execute claims
   (ReputationFacet attestations are live; the stake-escrow half isn't).
-- **TBA-driven actions in the bundle** — UX for "send this tx from your agent's TBA"
-  (contract surface ready, mostly UI).
 - **Economy ladder, next rungs** — party (ad-hoc squads) + recursive DAOs-of-DAOs
   UX (`design/agent-coordination.md`; nesting already works at the contract level).
 - **More backends** — OpenAI / local-WebGPU finish + own coding model

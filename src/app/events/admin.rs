@@ -467,6 +467,11 @@ pub(super) fn header_admin_toggle() {
     wasm_bindgen_futures::spawn_local(async move {
         super::guild::refresh_guild_list().await;
     });
+    // Agent-wallet (TBA) act panel — same fire-and-forget shape; no-ops when
+    // the slot isn't mounted (apex) or the host isn't a registered tenant.
+    wasm_bindgen_futures::spawn_local(async move {
+        super::tba::refresh_tba_panel().await;
+    });
     // Device/signer management lives at the apex only.
     if matches!(crate::app::tenant::current(), crate::app::tenant::Host::Apex) {
         wasm_bindgen_futures::spawn_local(async move {

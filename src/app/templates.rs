@@ -1013,6 +1013,10 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                     // pricing), folded in from the retired right rail.
                     // Injected from App state by header_admin_toggle.
                     div #financial-slot .financial-placeholder { "—" }
+                    // Act FROM the agent's token-bound account: balance +
+                    // send $LH (typed-amount confirmation; owner-signed,
+                    // sponsored — TbaFacet + MultiSignerAccount.execute).
+                    (admin_tba_section())
                     // Platform credits only (the BYOK gemini-key UI is hidden —
                     // the handlers + auto-restore stay, just no admin clutter).
                     (admin_credits_section())
@@ -1317,6 +1321,70 @@ pub(crate) fn invite_result_panel(code: &str, link: &str) -> Markup {
             }
             div.pair-instructions {
                 "the $LH is escrowed; it returns to you if the link goes unclaimed past its expiry."
+            }
+        }
+    }
+}
+
+/// "Agent wallet" panel — act FROM this name's ERC-6551 token-bound account.
+/// Shows the TBA address + its `$LH` balance (filled async by
+/// `events::tba::refresh_tba_panel` on admin-open) and sends `$LH` from the
+/// TBA to a `0x…` address or another agent's name (paid to that agent's own
+/// TBA). The [send] button only ARMS a typed-amount confirmation
+/// (`tba_send_confirm_panel`) — sending value is irreversible, so it follows
+/// the destructive-action convention. The owner's EOA signs; the on-chain
+/// `MultiSignerAccount.execute` is the real authorization gate.
+pub(crate) fn admin_tba_section() -> Markup {
+    html! {
+        div #tba-section .admin-section {
+            div.admin-section-title { "agent wallet" }
+            div.admin-identity-row {
+                span.admin-identity-label { "address" }
+                code #tba-act-address .admin-identity-value { "…" }
+            }
+            div.admin-identity-row {
+                span.admin-identity-label { "balance" }
+                code #tba-act-balance .admin-identity-value { "…" }
+            }
+            div.redeem-row {
+                input #tba-send-recipient .redeem-input type="text"
+                    aria-label="recipient address or agent name" placeholder="recipient (0x… or name)";
+            }
+            div.redeem-row {
+                input #tba-send-amount .redeem-input type="text"
+                    inputmode="decimal" aria-label="amount in $LH" placeholder="$LH amount";
+                button type="button" data-action="tba-send" .ghost { "send" }
+            }
+            div #tba-send-confirm-slot {}
+            div #tba-send-msg .admin-msg-slot {}
+        }
+    }
+}
+
+/// The armed TBA-send confirmation. `label` is what the user is paying
+/// (name + short address, or just the short address); `to_hex` + `amount_wei`
+/// are stamped into the confirm button's `data-arg` so the submit handler
+/// acts on EXACTLY what this panel displayed (re-reading the original inputs
+/// could desync). The confirmation input starts EMPTY and is never
+/// auto-filled — the user must type the amount (hard convention for
+/// irreversible actions). Everything is maud-escaped (`label` can carry a
+/// user-typed name; `to_hex` comes from an RPC node).
+pub(crate) fn tba_send_confirm_panel(label: &str, to_hex: &str, amount_wei: u128) -> Markup {
+    let amount_display = super::format_wei_as_test_eth(amount_wei);
+    let arg = format!("{to_hex}:{amount_wei}");
+    html! {
+        div.unlink-confirm {
+            div {
+                "send " b { (amount_display) " $LH" } " from the agent wallet to "
+                code { (label) } "? type the amount to confirm."
+            }
+            input #tba-send-confirm-input type="text"
+                inputmode="decimal" autocomplete="off"
+                aria-label="type the amount to confirm";
+            div.pair-confirm-actions {
+                button type="button" class="ghost" data-action="tba-send-cancel" { "cancel" }
+                button type="button" class="button-link" data-action="tba-send-confirm"
+                    data-arg=(arg) { "send" }
             }
         }
     }

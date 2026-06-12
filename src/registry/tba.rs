@@ -389,9 +389,57 @@ pub async fn tba_execute_sponsored(
     .await
 }
 
-/// Convenience: send LH from `token_id`'s TBA to a recipient. Wraps
-/// `tba_execute_sponsored` with credits.transfer calldata pre-built.
-/// The TBA must hold enough LH to cover `amount_wei`.
+/// Build the call batch that makes `token_id`'s TBA send `$LH`:
+/// `[diamond.createTokenBoundAccount(token_id) (idempotent),
+///   tba.execute($LH_token, 0, transfer(recipient, amount), 0)]`.
+///
+/// Pure — no chain I/O, no signing — so the browser act panel
+/// (`app::events::tba`, which routes it through the iframe-signed
+/// `run_sponsored_tempo_call`) and the native sponsored wrapper
+/// ([`tba_transfer_lh_sponsored`]) share ONE calldata home, and the layout
+/// is pinned by native unit tests. Rejects a zero amount up front (a
+/// zero-value `transfer` is never an intended act-panel send).
+pub fn tba_send_lh_calls(
+    token_id: u64,
+    tba_hex: &str,
+    recipient_hex: &str,
+    amount_wei: u128,
+) -> Result<Vec<crate::tempo_tx::TempoCall>, String> {
+    if amount_wei == 0 {
+        return Err("amount must be greater than 0".into());
+    }
+    let diamond = parse_eth_address(REGISTRY_ADDRESS)?;
+    let tba = parse_eth_address(tba_hex)?;
+    let recipient = parse_eth_address(recipient_hex)?;
+    let token = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
+    let transfer_data = encode_erc20_transfer(&recipient, amount_wei);
+    Ok(vec![
+        crate::tempo_tx::TempoCall {
+            to: diamond,
+            value_wei: 0,
+            input: encode_create_tba(token_id),
+        },
+        crate::tempo_tx::TempoCall {
+            to: tba,
+            value_wei: 0,
+            input: encode_tba_execute(&token, 0, &transfer_data),
+        },
+    ])
+}
+
+/// Gas budget for a `$LH`-send-from-TBA batch ([`tba_send_lh_calls`]):
+/// create TBA — ~742k live-measured on a COLD first deploy (CREATE2 of the
+/// full MultiSignerAccount), near-zero idempotent thereafter — + execute
+/// (~30k) + inner ERC-20 transfer (~52k) + Tempo sponsorship (~275k). A
+/// first transfer from an undeployed TBA needs ~1.1M, so 800k would revert
+/// out-of-gas; 2M covers the cold path and is free on the warm one (the
+/// sponsor is billed on gas USED, not the limit).
+pub const TBA_SEND_LH_GAS: u128 = 2_000_000;
+
+/// Convenience: send LH from `token_id`'s TBA to a recipient. Submits the
+/// [`tba_send_lh_calls`] batch as ONE sponsored Tempo tx. The TBA must hold
+/// enough LH to cover `amount_wei`; `sender` must be authorized on the TBA
+/// (the NFT holder or an enrolled device signer).
 pub async fn tba_transfer_lh_sponsored(
     sender: &SigningKey,
     fee_payer: &SigningKey,
@@ -401,28 +449,8 @@ pub async fn tba_transfer_lh_sponsored(
     amount_wei: u128,
     fee_token: &str,
 ) -> Result<String, String> {
-    let recipient = parse_eth_address(recipient_hex)?;
-    let transfer_data = encode_erc20_transfer(&recipient, amount_wei);
-
-    tba_execute_sponsored(
-        sender,
-        fee_payer,
-        token_id,
-        tba_address,
-        LOCALHARNESS_TOKEN_ADDRESS,
-        0,
-        transfer_data,
-        fee_token,
-        // create TBA — ~742k live-measured on a COLD first deploy
-        // (CREATE2 of the full MultiSignerAccount), near-zero idempotent
-        // thereafter — + execute (~30k) + inner ERC-20 transfer (~52k) +
-        // Tempo sponsorship (~275k). A first transfer from an
-        // undeployed TBA needs ~1.1M, so 800k would revert out-of-gas;
-        // 2M covers the cold path and is free on the warm one (sponsor
-        // billed on gas USED, not the limit).
-        2_000_000,
-    )
-    .await
+    let calls = tba_send_lh_calls(token_id, tba_address, recipient_hex, amount_wei)?;
+    submit_tempo_sponsored(sender, fee_payer, calls, fee_token, TBA_SEND_LH_GAS).await
 }
 
 /// Make a token-bound account EXECUTE an arbitrary call — the headless /
@@ -787,5 +815,54 @@ mod tests {
         assert_eq!(&cd[164..164 + inner.len()], inner.as_slice());
         // 68 bytes pads to 96 (3 words); total = selector + head(128) + len(32) + 96.
         assert_eq!(cd.len(), 4 + 128 + 32 + 96);
+    }
+
+    /// Pin the act-panel batch builder ([`tba_send_lh_calls`]): exactly TWO
+    /// calls — the idempotent `createTokenBoundAccount(token_id)` against the
+    /// DIAMOND, then `execute($LH, 0, transfer(recipient, amount), 0)` against
+    /// the TBA — both zero-native-value. A wrong `to` here either deploys
+    /// nothing (execute reverts: no code) or drives the wrong account, so the
+    /// routing is as load-bearing as the calldata bytes.
+    #[test]
+    fn tba_send_lh_calls_batch_layout() {
+        let tba_hex = format!("0x{}", "aa".repeat(20));
+        let recipient_hex = format!("0x{}", "cd".repeat(20));
+        let amount: u128 = 250_000_000_000_000_000; // 0.25 $LH
+        let calls = tba_send_lh_calls(42, &tba_hex, &recipient_hex, amount).unwrap();
+        assert_eq!(calls.len(), 2);
+
+        // Call 0: diamond.createTokenBoundAccount(42), value 0.
+        let diamond = parse_eth_address(REGISTRY_ADDRESS).unwrap();
+        assert_eq!(calls[0].to, diamond);
+        assert_eq!(calls[0].value_wei, 0);
+        assert_eq!(calls[0].input, encode_create_tba(42));
+        assert_eq!(
+            u64::from_be_bytes(calls[0].input[28..36].try_into().unwrap()),
+            42
+        );
+
+        // Call 1: tba.execute($LH, 0, transfer(recipient, amount), 0), value 0.
+        assert_eq!(calls[1].to, [0xAAu8; 20]);
+        assert_eq!(calls[1].value_wei, 0);
+        let token = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS).unwrap();
+        let inner = encode_erc20_transfer(&[0xCDu8; 20], amount);
+        assert_eq!(calls[1].input, encode_tba_execute(&token, 0, &inner));
+        // The execute target is the $LH token (word 0 of the head)…
+        assert_eq!(&calls[1].input[16..36], &token);
+        // …and the nested transfer rides at the dynamic-data offset.
+        assert_eq!(&calls[1].input[164..164 + inner.len()], inner.as_slice());
+    }
+
+    /// The builder fails CLOSED on bad inputs: zero amount (never a real
+    /// send), malformed TBA / recipient hex. No call batch may exist that a
+    /// later layer would have to remember to reject.
+    #[test]
+    fn tba_send_lh_calls_rejects_bad_inputs() {
+        let tba = format!("0x{}", "aa".repeat(20));
+        let to = format!("0x{}", "cd".repeat(20));
+        assert!(tba_send_lh_calls(1, &tba, &to, 0).is_err()); // zero amount
+        assert!(tba_send_lh_calls(1, "0x1234", &to, 1).is_err()); // short TBA
+        assert!(tba_send_lh_calls(1, &tba, "not-an-address", 1).is_err());
+        assert!(tba_send_lh_calls(1, &tba, "", 1).is_err());
     }
 }
