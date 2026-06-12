@@ -381,6 +381,9 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
                 if super::display::is_cartridge_canvas_id(&el.id()) {
                     super::display::set_pointer(event.client_x() as f64, event.client_y() as f64);
                     super::display::set_pointer_down(true);
+                    // This tap HAS user activation — prime notification permission
+                    // for a feed cartridge so its subscribe() can register the device.
+                    super::display::prime_feed_permission_on_gesture();
                 }
             }
         }
@@ -405,6 +408,9 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
                     if let Some(t) = event.touches().get(0) {
                         super::display::set_pointer(t.client_x() as f64, t.client_y() as f64);
                         super::display::set_pointer_down(true);
+                        // The tap that drives the cartridge's SUB also primes
+                        // notification permission while the gesture is live.
+                        super::display::prime_feed_permission_on_gesture();
                     }
                 }
             }

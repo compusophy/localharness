@@ -1092,6 +1092,51 @@ async fn do_feed_request_identity(worker: web_sys::Worker) {
 }
 
 thread_local! {
+    /// True while a cartridge that imports the host::agent FEED is running (set
+    /// by the worker's `cartridge_uses_feed` message). Gates permission-priming
+    /// so ONLY feed cartridges prompt — a plain game never asks for notifications.
+    static FEED_CARTRIDGE_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// One-shot guard so priming fires at most once per cartridge load (each tap
+    /// would otherwise re-attempt). Reset when a new feed cartridge loads.
+    static FEED_PRIMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(crate) fn set_feed_cartridge_active(on: bool) {
+    FEED_CARTRIDGE_ACTIVE.with(|c| c.set(on));
+    if on {
+        FEED_PRIMED.with(|c| c.set(false));
+    }
+}
+
+/// Called from the main-thread CANVAS TAP (mousedown / touchstart on a cartridge
+/// canvas) — the ONE real user gesture in the cartridge flow. The cartridge's
+/// own `subscribe()` tap can't request notification permission (it arrives via a
+/// worker postMessage with no user activation); THIS does, on the tap that
+/// produced it. Once permission is granted it registers this device for Web Push
+/// (address-keyed) so a READY-UP broadcast can reach it. Fires at most once per
+/// cartridge load; no-ops for non-feed cartridges and after a hard deny.
+pub(crate) fn prime_feed_permission_on_gesture() {
+    if !FEED_CARTRIDGE_ACTIVE.with(|c| c.get()) || FEED_PRIMED.with(|c| c.get()) {
+        return;
+    }
+    if matches!(
+        web_sys::Notification::permission(),
+        web_sys::NotificationPermission::Denied
+    ) {
+        return; // a denied site can't be re-prompted — needs a manual settings reset
+    }
+    FEED_PRIMED.with(|c| c.set(true));
+    wasm_bindgen_futures::spawn_local(async {
+        if crate::app::notifications::ensure_permission().await.unwrap_or(false) {
+            publish_viewer_push_sub().await;
+        } else {
+            // permission not (yet) granted — allow a later tap to try again
+            FEED_PRIMED.with(|c| c.set(false));
+        }
+    });
+}
+
+thread_local! {
     /// Session-lived cache of published child `app.wasm` bytes, keyed by name
     /// (host::compose). The worker can't do the on-chain registry read, so the
     /// main thread resolves the bytes for a `compose_spawn` and posts them back;
@@ -1380,6 +1425,11 @@ mod worker {
                             }
                         }
                     }
+                    // The running cartridge imports the host::agent feed surface
+                    // → arm permission-priming so the NEXT canvas tap (a real
+                    // main-thread gesture) can request notification permission,
+                    // which the cartridge's own subscribe() tap cannot.
+                    "cartridge_uses_feed" => super::set_feed_cartridge_active(true),
                     "agent_subscribe" => {
                         let w = worker_for_msg.clone();
                         wasm_bindgen_futures::spawn_local(super::do_feed_subscribe(w, true));

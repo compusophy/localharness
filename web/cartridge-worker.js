@@ -1005,8 +1005,19 @@ async function load(wasmBuf) {
 
   let instance;
   try {
-    const result = await WebAssembly.instantiate(wasmBuf, buildImports());
-    instance = result.instance;
+    const module = await WebAssembly.compile(wasmBuf);
+    // If the cartridge imports the host::agent feed surface (subscribe / broadcast
+    // / notify / …), tell the main thread so it can PRIME notification permission
+    // on the next canvas tap — the only main-thread USER GESTURE in the cartridge
+    // flow. The worker postMessage that carries subscribe() can't prompt (lost
+    // activation); the canvas tap that PRODUCED it can.
+    if (
+      IS_WORKER &&
+      WebAssembly.Module.imports(module).some((i) => i.module === 'host_agent')
+    ) {
+      self.postMessage({ type: 'cartridge_uses_feed' });
+    }
+    instance = await WebAssembly.instantiate(module, buildImports());
   } catch (e) {
     postError(LH_RUNTIME.INSTANTIATE_FAILED, 'instantiate failed: ' + (e && e.message ? e.message : String(e)));
     return;
