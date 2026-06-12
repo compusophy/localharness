@@ -864,16 +864,12 @@ async fn do_feed_subscribe(worker: web_sys::Worker, subscribe: bool) {
     let Some((signer, _)) = crate::app::chat::credit_signer().await else { return };
     let Ok(sponsor) = crate::app::sponsor::signer() else { return };
     let token = crate::app::registry::ALPHA_USD_ADDRESS;
-    // Subscribing is an explicit opt-in to a NOTIFICATION feed, so it's the
-    // right moment to ensure the viewer can actually RECEIVE pushes: prompt
-    // for permission + publish their push subscription on-chain (best-effort
-    // — a denied prompt still records the on-chain subscribe; they just won't
-    // get pings until they enable notifications). This is the ONLY place a
-    // cartridge-driven flow may surface the permission prompt, and only
-    // behind the user's deliberate subscribe gesture.
-    if subscribe {
-        let _ = crate::app::notifications::enable_and_publish().await;
-    }
+    // NOTE: a subscriber receives broadcasts only if their push subscription is
+    // published under THEIR identity's MAIN tokenId (the broadcast resolves
+    // mainOf(subscriber) → push_sub). They enable that via admin → notifications
+    // on their own identity. (Auto-publishing here targeted the TENANT's slot —
+    // wrong + polluting — so it was removed; a viewer-MAIN-targeted publish is
+    // the follow-up.)
     let res = if subscribe {
         crate::app::registry::subscribe_sponsored(&signer, &sponsor, feed_id, token).await
     } else {

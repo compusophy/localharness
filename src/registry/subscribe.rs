@@ -26,14 +26,17 @@ pub async fn subscribe_sponsored(
     target_id: u64,
     fee_token: &str,
 ) -> Result<String, String> {
-    // One cold array push + a membership SSTORE + event. 300k is comfortable
-    // over the ~140k a first subscribe costs plus sponsorship overhead.
+    // First subscribe to a feed CREATES the dynamic array (3 cold SSTOREs:
+    // length + element + index mapping) + event ~= 100k inner, and Tempo
+    // sponsorship adds ~275k overhead ON TOP. 300k total OUT-OF-GASSED the
+    // inner call (receipt reverted) — 600k gives real headroom; the sponsor
+    // pays gas USED, not the limit (CLAUDE.md "cast estimate, never guess").
     sponsored_diamond_call(
         sender,
         fee_payer,
         encode_target_call("subscribe(uint256)", target_id),
         fee_token,
-        300_000,
+        600_000,
     )
     .await
 }
@@ -50,7 +53,7 @@ pub async fn unsubscribe_sponsored(
         fee_payer,
         encode_target_call("unsubscribe(uint256)", target_id),
         fee_token,
-        300_000,
+        600_000,
     )
     .await
 }
