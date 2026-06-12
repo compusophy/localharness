@@ -421,14 +421,12 @@ semantics live in `contracts/README.md`** — this list is one line each.
   task, interval, budgetWei, maxRuns)` ESCROWS owner `$LH` (60s min). `recordRun`
   is SCHEDULER-ROLE-ONLY (the worker): atomically debits budget + advances `nextRun`
   (CAS-guarded vs double-fire). `budgetWei` is the HARD STOP; `cancelJob` refunds.
-  **Multi-agent + recursion (SHIPPED):** each fire is a bounded loop with a
-  `call_agent` tool (ping-pong) + `scheduleChildJob` (scheduler-only, child budget
-  FROM parent escrow, depth-capped — root budget caps the tree).
-  Anti-griefing: per-owner active-job cap + per-tick global/per-owner spend caps.
-  `setScheduler` = proxy meter key. Fired by `/scheduler` cron worker.
-  **/goal (ralph-on-chain):** a `GOAL: `-prefixed task (CLI `goal`) gets a goal-loop
-  prompt frame + a `finish_goal` tool; the worker relays it to `completeJob`
-  (scheduler-only) — job ends EARLY, unspent escrow refunds to the owner.
+  **Recursion:** each fire is a bounded loop with `call_agent` (ping-pong) +
+  `scheduleChildJob` (scheduler-only, child budget FROM parent escrow,
+  depth-capped). Anti-griefing: per-owner job cap + per-tick spend caps.
+  `setScheduler` = proxy meter key; fired by the `/scheduler` cron worker.
+  **/goal:** a `GOAL: `-prefixed task gets a goal-loop frame + `finish_goal`
+  tool → worker relays to `completeJob`; job ends EARLY, escrow refunds.
 - **SignalingFacet** — on-chain WebRTC signaling + presence for P2P teams.
   `announce(topic, owner, ephemeral, pubkey, sig)` is **OWNER-SIGNED**: requires
   `topic == keccak256("localharness.devices"‖owner)` AND `ecrecover(...)==owner`
