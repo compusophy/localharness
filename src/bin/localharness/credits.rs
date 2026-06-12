@@ -141,7 +141,74 @@ pub(crate) async fn open_session(caller_name: Option<&str>) -> i32 {
     }
 }
 
-pub(crate) async fn topup(caller_name: Option<&str>) -> i32 {
+pub(crate) const TOPUP_USAGE: &str = "\
+usage: localharness topup [--as <me>] [<amount>|--all]
+  topup <amount>   deposit that much wallet $LH into the per-call meter (e.g. 0.5)
+  topup --all      deposit the ENTIRE wallet balance
+  topup            show the wallet balance and what --all would move (deposits nothing)";
+
+/// Parsed `topup` arguments. Pure (no I/O) so it is unit-testable — and so
+/// `--help` short-circuits BEFORE identity resolution (the old code resolved
+/// the caller key first, so `topup --help` with several local keys died with
+/// "multiple identities — pick one with --as" instead of printing usage).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TopupArgs {
+    /// `--help` / `-h` — print usage, touch nothing.
+    Help,
+    /// Explicit positional amount to deposit, in wei (parsed like `send`).
+    Amount(u128),
+    /// `--all` — deposit the entire wallet balance (the explicit opt-in).
+    All,
+    /// No amount and no `--all` — print the balances, deposit NOTHING.
+    Inspect,
+}
+
+pub(crate) fn parse_topup_args(rest: &[String]) -> Result<TopupArgs, String> {
+    let mut all = false;
+    let mut amount: Option<u128> = None;
+    for arg in rest {
+        match arg.as_str() {
+            "--help" | "-h" => return Ok(TopupArgs::Help),
+            "--all" => all = true,
+            raw => {
+                if amount.is_some() {
+                    return Err(TOPUP_USAGE.to_string());
+                }
+                match localharness::encoding::parse_token_amount(raw) {
+                    Some(w) if w > 0 => amount = Some(w),
+                    _ => {
+                        return Err(format!(
+                            "topup: invalid amount '{raw}' (expected a positive number of $LH)\n{TOPUP_USAGE}"
+                        ))
+                    }
+                }
+            }
+        }
+    }
+    match (all, amount) {
+        (true, Some(_)) => Err(format!("topup: pass an amount OR --all, not both\n{TOPUP_USAGE}")),
+        (true, None) => Ok(TopupArgs::All),
+        (false, Some(w)) => Ok(TopupArgs::Amount(w)),
+        (false, None) => Ok(TopupArgs::Inspect),
+    }
+}
+
+/// `localharness topup [--as <me>] [<amount>|--all]` — fund the caller for
+/// PER-CALL billing by depositing wallet `$LH` into the per-request meter
+/// (the pot the proxy debits each `call`). An explicit `<amount>` (decimal
+/// `$LH`, parsed like `send`) moves exactly that much; `--all` moves the
+/// whole wallet. With NEITHER it deposits NOTHING — it prints the wallet
+/// balance and what `--all` would move. (Sweeping the entire wallet by
+/// default cost real users real `$LH`; the full sweep is now an explicit
+/// opt-in.) Sponsored — needs no gas. (Also attempts the daily allowance,
+/// but that's DISABLED on-chain, so a 0-`$LH` wallet must be funded first
+/// via `redeem` / `send`.)
+pub(crate) async fn topup(caller_name: Option<&str>, parsed: TopupArgs) -> i32 {
+    // `--help` short-circuits BEFORE any identity resolution.
+    if parsed == TopupArgs::Help {
+        println!("{TOPUP_USAGE}");
+        return 0;
+    }
     let (signer, sponsor) = match load_signer_and_sponsor(caller_name) {
         Ok(pair) => pair,
         Err(code) => return code,
@@ -156,24 +223,91 @@ pub(crate) async fn topup(caller_name: Option<&str>) -> i32 {
             Err(e) => eprintln!("claim failed (continuing to deposit): {e}"),
         }
     }
-    // 2. Deposit the wallet balance into the per-request meter.
+    // 2. Resolve what to deposit into the per-request meter.
     let bal = registry::token_balance_of(&addr).await.unwrap_or(0);
     if bal == 0 {
         println!("wallet has 0 $LH — nothing to deposit.");
         println!("fund it first: `localharness redeem <code>`, or have another agent `send` you $LH.");
         return 0;
     }
-    match registry::deposit_credits_sponsored(&signer, &sponsor, bal, registry::ALPHA_USD_ADDRESS)
-        .await
+    let deposit_wei = match parsed {
+        TopupArgs::Help => return 0, // handled above
+        TopupArgs::All => bal,
+        TopupArgs::Amount(w) if w > bal => {
+            eprintln!(
+                "topup: wallet holds only {} — can't deposit {}",
+                fmt_lh(bal),
+                fmt_lh(w)
+            );
+            return 1;
+        }
+        TopupArgs::Amount(w) => w,
+        TopupArgs::Inspect => {
+            // No amount, no --all: deposit NOTHING. The old default moved the
+            // ENTIRE wallet with no confirmation (a real user lost 5 $LH);
+            // the full sweep now requires the explicit --all.
+            println!("wallet holds {} — nothing was deposited.", fmt_lh(bal));
+            println!("  localharness topup <amount>   deposit that much into the per-call meter");
+            println!("  localharness topup --all      deposit the entire {}", fmt_lh(bal));
+            return 2;
+        }
+    };
+    match registry::deposit_credits_sponsored(
+        &signer,
+        &sponsor,
+        deposit_wei,
+        registry::ALPHA_USD_ADDRESS,
+    )
+    .await
     {
         Ok(tx) => {
-            println!("deposited {} into the meter  tx: {tx}", fmt_lh(bal));
+            println!("deposited {} into the meter  tx: {tx}", fmt_lh(deposit_wei));
             0
         }
         Err(e) => {
             eprintln!("deposit failed: {e}");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_topup_args_amount_all_and_inspect() {
+        // Bare topup = inspect-only (the old behavior swept the WHOLE wallet
+        // into the meter with no confirmation — a real user lost 5 $LH).
+        assert_eq!(parse_topup_args(&args(&[])), Ok(TopupArgs::Inspect));
+        // The full sweep is the explicit --all opt-in.
+        assert_eq!(parse_topup_args(&args(&["--all"])), Ok(TopupArgs::All));
+        // A positional amount parses like `send` (decimal $LH → wei).
+        assert_eq!(
+            parse_topup_args(&args(&["0.5"])),
+            Ok(TopupArgs::Amount(500_000_000_000_000_000))
+        );
+        assert_eq!(
+            parse_topup_args(&args(&["2"])),
+            Ok(TopupArgs::Amount(2_000_000_000_000_000_000))
+        );
+        // Conflicts and junk are rejected, never a tx.
+        assert!(parse_topup_args(&args(&["0.5", "--all"])).is_err()); // both
+        assert!(parse_topup_args(&args(&["--all", "0.5"])).is_err()); // both, either order
+        assert!(parse_topup_args(&args(&["0"])).is_err()); // zero
+        assert!(parse_topup_args(&args(&["nope"])).is_err()); // non-numeric
+        assert!(parse_topup_args(&args(&["-1"])).is_err()); // negative / unknown flag
+        assert!(parse_topup_args(&args(&["1", "2"])).is_err()); // two amounts
+    }
+
+    #[test]
+    fn parse_topup_args_help_short_circuits_before_identity() {
+        // `topup --help` used to die with "multiple identities — pick one with
+        // --as" because the caller key was resolved BEFORE the args were read.
+        // Help must parse purely (no identity, no RPC) wherever it appears.
+        assert_eq!(parse_topup_args(&args(&["--help"])), Ok(TopupArgs::Help));
+        assert_eq!(parse_topup_args(&args(&["-h"])), Ok(TopupArgs::Help));
+        assert_eq!(parse_topup_args(&args(&["--all", "--help"])), Ok(TopupArgs::Help));
     }
 }
 

@@ -58,7 +58,10 @@
 //!   invite accept [--as <me>] <code>  accept an invite (the escrowed $LH pays out to you)
 //!   invite reclaim [--as <me>] <code>  refund an EXPIRED invite to its funder
 //!   invite list [--as <me>]  show your total $LH locked in pending invites
-//!   topup [--as <me>]        deposit your wallet $LH into the per-call meter
+//!   topup [--as <me>] [<amount>|--all]
+//!                            deposit wallet $LH into the per-call meter: an
+//!                            explicit amount, or --all for the whole wallet
+//!                            (bare topup only shows what would move)
 //!   list [--as <me>]         list the subdomains you own (`--json` for machine output)
 //!   feedback [--as <me>] [text|--json]
 //!                            submit on-chain feedback (text), or read the log
@@ -244,7 +247,10 @@ WALLET, FUNDING & TBA
   localharness redeem [--as <me>] <code> redeem a code for $LH into your wallet
   localharness send [--as <me>] <to> <amt>  send $LH to an address / a name's owner
   localharness session [--as <me>]       open a proxy session (spend sessionPrice $LH)
-  localharness topup [--as <me>]         deposit your wallet $LH into the per-call meter
+  localharness topup [--as <me>] [<amount>|--all]
+                                         deposit wallet $LH into the per-call meter:
+                                         an explicit amount, or --all for the whole
+                                         wallet (bare topup only shows what would move)
   localharness tba show [--as <me>] [<name>]
                                          your (or <name>'s) token-bound account: its
                                          wallet address, $LH balance, and deployed status
@@ -443,8 +449,10 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
         },
-        Some("topup") => match take_as_flag(&args[1..]) {
-            Ok((caller, _)) => topup(caller.as_deref()).await,
+        Some("topup") => match take_as_flag(&args[1..])
+            .and_then(|(caller, rest)| parse_topup_args(&rest).map(|p| (caller, p)))
+        {
+            Ok((caller, parsed)) => topup(caller.as_deref(), parsed).await,
             Err(e) => {
                 eprintln!("{e}");
                 2

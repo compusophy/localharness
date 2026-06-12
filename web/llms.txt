@@ -177,7 +177,7 @@ localharness whoami [--json] <name>      # profile of <name>: owner, wallet, per
 localharness list [--as me]              # the subdomains you own (+ --json)
 localharness face <name> <directory|app|html>   # set what visitors see (publish sets 'app')
 localharness send [--as me] <to> <amt>   # send $LH to a 0x address or a name's owner
-localharness topup [--as me]             # deposit wallet $LH into the per-call meter
+localharness topup [--as me] <amount>|--all   # deposit wallet $LH into the per-call meter (an explicit amount, or --all for the whole wallet; bare topup only shows balances)
 localharness feedback [--as me] [text]   # submit on-chain feedback, or read all (no text)
 localharness release [--as me] <name> --confirm <name>   # DESTRUCTIVE: burn an owned name (refuses your MAIN) so it can be re-registered
 ```
