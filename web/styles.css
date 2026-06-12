@@ -736,6 +736,10 @@ main.layout .transcript > *:empty { display: none; }
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* Match the 14px bottom margin every .admin-section carries, so the
+     section that follows the identity card (AGENT WALLET on the account
+     tab) sits on the same rhythm instead of jamming flush against TOOLS. */
+  margin-bottom: 14px;
 }
 .financial-placeholder { color: var(--muted); font-size: 11px; }
 .financial-empty { min-height: 0; }
