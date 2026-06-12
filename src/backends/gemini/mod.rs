@@ -722,6 +722,19 @@ mod tests {
     /// arrives). REGRESSION: before the fix, `pending_calls` was drained when
     /// the assistant entry was pushed, so the result was never attached
     /// (`result` stayed `None`) and a reload lost every tool result.
+    /// REGRESSION: a persisted-history entry missing `parts` (older on-disk
+    /// format) must NOT fail the whole `decode_transcript_bytes` — that left a
+    /// returning user with a blank transcript despite having history. The bad
+    /// entry decodes as empty (skipped); the rest projects normally.
+    #[test]
+    fn decode_tolerates_entry_missing_parts() {
+        // First content has no `parts` field at all; second is a normal turn.
+        let raw = br#"[{"role":"user"},{"role":"model","parts":[{"text":"hi there"}]}]"#;
+        let entries = decode_transcript_bytes(raw).expect("must not error on missing parts");
+        assert_eq!(entries.len(), 1, "the part-less entry is skipped, the real one kept");
+        assert_eq!(entries[0].text, "hi there");
+    }
+
     #[test]
     fn transcript_attaches_results_to_calls_by_name() {
         use wire::{Content, ContentRole, FunctionCall, FunctionResponse, Part};

@@ -32,6 +32,13 @@ pub struct GenerateContentRequest {
 #[serde(rename_all = "camelCase")]
 pub struct Content {
     pub role: ContentRole,
+    // `default` so a persisted-history entry missing `parts` (an older on-disk
+    // format) decodes as an empty turn instead of failing the WHOLE
+    // `decode_transcript_bytes` array-deserialize — which left a returning user
+    // staring at a blank transcript despite having history. A part-less content
+    // is harmlessly skipped by `project_history` (it only pushes turns with
+    // text or tool-calls). Live API responses always carry `parts`.
+    #[serde(default)]
     pub parts: Vec<Part>,
 }
 
