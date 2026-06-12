@@ -34,12 +34,14 @@ pub async fn addr_push_sub_of(addr_hex: &str) -> Result<Option<String>, String> 
         .filter(|s| !s.is_empty()))
 }
 
-/// Sponsored gas for a `setPushSub` write: the subscription JSON is ~300-400
-/// bytes of fresh storage (cold SSTOREs) + the Tempo sponsorship overhead
-/// (~275k). Length-scaled with generous headroom; the sponsor pays gas USED,
-/// not the cap.
+/// Sponsored gas for a `setPushSub` write. LIVE-MEASURED: a 365-byte
+/// subscription's INNER call is ~323k gas (debug trace); plus ~275k Tempo
+/// sponsorship overhead → ~600k real. The cap MUST stay well under ~2M — a
+/// proven subscribe runs at 2M, but ~2.66M trips the sponsor's per-tx ceiling
+/// and the whole sponsored tx REVERTS (out-of-gas, ~2.6M burned) even though
+/// the inner call would succeed. So: tight, length-scaled, comfortably < 2M.
 fn set_push_sub_gas(len: usize) -> u128 {
-    1_200_000 + (len as u128) * 4_000
+    600_000 + (len as u128) * 1_000
 }
 
 /// Publish the CALLER's Web Push subscription on-chain (address-keyed),
