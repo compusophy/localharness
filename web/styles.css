@@ -405,6 +405,54 @@ main.layout .transcript > *:empty { display: none; }
   min-height: 0;
   padding: 8px;
 }
+/* Header notification bell + dropdown panel. Monochrome, matches the
+   header-button chrome; the panel hangs below the bell, right-aligned. */
+.notif-bell-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.notif-badge {
+  display: inline-block;
+  min-width: 16px;
+  margin-left: 4px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  color: var(--bg);
+  background: var(--fg);
+  border-radius: 8px;
+}
+.notif-badge[hidden] { display: none; }
+.notif-panel {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  min-width: 240px;
+  max-width: 320px;
+  max-height: 60vh;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  z-index: var(--z-header);
+}
+.notif-panel[hidden] { display: none; }
+.notif-panel-empty {
+  padding: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.notif-item {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.notif-item:last-child { border-bottom: none; }
+.notif-item-title { color: var(--fg); }
+.notif-item-body { color: var(--muted); margin-top: 2px; }
+
 .app-edit {
   position: absolute;
   bottom: 8px;

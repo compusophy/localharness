@@ -132,6 +132,7 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
                 // files + bug buttons cluttered the chrome). Files opens
                 // from the admin panel; feedback stays an admin tab.
                 div #header-admin .header-admin {
+                    (notif_bell())
                     button type="button"
                         data-action="header-admin-toggle"
                         .header-button.admin-button { "admin" }
@@ -2313,10 +2314,41 @@ pub(crate) fn public_face_header(owner_overlay: bool) -> Markup {
                         }
                     }
                 }
+                (notif_bell())
                 @if owner_overlay {
                     a.app-edit href="?edit=1" title="back to your studio" { "studio" }
                 }
             }
+        }
+    }
+}
+
+/// The header notification bell — a DIRECT-tap affordance (real user gesture,
+/// unlike the cartridge subscribe tap) that enables Web Push for this device
+/// AND opens the in-app notification panel. `#notif-bell-badge` carries the
+/// unread count; `#notif-bell-panel` is the dropdown list (filled by
+/// `events::notifications`). One bell, every surface (public face + app header).
+pub(crate) fn notif_bell() -> Markup {
+    html! {
+        div.notif-bell-wrap {
+            button #notif-bell type="button" data-action="notif-bell"
+                title="notifications" aria-label="notifications" .header-button {
+                "notify"
+                span #notif-bell-badge .notif-badge hidden {}
+            }
+            div #notif-bell-panel .notif-panel hidden {
+                div.notif-panel-empty { "no notifications yet" }
+            }
+        }
+    }
+}
+
+/// The open notification-bell panel (swapped in on tap). `msg` is a status line
+/// (auto-escaped by maud). The panel is visible (no `hidden`) once swapped.
+pub(crate) fn notif_panel(msg: &str) -> Markup {
+    html! {
+        div #notif-bell-panel .notif-panel {
+            div.notif-panel-empty { (msg) }
         }
     }
 }

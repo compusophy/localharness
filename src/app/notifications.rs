@@ -160,6 +160,28 @@ pub(crate) async fn subscribe_push() -> Result<String, String> {
 /// third party can read OUR pushes; the exposure is spam/identification.
 /// Follow-up: ECIES-seal the JSON to a proxy-held key so only the scheduler
 /// can read it.
+/// Enable Web Push for THIS DEVICE keyed by its OWN ADDRESS (PushFacet), not a
+/// MAIN tokenId — so ANY visitor (a bare device key, `mainOf == 0`) can receive
+/// cross-device pushes. MUST be called from a DIRECT user gesture (the header
+/// notification bell): the cartridge subscribe tap runs through a worker
+/// postMessage that loses user activation, so its `requestPermission` never
+/// prompts on mobile and the device silently never registers — THE
+/// cross-device-push bug. This path prompts, subscribes, and publishes the
+/// address-keyed subscription (signed by the device's credit key, sponsored).
+/// Returns the tx hash. Idempotent — safe to tap again to refresh a stale sub.
+pub(crate) async fn enable_device_push() -> Result<String, String> {
+    if !ensure_permission().await? {
+        return Err("notification permission is blocked — allow notifications for this site in your browser settings, then tap again".to_string());
+    }
+    let sub_json = subscribe_push().await?;
+    let (signer, _) = crate::app::chat::credit_signer()
+        .await
+        .ok_or_else(|| "no identity on this device yet".to_string())?;
+    let sponsor = crate::app::sponsor::signer().map_err(|e| format!("sponsor: {e}"))?;
+    let token = crate::registry::ALPHA_USD_ADDRESS;
+    crate::registry::set_push_sub_sponsored(&signer, &sponsor, sub_json.as_bytes(), token).await
+}
+
 pub(crate) async fn enable_and_publish() -> Result<String, String> {
     if !ensure_permission().await? {
         return Err("notification permission denied — allow notifications for this site in the browser settings".to_string());

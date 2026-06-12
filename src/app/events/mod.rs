@@ -165,6 +165,10 @@ enum Action {
     /// subscribe Web Push, and publish the subscription on-chain so the
     /// scheduler worker can notify the owner with the tab closed.
     EnableNotifications,
+    /// Header notification bell: enable Web Push for THIS device (address-keyed,
+    /// direct gesture) and open the in-app panel. The path a visitor uses to let
+    /// their phone be pinged — the cartridge tap can't prompt for permission.
+    NotifBell,
     /// Fire a local test notification (+vibration) so the user can verify the
     /// permission + service-worker path without scheduling anything.
     TestNotification,
@@ -241,6 +245,7 @@ impl Action {
             "unlink-confirm" => Action::UnlinkConfirm(arg.unwrap_or_default()),
             "unlink-cancel" => Action::UnlinkCancel,
             "enable-notifications" => Action::EnableNotifications,
+            "notif-bell" => Action::NotifBell,
             "test-notification" => Action::TestNotification,
             "install-app" => Action::InstallApp,
             _ => return None,
@@ -902,6 +907,7 @@ fn dispatch(action: Action) {
         Action::UnlinkConfirm(addr) => devices::unlink_confirm_pressed(addr),
         Action::UnlinkCancel => devices::unlink_cancel_pressed(),
         Action::EnableNotifications => admin::enable_notifications_pressed(),
+        Action::NotifBell => admin::notif_bell_pressed(),
         Action::TestNotification => admin::test_notification_pressed(),
         Action::InstallApp => admin::install_app_pressed(),
     }

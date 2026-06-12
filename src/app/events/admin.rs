@@ -300,6 +300,43 @@ async fn publish_x402_price_onchain(wei: u128) -> Result<bool, String> {
 /// publish under `keccak256("localharness.push_sub")`. After this, the
 /// proxy's scheduler worker can push job results with the tab CLOSED, and
 /// the agent's `notify` tool fires without a mid-turn permission prompt.
+/// The header notification bell — a DIRECT user gesture (unlike the cartridge
+/// subscribe tap, whose worker→main postMessage loses user activation so its
+/// permission prompt never fires on mobile). Enables Web Push for THIS device
+/// keyed by its ADDRESS (works with no MAIN identity) and opens the panel. This
+/// is the path that actually lets a phone register to be pinged.
+pub(super) fn notif_bell_pressed() {
+    dom::swap_outer(
+        "notif-bell-panel",
+        &templates::notif_panel("enabling notifications…").into_string(),
+    );
+    wasm_bindgen_futures::spawn_local(async move {
+        match crate::app::notifications::enable_device_push().await {
+            Ok(_tx) => {
+                crate::app::notifications::vibrate(120);
+                let _ = crate::app::notifications::show(
+                    "localharness",
+                    "notifications on — this device can now be pinged",
+                )
+                .await;
+                dom::swap_outer(
+                    "notif-bell-panel",
+                    &templates::notif_panel(
+                        "notifications ON for this device — you'll get pinged here and on your phone",
+                    )
+                    .into_string(),
+                );
+            }
+            Err(e) => {
+                dom::swap_outer(
+                    "notif-bell-panel",
+                    &templates::notif_panel(&e).into_string(),
+                );
+            }
+        }
+    });
+}
+
 pub(super) fn enable_notifications_pressed() {
     wasm_bindgen_futures::spawn_local(async move {
         let msg = "notify-msg";
