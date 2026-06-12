@@ -34,14 +34,16 @@ pub async fn addr_push_sub_of(addr_hex: &str) -> Result<Option<String>, String> 
         .filter(|s| !s.is_empty()))
 }
 
-/// Sponsored gas for a `setPushSub` write. LIVE-MEASURED: a 365-byte
-/// subscription's INNER call is ~323k gas (debug trace); plus ~275k Tempo
-/// sponsorship overhead → ~600k real. The cap MUST stay well under ~2M — a
-/// proven subscribe runs at 2M, but ~2.66M trips the sponsor's per-tx ceiling
-/// and the whole sponsored tx REVERTS (out-of-gas, ~2.6M burned) even though
-/// the inner call would succeed. So: tight, length-scaled, comfortably < 2M.
+/// Sponsored gas for a `setPushSub` write. CRITICAL: Tempo charges ~8,500 gas
+/// PER BYTE for storage writes (≈10x Ethereum — same as `setMetadata`; see
+/// CLAUDE.md). A 365-byte push subscription `cast estimate`s at ~3.4-3.6M on the
+/// live chain (NOT the 323k a `cast run` replay misleadingly shows). Earlier caps
+/// of 2.66M and 965k both OUT-OF-GASSED — the sole reason device registration
+/// never landed. There is NO sponsor ceiling here (publishing a cartridge uses
+/// ~11M and works). Match the proven setMetadata formula + headroom; the sponsor
+/// pays gas USED, not the cap.
 fn set_push_sub_gas(len: usize) -> u128 {
-    600_000 + (len as u128) * 1_000
+    1_500_000 + (len as u128) * 9_000
 }
 
 /// Publish the CALLER's Web Push subscription on-chain (address-keyed),
