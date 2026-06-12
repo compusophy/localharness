@@ -48,7 +48,9 @@ window.addEventListener("appinstalled", () => {
 const LH_BUILD = "6319a3b91298";
 try {
   const { default: init } = await import("./pkg/localharness.js?v=" + LH_BUILD);
-  await init("./pkg/localharness_bg.wasm?v=" + LH_BUILD);
+  // Object form (not a bare string) — the bare-path arg is deprecated in this
+  // wasm-bindgen and warns in the console; `{ module_or_path }` is the current API.
+  await init({ module_or_path: "./pkg/localharness_bg.wasm?v=" + LH_BUILD });
 } catch (e) {
   // Boot failed (wasm/shim fetch 404 mid-deploy, instantiation failure,
   // network drop). Swap #root to a minimal monochrome failure line —
