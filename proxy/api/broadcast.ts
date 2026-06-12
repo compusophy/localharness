@@ -1,0 +1,619 @@
+// localharness credit proxy — FEED BROADCAST route (Edge).
+//
+// POST /api/broadcast { targetId, title, body } → Web-Pushes one note to EVERY
+// subscriber of a subdomain's feed. This is the off-chain push delivery for the
+// cartridge "Ready Up" feature: a cartridge (or any participant) triggers a
+// "ready up" / "your turn" / "match starting" buzz to everyone subscribed to a
+// feed, with no tab open on the recipient devices. It is notify.ts's FAN-OUT
+// sibling — same auth, same token scheme, same per-request meter, same
+// `sendWebPush` plumbing — but it reads the feed's SUBSCRIBER SET off-chain
+// (SubscribeFacet.subscribersOf) and pushes to each subscriber's published Web
+// Push subscription instead of the caller's own.
+//
+// WHO MAY BROADCAST — IDENTITY-GATED, NOT OWNER-GATED. The only gate on the
+// sender is the standard proxy token (a valid Ethereum personal-sign over
+// `localharness-proxy:<addr>:<ts>`): the sender must be a real identity, but it
+// need NOT own the feed. Per the product, ANYONE participating in a feed can
+// trigger a Ready-Up for it. Identity-gating is the sybil bar; the per-targetId
+// RATE LIMIT (below) is the anti-spam control that owner-gating would otherwise
+// provide.
+//
+// AUTH + BILLING are byte-compatible with api/notify.ts / api/gemini.ts: the
+// caller sends `<address>:<timestamp>:<signature>` in `x-goog-api-key` (or
+// `x-api-key`); the proxy recovers the signer, gates on an active SessionFacet
+// session OR a CreditMeterFacet balance, and debits the SAME flat per-request
+// cost ONCE (the sender pays for the broadcast, like a model call — so a feed
+// can't be spammed for free; the meter IS part of the spam filter).
+//
+// ORDER OF OPERATIONS (notify.ts invariant — nothing may fail AFTER the caller
+// is charged except best-effort pushes): payload validation → VAPID config
+// check → auth → per-feed rate-limit (429 before any debit) → credit gate +
+// meter debit (charged ONCE, before the fan-out) → read subscribersOf → per
+// subscriber: resolve push_sub + sendWebPush (best-effort; one failure never
+// aborts the rest) → counts.
+
+import { secp256k1 } from '@noble/curves/secp256k1';
+import { keccak_256 } from '@noble/hashes/sha3';
+import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
+import {
+  createPublicClient,
+  createWalletClient,
+  defineChain,
+  encodeFunctionData,
+  http,
+} from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
+import { sendWebPush, type PushSubscriptionJson } from './_webpush';
+
+export const config = { runtime: 'edge' };
+
+// ---- constants (mirror api/notify.ts) ---------------------------------------
+
+const TEMPO_RPC = 'https://rpc.moderato.tempo.xyz';
+const REGISTRY = '0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c';
+const CHAIN_ID = 42431;
+
+// SAME per-request price as a model call / a self-notify — same env knob, same
+// default 0.01 $LH. A broadcast is a paid capability; the meter is part of the
+// anti-spam story (alongside the rate limit).
+const COST_PER_REQUEST_WEI = ((): bigint => {
+  try {
+    return BigInt(process.env.COST_PER_REQUEST_WEI ?? '10000000000000000');
+  } catch {
+    return 10_000_000_000_000_000n;
+  }
+})();
+
+const FRESHNESS_WINDOW_SECS = 300; // same tight replay window as notify.ts
+const ALLOWED_ORIGIN_SUFFIX = '.localharness.xyz';
+const ALLOWED_ORIGIN_EXACT = 'https://localharness.xyz';
+
+// Payload bounds — same as notify.ts; pushes are glanceable banners, trimmed
+// then truncated, never rejected for length.
+const MAX_TITLE_CHARS = 80;
+const MAX_BODY_CHARS = 200;
+const MAX_REQUEST_BODY_BYTES = 16_384; // { targetId, title, body } is tiny
+
+// Fan-out cap — at most this many subscribers are pushed per broadcast. Bounds
+// the per-invocation RPC + push fan-out on the public RPC and Edge wall-clock.
+// `subscribersOf` may return more; the extras are dropped (response notes the
+// truncation via `subscribers` being the capped count + a `truncated` flag).
+const MAX_FANOUT = 500;
+
+// Per-feed rate limit: at most one broadcast per RATE_LIMIT_MS per targetId.
+// This is the anti-spam control that owner-gating would otherwise provide
+// (broadcast is identity-gated, not owner-gated — anyone may trigger a feed).
+//
+// ⚠️ LIMITATION: this Map is per Edge ISOLATE, not global. Vercel may run
+// several isolates per region (and several regions), so the effective floor is
+// "1 per 20s per isolate", not a hard global "1 per 20s". It defeats a single
+// caller hammering one warm isolate (the common abuse shape); a determined
+// attacker spreading requests across isolates can exceed it. A hard global
+// limit needs shared state (KV/Redis) — deliberately out of scope (the meter
+// debit is the durable, global cost ceiling; this is a cheap first line).
+const RATE_LIMIT_MS = 20_000;
+const lastBroadcastAt = new Map<string, number>();
+
+// Web Push subscription slot — written by the browser app's "enable
+// notifications" flow (src/app/notifications.rs), under each owner's MAIN
+// tokenId (fallback: the name's own id), v1 plaintext JSON. Same slot
+// notify.ts / scheduler.ts read.
+const PUSH_SUB_KEY = bytesToHex(
+  keccak_256(new TextEncoder().encode('localharness.push_sub')),
+);
+
+const TEMPO_CHAIN = defineChain({
+  id: CHAIN_ID,
+  name: 'Tempo Moderato',
+  nativeCurrency: { name: 'Tempo', symbol: 'TEMPO', decimals: 18 },
+  rpcUrls: { default: { http: [TEMPO_RPC] } },
+});
+
+const METER_ABI = [
+  {
+    name: 'meter',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'user', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [],
+  },
+] as const;
+
+/** Whether `s` is a well-formed 0x-prefixed 20-byte hex address. */
+function isHexAddress(s: string): boolean {
+  return /^0x[0-9a-fA-F]{40}$/.test(s);
+}
+
+// ---- CORS (same policy as notify.ts) ----------------------------------------
+
+function corsHeaders(origin: string | null): Record<string, string> {
+  const h: Record<string, string> = {
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'content-type, x-goog-api-key, x-api-key',
+    'Vary': 'Origin',
+  };
+  if (origin && isAllowedOrigin(origin)) {
+    h['Access-Control-Allow-Origin'] = origin;
+  }
+  return h;
+}
+
+/** Whether `origin` may receive CORS headers (apex + subdomains + localhost
+ * dev — hostname-parsed, not prefix-matched; see notify.ts). */
+function isAllowedOrigin(origin: string): boolean {
+  if (origin === ALLOWED_ORIGIN_EXACT || origin.endsWith(ALLOWED_ORIGIN_SUFFIX)) {
+    return true;
+  }
+  try {
+    const u = new URL(origin);
+    return (
+      u.protocol === 'http:' &&
+      (u.hostname === 'localhost' || u.hostname === '127.0.0.1')
+    );
+  } catch {
+    return false;
+  }
+}
+
+function json(body: unknown, status: number, origin: string | null): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json', ...corsHeaders(origin) },
+  });
+}
+
+// ---- crypto helpers (mirror notify.ts) --------------------------------------
+
+function keccak(data: Uint8Array): Uint8Array {
+  return keccak_256(data);
+}
+
+function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+function stripHex(h: string): string {
+  return h.startsWith('0x') ? h.slice(2) : h;
+}
+
+/** Lowercase 0x address from a 64-byte uncompressed pubkey (no 0x04 prefix). */
+function toAddress(pubKeyXY: Uint8Array): string {
+  return '0x' + bytesToHex(keccak(pubKeyXY).slice(12));
+}
+
+/**
+ * Recover the signer's address from an Ethereum personal_sign signature.
+ * Same preimage + recovery as notify.ts/gemini.ts — the token scheme is shared.
+ */
+function recoverAddress(message: string, sigHex: string): string {
+  const msgBytes = new TextEncoder().encode(message);
+  const prefix = new TextEncoder().encode(
+    `\x19Ethereum Signed Message:\n${msgBytes.length}`,
+  );
+  const digest = keccak(concat(prefix, msgBytes));
+
+  const sig = hexToBytes(stripHex(sigHex));
+  if (sig.length !== 65) throw new Error('signature must be 65 bytes');
+  const r = sig.slice(0, 32);
+  const s = sig.slice(32, 64);
+  let v = sig[64];
+  if (v >= 27) v -= 27;
+
+  const signature = secp256k1.Signature.fromCompact(
+    bytesToHex(concat(r, s)),
+  ).addRecoveryBit(v);
+  const point = signature.recoverPublicKey(digest);
+  return toAddress(point.toRawBytes(false).slice(1));
+}
+
+function encodeAddressWord(address: string): string {
+  return stripHex(address).toLowerCase().padStart(64, '0');
+}
+
+function encodeUint256Word(value: bigint): string {
+  return value.toString(16).padStart(64, '0');
+}
+
+function selector(sig: string): string {
+  return bytesToHex(keccak(new TextEncoder().encode(sig)).slice(0, 4));
+}
+
+/** One `eth_call` against the diamond; returns the raw result hex or throws. */
+async function ethCall(data: string): Promise<string> {
+  const res = await fetch(TEMPO_RPC, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'eth_call',
+      params: [{ to: REGISTRY, data }, 'latest'],
+    }),
+  });
+  const body = (await res.json()) as { result?: string; error?: unknown };
+  if (!body.result) {
+    throw new Error('eth_call failed: ' + JSON.stringify(body.error ?? {}));
+  }
+  return body.result;
+}
+
+/** `sessionExpiryOf(address) -> uint256`, decoded as BigInt unix seconds. */
+async function sessionExpiryOf(address: string): Promise<bigint> {
+  return BigInt(
+    await ethCall('0x' + selector('sessionExpiryOf(address)') + encodeAddressWord(address)),
+  );
+}
+
+/** `creditOf(address) -> uint256` — the user's prepaid per-request balance. */
+async function creditOf(address: string): Promise<bigint> {
+  return BigInt(
+    await ethCall('0x' + selector('creditOf(address)') + encodeAddressWord(address)),
+  );
+}
+
+/**
+ * `subscribersOf(uint256 targetId) -> address[]` (SubscribeFacet). Decodes the
+ * ABI dynamic `address[]` return into a list of lowercase 0x addresses. Returns
+ * [] for an empty / malformed result.
+ */
+async function subscribersOf(targetId: bigint): Promise<string[]> {
+  const resultHex = await ethCall(
+    '0x' + selector('subscribersOf(uint256)') + encodeUint256Word(targetId),
+  );
+  const h = stripHex(resultHex);
+  // Dynamic array: [offset(32)] -> [length(32)] -> [elem(32)]*length.
+  if (h.length < 128) return []; // needs at least offset + length words
+  const off = Number(BigInt('0x' + h.slice(0, 64))) * 2;
+  if (h.length < off + 64) return [];
+  const len = Number(BigInt('0x' + h.slice(off, off + 64)));
+  if (len === 0) return [];
+  const out: string[] = [];
+  const base = off + 64;
+  for (let i = 0; i < len; i++) {
+    const wordStart = base + i * 64;
+    if (h.length < wordStart + 64) break;
+    // Each word is a left-padded address; take the low 20 bytes (40 hex chars).
+    out.push('0x' + h.slice(wordStart + 24, wordStart + 64).toLowerCase());
+  }
+  return out;
+}
+
+/** Decode an ABI-encoded dynamic `bytes` return into UTF-8 text ('' if empty). */
+function decodeAbiBytesUtf8(resultHex: string): string {
+  const h = stripHex(resultHex);
+  if (h.length < 128) return ''; // needs at least offset + length words
+  const off = Number(BigInt('0x' + h.slice(0, 64))) * 2;
+  const len = Number(BigInt('0x' + h.slice(off, off + 64)));
+  if (len === 0) return '';
+  const dataStart = off + 64;
+  if (h.length < dataStart + len * 2) return '';
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = parseInt(h.slice(dataStart + i * 2, dataStart + i * 2 + 2), 16);
+  }
+  return new TextDecoder().decode(bytes);
+}
+
+/**
+ * Resolve ONE subscriber address to its published Web Push subscription, or
+ * null. Slot rule mirrors notify.ts / scheduler.ts: the subscriber's MAIN
+ * tokenId (`mainOf(addr)`), falling back to its own subscriber id is NOT
+ * possible here (we only have an address, not a token id) — so a subscriber
+ * with no MAIN simply has no push target. (notify.ts is self-only and also
+ * keys off `mainOf`; the scheduler's fallback is a job's targetId, which we
+ * don't have per-subscriber.) Returns null on ANY failure — best-effort.
+ */
+async function pushSubOf(address: string): Promise<PushSubscriptionJson | null> {
+  let main: bigint;
+  try {
+    main = BigInt(
+      await ethCall('0x' + selector('mainOf(address)') + encodeAddressWord(address)),
+    );
+  } catch {
+    return null;
+  }
+  if (main === 0n) return null;
+  let text: string;
+  try {
+    const data =
+      '0x' +
+      selector('metadata(uint256,bytes32)') +
+      encodeUint256Word(main) +
+      PUSH_SUB_KEY;
+    text = decodeAbiBytesUtf8(await ethCall(data)).trim();
+  } catch {
+    return null;
+  }
+  if (!text) return null;
+  let sub: PushSubscriptionJson;
+  try {
+    sub = JSON.parse(text) as PushSubscriptionJson;
+  } catch {
+    return null;
+  }
+  if (
+    typeof sub?.endpoint !== 'string' ||
+    !sub.endpoint.startsWith('https://') ||
+    typeof sub.keys?.p256dh !== 'string' ||
+    typeof sub.keys?.auth !== 'string'
+  ) {
+    return null;
+  }
+  return sub;
+}
+
+/** Thrown when the on-chain debit REVERTED (caller is genuinely out of $LH). */
+class InsufficientCreditError extends Error {}
+
+/**
+ * Debit `amount` $LH from `user` via `CreditMeterFacet.meter` — identical
+ * semantics to notify.ts::meterDebit: await the receipt (authoritative), throw
+ * on a definitive revert, return normally on an ambiguous wait failure (never
+ * risk a double-charge on retry).
+ */
+async function meterDebit(user: string, amount: bigint): Promise<void> {
+  const pk = process.env.PROXY_METER_KEY;
+  if (!pk) throw new Error('missing PROXY_METER_KEY');
+  const account = privateKeyToAccount(
+    (pk.startsWith('0x') ? pk : `0x${pk}`) as `0x${string}`,
+  );
+  const wallet = createWalletClient({
+    account,
+    chain: TEMPO_CHAIN,
+    transport: http(TEMPO_RPC),
+  });
+  const data = encodeFunctionData({
+    abi: METER_ABI,
+    functionName: 'meter',
+    args: [user as `0x${string}`, amount],
+  });
+  const hash = await wallet.sendTransaction({
+    to: REGISTRY as `0x${string}`,
+    data,
+    value: 0n,
+  });
+
+  const pub = createPublicClient({ chain: TEMPO_CHAIN, transport: http(TEMPO_RPC) });
+  let status: 'success' | 'reverted';
+  try {
+    ({ status } = await pub.waitForTransactionReceipt({
+      hash,
+      timeout: 12_000,
+      pollingInterval: 500,
+    }));
+  } catch {
+    return; // ambiguous (RPC/timeout) — serve; do NOT double-charge on retry
+  }
+  if (status === 'reverted') {
+    throw new InsufficientCreditError('on-chain debit reverted (insufficient $LH)');
+  }
+}
+
+// ---- handler ----------------------------------------------------------------
+
+export default async function handler(req: Request): Promise<Response> {
+  const origin = req.headers.get('origin');
+
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: corsHeaders(origin) });
+  }
+  if (req.method !== 'POST') {
+    return json({ error: 'method not allowed' }, 405, origin);
+  }
+
+  try {
+    // ---- request body: { targetId, title, body } ------------------------------
+    const declaredLen = Number(req.headers.get('content-length') ?? '0');
+    if (Number.isFinite(declaredLen) && declaredLen > MAX_REQUEST_BODY_BYTES) {
+      return json({ error: 'request body too large' }, 413, origin);
+    }
+    let targetIdRaw: string | number;
+    let title: string;
+    let body: string;
+    try {
+      const parsed = (await req.json()) as {
+        targetId?: unknown;
+        title?: unknown;
+        body?: unknown;
+      };
+      targetIdRaw =
+        typeof parsed.targetId === 'string' || typeof parsed.targetId === 'number'
+          ? parsed.targetId
+          : '';
+      title = typeof parsed.title === 'string' ? parsed.title.trim() : '';
+      body = typeof parsed.body === 'string' ? parsed.body.trim() : '';
+    } catch {
+      return json({ error: 'invalid JSON body' }, 400, origin);
+    }
+    // targetId → bigint (accepts a decimal string or a JSON number).
+    let targetId: bigint;
+    try {
+      targetId = BigInt(targetIdRaw);
+    } catch {
+      return json({ error: 'missing or invalid targetId' }, 400, origin);
+    }
+    if (targetId <= 0n) {
+      return json({ error: 'missing or invalid targetId' }, 400, origin);
+    }
+    if (!title) {
+      return json({ error: 'missing title' }, 400, origin);
+    }
+    title = title.slice(0, MAX_TITLE_CHARS);
+    body = body.slice(0, MAX_BODY_CHARS);
+
+    // ---- VAPID config (BEFORE auth/debit — a misconfigured proxy must cost the
+    // caller nothing) -----------------------------------------------------------
+    const publicKey = process.env.VAPID_PUBLIC_KEY;
+    const privateKey = process.env.VAPID_PRIVATE_KEY;
+    const subject = process.env.VAPID_SUBJECT;
+    if (!publicKey || !privateKey || !subject) {
+      return json({ error: 'proxy misconfigured: web push is not set up' }, 500, origin);
+    }
+    const vapid = { publicKey, privateKey, subject };
+
+    // ---- AUTH — same token scheme + headers as notify.ts ----------------------
+    const token =
+      req.headers.get('x-goog-api-key') ?? req.headers.get('x-api-key') ?? '';
+    const parts = token.split(':');
+    if (parts.length !== 3) {
+      return json({ error: 'missing or malformed auth token' }, 401, origin);
+    }
+    const [address, tsStr, signature] = parts;
+    const timestamp = Number(tsStr);
+    if (!address || !signature || !Number.isFinite(timestamp)) {
+      return json({ error: 'malformed auth token' }, 401, origin);
+    }
+    if (!isHexAddress(address)) {
+      return json({ error: 'malformed auth token: address' }, 401, origin);
+    }
+    if (!Number.isInteger(timestamp) || timestamp < 0) {
+      return json({ error: 'malformed auth token: timestamp' }, 401, origin);
+    }
+    const now = Math.floor(Date.now() / 1000);
+    if (Math.abs(now - timestamp) > FRESHNESS_WINDOW_SECS) {
+      return json({ error: 'stale or future timestamp' }, 401, origin);
+    }
+    const message = `localharness-proxy:${address.toLowerCase()}:${timestamp}`;
+    let recovered: string;
+    try {
+      recovered = recoverAddress(message, signature);
+    } catch (e) {
+      return json({ error: 'bad signature: ' + (e as Error).message }, 401, origin);
+    }
+    if (recovered.toLowerCase() !== address.toLowerCase()) {
+      return json({ error: 'signature does not match address' }, 401, origin);
+    }
+
+    // ---- per-feed RATE LIMIT (BEFORE the debit — a rejected broadcast must not
+    // be charged). Identity-gated broadcast is not owner-gated, so this is the
+    // anti-spam control. Per-isolate Map (see RATE_LIMIT_MS comment). ----------
+    const feedKey = targetId.toString();
+    const nowMs = Date.now();
+    const last = lastBroadcastAt.get(feedKey) ?? 0;
+    if (nowMs - last < RATE_LIMIT_MS) {
+      const retryAfter = Math.ceil((RATE_LIMIT_MS - (nowMs - last)) / 1000);
+      return json(
+        { error: `rate limited: at most one broadcast per ${RATE_LIMIT_MS / 1000}s per feed`, retryAfterSeconds: retryAfter },
+        429,
+        origin,
+      );
+    }
+
+    // ---- credit gate + meter debit — charged ONCE, BEFORE the fan-out ---------
+    const cost = COST_PER_REQUEST_WEI;
+    const [expiry, credit] = await Promise.all([
+      sessionExpiryOf(address),
+      creditOf(address),
+    ]);
+    const hasSession = expiry > BigInt(now);
+    const hasCredit = credit >= cost;
+    if (!hasSession && !hasCredit) {
+      return json(
+        {
+          error:
+            'no $LH credit or active session for this identity — fund the per-request meter (localharness redeem / send / topup) or open a session explicitly (localharness session). See https://localharness.xyz/llms.txt',
+        },
+        402,
+        origin,
+      );
+    }
+    // Prefer per-request metering over a lingering free session (notify.ts
+    // rationale: a funded meter means the caller opted into per-call billing).
+    if (hasCredit) {
+      try {
+        await meterDebit(address, cost);
+      } catch (e) {
+        if (e instanceof InsufficientCreditError) {
+          if (!hasSession) {
+            return json(
+              {
+                error:
+                  'insufficient $LH credit — the on-chain debit reverted (balance changed since the gate read)',
+              },
+              402,
+              origin,
+            );
+          }
+          // else: covered by an active session — fall through and serve.
+        } else {
+          return json({ error: 'metering failed: ' + (e as Error).message }, 502, origin);
+        }
+      }
+    }
+
+    // The caller is now committed (charged or session-covered): mark the feed's
+    // last-broadcast time so the rate limit holds even if the fan-out is slow.
+    lastBroadcastAt.set(feedKey, nowMs);
+
+    // ---- FAN-OUT: read the feed's subscriber set, push to each ----------------
+    let allSubscribers: string[];
+    try {
+      allSubscribers = await subscribersOf(targetId);
+    } catch (e) {
+      // The debit already happened; surface the read failure but don't pretend
+      // we delivered. (The caller paid for a broadcast that couldn't enumerate
+      // its feed — rare; the rate-limit stamp still stands.)
+      return json(
+        { error: 'subscriber lookup failed: ' + (e as Error).message },
+        502,
+        origin,
+      );
+    }
+    const totalSubscribers = allSubscribers.length;
+    if (totalSubscribers === 0) {
+      return json({ sent: 0, subscribers: 0, failed: 0 }, 200, origin);
+    }
+    const truncated = totalSubscribers > MAX_FANOUT;
+    const targets = truncated ? allSubscribers.slice(0, MAX_FANOUT) : allSubscribers;
+
+    // Resolve + push with BOUNDED CONCURRENCY (small batches) to be kind to the
+    // public RPC and the push services. Per-subscriber best-effort: a failed
+    // resolve or push counts as `failed` and NEVER aborts the rest.
+    const BATCH = 10;
+    let sent = 0;
+    let failed = 0;
+    let noTarget = 0; // subscriber with no published push_sub (not a failure)
+    for (let i = 0; i < targets.length; i += BATCH) {
+      const batch = targets.slice(i, i + BATCH);
+      const results = await Promise.all(
+        batch.map(async (addr): Promise<'sent' | 'failed' | 'none'> => {
+          let sub: PushSubscriptionJson | null;
+          try {
+            sub = await pushSubOf(addr);
+          } catch {
+            return 'failed';
+          }
+          if (!sub) return 'none'; // never enabled notifications — not a failure
+          // sendWebPush never throws: true on accept, false on any send failure.
+          const ok = await sendWebPush(sub, JSON.stringify({ title, body }), vapid);
+          return ok ? 'sent' : 'failed';
+        }),
+      );
+      for (const r of results) {
+        if (r === 'sent') sent++;
+        else if (r === 'failed') failed++;
+        else noTarget++;
+      }
+    }
+
+    return json(
+      {
+        sent,
+        subscribers: targets.length,
+        failed,
+        ...(noTarget ? { noTarget } : {}),
+        ...(truncated ? { truncated: true, totalSubscribers } : {}),
+      },
+      200,
+      origin,
+    );
+  } catch (e) {
+    return json({ error: (e as Error).message }, 500, origin);
+  }
+}
