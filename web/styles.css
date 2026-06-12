@@ -172,7 +172,7 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
    block, the inline-flex bell and inline-block admin button aligned by text
    BASELINE (bell sat 3px higher) and had zero gap (touching). Center them on
    one axis with an 8px gap. The dropdown panel is position:fixed, out of flow. */
-.header-admin { position: relative; display: inline-flex; align-items: center; gap: 8px; }
+.header-admin { position: relative; display: inline-flex; align-items: center; gap: var(--space-2); }
 
 /* Brand dropdown — the top-left "localharness" title is a native
    <details> menu (no JS) exposing Home / Repo / Crate. Marker hidden
@@ -216,7 +216,7 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
   min-width: 96px;
 }
 .header-inner > .header-button + .header-admin, .header-inner > .header-brand + .header-button {
-  margin-left: 8px;
+  margin-left: var(--space-2);
 }
 
 /* Shared overlay close + admin feedback widget (the overlays that use
@@ -433,7 +433,10 @@ main.layout .transcript > *:empty { display: none; }
   min-width: 0;
   padding: 10px;
 }
-.notif-bell-btn svg { display: block; }
+/* 16px (1:1 with the 0 0 16 16 viewBox — crisp) so the bell's box height
+   matches the ADMIN text button on the same row instead of sitting 1.5px
+   shorter. */
+.notif-bell-btn svg { display: block; width: 16px; height: 16px; }
 .notif-badge {
   display: inline-block;
   min-width: 16px;
