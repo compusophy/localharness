@@ -37,26 +37,25 @@ pub(crate) async fn load_into_pending() {
     // Decrypt at-rest history; legacy plaintext falls through unchanged.
     let bytes = super::encryption::open(&bytes).await.unwrap_or(bytes);
 
-    // Project the bytes into a transcript and paint each entry.
-    match decode_transcript_bytes(&bytes) {
-        Ok(entries) if !entries.is_empty() => {
-            paint_entries(&entries);
-            // Scroll so the user sees the most recent turn, not the
-            // top of a long prior conversation. Deferred because the
-            // restore happens before first layout/font-swap settles.
-            dom::scroll_to_bottom_soon("transcript");
-        }
-        Ok(_) => {
-            // Empty transcript — bytes existed but no user-visible content.
-        }
-        Err(err) => {
-            // Corrupt bytes — surface but don't crash. The bytes are
-            // still stashed for restore; if the model rejects them at
-            // session start the user will see the error there.
-            web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
-                "history decode: {err}"
-            )));
-        }
+    // Project the bytes into a transcript and paint each entry. Try BOTH wire
+    // formats (see `decode_history_any`): a Claude-backed agent saves Anthropic
+    // shape, a Gemini one saves Gemini shape, and which backend saved this isn't
+    // known here (the agent isn't built yet). Without the fallback, every
+    // Claude-agent transcript restored BLANK.
+    let entries = decode_history_any(&bytes);
+    if !entries.is_empty() {
+        paint_entries(&entries);
+        // Scroll so the user sees the most recent turn, not the top of a long
+        // prior conversation. Deferred because the restore happens before first
+        // layout/font-swap settles.
+        dom::scroll_to_bottom_soon("transcript");
+    } else if !bytes.is_empty() {
+        // Bytes existed but neither decoder produced visible turns — log so a
+        // genuinely-unreadable history is diagnosable (it still stashes below for
+        // the model, which may accept it even if we can't paint it).
+        web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(
+            "history: bytes present but no transcript turns decoded (gemini+anthropic both empty)",
+        ));
     }
 
     APP.with(|cell| cell.borrow_mut().pending_history = Some(bytes));
@@ -81,6 +80,23 @@ pub(crate) async fn save_from_agent() {
             "history save: {err}"
         )));
     }
+}
+
+/// Decode persisted history into transcript entries, trying BOTH backend wire
+/// formats. The agent serializes history in ITS backend's shape — Gemini
+/// (`parts`) or Anthropic (`content` blocks, role `assistant`) — but which
+/// backend wrote this file isn't known at mount (the agent isn't built yet, and
+/// the model can be switched between sessions). The two shapes are
+/// self-discriminating, so the wrong decoder yields an empty transcript; pick
+/// whichever produces turns, Gemini (the default) first. Both decoders are
+/// internally lenient (skip malformed entries) so one bad turn can't blank the
+/// rest. Returns empty (never errors) when neither format matches.
+fn decode_history_any(bytes: &[u8]) -> Vec<crate::types::TranscriptEntry> {
+    let gemini = decode_transcript_bytes(bytes).unwrap_or_default();
+    if !gemini.is_empty() {
+        return gemini;
+    }
+    crate::backends::anthropic::decode_transcript_bytes(bytes).unwrap_or_default()
 }
 
 /// Take any pending restored history out of the App state. The first

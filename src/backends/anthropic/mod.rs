@@ -384,8 +384,15 @@ pub fn decode_transcript_bytes(bytes: &[u8]) -> Result<Vec<crate::types::Transcr
     if bytes.is_empty() {
         return Ok(Vec::new());
     }
-    let history: Vec<wire::Message> = serde_json::from_slice(bytes)
+    // Per-entry lenient (mirrors the Gemini decoder): a single malformed/older
+    // entry must not blank the WHOLE restored transcript. Parse the array
+    // generically, decode each message independently, skip the failures.
+    let raw: Vec<serde_json::Value> = serde_json::from_slice(bytes)
         .map_err(|e| Error::other(format!("decode_transcript_bytes: {e}")))?;
+    let history: Vec<wire::Message> = raw
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect();
     Ok(project_history(&history))
 }
 
@@ -623,6 +630,17 @@ mod tests {
     }
 
     /// Transcript projection matches tool calls to results by id.
+    /// REGRESSION: a single malformed entry must not blank the whole restored
+    /// Anthropic transcript — decode is per-entry lenient (skip failures).
+    #[test]
+    fn decode_skips_malformed_entry() {
+        let raw = br#"[{"role":"user","content":[{"type":"text","text":"q"}]},{"oops":1},{"role":"assistant","content":[{"type":"text","text":"a"}]}]"#;
+        let entries = decode_transcript_bytes(raw).expect("must not error");
+        assert_eq!(entries.len(), 2, "user + assistant kept, garbage skipped");
+        assert_eq!(entries[0].text, "q");
+        assert_eq!(entries[1].text, "a");
+    }
+
     #[test]
     fn transcript_matches_tool_calls_by_id() {
         use wire::{Block, Message, Role};
