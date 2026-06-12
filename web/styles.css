@@ -369,10 +369,15 @@ main.layout .transcript > *:empty { display: none; }
 }
 .display-canvas {
   display: block;
+  /* VARIABLE RESOLUTION: no hard-coded aspect. The canvas keeps the
+     intrinsic aspect of its backing store (the cartridge's dims() — the
+     worker sets width/height to e.g. 256x144 OR 270x480 portrait), and
+     max-width/height scale it DOWN proportionally to fit the stage
+     (replaced-element aspect preservation). A hard-coded 16/9 here squashed
+     portrait/square cartridges. 256x144 is already 16:9, so defaults are
+     unchanged. */
   max-width: 100%;
   max-height: 100%;
-  aspect-ratio: 16 / 9;
-  width: 100%;
   background: #000;
   image-rendering: pixelated;
   object-fit: contain;

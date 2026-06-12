@@ -2278,12 +2278,44 @@ pub(crate) fn public_landing(
 /// visitor never sees an edit door they can't use.
 pub(crate) fn app_fullscreen(owner_overlay: bool) -> Markup {
     html! {
+        // A public cartridge/HTML face keeps the site header (feedback: a
+        // visitor should still see the platform chrome + a way back to
+        // onboard, not a bare canvas). The cartridge fills the column below
+        // it, letterboxed to its own `dims()` aspect.
+        (public_face_header(owner_overlay))
         div.app-fullscreen {
             div.app-stage {
                 canvas #display-canvas .display-canvas {}
             }
-            @if owner_overlay {
-                a.app-edit href="?edit=1" title="back to your studio" { "studio" }
+        }
+    }
+}
+
+/// The slim header shown above a public-facing cartridge / HTML face: the
+/// `localharness` brand menu (with a `home` link to the apex, where a visitor
+/// with no identity is onboarded) and — for the owner previewing their own
+/// face — a `[studio]` escape back to the workshop. Deliberately NOT the full
+/// `site_header` (no admin/files: those are owner-studio tools, not a visitor
+/// surface).
+pub(crate) fn public_face_header(owner_overlay: bool) -> Markup {
+    html! {
+        header.site-header.public-face-header {
+            div.header-inner {
+                h1.header-brand {
+                    details.brand-menu {
+                        summary.brand-summary { "localharness" }
+                        nav.brand-menu-items {
+                            a href="https://localharness.xyz/" { "home" }
+                            a href="https://github.com/compusophy/localharness"
+                                target="_blank" rel="noopener" { "repo" }
+                            a href="https://crates.io/crates/localharness"
+                                target="_blank" rel="noopener" { "crate" }
+                        }
+                    }
+                }
+                @if owner_overlay {
+                    a.app-edit href="?edit=1" title="back to your studio" { "studio" }
+                }
             }
         }
     }
