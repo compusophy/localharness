@@ -16,8 +16,51 @@
 //! registered by `boot.js` at boot; `subscribe_push` re-registers it
 //! idempotently before subscribing.
 
+use std::cell::RefCell;
+
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
+
+thread_local! {
+    /// In-app notification bell log (newest first, capped). The header
+    /// `#notif-bell-panel` renders from this; `#notif-bell-badge` shows the
+    /// unread count. Fed by READY-UP broadcasts (the presser's own ding) and,
+    /// later, service-worker pushes relayed to the open page.
+    static BELL: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Append a notification to the in-app header bell (newest first, cap 30) and
+/// bump the unread badge. The panel content is refreshed (kept closed) so it's
+/// current when the bell is next opened.
+pub(crate) fn push_to_bell(title: &str, body: &str) {
+    BELL.with(|b| {
+        let mut v = b.borrow_mut();
+        v.insert(0, (title.to_string(), body.to_string()));
+        v.truncate(30);
+    });
+    let n = BELL.with(|b| b.borrow().len());
+    crate::app::dom::swap_outer(
+        "notif-bell-badge",
+        &format!("<span id=\"notif-bell-badge\" class=\"notif-badge\">{n}</span>"),
+    );
+    crate::app::dom::swap_outer(
+        "notif-bell-panel",
+        &crate::app::templates::notif_list_panel(&bell_items(), None, true).into_string(),
+    );
+}
+
+/// Snapshot of the in-app bell log (newest first).
+pub(crate) fn bell_items() -> Vec<(String, String)> {
+    BELL.with(|b| b.borrow().clone())
+}
+
+/// Hide the unread badge (called when the bell panel is opened / read).
+pub(crate) fn clear_bell_badge() {
+    crate::app::dom::swap_outer(
+        "notif-bell-badge",
+        "<span id=\"notif-bell-badge\" class=\"notif-badge\" hidden></span>",
+    );
+}
 
 /// VAPID application-server PUBLIC key (base64url, uncompressed P-256 point)
 /// — the `applicationServerKey` for `PushManager.subscribe`, pair of the

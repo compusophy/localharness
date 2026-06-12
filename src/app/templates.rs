@@ -2336,19 +2336,37 @@ pub(crate) fn notif_bell() -> Markup {
                 "notify"
                 span #notif-bell-badge .notif-badge hidden {}
             }
-            div #notif-bell-panel .notif-panel hidden {
-                div.notif-panel-empty { "no notifications yet" }
-            }
+            (notif_list_panel(&[], None, true))
         }
     }
 }
 
-/// The open notification-bell panel (swapped in on tap). `msg` is a status line
-/// (auto-escaped by maud). The panel is visible (no `hidden`) once swapped.
-pub(crate) fn notif_panel(msg: &str) -> Markup {
+/// The notification-bell dropdown. Renders the in-app notification log (newest
+/// first) plus an optional status `note` at the top (e.g. "notifications on" /
+/// an error). `hidden` controls visibility — `push_to_bell` re-renders it
+/// closed; the bell tap re-renders it open. All text auto-escaped by maud.
+pub(crate) fn notif_list_panel(
+    items: &[(String, String)],
+    note: Option<&str>,
+    hidden: bool,
+) -> Markup {
     html! {
-        div #notif-bell-panel .notif-panel {
-            div.notif-panel-empty { (msg) }
+        div #notif-bell-panel .notif-panel hidden[hidden] {
+            @if let Some(n) = note {
+                div.notif-panel-empty { (n) }
+            }
+            @if items.is_empty() {
+                @if note.is_none() {
+                    div.notif-panel-empty { "no notifications yet" }
+                }
+            } @else {
+                @for (title, body) in items {
+                    div.notif-item {
+                        div.notif-item-title { (title) }
+                        div.notif-item-body { (body) }
+                    }
+                }
+            }
         }
     }
 }

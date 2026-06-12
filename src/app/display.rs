@@ -1073,11 +1073,11 @@ async fn do_feed_broadcast(title: String, body: String) {
         Ok(Err(e)) => web_sys::console::warn_1(&JsValue::from_str(&format!("broadcast: {e}"))),
         Err(e) => web_sys::console::warn_1(&JsValue::from_str(&format!("broadcast timeout: {e}"))),
     }
-    // Immediate LOCAL feedback for the presser. The proxy fan-out reaches OTHER
-    // subscribers' devices (via Web Push), but the person who tapped READY UP
-    // should SEE it fire right here too — otherwise the button feels dead even
-    // when it worked. Permission-gated (granted on subscribe); requests it if
-    // still undecided, no-ops if denied. Vibrate as a tactile fallback.
+    // Immediate LOCAL feedback for the presser, on BOTH surfaces the user asked
+    // for: (1) the in-app header bell (always — no permission needed), and (2) an
+    // OS notification (permission-gated). The proxy fan-out reaches OTHER
+    // subscribers' phones via Web Push; this is the presser's own ding.
+    crate::app::notifications::push_to_bell(&title, &body);
     if crate::app::notifications::ensure_permission().await.unwrap_or(false) {
         let _ = crate::app::notifications::show(&title, &body).await;
     }
