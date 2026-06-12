@@ -897,6 +897,15 @@ input, textarea {
   font: inherit;
   outline: none;
 }
+/* iOS Safari AUTO-ZOOMS the page when a focused input's font-size is under
+   16px — on a phone that shifts the layout and can push the primary action
+   (the CLAIM button) off-screen (QA-fleet repro). Bump inputs to 16px at
+   phone widths ONLY; desktop keeps the 13px brutalist scale untouched. This
+   is the FIRST media query in the sheet — it's an input-zoom fix, not a
+   layout breakpoint, so it doesn't change the unified one-layout design. */
+@media (max-width: 600px) {
+  input, textarea, select { font-size: 16px; }
+}
 .key-row { display: flex; gap: 6px; }
 .key-row input { flex: 1; min-width: 0; }
 .add-device-form { display: flex; gap: 6px; }
