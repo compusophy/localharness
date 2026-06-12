@@ -61,9 +61,22 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageData};
 use super::dom;
 use super::templates;
 
-/// Logical framebuffer resolution. 16:9. The canvas backing store is
-/// this size; CSS scales it up with `image-rendering: pixelated` so
-/// individual pixels stay crisp.
+/// DEFAULT logical framebuffer resolution. 16:9. A cartridge that does NOT
+/// export `dims()` renders at this size (backward compatible). The canvas
+/// backing store is sized to this initially; CSS scales it up with
+/// `image-rendering: pixelated` so individual pixels stay crisp.
+///
+/// ## Variable resolution
+/// A cartridge MAY export `dims() -> i32` returning a packed `(w << 16) | h`
+/// (width high 16 bits, height low 16). The WORKER reads it after instantiate,
+/// allocates a framebuffer of that size, and STAMPS every `frame` message with
+/// the actual `w`/`h`. The main thread ([`worker::blit_frame`]) sizes the
+/// canvas backing store from those per-frame dims and builds the `ImageData`
+/// at `w`×`h` — so the host adapts to whatever the cartridge declared without
+/// the main thread ever calling `dims()` itself. Dimensions are validated +
+/// clamped to `[16, 1024]` in the worker; out of range falls back to the
+/// default. These consts remain the default + the composition/HTML-render path
+/// (single fixed surface).
 const FB_W: u32 = 256;
 const FB_H: u32 = 144;
 const FB_BYTES: usize = (FB_W * FB_H * 4) as usize;
@@ -264,23 +277,23 @@ pub(crate) async fn run_in_root_canvas(wasm_bytes: &[u8]) -> Result<(), JsValue>
 /// updating). That's acceptable for v1 (one live interactive embed); true
 /// concurrent embeds need a per-canvas worker registry, tracked as follow-up.
 ///
-/// ## Fixed framebuffer (v1) — the variable-resolution seam
-/// The canvas BACKING STORE is sized to [`FB_W`]×[`FB_H`] (256×144, 16:9) here,
-/// exactly like the overlay — the framebuffer the worker allocates is that
-/// fixed size, and CSS scales the canvas ELEMENT to the card box with
-/// `image-rendering: pixelated`. Variable framebuffer resolution + aspect
-/// (1:1, 9:16, 16:9, …) is the planned evolution: the cartridge will DECLARE
-/// its dims (e.g. an exported `dims() -> (w,h)` or a load-message field), the
-/// worker will allocate a framebuffer of that size, and THIS function is the
-/// seam where the host reads those dims and sizes the canvas backing store
-/// accordingly (instead of the hardcoded FB_W/FB_H below). Until then every
-/// cartridge — overlay or embed — renders at 256×144.
+/// ## Variable framebuffer resolution
+/// The canvas BACKING STORE is sized to the DEFAULT [`FB_W`]×[`FB_H`] (256×144)
+/// here as an initial size, but it is RESIZED to the cartridge's actual dims
+/// the moment its first `frame` message arrives ([`worker::blit_frame`] reads
+/// the `w`/`h` the worker stamped on each frame and resizes the canvas + builds
+/// the `ImageData` at `w`×`h`). A cartridge declares its size by exporting
+/// `dims() -> i32` (packed `(w<<16)|h`); with no such export it stays 256×144
+/// (backward compatible). CSS scales the canvas ELEMENT to the card box with
+/// `image-rendering: pixelated`; aspect-preserving letterboxing comes from the
+/// stylesheet's `max-width/height:100%` + `object-fit` on the canvas element.
 pub(crate) async fn run_in_canvas(
     canvas: HtmlCanvasElement,
     wasm_bytes: &[u8],
 ) -> Result<(), JsValue> {
-    // v1: fixed framebuffer. (The variable-resolution evolution reads the
-    // cartridge's declared dims here and sizes the backing store to match.)
+    // Initial backing store = the default; the worker's first frame resizes it
+    // to the cartridge's declared dims (see `worker::blit_frame`). Sizing it
+    // here avoids a 0×0 canvas flashing before the first frame lands.
     canvas.set_width(FB_W);
     canvas.set_height(FB_H);
     let id = canvas.id();
@@ -752,8 +765,14 @@ pub(crate) fn set_pointer(client_x: f64, client_y: f64) {
     if w <= 0.0 || h <= 0.0 {
         return;
     }
-    let fx = (((client_x - rect.left()) / w) * FB_W as f64).clamp(0.0, (FB_W - 1) as f64) as i32;
-    let fy = (((client_y - rect.top()) / h) * FB_H as f64).clamp(0.0, (FB_H - 1) as f64) as i32;
+    // Map into the canvas's ACTUAL backing-store resolution — the cartridge's
+    // declared framebuffer dims (which `blit_frame` set on the first frame), NOT
+    // the fixed default. A 320×240 cartridge sees pointer coords in 320×240
+    // space. Fall back to the default before the first frame sizes the canvas.
+    let fb_w = if canvas.width() > 0 { canvas.width() } else { FB_W };
+    let fb_h = if canvas.height() > 0 { canvas.height() } else { FB_H };
+    let fx = (((client_x - rect.left()) / w) * fb_w as f64).clamp(0.0, (fb_w - 1) as f64) as i32;
+    let fy = (((client_y - rect.top()) / h) * fb_h as f64).clamp(0.0, (fb_h - 1) as f64) as i32;
     POINTER.with(|p| p.set((fx, fy)));
     forward_pointer_to_worker();
 }
@@ -871,8 +890,9 @@ fn mount_canvas() -> Result<CanvasRenderingContext2d, JsValue> {
 
 /// Snapshot the live `#display-canvas` as a PNG data URL — used by the
 /// inline display card in the transcript. `None` when no canvas is mounted
-/// or the encode fails. Cheap: the backing store is the 256x144 logical
-/// framebuffer, so the PNG is a few KB.
+/// or the encode fails. Cheap: the backing store is the cartridge's logical
+/// framebuffer (256x144 default, up to 1024² for a `dims()`-declared
+/// cartridge), so the PNG is at most a few hundred KB.
 pub(crate) fn snapshot_data_url() -> Option<String> {
     let canvas = dom::by_id("display-canvas")?
         .dyn_into::<HtmlCanvasElement>()
@@ -1414,15 +1434,46 @@ mod worker {
     /// Blit a `{ type:'frame', fb:ArrayBuffer, w, h }` message to the canvas.
     /// The framebuffer is RGBA8888 already in the worker's packing
     /// (0xAABBGGRR little-endian == ImageData byte order R,G,B,A).
+    ///
+    /// VARIABLE RESOLUTION: the worker stamps every frame with the cartridge's
+    /// actual `w`/`h` (its `dims()` export, or the 256×144 default). We size the
+    /// canvas backing store to those dims (idempotent: a no-op once it matches,
+    /// so steady-state frames don't thrash) and build the `ImageData` at `w`×`h`
+    /// — the canvas adapts to the cartridge's chosen size on the FIRST frame.
+    /// Falls back to [`FB_W`]/[`FB_H`] if the message omits/garbles the dims.
     fn blit_frame(data: &JsValue, ctx: &CanvasRenderingContext2d) {
         let Ok(fb) = Reflect::get(data, &JsValue::from_str("fb")) else { return };
         let Ok(buffer) = fb.dyn_into::<ArrayBuffer>() else { return };
+        let w = Reflect::get(data, &JsValue::from_str("w"))
+            .ok()
+            .and_then(|v| v.as_f64())
+            .map(|n| n as u32)
+            .filter(|&n| n > 0)
+            .unwrap_or(FB_W);
+        let h = Reflect::get(data, &JsValue::from_str("h"))
+            .ok()
+            .and_then(|v| v.as_f64())
+            .map(|n| n as u32)
+            .filter(|&n| n > 0)
+            .unwrap_or(FB_H);
         let clamped = Uint8ClampedArray::new(&buffer);
         // ImageData wants a &Clamped<&[u8]>; copy the transferred buffer out.
         let mut bytes = vec![0u8; clamped.length() as usize];
         clamped.copy_to(&mut bytes[..]);
+        // Resize the canvas backing store to the cartridge's framebuffer dims
+        // (setting width/height to the same value is cheap; only a real change
+        // reallocates + clears). The CSS keeps the element aspect-scaled.
+        let canvas = ctx.canvas();
+        if let Some(canvas) = canvas {
+            if canvas.width() != w {
+                canvas.set_width(w);
+            }
+            if canvas.height() != h {
+                canvas.set_height(h);
+            }
+        }
         if let Ok(img) =
-            ImageData::new_with_u8_clamped_array_and_sh(Clamped(&bytes[..]), FB_W, FB_H)
+            ImageData::new_with_u8_clamped_array_and_sh(Clamped(&bytes[..]), w, h)
         {
             let _ = ctx.put_image_data(&img, 0.0, 0.0);
         }
