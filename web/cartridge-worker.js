@@ -965,18 +965,23 @@ function tick() {
   const t = (Date.now() - startMs) | 0;
   try {
     frameFn(t);
+    // host::compose: composite every live child into the parent FB after the
+    // parent's frame() draws and before present(), so the canvas only ever shows
+    // a fully-composited frame. No-op when the parent never spawned a child
+    // (composeChildren empty) — so a non-compose cartridge is byte-identical.
+    composeCompositePass(t);
+    present();
   } catch (e) {
-    // A wasm trap (unreachable / OOB) ends the run cleanly rather than spinning.
+    // ANY failure in the frame body — a wasm trap (unreachable / OOB), a compose
+    // pass error, or a present()/postMessage throw — ends the run cleanly with a
+    // CODED error. Critically, present() + the compose pass are INSIDE this guard:
+    // a throw there used to escape as an unhandled rejection, leaving the worker
+    // SILENT (no frame, no error) so the main-thread watchdog mis-reported a live
+    // cartridge as a hang (LH1001). Now it surfaces the real reason.
     running = false;
-    postError(LH_RUNTIME.WASM_TRAP, 'cartridge trapped: ' + (e && e.message ? e.message : String(e)));
+    postError(LH_RUNTIME.WASM_TRAP, 'cartridge frame failed: ' + (e && e.message ? e.message : String(e)));
     return;
   }
-  // host::compose: composite every live child into the parent FB after the
-  // parent's frame() draws and before present(), so the canvas only ever shows
-  // a fully-composited frame. No-op when the parent never spawned a child
-  // (composeChildren empty) — so a non-compose cartridge is byte-identical.
-  composeCompositePass(t);
-  present();
   // Worker rAF is available in modern browsers, but to keep this dependency-free
   // and predictable we self-pace with a ~16ms timer. The main thread's watchdog
   // (not this cadence) is what detects a hung frame.
@@ -1010,7 +1015,14 @@ async function load(wasmBuf) {
   memory = exp.memory || null;
   // A cartridge MAY declare its own framebuffer dims via `dims() -> i32`
   // (packed (w<<16)|h). No export => the 256x144 default. Reallocates the FB.
-  applyDims(exp);
+  // Guarded: a throwing dims()/alloc must surface a CODED error, not an unhandled
+  // rejection that leaves the worker silent (→ a false watchdog "hung" LH1001).
+  try {
+    applyDims(exp);
+  } catch (e) {
+    postError(LH_RUNTIME.WASM_TRAP, 'dims() failed: ' + (e && e.message ? e.message : String(e)));
+    return;
+  }
 
   if (typeof exp.frame === 'function') {
     frameFn = exp.frame;
