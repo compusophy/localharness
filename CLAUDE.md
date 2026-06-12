@@ -108,7 +108,7 @@ src/app/ (browser IDE):
   gas.rs(set_metadata_gas — THE sponsored-setMetadata formula, one home)
   notifications.rs(notify tool: local + `to:` cross-agent via proxy; sub under
     keccak256("localharness.push_sub"); bell inbox persists to OPFS via sw.js
-    relay/stash → push_arrived export; sw.js NO-cache by design)
+    relay/stash → push_arrived; sw.js stays NO-cache)
   signer_protocol.rs(lh-* postMessage consts + challenge preimage, used by BOTH
     signer.rs and verify.rs — never re-fork it)
   key_store.rs owner.rs(.lh_owner on-chain-derived hint) tenant.rs(host
@@ -144,8 +144,8 @@ web/          Vercel static site: index.html + boot.js + cartridge-worker.js
 proxy/        $LH credit proxy — SEPARATE Vercel project. The ONE off-chain
               component. api/gemini.ts(multi-provider passthrough) +
               api/mcp.ts(x402-gated MCP-over-HTTP) + api/scheduler.ts(Vercel-Cron
-              no-tab job worker) + api/notify.ts(web-push: self or cross-agent
-              `to`, sender chain-stamped; CLI `notify [--to]`)
+              no-tab job worker) + api/notify.ts(web-push, self or cross-agent
+              `to`, sender-stamped; CLI `notify [--to]`)
 scripts/      release.{ps1,sh} build-web.{ps1,sh} harvest-feedback.{sh,ps1}
               clear-feedback.sh issue-to-pr.sh test-fleet/(12 QA personas)
 examples/tempo_tx_live.rs  — live harness vs Moderato; source of truth for tempo_tx
