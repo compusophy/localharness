@@ -168,7 +168,11 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
   gap: 12px;
 }
 .header-brand { margin-right: auto; }   /* pushes utility buttons right */
-.header-admin { position: relative; }
+/* Bell + ADMIN live here. Must be a flex row, NOT the default block — as
+   block, the inline-flex bell and inline-block admin button aligned by text
+   BASELINE (bell sat 3px higher) and had zero gap (touching). Center them on
+   one axis with an 8px gap. The dropdown panel is position:fixed, out of flow. */
+.header-admin { position: relative; display: inline-flex; align-items: center; gap: 8px; }
 
 /* Brand dropdown — the top-left "localharness" title is a native
    <details> menu (no JS) exposing Home / Repo / Crate. Marker hidden
