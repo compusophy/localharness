@@ -434,7 +434,6 @@ main.layout .transcript > *:empty { display: none; }
   text-align: center;
   color: var(--bg);
   background: var(--fg);
-  border-radius: 8px;
 }
 .notif-badge[hidden] { display: none; }
 .notif-panel {
@@ -623,7 +622,9 @@ main.layout .transcript > *:empty { display: none; }
   text-decoration: none;
 }
 .explore-card:hover { border-color: var(--fg); }
-.explore-card-name { color: var(--fg); font-size: 15px; font-weight: 600; }
+/* Single-line clip: long unbroken agent names (e.g. qa-onchain-1780895987-…)
+   otherwise overflow/wrap and misalign the card grid. */
+.explore-card-name { color: var(--fg); font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .explore-card-host { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 /* One-line on-chain-persona preview — same muted, single-line-clipped
    language as .agent-preview (public-landing portfolio cards). A small
@@ -751,7 +752,7 @@ h1 {
 .tag {
   font-size: 11px; color: var(--accent);
   border: 1px solid var(--accent);
-  padding: 1px 6px; border-radius: 3px;
+  padding: 1px 6px;
 }
 
 .verify-pill.verify-pending { color: var(--muted);  border-color: var(--border); }
@@ -1074,9 +1075,33 @@ button {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   cursor: pointer;
+  /* Short greyscale ease so hover/active reads as deliberate, not abrupt
+     (no color — motion only). Matches the 90ms used on cards/rows below. */
+  transition: color 90ms ease, border-color 90ms ease, background 90ms ease;
 }
 button:hover { color: var(--fg); border-color: var(--fg); }
 button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Keyboard focus rings. Interactive controls relied on :hover alone, so a
+   keyboard/screen-reader user had NO visible focus indicator (only
+   .inline-card .ic-row had one). A monochrome 1px --fg outline on
+   :focus-visible (keyboard only — never on mouse click) makes focus order
+   followable without touching the brutalist look. */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+.explore-card:focus-visible,
+.agent-card:focus-visible,
+.agent-row-line:focus-visible {
+  outline: 1px solid var(--fg);
+  outline-offset: 2px;
+}
+/* Hover/focus motion on the navigable cards + rows (same 90ms language). */
+.explore-card, .agent-card, .agent-row-line {
+  transition: color 90ms ease, border-color 90ms ease, background 90ms ease;
+}
 button.ghost { /* legacy alias — same as base now */ }
 /* Selected chip in a picker row (model selector). The dispatcher sets
    `ghost active` on the persisted choice — without this rule the active
@@ -1126,6 +1151,13 @@ button.ready:hover {
 .turn .body {
   word-break: break-word;
 }
+/* Inline `code` in rendered markdown had no visual distinction — in a
+   monochrome UI backtick text was indistinguishable from prose, so
+   identifiers/paths/literals didn't read as code. A panel background +
+   1px border boxes it without color. Block code (`pre code`) opts out —
+   the <pre> is already styled. */
+.turn .body code { background: var(--panel); border: 1px solid var(--border); padding: 1px 4px; }
+.turn .body pre code { background: none; border: 0; padding: 0; }
 .turn.user .body { white-space: pre-wrap; color: var(--muted); }
 /* `pre-wrap` is ONLY correct while the turn STREAMS — the segment then
    holds raw model text whose newlines must show. The instant streaming
