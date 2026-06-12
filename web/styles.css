@@ -412,6 +412,12 @@ main.layout .transcript > *:empty { display: none; }
   display: inline-flex;
   align-items: center;
 }
+.notif-bell-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.notif-bell-btn svg { display: block; }
 .notif-badge {
   display: inline-block;
   min-width: 16px;

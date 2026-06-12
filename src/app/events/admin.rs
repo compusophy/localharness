@@ -306,31 +306,19 @@ async fn publish_x402_price_onchain(wei: u128) -> Result<bool, String> {
 /// keyed by its ADDRESS (works with no MAIN identity) and opens the panel. This
 /// is the path that actually lets a phone register to be pinged.
 pub(super) fn notif_bell_pressed() {
-    // Open the panel with the current in-app log; clear the unread badge.
+    // The bell is the notification LOG. Tap = open the log + clear the badge.
     let items = crate::app::notifications::bell_items();
     dom::swap_outer(
         "notif-bell-panel",
-        &templates::notif_list_panel(&items, Some("enabling notifications…"), false).into_string(),
+        &templates::notif_list_panel(&items, None, false).into_string(),
     );
     crate::app::notifications::clear_bell_badge();
+    // SILENTLY register this device for Web Push as a side effect of this real
+    // tap (the gesture the permission prompt needs — the cartridge tap can't
+    // prompt). Fire-and-forget: no toast, no vibrate, no panel text — the user
+    // only ever sees the browser's own permission prompt + their log.
     wasm_bindgen_futures::spawn_local(async move {
-        let note = match crate::app::notifications::enable_device_push().await {
-            Ok(_tx) => {
-                crate::app::notifications::vibrate(120);
-                let _ = crate::app::notifications::show(
-                    "localharness",
-                    "notifications on — this device can now be pinged",
-                )
-                .await;
-                "notifications ON — this device can now be pinged".to_string()
-            }
-            Err(e) => e,
-        };
-        let items = crate::app::notifications::bell_items();
-        dom::swap_outer(
-            "notif-bell-panel",
-            &templates::notif_list_panel(&items, Some(&note), false).into_string(),
-        );
+        let _ = crate::app::notifications::enable_device_push().await;
     });
 }
 

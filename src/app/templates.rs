@@ -2329,11 +2329,20 @@ pub(crate) fn public_face_header(owner_overlay: bool) -> Markup {
 /// unread count; `#notif-bell-panel` is the dropdown list (filled by
 /// `events::notifications`). One bell, every surface (public face + app header).
 pub(crate) fn notif_bell() -> Markup {
+    // A bell ICON (monochrome SVG, currentColor) — this is the notification LOG,
+    // not a send button. Tap it to see your notifications.
+    let bell = maud::PreEscaped(
+        "<svg viewBox=\"0 0 16 16\" width=\"15\" height=\"15\" fill=\"none\" \
+         stroke=\"currentColor\" stroke-width=\"1.3\" stroke-linecap=\"round\" \
+         stroke-linejoin=\"round\" aria-hidden=\"true\">\
+         <path d=\"M8 2.2a3 3 0 0 0-3 3c0 3.2-1.4 4.3-1.4 4.3h8.8S11 8.4 11 5.2a3 3 0 0 0-3-3z\"/>\
+         <path d=\"M6.6 12.1a1.5 1.5 0 0 0 2.8 0\"/></svg>",
+    );
     html! {
         div.notif-bell-wrap {
             button #notif-bell type="button" data-action="notif-bell"
-                title="notifications" aria-label="notifications" .header-button {
-                "notify"
+                title="notifications" aria-label="notifications" .header-button.notif-bell-btn {
+                (bell)
                 span #notif-bell-badge .notif-badge hidden {}
             }
             (notif_list_panel(&[], None, true))
