@@ -518,13 +518,15 @@ const host_agent = {
   // --- subscriber feed (fire-and-forget writes; cached reads) ---------------
   subscribe() {
     if (!viewerHasIdentity) return 0;
-    feedIsSubscribed = 1; // optimistic; main re-reads + corrects
+    if (!feedIsSubscribed) feedSubscriberCount += 1; // optimistic; main re-reads + corrects
+    feedIsSubscribed = 1;
     self.postMessage({ type: 'agent_subscribe' });
     return 1;
   },
   unsubscribe() {
     if (!viewerHasIdentity) return 0;
-    feedIsSubscribed = 0; // optimistic
+    if (feedIsSubscribed && feedSubscriberCount > 0) feedSubscriberCount -= 1; // optimistic
+    feedIsSubscribed = 0;
     self.postMessage({ type: 'agent_unsubscribe' });
     return 1;
   },
