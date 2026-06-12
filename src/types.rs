@@ -734,6 +734,7 @@ impl Step {
     /// "the model said it's done" signal — consumers (the in-tab loop)
     /// read it to stop auto-continuing and to suppress an empty-response
     /// bubble on a pure-tool/finish turn.
+    #[allow(clippy::too_many_arguments)] // a terminal-step constructor — fields, not flags
     pub fn turn_complete(
         trajectory_id: impl Into<String>,
         step_index: u32,

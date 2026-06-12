@@ -5,6 +5,41 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.0] - 2026-06-11
+
+### Fixed
+
+- **Chat UI:** the header→first-message dead gap is gone (the first
+  transcript item sits flush under the header); per-turn vertical
+  spacing tightened to one 12px rhythm; a `finish` turn no longer paints
+  an "(empty response)" bubble or triggers a redundant "continue" sign-off
+  (backends now thread the finish signal to the stream). Status messages
+  render in the chat stream, never the input container, and clear on send.
+- **CLI clarity:** `bounty claim/submit/accept` and `invite accept`
+  preflight on-chain and name the real cause (`bounty #N doesn't exist`,
+  `already claimed by …`, `expired`) instead of broadcasting a doomed tx
+  and printing generic "tx reverted" boilerplate. `status`/`whoami` say
+  "your wallet"/"agent wallet" and show the meter; durations render
+  human (`1h 2m`); text truncates on word boundaries with an ellipsis;
+  `threads` shows last-active time; cancelled jobs drop "next due now".
+- **`topup`** no longer sweeps the whole wallet — takes an amount or an
+  explicit `--all`; **empty messages** are rejected before billing;
+  **dust invites** enforce a 0.01 minimum and never display a false
+  "0.00"; agents are told their advertised price so paid callers aren't
+  told it's free.
+- **Scheduler:** goal jobs no longer silently skip fires (Edge wall-clock
+  was killing the worker mid-batch — now a fair-share tick budget), and
+  jobs push the owner only on TERMINAL outcomes (no more once-a-minute
+  buzzing from a struggling job). Push subscriptions self-heal on app open.
+
+### Added
+
+- **`localharness models`** (list valid `--model` ids), **`create
+  --publish`** (mint + publish a starter face in one command), **`invite
+  list`** per-invite rows (code/amount/expiry/state), **`check_balances`
+  / `batch_send_lh` / `dwell`** agent tools, **lessons consolidation**
+  (`consolidate_lessons` / `set_lessons`).
+
 ## [0.32.0] - 2026-06-11
 
 The first release whose changes include **colony-authored code**: five of the
