@@ -226,11 +226,21 @@ fn inject_token_styles(doc: &web_sys::Document) {
     if doc.get_element_by_id("lh-tokens").is_some() {
         return;
     }
-    let Some(head) = doc.head() else { return };
+    // `Document::head()` lives on HtmlDocument; query the element instead so
+    // this stays on the plain `web_sys::Document` we already hold. Fall back
+    // to <html> (or skip) if a host page somehow lacks a <head>.
+    let Some(parent) = doc
+        .query_selector("head")
+        .ok()
+        .flatten()
+        .or_else(|| doc.document_element())
+    else {
+        return;
+    };
     if let Ok(style_el) = doc.create_element("style") {
         let _ = style_el.set_attribute("id", "lh-tokens");
         style_el.set_text_content(Some(&style::root_tokens_css()));
-        let _ = head.append_child(&style_el);
+        let _ = parent.append_child(&style_el);
     }
 }
 
