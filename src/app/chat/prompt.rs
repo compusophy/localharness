@@ -331,6 +331,10 @@ pub(crate) fn base_system_prompt(
            as text, with NO tool call (call list_subdomains first only if you \
            must confirm the name exists). A request for a link is NEVER a \
            reason to run a cartridge.\n\
+         • \"embed / show me / play <name>'s app\" right here → embed_app(<name>): \
+           fetches another subdomain's PUBLISHED cartridge and runs it live, \
+           inline in this transcript (not an iframe). Only works if <name> \
+           published an app; one live embed at a time.\n\
          • \"How do I share my app/game/page?\" → PUBLISH it: \
            create_and_publish_app (new subdomain) or admin → public face \
            (publishes THIS tab's local app.rl/index.html on-chain). Local \

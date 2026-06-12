@@ -693,7 +693,41 @@ pub(crate) fn inline_result_card(
             }
             Some(display_card(display_thumb))
         }
+        "embed_app" => {
+            // The tool only emits `embedded: true` on success (else it errors,
+            // which short-circuits above). The card carries a live
+            // `#embed-canvas` that `chat::stream_turn` launches the stashed
+            // cartridge into right after this swaps in. Replay (no stashed
+            // bytes) paints the same canvas, which simply stays black.
+            if value.get("embedded").and_then(|v| v.as_bool()) != Some(true) {
+                return None;
+            }
+            let name = value.get("name").and_then(|v| v.as_str()).unwrap_or("app");
+            Some(embed_app_card(name))
+        }
         _ => None,
+    }
+}
+
+/// Live inline card for an `embed_app` result: a header (the embedded
+/// subdomain's name, linking out) over a 16:9 `#embed-canvas` the cartridge
+/// renders into. The canvas backing store is the fixed 256×144 framebuffer
+/// (sized by `display::run_in_canvas`); CSS scales the ELEMENT to the card box
+/// with `image-rendering: pixelated`, like the fullscreen display. Pointer
+/// input routes here while it's the active cartridge (see `events::mod`). v1:
+/// one live embed at a time (single worker).
+fn embed_app_card(name: &str) -> Markup {
+    html! {
+        div.inline-card.embed-app-card {
+            div.ic-head {
+                span.ic-title { "▶ " (name) }
+                a.ghost href=(format!("https://{name}.localharness.xyz/"))
+                    target="_blank" rel="noopener" { "open" }
+            }
+            div.embed-app-stage {
+                canvas id="embed-canvas" .embed-app-canvas {}
+            }
+        }
     }
 }
 
