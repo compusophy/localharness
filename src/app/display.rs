@@ -1000,12 +1000,6 @@ async fn do_feed_subscribe(worker: web_sys::Worker, subscribe: bool) {
     let Some((signer, _)) = crate::app::chat::credit_signer().await else { return };
     let Ok(sponsor) = crate::app::sponsor::signer() else { return };
     let token = crate::app::registry::ALPHA_USD_ADDRESS;
-    // NOTE: a subscriber receives broadcasts only if their push subscription is
-    // published under THEIR identity's MAIN tokenId (the broadcast resolves
-    // mainOf(subscriber) → push_sub). They enable that via admin → notifications
-    // on their own identity. (Auto-publishing here targeted the TENANT's slot —
-    // wrong + polluting — so it was removed; a viewer-MAIN-targeted publish is
-    // the follow-up.)
     let res = if subscribe {
         crate::app::registry::subscribe_sponsored(&signer, &sponsor, feed_id, token).await
     } else {
@@ -1013,8 +1007,47 @@ async fn do_feed_subscribe(worker: web_sys::Worker, subscribe: bool) {
     };
     if let Err(e) = res {
         web_sys::console::warn_1(&JsValue::from_str(&format!("feed subscribe: {e}")));
+    } else if subscribe {
+        // The SUBSCRIBE gesture is the right (and only) place to ask for
+        // notification permission and register THIS device for Web Push — a
+        // subscriber only ever RECEIVES a broadcast if their push subscription
+        // is published under their OWN identity's MAIN (the proxy resolves
+        // mainOf(subscriber) → push_sub). Removing this earlier left every
+        // broadcast unreachable AND never prompted for permission, so nothing
+        // ever buzzed. Best-effort: no-ops (silently) for a bare device key
+        // with no MAIN tokenId to hang the subscription on.
+        if crate::app::notifications::ensure_permission().await.unwrap_or(false) {
+            publish_viewer_push_sub().await;
+        }
     }
     refresh_feed_context(worker).await;
+}
+
+/// Publish the VIEWER's Web Push subscription under THEIR identity's MAIN
+/// tokenId, signed by the viewer's own credit key (sponsored) — the on-chain
+/// slot `/api/broadcast` reads to reach this subscriber. Distinct from
+/// `notifications::enable_and_publish`, which targets the *subdomain owner's*
+/// MAIN and signs as the owner (the owner-on-their-own-subdomain path); a
+/// VISITOR subscribing to someone else's feed needs THEIR slot, THEIR key.
+/// Best-effort + permission already ensured by the caller; a viewer with no
+/// registered MAIN has no slot they control, so this no-ops for them.
+async fn publish_viewer_push_sub() {
+    let Ok(sub_json) = crate::app::notifications::subscribe_push().await else { return };
+    let Some((signer, addr)) = crate::app::chat::credit_signer().await else { return };
+    let addr_hex = crate::encoding::bytes_to_hex_str(&addr);
+    let token_id = match crate::registry::main_of(&addr_hex).await {
+        Ok(id) if id != 0 => id,
+        _ => return, // no MAIN tokenId — nothing the viewer controls to write to
+    };
+    let Ok(sponsor) = crate::app::sponsor::signer() else { return };
+    let input = crate::registry::encode_set_push_sub(token_id, sub_json.as_bytes());
+    let gas = crate::app::gas::set_metadata_gas(sub_json.len());
+    let token = crate::app::registry::ALPHA_USD_ADDRESS;
+    if let Err(e) =
+        crate::registry::sponsored_diamond_call(&signer, &sponsor, input, token, gas).await
+    {
+        web_sys::console::warn_1(&JsValue::from_str(&format!("publish push_sub: {e}")));
+    }
 }
 
 /// THE READY UP: POST /api/broadcast so the proxy pushes to every subscriber.
@@ -1043,6 +1076,15 @@ async fn do_feed_broadcast(title: String, body: String) {
         Ok(Err(e)) => web_sys::console::warn_1(&JsValue::from_str(&format!("broadcast: {e}"))),
         Err(e) => web_sys::console::warn_1(&JsValue::from_str(&format!("broadcast timeout: {e}"))),
     }
+    // Immediate LOCAL feedback for the presser. The proxy fan-out reaches OTHER
+    // subscribers' devices (via Web Push), but the person who tapped READY UP
+    // should SEE it fire right here too — otherwise the button feels dead even
+    // when it worked. Permission-gated (granted on subscribe); requests it if
+    // still undecided, no-ops if denied. Vibrate as a tactile fallback.
+    if crate::app::notifications::ensure_permission().await.unwrap_or(false) {
+        let _ = crate::app::notifications::show(&title, &body).await;
+    }
+    crate::app::notifications::vibrate(120);
 }
 
 /// Ensure the viewer has a wallet (credit_signer generates + persists a device
