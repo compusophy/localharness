@@ -104,6 +104,16 @@ pub enum Block {
     /// Our response to a tool call. Matched to the call by `tool_use_id`.
     ToolResult {
         tool_use_id: String,
+        /// Anthropic types this `string | content_block[]`; a bare object /
+        /// number / bool is REJECTED with a 400 (`tool_result.content: Found
+        /// an object`). The fresh path stringifies via `loop::tool_result_content`,
+        /// but REPLAYED history (a saved conversation deserialized straight into
+        /// a `Value`) can carry a raw object that bypasses it and 400s on the
+        /// next turn — a Claude-backed agent with tool history became unusable.
+        /// Enforce the invariant at the WIRE BOUNDARY so EVERY construction path
+        /// is safe: a string (or already-valid array) serializes verbatim;
+        /// anything else as its compact JSON text.
+        #[serde(serialize_with = "serialize_tool_result_content")]
         content: Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
@@ -119,6 +129,19 @@ pub enum Block {
     /// tool call). `#[serde(other)]` requires a unit variant.
     #[serde(other)]
     Other,
+}
+
+/// Coerce a `tool_result.content` `Value` to a wire-valid shape. Anthropic
+/// accepts `string | content_block[]`: a string (or an array, assumed to be
+/// content blocks) passes through; any other shape (object/number/bool/null)
+/// is emitted as its compact JSON text so the API never sees a bare object.
+/// Mirrors `loop::tool_result_content` but at the SERIALIZE boundary, so it
+/// also covers replayed/restored history that never went through that helper.
+fn serialize_tool_result_content<S: serde::Serializer>(v: &Value, s: S) -> Result<S::Ok, S::Error> {
+    match v {
+        Value::String(_) | Value::Array(_) => v.serialize(s),
+        other => s.serialize_str(&other.to_string()),
+    }
 }
 
 /// Base64 image source for an [`Block::Image`].
@@ -382,6 +405,39 @@ mod tests {
     fn deserialize_text_block() {
         let b: Block = serde_json::from_str(r#"{"type":"text","text":"hello"}"#).unwrap();
         assert!(matches!(b, Block::Text { ref text } if text == "hello"));
+    }
+
+    /// REGRESSION: a `ToolResult` whose `content` is a raw object (e.g. from
+    /// REPLAYED history that never passed through `loop::tool_result_content`)
+    /// must still serialize to a wire-valid string, not a bare object —
+    /// Anthropic 400s "tool_result.content: Found an object" otherwise, which
+    /// bricked Claude-backed agents with tool history on every follow-up turn.
+    #[test]
+    fn tool_result_object_content_serializes_to_string() {
+        let block = Block::ToolResult {
+            tool_use_id: "toolu_1".into(),
+            content: serde_json::json!({"contents": "fn main() {}", "lines": 1}),
+            is_error: None,
+        };
+        let wire: Value = serde_json::to_value(&block).unwrap();
+        assert_eq!(wire["type"], "tool_result");
+        assert!(
+            wire["content"].is_string(),
+            "object content must serialize as a string, got {}",
+            wire["content"]
+        );
+        // The stringified content round-trips back to the original object.
+        let back: Value = serde_json::from_str(wire["content"].as_str().unwrap()).unwrap();
+        assert_eq!(back, serde_json::json!({"contents": "fn main() {}", "lines": 1}));
+
+        // A string content passes through verbatim (no double-quoting).
+        let s = Block::ToolResult {
+            tool_use_id: "toolu_2".into(),
+            content: Value::String("plain".into()),
+            is_error: None,
+        };
+        let sv: Value = serde_json::to_value(&s).unwrap();
+        assert_eq!(sv["content"], "plain");
     }
 
     #[test]
