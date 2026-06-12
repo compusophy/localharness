@@ -310,6 +310,21 @@ function decodeAbiBytesUtf8(resultHex: string): string {
  * don't have per-subscriber.) Returns null on ANY failure — best-effort.
  */
 async function pushSubOf(address: string): Promise<PushSubscriptionJson | null> {
+  // 1) ADDRESS-KEYED (PushFacet.pushSubOf) — the device self-registered its own
+  //    subscription, keyed by its address. This reaches a bare device key with
+  //    NO registered MAIN identity (mainOf == 0), which the legacy slot below
+  //    could never serve — the cross-device-push fix.
+  try {
+    const data =
+      '0x' + selector('pushSubOf(address)') + encodeAddressWord(address);
+    const parsed = parsePushJson(decodeAbiBytesUtf8(await ethCall(data)).trim());
+    if (parsed) return parsed;
+  } catch {
+    /* fall through to the legacy MAIN-keyed metadata slot */
+  }
+
+  // 2) LEGACY: the subscriber's MAIN tokenId metadata slot (owner-published via
+  //    admin → notifications). Kept so existing published subs keep working.
   let main: bigint;
   try {
     main = BigInt(
@@ -319,17 +334,20 @@ async function pushSubOf(address: string): Promise<PushSubscriptionJson | null> 
     return null;
   }
   if (main === 0n) return null;
-  let text: string;
   try {
     const data =
       '0x' +
       selector('metadata(uint256,bytes32)') +
       encodeUint256Word(main) +
       PUSH_SUB_KEY;
-    text = decodeAbiBytesUtf8(await ethCall(data)).trim();
+    return parsePushJson(decodeAbiBytesUtf8(await ethCall(data)).trim());
   } catch {
     return null;
   }
+}
+
+/** Parse + validate a Web Push subscription JSON string; null if malformed. */
+function parsePushJson(text: string): PushSubscriptionJson | null {
   if (!text) return null;
   let sub: PushSubscriptionJson;
   try {

@@ -1023,28 +1023,25 @@ async fn do_feed_subscribe(worker: web_sys::Worker, subscribe: bool) {
     refresh_feed_context(worker).await;
 }
 
-/// Publish the VIEWER's Web Push subscription under THEIR identity's MAIN
-/// tokenId, signed by the viewer's own credit key (sponsored) — the on-chain
-/// slot `/api/broadcast` reads to reach this subscriber. Distinct from
-/// `notifications::enable_and_publish`, which targets the *subdomain owner's*
-/// MAIN and signs as the owner (the owner-on-their-own-subdomain path); a
-/// VISITOR subscribing to someone else's feed needs THEIR slot, THEIR key.
-/// Best-effort + permission already ensured by the caller; a viewer with no
-/// registered MAIN has no slot they control, so this no-ops for them.
+/// Register the VIEWER's Web Push subscription on-chain keyed by THEIR OWN
+/// ADDRESS (`PushFacet.setPushSub`), signed by the viewer's credit key
+/// (sponsored) — the slot `/api/broadcast` reads to reach this exact device.
+/// Address-keyed so it works for ANY device, INCLUDING a bare device key with
+/// no registered MAIN identity (the old MAIN-tokenId slot left such devices
+/// unreachable — the cross-device-push bug). Permission already ensured by the
+/// caller.
 async fn publish_viewer_push_sub() {
     let Ok(sub_json) = crate::app::notifications::subscribe_push().await else { return };
-    let Some((signer, addr)) = crate::app::chat::credit_signer().await else { return };
-    let addr_hex = crate::encoding::bytes_to_hex_str(&addr);
-    let token_id = match crate::registry::main_of(&addr_hex).await {
-        Ok(id) if id != 0 => id,
-        _ => return, // no MAIN tokenId — nothing the viewer controls to write to
-    };
+    let Some((signer, _)) = crate::app::chat::credit_signer().await else { return };
     let Ok(sponsor) = crate::app::sponsor::signer() else { return };
-    let input = crate::registry::encode_set_push_sub(token_id, sub_json.as_bytes());
-    let gas = crate::app::gas::set_metadata_gas(sub_json.len());
     let token = crate::app::registry::ALPHA_USD_ADDRESS;
-    if let Err(e) =
-        crate::registry::sponsored_diamond_call(&signer, &sponsor, input, token, gas).await
+    if let Err(e) = crate::registry::set_push_sub_sponsored(
+        &signer,
+        &sponsor,
+        sub_json.as_bytes(),
+        token,
+    )
+    .await
     {
         web_sys::console::warn_1(&JsValue::from_str(&format!("publish push_sub: {e}")));
     }
