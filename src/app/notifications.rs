@@ -312,3 +312,47 @@ pub(crate) async fn refresh_subscription_if_stale() {
         )),
     }
 }
+
+/// HEADLESS auto-registration: on every app load, if notification permission is
+/// ALREADY granted AND this device already has an identity, (re)publish its
+/// ADDRESS-KEYED Web Push subscription — no gesture, no prompt, works for any
+/// visitor (no MAIN needed). After the ONE-TIME permission grant (via the bell),
+/// this keeps the device registered so a READY-UP broadcast always reaches it.
+/// Idempotent: skips the sponsored write when the on-chain sub already matches.
+pub(crate) async fn auto_register_device_push() {
+    if !matches!(
+        web_sys::Notification::permission(),
+        web_sys::NotificationPermission::Granted
+    ) {
+        return; // no permission yet — the one-time bell tap must grant it first
+    }
+    // Only if an identity ALREADY exists — never silently mint a wallet on load.
+    if crate::app::chat::credit_address_existing().await.is_none() {
+        return;
+    }
+    let Some((signer, addr)) = crate::app::chat::credit_signer().await else {
+        return;
+    };
+    let Ok(current) = subscribe_push().await else {
+        return;
+    };
+    let addr_hex = crate::encoding::bytes_to_hex_str(&addr);
+    if let Ok(Some(published)) = crate::registry::addr_push_sub_of(&addr_hex).await {
+        if published == current {
+            return; // already up to date
+        }
+    }
+    let Ok(sponsor) = crate::app::sponsor::signer() else {
+        return;
+    };
+    let token = crate::registry::ALPHA_USD_ADDRESS;
+    match crate::registry::set_push_sub_sponsored(&signer, &sponsor, current.as_bytes(), token).await
+    {
+        Ok(_) => web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(
+            "[push] device auto-registered (address-keyed)",
+        )),
+        Err(e) => web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
+            "[push] auto-register failed: {e}"
+        ))),
+    }
+}

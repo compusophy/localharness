@@ -91,7 +91,7 @@ const MAX_FANOUT = 500;
 // attacker spreading requests across isolates can exceed it. A hard global
 // limit needs shared state (KV/Redis) — deliberately out of scope (the meter
 // debit is the durable, global cost ceiling; this is a cheap first line).
-const RATE_LIMIT_MS = 20_000;
+const RATE_LIMIT_MS = 3_000;
 const lastBroadcastAt = new Map<string, number>();
 
 // Web Push subscription slot — written by the browser app's "enable

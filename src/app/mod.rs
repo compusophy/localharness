@@ -731,6 +731,12 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
         wasm_bindgen_futures::spawn_local(async {
             notifications::refresh_subscription_if_stale().await;
         });
+        // HEADLESS: once permission is granted (one-time bell tap), keep THIS
+        // device's address-keyed push sub published on every load so a READY-UP
+        // broadcast always reaches it — no button needed after the first grant.
+        wasm_bindgen_futures::spawn_local(async {
+            notifications::auto_register_device_push().await;
+        });
     }
 
     // Background: try to verify the visitor against the on-chain

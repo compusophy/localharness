@@ -313,12 +313,22 @@ pub(super) fn notif_bell_pressed() {
         &templates::notif_list_panel(&items, None, false).into_string(),
     );
     crate::app::notifications::clear_bell_badge();
-    // SILENTLY register this device for Web Push as a side effect of this real
-    // tap (the gesture the permission prompt needs — the cartridge tap can't
-    // prompt). Fire-and-forget: no toast, no vibrate, no panel text — the user
-    // only ever sees the browser's own permission prompt + their log.
+    // Register this device for Web Push as a side effect of this real tap (the
+    // gesture the permission prompt needs — the cartridge tap can't prompt).
+    // On SUCCESS: silent (the user sees only their log). On FAILURE: surface the
+    // reason in the panel + console so a broken link (permission denied / SW /
+    // publish tx) is visible, not swallowed.
     wasm_bindgen_futures::spawn_local(async move {
-        let _ = crate::app::notifications::enable_device_push().await;
+        if let Err(e) = crate::app::notifications::enable_device_push().await {
+            web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(&format!(
+                "[push] device registration failed: {e}"
+            )));
+            let items = crate::app::notifications::bell_items();
+            dom::swap_outer(
+                "notif-bell-panel",
+                &templates::notif_list_panel(&items, Some(&format!("⚠ {e}")), false).into_string(),
+            );
+        }
     });
 }
 
