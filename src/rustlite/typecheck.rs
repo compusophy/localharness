@@ -1049,6 +1049,24 @@ fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, 
         "audio::noise" => (vec![I32], I32),
         "audio::stop" => (vec![I32], Void),
         "audio::set_volume" => (vec![I32], Void),
+        // --- agent (host_agent): the cartridge<->platform bridge (feedback
+        // #66/#103). Lets a published cartridge reach the platform it runs
+        // inside, within a deliberately narrow + safe v1 surface.
+        //
+        // `notify(title, body) -> i32`  show a LOCAL system notification to
+        //   the CURRENT viewer (never other users — that P2P-subscriber push
+        //   is the named follow-up). Strings are length-prefixed pointers
+        //   (same ABI as host_net). Permission-GATED (never prompts; silently
+        //   dropped if the viewer hasn't already allowed notifications) and
+        //   RATE-LIMITED (~1 / 3s). Returns 1 if posted, 0 if dropped/limited.
+        //   Use on a user gesture (a button press) — e.g. "Ready Up!".
+        // `viewer_is_owner() -> i32`    1 if THIS device controls (owns) the
+        //   subdomain the cartridge is published under, else 0 — gate
+        //   host-only controls (the "host triggers" in a Ready-Up app).
+        // `viewer_has_identity() -> i32` 1 if the viewer has a local wallet.
+        "agent::notify" => (vec![String, String], I32),
+        "agent::viewer_is_owner" => (vec![], I32),
+        "agent::viewer_has_identity" => (vec![], I32),
         _ => return None,
     };
     let (module, func) = key.split_once("::")?;
@@ -1058,6 +1076,24 @@ fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, 
 #[cfg(test)]
 mod host_fn_tests {
     use super::*;
+
+    #[test]
+    fn host_agent_signatures_resolve() {
+        use ResolvedType::{String as Str, I32};
+        let (m, f, p, r) = resolve_host_fn("host::agent::notify").expect("notify resolves");
+        assert_eq!((m.as_str(), f.as_str()), ("agent", "notify"));
+        assert_eq!(p, vec![Str, Str]);
+        assert_eq!(r, I32, "notify returns posted/dropped flag");
+
+        for name in ["host::agent::viewer_is_owner", "host::agent::viewer_has_identity"] {
+            let (m, _f, p, r) = resolve_host_fn(name).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(m, "agent");
+            assert!(p.is_empty(), "{name} takes no args");
+            assert_eq!(r, I32);
+        }
+        // The module-elision default (display) must NOT swallow agent fns.
+        assert!(resolve_host_fn("agent::notify").is_some());
+    }
 
     #[test]
     fn state_get_resolves_to_i32_in_every_spelling() {

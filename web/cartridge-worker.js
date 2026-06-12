@@ -487,8 +487,34 @@ const host_abort = {
 const FUEL_PER_FRAME = 1_000_000;
 let fuel = FUEL_PER_FRAME;
 
+// ---- host_agent: the cartridge<->platform bridge (feedback #66/#103) ---------
+// notify forwards to the main thread (which owns Notification + the permission
+// state); viewer context is passed in at load time (the worker can't read the
+// wallet/owner state). notify is RATE-LIMITED here (1/3s) as the first line of
+// defense; the main thread re-gates on permission and never prompts. Reaching
+// OTHER users' devices (P2P subscriber push) is the deliberate follow-up — this
+// only ever notifies the current viewer.
+let viewerIsOwner = 0;
+let viewerHasIdentity = 0;
+let lastAgentNotify = 0;
+const AGENT_NOTIFY_MIN_MS = 3000;
+const host_agent = {
+  notify(titlePtr, bodyPtr) {
+    const now = Date.now();
+    if (now - lastAgentNotify < AGENT_NOTIFY_MIN_MS) return 0; // rate-limited
+    const title = (readString(titlePtr) || '').slice(0, 80);
+    const body = (readString(bodyPtr) || '').slice(0, 200);
+    if (!title) return 0;
+    lastAgentNotify = now;
+    self.postMessage({ type: 'agent_notify', title, body });
+    return 1;
+  },
+  viewer_is_owner: () => viewerIsOwner,
+  viewer_has_identity: () => viewerHasIdentity,
+};
+
 function buildImports() {
-  return { host_display, host_net, host_audio, host_log, host_time, host_abort };
+  return { host_display, host_net, host_audio, host_log, host_time, host_abort, host_agent };
 }
 
 // ---- present + frame loop ----------------------------------------------------
@@ -591,6 +617,8 @@ if (IS_WORKER) {
     if (!msg || typeof msg.type !== 'string') return;
     switch (msg.type) {
       case 'load':
+        viewerIsOwner = msg.viewerIsOwner | 0;
+        viewerHasIdentity = msg.viewerHasIdentity | 0;
         load(msg.wasm);
         break;
       case 'input':
@@ -614,6 +642,7 @@ if (typeof module !== 'undefined' && module.exports) {
     FB_W,
     FB_H,
     host_display, // the re-implemented draw ABI under test
+    host_agent,
     glyph5x7, // expose the font table for a byte-for-byte vs-Rust check
     packRgb,
     LH_RUNTIME, // the LH1xxx runtime codes the worker reports (headless check)

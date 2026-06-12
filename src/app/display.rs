@@ -1004,6 +1004,30 @@ mod worker {
                             .unwrap_or_default();
                         web_sys::console::log_1(&JsValue::from_str(&msg));
                     }
+                    // host_agent::notify — a cartridge asked to buzz the viewer.
+                    // Permission-GATED (never prompts: `show` only renders if
+                    // already granted, and we skip entirely otherwise) and the
+                    // worker already rate-limited. Local to THIS viewer only.
+                    "agent_notify" => {
+                        if matches!(
+                            web_sys::Notification::permission(),
+                            web_sys::NotificationPermission::Granted
+                        ) {
+                            let title = Reflect::get(&data, &JsValue::from_str("title"))
+                                .ok()
+                                .and_then(|v| v.as_string())
+                                .unwrap_or_default();
+                            let body = Reflect::get(&data, &JsValue::from_str("body"))
+                                .ok()
+                                .and_then(|v| v.as_string())
+                                .unwrap_or_default();
+                            if !title.is_empty() {
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    let _ = crate::app::notifications::show(&title, &body).await;
+                                });
+                            }
+                        }
+                    }
                     "done" => {
                         record_outcome(run_gen, RunOutcome::Live);
                         // A one-shot `render()` finished and posted its single
@@ -1031,6 +1055,27 @@ mod worker {
         let msg = Object::new();
         Reflect::set(&msg, &JsValue::from_str("type"), &JsValue::from_str("load"))?;
         Reflect::set(&msg, &JsValue::from_str("wasm"), &bytes.buffer())?;
+        // Viewer context for host_agent (feedback #66/#103): is THIS device the
+        // verified owner of the subdomain, and does the viewer have a wallet?
+        // Both read sync from APP state — cheap, no RPC. A cartridge gates
+        // host-only controls on `viewer_is_owner`.
+        let (is_owner, has_identity) = crate::app::APP.with(|c| {
+            let app = c.borrow();
+            (
+                matches!(app.verify_state, crate::app::VerifyState::Verified { .. }),
+                app.wallet.is_some(),
+            )
+        });
+        Reflect::set(
+            &msg,
+            &JsValue::from_str("viewerIsOwner"),
+            &JsValue::from_f64(if is_owner { 1.0 } else { 0.0 }),
+        )?;
+        Reflect::set(
+            &msg,
+            &JsValue::from_str("viewerHasIdentity"),
+            &JsValue::from_f64(if has_identity { 1.0 } else { 0.0 }),
+        )?;
         worker
             .post_message(&msg)
             .map_err(|e| JsValue::from_str(&format!("worker post failed: {e:?}")))?;

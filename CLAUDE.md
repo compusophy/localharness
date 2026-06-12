@@ -101,7 +101,8 @@ src/app/ (browser IDE):
     as a header-[files] MODAL — no files tab)
   display.rs(framebuffer: runs wasm cartridges off-main-thread in a Web Worker +
     rasterizes HTML; main-thread WATCHDOG kills hung workers — the brick fix;
-    surface = a fullscreen dismissable OVERLAY, not a tab/panel)
+    surface = a fullscreen dismissable OVERLAY, not a tab/panel; host_agent
+    bridge: notify (permission-gated, viewer-local) + viewer_is_owner/has_identity)
   gas.rs(set_metadata_gas — THE sponsored-setMetadata formula, one home)
   notifications.rs(notify tool + Web Push subscribe; sub published under
     keccak256("localharness.push_sub") for the scheduler's tab-closed pushes;
