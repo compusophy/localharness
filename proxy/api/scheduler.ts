@@ -26,6 +26,14 @@
 // So even with free/generous per-job budgets and many due jobs, the platform's
 // upstream API spend per tick is hard-capped.
 //
+// PER-TICK WALL-CLOCK BUDGET (TICK_SOFT_BUDGET_MS): the tick also self-limits
+// its OWN runtime so the Edge platform never kills it mid-batch (that kill
+// SILENTLY skipped every job after a heavy one — no recordRun, no log, no
+// summary). Each batch job gets a fair-share model deadline (a heavy run is
+// truncated + recorded, never starves the rest), and any due job the tick
+// cannot reach is reported as `deferred` (per-job result + log line; nextRun
+// unchanged, re-fires next tick). A due job either RUNS or its skip is VISIBLE.
+//
 // TRUST ENVELOPE (design §2.6): the worker gains NO new authority. It can only
 // fire owner-defined jobs and spend their PRE-COMMITTED budgets. `recordRun` is
 // the worker's ONLY on-chain write; the facet itself enforces the budget hard
@@ -182,6 +190,29 @@ const MAX_JOBS_PER_TICK = ((): number => {
 const MAX_PINGPONG_ROUNDS = ((): number => {
   const n = Number(process.env.SCHEDULER_MAX_PINGPONG_ROUNDS ?? '4');
   return Number.isFinite(n) && n > 0 ? Math.min(Math.trunc(n), 16) : 4;
+})();
+
+// ---- per-tick WALL-CLOCK budget (the silent-fire-skip fix) -------------------
+//
+// Edge kills the function at ~25-30s. Before this guard, ONE heavy ping-pong
+// job (8 metered calls ≈ 24-40s of model time) could eat the entire tick: the
+// platform killed the worker MID-BATCH, so every job after it in the batch was
+// skipped with NO recordRun, NO log line, and NO tick summary — the fleet's
+// "goal job silently never fired" repro (job #31: due, never run, runsLeft
+// intact, while job #28 fired 8-call runs every minute). Two fixes hang off
+// this soft budget:
+//   * FAIR-SHARE MODEL DEADLINES — batch job i may run its model loop until
+//     the (i+1)/batchSize fraction of the budget (cumulative, so a quick early
+//     job rolls unused time forward). A heavy early job is TRUNCATED — its
+//     partial work is still recorded + noted 'wall-clock capped' — instead of
+//     starving every job behind it.
+//   * OBSERVABLE DEFERRALS — any due job the tick cannot reach (batch cap or
+//     budget already gone) gets a `deferred` result row + a log line instead
+//     of vanishing with a killed function. Its nextRun is untouched; it
+//     re-fires next tick.
+const TICK_SOFT_BUDGET_MS = ((): number => {
+  const n = Number(process.env.SCHEDULER_TICK_SOFT_BUDGET_MS ?? '20000');
+  return Number.isFinite(n) && n >= 5000 ? Math.min(Math.trunc(n), 290_000) : 20_000;
 })();
 
 // Status enum (LibScheduleStorage.Status). Only Active (0) jobs are fired.
@@ -941,6 +972,10 @@ interface PingPongResult {
   /** True if the loop stopped because a per-TICK cap (global/per-owner) blocked
    * the next call (the job spills to the next tick). */
   tickCapped: boolean;
+  /** True if the loop stopped because the job's fair share of the tick's
+   * wall-clock budget ran out (partial work is still recorded; the job
+   * re-fires on its own interval — never a silent skip). */
+  clockCapped: boolean;
   /** Set when the agent called `finish_goal`: its final report. The caller
    * relays this to the facet's `completeJob` (after recordRun debits this
    * run's calls) — the job ends + the remainder refunds to the owner. */
@@ -986,6 +1021,7 @@ async function runPingPong(
   targetId: bigint,
   owner: string,
   tb: TickBudget,
+  modelDeadlineMs: number,
 ): Promise<PingPongResult> {
   const contents: GeminiContent[] = [
     { role: 'user', parts: [{ text: task }] },
@@ -994,10 +1030,12 @@ async function runPingPong(
   let lastText = '';
   let budgetCapped = false;
   let tickCapped = false;
+  let clockCapped = false;
 
-  // BOTH gates (per-job budget AND per-tick caps) for the NEXT metered call.
-  // Returns true if we may proceed; sets the matching *Capped flag + returns
-  // false if not. Caller commits the spend after a true.
+  // ALL gates (per-job budget AND per-tick caps AND the job's fair share of
+  // the tick wall-clock) for the NEXT metered call. Returns true if we may
+  // proceed; sets the matching *Capped flag + returns false if not. Caller
+  // commits the spend after a true.
   const mayMeterCall = (): boolean => {
     if (calls >= maxCalls) {
       budgetCapped = true;
@@ -1005,6 +1043,13 @@ async function runPingPong(
     }
     if (!canSpend(tb, owner, COST_WEI)) {
       tickCapped = true;
+      return false;
+    }
+    if (Date.now() >= modelDeadlineMs) {
+      // Wall-clock fair share spent: stop HERE so the jobs behind this one in
+      // the batch still get processed (and so the platform never kills the
+      // function mid-batch, which would skip them SILENTLY).
+      clockCapped = true;
       return false;
     }
     return true;
@@ -1027,6 +1072,7 @@ async function runPingPong(
         rounds: round + 1,
         budgetCapped,
         tickCapped,
+        clockCapped,
       };
     }
 
@@ -1045,6 +1091,7 @@ async function runPingPong(
         rounds: round + 1,
         budgetCapped,
         tickCapped,
+        clockCapped,
         goalReport: output,
       };
     }
@@ -1064,7 +1111,9 @@ async function runPingPong(
         responsePayload = {
           error: budgetCapped
             ? 'budget exhausted: not enough remaining $LH to schedule a child job'
-            : 'per-tick spend cap reached: cannot schedule a child job this tick',
+            : clockCapped
+              ? 'tick wall-clock budget reached: cannot schedule a child job this run'
+              : 'per-tick spend cap reached: cannot schedule a child job this tick',
         };
       } else {
         calls++;
@@ -1123,7 +1172,7 @@ async function runPingPong(
           { functionResponse: { name: 'schedule_task', response: responsePayload } },
         ],
       });
-      if (tickCapped) break; // a per-tick cap halts the whole run (spills)
+      if (tickCapped || clockCapped) break; // a tick cap / spent wall-clock share halts the run
       continue;
     }
 
@@ -1149,7 +1198,9 @@ async function runPingPong(
         responsePayload = {
           error: budgetCapped
             ? 'budget exhausted: not enough remaining $LH to notify the owner'
-            : 'per-tick spend cap reached: cannot notify the owner this tick',
+            : clockCapped
+              ? 'tick wall-clock budget reached: cannot notify the owner this run'
+              : 'per-tick spend cap reached: cannot notify the owner this tick',
         };
       } else {
         calls++;
@@ -1171,7 +1222,7 @@ async function runPingPong(
           { functionResponse: { name: 'notify_owner', response: responsePayload } },
         ],
       });
-      if (tickCapped) break; // a per-tick cap halts the whole run (spills)
+      if (tickCapped || clockCapped) break; // a tick cap / spent wall-clock share halts the run
       continue;
     }
 
@@ -1190,7 +1241,9 @@ async function runPingPong(
       responsePayload = {
         error: budgetCapped
           ? 'budget exhausted: not enough remaining $LH to call another agent'
-          : 'per-tick spend cap reached: cannot call another agent this tick',
+          : clockCapped
+            ? 'tick wall-clock budget reached: cannot call another agent this run'
+            : 'per-tick spend cap reached: cannot call another agent this tick',
       };
     } else {
       calls++;
@@ -1211,17 +1264,19 @@ async function runPingPong(
         { functionResponse: { name: 'call_agent', response: responsePayload } },
       ],
     });
-    if (tickCapped) break; // a per-tick cap halts the whole run (spills)
+    if (tickCapped || clockCapped) break; // a tick cap / spent wall-clock share halts the run
   }
 
-  // Fell out of the loop: MAX_PINGPONG_ROUNDS hit, OR the per-job budget capped us,
-  // OR a per-tick cap halted us mid-conversation. Return the best text we have.
+  // Fell out of the loop: MAX_PINGPONG_ROUNDS hit, OR the per-job budget capped
+  // us, OR a per-tick cap halted us mid-conversation, OR the job's wall-clock
+  // fair share ran out. Return the best text we have.
   return {
-    output: lastText || '(the agent reached its round/budget/tick limit without a final answer)',
+    output: lastText || '(the agent reached its round/budget/tick/wall-clock limit without a final answer)',
     calls,
     rounds: MAX_PINGPONG_ROUNDS,
     budgetCapped,
     tickCapped,
+    clockCapped,
   };
 }
 
@@ -1419,7 +1474,10 @@ async function completeJob(id: bigint): Promise<'completed' | 'failed'> {
 
 interface JobResult {
   id: string;
-  outcome: 'recorded' | 'skipped' | 'stale' | 'spilled';
+  /** `deferred` = due this tick but never started (batch cap, or the tick's
+   * wall-clock budget ran out first). nextRun is UNCHANGED — it re-fires next
+   * tick. Always logged + reported, never silent. */
+  outcome: 'recorded' | 'skipped' | 'stale' | 'spilled' | 'deferred';
   ran: 'ok' | 'error' | 'n/a';
   /** generateContent calls made this run (agent turns + sub-agent turns). */
   calls?: number;
@@ -1439,9 +1497,15 @@ interface JobResult {
  * (advancing nextRun + debiting `calls * COST_WEI`, capped to the budget) — even
  * if Gemini errored, so a broken job can never hot-loop and stays bounded by its
  * budget. The per-job budget bounds the WHOLE ping-pong run; `tb` (the shared
- * tick ledger) caps the WHOLE tick across all jobs/owners on top.
+ * tick ledger) caps the WHOLE tick across all jobs/owners on top;
+ * `modelDeadlineMs` (this job's fair share of the tick wall-clock, computed by
+ * the handler) truncates a heavy run so the jobs behind it still fire.
  */
-async function processJob(id: bigint, tb: TickBudget): Promise<JobResult> {
+async function processJob(
+  id: bigint,
+  tb: TickBudget,
+  modelDeadlineMs: number,
+): Promise<JobResult> {
   const idStr = id.toString();
   const job = await getJob(id);
 
@@ -1519,6 +1583,7 @@ async function processJob(id: bigint, tb: TickBudget): Promise<JobResult> {
   let calls = 0;
   let budgetCapped = false;
   let tickCapped = false;
+  let clockCapped = false;
   // `ranLoop` = the ping-pong loop actually executed (and self-committed its calls
   // to the tick ledger). If a pre-loop READ (persona/task) throws, the loop never
   // ran and committed nothing — we charge ONE call below and must ALSO commit that
@@ -1545,10 +1610,20 @@ async function processJob(id: bigint, tb: TickBudget): Promise<JobResult> {
       ? `THE GOAL:\n${rawTask.slice(GOAL_PREFIX.length).trim()}`
       : rawTask || 'Perform your scheduled task and report concisely.';
     ranLoop = true;
-    const result = await runPingPong(persona, task, maxCalls, id, job.targetId, job.owner, tb);
+    const result = await runPingPong(
+      persona,
+      task,
+      maxCalls,
+      id,
+      job.targetId,
+      job.owner,
+      tb,
+      modelDeadlineMs,
+    );
     calls = result.calls;
     budgetCapped = result.budgetCapped;
     tickCapped = result.tickCapped;
+    clockCapped = result.clockCapped;
     goalReport = result.goalReport;
     runNote = result.output;
     // MVP output sink = the Vercel log. The reply is recorded here so a scheduled
@@ -1559,7 +1634,8 @@ async function processJob(id: bigint, tb: TickBudget): Promise<JobResult> {
     console.log(
       `[scheduler] job ${idStr} target ${name} (#${job.targetId}) ` +
         `calls=${calls}/${maxCalls} rounds=${result.rounds}` +
-        `${budgetCapped ? ' (budget-capped)' : ''}${tickCapped ? ' (tick-capped)' : ''} ` +
+        `${budgetCapped ? ' (budget-capped)' : ''}${tickCapped ? ' (tick-capped)' : ''}` +
+        `${clockCapped ? ' (wall-clock-capped)' : ''} ` +
         `reply: ${runNote.slice(0, 800)}`,
     );
   } catch (e) {
@@ -1633,9 +1709,11 @@ async function processJob(id: bigint, tb: TickBudget): Promise<JobResult> {
           ? runNote.slice(0, 200)
           : tickCapped
             ? 'tick-capped mid-run (remaining work spills to next tick)'
-            : budgetCapped
-              ? 'budget-capped mid-run'
-              : undefined,
+            : clockCapped
+              ? 'wall-clock capped mid-run (partial work recorded; re-fires on its interval)'
+              : budgetCapped
+                ? 'budget-capped mid-run'
+                : undefined,
   };
 }
 
@@ -1700,38 +1778,77 @@ export default async function handler(req: Request): Promise<Response> {
   const tickBudget = newTickBudget();
   let scanned = 0;
   try {
-    // Collect up to MAX_JOBS_PER_TICK due jobs by FOLLOWING the cursor across
-    // pages. jobsDue(startAfter, limit) scans the INDEX WINDOW
+    // Collect the FULL due set by FOLLOWING the cursor across pages.
+    // jobsDue(startAfter, limit) scans the INDEX WINDOW
     // [startAfter, startAfter+limit) of the enumerable jobIds and returns the
     // due ones in it + nextCursor (the index after the window). A single page
     // from 0 STARVES newer due jobs once terminal (Exhausted/Cancelled) jobs
-    // pile up at low indices — so page forward until we have enough due jobs or
-    // the index is fully scanned. Bounded (max 64 pages) so a huge index can't spin.
-    const ids: bigint[] = [];
+    // pile up at low indices — so page forward until the index is fully
+    // scanned. Bounded (max 64 pages of view calls) so a huge index can't
+    // spin. We scan PAST the batch cap on purpose: every due job we will NOT
+    // process this tick must still be VISIBLE (a `deferred` result row), so a
+    // skip is never silent.
+    const dueAll: bigint[] = [];
     const SCAN_PAGE = 64n;
     let cursor = 0n;
-    for (let page = 0; page < 64 && ids.length < MAX_JOBS_PER_TICK; page++) {
+    for (let page = 0; page < 64; page++) {
       const { ids: pageIds, nextCursor } = await jobsDue(cursor, SCAN_PAGE);
-      for (const id of pageIds) ids.push(id);
+      for (const id of pageIds) dueAll.push(id);
       if (nextCursor <= cursor) break; // cursor didn't advance => fully scanned
       cursor = nextCursor;
     }
-    const due = ids.slice(0, MAX_JOBS_PER_TICK);
-    scanned = due.length;
+    const due = dueAll.slice(0, MAX_JOBS_PER_TICK);
+    scanned = dueAll.length;
+
+    // A due job this tick cannot reach is NEVER silent: log + report it.
+    // Its nextRun is untouched, so jobsDue returns it again next tick.
+    const defer = (id: bigint, why: string) => {
+      console.warn(`[scheduler] job ${id} DEFERRED — ${why}; re-fires next tick (nextRun unchanged)`);
+      results.push({
+        id: id.toString(),
+        outcome: 'deferred',
+        ran: 'n/a',
+        note: `${why} — re-fires next tick (nextRun unchanged)`,
+      });
+    };
 
     // Process SEQUENTIALLY so recordRun txs from the single scheduler account
     // don't collide on the nonce (they share one EOA). Each run's accounting is
     // awaited before the next starts — bounded + ordered.
-    for (const id of due) {
+    for (let i = 0; i < due.length; i++) {
+      const id = due[i];
+      // MID-BATCH WALL-CLOCK GUARD: if earlier jobs (model loops + receipt
+      // waits) already consumed the tick's soft budget, defer the remainder
+      // OBSERVABLY rather than letting the platform kill the function
+      // mid-batch — which would skip them with no recordRun, no log, and no
+      // tick summary (the fleet's "silent fire-skip").
+      if (i > 0 && Date.now() - tickStart >= TICK_SOFT_BUDGET_MS) {
+        for (const rest of due.slice(i)) defer(rest, 'tick wall-clock budget exhausted');
+        break;
+      }
+      // FAIR-SHARE MODEL DEADLINE: job i may run its model loop until the
+      // (i+1)/batchSize fraction of the tick budget. Cumulative, so a quick
+      // early job rolls its unused time forward; a heavy early job is
+      // truncated (its partial work recorded + noted) instead of eating the
+      // whole tick and starving every job behind it.
+      const modelDeadline = tickStart + Math.floor((TICK_SOFT_BUDGET_MS * (i + 1)) / due.length);
       try {
-        results.push(await processJob(id, tickBudget));
+        results.push(await processJob(id, tickBudget, modelDeadline));
       } catch (e) {
         // A read failure for one job must not abort the whole tick.
         console.error(`[scheduler] job ${id} unexpected error: ${(e as Error).message}`);
         results.push({ id: id.toString(), outcome: 'skipped', ran: 'n/a', note: (e as Error).message });
       }
     }
+
+    // Due jobs beyond the per-tick batch cap: visible, never silent.
+    for (const id of dueAll.slice(MAX_JOBS_PER_TICK)) {
+      defer(id, `due but beyond the per-tick job cap (${MAX_JOBS_PER_TICK})`);
+    }
   } catch (e) {
+    // Loud in the function logs too — a pre-loop failure (RPC scan, etc.)
+    // means NOTHING ran this tick, which must be diagnosable after the fact.
+    console.error(`[scheduler] tick FAILED before/while processing: ${(e as Error).message}`);
     return new Response(
       JSON.stringify({ error: 'scheduler tick failed: ' + (e as Error).message }),
       { status: 502, headers: { 'content-type': 'application/json' } },
@@ -1743,6 +1860,9 @@ export default async function handler(req: Request): Promise<Response> {
   const skipped = results.filter((r) => r.outcome === 'skipped').length;
   // SPILLED = blocked by a per-tick cap (#1); re-fires next tick (NOT dropped).
   const spilled = results.filter((r) => r.outcome === 'spilled').length;
+  // DEFERRED = due but never started this tick (batch cap / wall-clock budget);
+  // re-fires next tick (NOT dropped). Reported per job so a skip is never silent.
+  const deferred = results.filter((r) => r.outcome === 'deferred').length;
   const errored = results.filter((r) => r.ran === 'error').length;
   // /goal jobs that ended themselves this tick (finish_goal → completeJob).
   const goalsCompleted = results.filter((r) => r.goal === 'completed').length;
@@ -1756,9 +1876,16 @@ export default async function handler(req: Request): Promise<Response> {
     stale,
     skipped,
     spilled,
+    deferred,
     errored,
     goalsCompleted,
     totalCalls,
+    // Spilled/deferred jobs are BY DESIGN, not failures: their nextRun is
+    // unchanged and they re-fire next tick (per-tick spend/job/wall-clock caps).
+    note:
+      spilled + deferred > 0
+        ? 'spilled/deferred jobs hit a per-tick cap (spend, job count, or wall-clock); nextRun unchanged — they re-fire next tick'
+        : undefined,
     // Real $LH the worker committed to spend this tick (the per-tick cap unit).
     tickSpentWei: tickBudget.global.toString(),
     globalTickCapWei: GLOBAL_TICK_CAP_WEI.toString(),
@@ -1767,7 +1894,7 @@ export default async function handler(req: Request): Promise<Response> {
     jobs: results,
   };
   console.log(
-    `[scheduler] tick: scanned=${scanned} recorded=${recorded} stale=${stale} skipped=${skipped} spilled=${spilled} errored=${errored} goalsCompleted=${goalsCompleted} calls=${totalCalls} spentWei=${tickBudget.global} in ${summary.durationMs}ms`,
+    `[scheduler] tick: scanned=${scanned} recorded=${recorded} stale=${stale} skipped=${skipped} spilled=${spilled} deferred=${deferred} errored=${errored} goalsCompleted=${goalsCompleted} calls=${totalCalls} spentWei=${tickBudget.global} in ${summary.durationMs}ms`,
   );
   return new Response(JSON.stringify(summary), {
     status: 200,
