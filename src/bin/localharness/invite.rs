@@ -8,7 +8,7 @@ usage: localharness invite <create|accept|reclaim|list> ...
   invite accept [--as <me>] <code>                        accept an invite (paid to you)
   invite reclaim [--as <me>] <code>                       refund an EXPIRED invite
   invite list [--as <me>]                                 your total escrowed $LH
-  dur: 1h / 7d / 30d   (1h … 90d, default 7d)   amount: $LH (e.g. 100 or 10.5)";
+  dur: 1h / 7d / 30d   (1h … 90d, default 7d)   amount: $LH (min 0.01, e.g. 100 or 10.5)";
 
 /// Parse an invite TTL like `1h` / `7d` / `30m` / `3600` (bare = seconds) into
 /// seconds, enforcing the facet's `[MIN_TTL, MAX_TTL]` = 1h…90d bound. Pure +
@@ -111,6 +111,13 @@ pub(crate) fn parse_invite_create_args(rest: &[String]) -> Result<ParsedInviteCr
         Some(w) if w > 0 => w,
         _ => return Err(format!("--amount must be a positive $LH amount, got '{amount_label}'")),
     };
+    // Dust guard: below 0.01 $LH the escrow is real but every display rounds
+    // it away — reject it outright rather than create a worthless invite.
+    if amount_wei < INVITE_MIN_AMOUNT_WEI {
+        return Err(format!(
+            "--amount must be at least 0.01 $LH, got '{amount_label}'"
+        ));
+    }
     let ttl_secs = match ttl {
         None => INVITE_DEFAULT_TTL_SECS,
         Some(raw) => parse_ttl(&raw)?,
@@ -374,6 +381,15 @@ mod tests {
         // Zero / non-numeric amount.
         assert!(parse_invite_create_args(&args(&["--amount", "0"])).is_err());
         assert!(parse_invite_create_args(&args(&["--amount", "nope"])).is_err());
+        // Dust below the 0.01 $LH minimum (1 wei used to escrow as "0.00 LH").
+        let e = parse_invite_create_args(&args(&["--amount", "0.000000000000000001"]))
+            .err()
+            .expect("dust amount must be rejected");
+        assert!(e.contains("at least 0.01"), "got: {e}");
+        assert!(parse_invite_create_args(&args(&["--amount", "0.009"])).is_err());
+        // The exact minimum is allowed.
+        let p = parse_invite_create_args(&args(&["--amount", "0.01"])).unwrap();
+        assert_eq!(p.amount_wei, INVITE_MIN_AMOUNT_WEI);
         // Out-of-range ttl bubbles up from parse_ttl.
         assert!(parse_invite_create_args(&args(&["--amount", "10", "--ttl", "30m"])).is_err());
         assert!(parse_invite_create_args(&args(&["--amount", "10", "--ttl", "91d"])).is_err());

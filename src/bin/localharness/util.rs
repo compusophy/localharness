@@ -41,10 +41,18 @@ pub(crate) fn take_as_flag(args: &[String]) -> Result<(Option<String>, Vec<Strin
     take_value_flag(args, "--as", "usage: --as <name> requires a name")
 }
 
-/// Format `$LH` wei as a 2-decimal LH string.
+/// Format `$LH` wei as a 2-decimal LH string. A nonzero amount below 0.01
+/// renders as `<0.01 LH` — truncating dust to a false "0.00 LH" let a 1-wei
+/// invite print as escrowing nothing (the fleet's dust-invite lie). Every
+/// command's `$LH` display flows through here, so they all get the fix.
 pub(crate) fn fmt_lh(wei: u128) -> String {
-    let whole = wei / 1_000_000_000_000_000_000u128;
-    let cents = (wei % 1_000_000_000_000_000_000u128) / 10_000_000_000_000_000u128;
+    const ONE_LH: u128 = 1_000_000_000_000_000_000;
+    const ONE_CENT: u128 = ONE_LH / 100; // 0.01 $LH
+    if wei > 0 && wei < ONE_CENT {
+        return "<0.01 LH".to_string();
+    }
+    let whole = wei / ONE_LH;
+    let cents = (wei % ONE_LH) / ONE_CENT;
     format!("{whole}.{cents:02} LH")
 }
 
@@ -308,6 +316,22 @@ pub(crate) fn name_is_valid(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fmt_lh_never_shows_a_false_zero() {
+        // True zero stays "0.00 LH" …
+        assert_eq!(fmt_lh(0), "0.00 LH");
+        // … but nonzero dust below a cent must NOT print as nothing: a 1-wei
+        // invite printed "0.00 LH" while really escrowing value (fleet bug).
+        assert_eq!(fmt_lh(1), "<0.01 LH");
+        assert_eq!(fmt_lh(9_999_999_999_999_999), "<0.01 LH"); // 1 wei under a cent
+        // From exactly one cent up, the 2-decimal display is unchanged.
+        assert_eq!(fmt_lh(10_000_000_000_000_000), "0.01 LH");
+        assert_eq!(fmt_lh(1_000_000_000_000_000_000), "1.00 LH");
+        assert_eq!(fmt_lh(10_500_000_000_000_000_000), "10.50 LH");
+        // Sub-cent residue on a non-dust amount still truncates (not false-zero).
+        assert_eq!(fmt_lh(1_005_000_000_000_000_000), "1.00 LH");
+    }
 
     #[test]
     fn take_as_flag_extracts_caller() {

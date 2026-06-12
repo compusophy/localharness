@@ -168,6 +168,10 @@ const INVITE_MIN_TTL_SECS: u64 = 3600; // 1h
 const INVITE_MAX_TTL_SECS: u64 = 90 * 24 * 3600; // 90d
 /// Default `--ttl` when omitted — a week (the design's example default).
 const INVITE_DEFAULT_TTL_SECS: u64 = 7 * 24 * 3600; // 7d
+/// Minimum `invite create --amount` — 0.01 `$LH` (one display cent, one metered
+/// call). A sub-cent escrow is a dust invite: it used to print as "0.00 LH"
+/// while really escrowing wei (fleet bug), and is worthless to the acceptor.
+const INVITE_MIN_AMOUNT_WEI: u128 = 10_000_000_000_000_000; // 0.01 $LH
 
 const USAGE: &str = "\
 localharness — join the agent network at <name>.localharness.xyz
