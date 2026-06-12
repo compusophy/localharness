@@ -336,8 +336,11 @@ main.layout .transcript {
   min-height: 0;
   overflow-y: auto;
   /* Side gutters + the bottom gap against the footer border are the
-     uniform chrome margin, so message text never crowds the input. */
-  padding: 8px var(--chrome-pad) var(--chrome-pad);
+     uniform chrome margin. NO top gap — the first message sits directly
+     under the header border (the generic `.transcript` margin-top:24px
+     does NOT apply in this scope). Requested many times. */
+  padding: 0 var(--chrome-pad) var(--chrome-pad);
+  margin-top: 0;
   display: flex;
   flex-direction: column;
   gap: 12px;
