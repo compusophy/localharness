@@ -26,17 +26,19 @@ pub async fn subscribe_sponsored(
     target_id: u64,
     fee_token: &str,
 ) -> Result<String, String> {
-    // First subscribe to a feed CREATES the dynamic array (3 cold SSTOREs:
-    // length + element + index mapping) + event ~= 100k inner, and Tempo
-    // sponsorship adds ~275k overhead ON TOP. 300k total OUT-OF-GASSED the
-    // inner call (receipt reverted) — 600k gives real headroom; the sponsor
-    // pays gas USED, not the limit (CLAUDE.md "cast estimate, never guess").
+    // `cast estimate` (never guess): the FIRST subscriber to a feed creates the
+    // dynamic array (length + element + 1-based index mapping = several cold
+    // SSTOREs) and costs ~1.05M gas INNER; even joining a populated feed is
+    // ~800k. Tempo sponsorship adds ~275k on top → ~1.33M real. 300k then 600k
+    // both OUT-OF-GASSED (receipt reverted → the toggle snapped back, count
+    // stuck at 0). 2M is the limit; the sponsor pays gas USED, not the cap, so
+    // the headroom is free (CLAUDE.md "the bug is always an under-set cap").
     sponsored_diamond_call(
         sender,
         fee_payer,
         encode_target_call("subscribe(uint256)", target_id),
         fee_token,
-        600_000,
+        2_000_000,
     )
     .await
 }
