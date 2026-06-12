@@ -1,11 +1,39 @@
 # host::compose — in-framebuffer subdomain composition
 
-> **STATUS: open.** The single-cartridge framebuffer runtime (Web Worker +
-> watchdog) shipped, and the iframe-based `?compose=` it replaces is gone — but
-> the multi-child `host::compose` ABI (spawn / move / focus / close, per-child
-> wasm instances clipped into one shared RGBA buffer) is NOT built. This is also
+> **STATUS: pure core LANDED; wiring open.** The single-cartridge framebuffer
+> runtime (Web Worker + watchdog) shipped, the iframe-based `?compose=` it
+> replaces is gone, and the **pure compositor core** now lives native-tested in
+> `src/compose.rs`: the cache (`WasmCache`), the admission budget
+> (`ComposeBudget`), the deferred-mutation module table (`ModuleTable` /
+> `Pending`), the grid layout (`grid_viewports`), and — new this cut — the
+> **framebuffer blit** (`blit_child`) + **pointer map** (`map_pointer_into_child`)
+> that composite a child surface into a parent rect and route input into it. What
+> remains is the wasm-only wiring: the rustlite `host::compose` import and the
+> `app::display` compositor calling these pure functions per child. This is also
 > where the open **cartridge host-import / rich-context-cartridge** frontier
-> lives. Meaty blueprint; unimplemented.
+> lives.
+>
+> **What THIS cut delivers (the pure core, `src/compose.rs`):**
+> - `blit_child(dst, dst_w, dst_h, child, child_w, child_h, x, y, view_w, view_h)`
+>   — composite a packed-`u32` child framebuffer into a viewport of a packed-`u32`
+>   parent framebuffer; nearest-neighbour integer scale; total edge clipping;
+>   bounds-safe (never panics / never indexes OOB). Mirrored as
+>   `Module::blit_into`.
+> - `map_pointer_into_child(px, py, x, y, view_w, view_h, child_w, child_h) ->
+>   Option<(cx, cy)>` — map a parent pointer into a child's local space, `None`
+>   when outside the viewport; the exact inverse of the blit's forward sample.
+>   Mirrored as `Module::pointer_into`.
+> - 31 native unit tests covering scale (identity / 2x / 0.5x), four-edge + fully-
+>   offscreen clipping, RGBA channel-order preservation, short-slice safety, the
+>   pointer in/out-of-viewport gate, scale mapping, rightmost-column clamp, and a
+>   blit↔pointer roundtrip agreement.
+>
+> **What's DEFERRED to the wiring follow-up (wasm-only, `src/app/` + rustlite):**
+> the `host::compose` rustlite import (spawn/status/move/focus/close), the
+> `app::display` compositor pass that fetches a child's `app.wasm`, runs its
+> `frame()` into its own buffer, calls `blit_child` to fold it into the shared
+> framebuffer, and fills the focused child's `InputSource::Local` pointer cell via
+> `map_pointer_into_child`. None of that is in this cut.
 
 Status: design. Replaces the iframe-based `?compose=` (`src/app/compose.rs` +
 `src/app/embed.rs`). No iframes, no DOM, one canvas.
@@ -72,6 +100,65 @@ The parent is the window manager: it decides the layout (rects), z-order (spawn
 order), and which child is focused. There is one shared host framebuffer; the
 parent's draws and every child's draws all land in it, then a single `present()`
 flips it to the canvas.
+
+## 0. The pure compositor core (`src/compose.rs`) — LANDED
+
+Everything below the ABI that is *pure control flow + pixel math* lives in
+`src/compose.rs`, native-tested, carrying zero browser dependency. The wasm-only
+`app::display` compositor is a thin shell over it.
+
+### Framebuffer model
+
+Both parent and child framebuffers are **packed `u32`** in the worker's
+convention: `0xAABBGGRR` little-endian (byte order R, G, B, A — see
+`web/cartridge-worker.js`, which fills a `Uint32Array`). A child renders into its
+own `child_w x child_h` buffer (its native resolution); the host folds that buffer
+into the parent's framebuffer at the child's viewport.
+
+### `blit_child` — the composite primitive
+
+```text
+blit_child(dst, dst_w, dst_h, child, child_w, child_h, x, y, view_w, view_h)
+```
+
+Composites the `child_w x child_h` child surface into the rect `(x, y, view_w,
+view_h)` of the parent `dst`.
+
+- **Sampling.** Nearest-neighbour, integer-only. For each destination pixel the
+  source is `src = (dst_local * child_dim) / view_dim` per axis. This handles
+  upscale (2x → each source pixel becomes a block), downscale (0.5x → odd
+  rows/cols are dropped, never blended), and identity uniformly. Pixels are
+  copied verbatim — the alpha byte rides along, channel order preserved, no
+  alpha-blending in v1 (a composited child is opaque within its rect).
+- **Clipping.** Total and bounds-safe. Negative `x`/`y` clip the child (the
+  off-screen source columns/rows are skipped — the child is clipped, not shifted);
+  right/bottom overflow is clamped to `dst_w`/`dst_h`; a fully off-screen or
+  degenerate (`view_w<=0`, empty child, …) call is a no-op. A `dst`/`child` slice
+  shorter than its declared `w*h` is tolerated — any index past the real slice is
+  skipped. **The function never panics and never indexes out of bounds.**
+- `Module::blit_into(dst, dst_w, dst_h, child, child_w, child_h)` is the
+  convenience that passes the module's own `Viewport` as the rect.
+
+### `map_pointer_into_child` — the input primitive
+
+```text
+map_pointer_into_child(px, py, x, y, view_w, view_h, child_w, child_h)
+        -> Option<(cx, cy)>
+```
+
+Maps a parent-framebuffer pointer into a child's LOCAL space. Returns `None` when
+the pointer is outside the viewport rect (`ox+w` / `oy+h` exclusive) — so a
+composed child only ever feels the pointer over its own rect; a click on parent
+chrome or a sibling never leaks in. Inside, it inverts the blit's forward sample
+(`cx = ((px-x)*child_w)/view_w`) and clamps into `[0, child_w) x [0, child_h)` so
+the rightmost column maps to `child_w-1`, never `child_w` (an OOB a child could
+read). It is the exact inverse of `blit_child`'s scale, proven by the
+`pointer_forward_blit_roundtrip_agrees` test. `Module::pointer_into(px, py,
+child_w, child_h)` uses the module's viewport.
+
+These two are what give a composed child a correct, isolated **virtual display
+clipped to its rect** and **local, focus-gated pointer** — the pixel + input core
+of the ABI specified next.
 
 ## 1. The `host::compose` ABI
 
@@ -234,13 +321,33 @@ on each rAF tick (generation still current):
     for child in MODULES (in spawn order = z-order):
         match child.state:
             Ready:
-                set ACTIVE_VIEWPORT = child.viewport          // host_display binds here
-                set ACTIVE_FOCUS    = (FOCUS == this handle)
-                try child.frame(t)  // or render() once; trap => mark Failed
-            Loading: draw a placeholder into child.viewport    // see §4
+                child.pointer = map_pointer_into_child(            // focus-gated
+                    POINTER.x, POINTER.y, child.viewport, child.native_w/h)
+                                       // .. or "no pointer" when None / not focused
+                try child.frame(t)  // renders into child's OWN child_w×child_h buf
+                                    // (trap => mark Failed, skip blit)
+                blit_child(FB, FB_W, FB_H, child.buf, child.native_w/h,
+                           child.viewport.ox/oy/w/h)              // fold into FB
+            Loading: draw a placeholder into child.viewport        // see §4
             Failed:  draw an error tile into child.viewport
     host.present()                  // single flip of the composited buffer
 ```
+
+Two model refinements the pure core makes concrete vs the original sketch:
+
+1. **A child renders into its OWN buffer, then the host blits.** The original
+   sketch bound the child's `host_display` viewport so its draws landed directly
+   in the shared FB. With `blit_child` the cleaner model is: the child draws into
+   a private `child_w x child_h` buffer at its native resolution, and the host
+   composites that buffer into the viewport — which is what makes **scaling** free
+   (a 256×144 child app shown in a 160×144 panel) and keeps the child's pixels
+   physically unable to touch a sibling (it writes its own buffer, never the FB).
+   The viewport-bound-draw path still works for a child authored at exactly the
+   viewport size (identity scale); `blit_child` subsumes both.
+2. **Pointer routing is one `map_pointer_into_child` call per focused child.** The
+   host fills the child's `InputSource::Local` pointer cell from the result (or a
+   "no pointer" sentinel when `None` / the child isn't focused), so the child's
+   `pointer_x/y/down` polls read its own rect-local, focus-gated coordinates.
 
 The parent's own `host_display` closures write the *full* framebuffer
 (viewport = whole screen); children's write their rects. Z-order is spawn order:
@@ -458,8 +565,16 @@ by writing ~30 lines of rustlite.
   `public_face` is `html` should render its HTML snapshot into the rect via
   `paint_html_fb`. Straightforward, not in the first cut.
 - **Keyboard routing** to the focused module (cartridges are pointer-only today).
-- **Recursive composition** (a module spawning sub-modules). Intentionally capped
-  at depth 1 — children's `host_compose.spawn_module` returns `FAILED`.
+- **Recursive composition** (a module spawning sub-modules). v1 caps nesting at
+  depth 1 — a child's `host_compose.spawn_module` returns `FAILED`. When recursion
+  is opened, the bound is `ComposeBudget` (`src/compose.rs`): `max_children` (the
+  count cap), `max_bytes_per_child`, and `max_total_bytes` (the aggregate cap that
+  makes a deep tree converge — every grandchild's bytes count against the same
+  total). v1 caps: 8 children, 16 KB each, 64 KB total (`ComposeBudget::v1()`).
+  `admit(count, total_bytes, child_bytes)` is checked BEFORE any fetch/instantiate,
+  returning the refusal reason so a hit cap logs instead of silently "working". A
+  per-tree **depth** cap is the one budget axis not yet a field — add it to
+  `ComposeBudget` alongside the byte caps when depth>1 lands.
 - **Per-module fuel/time budget** beyond the trap-latch — a runaway child `frame`
   can still burn its slice of the rAF tick; a real scheduler would time-box each
   child.
