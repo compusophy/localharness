@@ -99,8 +99,7 @@ src/app/ (browser IDE):
     confirm)) chat/(turn loop in mod.rs; session.rs prompt.rs
     access.rs tools/{platform,bounty,guild,governance,misc})
   history.rs(OPFS conversation + tool-call replay) opfs.rs(file browser/editor
-    MODAL, opened from the ADMIN panel — feedback #71 removed the header
-    [files] button; header = brand + bell + admin only. No files tab)
+    MODAL off the ADMIN panel — #71 killed the header [files] button)
   display.rs(framebuffer: runs wasm cartridges off-main-thread in a Web Worker +
     rasterizes HTML; main-thread WATCHDOG kills hung workers — the brick fix;
     surface = a fullscreen dismissable OVERLAY, not a tab/panel; host_agent
@@ -296,9 +295,8 @@ listener at document level dispatches via `data-action`/`data-arg`. Zero
 **UNIFIED STREAM (issue #28): chat IS the app.** One chronological transcript
 fills the content area on every viewport (no mobile FILES/CHAT/DISPLAY tab bar,
 no side panels). Tool outputs surface inline (`inline_result_card`); FILES is a
-modal opened from the ADMIN panel (`opfs::toggle_files_modal`, editor in
-`#fs-viewer`; the header [files] button was removed — feedback #71), DISPLAY a
-fullscreen overlay (ToggleDisplay /
+modal off the ADMIN panel (`opfs::toggle_files_modal`, editor in `#fs-viewer`;
+header button removed, #71), DISPLAY a fullscreen overlay (ToggleDisplay /
 `display::mount_canvas`; × stops the cartridge). `#ctx-bar` sits at the TOP of
 the chat column (feedback #62).
 
