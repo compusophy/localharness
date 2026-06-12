@@ -367,6 +367,329 @@ function drawNumber(x, y, value, packed, scale) {
   }
 }
 
+// ---- host_compose: cartridge-in-cartridge composition -----------------------
+// A HAND PORT of `src/compose.rs::blit_child` + `map_pointer_into_child` (Rust).
+// `scripts/test-compose-wiring.mjs` diffs these against the Rust impls, so the
+// two can't silently drift — run it (and `cargo test -p localharness compose`)
+// when you touch either side. Both take packed-u32 (0xAABBGGRR) framebuffers.
+
+// Composite a CHILD framebuffer into a viewport (x, y, vw, vh) of a PARENT
+// framebuffer. Nearest-neighbour integer scaling; total edge clipping; never
+// indexes out of bounds (a dst/child shorter than its declared w*h is
+// tolerated). Byte-for-byte mirror of compose.rs::blit_child.
+function blitChild(dst, dstW, dstH, child, childW, childH, x, y, viewW, viewH) {
+  if (viewW <= 0 || viewH <= 0 || childW <= 0 || childH <= 0 || dstW <= 0 || dstH <= 0) return;
+  const dx0 = Math.max(0, x);
+  const dy0 = Math.max(0, y);
+  const dx1 = Math.min(x + viewW, dstW);
+  const dy1 = Math.min(y + viewH, dstH);
+  if (dx0 >= dx1 || dy0 >= dy1) return;
+  for (let dy = dy0; dy < dy1; dy++) {
+    const vy = dy - y;
+    const sy = Math.trunc((vy * childH) / viewH);
+    if (sy < 0 || sy >= childH) continue;
+    const srcRow = sy * childW;
+    const dstRow = dy * dstW;
+    for (let dx = dx0; dx < dx1; dx++) {
+      const vx = dx - x;
+      const sx = Math.trunc((vx * childW) / viewW);
+      if (sx < 0 || sx >= childW) continue;
+      const si = srcRow + sx;
+      const di = dstRow + dx;
+      if (si < child.length && di < dst.length) dst[di] = child[si];
+    }
+  }
+}
+
+// Map a PARENT pointer (px, py) into a CHILD's local space given its viewport
+// (x, y, vw, vh) and native (childW, childH). Returns [cx, cy] or null when the
+// pointer is outside the viewport. Mirror of compose.rs::map_pointer_into_child.
+function mapPointerIntoChild(px, py, x, y, viewW, viewH, childW, childH) {
+  if (viewW <= 0 || viewH <= 0 || childW <= 0 || childH <= 0) return null;
+  if (px < x || py < y || px >= x + viewW || py >= y + viewH) return null;
+  const vx = px - x;
+  const vy = py - y;
+  let cx = Math.trunc((vx * childW) / viewW);
+  let cy = Math.trunc((vy * childH) / viewH);
+  cx = Math.max(0, Math.min(cx, childW - 1));
+  cy = Math.max(0, Math.min(cy, childH - 1));
+  return [cx, cy];
+}
+
+// ComposeBudget (mirror of compose.rs::ComposeBudget::v1). Caps the compose
+// graph so an attacker-authored or runaway parent can't exhaust the worker:
+// 8 children, 16 KB each, 64 KB total. A child that itself spawns grandchildren
+// counts against the same total/count — the aggregate is the recursion backstop.
+const COMPOSE_MAX_CHILDREN = 8;
+const COMPOSE_MAX_BYTES_PER_CHILD = 16 * 1024;
+const COMPOSE_MAX_TOTAL_BYTES = 64 * 1024;
+
+// Child module states (mirror the host::compose status() ABI).
+const MOD_LOADING = 0;
+const MOD_READY = 1;
+const MOD_FAILED = 2;
+
+// The live child table. handle = index; a closed slot becomes null (never
+// aliased). Each entry owns its OWN buffer/instance/memory/state — isolation is
+// per-instance. `focus` is the handle that receives pointer input (-1 = parent).
+let composeChildren = [];
+let composeFocus = -1;
+let composeTotalBytes = 0;
+
+function composeLiveCount() {
+  let n = 0;
+  for (const c of composeChildren) if (c && c.state !== MOD_FAILED) n++;
+  return n;
+}
+
+// Read a child's dims() the same way applyDims does for the parent: packed
+// (w<<16)|h, clamped to [FB_MIN, FB_MAX]; default 256x144 when absent/invalid.
+function childDims(exports) {
+  if (exports && typeof exports.dims === 'function') {
+    let packed;
+    try { packed = exports.dims() | 0; } catch (_e) { packed = 0; }
+    const d = decodeDims(packed >>> 0);
+    if (d) return d;
+  }
+  return [FB_W_DEFAULT, FB_H_DEFAULT];
+}
+
+// Build a child's OWN host imports: a host_display bound to the child's private
+// buffer (NOT the shared FB — the host blits the child's buffer in after its
+// frame), its own pointer cell, its own 64-slot state, and inert host_net/
+// host_audio/host_agent/host_compose (recursion is the parent's job, capped by
+// ComposeBudget; a child's spawn_module returns FAILED). The child is unmodified
+// — it draws into a (0,0)-origin surface of its native size, oblivious to being
+// composited.
+function buildChildImports(child) {
+  const cw = () => child.w;
+  const ch = () => child.h;
+  function cSetPixel(x, y, packed) {
+    if (x < 0 || y < 0 || x >= child.w || y >= child.h) return;
+    child.fb[y * child.w + x] = packed;
+  }
+  function cFillRect(x, y, w, h, packed) {
+    const x0 = Math.max(0, x), y0 = Math.max(0, y);
+    const x1 = Math.min(child.w, x + w), y1 = Math.min(child.h, y + h);
+    for (let yy = y0; yy < y1; yy++) {
+      const base = yy * child.w;
+      for (let xx = x0; xx < x1; xx++) child.fb[base + xx] = packed;
+    }
+  }
+  function cBlitGlyph(x, y, code, packed, scale) {
+    const glyph = glyph5x7(code >>> 0);
+    const s = Math.max(1, scale | 0);
+    for (let row = 0; row < 7; row++) {
+      const bits = glyph[row];
+      for (let col = 0; col < 5; col++) {
+        if (((bits >> (4 - col)) & 1) === 0) continue;
+        for (let dy = 0; dy < s; dy++) for (let dx = 0; dx < s; dx++) cSetPixel(x + col * s + dx, y + row * s + dy, packed);
+      }
+    }
+  }
+  function cDrawNumber(x, y, value, packed, scale) {
+    const s = Math.max(1, scale | 0);
+    const advance = 6 * s;
+    let cx = x;
+    let n = Math.abs(value | 0);
+    if ((value | 0) < 0) { cBlitGlyph(cx, y, 0x2D, packed, s); cx += advance; }
+    const digits = [];
+    if (n === 0) digits.push(0x30);
+    else while (n > 0) { digits.push(0x30 + (n % 10)); n = Math.floor(n / 10); }
+    for (let i = digits.length - 1; i >= 0; i--) { cBlitGlyph(cx, y, digits[i], packed, s); cx += advance; }
+  }
+  function cDrawLine(x0, y0, x1, y1, packed) {
+    let dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0);
+    let sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, err = dx + dy, x = x0, y = y0;
+    for (;;) { cSetPixel(x, y, packed); if (x === x1 && y === y1) break; const e2 = 2 * err; if (e2 >= dy) { err += dy; x += sx; } if (e2 <= dx) { err += dx; y += sy; } }
+  }
+  function cFillTriangle(x0, y0, x1, y1, x2, y2, packed) {
+    const minX = Math.max(0, Math.min(x0, x1, x2)), minY = Math.max(0, Math.min(y0, y1, y2));
+    const maxX = Math.min(child.w - 1, Math.max(x0, x1, x2)), maxY = Math.min(child.h - 1, Math.max(y0, y1, y2));
+    if (minX > maxX || minY > maxY) return;
+    const area = edge(x0, y0, x1, y1, x2, y2);
+    if (area === 0) return;
+    const positive = area > 0;
+    for (let py = minY; py <= maxY; py++) for (let px = minX; px <= maxX; px++) {
+      const w0 = edge(x1, y1, x2, y2, px, py), w1 = edge(x2, y2, x0, y0, px, py), w2 = edge(x0, y0, x1, y1, px, py);
+      const inside = positive ? (w0 >= 0 && w1 >= 0 && w2 >= 0) : (w0 <= 0 && w1 <= 0 && w2 <= 0);
+      if (inside) cSetPixel(px, py, packed);
+    }
+  }
+  const child_display = {
+    clear: (rgb) => cFillRect(0, 0, child.w, child.h, packRgb(rgb)),
+    set_pixel: (x, y, rgb) => cSetPixel(x, y, packRgb(rgb)),
+    fill_rect: (x, y, w, h, rgb) => cFillRect(x, y, w, h, packRgb(rgb)),
+    draw_char: (x, y, code, rgb, scale) => cBlitGlyph(x, y, code, packRgb(rgb), scale),
+    draw_number: (x, y, value, rgb, scale) => cDrawNumber(x, y, value, packRgb(rgb), scale),
+    draw_line: (x0, y0, x1, y1, rgb) => cDrawLine(x0, y0, x1, y1, packRgb(rgb)),
+    fill_triangle: (x0, y0, x1, y1, x2, y2, rgb) => cFillTriangle(x0, y0, x1, y1, x2, y2, packRgb(rgb)),
+    present: () => {}, // host presents the composited frame, never a child
+    width: cw,
+    height: ch,
+    // Pointer is filled per-frame (focus-gated) into child.ptr; -1 means "no
+    // pointer here" so a poll-model child can tell unfocused/outside from (0,0).
+    pointer_x: () => child.ptr.x,
+    pointer_y: () => child.ptr.y,
+    pointer_down: () => child.ptr.down,
+    state_get: (slot) => (slot >= 0 && slot < 64 ? child.state_regs[slot] : 0),
+    state_set: (slot, value) => { if (slot >= 0 && slot < 64) child.state_regs[slot] = value | 0; },
+  };
+  // Inert recursion stub: a child cannot itself spawn (depth-1 cap); the ABI
+  // still resolves so a child importing host_compose instantiates.
+  const child_compose = {
+    spawn_module: () => -1,
+    status: () => -1,
+    move_module: () => 0,
+    focus_module: () => -1,
+    focused: () => -1,
+    close_module: () => -1,
+    module_count: () => 0,
+  };
+  // A child gets its own (no-op) net/audio/agent so its imports link, but it
+  // can't reach the platform from inside a panel (the parent is the surface).
+  const child_net = { open: () => -1, send: () => 0, poll: () => -1, status: () => -1, close: () => {} };
+  const child_audio = { tone: () => -1, tone_at: () => -1, noise: () => -1, stop: () => {}, set_volume: () => {} };
+  const child_agent = {
+    notify: () => 0, viewer_is_owner: () => 0, viewer_has_identity: () => 0,
+    subscribe: () => 0, unsubscribe: () => 0, is_subscribed: () => 0,
+    subscriber_count: () => 0, broadcast: () => 0, request_identity: () => 0,
+  };
+  return {
+    host_display: child_display,
+    host_compose: child_compose,
+    host_net: child_net,
+    host_audio: child_audio,
+    host_agent: child_agent,
+    host_log, host_time, host_abort,
+  };
+}
+
+// Instantiate the fetched bytes for a Loading child into its own instance +
+// buffer. Marks the slot Ready (or Failed) and accounts its bytes against the
+// total. Called from the main-thread `compose_bytes` reply.
+function composeInstantiate(handle, wasmBuf) {
+  const child = composeChildren[handle];
+  if (!child || child.state === MOD_FAILED) return;
+  const bytes = new Uint8Array(wasmBuf);
+  // Per-child + aggregate byte caps (mirror ComposeBudget::admit). The count cap
+  // is enforced at spawn; the byte caps are enforced here once the size is known.
+  if (bytes.length > COMPOSE_MAX_BYTES_PER_CHILD ||
+      composeTotalBytes + bytes.length > COMPOSE_MAX_TOTAL_BYTES) {
+    child.state = MOD_FAILED;
+    return;
+  }
+  let instance;
+  try {
+    const mod = new WebAssembly.Module(bytes);
+    instance = new WebAssembly.Instance(mod, buildChildImports(child));
+  } catch (_e) {
+    child.state = MOD_FAILED;
+    return;
+  }
+  const exp = instance.exports;
+  const [dw, dh] = childDims(exp);
+  child.w = dw;
+  child.h = dh;
+  child.fb = new Uint32Array(dw * dh);
+  child.memory = exp.memory || null;
+  child.frame = (typeof exp.frame === 'function') ? exp.frame
+    : (typeof exp.render === 'function') ? exp.render : null;
+  if (!child.frame) { child.state = MOD_FAILED; return; }
+  composeTotalBytes += bytes.length;
+  child.bytes = bytes.length;
+  child.state = MOD_READY;
+}
+
+// host_compose: the parent's window-manager ABI. spawn_module posts a fetch
+// request to the main thread (the worker can't do the on-chain registry read);
+// the rest mutate the child table synchronously.
+const host_compose = {
+  spawn_module(namePtr, x, y, w, h) {
+    const name = readString(namePtr);
+    if (name === null || name === '') return -1;
+    if (composeLiveCount() >= COMPOSE_MAX_CHILDREN) return -1; // count cap
+    // Allocate a slot (reuse a null hole, else push). Slots never alias: a fresh
+    // logical child each spawn even when reusing a freed index.
+    let handle = composeChildren.indexOf(null);
+    const child = {
+      name, state: MOD_LOADING,
+      vp: { x: x | 0, y: y | 0, w: Math.max(1, w | 0), h: Math.max(1, h | 0) },
+      w: FB_W_DEFAULT, h: FB_H_DEFAULT, fb: null,
+      memory: null, frame: null, bytes: 0,
+      state_regs: new Int32Array(64),
+      ptr: { x: -1, y: -1, down: 0 },
+    };
+    if (handle < 0) { handle = composeChildren.length; composeChildren.push(child); }
+    else composeChildren[handle] = child;
+    self.postMessage({ type: 'compose_spawn', handle, name });
+    return handle;
+  },
+  status(handle) {
+    const c = composeChildren[handle];
+    return c ? c.state : -1;
+  },
+  move_module(handle, x, y, w, h) {
+    const c = composeChildren[handle];
+    if (!c) return 0;
+    c.vp = { x: x | 0, y: y | 0, w: Math.max(1, w | 0), h: Math.max(1, h | 0) };
+    return 1;
+  },
+  focus_module(handle) {
+    if (handle === -1) { composeFocus = -1; return 1; } // focus the parent
+    if (!composeChildren[handle]) return 0;
+    composeFocus = handle;
+    return 1;
+  },
+  focused: () => composeFocus,
+  close_module(handle) {
+    const c = composeChildren[handle];
+    if (!c) return 0;
+    if (c.state === MOD_READY) composeTotalBytes -= c.bytes;
+    composeChildren[handle] = null;
+    if (composeFocus === handle) composeFocus = -1;
+    return 1;
+  },
+  module_count: () => composeLiveCount(),
+};
+
+// Reset the compose table (a fresh parent load clears the whole graph).
+function composeReset() {
+  composeChildren = [];
+  composeFocus = -1;
+  composeTotalBytes = 0;
+}
+
+// Tick every Ready child into its own buffer, then blit it into the parent FB at
+// the child's viewport (nearest-neighbour scale). Pointer routes only into the
+// focused child (focus-gated). A trapping child is latched Failed + skipped — it
+// can't take down the parent or a sibling. Called from the parent's tick() after
+// the parent's frame() draws, before present().
+function composeCompositePass(t) {
+  for (let i = 0; i < composeChildren.length; i++) {
+    const c = composeChildren[i];
+    if (!c) continue;
+    if (c.state !== MOD_READY) continue; // Loading/Failed draw nothing in v1
+    // Focus-gated pointer: only the focused child feels the pointer, and only
+    // over its own rect; everyone else reads "no pointer" (-1 / 0).
+    if (i === composeFocus) {
+      const mapped = mapPointerIntoChild(ptr.x, ptr.y, c.vp.x, c.vp.y, c.vp.w, c.vp.h, c.w, c.h);
+      if (mapped) { c.ptr.x = mapped[0]; c.ptr.y = mapped[1]; c.ptr.down = ptr.down; }
+      else { c.ptr.x = -1; c.ptr.y = -1; c.ptr.down = 0; }
+    } else {
+      c.ptr.x = -1; c.ptr.y = -1; c.ptr.down = 0;
+    }
+    try {
+      c.frame(t);
+    } catch (_e) {
+      c.state = MOD_FAILED; // latch + skip; never propagates to the parent
+      composeTotalBytes -= c.bytes;
+      continue;
+    }
+    blitChild(fb32, FB_W, FB_H, c.fb, c.w, c.h, c.vp.x, c.vp.y, c.vp.w, c.vp.h);
+  }
+}
+
 // ---- host_net: WebSocket (works in a worker) --------------------------------
 // Faithful port of display.rs::net — poll-model sockets, SSRF wss-only gate,
 // MAX_SOCKETS / MAX_INBOX caps, length-prefixed strings over cartridge memory.
@@ -623,7 +946,7 @@ function applyAgentContext(msg) {
 }
 
 function buildImports() {
-  return { host_display, host_net, host_audio, host_log, host_time, host_abort, host_agent };
+  return { host_display, host_net, host_audio, host_log, host_time, host_abort, host_agent, host_compose };
 }
 
 // ---- present + frame loop ----------------------------------------------------
@@ -648,6 +971,11 @@ function tick() {
     postError(LH_RUNTIME.WASM_TRAP, 'cartridge trapped: ' + (e && e.message ? e.message : String(e)));
     return;
   }
+  // host::compose: composite every live child into the parent FB after the
+  // parent's frame() draws and before present(), so the canvas only ever shows
+  // a fully-composited frame. No-op when the parent never spawned a child
+  // (composeChildren empty) — so a non-compose cartridge is byte-identical.
+  composeCompositePass(t);
   present();
   // Worker rAF is available in modern browsers, but to keep this dependency-free
   // and predictable we self-pace with a ~16ms timer. The main thread's watchdog
@@ -658,6 +986,7 @@ function tick() {
 async function load(wasmBuf) {
   running = false;
   closeAllSockets();
+  composeReset(); // a fresh parent clears the whole compose graph
   state.fill(0);
   ptr.x = 0; ptr.y = 0; ptr.down = 0;
   memory = null;
@@ -710,6 +1039,7 @@ async function load(wasmBuf) {
       running = false;
       return;
     }
+    composeCompositePass(0); // composite any children a one-shot parent mounted
     present();
     running = false;
     // Tell the main thread this was a ONE-SHOT render that completed: it posted
@@ -739,6 +1069,16 @@ if (IS_WORKER) {
         break;
       case 'agent_context':
         applyAgentContext(msg);
+        break;
+      case 'compose_bytes':
+        // Main thread resolved a child's on-chain app.wasm (or signalled a
+        // failure with wasm=null). Instantiate it into its slot, or mark Failed.
+        if (msg.wasm) {
+          composeInstantiate(msg.handle | 0, msg.wasm);
+        } else {
+          const c = composeChildren[msg.handle | 0];
+          if (c) c.state = MOD_FAILED;
+        }
         break;
       case 'input':
         ptr.x = msg.x | 0;
@@ -770,6 +1110,48 @@ if (typeof module !== 'undefined' && module.exports) {
     liveDims: () => [FB_W, FB_H],
     host_display, // the re-implemented draw ABI under test
     host_agent,
+    host_compose, // the window-manager ABI (spawn/status/focus/close/...)
+    // The JS mirrors of compose.rs (under parity test vs the Rust impls).
+    blitChild,
+    mapPointerIntoChild,
+    composeReset,
+    composeInstantiate,
+    composeChildren: () => composeChildren,
+    composeFocus: () => composeFocus,
+    // Allocate a LOADING child slot directly (test shim — drives the real child
+    // table + ComposeBudget count cap, avoiding spawn_module's readString/
+    // postMessage path, which needs a live worker + a parent's linear memory).
+    // The caller then feeds the child's bytes via composeInstantiate (simulating
+    // the main-thread compose_bytes reply) and ticks via composeRunPass.
+    // Returns the handle, or -1 when the child-count cap is hit.
+    composeMountForTest(name, x, y, w, h) {
+      if (composeLiveCount() >= COMPOSE_MAX_CHILDREN) return -1; // count cap
+      let handle = composeChildren.indexOf(null);
+      const child = {
+        name, state: MOD_LOADING,
+        vp: { x: x | 0, y: y | 0, w: Math.max(1, w | 0), h: Math.max(1, h | 0) },
+        w: FB_W_DEFAULT, h: FB_H_DEFAULT, fb: null,
+        memory: null, frame: null, bytes: 0,
+        state_regs: new Int32Array(64),
+        ptr: { x: -1, y: -1, down: 0 },
+      };
+      if (handle < 0) { handle = composeChildren.length; composeChildren.push(child); }
+      else composeChildren[handle] = child;
+      return handle;
+    },
+    composeFocusForTest: (h) => host_compose.focus_module(h),
+    // Run the composite pass into a caller-supplied parent FB at the given
+    // pointer. Sets the live FB_W/FB_H + fb32 + ptr to the parent's, ticks every
+    // Ready child, blits each into the parent FB, and returns it.
+    composeRunPass(parentFb, parentW, parentH, t, pointer) {
+      FB_W = parentW; FB_H = parentH;
+      fb32 = parentFb;
+      ptr.x = pointer ? pointer.x : 0;
+      ptr.y = pointer ? pointer.y : 0;
+      ptr.down = pointer ? pointer.down : 0;
+      composeCompositePass(t | 0);
+      return parentFb;
+    },
     glyph5x7, // expose the font table for a byte-for-byte vs-Rust check
     packRgb,
     LH_RUNTIME, // the LH1xxx runtime codes the worker reports (headless check)

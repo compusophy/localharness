@@ -1,17 +1,43 @@
 # host::compose — in-framebuffer subdomain composition
 
-> **STATUS: pure core LANDED; wiring open.** The single-cartridge framebuffer
-> runtime (Web Worker + watchdog) shipped, the iframe-based `?compose=` it
-> replaces is gone, and the **pure compositor core** now lives native-tested in
-> `src/compose.rs`: the cache (`WasmCache`), the admission budget
-> (`ComposeBudget`), the deferred-mutation module table (`ModuleTable` /
-> `Pending`), the grid layout (`grid_viewports`), and — new this cut — the
-> **framebuffer blit** (`blit_child`) + **pointer map** (`map_pointer_into_child`)
-> that composite a child surface into a parent rect and route input into it. What
-> remains is the wasm-only wiring: the rustlite `host::compose` import and the
-> `app::display` compositor calling these pure functions per child. This is also
-> where the open **cartridge host-import / rich-context-cartridge** frontier
-> lives.
+> **STATUS: WIRED (v1).** The pure compositor core (`src/compose.rs`) and the
+> wasm-only wiring both landed. A PARENT cartridge can now `compose::spawn_module`
+> a CHILD subdomain's published `app.wasm`, which runs in its OWN buffer (its
+> native `dims()`) and gets blitted (nearest-neighbour scaled) into a sub-rect of
+> the parent's framebuffer, with pointer routing into the focused child. NO
+> iframes. What landed:
+> - **rustlite import** (`typecheck.rs::resolve_host_fn`, `host_compose` module):
+>   `spawn_module(name, x, y, w, h) -> handle`, `status / focus_module /
+>   close_module(handle) -> i32`, `move_module(handle, x, y, w, h) -> i32`,
+>   `focused() -> i32`, `module_count() -> i32`. Codegen is generic over
+>   `host_<module>` — no emitter change. A `host_compose` stub in
+>   `rustlite/loader.rs` keeps a standalone-loaded compose cartridge instantiable
+>   (every op inert outside the compositor).
+> - **worker compositor** (`web/cartridge-worker.js`): a `host_compose` namespace
+>   + a child table. `spawn_module` posts `compose_spawn` to the main thread
+>   (which resolves the child's on-chain `app.wasm` and posts the bytes back as
+>   `compose_bytes`); the worker instantiates the child into its own buffer, ticks
+>   it each frame, and folds it into the parent FB via a JS `blitChild` mirror of
+>   `compose.rs::blit_child`. Pointer routes via a JS `mapPointerIntoChild` mirror,
+>   focus-gated. Both mirrors are parity-tested vs the Rust impls
+>   (`scripts/test-compose-wiring.mjs`, verify.sh stage 10).
+> - **display.rs round-trip**: `do_compose_spawn` resolves `compose_module_wasm`
+>   (cached per session in `COMPOSE_WASM_CACHE`) and posts the bytes back; a
+>   `compose_spawn` arm in the worker `onmessage` closure drives it.
+> - **budget**: `ComposeBudget::v1` (8 children, 16 KB each, 64 KB total) is
+>   enforced — the count cap at spawn, the byte caps at instantiate; a grandchild
+>   counts against the same total (recursion's backstop, though v1 children get an
+>   inert `host_compose` so the depth cap is 1).
+>
+> **Deferred (honest scope):** the WM is driven by an agent-authored compositor
+> cartridge — the old URL `?compose=foo,bar` entrypoint + `src/app/compose.rs` /
+> `embed.rs` were NOT touched/removed in this cut (they're already iframe-free
+> via `compose_module_wasm`). A LOADING/FAILED child draws nothing (no placeholder
+> tile yet). HTML-faced modules, keyboard routing, per-child fuel budgeting, and
+> depth>1 recursion remain deferred (see "Deferred" at the bottom). The pure-core
+> primitives (`WasmCache`, `ModuleTable`/`Pending`, `grid_viewports`) are still
+> available for a richer host-side table; the worker v1 uses a flat JS child
+> array directly.
 >
 > **What THIS cut delivers (the pure core, `src/compose.rs`):**
 > - `blit_child(dst, dst_w, dst_h, child, child_w, child_h, x, y, view_w, view_h)`

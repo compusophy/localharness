@@ -212,6 +212,32 @@ fn build_host_imports(mem: &SharedMemory) -> Result<(js_sys::Object, NetRuntime)
     audio_void.forget();
     let _ = Reflect::set(&imports, &JsValue::from_str("host_audio"), &host_audio);
 
+    // host_compose module — cartridge-in-cartridge composition (the real
+    // compositor lives in the Web Worker / src/app/display.rs). This BARE loader
+    // (SDK / compile-check path) runs no compositor context, so every op is an
+    // inert stub: spawn_module / status / focused return a negative "no compositor
+    // / bad handle" code, the rest return 0. Without these a cartridge that
+    // imports host_compose would fail instantiation with a missing-import
+    // LinkError. Children mounted by the live compositor get a similarly inert
+    // host_compose (recursion is the parent's job, capped by ComposeBudget).
+    let host_compose = Object::new();
+    let compose_spawn = Closure::<dyn Fn(i32, i32, i32, i32, i32) -> i32>::new(|_a, _b, _c, _d, _e| -1);
+    let compose_one = Closure::<dyn Fn(i32) -> i32>::new(|_a| -1);
+    let compose_move = Closure::<dyn Fn(i32, i32, i32, i32, i32) -> i32>::new(|_a, _b, _c, _d, _e| 0);
+    let compose_none = Closure::<dyn Fn() -> i32>::new(|| -1);
+    let _ = Reflect::set(&host_compose, &JsValue::from_str("spawn_module"), compose_spawn.as_ref());
+    let _ = Reflect::set(&host_compose, &JsValue::from_str("status"), compose_one.as_ref());
+    let _ = Reflect::set(&host_compose, &JsValue::from_str("move_module"), compose_move.as_ref());
+    let _ = Reflect::set(&host_compose, &JsValue::from_str("focus_module"), compose_one.as_ref());
+    let _ = Reflect::set(&host_compose, &JsValue::from_str("focused"), compose_none.as_ref());
+    let _ = Reflect::set(&host_compose, &JsValue::from_str("close_module"), compose_one.as_ref());
+    let _ = Reflect::set(&host_compose, &JsValue::from_str("module_count"), compose_none.as_ref());
+    compose_spawn.forget();
+    compose_one.forget();
+    compose_move.forget();
+    compose_none.forget();
+    let _ = Reflect::set(&imports, &JsValue::from_str("host_compose"), &host_compose);
+
     // host_net module — WebSocket-backed multiplayer / sync I/O. Mirrors
     // host_display: integer-only host functions a rustlite cartridge calls,
     // strings passed as length-prefixed pointers into cartridge memory.

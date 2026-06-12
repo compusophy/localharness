@@ -1092,6 +1092,44 @@ fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, 
         "agent::subscriber_count" => (vec![], I32),
         "agent::broadcast" => (vec![String, String], I32),
         "agent::request_identity" => (vec![], I32),
+        // --- compose (host_compose): cartridge-in-cartridge composition. A
+        // PARENT cartridge mounts another subdomain's published `app.wasm` as a
+        // CHILD bound to a sub-rectangle of the parent's framebuffer, with the
+        // child running in its OWN buffer (its native dims) and the host
+        // blitting it into the rect (nearest-neighbour scale — see
+        // `crate::compose::blit_child`). Pointer input routes into the focused
+        // child via `crate::compose::map_pointer_into_child`. NO iframes — pure
+        // pixel composition. Integer-only, poll-model, the SAME conventions as
+        // host_net/host_agent: the child name is a length-prefixed string
+        // pointer into the parent's linear memory (4-byte LE len + UTF-8). See
+        // `web/cartridge-worker.js` host_compose + `src/app/display.rs`
+        // (compose_spawn round-trip) + `design/host-compose.md` for the model.
+        //
+        // `spawn_module(name, x, y, w, h) -> handle`  fetch <name>'s on-chain
+        //   app.wasm, instantiate a child bound to rect (x,y,w,h) in PARENT
+        //   framebuffer coords. `name` is a string literal (a length-prefixed
+        //   pointer into the parent's memory, same ABI as agent::notify).
+        //   Returns a handle >= 0 (state LOADING; it starts ticking once the
+        //   bytes arrive) or a negative code on a synchronous reject (e.g. the
+        //   ComposeBudget child-count cap).
+        // `status(handle) -> i32`  -1 bad handle, 0 LOADING, 1 READY (ticking),
+        //   2 FAILED (no app.wasm, bad bytes, trap, or budget-refused).
+        // `move_module(handle, x, y, w, h) -> i32`  re-bind the child's rect
+        //   (the window manager moves/resizes a panel). 1 ok, 0 bad handle.
+        // `focus_module(handle) -> i32`  make `handle` the focused child — the
+        //   only one fed pointer input. Pass -1 to focus the parent itself.
+        //   1 ok, 0 bad handle.
+        // `focused() -> i32`  the currently focused handle, or -1 for the parent.
+        // `close_module(handle) -> i32`  tear the child down (drop its instance
+        //   + buffer + rect; free the slot, never aliased). 1 ok, 0 bad handle.
+        // `module_count() -> i32`  number of live (non-closed) children.
+        "compose::spawn_module" => (vec![String, I32, I32, I32, I32], I32),
+        "compose::status" => (vec![I32], I32),
+        "compose::move_module" => (vec![I32, I32, I32, I32, I32], I32),
+        "compose::focus_module" => (vec![I32], I32),
+        "compose::focused" => (vec![], I32),
+        "compose::close_module" => (vec![I32], I32),
+        "compose::module_count" => (vec![], I32),
         _ => return None,
     };
     let (module, func) = key.split_once("::")?;
@@ -1118,6 +1156,43 @@ mod host_fn_tests {
         }
         // The module-elision default (display) must NOT swallow agent fns.
         assert!(resolve_host_fn("agent::notify").is_some());
+    }
+
+    #[test]
+    fn host_compose_signatures_resolve() {
+        use ResolvedType::{String as Str, I32};
+        // spawn_module(name, x, y, w, h) -> handle (name is a string literal).
+        let (m, f, p, r) = resolve_host_fn("host::compose::spawn_module").expect("spawn resolves");
+        assert_eq!((m.as_str(), f.as_str()), ("compose", "spawn_module"));
+        assert_eq!(p, vec![Str, I32, I32, I32, I32], "name string + rect");
+        assert_eq!(r, I32, "spawn returns a child handle");
+
+        // Single-handle ops: status / focus / close return i32.
+        for name in [
+            "host::compose::status",
+            "host::compose::focus_module",
+            "host::compose::close_module",
+        ] {
+            let (m, _f, p, r) = resolve_host_fn(name).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(m, "compose");
+            assert_eq!(p, vec![I32], "{name} takes one handle");
+            assert_eq!(r, I32);
+        }
+
+        // move_module(handle, x, y, w, h) -> i32 (all integer).
+        let (_m, _f, p, r) = resolve_host_fn("host::compose::move_module").unwrap();
+        assert_eq!(p, vec![I32, I32, I32, I32, I32]);
+        assert_eq!(r, I32);
+
+        // No-arg readers: focused() / module_count() -> i32.
+        for name in ["host::compose::focused", "host::compose::module_count"] {
+            let (m, _f, p, r) = resolve_host_fn(name).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(m, "compose");
+            assert!(p.is_empty(), "{name} takes no args");
+            assert_eq!(r, I32);
+        }
+        // The module-elision default (display) must NOT swallow compose fns.
+        assert!(resolve_host_fn("compose::spawn_module").is_some());
     }
 
     #[test]

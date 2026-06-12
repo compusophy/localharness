@@ -159,11 +159,11 @@ Historical design docs dropped at 0.10.1 — see git tags `v0.1.0`–`v0.10.0`.
 ## Build / test / run
 
 ```sh
-cargo build                                                        # native
-cargo test                                                         # full suite
-cargo check --no-default-features --target wasm32-unknown-unknown  # wasm guardrail
-./scripts/build-web.sh                                             # rebuild wasm bundle
-vercel deploy --prod --yes                                         # deploy web/
+cargo build        # native
+cargo test         # full suite
+cargo check --no-default-features --target wasm32-unknown-unknown  # wasm guard
+./scripts/build-web.sh      # rebuild wasm bundle
+vercel deploy --prod --yes  # deploy web/
 ```
 
 wasm app build: `wasm-pack build . --target web --out-dir web/pkg --release
@@ -300,6 +300,19 @@ admin-style modal off the header [files] button (`opfs::toggle_files_modal`,
 editor in `#fs-viewer`), DISPLAY a fullscreen overlay (ToggleDisplay /
 `display::mount_canvas`; × stops the cartridge). `#ctx-bar` sits at the TOP of
 the chat column (feedback #62).
+
+**host::compose (cartridge-in-cartridge, NO iframes).** A parent
+`compose::spawn_module(name,x,y,w,h)`s another subdomain's published `app.wasm`
+as a CHILD in a sub-rect. Pure pixel math = `src/compose.rs` (`blit_child`
+nearest-neighbour scale+clip, `map_pointer_into_child`, `ComposeBudget::v1`
+8/16K/64K). Worker (`cartridge-worker.js` `host_compose` + child table) ticks each
+Ready child into its OWN buffer then `blitChild`s it into the parent FB; the JS
+`blitChild`/`mapPointerIntoChild` are HAND PORTS of the Rust impls — parity-tested
+by `scripts/test-compose-wiring.mjs` (verify.sh stage 10), don't drift. A worker
+can't read the chain → `spawn_module` posts `compose_spawn`;
+`display.rs::do_compose_spawn` resolves `compose_module_wasm` (cached) + posts
+bytes back. Pointer → focused child only. v1: depth-1 (child spawn inert);
+no-compose cartridges render byte-identical (no-op pass).
 
 **Mount-time routing (`mod.rs::mount`):**
 1. `?signer=1` → minimal signer chrome + postMessage listener, return. No apex
@@ -448,9 +461,8 @@ semantics live in `contracts/README.md`** — this list is one line each.
 - **ReputationFacet** — `attest(subject, rating 1..5, workRef)` with per-work
   dedup + self-attestation rejection; paged `attestationsOf`. ERC-8004
   validation staking still open.
-- **PairingFacet** — REMOVED from the live diamond 2026-06-10; superseded by
-  QR seed-adoption. Source kept, re-cuttable.
-- **OwnedTokens** (`tokensOfOwner` enumerable index) — DRAFT, not cut.
+- **PairingFacet** — REMOVED from the live diamond 2026-06-10 (QR seed-adoption
+  superseded it); re-cuttable. **OwnedTokens** (`tokensOfOwner`) — DRAFT, not cut.
 
 **ERC-6551 account** (`MultiSignerAccount`): CALL-only; additional-signer set on top
 of the NFT holder + EIP-1271 `isValidSignature`, so a MAIN can be controlled by
@@ -582,8 +594,8 @@ must come from the root key, which is why a sponsor key must be embedded in wasm
 Shipped: SDK runtime, browser IDE, platform layer, Tempo native AA, second backend
 (Anthropic, 0.23.0), tool-call replay, agent scheduling + recursion, offline Mock
 backend (0.29.0), economy ladder rungs 1–4 (bounty → guild → DAO voting) +
-ReputationFacet + colony (0.30.0), x402 agent-pays-agent (caller-pays call_agent
-fallback + advertised/enforced on-chain pricing, unreleased). Still open:
+ReputationFacet + colony (0.30.0), x402 agent-pays-agent, host::compose
+cartridge-in-cartridge (unreleased). Still open:
 
 - **Stripe MPP** — fiat agent-payments rail beside the live x402 `$LH` path.
 - **ERC-8004 validation staking** — validators stake to re-execute claims
@@ -625,8 +637,6 @@ module → CLAUDE.md tree; new agent tool → `llms.txt` + `chat.rs::start_sessi
 prompt; new facet → CLAUDE.md on-chain + `contracts/README.md` + `llms.txt`; browser
 UX → CLAUDE.md browser section; release → CHANGELOG.
 
-**Verify before any release:**
-```sh
-cargo doc --no-deps 2>&1 | grep "warning.*missing"   # undocumented pub items
-curl -s https://localharness.xyz/llms.txt | head -5  # verify llms.txt deployed
-```
+**Verify before any release:** `cargo doc --no-deps 2>&1 | grep "warning.*missing"`
+(undocumented pub items) + `curl -s https://localharness.xyz/llms.txt | head -5`
+(llms.txt deployed).

@@ -18,14 +18,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backing store resizes to match on the first frame and CSS-letterboxes to
   its container — so 1:1, 2:1, 1:2, 9:16, 16:9, or "way more pixels" are all
   just a different `(w, h)`. Pointer mapping follows the live resolution.
-- **Cartridge-in-cartridge composition core** (`src/compose.rs`): pure,
-  native-tested framebuffer primitives — `blit_child` (nearest-neighbour
-  integer scaling of a child framebuffer into a parent sub-region, total
-  bounds-safe clipping, packed-u32) and `map_pointer_into_child` (the exact
-  inverse of the blit's source selection, viewport-gated). The foundation for
-  running a child cartridge's framebuffer into a parent's viewport with no
-  iframes. The `host::compose` import + worker compositor pass that wire these
-  to authoring cartridges land next.
+- **host::compose — cartridge-in-cartridge composition (wired, v1).** A PARENT
+  rustlite cartridge can now run ANOTHER subdomain's published `app.wasm` as a
+  CHILD bound to a sub-rectangle of its own framebuffer — pure pixel composition,
+  NO iframes. New `host::compose` import (`spawn_module(name,x,y,w,h)->handle`,
+  `status`/`focus_module`/`close_module(handle)`, `move_module(handle,x,y,w,h)`,
+  `focused()`, `module_count()`). The child runs in its OWN isolated wasm
+  Instance+Memory at its own `dims()`, drawing in (0,0)-origin space; the host
+  blits it nearest-neighbour-scaled into the rect (`src/compose.rs::blit_child`)
+  and routes the pointer into the focused child (`map_pointer_into_child`),
+  focus-gated so a sibling never feels a click meant for another. The worker
+  (`web/cartridge-worker.js`) carries a `host_compose` namespace + child table;
+  `spawn_module` posts a fetch request to the main thread
+  (`display.rs::do_compose_spawn`), which resolves the child's on-chain
+  `app.wasm` (session-cached) and posts the bytes back. `ComposeBudget::v1`
+  (8 children, 16 KB each, 64 KB total) gates spawns; a child's `spawn_module`
+  is inert (depth-1 cap). The composed child is the IDENTICAL file served at
+  `<name>.localharness.xyz` — no embed build. New proof: `verify.sh` stage 10
+  (`scripts/test-compose-wiring.mjs`) drives the real worker host — scaled +
+  isolated blit, pointer mapping, JS<->Rust `blitChild`/`mapPointerIntoChild`
+  parity, and the budget cap — plus a `tests/host_compose_cartridge.rs`
+  integration test (a compose cartridge compiles + emits valid wasm). A cartridge
+  that never calls `compose::*` renders byte-identically (the change is purely
+  additive — the compose pass is a no-op with no children).
+- **Subscriber-feed `subscribe` gas cap raised 600k → 2M.** The first subscriber
+  to a feed creates the on-chain array (~1.05M gas, per `cast estimate`); the
+  600k sponsored cap out-of-gassed every subscribe (count stuck at 0, the
+  Ready-Up toggle snapped back). The sponsor pays gas USED, not the cap.
 
 ## [0.33.0] - 2026-06-11
 
