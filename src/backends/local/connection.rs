@@ -538,13 +538,14 @@ pub fn decode_transcript_bytes(bytes: &[u8]) -> Result<Vec<TranscriptEntry>> {
 
 /// Build the turn-terminating step (model-sourced, user-facing, DONE) carrying
 /// the generated text.
-fn terminal_step(state: &LoopState, traj: &str, text: String) -> Step {
+fn terminal_step(state: &LoopState, traj: &str, text: String, finished: bool) -> Step {
     Step::turn_complete(
         traj,
         state.alloc_step_index(),
         StepStatus::Done,
         text,
         "",
+        finished,
         None,
         None,
     )
@@ -620,6 +621,9 @@ impl Connection for LocalConnection {
             // common case for the tiny base model) ends the turn with that text
             // as the terminal Step, exactly as the old single-shot path did.
             let mut final_text = String::new();
+            // The model called `finish` this turn — flags the terminal step
+            // as `StepType::Finish` (see `gemini::loop`).
+            let mut finished_turn = false;
             let mut rounds = 0u32;
             loop {
                 rounds += 1;
@@ -655,6 +659,7 @@ impl Connection for LocalConnection {
                 // Explicit `finish()` ends the turn (the model is done).
                 if name == FINISH_TOOL_NAME {
                     final_text = reply;
+                    finished_turn = true;
                     break;
                 }
 
@@ -687,7 +692,7 @@ impl Connection for LocalConnection {
                 });
             }
 
-            state.emit(terminal_step(&state, &traj, final_text.clone()));
+            state.emit(terminal_step(&state, &traj, final_text.clone(), finished_turn));
 
             // Post-turn hooks observe the completed turn's final text — fired
             // after the terminal step, never on denied or failed turns (the

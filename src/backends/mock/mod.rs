@@ -402,12 +402,19 @@ impl MockInner {
         }
 
         let content = turn.content();
+        // A scripted `finish` tool call flags the terminal step as
+        // `StepType::Finish` (mirrors the live backends' `saw_finish`).
+        let finished_turn = turn.actions.iter().any(|a| {
+            matches!(a, ScriptAction::ToolCall { name, .. }
+                if name == crate::builtins::FINISH_TOOL_NAME)
+        });
         self.emit(Step::turn_complete(
             traj,
             self.alloc_step_index(),
             StepStatus::Done,
             content.as_str(),
             "",
+            finished_turn,
             None,
             turn.usage,
         ));

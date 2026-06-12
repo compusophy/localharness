@@ -219,6 +219,9 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
     let mut rounds = 0u32;
     let mut last_text = String::new();
     let mut last_stop: Option<StopReason> = None;
+    // The model called `finish` this turn — flags the terminal step as
+    // `StepType::Finish` (see `gemini::loop`).
+    let mut finished_turn = false;
     let trajectory_id = Uuid::new_v4().to_string();
 
     loop {
@@ -557,6 +560,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
         });
 
         if saw_finish {
+            finished_turn = true;
             break;
         }
         // Otherwise loop and let the model react to the tool results.
@@ -583,6 +587,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
         status,
         last_text.as_str(),
         error_msg,
+        finished_turn,
         structured,
         usage_opt,
     );

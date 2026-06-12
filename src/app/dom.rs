@@ -91,6 +91,15 @@ pub(crate) fn append_html(id: &str, html: &str) {
     }
 }
 
+/// Remove an element from the DOM by id (no-op if it's already gone).
+/// Used to drop a pre-painted shell that ended up with nothing to show
+/// (e.g. a pure-`finish` assistant turn — see `chat::stream_turn`).
+pub(crate) fn remove(id: &str) {
+    if let Some(el) = by_id(id) {
+        el.remove();
+    }
+}
+
 /// Scroll an element to the bottom. Used by the chat to keep the
 /// latest content in view as the assistant streams.
 pub(crate) fn scroll_to_bottom(id: &str) {

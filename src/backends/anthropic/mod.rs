@@ -742,6 +742,7 @@ mod tests {
                 StepStatus::Done,
                 "all good",
                 "",
+                false,
                 None,
                 None,
             ))

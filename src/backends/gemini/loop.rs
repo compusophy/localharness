@@ -216,6 +216,10 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content, prompt: Conten
     let mut rounds = 0u32;
     let mut last_text = String::new();
     let mut last_finish: Option<FinishReason> = None;
+    // The model called `finish` this turn — flags the terminal step as
+    // `StepType::Finish` so the in-tab loop stops auto-continuing (and
+    // doesn't paint an empty-response bubble on a pure-finish turn).
+    let mut finished_turn = false;
     let trajectory_id = Uuid::new_v4().to_string();
 
     loop {
@@ -459,6 +463,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content, prompt: Conten
         });
 
         if saw_finish {
+            finished_turn = true;
             break;
         }
         // Otherwise: loop and let the model react to the tool results.
@@ -493,6 +498,7 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content, prompt: Conten
         status,
         last_text.as_str(),
         error_msg,
+        finished_turn,
         structured,
         usage_opt,
     );

@@ -193,6 +193,7 @@ mod tests {
             StepStatus::Error,
             "",
             "stopped by safety policy",
+            false,
             None,
             None,
         );

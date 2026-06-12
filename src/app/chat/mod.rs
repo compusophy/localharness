@@ -605,12 +605,32 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
 
     mark_turn_done(assistant_turn_id);
 
+    // Did the model call `finish` this turn? Backends INTERCEPT `finish` and
+    // never emit it as a ToolCall chunk, so `saw_finish` above (set on chunks)
+    // can't catch it — read the terminal flag off the response instead. This is
+    // the signal that the model explicitly declared the turn complete: it stops
+    // the auto-continue loop (no redundant "continue toward the goal" sign-off)
+    // and suppresses the empty-response bubble on a pure-tool / bare-finish turn.
+    if response.finished() {
+        saw_finish = true;
+        // A pure `finish` turn (no text, no other tool cards) has nothing to
+        // show — the shell we pre-painted would render as an empty bordered
+        // bubble. Drop it entirely so a silent completion leaves no artifact.
+        if !any_visible {
+            dom::remove(&format!("turn-{assistant_turn_id}"));
+        }
+    }
+
     // The stream completed without error but produced no visible output.
     // Classify WHY (from the model's finish-reason note + whether it reasoned)
     // so the message names the likely cause + remedy, and so a TRUNCATED turn
     // (model ran out of output budget mid-answer) can be retried rather than
     // dead-ended as a flat "(empty response)".
-    let empty_kind = if !any_visible && !TURN_CANCEL.with(|c| c.get()) {
+    //
+    // A turn that called `finish` is INTENTIONALLY silent (the tool cards + any
+    // final text are the only artifacts) — never paint an empty-response bubble
+    // for it, even when it produced no other visible output.
+    let empty_kind = if !any_visible && !saw_finish && !TURN_CANCEL.with(|c| c.get()) {
         let kind = classify_empty(response.finish_note().as_deref(), saw_thinking);
         let body_id = format!("turn-body-{assistant_turn_id}");
         // For the RETRYABLE (truncated) case, don't print a scary error — the
