@@ -1,5 +1,12 @@
 # host::compose — in-framebuffer subdomain composition
 
+> **STATUS: open.** The single-cartridge framebuffer runtime (Web Worker +
+> watchdog) shipped, and the iframe-based `?compose=` it replaces is gone — but
+> the multi-child `host::compose` ABI (spawn / move / focus / close, per-child
+> wasm instances clipped into one shared RGBA buffer) is NOT built. This is also
+> where the open **cartridge host-import / rich-context-cartridge** frontier
+> lives. Meaty blueprint; unimplemented.
+
 Status: design. Replaces the iframe-based `?compose=` (`src/app/compose.rs` +
 `src/app/embed.rs`). No iframes, no DOM, one canvas.
 

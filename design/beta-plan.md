@@ -1,5 +1,10 @@
 # localharness — Private Beta Plan
 
+> **STATUS: open.** The structured private beta described here has not run; this
+> is the operational instrument that gates the mainnet 1.0 launch. Some
+> prerequisites it lists have since shipped (state-backed feedback, the silent
+> wallet trap, the resolve loop), but the beta *process itself* is forward.
+
 > Operational companion to [`launch-1.0.md`](launch-1.0.md). The betas run on
 > **Tempo Moderato testnet** as ordinary version bumps (0.19, 0.20, …). Their
 > single job is to **surface bugs and validate maker demand** before the 1.0.0

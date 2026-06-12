@@ -1,5 +1,14 @@
 # Model-agnostic evolution + the multi-model arc
 
+> **STATUS: open (partially shipped).** Phases A–C are DONE: the port framing is
+> shed, the Anthropic backend shipped (0.23.0), the Mock offline backend shipped
+> (0.29.0), and the `$LH` proxy routes to either provider with per-model pricing.
+> The seam proved itself. FORWARD: **Phase D** (finish the in-browser local model —
+> Gemma 3 270M via Burn/WebGPU is native-validated but not shipped to the browser
+> app, and tool-call templating + a difficulty router are unbuilt), **Phase E**
+> (an own coding model), and **Phase F** (decentralized compute). Read Phases A–C
+> as a record of what shipped; D–F as the roadmap.
+
 ## 1. The shift
 
 localharness began as a Rust *port* of Google's "antigravity" Python SDK and is still described, in places, as "an agent SDK for Gemini." That framing is now wrong twice over: the crate is already architecturally decoupled — `src/connections/mod.rs` defines backend-neutral `Connection` / `ConnectionStrategy` traits, and `Agent`/`Conversation`/`Step`/`ToolCall`/`Content` depend only on those traits, never on Gemini wire — and the long-arc product is a model-agnostic, eventually self-hosting agent OS, not a Google client. What is actually hardwired is narrow: one concrete backend (`src/backends/gemini/`), Gemini model-id defaults sitting in the neutral `types.rs`, a `start_gemini`-only facade entry, and a Gemini-only credit proxy. The doc framing ("mirrors `google.antigravity.types`", `antig::mcp`, "SDK for Gemini") is legacy skin over an already-general skeleton.

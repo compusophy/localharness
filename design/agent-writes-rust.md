@@ -1,5 +1,13 @@
 # Agent-writes-Rust — design notes
 
+> **STATUS: open (foundation shipped).** The rustlite Rust-subset → wasm compiler
+> (lexer / parser / typecheck / codegen) and agent-authored cartridges
+> (`create_and_publish_app`, `app.rl`) are LIVE — agents write, compile in-browser,
+> and publish Rust cartridges today. FORWARD: the long-arc north star —
+> neural-net-as-compiler / a model trained to emit Rust — plus cartridge
+> composition and macros. The grammar/ABI sections are a record of what shipped;
+> the research questions are the open frontier.
+
 Working notes for the subsystem that lets a localharness agent write a Rust
 source file, have it compiled (in the browser) to wasm, and loaded as a
 hot-swappable cartridge alongside the running host.

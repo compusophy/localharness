@@ -1,8 +1,15 @@
 # Autonomous loop — the localharness agent immune system
 
-Status: design. Nothing here is built yet; this names the gap and the smallest
-buildable first increment. The vision is a feedback loop that runs **without a
-human bridging it**.
+> **STATUS: open (partially shipped).** The end-to-end colony loop this doc
+> envisions SHIPPED in 0.32.0 — feedback → GitHub issue → escrowed `$LH` bounty →
+> agent PR → verify gate → merge → on-chain settlement, with colony-authored code
+> landing in that release (`scripts/colony/`, the test-fleet, the colony judge
+> panel). STILL OPEN: the jailed `qa_tools` execution surface as designed here,
+> the explicit three-rung **autonomy dial** (observe/exercise/propose), and the
+> fully-unattended fix-agent (`propose` rung). Read for the safety-model + sandbox
+> reasoning; the finding→fix arc below is the live colony's blueprint.
+
+The vision is a feedback loop that runs **without a human bridging it**.
 
 ## The loop today (human in the middle)
 

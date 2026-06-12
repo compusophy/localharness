@@ -1,5 +1,13 @@
 # localharness 1.0.0 — Launch Spec
 
+> **STATUS: open.** The 1.0 / **mainnet** moment has NOT happened — the project
+> is still on Tempo Moderato **testnet** at `0.x`. The *infrastructure* this spec
+> calls for (on-chain identity + TBA, metered access, x402 escrow, templates +
+> one-click fork, scoped runtime keys) has largely shipped on testnet; the 1.0
+> *boundary itself* — mainnet, real `$LH` value, the Stripe on-ramp, and the
+> sybil gate — is the forward work. Read with `beta-plan.md` (the testnet path to
+> get here).
+
 > Supersedes the 0.11-era launch *plan*. Rewritten at **0.18.0** after the
 > agent-economy brainstorm and its peer review. 1.0.0 is reserved for the
 > public-launch moment — this is the bar we hold it to, the architecture we
