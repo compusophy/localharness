@@ -63,9 +63,71 @@ function postError(code, detail) {
   self.postMessage({ type: 'error', code, detail });
 }
 
-// Logical framebuffer resolution. MUST match FB_W/FB_H in src/app/display.rs.
-const FB_W = 256;
-const FB_H = 144;
+// Logical framebuffer resolution. The DEFAULT (256x144, 16:9) MUST match the
+// FB_W/FB_H defaults in src/app/display.rs. A cartridge MAY override these per
+// load by exporting `dims() -> i32` returning a PACKED (width << 16) | height
+// (width in the high 16 bits, height in the low 16). The worker calls it ONCE
+// after instantiate; a cartridge with NO `dims()` export keeps the default, so
+// every existing cartridge renders EXACTLY as before (backward compatible).
+//
+// These are mutable (`let`): `applyDims()` rewrites them at load time. The
+// Node test surface still exports the DEFAULTS (FB_W_DEFAULT/FB_H_DEFAULT) and
+// the live values, and `renderOnce` honors a cartridge's `dims()` too.
+const FB_W_DEFAULT = 256;
+const FB_H_DEFAULT = 144;
+// Clamp range for a cartridge-declared dimension. The lower bound keeps a
+// cartridge from declaring a degenerate (0/negative) surface; the upper bound
+// caps the per-frame postMessage transfer cost (a frame is w*h*4 bytes, so
+// 1024x1024 = 4MB/frame is already the ceiling we accept).
+const FB_MIN = 16;
+const FB_MAX = 1024;
+let FB_W = FB_W_DEFAULT;
+let FB_H = FB_H_DEFAULT;
+
+// Decode a packed `(w << 16) | h` dims value and validate/clamp it. Returns
+// `[w, h]` on success, or `null` (caller falls back to the default + logs) when
+// either dimension is out of [FB_MIN, FB_MAX].
+function decodeDims(packed) {
+  const w = (packed >>> 16) & 0xffff;
+  const h = packed & 0xffff;
+  if (w < FB_MIN || w > FB_MAX || h < FB_MIN || h > FB_MAX) return null;
+  return [w, h];
+}
+
+// Set the live framebuffer dimensions from a cartridge's `dims()` export (or
+// reset to default when `instanceExports.dims` is absent). Reallocates the
+// backing framebuffer to match. Logs + falls back to default on an invalid
+// declared size.
+function applyDims(instanceExports) {
+  FB_W = FB_W_DEFAULT;
+  FB_H = FB_H_DEFAULT;
+  if (instanceExports && typeof instanceExports.dims === 'function') {
+    let packed;
+    try {
+      packed = instanceExports.dims() | 0;
+    } catch (_e) {
+      packed = 0;
+    }
+    const dims = decodeDims(packed >>> 0);
+    if (dims) {
+      FB_W = dims[0];
+      FB_H = dims[1];
+    } else {
+      const warn = '[cartridge] dims() out of range [' + FB_MIN + ',' + FB_MAX +
+        '] (packed ' + (packed >>> 0) + ') — falling back to ' +
+        FB_W_DEFAULT + 'x' + FB_H_DEFAULT;
+      // Worker path posts a log message; under Node (test harness, no `self`)
+      // fall back to console so the warning isn't lost.
+      if (typeof self !== 'undefined' && typeof self.postMessage === 'function') {
+        self.postMessage({ type: 'log', level: 'warn', msg: warn });
+      } else if (typeof console !== 'undefined') {
+        console.warn(warn);
+      }
+    }
+  }
+  fbBytes = new Uint8ClampedArray(FB_W * FB_H * 4);
+  fb32 = new Uint32Array(fbBytes.buffer);
+}
 
 // ---- shared mutable state for this cartridge run -----------------------------
 let running = false;
@@ -134,7 +196,8 @@ function drawLine(x0, y0, x1, y1, packed) {
 }
 
 // edge(): twice the signed area, the barycentric edge function. JS numbers are
-// f64, which exactly represents these products at 256x144 (well under 2^53).
+// f64, which exactly represents these products even at the 1024×1024 max
+// framebuffer (cross products stay ~1e6, well under 2^53).
 function edge(ax, ay, bx, by, cx, cy) {
   return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
 }
@@ -598,6 +661,11 @@ async function load(wasmBuf) {
   state.fill(0);
   ptr.x = 0; ptr.y = 0; ptr.down = 0;
   memory = null;
+  // Reset to default dims; the real size is decided AFTER instantiate (a
+  // cartridge's `dims()` export needs a live instance to call). applyDims()
+  // below reallocates the framebuffer once the instance exists.
+  FB_W = FB_W_DEFAULT;
+  FB_H = FB_H_DEFAULT;
   fbBytes = new Uint8ClampedArray(FB_W * FB_H * 4);
   fb32 = new Uint32Array(fbBytes.buffer);
 
@@ -611,6 +679,9 @@ async function load(wasmBuf) {
   }
   const exp = instance.exports;
   memory = exp.memory || null;
+  // A cartridge MAY declare its own framebuffer dims via `dims() -> i32`
+  // (packed (w<<16)|h). No export => the 256x144 default. Reallocates the FB.
+  applyDims(exp);
 
   if (typeof exp.frame === 'function') {
     frameFn = exp.frame;
@@ -687,8 +758,16 @@ if (IS_WORKER) {
 // Node-only test surface (the host-parity harness). NOT used by the worker.
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    FB_W,
-    FB_H,
+    // The DEFAULT dims (256x144). The live FB_W/FB_H are `let`-mutable and a
+    // cartridge's dims() can change them at load; expose both so a test can
+    // assert the default AND read the live size after renderOnce.
+    FB_W: FB_W_DEFAULT,
+    FB_H: FB_H_DEFAULT,
+    FB_MIN,
+    FB_MAX,
+    decodeDims,
+    // Live framebuffer dims (reflect the last renderOnce's cartridge dims()).
+    liveDims: () => [FB_W, FB_H],
     host_display, // the re-implemented draw ABI under test
     host_agent,
     glyph5x7, // expose the font table for a byte-for-byte vs-Rust check
@@ -699,6 +778,12 @@ if (typeof module !== 'undefined' && module.exports) {
     // and return the presented framebuffer as a fresh Uint8ClampedArray. Drives
     // the present-after-frame model: frame(t) draws, then we snapshot.
     renderOnce(wasmBytes, t = 0) {
+      // Start from the default-size framebuffer; if the cartridge exports
+      // dims(), applyDims() (called after instantiate, like the worker) resizes
+      // it before frame() draws — so the snapshot reflects the cartridge's
+      // chosen resolution. liveDims() reports the size this frame rendered at.
+      FB_W = FB_W_DEFAULT;
+      FB_H = FB_H_DEFAULT;
       fbBytes = new Uint8ClampedArray(FB_W * FB_H * 4);
       fb32 = new Uint32Array(fbBytes.buffer);
       state.fill(0);
@@ -721,6 +806,9 @@ if (typeof module !== 'undefined' && module.exports) {
       }
       const inst = new WebAssembly.Instance(mod, importObj);
       memory = inst.exports.memory || null;
+      // Honor a cartridge's dims() (no-op when absent — keeps the 256x144
+      // default and the existing parity snapshots byte-identical).
+      applyDims(inst.exports);
       const fn = inst.exports.frame || inst.exports.render;
       fn(t);
       return fbBytes.slice();
