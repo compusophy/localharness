@@ -957,8 +957,14 @@ fn post_agent_context(
 /// Read the live feed context (subscribed? count? identity?) and post it to
 /// the worker. Best-effort: any read failure leaves that field unsent.
 async fn refresh_feed_context(worker: web_sys::Worker) {
-    let Some(feed_id) = feed_token_id().await else { return };
+    // Skip for an anonymous visitor (no wallet): they can't subscribe, and this
+    // avoids 3 RPC reads on EVERY cartridge launch (the public RPC is
+    // rate-limited — a likely source of launch slowness).
     let addr = crate::app::chat::credit_address_existing().await;
+    if addr.is_none() {
+        return;
+    }
+    let Some(feed_id) = feed_token_id().await else { return };
     let has_identity = addr.is_some();
     let is_sub = match &addr {
         Some(a) => crate::app::registry::is_subscribed(feed_id, a).await.unwrap_or(false),
