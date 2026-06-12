@@ -67,6 +67,11 @@ impl Tool for ViewFile {
         let args: Args = serde_json::from_value(args)
             .map_err(|e| Error::other(format!("view_file args: {e}")))?;
 
+        // Never let a tool read the wallet seed / device key into the transcript.
+        if crate::builtins::is_protected_path(&args.path) {
+            return Err(crate::builtins::protected_path_error(&args.path));
+        }
+
         // Refuse to read a huge file into memory. (metadata() may be None
         // on backends that don't implement it — then we fall through to the
         // read, same as before.)

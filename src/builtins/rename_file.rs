@@ -61,6 +61,13 @@ impl Tool for RenameFile {
         if args.from == args.to {
             return Err(Error::other("from and to are identical"));
         }
+        // Renaming the seed/device key away (or clobbering one) bricks identity.
+        if crate::builtins::is_protected_path(&args.from) {
+            return Err(crate::builtins::protected_path_error(&args.from));
+        }
+        if crate::builtins::is_protected_path(&args.to) {
+            return Err(crate::builtins::protected_path_error(&args.to));
+        }
         self.fs.rename(&args.from, &args.to).await?;
         Ok(json!({ "ok": true, "from": args.from, "to": args.to }))
     }

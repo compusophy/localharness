@@ -54,6 +54,10 @@ impl Tool for DeleteFile {
     async fn execute(&self, args: Value, _ctx: Option<Arc<ToolContext>>) -> Result<Value> {
         let args: Args = serde_json::from_value(args)
             .map_err(|e| Error::other(format!("delete_file args: {e}")))?;
+        // Deleting the wallet seed / device key bricks the identity.
+        if crate::builtins::is_protected_path(&args.path) {
+            return Err(crate::builtins::protected_path_error(&args.path));
+        }
         self.fs.delete(&args.path).await?;
         Ok(json!({ "ok": true, "path": args.path }))
     }

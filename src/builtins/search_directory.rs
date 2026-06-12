@@ -87,6 +87,10 @@ impl Tool for SearchDirectory {
             if !matches!(entry.kind, EntryKind::File) {
                 continue;
             }
+            // Never surface the seed/device-key contents in search results.
+            if crate::builtins::is_protected_path(&entry.path) {
+                continue;
+            }
             let name = file_name(&entry.path);
             if let Some(matcher) = &file_matcher {
                 if !matcher.is_match(name) {

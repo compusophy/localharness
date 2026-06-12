@@ -61,6 +61,38 @@ pub use search_directory::SearchDirectory;
 pub use start_subagent::StartSubagent;
 pub use view_file::ViewFile;
 
+/// Identity / secret files the AGENT'S filesystem tools must never read,
+/// modify, destroy, or surface. `.lh_wallet` is the BIP-39 seed — the private
+/// key the whole identity derives from; a prompt injection that got the model
+/// to `view_file`/`search_directory` it could exfiltrate the seed into the
+/// transcript, and `delete_file`/`rename_file` on it bricks the identity (the
+/// reset-brick failure mode). The device key is likewise secret; the owner
+/// hints have no legitimate agent use. Matched on the final path component
+/// (path-independent). Mirrors `filesystem::EXEMPT_FILES` by intent — both
+/// protect identity material — but is a SEPARATE list: that one governs
+/// at-rest encryption (keep plaintext), this one governs agent tool ACCESS.
+pub(crate) const PROTECTED_FILES: &[&str] =
+    &[".lh_wallet", ".lh_device_key", ".lh_owner", ".lh_linked_owner"];
+
+/// True iff `path`'s final component is a protected identity/secret file that
+/// the agent's filesystem tools must refuse to touch. Splits on both `/` and
+/// `\` so a Windows-style path can't slip a protected basename past the check.
+pub(crate) fn is_protected_path(path: &str) -> bool {
+    let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    PROTECTED_FILES.contains(&base)
+}
+
+/// The error a filesystem builtin returns when asked to touch a protected
+/// identity file. Phrased so the model understands it's a hard policy, not a
+/// transient failure, and stops retrying.
+pub(crate) fn protected_path_error(path: &str) -> crate::error::Error {
+    let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    crate::error::Error::other(format!(
+        "refused: '{base}' is a protected identity/secret file (the wallet seed \
+         or device key) — agent filesystem tools cannot read, modify, or delete it"
+    ))
+}
+
 /// Construction dependencies the built-in tools optionally need.
 ///
 /// * `chat_client` + `chat_model` — used by `start_subagent`.
@@ -220,6 +252,60 @@ mod compile_failure_report_tests {
         assert!(r["location"].is_null());
         assert!(r["snippet"].is_null());
         assert!(r["hint"].as_str().unwrap().contains("recompile"), "{r}");
+    }
+}
+
+#[cfg(test)]
+mod protected_path_tests {
+    use super::*;
+
+    #[test]
+    fn matches_seed_and_identity_files_by_basename() {
+        for p in [
+            ".lh_wallet",
+            "./.lh_wallet",
+            "/data/agent/.lh_wallet",
+            "subdir\\.lh_device_key",
+            ".lh_owner",
+            ".lh_linked_owner",
+        ] {
+            assert!(is_protected_path(p), "{p} must be protected");
+        }
+        for p in ["note.txt", "app.rl", ".lh_history.json", "wallet.txt", "lh_wallet"] {
+            assert!(!is_protected_path(p), "{p} must NOT be protected");
+        }
+    }
+
+    #[cfg(feature = "native")]
+    #[tokio::test]
+    async fn view_and_delete_refuse_the_seed_file() {
+        use crate::filesystem::NativeFilesystem;
+        use crate::tools::Tool;
+        use serde_json::json;
+        use std::sync::Arc;
+
+        let dir = std::env::temp_dir().join(format!("lh_protect_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let seed = dir.join(".lh_wallet");
+        std::fs::write(&seed, b"SECRET SEED PHRASE").unwrap();
+        let seed_str = seed.display().to_string();
+        let fs = Arc::new(NativeFilesystem::new());
+
+        // view_file must refuse — the seed never reaches the transcript.
+        let v = ViewFile::new(fs.clone())
+            .execute(json!({ "path": seed_str }), None)
+            .await;
+        assert!(v.is_err(), "view_file must refuse the seed");
+        assert!(format!("{:?}", v.unwrap_err()).contains("protected"));
+
+        // delete_file must refuse — the seed file survives (no brick).
+        let d = DeleteFile::new(fs.clone())
+            .execute(json!({ "path": seed_str }), None)
+            .await;
+        assert!(d.is_err(), "delete_file must refuse the seed");
+        assert!(seed.exists(), "seed file must still exist after refused delete");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
 

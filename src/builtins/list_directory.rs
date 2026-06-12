@@ -54,6 +54,9 @@ impl Tool for ListDirectory {
 
         let entry_values: Vec<Value> = entries
             .into_iter()
+            // Hide the seed/device-key files — the agent has no business seeing
+            // them, and not surfacing them shrinks the prompt-injection surface.
+            .filter(|e| !crate::builtins::PROTECTED_FILES.contains(&e.name.as_str()))
             .map(|e| {
                 let mut obj = json!({
                     "name": e.name,

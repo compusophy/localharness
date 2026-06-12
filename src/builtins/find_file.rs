@@ -71,6 +71,10 @@ impl Tool for FindFile {
             if !matches!(entry.kind, EntryKind::File) {
                 continue;
             }
+            // Don't surface the protected identity files in name matches.
+            if crate::builtins::is_protected_path(&entry.path) {
+                continue;
+            }
             let name = file_name(&entry.path);
             if !matcher.is_match(name) {
                 continue;

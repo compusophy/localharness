@@ -56,6 +56,11 @@ impl Tool for CreateFile {
         let args: Args = serde_json::from_value(args)
             .map_err(|e| Error::other(format!("create_file args: {e}")))?;
 
+        // Never let a tool create/clobber the seed or device-key path.
+        if crate::builtins::is_protected_path(&args.path) {
+            return Err(crate::builtins::protected_path_error(&args.path));
+        }
+
         if self.fs.metadata(&args.path).await?.is_some() {
             return Err(Error::other(format!(
                 "create_file refuses to overwrite existing file: {}",

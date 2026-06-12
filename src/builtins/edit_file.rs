@@ -66,6 +66,10 @@ impl Tool for EditFile {
         if args.old_string.is_empty() {
             return Err(Error::other("old_string must not be empty"));
         }
+        // Editing the seed/device key would corrupt the identity (and reads it).
+        if crate::builtins::is_protected_path(&args.path) {
+            return Err(crate::builtins::protected_path_error(&args.path));
+        }
 
         let bytes = self.fs.read(&args.path).await?;
         let original = String::from_utf8(bytes)
