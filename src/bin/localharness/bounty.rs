@@ -60,6 +60,89 @@ pub(crate) fn parse_bounty_post_args(rest: &[String]) -> Result<ParsedBountyPost
     Ok(ParsedBountyPost { task, reward_label, reward_wei, ttl_secs })
 }
 
+/// The READ-ONLY preflight verdict for a bounty WRITE. `get_bounty` returns the
+/// all-zero record for an id that was never posted (the facet has no row), which
+/// the chain would revert on with a generic error — so we name that and the
+/// wrong-state cases BEFORE broadcasting a tx that burns sponsor gas (on-chain
+/// feedback #85). `Ok(())` means the write's precondition holds; `Err` is the
+/// named cause to print instead of submitting.
+///
+/// `action` is one of `"claim"` / `"submit"` / `"accept"`; each gates on the
+/// status the facet requires (Open to claim, Claimed to submit, Submitted to
+/// accept). A claimant-name (resolved by the caller) sharpens the "already
+/// claimed by …" message. Pure + testable — the cause-mapping core.
+pub(crate) fn bounty_preflight(
+    id: u64,
+    b: &registry::Bounty,
+    action: &str,
+    claimant_label: Option<&str>,
+) -> Result<(), String> {
+    // A never-posted id decodes as the zero record (poster all-zero).
+    if b.poster.trim_start_matches("0x").chars().all(|c| c == '0') {
+        return Err(format!("bounty #{id} doesn't exist"));
+    }
+    let who = || match claimant_label {
+        Some(l) if !l.is_empty() => format!(" by {l}"),
+        _ if b.claimant_token_id != 0 => format!(" by token #{}", b.claimant_token_id),
+        _ => String::new(),
+    };
+    match action {
+        "claim" => match b.status {
+            0 => Ok(()),
+            1 | 2 => Err(format!("bounty #{id} is already claimed{} — pick another", who())),
+            _ => Err(format!(
+                "bounty #{id} is not open (it's {}) — nothing to claim",
+                b.status_label()
+            )),
+        },
+        "submit" => match b.status {
+            1 => Ok(()),
+            0 => Err(format!("bounty #{id} hasn't been claimed yet — `bounty claim {id}` first")),
+            2 => Err(format!("bounty #{id} already has a submitted result")),
+            _ => Err(format!(
+                "bounty #{id} is {} — you can't submit a result",
+                b.status_label()
+            )),
+        },
+        "accept" => match b.status {
+            2 => Ok(()),
+            0 | 1 => Err(format!(
+                "bounty #{id} has no submitted result to accept yet (it's {})",
+                b.status_label()
+            )),
+            _ => Err(format!(
+                "bounty #{id} is already {} — nothing to accept",
+                b.status_label()
+            )),
+        },
+        _ => Ok(()),
+    }
+}
+
+/// Run the read-only [`bounty_preflight`] for `id`/`action`, resolving the
+/// claimant's name for a sharper message. `Ok(())` = the write may proceed;
+/// `Err(code)` already printed the named cause and carries the exit code. A
+/// `get_bounty` RPC error is NON-fatal here — it falls through to the write
+/// (which then surfaces the real failure), so a transient read never blocks a
+/// legitimate action.
+async fn bounty_preflight_or_reject(id: u64, action: &str) -> Result<(), i32> {
+    let Ok(b) = registry::get_bounty(id).await else {
+        return Ok(()); // read failed → let the write speak for itself
+    };
+    let claimant_label = if b.claimant_token_id != 0 {
+        registry::name_of_id(b.claimant_token_id).await.ok().filter(|n| !n.is_empty())
+    } else {
+        None
+    };
+    match bounty_preflight(id, &b, action, claimant_label.as_deref()) {
+        Ok(()) => Ok(()),
+        Err(msg) => {
+            eprintln!("{msg}");
+            Err(1)
+        }
+    }
+}
+
 /// `localharness bounty <subcommand>` — the bounty-board router.
 pub(crate) async fn bounty(caller: Option<&str>, rest: &[String]) -> i32 {
     match rest.first().map(String::as_str) {
@@ -146,7 +229,7 @@ pub(crate) async fn bounty_post(caller: Option<&str>, rest: &[String]) -> i32 {
     println!(
         "posting bounty: reward {}, expires in {} …",
         fmt_lh(reward_wei),
-        fmt_ttl(ttl_secs)
+        fmt_duration(ttl_secs)
     );
     match registry::post_bounty_sponsored(
         &signer,
@@ -167,12 +250,12 @@ pub(crate) async fn bounty_post(caller: Option<&str>, rest: &[String]) -> i32 {
             };
             match id_note {
                 Some(id) => {
-                    println!("✓ bounty #{id} posted — {} escrowed, expires in {}", fmt_lh(reward_wei), fmt_ttl(ttl_secs));
+                    println!("✓ bounty #{id} posted — {} escrowed, expires in {}", fmt_lh(reward_wei), fmt_duration(ttl_secs));
                     println!("  link:  https://localharness.xyz/?bounty={id}");
                     println!("  any agent can `bounty claim {id}`, do the work, and `bounty submit {id} <result>`.");
                 }
                 None => {
-                    println!("✓ bounty posted — {} escrowed, expires in {}", fmt_lh(reward_wei), fmt_ttl(ttl_secs));
+                    println!("✓ bounty posted — {} escrowed, expires in {}", fmt_lh(reward_wei), fmt_duration(ttl_secs));
                     println!("  see it with `bounty mine`.");
                 }
             }
@@ -219,7 +302,9 @@ pub(crate) async fn bounty_show(id_raw: &str) -> i32 {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     println!("{}", format_bounty_row(id, &b, &task, now));
-    println!("      poster    {}", b.poster);
+    // Resolve the poster's name the same way the claimant is (feedback #82/#83) —
+    // a bare 0x next to a named claimant was inconsistent.
+    println!("      poster    {}", resolve_address_label(&b.poster).await);
     if b.claimant_token_id != 0 {
         let label = match registry::name_of_id(b.claimant_token_id).await {
             Ok(n) if !n.is_empty() => format!("{n} (token #{})", b.claimant_token_id),
@@ -251,9 +336,9 @@ pub(crate) fn format_bounty_row(id: u64, b: &registry::Bounty, task: &str, now: 
     } else if b.expiry <= now {
         "EXPIRED".to_string()
     } else {
-        format!("in {}", fmt_interval(b.expiry - now))
+        format!("in {}", fmt_duration(b.expiry - now))
     };
-    let snippet: String = task.replace('\n', " ").chars().take(70).collect();
+    let snippet = truncate_words(task, 70);
     format!(
         "  #{id}  reward {reward}  expires {when}  [{status}]\n      {snippet}",
         reward = fmt_lh(b.reward_wei),
@@ -298,7 +383,7 @@ pub(crate) async fn bounty_list(rest: &[String]) -> i32 {
                 for (id, task, reward) in hits {
                     // A reward-only line keeps `discover_bounties`' (id, task,
                     // reward) shape without a second per-id read.
-                    let snippet: String = task.replace('\n', " ").chars().take(70).collect();
+                    let snippet = truncate_words(&task, 70);
                     println!("  #{id}  reward {}\n      {snippet}", fmt_lh(reward));
                 }
                 0
@@ -347,6 +432,12 @@ pub(crate) async fn bounty_claim(caller: Option<&str>, id_arg: &str) -> i32 {
             return 2;
         }
     };
+    // Read-only preflight: a nonexistent / already-claimed / not-open bounty
+    // reverts on-chain and burns sponsor gas while naming nothing (feedback #85).
+    // Name the cause here, before the tx.
+    if let Err(code) = bounty_preflight_or_reject(bounty_id, "claim").await {
+        return code;
+    }
     let (signer, sponsor) = match load_signer_and_sponsor(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
@@ -397,6 +488,10 @@ pub(crate) async fn bounty_submit(caller: Option<&str>, id_arg: &str, result: &s
         eprintln!("bounty submit: result is empty");
         return 2;
     }
+    // Preflight: submitting to an unclaimed / already-submitted bounty reverts.
+    if let Err(code) = bounty_preflight_or_reject(bounty_id, "submit").await {
+        return code;
+    }
     let (signer, sponsor) = match load_signer_and_sponsor(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
@@ -432,6 +527,10 @@ pub(crate) async fn bounty_accept(caller: Option<&str>, id_arg: &str) -> i32 {
             return 2;
         }
     };
+    // Preflight: accepting a bounty with no submitted result reverts.
+    if let Err(code) = bounty_preflight_or_reject(bounty_id, "accept").await {
+        return code;
+    }
     let (signer, sponsor) = match load_signer_and_sponsor(caller) {
         Ok(pair) => pair,
         Err(code) => return code,
@@ -599,6 +698,48 @@ mod tests {
         assert!(row.contains("expires in 5m"));
         assert!(row.contains("[open]"));
         assert!(row.contains("audit the vault")); // newline flattened
+    }
+
+    #[test]
+    fn bounty_preflight_names_the_revert_cause() {
+        let mk = |status: u8, claimant: u64| registry::Bounty {
+            poster: "0xabc".into(),
+            reward_wei: 1,
+            expiry: 0,
+            status,
+            claimant_token_id: claimant,
+        };
+        // A never-posted id decodes as the zero record → "doesn't exist".
+        let ghost = registry::Bounty {
+            poster: "0x0000000000000000000000000000000000000000".into(),
+            reward_wei: 0,
+            expiry: 0,
+            status: 0,
+            claimant_token_id: 0,
+        };
+        assert_eq!(
+            bounty_preflight(999, &ghost, "claim", None),
+            Err("bounty #999 doesn't exist".to_string())
+        );
+        // claim: only Open passes; Claimed names the claimant.
+        assert!(bounty_preflight(1, &mk(0, 0), "claim", None).is_ok());
+        let e = bounty_preflight(1, &mk(1, 7), "claim", Some("dex-qa")).unwrap_err();
+        assert!(e.contains("already claimed by dex-qa"), "got: {e}");
+        // No name resolved → falls back to the token id.
+        let e = bounty_preflight(1, &mk(1, 7), "claim", None).unwrap_err();
+        assert!(e.contains("token #7"), "got: {e}");
+        // Paid/cancelled aren't open.
+        assert!(bounty_preflight(1, &mk(3, 7), "claim", None).is_err());
+        // submit: only Claimed passes; Open coaches "claim first".
+        assert!(bounty_preflight(1, &mk(1, 7), "submit", None).is_ok());
+        let e = bounty_preflight(1, &mk(0, 0), "submit", None).unwrap_err();
+        assert!(e.contains("hasn't been claimed"), "got: {e}");
+        assert!(bounty_preflight(1, &mk(2, 7), "submit", None).is_err());
+        // accept: only Submitted passes.
+        assert!(bounty_preflight(1, &mk(2, 7), "accept", None).is_ok());
+        let e = bounty_preflight(1, &mk(1, 7), "accept", None).unwrap_err();
+        assert!(e.contains("no submitted result"), "got: {e}");
+        assert!(bounty_preflight(1, &mk(3, 7), "accept", None).is_err());
     }
 
     #[test]
