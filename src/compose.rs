@@ -77,6 +77,167 @@ pub struct Module<H> {
     pub viewport: Viewport,
 }
 
+/// Composite a CHILD framebuffer into a viewport `(x, y, view_w, view_h)` of a
+/// PARENT framebuffer. Both buffers are packed `u32` per the worker's pixel
+/// convention (`0xAABBGGRR` little-endian — byte order R,G,B,A; see
+/// `web/cartridge-worker.js`). The child's native `child_w x child_h` surface is
+/// scaled to fill the `view_w x view_h` viewport via **nearest-neighbour**
+/// sampling: for each destination pixel the source pixel is
+/// `src = (dx * child_w) / view_w`, an integer map that needs no float and works
+/// for upscale (2x), downscale (0.5x — source pixels are dropped, never blended),
+/// and identity alike. Pixels are copied verbatim (the alpha byte rides along,
+/// no blending) so the child's channel order is preserved exactly.
+///
+/// **Clipping is total and bounds-safe — this function never panics and never
+/// indexes out of bounds:**
+/// - A negative `x`/`y` (the viewport hangs off the top/left) starts the copy at
+///   the first on-screen destination column/row; the corresponding source pixels
+///   are skipped, so the child is clipped, not shifted.
+/// - A viewport overflowing the right/bottom edge is clamped to `dst_w`/`dst_h`.
+/// - A fully off-screen viewport (entirely past any edge, or zero/negative
+///   `view_w`/`view_h`, or an empty child) is a no-op.
+/// - A `dst`/`child` slice shorter than `dst_w*dst_h` / `child_w*child_h` is
+///   tolerated: any index that would fall outside the actual slice is skipped.
+///
+/// This is the pure pixel half of `host::compose` — after [`ComposeBudget::admit`]
+/// gates a child and the host runs that child's `frame()` into its own buffer,
+/// `blit_child` is what folds the result into the parent's framebuffer. It is
+/// the iframe-free composition primitive: no DOM node, no second canvas, no
+/// origin — just one buffer copied into a sub-rectangle of another.
+#[allow(clippy::too_many_arguments)] // compositor primitive: parent fb + child fb + viewport rect
+pub fn blit_child(
+    dst: &mut [u32],
+    dst_w: i32,
+    dst_h: i32,
+    child: &[u32],
+    child_w: i32,
+    child_h: i32,
+    x: i32,
+    y: i32,
+    view_w: i32,
+    view_h: i32,
+) {
+    // Degenerate inputs → nothing to composite.
+    if view_w <= 0 || view_h <= 0 || child_w <= 0 || child_h <= 0 || dst_w <= 0 || dst_h <= 0 {
+        return;
+    }
+
+    // Clip the destination viewport rect to the framebuffer. `dx0/dy0` are the
+    // first on-screen destination columns/rows; `dx1/dy1` are exclusive ends.
+    let dx0 = x.max(0);
+    let dy0 = y.max(0);
+    let dx1 = x.saturating_add(view_w).min(dst_w);
+    let dy1 = y.saturating_add(view_h).min(dst_h);
+    if dx0 >= dx1 || dy0 >= dy1 {
+        return; // entirely off-screen
+    }
+
+    let dst_w_us = dst_w as usize;
+    let child_w_us = child_w as usize;
+
+    let mut dy = dy0;
+    while dy < dy1 {
+        // Viewport-local destination row, then nearest-neighbour source row.
+        let vy = dy - y; // 0..view_h within the (unclipped) viewport
+        let sy = ((vy as i64 * child_h as i64) / view_h as i64) as i32;
+        // `sy` is in [0, child_h) for vy in [0, view_h); clamp defensively.
+        if sy < 0 || sy >= child_h {
+            dy += 1;
+            continue;
+        }
+        let src_row = sy as usize * child_w_us;
+        let dst_row = dy as usize * dst_w_us;
+
+        let mut dx = dx0;
+        while dx < dx1 {
+            let vx = dx - x;
+            let sx = ((vx as i64 * child_w as i64) / view_w as i64) as i32;
+            if sx >= 0 && sx < child_w {
+                let si = src_row + sx as usize;
+                let di = dst_row + dx as usize;
+                // Slice-length guards: never index past the actual buffers even
+                // if they are shorter than w*h would imply.
+                if si < child.len() && di < dst.len() {
+                    dst[di] = child[si];
+                }
+            }
+            dx += 1;
+        }
+        dy += 1;
+    }
+}
+
+/// Map a PARENT-framebuffer pointer `(px, py)` into a composed CHILD's LOCAL
+/// coordinate space, given the child's viewport `(x, y, view_w, view_h)` in
+/// parent coords and the child's native `child_w x child_h` surface.
+///
+/// Returns `None` when the pointer is OUTSIDE the viewport (so a composed child
+/// only ever "feels" the pointer over its own rect — a click on parent chrome or
+/// a sibling never leaks in). Inside the viewport it returns the child-local
+/// `(cx, cy)`, inverting the same nearest-neighbour scale [`blit_child`] uses:
+/// `cx = ((px - x) * child_w) / view_w`, clamped to `[0, child_w)`. So a child
+/// that drew at native resolution `child_w x child_h` and was scaled up/down into
+/// the viewport receives pointer coordinates in its OWN space — exactly as if it
+/// were running fullscreen at its native size.
+///
+/// This is what gives a composed child correct input. It is the pure inverse of
+/// the blit's forward map and carries no browser dependency; the compositor in
+/// `app::display` calls it each frame to fill the focused child's `InputSource::Local`
+/// pointer cell (focus-gated so siblings stay isolated).
+#[allow(clippy::too_many_arguments)] // compositor primitive: pointer + viewport rect + child dims
+pub fn map_pointer_into_child(
+    px: i32,
+    py: i32,
+    x: i32,
+    y: i32,
+    view_w: i32,
+    view_h: i32,
+    child_w: i32,
+    child_h: i32,
+) -> Option<(i32, i32)> {
+    if view_w <= 0 || view_h <= 0 || child_w <= 0 || child_h <= 0 {
+        return None;
+    }
+    // Outside the viewport rect → the child sees no pointer.
+    if px < x || py < y || px >= x.saturating_add(view_w) || py >= y.saturating_add(view_h) {
+        return None;
+    }
+    let vx = (px - x) as i64;
+    let vy = (py - y) as i64;
+    // Forward map (blit) is sx = vx*child_w/view_w; the pointer inverse is the
+    // same division (each viewport pixel samples one source pixel).
+    let cx = ((vx * child_w as i64) / view_w as i64) as i32;
+    let cy = ((vy * child_h as i64) / view_h as i64) as i32;
+    // Clamp into [0, child_w) x [0, child_h): the rightmost viewport column maps
+    // to child_w-1, never child_w (an off-by-one a child could read OOB).
+    Some((cx.clamp(0, child_w - 1), cy.clamp(0, child_h - 1)))
+}
+
+impl<H> Module<H> {
+    /// Composite this child's framebuffer (`child_w x child_h`, packed `u32`)
+    /// into this module's [`Viewport`] of a parent framebuffer. The viewport's
+    /// `(ox, oy, w, h)` are the destination rect; the child is nearest-neighbour
+    /// scaled to fill it (see [`blit_child`]). The single call the compositor
+    /// makes per `Ready` child after its `frame()` runs.
+    pub fn blit_into(&self, dst: &mut [u32], dst_w: i32, dst_h: i32, child: &[u32], child_w: i32, child_h: i32) {
+        blit_child(
+            dst, dst_w, dst_h, child, child_w, child_h,
+            self.viewport.ox, self.viewport.oy, self.viewport.w, self.viewport.h,
+        );
+    }
+
+    /// Map a parent-framebuffer pointer into this child's local space given the
+    /// child's native dims, or `None` if the pointer is outside this module's
+    /// viewport. See [`map_pointer_into_child`].
+    pub fn pointer_into(&self, px: i32, py: i32, child_w: i32, child_h: i32) -> Option<(i32, i32)> {
+        map_pointer_into_child(
+            px, py,
+            self.viewport.ox, self.viewport.oy, self.viewport.w, self.viewport.h,
+            child_w, child_h,
+        )
+    }
+}
+
 /// Resource caps for a composition — the security gate that stops an
 /// attacker-authored or runaway compose graph from exhausting the host (linear
 /// memory) or the sponsor (per-mount fees). The adversarial critique flagged
@@ -403,6 +564,241 @@ mod tests {
         let mut got = None;
         t.tick(|_i, _h, v, _p| got = Some(*v));
         assert_eq!(got, Some(Viewport { ox: 10, oy: 20, w: 64, h: 32 }));
+    }
+
+    // ── blit_child + map_pointer_into_child ────────────────────────────────
+
+    /// A `w x h` parent framebuffer, all zero (transparent black).
+    fn pfb(w: i32, h: i32) -> Vec<u32> {
+        vec![0u32; (w * h) as usize]
+    }
+
+    /// A `w x h` child framebuffer filled with a single packed colour.
+    fn cfb(w: i32, h: i32, color: u32) -> Vec<u32> {
+        vec![color; (w * h) as usize]
+    }
+
+    fn at(buf: &[u32], w: i32, x: i32, y: i32) -> u32 {
+        buf[(y * w + x) as usize]
+    }
+
+    #[test]
+    fn blit_identity_copies_child_pixel_for_pixel() {
+        let (w, h) = (16, 16);
+        let mut dst = pfb(w, h);
+        // 4x4 child with a distinct value per pixel so a mis-map is visible.
+        let cw = 4;
+        let ch = 4;
+        let child: Vec<u32> = (0..(cw * ch) as u32).collect();
+        // Identity scale (view == child dims) at offset (2,3).
+        blit_child(&mut dst, w, h, &child, cw, ch, 2, 3, cw, ch);
+        for cy in 0..ch {
+            for cx in 0..cw {
+                let want = (cy * cw + cx) as u32;
+                assert_eq!(at(&dst, w, 2 + cx, 3 + cy), want, "child ({cx},{cy}) lands at parent ({},{})", 2 + cx, 3 + cy);
+            }
+        }
+        // The pixel just outside the blit rect is untouched.
+        assert_eq!(at(&dst, w, 1, 3), 0);
+        assert_eq!(at(&dst, w, 2 + cw, 3), 0);
+    }
+
+    #[test]
+    fn blit_preserves_rgba_channel_order() {
+        // 0xAABBGGRR packed: a known colour must survive the copy byte-for-byte.
+        let color = 0x11_22_33_44u32; // A=0x11 B=0x22 G=0x33 R=0x44
+        let (w, h) = (8, 8);
+        let mut dst = pfb(w, h);
+        let child = cfb(2, 2, color);
+        blit_child(&mut dst, w, h, &child, 2, 2, 0, 0, 2, 2);
+        assert_eq!(at(&dst, w, 0, 0), color, "packed colour preserved exactly");
+        assert_eq!(at(&dst, w, 1, 1), color);
+    }
+
+    #[test]
+    fn blit_scales_2x_nearest_neighbour() {
+        // 2x2 child → 4x4 viewport. Each source pixel becomes a 2x2 block.
+        let cw = 2;
+        let ch = 2;
+        // child: [A B / C D]
+        let child = vec![10u32, 20, 30, 40];
+        let (w, h) = (8, 8);
+        let mut dst = pfb(w, h);
+        blit_child(&mut dst, w, h, &child, cw, ch, 0, 0, 4, 4);
+        // Top-left 2x2 block == A(10), top-right == B(20), etc.
+        assert_eq!(at(&dst, w, 0, 0), 10);
+        assert_eq!(at(&dst, w, 1, 1), 10, "A occupies the whole top-left 2x2");
+        assert_eq!(at(&dst, w, 2, 0), 20);
+        assert_eq!(at(&dst, w, 3, 1), 20);
+        assert_eq!(at(&dst, w, 0, 2), 30);
+        assert_eq!(at(&dst, w, 2, 2), 40);
+        assert_eq!(at(&dst, w, 3, 3), 40);
+    }
+
+    #[test]
+    fn blit_scales_half_drops_source_pixels() {
+        // 4x4 child → 2x2 viewport: nearest-neighbour picks source (0,0),(2,0),
+        // (0,2),(2,2) — odd rows/cols are dropped, never blended.
+        let cw = 4;
+        let ch = 4;
+        let child: Vec<u32> = (0..(cw * ch) as u32).collect(); // value == cy*4+cx
+        let (w, h) = (8, 8);
+        let mut dst = pfb(w, h);
+        blit_child(&mut dst, w, h, &child, cw, ch, 0, 0, 2, 2);
+        // dst(0,0)→src(0,0)=0; dst(1,0)→src(2,0)=2; dst(0,1)→src(0,2)=8; dst(1,1)→src(2,2)=10.
+        assert_eq!(at(&dst, w, 0, 0), 0);
+        assert_eq!(at(&dst, w, 1, 0), 2);
+        assert_eq!(at(&dst, w, 0, 1), 8);
+        assert_eq!(at(&dst, w, 1, 1), 10);
+    }
+
+    #[test]
+    fn blit_clips_at_right_and_bottom_edges() {
+        // Viewport runs off the right + bottom; only the on-screen part is drawn.
+        let (w, h) = (4, 4);
+        let mut dst = pfb(w, h);
+        let child = cfb(4, 4, 7);
+        // Place a 4x4 identity blit at (2,2): only the 2x2 bottom-right corner fits.
+        blit_child(&mut dst, w, h, &child, 4, 4, 2, 2, 4, 4);
+        assert_eq!(at(&dst, w, 2, 2), 7);
+        assert_eq!(at(&dst, w, 3, 3), 7);
+        assert_eq!(at(&dst, w, 0, 0), 0, "top-left untouched");
+        assert_eq!(at(&dst, w, 1, 1), 0);
+    }
+
+    #[test]
+    fn blit_clips_at_left_and_top_edges_without_shifting() {
+        // Negative offset: the child is clipped (left/top columns dropped), NOT
+        // shifted right. A 4x4 identity child at (-2,-2) shows its bottom-right.
+        let (w, h) = (4, 4);
+        let mut dst = pfb(w, h);
+        let child: Vec<u32> = (0..16u32).collect(); // value == cy*4+cx
+        blit_child(&mut dst, w, h, &child, 4, 4, -2, -2, 4, 4);
+        // dst(0,0) shows child(2,2)=10 (the first on-screen source pixel).
+        assert_eq!(at(&dst, w, 0, 0), 10);
+        assert_eq!(at(&dst, w, 1, 1), 15);
+        // Nothing wrote past the clipped region's natural extent.
+        assert_eq!(at(&dst, w, 2, 2), 0);
+    }
+
+    #[test]
+    fn blit_fully_offscreen_is_a_noop() {
+        let (w, h) = (4, 4);
+        let child = cfb(2, 2, 9);
+        // Past the right edge.
+        let mut dst = pfb(w, h);
+        blit_child(&mut dst, w, h, &child, 2, 2, 4, 0, 2, 2);
+        assert!(dst.iter().all(|&p| p == 0), "off the right edge writes nothing");
+        // Past the bottom edge.
+        let mut dst = pfb(w, h);
+        blit_child(&mut dst, w, h, &child, 2, 2, 0, 4, 2, 2);
+        assert!(dst.iter().all(|&p| p == 0));
+        // Entirely off the left/top.
+        let mut dst = pfb(w, h);
+        blit_child(&mut dst, w, h, &child, 2, 2, -2, 0, 2, 2);
+        assert!(dst.iter().all(|&p| p == 0), "viewport ends at x=0 → nothing on-screen");
+        let mut dst = pfb(w, h);
+        blit_child(&mut dst, w, h, &child, 2, 2, 0, -2, 2, 2);
+        assert!(dst.iter().all(|&p| p == 0));
+    }
+
+    #[test]
+    fn blit_degenerate_inputs_are_noops() {
+        let (w, h) = (4, 4);
+        let child = cfb(2, 2, 9);
+        let mut dst = pfb(w, h);
+        // Zero/negative viewport dims.
+        blit_child(&mut dst, w, h, &child, 2, 2, 0, 0, 0, 4);
+        blit_child(&mut dst, w, h, &child, 2, 2, 0, 0, 4, 0);
+        blit_child(&mut dst, w, h, &child, 2, 2, 0, 0, -1, 4);
+        // Empty child.
+        blit_child(&mut dst, w, h, &[], 0, 0, 0, 0, 4, 4);
+        assert!(dst.iter().all(|&p| p == 0), "no degenerate call writes anything");
+    }
+
+    #[test]
+    fn blit_tolerates_short_slices_without_panicking() {
+        // dst shorter than dst_w*dst_h, and child shorter than child_w*child_h:
+        // any index past the real slice is skipped — must not panic.
+        let mut dst = vec![0u32; 4]; // claims 8x8 but only 4 long
+        let child = vec![5u32; 2]; // claims 4x4 but only 2 long
+        blit_child(&mut dst, 8, 8, &child, 4, 4, 0, 0, 4, 4);
+        // Whatever it wrote, it stayed inside the 4-element dst slice.
+        assert_eq!(dst.len(), 4);
+    }
+
+    #[test]
+    fn module_blit_into_uses_its_viewport() {
+        let m = Module { handle: (), viewport: Viewport { ox: 3, oy: 1, w: 2, h: 2 } };
+        let (w, h) = (8, 8);
+        let mut dst = pfb(w, h);
+        let child = cfb(2, 2, 0xABCD_1234);
+        m.blit_into(&mut dst, w, h, &child, 2, 2);
+        assert_eq!(at(&dst, w, 3, 1), 0xABCD_1234);
+        assert_eq!(at(&dst, w, 4, 2), 0xABCD_1234);
+        assert_eq!(at(&dst, w, 0, 0), 0, "outside the viewport untouched");
+    }
+
+    #[test]
+    fn pointer_inside_viewport_maps_to_child_local() {
+        // Viewport (10,20,64,32), child native 64x32 → identity scale. A pointer
+        // at parent (60,45) is viewport-local (50,25) → child-local (50,25).
+        let got = map_pointer_into_child(60, 45, 10, 20, 64, 32, 64, 32);
+        assert_eq!(got, Some((50, 25)));
+    }
+
+    #[test]
+    fn pointer_outside_viewport_is_none() {
+        // Left, top, right, bottom of the viewport (10,20,64,32).
+        assert_eq!(map_pointer_into_child(9, 30, 10, 20, 64, 32, 64, 32), None, "left of viewport");
+        assert_eq!(map_pointer_into_child(30, 19, 10, 20, 64, 32, 64, 32), None, "above viewport");
+        assert_eq!(map_pointer_into_child(74, 30, 10, 20, 64, 32, 64, 32), None, "ox+w is exclusive");
+        assert_eq!(map_pointer_into_child(30, 52, 10, 20, 64, 32, 64, 32), None, "oy+h is exclusive");
+    }
+
+    #[test]
+    fn pointer_scale_2x_halves_into_child_space() {
+        // Child native 32x16 scaled into a 64x32 viewport at origin (0,0).
+        // A pointer at viewport (40,20) maps to child (40*32/64, 20*16/32)=(20,10).
+        assert_eq!(map_pointer_into_child(40, 20, 0, 0, 64, 32, 32, 16), Some((20, 10)));
+        // Top-left corner maps to (0,0).
+        assert_eq!(map_pointer_into_child(0, 0, 0, 0, 64, 32, 32, 16), Some((0, 0)));
+    }
+
+    #[test]
+    fn pointer_rightmost_column_clamps_inside_child() {
+        // The last viewport column/row must map to child_w-1 / child_h-1, never
+        // child_w/child_h (which a child would read OOB).
+        let got = map_pointer_into_child(63, 31, 0, 0, 64, 32, 64, 32);
+        assert_eq!(got, Some((63, 31)));
+        // Downscale edge: 4x view of a 1-wide child still clamps to 0.
+        let got = map_pointer_into_child(3, 0, 0, 0, 4, 4, 1, 1);
+        assert_eq!(got, Some((0, 0)));
+    }
+
+    #[test]
+    fn pointer_forward_blit_roundtrip_agrees() {
+        // The pointer map is the inverse of the blit's forward sample: a pointer
+        // over destination pixel (dx,dy) must select the SAME source pixel the
+        // blit copied there. Check across a 3x scale.
+        let (cw, ch) = (5, 3);
+        let (vw, vh) = (15, 9);
+        let (ox, oy) = (7, 11);
+        for dy in 0..vh {
+            for dx in 0..vw {
+                let mapped = map_pointer_into_child(ox + dx, oy + dy, ox, oy, vw, vh, cw, ch).unwrap();
+                let blit_sx = ((dx as i64 * cw as i64) / vw as i64) as i32;
+                let blit_sy = ((dy as i64 * ch as i64) / vh as i64) as i32;
+                assert_eq!(mapped, (blit_sx, blit_sy), "pointer at dst ({dx},{dy}) must select blit's source pixel");
+            }
+        }
+    }
+
+    #[test]
+    fn module_pointer_into_uses_its_viewport() {
+        let m = Module { handle: (), viewport: Viewport { ox: 100, oy: 50, w: 64, h: 32 } };
+        assert_eq!(m.pointer_into(110, 60, 64, 32), Some((10, 10)));
+        assert_eq!(m.pointer_into(10, 10, 64, 32), None, "pointer over parent chrome → child sees nothing");
     }
 
     #[test]
