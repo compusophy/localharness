@@ -5,8 +5,8 @@
 #
 # Why this exists: `cargo test` NEVER instantiates wasm, so it cannot prove the
 # browser app's cartridge runtime or host::compose actually work — that gap is
-# how features shipped on "it compiles, therefore it's done". Stages 3-7 do REAL
-# wasm instantiation + framebuffer assertions. A release must pass all seven.
+# how features shipped on "it compiles, therefore it's done". Stages 3-9 do REAL
+# wasm instantiation + framebuffer assertions. A release must pass all nine.
 #
 #   1. native test suites            cargo test for EVERY feature config that
 #                                    carries tests: default, anthropic, wallet
@@ -25,6 +25,10 @@
 #                                    the codegen regression gate — proves complex
 #                                    cartridges produce valid, non-trapping wasm
 #                                    that draws/computes the right answer)
+#   9. variable resolution           test-variable-resolution.mjs (a dims()
+#                                    cartridge resizes the worker framebuffer;
+#                                    a no-dims() cartridge stays 256×144;
+#                                    clamp range [16,1024] enforced)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -36,35 +40,38 @@ trap 'rm -f "$CART_WASM"' EXIT
 if [[ -t 1 ]]; then B='\033[1m'; G='\033[1;32m'; N='\033[0m'; else B=''; G=''; N=''; fi
 step() { printf "\n${B}== %s ==${N}\n" "$1"; }
 
-step "1/8  native test suites (default + anthropic + wallet)"
+step "1/9  native test suites (default + anthropic + wallet)"
 cargo test --quiet
 cargo test --quiet --features anthropic
 cargo test --quiet --features wallet
 
-step "2/8  wasm32 guardrails (bare SDK + wallet + browser-app)"
+step "2/9  wasm32 guardrails (bare SDK + wallet + browser-app)"
 cargo check --quiet --no-default-features --target wasm32-unknown-unknown
 cargo check --quiet --no-default-features --features wallet --target wasm32-unknown-unknown
 cargo check --quiet --no-default-features --target wasm32-unknown-unknown --features browser-app
 
-step "3/8  compile a real cartridge ($CART_SRC)"
+step "3/9  compile a real cartridge ($CART_SRC)"
 cargo run --quiet --features wallet --bin localharness -- compile "$CART_SRC" "$CART_WASM"
 
-step "4/8  instantiate + run (catch traps)"
+step "4/9  instantiate + run (catch traps)"
 node scripts/validate-cartridge.js "$CART_WASM"
 
-step "5/8  single-cartridge render"
+step "5/9  single-cartridge render"
 node scripts/render-cartridge.js "$CART_WASM"
 
-step "6/8  multi-module composition (host::compose)"
+step "6/9  multi-module composition (host::compose)"
 node scripts/render-compose.js "$CART_WASM"
 
-step "7/8  worker host-parity (off-main-thread cartridge runtime)"
+step "7/9  worker host-parity (off-main-thread cartridge runtime)"
 node scripts/test-worker-host-parity.mjs
 
-step "8/8  cartridge corpus (compile -> instantiate -> run -> assert)"
+step "8/9  cartridge corpus (compile -> instantiate -> run -> assert)"
 node scripts/test-cartridges.mjs
 
-printf "\n${G}PROOF-OF-SPEC OK${N} — all 8 stages passed.\n"
+step "9/9  variable framebuffer resolution (dims() convention)"
+node scripts/test-variable-resolution.mjs
+
+printf "\n${G}PROOF-OF-SPEC OK${N} — all 9 stages passed.\n"
 
 # Opt-in extensions (NOT run here — both hit the LIVE testnet / proxy and spend
 # real sponsor gas, so they must never gate this network-free proof). Run by hand:

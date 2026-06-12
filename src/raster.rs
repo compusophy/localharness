@@ -199,8 +199,8 @@ pub fn draw_line(
 }
 
 /// Twice the signed area of triangle `(a,b,c)` — the edge function for
-/// barycentric coverage. `> 0` is CCW; widened to `i64` so 256x144 coords
-/// can't overflow the cross product.
+/// barycentric coverage. `> 0` is CCW; widened to `i64` so framebuffer coords
+/// (up to the 1024×1024 cartridge-declared max) can't overflow the cross product.
 #[inline]
 fn edge(ax: i32, ay: i32, bx: i32, by: i32, cx: i32, cy: i32) -> i64 {
     (bx - ax) as i64 * (cy - ay) as i64 - (by - ay) as i64 * (cx - ax) as i64

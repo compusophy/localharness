@@ -1370,6 +1370,115 @@ mod tests {
         }
     }
 
+    /// Parse the wasm EXPORT section (id 7) and return the names of all
+    /// FUNCTION exports (export kind 0x00). The section format is:
+    /// `count` then `count` × (`name_len` name `kind` `index`). Used to PROVE a
+    /// cartridge's `dims()` export is genuinely present in the binary (a
+    /// substring check would also match an import field name).
+    fn function_export_names(wasm: &[u8]) -> Vec<String> {
+        // Walk top-level sections to find the export section's payload.
+        let mut i = 8usize; // skip magic (4) + version (4)
+        let mut names = Vec::new();
+        while i < wasm.len() {
+            let id = wasm[i];
+            i += 1;
+            // section size (LEB128 u32)
+            let mut size = 0u32;
+            let mut shift = 0;
+            loop {
+                let byte = wasm[i];
+                i += 1;
+                size |= ((byte & 0x7f) as u32) << shift;
+                if byte & 0x80 == 0 {
+                    break;
+                }
+                shift += 7;
+            }
+            let end = i + size as usize;
+            if id == SEC_EXPORT {
+                let mut p = i;
+                // count (LEB128 u32)
+                let mut count = 0u32;
+                let mut sh = 0;
+                loop {
+                    let b = wasm[p];
+                    p += 1;
+                    count |= ((b & 0x7f) as u32) << sh;
+                    if b & 0x80 == 0 {
+                        break;
+                    }
+                    sh += 7;
+                }
+                for _ in 0..count {
+                    // name_len
+                    let mut nlen = 0u32;
+                    let mut s2 = 0;
+                    loop {
+                        let b = wasm[p];
+                        p += 1;
+                        nlen |= ((b & 0x7f) as u32) << s2;
+                        if b & 0x80 == 0 {
+                            break;
+                        }
+                        s2 += 7;
+                    }
+                    let name = String::from_utf8_lossy(&wasm[p..p + nlen as usize]).to_string();
+                    p += nlen as usize;
+                    let kind = wasm[p];
+                    p += 1;
+                    // index (LEB128 u32) — skip
+                    loop {
+                        let b = wasm[p];
+                        p += 1;
+                        if b & 0x80 == 0 {
+                            break;
+                        }
+                    }
+                    if kind == 0x00 {
+                        names.push(name);
+                    }
+                }
+                return names;
+            }
+            i = end;
+        }
+        names
+    }
+
+    #[test]
+    fn emit_dims_export_for_variable_resolution() {
+        // VARIABLE FRAMEBUFFER RESOLUTION: a cartridge MAY export `dims() ->
+        // i32` returning a packed `(w << 16) | h` so the host (worker) sizes the
+        // framebuffer to the cartridge's chosen dimensions instead of the fixed
+        // 256×144 default. rustlite exports EVERY top-level fn, so `dims` needs
+        // no codegen change — this guards that the export is genuinely emitted
+        // (parsed out of the real export section, not a substring) alongside
+        // `frame`, so the worker's `instance.exports.dims` lookup finds it.
+        let wasm = compile_to_wasm(
+            r#"
+            use host::display;
+            fn dims() -> i32 {
+                (320 << 16) | 240
+            }
+            fn frame(t: i32) {
+                display::clear(0);
+                display::fill_rect(0, 0, 320, 240, 0x202020);
+                display::present();
+            }
+        "#,
+        );
+        assert_eq!(&wasm[0..4], WASM_MAGIC);
+        let exports = function_export_names(&wasm);
+        assert!(
+            exports.iter().any(|n| n == "dims"),
+            "a cartridge declaring dims() must export it as a function (got exports: {exports:?})",
+        );
+        assert!(
+            exports.iter().any(|n| n == "frame"),
+            "frame must still be exported (got: {exports:?})",
+        );
+    }
+
     #[test]
     fn emit_array_indexed_write_stores() {
         // `a[i] = v` must emit an i32.store (0x36). The read path emits
