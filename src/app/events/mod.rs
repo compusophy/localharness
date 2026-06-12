@@ -270,6 +270,25 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
         let Some(target) = event.target() else { return };
         let Ok(mut node) = target.dyn_into::<Element>() else { return };
 
+        // Backdrop-click dismissal: a click whose RAW target IS the overlay
+        // backdrop itself (the dark area, never a child inside the dialog —
+        // those bubble up with a different target) closes the modal. Standard
+        // modal behaviour, paired with ESC. Admin + files only; the display
+        // overlay is a fullscreen interactive surface (its × / ESC close it).
+        match node.id().as_str() {
+            "header-admin-panel" => {
+                event.prevent_default();
+                dispatch(Action::HeaderAdminClose);
+                return;
+            }
+            "files-modal" => {
+                event.prevent_default();
+                dispatch(Action::ToggleFiles);
+                return;
+            }
+            _ => {}
+        }
+
         // Walk up from the event target looking for [data-action].
         // Take any [data-arg] from the SAME element so the two travel
         // as a single intent.
