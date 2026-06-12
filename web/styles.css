@@ -345,6 +345,15 @@ main.layout .transcript {
   flex-direction: column;
   gap: 12px;
 }
+/* The FIRST item in the transcript sits FLUSH against the header border —
+   no residual top gap. `.turn` carries `padding: 4px 0` for between-turn
+   rhythm, but the first turn must not push the conversation down from the
+   header (the "1px gap under the header" / "padding above the transcript"
+   — one gap, reported from both sides). */
+main.layout .transcript > :first-child {
+  margin-top: 0;
+  padding-top: 0;
+}
 main.layout .transcript > * { flex-shrink: 0; }
 /* System status line — lives IN the transcript stream (one replaceable
    line appended by dom::set_status), not in the input chrome. Terse,
