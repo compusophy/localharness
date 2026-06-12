@@ -172,7 +172,10 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
    block, the inline-flex bell and inline-block admin button aligned by text
    BASELINE (bell sat 3px higher) and had zero gap (touching). Center them on
    one axis with an 8px gap. The dropdown panel is position:fixed, out of flow. */
-.header-admin { position: relative; display: inline-flex; align-items: center; gap: var(--space-2); }
+/* gap == --chrome-pad so the space between the bell and ADMIN equals the
+   space from ADMIN to the header's right edge (both 16px) — ADMIN is evenly
+   spaced on both sides. */
+.header-admin { position: relative; display: inline-flex; align-items: center; gap: var(--chrome-pad); }
 
 /* Brand dropdown — the top-left "localharness" title is a native
    <details> menu (no JS) exposing Home / Repo / Crate. Marker hidden
