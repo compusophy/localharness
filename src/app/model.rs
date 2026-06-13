@@ -14,18 +14,27 @@
 
 const MODEL_FILE: &str = ".lh_model";
 
-/// Default model id when none is persisted — the Gemini flash model the
-/// platform has always defaulted to.
-pub(crate) const DEFAULT_MODEL: &str = "gemini-3.5-flash";
+/// Default model id when none is persisted — the platform's Gemini default.
+/// Aliases the crate-canonical [`crate::types::DEFAULT_MODEL`] so a model-id
+/// flip in ONE place propagates here (no re-typed literal to drift).
+pub(crate) const DEFAULT_MODEL: &str = crate::types::DEFAULT_MODEL;
 
 /// The selectable models, as `(id, label)` pairs. Drives the admin
 /// selector template AND is the allowlist [`save`] validates against, so a
 /// stale/garbage `.lh_model` can never route to an unknown model.
+///
+/// The ids REFERENCE the canonical backend constants rather than re-typing
+/// literals — a rename in `types`/`anthropic::wire` auto-propagates here, so
+/// the selector can never advertise a dead id (the model-id-flip drift trap;
+/// browser-app always pulls the `anthropic` feature, so the consts resolve).
+/// `gemma-3-270m` stays a literal (the `local` feature/backend isn't always
+/// present to const-reference); `gpt-*` is intentionally absent until the
+/// OpenAI selector path is wired (proxy `OPENAI_API_KEY`).
 pub(crate) const MODELS: &[(&str, &str)] = &[
-    ("gemini-3.5-flash", "Gemini"),
-    ("claude-haiku-4-5-20251001", "Claude Haiku"),
-    ("claude-sonnet-4-6", "Claude Sonnet"),
-    ("claude-opus-4-8", "Claude Opus"),
+    (crate::types::DEFAULT_MODEL, "Gemini"),
+    (crate::backends::anthropic::DEFAULT_MODEL, "Claude Haiku"),
+    (crate::backends::anthropic::SONNET_MODEL, "Claude Sonnet"),
+    (crate::backends::anthropic::OPUS_MODEL, "Claude Opus"),
     ("gemma-3-270m", "Local (Gemma)"),
 ];
 

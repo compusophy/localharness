@@ -76,10 +76,33 @@ mod tests {
 
     /// The hard-coded ids must stay in lockstep with the crate's canonical
     /// constants — a model rename that forgets this list would advertise a dead
-    /// id (the gemini-model-id-flip gotcha applied to the CLI surface).
+    /// id (the gemini-model-id-flip gotcha applied to the CLI surface). The CLI
+    /// lists ids ACROSS feature builds (with a "needs the X-feature build"
+    /// caveat), so it can't const-reference the feature-gated backend wire
+    /// constants the way the browser selector does — instead these tests pin
+    /// the literals against those constants WHEN the feature is present, so any
+    /// build that includes a backend catches a drifted id.
     #[test]
     fn models_match_canonical_constants() {
         let ids: Vec<&str> = MODELS.iter().map(|(id, _, _)| *id).collect();
         assert!(ids.contains(&localharness::types::DEFAULT_MODEL));
+    }
+
+    #[cfg(feature = "anthropic")]
+    #[test]
+    fn anthropic_ids_match_backend_wire_constants() {
+        let ids: Vec<&str> = MODELS.iter().map(|(id, _, _)| *id).collect();
+        assert!(ids.contains(&localharness::backends::anthropic::DEFAULT_MODEL));
+        assert!(ids.contains(&localharness::backends::anthropic::SONNET_MODEL));
+        assert!(ids.contains(&localharness::backends::anthropic::OPUS_MODEL));
+    }
+
+    #[cfg(feature = "openai")]
+    #[test]
+    fn openai_ids_match_backend_wire_constants() {
+        let ids: Vec<&str> = MODELS.iter().map(|(id, _, _)| *id).collect();
+        assert!(ids.contains(&localharness::backends::openai::DEFAULT_MODEL));
+        assert!(ids.contains(&localharness::backends::openai::MINI_MODEL));
+        assert!(ids.contains(&localharness::backends::openai::PRO_MODEL));
     }
 }
