@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Validation CLI (`localharness validation …`)** — stake/challenge/resolve/
+  reclaim/draw/show/count over the now-live ValidationFacet (mirrors the party
+  CLI; verified against the live facet).
+- **Job last-run record (GitHub #52, cut live).** `ScheduleFacet.recordRun` now
+  stamps an appended `lastRunRecord` mapping (timestamp+status, layout-safe) read
+  via a new `lastRunOf(uint256)` view; `localharness jobs` shows "last run: Ns ago
+  [active|exhausted]" so a fired job is distinguishable from a silently-skipped
+  one. Cut live (Replace `recordRun` + Add `lastRunOf`).
 - **ValidationFacet + PartyFacet CUT LIVE on the diamond (2026-06-13).** The two
   long-pending economy-ladder rungs are now on-chain (owner-signed `diamondCut`,
   Add-only): **ValidationFacet** — ERC-8004-style validation STAKING (stake `$LH`
