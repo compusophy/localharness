@@ -119,9 +119,18 @@ pub(crate) fn focus_first_in(container_id: &str) {
     let Some(c) = by_id(container_id) else { return };
     let sel = "button:not([disabled]), a[href], input:not([type=hidden]):not([disabled]), \
                textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])";
-    if let Ok(Some(el)) = c.query_selector(sel) {
-        if let Some(h) = el.dyn_ref::<web_sys::HtmlElement>() {
-            let _ = h.focus();
+    let Ok(list) = c.query_selector_all(sel) else { return };
+    // Pick the first VISIBLE focusable. A modal often renders inactive tab
+    // panels as `display:none` (e.g. the admin Account/Usage/Feedback tabs);
+    // `.focus()` no-ops on a non-rendered element, which would silently strand
+    // focus. `offset_parent() == None` flags a `display:none` subtree, so skip
+    // those and focus the first one that's actually on screen.
+    for i in 0..list.length() {
+        if let Some(h) = list.get(i).and_then(|n| n.dyn_into::<web_sys::HtmlElement>().ok()) {
+            if h.offset_parent().is_some() {
+                let _ = h.focus();
+                return;
+            }
         }
     }
 }
