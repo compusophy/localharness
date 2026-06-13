@@ -42,6 +42,16 @@ import {
 
 const LIVE = hasFlag('--live');
 const LABEL = 'colony';
+// Optional category filter: --tag BUG|FEATURE|FEEDBACK files only feedback whose
+// text carries that `[TAG]` prefix. Lets a run surface just the high-signal bugs
+// without flooding the tracker with every opinion/feature item at once.
+const TAG = (takeFlag('--tag', null) || '').toUpperCase() || null;
+
+/** The `[BUG]`/`[FEATURE]`/`[FEEDBACK]` tag of a feedback item, or null. */
+function tagOf(text) {
+  const m = effectiveText(text).match(/^\s*\[(BUG|FEATURE|FEEDBACK)\]/i);
+  return m ? m[1].toUpperCase() : null;
+}
 
 /** Effective text: the decoded body for qa/v1 fleet envelopes, raw otherwise. */
 function effectiveText(text) {
@@ -118,8 +128,13 @@ async function main() {
       process.exit(1);
     }
   }
-  const untracked = entries.filter((e) => !trackedMarked.has(e.index));
+  let untracked = entries.filter((e) => !trackedMarked.has(e.index));
   console.log(`existing issues (open+closed) already track ${trackedMarked.size} index(es); ${untracked.length} remain`);
+  if (TAG) {
+    const before = untracked.length;
+    untracked = untracked.filter((e) => tagOf(e.text) === TAG);
+    console.log(`--tag ${TAG}: ${untracked.length} of ${before} match (rest left on-chain, unfiled)`);
+  }
 
   // 4. Exact-dup collapse (first index wins; dups recorded in the footer).
   const byKey = new Map();

@@ -233,21 +233,43 @@ export function selector(sig) {
 
 // -------------------------------------------------------- on-chain feedback
 
-export async function ethCall(data) {
-  const res = await fetch(RPC, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'eth_call',
-      params: [{ to: DIAMOND, data }, 'latest'],
-    }),
-  });
-  if (!res.ok) throw new Error(`RPC HTTP ${res.status}`);
-  const json = await res.json();
-  if (json.error) throw new Error(`RPC error: ${json.error.message || JSON.stringify(json.error)}`);
-  return json.result;
+const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+export async function ethCall(data, { retries = 6 } = {}) {
+  // The public Tempo RPC rate-limits (429) and occasionally 5xxs, especially
+  // right after a fleet run hammers it. Exponential backoff makes the colony
+  // bridge resilient instead of dying on the first throttle.
+  let delay = 700;
+  for (let attempt = 0; ; attempt++) {
+    let res;
+    try {
+      res = await fetch(RPC, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'eth_call',
+          params: [{ to: DIAMOND, data }, 'latest'],
+        }),
+      });
+    } catch (e) {
+      if (attempt >= retries) throw e;
+      await _sleep(delay);
+      delay = Math.min(delay * 2, 8000);
+      continue;
+    }
+    if (res.status === 429 || res.status >= 500) {
+      if (attempt >= retries) throw new Error(`RPC HTTP ${res.status} after ${retries} retries`);
+      await _sleep(delay);
+      delay = Math.min(delay * 2, 8000);
+      continue;
+    }
+    if (!res.ok) throw new Error(`RPC HTTP ${res.status}`);
+    const json = await res.json();
+    if (json.error) throw new Error(`RPC error: ${json.error.message || JSON.stringify(json.error)}`);
+    return json.result;
+  }
 }
 
 /** `feedbackCount()` — total on-chain feedback entries (stable array length). */
@@ -278,7 +300,7 @@ export async function fetchFeedback(skip = new Set()) {
   const wanted = [];
   for (let i = 0; i < count; i++) if (!skip.has(i)) wanted.push(i);
   const out = [];
-  const CHUNK = 8; // polite concurrency against the public RPC
+  const CHUNK = 4; // gentle concurrency against the rate-limited public RPC (ethCall backs off on 429)
   for (let at = 0; at < wanted.length; at += CHUNK) {
     const slice = wanted.slice(at, at + CHUNK);
     const rows = await Promise.all(
