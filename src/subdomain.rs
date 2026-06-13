@@ -30,7 +30,7 @@ pub fn validate(input: &str) -> Result<String, String> {
     // char count == byte count here (all-ASCII past the check above), but count
     // chars for a correct message regardless.
     let len = name.chars().count();
-    if len < 3 || len > 32 {
+    if !(3..=32).contains(&len) {
         return Err(format!("name must be 3–32 characters (got {len})"));
     }
     if name.starts_with('-') || name.ends_with('-') {

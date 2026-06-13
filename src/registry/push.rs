@@ -34,7 +34,7 @@ pub fn merge_push_sub(slot: Option<&str>, current: &str) -> Option<String> {
         },
     };
     entries.retain(|e| e.get("endpoint").and_then(|v| v.as_str()).is_some());
-    if entries.iter().any(|e| *e == cur) {
+    if entries.contains(&cur) {
         return None; // this exact subscription is already published
     }
     entries.retain(|e| e.get("endpoint").and_then(|v| v.as_str()) != Some(cur_ep.as_str()));
