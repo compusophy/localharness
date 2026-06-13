@@ -720,12 +720,15 @@ pub(crate) fn inline_result_card(
 }
 
 /// Live inline card for an `embed_app` result: a header (the embedded
-/// subdomain's name, linking out) over a 16:9 `#embed-canvas` the cartridge
-/// renders into. The canvas backing store is the fixed 256×144 framebuffer
-/// (sized by `display::run_in_canvas`); CSS scales the ELEMENT to the card box
-/// with `image-rendering: pixelated`, like the fullscreen display. Pointer
-/// input routes here while it's the active cartridge (see `events::mod`). v1:
-/// one live embed at a time (single worker).
+/// subdomain's name, linking out) over a 16:9 canvas the cartridge renders
+/// into. The canvas id is UNIQUE per card (`display::next_embed_canvas_id`) —
+/// live and replayed cards coexist in one transcript, and a shared id made
+/// the launch resolve the OLDEST card's canvas (the blank-embed bug). The
+/// backing store is sized by `display::run_in_canvas` (the cartridge's
+/// declared dims); CSS scales the ELEMENT to the card box with
+/// `image-rendering: pixelated`, like the fullscreen display. Pointer input
+/// routes here while it's the active cartridge (see `events::mod`). v1: one
+/// LIVE embed at a time (single worker).
 fn embed_app_card(name: &str) -> Markup {
     html! {
         div.inline-card.embed-app-card {
@@ -735,7 +738,7 @@ fn embed_app_card(name: &str) -> Markup {
                     target="_blank" rel="noopener" { "open" }
             }
             div.embed-app-stage {
-                canvas id="embed-canvas" .embed-app-canvas {}
+                canvas id=(crate::app::display::next_embed_canvas_id()) .embed-app-canvas {}
             }
         }
     }

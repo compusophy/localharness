@@ -789,21 +789,48 @@ thread_local! {
     static PENDING_EMBED: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
 }
 
-/// Stash cartridge `wasm` for the next `#embed-canvas` card to pick up. The
+/// Stash cartridge `wasm` for the next embed card to pick up. The
 /// `embed_app` tool calls this just before returning its `{embedded:true}`
 /// result; `launch_pending_embed` (run from the ToolResult handler) drains it.
 pub(crate) fn stash_pending_embed(wasm: Vec<u8>) {
     PENDING_EMBED.with(|c| *c.borrow_mut() = Some(wasm));
 }
 
+thread_local! {
+    /// Monotonic suffix for embed-canvas DOM ids. Every embed card —
+    /// live OR history-replayed — must carry a UNIQUE canvas id: when all
+    /// cards shared `#embed-canvas`, `by_id` resolved to the OLDEST card
+    /// (often a dead replayed one at the top of the transcript), the
+    /// cartridge launched into THAT, and the new card stayed a blank
+    /// default-size canvas — the embed_app blank-render bug.
+    static EMBED_CANVAS_SEQ: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// A fresh unique DOM id for an embed card's canvas (`embed-canvas-<n>`).
+pub(crate) fn next_embed_canvas_id() -> String {
+    EMBED_CANVAS_SEQ.with(|c| {
+        let n = c.get().wrapping_add(1);
+        c.set(n);
+        format!("embed-canvas-{n}")
+    })
+}
+
 /// If an `embed_app` tool stashed cartridge bytes AND the transcript has
-/// painted its `#embed-canvas`, launch the cartridge into that canvas (the
-/// inline interactive card). No-op when nothing is pending. Called from
-/// `chat::stream_turn` right after the inline card swaps in. Drains the stash
+/// painted its embed card, launch the cartridge into THAT CARD's canvas (the
+/// inline interactive card). `card_id` is the `#tool-{id}-card` slot the card
+/// just swapped into — scoping the lookup there (instead of a global id)
+/// guarantees the cartridge lands in the card the user is looking at, not an
+/// older embed's canvas. No-op when nothing is pending. Drains the stash
 /// either way so a missing canvas can't leak bytes into a later embed.
-pub(crate) async fn launch_pending_embed() {
+pub(crate) async fn launch_pending_embed(card_id: &str) {
     let Some(wasm) = PENDING_EMBED.with(|c| c.borrow_mut().take()) else { return };
-    let Some(el) = dom::by_id("embed-canvas") else { return };
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return };
+    let Ok(Some(el)) = doc.query_selector(&format!("#{card_id} canvas.embed-app-canvas")) else {
+        web_sys::console::warn_1(&JsValue::from_str(&format!(
+            "embed launch: no canvas inside #{card_id}"
+        )));
+        return;
+    };
     let Ok(canvas) = el.dyn_into::<HtmlCanvasElement>() else { return };
     if let Err(e) = run_in_canvas(canvas, &wasm).await {
         web_sys::console::warn_1(&JsValue::from_str(&format!("embed launch failed: {e:?}")));
@@ -812,17 +839,23 @@ pub(crate) async fn launch_pending_embed() {
 
 /// `true` if `id` is the DOM id of a cartridge canvas the delegated pointer
 /// listeners should route input from — the fullscreen overlay `display-canvas`
-/// or an inline `embed-canvas` (the `embed_app` card). Used by `events::mod`
+/// or an inline `embed-canvas-<n>` (an `embed_app` card). Used by `events::mod`
 /// to gate `set_pointer`/`set_pointer_down` on a pointer event's target.
 pub(crate) fn is_cartridge_canvas_id(id: &str) -> bool {
-    id == "display-canvas" || id == "embed-canvas"
+    id == "display-canvas" || id.starts_with("embed-canvas")
 }
 
 /// `true` when a cartridge canvas is currently mounted (overlay OR an embed
 /// card), so `mousemove`/`touchmove` know whether to bother updating the
 /// poll-model pointer. Cheap DOM presence check (no worker query).
 pub(crate) fn cartridge_canvas_present() -> bool {
-    dom::by_id("display-canvas").is_some() || dom::by_id("embed-canvas").is_some()
+    if dom::by_id("display-canvas").is_some() {
+        return true;
+    }
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.query_selector("canvas.embed-app-canvas").ok().flatten())
+        .is_some()
 }
 
 fn set_fn<T: ?Sized>(obj: &Object, name: &str, closure: &Closure<T>) -> Result<(), JsValue> {

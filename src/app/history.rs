@@ -493,8 +493,9 @@ mod tests {
 
     #[test]
     fn embed_app_card_carries_a_live_canvas() {
-        // Success shape (`embedded: true`) → a card with the #embed-canvas the
-        // ToolResult handler launches the cartridge into.
+        // Success shape (`embedded: true`) → a card with a UNIQUE-id embed
+        // canvas the ToolResult handler launches the cartridge into (a shared
+        // id resolved to the oldest card — the blank-embed bug).
         let ok = ok_result(
             "embed_app",
             serde_json::json!({"name": "pong", "url": "https://pong.localharness.xyz/", "embedded": true}),
@@ -507,8 +508,24 @@ mod tests {
         )
         .expect("embed success should card")
         .into_string();
-        assert!(card.contains("id=\"embed-canvas\""), "no embed canvas: {card}");
+        assert!(card.contains("id=\"embed-canvas-"), "no embed canvas: {card}");
+        assert!(card.contains("class=\"embed-app-canvas\""), "no canvas class: {card}");
         assert!(card.contains("pong"));
+
+        // Two cards never share a canvas id (the root cause of the bug).
+        let card2 = super::templates::inline_result_card(
+            "embed_app",
+            &serde_json::json!({"name": "pong"}),
+            &ok,
+            None,
+        )
+        .unwrap()
+        .into_string();
+        let id_of = |s: &str| {
+            let i = s.find("id=\"embed-canvas-").unwrap();
+            s[i..s[i..].find(" class").unwrap() + i].to_string()
+        };
+        assert_ne!(id_of(&card), id_of(&card2), "embed canvas ids must be unique");
 
         // A result without `embedded: true` (shouldn't happen — the tool errors
         // instead — but defend the gate) yields no card.
