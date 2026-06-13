@@ -687,6 +687,12 @@ main.layout .transcript > *:empty { display: none; }
   border: 1px solid var(--border);
   background: var(--panel);
   text-decoration: none;
+  /* Uniform card height regardless of whether the agent published a persona
+     preview: a 3-line card (name + host + preview) is ~103px; persona-less
+     cards (2 lines) and the lone last-row card were 77-94px, so grid rows
+     rendered ragged (CSS grid stretch only equalizes WITHIN a row, not
+     across rows). This floor makes every row the same height. */
+  min-height: 103px;
 }
 .explore-card:hover { border-color: var(--fg); }
 /* Single-line clip: long unbroken agent names (e.g. qa-onchain-1780895987-…)
