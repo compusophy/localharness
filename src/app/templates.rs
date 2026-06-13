@@ -881,6 +881,8 @@ fn apex_claim() -> Markup {
                     aria-label="agent name to claim"
                     placeholder="choose a name"
                     autocomplete="off"
+                    autocapitalize="none"
+                    autocorrect="off"
                     spellcheck="false"
                     maxlength="32"
                     required {}
@@ -1719,6 +1721,7 @@ pub(crate) fn adopt_join(ct_hex: &str) -> Markup {
                         input #adopt-code .create-input type="text"
                             aria-label="one-time adoption code"
                             placeholder="enter code" autocomplete="off"
+                            autocapitalize="none" autocorrect="off"
                             spellcheck="false" maxlength="8" required {}
                         input #adopt-ct type="hidden" value=(ct_hex) {}
                         button type="submit" .create-button { "adopt" }

@@ -115,6 +115,12 @@ pub(crate) async fn mcp_tool_call(
                 return Ok(mcp_text_result("call_agent requires both 'name' and 'message'", true));
             }
             // Stateless per MCP request for v1 (no persisted thread).
+            // INVARIANT: `run_agent_turn` must NEVER write to stdout — this MCP
+            // server's stdout IS the JSON-RPC channel (responses go through
+            // `out.write_all` in mcp_serve; all status uses eprintln!). A stray
+            // println! anywhere in the turn path would silently corrupt the
+            // protocol frame (QA fleet dex-qa flagged this DX trap). Keep turn
+            // output as a RETURN VALUE; never print it here.
             match run_agent_turn(key_hex, target, message, None, None).await {
                 Ok((text, _hist)) => Ok(mcp_text_result(text.trim(), false)),
                 Err(e) => Ok(mcp_text_result(&format!("call_agent failed: {e}"), true)),
