@@ -1113,12 +1113,16 @@ fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, 
         // (compose_spawn round-trip) + `design/host-compose.md` for the model.
         //
         // `spawn_module(name, x, y, w, h) -> handle`  fetch <name>'s on-chain
-        //   app.wasm, instantiate a child bound to rect (x,y,w,h) in PARENT
+        //   app.wasm, instantiate a child bound to rect (x,y,w,h) in the CALLER's
         //   framebuffer coords. `name` is a string literal (a length-prefixed
-        //   pointer into the parent's memory, same ABI as agent::notify).
-        //   Returns a handle >= 0 (state LOADING; it starts ticking once the
-        //   bytes arrive) or a negative code on a synchronous reject (e.g. the
-        //   ComposeBudget child-count cap).
+        //   pointer into the caller's memory, same ABI as agent::notify).
+        //   Returns a handle >= 0 (LOADING; it ticks once the bytes arrive) or a
+        //   negative reject. RECURSIVE: the child gets its OWN compose table and
+        //   may spawn grandchildren — handles are per-node (a child's handle 0 is
+        //   distinct from the parent's). The fractal terminates at the depth cap
+        //   (a node there returns -1); also bounded by per-node child / total-node
+        //   / total-byte caps (ComposeBudget). A self-spawning cartridge nests
+        //   into a Droste image.
         // `status(handle) -> i32`  -1 bad handle, 0 LOADING, 1 READY (ticking),
         //   2 FAILED (no app.wasm, bad bytes, trap, or budget-refused).
         // `move_module(handle, x, y, w, h) -> i32`  re-bind the child's rect

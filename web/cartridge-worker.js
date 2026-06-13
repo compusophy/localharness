@@ -417,29 +417,76 @@ function mapPointerIntoChild(px, py, x, y, viewW, viewH, childW, childH) {
 }
 
 // ComposeBudget (mirror of compose.rs::ComposeBudget::v1). Caps the compose
-// graph so an attacker-authored or runaway parent can't exhaust the worker:
-// 8 children, 16 KB each, 64 KB total. A child that itself spawns grandchildren
-// counts against the same total/count — the aggregate is the recursion backstop.
+// graph so an attacker-authored or runaway parent can't exhaust the worker.
+// RECURSION is real now: a child gets its OWN compose table and can spawn
+// grandchildren (the fractal). The fork-bomb backstop is three GLOBAL caps that
+// hold across the WHOLE tree (not per-parent):
+//   • per-node child count (8) — one node's immediate children
+//   • depth (5) — root=0; a node at the cap gets an INERT compose api so its
+//     spawn_module returns -1 (the ABI-level recursion stop)
+//   • total live nodes (24) and total wasm bytes (256 KB) across every level
 const COMPOSE_MAX_CHILDREN = 8;
 const COMPOSE_MAX_BYTES_PER_CHILD = 16 * 1024;
-const COMPOSE_MAX_TOTAL_BYTES = 64 * 1024;
+const COMPOSE_MAX_TOTAL_BYTES = 256 * 1024;
+const COMPOSE_MAX_DEPTH = 5;
+const COMPOSE_MAX_NODES = 24;
 
 // Child module states (mirror the host::compose status() ABI).
 const MOD_LOADING = 0;
 const MOD_READY = 1;
 const MOD_FAILED = 2;
 
-// The live child table. handle = index; a closed slot becomes null (never
-// aliased). Each entry owns its OWN buffer/instance/memory/state — isolation is
-// per-instance. `focus` is the handle that receives pointer input (-1 = parent).
-let composeChildren = [];
-let composeFocus = -1;
-let composeTotalBytes = 0;
+// The compose tree. Every node — the root parent AND every composited child —
+// owns a `children` array + a `focus` handle, so composition is recursive: a
+// child's children blit into the child's buffer, which blits into its parent's,
+// up to the root framebuffer. The ROOT node's buffer/dims ARE the live
+// FB_W/FB_H/fb32 (handled specially in the composite walk), so it carries no fb
+// of its own; `memory` is refreshed from the live root `memory` each load/pass.
+// A child node additionally owns w/h/fb/instance-memory/frame/state/ptr.
+let rootNode = { children: [], focus: -1, depth: 0, memory: null };
+let composeTotalBytes = 0;       // wasm bytes across the whole tree
+let composeTotalNodes = 0;       // live (non-failed) child nodes across the tree
+let composeNextUid = 1;          // monotonic; the compose_bytes round-trip key
+const composeNodeIndex = new Map(); // uid -> child node (main-thread reply target)
 
-function composeLiveCount() {
+// Live (non-failed) immediate children of one node.
+function liveChildCount(children) {
   let n = 0;
-  for (const c of composeChildren) if (c && c.state !== MOD_FAILED) n++;
+  for (const c of children) if (c && c.state !== MOD_FAILED) n++;
   return n;
+}
+// Root-level live count (back-compat name; used by the root spawn cap + tests).
+function composeLiveCount() {
+  return liveChildCount(rootNode.children);
+}
+
+// A fresh child slot in state LOADING (bytes arrive via the compose_bytes
+// round-trip). `depth` is the parent's depth + 1; `uid` keys the async reply.
+function makeChildSlot(name, x, y, w, h, depth, uid) {
+  return {
+    name, uid, depth, state: MOD_LOADING,
+    vp: { x: x | 0, y: y | 0, w: Math.max(1, w | 0), h: Math.max(1, h | 0) },
+    w: FB_W_DEFAULT, h: FB_H_DEFAULT, fb: null,
+    memory: null, frame: null, bytes: 0,
+    state_regs: new Int32Array(64),
+    ptr: { x: -1, y: -1, down: 0 },
+    children: [], focus: -1,
+  };
+}
+
+// Recursively free a child + its whole subtree's budget (bytes/nodes) and index
+// entries. Used by close (the slot is then nulled by the caller) and by a frame
+// trap (the slot stays as a FAILED tombstone so status() still reports 2). After
+// this, the node no longer counts toward COMPOSE_MAX_NODES / _TOTAL_BYTES.
+function reclaimSubtree(child) {
+  if (!child) return;
+  for (let i = 0; i < child.children.length; i++) {
+    reclaimSubtree(child.children[i]);
+    child.children[i] = null;
+  }
+  if (child.state === MOD_READY) composeTotalBytes -= child.bytes;
+  if (child.state !== MOD_FAILED) composeTotalNodes -= 1; // a FAILED node was already uncounted
+  composeNodeIndex.delete(child.uid);
 }
 
 // Read a child's dims() the same way applyDims does for the parent: packed
@@ -535,17 +582,10 @@ function buildChildImports(child) {
     state_get: (slot) => (slot >= 0 && slot < 64 ? child.state_regs[slot] : 0),
     state_set: (slot, value) => { if (slot >= 0 && slot < 64) child.state_regs[slot] = value | 0; },
   };
-  // Inert recursion stub: a child cannot itself spawn (depth-1 cap); the ABI
-  // still resolves so a child importing host_compose instantiates.
-  const child_compose = {
-    spawn_module: () => -1,
-    status: () => -1,
-    move_module: () => 0,
-    focus_module: () => -1,
-    focused: () => -1,
-    close_module: () => -1,
-    module_count: () => 0,
-  };
+  // A child gets a REAL compose api bound to its OWN table, so it can spawn
+  // grandchildren (the fractal) — UNLESS it sits at the depth cap, where
+  // makeComposeApi hands back the inert stub and spawn_module returns -1.
+  const child_compose = makeComposeApi(child);
   // A child gets its own (no-op) net/audio/agent so its imports link, but it
   // can't reach the platform from inside a panel (the parent is the surface).
   const child_net = { open: () => -1, send: () => 0, poll: () => -1, status: () => -1, close: () => {} };
@@ -569,15 +609,25 @@ function buildChildImports(child) {
 // Instantiate the fetched bytes for a Loading child into its own instance +
 // buffer. Marks the slot Ready (or Failed) and accounts its bytes against the
 // total. Called from the main-thread `compose_bytes` reply.
-function composeInstantiate(handle, wasmBuf) {
-  const child = composeChildren[handle];
-  if (!child || child.state === MOD_FAILED) return;
+// Mark a still-LOADING child FAILED and release its node budget (it never
+// became drawable). The slot stays as a FAILED tombstone so status() → 2.
+function failLoadingChild(child) {
+  if (!child || child.state !== MOD_LOADING) return;
+  composeTotalNodes -= 1;
+  composeNodeIndex.delete(child.uid);
+  child.state = MOD_FAILED;
+}
+
+// Instantiate fetched bytes INTO a specific child node (the parent-thread
+// compose_bytes reply target, or a test mount). Marks it Ready (its own buffer
+// at its own dims) or Failed. The byte caps (mirror ComposeBudget) are enforced
+// here once the size is known; the count/depth caps were enforced at spawn.
+function instantiateChild(child, wasmBuf) {
+  if (!child || child.state !== MOD_LOADING) return;
   const bytes = new Uint8Array(wasmBuf);
-  // Per-child + aggregate byte caps (mirror ComposeBudget::admit). The count cap
-  // is enforced at spawn; the byte caps are enforced here once the size is known.
   if (bytes.length > COMPOSE_MAX_BYTES_PER_CHILD ||
       composeTotalBytes + bytes.length > COMPOSE_MAX_TOTAL_BYTES) {
-    child.state = MOD_FAILED;
+    failLoadingChild(child);
     return;
   }
   let instance;
@@ -585,7 +635,7 @@ function composeInstantiate(handle, wasmBuf) {
     const mod = new WebAssembly.Module(bytes);
     instance = new WebAssembly.Instance(mod, buildChildImports(child));
   } catch (_e) {
-    child.state = MOD_FAILED;
+    failLoadingChild(child);
     return;
   }
   const exp = instance.exports;
@@ -596,86 +646,119 @@ function composeInstantiate(handle, wasmBuf) {
   child.memory = exp.memory || null;
   child.frame = (typeof exp.frame === 'function') ? exp.frame
     : (typeof exp.render === 'function') ? exp.render : null;
-  if (!child.frame) { child.state = MOD_FAILED; return; }
+  if (!child.frame) { failLoadingChild(child); return; }
   composeTotalBytes += bytes.length;
   child.bytes = bytes.length;
   child.state = MOD_READY;
 }
 
-// host_compose: the parent's window-manager ABI. spawn_module posts a fetch
-// request to the main thread (the worker can't do the on-chain registry read);
-// the rest mutate the child table synchronously.
-const host_compose = {
-  spawn_module(namePtr, x, y, w, h) {
-    const name = readString(namePtr);
-    if (name === null || name === '') return -1;
-    if (composeLiveCount() >= COMPOSE_MAX_CHILDREN) return -1; // count cap
-    // Allocate a slot (reuse a null hole, else push). Slots never alias: a fresh
-    // logical child each spawn even when reusing a freed index.
-    let handle = composeChildren.indexOf(null);
-    const child = {
-      name, state: MOD_LOADING,
-      vp: { x: x | 0, y: y | 0, w: Math.max(1, w | 0), h: Math.max(1, h | 0) },
-      w: FB_W_DEFAULT, h: FB_H_DEFAULT, fb: null,
-      memory: null, frame: null, bytes: 0,
-      state_regs: new Int32Array(64),
-      ptr: { x: -1, y: -1, down: 0 },
-    };
-    if (handle < 0) { handle = composeChildren.length; composeChildren.push(child); }
-    else composeChildren[handle] = child;
-    self.postMessage({ type: 'compose_spawn', handle, name });
-    return handle;
-  },
-  status(handle) {
-    const c = composeChildren[handle];
-    return c ? c.state : -1;
-  },
-  move_module(handle, x, y, w, h) {
-    const c = composeChildren[handle];
-    if (!c) return 0;
-    c.vp = { x: x | 0, y: y | 0, w: Math.max(1, w | 0), h: Math.max(1, h | 0) };
-    return 1;
-  },
-  focus_module(handle) {
-    if (handle === -1) { composeFocus = -1; return 1; } // focus the parent
-    if (!composeChildren[handle]) return 0;
-    composeFocus = handle;
-    return 1;
-  },
-  focused: () => composeFocus,
-  close_module(handle) {
-    const c = composeChildren[handle];
-    if (!c) return 0;
-    if (c.state === MOD_READY) composeTotalBytes -= c.bytes;
-    composeChildren[handle] = null;
-    if (composeFocus === handle) composeFocus = -1;
-    return 1;
-  },
-  module_count: () => composeLiveCount(),
-};
-
-// Reset the compose table (a fresh parent load clears the whole graph).
-function composeReset() {
-  composeChildren = [];
-  composeFocus = -1;
-  composeTotalBytes = 0;
+// The compose_bytes round-trip target: resolve the LOADING node by its global
+// uid (handles are per-node now, so a flat index can't address the tree) and
+// instantiate it.
+function composeInstantiate(uid, wasmBuf) {
+  instantiateChild(composeNodeIndex.get(uid), wasmBuf);
 }
 
-// Tick every Ready child into its own buffer, then blit it into the parent FB at
-// the child's viewport (nearest-neighbour scale). Pointer routes only into the
-// focused child (focus-gated). A trapping child is latched Failed + skipped — it
-// can't take down the parent or a sibling. Called from the parent's tick() after
-// the parent's frame() draws, before present().
-function composeCompositePass(t) {
-  for (let i = 0; i < composeChildren.length; i++) {
-    const c = composeChildren[i];
-    if (!c) continue;
-    if (c.state !== MOD_READY) continue; // Loading/Failed draw nothing in v1
-    // Focus-gated pointer: only the focused child feels the pointer, and only
-    // over its own rect; everyone else reads "no pointer" (-1 / 0).
-    if (i === composeFocus) {
-      const mapped = mapPointerIntoChild(ptr.x, ptr.y, c.vp.x, c.vp.y, c.vp.w, c.vp.h, c.w, c.h);
-      if (mapped) { c.ptr.x = mapped[0]; c.ptr.y = mapped[1]; c.ptr.down = ptr.down; }
+// The inert compose api handed to a node AT the depth cap: the ABI still links
+// so the cartridge instantiates, but spawn_module returns -1 (recursion stops).
+const INERT_COMPOSE = {
+  spawn_module: () => -1, status: () => -1, move_module: () => 0,
+  focus_module: () => -1, focused: () => -1, close_module: () => -1,
+  module_count: () => 0,
+};
+
+// Build the window-manager ABI bound to ONE node's child table. The root parent
+// and every composited child get their own, so spawn/focus/close act on THAT
+// node's children — recursion falls out for free. A node at the depth cap gets
+// the inert stub (its children would be depth+1 over the cap). spawn_module
+// posts a fetch request to the main thread (the worker can't read the chain);
+// the rest mutate the node's table synchronously.
+function makeComposeApi(node) {
+  if (node.depth >= COMPOSE_MAX_DEPTH) return INERT_COMPOSE;
+  return {
+    spawn_module(namePtr, x, y, w, h) {
+      const name = readStringFrom(node.memory, namePtr);
+      if (name === null || name === '') return -1;
+      if (liveChildCount(node.children) >= COMPOSE_MAX_CHILDREN) return -1; // per-node cap
+      if (composeTotalNodes >= COMPOSE_MAX_NODES) return -1;                // global fork-bomb cap
+      const uid = composeNextUid++;
+      // Allocate a slot (reuse a null hole, else push). Slots never alias.
+      let handle = node.children.indexOf(null);
+      const child = makeChildSlot(name, x, y, w, h, node.depth + 1, uid);
+      if (handle < 0) { handle = node.children.length; node.children.push(child); }
+      else node.children[handle] = child;
+      composeTotalNodes += 1;
+      composeNodeIndex.set(uid, child);
+      if (typeof self !== 'undefined' && self.postMessage) {
+        self.postMessage({ type: 'compose_spawn', uid, name });
+      }
+      return handle;
+    },
+    status(handle) {
+      const c = node.children[handle];
+      return c ? c.state : -1;
+    },
+    move_module(handle, x, y, w, h) {
+      const c = node.children[handle];
+      if (!c) return 0;
+      c.vp = { x: x | 0, y: y | 0, w: Math.max(1, w | 0), h: Math.max(1, h | 0) };
+      return 1;
+    },
+    focus_module(handle) {
+      if (handle === -1) { node.focus = -1; return 1; } // focus this node itself
+      if (!node.children[handle]) return 0;
+      node.focus = handle;
+      return 1;
+    },
+    focused: () => node.focus,
+    close_module(handle) {
+      const c = node.children[handle];
+      if (!c) return 0;
+      reclaimSubtree(c);            // free its whole subtree's budget first
+      node.children[handle] = null;
+      if (node.focus === handle) node.focus = -1;
+      return 1;
+    },
+    module_count: () => liveChildCount(node.children),
+  };
+}
+
+// The root parent's compose api (bound to rootNode). buildImports hands this to
+// the top-level cartridge.
+const host_compose = makeComposeApi(rootNode);
+
+// Reset the whole compose tree (a fresh parent load clears every level).
+// MUTATE rootNode in place — never reassign it: host_compose = makeComposeApi(
+// rootNode) closes over this exact object, so swapping it for a new one would
+// leave the root cartridge's compose api driving an orphaned table.
+function composeReset() {
+  rootNode.children = [];
+  rootNode.focus = -1;
+  rootNode.depth = 0;
+  rootNode.memory = null;
+  composeTotalBytes = 0;
+  composeTotalNodes = 0;
+  composeNextUid = 1;
+  composeNodeIndex.clear();
+}
+
+// Recursively composite a node's children INTO a destination buffer. For each
+// Ready child: set its (focus-gated) pointer from this node's pointer, run its
+// frame() into its own buffer, recurse so ITS children composite on top, then
+// blit the child (nearest-neighbour scaled) into the destination. This is the
+// fractal: the same fold runs at every level. A trapping child is reclaimed +
+// latched Failed + skipped — it never takes down a parent or sibling. The array
+// under iteration (node.children) is only ever mutated by node's OWN frame(),
+// which already ran one level up — so no re-entrant mutation here.
+function compositeChildren(node, dstFb, dstW, dstH, parentPtr, t) {
+  const children = node.children;
+  const focus = node.focus;
+  for (let i = 0; i < children.length; i++) {
+    const c = children[i];
+    if (!c || c.state !== MOD_READY) continue;
+    if (i === focus) {
+      const mapped = mapPointerIntoChild(parentPtr.x, parentPtr.y, c.vp.x, c.vp.y, c.vp.w, c.vp.h, c.w, c.h);
+      if (mapped) { c.ptr.x = mapped[0]; c.ptr.y = mapped[1]; c.ptr.down = parentPtr.down; }
       else { c.ptr.x = -1; c.ptr.y = -1; c.ptr.down = 0; }
     } else {
       c.ptr.x = -1; c.ptr.y = -1; c.ptr.down = 0;
@@ -683,12 +766,23 @@ function composeCompositePass(t) {
     try {
       c.frame(t);
     } catch (_e) {
-      c.state = MOD_FAILED; // latch + skip; never propagates to the parent
-      composeTotalBytes -= c.bytes;
+      reclaimSubtree(c);
+      c.state = MOD_FAILED; // tombstone (status → 2); skip — never propagates up
       continue;
     }
-    blitChild(fb32, FB_W, FB_H, c.fb, c.w, c.h, c.vp.x, c.vp.y, c.vp.w, c.vp.h);
+    // Recurse: this child's own children draw on top of what it just drew.
+    if (c.children.length) compositeChildren(c, c.fb, c.w, c.h, c.ptr, t);
+    blitChild(dstFb, dstW, dstH, c.fb, c.w, c.h, c.vp.x, c.vp.y, c.vp.w, c.vp.h);
   }
+}
+
+// Composite the whole tree into the root framebuffer. No-op (byte-identical to a
+// non-compose cartridge) when the root never spawned a child. Called from the
+// parent's tick() after its frame() draws, before present().
+function composeCompositePass(t) {
+  if (!rootNode.children.length) return;
+  rootNode.memory = memory; // root spawn reads names from the live root memory
+  compositeChildren(rootNode, fb32, FB_W, FB_H, ptr, t);
 }
 
 // ---- host_net: WebSocket (works in a worker) --------------------------------
@@ -725,14 +819,22 @@ function memU8() {
   return new Uint8Array(memory.buffer);
 }
 
-function readString(p) {
-  if (p < 0 || memory === null) return null;
-  const a = memU8();
+// Read a length-prefixed UTF-8 string out of an ARBITRARY linear memory. The
+// compose tree needs this: a child's spawn_module passes a pointer into ITS OWN
+// memory, not the root parent's, so makeComposeApi reads from node.memory.
+function readStringFrom(mem, p) {
+  if (p < 0 || !mem) return null;
+  const a = new Uint8Array(mem.buffer);
   const cap = a.length;
   if (p + 4 > cap) return null;
   const len = a[p] | (a[p + 1] << 8) | (a[p + 2] << 16) | (a[p + 3] << 24);
   if (len < 0 || len > 65536 || p + 4 + len > cap) return null;
   return new TextDecoder().decode(a.subarray(p + 4, p + 4 + len));
+}
+
+function readString(p) {
+  if (memory === null) return null;
+  return readStringFrom(memory, p);
 }
 
 function writeString(outPtr, s, max) {
@@ -1037,6 +1139,7 @@ async function load(wasmBuf) {
   }
   const exp = instance.exports;
   memory = exp.memory || null;
+  rootNode.memory = memory; // a root spawn_module on the first frame reads names from here
   // A cartridge MAY declare its own framebuffer dims via `dims() -> i32`
   // (packed (w<<16)|h). No export => the 256x144 default. Reallocates the FB.
   // Guarded: a throwing dims()/alloc must surface a CODED error, not an unhandled
@@ -1108,12 +1211,12 @@ if (IS_WORKER) {
         break;
       case 'compose_bytes':
         // Main thread resolved a child's on-chain app.wasm (or signalled a
-        // failure with wasm=null). Instantiate it into its slot, or mark Failed.
+        // failure with wasm=null). The child is addressed by its global uid
+        // (handles are per-node now). Instantiate it, or mark the slot Failed.
         if (msg.wasm) {
-          composeInstantiate(msg.handle | 0, msg.wasm);
+          composeInstantiate(msg.uid | 0, msg.wasm);
         } else {
-          const c = composeChildren[msg.handle | 0];
-          if (c) c.state = MOD_FAILED;
+          failLoadingChild(composeNodeIndex.get(msg.uid | 0));
         }
         break;
       case 'input':
@@ -1151,29 +1254,38 @@ if (typeof module !== 'undefined' && module.exports) {
     blitChild,
     mapPointerIntoChild,
     composeReset,
-    composeInstantiate,
-    composeChildren: () => composeChildren,
-    composeFocus: () => composeFocus,
-    // Allocate a LOADING child slot directly (test shim — drives the real child
-    // table + ComposeBudget count cap, avoiding spawn_module's readString/
-    // postMessage path, which needs a live worker + a parent's linear memory).
-    // The caller then feeds the child's bytes via composeInstantiate (simulating
-    // the main-thread compose_bytes reply) and ticks via composeRunPass.
-    // Returns the handle, or -1 when the child-count cap is hit.
-    composeMountForTest(name, x, y, w, h) {
-      if (composeLiveCount() >= COMPOSE_MAX_CHILDREN) return -1; // count cap
-      let handle = composeChildren.indexOf(null);
-      const child = {
-        name, state: MOD_LOADING,
-        vp: { x: x | 0, y: y | 0, w: Math.max(1, w | 0), h: Math.max(1, h | 0) },
-        w: FB_W_DEFAULT, h: FB_H_DEFAULT, fb: null,
-        memory: null, frame: null, bytes: 0,
-        state_regs: new Int32Array(64),
-        ptr: { x: -1, y: -1, down: 0 },
-      };
-      if (handle < 0) { handle = composeChildren.length; composeChildren.push(child); }
-      else composeChildren[handle] = child;
+    composeChildren: () => rootNode.children,
+    composeFocus: () => rootNode.focus,
+    COMPOSE_MAX_DEPTH,
+    // Mount a LOADING child slot into a node's table directly (test shim —
+    // drives the real tree + budget caps, avoiding spawn_module's readString/
+    // postMessage path, which needs a live worker + the parent's linear memory).
+    // `parent` is null/undefined for a root child, or a child node object for a
+    // grandchild (recursion). The caller then feeds bytes via
+    // composeInstantiateForTest and ticks via composeRunPass. Returns the handle
+    // (index into the parent's children), or -1 when a cap is hit.
+    composeMountInto(parent, name, x, y, w, h) {
+      const node = parent || rootNode;
+      if (node.depth >= COMPOSE_MAX_DEPTH) return -1;          // depth cap
+      if (liveChildCount(node.children) >= COMPOSE_MAX_CHILDREN) return -1; // per-node cap
+      if (composeTotalNodes >= COMPOSE_MAX_NODES) return -1;   // global cap
+      const uid = composeNextUid++;
+      let handle = node.children.indexOf(null);
+      const child = makeChildSlot(name, x, y, w, h, node.depth + 1, uid);
+      if (handle < 0) { handle = node.children.length; node.children.push(child); }
+      else node.children[handle] = child;
+      composeTotalNodes += 1;
+      composeNodeIndex.set(uid, child);
       return handle;
+    },
+    composeMountForTest(name, x, y, w, h) {
+      return module.exports.composeMountInto(null, name, x, y, w, h);
+    },
+    // Instantiate fetched bytes into the child at `handle` of `parent`'s table
+    // (root if parent is null) — the test's stand-in for the compose_bytes reply.
+    composeInstantiateForTest(handle, wasmBuf, parent) {
+      const node = parent || rootNode;
+      instantiateChild(node.children[handle], wasmBuf);
     },
     composeFocusForTest: (h) => host_compose.focus_module(h),
     // Run the composite pass into a caller-supplied parent FB at the given
@@ -1224,6 +1336,7 @@ if (typeof module !== 'undefined' && module.exports) {
       }
       const inst = new WebAssembly.Instance(mod, importObj);
       memory = inst.exports.memory || null;
+      rootNode.memory = memory; // mirror load(): a root spawn reads names from here
       // Honor a cartridge's dims() (no-op when absent — keeps the 256x144
       // default and the existing parity snapshots byte-identical).
       applyDims(inst.exports);

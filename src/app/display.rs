@@ -1255,7 +1255,7 @@ thread_local! {
 /// subdomain's PUBLISHED on-chain `app.wasm` (cached per session) and post it
 /// back as `compose_bytes`; the worker instantiates it into its slot. A
 /// `wasm: null` reply marks the child FAILED (unregistered / no published app).
-async fn do_compose_spawn(worker: web_sys::Worker, handle: i32, name: String) {
+async fn do_compose_spawn(worker: web_sys::Worker, uid: i32, name: String) {
     // Cache hit → reuse; else fetch the published bytes and remember them.
     let cached = COMPOSE_WASM_CACHE.with(|c| c.borrow().get(&name).cloned());
     let bytes = match cached {
@@ -1270,16 +1270,18 @@ async fn do_compose_spawn(worker: web_sys::Worker, handle: i32, name: String) {
             fetched
         }
     };
-    post_compose_bytes(&worker, handle, bytes.as_deref());
+    post_compose_bytes(&worker, uid, bytes.as_deref());
 }
 
 /// Post a `compose_bytes` reply to the worker: the resolved child `app.wasm`
-/// (transferred zero-copy) or `wasm: null` to mark the slot FAILED.
-fn post_compose_bytes(worker: &web_sys::Worker, handle: i32, bytes: Option<&[u8]>) {
+/// (transferred zero-copy) or `wasm: null` to mark the slot FAILED. Keyed by the
+/// child's global `uid` (compose is a tree now — a flat handle can't address a
+/// node nested under another node's table).
+fn post_compose_bytes(worker: &web_sys::Worker, uid: i32, bytes: Option<&[u8]>) {
     use js_sys::{Object, Reflect, Uint8Array};
     let msg = Object::new();
     let _ = Reflect::set(&msg, &JsValue::from_str("type"), &JsValue::from_str("compose_bytes"));
-    let _ = Reflect::set(&msg, &JsValue::from_str("handle"), &JsValue::from_f64(handle as f64));
+    let _ = Reflect::set(&msg, &JsValue::from_str("uid"), &JsValue::from_f64(uid as f64));
     match bytes {
         Some(b) => {
             let arr = Uint8Array::from(b);
@@ -1564,19 +1566,20 @@ mod worker {
                         let w = worker_for_msg.clone();
                         wasm_bindgen_futures::spawn_local(super::do_feed_request_identity(w));
                     }
-                    // host::compose — a parent cartridge spawned a child. The
-                    // worker can't read the on-chain registry, so it posted the
-                    // child's name + allocated handle here; resolve the published
-                    // app.wasm on the MAIN thread and post the bytes back (or a
-                    // FAILED signal). The worker instantiates it into its slot.
+                    // host::compose — a cartridge ANYWHERE in the compose tree
+                    // spawned a child. The worker can't read the on-chain
+                    // registry, so it posted the child's name + its global uid
+                    // here; resolve the published app.wasm on the MAIN thread and
+                    // post the bytes back (or a FAILED signal). The worker
+                    // instantiates it into the matching node.
                     "compose_spawn" => {
-                        let handle = Reflect::get(&data, &JsValue::from_str("handle"))
+                        let uid = Reflect::get(&data, &JsValue::from_str("uid"))
                             .ok().and_then(|v| v.as_f64()).map(|n| n as i32).unwrap_or(-1);
                         let name = Reflect::get(&data, &JsValue::from_str("name"))
                             .ok().and_then(|v| v.as_string()).unwrap_or_default();
-                        if handle >= 0 && !name.is_empty() {
+                        if uid >= 0 && !name.is_empty() {
                             let w = worker_for_msg.clone();
-                            wasm_bindgen_futures::spawn_local(super::do_compose_spawn(w, handle, name));
+                            wasm_bindgen_futures::spawn_local(super::do_compose_spawn(w, uid, name));
                         }
                     }
                     "done" => {

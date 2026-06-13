@@ -246,15 +246,31 @@ impl<H> Module<H> {
 /// requested, BEFORE any fetch/instantiate/settle.
 #[derive(Clone, Copy, Debug)]
 pub struct ComposeBudget {
+    /// Immediate children of ONE node.
     pub max_children: usize,
     pub max_bytes_per_child: usize,
+    /// Wasm bytes across the WHOLE tree (every level), not per node.
     pub max_total_bytes: usize,
+    /// Deepest spawnable node. Root = depth 0; a node at this depth gets an
+    /// inert compose api (its `spawn_module` returns -1) — the recursion stop.
+    pub max_depth: usize,
+    /// Live nodes across the WHOLE tree — the fork-bomb backstop independent of
+    /// the per-node child cap (a balanced tree could otherwise explode).
+    pub max_total_nodes: usize,
 }
 
 impl ComposeBudget {
-    /// Conservative v1 caps (8 children, 16 KB each, 64 KB total).
+    /// v1 caps. Composition is RECURSIVE (the fractal): a child gets its own
+    /// table and may spawn grandchildren, bounded by depth + global node/byte
+    /// caps. 8 children/node, 16 KB each, 256 KB total, depth 5, 24 nodes total.
     pub fn v1() -> Self {
-        Self { max_children: 8, max_bytes_per_child: 16 * 1024, max_total_bytes: 64 * 1024 }
+        Self {
+            max_children: 8,
+            max_bytes_per_child: 16 * 1024,
+            max_total_bytes: 256 * 1024,
+            max_depth: 5,
+            max_total_nodes: 24,
+        }
     }
 
     /// Whether a new child of `child_bytes` may be admitted given the `count`
@@ -275,6 +291,20 @@ impl ComposeBudget {
                 "compose: mounting {child_bytes} more bytes would exceed the {}-byte total cap",
                 self.max_total_bytes
             ));
+        }
+        Ok(())
+    }
+
+    /// Whether a node at `parent_depth` may spawn another child given
+    /// `total_nodes` already live across the tree — the recursion-specific gate
+    /// (depth + global node count) checked at spawn time, before the byte caps
+    /// in [`admit`]. `Err` says which cap stopped the fractal.
+    pub fn may_spawn(&self, parent_depth: usize, total_nodes: usize) -> Result<(), String> {
+        if parent_depth >= self.max_depth {
+            return Err(format!("compose: at the depth-{} cap", self.max_depth));
+        }
+        if total_nodes >= self.max_total_nodes {
+            return Err(format!("compose: at the {}-node tree cap", self.max_total_nodes));
         }
         Ok(())
     }
@@ -504,10 +534,23 @@ mod tests {
         assert!(b.admit(8, 0, 1).is_err());
         // Child too big.
         assert!(b.admit(0, 0, 16 * 1024 + 1).is_err());
-        // Total would overflow the aggregate cap.
-        assert!(b.admit(1, 60 * 1024, 8 * 1024).is_err());
+        // Total would overflow the aggregate cap (256 KB).
+        assert!(b.admit(1, 250 * 1024, 8 * 1024).is_err());
+        assert!(b.admit(1, 200 * 1024, 8 * 1024).is_ok()); // still room under 256 KB
         // saturating_add can't be tricked into wrapping past the cap.
         assert!(b.admit(0, usize::MAX, 1).is_err());
+    }
+
+    #[test]
+    fn compose_budget_may_spawn_gates_depth_and_tree_node_count() {
+        let b = ComposeBudget::v1();
+        // A shallow node with room to grow may spawn.
+        assert!(b.may_spawn(0, 0).is_ok());
+        assert!(b.may_spawn(4, 23).is_ok()); // depth 4 child→5 (ok), 23 nodes (last slot)
+        // A node AT the depth cap cannot spawn (its child would be depth 6).
+        assert!(b.may_spawn(5, 0).is_err());
+        // The global tree-node cap stops a wide fractal even when shallow.
+        assert!(b.may_spawn(1, 24).is_err());
     }
 
     #[test]

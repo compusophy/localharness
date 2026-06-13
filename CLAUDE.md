@@ -300,18 +300,18 @@ header button removed, #71), DISPLAY a fullscreen overlay (ToggleDisplay /
 `display::mount_canvas`; × stops the cartridge). `#ctx-bar` sits at the TOP of
 the chat column (feedback #62).
 
-**host::compose (cartridge-in-cartridge, NO iframes).** A parent
-`compose::spawn_module(name,x,y,w,h)`s another subdomain's published `app.wasm`
-as a CHILD in a sub-rect. Pure pixel math = `src/compose.rs` (`blit_child`
-nearest-neighbour scale+clip, `map_pointer_into_child`, `ComposeBudget::v1`
-8/16K/64K). Worker (`cartridge-worker.js` `host_compose` + child table) ticks each
-Ready child into its OWN buffer then `blitChild`s it into the parent FB; the JS
-`blitChild`/`mapPointerIntoChild` are HAND PORTS of the Rust impls — parity-tested
-by `scripts/test-compose-wiring.mjs` (verify.sh stage 10), don't drift. A worker
-can't read the chain → `spawn_module` posts `compose_spawn`;
-`display.rs::do_compose_spawn` resolves `compose_module_wasm` (cached) + posts
-bytes back. Pointer → focused child only. v1: depth-1 (child spawn inert);
-no-compose cartridges render byte-identical (no-op pass).
+**host::compose (cartridge-in-cartridge, NO iframes — RECURSIVE).** A parent
+`compose::spawn_module(name,x,y,w,h)`s another subdomain's `app.wasm` as a CHILD
+in a sub-rect. Pixel math = `src/compose.rs` (`blit_child`, `map_pointer_into_child`,
+`ComposeBudget::v1` 8/node · 16K · 256K total · depth 5 · 24 nodes). Worker
+(`cartridge-worker.js`) is a TREE: every node owns a `children`/`focus` table via
+`makeComposeApi(node)`, so a child spawns grandchildren — `compositeChildren`
+recurses (the fractal). Node AT depth cap → `INERT_COMPOSE` (spawn -1). Handles
+per-node; `compose_spawn`/`compose_bytes` key on a GLOBAL `uid`. JS
+`blitChild`/`mapPointerIntoChild` HAND PORT the Rust impls — parity-tested
+(`test-compose-wiring.mjs`, verify.sh stage 10; recursion + depth cap).
+`composeReset` MUTATES `rootNode` (never reassign — `host_compose` closes over
+it). `fractal.rl` = the Droste demo.
 
 **Mount-time routing (`mod.rs::mount`):**
 1. `?signer=1` → minimal signer chrome + postMessage listener, return. No apex

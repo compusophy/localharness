@@ -19,6 +19,9 @@
 //      src/compose.rs::blit_child / map_pointer_into_child on pinned test vectors
 //      (the exact values the Rust unit tests assert) — guards JS↔Rust drift.
 //   4. BUDGET: the child-count cap (ComposeBudget v1 = 8) refuses a 9th mount.
+//   5. RECURSION (the fractal): a grandchild composites child→parent→root
+//      through two blits — proof composition is a tree, not depth-1.
+//   6. DEPTH CAP: the recursion terminates — a node at MAX_DEPTH can't spawn.
 //
 // Run standalone:  node scripts/test-compose-wiring.mjs
 // Wired into verify.sh as a stage. Exits non-zero on any FAIL.
@@ -94,7 +97,7 @@ const childWasm = compileSource(childSrc, 'child');
   const handle = worker.composeMountForTest('child', RX, RY, RW, RH);
   check('1a child mounts into a slot', handle >= 0, `handle=${handle}`);
   // Simulate the main-thread compose_bytes reply: instantiate the fetched bytes.
-  worker.composeInstantiate(handle, childWasm.buffer.slice(childWasm.byteOffset, childWasm.byteOffset + childWasm.byteLength));
+  worker.composeInstantiateForTest(handle, childWasm.buffer.slice(childWasm.byteOffset, childWasm.byteOffset + childWasm.byteLength));
   const child = worker.composeChildren()[handle];
   check('1b child instantiated READY at its dims()', child && child.state === 1 && child.w === 64 && child.h === 64,
     child ? `state=${child.state} ${child.w}x${child.h}` : 'no child');
@@ -131,7 +134,7 @@ const childWasm = compileSource(childSrc, 'child');
   const RX = 96, RY = 0, RW = 128, RH = 72;
   worker.composeReset();
   const handle = worker.composeMountForTest('child', RX, RY, RW, RH);
-  worker.composeInstantiate(handle, childWasm.buffer.slice(childWasm.byteOffset, childWasm.byteOffset + childWasm.byteLength));
+  worker.composeInstantiateForTest(handle, childWasm.buffer.slice(childWasm.byteOffset, childWasm.byteOffset + childWasm.byteLength));
   worker.composeFocusForTest(handle);
   check('2a focus set to the child', worker.composeFocus() === handle, `focus=${worker.composeFocus()}`);
 
@@ -257,7 +260,63 @@ const childWasm = compileSource(childSrc, 'child');
   worker.composeReset();
 }
 
+// ---- 5. RECURSION: a grandchild composites through TWO levels (the fractal) -
+// A green child A (64×64) mounted at parent (0,0,64,64) identity; a red
+// grandchild B (32×32) mounted INTO A at (0,0,32,32) identity. After the
+// recursive pass, A's rect is green EXCEPT B's quarter, which shows red — proof
+// the grandchild's pixels folded child→A→root through two blits.
+{
+  const GREEN = 0x00ff00, GREENP = packRgb(GREEN);
+  const ab = (w) => w.buffer.slice(w.byteOffset, w.byteOffset + w.byteLength);
+  const fill = (w, h, rgb) => `fn dims() -> i32 { (${w} << 16) | ${h} }\nfn frame(t: i32) { host::display::clear(0x${rgb.toString(16)}); host::display::present(); }\n`;
+  const greenWasm = compileSource(fill(64, 64, GREEN), 'green');
+  const redWasm = compileSource(fill(32, 32, RED), 'red');
+
+  const PW = 256, PH = 144;
+  worker.composeReset();
+  const hA = worker.composeMountForTest('a', 0, 0, 64, 64);
+  worker.composeInstantiateForTest(hA, ab(greenWasm));
+  const nodeA = worker.composeChildren()[hA];
+  check('5a child A READY at 64×64', nodeA && nodeA.state === 1 && nodeA.w === 64, nodeA ? `${nodeA.w}x${nodeA.h}` : 'none');
+
+  // Mount B INTO A (depth 2) and instantiate it against A's table.
+  const hB = worker.composeMountInto(nodeA, 'b', 0, 0, 32, 32);
+  check('5b grandchild B mounts into A (depth 2)', hB >= 0 && nodeA.children[hB] && nodeA.children[hB].depth === 2,
+    nodeA.children[hB] ? `depth=${nodeA.children[hB].depth}` : 'none');
+  worker.composeInstantiateForTest(hB, ab(redWasm), nodeA);
+  check('5c grandchild B READY at 32×32', nodeA.children[hB].state === 1 && nodeA.children[hB].w === 32);
+
+  const parentFb = new Uint32Array(PW * PH);
+  worker.composeRunPass(parentFb, PW, PH, 0, { x: 0, y: 0, down: 0 });
+
+  check('5d grandchild red shows at parent (0,0)', pix(parentFb, PW, 0, 0) === REDP, `0x${pix(parentFb, PW, 0, 0).toString(16)}`);
+  check('5e grandchild red fills its quarter', pix(parentFb, PW, 31, 31) === REDP);
+  check('5f child green outside the grandchild', pix(parentFb, PW, 40, 40) === GREENP, `0x${pix(parentFb, PW, 40, 40).toString(16)}`);
+  check('5g child green at its far corner', pix(parentFb, PW, 63, 63) === GREENP);
+  check('5h nothing outside child A', pix(parentFb, PW, 70, 70) === 0);
+  worker.composeReset();
+}
+
+// ---- 6. DEPTH CAP: the fractal terminates — a node at MAX_DEPTH can't spawn --
+{
+  worker.composeReset();
+  let node = null;
+  let lastDepth = 0;
+  // Build a chain root→d1→…→d{MAX_DEPTH}; each mount must succeed up to the cap.
+  for (let d = 1; d <= worker.COMPOSE_MAX_DEPTH; d++) {
+    const h = worker.composeMountInto(node, 'n', 0, 0, 8, 8);
+    check(`6a depth-${d} node mounts`, h >= 0, `h=${h}`);
+    node = (node ? node.children : worker.composeChildren())[h];
+    lastDepth = node.depth;
+  }
+  check('6b deepest node is at MAX_DEPTH', lastDepth === worker.COMPOSE_MAX_DEPTH, `depth=${lastDepth}`);
+  // A node AT the depth cap cannot spawn another level — recursion stops here.
+  const over = worker.composeMountInto(node, 'n', 0, 0, 8, 8);
+  check('6c node at the depth cap refuses to spawn', over === -1, `over=${over}`);
+  worker.composeReset();
+}
+
 console.log('');
-if (fail === 0) console.log('PASS: cartridge-in-cartridge composition wired (composite + pointer + parity + budget)');
+if (fail === 0) console.log('PASS: cartridge-in-cartridge composition wired (composite + pointer + parity + budget + recursion + depth cap)');
 else console.error(`FAIL: ${fail} compose-wiring check(s) failed`);
 process.exit(fail === 0 ? 0 : 1);
