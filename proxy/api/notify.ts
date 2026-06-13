@@ -30,8 +30,19 @@
 //
 // ORDER OF OPERATIONS (the fetch.ts invariant: nothing proxy-side may fail
 // AFTER the caller is charged except the actual upstream send): payload
-// validation → VAPID config check → auth → subscription lookup (404 before
+// validation → VAPID config check → RATE LIMIT (429 before auth — cheap
+// rejection on the CLAIMED address) → auth → subscription lookup (404 before
 // any debit) → credit gate + meter debit → the push itself (502 on failure).
+//
+// RATE LIMITS (best-effort, PER-ISOLATE — see api/_ratelimit.ts for why
+// that's accepted; the meter debit stays the global hard backstop):
+//   * per SENDER: ≤ NOTIFY_SENDER_PER_MIN pushes/min — a funded loop can't
+//     buzz a phone continuously even though each push is paid;
+//   * per RECIPIENT (`to` only): ≤ NOTIFY_RECIPIENT_PER_MIN deliveries/min to
+//     one target name ACROSS ALL SENDERS in this isolate — many funded
+//     senders can't gang up on one phone.
+// Checked pre-auth on the claimed address: worst case a spoofer burns a
+// window (nuisance), never funds — debits only happen after real auth.
 
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3';
@@ -50,6 +61,7 @@ import {
   sendWebPushAll,
   type PushSubscriptionJson,
 } from './_webpush';
+import { SlidingWindow, claimedAddress } from './_ratelimit';
 
 export const config = { runtime: 'edge' };
 
@@ -79,6 +91,17 @@ const ALLOWED_ORIGIN_EXACT = 'https://localharness.xyz';
 const MAX_TITLE_CHARS = 80;
 const MAX_BODY_CHARS = 200;
 const MAX_REQUEST_BODY_BYTES = 16_384; // { title, body } is tiny
+
+// Rate limits (best-effort, PER-ISOLATE — see api/_ratelimit.ts + the header).
+// Sender: 10/min is generous for legit "notify me when done" agent loops but
+// kills a tight buzz loop. Recipient: 10/min to one target name across ALL
+// senders in this isolate — a phone gets at most ~one banner every 6s from
+// here even if many funded senders pile on. The meter (0.01 $LH/push) stays
+// the global hard backstop an isolate-spread attacker still pays.
+const NOTIFY_SENDER_PER_MIN = 10;
+const NOTIFY_RECIPIENT_PER_MIN = 10;
+const senderWindow = new SlidingWindow(NOTIFY_SENDER_PER_MIN, 60_000);
+const recipientWindow = new SlidingWindow(NOTIFY_RECIPIENT_PER_MIN, 60_000);
 
 // Web Push subscription slot — written by the browser app's admin "enable
 // notifications" flow (src/app/notifications.rs) under the owner's MAIN
@@ -447,9 +470,46 @@ export default async function handler(req: Request): Promise<Response> {
       return json({ error: 'proxy misconfigured: web push is not set up' }, 500, origin);
     }
 
-    // ---- AUTH — same token scheme + headers as api/gemini.ts -------------------
+    // ---- RATE LIMIT (BEFORE auth — rejecting a flood must not cost a curve
+    // recovery per request). Keyed on the CLAIMED, unverified address; safe
+    // because nothing of value is gated here — a spoofer burns the address's
+    // per-isolate rate window (a one-minute nuisance), never its funds: the
+    // meter debit below only ever runs after real signature verification.
+    // Best-effort + PER-ISOLATE — see api/_ratelimit.ts. ------------------------
     const token =
       req.headers.get('x-goog-api-key') ?? req.headers.get('x-api-key') ?? '';
+    const claimed = claimedAddress(token);
+    if (claimed) {
+      const wait = senderWindow.hit(claimed);
+      if (wait > 0) {
+        return json(
+          {
+            error: `rate limited: at most ${NOTIFY_SENDER_PER_MIN} notifies per 60s per sender`,
+            retryAfterSeconds: wait,
+          },
+          429,
+          origin,
+        );
+      }
+    }
+    // Per-RECIPIENT cap (cross-agent only): one phone can't be buzzed
+    // continuously even by MANY funded senders — deliveries to a target name
+    // share one window across all senders in this isolate.
+    if (to) {
+      const wait = recipientWindow.hit(to);
+      if (wait > 0) {
+        return json(
+          {
+            error: `rate limited: "${to}" can receive at most ${NOTIFY_RECIPIENT_PER_MIN} notifies per 60s across all senders`,
+            retryAfterSeconds: wait,
+          },
+          429,
+          origin,
+        );
+      }
+    }
+
+    // ---- AUTH — same token scheme + headers as api/gemini.ts -------------------
     const parts = token.split(':');
     if (parts.length !== 3) {
       return json({ error: 'missing or malformed auth token' }, 401, origin);

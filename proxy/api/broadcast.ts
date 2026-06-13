@@ -27,10 +27,17 @@
 //
 // ORDER OF OPERATIONS (notify.ts invariant — nothing may fail AFTER the caller
 // is charged except best-effort pushes): payload validation → VAPID config
-// check → auth → per-feed rate-limit (429 before any debit) → credit gate +
-// meter debit (charged ONCE, before the fan-out) → read subscribersOf → per
-// subscriber: resolve push_sub + sendWebPush (best-effort; one failure never
-// aborts the rest) → counts.
+// check → per-SENDER rate-limit (429 BEFORE auth — cheap rejection on the
+// CLAIMED address; a spoofer burns a window, never funds) → auth → per-feed
+// rate-limit (429 before any debit) → credit gate + meter debit (charged
+// ONCE, before the fan-out) → read subscribersOf → per subscriber: resolve
+// push_sub + sendWebPush (best-effort; one failure never aborts the rest) →
+// counts.
+//
+// RATE LIMITS (best-effort, PER-ISOLATE — see api/_ratelimit.ts for why
+// that's accepted): per SENDER ≤ BROADCAST_SENDER_PER_MIN/min (a broadcast
+// fans out to up to MAX_FANOUT phones, so the per-sender budget is tight) +
+// the per-FEED cooldown below. The meter is the global hard backstop.
 
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3';
@@ -49,6 +56,7 @@ import {
   sendWebPushAll,
   type PushSubscriptionJson,
 } from './_webpush';
+import { SlidingWindow, claimedAddress } from './_ratelimit';
 
 export const config = { runtime: 'edge' };
 
@@ -98,6 +106,16 @@ const MAX_FANOUT = 500;
 // debit is the durable, global cost ceiling; this is a cheap first line).
 const RATE_LIMIT_MS = 3_000;
 const lastBroadcastAt = new Map<string, number>();
+
+// Per-SENDER sliding window (also per-isolate, same caveat). 3/min: one
+// broadcast fans out to up to MAX_FANOUT devices, so a sender's spam budget
+// must be far tighter than notify's — 3 group-buzzes a minute covers any
+// legit "ready up" cadence while a loop dies immediately. Checked BEFORE
+// auth on the CLAIMED address (cheap rejection; a spoofer can burn an
+// address's window in this isolate, never its funds — the identity gate
+// below still requires a real signature).
+const BROADCAST_SENDER_PER_MIN = 3;
+const senderWindow = new SlidingWindow(BROADCAST_SENDER_PER_MIN, 60_000);
 
 // Web Push subscription slot — written by the browser app's "enable
 // notifications" flow (src/app/notifications.rs), under each owner's MAIN
@@ -454,9 +472,29 @@ export default async function handler(req: Request): Promise<Response> {
     }
     const vapid = { publicKey, privateKey, subject };
 
-    // ---- AUTH — same token scheme + headers as notify.ts ----------------------
+    // ---- per-SENDER RATE LIMIT (BEFORE auth — rejecting a flood must not
+    // cost a curve recovery per request). Keyed on the CLAIMED, unverified
+    // address — safe: a spoofer burns the address's per-isolate rate window
+    // (a one-minute nuisance), never its funds. Best-effort + PER-ISOLATE —
+    // see api/_ratelimit.ts; the per-feed cooldown below still applies. ---------
     const token =
       req.headers.get('x-goog-api-key') ?? req.headers.get('x-api-key') ?? '';
+    const claimed = claimedAddress(token);
+    if (claimed) {
+      const wait = senderWindow.hit(claimed);
+      if (wait > 0) {
+        return json(
+          {
+            error: `rate limited: at most ${BROADCAST_SENDER_PER_MIN} broadcasts per 60s per sender`,
+            retryAfterSeconds: wait,
+          },
+          429,
+          origin,
+        );
+      }
+    }
+
+    // ---- AUTH — same token scheme + headers as notify.ts ----------------------
     const parts = token.split(':');
     if (parts.length !== 3) {
       return json({ error: 'missing or malformed auth token' }, 401, origin);
