@@ -1,7 +1,8 @@
 // localharness credit proxy — multi-provider LLM passthrough (Edge).
 //
 // Routes by path: /v1beta/models/<model>:<method> -> Gemini (the original,
-// byte-identical path), /v1/messages -> Anthropic. A client in *platform-
+// byte-identical path), /v1/messages -> Anthropic, /v1/chat/completions ->
+// OpenAI. A client in *platform-
 // credits* mode points its backend client at this proxy (`with_base_url`) and
 // sends requests with the SAME path/shape it would send to the provider. This
 // function:
@@ -49,6 +50,7 @@ const REGISTRY = '0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
 const ANTHROPIC_BASE = 'https://api.anthropic.com';
 const ANTHROPIC_VERSION = '2023-06-01';
+const OPENAI_BASE = 'https://api.openai.com';
 const CHAIN_ID = 42431;
 // `$LH` (18-decimal wei) debited per request in per-request mode.
 // Env-overridable; default 0.01 LH.
@@ -79,6 +81,16 @@ const PRICE_ANTHROPIC: Record<string, bigint> = {
 };
 const PRICE_ANTHROPIC_DEFAULT = envWei('PRICE_ANTHROPIC_DEFAULT_WEI', 50_000_000_000_000_000n);
 
+// OpenAI pricing mirrors the Anthropic tiers (mini ≙ Haiku, flagship ≙ Sonnet,
+// pro ≙ Opus). Same rule: an UNKNOWN model falls to the mid default, NEVER free.
+const PRICE_OPENAI: Record<string, bigint> = {
+  'gpt-5-nano': envWei('PRICE_OPENAI_NANO_WEI', 10_000_000_000_000_000n), // 0.01
+  'gpt-5-mini': envWei('PRICE_OPENAI_MINI_WEI', 10_000_000_000_000_000n), // 0.01
+  'gpt-5.1': envWei('PRICE_OPENAI_FLAGSHIP_WEI', 50_000_000_000_000_000n), // 0.05
+  'gpt-5-pro': envWei('PRICE_OPENAI_PRO_WEI', 200_000_000_000_000_000n), // 0.20
+};
+const PRICE_OPENAI_DEFAULT = envWei('PRICE_OPENAI_DEFAULT_WEI', 50_000_000_000_000_000n);
+
 // Hard ceiling on the `$LH` a SINGLE request may debit. Bill-shock guard: a
 // stateless Edge function has no per-identity rate store, so the spend cap is
 // the user's on-chain `creditOf` balance — but a misconfigured price env (an
@@ -89,10 +101,15 @@ const PRICE_ANTHROPIC_DEFAULT = envWei('PRICE_ANTHROPIC_DEFAULT_WEI', 50_000_000
 // price, far below "drain the wallet in one call". Env-overridable.
 const MAX_COST_PER_REQUEST_WEI = envWei('MAX_COST_PER_REQUEST_WEI', 1_000_000_000_000_000_000n);
 
-function priceOf(provider: 'gemini' | 'anthropic', model: string): bigint {
-  const raw = provider === 'gemini'
-    ? COST_PER_REQUEST_WEI
-    : (PRICE_ANTHROPIC[model] ?? PRICE_ANTHROPIC_DEFAULT);
+type Provider = 'gemini' | 'anthropic' | 'openai';
+
+function priceOf(provider: Provider, model: string): bigint {
+  const raw =
+    provider === 'gemini'
+      ? COST_PER_REQUEST_WEI
+      : provider === 'anthropic'
+        ? (PRICE_ANTHROPIC[model] ?? PRICE_ANTHROPIC_DEFAULT)
+        : (PRICE_OPENAI[model] ?? PRICE_OPENAI_DEFAULT);
   // Clamp to the per-request ceiling — never debit more than the cap in one call.
   return raw > MAX_COST_PER_REQUEST_WEI ? MAX_COST_PER_REQUEST_WEI : raw;
 }
@@ -142,7 +159,7 @@ const METHOD_RE = /^(generateContent|streamGenerateContent)$/;
 function corsHeaders(origin: string | null): Record<string, string> {
   const h: Record<string, string> = {
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'content-type, x-goog-api-key, x-api-key, anthropic-version',
+    'Access-Control-Allow-Headers': 'content-type, x-goog-api-key, x-api-key, anthropic-version, authorization',
     'Vary': 'Origin',
   };
   if (origin && isAllowedOrigin(origin)) {
@@ -398,17 +415,18 @@ export default async function handler(req: Request): Promise<Response> {
   try {
     // Route by path → provider + model. Gemini: /v1beta/models/<model>:<method>
     // (model/method allowlisted so nothing the caller controls reshapes the
-    // key-bearing upstream URL — H3). Anthropic: /v1/messages (model is in the
-    // JSON body; read once here and forwarded verbatim).
+    // key-bearing upstream URL — H3). Anthropic: /v1/messages; OpenAI:
+    // /v1/chat/completions (both carry the model in the JSON body; read once
+    // here and forwarded verbatim).
     //
-    // BOTH branches read the body HERE, before auth/metering. `readTextCapped`
+    // ALL branches read the body HERE, before auth/metering. `readTextCapped`
     // throws past MAX_BODY_BYTES (a chunked body declares no Content-Length, so
     // the up-front header check can't catch it) — and that throw must land
     // BEFORE the $LH debit. The Gemini body used to be read lazily in the
     // forward block, AFTER `meterDebit`: an oversized chunked body got charged,
     // then 413'd via the outer catch without ever reaching the upstream.
     const reqUrl = new URL(req.url);
-    let provider: 'gemini' | 'anthropic';
+    let provider: Provider;
     let model: string;
     let requestBody: string;
 
@@ -420,8 +438,11 @@ export default async function handler(req: Request): Promise<Response> {
       provider = 'gemini';
       model = gem[1];
       requestBody = await readTextCapped(req);
-    } else if (reqUrl.pathname === '/v1/messages') {
-      provider = 'anthropic';
+    } else if (
+      reqUrl.pathname === '/v1/messages' ||
+      reqUrl.pathname === '/v1/chat/completions'
+    ) {
+      provider = reqUrl.pathname === '/v1/messages' ? 'anthropic' : 'openai';
       requestBody = await readTextCapped(req);
       let parsed: { model?: unknown };
       try {
@@ -438,9 +459,12 @@ export default async function handler(req: Request): Promise<Response> {
     }
 
     // AUTH — the localharness token `<address>:<timestamp>:<signature>` rides in
-    // x-goog-api-key (Gemini clients) OR x-api-key (Anthropic clients).
+    // x-goog-api-key (Gemini clients), x-api-key (Anthropic clients), or
+    // `Authorization: Bearer <token>` (OpenAI-shaped clients). A real provider
+    // key has no colons, so the forms stay unambiguous.
+    const bearer = (req.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '');
     const token =
-      req.headers.get('x-goog-api-key') ?? req.headers.get('x-api-key') ?? '';
+      req.headers.get('x-goog-api-key') ?? req.headers.get('x-api-key') ?? bearer;
     const parts = token.split(':');
     if (parts.length !== 3) {
       return json({ error: 'missing or malformed auth token' }, 401, origin);
@@ -494,14 +518,18 @@ export default async function handler(req: Request): Promise<Response> {
     const upstreamKey =
       provider === 'gemini'
         ? process.env.GEMINI_API_KEY
-        : process.env.ANTHROPIC_API_KEY;
+        : provider === 'anthropic'
+          ? process.env.ANTHROPIC_API_KEY
+          : process.env.OPENAI_API_KEY;
     if (!upstreamKey) {
       return json(
         {
           error:
             provider === 'gemini'
               ? 'proxy misconfigured: missing GEMINI_API_KEY'
-              : 'proxy missing ANTHROPIC_API_KEY — add it to the proxy env to enable Claude on credits',
+              : provider === 'anthropic'
+                ? 'proxy missing ANTHROPIC_API_KEY — add it to the proxy env to enable Claude on credits'
+                : 'proxy missing OPENAI_API_KEY — add it to the proxy env to enable OpenAI models on credits',
         },
         500,
         origin,
@@ -582,13 +610,23 @@ export default async function handler(req: Request): Promise<Response> {
         },
         body: requestBody,
       });
-    } else {
+    } else if (provider === 'anthropic') {
       upstream = await fetch(ANTHROPIC_BASE + '/v1/messages', {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
           'x-api-key': upstreamKey,
           'anthropic-version': ANTHROPIC_VERSION,
+          accept: req.headers.get('accept') ?? 'text/event-stream',
+        },
+        body: requestBody,
+      });
+    } else {
+      upstream = await fetch(OPENAI_BASE + '/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${upstreamKey}`,
           accept: req.headers.get('accept') ?? 'text/event-stream',
         },
         body: requestBody,
