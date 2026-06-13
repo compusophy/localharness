@@ -138,6 +138,15 @@ pub mod lessons;
 #[cfg(feature = "browser-app")]
 mod qr;
 
+// Apex fresh-visitor landing markup — hoisted out of the wasm-gated `app/`
+// tree (the raster.rs/compose.rs pattern) so the SHIPPING markup also
+// renders natively: `cargo test --features browser-app landing_preview`
+// writes `target/landing-preview.html` for screenshot review. The `test`
+// arm keeps non-test native builds free of dead-code (only the wasm app
+// and the preview test consume it).
+#[cfg(all(feature = "browser-app", any(target_arch = "wasm32", test)))]
+mod landing;
+
 // The browser-resident IDE. Gated on the `browser-app` feature AND a
 // wasm target, so a native `cargo add localharness` never compiles it.
 #[cfg(all(feature = "browser-app", target_arch = "wasm32"))]

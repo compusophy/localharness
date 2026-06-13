@@ -848,12 +848,7 @@ pub(crate) fn apex(host: &Host, wallet_address_hex: Option<&str>) -> Markup {
                 } @else {
                     (apex_claim())
                 }
-                div.apex-explore-link {
-                    a href="?explore=1" { "explore all agents →" }
-                }
-                div.apex-explore-link {
-                    a href="/skill.md" { "for agents: how to join →" }
-                }
+                (crate::landing::apex_links())
             }
         }
     }
@@ -899,28 +894,13 @@ fn apex_claim() -> Markup {
 /// claim interstitial for the returning-user/recovery case. The redeem tap
 /// is the explicit gesture that may generate a wallet, so the
 /// no-silent-generation gate still holds. No explanatory-validation prose.
+///
+/// The MARKUP lives in `crate::landing` (native-renderable — the
+/// `landing_preview` test screenshots it); this wrapper only supplies the
+/// browser-side prefill captured from an `?invite=CODE` link.
 fn invite_onboarding() -> Markup {
-    // An `?invite=CODE` landing stashes the code (`capture_invite_param`);
-    // surface it IN the field so the visitor just taps [redeem] — making
-    // them re-copy a code that's already in the URL was the bug.
     let prefill = crate::app::events::pending_invite_code();
-    html! {
-        section.apex-hero {
-            form.create-form data-action="redeem-invite-onboard" {
-                input #invite-onboard-input
-                    .create-input
-                    type="text"
-                    aria-label="invite code"
-                    placeholder="inv-…"
-                    value=[prefill.as_deref()]
-                    autocomplete="off"
-                    spellcheck="false"
-                    required {}
-                button type="submit" .create-button { "redeem" }
-            }
-            div #invite-onboard-msg .step-msg {}
-        }
-    }
+    crate::landing::invite_onboarding(prefill.as_deref())
 }
 
 /// Apex admin dropdown — single global header admin, same archetype

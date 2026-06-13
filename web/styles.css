@@ -641,7 +641,10 @@ main.layout .transcript > *:empty { display: none; }
    rule and `.explore-main` (32px). The old asymmetric 64px top made
    the apex-family pages (apex/claim/landing) sit visibly lower than
    every other page, the "uneven spacing under the header" report. */
-.apex-main { display: block; padding: 32px 24px; max-width: 1180px; }
+/* overflow-y: the body never scrolls (#root is viewport-bound), so a
+   short window / soft-keyboard viewport must scroll the apex page
+   INTERNALLY or the hero's lower half (the invite input!) gets clipped. */
+.apex-main { display: block; padding: 32px 24px; max-width: 1180px; overflow-y: auto; }
 .apex-main > .col-chat { max-width: 600px; margin: 0 auto; }
 /* The gap under the site-header is the `main` top padding alone (32px).
    The first content block inside an apex-family page must not stack its
@@ -651,9 +654,18 @@ main.layout .transcript > *:empty { display: none; }
    we only zero the FIRST one. */
 .apex-main > .col-chat > :first-child,
 .apex-main > :first-child { margin-top: 0; }
-.apex-explore-link { text-align: center; margin-top: 32px; }
-.apex-explore-link a { color: var(--muted); text-decoration: none; font-size: 12px; }
-.apex-explore-link a:hover { color: var(--fg); }
+/* Apex footer links (src/landing.rs::apex_links) — ONE centered row;
+   explore is the uninvited visitor's escape hatch. wrap keeps both links
+   on-screen at 390px. */
+.apex-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px 32px;
+  margin-top: 64px;
+}
+.apex-links a { color: var(--muted); text-decoration: none; font-size: 12px; }
+.apex-links a:hover { color: var(--fg); }
 
 /* Public agent directory (?explore=1) */
 .explore-main { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
@@ -883,22 +895,80 @@ h1 {
 h1 a { color: inherit; text-decoration: none; }
 h1 a:hover { color: var(--accent); }
 
-/* Apex / unclaimed chrome. The fresh-visitor hero is ONE centered column:
-   headline over the invite input — nothing else competes (the create/import
-   buttons are gone; import lives in admin). */
+/* Apex front door (src/landing.rs) — the fresh-visitor hero. ONE centered
+   column: wordmark / one value-prop line / the invite input as the
+   centerpiece — nothing else competes (the create/import buttons are gone;
+   import lives in admin). Hierarchy is SIZE + SPACING only: wordmark huge,
+   tagline muted, 56px of air before the form. Preview without a browser
+   profile: `cargo test --features browser-app landing_preview` →
+   target/landing-preview.html. */
 .apex-hero {
-  margin: 14vh 0 40px;
+  margin: 16vh 0 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   text-align: center;
 }
+/* clamp: ~36px on a 390px phone, 56px on desktop — always one line. */
+.apex-wordmark {
+  margin: 0;
+  font-size: clamp(32px, 9.5vw, 56px);
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  line-height: 1;
+  color: var(--fg);
+}
+/* 60ch holds the whole sentence on ONE line on desktop; phones wrap
+   naturally inside the column padding. */
+.apex-tagline {
+  margin: 24px 0 0;
+  max-width: 60ch;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+/* The literal `<name>` placeholder host — same muted tone (monochrome:
+   no second color), nowrap so the hostname never breaks mid-domain. */
+.apex-tagline-host { white-space: nowrap; }
+/* Hero overrides of the generic .create-form (64px top / 24px gap are the
+   claim page's numbers): a tight input-over-button stack, full-width
+   button so the redeem CTA reads as the page's one action. */
+.apex-hero .create-form {
+  margin: 56px auto 0;
+  gap: 12px;
+  width: 100%;
+  max-width: 360px;
+}
+.apex-hero .create-input { padding: 14px 16px; }
+/* The redeem CTA is the page's ONE action — INVERTED (filled) so it
+   outweighs the outline input above it. Still monochrome: fg-on-bg
+   flipped, no new tone. `.failed` falls back to the outline treatment
+   in the error tone (parity with the global .create-button.failed). */
+.apex-hero .create-button {
+  width: 100%;
+  padding: 14px 32px;
+  background: var(--fg);
+  border-color: var(--fg);
+  color: var(--bg);
+  font-weight: 600;
+}
+.apex-hero .create-button:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+}
+.apex-hero .create-button.failed {
+  background: transparent;
+  border-color: var(--error);
+  color: var(--error);
+}
+.apex-hero .step-msg { margin-top: 16px; }
+/* Signer chrome (signer_no_identity / signer_chrome) still uses the old
+   headline scale. */
 .apex-headline {
   font-size: 28px; font-weight: 600; letter-spacing: -0.01em;
   margin: 0 0 16px; color: var(--fg);
 }
-/* The hero reuses .create-form (claim styles it with a 64px top margin for
-   the agents-list page); inside the hero the headline already provides the
-   separation. */
-.apex-hero .create-form { margin-top: 16px; }
-.apex-hero .step-msg { margin-top: 12px; }
 .apex-sub { color: var(--muted); margin: 0 0 32px; max-width: 56ch; line-height: 1.6; }
 
 .apex-fine { color: var(--muted); font-size: 12px; line-height: 1.6; }
