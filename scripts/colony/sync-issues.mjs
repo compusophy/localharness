@@ -6,9 +6,11 @@
 // numbering as scripts/harvest-feedback.sh and docs/feedback-resolved.txt),
 // then EXCLUDES, in order:
 //   1. indices listed in docs/feedback-resolved.txt (already addressed),
-//   2. indices that already have a matching OPEN issue — matched by the
-//      visible `lh-feedback:<index>` marker line stamped into every issue
-//      body this script creates (found via ONE `gh issue list --search`),
+//   2. indices that already have a matching issue, OPEN OR CLOSED — matched by
+//      the visible `lh-feedback:<index>` marker line stamped into every issue
+//      body this script creates (found via ONE `gh issue list --search`). NOTE
+//      state=all is load-bearing: deduping on open-only would RE-FILE an index
+//      the moment its issue is closed (the bug that re-created the backlog),
 //   3. exact-duplicate feedback texts (normalized whitespace + case collapse;
 //      the first index wins, dups are listed in its footer).
 //
@@ -89,33 +91,35 @@ async function main() {
       `${entries.length} candidate(s)`,
   );
 
-  // 3. Indices already tracked by an OPEN issue (one search, marker contract).
-  //    GitHub's tokenizer splits on ':' so searching the prefix finds bodies
-  //    containing `lh-feedback:<n>`.
-  let openMarked = new Set();
+  // 3. Indices already tracked by an issue (OPEN OR CLOSED) — one search,
+  //    marker contract. GitHub's tokenizer splits on ':' so searching the
+  //    prefix finds bodies containing `lh-feedback:<n>`. state=all so a CLOSED
+  //    (resolved) issue keeps its index tracked — deduping open-only re-files
+  //    everything the moment it's closed.
+  let trackedMarked = new Set();
   try {
     const raw = gh([
       'issue', 'list',
-      '--state', 'open',
+      '--state', 'all',
       '--search', MARKER_PREFIX.replace(/:$/, ''),
       '--json', 'number,body',
-      '--limit', '200',
+      '--limit', '400',
     ]);
     const markerRe = new RegExp(`${MARKER_PREFIX}(\\d+)\\b`, 'g');
     for (const issue of JSON.parse(raw)) {
       for (const m of (issue.body || '').matchAll(markerRe)) {
-        openMarked.add(Number(m[1]));
+        trackedMarked.add(Number(m[1]));
       }
     }
   } catch (e) {
-    console.error(`warning: could not query open issues (${e.message}) — assuming none tracked.`);
+    console.error(`warning: could not query issues (${e.message}) — assuming none tracked.`);
     if (LIVE) {
-      console.error('refusing --live without the open-issue dedup check.');
+      console.error('refusing --live without the dedup check.');
       process.exit(1);
     }
   }
-  const untracked = entries.filter((e) => !openMarked.has(e.index));
-  console.log(`open issues already track ${openMarked.size} index(es); ${untracked.length} remain`);
+  const untracked = entries.filter((e) => !trackedMarked.has(e.index));
+  console.log(`existing issues (open+closed) already track ${trackedMarked.size} index(es); ${untracked.length} remain`);
 
   // 4. Exact-dup collapse (first index wins; dups recorded in the footer).
   const byKey = new Map();
