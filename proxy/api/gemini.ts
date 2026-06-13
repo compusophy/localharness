@@ -555,42 +555,18 @@ export default async function handler(req: Request): Promise<Response> {
         origin,
       );
     }
-    // PREFER per-request metering: a FUNDED meter (`creditOf >= cost`) means the
-    // caller opted into real per-call billing, so debit the per-model cost even
-    // if a (free beta, `sessionPrice==0`) session is ALSO active — otherwise the
-    // free session would silently make every call free. Callers with ONLY a
-    // session and no meter balance (the free-beta / CLI fallback) are still
-    // served free. Fail closed if the debit can't be submitted.
-    if (hasCredit) {
-      try {
-        await meterDebit(address, cost);
-      } catch (e) {
-        // A definitive revert = genuinely out of $LH for THIS request. If a
-        // (free-beta) session also covers the caller, serve under it; otherwise
-        // it's a real 402. Anything else is an ambiguous infra error (502).
-        if (e instanceof InsufficientCreditError) {
-          if (!hasSession) {
-            return json(
-              {
-                error:
-                  'insufficient $LH credit — the on-chain debit reverted (balance changed since the gate read)',
-              },
-              402,
-              origin,
-            );
-          }
-          // else: covered by an active session — fall through and serve.
-        } else {
-          return json({ error: 'metering failed: ' + (e as Error).message }, 502, origin);
-        }
-      }
-    }
+    // NOTE: the per-request meter DEBIT happens AFTER the upstream call returns
+    // 2xx (see below), NOT here. Charging before the upstream call billed
+    // callers for empty/malformed input (upstream 400) and upstream 5xx outages
+    // — "the gateway charges before validating / no refund on failure" (QA
+    // fleet bugs #51/#56/#59/#62/#63/#70/#71). The on-chain gate above only
+    // CONFIRMED the caller can pay; the actual debit is deferred to success.
 
     // Forward to the right upstream with the SERVER-held key in the HEADER
     // (never the URL). Stream the SSE body straight back. The body was read
-    // (and size-capped) at routing time and the key checked before metering —
-    // from here the only thing that can fail is the upstream call itself,
-    // which is the one failure a debited caller legitimately pays for.
+    // (and size-capped) at routing time and the key checked before metering.
+    // The caller is debited only AFTER this returns 2xx (below), so an upstream
+    // 4xx (bad/empty input) or 5xx (outage) costs nothing.
     let upstream: Response;
     if (provider === 'gemini') {
       // Rebuild the upstream query from an ALLOWLIST instead of forwarding the
@@ -631,6 +607,51 @@ export default async function handler(req: Request): Promise<Response> {
         },
         body: requestBody,
       });
+    }
+
+    // Upstream rejected (4xx — empty/malformed input) or failed (5xx — outage).
+    // Pass the status straight through and DO NOT charge: nothing billable
+    // happened. This is the charge-before-success fix (QA fleet bug cluster).
+    if (!upstream.ok) {
+      return new Response(upstream.body, {
+        status: upstream.status,
+        headers: {
+          'content-type':
+            upstream.headers.get('content-type') ?? 'application/json',
+          ...corsHeaders(origin),
+        },
+      });
+    }
+
+    // SUCCESS (2xx). NOW debit the per-request meter. PREFER per-request
+    // metering: a FUNDED meter (`creditOf >= cost`) means the caller opted into
+    // real per-call billing, so debit even if a (free-beta `sessionPrice==0`)
+    // session is ALSO active — else the free session would silently make every
+    // call free. Callers with ONLY a session and no meter balance stay free.
+    // Fail closed if the debit can't be submitted.
+    if (hasCredit) {
+      try {
+        await meterDebit(address, cost);
+      } catch (e) {
+        // A definitive revert = genuinely out of $LH for THIS request. If a
+        // (free-beta) session also covers the caller, serve under it; otherwise
+        // it's a real 402. Anything else is an ambiguous infra error (502).
+        if (e instanceof InsufficientCreditError) {
+          if (!hasSession) {
+            return json(
+              {
+                error:
+                  'insufficient $LH credit — the on-chain debit reverted (balance changed since the gate read)',
+              },
+              402,
+              origin,
+            );
+          }
+          // else: covered by an active session — fall through and serve.
+        } else {
+          return json({ error: 'metering failed: ' + (e as Error).message }, 502, origin);
+        }
+      }
     }
 
     return new Response(upstream.body, {

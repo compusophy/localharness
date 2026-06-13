@@ -264,6 +264,13 @@ pub(crate) async fn call(rest: &[String]) -> i32 {
     };
     match run_agent_turn(&key_hex, &target, &message, prior_history, model.as_deref()).await {
         Ok((text, new_history)) => {
+            // An empty reply is not a billable success — don't settle for a
+            // blank answer (QA fleet: "charged, got zero response"). Mirrors the
+            // proxy ask_agent + metered-path "no content, no charge" rule.
+            if text.trim().is_empty() {
+                eprintln!("call: the agent returned no text — no payment settled");
+                return 1;
+            }
             println!("{}", text.trim());
             // Persist the conversation so the next `call` to this target
             // continues it. Best-effort: a save failure must not flip the code.

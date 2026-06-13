@@ -35,6 +35,13 @@ fn parse_addr(s: &str) -> Result<[u8; 20], String> {
 /// Ask `target` through the hosted x402 endpoint, paying from the local
 /// credit key. Returns the agent's reply text, or a descriptive error.
 pub(crate) async fn ask_via_proxy(target: &str, message: &str) -> Result<String, String> {
+    // Reject an empty/whitespace message BEFORE signing any payment
+    // authorization — an empty ask used to ride all the way to the proxy,
+    // settle, then crash the runner with nothing to show for it (QA fleet
+    // #56/#119). No payment commitment for a blank prompt.
+    if message.trim().is_empty() {
+        return Err("message cannot be empty".to_string());
+    }
     let (signer, from) = super::chat::credit_signer()
         .await
         .ok_or_else(|| "no identity to pay from".to_string())?;
