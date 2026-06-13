@@ -410,6 +410,12 @@ pub(crate) fn chrome(host: &Host) -> Markup {
         (site_header(host))
         main #layout .layout {
             div.col-chat {
+                // Context-fullness indicator (feedback #59/#62, GitHub #28): a
+                // 2px bar at the TOP of the chat column whose fill = live prompt
+                // tokens / the compaction threshold. Painted by
+                // `chat::update_context_bar` after every turn; a full bar means
+                // an auto-compaction is imminent.
+                div #ctx-bar .ctx-bar title="context" { div #ctx-fill .ctx-fill {} }
                 // Live region: streamed assistant turns are appended/swapped
                 // into here as the model replies, so screen readers must be
                 // told to announce mutations. `role=log` + `aria-live=polite`

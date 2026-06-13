@@ -264,6 +264,7 @@ pub(crate) async fn run_send() {
         // history marker show up incrementally (not just at the very end).
         super::history::save_from_agent().await;
         super::opfs::refresh().await;
+        update_context_bar(&agent);
 
         // Drain any context-management a tool requested THIS turn. Deferred
         // to here (not run inside the tool) because clearing/summarising the
@@ -800,6 +801,31 @@ fn fail_pending_turn(turn_id: u32, text: &str) {
 /// The in-tab auto-compaction ceiling — shared by the session config and the
 /// context-fullness bar so the bar's "full" always means "compaction next".
 pub(crate) const COMPACTION_THRESHOLD: u32 = 128_000;
+
+/// Repaint the context-fullness bar (feedback #59/#62, GitHub #28): fill = the
+/// last turn's LIVE prompt tokens vs [`COMPACTION_THRESHOLD`], so a full bar
+/// means the next turn summarizes the old history prefix. Lives at the top of
+/// the chat column (`#ctx-bar` in `templates::chrome`); repainted after every
+/// turn alongside the history persist. Uses the per-turn `prompt_token_count`
+/// (the live context size the model reports), NOT a cumulative billing total.
+fn update_context_bar(agent: &crate::Agent) {
+    let tokens = agent
+        .conversation()
+        .last_turn_usage()
+        .and_then(|u| u.prompt_token_count)
+        .unwrap_or(0)
+        .max(0) as u64;
+    let pct = ((tokens as f64 / COMPACTION_THRESHOLD as f64) * 100.0).min(100.0);
+    if let Some(el) = dom::by_id("ctx-fill") {
+        let _ = el.set_attribute("style", &format!("width:{pct:.1}%"));
+    }
+    if let Some(el) = dom::by_id("ctx-bar") {
+        let _ = el.set_attribute(
+            "title",
+            &format!("context: {tokens} / {COMPACTION_THRESHOLD} tokens"),
+        );
+    }
+}
 
 fn mark_turn_done(turn_id: u32) {
     // The pipeline line is a PENDING-turn affordance — it disappears the
