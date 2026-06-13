@@ -66,11 +66,14 @@ pub(crate) async fn load() -> Option<MasterWallet> {
 /// the wallet. Caller is responsible for confirming intent — this
 /// overwrites any existing wallet file at the apex origin.
 pub(crate) async fn create_and_persist() -> Result<MasterWallet, String> {
+    super::debuglog::log("create wallet: generating mnemonic");
     let fs = super::shared_opfs();
     let (mnemonic, signer) = wallet::generate_with_mnemonic();
+    super::debuglog::log("create wallet: writing seed (opfs write)");
     fs.write_atomic(WALLET_FILE, mnemonic.to_string().as_bytes())
         .await
         .map_err(|e| format!("wallet save: {e}"))?;
+    super::debuglog::log("create wallet: seed written — installing at-rest key");
     install_at_rest(&mnemonic);
     let address = wallet::address(&signer);
     Ok(MasterWallet {

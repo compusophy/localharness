@@ -125,14 +125,21 @@ pub(crate) async fn credit_signer() -> Option<(k256::ecdsa::SigningKey, [u8; 20]
     {
         return Some(pair);
     }
+    // Breadcrumbed: this identity-creation path froze on iOS with no symptom —
+    // the crumbs put the dying stage on the panic banner / ?debug=1 overlay.
+    crate::app::debuglog::log("credit_signer: loading device key (opfs read)");
     if let Some(sk) = crate::app::wallet_store::load_device_key().await {
+        crate::app::debuglog::log("credit_signer: device key loaded");
         let addr = crate::wallet::address(&sk);
         return Some((sk, addr));
     }
+    crate::app::debuglog::log("credit_signer: no key — generating");
     let w = crate::wallet::generate();
+    crate::app::debuglog::log("credit_signer: persisting device key (opfs write)");
     crate::app::wallet_store::persist_device_key(&w.private_key_hex)
         .await
         .ok()?;
+    crate::app::debuglog::log("credit_signer: device key persisted");
     // `w` is Drop (zeroizes its hex) — clone the signer, copy the address.
     Some((w.signer.clone(), w.address))
 }

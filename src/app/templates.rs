@@ -906,7 +906,6 @@ fn invite_onboarding() -> Markup {
     let prefill = crate::app::events::pending_invite_code();
     html! {
         section.apex-hero {
-            h2.apex-headline { "have an invite code?" }
             form.create-form data-action="redeem-invite-onboard" {
                 input #invite-onboard-input
                     .create-input

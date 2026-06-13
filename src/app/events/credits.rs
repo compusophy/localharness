@@ -313,6 +313,7 @@ pub(super) fn redeem_invite_onboard_pressed() {
             .map_err(|_| "identity setup timed out — reload and try again".to_string())?
             .ok_or_else(|| "no identity".to_string())?;
             let fee_payer = crate::app::sponsor::signer()?;
+            crate::app::debuglog::log("onboard: identity ready — sending sponsored claim");
             dom::swap_inner(
                 "invite-onboard-msg",
                 "<span style=\"color:var(--muted)\">accepting on-chain…</span>",

@@ -24,6 +24,7 @@ use crate::Agent;
 
 mod chat;
 mod compose;
+mod debuglog;
 // pub(crate) so the `run_cartridge` builtin tool can hand a compiled
 // cartridge to the framebuffer (the agent→display loop).
 pub(crate) mod display;
@@ -246,6 +247,10 @@ pub(crate) fn install_at_rest_encryption(key: [u8; 32]) {
 #[wasm_bindgen(start)]
 fn start() {
     console_error_panic_hook::set_once();
+    // AFTER the console hook (it chains the previous hook): paint panics into
+    // a visible banner — iOS has no console, and a wasm panic otherwise looks
+    // like a silently frozen app (every spawned future dies, timeouts included).
+    debuglog::install_panic_banner();
 
     if let Err(err) = mount() {
         web_sys::console::error_1(&JsValue::from_str(&format!(
