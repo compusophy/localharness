@@ -455,7 +455,9 @@ pub(super) fn header_admin_toggle() {
             templates::admin_dropdown_tenant().into_string()
         }
     };
+    dom::remember_focus();
     dom::swap_outer("header-admin-panel", &body);
+    dom::focus_first_in("header-admin-panel");
 
     // Inject the stashed agent card (folded in from the retired right rail)
     // into the Account tab's #financial-slot. Built by kick_verification.
@@ -616,6 +618,7 @@ pub(super) fn header_admin_close() {
         "header-admin-panel",
         r#"<div id="header-admin-panel" hidden></div>"#,
     );
+    dom::restore_focus();
 }
 
 /// Switch the active admin tab by flipping the `tab-<name>` class on

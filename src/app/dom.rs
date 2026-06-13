@@ -3,6 +3,7 @@
 //! HTML swaps ("find this id, swap its inner") instead of web-sys
 //! incantations. **Nothing here builds DOM nodes**; that's maud's job.
 
+use std::cell::RefCell;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{Document, Element, HtmlInputElement, HtmlTextAreaElement, Storage, Window};
@@ -79,6 +80,49 @@ pub(crate) fn swap_inner(id: &str, html: &str) {
 pub(crate) fn swap_outer(id: &str, html: &str) {
     if let Some(el) = by_id(id) {
         el.set_outer_html(html);
+    }
+}
+
+thread_local! {
+    /// The element focused when a modal/overlay opened, so closing it returns
+    /// focus there (a11y #58) instead of stranding the user on `<body>`. Only
+    /// one overlay is open at a time, so a single slot suffices.
+    static FOCUS_RETURN: RefCell<Option<Element>> = const { RefCell::new(None) };
+}
+
+/// Save the currently-focused element so a later [`restore_focus`] can return
+/// to it. Call right before opening a modal/overlay. Focus is a BEHAVIOUR, not
+/// DOM construction — the no-imperative-DOM rule is about building nodes.
+pub(crate) fn remember_focus() {
+    if let Ok(doc) = document() {
+        FOCUS_RETURN.with(|c| *c.borrow_mut() = doc.active_element());
+    }
+}
+
+/// Return focus to the element [`remember_focus`] saved (call when closing a
+/// modal/overlay). No-op if nothing was saved or the element is gone.
+pub(crate) fn restore_focus() {
+    FOCUS_RETURN.with(|c| {
+        if let Some(el) = c.borrow_mut().take() {
+            if let Some(h) = el.dyn_ref::<web_sys::HtmlElement>() {
+                let _ = h.focus();
+            }
+        }
+    });
+}
+
+/// Move keyboard focus to the first focusable element inside `#container_id`
+/// (a11y #58: an opened modal/overlay should take focus so keyboard + screen-
+/// reader users land INSIDE it, not stranded on the trigger behind it). No-op
+/// if the container or a focusable child is missing.
+pub(crate) fn focus_first_in(container_id: &str) {
+    let Some(c) = by_id(container_id) else { return };
+    let sel = "button:not([disabled]), a[href], input:not([type=hidden]):not([disabled]), \
+               textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])";
+    if let Ok(Some(el)) = c.query_selector(sel) {
+        if let Some(h) = el.dyn_ref::<web_sys::HtmlElement>() {
+            let _ = h.focus();
+        }
     }
 }
 

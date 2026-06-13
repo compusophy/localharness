@@ -284,8 +284,11 @@ async fn ensure_modal_open() {
 pub(crate) async fn toggle_files_modal() {
     if files_modal_open() {
         dom::swap_outer("files-modal", &templates::files_modal_closed().into_string());
+        dom::restore_focus();
     } else {
+        dom::remember_focus();
         ensure_modal_open().await;
+        dom::focus_first_in("files-modal");
     }
 }
 
@@ -298,7 +301,9 @@ pub(crate) fn toggle_display() {
     if dom::by_id("display-canvas").is_some() {
         close_display();
     } else {
+        dom::remember_focus();
         dom::swap_outer("display-overlay", &templates::display_overlay().into_string());
+        dom::focus_first_in("display-overlay");
     }
 }
 
@@ -307,6 +312,7 @@ pub(crate) fn toggle_display() {
 pub(crate) fn close_display() {
     super::display::stop();
     dom::swap_outer("display-overlay", &templates::display_overlay_closed().into_string());
+    dom::restore_focus();
 }
 
 fn cwd_path(cwd: &[String]) -> String {
