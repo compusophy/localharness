@@ -142,7 +142,7 @@ web/          Vercel static site: index.html + boot.js + cartridge-worker.js
               (off-main-thread cartridge runtime, the brick fix) + pkg/(wasm-pack
               output, gitignored) + llms.txt(full agent spec) + skill.md(onboarding)
 proxy/        $LH credit proxy — SEPARATE Vercel project. The ONE off-chain
-              component. api/gemini.ts(multi-provider: Gemini/Claude/OpenAI) +
+              component. api/gemini.ts(multi-LLM: Gemini/Claude/GPT) +
               api/mcp.ts(x402-gated MCP-over-HTTP) + api/scheduler.ts(Vercel-Cron
               no-tab job worker) + api/notify.ts(web-push, self or cross-agent
               `to`, sender-stamped; CLI `notify --to`)
