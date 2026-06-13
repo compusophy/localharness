@@ -153,10 +153,11 @@ console_error_panic_hook = { version = "0.1", optional = true }
 # highlighting, no html-on-the-wire: we hand pulldown-cmark a string,
 # get HTML back, swap it into the segment via maud's PreEscaped.
 pulldown-cmark = { version = "0.10", optional = true, default-features = false, features = ["html"] }
-# QR code for the device-pairing deep link. svg-only (NO `image`/`pic`
+# QR code for the share surfaces (device-pairing deep link, publish share,
+# `?invite=` invite links — see src/qr.rs). svg-only (NO `image`/`pic`
 # default features) so it pulls ZERO transitive deps and stays wasm-clean —
 # we render an inline SVG string and inject it via maud `PreEscaped`. UI-only;
-# enabled solely by the browser-app feature.
+# enabled solely by the browser-app feature (never in default native builds).
 qrcode = { version = "0.14", optional = true, default-features = false, features = ["svg"] }
 # In-browser wallet primitives (M6 spike).
 # k256: secp256k1 keypair + sign. ecdsa + arithmetic features are

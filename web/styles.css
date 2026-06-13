@@ -1094,6 +1094,25 @@ input, textarea {
   image-rendering: pixelated;
 }
 
+/* --- Invite share panel (admin → invite a friend) --- */
+.invite-result-card { display: flex; flex-direction: column; gap: 8px; }
+/* The QR keeps its WHITE padding/background on purpose: a phone camera
+   needs the light quiet zone even when the app theme is dark. Capped at
+   280px square; crispEdges so modules never anti-alias when scaled. */
+.invite-qr {
+  align-self: flex-start;
+  width: min(280px, 100%);
+  aspect-ratio: 1 / 1;
+  box-sizing: border-box;
+  padding: 8px; background: #ffffff;
+  border: 1px solid var(--border);
+}
+.invite-qr svg {
+  display: block; width: 100%; height: 100%;
+  shape-rendering: crispEdges;
+}
+.invite-result-card .pair-url { overflow-wrap: anywhere; }
+
 /* --- Post-publish share fragment (admin → public face) --- */
 .share-block { display: flex; flex-direction: column; gap: 8px; }
 .share-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

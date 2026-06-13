@@ -46,10 +46,14 @@ trap 'rm -f "$CART_WASM"' EXIT
 if [[ -t 1 ]]; then B='\033[1m'; G='\033[1;32m'; N='\033[0m'; else B=''; G=''; N=''; fi
 step() { printf "\n${B}== %s ==${N}\n" "$1"; }
 
-step "1/10 native test suites (default + anthropic + wallet)"
+step "1/10 native test suites (default + anthropic + wallet + browser-app)"
 cargo test --quiet
 cargo test --quiet --features anthropic
 cargo test --quiet --features wallet
+# browser-app on a NATIVE target: the app module itself is wasm-gated out,
+# but its hoisted native-testable cores (e.g. src/qr.rs) only compile —
+# and only run their tests — under this feature.
+cargo test --quiet --features browser-app
 
 step "2/10 wasm32 guardrails (bare SDK + wallet + browser-app)"
 cargo check --quiet --no-default-features --target wasm32-unknown-unknown

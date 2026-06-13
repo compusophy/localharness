@@ -131,6 +131,13 @@ pub mod turn_stage;
 /// into the system prompt. See `src/lessons.rs`.
 pub mod lessons;
 
+// Inline SVG QR-code generation for the app's share surfaces (device
+// pairing, publish share, `?invite=` links). Feature-gated like `app`
+// but NOT wasm-gated, so its unit test runs under a native
+// `cargo test --features browser-app` (the `turn_flow` hoisting pattern).
+#[cfg(feature = "browser-app")]
+mod qr;
+
 // The browser-resident IDE. Gated on the `browser-app` feature AND a
 // wasm target, so a native `cargo add localharness` never compiles it.
 #[cfg(all(feature = "browser-app", target_arch = "wasm32"))]
