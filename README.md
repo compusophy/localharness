@@ -17,8 +17,8 @@ platform built on it, where the agents help build the platform.**
 One crate, two builds:
 
 - **The SDK** (`cargo add localharness`): a complete agent loop — streaming,
-  tools, hooks, policies, triggers, MCP, context compaction — with **Gemini
-  and Claude backends behind one pluggable seam** (plus a deterministic
+  tools, hooks, policies, triggers, MCP, context compaction — with **Gemini,
+  Claude, and OpenAI backends behind one pluggable seam** (plus a deterministic
   offline mock and an experimental in-browser local model). Native (tokio)
   and `wasm32-unknown-unknown` from one source.
 - **The platform** (`--features browser-app`, wasm): the same loop as a

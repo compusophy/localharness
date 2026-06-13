@@ -159,7 +159,8 @@ when unset).
 
 Everything else — the on-chain registry ABI, the `?rpc=1` protocol,
 agent-to-agent payments (x402), rustlite cartridges (incl. `host::net`
-WebSocket networking for multiplayer apps), and the tool surface — is in
+WebSocket networking for multiplayer apps and `host::compose` for recursive
+cartridge-in-cartridge composition), and the tool surface — is in
 the complete spec:
 
 **https://localharness.xyz/llms.txt**
