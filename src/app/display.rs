@@ -823,18 +823,33 @@ pub(crate) fn next_embed_canvas_id() -> String {
 /// older embed's canvas. No-op when nothing is pending. Drains the stash
 /// either way so a missing canvas can't leak bytes into a later embed.
 pub(crate) async fn launch_pending_embed(card_id: &str) {
-    let Some(wasm) = PENDING_EMBED.with(|c| c.borrow_mut().take()) else { return };
+    let Some(wasm) = PENDING_EMBED.with(|c| c.borrow_mut().take()) else {
+        embed_trace(&format!("no-stash for #{card_id}"));
+        return;
+    };
     let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return };
     let Ok(Some(el)) = doc.query_selector(&format!("#{card_id} canvas.embed-app-canvas")) else {
-        web_sys::console::warn_1(&JsValue::from_str(&format!(
-            "embed launch: no canvas inside #{card_id}"
-        )));
+        embed_trace(&format!("no-canvas inside #{card_id}"));
         return;
     };
     let Ok(canvas) = el.dyn_into::<HtmlCanvasElement>() else { return };
-    if let Err(e) = run_in_canvas(canvas, &wasm).await {
-        web_sys::console::warn_1(&JsValue::from_str(&format!("embed launch failed: {e:?}")));
+    match run_in_canvas(canvas, &wasm).await {
+        Ok(()) => embed_trace(&format!("launched into #{card_id}")),
+        Err(e) => embed_trace(&format!("run failed in #{card_id}: {e:?}")),
     }
+}
+
+/// Last embed-launch outcome, exposed at `window.__lhEmbedTrace` (and the
+/// console) — the launch path's failure branches are otherwise silent in the
+/// UI, and console capture is flaky under automation. One line, overwritten
+/// per launch; costs nothing and makes "the embed is blank" diagnosable live.
+fn embed_trace(msg: &str) {
+    web_sys::console::warn_1(&JsValue::from_str(&format!("[embed] {msg}")));
+    let _ = js_sys::Reflect::set(
+        &js_sys::global(),
+        &JsValue::from_str("__lhEmbedTrace"),
+        &JsValue::from_str(msg),
+    );
 }
 
 /// `true` if `id` is the DOM id of a cartridge canvas the delegated pointer
