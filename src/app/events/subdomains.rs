@@ -141,13 +141,24 @@ pub(crate) async fn run_batch_create_subdomains(
     if calls.is_empty() {
         return Err("no valid, available names to register".into());
     }
+    // PAID CLAIMS: a non-zero `registrationCost()` makes every register pull
+    // the fee via transferFrom — ONE cumulative `approve(diamond, cost × n)`
+    // up front covers the whole batch (each pull decrements the allowance).
+    let cost = crate::app::registry::registration_cost().await.unwrap_or(0);
+    if cost > 0 {
+        let total = cost.saturating_mul(registered.len() as u128);
+        calls.insert(
+            0,
+            crate::app::registry::approve_credits_call(total).map_err(|e| format!("approve: {e}"))?,
+        );
+    }
     // Each register is a full cold ERC-721 mint (~1.32M inner each, per the
     // eth_estimateGas note in registry.rs) + ONE ~275k sponsorship overhead
     // for the tx. 1.5M/name covers the mint + cold-SSTORE variance + margin;
-    // +400k one-time. Over-budget is FREE — the sponsor is billed on gas USED,
-    // not the limit (same lesson as the redeem/feedback OOG bug class), so
-    // headroom is correct.
-    let gas = 400_000 + (calls.len() as u128) * 1_500_000;
+    // +400k one-time (+60k when the approve rides along). Over-budget is FREE —
+    // the sponsor is billed on gas USED, not the limit (same lesson as the
+    // redeem/feedback OOG bug class), so headroom is correct.
+    let gas = 400_000 + (calls.len() as u128) * 1_500_000 + if cost > 0 { 60_000 } else { 0 };
     let tx = super::run_sponsored_tempo_call(&owner, calls, gas, "batch create subdomains").await?;
     // Inherit this device's Gemini key onto each new subdomain (best-effort,
     // detached — same as the single create_subdomain flow).

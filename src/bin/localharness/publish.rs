@@ -187,6 +187,29 @@ pub(crate) async fn create_publish(name: &str, persona: Option<&str>, do_publish
         Err(code) => return code,
     };
 
+    // PAID CLAIMS (sybil gate): a non-zero registrationCost is pulled from the
+    // claimer's $LH wallet inside register(). Pre-check so a fresh unfunded
+    // key gets an actionable message instead of a raw chain revert.
+    if let Ok(cost) = registry::registration_cost().await {
+        if cost > 0 {
+            let balance = registry::token_balance_of(&addr).await.unwrap_or(0);
+            if balance < cost {
+                eprintln!(
+                    "claiming a name costs {} $LH — this identity ({addr}) holds {}.",
+                    fmt_lh(cost),
+                    fmt_lh(balance)
+                );
+                eprintln!(
+                    "fund it first: accept an invite (localharness invite accept <code>), \
+                     redeem a code (localharness redeem <code>), or have another identity \
+                     `localharness send {addr} <amount>` — then re-run create."
+                );
+                return 2;
+            }
+            println!("claiming costs {} $LH (pulled on-chain from your wallet)", fmt_lh(cost));
+        }
+    }
+
     println!("claiming {name}.localharness.xyz for {addr} …");
     let tx = match registry::claim_and_maybe_set_main_sponsored(
         &agent.signer,

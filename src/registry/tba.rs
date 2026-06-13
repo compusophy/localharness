@@ -209,6 +209,21 @@ pub fn register_calldata(name: &str) -> Vec<u8> {
     hex_to_bytes(&encode_register(name)).unwrap_or_default()
 }
 
+/// `$LH.approve(diamond, amount)` as a ready [`crate::tempo_tx::TempoCall`].
+/// Prepend ONE of these to a batch of `register` calls when
+/// `registrationCost()` is non-zero: the allowance is CUMULATIVE (each
+/// register's `transferFrom` decrements it), so `cost × names` covers the
+/// whole batch. Without it a paid batch register reverts on the pull.
+pub fn approve_credits_call(amount_wei: u128) -> Result<crate::tempo_tx::TempoCall, String> {
+    let diamond = parse_eth_address(REGISTRY_ADDRESS)?;
+    let token = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
+    Ok(crate::tempo_tx::TempoCall {
+        to: token,
+        value_wei: 0,
+        input: encode_approve(&diamond, amount_wei),
+    })
+}
+
 /// Release (recycle) a subdomain — burn the NFT + free the name — via a
 /// sponsored tx. `sender` must own the token. DESTRUCTIVE: the UI/tool
 /// MUST require typed confirmation before calling this. Refuses the MAIN
