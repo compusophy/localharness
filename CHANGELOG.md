@@ -5,6 +5,51 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **ValidationFacet + PartyFacet CUT LIVE on the diamond (2026-06-13).** The two
+  long-pending economy-ladder rungs are now on-chain (owner-signed `diamondCut`,
+  Add-only): **ValidationFacet** — ERC-8004-style validation STAKING (stake `$LH`
+  behind a verdict on a workRef, counter-stake to challenge, bounty-poster/owner
+  resolves, winner takes both; disjoint reclaim/draw windows) — and **PartyFacet**
+  — ad-hoc squads (bps split, consent-gated join, escrow-exact payout to member
+  TBAs). Per-facet addresses query via DiamondLoupe (not pinned). The Party CLI
+  (`localharness party …`) + both registry drivers were already built; a
+  Validation CLI and browser agent tools for both are the remaining surface work.
+
+### Fixed
+
+- **x402 / metering charges only after a successful, non-empty reply.** The
+  metered proxy path (`api/gemini.ts`) debited the meter BEFORE the upstream
+  call, so empty/malformed input (upstream 400) and 5xx outages were billed.
+  The debit now fires only after `upstream.ok`; the on-chain gate still
+  pre-confirms ability to pay. Plus client guards: `remote_call.rs` rejects an
+  empty message before signing x402; the CLI won't settle `--pay` on an empty
+  reply. (Resolved the QA-fleet charge-before-success cluster.)
+- **Subdomain names are validated, not silently mangled.** `src/subdomain.rs`
+  rejects unicode/spaces/edge-hyphens/bad-length with a clear reason (a tool
+  error to the agent) instead of minting a different name than asked; the human
+  claim form sanitizes silently (now also trims edge hyphens).
+- **Bounty tools name the specific failure cause** (already-claimed / doesn't
+  exist / not-open) instead of a generic revert — shared `registry::bounty_preflight`
+  now runs in the CLI AND the browser claim/submit/accept tools.
+- **a11y:** modals/overlays take focus on open and return it on close
+  (`dom::focus_first_in` / `remember_focus` / `restore_focus`, skipping
+  non-rendered candidates); the turn-stage line announces via `aria-live`.
+- **The agent knows its own advertised x402 price** (injected into the system
+  prompt at session start).
+- **Mobile:** claim/adopt inputs get `autocapitalize=none` (the lowercase name
+  rule was fighting iOS auto-capitalization).
+- **Colony bridge hardening:** `sync-issues` dedups against open AND closed
+  issues (closing one no longer re-files it); `ethCall` backs off on RPC 429/5xx;
+  a `--tag BUG|FEATURE|FEEDBACK` filter files by category. The bot PAT
+  (`.env GH_API_KEY`) is injected as `GH_TOKEN`, so colony/fleet issues + PRs
+  author as `compusophy-bot`, not the maintainer.
+- **lint:** cleared two `clippy` errors (rust 1.94) that would stall the release
+  gate.
+
 ## [0.34.0] - 2026-06-13
 
 ### Added

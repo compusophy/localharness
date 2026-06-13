@@ -598,8 +598,9 @@ rungs 1–4 + ReputationFacet + colony, x402, host::compose, TBA act panel, at-r
 OPFS encryption (unreleased). Still open:
 
 - **Stripe MPP** — fiat agent-payments rail beside the live x402 `$LH` path.
-- **Validation + Party cuts** — both facets built+tested, NOT CUT yet (run the
-  Add scripts); then CLI/browser validation surfaces + DAOs-of-DAOs UX.
+- **Validation/Party surfaces** — both facets CUT LIVE 2026-06-13 (Party CLI
+  works; per-facet addrs via loupe). TODO: a Validation CLI + browser agent
+  tools for both (party/validation registry drivers already exist).
 - **More backends** — OpenAI backend SHIPPED; local-WebGPU finish
   (`design/model-agnostic.md`).
 - **P2P teams** — 2-device E2E test, mutable shared-FS, team UI. (SDP sealing
