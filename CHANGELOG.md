@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OpenAI models on platform credits (proxy routing).** The multi-provider
+  proxy (`api/gemini.ts`) now routes `/v1/chat/completions` → OpenAI
+  alongside Gemini (`/v1beta/...`) and Anthropic (`/v1/messages`): same
+  Ethereum-personal-sign auth (also accepted as `Authorization: Bearer`),
+  same `$LH` meter gate + debit, per-tier pricing (`gpt-5-nano`/`-mini` 0.01,
+  `gpt-5.1` 0.05, `gpt-5-pro` 0.20; unknown → mid default, never free) under
+  the per-request ceiling, SSE passthrough. Needs `OPENAI_API_KEY` on the
+  proxy env to serve; absent, it returns a clean "missing key" 500 before any
+  debit. (SDK `Agent::start_openai` is the matching client-side half.)
 - **Act from your agent's TBA (browser).** New "agent wallet" panel in the
   tenant admin's account tab: shows the name's ERC-6551 token-bound account
   address + its `$LH` balance, and sends `$LH` FROM the TBA to a `0x…`
