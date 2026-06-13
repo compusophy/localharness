@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.34.0] - 2026-06-13
 
 ### Added
 
@@ -110,29 +110,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backing store resizes to match on the first frame and CSS-letterboxes to
   its container — so 1:1, 2:1, 1:2, 9:16, 16:9, or "way more pixels" are all
   just a different `(w, h)`. Pointer mapping follows the live resolution.
-- **host::compose — cartridge-in-cartridge composition (wired, v1).** A PARENT
-  rustlite cartridge can now run ANOTHER subdomain's published `app.wasm` as a
-  CHILD bound to a sub-rectangle of its own framebuffer — pure pixel composition,
-  NO iframes. New `host::compose` import (`spawn_module(name,x,y,w,h)->handle`,
+- **host::compose — RECURSIVE cartridge-in-cartridge composition (the fractal).**
+  A cartridge can run ANOTHER subdomain's published `app.wasm` as a CHILD bound
+  to a sub-rectangle of its own framebuffer — pure pixel composition, NO iframes.
+  New `host::compose` import (`spawn_module(name,x,y,w,h)->handle`,
   `status`/`focus_module`/`close_module(handle)`, `move_module(handle,x,y,w,h)`,
   `focused()`, `module_count()`). The child runs in its OWN isolated wasm
   Instance+Memory at its own `dims()`, drawing in (0,0)-origin space; the host
   blits it nearest-neighbour-scaled into the rect (`src/compose.rs::blit_child`)
   and routes the pointer into the focused child (`map_pointer_into_child`),
-  focus-gated so a sibling never feels a click meant for another. The worker
-  (`web/cartridge-worker.js`) carries a `host_compose` namespace + child table;
-  `spawn_module` posts a fetch request to the main thread
-  (`display.rs::do_compose_spawn`), which resolves the child's on-chain
-  `app.wasm` (session-cached) and posts the bytes back. `ComposeBudget::v1`
-  (8 children, 16 KB each, 64 KB total) gates spawns; a child's `spawn_module`
-  is inert (depth-1 cap). The composed child is the IDENTICAL file served at
-  `<name>.localharness.xyz` — no embed build. New proof: `verify.sh` stage 10
-  (`scripts/test-compose-wiring.mjs`) drives the real worker host — scaled +
-  isolated blit, pointer mapping, JS<->Rust `blitChild`/`mapPointerIntoChild`
-  parity, and the budget cap — plus a `tests/host_compose_cartridge.rs`
-  integration test (a compose cartridge compiles + emits valid wasm). A cartridge
-  that never calls `compose::*` renders byte-identically (the change is purely
-  additive — the compose pass is a no-op with no children).
+  focus-gated so a sibling never feels a click meant for another. **Composition
+  is a TREE, not one level:** every node — the root parent and each composited
+  child — owns its own children/focus table (`makeComposeApi(node)` in
+  `web/cartridge-worker.js`), so a child can spawn grandchildren and the
+  composite pass recurses (a child draws, its children blit into its buffer,
+  that blits up to the root). A cartridge that spawns *itself* nests into a
+  Droste fractal — shipped as `fractal.rl` (live at `fractal.localharness.xyz`).
+  Bounded so it can't fork-bomb a tab: per-node child cap (8), depth cap (5 — a
+  node there gets an inert compose api whose `spawn_module` returns -1, the
+  recursion stop), and global caps on live nodes (24) and wasm bytes (256 KB)
+  across the whole tree (`ComposeBudget::v1`); handles are per-node, so the
+  `compose_spawn`/`compose_bytes` round-trip to the main thread
+  (`display.rs::do_compose_spawn`, which resolves the on-chain `app.wasm`,
+  session-cached) keys on a global `uid`. The composed child is the IDENTICAL
+  file served at `<name>.localharness.xyz` — no embed build. Proof: `verify.sh`
+  stage 10 (`scripts/test-compose-wiring.mjs`) drives the real worker host —
+  scaled + isolated blit, pointer mapping, JS↔Rust parity, the budget cap, a
+  depth-2 grandchild compositing through two blits, and the depth-cap stop —
+  plus `tests/host_compose_cartridge.rs`. A cartridge that never calls
+  `compose::*` renders byte-identically (the compose pass is a no-op with no
+  children).
+- **`broadcast_compose` — a custom message for the Ready Up broadcast.** New
+  `host::agent::broadcast_compose(title, default_body)` import: a cartridge is
+  pixels-only and can't summon a mobile keyboard, so the host opens a real text
+  input over the canvas (prefilled with `default_body`); [send] broadcasts the
+  typed body to every feed subscriber via the existing push fan-out, [cancel]
+  or Escape dismisses. `readyup.rl`'s READY UP button now opens the composer.
 - **Subscriber-feed `subscribe` gas cap raised 600k → 2M.** The first subscriber
   to a feed creates the on-chain array (~1.05M gas, per `cast estimate`); the
   600k sponsored cap out-of-gassed every subscribe (count stuck at 0, the
@@ -169,6 +182,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **ESC + backdrop-click dismiss every overlay.** ESC closes the topmost open
   layer (bell dropdown → display → files → admin); clicking the dark backdrop
   closes the admin/files modals.
+
+### Changed
+
+- **README shows real mobile screenshots.** A new "On a phone" section renders
+  two live agents' cartridge faces (`readyup`, the recursive `fractal`) framed
+  as a phone — genuine pixels from the same framebuffer host the browser runs
+  (`scripts/render-screenshots.mjs`), not mockups, served at
+  `localharness.xyz/screenshots/`.
+- **Model ids are single-sourced.** The in-browser model selector now
+  references the canonical id constants instead of duplicating string literals,
+  and the CLI `models` command + `llms.txt` architecture summary list the full
+  Gemini/Claude/OpenAI set from one place — no more drift between surfaces.
 
 ### Fixed
 
