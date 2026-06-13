@@ -90,6 +90,19 @@ library LibScheduleStorage {
         /// zero) for normal root jobs. A NEW mapping, NOT new `Job`
         /// fields — keeps the live `Job` layout immutable.
         mapping(uint256 => ChildMeta) childMeta;
+        // === APPENDED 2026-06-13 (#52: last-run timestamp + status). New
+        //     member ONLY at the end — every prior member is byte-for-byte
+        //     unchanged (positional layout), so live jobs are not touched. ===
+        /// jobId -> the LAST `recordRun` outcome, packed: the unix-second
+        /// timestamp in the high bits (`<< 8`) and the post-run `Status` in
+        /// the low byte. 0 = the job has NEVER run (no `recordRun` yet) —
+        /// distinguishable from a run at timestamp 0 because a real run's
+        /// timestamp is always far above the status-byte range. `lastRunOf`
+        /// unpacks it. Lets the `jobs`/`status` UIs show "last run: <when>
+        /// [status]" without scraping the `JobRan` event log (Tempo RPC
+        /// caps block ranges at 100k — same enumerable-state discipline as
+        /// DeviceRegistry replacing log scraping).
+        mapping(uint256 => uint72) lastRunRecord;
     }
 
     function load() internal pure returns (Storage storage s) {

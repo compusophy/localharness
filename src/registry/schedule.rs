@@ -191,6 +191,22 @@ pub async fn get_job(job_id: u64) -> Result<ScheduledJob, String> {
     })
 }
 
+/// Read `lastRunOf(uint256)` → (unix timestamp, status byte) of the job's most
+/// recent `recordRun`, or `(0, 0)` if it has never run (GitHub #52). The view
+/// returns two ABI words: the `uint64` timestamp then the `uint8` status enum
+/// (each right-aligned). Lets `jobs`/`status` show "last run: <when> [status]"
+/// without scraping the `JobRan` event log.
+pub async fn last_run_of(job_id: u64) -> Result<(u64, u8), String> {
+    let result = read_view(selector("lastRunOf(uint256)"), &[u256_be(job_id as u128)]).await?;
+    let bytes = hex_to_bytes(&result)?;
+    if bytes.len() < 2 * 32 {
+        return Err(format!("lastRunOf: short response {} bytes", bytes.len()));
+    }
+    let timestamp = u64_low(&bytes[0..32]);
+    let status = bytes[2 * 32 - 1]; // low byte of word 1
+    Ok((timestamp, status))
+}
+
 /// Read `taskOf(uint256)` — the job's task prompt, decoded UTF-8. Stored as
 /// on-chain `bytes` (same ABI shape as a `string` return: offset + length +
 /// body); we interpret it as UTF-8 since the MVP task is an inline prompt.

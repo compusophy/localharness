@@ -366,6 +366,21 @@ pub(crate) async fn list_jobs(caller_name: Option<&str>) -> i32 {
             .unwrap_or_else(|| format!("token#{}", job.target_id));
         let task = registry::task_of(id).await.unwrap_or_default();
         println!("{}", format_job_row(id, &target, &job, &task, now));
+        // #52: surface the LAST run so the owner can tell a fired job from a
+        // silently-skipped one (nextRun in the past + no last-run = never fired).
+        if let Ok((ts, status)) = registry::last_run_of(id).await {
+            if ts == 0 {
+                println!("    last run: — (not yet run)");
+            } else {
+                let ago = now.saturating_sub(ts);
+                let post = match status {
+                    0 => "active",
+                    3 => "exhausted",
+                    _ => "ran",
+                };
+                println!("    last run: {ago}s ago [{post}]");
+            }
+        }
     }
     0
 }

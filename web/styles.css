@@ -822,8 +822,15 @@ main.layout .transcript > *:empty { display: none; }
      section that follows the identity card (AGENT WALLET on the account
      tab) sits on the same rhythm instead of jamming flush against TOOLS. */
   margin-bottom: 14px;
+  /* CLS (#64): #financial-slot starts as a one-char placeholder and is
+     swapped for the 5-line agent card after async on-chain reads. Reserve
+     the card's vertical space up front so the account tab doesn't jump.
+     ~100px sits just under a filled card (5 lines + gaps), so no dead
+     space when populated. */
+  min-height: 100px;
 }
 .financial-placeholder { color: var(--muted); font-size: 11px; }
+/* The empty state is intentionally flat — drop the reservation. */
 .financial-empty { min-height: 0; }
 
 .financial-line {
@@ -857,6 +864,16 @@ h1 {
   padding: 1px 6px;
 }
 
+/* CLS (#64): the verify pill mounts as `verifying…` then swaps in place
+   for `✓ owner` / `visitor · owner 0x…` once the on-chain owner resolves.
+   The states are different widths, so reserve a baseline width and center
+   the label — the header stops reflowing when verification lands. ~92px is
+   just under the `verifying…` width, so no dead space in any state. */
+.verify-pill {
+  display: inline-block;
+  min-width: 92px;
+  text-align: center;
+}
 .verify-pill.verify-pending { color: var(--muted);  border-color: var(--border); }
 .verify-pill.verify-ok { color: var(--fg); border-color: var(--fg); }
 .verify-pill.verify-visitor { color: var(--muted); border-color: var(--muted); }

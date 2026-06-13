@@ -291,6 +291,12 @@ contract ScheduleFacet {
             j.nextRun = newNextRun;
             emit JobRan(id, runsLeft, spentWei, newNextRun, uint8(LibScheduleStorage.Status.Active));
         }
+
+        // #52: stamp the last-run record — timestamp in the high bits, the
+        // post-run status in the low byte — AFTER the status above is final
+        // (Exhausted on a hard stop, else Active). Read via `lastRunOf` so
+        // UIs show "last run: <when> [status]" without scraping JobRan logs.
+        s.lastRunRecord[id] = (uint72(block.timestamp) << 8) | uint8(j.status);
     }
 
     /// SCHEDULER-ROLE-ONLY goal completion — the on-chain half of the
@@ -583,6 +589,17 @@ contract ScheduleFacet {
     /// The task prompt (or pointer) for a job.
     function taskOf(uint256 id) external view returns (bytes memory) {
         return LibScheduleStorage.load().task[id];
+    }
+
+    /// #52: the LAST `recordRun` outcome for a job — `timestamp` is the
+    /// unix second of the most recent fire, `status` the post-run
+    /// `LibScheduleStorage.Status` byte (Active still running / Exhausted
+    /// hard-stopped). Returns `(0, 0)` if the job has NEVER run yet (no
+    /// `recordRun`). Unpacks the packed `lastRunRecord` word (timestamp in
+    /// the high bits, status in the low byte).
+    function lastRunOf(uint256 id) external view returns (uint64 timestamp, uint8 status) {
+        uint72 packed = LibScheduleStorage.load().lastRunRecord[id];
+        return (uint64(packed >> 8), uint8(packed));
     }
 
     /// Every job id a given owner has scheduled (Active + terminal).
