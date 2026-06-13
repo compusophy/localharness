@@ -612,14 +612,20 @@ fn emit_error(state: &LoopState, message: String) {
 impl LoopState {
     fn emit_chunk_step(&self, chunk: StreamChunk) {
         // Wrap a StreamChunk as a Step so it flows through the same
-        // broadcast. Today we only do this for ToolCall — the dispatched
-        // tool result is reflected in the model's next turn.
-        if let StreamChunk::ToolCall(tc) = chunk {
-            self.emit(Step::tool_call(
+        // broadcast. ToolCall AND ToolResult both surface — dropping results
+        // here (the pre-0.34 behavior, despite the call-site comment claiming
+        // otherwise) left every live tool block "running" with an EMPTY
+        // result panel until a reload replayed it from history.
+        match chunk {
+            StreamChunk::ToolCall(tc) => self.emit(Step::tool_call(
                 self.alloc_step_index(),
                 tc,
                 StepStatus::Active,
-            ));
+            )),
+            StreamChunk::ToolResult(tr) => {
+                self.emit(Step::tool_result(self.alloc_step_index(), tr))
+            }
+            _ => {}
         }
     }
 }

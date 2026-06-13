@@ -511,6 +511,13 @@ fn step_to_chunks(step: &Step, text_emitted: usize) -> Vec<StreamChunk> {
     for tc in &step.tool_calls {
         out.push(StreamChunk::ToolCall(tc.clone()));
     }
+    // Dispatched tool results ride their own observability step
+    // (`Step::tool_result`). Without this mapping the UI never hears a live
+    // result — tool blocks stayed "running" and inline result cards stayed
+    // EMPTY until a reload replayed them from saved history.
+    for tr in &step.tool_results {
+        out.push(StreamChunk::ToolResult(tr.clone()));
+    }
     out
 }
 
@@ -536,6 +543,36 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn tool_result_steps_surface_as_tool_result_chunks() {
+        // THE live-result regression: `Step::tool_result` carries the
+        // dispatched result, and step_to_chunks must surface it — without this
+        // the UI never hears a live tool result (blocks stay "running",
+        // inline cards stay empty until a reload replays saved history).
+        let result = crate::types::ToolResult::ok(
+            "embed_app",
+            None,
+            serde_json::json!({"embedded": true, "name": "pong"}),
+        );
+        let step = Step::tool_result(7, result.clone());
+        let chunks = step_to_chunks(&step, 0);
+        assert_eq!(chunks.len(), 1, "exactly one chunk: {chunks:?}");
+        match &chunks[0] {
+            StreamChunk::ToolResult(tr) => {
+                assert_eq!(tr.name, "embed_app");
+                assert_eq!(tr.result, result.result);
+                assert!(tr.error.is_none());
+            }
+            other => panic!("expected a ToolResult chunk, got {other:?}"),
+        }
+        // And a failed dispatch keeps its error on the chunk.
+        let err = crate::types::ToolResult::err("embed_app", None, "no such app");
+        let chunks = step_to_chunks(&Step::tool_result(8, err), 0);
+        assert!(
+            matches!(&chunks[0], StreamChunk::ToolResult(tr) if tr.error.as_deref() == Some("no such app"))
+        );
     }
 
     #[test]

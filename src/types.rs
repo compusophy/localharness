@@ -605,6 +605,13 @@ pub struct Step {
     /// Tool calls the model is requesting.
     #[serde(default)]
     pub tool_calls: Vec<ToolCall>,
+    /// Dispatched tool RESULTS (a [`Step::tool_result`] observability step).
+    /// Stream consumers (`ChatResponse::chunks` → `StreamChunk::ToolResult`)
+    /// read these to flip a tool block from "running" to ok/err and render
+    /// inline result cards. Empty on every other step kind; omitted from the
+    /// wire when empty (old-shape compatible).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_results: Vec<ToolResult>,
     /// Error message, if any.
     #[serde(default)]
     pub error: String,
@@ -653,6 +660,7 @@ impl Step {
             thinking: String::new(),
             thinking_delta: String::new(),
             tool_calls: Vec::new(),
+            tool_results: Vec::new(),
             error: String::new(),
             is_complete_response: None,
             structured_output: None,
@@ -709,11 +717,16 @@ impl Step {
         s
     }
 
-    /// A resolved-tool-result marker step (model → environment, `Done`,
-    /// non-terminal, NO tool_calls) carrying only the optional error message —
-    /// lets a UI flip a tool block from "running" to ok/err without tripping
-    /// a System+Error turn-failure translation in `subscribe_steps`.
-    pub fn tool_result(step_index: u32, error: impl Into<String>) -> Self {
+    /// A resolved-tool-result step (model → environment, `Done`, non-terminal,
+    /// NO tool_calls) carrying the full dispatched [`ToolResult`] in
+    /// `tool_results` — `ChatResponse::chunks` surfaces it as
+    /// [`StreamChunk::ToolResult`] so a UI can flip the tool block from
+    /// "running" to ok/err and render the inline result card. `Done` +
+    /// Model→Environment so it is observability-only: the step dispatcher
+    /// skips `Done` steps, and it never trips the System+Error turn-failure
+    /// translation in `subscribe_steps` (a *tool* error must not abort the
+    /// turn — it also rides in `error` for step-level consumers).
+    pub fn tool_result(step_index: u32, result: ToolResult) -> Self {
         let mut s = Self::base(
             StepType::ToolCall,
             StepSource::Model,
@@ -721,7 +734,8 @@ impl Step {
             StepStatus::Done,
         );
         s.step_index = step_index;
-        s.error = error.into();
+        s.error = result.error.clone().unwrap_or_default();
+        s.tool_results = vec![result];
         s.is_complete_response = Some(false);
         s
     }

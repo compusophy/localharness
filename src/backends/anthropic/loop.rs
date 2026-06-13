@@ -756,12 +756,19 @@ fn emit_error(state: &LoopState, message: String) {
 
 impl LoopState {
     fn emit_chunk_step(&self, chunk: StreamChunk) {
-        if let StreamChunk::ToolCall(tc) = chunk {
-            self.emit(Step::tool_call(
+        // ToolCall AND ToolResult both surface as steps (mirrors the Gemini
+        // loop) — dropping results left live tool blocks "running" with an
+        // empty result panel until a reload replayed them from history.
+        match chunk {
+            StreamChunk::ToolCall(tc) => self.emit(Step::tool_call(
                 self.alloc_step_index(),
                 tc,
                 StepStatus::Active,
-            ));
+            )),
+            StreamChunk::ToolResult(tr) => {
+                self.emit(Step::tool_result(self.alloc_step_index(), tr))
+            }
+            _ => {}
         }
     }
 }

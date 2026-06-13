@@ -316,10 +316,7 @@ impl LoopState {
     /// reflected back into history as a ```` ```tool_output ```` turn for the
     /// next model round.
     fn emit_tool_result_step(&self, result: &ToolResult) {
-        self.emit(Step::tool_result(
-            self.alloc_step_index(),
-            result.error.clone().unwrap_or_default(),
-        ));
+        self.emit(Step::tool_result(self.alloc_step_index(), result.clone()));
     }
 }
 
