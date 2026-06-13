@@ -2025,12 +2025,29 @@ pub(crate) fn agents_list(
 /// lifeline: backgrounding the browser can refresh the tab and dismiss
 /// this view, so one tap must be enough to bank the words first.
 pub(crate) fn seed_phrase(words: &str) -> Markup {
+    // [download] is a NATIVE browser download via a `data:` URL — a plain
+    // template anchor, no imperative DOM/JS (the no-createElement rule). BIP-39
+    // words are lowercase ASCII separated by single spaces, so the only char
+    // needing percent-encoding for the data URL is the space.
+    let download_href = format!(
+        "data:text/plain;charset=utf-8,{}",
+        words.replace(' ', "%20")
+    );
     html! {
         div.seed-words { (words) }
+        // GitHub #33: mobile backgrounding can refresh the tab and wipe this
+        // view before the words are saved. Make the risk explicit AND give a
+        // one-tap save (copy or download) so the words are banked first.
+        p.seed-warn {
+            "Save these words now — copy or download them before you switch apps. "
+            "Backgrounding the browser can refresh this tab and lose them; "
+            "they are shown once and never leave this device."
+        }
         p.apex-fine {
-            "stays on this device — copy it before switching apps. "
             button #seed-copy type="button" data-action="copy-seed" data-arg=(words)
                 .link-button { "copy" }
+            " · "
+            a.link-button download="localharness-seed.txt" href=(download_href) { "download" }
             " · "
             button type="button" data-action="hide-seed" .link-button { "hide" }
         }
