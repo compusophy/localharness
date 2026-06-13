@@ -23,6 +23,11 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, appendFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { botEnv } from '../colony/lib.mjs';
+
+// Every gh call here authors AS THE BOT (compusophy-bot) via the .env GH_API_KEY,
+// so fleet-filed feedback issues aren't attributed to the logged-in maintainer.
+const GH_ENV = botEnv();
 
 const CREATE = process.argv.includes('--create');
 const CLI =
@@ -80,7 +85,7 @@ console.log(
 if (CREATE) {
   for (const l of ['bug', 'enhancement', 'feedback', 'from-fleet']) {
     try {
-      execFileSync('gh', ['label', 'create', l, '--force'], { stdio: 'ignore' });
+      execFileSync('gh', ['label', 'create', l, '--force'], { stdio: 'ignore', env: GH_ENV });
     } catch {
       /* label may already exist or gh may be unauthed — surfaced per-issue below */
     }
@@ -114,7 +119,7 @@ for (const e of fresh) {
     const out = execFileSync(
       'gh',
       ['issue', 'create', '--title', title, '--body', body, '--label', label, '--label', 'from-fleet'],
-      { encoding: 'utf8' },
+      { encoding: 'utf8', env: GH_ENV },
     );
     console.log('  ✓ ' + out.trim());
     mkdirSync(dirname(LEDGER), { recursive: true });

@@ -131,11 +131,17 @@ follow-up, not built yet.
 
 ## Auth
 
-- **GitHub**: currently the **maintainer's own `gh` login** (compusophy).
-  Every script honors `GH_TOKEN` if set — when the `compusophy-bot` PAT
-  lands, the swap is one env line (`GH_TOKEN=<bot pat>`), zero script changes.
-  All gh calls pin `--repo compusophy/localharness` (`LH_REPO` to override)
-  because the worktree carries an unrelated `upstream` remote.
+- **GitHub**: every colony/fleet `gh` call now authors **as `compusophy-bot`**,
+  not the logged-in maintainer. The bot PAT lives in `.env` as `GH_API_KEY`
+  (beside `EVM_PRIVATE_KEY`); `lib.mjs::botEnv()` loads it and injects it as
+  `GH_TOKEN` (the var `gh` actually reads) into every child process — and
+  `issue-to-pr.sh` does the same in bash. Precedence: an explicit `GH_TOKEN`
+  in the environment wins, else `.env` `GH_API_KEY`, else `.env` `GH_TOKEN`,
+  else gh falls back to the logged-in account (with a one-time warning). This
+  is why issues filed before the wiring read as `compusophy` — the PAT was in
+  `.env` under a name `gh` doesn't honor and was never mapped across. All gh
+  calls pin `--repo compusophy/localharness` (`LH_REPO` to override) because
+  the worktree carries an unrelated `upstream` remote.
 - **On-chain**: writes go through the `localharness` CLI with local keys
   (`--as <name>`); gas is sponsored, rewards come from the poster's $LH.
 

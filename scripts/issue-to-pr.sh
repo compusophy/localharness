@@ -71,6 +71,16 @@ cd "$(dirname "$0")/.."
 
 REPO="${REPO:-compusophy/localharness}"
 
+# Author the PR AS THE COLONY BOT (compusophy-bot), not the logged-in account.
+# The bot PAT lives in .env as GH_API_KEY (the var `gh` honors is GH_TOKEN), so
+# map it in unless GH_TOKEN is already set explicitly. Without it, gh would fall
+# back to the maintainer's login and the PR would read as the human.
+if [[ -z "${GH_TOKEN:-}" && -f .env ]]; then
+  _bot="$(sed -n 's/^[[:space:]]*\(export[[:space:]]\+\)\?GH_API_KEY[[:space:]]*=[[:space:]]*//p' .env | head -1 | tr -d '"'\''[:space:]')"
+  if [[ -n "$_bot" ]]; then export GH_TOKEN="$_bot"; fi
+  unset _bot
+fi
+
 # ---- pretty output (bold/green only on a tty; same idiom as verify.sh) -------
 if [[ -t 1 ]]; then B='\033[1m'; G='\033[1;32m'; R='\033[1;31m'; Y='\033[1;33m'; N='\033[0m'
 else B=''; G=''; R=''; Y=''; N=''; fi

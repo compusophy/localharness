@@ -4,10 +4,15 @@
 // is the `gh` CLI as a subprocess (execFileSync with arg arrays — no shell, so
 // it is Windows-safe), and on-chain WRITES go through the `localharness` CLI.
 //
-// Auth model: `gh` uses the maintainer's logged-in account by default and
-// AUTOMATICALLY honors GH_TOKEN when set — the future compusophy-bot swap is
-// `GH_TOKEN=<bot pat>` in the environment, no script change. We never strip or
-// rewrite the child env, so that contract holds for every gh call here.
+// Auth model: every gh call runs AS THE COLONY BOT (compusophy-bot), not the
+// maintainer. The bot PAT lives in `.env` as `GH_API_KEY` (alongside
+// EVM_PRIVATE_KEY); `botEnv()` loads it and injects it as `GH_TOKEN` (the var
+// `gh` actually honors) into the child env. Precedence: an explicit `GH_TOKEN`
+// already in the environment wins; else `.env`'s `GH_API_KEY`; else `.env`'s
+// `GH_TOKEN`; else the child inherits the ambient env (gh falls back to the
+// logged-in account). This is why issues/PRs are authored by the bot, not the
+// human who happens to be `gh auth`'d — the bug that made every early issue
+// read as `compusophy` instead of `compusophy-bot`.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
@@ -71,14 +76,60 @@ export function fmtCmd(argv) {
   return argv.map((a) => (/[\s"']/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a)).join(' ');
 }
 
+// ------------------------------------------------------------------ bot auth
+
+/** Minimal `.env` reader: value of KEY from REPO_ROOT/.env (quotes + inline
+ *  whitespace stripped), or undefined. No npm dep; tolerant of comments and
+ *  `export ` prefixes. */
+function envFileValue(key, path = join(REPO_ROOT, '.env')) {
+  if (!existsSync(path)) return undefined;
+  for (const raw of readFileSync(path, 'utf8').split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const m = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (m && m[1] === key) return m[2].trim().replace(/^['"]|['"]$/g, '');
+  }
+  return undefined;
+}
+
+let _botTokenMemo; // resolve once per process
+/** The colony bot PAT, or undefined. Precedence: ambient GH_TOKEN > .env
+ *  GH_API_KEY > .env GH_TOKEN. */
+export function loadBotToken() {
+  if (_botTokenMemo !== undefined) return _botTokenMemo || undefined;
+  _botTokenMemo =
+    process.env.GH_TOKEN ||
+    envFileValue('GH_API_KEY') ||
+    envFileValue('GH_TOKEN') ||
+    '';
+  return _botTokenMemo || undefined;
+}
+
+let _warnedNoBot = false;
+/** Child env for `gh` with the bot token injected as GH_TOKEN. Falls back to
+ *  the ambient env (logged-in account) with a one-time warning if no token is
+ *  found — so a bot-less checkout still works, just not as the bot. */
+export function botEnv() {
+  const token = loadBotToken();
+  if (!token) {
+    if (!_warnedNoBot) {
+      console.error('!! no GH_API_KEY/GH_TOKEN found — gh runs as the logged-in account, NOT the bot');
+      _warnedNoBot = true;
+    }
+    return process.env;
+  }
+  return { ...process.env, GH_TOKEN: token };
+}
+
 // ------------------------------------------------------------------ gh + CLI
 
-/** Run `gh <args> --repo REPO`, return stdout. Throws with gh's stderr line on
- *  failure. READ-ONLY callers only, except behind an explicit --live gate. */
+/** Run `gh <args> --repo REPO` AS THE BOT (see botEnv), return stdout. Throws
+ *  with gh's stderr line on failure. READ-ONLY callers only, except behind an
+ *  explicit --live gate. */
 export function gh(args, { repoFlag = true } = {}) {
   const full = repoFlag ? [...args, '--repo', REPO] : args;
   try {
-    return execFileSync('gh', full, { encoding: 'utf8', maxBuffer: 64 << 20 });
+    return execFileSync('gh', full, { encoding: 'utf8', maxBuffer: 64 << 20, env: botEnv() });
   } catch (e) {
     const detail = (e.stderr || e.message || '').toString().trim().split('\n')[0];
     throw new Error(`gh ${args[0]} ${args[1] || ''} failed: ${detail}`);
