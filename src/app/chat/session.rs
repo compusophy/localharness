@@ -40,6 +40,10 @@ use super::tools::platform::{
     create_subdomain_tool, discover_agents_tool, embed_app_tool, list_subdomains_tool,
     release_subdomain_tool, batch_send_lh_tool, check_balances_tool, send_lh_tool,
 };
+use super::tools::validation::{
+    challenge_validation_tool, get_validation_tool, reclaim_validation_tool,
+    resolve_validation_tool, stake_validation_tool,
+};
 use super::{ANTHROPIC_MAX_OUTPUT_TOKENS, GEMINI_MAX_OUTPUT_TOKENS};
 
 pub(crate) async fn start_session(
@@ -258,6 +262,11 @@ pub(crate) async fn start_session(
             .with_tool(disband_party_tool())
             .with_tool(discover_parties_tool())
             .with_tool(get_party_tool())
+            .with_tool(stake_validation_tool())
+            .with_tool(challenge_validation_tool())
+            .with_tool(resolve_validation_tool())
+            .with_tool(reclaim_validation_tool())
+            .with_tool(get_validation_tool())
             .with_tool(create_guild_tool())
             .with_tool(invite_to_guild_tool())
             .with_tool(fund_guild_tool())
@@ -351,6 +360,11 @@ pub(crate) async fn start_session(
             .with_tool(disband_party_tool())
             .with_tool(discover_parties_tool())
             .with_tool(get_party_tool())
+            .with_tool(stake_validation_tool())
+            .with_tool(challenge_validation_tool())
+            .with_tool(resolve_validation_tool())
+            .with_tool(reclaim_validation_tool())
+            .with_tool(get_validation_tool())
             .with_tool(create_guild_tool())
             .with_tool(invite_to_guild_tool())
             .with_tool(fund_guild_tool())

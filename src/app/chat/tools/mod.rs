@@ -8,3 +8,4 @@ pub(crate) mod guild;
 pub(crate) mod misc;
 pub(crate) mod party;
 pub(crate) mod platform;
+pub(crate) mod validation;
