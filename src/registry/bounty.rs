@@ -54,6 +54,80 @@ impl Bounty {
     }
 }
 
+/// Map a bounty's on-chain state to a SPECIFIC, human-readable reason a
+/// `claim`/`submit`/`accept` write would fail — so callers surface "already
+/// claimed by dex-qa" instead of a generic "reverted" (GitHub #50). `action` is
+/// `"claim"`/`"submit"`/`"accept"`; each gates on the status the facet requires
+/// (Open→claim, Claimed→submit, Submitted→accept). `claimant_label` (a resolved
+/// name) sharpens the "already claimed by …" message. Pure + testable; `Ok(())`
+/// means the precondition holds. Shared by the CLI and the browser bounty tools.
+pub fn bounty_preflight(
+    id: u64,
+    b: &Bounty,
+    action: &str,
+    claimant_label: Option<&str>,
+) -> Result<(), String> {
+    // A never-posted id decodes as the zero record (poster all-zero).
+    if b.poster.trim_start_matches("0x").chars().all(|c| c == '0') {
+        return Err(format!("bounty #{id} doesn't exist"));
+    }
+    let who = || match claimant_label {
+        Some(l) if !l.is_empty() => format!(" by {l}"),
+        _ if b.claimant_token_id != 0 => format!(" by token #{}", b.claimant_token_id),
+        _ => String::new(),
+    };
+    match action {
+        "claim" => match b.status {
+            0 => Ok(()),
+            1 | 2 => Err(format!("bounty #{id} is already claimed{} — pick another", who())),
+            _ => Err(format!(
+                "bounty #{id} is not open (it's {}) — nothing to claim",
+                b.status_label()
+            )),
+        },
+        "submit" => match b.status {
+            1 => Ok(()),
+            0 => Err(format!("bounty #{id} hasn't been claimed yet — claim it first")),
+            2 => Err(format!("bounty #{id} already has a submitted result")),
+            _ => Err(format!(
+                "bounty #{id} is {} — you can't submit a result",
+                b.status_label()
+            )),
+        },
+        "accept" => match b.status {
+            2 => Ok(()),
+            0 | 1 => Err(format!(
+                "bounty #{id} has no submitted result to accept yet (it's {})",
+                b.status_label()
+            )),
+            _ => Err(format!(
+                "bounty #{id} is already {} — nothing to accept",
+                b.status_label()
+            )),
+        },
+        _ => Ok(()),
+    }
+}
+
+/// Read `id`'s state (resolving the claimant's name for a sharper message) and
+/// run [`bounty_preflight`]. `Ok(())` = the precondition holds OR the read
+/// failed (let the write surface the real error — a transient read must never
+/// block a legitimate action). `Err(msg)` = a NAMED precondition failure.
+pub async fn bounty_preflight_check(id: u64, action: &str) -> Result<(), String> {
+    let Ok(b) = get_bounty(id).await else {
+        return Ok(()); // read failed → let the write speak for itself
+    };
+    let claimant_label = if b.claimant_token_id != 0 {
+        crate::registry::name_of_id(b.claimant_token_id)
+            .await
+            .ok()
+            .filter(|n| !n.is_empty())
+    } else {
+        None
+    };
+    bounty_preflight(id, &b, action, claimant_label.as_deref())
+}
+
 /// Encode `postBounty(bytes task, uint128 rewardWei, uint64 ttlSeconds)`. `task`
 /// is the FIRST (dynamic `bytes`) arg, so head word 0 holds the OFFSET to the
 /// tail (3 fixed head words = `3 * 32`); words 1/2 are `rewardWei`/`ttlSeconds`
@@ -610,5 +684,45 @@ mod tests {
         assert_eq!(hits[1].0, "3");
         // Empty query keeps the whole board.
         assert_eq!(rank_agent_matches(&pairs, "").len(), 3);
+    }
+
+    #[test]
+    fn bounty_preflight_names_the_revert_cause() {
+        let mk = |status: u8, claimant: u64| Bounty {
+            poster: "0xabc".into(),
+            reward_wei: 1,
+            expiry: 0,
+            status,
+            claimant_token_id: claimant,
+        };
+        // A never-posted id decodes as the zero record → "doesn't exist".
+        let ghost = Bounty {
+            poster: "0x0000000000000000000000000000000000000000".into(),
+            reward_wei: 0,
+            expiry: 0,
+            status: 0,
+            claimant_token_id: 0,
+        };
+        assert_eq!(
+            bounty_preflight(999, &ghost, "claim", None),
+            Err("bounty #999 doesn't exist".to_string())
+        );
+        // claim: only Open passes; Claimed names the claimant, else the token id.
+        assert!(bounty_preflight(1, &mk(0, 0), "claim", None).is_ok());
+        let e = bounty_preflight(1, &mk(1, 7), "claim", Some("dex-qa")).unwrap_err();
+        assert!(e.contains("already claimed by dex-qa"), "got: {e}");
+        let e = bounty_preflight(1, &mk(1, 7), "claim", None).unwrap_err();
+        assert!(e.contains("token #7"), "got: {e}");
+        assert!(bounty_preflight(1, &mk(3, 7), "claim", None).is_err());
+        // submit: only Claimed passes; Open coaches "claim first".
+        assert!(bounty_preflight(1, &mk(1, 7), "submit", None).is_ok());
+        let e = bounty_preflight(1, &mk(0, 0), "submit", None).unwrap_err();
+        assert!(e.contains("hasn't been claimed"), "got: {e}");
+        assert!(bounty_preflight(1, &mk(2, 7), "submit", None).is_err());
+        // accept: only Submitted passes.
+        assert!(bounty_preflight(1, &mk(2, 7), "accept", None).is_ok());
+        let e = bounty_preflight(1, &mk(1, 7), "accept", None).unwrap_err();
+        assert!(e.contains("no submitted result"), "got: {e}");
+        assert!(bounty_preflight(1, &mk(3, 7), "accept", None).is_err());
     }
 }

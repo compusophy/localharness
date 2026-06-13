@@ -67,74 +67,15 @@ pub(crate) fn parse_bounty_post_args(rest: &[String]) -> Result<ParsedBountyPost
 /// feedback #85). `Ok(())` means the write's precondition holds; `Err` is the
 /// named cause to print instead of submitting.
 ///
-/// `action` is one of `"claim"` / `"submit"` / `"accept"`; each gates on the
-/// status the facet requires (Open to claim, Claimed to submit, Submitted to
-/// accept). A claimant-name (resolved by the caller) sharpens the "already
-/// claimed by …" message. Pure + testable — the cause-mapping core.
-pub(crate) fn bounty_preflight(
-    id: u64,
-    b: &registry::Bounty,
-    action: &str,
-    claimant_label: Option<&str>,
-) -> Result<(), String> {
-    // A never-posted id decodes as the zero record (poster all-zero).
-    if b.poster.trim_start_matches("0x").chars().all(|c| c == '0') {
-        return Err(format!("bounty #{id} doesn't exist"));
-    }
-    let who = || match claimant_label {
-        Some(l) if !l.is_empty() => format!(" by {l}"),
-        _ if b.claimant_token_id != 0 => format!(" by token #{}", b.claimant_token_id),
-        _ => String::new(),
-    };
-    match action {
-        "claim" => match b.status {
-            0 => Ok(()),
-            1 | 2 => Err(format!("bounty #{id} is already claimed{} — pick another", who())),
-            _ => Err(format!(
-                "bounty #{id} is not open (it's {}) — nothing to claim",
-                b.status_label()
-            )),
-        },
-        "submit" => match b.status {
-            1 => Ok(()),
-            0 => Err(format!("bounty #{id} hasn't been claimed yet — `bounty claim {id}` first")),
-            2 => Err(format!("bounty #{id} already has a submitted result")),
-            _ => Err(format!(
-                "bounty #{id} is {} — you can't submit a result",
-                b.status_label()
-            )),
-        },
-        "accept" => match b.status {
-            2 => Ok(()),
-            0 | 1 => Err(format!(
-                "bounty #{id} has no submitted result to accept yet (it's {})",
-                b.status_label()
-            )),
-            _ => Err(format!(
-                "bounty #{id} is already {} — nothing to accept",
-                b.status_label()
-            )),
-        },
-        _ => Ok(()),
-    }
-}
-
-/// Run the read-only [`bounty_preflight`] for `id`/`action`, resolving the
-/// claimant's name for a sharper message. `Ok(())` = the write may proceed;
-/// `Err(code)` already printed the named cause and carries the exit code. A
-/// `get_bounty` RPC error is NON-fatal here — it falls through to the write
-/// (which then surfaces the real failure), so a transient read never blocks a
-/// legitimate action.
+/// Read-only precondition check for a bounty WRITE: print the SPECIFIC cause
+/// (e.g. "already claimed by dex-qa") if the action would fail, so the user
+/// isn't left with a generic revert. `Err(1)` = rejected (cause printed); a
+/// read failure is non-fatal (falls through to the write, which surfaces the
+/// real error). The cause-mapping logic now lives in
+/// `registry::bounty_preflight` / `bounty_preflight_check`, shared with the
+/// browser bounty tools (GitHub #50).
 async fn bounty_preflight_or_reject(id: u64, action: &str) -> Result<(), i32> {
-    let Ok(b) = registry::get_bounty(id).await else {
-        return Ok(()); // read failed → let the write speak for itself
-    };
-    let claimant_label = if b.claimant_token_id != 0 {
-        registry::name_of_id(b.claimant_token_id).await.ok().filter(|n| !n.is_empty())
-    } else {
-        None
-    };
-    match bounty_preflight(id, &b, action, claimant_label.as_deref()) {
+    match registry::bounty_preflight_check(id, action).await {
         Ok(()) => Ok(()),
         Err(msg) => {
             eprintln!("{msg}");
@@ -700,47 +641,7 @@ mod tests {
         assert!(row.contains("audit the vault")); // newline flattened
     }
 
-    #[test]
-    fn bounty_preflight_names_the_revert_cause() {
-        let mk = |status: u8, claimant: u64| registry::Bounty {
-            poster: "0xabc".into(),
-            reward_wei: 1,
-            expiry: 0,
-            status,
-            claimant_token_id: claimant,
-        };
-        // A never-posted id decodes as the zero record → "doesn't exist".
-        let ghost = registry::Bounty {
-            poster: "0x0000000000000000000000000000000000000000".into(),
-            reward_wei: 0,
-            expiry: 0,
-            status: 0,
-            claimant_token_id: 0,
-        };
-        assert_eq!(
-            bounty_preflight(999, &ghost, "claim", None),
-            Err("bounty #999 doesn't exist".to_string())
-        );
-        // claim: only Open passes; Claimed names the claimant.
-        assert!(bounty_preflight(1, &mk(0, 0), "claim", None).is_ok());
-        let e = bounty_preflight(1, &mk(1, 7), "claim", Some("dex-qa")).unwrap_err();
-        assert!(e.contains("already claimed by dex-qa"), "got: {e}");
-        // No name resolved → falls back to the token id.
-        let e = bounty_preflight(1, &mk(1, 7), "claim", None).unwrap_err();
-        assert!(e.contains("token #7"), "got: {e}");
-        // Paid/cancelled aren't open.
-        assert!(bounty_preflight(1, &mk(3, 7), "claim", None).is_err());
-        // submit: only Claimed passes; Open coaches "claim first".
-        assert!(bounty_preflight(1, &mk(1, 7), "submit", None).is_ok());
-        let e = bounty_preflight(1, &mk(0, 0), "submit", None).unwrap_err();
-        assert!(e.contains("hasn't been claimed"), "got: {e}");
-        assert!(bounty_preflight(1, &mk(2, 7), "submit", None).is_err());
-        // accept: only Submitted passes.
-        assert!(bounty_preflight(1, &mk(2, 7), "accept", None).is_ok());
-        let e = bounty_preflight(1, &mk(1, 7), "accept", None).unwrap_err();
-        assert!(e.contains("no submitted result"), "got: {e}");
-        assert!(bounty_preflight(1, &mk(3, 7), "accept", None).is_err());
-    }
+    // (bounty_preflight moved to registry::bounty; its unit test lives there now.)
 
     #[test]
     fn format_bounty_row_expired_and_no_expiry() {

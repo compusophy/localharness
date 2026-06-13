@@ -162,6 +162,11 @@ pub(crate) fn claim_bounty_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .ok_or_else(|| crate::error::Error::other("bounty_id is required"))?;
             // The claimant is THIS subdomain's own tokenId.
             let claimant_token_id = own_token_id().await?;
+            // Surface the SPECIFIC cause (already claimed / doesn't exist / not
+            // open) instead of a generic revert (#50) — shared with the CLI.
+            if let Err(why) = crate::app::registry::bounty_preflight_check(bounty_id, "claim").await {
+                return Err(crate::error::Error::other(why));
+            }
             let (signer, fee_payer) = bounty_signers().await?;
             let tx_hash = crate::app::registry::claim_bounty_sponsored(
                 &signer,
@@ -219,6 +224,10 @@ pub(crate) fn submit_result_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             if result_text.is_empty() {
                 return Err(crate::error::Error::other("result cannot be empty"));
             }
+            // Specific cause if this bounty isn't in a submittable state (#50).
+            if let Err(why) = crate::app::registry::bounty_preflight_check(bounty_id, "submit").await {
+                return Err(crate::error::Error::other(why));
+            }
             let (signer, fee_payer) = bounty_signers().await?;
             let tx_hash = crate::app::registry::submit_result_sponsored(
                 &signer,
@@ -265,6 +274,10 @@ pub(crate) fn accept_result_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .get("bounty_id")
                 .and_then(|v| v.as_u64())
                 .ok_or_else(|| crate::error::Error::other("bounty_id is required"))?;
+            // Specific cause if there's no submitted result to accept (#50).
+            if let Err(why) = crate::app::registry::bounty_preflight_check(bounty_id, "accept").await {
+                return Err(crate::error::Error::other(why));
+            }
             let (signer, fee_payer) = bounty_signers().await?;
             let tx_hash = crate::app::registry::accept_result_sponsored(
                 &signer,
