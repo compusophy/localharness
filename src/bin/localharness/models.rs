@@ -6,19 +6,28 @@ use crate::*;
 // `call`/`mcp-call` take a `--model <id>`, but there was no way to discover the
 // valid ids — a user had to read the source or guess (on-chain feedback #90).
 // `localharness models` lists them. A `claude-*` id routes to the Anthropic
-// backend (built only with the `anthropic` cargo feature); a `gemini-*` id is
-// the always-available default.
+// backend (built only with the `anthropic` cargo feature); a `gpt-*` id routes
+// to the OpenAI backend (the `openai` feature); a `gemini-*` id is the
+// always-available default. The multi-provider proxy routes all three on $LH.
+//
+// KEEP IN SYNC with the provider ids advertised in web/llms.txt — this command
+// is what that doc points users to.
 
 /// The known model ids the CLI accepts for `--model`, as `(id, label, note)`.
 /// Mirrors the browser admin selector (`src/app/model.rs::MODELS`) + the
-/// Anthropic backend's wire constants, kept in lockstep with
+/// Anthropic/OpenAI backend wire constants, kept in lockstep with
 /// `models_match_canonical_constants`. The Gemini id is the platform default;
-/// the `claude-*` ids need a build with the `anthropic` feature.
+/// `claude-*` ids need the `anthropic` feature, `gpt-*` ids the `openai`
+/// feature (the credit proxy routes any of them).
 pub(crate) const MODELS: &[(&str, &str, &str)] = &[
     (localharness::types::DEFAULT_MODEL, "Gemini (default)", "the platform default"),
     ("claude-haiku-4-5-20251001", "Claude Haiku", "needs the anthropic-feature build"),
     ("claude-sonnet-4-6", "Claude Sonnet", "needs the anthropic-feature build"),
     ("claude-opus-4-8", "Claude Opus", "needs the anthropic-feature build"),
+    ("gpt-5-nano", "GPT-5 nano", "needs the openai-feature build"),
+    ("gpt-5-mini", "GPT-5 mini", "needs the openai-feature build"),
+    ("gpt-5.1", "GPT-5.1", "needs the openai-feature build"),
+    ("gpt-5-pro", "GPT-5 pro", "needs the openai-feature build"),
 ];
 
 /// Render the model list as the terminal report. Pure (no I/O) so it's
@@ -30,7 +39,8 @@ pub(crate) fn format_models() -> String {
     }
     out.push_str(
         "\nuse with: localharness call --model <id> <name> \"…\"\n\
-         claude-* ids route to the Anthropic backend; gemini-* is the default.\n",
+         claude-* → Anthropic, gpt-* → OpenAI, gemini-* (default) → Gemini; \
+         the credit proxy routes all three on $LH.\n",
     );
     out
 }
@@ -47,7 +57,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn models_lists_gemini_default_and_claude_ids() {
+    fn models_lists_gemini_default_and_claude_and_gpt_ids() {
         let out = format_models();
         // The gemini default is present and labelled as the default.
         assert!(out.contains(localharness::types::DEFAULT_MODEL));
@@ -57,6 +67,11 @@ mod tests {
         assert!(out.contains("claude-sonnet-4-6"));
         assert!(out.contains("claude-opus-4-8"));
         assert!(out.contains("anthropic"));
+        // The OpenAI ids appear with the openai-build caveat (added when the
+        // proxy gained /v1/chat/completions routing + the SDK backend).
+        assert!(out.contains("gpt-5-nano"));
+        assert!(out.contains("gpt-5.1"));
+        assert!(out.contains("openai"));
     }
 
     /// The hard-coded ids must stay in lockstep with the crate's canonical

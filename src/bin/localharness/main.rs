@@ -243,8 +243,9 @@ CALLING & MCP
                                          (--fresh starts over); --pay settles that
                                          much $LH to <name>'s TBA on success
   localharness models                    list the valid --model ids for call /
-                                         mcp-call (gemini default + claude-* ids;
-                                         claude needs the anthropic-feature build)
+                                         mcp-call (gemini default + claude-* +
+                                         gpt-* ids; claude/gpt need the
+                                         anthropic/openai-feature build)
   localharness mcp                       run an MCP (stdio) server exposing a
                                          `call_agent` tool, so any MCP client
                                          (Claude Code, …) can call localharness
