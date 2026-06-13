@@ -42,3 +42,4 @@ claude-persona.txt
 # create's scaffold - fleet runs from the repo root must not litter it
 /app.rl
 qr-*.png
+fleet-run-output.txt
