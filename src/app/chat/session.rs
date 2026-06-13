@@ -25,6 +25,10 @@ use super::tools::guild::{
     create_guild_tool, fund_guild_tool, invite_to_guild_tool, list_my_guilds_tool,
     spend_treasury_tool,
 };
+use super::tools::party::{
+    complete_party_tool, disband_party_tool, discover_parties_tool, form_party_tool,
+    fund_party_tool, get_party_tool, join_party_tool,
+};
 use super::tools::misc::{
     dwell_tool,
     clear_context_tool, compact_context_tool, consolidate_lessons_tool, notify_tool,
@@ -247,6 +251,13 @@ pub(crate) async fn start_session(
             .with_tool(submit_result_tool())
             .with_tool(accept_result_tool())
             .with_tool(discover_bounties_tool())
+            .with_tool(form_party_tool())
+            .with_tool(join_party_tool())
+            .with_tool(fund_party_tool())
+            .with_tool(complete_party_tool())
+            .with_tool(disband_party_tool())
+            .with_tool(discover_parties_tool())
+            .with_tool(get_party_tool())
             .with_tool(create_guild_tool())
             .with_tool(invite_to_guild_tool())
             .with_tool(fund_guild_tool())
@@ -333,6 +344,13 @@ pub(crate) async fn start_session(
             .with_tool(submit_result_tool())
             .with_tool(accept_result_tool())
             .with_tool(discover_bounties_tool())
+            .with_tool(form_party_tool())
+            .with_tool(join_party_tool())
+            .with_tool(fund_party_tool())
+            .with_tool(complete_party_tool())
+            .with_tool(disband_party_tool())
+            .with_tool(discover_parties_tool())
+            .with_tool(get_party_tool())
             .with_tool(create_guild_tool())
             .with_tool(invite_to_guild_tool())
             .with_tool(fund_guild_tool())
