@@ -157,15 +157,20 @@ pub(crate) async fn current_tenant_owner() -> Result<(String, String), String> {
 
 /// Normalise a user-typed subdomain candidate to the same character
 /// set the on-chain registry enforces: lowercase ASCII alphanumeric +
-/// dash. Mirrors the `[^a-z0-9-]` filter the contract applies before
-/// minting.
+/// dash, with leading/trailing hyphens trimmed (the contract rejects
+/// those, so dropping them silently keeps the human claim form from
+/// producing a name that would revert). Mirrors the `[^a-z0-9-]` filter
+/// the contract applies before minting. (Agent TOOLS use
+/// `crate::subdomain::validate` instead, which REJECTS rather than
+/// silently mangles — the right behavior for a programmatic caller.)
 pub(crate) fn sanitize(input: &str) -> String {
-    input
+    let s: String = input
         .trim()
         .to_ascii_lowercase()
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
-        .collect()
+        .collect();
+    s.trim_matches('-').to_string()
 }
 
 fn classify(hostname: &str) -> Host {

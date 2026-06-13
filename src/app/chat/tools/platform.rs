@@ -123,10 +123,10 @@ pub(crate) fn create_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
             let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
             let persona = args.get("persona").and_then(|v| v.as_str());
             let prefund_lh = args.get("prefund_lh").and_then(|v| v.as_str());
-            let cleaned = crate::app::tenant::sanitize(name);
-            if cleaned.len() < 3 || cleaned.len() > 32 {
-                return Err(crate::error::Error::other("invalid name"));
-            }
+            // Validate (don't silently mangle) — an invalid name returns a clear
+            // reason to the agent instead of minting a DIFFERENT name (#66/#60).
+            let cleaned = crate::subdomain::validate(name)
+                .map_err(|why| crate::error::Error::other(format!("invalid subdomain name: {why}")))?;
             // Register the name first (master wallet ends up holding the new id).
             let (owner, claim_tx) = crate::app::verify::claim_name_via_iframe(&cleaned)
                 .await
@@ -259,10 +259,8 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
             let source = args.get("source").and_then(|v| v.as_str()).unwrap_or("");
             let persona = args.get("persona").and_then(|v| v.as_str());
             let prefund_lh = args.get("prefund_lh").and_then(|v| v.as_str());
-            let cleaned = crate::app::tenant::sanitize(name);
-            if cleaned.len() < 3 || cleaned.len() > 32 {
-                return Err(crate::error::Error::other("invalid name"));
-            }
+            let cleaned = crate::subdomain::validate(name)
+                .map_err(|why| crate::error::Error::other(format!("invalid subdomain name: {why}")))?;
             if source.trim().is_empty() {
                 return Err(crate::error::Error::other("source cannot be empty"));
             }

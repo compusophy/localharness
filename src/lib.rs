@@ -131,6 +131,11 @@ pub mod turn_stage;
 /// into the system prompt. See `src/lessons.rs`.
 pub mod lessons;
 
+/// Pure subdomain-name validation (native-testable) — the single source of
+/// truth shared by the browser create tools and kept in sync with the
+/// on-chain `LocalharnessRegistryFacet._isValidName` rule. See `src/subdomain.rs`.
+pub mod subdomain;
+
 // Inline SVG QR-code generation for the app's share surfaces (device
 // pairing, publish share, `?invite=` links). Feature-gated like `app`
 // but NOT wasm-gated, so its unit test runs under a native
