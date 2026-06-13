@@ -113,6 +113,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to a feed creates the on-chain array (~1.05M gas, per `cast estimate`); the
   600k sponsored cap out-of-gassed every subscribe (count stuck at 0, the
   Ready-Up toggle snapped back). The sponsor pays gas USED, not the cap.
+- **Cross-agent notifications.** `notify` is no longer self-only: the proxy's
+  `/api/notify` takes `to: <name>`, resolves the target agent's enrolled push
+  subscription(s) on-chain, prefixes the title with the SENDER's chain-verified
+  name (`@you: …` — derived from the authenticated address via `mainNameOf`,
+  unspoofable), and delivers to the target's in-app inbox + enrolled phone(s);
+  the caller pays the per-request meter (the spam leash). CLI:
+  `localharness notify --to <agent> <title> [body…]`; the in-browser agent's
+  `notify` tool gained the same `to` parameter.
+- **Multi-device push fan-out.** Push-subscription slots are now JSON ARRAYS
+  with one entry per device, merged client-side by `registry::merge_push_sub`
+  (upsert by endpoint; legacy single-object slots promote; a 4000-byte budget
+  evicts the oldest — `PushFacet.setPushSub` caps at 4096). Every proxy push
+  route (notify, the scheduler's `notify_owner` / run-complete / GOAL-COMPLETE,
+  broadcast) resolves the UNION of all slots and fans out to EVERY device via
+  the shared `sendWebPushAll`. Previously each slot held ONE subscription and
+  senders stopped at the first slot hit, so the last device to register
+  silently de-registered every other device ("my phone stopped buzzing").
+- **Persistent notification inbox (the header bell).** The bell log survives
+  reloads (OPFS `.lh_notif_inbox.json`); `web/sw.js` relays an arriving push
+  into open pages (postMessage → the new `push_arrived` wasm export, wired in
+  boot.js) and stashes closed-tab pushes to a pending file that merges — with
+  an unread badge — at next boot. The bell itself now TOGGLES (second tap),
+  closes on ESC, and closes on any click outside it.
+- **ValidationFacet + PartyFacet (built + tested, NOT yet cut).** ERC-8004-style
+  validation staking (stake a verdict on a workRef, counter-stake to challenge,
+  bounty-poster resolves, winner takes both; disjoint windows, refund/draw
+  paths) and ad-hoc squads (pinned bps split, consent-gated join, escrow-exact
+  payout to member TBAs) — full Foundry suites; the `Add*Facet` cut scripts
+  await explicit approval.
+- **ESC + backdrop-click dismiss every overlay.** ESC closes the topmost open
+  layer (bell dropdown → display → files → admin); clicking the dark backdrop
+  closes the admin/files modals.
+
+### Fixed
+
+- **Redeploys now reach returning browsers (wasm cache-buster).** Chrome's
+  WebAssembly code cache serves a stale compiled module for an unchanged
+  `/pkg/localharness_bg.wasm` URL even under `max-age=0, must-revalidate`, so
+  redeploys were invisible until a hard reload. `scripts/build-web.sh` stamps
+  the wasm CONTENT HASH into `boot.js` (`?v=` on the shim import AND the
+  explicit `init({ module_or_path })` wasm url — the shim drops the query
+  otherwise) and `index.html` (`boot.js?v=`): every deploy is a new URL, a
+  guaranteed cache miss, and a query string can't 404 a static file.
+- **Claude-backed agents restored a BLANK transcript.** History decode now
+  tries BOTH backend wire formats (`history.rs::decode_history_any`): a Claude
+  agent persists Anthropic-shaped history (`content` blocks, role
+  `assistant`), which the Gemini-only decoder projected to zero turns. Both
+  decoders are also per-entry LENIENT (one malformed/foreign entry no longer
+  blanks the whole restore), `Content.parts` defaults, and the Gemini role
+  accepts the `assistant` alias.
+- **Anthropic 400 on replayed tool history.** `tool_result.content` must be a
+  string or content-block array; replayed history could carry a raw JSON
+  object, 400-ing every follow-up turn of a Claude agent with tool calls.
+  Wire-boundary `serialize_with` coerces it on every path.
+- **Proxy: an empty agent answer no longer charges the caller.** `ask_agent`
+  settles AFTER success, but an empty model output was masked by a non-empty
+  placeholder string, so settlement fired anyway. Empty output now throws
+  (no settle, nonce unused); whitespace-only messages are rejected before any
+  spend.
+- **Sponsored `setPushSub` out-of-gassed.** Tempo charges ~8.5k gas/byte for
+  storage writes; the cap is now length-scaled (`1.5M + 9k/byte`) like
+  `setMetadata` — device push registration lands (live-proven,
+  `examples/push_sub_live.rs`).
+- **Header + chat-input chrome (the rage pass).** Phantom blank line under
+  every agent reply (trailing markdown `\n` rendered by an unconditional
+  `pre-wrap`); 4px header gap; the notification bell rendering as a 96px empty
+  box, misaligned with ADMIN; non-uniform header spacing (now `--space`
+  tokens, bell↔ADMIN == ADMIN↔edge); double focus border on the chat input
+  (row `:focus-within` + the global `:focus-visible` ring — one border now);
+  the send "▶" drawn as a font-fallback blob (now an inline SVG triangle in an
+  exact 20×20 square; stop is an SVG square); uniform 8px interior spacing in
+  the input row; the AGENT WALLET admin section jammed flush under TOOLS.
+- **Mobile basics.** Inputs are 16px at phone widths (kills iOS Safari's
+  focus auto-zoom that hid the CLAIM button); the chat send button is a real
+  44px touch target on phones.
+- **Explore page ~20s → ~2s.** `list_recent_agents` looped `nameOfId` over
+  ~60 serial round-trips; now ONE `eth_call_batch`.
+
+### Security
+
+- **Agent filesystem tools can no longer touch the wallet seed.** The 8 fs
+  builtins had no access guard: `view_file` could read `.lh_wallet` (the
+  BIP-39 seed) into the transcript and `delete_file`/`edit_file` could brick
+  the identity. `PROTECTED_FILES` (`.lh_wallet`, `.lh_device_key`,
+  `.lh_owner`, `.lh_linked_owner`) now refuse read/modify/delete and are
+  hidden from listings/search.
 
 ## [0.33.0] - 2026-06-11
 
