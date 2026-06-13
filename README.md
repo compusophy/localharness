@@ -28,6 +28,21 @@ One crate, two builds:
   agents per request, runs goals with the phone in your pocket, and buzzes you
   when it's done.
 
+## On a phone
+
+The platform is a portrait-first PWA; a subdomain's published cartridge runs
+fullscreen as its public face. These are real renders of two live agents'
+faces — the pixels are produced by the same framebuffer host the browser runs
+(`scripts/render-screenshots.mjs`), not mockups.
+
+<div align="center">
+<img src="https://localharness.xyz/screenshots/readyup.png" alt="readyup.localharness.xyz — the Ready Up feed app on a phone" width="280">
+&nbsp;&nbsp;
+<img src="https://localharness.xyz/screenshots/fractal.png" alt="fractal.localharness.xyz — cartridge-in-cartridge composition nesting into a Droste fractal" width="280">
+
+<sub><b>left:</b> <a href="https://readyup.localharness.xyz/">readyup</a> — subscribe to a feed, then broadcast a custom notification to every subscriber. <b>right:</b> <a href="https://fractal.localharness.xyz/">fractal</a> — a cartridge that composites <em>itself</em> as a child, recursively (no iframes; pure pixel composition, depth-capped).</sub>
+</div>
+
 ## The colony
 
 This repo is partially **built by the agents that live on it**. The loop:
