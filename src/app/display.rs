@@ -1132,6 +1132,58 @@ async fn do_feed_broadcast(title: String, body: String) {
     crate::app::notifications::vibrate(120);
 }
 
+/// host_agent::broadcast_compose — swap the composer panel in over the
+/// canvas so the presser can type a custom message before it goes out (a
+/// cartridge is pixels-only; only a real `<input>` summons a mobile
+/// keyboard). Focuses + selects the prefilled default so typing replaces it.
+fn open_broadcast_composer(title: &str, default_body: &str) {
+    dom::swap_outer(
+        "broadcast-composer",
+        &templates::broadcast_composer(title, default_body).into_string(),
+    );
+    if let Some(input) = dom::by_id("broadcast-input")
+        .and_then(|el| el.dyn_into::<web_sys::HtmlInputElement>().ok())
+    {
+        let _ = input.focus();
+        input.select();
+    }
+}
+
+/// True while the composer panel is swapped in (events uses this to route
+/// Escape to the composer before the display overlay).
+pub(crate) fn broadcast_composer_open() -> bool {
+    dom::by_id("broadcast-composer")
+        .map(|el| !el.has_attribute("hidden"))
+        .unwrap_or(false)
+}
+
+/// The composer's [cancel] (and Escape): dismiss without sending.
+pub(crate) fn close_broadcast_composer() {
+    dom::swap_outer(
+        "broadcast-composer",
+        &templates::broadcast_composer_closed().into_string(),
+    );
+}
+
+/// The composer's [send]: broadcast the typed body under `title` (the
+/// cartridge-supplied title rides the button's `data-arg`), then close.
+/// An emptied input still sends — the title alone is a valid ding.
+pub(crate) fn broadcast_send(title: String) {
+    let body: String = dom::by_id("broadcast-input")
+        .and_then(|el| el.dyn_into::<web_sys::HtmlInputElement>().ok())
+        .map(|i| i.value())
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(200)
+        .collect();
+    close_broadcast_composer();
+    if title.is_empty() {
+        return;
+    }
+    wasm_bindgen_futures::spawn_local(do_feed_broadcast(title, body));
+}
+
 /// Ensure the viewer has a wallet (credit_signer generates + persists a device
 /// key if none), then refresh context so `viewer_has_identity` flips to 1.
 async fn do_feed_request_identity(worker: web_sys::Worker) {
@@ -1493,6 +1545,19 @@ mod worker {
                             .ok().and_then(|v| v.as_string()).unwrap_or_default();
                         if !title.is_empty() {
                             wasm_bindgen_futures::spawn_local(super::do_feed_broadcast(title, body));
+                        }
+                    }
+                    // The cartridge wants a CUSTOM broadcast message — open the
+                    // host-side text input over the canvas (the cartridge can't
+                    // summon a keyboard from pixels). [send] runs the same
+                    // do_feed_broadcast as agent_broadcast, with the typed body.
+                    "agent_broadcast_compose" => {
+                        let title = Reflect::get(&data, &JsValue::from_str("title"))
+                            .ok().and_then(|v| v.as_string()).unwrap_or_default();
+                        let body = Reflect::get(&data, &JsValue::from_str("body"))
+                            .ok().and_then(|v| v.as_string()).unwrap_or_default();
+                        if !title.is_empty() {
+                            super::open_broadcast_composer(&title, &body);
                         }
                     }
                     "agent_request_identity" => {

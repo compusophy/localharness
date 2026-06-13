@@ -553,7 +553,8 @@ function buildChildImports(child) {
   const child_agent = {
     notify: () => 0, viewer_is_owner: () => 0, viewer_has_identity: () => 0,
     subscribe: () => 0, unsubscribe: () => 0, is_subscribed: () => 0,
-    subscriber_count: () => 0, broadcast: () => 0, request_identity: () => 0,
+    subscriber_count: () => 0, broadcast: () => 0, broadcast_compose: () => 0,
+    request_identity: () => 0,
   };
   return {
     host_display: child_display,
@@ -927,6 +928,18 @@ const host_agent = {
     if (!title) return 0;
     lastAgentBroadcast = now;
     self.postMessage({ type: 'agent_broadcast', title, body });
+    return 1;
+  },
+  broadcast_compose(titlePtr, bodyPtr) {
+    // `broadcast`, but the MAIN thread opens a text input over the canvas
+    // first (a cartridge is pixels-only — it can't summon a keyboard). The
+    // typed body is broadcast from the composer's [send]; rate-limiting the
+    // actual send is the human typing + tapping, so opening isn't limited.
+    if (!viewerHasIdentity) return 0;
+    const title = (readString(titlePtr) || '').slice(0, 80);
+    const body = (readString(bodyPtr) || '').slice(0, 200);
+    if (!title) return 0;
+    self.postMessage({ type: 'agent_broadcast_compose', title, body });
     return 1;
   },
   request_identity() {

@@ -2252,8 +2252,45 @@ pub(crate) fn display_surface() -> Markup {
             div.display-stage {
                 canvas #display-canvas .display-canvas {}
             }
+            (broadcast_composer_closed())
         }
     }
+}
+
+/// The broadcast composer — a cartridge called `host::agent::
+/// broadcast_compose(title, default_body)` and the host owes it a text
+/// input (a cartridge is pixels-only; only a real `<input>` can summon a
+/// mobile keyboard). Swapped in over the canvas at `#broadcast-composer`;
+/// [send] broadcasts the typed body under `title`, [cancel] (or Escape)
+/// dismisses without sending. The title rides on the send button's
+/// `data-arg` so dispatch needs no side-channel state.
+pub(crate) fn broadcast_composer(title: &str, default_body: &str) -> Markup {
+    html! {
+        div #broadcast-composer .broadcast-composer {
+            div.broadcast-composer-panel {
+                div.broadcast-composer-title { (title) }
+                input #broadcast-input
+                    type="text"
+                    value=(default_body)
+                    maxlength="200"
+                    autocomplete="off"
+                    aria-label="notification message";
+                div.prompt-actions {
+                    button #broadcast-send-btn type="button"
+                        data-action="broadcast-send" data-arg=(title) { "send" }
+                    button type="button" data-action="broadcast-cancel"
+                        .ghost { "cancel" }
+                }
+            }
+        }
+    }
+}
+
+/// The closed state of the broadcast composer — the hidden swap target.
+/// Present on BOTH cartridge surfaces (the display overlay and the
+/// fullscreen public face) so `agent_broadcast_compose` always has a node.
+pub(crate) fn broadcast_composer_closed() -> Markup {
+    html! { div #broadcast-composer hidden {} }
 }
 
 /// Chrome-less "app mode" page — the subdomain booted straight into its
@@ -2362,6 +2399,7 @@ pub(crate) fn app_fullscreen(owner_overlay: bool) -> Markup {
             div.app-stage {
                 canvas #display-canvas .display-canvas {}
             }
+            (broadcast_composer_closed())
         }
     }
 }

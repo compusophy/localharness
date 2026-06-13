@@ -4,7 +4,9 @@
 // the old 256x144 landscape, so it fills a phone in portrait. Layout, top→bottom:
 //   • a SUB / UNSUB toggle button (green when you're subscribed)
 //   • the live member count (how many are subscribed to this feed)
-//   • a full-width READY UP button that pushes a notification to everyone subbed
+//   • a full-width READY UP button that opens the host's text input (prefilled
+//     with the default message) so the presser can type a CUSTOM message, then
+//     pushes it to everyone subbed
 // Identity-gated: a viewer with no wallet taps once to mint one, then can sub.
 
 fn dims() -> i32 {
@@ -95,7 +97,10 @@ fn frame(t: i32) {
                     }
                 }
                 if py >= 400 {
-                    host::agent::broadcast("Ready Up!", "Tap in — it's go time.");
+                    // Opens the host's composer (text input over the canvas)
+                    // prefilled with the default; [send] broadcasts the typed
+                    // message to every subscriber.
+                    host::agent::broadcast_compose("Ready Up!", "Tap in — it's go time.");
                 }
             }
         }

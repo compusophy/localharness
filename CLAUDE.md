@@ -104,7 +104,8 @@ src/app/ (browser IDE):
   display.rs(framebuffer: runs wasm cartridges off-main-thread in a Web Worker +
     rasterizes HTML; main-thread WATCHDOG kills hung workers — the brick fix;
     surface = a fullscreen dismissable OVERLAY, not a tab/panel; host_agent
-    bridge: notify (permission-gated, viewer-local) + viewer_is_owner/has_identity)
+    bridge: notify + subscribe/broadcast feed (broadcast_compose = host text
+    input over the canvas) + viewer_is_owner/has_identity)
   gas.rs(set_metadata_gas — THE sponsored-setMetadata formula, one home)
   notifications.rs(notify tool: local + `to:` cross-agent; sub under
     keccak256("localharness.push_sub"); bell inbox persists to OPFS via sw.js

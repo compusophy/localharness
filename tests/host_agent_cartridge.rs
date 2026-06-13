@@ -59,3 +59,22 @@ fn frame(t: i32) {
         assert!(s.contains(name), "import {name} present");
     }
 }
+
+#[test]
+fn broadcast_compose_cartridge_compiles() {
+    // The custom-message Ready Up: broadcast_compose(title, default_body)
+    // opens the HOST's text input over the canvas before broadcasting.
+    let src = r#"
+fn frame(t: i32) {
+    host::display::clear(0);
+    if host::display::pointer_down() == 1 {
+        host::agent::broadcast_compose("Ready Up!", "Tap in.");
+    }
+    host::display::present();
+}
+"#;
+    let wasm = rustlite::compile(src).expect("broadcast_compose cartridge compiles");
+    let s = String::from_utf8_lossy(&wasm);
+    assert!(s.contains("host_agent"), "host_agent import module present");
+    assert!(s.contains("broadcast_compose"), "broadcast_compose import present");
+}

@@ -1082,6 +1082,12 @@ fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, 
         //   to EVERY subscriber's device (via the proxy). NOT owner-gated —
         //   anyone with an identity can fire it; rate-limited per feed. 1 if
         //   the request went out, 0 if no identity.
+        // `broadcast_compose(title, default_body) -> i32`  `broadcast`, but
+        //   the host first opens a text input over the canvas (prefilled with
+        //   `default_body`) so the presser can type a CUSTOM message before it
+        //   goes out — a cartridge is pixels-only and can't summon a mobile
+        //   keyboard itself. [send] broadcasts the typed body under `title`;
+        //   [cancel] sends nothing. 1 if the composer opened, 0 if no identity.
         // `request_identity() -> i32`  ensure the viewer has a wallet (creates
         //   a local one if missing — the "this app needs an identity" path);
         //   returns 1 if they now have one. Gate subscribe/broadcast on this
@@ -1091,6 +1097,7 @@ fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, 
         "agent::is_subscribed" => (vec![], I32),
         "agent::subscriber_count" => (vec![], I32),
         "agent::broadcast" => (vec![String, String], I32),
+        "agent::broadcast_compose" => (vec![String, String], I32),
         "agent::request_identity" => (vec![], I32),
         // --- compose (host_compose): cartridge-in-cartridge composition. A
         // PARENT cartridge mounts another subdomain's published `app.wasm` as a

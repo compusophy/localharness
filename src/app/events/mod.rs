@@ -124,6 +124,12 @@ enum Action {
     SaveApiKey,
     ToggleDisplay,
     StopTurn,
+    /// Broadcast-composer [send] — a cartridge's `broadcast_compose` opened
+    /// a text input over the canvas; the payload is the notification TITLE
+    /// (the typed body is read from `#broadcast-input` at dispatch).
+    BroadcastSend(String),
+    /// Broadcast-composer [cancel] / Escape — dismiss without sending.
+    BroadcastCancel,
     /// Set this subdomain's public face: "directory", "app", or "html".
     /// "app"/"html" also publish the device's local app.rl/index.html.
     SetPublicFace(String),
@@ -260,6 +266,8 @@ impl Action {
             "save-api-key" => Action::SaveApiKey,
             "toggle-display" => Action::ToggleDisplay,
             "stop-turn" => Action::StopTurn,
+            "broadcast-send" => Action::BroadcastSend(arg.unwrap_or_default()),
+            "broadcast-cancel" => Action::BroadcastCancel,
             "set-public-face" => Action::SetPublicFace(arg.unwrap_or_default()),
             "copy-share-url" => Action::CopyShareUrl(arg.unwrap_or_default()),
             "copy-seed" => Action::CopySeed(arg.unwrap_or_default()),
@@ -395,6 +403,11 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
             if admin::notif_panel_open() {
                 event.prevent_default();
                 admin::close_notif_panel();
+            } else if super::display::broadcast_composer_open() {
+                // The broadcast composer floats over the cartridge canvas —
+                // dismiss IT, not the whole display surface beneath it.
+                event.prevent_default();
+                super::display::close_broadcast_composer();
             } else if dom::by_id("display-canvas").is_some() {
                 event.prevent_default();
                 dispatch(Action::ToggleDisplay);
@@ -436,6 +449,18 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
                 dispatch(action);
                 return;
             }
+        }
+
+        // Enter inside the broadcast composer's input sends — route through
+        // the send BUTTON's click so the title rides its data-arg unchanged.
+        if key == "Enter" && el.id() == "broadcast-input" {
+            event.prevent_default();
+            if let Some(btn) = dom::by_id("broadcast-send-btn")
+                .and_then(|b| b.dyn_into::<HtmlElement>().ok())
+            {
+                btn.click();
+            }
+            return;
         }
 
         // Enter inside the prompt textarea sends; Shift+Enter inserts a
@@ -628,6 +653,8 @@ fn dispatch(action: Action) {
         }
         Action::OpfsCloseViewer => super::opfs::close_viewer(),
         Action::ToggleDisplay => super::opfs::toggle_display(),
+        Action::BroadcastSend(title) => super::display::broadcast_send(title),
+        Action::BroadcastCancel => super::display::close_broadcast_composer(),
         Action::StopTurn => super::chat::request_stop_turn(),
         Action::SetPublicFace(choice) => {
             wasm_bindgen_futures::spawn_local(async move {

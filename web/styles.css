@@ -422,6 +422,41 @@ main.layout .transcript > *:empty { display: none; }
   min-height: 0;
   padding: 8px;
 }
+/* Broadcast composer — a cartridge's broadcast_compose() asked the host
+   for a text input (pixels can't summon a keyboard). Floats centered over
+   whichever cartridge surface is live (display overlay or fullscreen
+   public face), above the display layer. */
+.broadcast-composer {
+  position: fixed; inset: 0;
+  z-index: calc(var(--z-display) + 1);
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.broadcast-composer-panel {
+  width: 100%;
+  max-width: 420px;
+  padding: var(--space-4);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.broadcast-composer-title {
+  color: var(--fg);
+  font-weight: 600;
+}
+.broadcast-composer-panel input {
+  width: 100%;
+  padding: var(--space-2);
+  font-family: var(--font-mono);
+  color: var(--fg);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
 /* Header notification bell + dropdown panel. Monochrome, matches the
    header-button chrome; the panel hangs below the bell, right-aligned. */
 .notif-bell-wrap {
