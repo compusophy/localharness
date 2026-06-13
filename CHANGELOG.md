@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **OpenAI Chat Completions backend (`feature = "openai"`).** A third Rust-native
+  `ConnectionStrategy` behind the same Layer-3 seam as Gemini/Anthropic —
+  `Agent::start_openai(OpenAiAgentConfig::new(key))` (BYOK to `api.openai.com`)
+  or `.with_base_url(proxy)` for platform `$LH`. `POST /v1/chat/completions`
+  with `stream: true`; messages carry `system`/`user`/`assistant`/`tool` roles,
+  `tool_calls`, and `tool` result messages; tool schemas pass through as
+  `function.parameters`. Purely additive — off by default, pulls NO new deps
+  (reuses reqwest/serde/futures), shares the backend core (sse/dispatch/
+  compaction/stream_timeout), and is wasm32-clean. Model ids accepted as-is
+  (NOT validated): `gpt-5-nano`/`-mini`/`gpt-5.1`/`gpt-5-pro`. The streaming
+  decoder accumulates the index-keyed `delta.tool_calls` fragments — `id`/`name`
+  on the first fragment per index, `arguments` as string pieces concatenated
+  across chunks (the OpenAI-specific gotcha). `browser-app` pulls it in so the
+  in-tab model selector can use it; history decode is wired into
+  `app/history.rs::decode_history_any`.
 - **OpenAI models on platform credits (proxy routing).** The multi-provider
   proxy (`api/gemini.ts`) now routes `/v1/chat/completions` → OpenAI
   alongside Gemini (`/v1beta/...`) and Anthropic (`/v1/messages`): same

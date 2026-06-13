@@ -71,6 +71,11 @@ pub mod mock;
 /// purely additive (off by default).
 #[cfg(feature = "anthropic")]
 pub mod anthropic;
+/// OpenAI (Chat Completions API) backend — a `ConnectionStrategy` behind the
+/// same Layer-3 seam. Gated on the `openai` feature so it's purely additive
+/// (off by default).
+#[cfg(feature = "openai")]
+pub mod openai;
 /// Local in-browser model backend — Gemma 3 270M via Burn's wgpu/WebGPU
 /// backend. Gated on the `local` feature (heavy: pulls the Burn framework).
 #[cfg(feature = "local")]
@@ -90,7 +95,7 @@ use crate::types::{Step, StepSource, StepStatus};
 /// (top-level `system`) and the local backend (prompt preamble); the Gemini
 /// backend keeps its own near-variant, which wraps the same flattening in a
 /// wire `Content` instead of returning the string.
-#[cfg(any(feature = "anthropic", feature = "local"))]
+#[cfg(any(feature = "anthropic", feature = "local", feature = "openai"))]
 pub(crate) fn render_system(s: &crate::types::SystemInstructions) -> String {
     use crate::types::SystemInstructions;
     match s {

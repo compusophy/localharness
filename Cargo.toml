@@ -62,7 +62,7 @@ native = [
 # `maud` or DOM web-sys features. Enable it together with
 # `--no-default-features --target wasm32-unknown-unknown` via wasm-pack
 # to build the shipping browser bundle. Has no effect on a native build.
-browser-app = ["dep:maud", "dep:console_error_panic_hook", "dep:pulldown-cmark", "dep:qrcode", "wallet", "anthropic"]
+browser-app = ["dep:maud", "dep:console_error_panic_hook", "dep:pulldown-cmark", "dep:qrcode", "wallet", "anthropic", "openai"]
 # `wallet` is the M6 in-browser keypair. Uses k256 + sha3 directly
 # rather than alloy's split crates — alloy's TransactionEnvelope
 # proc-macro currently trips on `serde::__private` symbol resolution
@@ -77,6 +77,13 @@ wallet = ["dep:k256", "dep:sha3", "dep:rand_core", "dep:bip39", "dep:zeroize"]
 # does not touch the default build or the Gemini backend. BYOK only here;
 # the credit-proxy/credits routing is Phase C (out of scope).
 anthropic = []
+# `openai` compiles the OpenAI Chat Completions backend
+# (`src/backends/openai/`): `POST /v1/chat/completions` as a
+# `ConnectionStrategy`. Purely additive — off by default, pulls no new deps
+# (reuses reqwest/serde/futures), and leaves the default build + the Gemini
+# backend untouched. BYOK (`Agent::start_openai`) or platform `$LH` via the
+# proxy base-url override (the proxy already forwards `/v1/chat/completions`).
+openai = []
 # `local` compiles the in-browser local-model backend (`src/backends/local/`):
 # Gemma 3 270M running fully in the tab via Burn's wgpu/WebGPU backend (no
 # proxy, no `$LH`, no API key). UNLIKE `anthropic` this is HEAVY — it pulls the
@@ -384,4 +391,4 @@ wasm-opt = false
 # wasm32-only chrome and `local` pulls the heavy Burn stack; neither adds
 # documentable API on docs.rs's native builder, so neither is enabled.
 [package.metadata.docs.rs]
-features = ["wallet", "anthropic"]
+features = ["wallet", "anthropic", "openai"]

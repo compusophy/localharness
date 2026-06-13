@@ -87,6 +87,7 @@ src/                  library crate
     │                 stream_timeout.rs — fix backend plumbing HERE, not per-backend
     ├── gemini/       api.rs(client) wire.rs loop.rs compaction.rs mod.rs
     ├── anthropic/    Claude Messages API backend (feature "anthropic")
+    ├── openai/       OpenAI Chat Completions backend (feature)
     ├── mock/         deterministic offline backend (Agent::start_mock; wasm-clean)
     ├── mcp/          stdio MCP client (native-only)
     └── local/        in-browser Gemma 3 270M via Burn/wgpu (feature "local")
@@ -176,9 +177,11 @@ wasm-opt rejects post-MVP features modern rustc emits).
 - **`wallet`** (off): `pub mod wallet` + `pub mod registry`. Pulls
   k256+sha3+rand_core+bip39. All targets.
 - **`browser-app`** (off): `src/app/` as wasm cdylib. Pulls maud, pulldown-cmark,
-  +wallet, +anthropic transitively. No native effect.
-- **`anthropic`** (off): Claude Messages API backend. PURELY ADDITIVE — no new
-  deps. BYOK (`Agent::start_anthropic`) or platform `$LH` via the proxy.
+  +wallet, +anthropic, +openai transitively. No native effect.
+- **`anthropic`** / **`openai`** (off): Claude Messages / OpenAI Chat Completions
+  backends. ADDITIVE — no new deps. BYOK (`Agent::start_anthropic`/`start_openai`)
+  or platform `$LH` via the proxy. OpenAI gotcha: streamed `tool_calls` are
+  index-keyed fragments, `arguments` string pieces to concat (`openai/loop.rs`).
 - **`local`** (off): in-browser Gemma 3 270M via Burn wgpu/WebGPU (no proxy/key).
   HEAVY (~570MB weights); NOT in browser-app — build `--features browser-app,local`.
   Gotchas: getrandom-0.4 needs `.cargo/config.toml getrandom_backend="wasm_js"` +
@@ -479,19 +482,17 @@ fetches + decrypts via the apex iframe BEFORE the api-key modal. Saving best-eff
 ## Credit proxy + $LH sessions/metering (LIVE)
 
 Proxy (separate Vercel project "proxy") is the ONE accepted off-chain component.
-Platform `$LH` credits are the **primary** usage path; **BYOK** (own Gemini key) is
-the fallback that skips the proxy. `api/gemini.ts` = transparent multi-provider
-passthrough holding the platform keys; auth = Ethereum personal-sign in the
-`x-goog-api-key` header as `address:timestamp:signature`. Proxy verifies the sig,
-gates on EITHER an active SessionFacet session OR a CreditMeterFacet balance, debits
-via the meter key before streaming.
+Platform `$LH` credits are the **primary** usage path; **BYOK** (own key) is the
+fallback that skips the proxy. `api/gemini.ts` = transparent multi-provider
+passthrough (Gemini/Claude/OpenAI `/v1/chat/completions`) holding the platform
+keys; auth = Ethereum personal-sign in the `x-goog-api-key` header as
+`address:timestamp:signature`. Proxy verifies the sig, gates on a SessionFacet
+session OR CreditMeterFacet balance, debits via the meter key before streaming.
 
-Bundle helpers (`registry.rs`): `redeem_sponsored`, `open_session_sponsored`,
-`session_expiry_of`, `session_price`, `deposit_credits_sponsored`,
-`credit_balance_of`. x402 helpers: `x402_domain_separator`, `x402_digest`,
-`sign_x402`, `settle_x402_sponsored`, `x402_authorization_state`. Release/device:
-`release_name_sponsored`, `consolidate_into_main_sponsored`, `devices_of`,
-`remove_signer_sponsored`.
+Bundle helpers (`registry.rs`): `*_sponsored` for redeem/open_session/deposit_
+credits/settle_x402/release_name/consolidate_into_main/remove_signer + reads
+`session_expiry_of`/`session_price`/`credit_balance_of`/`devices_of` + x402
+`x402_domain_separator`/`x402_digest`/`sign_x402`/`x402_authorization_state`.
 
 ## Agent tools + destructive-action convention
 
@@ -591,15 +592,16 @@ must come from the root key, which is why a sponsor key must be embedded in wasm
 
 ## What's pending
 
-Shipped: SDK runtime, browser IDE, platform layer, Tempo native AA, Anthropic
-backend, tool-call replay, scheduling + recursion, Mock backend, economy rungs
-1–4 + ReputationFacet + colony, x402 agent-pays-agent, host::compose, TBA act
-panel, at-rest OPFS encryption (unreleased). Still open:
+Shipped: SDK runtime, browser IDE, platform layer, Tempo native AA, Anthropic +
+OpenAI backends, tool-call replay, scheduling + recursion, Mock backend, economy
+rungs 1–4 + ReputationFacet + colony, x402, host::compose, TBA act panel, at-rest
+OPFS encryption (unreleased). Still open:
 
 - **Stripe MPP** — fiat agent-payments rail beside the live x402 `$LH` path.
 - **Validation + Party cuts** — both facets built+tested, NOT CUT yet (run the
   Add scripts); then CLI/browser validation surfaces + DAOs-of-DAOs UX.
-- **More backends** — OpenAI / local-WebGPU finish (`design/model-agnostic.md`).
+- **More backends** — OpenAI backend SHIPPED; local-WebGPU finish
+  (`design/model-agnostic.md`).
 - **P2P teams** — 2-device E2E test, mutable shared-FS, team UI. (SDP sealing
   DONE — `signaling_seal.rs` sender-signed envelope, hard-cut v2.)
 
@@ -625,20 +627,15 @@ model artifacts.
 
 ## Documentation SOP
 
-Five surfaces — keep in sync on every change:
-
-| Surface | File | Covers |
-|---------|------|--------|
-| docs.rs | `///` in source | Public API: every `pub` item gets a one-liner |
-| README.md | repo root | Quick start, features, architecture, links |
-| CLAUDE.md | repo root | Internal map + gotchas (this file; under 40K) |
-| llms.txt | `web/llms.txt` | Agent capabilities, RPC format, registry |
-| CHANGELOG.md | repo root | Per-version changes (Keep-a-Changelog) |
+Five surfaces — keep in sync on every change: **docs.rs** (`///` in source, every
+`pub` item gets a one-liner) · **README.md** (quick start, features, architecture)
+· **CLAUDE.md** (internal map + gotchas, this file, under 40K) · **llms.txt**
+(`web/llms.txt`: caps, RPC, registry) · **CHANGELOG.md**
+(per-version, Keep-a-Changelog).
 
 **When to update what:** new pub API → `///` (+README if surface changes); new
-module → CLAUDE.md tree; new agent tool → `llms.txt` + the session prompt; new
-facet → CLAUDE.md on-chain + `contracts/README.md` + `llms.txt`; browser UX →
-CLAUDE.md browser section; release → CHANGELOG.
+module → CLAUDE.md tree; new agent tool → `llms.txt` + session prompt; new facet →
+CLAUDE.md on-chain + `contracts/README.md` + `llms.txt`; release → CHANGELOG.
 
-**Verify before any release:** `cargo doc --no-deps 2>&1 | grep "warning.*missing"`
-+ `curl -s https://localharness.xyz/llms.txt | head -5` (deployed?).
+**Verify before release:** `cargo doc --no-deps 2>&1 | grep "warning.*missing"` +
+`curl -s https://localharness.xyz/llms.txt | head -5`.

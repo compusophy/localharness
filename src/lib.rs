@@ -185,6 +185,8 @@ pub mod x402_hook;
 pub use agent::{Agent, AgentConfig, GeminiAgentConfig, MockAgentConfig};
 #[cfg(feature = "anthropic")]
 pub use agent::AnthropicAgentConfig;
+#[cfg(feature = "openai")]
+pub use agent::OpenAiAgentConfig;
 #[cfg(feature = "local")]
 pub use agent::LocalAgentConfig;
 pub use backends::gemini::{
@@ -196,6 +198,10 @@ pub use backends::mock::{
 #[cfg(feature = "anthropic")]
 pub use backends::anthropic::{
     AnthropicBackendConfig, AnthropicConnection, AnthropicConnectionStrategy, AnthropicRunners,
+};
+#[cfg(feature = "openai")]
+pub use backends::openai::{
+    OpenAiBackendConfig, OpenAiConnection, OpenAiConnectionStrategy, OpenAiRunners,
 };
 #[cfg(feature = "native")]
 pub use backends::mcp::{McpBridge, McpClient, McpToolDecl};

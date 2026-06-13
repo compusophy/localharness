@@ -96,7 +96,14 @@ fn decode_history_any(bytes: &[u8]) -> Vec<crate::types::TranscriptEntry> {
     if !gemini.is_empty() {
         return gemini;
     }
-    crate::backends::anthropic::decode_transcript_bytes(bytes).unwrap_or_default()
+    let anthropic = crate::backends::anthropic::decode_transcript_bytes(bytes).unwrap_or_default();
+    if !anthropic.is_empty() {
+        return anthropic;
+    }
+    // OpenAI shape (role-keyed messages + `tool_calls`) — pulled in transitively
+    // by browser-app. Both other shapes are self-discriminating, so a wrong
+    // decoder yields empty; this is the last fallback.
+    crate::backends::openai::decode_transcript_bytes(bytes).unwrap_or_default()
 }
 
 /// Take any pending restored history out of the App state. The first

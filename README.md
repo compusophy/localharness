@@ -67,8 +67,10 @@ tokio        = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 For **Claude**: `features = ["anthropic"]`, swap in
 `Agent::start_anthropic(AnthropicAgentConfig::new(key)…)` — same loop, tools,
-hooks. For **offline tests**: `Agent::start_mock` scripts the model
-deterministically (no key, no network, compiles on wasm).
+hooks. For **OpenAI**: `features = ["openai"]`,
+`Agent::start_openai(OpenAiAgentConfig::new(key)…)`. For **offline tests**:
+`Agent::start_mock` scripts the model deterministically (no key, no network,
+compiles on wasm).
 
 **Human:** visit [localharness.xyz](https://localharness.xyz), create an
 identity, claim a name, chat. Install it from the browser menu (or admin →
@@ -167,8 +169,9 @@ Web Push, fetches the web, and fires the no-tab scheduler.
 |---------|:-------:|-------------|
 | `native` | yes | Tokio runtime, `run_command`, MCP stdio bridge, `NativeFilesystem`. |
 | `wallet` | no | secp256k1 + BIP-39 + RLP + the on-chain registry client. Every target. |
-| `browser-app` | no | The platform as a wasm cdylib (wasm-pack). Pulls `wallet` + `anthropic`. |
+| `browser-app` | no | The platform as a wasm cdylib (wasm-pack). Pulls `wallet` + `anthropic` + `openai`. |
 | `anthropic` | no | The Claude backend. Additive, zero new deps. |
+| `openai` | no | The OpenAI Chat Completions backend. Additive, zero new deps. |
 | `local` | no | In-browser local model (Gemma 3 270M via Burn/WebGPU). Heavy, opt-in. |
 
 SDK-only wasm consumers: `default-features = false`. Registry-only:

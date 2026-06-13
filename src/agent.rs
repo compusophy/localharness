@@ -32,6 +32,10 @@ use crate::backends::mock::{MockConnectionStrategy, MockRunners};
 use crate::backends::anthropic::{
     AnthropicBackendConfig, AnthropicConnection, AnthropicConnectionStrategy, AnthropicRunners,
 };
+#[cfg(feature = "openai")]
+use crate::backends::openai::{
+    OpenAiBackendConfig, OpenAiConnection, OpenAiConnectionStrategy, OpenAiRunners,
+};
 #[cfg(feature = "local")]
 use crate::backends::local::connection::{
     LocalBackendConfig, LocalConnection, LocalConnectionStrategy, LocalRunners,
@@ -567,6 +571,151 @@ impl AnthropicAgentConfig {
 }
 
 // =============================================================================
+// OpenAI agent config (feature = "openai")
+// =============================================================================
+
+/// Configuration for the Rust-native OpenAI (Chat Completions) backend.
+///
+/// Pairs the generic `AgentConfig` (hooks, tools, policies, triggers) with
+/// `OpenAiBackendConfig` (model, API key, temperature, max_tokens). The
+/// parallel of [`GeminiAgentConfig`] / [`AnthropicAgentConfig`]; additive —
+/// `start_gemini` and the neutral `AgentConfig` are untouched.
+#[cfg(feature = "openai")]
+pub struct OpenAiAgentConfig {
+    /// Backend-agnostic settings (tools, policies, triggers).
+    pub agent: AgentConfig,
+    /// OpenAI-specific settings (model, API key, temperature, max_tokens).
+    pub openai: OpenAiBackendConfig,
+    /// Opaque history bytes from a previous session
+    /// (`Agent::history_bytes()`), applied immediately after `connect()`.
+    pub initial_history: Option<Vec<u8>>,
+}
+
+#[cfg(feature = "openai")]
+impl OpenAiAgentConfig {
+    /// Create a new OpenAI agent configuration with the given API key
+    /// (BYOK — talks directly to `api.openai.com`).
+    pub fn new(api_key: impl Into<String>) -> Self {
+        Self {
+            agent: AgentConfig::default(),
+            openai: OpenAiBackendConfig::new(api_key),
+            initial_history: None,
+        }
+    }
+
+    /// Seed the new connection with previously-saved history bytes.
+    pub fn with_history_bytes(mut self, bytes: Vec<u8>) -> Self {
+        self.initial_history = Some(bytes);
+        self
+    }
+
+    /// Override the OpenAI model ID (e.g. `gpt-5-mini` / `gpt-5-pro` / any
+    /// other string — model ids are NOT validated).
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.openai = self.openai.with_model(model);
+        self
+    }
+
+    /// Set the system instructions for the model.
+    pub fn with_system_instructions(mut self, instr: impl Into<SystemInstructions>) -> Self {
+        let instr = instr.into();
+        self.openai = self.openai.with_system_instructions(instr.clone());
+        self.agent = self.agent.with_system_instructions(instr);
+        self
+    }
+
+    /// Set the sampling temperature.
+    pub fn with_temperature(mut self, t: f32) -> Self {
+        self.openai = self.openai.with_temperature(t);
+        self
+    }
+
+    /// Set `max_completion_tokens` for the response.
+    pub fn with_max_tokens(mut self, n: u32) -> Self {
+        self.openai = self.openai.with_max_tokens(n);
+        self
+    }
+
+    /// Route requests through an alternate base URL (the credit proxy, which
+    /// already forwards `/v1/chat/completions`).
+    pub fn with_base_url(mut self, url: url::Url) -> Self {
+        self.openai = self.openai.with_base_url(url);
+        self
+    }
+
+    /// Mint a fresh auth credential for EVERY request instead of reusing the
+    /// static api key (which becomes a fallback) — see
+    /// [`GeminiAgentConfig::with_auth_provider`].
+    pub fn with_auth_provider(mut self, provider: crate::backends::KeyProvider) -> Self {
+        self.openai.api_key_provider = Some(crate::backends::AuthTokenProvider(provider));
+        self
+    }
+
+    /// Plug in a custom [`Filesystem`] impl for the fs built-ins.
+    ///
+    /// [`Filesystem`]: crate::filesystem::Filesystem
+    pub fn with_filesystem(mut self, fs: crate::filesystem::SharedFilesystem) -> Self {
+        self.openai = self.openai.with_filesystem(fs);
+        self
+    }
+
+    /// Configure which built-in tools are enabled.
+    pub fn with_capabilities(mut self, cap: CapabilitiesConfig) -> Self {
+        self.agent = self.agent.with_capabilities(cap);
+        self
+    }
+
+    /// Register a custom tool.
+    pub fn with_tool(mut self, tool: Arc<dyn Tool>) -> Self {
+        self.agent = self.agent.with_tool(tool);
+        self
+    }
+
+    /// Set the safety policies for tool execution.
+    pub fn with_policies(mut self, policies: Vec<Policy>) -> Self {
+        self.agent = self.agent.with_policies(policies);
+        self
+    }
+
+    /// Register a custom pre-tool-call decide hook (see
+    /// [`AgentConfig::with_pre_tool_hook`]).
+    pub fn with_pre_tool_hook(
+        mut self,
+        hook: Arc<dyn crate::hooks::PreToolCallDecideHook>,
+    ) -> Self {
+        self.agent = self.agent.with_pre_tool_hook(hook);
+        self
+    }
+
+    /// Add a workspace root for path-containment enforcement.
+    pub fn with_workspace(mut self, ws: impl Into<PathBuf>) -> Self {
+        self.agent = self.agent.with_workspace(ws);
+        self
+    }
+
+    /// Register a background trigger.
+    pub fn with_trigger(mut self, trigger: Arc<dyn Trigger>) -> Self {
+        self.agent = self.agent.with_trigger(trigger);
+        self
+    }
+
+    /// Add an MCP server to connect at startup (native only).
+    #[cfg(feature = "native")]
+    pub fn with_mcp_server(mut self, server: McpServerConfig) -> Self {
+        self.agent = self.agent.with_mcp_server(server);
+        self
+    }
+
+    /// Resume an existing conversation by its ID.
+    pub fn resume(mut self, conversation_id: impl Into<String>) -> Self {
+        let id = conversation_id.into();
+        self.openai.conversation_id = Some(id.clone());
+        self.agent.conversation_id = Some(id);
+        self
+    }
+}
+
+// =============================================================================
 // Local agent config (feature = "local")
 // =============================================================================
 
@@ -703,6 +852,10 @@ pub struct Agent {
     /// / `transcript()` work for either backend. Additive (feature-gated).
     #[cfg(feature = "anthropic")]
     anthropic_connection: Option<Arc<AnthropicConnection>>,
+    /// Typed handle to the OpenAI connection when `start_openai` was used.
+    /// Parallels `anthropic_connection`. Additive (feature-gated).
+    #[cfg(feature = "openai")]
+    openai_connection: Option<Arc<OpenAiConnection>>,
     /// Typed handle to the local (in-browser Gemma) connection when
     /// `start_local` was used. Parallels `anthropic_connection`. Additive
     /// (feature-gated).
@@ -831,6 +984,39 @@ impl Agent {
         Ok(agent)
     }
 
+    /// Start an `Agent` backed by the Rust-native OpenAI (Chat Completions)
+    /// runtime. Parallels [`Agent::start_anthropic`]; additive and
+    /// non-breaking. BYOK — `OpenAiAgentConfig::new(key)` talks directly to
+    /// `api.openai.com`; `with_base_url` routes through the credit proxy.
+    #[cfg(feature = "openai")]
+    pub async fn start_openai(mut config: OpenAiAgentConfig) -> Result<Self> {
+        config.agent.capabilities.validate()?;
+        Self::wire_response_schema(&mut config.agent);
+        let mut openai_config = config.openai;
+        // Keep the backend's CapabilitiesConfig in sync with the agent's so
+        // register_builtins enables the right set.
+        openai_config.capabilities = config.agent.capabilities.clone();
+        let initial_history = config.initial_history.take();
+        let capture: Arc<parking_lot::Mutex<Option<Arc<OpenAiConnection>>>> =
+            Arc::new(parking_lot::Mutex::new(None));
+        let capture_for_factory = capture.clone();
+        let mut agent = Self::start_with_factory(config.agent, move |hooks, tools, ctx| {
+            OpenAiConnectionStrategy::new(openai_config)
+                .with_runners(OpenAiRunners {
+                    tool_runner: Some(tools),
+                    hook_runner: Some(hooks),
+                    session_ctx: Some(ctx),
+                })
+                .with_typed_capture(capture_for_factory)
+        })
+        .await?;
+        agent.openai_connection = capture.lock().take();
+        if let (Some(bytes), Some(oc)) = (initial_history, agent.openai_connection.as_ref()) {
+            oc.set_history_bytes(&bytes)?;
+        }
+        Ok(agent)
+    }
+
     /// Start an `Agent` backed by the in-browser local (Gemma 3 270M / Burn-wgpu)
     /// runtime. Parallels [`Agent::start_gemini`]; additive and non-breaking. No
     /// API key — the model runs fully on-device, reading weights from the
@@ -889,6 +1075,10 @@ impl Agent {
         if let Some(ac) = self.anthropic_connection.as_ref() {
             return ac.history_bytes().map(Some);
         }
+        #[cfg(feature = "openai")]
+        if let Some(oc) = self.openai_connection.as_ref() {
+            return oc.history_bytes().map(Some);
+        }
         #[cfg(feature = "local")]
         if let Some(lc) = self.local_connection.as_ref() {
             return lc.history_bytes().map(Some);
@@ -908,6 +1098,10 @@ impl Agent {
         #[cfg(feature = "anthropic")]
         if let Some(ac) = self.anthropic_connection.as_ref() {
             return ac.compact().await;
+        }
+        #[cfg(feature = "openai")]
+        if let Some(oc) = self.openai_connection.as_ref() {
+            return oc.compact().await;
         }
         #[cfg(feature = "local")]
         if let Some(lc) = self.local_connection.as_ref() {
@@ -931,6 +1125,10 @@ impl Agent {
         if let Some(ac) = self.anthropic_connection.as_ref() {
             ac.clear_history();
         }
+        #[cfg(feature = "openai")]
+        if let Some(oc) = self.openai_connection.as_ref() {
+            oc.clear_history();
+        }
         #[cfg(feature = "local")]
         if let Some(lc) = self.local_connection.as_ref() {
             lc.clear_history();
@@ -949,6 +1147,10 @@ impl Agent {
         #[cfg(feature = "anthropic")]
         if let Some(ac) = self.anthropic_connection.as_ref() {
             return ac.transcript();
+        }
+        #[cfg(feature = "openai")]
+        if let Some(oc) = self.openai_connection.as_ref() {
+            return oc.transcript();
         }
         #[cfg(feature = "local")]
         if let Some(lc) = self.local_connection.as_ref() {
@@ -1068,6 +1270,8 @@ impl Agent {
             gemini_connection: None,
             #[cfg(feature = "anthropic")]
             anthropic_connection: None,
+            #[cfg(feature = "openai")]
+            openai_connection: None,
             #[cfg(feature = "local")]
             local_connection: None,
             hook_runner,
