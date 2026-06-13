@@ -107,6 +107,26 @@ pub(crate) async fn start_session(
         None => system_instructions,
     };
 
+    // The agent's OWN advertised per-call price (GitHub #49) — so it can answer
+    // "what do you charge?" accurately instead of guessing or stating a price
+    // that mismatches the chain. Effective price = advertised on-chain, else the
+    // 0.01 $LH default the proxy enforces as a floor. Tenant-only, best-effort:
+    // a failed on-chain read just omits the line (never blocks session start).
+    let system_instructions = if let crate::app::tenant::Host::Tenant(_) = &host {
+        match crate::registry::id_of_name(&agent_name).await {
+            Ok(id) if id != 0 => match crate::registry::x402_ask_price_of(id).await {
+                Ok(wei) => format!(
+                    "{system_instructions}\n\n=== Your pricing ===\nYour advertised per-call price is {} $LH — what a caller pays to reach you over the hosted x402 route. State this if asked what you charge.",
+                    crate::app::chat::tools::guild::format_lh(wei)
+                ),
+                Err(_) => system_instructions,
+            },
+            _ => system_instructions,
+        }
+    } else {
+        system_instructions
+    };
+
     let mut capabilities = match crate::app::tool_allowlist::load().await {
         Some(mut tools) => {
             // Always union the golden tools so neither the owner nor the

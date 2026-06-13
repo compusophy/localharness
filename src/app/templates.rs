@@ -541,8 +541,12 @@ pub(crate) fn turn(turn_id: u32, role: &str, body: Markup, streaming: bool) -> M
 /// empties it when the turn completes (`.stage-line:empty` hides it).
 pub(crate) fn stage_container(turn_id: u32) -> Markup {
     let id_str = format!("stage-{turn_id}");
+    // `role=status` + aria-live=polite so a screen-reader user hears the turn
+    // lifecycle (paying → thinking → streaming) instead of silence while the
+    // agent works (GitHub #61/#65). polite (not assertive) so the frequent
+    // stage swaps queue behind, rather than interrupt, the transcript output.
     html! {
-        div id=(id_str) .stage-line {}
+        div id=(id_str) .stage-line role="status" aria-live="polite" {}
     }
 }
 
