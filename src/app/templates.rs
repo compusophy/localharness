@@ -885,20 +885,25 @@ fn apex_claim() -> Markup {
     }
 }
 
-/// Invite-code-FIRST onboarding — the PRIMARY surface for a fresh visitor
-/// with no identity. A brand-new visitor has no `$LH`, so leading with a
-/// "claim a name" form stranded them (claiming credit-gated nothing, but
-/// every other action needs credits). Instead: paste an invite code →
-/// `redeem` accepts the InviteFacet escrow (`acceptInvite`), funding their
-/// new identity with the inviter's `$LH`. THAT is the entry. The claim
-/// form only appears once funded (an identity exists).
+/// Invite-code-FIRST onboarding — the ONLY surface for a fresh visitor
+/// with no identity. A brand-new visitor has no `$LH`, so anything else on
+/// this page is a dead end (an unfunded identity can't do a single thing) —
+/// the invite code IS the front door: paste (or arrive via an `?invite=`
+/// link, which PREFILLS the field) → `redeem` accepts the InviteFacet
+/// escrow, creating + funding the identity in one tap. The claim form
+/// appears once funded.
 ///
-/// The create-identity / import-seed affordances stay as de-emphasized
-/// secondary links for visitors who arrived without an invite (they know
-/// what they're doing). Both are EXPLICIT user actions wired to the
-/// existing `create-identity` / `show-import` handlers — never auto-fired,
-/// so the no-silent-generation gate holds. No explanatory-validation prose.
+/// The create-identity / import-seed buttons were REMOVED from this hero
+/// (an identity without credits stranded people — the user's call): seed
+/// import + explicit create stay reachable from the admin panel and the
+/// claim interstitial for the returning-user/recovery case. The redeem tap
+/// is the explicit gesture that may generate a wallet, so the
+/// no-silent-generation gate still holds. No explanatory-validation prose.
 fn invite_onboarding() -> Markup {
+    // An `?invite=CODE` landing stashes the code (`capture_invite_param`);
+    // surface it IN the field so the visitor just taps [redeem] — making
+    // them re-copy a code that's already in the URL was the bug.
+    let prefill = crate::app::events::pending_invite_code();
     html! {
         section.apex-hero {
             h2.apex-headline { "have an invite code?" }
@@ -908,23 +913,13 @@ fn invite_onboarding() -> Markup {
                     type="text"
                     aria-label="invite code"
                     placeholder="inv-…"
+                    value=[prefill.as_deref()]
                     autocomplete="off"
                     spellcheck="false"
                     required {}
                 button type="submit" .create-button { "redeem" }
             }
             div #invite-onboard-msg .step-msg {}
-            div.apex-onboard-alt {
-                button type="button" data-action="create-identity" .ghost {
-                    "create an identity"
-                }
-                button type="button" data-action="show-import" .ghost {
-                    "import seed"
-                }
-            }
-            div #import-slot {}
-            div #identity-msg .admin-msg-slot {}
-            div #seed-msg .admin-msg-slot {}
         }
     }
 }

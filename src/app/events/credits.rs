@@ -292,9 +292,12 @@ pub(super) fn redeem_invite_onboard_pressed() {
     }
     let msg_id = "invite-onboard-msg";
     let is_invite = code.starts_with("inv-");
+    // STAGE-TAGGED progress + hard timeouts: every await below is bounded, so
+    // a flaky mobile connection / a wedged storage API shows WHICH stage died
+    // instead of "redeeming…" forever (the iPhone stuck-redeem report).
     dom::swap_inner(
         msg_id,
-        "<span style=\"color:var(--muted)\">redeeming…</span>",
+        "<span style=\"color:var(--muted)\">creating identity…</span>",
     );
     wasm_bindgen_futures::spawn_local(async move {
         let result = async {
@@ -302,27 +305,42 @@ pub(super) fn redeem_invite_onboard_pressed() {
             // ALLOWED (not silent). Reuses `credit_signer` (master wallet if
             // present, else load-or-generate the local key) so a returning
             // user with a seed doesn't get a second identity.
-            let (signer, _) = crate::app::chat::credit_signer()
-                .await
-                .ok_or_else(|| "no identity".to_string())?;
+            let (signer, _) = crate::app::net::with_timeout(
+                15_000,
+                crate::app::chat::credit_signer(),
+            )
+            .await
+            .map_err(|_| "identity setup timed out — reload and try again".to_string())?
+            .ok_or_else(|| "no identity".to_string())?;
             let fee_payer = crate::app::sponsor::signer()?;
-            if is_invite {
-                crate::app::registry::accept_invite_sponsored(
-                    &signer,
-                    &fee_payer,
-                    &code,
-                    crate::app::registry::ALPHA_USD_ADDRESS,
-                )
+            dom::swap_inner(
+                "invite-onboard-msg",
+                "<span style=\"color:var(--muted)\">accepting on-chain…</span>",
+            );
+            let send = async {
+                if is_invite {
+                    crate::app::registry::accept_invite_sponsored(
+                        &signer,
+                        &fee_payer,
+                        &code,
+                        crate::app::registry::ALPHA_USD_ADDRESS,
+                    )
+                    .await
+                } else {
+                    crate::app::registry::redeem_sponsored(
+                        &signer,
+                        &fee_payer,
+                        &code,
+                        crate::app::registry::ALPHA_USD_ADDRESS,
+                    )
+                    .await
+                }
+            };
+            crate::app::net::with_timeout(45_000, send)
                 .await
-            } else {
-                crate::app::registry::redeem_sponsored(
-                    &signer,
-                    &fee_payer,
-                    &code,
-                    crate::app::registry::ALPHA_USD_ADDRESS,
-                )
-                .await
-            }
+                .map_err(|_| {
+                    "network timed out — check your connection and tap redeem again".to_string()
+                })?
         }
         .await;
         match result {
@@ -360,8 +378,10 @@ fn local_storage() -> Option<web_sys::Storage> {
     web_sys::window().and_then(|w| w.local_storage().ok().flatten())
 }
 
-/// The redeem code stashed from an `?invite=CODE` link, if any.
-fn pending_invite_code() -> Option<String> {
+/// The redeem code stashed from an `?invite=CODE` link, if any. `pub(crate)`:
+/// the apex hero reads it to PREFILL the invite input (an invitee must never
+/// have to re-copy a code that already rode in on the URL).
+pub(crate) fn pending_invite_code() -> Option<String> {
     local_storage()?
         .get_item("lh_pending_invite")
         .ok()
@@ -415,23 +435,31 @@ pub(crate) async fn try_redeem_pending_invite(allow_generate: bool) {
         if is_invite { "accepting invite…" } else { "redeeming invite…" },
         false,
     );
-    let result = if is_invite {
-        crate::app::registry::accept_invite_sponsored(
-            &signer,
-            &fee_payer,
-            &code,
-            crate::app::registry::ALPHA_USD_ADDRESS,
-        )
-        .await
-    } else {
-        crate::app::registry::redeem_sponsored(
-            &signer,
-            &fee_payer,
-            &code,
-            crate::app::registry::ALPHA_USD_ADDRESS,
-        )
-        .await
+    let claim = async {
+        if is_invite {
+            crate::app::registry::accept_invite_sponsored(
+                &signer,
+                &fee_payer,
+                &code,
+                crate::app::registry::ALPHA_USD_ADDRESS,
+            )
+            .await
+        } else {
+            crate::app::registry::redeem_sponsored(
+                &signer,
+                &fee_payer,
+                &code,
+                crate::app::registry::ALPHA_USD_ADDRESS,
+            )
+            .await
+        }
     };
+    // Bounded: a stalled mobile connection must surface, not hang the status
+    // line forever.
+    let result = crate::app::net::with_timeout(45_000, claim)
+        .await
+        .map_err(|_| "timed out".to_string())
+        .and_then(|r| r);
     match result {
         Ok(_) => {
             // Land them on platform credits (the default) and refresh the

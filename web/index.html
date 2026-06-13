@@ -6,8 +6,12 @@
        keyboard shrinks the layout viewport (so 100dvh shrinks too and the
        sticky header stays on-screen). iOS Safari ignores this directive;
        events.rs installs a visualViewport listener that drives --lh-vh /
-       --lh-vv-top + the .lh-kb class to cover it. -->
-  <meta name="viewport" content="width=device-width,initial-scale=1,interactive-widget=resizes-content" />
+       --lh-vv-top + the .lh-kb class to cover it.
+       viewport-fit=cover: without it the notched-iPhone / installed-PWA
+       status bar OVERLAPS the header (layout ignores the safe areas);
+       styles.css pads the chrome with env(safe-area-inset-*), a no-op on
+       devices without insets. -->
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -43,6 +47,6 @@
 <!-- ?v= is the per-build cache-buster (stamped by scripts/build-web.sh); it
      busts a stale-cached boot.js so a redeploy's new wasm url reaches returning
      visitors. index.html itself is the navigation document and revalidates. -->
-<script type="module" src="./boot.js?v=315573548d78"></script>
+<script type="module" src="./boot.js?v=741c29a39bb4"></script>
 </body>
 </html>

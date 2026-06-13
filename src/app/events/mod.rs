@@ -34,7 +34,7 @@ mod schedule;
 mod subdomains;
 mod tba;
 
-pub(crate) use credits::{refresh_fund_banner, try_redeem_pending_invite};
+pub(crate) use credits::{pending_invite_code, refresh_fund_banner, try_redeem_pending_invite};
 pub(crate) use key_sync::{sync_local_key_to_main, try_auto_restore_gemini_key};
 pub(crate) use subdomains::{run_batch_create_subdomains, run_bulk_release, run_release_subdomain};
 
@@ -763,13 +763,41 @@ fn dispatch(action: Action) {
             match super::tenant::current() {
                 super::tenant::Host::Apex => {
                     wasm_bindgen_futures::spawn_local(async move {
-                        if let Err(err) = super::wallet_store::create_and_persist().await {
-                            dom::swap_inner(
-                                "identity-msg",
-                                &dom::msg_span(dom::Msg::Error, &format!("create failed: {err}")),
-                            );
-                            return;
+                        // Bounded: a wedged storage write must surface as an
+                        // error, not an eternal "generating identity…" (the
+                        // iPhone stuck-create report).
+                        match super::net::with_timeout(
+                            15_000,
+                            super::wallet_store::create_and_persist(),
+                        )
+                        .await
+                        {
+                            Err(_) => {
+                                dom::swap_inner(
+                                    "identity-msg",
+                                    &dom::msg_span(
+                                        dom::Msg::Error,
+                                        "create timed out — reload and try again",
+                                    ),
+                                );
+                                return;
+                            }
+                            Ok(Err(err)) => {
+                                dom::swap_inner(
+                                    "identity-msg",
+                                    &dom::msg_span(dom::Msg::Error, &format!("create failed: {err}")),
+                                );
+                                return;
+                            }
+                            Ok(Ok(_)) => {}
                         }
+                        // Progress BEFORE the repaint: paint_apex does on-chain
+                        // reads that can be slow on mobile — the identity is
+                        // already safe at this point and the user should know.
+                        dom::swap_inner(
+                            "identity-msg",
+                            "<span style=\"color:var(--muted)\">identity created — loading…</span>",
+                        );
                         super::paint_apex(super::tenant::Host::Apex).await;
                     });
                 }

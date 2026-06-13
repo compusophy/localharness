@@ -163,6 +163,10 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
 .header-inner {
   width: 100%;
   padding: var(--chrome-pad);
+  /* iOS status bar / Dynamic Island (PWA standalone + notched Safari):
+     pad the header DOWN out of the inset instead of rendering under it.
+     env() is 0 on devices without insets; needs viewport-fit=cover. */
+  padding-top: calc(var(--chrome-pad) + env(safe-area-inset-top));
   display: flex;
   align-items: center;
   gap: 12px;
@@ -662,6 +666,9 @@ main.layout .transcript > *:empty { display: none; }
    so header and footer read as the same chrome bar. */
 .terminal-body {
   padding: var(--chrome-pad);
+  /* iOS home indicator (PWA standalone / notched Safari): keep the input
+     row above it. env() is 0 everywhere else; needs viewport-fit=cover. */
+  padding-bottom: calc(var(--chrome-pad) + env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -841,25 +848,23 @@ h1 {
 h1 a { color: inherit; text-decoration: none; }
 h1 a:hover { color: var(--accent); }
 
-/* Apex / unclaimed chrome */
-.apex-hero { margin: 40px 0; }
+/* Apex / unclaimed chrome. The fresh-visitor hero is ONE centered column:
+   headline over the invite input — nothing else competes (the create/import
+   buttons are gone; import lives in admin). */
+.apex-hero {
+  margin: 14vh 0 40px;
+  text-align: center;
+}
 .apex-headline {
   font-size: 28px; font-weight: 600; letter-spacing: -0.01em;
   margin: 0 0 16px; color: var(--fg);
 }
+/* The hero reuses .create-form (claim styles it with a 64px top margin for
+   the agents-list page); inside the hero the headline already provides the
+   separation. */
+.apex-hero .create-form { margin-top: 16px; }
+.apex-hero .step-msg { margin-top: 12px; }
 .apex-sub { color: var(--muted); margin: 0 0 32px; max-width: 56ch; line-height: 1.6; }
-
-/* Secondary onboarding affordances (create identity / import seed) below
-   the invite-code form — de-emphasized so the invite redeem is primary. */
-.apex-onboard-alt {
-  display: flex; gap: 16px; margin-top: 20px;
-}
-.apex-onboard-alt button {
-  background: none; border: none; padding: 0;
-  color: var(--muted); font-size: 12px; cursor: pointer;
-  font-family: inherit; text-decoration: underline; text-underline-offset: 3px;
-}
-.apex-onboard-alt button:hover { color: var(--fg); }
 
 .apex-fine { color: var(--muted); font-size: 12px; line-height: 1.6; }
 .apex-fine a { color: var(--accent); }
@@ -910,7 +915,12 @@ input, textarea {
    is the FIRST media query in the sheet — it's an input-zoom fix, not a
    layout breakpoint, so it doesn't change the unified one-layout design. */
 @media (max-width: 600px) {
-  input, textarea, select { font-size: 16px; }
+  /* !important is REQUIRED here: classed inputs (.create-input { font:
+     inherit } et al) beat this element selector on specificity, so the
+     16px never applied to them and iOS still auto-zoomed on focus (the
+     "inputs zoom in" iPhone report). Zoom prevention must win over every
+     per-input font declaration. */
+  input, textarea, select { font-size: 16px !important; }
   /* The chat send button (▶) is a 20x13 hit area on desktop — far below the
      ~44px touch-target minimum (WCAG 2.5.5 / Apple HIG) for what is the
      PRIMARY mobile action. Give it a real touch target; the input row grows
