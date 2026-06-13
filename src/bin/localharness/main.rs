@@ -121,6 +121,7 @@ mod notify;
 mod party;
 mod probe;
 mod publish;
+mod validation;
 mod reputation;
 mod schedule;
 mod status;
@@ -144,6 +145,7 @@ pub(crate) use publish::*;
 pub(crate) use reputation::*;
 pub(crate) use schedule::*;
 pub(crate) use status::*;
+pub(crate) use validation::*;
 pub(crate) use tba::*;
 pub(crate) use util::*;
 pub(crate) use vote::*;
@@ -602,6 +604,13 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
         },
+        Some("validation") => match take_as_flag(&args[1..]) {
+            Ok((caller, rest)) => validation(caller.as_deref(), &rest).await,
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
         Some("tba") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => tba(caller.as_deref(), &rest).await,
             Err(e) => {
@@ -751,7 +760,7 @@ mod tests {
         for cmd in [
             "create", "compile", "publish", "face", "persona", "call", "list",
             "feedback", "probe", "triage", "threads", "forget", "whoami", "status",
-            "invite", "bounty", "colony", "reputation", "guild", "party", "vote", "tba",
+            "invite", "bounty", "colony", "reputation", "guild", "party", "validation", "vote", "tba",
             "schedule", "goal", "jobs", "unschedule", "notify", "models",
         ] {
             assert!(
