@@ -290,6 +290,11 @@ pub(super) fn redeem_invite_onboard_pressed() {
     if code.is_empty() {
         return;
     }
+    // SINGLE-FLIGHT: a second press while a flow runs is ignored (mashing a
+    // slow button must not spawn parallel identity creations).
+    let Some(flow_guard) = super::onboard_flow_begin() else {
+        return;
+    };
     let msg_id = "invite-onboard-msg";
     let is_invite = code.starts_with("inv-");
     // STAGE-TAGGED progress + hard timeouts: every await below is bounded, so
@@ -300,6 +305,7 @@ pub(super) fn redeem_invite_onboard_pressed() {
         "<span style=\"color:var(--muted)\">creating identity…</span>",
     );
     wasm_bindgen_futures::spawn_local(async move {
+        let _flow_guard = flow_guard; // released on every exit path
         let result = async {
             // Explicit user action → generating the device/credit key here is
             // ALLOWED (not silent). Reuses `credit_signer` (master wallet if

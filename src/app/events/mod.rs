@@ -35,6 +35,37 @@ mod subdomains;
 mod tba;
 
 pub(crate) use credits::{pending_invite_code, refresh_fund_banner, try_redeem_pending_invite};
+
+thread_local! {
+    /// One identity/onboarding flow at a time. Mashing a (perceived-stuck)
+    /// button spawned PARALLEL identity creations — concurrent OPFS writes
+    /// to the same key files plus a pile of racing timers, implicated in the
+    /// iOS executor `RefCell already borrowed` panic. Guarded flows: the
+    /// onboarding redeem, create-identity, import-seed.
+    static ONBOARD_BUSY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Begin an exclusive onboarding flow. `None` = one is already running
+/// (caller silently ignores the press). Hold the guard for the WHOLE async
+/// flow — dropping it (any exit path) releases the lock.
+pub(super) fn onboard_flow_begin() -> Option<OnboardFlowGuard> {
+    ONBOARD_BUSY.with(|b| {
+        if b.get() {
+            None
+        } else {
+            b.set(true);
+            Some(OnboardFlowGuard)
+        }
+    })
+}
+
+pub(super) struct OnboardFlowGuard;
+
+impl Drop for OnboardFlowGuard {
+    fn drop(&mut self) {
+        ONBOARD_BUSY.with(|b| b.set(false));
+    }
+}
 pub(crate) use key_sync::{sync_local_key_to_main, try_auto_restore_gemini_key};
 pub(crate) use subdomains::{run_batch_create_subdomains, run_bulk_release, run_release_subdomain};
 
@@ -756,6 +787,10 @@ fn dispatch(action: Action) {
             // Tenant: route through the apex signer iframe so the wallet
             // lands at apex OPFS, then re-paint tenant chrome so
             // verification picks up the new owner.
+            // SINGLE-FLIGHT: ignore re-presses while a flow runs.
+            let Some(flow_guard) = onboard_flow_begin() else {
+                return;
+            };
             dom::swap_inner(
                 "identity-msg",
                 "<span style=\"color:var(--muted)\">generating identity…</span>",
@@ -763,6 +798,7 @@ fn dispatch(action: Action) {
             match super::tenant::current() {
                 super::tenant::Host::Apex => {
                     wasm_bindgen_futures::spawn_local(async move {
+                        let _flow_guard = flow_guard;
                         // Bounded: a wedged storage write must surface as an
                         // error, not an eternal "generating identity…" (the
                         // iPhone stuck-create report).
@@ -806,6 +842,7 @@ fn dispatch(action: Action) {
                     // overwrite=true because the user has clicked the
                     // create action with intent (just like at apex).
                     wasm_bindgen_futures::spawn_local(async move {
+                        let _flow_guard = flow_guard;
                         match super::verify::create_wallet_via_iframe(true).await {
                             Ok(_addr) => {
                                 if let super::tenant::Host::Tenant(name) = &host {

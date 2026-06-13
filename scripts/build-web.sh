@@ -29,6 +29,25 @@ if [ -n "$VERSION" ]; then
     echo "→ stamped llms.txt version: ${VERSION}"
 fi
 
+# PRIVACY: rustc embeds the BUILD MACHINE's absolute source paths into panic
+# metadata inside the wasm (e.g. C:\Users\<name>\.cargo\registry\...) — the
+# published binary leaked the builder's username (surfaced by the on-screen
+# panic banner, but present in `strings` of every prior bundle). Remap every
+# local prefix to a generic one. Both slash styles: rustc records Windows
+# paths with backslashes for local crates and forward slashes elsewhere.
+REPO_DIR="$(pwd)"
+REPO_DIR_WIN="$(cygpath -w "$REPO_DIR" 2>/dev/null || echo "$REPO_DIR")"
+CARGO_DIR="${CARGO_HOME:-$HOME/.cargo}"
+CARGO_DIR_WIN="$(cygpath -w "$CARGO_DIR" 2>/dev/null || echo "$CARGO_DIR")"
+HOME_WIN="$(cygpath -w "$HOME" 2>/dev/null || echo "$HOME")"
+export RUSTFLAGS="${RUSTFLAGS:-} \
+ --remap-path-prefix=${REPO_DIR_WIN}=/lh \
+ --remap-path-prefix=${REPO_DIR}=/lh \
+ --remap-path-prefix=${CARGO_DIR_WIN}=/cargo \
+ --remap-path-prefix=${CARGO_DIR}=/cargo \
+ --remap-path-prefix=${HOME_WIN}=/home \
+ --remap-path-prefix=${HOME}=/home"
+
 echo "→ wasm-pack build (release, browser-app)..."
 wasm-pack build . \
     --target web \
@@ -36,6 +55,13 @@ wasm-pack build . \
     --release \
     --no-default-features \
     --features browser-app
+
+# Guard: the published wasm must not contain the builder's username.
+USERPART="$(basename "$HOME_WIN" 2>/dev/null || basename "$HOME")"
+if [ -n "$USERPART" ] && grep -aq "Users.$USERPART" web/pkg/localharness_bg.wasm; then
+    echo "ERROR: build-machine path leaked into web/pkg/localharness_bg.wasm — remap failed" >&2
+    exit 1
+fi
 
 # Cache-bust the bundle URLs (see web/boot.js): Chrome's wasm code cache serves
 # a stale compiled module for the unchanged wasm URL despite must-revalidate, so
