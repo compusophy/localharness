@@ -1696,8 +1696,14 @@ async function processJob(
   // debit exhausted the job, the facet already refunded via the exhaust path
   // and completeJob reports 'failed' on the JobNotActive revert — same outcome
   // for the owner (job over, remainder refunded), logged either way.
+  // Gate on `outcome === 'recorded'` (matching the push block below): only relay
+  // completeJob when THIS run's recordRun actually landed. On a benign
+  // race/timeout (outcome 'stale' — another firer committed first, or the
+  // receipt didn't arrive) the job was NOT advanced by us; calling completeJob
+  // anyway would end an Active job early + refund its escrow on a run we never
+  // recorded. The goal-loop simply re-fires next tick and the agent re-finishes.
   let goal: 'completed' | 'complete-failed' | undefined;
-  if (goalReport !== undefined) {
+  if (outcome === 'recorded' && goalReport !== undefined) {
     goal = (await completeJob(id)) === 'completed' ? 'completed' : 'complete-failed';
     console.log(
       `[scheduler] job ${idStr} GOAL ${goal === 'completed' ? 'COMPLETE (job ended, remainder refunded)' : 'finish relay unconfirmed'} — report: ${goalReport.slice(0, 800)}`,
@@ -1711,8 +1717,15 @@ async function processJob(
   // job buzzes when it finishes, not while it works. Still only for runs
   // WE recorded with output; missing VAPID env / subscription silently
   // skips; a push failure can never fail the run.
+  // Mirror ScheduleFacet.recordRun's exhaust test EXACTLY (recordRun marks
+  // Exhausted when `runsLeft == 0 || remaining < spentWei`, where
+  // `remaining = budgetWei - spentWei`): the partial-remainder hard stop fires
+  // when what's left can't fund another run of THIS size, not only when the
+  // budget hit exactly zero. `spentWei` is already capped to `job.budgetWei`,
+  // so `job.budgetWei - spentWei` never underflows.
   const exhaustedNow =
-    outcome === 'recorded' && (job.runsLeft <= 1 || spentWei >= job.budgetWei);
+    outcome === 'recorded' &&
+    (job.runsLeft <= 1 || job.budgetWei - spentWei < spentWei);
   if (outcome === 'recorded' && ran === 'ok' && (goal === 'completed' || exhaustedNow)) {
     const pushBody = goalReport !== undefined ? goalReport : runNote;
     const pushName = goal === 'completed' ? `GOAL COMPLETE: ${name}` : name;
