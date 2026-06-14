@@ -33,6 +33,13 @@
 //! tag `localharness/v0/ecies` — keccak over the shared-secret x-coordinate).
 //! Phase 2 is purely additive: it does NOT touch the facet or v1 derivation.
 
+// aes-gcm 0.10 re-exports generic-array 0.14, whose `Nonce::{from_slice,
+// as_slice}` are deprecation-flagged in favor of a generic-array 1.x API the
+// crate hasn't bumped to yet. The usage below is the canonical, stable pattern
+// for this aes-gcm version, so silence the transitive-dep deprecation here
+// (keeps `clippy -D warnings` green) rather than chasing a churned API.
+#![allow(deprecated)]
+
 use crate::kv_reduce::KvOp;
 use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};

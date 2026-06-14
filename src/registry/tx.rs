@@ -386,7 +386,8 @@ mod tests {
         let max = format!("0x{}{}", "0".repeat(32), "f".repeat(32));
         assert_eq!(decode_u256_as_u128(&max).unwrap(), u128::MAX);
         // High bytes set (value > u128::MAX) → ERROR, never silent truncation.
-        let overflow = format!("0x{}{}", format!("{:032x}", 1u8), "0".repeat(32));
+        let high = format!("{:032x}", 1u8);
+        let overflow = format!("0x{}{}", high, "0".repeat(32));
         assert!(decode_u256_as_u128(&overflow).is_err());
     }
 }

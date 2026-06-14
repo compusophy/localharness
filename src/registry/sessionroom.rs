@@ -1,9 +1,9 @@
 //! SessionRoom driver (GitHub #22): create/manage member-gated, append-only
-//! logs of ENCRYPTED key/value ops on the diamond's `SessionRoomFacet`. Sealing
-//! + CRDT folding are off-chain (`crate::kv_room` + `crate::kv_reduce`); this
-//! module is only the chain I/O — sponsored writes + decoded reads. The `Op` ABI
-//! shape `(address, uint64, bytes)` matches `Signal`, so reads reuse the shared
-//! `decode_addr_ts_bytes_array` decoder.
+//! logs of ENCRYPTED key/value ops on the diamond's `SessionRoomFacet`. Op
+//! sealing and CRDT folding are off-chain (`crate::kv_room` and
+//! `crate::kv_reduce`); this module is only the chain I/O — sponsored writes plus
+//! decoded reads. The `Op` ABI shape `(address, uint64, bytes)` matches
+//! `Signal`, so reads reuse the shared `decode_addr_ts_bytes_array` decoder.
 
 use super::*;
 use k256::ecdsa::SigningKey;
@@ -261,13 +261,11 @@ mod tests {
         // [0xaa.., 0xbb..]: offset=0x20, len=2, two padded addresses.
         let a = "a".repeat(40);
         let b = "b".repeat(40);
-        let hex = format!(
-            "0x{off}{len}{a_word}{b_word}",
-            off = format!("{:0>64x}", 0x20),
-            len = format!("{:0>64x}", 2),
-            a_word = format!("{:0>24}{}", "", a),
-            b_word = format!("{:0>24}{}", "", b),
-        );
+        let off = format!("{:0>64x}", 0x20);
+        let len = format!("{:0>64x}", 2);
+        let a_word = format!("{:0>24}{a}", "");
+        let b_word = format!("{:0>24}{b}", "");
+        let hex = format!("0x{off}{len}{a_word}{b_word}");
         let got = decode_address_array(&hex);
         assert_eq!(got, vec![format!("0x{a}"), format!("0x{b}")]);
     }
