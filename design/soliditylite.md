@@ -119,6 +119,20 @@
 > the bin) + wasm clean. Next: (a) `facet cut <diamond> <facet> <src>` + a browser ClosureTool
 > (confirm_guard-gated) for the full author→deploy→cut via a tool call; (b) the §7 safety lint; (c)
 > dynamic types.
+>
+> **UPDATE 2026-06-14 (loop tick 12): the FULL keystone flow is CLI-driven.** Exposed
+> `CompiledArtifact.selectors` (the compiler already computed them for dispatch) and added two CLI
+> subcommands: `localharness facet diamond [--as <me>]` (genesis a child diamond the caller OWNS,
+> seeded with the core Cut/Loupe/Ownership facets via `encode_diamond_constructor_args` +
+> `create_sponsored`) and `facet cut [--as <me>] <diamond> <facet> <src.sol>` (compile → `art.selectors`
+> → `encode_diamond_cut` → `submit_tempo_sponsored`). DOGFOODED end to end as `claude`: `facet diamond`
+> → a claude-owned diamond `0x59e3b39a…`, `facet cut <diamond> <tally-facet> tally.sol` → cut, then
+> `get()` resolves THROUGH the diamond (returns 0, i.e. wired + routes to the facet). 694 lib tests,
+> clippy(all-targets) + wasm clean. An agent now runs the WHOLE self-modification keystone — genesis a
+> diamond it owns → deploy a facet from source → cut it in — from the CLI, no toolchain/solc/examples.
+> Next: a browser ClosureTool (confirm_guard-gated) for the in-tab surface; the §7 safety lint;
+> dynamic types. (`facet diamond` reads contracts/out Diamond.json — embed the bytecode for a
+> distributed CLI.)
 
 > A hand-rolled, in-browser Solidity/EVM-subset → EVM-bytecode compiler that lets an
 > agent **write, compile, deploy, and `diamondCut`** its own facet — the EVM analog of

@@ -241,9 +241,12 @@ CARTRIDGES & PUBLISHING
                                          set what visitors see (publish sets it)
   localharness facet deploy [--as <me>] <name> <src.sol>
                                          compile a SolidityLite (Solidity/EVM-
-                                         subset) facet IN-CRATE + deploy it
-                                         on-chain (sponsored CREATE); prints the
-                                         facet address to diamondCut into a diamond
+                                         subset) facet IN-CRATE + deploy on-chain
+                                         (sponsored CREATE); prints addr+selectors
+  localharness facet diamond [--as <me>] genesis a diamond YOU own (cuttable +
+                                         loupe-verifiable; seeded w/ core facets)
+  localharness facet cut [--as <me>] <diamond> <facet> <src.sol>
+                                         diamondCut a deployed facet into your diamond
 
 CALLING & MCP
   localharness call [--as <me>] [--fresh] [--pay <amt>] <name> <message>

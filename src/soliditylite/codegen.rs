@@ -446,9 +446,10 @@ fn assemble_full(functions: Vec<([u8; 4], Body)>) -> CompiledArtifact {
         emit_full_body(&mut a, lf.body_label, &lf.body);
     }
 
+    let selectors = lowered.iter().map(|lf| lf.selector).collect();
     let runtime = a.finish();
     let init_code = crate::soliditylite::asm::init_wrapper(&runtime);
-    CompiledArtifact { init_code, runtime }
+    CompiledArtifact { init_code, runtime, selectors }
 }
 
 /// Assemble a full runtime from a list of `(selector, body value)` pairs and wrap
@@ -478,9 +479,10 @@ pub fn assemble(functions: &[([u8; 4], BodyValue)]) -> CompiledArtifact {
         emit_body(&mut a, lf.body_label, lf.value);
     }
 
+    let selectors = lowered.iter().map(|lf| lf.selector).collect();
     let runtime = a.finish();
     let init_code = crate::soliditylite::asm::init_wrapper(&runtime);
-    CompiledArtifact { init_code, runtime }
+    CompiledArtifact { init_code, runtime, selectors }
 }
 
 /// The storage `BASE` slot for a facet: `keccak256("localharness.<name>.storage.v1")`

@@ -52,6 +52,10 @@ pub struct CompiledArtifact {
     pub init_code: Vec<u8>,
     /// The deployed runtime bytecode (what `eth_getCode` returns after deploy).
     pub runtime: Vec<u8>,
+    /// The 4-byte function selectors this facet dispatches, in declaration order
+    /// — i.e. the `FacetCut.functionSelectors` needed to `diamondCut` it into a
+    /// diamond. (`emit_constant_getter` yields the single getter's selector.)
+    pub selectors: Vec<[u8; 4]>,
 }
 
 /// Emit a minimal single-function contract: a constant getter.
