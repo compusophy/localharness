@@ -121,9 +121,15 @@ impl ConfirmGate {
         }
         // Code + args match. The model could have copied the code out of the
         // tool result, so additionally require that the USER typed it: the
-        // code must appear in the latest user message (case-insensitive).
-        let nonce_upper = supplied.to_ascii_uppercase();
-        if last_user_msg.to_ascii_uppercase().contains(&nonce_upper) {
+        // code must appear in the latest user message as a STANDALONE token
+        // (case-insensitive). A substring `contains` would approve on an
+        // incidental match inside an unrelated word/hash/URL — too weak for the
+        // last line of defense on irreversible actions, so split on
+        // non-alphanumerics (the alphabet is alnum) and compare whole tokens.
+        if last_user_msg
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|tok| tok.eq_ignore_ascii_case(supplied))
+        {
             self.pending = None; // consume — single-use
             ConfirmOutcome::Approved
         } else {
@@ -208,6 +214,24 @@ mod tests {
         assert_eq!(out, ConfirmOutcome::NotTypedByUser);
         // The user then actually types it (lowercase is fine) → approved.
         let out = gate.check(&fp("fsmoke"), "AAAAAA", "ok: aaaaaa", "CCCCCC".into());
+        assert_eq!(out, ConfirmOutcome::Approved);
+    }
+
+    #[test]
+    fn incidental_substring_does_not_approve() {
+        let mut gate = ConfirmGate::new();
+        gate.check(&fp("fsmoke"), "", "please release fsmoke", "AB23CD".into());
+        // The code appears only as a SUBSTRING of an unrelated token (a hash),
+        // never typed standalone by the user → must NOT approve.
+        let out = gate.check(
+            &fp("fsmoke"),
+            "AB23CD",
+            "see commit 9fAB23CDee for context",
+            "ZZZZZZ".into(),
+        );
+        assert_eq!(out, ConfirmOutcome::NotTypedByUser);
+        // Typed as its own token (any delimiter) → approved.
+        let out = gate.check(&fp("fsmoke"), "AB23CD", "code: AB23CD.", "YYYYYY".into());
         assert_eq!(out, ConfirmOutcome::Approved);
     }
 

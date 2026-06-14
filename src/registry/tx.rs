@@ -91,11 +91,20 @@ pub(crate) fn decode_u256_as_u128(hex: &str) -> Result<u128, String> {
     if trimmed.is_empty() {
         return Ok(0);
     }
-    // Strip leading zeros so we fit in u128 (last 32 hex chars).
+    // Take the low 32 hex chars (16 bytes = u128) — but REJECT rather than
+    // silently truncate if the dropped high bytes are non-zero. These words back
+    // balance/allowance/supply reads that gate payment + escrow; returning a
+    // value mod 2^128 would be a silently-wrong number used in a money decision.
     let tail = if trimmed.len() <= 32 {
         trimmed
     } else {
-        &trimmed[trimmed.len() - 32..]
+        let (high, low) = trimmed.split_at(trimmed.len() - 32);
+        if high.bytes().any(|b| b != b'0') {
+            return Err(format!(
+                "value exceeds u128::MAX (high bytes set): 0x{trimmed}"
+            ));
+        }
+        low
     };
     u128::from_str_radix(tail, 16).map_err(|e| e.to_string())
 }
@@ -376,5 +385,8 @@ mod tests {
         // Exactly u128::MAX in the low 16 bytes.
         let max = format!("0x{}{}", "0".repeat(32), "f".repeat(32));
         assert_eq!(decode_u256_as_u128(&max).unwrap(), u128::MAX);
+        // High bytes set (value > u128::MAX) → ERROR, never silent truncation.
+        let overflow = format!("0x{}{}", format!("{:032x}", 1u8), "0".repeat(32));
+        assert!(decode_u256_as_u128(&overflow).is_err());
     }
 }

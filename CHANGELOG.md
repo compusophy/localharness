@@ -5,6 +5,36 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security & correctness (parallel bug-sweep wave)
+
+- **Guild treasury could be stranded by `releaseName` (HIGH, fixed + cut live).**
+  A guild is minted as a normal identity NFT held by its founder, so
+  `releaseName(guildId)` would burn it — but `_burn` only clears registry
+  storage, leaving the guild's escrowed `$LH` treasury (`guildBalance`) and
+  membership rows in `LibGuildStorage` permanently unreachable. `releaseName`
+  now reverts `CannotReleaseGuild` for any existing guild id (admin reset paths
+  unchanged). New ReleaseFacet cut live (`ReplaceReleaseGuildGuard.s.sol`).
+- **Confirm-gate substring bypass (security).** The destructive-action gate
+  approved when the confirmation code appeared as an unanchored *substring* of
+  the latest user message — an incidental match inside a hash/URL/word could
+  satisfy the "user typed it" requirement. It now requires the code as a
+  standalone whitespace/punctuation-delimited token.
+- **`decode_u256_as_u128` silent truncation (correctness).** On-chain
+  balance/allowance/supply reads above 2^128 were silently returned mod 2^128
+  instead of erroring — a wrong number feeding payment/escrow gates. Now returns
+  an error when the dropped high bytes are non-zero.
+- **Proxy: streaming no longer blocks on the meter receipt.** `api/gemini.ts`
+  awaited the on-chain `meter()` receipt (up to 12s) before streaming the LLM
+  response, adding head-of-line latency to every metered call. It now broadcasts
+  the debit without serializing first-byte behind the receipt (the credit gate
+  already pre-checks balance; `meter()` is CAS-guarded against double-charge).
+- **Proxy: x402 money fields reject lossy JS numbers.** `api/mcp.ts` `toBig`
+  silently truncated number-typed `value`/`validBefore`/`validAfter` above
+  2^53 via `Math.trunc`, corrupting a signed money field; it now rejects
+  non-safe-integer numbers and requires large values as decimal strings.
+
 ## [0.35.0] - 2026-06-13
 
 ### Added

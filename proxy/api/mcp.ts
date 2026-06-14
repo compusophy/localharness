@@ -1089,7 +1089,17 @@ function parseAuth(headerVal: string | null, params: Record<string, unknown>): X
   const o = raw as Record<string, unknown>;
 
   const toBig = (v: unknown, field: string): bigint => {
-    if (typeof v === 'number') return BigInt(Math.trunc(v));
+    // Money/time fields are $LH wei (18 decimals): real values (>=1e16) sit far
+    // above Number.MAX_SAFE_INTEGER, so a JS number has already lost precision
+    // before we see it. Accept numbers ONLY when exactly representable; force
+    // large values to arrive as decimal strings (BigInt parses those losslessly)
+    // rather than silently corrupting a signed, money-moving field.
+    if (typeof v === 'number') {
+      if (!Number.isSafeInteger(v)) {
+        throw new Error(`x402 authorization: ${field} exceeds safe-integer range — pass it as a decimal string`);
+      }
+      return BigInt(v);
+    }
     if (typeof v === 'string' && v.trim() !== '') return BigInt(v);
     throw new Error(`x402 authorization: missing/invalid ${field}`);
   };

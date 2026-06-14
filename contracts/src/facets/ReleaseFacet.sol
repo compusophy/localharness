@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import {LibDiamond} from "../libraries/LibDiamond.sol";
 import {LibRegistryStorage} from "../libraries/LibRegistryStorage.sol";
 import {LibMainIdentityStorage} from "../libraries/LibMainIdentityStorage.sol";
+import {LibGuildStorage} from "../libraries/LibGuildStorage.sol";
 
 /// @title ReleaseFacet
 /// @notice Recycle a subdomain: the owner gives it up — the NFT is burned
@@ -26,6 +27,7 @@ contract ReleaseFacet {
 
     error NotOwner();
     error CannotReleaseMain();
+    error CannotReleaseGuild();
 
     function releaseName(uint256 tokenId) external {
         LibRegistryStorage.Storage storage s = LibRegistryStorage.load();
@@ -38,6 +40,16 @@ contract ReleaseFacet {
         // if that facet is ever cut out, which would silently BYPASS this guard.
         if (LibMainIdentityStorage.load().mainOf[msg.sender] == tokenId) {
             revert CannotReleaseMain();
+        }
+
+        // Guard: never release a GUILD identity. A guild is minted as a normal
+        // identity NFT held by its founder (GuildFacet.createGuild), but its
+        // treasury ($LH escrowed in the diamond, ledgered in guildBalance) and
+        // membership rows live in LibGuildStorage, which `_burn` does NOT clear.
+        // Burning it would zombie the guild and strand its funds forever. Force
+        // the treasury to be drained + the guild wound down before release.
+        if (LibGuildStorage.load().guilds[tokenId].exists) {
+            revert CannotReleaseGuild();
         }
 
         _burn(s, tokenId, owner);

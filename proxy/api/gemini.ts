@@ -317,7 +317,7 @@ class InsufficientCreditError extends Error {}
  * double-charge if they retry a debit that actually landed. Bursts produce
  * definitive reverts, not timeouts, so the leak still closes.
  */
-async function meterDebit(user: string, amount: bigint): Promise<void> {
+async function meterDebit(user: string, amount: bigint, confirm = true): Promise<void> {
   const pk = process.env.PROXY_METER_KEY;
   if (!pk) throw new Error('missing PROXY_METER_KEY');
   const account = privateKeyToAccount(
@@ -338,6 +338,14 @@ async function meterDebit(user: string, amount: bigint): Promise<void> {
     data,
     value: 0n,
   });
+
+  // Streaming callers (`confirm=false`) await only the broadcast above — they
+  // must NOT serialize first-byte latency behind the receipt (up to the 12s
+  // timeout below). The credit gate already verified `creditOf >= cost` and
+  // `meter()` is CAS-guarded against double-charge, so the residual race
+  // (balance dropped between gate-read and debit) at worst serves one call for
+  // free rather than adding seconds of head-of-line delay to every request.
+  if (!confirm) return;
 
   const pub = createPublicClient({ chain: TEMPO_CHAIN, transport: http(TEMPO_RPC) });
   let status: 'success' | 'reverted';
@@ -631,24 +639,14 @@ export default async function handler(req: Request): Promise<Response> {
     // Fail closed if the debit can't be submitted.
     if (hasCredit) {
       try {
-        await meterDebit(address, cost);
+        // Submit the debit but DON'T block first-byte on the receipt: streaming
+        // responses must flow immediately, not after the meter tx confirms
+        // (which added up to 12s of head-of-line latency to every metered call).
+        await meterDebit(address, cost, false);
       } catch (e) {
-        // A definitive revert = genuinely out of $LH for THIS request. If a
-        // (free-beta) session also covers the caller, serve under it; otherwise
-        // it's a real 402. Anything else is an ambiguous infra error (502).
-        if (e instanceof InsufficientCreditError) {
-          if (!hasSession) {
-            return json(
-              {
-                error:
-                  'insufficient $LH credit — the on-chain debit reverted (balance changed since the gate read)',
-              },
-              402,
-              origin,
-            );
-          }
-          // else: covered by an active session — fall through and serve.
-        } else {
+        // Broadcast itself failed (RPC/infra). Without a (free-beta) session
+        // covering the caller, that's a real 502; otherwise serve under it.
+        if (!hasSession) {
           return json({ error: 'metering failed: ' + (e as Error).message }, 502, origin);
         }
       }
