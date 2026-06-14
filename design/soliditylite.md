@@ -148,6 +148,25 @@
 > `owner()` → rejected as reserved AND clashing. This is advisory off-chain defense; §7 still wants the
 > on-chain registrar to re-enforce reserved + `_init==0` for agent-signed cuts. Next: the on-chain
 > guard, the browser cut ClosureTool (confirm_guard-gated), dynamic types.
+>
+> **UPDATE 2026-06-14 (loop tick 14): §7 trust-critical ON-CHAIN guard shipped + LIVE — `GuardedDiamondCutFacet`.**
+> The off-chain `cut_guard` only protects CLI users; an agent can sign a raw `diamondCut` and bypass it.
+> Fix: `contracts/src/facets/GuardedDiamondCutFacet.sol` — a drop-in cut facet occupying the SAME
+> selector (`0x1f931c1c`), so it's the ONLY `diamondCut` entry point. It enforces, in the EVM:
+> (a) no FacetCut may touch a RESERVED selector (cut/ownership/loupe/ERC165) in ANY action — because
+> `diamondCut` itself is reserved, the guard cannot be replaced or removed, so the constraint is
+> PERMANENT; (b) `_init==address(0)` and empty `_calldata` (no init delegatecall — the highest-severity
+> vector). Seeded into every child diamond at genesis (`facet diamond` now uses
+> `GUARDED_CUT_FACET=0xa4c8a030607090e0C8602311F104471381E94eb1` for `0x1f931c1c` in place of the raw
+> cut facet) → child diamonds are SAFE-BY-CONSTRUCTION (the foundation for tradable agent-owned
+> diamonds). 7 forge/revm tests (`test/GuardedDiamondCutFacet.t.sol`: legit-cut-routes, reserved-add,
+> self-replace, loupe-remove, nonzero-init, nonzero-calldata, non-owner). DEPLOYED to Tempo Moderato
+> (`0xa4c8a030…`, owner key) and PROVEN LIVE via raw owner-signed `cast` calls that bypass the CLI
+> lint: a deployer-owned guarded diamond `0x94d23c60…` → reserved-selector cut reverts `Guarded:
+> reserved selector`, nonzero-init reverts `Guarded: init delegatecall forbidden`, a legit non-reserved
+> cut lands (loupe records it). The off-chain lint catches mistakes pre-gas; this binds the invariant
+> even for a raw agent-signed tx. Next: the browser cut ClosureTool (confirm_guard-gated, in-tab
+> surface), dynamic types (string/bytes/arrays), embed Diamond bytecode for a distributable CLI.
 
 > A hand-rolled, in-browser Solidity/EVM-subset → EVM-bytecode compiler that lets an
 > agent **write, compile, deploy, and `diamondCut`** its own facet — the EVM analog of
