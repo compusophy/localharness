@@ -86,6 +86,10 @@ pub struct AgentConfig {
     /// enforcer. First deny wins — use for cross-cutting guards a static
     /// `Policy` can't express (e.g. duplicate-action suppression).
     pub pre_tool_hooks: Vec<Arc<dyn crate::hooks::PreToolCallDecideHook>>,
+    /// Custom post-tool-call inspect hooks, run after each call's result is
+    /// known. Inspect-only (cannot block) — use to observe outcomes or undo a
+    /// pre-hook's optimistic bookkeeping on failure (e.g. the dedup cleanup).
+    pub post_tool_hooks: Vec<Arc<dyn crate::hooks::PostToolCallHook>>,
 }
 
 impl AgentConfig {
@@ -126,6 +130,17 @@ impl AgentConfig {
         hook: Arc<dyn crate::hooks::PreToolCallDecideHook>,
     ) -> Self {
         self.pre_tool_hooks.push(hook);
+        self
+    }
+
+    /// Register a custom post-tool-call inspect hook (runs after each call's
+    /// result is known; inspect-only). Pairs with a pre-tool hook to undo
+    /// optimistic bookkeeping on failure — e.g. reverting a dedup hash insert.
+    pub fn with_post_tool_hook(
+        mut self,
+        hook: Arc<dyn crate::hooks::PostToolCallHook>,
+    ) -> Self {
+        self.post_tool_hooks.push(hook);
         self
     }
 
@@ -293,6 +308,16 @@ impl GeminiAgentConfig {
         self
     }
 
+    /// Register a custom post-tool-call inspect hook (see
+    /// [`AgentConfig::with_post_tool_hook`]).
+    pub fn with_post_tool_hook(
+        mut self,
+        hook: Arc<dyn crate::hooks::PostToolCallHook>,
+    ) -> Self {
+        self.agent = self.agent.with_post_tool_hook(hook);
+        self
+    }
+
     /// Add a workspace root for path-containment enforcement.
     pub fn with_workspace(mut self, ws: impl Into<PathBuf>) -> Self {
         self.agent = self.agent.with_workspace(ws);
@@ -404,6 +429,16 @@ impl MockAgentConfig {
         hook: Arc<dyn crate::hooks::PreToolCallDecideHook>,
     ) -> Self {
         self.agent = self.agent.with_pre_tool_hook(hook);
+        self
+    }
+
+    /// Register a custom post-tool-call inspect hook (see
+    /// [`AgentConfig::with_post_tool_hook`]).
+    pub fn with_post_tool_hook(
+        mut self,
+        hook: Arc<dyn crate::hooks::PostToolCallHook>,
+    ) -> Self {
+        self.agent = self.agent.with_post_tool_hook(hook);
         self
     }
 
@@ -539,6 +574,16 @@ impl AnthropicAgentConfig {
         hook: Arc<dyn crate::hooks::PreToolCallDecideHook>,
     ) -> Self {
         self.agent = self.agent.with_pre_tool_hook(hook);
+        self
+    }
+
+    /// Register a custom post-tool-call inspect hook (see
+    /// [`AgentConfig::with_post_tool_hook`]).
+    pub fn with_post_tool_hook(
+        mut self,
+        hook: Arc<dyn crate::hooks::PostToolCallHook>,
+    ) -> Self {
+        self.agent = self.agent.with_post_tool_hook(hook);
         self
     }
 
@@ -687,6 +732,16 @@ impl OpenAiAgentConfig {
         self
     }
 
+    /// Register a custom post-tool-call inspect hook (see
+    /// [`AgentConfig::with_post_tool_hook`]).
+    pub fn with_post_tool_hook(
+        mut self,
+        hook: Arc<dyn crate::hooks::PostToolCallHook>,
+    ) -> Self {
+        self.agent = self.agent.with_post_tool_hook(hook);
+        self
+    }
+
     /// Add a workspace root for path-containment enforcement.
     pub fn with_workspace(mut self, ws: impl Into<PathBuf>) -> Self {
         self.agent = self.agent.with_workspace(ws);
@@ -802,6 +857,16 @@ impl LocalAgentConfig {
         hook: Arc<dyn crate::hooks::PreToolCallDecideHook>,
     ) -> Self {
         self.agent = self.agent.with_pre_tool_hook(hook);
+        self
+    }
+
+    /// Register a custom post-tool-call inspect hook (see
+    /// [`AgentConfig::with_post_tool_hook`]).
+    pub fn with_post_tool_hook(
+        mut self,
+        hook: Arc<dyn crate::hooks::PostToolCallHook>,
+    ) -> Self {
+        self.agent = self.agent.with_post_tool_hook(hook);
         self
     }
 
@@ -1205,6 +1270,9 @@ impl Agent {
         }
         for hook in &agent_config.pre_tool_hooks {
             hook_runner.register_pre_tool_call_decide(hook.clone());
+        }
+        for hook in &agent_config.post_tool_hooks {
+            hook_runner.register_post_tool_call(hook.clone());
         }
 
         // MCP servers: connect, register their tools BEFORE the

@@ -13,14 +13,29 @@
 //! message telling the model to finish instead. First turns are never
 //! blocked — "notify me twice" stays expressible; only the nudge-induced
 //! repeat class is suppressed.
+//!
+//! **Commit-on-success (issue #84).** The pre-hook records the hash at DECIDE
+//! time (before the body runs) so a parallel functionCall batch can't slip the
+//! same call through twice in one turn (#55). But that recording must be
+//! REVERTED if execution then FAILS — otherwise a transient error (e.g. an RPC
+//! blip on `send_lh`) would permanently poison the hash and the model could
+//! never retry the action within the same request. The paired
+//! [`DuplicateActionGuardCleanup`] [`PostToolCallHook`] removes the hash again
+//! whenever the freshly-inserted call comes back with an error. A DENIED repeat
+//! never re-inserts, so its denial error never triggers a cleanup.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use crate::error::Result;
-use crate::hooks::{OperationContext, PreToolCallDecideHook};
-use crate::types::{HookResult, ToolCall};
+use crate::hooks::{OperationContext, PostToolCallHook, PreToolCallDecideHook};
+use crate::types::{HookResult, ToolCall, ToolResult};
+
+/// Op-context key the pre-hook stamps with the hash it freshly inserted, so the
+/// paired post-hook can revert exactly that insert on failure. Only set on the
+/// FIRST occurrence (the insert path) — a denied repeat leaves it unset.
+const FRESH_HASH_KEY: &str = "app::dedup::fresh_hash";
 
 thread_local! {
     /// Hashes of guarded calls executed during the CURRENT user request
@@ -74,7 +89,7 @@ impl PreToolCallDecideHook for DuplicateActionGuard {
         "app::duplicate_action_guard"
     }
 
-    async fn run(&self, _ctx: &OperationContext, call: &ToolCall) -> Result<HookResult> {
+    async fn run(&self, ctx: &OperationContext, call: &ToolCall) -> Result<HookResult> {
         if !GUARDED.contains(&call.name.as_str()) {
             return Ok(HookResult::allow());
         }
@@ -94,6 +109,40 @@ impl PreToolCallDecideHook for DuplicateActionGuard {
                 call.name
             )));
         }
+        // We just inserted `h`. Hand it to the paired post-hook so a FAILED
+        // execution can revert the insert (issue #84) and the model may retry.
+        ctx.set(FRESH_HASH_KEY, serde_json::Value::String(h.to_string()));
         Ok(HookResult::allow())
+    }
+}
+
+/// Reverts the pre-hook's optimistic hash insert when the call FAILS, so a
+/// transient error doesn't permanently block a same-request retry (issue #84).
+///
+/// Fires for every tool call, but only acts when the pre-hook stamped a fresh
+/// hash into this op context (i.e. THIS call inserted it — not a denied repeat)
+/// AND the result carries an error. Read-only / never-inserted calls leave the
+/// marker unset, so this is a no-op for them.
+pub(crate) struct DuplicateActionGuardCleanup;
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl PostToolCallHook for DuplicateActionGuardCleanup {
+    fn name(&self) -> &str {
+        "app::duplicate_action_guard_cleanup"
+    }
+
+    async fn run(&self, ctx: &OperationContext, result: &ToolResult) -> Result<()> {
+        if result.error.is_none() {
+            return Ok(());
+        }
+        let Some(h) = ctx
+            .get(FRESH_HASH_KEY)
+            .and_then(|v| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+        else {
+            return Ok(());
+        };
+        RUN_HASHES.with(|s| s.borrow_mut().remove(&h));
+        Ok(())
     }
 }
