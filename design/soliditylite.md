@@ -95,6 +95,18 @@
 > string and executes on the real Tempo EVM.** Next (capstone): compile the full CounterFacet →
 > deploy → genesis a fresh child diamond → cut → call through the diamond (the existing child already
 > holds those selectors), the full agent-authored-facet-in-its-own-diamond demo.
+>
+> **UPDATE 2026-06-14 (loop tick 10): CAPSTONE — the SolidityLite MVP is demonstrated END TO END.**
+> `examples/soliditylite_mvp_capstone.rs` runs the literal keystone flow live on Moderato: an agent
+> (1) WROTE a CounterFacet in source, (2) COMPILED it in-crate (789-byte runtime), (3) DEPLOYED it
+> via sponsored CREATE, (4) GENESISed a fresh child diamond it OWNS (`0xe11916…`), (5) CUT the
+> compiled facet's 4 selectors into that diamond (loupe `facetAddress(increment)` == the compiled
+> facet), and (6) CALLED `increment()` THROUGH the diamond → `countOf`==1, `totalCount`==1, and the
+> `Incremented` event fired correctly (topic0 + indexed caller + data). The self-modifying-platform
+> keystone is PROVEN: an agent authors, compiles, deploys, and cuts its own facet into a diamond it
+> owns. BEYOND-MVP (next): an agent TOOL (browser + CLI) to author/deploy/cut a facet end to end;
+> the design §7 safety/immune-system layers (selector-clash + storage-isolation lint, on-chain
+> `_init==0` + reserved-selector guard); dynamic types (string/bytes/arrays) for data-heavy facets.
 
 > A hand-rolled, in-browser Solidity/EVM-subset → EVM-bytecode compiler that lets an
 > agent **write, compile, deploy, and `diamondCut`** its own facet — the EVM analog of
