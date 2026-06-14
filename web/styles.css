@@ -670,6 +670,14 @@ main.layout .transcript > *:empty { display: none; }
    we only zero the FIRST one. */
 .apex-main > .col-chat > :first-child,
 .apex-main > :first-child { margin-top: 0; }
+/* Soft-keyboard fix (#90): on mobile, focusing the claim/onboarding input
+   makes the browser scroll it into the shrunken (above-keyboard) viewport,
+   which left the submit button — directly BELOW the input in the .create-form
+   column — hidden behind the keyboard, forcing a tap-away to dismiss before
+   submit. scroll-margin-bottom reserves room below the input in that scroll
+   calculation, so the input parks higher and the button stays on screen.
+   ~120px clears the button + its 24px gap on the tightest layout. */
+.apex-main .create-input { scroll-margin-bottom: 120px; }
 /* Apex footer links (src/landing.rs::apex_links) — ONE centered row;
    explore is the uninvited visitor's escape hatch. wrap keeps both links
    on-screen at 390px. */
