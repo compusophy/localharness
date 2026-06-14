@@ -481,6 +481,24 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
 
         if deps.state.cancel.load(Ordering::Acquire) {
             debug!("turn cancelled before tool dispatch");
+            // The assistant message with these tool_use blocks is already in
+            // history (pushed above; `pending_calls` is non-empty here — the
+            // empty case broke at the check above). Anthropic 400s the NEXT
+            // turn if a tool_use isn't answered by a matching tool_result, so
+            // balance every pending call with a cancelled tool_result before
+            // bailing — otherwise the dangling tool_use bricks the conversation.
+            let cancelled_blocks: Vec<Block> = pending_calls
+                .into_iter()
+                .map(|(id, _name, _args, _err)| Block::ToolResult {
+                    tool_use_id: id,
+                    content: tool_result_content(&json!({ "error": "cancelled" })),
+                    is_error: Some(true),
+                })
+                .collect();
+            deps.state.history.lock().push(Message {
+                role: Role::User,
+                content: cancelled_blocks,
+            });
             break;
         }
 
@@ -1034,6 +1052,55 @@ mod tests {
             assistant_blocks.is_empty(),
             "unsigned thinking must not be persisted"
         );
+    }
+
+    /// REGRESSION (#82): the assistant turn carrying `tool_use` blocks is pushed
+    /// to history BEFORE tools dispatch. If the turn is cancelled in that window
+    /// the loop breaks WITHOUT appending the matching `tool_result` user message
+    /// — a dangling tool_use that 400s the NEXT Anthropic turn
+    /// (`tool_use ids were found without tool_result blocks`). The cancel branch
+    /// must balance every pending call with a cancelled tool_result so history
+    /// stays valid. This mirrors the block assembly run_turn performs on cancel.
+    #[test]
+    fn cancelled_turn_balances_pending_tool_use_with_tool_results() {
+        let pending_calls: Vec<(String, String, Value, Option<String>)> = vec![
+            ("toolu_1".into(), "view_file".into(), json!({"path": "a.rs"}), None),
+            ("toolu_2".into(), "list_directory".into(), json!({}), None),
+        ];
+
+        // --- assembly copied from run_turn's cancel branch ---
+        let cancelled_blocks: Vec<Block> = pending_calls
+            .into_iter()
+            .map(|(id, _name, _args, _err)| Block::ToolResult {
+                tool_use_id: id,
+                content: tool_result_content(&json!({ "error": "cancelled" })),
+                is_error: Some(true),
+            })
+            .collect();
+
+        // One tool_result per tool_use, ids preserved, marked errored.
+        assert_eq!(cancelled_blocks.len(), 2);
+        let ids: Vec<&str> = cancelled_blocks
+            .iter()
+            .map(|b| match b {
+                Block::ToolResult {
+                    tool_use_id,
+                    is_error,
+                    content,
+                } => {
+                    assert_eq!(*is_error, Some(true), "cancelled result must be is_error");
+                    // Content is a wire-valid STRING (Anthropic 400s a bare object).
+                    assert!(content.is_string(), "tool_result.content must be a string");
+                    assert!(
+                        content.as_str().unwrap().contains("cancelled"),
+                        "content should mark the call cancelled"
+                    );
+                    tool_use_id.as_str()
+                }
+                other => panic!("expected ToolResult block, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(ids, vec!["toolu_1", "toolu_2"], "every tool_use id answered");
     }
 
     /// Multiple `message_delta` events (the spec permits more than one) each
