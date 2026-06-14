@@ -182,6 +182,22 @@
 > `setClamped(50)` ⇒ `get()==50` (else branch), `setClamped(200)` ⇒ `get()==100` (then branch). Both
 > branches execute correctly on the real EVM. Next: dynamic types (string/bytes/arrays — the bigger,
 > multi-tick codec+storage rewrite), the browser cut ClosureTool, embed Diamond bytecode.
+>
+> **UPDATE 2026-06-14 (loop tick 16): dynamic types slice 1 — `string` CONSTANT returns.** First step
+> of the multi-tick dynamic-type path (the rest: string params/echo, then dynamic STORAGE). Added
+> `returns (string) { return "<lit>"; }` → the ABI string encoding `head offset 0x20 ‖ length ‖
+> left-aligned right-padded data`, RETURNing the exact dynamic size (single- AND multi-word data).
+> SAFETY-BOUNDED so it can't silently miscompile: `Ty::String` is produced ONLY by the return-clause
+> parser (never `parse_ty`), so `string` in a param/state/event stays a clean "expected type" error;
+> `Expr::StrLit` is valid ONLY as a whole `return` (a string literal in an assignment/compare/emit, or a
+> `returns (string)` with a non-literal body, or a literal returned without `returns (string)`, are all
+> TYPE_MISMATCH/unsupported errors). The value-type return tail is UNTOUCHED — the const-getter golden
+> gate + all 100 soliditylite + 703 lib tests pass; clippy all-targets + wasm clean. PROVEN LIVE on
+> Tempo via a real ERC721-metadata facet (canonical selectors `name()` 0x06fdde03, `symbol()`
+> 0x95d89b41) deployed by `facet deploy` to `0x31282bb5…`: `name()` ⇒ "Localharness Generative Art
+> Collection" (38 bytes, multi-word path), `symbol()` ⇒ "LART" (single-word). This is the
+> `tokenURI`/`name`/`symbol` building block for a real ArtFacet (the art-NFT thrust). Next slices:
+> string CALLDATA params + echo (decode side), then dynamic STORAGE (Feedback/Message-class).
 
 > A hand-rolled, in-browser Solidity/EVM-subset → EVM-bytecode compiler that lets an
 > agent **write, compile, deploy, and `diamondCut`** its own facet — the EVM analog of

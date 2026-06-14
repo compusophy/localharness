@@ -18,7 +18,7 @@ use crate::soliditylite::CompiledArtifact;
 // `Expr`/`Facet`/`Stmt` + the `CompileError` diagnostics are only used by the
 // source-compile path, which is wallet-gated (selector + slot keccak live there).
 #[cfg(feature = "wallet")]
-use crate::soliditylite::ast::{CmpOp, Expr, Facet, StateVarKind, Stmt};
+use crate::soliditylite::ast::{CmpOp, Expr, Facet, StateVarKind, Stmt, Ty};
 #[cfg(feature = "wallet")]
 use crate::rustlite::CompileError;
 
@@ -59,6 +59,11 @@ enum Body {
     /// A mutating function: a sequence of statements (`require` guards + scalar /
     /// mapping-entry assignments), then `RETURN(0,0)`.
     Mutating(Vec<LoweredStmt>),
+    /// A `returns (string)` getter returning a CONSTANT string literal (the
+    /// dynamic-type stretch, slice 1). Emits the ABI string encoding —
+    /// `head offset 0x20 ‖ length ‖ right-padded data` — and `RETURN`s the exact
+    /// dynamic size. The bytes are the decoded UTF-8 literal.
+    ConstString(Vec<u8>),
 }
 
 /// One statement inside a mutating body: a `require` guard, an assignment, or an
@@ -395,6 +400,27 @@ fn emit_full_body(a: &mut Asm, body: Label, b: &Body) {
                 .push_u64(0x00)
                 .emit(op::RETURN);
         }
+        Body::ConstString(bytes) => {
+            a.jumpdest(body);
+            // ABI `string` return: a single head word (offset 0x20 to the data),
+            // then the length, then the UTF-8 bytes LEFT-aligned and right-padded
+            // to a 32-byte multiple — all known at compile time for a literal.
+            //   mem[0x00] = 0x20            ; offset to (length, data)
+            //   mem[0x20] = len
+            //   mem[0x40 + 32*i] = data word i
+            //   RETURN(0x00, 0x40 + ceil(len/32)*32)
+            a.push_u64(0x20).push_u64(0x00).emit(op::MSTORE);
+            a.push_u64(bytes.len() as u64).push_u64(0x20).emit(op::MSTORE);
+            let mut off = 0x40u64;
+            for chunk in bytes.chunks(32) {
+                let mut word = [0u8; 32];
+                word[..chunk.len()].copy_from_slice(chunk); // left-aligned, right-padded
+                a.push32(&word).push_u64(off).emit(op::MSTORE);
+                off += 32;
+            }
+            let padded = bytes.len().div_ceil(32) * 32;
+            a.push_u64(0x40 + padded as u64).push_u64(0x00).emit(op::RETURN);
+        }
         Body::Mutating(stmts) => {
             a.jumpdest(body);
             // Allocate ONE shared revert label for this function's `require`s (incl.
@@ -677,6 +703,15 @@ impl Resolver<'_> {
                 lhs: Box::new(self.lower_expr(lhs)?),
                 rhs: Box::new(self.lower_expr(rhs)?),
             }),
+            // A string literal is a dynamic value, not a single word — it is only
+            // valid as a whole `return "…";` (handled in the body match, not here).
+            Expr::StrLit { span, .. } => Err(CompileError::at_code(
+                crate::error_codes::UNSUPPORTED_FEATURE,
+                "a string literal is only supported as a whole `return` value in v1 (not in an \
+                 assignment, comparison, arithmetic, or event argument)"
+                    .to_string(),
+                *span,
+            )),
         }
     }
 }
@@ -853,6 +888,29 @@ pub fn compile(facet: &Facet) -> Result<CompiledArtifact, CompileError> {
 
         let r = Resolver { facet, base, func };
         let body = match &func.body {
+            // `return "<lit>";` from a `returns (string)` function → a constant
+            // string ABI return (the dynamic-type stretch, slice 1: no storage).
+            // A string literal returned WITHOUT `returns (string)` is a type error.
+            Stmt::Return(Expr::StrLit { value, span }) => {
+                if func.returns != Some(Ty::String) {
+                    return Err(CompileError::at_code(
+                        codes::TYPE_MISMATCH,
+                        "a string literal can only be returned from a `returns (string)` function".to_string(),
+                        *span,
+                    ));
+                }
+                Body::ConstString(value.clone())
+            }
+            // Conversely a `returns (string)` function MUST return a string literal
+            // in v1 (no dynamic storage/calldata strings yet) — catch a non-literal
+            // body before it falls into the single-word return paths below.
+            _ if func.returns == Some(Ty::String) => {
+                return Err(CompileError::at_code(
+                    codes::TYPE_MISMATCH,
+                    "a `returns (string)` function must return a string literal in v1".to_string(),
+                    func.span,
+                ))
+            }
             // Simple view getter `return <intlit>;` / `return <scalarStateVar>;`
             // keeps the golden-gate `BodyValue` path (PUSH32 / PUSH32+SLOAD); every
             // other return shape (param ref, msg.sender, mapping index, `a + b`)

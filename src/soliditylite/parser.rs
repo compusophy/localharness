@@ -306,7 +306,15 @@ impl Parser<'_> {
             // `returns ( <ty> )` — the getter always returns one word.
             self.advance(); // `returns`
             self.expect(&SolKind::LParen, "`(`")?;
-            let returns = self.parse_ty()?;
+            // `string` is recognized ONLY in the return position (it lexes as a
+            // plain identifier — never `parse_ty`, so it can't appear in a param,
+            // state var, or event arg). v1 supports a constant string-literal body.
+            let returns = if matches!(self.peek(), SolKind::Ident(name) if name == "string") {
+                self.advance();
+                Ty::String
+            } else {
+                self.parse_ty()?
+            };
             self.expect(&SolKind::RParen, "`)`")?;
             // Body: `{ return <expr> ; }`.
             self.expect(&SolKind::LBrace, "`{`")?;
@@ -564,6 +572,13 @@ impl Parser<'_> {
                 let span = self.span();
                 self.advance();
                 Ok(Expr::IntLit { value_be32: word, span })
+            }
+            // A string literal — valid only as a whole `return "…";` (enforced at
+            // codegen); the decoded UTF-8 bytes ride along for `Body::ConstString`.
+            SolKind::Str(s) => {
+                let span = self.span();
+                self.advance();
+                Ok(Expr::StrLit { value: s.into_bytes(), span })
             }
             // An identifier is `msg.sender`, a `<mapping>[<key>]` index, a bare
             // state-variable read, or a bare parameter reference (the last two are

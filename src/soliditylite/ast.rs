@@ -52,18 +52,27 @@ pub enum Ty {
     Bool,
     /// `bytes32` — the word as-is.
     Bytes32,
+    /// `string` — a dynamic type, v1-supported ONLY as a function's RETURN type
+    /// (`returns (string)`) with a constant string-literal body. Produced solely
+    /// by the return-clause parser, never `parse_ty`, so `string` in a parameter,
+    /// state var, or event arg stays a clean "expected type" error (NOT a silent
+    /// single-word miscompile). See [`super::codegen`]'s `Body::ConstString`.
+    String,
 }
 
 impl Ty {
     /// The canonical ABI type name used in the function selector signature
     /// (`keccak256("name(types)")`). For v1's value types this is just the
-    /// Solidity name.
+    /// Solidity name. `string` only ever appears as a return type (NOT in the
+    /// param/event signature that feeds the selector), so its name is unused
+    /// there but defined for completeness.
     pub fn abi_name(self) -> &'static str {
         match self {
             Ty::Uint256 => "uint256",
             Ty::Address => "address",
             Ty::Bool => "bool",
             Ty::Bytes32 => "bytes32",
+            Ty::String => "string",
         }
     }
 }
@@ -271,6 +280,11 @@ pub enum Expr {
     /// evaluated, then the comparison opcode(s) for `op`, leaving a `0`/`1` word.
     /// Binds LOOSER than `+`, so `n + 1 > 0` parses as `(n + 1) > 0`.
     Cmp { op: CmpOp, lhs: Box<Expr>, rhs: Box<Expr>, span: Span },
+    /// A string literal `"…"` (the dynamic-type stretch). v1 supports it ONLY as a
+    /// whole `return "…";` from a `returns (string)` function (codegen lowers it to
+    /// `Body::ConstString`). Any other position (assignment, comparison, emit arg)
+    /// is a clean codegen error. `value` is the decoded UTF-8 bytes.
+    StrLit { value: Vec<u8>, span: Span },
 }
 
 impl Expr {
@@ -283,6 +297,7 @@ impl Expr {
             Expr::Index { span, .. } => *span,
             Expr::Add { span, .. } => *span,
             Expr::Cmp { span, .. } => *span,
+            Expr::StrLit { span, .. } => *span,
         }
     }
 }

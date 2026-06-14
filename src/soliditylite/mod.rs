@@ -347,6 +347,52 @@ mod tests {
         assert_eq!(art.init_code, super::asm::init_wrapper(&art.runtime));
     }
 
+    /// `string` constant returns (dynamic-type slice 1): a `returns (string)`
+    /// function with a literal body compiles, embeds the UTF-8 bytes (left-aligned
+    /// in a PUSH32 data word), and is keyed by its selector. The ABI
+    /// offset/length/data return shape is proven live on-chain (loop-tick report).
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn compile_string_constant_return() {
+        let art = super::compile(
+            "facet Meta { function name() external pure returns (string) { return \"claude\"; } }",
+        )
+        .expect("a constant string return must compile");
+        assert_eq!(art.selectors.len(), 1);
+        assert_eq!(art.selectors[0], crate::registry::selector("name()"));
+        let mut word = [0u8; 32];
+        word[..6].copy_from_slice(b"claude");
+        assert!(art.runtime.windows(32).any(|w| w == word), "the literal data word must be embedded");
+    }
+
+    /// `string` is accepted ONLY as a return type and a string literal ONLY as a
+    /// whole `return` — every other position is a clean error, never a silent
+    /// single-word miscompile (the dynamic-type safety boundary).
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn string_is_return_only() {
+        // `string` as a parameter type → parse error (parse_ty never yields String).
+        assert!(
+            super::compile("facet B { function f(string s) external view returns (uint256) { return 1; } }").is_err(),
+            "a `string` parameter must be rejected"
+        );
+        // a string literal in an assignment → codegen error.
+        assert!(
+            super::compile("facet B { bytes32 v; function f() external { v = \"x\"; } }").is_err(),
+            "a string literal in an assignment must be rejected"
+        );
+        // `returns (string)` with a non-literal body → type error.
+        assert!(
+            super::compile("facet B { function f() external pure returns (string) { return 1; } }").is_err(),
+            "`returns (string)` with a non-literal body must be rejected"
+        );
+        // a string literal returned without `returns (string)` → type error.
+        assert!(
+            super::compile("facet B { function f() external pure returns (uint256) { return \"x\"; } }").is_err(),
+            "a string literal without `returns (string)` must be rejected"
+        );
+    }
+
     /// Bad source returns a clean `CompileError` (not a panic), with a coded,
     /// span-pinned diagnostic that `render`s a caret.
     #[cfg(feature = "wallet")]
