@@ -132,6 +132,11 @@ pub mod kv_room;
 /// `app::chat::confirm_guard` at the dispatch layer. See `src/confirm.rs`.
 pub mod confirm;
 
+/// Static safety lint for agent-authored facet cuts (SolidityLite §7 Layer 1):
+/// reserved-selector denylist + clash + `_init==0`. Pure + native-testable;
+/// wired into `localharness facet cut` as a pre-flight. See `src/cut_guard.rs`.
+pub mod cut_guard;
+
 /// Pure turn-outcome classification for the continuous-execution chat loop
 /// (native-testable). Hoisted out of `app::chat` so its guard tests run under
 /// `cargo test`. See `src/turn_flow.rs`.

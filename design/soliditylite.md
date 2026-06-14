@@ -133,6 +133,21 @@
 > Next: a browser ClosureTool (confirm_guard-gated) for the in-tab surface; the §7 safety lint;
 > dynamic types. (`facet diamond` reads contracts/out Diamond.json — embed the bytecode for a
 > distributed CLI.)
+>
+> **UPDATE 2026-06-14 (loop tick 13): §7 Layer 1 immune system shipped — `cut_guard`.** A pure,
+> native-testable lint (`src/cut_guard.rs`) that vets an `Add` cut BEFORE it's submitted:
+> (a) reserved-selector denylist — `diamondCut`/`transferOwnership`/`owner`/the 5 loupe selectors
+> (`RESERVED_SELECTORS`), so a facet can't seize cut/ownership or blind the loupe; (b) selector clash
+> vs the target diamond's live selectors (queried via new pub `registry::facet_address_of(diamond,
+> selector)` → loupe `facetAddress(bytes4)`), so an Add that would revert is refused before burning
+> gas; (c) `_init==0` (no init delegatecall — arbitrary code in the diamond's storage context); (d)
+> intra-facet duplicate selectors. `check_cut(new, existing, init_is_zero) -> Result<(), Vec<String>>`
+> reports EVERY violation at once. Wired as a pre-flight into `localharness facet cut` (6 unit tests,
+> clippy all-targets + wasm clean). DOGFOODED live against claude's diamond `0x59e3b39a…`: re-cutting
+> `tally` (bump/get already present) → rejected with 2 clash reasons, zero gas spent; a facet declaring
+> `owner()` → rejected as reserved AND clashing. This is advisory off-chain defense; §7 still wants the
+> on-chain registrar to re-enforce reserved + `_init==0` for agent-signed cuts. Next: the on-chain
+> guard, the browser cut ClosureTool (confirm_guard-gated), dynamic types.
 
 > A hand-rolled, in-browser Solidity/EVM-subset → EVM-bytecode compiler that lets an
 > agent **write, compile, deploy, and `diamondCut`** its own facet — the EVM analog of

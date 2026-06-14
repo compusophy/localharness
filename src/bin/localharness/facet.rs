@@ -13,6 +13,7 @@
 #[allow(unused_imports)]
 use crate::*;
 use crate::util::load_signer_and_sponsor;
+use localharness::cut_guard;
 use localharness::registry::{self, FacetCut};
 use localharness::soliditylite::compile;
 use localharness::tempo_tx::TempoCall;
@@ -130,6 +131,23 @@ async fn facet_cut(caller: Option<&str>, rest: &[String]) -> i32 {
         Ok(a) => a,
         Err(c) => return c,
     };
+    // §7 safety pre-flight: refuse reserved/clashing/duplicate selectors and a
+    // non-zero `_init` BEFORE spending cut gas (a clash reverts the whole tx) or
+    // letting a facet seize the diamond. Clash detection queries the diamond's
+    // loupe for each new selector; reserved + dup checks are pure.
+    let mut present: Vec<[u8; 4]> = Vec::new();
+    for s in &art.selectors {
+        if let Ok(Some(_)) = registry::facet_address_of(diamond, *s).await {
+            present.push(*s);
+        }
+    }
+    if let Err(reasons) = cut_guard::check_cut(&art.selectors, &present, true) {
+        eprintln!("✗ cut rejected by safety lint ({} issue(s)):", reasons.len());
+        for r in &reasons {
+            eprintln!("  - {r}");
+        }
+        return 1;
+    }
     let n = art.selectors.len();
     let cut = FacetCut { facet: addr20(facet_addr), action: 0, selectors: art.selectors };
     let calldata = registry::encode_diamond_cut(&[cut], &[0u8; 20], &[]);
@@ -137,7 +155,7 @@ async fn facet_cut(caller: Option<&str>, rest: &[String]) -> i32 {
         Ok(p) => p,
         Err(c) => return c,
     };
-    println!("cutting {n} selector(s) of {facet_addr} into {diamond} (diamondCut, sponsored) …");
+    println!("cutting {n} selector(s) of {facet_addr} into {diamond} (safety-lint OK; diamondCut, sponsored) …");
     match registry::submit_tempo_sponsored(
         &signer,
         &sponsor,

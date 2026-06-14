@@ -179,6 +179,19 @@ pub(crate) fn decode_address(result_hex: &str) -> Option<String> {
     Some(format!("0x{}", addr_hex.to_lowercase()))
 }
 
+/// `facetAddress(bytes4)` on an arbitrary `diamond` via its loupe — the facet
+/// implementing `selector`, or `None` if the selector is unbound. Used by the
+/// cut pre-flight ([`crate::cut_guard`]) to detect selector clashes BEFORE
+/// submitting a (gas-costly, would-revert) `Add` cut into a diamond. Unlike
+/// [`read_view`] this targets a caller-supplied diamond, not the canonical one.
+pub async fn facet_address_of(diamond: &str, selector: [u8; 4]) -> Result<Option<String>, String> {
+    let mut arg = [0u8; 32];
+    arg[..4].copy_from_slice(&selector); // bytes4 is LEFT-aligned in its word
+    let data = encode_call_hex([0xcd, 0xff, 0xac, 0xc6], &[arg]); // facetAddress(bytes4)
+    let result = eth_call(diamond, &data).await?;
+    Ok(decode_address(&result))
+}
+
 /// Decode an ABI `string` return (offset + length + bytes). `None` on a
 /// short/truncated/invalid body.
 pub(crate) fn decode_string(result_hex: &str) -> Option<String> {
