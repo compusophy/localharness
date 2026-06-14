@@ -53,6 +53,40 @@
 /// boundary.
 pub const CONFLICT_HASH_HEX_LEN: usize = 8;
 
+/// The fixed literal a conflict copy inserts between the base name and the short
+/// hash: `<name>` + `CONFLICT_SEP` + `<shorthash>`. Pinned so the name guard in
+/// `crate::app::shared_fs` can recognise (and size-budget for) a well-formed
+/// conflict name without re-deriving the format.
+pub const CONFLICT_SEP: &str = ".conflict-";
+
+/// Maximum number of bytes [`conflict_name`] appends to a base name:
+/// `CONFLICT_SEP` (`.conflict-`) + up to [`CONFLICT_HASH_HEX_LEN`] hex chars.
+/// The name-safety guard reserves exactly this much headroom so a base name that
+/// passes the guard ALWAYS yields a conflict name that also passes — closing the
+/// gap (#85) where a 111–128-char base produced a 129–146-char conflict name
+/// that failed `path_is_safe`, silently dropping the loser's edit.
+pub const CONFLICT_SUFFIX_MAX_LEN: usize = CONFLICT_SEP.len() + CONFLICT_HASH_HEX_LEN;
+
+/// True iff `name` is a well-formed conflict copy: `<base><CONFLICT_SEP><short>`
+/// where `<base>` is non-empty and `<short>` is 1..=[`CONFLICT_HASH_HEX_LEN`]
+/// lowercase hex chars (exactly what [`conflict_name`] emits). Lets a name guard
+/// admit a long-but-legitimate conflict name even when the plain-name cap (with
+/// reserved headroom) would reject it, so the holder can still serve/store the
+/// conflict copy. Does NOT vouch for traversal safety — the caller still applies
+/// its own no-`/`/no-`..` checks.
+pub fn is_conflict_name(name: &str) -> bool {
+    let Some(idx) = name.rfind(CONFLICT_SEP) else {
+        return false;
+    };
+    if idx == 0 {
+        return false; // empty base
+    }
+    let short = &name[idx + CONFLICT_SEP.len()..];
+    !short.is_empty()
+        && short.len() <= CONFLICT_HASH_HEX_LEN
+        && short.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+
 /// One file in a device's shared folder, reduced to what reconcile needs: its
 /// flat `name` and a `hash` of its content. The hash is opaque to this module —
 /// any deterministic function of the bytes works; equality means "same content"
@@ -384,6 +418,67 @@ mod tests {
 
         assert_eq!(final_a, final_b, "both devices reach the same folder");
         assert_eq!(final_a, merged_set(&a, &b), "matches the direct fixed point");
+    }
+
+    /// The conflict suffix budget exactly covers what [`conflict_name`] appends:
+    /// `.conflict-` plus the short hash. This is the headroom the name guard
+    /// (`crate::app::shared_fs::path_is_safe`) must reserve so a base name that
+    /// passes the guard ALWAYS yields a conflict name that fits too (#85).
+    #[test]
+    fn conflict_suffix_len_matches_what_conflict_name_appends() {
+        // A full-length short hash (>= CONFLICT_HASH_HEX_LEN hex chars worth of
+        // bytes) appends the maximum: `.conflict-` + CONFLICT_HASH_HEX_LEN hex.
+        let max = conflict_name("x", &[0xab, 0xcd, 0xef, 0x01, 0x23]);
+        assert_eq!(max.len() - "x".len(), CONFLICT_SUFFIX_MAX_LEN);
+        // For ANY base + hash, the appended length never exceeds the budget.
+        for base in ["a", "notes.txt", &"z".repeat(64)] {
+            for hash in [&b""[..], &b"\x00"[..], &b"\xff\xff\xff\xff\xff\xff"[..]] {
+                let cn = conflict_name(base, hash);
+                assert!(
+                    cn.len() <= base.len() + CONFLICT_SUFFIX_MAX_LEN,
+                    "conflict suffix for {base:?}/{hash:?} overran the budget"
+                );
+            }
+        }
+    }
+
+    /// A base name capped at `128 - CONFLICT_SUFFIX_MAX_LEN` (the reserved-
+    /// headroom plain-name cap) yields a conflict name within the 128-byte cap —
+    /// the property that fixes the silent loser-drop in #85.
+    #[test]
+    fn capped_base_yields_in_bounds_conflict_name() {
+        const NAME_CAP: usize = 128;
+        let base = "n".repeat(NAME_CAP - CONFLICT_SUFFIX_MAX_LEN); // 110 chars
+        assert!(base.len() <= NAME_CAP - CONFLICT_SUFFIX_MAX_LEN);
+        let cn = conflict_name(&base, &[0xde, 0xad, 0xbe, 0xef, 0x99]);
+        assert!(
+            cn.len() <= NAME_CAP,
+            "conflict name {} > cap {NAME_CAP}",
+            cn.len()
+        );
+        assert!(is_conflict_name(&cn), "must be recognised as a conflict name");
+    }
+
+    /// [`is_conflict_name`] accepts exactly what [`conflict_name`] emits and
+    /// rejects plain names + malformed lookalikes.
+    #[test]
+    fn is_conflict_name_round_trips() {
+        // Emitted conflict names are recognised, across hash lengths.
+        assert!(is_conflict_name(&conflict_name("notes.txt", b"\x01")));
+        assert!(is_conflict_name(&conflict_name("a", &[0xab, 0xcd, 0xef, 0x12])));
+        assert!(is_conflict_name(&conflict_name(
+            "doc",
+            &[0xff, 0xff, 0xff, 0xff, 0xff]
+        )));
+        // Plain names are not conflict names.
+        assert!(!is_conflict_name("notes.txt"));
+        assert!(!is_conflict_name("a.b.c"));
+        // Empty base or empty/over-long/non-hex/upper short hash is rejected.
+        assert!(!is_conflict_name(".conflict-ab"));
+        assert!(!is_conflict_name("x.conflict-"));
+        assert!(!is_conflict_name("x.conflict-abcdef012")); // 9 > 8 hex
+        assert!(!is_conflict_name("x.conflict-zz")); // non-hex
+        assert!(!is_conflict_name("x.conflict-AB")); // uppercase
     }
 
     /// Test helper: simulate `local` applying its `plan_pulls(local, remote)` —

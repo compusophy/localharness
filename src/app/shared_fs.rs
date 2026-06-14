@@ -57,13 +57,38 @@ pub(crate) struct SharedEntry {
     pub(crate) size: u64,
 }
 
+/// Hard upper bound on any stored shared-file name (plain or conflict copy).
+const NAME_MAX_LEN: usize = 128;
+
+/// Plain (user-facing) names are capped with headroom so the convergent
+/// reconcile can append a `.conflict-<shorthash>` suffix and STILL produce a
+/// name within [`NAME_MAX_LEN`]. Without this, a 111–128-char name yielded a
+/// 129–146-char conflict name that failed the guard, so the conflict copy
+/// (`super::sharedfs_sync`'s `apex_write`) silently dropped the loser's edit
+/// (#85). The reserved span is exactly what [`conflict_name`] can add.
+///
+/// [`conflict_name`]: crate::sharedfs_reconcile::conflict_name
+const PLAIN_NAME_MAX_LEN: usize =
+    NAME_MAX_LEN - crate::sharedfs_reconcile::CONFLICT_SUFFIX_MAX_LEN;
+
 /// Reject anything that could escape `.lh_shared/`. The path component
 /// arrives from a subdomain URL in the round-trip, so this guard is
 /// load-bearing: no traversal, no absolute paths, no nesting (flat folder
 /// for v1), non-empty, bounded length.
+///
+/// Length is two-tier so the reconcile's conflict copies are never orphaned:
+/// a plain name is capped at [`PLAIN_NAME_MAX_LEN`] (leaving headroom for the
+/// `.conflict-<shorthash>` suffix), while a well-formed conflict name
+/// ([`crate::sharedfs_reconcile::is_conflict_name`]) is admitted up to the full
+/// [`NAME_MAX_LEN`] so the holder can serve/store the loser's copy.
 fn path_is_safe(path: &str) -> bool {
+    let len_ok = if crate::sharedfs_reconcile::is_conflict_name(path) {
+        path.len() <= NAME_MAX_LEN
+    } else {
+        path.len() <= PLAIN_NAME_MAX_LEN
+    };
     !path.is_empty()
-        && path.len() <= 128
+        && len_ok
         && !path.contains("..")
         && !path.contains('/')
         && !path.contains('\\')
