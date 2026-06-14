@@ -40,13 +40,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gas_price = registry::current_gas_price().await?;
     println!("nonce={nonce} gas_price={gas_price}");
 
+    // Init-code: set INIT_CODE_HEX to deploy a real facet's creation bytecode
+    // (e.g. forge's bytecode.object); default is the tiny 1-byte-STOP probe.
+    let init_code = match std::env::var("INIT_CODE_HEX") {
+        Ok(h) => {
+            let s = h.trim().trim_start_matches("0x").trim_start_matches("0X");
+            println!("init-code: INIT_CODE_HEX ({} bytes)", s.len() / 2);
+            hex_decode(s)?
+        }
+        Err(_) => {
+            println!("init-code: default 1-byte-STOP probe ({} bytes)", INIT_CODE.len());
+            INIT_CODE.to_vec()
+        }
+    };
+
     let tx = TempoTxBuilder::new(registry::CHAIN_ID)
         .max_priority_fee_per_gas(gas_price)
         .max_fee_per_gas(gas_price)
-        .gas_limit(600_000)
+        .gas_limit(1_500_000)
         .nonce(nonce)
         .fee_token(parse_addr(ALPHA_USD)?)
-        .call(TempoCall { to: [0u8; 20], value_wei: 0, input: INIT_CODE.to_vec() })
+        .call(TempoCall { to: [0u8; 20], value_wei: 0, input: init_code })
         .sponsored()
         .create()
         .build();

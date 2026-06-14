@@ -6,6 +6,15 @@
 > (`0xe6366e…510b0a`), non-empty `eth_getCode`. `TempoTxBuilder::create()` (RLP-encodes
 > the call's `to` as empty `0x80`) shipped + unit-tested, non-breaking. The deploy stage
 > is unblocked; next is Installment 0 (child-diamond genesis + facet templates).
+>
+> **UPDATE 2026-06-14 (loop tick 2): Installment 0 foundation shipped + a real facet deploys.**
+> The CounterFacet (`contracts/src/facets/CounterFacet.sol` + `LibCounterStorage`, 9 forge tests)
+> and the FacetCut[] ABI encoder (`registry::encode_diamond_cut`, golden-vector tested byte-for-byte
+> vs `cast calldata`) are committed. A live probe then deployed the **real 882-byte CounterFacet
+> runtime** via sponsored CREATE (`status 0x1`, `getCode` = the runtime at `0x4f3416…49e2`). Because
+> solc-0.8.24 emits `PUSH0` (`0x5f`) throughout that bytecode and it deployed + runs, **Moderato
+> supports PUSH0** — resolving the §5/§10 open question (the emitter may use PUSH0). Remaining for
+> the full E2E: child-diamond genesis + the live `diamondCut` + loupe-verify + call.
 
 > A hand-rolled, in-browser Solidity/EVM-subset → EVM-bytecode compiler that lets an
 > agent **write, compile, deploy, and `diamondCut`** its own facet — the EVM analog of
