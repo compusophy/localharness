@@ -5,6 +5,51 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.37.0] - 2026-06-13
+
+### Security & correctness (parallel bug-sweep wave)
+
+- **Cross-origin signer `$LH`-token drain (#81, HIGH).** The apex `?signer=1`
+  handler allowlisted call targets to {diamond, `$LH` token} but left the token's
+  CALLDATA unrestricted, and `lh-sign-digest` is honored from ANY trusted
+  `*.localharness.xyz` origin — so visiting a hostile subdomain (which embeds the
+  apex signer iframe) could make the master wallet sign `transfer(attacker,
+  balance)`. The signer now gates token calldata: `approve` may target ONLY the
+  diamond, `transferFrom` is never signed via this path, and a `transfer`
+  (send_lh) is signed ONLY when the requesting subdomain is owned by the master
+  (on-chain `ownerOfName`, fail-closed). The user's own send_lh/escrow flows are
+  unaffected; a drain from someone else's subdomain is refused.
+- **Anthropic: cancel left a dangling `tool_use` that 400'd the next turn (#82,
+  HIGH).** The assistant message with `tool_use` blocks was pushed to history
+  before tool dispatch; cancelling in that window broke the loop without the
+  matching `tool_result`, so the next Anthropic turn 400'd
+  (`tool_use ids found without tool_result blocks`). The cancel branch now
+  appends balancing `tool_result` blocks (`is_error`, "cancelled") first.
+- **Gemini 3.x compaction returned empty summaries (#83).** `summarize()` matched
+  only `Part::Text`, but 3.x delivers visible text as `Part::Thought{thought:
+  false, text}` — so summaries came back empty. It now accepts both, mirroring
+  the main streaming loop.
+- **Dedup guard blocked retry of a failed side-effecting tool (#84).** The
+  duplicate-action guard recorded a call's hash at decide time and never cleared
+  it on failure, so a transiently-failing guarded tool (e.g. `send_lh`) could
+  never be retried in the same request. A paired PostToolCall cleanup hook now
+  removes the hash when the call errored (commit-on-success), preserving the
+  parallel-batch double-fire suppression.
+- **Shared-FS: long names silently dropped the conflict loser (#85).** A conflict
+  copy name (`<name>.conflict-<8hex>`, +18 chars) could exceed the 128-byte
+  `path_is_safe` cap for a valid 111-128-char name, and the write discarded the
+  error — losing the loser's edit. User names now reserve conflict-suffix
+  headroom, and well-formed conflict names are explicitly allowed.
+- **Shared-FS: race served a conflict-copy Want before it existed (#86).** Inbound
+  sync messages were each spawned detached with no ordering, so a `Want` for a
+  conflict name could be served before the `Manifest` handler materialized it.
+  Inbound messages are now processed serially (a per-session queue draining in
+  arrival order).
+- **Four low-severity fixes (#87).** `view_file` on an empty file (was an
+  inverted-range error), `parse_token_amount` accepting a leading `+`, a stale
+  empty assistant-bubble shell left after a truncated turn, and `FOCUS_RETURN`
+  clobbered by nested modals (now a small stack).
+
 ## [0.36.0] - 2026-06-13
 
 ### Added
