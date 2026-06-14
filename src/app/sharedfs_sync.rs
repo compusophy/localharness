@@ -31,6 +31,7 @@
 //! (Layer 5) is in [`super::teams_sync`]. Gated on `feature = "browser-app"`.
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
@@ -68,6 +69,28 @@ async fn local_manifest() -> Vec<FileMeta> {
 /// `on_msg` callback can reply without borrowing the whole [`Peer`].
 type Tx = Rc<RefCell<Option<RtcDataChannel>>>;
 
+/// Per-session inbound queue + a one-bit "a drain task is already running" flag.
+/// Inbound messages MUST be processed serially: a `Manifest` first materialises
+/// the local conflict copies (`rename_local`), and a later `Want` for that
+/// conflict name can only be served once that write has landed. The on-channel
+/// `onmessage` callback fires synchronously, so we cannot `.await` inside it;
+/// instead each message is enqueued and a single drain task (chained via the
+/// `draining` flag — no concurrent tasks) processes them strictly in order.
+#[derive(Clone)]
+struct Inbox {
+    queue: Rc<RefCell<VecDeque<SyncMsg>>>,
+    draining: Rc<RefCell<bool>>,
+}
+
+impl Inbox {
+    fn new() -> Self {
+        Self {
+            queue: Rc::new(RefCell::new(VecDeque::new())),
+            draining: Rc::new(RefCell::new(false)),
+        }
+    }
+}
+
 /// Wire messages over the data channel.
 #[derive(Serialize, Deserialize)]
 enum SyncMsg {
@@ -96,54 +119,85 @@ fn send_msg(tx: &Tx, msg: &SyncMsg) {
     }
 }
 
-/// React to one inbound message. The async apex-store work runs on a detached
-/// task so the sync callback itself stays synchronous.
-fn handle_message(bytes: Vec<u8>, tx: Tx) {
+/// React to one inbound message. Decodes it and enqueues onto the per-session
+/// [`Inbox`]; the apex-store work runs on a single serial drain task so the sync
+/// callback itself stays synchronous. ORDER IS LOAD-BEARING — see [`drain`].
+fn handle_message(bytes: Vec<u8>, tx: Tx, inbox: Inbox) {
     let Ok(msg) = serde_json::from_slice::<SyncMsg>(&bytes) else {
         return;
     };
+    inbox.queue.borrow_mut().push_back(msg);
+    drain(tx, inbox);
+}
+
+/// Drain the inbox STRICTLY in arrival order, one message at a time. If a drain
+/// task is already running we just leave the freshly-enqueued message for it to
+/// pick up (`draining` is the in-flight flag) — this guarantees a `Manifest`'s
+/// `rename_local` write completes before a later `Want` for that conflict name
+/// is served, which the old per-message detached task could not (a `Want`
+/// scheduled first would read the not-yet-materialised name and lose the copy).
+fn drain(tx: Tx, inbox: Inbox) {
+    if *inbox.draining.borrow() {
+        return;
+    }
+    *inbox.draining.borrow_mut() = true;
     wasm_bindgen_futures::spawn_local(async move {
-        match msg {
-            SyncMsg::Manifest(remote) => {
-                // CONVERGENT reconcile. Build our content-hashed manifest, then
-                // let the PURE planner decide what to pull and which local files
-                // to copy to a conflict name. Both devices run the symmetric
-                // plan over the same hashes → same final set (see
-                // `crate::sharedfs_reconcile`).
-                let local = local_manifest().await;
-                let remote: Vec<FileMeta> = remote
-                    .into_iter()
-                    .map(|(name, hash)| FileMeta::new(name, hash))
-                    .collect();
-                let plan = crate::sharedfs_reconcile::plan_pulls(&local, &remote);
+        loop {
+            let Some(msg) = inbox.queue.borrow_mut().pop_front() else {
+                break;
+            };
+            process_message(msg, &tx).await;
+        }
+        *inbox.draining.borrow_mut() = false;
+    });
+}
 
-                // Materialise local conflict copies FIRST: preserve our losing
-                // edit under its `name.conflict-<shorthash>` name so it survives
-                // (and so we can serve it if the peer asks). We read the source's
-                // current plaintext and re-seal under our own key at the copy.
-                for (from, to) in &plan.rename_local {
-                    if let Ok(Some(plain)) = shared_fs::apex_read(from).await {
-                        let _ = shared_fs::apex_write(to, &plain).await;
-                    }
-                }
+/// Apply a single inbound message against the apex store. Awaited from the serial
+/// [`drain`] loop, never spawned per-message — so writes from an earlier message
+/// are visible to a later one.
+async fn process_message(msg: SyncMsg, tx: &Tx) {
+    match msg {
+        SyncMsg::Manifest(remote) => {
+            // CONVERGENT reconcile. Build our content-hashed manifest, then
+            // let the PURE planner decide what to pull and which local files
+            // to copy to a conflict name. Both devices run the symmetric
+            // plan over the same hashes → same final set (see
+            // `crate::sharedfs_reconcile`).
+            let local = local_manifest().await;
+            let remote: Vec<FileMeta> = remote
+                .into_iter()
+                .map(|(name, hash)| FileMeta::new(name, hash))
+                .collect();
+            let plan = crate::sharedfs_reconcile::plan_pulls(&local, &remote);
 
-                // Request every name the reconcile says we lack (peer-only
-                // files + the peer's conflict copies + winners that override a
-                // local loser).
-                for name in plan.want {
-                    send_msg(&tx, &SyncMsg::Want(name));
+            // Materialise local conflict copies FIRST: preserve our losing
+            // edit under its `name.conflict-<shorthash>` name so it survives
+            // (and so we can serve it if the peer asks). We read the source's
+            // current plaintext and re-seal under our own key at the copy.
+            // Serial draining ensures this write lands before any later `Want`
+            // for the conflict name is processed.
+            for (from, to) in &plan.rename_local {
+                if let Ok(Some(plain)) = shared_fs::apex_read(from).await {
+                    let _ = shared_fs::apex_write(to, &plain).await;
                 }
             }
-            SyncMsg::Want(name) => {
-                if let Ok(Some(data)) = shared_fs::apex_read(&name).await {
-                    send_msg(&tx, &SyncMsg::File { name, data });
-                }
-            }
-            SyncMsg::File { name, data } => {
-                let _ = shared_fs::apex_write(&name, &data).await;
+
+            // Request every name the reconcile says we lack (peer-only
+            // files + the peer's conflict copies + winners that override a
+            // local loser).
+            for name in plan.want {
+                send_msg(tx, &SyncMsg::Want(name));
             }
         }
-    });
+        SyncMsg::Want(name) => {
+            if let Ok(Some(data)) = shared_fs::apex_read(&name).await {
+                send_msg(tx, &SyncMsg::File { name, data });
+            }
+        }
+        SyncMsg::File { name, data } => {
+            let _ = shared_fs::apex_write(&name, &data).await;
+        }
+    }
 }
 
 /// A live cross-device sync session: a [`Peer`] wired to the shared-folder
@@ -160,7 +214,9 @@ impl SharedFsSync {
     pub(crate) async fn offer() -> Result<(Self, String), JsValue> {
         let tx: Tx = Rc::new(RefCell::new(None));
         let tx_cb = tx.clone();
-        let (peer, sdp) = Peer::offer(move |bytes| handle_message(bytes, tx_cb.clone())).await?;
+        let inbox = Inbox::new();
+        let (peer, sdp) =
+            Peer::offer(move |bytes| handle_message(bytes, tx_cb.clone(), inbox.clone())).await?;
         *tx.borrow_mut() = Some(peer.sender());
         Ok((Self { peer, tx }, sdp))
     }
@@ -170,8 +226,11 @@ impl SharedFsSync {
     pub(crate) async fn answer(offer_sdp: &str) -> Result<(Self, String), JsValue> {
         let tx: Tx = Rc::new(RefCell::new(None));
         let tx_cb = tx.clone();
-        let (peer, sdp) =
-            Peer::answer(offer_sdp, move |bytes| handle_message(bytes, tx_cb.clone())).await?;
+        let inbox = Inbox::new();
+        let (peer, sdp) = Peer::answer(offer_sdp, move |bytes| {
+            handle_message(bytes, tx_cb.clone(), inbox.clone())
+        })
+        .await?;
         *tx.borrow_mut() = Some(peer.sender());
         Ok((Self { peer, tx }, sdp))
     }
