@@ -57,6 +57,10 @@ pub enum SolKind {
     RParen,
     /// `;`
     Semi,
+    /// `=` (assignment).
+    Assign,
+    /// `+` (addition).
+    Plus,
     /// End of input.
     Eof,
 }
@@ -127,6 +131,8 @@ impl Lexer<'_> {
             b'(' => Some(SolKind::LParen),
             b')' => Some(SolKind::RParen),
             b';' => Some(SolKind::Semi),
+            b'=' => Some(SolKind::Assign),
+            b'+' => Some(SolKind::Plus),
             _ => None,
         };
         if let Some(kind) = punct {

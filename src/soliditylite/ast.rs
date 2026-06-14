@@ -85,7 +85,10 @@ pub enum Mutability {
     View,
     /// `pure` — touches no state (accepted; a constant getter is effectively pure).
     Pure,
-    /// No mutability keyword (a plain `external` function).
+    /// No mutability keyword (a plain `external` function). A no-`view`,
+    /// no-`returns` function (`function f() external { … }`) is a MUTATING
+    /// function — its body may assign to state vars and falls through to an empty
+    /// `RETURN(0,0)` (the storage-write stretch).
     NonPayable,
 }
 
@@ -97,25 +100,35 @@ pub struct Function {
     pub name: String,
     /// State mutability (`view`/`pure`/none).
     pub mutability: Mutability,
-    /// The single return type, if the function declares `returns (...)`. v1
-    /// functions always return exactly one word, so this is `Some` after a valid
-    /// parse; `None` is reserved for a future no-return shape.
+    /// The single return type, if the function declares `returns (...)`. A view
+    /// getter is `Some(ty)`; a MUTATING function (no `returns` clause) is `None`
+    /// and its body emits its statements then `RETURN(0,0)`.
     pub returns: Option<Ty>,
-    /// The function body — a single statement in the floor grammar.
+    /// The function body. A view getter has a single [`Stmt::Return`]; a mutating
+    /// function has a (possibly empty) sequence of [`Stmt::Assign`].
     pub body: Stmt,
     /// Source span of the `function` keyword.
     pub span: Span,
 }
 
-/// A statement. The floor grammar has exactly one: `return <expr>;`.
+/// A statement. View getters are a single `return <expr>;`; mutating functions
+/// are a `{ <assign>* }` block of state-var assignments.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     /// `return <expr>;` — evaluate the expression and return it as the 32-byte word.
     Return(Expr),
+    /// `<stateVar> = <expr>;` — evaluate `<expr>` and `SSTORE` it to the state
+    /// var's keccak-namespaced slot (the storage-write stretch). `name` is the
+    /// assignment target; `span` is the target identifier's span.
+    Assign { name: String, value: Expr, span: Span },
+    /// A `{ <stmt>* }` block — a mutating function body holding zero or more
+    /// statements, emitted in order. (View getters never use this; their body is a
+    /// bare [`Stmt::Return`], so tick-5's pattern-matches are unaffected.)
+    Block(Vec<Stmt>),
 }
 
 /// An expression. The floor grammar has the integer literal; the storage stretch
-/// adds a bare state-variable reference.
+/// adds a bare state-variable reference and a left-associative `+` of operands.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     /// An integer literal — its big-endian 32-byte word and the literal's span.
@@ -123,6 +136,9 @@ pub enum Expr {
     /// A bare identifier — a state-variable read (`return <name>;`), resolved to
     /// an `SLOAD` of its keccak-namespaced slot at codegen (storage stretch).
     StateVar { name: String, span: Span },
+    /// A binary `lhs + rhs` — both operands are evaluated onto the stack, then
+    /// `ADD` (the arithmetic stretch; left-associative, e.g. `n = n + 1`).
+    Add { lhs: Box<Expr>, rhs: Box<Expr>, span: Span },
 }
 
 impl Expr {
@@ -131,6 +147,7 @@ impl Expr {
         match self {
             Expr::IntLit { span, .. } => *span,
             Expr::StateVar { span, .. } => *span,
+            Expr::Add { span, .. } => *span,
         }
     }
 }

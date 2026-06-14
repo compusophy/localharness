@@ -52,6 +52,16 @@
 > Moderato (multi-function dispatch from source works). 34 soliditylite tests, wasm+clippy clean.
 > Next: parameters (calldata decode) + `SSTORE` + `require` + events → compile the full CounterFacet
 > from source, then deploy+cut it via the proven path.
+>
+> **UPDATE 2026-06-14 (loop tick 6): compiled facets WRITE STATE on-chain.** Extended the compiler
+> (lexer/ast/parser/codegen) for mutating `function f() external { ... }`, assignment `var = expr;`
+> (→ `SSTORE`), and binary `+` (→ `ADD`), reusing the keccak slot derivation + SLOAD read; the
+> constant-getter golden gate stays byte-identical. LIVE: compiled `facet Tally { uint256 n;
+> function bump() external { n = n + 1; } function get() external view returns (uint256){ return n; } }`
+> from source → deployed → `bump()` ×2 → `get()` == 2 on Moderato (compiled SSTORE/SLOAD/ADD persist
+> state). 44 soliditylite tests, wasm+clippy clean. Next: function PARAMETERS (calldata decode) +
+> mappings (`count[msg.sender]`) + `require` + events → the full CounterFacet from source → cut into
+> a child diamond — that closes the SolidityLite MVP.
 
 > A hand-rolled, in-browser Solidity/EVM-subset → EVM-bytecode compiler that lets an
 > agent **write, compile, deploy, and `diamondCut`** its own facet — the EVM analog of

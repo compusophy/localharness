@@ -329,6 +329,44 @@ mod tests {
         assert!(super::compile("facet C { @ }").is_err());
     }
 
+    /// THE STATEFUL TARGET (Installment 1 storage-write MVP): the `Tally` facet —
+    /// a mutating `bump()` (`n = n + 1`) plus a view `get()` — compiles, both
+    /// selectors are dispatched, and `init_code` wraps the runtime. The exact
+    /// bump() opcode sequence is pinned in `codegen::tests::tally_bump_*`.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn compile_tally_facet_with_a_storage_write() {
+        let art = super::compile(
+            "facet Tally { uint256 n; \
+             function bump() external { n = n + 1; } \
+             function get() external view returns (uint256) { return n; } }",
+        )
+        .expect("the Tally facet (storage write) must compile");
+        let rt = &art.runtime;
+
+        // bump() = keccak256("bump()")[..4]; get() = 0x6d4ce63c.
+        let sel_bump = crate::registry::selector("bump()"); // = 0x68110b2f
+        let sel_get = crate::registry::selector("get()");
+        assert_eq!(sel_bump, [0x68, 0x11, 0x0b, 0x2f], "bump() selector pin");
+        assert_eq!(sel_get, [0x6d, 0x4c, 0xe6, 0x3c], "get() selector pin");
+
+        // Both dispatch arms (PUSH4 <sel>) are present.
+        for sel in [sel_bump, sel_get] {
+            let push4: Vec<u8> = std::iter::once(op::PUSH1 + 3).chain(sel).collect();
+            assert!(
+                rt.windows(push4.len()).any(|w| w == push4.as_slice()),
+                "selector PUSH4 {sel:02x?} must be dispatched"
+            );
+        }
+        // The runtime stores (SSTORE) — the new capability — and reads (SLOAD).
+        assert!(rt.contains(&op::SSTORE), "Tally must SSTORE (the storage write)");
+        assert!(rt.contains(&op::SLOAD), "Tally must SLOAD (reads n)");
+        assert!(rt.contains(&op::ADD), "Tally must ADD (n + 1)");
+
+        // init_code wraps the runtime.
+        assert_eq!(art.init_code, super::asm::init_wrapper(rt));
+    }
+
     /// Breadth must NOT trip the depth guard: a facet with far more functions than
     /// `MAX_RECURSION_DEPTH` still compiles, proving the guard counts NESTING (per
     /// parse path), not the number of declared functions. (The guard's depth-cap
