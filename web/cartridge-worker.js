@@ -468,6 +468,20 @@ function composeLiveCount() {
   return liveChildCount(rootNode.children);
 }
 
+// First reusable slot index in a node's table: a null hole OR a FAILED tombstone
+// (issue #92). Without this a spawn-and-fail loop appends a fresh tombstone every
+// call — the array grows unbounded and the per-frame composite walk is O(n) over
+// dead slots. A FAILED node's budget (composeTotalNodes / bytes / index entry) was
+// already reclaimed when it died, so overwriting the slot is safe with no
+// re-accounting; the prior reference is simply dropped. Returns -1 → caller pushes.
+function reclaimableSlot(children) {
+  for (let i = 0; i < children.length; i++) {
+    const c = children[i];
+    if (!c || c.state === MOD_FAILED) return i;
+  }
+  return -1;
+}
+
 // A fresh child slot in state LOADING (bytes arrive via the compose_bytes
 // round-trip). `depth` is the parent's depth + 1; `uid` keys the async reply.
 function makeChildSlot(name, x, y, w, h, depth, uid) {
@@ -706,8 +720,10 @@ function makeComposeApi(node) {
       if (liveChildCount(node.children) >= COMPOSE_MAX_CHILDREN) return -1; // per-node cap
       if (composeTotalNodes >= COMPOSE_MAX_NODES) return -1;                // global fork-bomb cap
       const uid = composeNextUid++;
-      // Allocate a slot (reuse a null hole, else push). Slots never alias.
-      let handle = node.children.indexOf(null);
+      // Allocate a slot (reuse a null hole OR a FAILED tombstone, else push) so a
+      // spawn-and-fail loop can't grow the table unbounded (issue #92). Slots
+      // never alias; a reused tombstone's budget was already reclaimed when it died.
+      let handle = reclaimableSlot(node.children);
       const child = makeChildSlot(name, x, y, w, h, node.depth + 1, uid);
       if (handle < 0) { handle = node.children.length; node.children.push(child); }
       else node.children[handle] = child;
@@ -730,7 +746,10 @@ function makeComposeApi(node) {
     },
     focus_module(handle) {
       if (handle === -1) { node.focus = -1; return 1; } // focus this node itself
-      if (!node.children[handle]) return 0;
+      // Reject focusing an empty slot OR a FAILED tombstone (truthy) — focusing a
+      // dead slot would silently sink the parent's pointer input (issue #92).
+      const c = node.children[handle];
+      if (!c || c.state === MOD_FAILED) return 0;
       node.focus = handle;
       return 1;
     },
@@ -1407,7 +1426,7 @@ if (typeof module !== 'undefined' && module.exports) {
       if (liveChildCount(node.children) >= COMPOSE_MAX_CHILDREN) return -1; // per-node cap
       if (composeTotalNodes >= COMPOSE_MAX_NODES) return -1;   // global cap
       const uid = composeNextUid++;
-      let handle = node.children.indexOf(null);
+      let handle = reclaimableSlot(node.children); // reuse null hole OR FAILED tombstone (#92)
       const child = makeChildSlot(name, x, y, w, h, node.depth + 1, uid);
       if (handle < 0) { handle = node.children.length; node.children.push(child); }
       else node.children[handle] = child;
