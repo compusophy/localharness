@@ -630,9 +630,16 @@ impl WasmEmitter {
                 self.emit_expr(lhs, code)?;
                 code.push(OP_IF);
                 code.push(resolved_to_wasm(&ResolvedType::I32));
+                // The `rhs` is emitted INSIDE this `if` frame, so a `break`/
+                // `continue` in it (e.g. `cond && { break }`) must step one frame
+                // further out — bump `extra_depth` around the rhs exactly like the
+                // regular `If` arm does. The const arms emit no branch, so they
+                // need no adjustment.
                 match op {
                     BinOp::And => {
+                        self.extra_depth += 1;
                         self.emit_expr(rhs, code)?;
+                        self.extra_depth -= 1;
                         code.push(OP_ELSE);
                         code.push(OP_I32_CONST);
                         leb128_i32(0, code);
@@ -641,7 +648,9 @@ impl WasmEmitter {
                         code.push(OP_I32_CONST);
                         leb128_i32(1, code);
                         code.push(OP_ELSE);
+                        self.extra_depth += 1;
                         self.emit_expr(rhs, code)?;
+                        self.extra_depth -= 1;
                     }
                     _ => unreachable!(),
                 }
@@ -815,10 +824,15 @@ impl WasmEmitter {
             }
             TypedExprKind::If { cond, then_block, else_block } => {
                 self.emit_expr(cond, code)?;
-                let block_ty = if then_block.ty == ResolvedType::Void {
+                // The frame's result type is the If EXPRESSION's type, not the
+                // then-block's: an else-less `if` is `Void` (typecheck rejects a
+                // value-position else-less `if`), so it must stay on BLOCK_VOID
+                // even when the then-block itself has a non-void tail. A value
+                // `(if (result T))` is only legal WITH an else branch.
+                let block_ty = if expr.ty == ResolvedType::Void || else_block.is_none() {
                     BLOCK_VOID
                 } else {
-                    resolved_to_wasm(&then_block.ty)
+                    resolved_to_wasm(&expr.ty)
                 };
                 code.push(OP_IF);
                 code.push(block_ty);

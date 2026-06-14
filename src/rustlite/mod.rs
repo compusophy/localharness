@@ -421,6 +421,72 @@ mod tests {
     }
 
     #[test]
+    fn else_less_if_in_value_position_is_rejected() {
+        // GitHub #80 (1): an `if` WITHOUT an `else` is a statement, never a value
+        // (Rust semantics). Using its value (here as a `let` init) must be a type
+        // error — the previous typechecker typed the `if` as the then-block's
+        // type even with no else, and codegen then emitted an `(if (result T))`
+        // frame with no else branch (stack-imbalanced, invalid wasm).
+        let e = compile(
+            "fn frame(t: i32) { let x = if t > 0 { 5 }; host::display::clear(x); host::display::present(); }"
+        )
+        .expect_err("else-less if used as a value must be rejected");
+        assert_eq!(e.code, Some(codes::TYPE_MISMATCH), "{e}");
+        // An else-less `if` as a STATEMENT (its value discarded) is still fine.
+        assert!(compile(
+            "fn frame(t: i32) { let mut x = 0; if t > 0 { x = 5; } host::display::clear(x); host::display::present(); }"
+        )
+        .is_ok());
+        // With an `else`, using the value is fine (both branches yield i32).
+        assert!(compile(
+            "fn frame(t: i32) { let x = if t > 0 { 5 } else { 9 }; host::display::clear(x); host::display::present(); }"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn short_circuit_with_break_in_rhs_compiles() {
+        // GitHub #80 (2): the short-circuit `&&`/`||` arm opens an OP_IF frame for
+        // the rhs but never bumped `extra_depth`, so a `break`/`continue` in the
+        // rhs (e.g. `cond || continue`) branched to the wrong frame (invalid
+        // wasm). These compile + must validate (see the node proof). `&&` with a
+        // `break` in the rhs — the break runs only when the lhs is true:
+        assert!(compile(
+            "fn frame(t: i32) { let mut i = 0; loop { let go = t > 0 && break; i = i + 1; } host::display::clear(i); host::display::present(); }"
+        )
+        .is_ok());
+        // `||` with a `continue` in the rhs — the continue runs only when the lhs
+        // is false:
+        assert!(compile(
+            "fn frame(t: i32) { let mut i = 0; while i < 3 { i = i + 1; let keep = i > 9 || continue; } host::display::clear(i); host::display::present(); }"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn non_last_irrefutable_match_arm_is_rejected() {
+        // GitHub #80 (3): a `_`/binding arm matches everything; codegen lowers the
+        // terminal catch-all to a plain `else`, so a non-last irrefutable arm
+        // emitted stack-imbalanced wasm. Reject it (move it last).
+        let e = compile(
+            "fn frame(t: i32) { let v = match t { _ => 1, 0 => 2 }; host::display::clear(v); host::display::present(); }"
+        )
+        .expect_err("a non-last wildcard arm must be rejected");
+        assert_eq!(e.code, Some(codes::TYPE_MISMATCH), "{e}");
+        // A non-last BINDING arm is equally irrefutable → rejected.
+        let e = compile(
+            "fn frame(t: i32) { let v = match t { n => n, 0 => 2 }; host::display::clear(v); host::display::present(); }"
+        )
+        .expect_err("a non-last binding arm must be rejected");
+        assert_eq!(e.code, Some(codes::TYPE_MISMATCH), "{e}");
+        // The catch-all LAST is the correct shape and still compiles.
+        assert!(compile(
+            "fn frame(t: i32) { let v = match t { 0 => 2, _ => 1 }; host::display::clear(v); host::display::present(); }"
+        )
+        .is_ok());
+    }
+
+    #[test]
     fn array_return_type_is_rejected() {
         // RETURNING an array is unsound under the static-region model: the region
         // a returned array points into is reused on every call, so two live
@@ -516,6 +582,65 @@ mod array_write_run_proof {
             (
                 "repeat_then_write.wasm",
                 "fn frame(t: i32) { let mut g = [5; 8]; g[2] = 88; host::display::clear(g[t]); host::display::present(); }",
+            ),
+        ];
+
+        for (file, src) in cases {
+            let wasm = compile(src).unwrap_or_else(|e| panic!("compile {file}: {e}"));
+            std::fs::write(out_dir.join(file), &wasm).unwrap_or_else(|e| panic!("write {file}: {e}"));
+        }
+    }
+}
+
+/// Emit the GitHub-#80 codegen-fix cartridges for the node validate-proof
+/// (`scripts/verify-codegen-valid.mjs`). Each snippet is ACCEPTED source that
+/// the three #80 bugs used to lower to STACK-IMBALANCED wasm — a `WebAssembly.
+/// validate` over the emitted bytes is the only honest proof the fix holds (the
+/// in-process `compile().is_ok()` tests only prove the bytes were produced, not
+/// that they're a valid module). Run `cargo test emits_codegen_valid_proof`,
+/// then `node scripts/verify-codegen-valid.mjs`. Native-only (writes the tree).
+#[cfg(all(test, feature = "native"))]
+mod codegen_valid_run_proof {
+    use super::compile;
+
+    #[test]
+    fn emits_codegen_valid_proof() {
+        let out_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("scripts")
+            .join(".codegen-valid-proof");
+        std::fs::create_dir_all(&out_dir).expect("create proof dir");
+
+        let cases: &[(&str, &str)] = &[
+            // #80 (1): an else-less `if` as a STATEMENT (value discarded) stays on
+            // the void path. Used to be fine, but pin it so the void-frame lowering
+            // keeps validating after the value-position reject.
+            (
+                "elseless_if_stmt.wasm",
+                "fn frame(t: i32) { let mut x = 0; if t > 0 { x = 5; } host::display::clear(x); host::display::present(); }",
+            ),
+            // #80 (1): an `if`/`else` USED AS A VALUE emits an `(if (result i32))`
+            // frame with both branches — must validate (balanced stack).
+            (
+                "value_if_else.wasm",
+                "fn frame(t: i32) { let x = if t > 0 { 5 } else { 9 }; host::display::clear(x); host::display::present(); }",
+            ),
+            // #80 (2): short-circuit `&&` with a `break` in the rhs — the rhs runs
+            // inside the `&&` if-frame, so its br target must step one frame extra.
+            (
+                "and_break_rhs.wasm",
+                "fn frame(t: i32) { let mut i = 0; loop { let go = t > 0 && break; i = i + 1; } host::display::clear(i); host::display::present(); }",
+            ),
+            // #80 (2): short-circuit `||` with a `continue` in the rhs.
+            (
+                "or_continue_rhs.wasm",
+                "fn frame(t: i32) { let mut i = 0; while i < 3 { i = i + 1; let keep = i > 9 || continue; } host::display::clear(i); host::display::present(); }",
+            ),
+            // #80 (3): a `match` with the catch-all LAST (the only legal shape) —
+            // the chained if/else closes cleanly. A non-last catch-all is rejected
+            // in the typechecker, so only the valid shape reaches codegen.
+            (
+                "match_wildcard_last.wasm",
+                "fn frame(t: i32) { let v = match t { 0 => 2, 1 => 7, _ => 1 }; host::display::clear(v); host::display::present(); }",
             ),
         ];
 

@@ -843,7 +843,28 @@ impl TypeContext {
                     Some(ElseBranch::If(e)) => Some(TypedElse::If(Box::new(self.check_expr(e)?))),
                     None => None,
                 };
-                let ty = then_typed.ty.clone();
+                // An `if` WITHOUT an `else` is a statement, never a value (Rust
+                // semantics): the missing branch can't produce a value, so the
+                // whole `if` is `Void`. A non-void tail in the `then` block would
+                // therefore be dropped on the floor on the false path — codegen
+                // would have to emit an `(if (result T))` frame with no else,
+                // which is stack-imbalanced (invalid) wasm. Reject it here so the
+                // emitter always stays on the void path (BLOCK_VOID).
+                let ty = if else_typed.is_some() {
+                    then_typed.ty.clone()
+                } else {
+                    if then_typed.ty != ResolvedType::Void && then_typed.ty != ResolvedType::Never {
+                        return Err(CompileError::at_code(
+                            codes::TYPE_MISMATCH,
+                            format!(
+                                "`if` without `else` evaluates to {:?}, but an else-less `if` is a statement (add an `else` branch to use its value)",
+                                then_typed.ty
+                            ),
+                            span,
+                        ));
+                    }
+                    ResolvedType::Void
+                };
                 Ok(TypedExpr {
                     ty,
                     kind: TypedExprKind::If { cond: Box::new(cond), then_block: then_typed, else_block: else_typed },
@@ -857,6 +878,20 @@ impl TypeContext {
                 let mut result_ty = ResolvedType::Void;
 
                 for (i, arm) in arms.iter().enumerate() {
+                    // An irrefutable arm (`_` or a bare binding) matches
+                    // everything, so any arm after it is dead — and codegen lowers
+                    // a non-last match to a chain of `if/else` frames that assumes
+                    // the irrefutable arm is the terminal `else`. A non-last
+                    // wildcard/binding would emit a stack-imbalanced (invalid)
+                    // module, so reject it here (the arm must be moved last).
+                    if is_irrefutable_pattern(&arm.pattern) && i != arms.len() - 1 {
+                        return Err(CompileError::at_code(
+                            codes::TYPE_MISMATCH,
+                            "a `_`/binding match arm matches everything; move it last (arms after it are unreachable)",
+                            arm.span,
+                        ));
+                    }
+
                     self.push_scope();
                     self.bind_pattern(&arm.pattern, &scrutinee.ty)?;
                     let body = self.check_expr(&arm.body)?;
@@ -956,6 +991,15 @@ impl TypeContext {
             }
         }
     }
+}
+
+/// Whether a match pattern matches EVERY value (so any later arm is dead code).
+/// Mirrors codegen's `is_wildcard`: a bare `_` or a binding (`x =>`) catches all;
+/// literals, ranges, and variant patterns are refutable. Codegen lowers the
+/// terminal catch-all to a plain `else`, so a non-last irrefutable arm is
+/// rejected in the typechecker (it would otherwise emit invalid wasm).
+fn is_irrefutable_pattern(pattern: &Pattern) -> bool {
+    matches!(pattern.kind, PatternKind::Wildcard | PatternKind::Binding(_))
 }
 
 /// Resolve a `module::func` path against the host-function table.

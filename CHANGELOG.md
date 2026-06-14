@@ -62,6 +62,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`[data-modal-trap]` + `dom::trap_tab_in`, handled in the one delegated keydown
   listener — no new closure), Escape dismisses it (`data-modal-cancel`), and
   closing returns focus to the trigger (`dom::restore_focus`).
+- **rustlite: three codegen bugs emitted invalid wasm from ACCEPTED source
+  (GitHub #80).** Each compiled clean but produced a stack-imbalanced module that
+  failed `WebAssembly.validate` / instantiation:
+  - A value-position `if` WITHOUT an `else` was typed as the then-block's type, so
+    codegen emitted an `(if (result T))` frame with no else branch (the false path
+    leaves the stack empty). An else-less `if` is now `Void` (Rust semantics);
+    using its value is rejected (LH0204) so the emitter stays on the void frame.
+  - A short-circuit `&&`/`||` opened an `OP_IF` frame for its rhs but never bumped
+    `extra_depth`, so a `break`/`continue` in the rhs (`cond || continue`) branched
+    to the wrong frame. The rhs emission is now depth-adjusted like the regular
+    `if` arm.
+  - A non-last `_`/binding `match` arm emitted an unbalanced if/else chain (codegen
+    lowers the terminal catch-all to a plain `else`). It's now rejected in the
+    typechecker (move the catch-all last).
+  Proven by `cargo test emits_codegen_valid_proof` + `node
+  scripts/verify-codegen-valid.mjs` (each emitted module `WebAssembly.validate`s,
+  instantiates, and runs).
 
 ## [0.35.0] - 2026-06-13
 
