@@ -15,6 +15,7 @@
 mod abi;
 mod bounty;
 mod credits;
+mod diamond;
 mod feedback;
 mod guild;
 mod invite;
@@ -36,6 +37,7 @@ mod x402;
 pub(crate) use abi::*;
 pub use bounty::*;
 pub use credits::*;
+pub use diamond::*;
 pub use feedback::*;
 pub use guild::*;
 pub use invite::*;
