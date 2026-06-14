@@ -87,7 +87,10 @@ impl Filesystem for NativeFilesystem {
 
     async fn metadata(&self, path: &str) -> Result<Option<Metadata>> {
         let p = PathBuf::from(path);
-        match tokio::fs::metadata(&p).await {
+        // `symlink_metadata` (lstat) does NOT follow symlinks, so a symlink
+        // classifies as `EntryKind::Symlink` rather than its target's kind —
+        // matching `walk()` (follow_links=false) and `delete()`.
+        match tokio::fs::symlink_metadata(&p).await {
             Ok(meta) => {
                 let kind = classify_meta_only(&meta);
                 Ok(Some(Metadata {
@@ -315,6 +318,26 @@ mod tests {
         assert_eq!(file.kind, EntryKind::File);
         assert_eq!(inner.size, None);
         assert_eq!(inner.kind, EntryKind::Directory);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // metadata() must lstat (NOT follow symlinks) so a symlink classifies as
+    // EntryKind::Symlink — matching walk()/delete(). Unix-only: creating a
+    // symlink on Windows needs elevated privileges.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn metadata_classifies_symlink_without_following() {
+        let dir = unique_dir("symlink");
+        touch(&dir, "target.txt", b"hi");
+        let link = dir.join("link.txt");
+        std::os::unix::fs::symlink(dir.join("target.txt"), &link).unwrap();
+        let fs = NativeFilesystem::new();
+        let meta = fs
+            .metadata(&link.display().to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.kind, EntryKind::Symlink);
         std::fs::remove_dir_all(&dir).ok();
     }
 

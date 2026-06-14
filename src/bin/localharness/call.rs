@@ -283,10 +283,7 @@ pub(crate) async fn call(rest: &[String]) -> i32 {
             // `--pay`: settle the $LH to the target AFTER a successful reply —
             // a failed call costs the caller nothing.
             match pay_wei {
-                Some(value_wei) => {
-                    settle_call_payment(&key_hex, &target, value_wei, pay.as_deref().unwrap_or(""))
-                        .await
-                }
+                Some(value_wei) => settle_call_payment(&key_hex, &target, value_wei).await,
                 None => 0,
             }
         }
@@ -303,12 +300,7 @@ pub(crate) async fn call(rest: &[String]) -> i32 {
 /// x402 flow, and of `mcp-call` where the PROXY settles). Sign the
 /// `PaymentAuthorization` with the caller key, ensure the diamond's `$LH`
 /// allowance, submit the sponsored `settle`. Returns the process exit code.
-async fn settle_call_payment(
-    key_hex: &str,
-    target: &str,
-    value_wei: u128,
-    human_amount: &str,
-) -> i32 {
+async fn settle_call_payment(key_hex: &str, target: &str, value_wei: u128) -> i32 {
     let signer = match wallet::from_private_key_hex(key_hex) {
         Ok(s) => s,
         Err(e) => {
@@ -384,7 +376,9 @@ async fn settle_call_payment(
     .await
     {
         Ok(tx) => {
-            println!("paid {human_amount} $LH to {target}'s account {to_hex} (tx {tx})");
+            // `fmt_lh` already carries the " LH" suffix — print the RESOLVED
+            // amount, never the raw `--pay auto` flag string.
+            println!("paid {} to {target}'s account {to_hex} (tx {tx})", fmt_lh(value_wei));
             0
         }
         Err(e) => {

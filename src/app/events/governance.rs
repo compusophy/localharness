@@ -106,11 +106,12 @@ pub(super) fn propose_measure_pressed() {
         .await;
         match result {
             Ok(_) => {
-                // New proposal id = the guild's last entry in proposals_of.
-                let new_id = crate::app::registry::proposals_of(guild_id, 0, PROPOSAL_LIST_LIMIT)
+                // New proposal id = the monotonic global counter (ids count up
+                // from 1). `proposals_of(.., 0, LIMIT)` is oldest-first and
+                // PAGINATED, so its last entry is the LIMIT-th proposal, not the
+                // newest, once a guild has more than LIMIT proposals.
+                let new_id = crate::app::registry::proposal_count()
                     .await
-                    .ok()
-                    .and_then(|ids| ids.last().copied())
                     .unwrap_or(0);
                 dom::swap_inner(
                     "governance-result",

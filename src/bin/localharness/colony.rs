@@ -81,14 +81,20 @@ pub(crate) fn colony_judge_prompt(task: &str, result: &str) -> String {
 }
 
 /// Parse a judge's reply into `(rating, rationale)`. The rating is the FIRST
-/// `1..=5` digit anywhere in the reply (the prompt asks for it on line 1, but a
-/// chatty model may prepend a word); unparseable → a neutral default of 3. The
-/// rationale is the first non-empty line that is not just the bare rating digit.
-/// Pure + testable.
+/// `1..=5` digit on the FIRST NON-EMPTY LINE (the prompt pins the score to line
+/// 1; a chatty model may prepend a word, but a number further down in the
+/// rationale — a year, a count — must NOT be mistaken for the score);
+/// unparseable → a neutral default of 3. The rationale is the first non-empty
+/// line that is not just the bare rating digit. Pure + testable.
 pub(crate) fn parse_judge_rating(reply: &str) -> (u8, String) {
     let rating = reply
-        .chars()
-        .find_map(|c| c.to_digit(10).filter(|d| (1..=5).contains(d)))
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .and_then(|line| {
+            line.chars()
+                .find_map(|c| c.to_digit(10).filter(|d| (1..=5).contains(d)))
+        })
         .map(|d| d as u8)
         .unwrap_or(3);
     let rationale = reply
@@ -1381,9 +1387,22 @@ mod tests {
 
         // Out-of-range / no digit → neutral default of 3.
         assert_eq!(parse_judge_rating("no number here at all").0, 3);
-        // A leading 0/6..9 is skipped; the first IN-RANGE digit wins.
+        // A leading 0/6..9 is skipped; the first IN-RANGE digit ON LINE 1 wins.
         assert_eq!(parse_judge_rating("0 then 2").0, 2);
         assert_eq!(parse_judge_rating("99999").0, 3);
+
+        // REGRESSION (#89): a number in the rationale (a later line) must NOT
+        // override the score. Here line 1 has no in-range digit, so the parse
+        // defaults to 3 rather than grabbing the "2" from the rationale.
+        let (r, _) = parse_judge_rating("Score: ten\nIt got 2 of the 3 checks wrong.");
+        assert_eq!(r, 3);
+        // And the genuine score on line 1 wins even when later lines have digits.
+        let (r, _) = parse_judge_rating("4\nFails 1 of 5 edge cases noted in 2024.");
+        assert_eq!(r, 4);
+        // Leading blank lines are skipped to the first non-empty line.
+        let (r, why) = parse_judge_rating("\n\n5\nExcellent.");
+        assert_eq!(r, 5);
+        assert_eq!(why, "Excellent.");
     }
 
     #[test]

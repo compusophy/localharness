@@ -48,7 +48,7 @@ pub(crate) async fn collect_payment_if_required() -> Result<Option<String>, Stri
 
     let purpose = format!(
         "pay {} LH per turn to this agent",
-        price_wei / 1_000_000_000_000_000_000u128,
+        crate::app::format_wei_as_test_eth(price_wei),
     );
 
     // Build ERC-20 transfer(tba, price_wei) calldata against the

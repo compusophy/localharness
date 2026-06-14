@@ -35,6 +35,12 @@ use web_sys::{
 use super::{DirEntry, EntryKind, Filesystem, Metadata, WalkEntry};
 use crate::error::{Error, Result};
 
+/// Hard cap on entries a single `walk` collects. find_file/search_directory
+/// cap their own RESULTS, but they collect the whole walk first, so without
+/// this a walk over a huge tree would exhaust memory. Mirrors
+/// `NativeFilesystem::MAX_WALK_ENTRIES`; 200k is far beyond any real workspace.
+const MAX_WALK_ENTRIES: usize = 200_000;
+
 /// Filesystem backed by the browser's Origin Private File System.
 ///
 /// Cheap to clone: holds an `Rc` to the OPFS root handle once acquired.
@@ -324,6 +330,11 @@ async fn walk_dir(
     }
     let entries = collect_entries(dir).await?;
     for entry in entries {
+        // Stop once the global cap is hit (an over-large tree must not
+        // exhaust memory) — matches NativeFilesystem's MAX_WALK_ENTRIES.
+        if out.len() >= MAX_WALK_ENTRIES {
+            return Ok(());
+        }
         let path = if prefix.is_empty() || prefix == "/" {
             entry.name.clone()
         } else {

@@ -258,7 +258,8 @@ pub(crate) fn base_system_prompt(
              animated apps use run_cartridge. Pair with create_file to also \
              save the HTML as `index.html`. (Opening an .html file from the \
              files modal renders it here too.)\n\
-           • dwell(seconds) — WAIT cleanly (max 300s) for cooldowns or tx              confirmation instead of burning dummy read calls to pass time.
+           • dwell(seconds) — WAIT cleanly (max 300s) for cooldowns or tx \
+             confirmation instead of burning dummy read calls to pass time.\n\
            • submit_feedback(text) — submit feedback on-chain via the \
              FeedbackFacet. Emits a FeedbackSubmitted event on the registry \
              diamond. Use when the user asks to leave feedback or to report \
