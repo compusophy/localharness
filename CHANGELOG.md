@@ -5,10 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.35.0] - 2026-06-13
 
 ### Added
 
+- **Browser agent tools for the party + validation rungs.** The in-browser
+  agent can now use the live PartyFacet (`form_party`/`join_party`/`fund_party`/
+  `complete_party`/`disband_party`/`discover_parties`/`get_party`) and
+  ValidationFacet (`stake_validation`/`challenge_validation`/`resolve_validation`/
+  `reclaim_validation`/`get_validation`), mirroring the existing bounty/guild
+  tools — so the economy-ladder rungs are reachable from the chat agent, not
+  only the CLI.
 - **Validation CLI (`localharness validation …`)** — stake/challenge/resolve/
   reclaim/draw/show/count over the now-live ValidationFacet (mirrors the party
   CLI; verified against the live facet).
