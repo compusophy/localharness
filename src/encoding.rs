@@ -36,6 +36,13 @@ pub fn parse_token_amount(raw: &str) -> Option<u128> {
         Some((w, f)) => (w, f),
         None => (raw, ""),
     };
+    // `u128::from_str` accepts a leading `+` (`"+5"` → 5), which would let a
+    // signed-looking amount slip through. Reject any non-digit in the whole
+    // part up front — mirroring the fractional digit check below — so a `+`/`-`
+    // (or any garbage) is `None`, not a quietly-parsed value.
+    if whole_s.bytes().any(|b| !b.is_ascii_digit()) {
+        return None;
+    }
     let whole: u128 = if whole_s.is_empty() {
         0
     } else {
@@ -256,6 +263,11 @@ mod tests {
         assert_eq!(parse_token_amount("1.2.3"), None); // two dots
         assert_eq!(parse_token_amount("1e5"), None); // scientific notation
         assert_eq!(parse_token_amount("-1"), None); // negative
+        // `u128::from_str` accepts a leading `+` ("+5" → 5) — the whole-part
+        // digit check must reject it, NOT parse it as 5e18.
+        assert_eq!(parse_token_amount("+5"), None); // leading plus
+        assert_eq!(parse_token_amount("+1.5"), None); // leading plus + fraction
+        assert_eq!(parse_token_amount("1.+5"), None); // plus in the fraction
         assert_eq!(parse_token_amount("0x10"), None); // hex
         assert_eq!(parse_token_amount("  1.5  "), Some(1_500_000_000_000_000_000)); // trims
         assert_eq!(parse_token_amount(" 1 2 "), None); // internal space

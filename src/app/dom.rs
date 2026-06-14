@@ -84,26 +84,34 @@ pub(crate) fn swap_outer(id: &str, html: &str) {
 }
 
 thread_local! {
-    /// The element focused when a modal/overlay opened, so closing it returns
-    /// focus there (a11y #58) instead of stranding the user on `<body>`. Only
-    /// one overlay is open at a time, so a single slot suffices.
-    static FOCUS_RETURN: RefCell<Option<Element>> = const { RefCell::new(None) };
+    /// The elements focused when modals/overlays opened, so closing each returns
+    /// focus where it was when THAT modal opened (a11y #58) instead of stranding
+    /// the user on `<body>`. A STACK, not a single slot: nested modals (e.g.
+    /// unlink / tba-send opened from inside the admin dropdown) each push their
+    /// own return target; closing them pops in reverse so the innermost restores
+    /// to the dropdown and the dropdown to the original trigger. A lone slot let
+    /// the inner open clobber the outer's saved focus.
+    static FOCUS_RETURN: RefCell<Vec<Option<Element>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Save the currently-focused element so a later [`restore_focus`] can return
-/// to it. Call right before opening a modal/overlay. Focus is a BEHAVIOUR, not
-/// DOM construction — the no-imperative-DOM rule is about building nodes.
+/// to it. Call right before opening a modal/overlay. PUSHES onto the focus
+/// stack so nested modals each remember their own return target. Focus is a
+/// BEHAVIOUR, not DOM construction — the no-imperative-DOM rule is about
+/// building nodes.
 pub(crate) fn remember_focus() {
     if let Ok(doc) = document() {
-        FOCUS_RETURN.with(|c| *c.borrow_mut() = doc.active_element());
+        FOCUS_RETURN.with(|c| c.borrow_mut().push(doc.active_element()));
     }
 }
 
-/// Return focus to the element [`remember_focus`] saved (call when closing a
-/// modal/overlay). No-op if nothing was saved or the element is gone.
+/// Return focus to the element the most recent [`remember_focus`] saved (call
+/// when closing a modal/overlay). POPS the focus stack so a nested modal
+/// restores to its parent, then the parent to the original trigger. No-op if
+/// the stack is empty or the saved element is gone.
 pub(crate) fn restore_focus() {
     FOCUS_RETURN.with(|c| {
-        if let Some(el) = c.borrow_mut().take() {
+        if let Some(Some(el)) = c.borrow_mut().pop() {
             if let Some(h) = el.dyn_ref::<web_sys::HtmlElement>() {
                 let _ = h.focus();
             }

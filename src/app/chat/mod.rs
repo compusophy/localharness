@@ -663,6 +663,12 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
                 ),
             );
             dom::scroll_to_bottom("transcript");
+        } else {
+            // Truncated → no message AND no visible output, so the pre-painted
+            // shell would linger as an empty bordered bubble until the retry
+            // continuation paints a fresh one. Drop it (same as the pure-`finish`
+            // case above) so the retry leaves no empty artifact behind.
+            dom::remove(&format!("turn-{assistant_turn_id}"));
         }
         Some(kind)
     } else {

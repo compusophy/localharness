@@ -92,6 +92,20 @@ impl Tool for ViewFile {
         let lines: Vec<&str> = full.split_inclusive('\n').collect();
         let total_lines = lines.len() as u32;
 
+        // An empty file has no lines, so the default range computes to
+        // (start=1, end=0) → a spurious `start > end` error. Return empty
+        // content instead — an empty file is a valid (if dull) read.
+        if total_lines == 0 {
+            return Ok(json!({
+                "path": args.path,
+                "total_lines": 0,
+                "start_line": 0,
+                "end_line": 0,
+                "truncated": false,
+                "content": "",
+            }));
+        }
+
         let (start, end) = match (args.start_line, args.end_line) {
             (Some(s), Some(e)) => (s.max(1), e.min(total_lines).max(1)),
             (Some(s), None) => (s.max(1), total_lines),
@@ -151,6 +165,23 @@ mod tests {
             )
             .await;
         assert!(res.is_err(), "start_line > end_line should error");
+        let _ = std::fs::remove_file(tmp);
+    }
+
+    #[tokio::test]
+    async fn reads_empty_file_without_error() {
+        let tmp = tempfile_path("view_file_empty.txt");
+        tokio::fs::write(&tmp, b"").await.unwrap();
+        let tool = ViewFile::new(Arc::new(NativeFilesystem::new()));
+        let out = tool
+            .execute(json!({"path": tmp.display().to_string()}), None)
+            .await
+            .unwrap();
+        assert_eq!(out["content"].as_str().unwrap(), "");
+        assert_eq!(out["total_lines"].as_u64(), Some(0));
+        assert_eq!(out["start_line"].as_u64(), Some(0));
+        assert_eq!(out["end_line"].as_u64(), Some(0));
+        assert_eq!(out["truncated"].as_bool(), Some(false));
         let _ = std::fs::remove_file(tmp);
     }
 
