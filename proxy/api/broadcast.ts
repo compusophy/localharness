@@ -5,10 +5,10 @@
 // cartridge "Ready Up" feature: a cartridge (or any participant) triggers a
 // "ready up" / "your turn" / "match starting" buzz to everyone subscribed to a
 // feed, with no tab open on the recipient devices. It is notify.ts's FAN-OUT
-// sibling — same auth, same token scheme, same per-request meter, same
-// `sendWebPush` plumbing — but it reads the feed's SUBSCRIBER SET off-chain
-// (SubscribeFacet.subscribersOf) and pushes to each subscriber's published Web
-// Push subscription instead of the caller's own.
+// sibling — same auth, same token scheme, same `sendWebPush` plumbing — but it
+// reads the feed's SUBSCRIBER SET off-chain (SubscribeFacet.subscribersOf) and
+// pushes to each subscriber's published Web Push subscription instead of the
+// caller's own. Unlike notify.ts, a broadcast is FREE (not metered) — see below.
 //
 // WHO MAY BROADCAST — IDENTITY-GATED, NOT OWNER-GATED. The only gate on the
 // sender is the standard proxy token (a valid Ethereum personal-sign over
@@ -18,38 +18,31 @@
 // RATE LIMIT (below) is the anti-spam control that owner-gating would otherwise
 // provide.
 //
-// AUTH + BILLING are byte-compatible with api/notify.ts / api/gemini.ts: the
-// caller sends `<address>:<timestamp>:<signature>` in `x-goog-api-key` (or
-// `x-api-key`); the proxy recovers the signer, gates on an active SessionFacet
-// session OR a CreditMeterFacet balance, and debits the SAME flat per-request
-// cost ONCE (the sender pays for the broadcast, like a model call — so a feed
-// can't be spammed for free; the meter IS part of the spam filter).
+// AUTH is byte-compatible with api/notify.ts / api/gemini.ts: the caller sends
+// `<address>:<timestamp>:<signature>` in `x-goog-api-key` (or `x-api-key`) and
+// the proxy recovers the signer — the sender must be a real identity. A
+// Ready-Up broadcast is intentionally FREE (NOT metered): requiring $LH per tap
+// would kill the viral, low-friction "anyone can ping the group" use case. The
+// spam controls are the identity gate (a valid signed identity above) + the
+// rate limits below.
 //
-// ORDER OF OPERATIONS (notify.ts invariant — nothing may fail AFTER the caller
-// is charged except best-effort pushes): payload validation → VAPID config
-// check → per-SENDER rate-limit (429 BEFORE auth — cheap rejection on the
-// CLAIMED address; a spoofer burns a window, never funds) → auth → per-feed
-// rate-limit (429 before any debit) → credit gate + meter debit (charged
-// ONCE, before the fan-out) → read subscribersOf → per subscriber: resolve
-// push_sub + sendWebPush (best-effort; one failure never aborts the rest) →
-// counts.
+// ORDER OF OPERATIONS (nothing may fail AFTER the broadcast commits except
+// best-effort pushes): payload validation → VAPID config check → per-SENDER
+// rate-limit (429 BEFORE auth — cheap rejection on the CLAIMED address; a
+// spoofer burns a window) → auth → per-feed rate-limit (429 before the fan-out)
+// → read subscribersOf → per subscriber: resolve push_sub + sendWebPush
+// (best-effort; one failure never aborts the rest) → counts. FREE (rate-limited
+// + identity-gated) — no meter debit.
 //
 // RATE LIMITS (best-effort, PER-ISOLATE — see api/_ratelimit.ts for why
 // that's accepted): per SENDER ≤ BROADCAST_SENDER_PER_MIN/min (a broadcast
 // fans out to up to MAX_FANOUT phones, so the per-sender budget is tight) +
-// the per-FEED cooldown below. The meter is the global hard backstop.
+// the per-FEED cooldown below. With broadcasts free, these rate limits + the
+// identity gate ARE the spam story.
 
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
-import {
-  createPublicClient,
-  createWalletClient,
-  defineChain,
-  encodeFunctionData,
-  http,
-} from 'viem';
-import { privateKeyToAccount } from 'viem/accounts';
 import {
   parsePushSubs,
   dedupeSubs,
@@ -64,18 +57,6 @@ export const config = { runtime: 'edge' };
 
 const TEMPO_RPC = 'https://rpc.moderato.tempo.xyz';
 const REGISTRY = '0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c';
-const CHAIN_ID = 42431;
-
-// SAME per-request price as a model call / a self-notify — same env knob, same
-// default 0.01 $LH. A broadcast is a paid capability; the meter is part of the
-// anti-spam story (alongside the rate limit).
-const COST_PER_REQUEST_WEI = ((): bigint => {
-  try {
-    return BigInt(process.env.COST_PER_REQUEST_WEI ?? '10000000000000000');
-  } catch {
-    return 10_000_000_000_000_000n;
-  }
-})();
 
 const FRESHNESS_WINDOW_SECS = 300; // same tight replay window as notify.ts
 const ALLOWED_ORIGIN_SUFFIX = '.localharness.xyz';
@@ -102,8 +83,8 @@ const MAX_FANOUT = 500;
 // "1 per 20s per isolate", not a hard global "1 per 20s". It defeats a single
 // caller hammering one warm isolate (the common abuse shape); a determined
 // attacker spreading requests across isolates can exceed it. A hard global
-// limit needs shared state (KV/Redis) — deliberately out of scope (the meter
-// debit is the durable, global cost ceiling; this is a cheap first line).
+// limit needs shared state (KV/Redis) — deliberately out of scope (this + the
+// identity gate are the cheap first line; broadcasts are free).
 const RATE_LIMIT_MS = 3_000;
 const lastBroadcastAt = new Map<string, number>();
 
@@ -124,26 +105,6 @@ const senderWindow = new SlidingWindow(BROADCAST_SENDER_PER_MIN, 60_000);
 const PUSH_SUB_KEY = bytesToHex(
   keccak_256(new TextEncoder().encode('localharness.push_sub')),
 );
-
-const TEMPO_CHAIN = defineChain({
-  id: CHAIN_ID,
-  name: 'Tempo Moderato',
-  nativeCurrency: { name: 'Tempo', symbol: 'TEMPO', decimals: 18 },
-  rpcUrls: { default: { http: [TEMPO_RPC] } },
-});
-
-const METER_ABI = [
-  {
-    name: 'meter',
-    type: 'function',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'user', type: 'address' },
-      { name: 'amount', type: 'uint256' },
-    ],
-    outputs: [],
-  },
-] as const;
 
 /** Whether `s` is a well-formed 0x-prefixed 20-byte hex address. */
 function isHexAddress(s: string): boolean {
@@ -266,20 +227,6 @@ async function ethCall(data: string): Promise<string> {
   return body.result;
 }
 
-/** `sessionExpiryOf(address) -> uint256`, decoded as BigInt unix seconds. */
-async function sessionExpiryOf(address: string): Promise<bigint> {
-  return BigInt(
-    await ethCall('0x' + selector('sessionExpiryOf(address)') + encodeAddressWord(address)),
-  );
-}
-
-/** `creditOf(address) -> uint256` — the user's prepaid per-request balance. */
-async function creditOf(address: string): Promise<bigint> {
-  return BigInt(
-    await ethCall('0x' + selector('creditOf(address)') + encodeAddressWord(address)),
-  );
-}
-
 /**
  * `subscribersOf(uint256 targetId) -> address[]` (SubscribeFacet). Decodes the
  * ABI dynamic `address[]` return into a list of lowercase 0x addresses. Returns
@@ -363,53 +310,6 @@ async function pushSubsOf(address: string): Promise<PushSubscriptionJson[]> {
   return dedupeSubs(out);
 }
 
-/** Thrown when the on-chain debit REVERTED (caller is genuinely out of $LH). */
-class InsufficientCreditError extends Error {}
-
-/**
- * Debit `amount` $LH from `user` via `CreditMeterFacet.meter` — identical
- * semantics to notify.ts::meterDebit: await the receipt (authoritative), throw
- * on a definitive revert, return normally on an ambiguous wait failure (never
- * risk a double-charge on retry).
- */
-async function meterDebit(user: string, amount: bigint): Promise<void> {
-  const pk = process.env.PROXY_METER_KEY;
-  if (!pk) throw new Error('missing PROXY_METER_KEY');
-  const account = privateKeyToAccount(
-    (pk.startsWith('0x') ? pk : `0x${pk}`) as `0x${string}`,
-  );
-  const wallet = createWalletClient({
-    account,
-    chain: TEMPO_CHAIN,
-    transport: http(TEMPO_RPC),
-  });
-  const data = encodeFunctionData({
-    abi: METER_ABI,
-    functionName: 'meter',
-    args: [user as `0x${string}`, amount],
-  });
-  const hash = await wallet.sendTransaction({
-    to: REGISTRY as `0x${string}`,
-    data,
-    value: 0n,
-  });
-
-  const pub = createPublicClient({ chain: TEMPO_CHAIN, transport: http(TEMPO_RPC) });
-  let status: 'success' | 'reverted';
-  try {
-    ({ status } = await pub.waitForTransactionReceipt({
-      hash,
-      timeout: 12_000,
-      pollingInterval: 500,
-    }));
-  } catch {
-    return; // ambiguous (RPC/timeout) — serve; do NOT double-charge on retry
-  }
-  if (status === 'reverted') {
-    throw new InsufficientCreditError('on-chain debit reverted (insufficient $LH)');
-  }
-}
-
 // ---- handler ----------------------------------------------------------------
 
 export default async function handler(req: Request): Promise<Response> {
@@ -462,8 +362,8 @@ export default async function handler(req: Request): Promise<Response> {
     title = title.slice(0, MAX_TITLE_CHARS);
     body = body.slice(0, MAX_BODY_CHARS);
 
-    // ---- VAPID config (BEFORE auth/debit — a misconfigured proxy must cost the
-    // caller nothing) -----------------------------------------------------------
+    // ---- VAPID config (BEFORE auth — a misconfigured proxy must reject early,
+    // before any fan-out) -------------------------------------------------------
     const publicKey = process.env.VAPID_PUBLIC_KEY;
     const privateKey = process.env.VAPID_PRIVATE_KEY;
     const subject = process.env.VAPID_SUBJECT;
@@ -525,9 +425,9 @@ export default async function handler(req: Request): Promise<Response> {
       return json({ error: 'signature does not match address' }, 401, origin);
     }
 
-    // ---- per-feed RATE LIMIT (BEFORE the debit — a rejected broadcast must not
-    // be charged). Identity-gated broadcast is not owner-gated, so this is the
-    // anti-spam control. Per-isolate Map (see RATE_LIMIT_MS comment). ----------
+    // ---- per-feed RATE LIMIT. Identity-gated broadcast is not owner-gated, so
+    // (with broadcasts free) this is the anti-spam control. Per-isolate Map
+    // (see RATE_LIMIT_MS comment). ---------------------------------------------
     const feedKey = targetId.toString();
     const nowMs = Date.now();
     const last = lastBroadcastAt.get(feedKey) ?? 0;
@@ -543,14 +443,11 @@ export default async function handler(req: Request): Promise<Response> {
     // ---- FREE (rate-limited + identity-gated) --------------------------------
     // A Ready-Up broadcast is NOT metered: requiring $LH per tap would kill the
     // viral, low-friction "anyone can ping the group" use case. The spam
-    // controls are the per-feed rate limit (above) + the identity gate (a valid
-    // signed identity is required to reach here). Metering can return behind a
-    // config flag if abuse appears; for now the floor is "have an identity,
-    // wait your 20s." (meterDebit / creditOf / sessionExpiryOf stay defined for
-    // a future re-enable.)
-
-    // Mark the feed's
-    // last-broadcast time so the rate limit holds even if the fan-out is slow.
+    // controls are the rate limits + the identity gate (a valid signed identity
+    // is required to reach here).
+    //
+    // Mark the feed's last-broadcast time so the rate limit holds even if the
+    // fan-out is slow.
     lastBroadcastAt.set(feedKey, nowMs);
 
     // ---- FAN-OUT: read the feed's subscriber set, push to each ----------------
@@ -558,9 +455,8 @@ export default async function handler(req: Request): Promise<Response> {
     try {
       allSubscribers = await subscribersOf(targetId);
     } catch (e) {
-      // The debit already happened; surface the read failure but don't pretend
-      // we delivered. (The caller paid for a broadcast that couldn't enumerate
-      // its feed — rare; the rate-limit stamp still stands.)
+      // Surface the read failure but don't pretend we delivered. (Rare; the
+      // rate-limit stamp still stands.)
       return json(
         { error: 'subscriber lookup failed: ' + (e as Error).message },
         502,
