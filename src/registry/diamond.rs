@@ -152,6 +152,41 @@ pub fn encode_diamond_cut_hex(cuts: &[FacetCut], init: &[u8; 20], init_calldata:
     format!("0x{}", bytes_to_hex(&encode_diamond_cut(cuts, init, init_calldata)))
 }
 
+/// ABI-encode the `Diamond` constructor's argument tuple
+/// `(address _contractOwner, FacetCut[] _diamondCut)` — NO function selector.
+///
+/// Constructor args are appended raw to the creation bytecode (there is no
+/// 4-byte selector for a constructor), so this returns just the encoded tuple.
+/// Use it when assembling child-diamond genesis bytecode
+/// (`Diamond` creation code ‖ these args) for a `CREATE`/`CREATE2` deploy.
+///
+/// CRITICAL: the arg order is `(owner, cuts)` — the OPPOSITE of
+/// [`encode_diamond_cut`]'s `diamondCut(cuts, init, calldata)`. The head is two
+/// words — the left-padded `owner` address (static) then the offset to the
+/// dynamic `FacetCut[]` (a constant `0x40`, since the head is exactly two
+/// words) — followed by the identical `FacetCut[]` tail produced by
+/// [`encode_facet_cut_array`] (length, element-offset table, each tuple with its
+/// inner `bytes4[]`).
+pub fn encode_diamond_constructor_args(owner: &[u8; 20], cuts: &[FacetCut]) -> Vec<u8> {
+    let cuts_blob = encode_facet_cut_array(cuts);
+
+    // Two outer head words: the static `owner` address then the offset to the
+    // (only) dynamic arg. The cuts array begins right after the head, so its
+    // offset is a constant `2 * 32 = 0x40`.
+    const HEAD: usize = 2 * WORD; // owner, offset-cuts
+    let mut buf = Vec::with_capacity(HEAD + cuts_blob.len());
+    buf.extend_from_slice(&word_address(owner)); // owner address (static)
+    buf.extend_from_slice(&word_usize(HEAD)); // offset to FacetCut[] = 0x40
+    buf.extend_from_slice(&cuts_blob);
+    buf
+}
+
+/// Like [`encode_diamond_constructor_args`] but returns a `0x`-prefixed
+/// lowercase hex string.
+pub fn encode_diamond_constructor_args_hex(owner: &[u8; 20], cuts: &[FacetCut]) -> String {
+    format!("0x{}", bytes_to_hex(&encode_diamond_constructor_args(owner, cuts)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,6 +325,121 @@ mod tests {
             // trailing bytes: length 0
             "0000000000000000000000000000000000000000000000000000000000000000",
         );
+        assert_eq!(got, expected);
+    }
+
+    /// GOLDEN VECTOR — `Diamond` constructor args `(address, FacetCut[])`, ONE
+    /// Add cut with two selectors. Note the arg ORDER is `(owner, cuts)` (owner
+    /// FIRST), the OPPOSITE of `diamondCut(cuts, init, calldata)`, and there is
+    /// NO leading 4-byte selector (constructor args append raw to the bytecode).
+    ///
+    /// Derived with foundry `cast` (v1.6.0-nightly-tempo):
+    /// ```text
+    /// cast abi-encode "constructor(address,(address,uint8,bytes4[])[])" \
+    ///   0x1111111111111111111111111111111111111111 \
+    ///   "[(0x2222222222222222222222222222222222222222,0,[0xaabbccdd,0x11223344])]"
+    /// ```
+    #[test]
+    fn golden_constructor_args_one_cut() {
+        let expected = concat!(
+            "0x",
+            // head: owner (left-padded address)
+            "0000000000000000000000001111111111111111111111111111111111111111",
+            // head: offset to FacetCut[] = 0x40 (head is exactly two words)
+            "0000000000000000000000000000000000000000000000000000000000000040",
+            // FacetCut[]: length 1
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            // element[0] offset (from start of array data) = 0x20
+            "0000000000000000000000000000000000000000000000000000000000000020",
+            // tuple: facetAddress 0x2222…2222
+            "0000000000000000000000002222222222222222222222222222222222222222",
+            // tuple: action (Add = 0)
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            // tuple: offset to bytes4[] within tuple = 0x60
+            "0000000000000000000000000000000000000000000000000000000000000060",
+            // bytes4[]: length 2
+            "0000000000000000000000000000000000000000000000000000000000000002",
+            // selector 0xaabbccdd (left-aligned)
+            "aabbccdd00000000000000000000000000000000000000000000000000000000",
+            // selector 0x11223344 (left-aligned)
+            "1122334400000000000000000000000000000000000000000000000000000000",
+        );
+        let cut = FacetCut {
+            facet: [0x22; 20],
+            action: 0,
+            selectors: vec![[0xaa, 0xbb, 0xcc, 0xdd], [0x11, 0x22, 0x33, 0x44]],
+        };
+        let got = encode_diamond_constructor_args_hex(&[0x11; 20], std::slice::from_ref(&cut));
+        assert_eq!(got, expected);
+
+        // Raw form agrees with the hex form, and is whole 32-byte words (no
+        // selector to offset by, unlike diamondCut calldata).
+        let raw = encode_diamond_constructor_args(&[0x11; 20], std::slice::from_ref(&cut));
+        assert_eq!(got, format!("0x{}", bytes_to_hex(&raw)));
+        assert_eq!(raw.len() % WORD, 0);
+    }
+
+    /// GOLDEN VECTOR — TWO cuts (Add facet `0x44…44` with one selector, then
+    /// Remove facet `0x55…55` with two selectors). Exercises the element-offset
+    /// table with a non-trivial second offset (`0xe0`) and a Remove action.
+    ///
+    /// Derived with foundry `cast`:
+    /// ```text
+    /// cast abi-encode "constructor(address,(address,uint8,bytes4[])[])" \
+    ///   0x3333333333333333333333333333333333333333 \
+    ///   "[(0x4444444444444444444444444444444444444444,0,[0xdeadbeef]),\
+    ///     (0x5555555555555555555555555555555555555555,2,[0xcafebabe,0xfeedface])]"
+    /// ```
+    #[test]
+    fn golden_constructor_args_two_cuts_remove() {
+        let expected = concat!(
+            "0x",
+            // head: owner 0x3333…3333
+            "0000000000000000000000003333333333333333333333333333333333333333",
+            // head: offset to FacetCut[] = 0x40
+            "0000000000000000000000000000000000000000000000000000000000000040",
+            // FacetCut[]: length 2
+            "0000000000000000000000000000000000000000000000000000000000000002",
+            // element[0] offset = 0x40 (just past the 2-word offset table)
+            "0000000000000000000000000000000000000000000000000000000000000040",
+            // element[1] offset = 0xe0 (after element[0]: 5 words = 0xa0, +0x40)
+            "00000000000000000000000000000000000000000000000000000000000000e0",
+            // element[0] tuple: facetAddress 0x4444…4444
+            "0000000000000000000000004444444444444444444444444444444444444444",
+            // element[0]: action (Add = 0)
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            // element[0]: offset to bytes4[] = 0x60
+            "0000000000000000000000000000000000000000000000000000000000000060",
+            // element[0] bytes4[]: length 1
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            // selector 0xdeadbeef (left-aligned)
+            "deadbeef00000000000000000000000000000000000000000000000000000000",
+            // element[1] tuple: facetAddress 0x5555…5555
+            "0000000000000000000000005555555555555555555555555555555555555555",
+            // element[1]: action (Remove = 2)
+            "0000000000000000000000000000000000000000000000000000000000000002",
+            // element[1]: offset to bytes4[] = 0x60
+            "0000000000000000000000000000000000000000000000000000000000000060",
+            // element[1] bytes4[]: length 2
+            "0000000000000000000000000000000000000000000000000000000000000002",
+            // selector 0xcafebabe (left-aligned)
+            "cafebabe00000000000000000000000000000000000000000000000000000000",
+            // selector 0xfeedface (left-aligned)
+            "feedface00000000000000000000000000000000000000000000000000000000",
+        );
+        let cuts = [
+            FacetCut {
+                facet: [0x44; 20],
+                action: 0,
+                selectors: vec![[0xde, 0xad, 0xbe, 0xef]],
+            },
+            FacetCut {
+                facet: [0x55; 20],
+                action: 2,
+                selectors: vec![[0xca, 0xfe, 0xba, 0xbe], [0xfe, 0xed, 0xfa, 0xce]],
+            },
+        ];
+        let got = encode_diamond_constructor_args_hex(&[0x33; 20], &cuts);
         assert_eq!(got, expected);
     }
 }
