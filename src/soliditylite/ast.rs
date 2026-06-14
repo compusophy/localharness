@@ -269,6 +269,11 @@ pub enum Expr {
     StateVar { name: String, span: Span },
     /// `msg.sender` — the caller address as a 32-byte word (`CALLER`).
     MsgSender { span: Span },
+    /// `block.timestamp` — the current block's unix time as a word (`TIMESTAMP`).
+    /// Enables time-based facets (deadlines, vesting, rate-limits, auctions).
+    BlockTimestamp { span: Span },
+    /// `block.number` — the current block height as a word (`NUMBER`).
+    BlockNumber { span: Span },
     /// `<mapping>[<key>]` — a mapping-entry read: derive the entry slot
     /// `keccak256(pad32(key) ++ pad32(baseSlot))`, then `SLOAD`. `base` is the
     /// mapping name; `key` is the index expression.
@@ -307,6 +312,8 @@ impl Expr {
             Expr::IntLit { span, .. } => *span,
             Expr::StateVar { span, .. } => *span,
             Expr::MsgSender { span, .. } => *span,
+            Expr::BlockTimestamp { span, .. } => *span,
+            Expr::BlockNumber { span, .. } => *span,
             Expr::Index { span, .. } => *span,
             Expr::Add { span, .. } => *span,
             Expr::Sub { span, .. } => *span,

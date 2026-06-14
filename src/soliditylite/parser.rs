@@ -637,6 +637,20 @@ impl Parser<'_> {
                     }
                     return Ok(Expr::MsgSender { span });
                 }
+                // `block.timestamp` / `block.number`: `block` is a plain identifier.
+                if name == "block" && matches!(self.peek(), SolKind::Dot) {
+                    self.advance(); // `.`
+                    let member = self.expect_ident()?;
+                    return match member.as_str() {
+                        "timestamp" => Ok(Expr::BlockTimestamp { span }),
+                        "number" => Ok(Expr::BlockNumber { span }),
+                        other => Err(CompileError::at_code(
+                            codes::UNSUPPORTED_FEATURE,
+                            format!("only `block.timestamp` and `block.number` are supported, got `block.{other}`"),
+                            span,
+                        )),
+                    };
+                }
                 // `<mapping>[<key>]` index read.
                 if matches!(self.peek(), SolKind::LBracket) {
                     self.advance(); // `[`

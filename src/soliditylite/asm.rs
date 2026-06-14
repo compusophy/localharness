@@ -70,6 +70,10 @@ pub mod op {
     /// The 20-byte caller address, left-padded to a 32-byte word (`CALLER`, aka
     /// `msg.sender`).
     pub const CALLER: u8 = 0x33;
+    /// The current block's unix timestamp as a word (`TIMESTAMP`, `block.timestamp`).
+    pub const TIMESTAMP: u8 = 0x42;
+    /// The current block height as a word (`NUMBER`, `block.number`).
+    pub const NUMBER: u8 = 0x43;
     /// Duplicate the top stack item (`DUP1`).
     pub const DUP1: u8 = 0x80;
     /// Pop the top stack item (`POP`).

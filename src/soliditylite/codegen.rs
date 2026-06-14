@@ -115,6 +115,10 @@ enum LoweredExpr {
     Param(u64),
     /// `CALLER` — `msg.sender`, the caller address as a 32-byte word.
     Caller,
+    /// `TIMESTAMP` — `block.timestamp`, the block's unix time as a word.
+    Timestamp,
+    /// `NUMBER` — `block.number`, the block height as a word.
+    Number,
     /// A mapping-entry read: derive the entry slot
     /// `keccak256(pad32(key) ++ pad32(baseSlot))`, then `SLOAD`.
     MapLoad { base_slot: [u8; 32], key: Box<LoweredExpr> },
@@ -173,6 +177,12 @@ impl LoweredExpr {
             }
             LoweredExpr::Caller => {
                 a.emit(op::CALLER);
+            }
+            LoweredExpr::Timestamp => {
+                a.emit(op::TIMESTAMP);
+            }
+            LoweredExpr::Number => {
+                a.emit(op::NUMBER);
             }
             LoweredExpr::MapLoad { base_slot, key } => {
                 emit_map_slot(a, base_slot, key);
@@ -721,6 +731,8 @@ impl Resolver<'_> {
                 }
             }
             Expr::MsgSender { .. } => Ok(LoweredExpr::Caller),
+            Expr::BlockTimestamp { .. } => Ok(LoweredExpr::Timestamp),
+            Expr::BlockNumber { .. } => Ok(LoweredExpr::Number),
             Expr::Index { base, key, span } => Ok(LoweredExpr::MapLoad {
                 base_slot: self.mapping_base_slot(base, *span)?,
                 key: Box::new(self.lower_expr(key)?),

@@ -230,6 +230,18 @@
 > is done; the remaining frontier is the harder, narrower DYNAMIC-TYPE work (string calldata
 > decode → dynamic storage → computed `tokenURI`) and the browser cut tool (needs a browser session) —
 > good candidates to user-prioritize alongside merging the `loop/soliditylite` branch.
+>
+> **UPDATE 2026-06-14 (loop tick 19): `block.timestamp` + `block.number` — time-based facets.** A
+> genuine primitive gap the tick-18 "arc complete" note overlooked: economic facets need TIME
+> (auctions/deadlines, vesting, rate-limits, time-locks). These are word-valued environment reads that
+> mirror `msg.sender` → `CALLER` EXACTLY (single-word, fits the existing machinery), so they're
+> low-risk + additive: parser handles `block.timestamp`/`block.number` like `msg.sender` (unknown
+> `block.<member>` is a clean error), `Expr::BlockTimestamp/BlockNumber` → `LoweredExpr::Timestamp/Number`
+> → `op::TIMESTAMP` (0x42) / `op::NUMBER` (0x43). 706 lib tests, clippy all-targets + wasm clean.
+> PROVEN LIVE on Tempo (Clock facet `0xc9f1ddc1…`): `bn()` ⇒ 22231426 (EXACT match to chain latest),
+> `ts()` ⇒ 1781462743 vs chain 1781462744 (off by one ~1s block — correct). An agent can now gate logic
+> on time, e.g. `require(block.timestamp < deadline, "expired")`. Remaining frontier unchanged: dynamic
+> types (string calldata decode → dynamic storage → computed `tokenURI`) + the browser cut tool.
 
 > A hand-rolled, in-browser Solidity/EVM-subset → EVM-bytecode compiler that lets an
 > agent **write, compile, deploy, and `diamondCut`** its own facet — the EVM analog of

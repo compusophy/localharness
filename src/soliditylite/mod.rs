@@ -394,6 +394,28 @@ mod tests {
         assert!(art.runtime.contains(&op::MOD), "must emit MOD");
     }
 
+    /// `block.timestamp` / `block.number` compile to the `TIMESTAMP` / `NUMBER`
+    /// opcodes (word-valued environment reads, mirroring `msg.sender` → CALLER) —
+    /// the basis for time-based facets. An unknown `block.<member>` is rejected.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn compile_block_env_reads() {
+        let art = super::compile(
+            "facet Clock { \
+             function ts() external view returns (uint256) { return block.timestamp; } \
+             function bn() external view returns (uint256) { return block.number; } \
+             function live(uint256 deadline) external view returns (uint256) { return block.timestamp; } }",
+        )
+        .expect("block.timestamp / block.number must compile");
+        assert!(art.runtime.contains(&op::TIMESTAMP), "block.timestamp must emit TIMESTAMP");
+        assert!(art.runtime.contains(&op::NUMBER), "block.number must emit NUMBER");
+        // an unknown block member is a clean error, not a silent miscompile.
+        assert!(
+            super::compile("facet B { function f() external view returns (uint256) { return block.coinbase; } }").is_err(),
+            "`block.coinbase` must be rejected"
+        );
+    }
+
     /// `string` is accepted ONLY as a return type and a string literal ONLY as a
     /// whole `return` — every other position is a clean error, never a silent
     /// single-word miscompile (the dynamic-type safety boundary).
