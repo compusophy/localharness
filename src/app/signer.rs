@@ -175,11 +175,18 @@ fn handle_message(event: &MessageEvent) -> Result<(), String> {
             }
         }
         MSG_SIGN_DIGEST => {
+            // Async now: a value-moving $LH transfer is only signed for a
+            // subdomain the master OWNS (on-chain `ownerOfName` check), which
+            // needs `.await`. The reply is posted by the spawned task.
             let purpose = get_str("purpose").unwrap_or_else(|| "sign digest".into());
-            match build_sponsored_tx_response(&id, &data, &purpose) {
-                Ok(obj) => obj,
-                Err(err) => error_response(&id, &err),
-            }
+            spawn_reply(
+                "sign-digest",
+                id,
+                source_jsval,
+                origin.clone(),
+                build_sponsored_tx_response(data.clone(), purpose, origin),
+            );
+            return Ok(());
         }
         MSG_REVEAL_SEED => {
             // APEX-ONLY. Revealing the master mnemonic to a tenant
@@ -446,8 +453,12 @@ fn build_challenge_response(id: &str, nonce_hex: &str, name: &str) -> Result<JsV
 /// cross-origin sponsored path is only ever used for register /
 /// setMetadata / submitFeedback (diamond) and approve / transfer ($LH);
 /// TBA-touching flows run apex-side with the wallet directly, never here.
-fn build_sponsored_tx_response(id: &str, data: &JsValue, purpose: &str) -> Result<JsValue, String> {
-    let tx_obj = js_sys::Reflect::get(data, &JsValue::from_str("tx"))
+async fn build_sponsored_tx_response(
+    data: JsValue,
+    purpose: String,
+    origin: String,
+) -> Result<ReplyFields, String> {
+    let tx_obj = js_sys::Reflect::get(&data, &JsValue::from_str("tx"))
         .ok()
         .filter(|v| !v.is_undefined() && !v.is_null())
         .ok_or_else(|| "refusing to sign: missing structured tx fields".to_string())?;
@@ -485,6 +496,14 @@ fn build_sponsored_tx_response(id: &str, data: &JsValue, purpose: &str) -> Resul
     if calls_arr.length() == 0 {
         return Err("tx.calls empty".into());
     }
+    // #81: allowlisting the $LH token by TARGET alone is a confused-deputy
+    // drain — the token accepts value-moving calls, so any trusted subdomain
+    // (incl. a hostile one the victim merely VISITS) could have the master sign
+    // `transfer(attacker, balance)`. Gate the token's calldata: `approve` may
+    // only target the diamond (escrow), `transferFrom` is never signed here, and
+    // a `transfer` (send_lh) is signed ONLY for a subdomain the master OWNS
+    // (the on-chain ownership check below, after the loop).
+    let mut needs_owner_check = false;
     let mut calls = Vec::with_capacity(calls_arr.length() as usize);
     for i in 0..calls_arr.length() {
         let c = calls_arr.get(i);
@@ -516,6 +535,31 @@ fn build_sponsored_tx_response(id: &str, data: &JsValue, purpose: &str) -> Resul
         } else {
             hex_to_bytes(&cinput)?
         };
+        // Per-call $LH-token calldata policy (#81).
+        if to == token_addr {
+            match input.get(0..4) {
+                // transferFrom(address,address,uint256) — never via this path
+                // (the master pushes funds with `transfer`; `transferFrom` is the
+                // diamond pulling, not a cross-origin-signable master action).
+                Some([0x23, 0xb8, 0x72, 0xdd]) => {
+                    return Err("refusing to sign: $LH transferFrom is not permitted via the cross-origin signer".into());
+                }
+                // approve(address,uint256) — spender (arg0, input[16..36]) must be
+                // the diamond, so a hostile page can't approve itself to drain.
+                Some([0x09, 0x5e, 0xa7, 0xb3]) => {
+                    if input.get(16..36) != Some(registry_addr.as_slice()) {
+                        return Err("refusing to sign: $LH approve must target the diamond".into());
+                    }
+                }
+                // transfer(address,uint256) — send_lh. Only legit from a subdomain
+                // the master owns; verified on-chain after the loop.
+                Some([0xa9, 0x05, 0x9c, 0xbb]) => {
+                    needs_owner_check = true;
+                }
+                // Other selectors move no $LH (e.g. accidental no-ops) — allowed.
+                _ => {}
+            }
+        }
         calls.push(crate::tempo_tx::TempoCall { to, value_wei, input });
     }
 
@@ -540,7 +584,7 @@ fn build_sponsored_tx_response(id: &str, data: &JsValue, purpose: &str) -> Resul
     // Cross-check: the digest the tenant claims must equal our independent
     // reconstruction. A mismatch means the structured fields and the
     // digest disagree — refuse rather than sign the unknown one.
-    if let Some(claimed) = js_sys::Reflect::get(data, &JsValue::from_str("digest"))
+    if let Some(claimed) = js_sys::Reflect::get(&data, &JsValue::from_str("digest"))
         .ok()
         .and_then(|v| v.as_string())
     {
@@ -552,19 +596,38 @@ fn build_sponsored_tx_response(id: &str, data: &JsValue, purpose: &str) -> Resul
     }
 
     let (signer, address) = wallet_handle()?;
+
+    // #81 ownership gate: a $LH `transfer` is only signed for a subdomain THIS
+    // identity owns on-chain — closing the confused-deputy where visiting a
+    // hostile `*.localharness.xyz` (which is `is_trusted_origin`) makes the
+    // master sign `transfer(attacker, balance)`. Fails CLOSED (refuse) on a
+    // missing/foreign owner or an RPC error — send_lh from the user's own
+    // subdomain still works; a drain from someone else's does not.
+    if needs_owner_check {
+        let sub = super::tenant::tenant_name_from_origin(&origin).ok_or_else(|| {
+            "refusing to sign a $LH transfer: request is not from a tenant subdomain".to_string()
+        })?;
+        match crate::registry::owner_of_name(&sub).await {
+            Ok(Some(owner)) if owner.eq_ignore_ascii_case(&bytes_to_hex_str(&address)) => {}
+            Ok(_) => {
+                return Err(format!(
+                    "refusing to sign a $LH transfer for '{sub}': that subdomain is not owned by this identity"
+                ));
+            }
+            Err(e) => return Err(format!("$LH transfer ownership check failed: {e}")),
+        }
+    }
+
     web_sys::console::log_1(&JsValue::from_str(&format!(
         "lh-sign-digest: signed reconstructed sponsored tx ({purpose}, {} allowlisted call(s))",
         rebuilt.calls.len(),
     )));
     let sig = wallet::sign_hash(&signer, &sender_hash);
 
-    Ok(success_response(
-        id,
-        &[
-            ("address", bytes_to_hex_str(&address)),
-            ("signature", bytes_to_hex_str(&sig)),
-        ],
-    ))
+    Ok(vec![
+        ("address", bytes_to_hex_str(&address)),
+        ("signature", bytes_to_hex_str(&sig)),
+    ])
 }
 
 /// Parse a `0x`-optional 20-byte hex address. Thin fixed-length wrapper over

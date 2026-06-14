@@ -54,6 +54,18 @@ pub(crate) fn is_apex_origin(origin: &str) -> bool {
     false
 }
 
+/// The tenant subdomain name an `origin` belongs to, e.g.
+/// `https://alice.localharness.xyz` → `Some("alice")`. `None` for the apex,
+/// non-localharness, or non-tenant origins. Used by the cross-origin signer to
+/// gate value-moving `$LH` calls to subdomains the master actually OWNS.
+pub(crate) fn tenant_name_from_origin(origin: &str) -> Option<String> {
+    let host = origin_host(origin)?;
+    match classify(&host) {
+        Host::Tenant(name) => Some(name),
+        _ => None,
+    }
+}
+
 /// Parse the lowercase host out of an `origin`. Requires an explicit
 /// `http(s)://` scheme (so `null` / `file:` origins are rejected) and
 /// strips any path and port.
