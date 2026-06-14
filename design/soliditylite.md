@@ -15,6 +15,17 @@
 > solc-0.8.24 emits `PUSH0` (`0x5f`) throughout that bytecode and it deployed + runs, **Moderato
 > supports PUSH0** — resolving the §5/§10 open question (the emitter may use PUSH0). Remaining for
 > the full E2E: child-diamond genesis + the live `diamondCut` + loupe-verify + call.
+>
+> **UPDATE 2026-06-14 (loop tick 3): child-diamond GENESIS works live.** Added
+> `registry::encode_diamond_constructor_args` (golden-tested vs `cast abi-encode`) and
+> `examples/child_diamond_genesis.rs`, which deployed an **agent-owned child Diamond** at
+> `0x1e354c…c962` via sponsored CREATE — seeded with the prod Cut/Loupe/Ownership facets
+> (reused as stateless code, delegatecalled in the child's storage). Verified: `owner()` ==
+> deployer, `facetAddress(diamondCut)` == prod CutFacet → cuttable + loupe-verifiable. This is
+> the per-agent SANDBOX diamond the safety model rests on. **Gas note:** genesis OOG'd at a 4M
+> limit (the constructor's `diamondCut` does many cold SSTOREs at Tempo's high storage-gas
+> rates; `cast run`'s 690k replay number was misleading — `debug_traceTransaction` showed the
+> real OOG); 25M succeeded. Remaining: the live `diamondCut` of a real facet INTO the child + call.
 
 > A hand-rolled, in-browser Solidity/EVM-subset → EVM-bytecode compiler that lets an
 > agent **write, compile, deploy, and `diamondCut`** its own facet — the EVM analog of

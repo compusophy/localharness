@@ -343,6 +343,12 @@ required-features = ["wallet"]
 name = "tempo_create_probe"
 required-features = ["wallet"]
 
+# SolidityLite Installment 0 — child-diamond genesis: deploy an agent-owned
+# Diamond seeded with the prod Cut/Loupe/Ownership facets via sponsored CREATE.
+[[example]]
+name = "child_diamond_genesis"
+required-features = ["wallet"]
+
 # Minimal getting-started example: one agent turn with a custom tool. Needs only
 # the default `native` feature (tokio) + a GEMINI_API_KEY at runtime — no wallet,
 # no chain. The smallest end-to-end use of the core agent loop.
