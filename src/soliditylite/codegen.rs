@@ -120,6 +120,8 @@ enum LoweredExpr {
     MapLoad { base_slot: [u8; 32], key: Box<LoweredExpr> },
     /// `<lhs> <rhs> ADD` — a binary addition (left operand pushed first).
     Add(Box<LoweredExpr>, Box<LoweredExpr>),
+    /// `lhs - rhs` — `SUB` (`lhs` pushed on TOP so `SUB` = top − next = `lhs − rhs`).
+    Sub(Box<LoweredExpr>, Box<LoweredExpr>),
     /// `<lhs> <rhs> <cmp>` — a comparison leaving a `0`/`1` word (the relational
     /// stretch). The operand order matters: both EVM `GT`/`LT` pop `a` (top) then
     /// `b` and compute `a <cmp> b`, so we push `lhs` first then `rhs` and the strict
@@ -174,6 +176,12 @@ impl LoweredExpr {
                 lhs.emit(a);
                 rhs.emit(a);
                 a.emit(op::ADD);
+            }
+            LoweredExpr::Sub(lhs, rhs) => {
+                // Push rhs (deeper) then lhs (top) so `SUB` = μs[0] - μs[1] = lhs - rhs.
+                rhs.emit(a);
+                lhs.emit(a);
+                a.emit(op::SUB);
             }
             LoweredExpr::Cmp { op: cmp, lhs, rhs } => {
                 // Push `lhs` (deeper) then `rhs` (top). EVM `GT`/`LT`/`EQ` pop the
@@ -695,6 +703,10 @@ impl Resolver<'_> {
                 key: Box::new(self.lower_expr(key)?),
             }),
             Expr::Add { lhs, rhs, .. } => Ok(LoweredExpr::Add(
+                Box::new(self.lower_expr(lhs)?),
+                Box::new(self.lower_expr(rhs)?),
+            )),
+            Expr::Sub { lhs, rhs, .. } => Ok(LoweredExpr::Sub(
                 Box::new(self.lower_expr(lhs)?),
                 Box::new(self.lower_expr(rhs)?),
             )),

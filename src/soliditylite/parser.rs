@@ -557,11 +557,21 @@ impl Parser<'_> {
     /// `term ("+" term)*` — folds left so `a + b + c` parses as `(a + b) + c`.
     fn parse_add(&mut self) -> Result<Expr, CompileError> {
         let mut lhs = self.parse_primary()?;
-        while matches!(self.peek(), SolKind::Plus) {
+        loop {
             let op_span = self.span();
-            self.advance(); // `+`
-            let rhs = self.parse_primary()?;
-            lhs = Expr::Add { lhs: Box::new(lhs), rhs: Box::new(rhs), span: op_span };
+            match self.peek() {
+                SolKind::Plus => {
+                    self.advance(); // `+`
+                    let rhs = self.parse_primary()?;
+                    lhs = Expr::Add { lhs: Box::new(lhs), rhs: Box::new(rhs), span: op_span };
+                }
+                SolKind::Minus => {
+                    self.advance(); // `-`
+                    let rhs = self.parse_primary()?;
+                    lhs = Expr::Sub { lhs: Box::new(lhs), rhs: Box::new(rhs), span: op_span };
+                }
+                _ => break,
+            }
         }
         Ok(lhs)
     }

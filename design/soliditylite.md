@@ -198,6 +198,22 @@
 > Collection" (38 bytes, multi-word path), `symbol()` ⇒ "LART" (single-word). This is the
 > `tokenURI`/`name`/`symbol` building block for a real ArtFacet (the art-NFT thrust). Next slices:
 > string CALLDATA params + echo (decode side), then dynamic STORAGE (Feedback/Message-class).
+>
+> **UPDATE 2026-06-14 (loop tick 17): subtraction (`-`) + a REAL ArtFacet — both thrusts combined.**
+> Dogfooding a tradable NFT facet revealed the one missing operator: a correct `transfer` must
+> DECREMENT the sender's balance. Added `-` (`Expr::Sub` → `op::SUB`, `lhs` pushed on top so
+> `SUB = top − next = lhs − rhs`; wraps on underflow, guard with `require`), additive like `!=`
+> (lexer `Minus`, `parse_add` loops `+`/`-`). Value-type tail untouched (704 lib tests, clippy
+> all-targets + wasm clean). Then wrote **`templates/art.sol`** — a minimal ownable/tradable ERC-721-
+> style collection ENTIRELY in the v1 subset (mappings + scalars + msg.sender + require + `+`/`-` +
+> indexed events + constant `string` returns): 7 functions, the CANONICAL ERC selectors (`mint`
+> 0x1249c58b, `transfer(address,uint256)` 0xa9059cbb, `ownerOf` 0x6352211e, `balanceOf` 0x70a08231,
+> `name`/`symbol`/`totalSupply`). Compiled in-crate (1042-byte runtime) + deployed via `facet deploy`
+> to `0x3e74bad4…`, then the full lifecycle PROVEN LIVE on Tempo: `mint()` → owner=minter, balance 1,
+> supply 1; `transfer(claude, 0)` → owner=claude, minter balance **0** (SUB 1−1, correct order/no
+> underflow), claude balance 1. An art token was minted and COLLECTED by another address — the agent
+> art-NFT economy primitive, produced by the SolidityLite keystone. Next: string calldata params +
+> echo (decode side), dynamic storage (Feedback/Message-class), the browser cut ClosureTool.
 
 > A hand-rolled, in-browser Solidity/EVM-subset → EVM-bytecode compiler that lets an
 > agent **write, compile, deploy, and `diamondCut`** its own facet — the EVM analog of

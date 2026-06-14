@@ -55,6 +55,9 @@ pub mod op {
     pub const SHR: u8 = 0x1C;
     /// Addition.
     pub const ADD: u8 = 0x01;
+    /// Subtraction — `SUB` computes `μs[0] - μs[1]` (top minus next), wrapping mod
+    /// 2^256 on underflow (NO 0.8-style revert in v1).
+    pub const SUB: u8 = 0x03;
     /// Keccak-256 of `mem[offset..offset+len]` (`KECCAK256(offset, len)`, aka SHA3) —
     /// used to derive a mapping-entry storage slot from `key ++ baseSlot`.
     pub const KECCAK256: u8 = 0x20;

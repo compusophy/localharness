@@ -365,6 +365,16 @@ mod tests {
         assert!(art.runtime.windows(32).any(|w| w == word), "the literal data word must be embedded");
     }
 
+    /// Subtraction (`-`) compiles and emits `SUB`. Operand order (`lhs - rhs`, not
+    /// `rhs - lhs`) is proven live by the ArtFacet trade (a balance 1→0, not 0→2^256-1).
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn compile_subtraction() {
+        let art = super::compile("facet S { uint256 n; function dec() external { n = n - 1; } }")
+            .expect("subtraction must compile");
+        assert!(art.runtime.contains(&op::SUB), "`n - 1` must emit SUB");
+    }
+
     /// `string` is accepted ONLY as a return type and a string literal ONLY as a
     /// whole `return` — every other position is a clean error, never a silent
     /// single-word miscompile (the dynamic-type safety boundary).

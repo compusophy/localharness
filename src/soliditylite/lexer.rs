@@ -77,6 +77,8 @@ pub enum SolKind {
     Dot,
     /// `+` (addition).
     Plus,
+    /// `-` (subtraction).
+    Minus,
     /// `>` (greater-than comparison).
     Gt,
     /// `<` (less-than comparison).
@@ -186,6 +188,7 @@ impl Lexer<'_> {
             b'=' => Some(SolKind::Assign),
             b'.' => Some(SolKind::Dot),
             b'+' => Some(SolKind::Plus),
+            b'-' => Some(SolKind::Minus),
             b'>' => Some(SolKind::Gt),
             b'<' => Some(SolKind::Lt),
             _ => None,
