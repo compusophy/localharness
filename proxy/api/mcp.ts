@@ -369,6 +369,26 @@ async function personaOf(tokenId: bigint): Promise<string | null> {
  * 0.01 $LH. Mirrors `registry::DEFAULT_ASK_PRICE_WEI`. */
 const DEFAULT_ASK_PRICE_WEI = 10_000_000_000_000_000n;
 
+/** Price-lock overpay tolerance, in basis points (1% = 100 bps). The x402
+ * authorization signs an EXACT `value` and `settle` moves EXACTLY that — the
+ * facilitator can never settle LESS than signed, so we can't "pay the cheaper
+ * of signed/current". Instead we LOCK the signed value to the live price: an
+ * underpay is rejected (the floor) and an overpay BEYOND this slack is rejected
+ * too, so a caller whose quote went stale (price dropped after they signed)
+ * re-quotes at the current price rather than SILENTLY overpaying. The band
+ * absorbs benign drift / small deliberate tips. Mirrors
+ * `registry::PRICE_LOCK_OVERPAY_TOLERANCE_BPS`. */
+const PRICE_LOCK_OVERPAY_TOLERANCE_BPS = 1000n; // 10%
+
+/** Max `value` the gate settles against a live `required` price:
+ * `required + tolerance` (saturating-free; bigint can't overflow). A signed
+ * authorization at or below this ceiling settles as signed; above it the gate
+ * rejects and returns `required` so the caller re-quotes — no silent overpay
+ * from a stale quote. Mirrors `registry::price_lock_ceiling`. */
+function priceLockCeiling(required: bigint): bigint {
+  return required + (required * PRICE_LOCK_OVERPAY_TOLERANCE_BPS) / 10_000n;
+}
+
 /** Render wei as a short decimal $LH string for prompt text (2dp, floor).
  * Mirrors scheduler.ts::weiToLhText. */
 function weiToLhText(wei: bigint): string {
@@ -1159,10 +1179,13 @@ async function handleAskAgent(
   }
 
   // 2. Resolve the agent's effective price: advertised on-chain, else the
-  //    platform default. This is the FLOOR the authorization must meet —
-  //    without it, an owner's published price gated nothing and callers
-  //    named their own tip. A read failure falls back to the default
-  //    (never blocks on a flaky eth_call; settle stays authoritative).
+  //    platform default. This is the live PRICE-LOCK reference the
+  //    authorization is bound to — the floor it must meet AND (step 4b) the
+  //    ceiling it must not exceed beyond tolerance, so a stale quote can
+  //    neither underpay nor SILENTLY overpay. Re-read here at settle-time, so
+  //    the price the caller actually pays is the price NOW, not whatever they
+  //    quoted earlier. A read failure falls back to the default (never blocks
+  //    on a flaky eth_call; settle stays authoritative).
   let required = DEFAULT_ASK_PRICE_WEI;
   try {
     required = (await x402PriceOf(tokenId)) ?? DEFAULT_ASK_PRICE_WEI;
@@ -1208,6 +1231,32 @@ async function handleAskAgent(
       `payment below "${name}"'s price: authorized ${auth.value} wei, requires ${required} wei $LH`,
       402,
       { payTo: payee, scheme: 'x402-exact', asset: '$LH', chainId: CHAIN_ID, minValue: required.toString() },
+    );
+  }
+  // 4b. Price-lock the OTHER direction. `settle` moves EXACTLY `auth.value`, so
+  //     if the price DROPPED after the caller signed, settling the stale signed
+  //     value would SILENTLY overpay the agent (issue #72). Reject anything
+  //     above the live price + tolerance and return `required` so the caller
+  //     re-quotes at the current price. The band (priceLockCeiling) absorbs
+  //     benign drift / small deliberate tips; only a real overpay gap rejects.
+  //     A read-failure `required` falls back to the default above, so this lock
+  //     is never stricter than the floor the caller could have read.
+  const ceiling = priceLockCeiling(required);
+  if (auth.value > ceiling) {
+    return rpcError(
+      id,
+      -32602,
+      `payment above "${name}"'s current price: authorized ${auth.value} wei, current price is ${required} wei $LH (the price changed after you quoted) — re-sign for the current price`,
+      402,
+      {
+        payTo: payee,
+        scheme: 'x402-exact',
+        asset: '$LH',
+        chainId: CHAIN_ID,
+        priceChanged: true,
+        currentPriceWei: required.toString(),
+        maxValue: ceiling.toString(),
+      },
     );
   }
 

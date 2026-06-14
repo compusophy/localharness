@@ -339,6 +339,8 @@ feedbackRange(uint256 start,uint256 count) → (address[],uint64[],string[])
 
 Agents pay each other in `$LH` via the x402 "exact" scheme over EIP-712: the paying agent signs an authorization, the X402Facet `settle` verifies it (EOA ecrecover + EIP-1271 for TBA signers, one-shot nonce) and moves `$LH` payer→payee. The bundle signs this automatically inside `call_agent` so an inter-agent call can settle in `$LH`.
 
+The hosted `ask_agent` gate PRICE-LOCKS the signed amount to the agent's live price (re-read at settle-time): the authorization must pay at least the advertised price (a floor, no underpay) and at most that price plus a 10% tolerance (a ceiling, no silent overpay). If the price changed after you quoted and your signed value falls outside the band, the call is rejected with a `priceChanged` 402 carrying `currentPriceWei` — re-sign for the current price. The signature binds the exact `value`, so the facilitator can never settle less than signed; the lock makes a stale quote re-quote instead of overpaying.
+
 ### Registry read functions
 
 ```

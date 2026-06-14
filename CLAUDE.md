@@ -223,7 +223,7 @@ modules don't trip a default `cargo check`).
   SSTOREs); a flat 800k cap out-of-gassed EVERY feedback. `setMetadata` ≈ **7.6k
   gas/BYTE** → `1.2M + bytes*8500`. Block limit 500M, so big writes fit — the bug
   is always an under-set CLIENT cap; sponsored gas is now length-scaled. **Trust
-  `debug_traceTransaction` (real exec) over `cast run` (replay) for gas.**
+  `debug_traceTransaction` (real exec) over `cast run` (replay).**
 - **Gemini model IDs flip — verify against the live API, never trust memory.**
   `DEFAULT_MODEL` = `gemini-3.5-flash` (2026-05-29); `gemini-2.5-flash` now 400s.
   `curl` the live `:generateContent` before changing/defending a constant. If the
@@ -357,7 +357,7 @@ owner-device working copies; *visitors* see published bytes in the diamond under
 `keccak256("localharness.{app.wasm, public.html, public_face, persona, x402_price}")`.
 `x402_price` = the agent's advertised per-call `$LH` price (decimal-wei UTF-8;
 default 0.01 `$LH` unset; `registry::{x402_price_of, x402_ask_price_of,
-encode_set_x402_price}`; enforced as a floor by the proxy's ask_agent gate).
+encode_set_x402_price}`; price-LOCKED (floor + 10% ceiling, #72) by ask_agent).
 Generic `registry::{metadata_bytes_of, encode_set_metadata_bytes}` back the
 typed accessors.
 
@@ -412,7 +412,8 @@ semantics live in `contracts/README.md`** — this list is one line each.
 - **X402Facet** — x402 EIP-712 "exact" settlement in $LH (agent-to-agent).
   `settle(...)` (EOA ecrecover + EIP-1271, one-shot nonce) moves payer→payee;
   `x402DomainSeparator()` read live (binds chainId+diamond → the reset changed it).
-  Proxy ask_agent + CLI `--pay` settle only AFTER a successful reply (issue #25).
+  Proxy ask_agent + CLI `--pay` settle only AFTER a reply (#25); ask_agent
+  price-LOCKS signed value (floor + 10% ceiling, no silent over/under-pay #72).
 - **DeviceRegistryFacet** — enumerable linked-device index in ONE call:
   `linkDevice / unlinkDevice / devicesOf / isDeviceLinked` (replaces log scraping;
   Tempo RPC caps at 100k blocks).
@@ -597,14 +598,14 @@ must come from the root key, which is why a sponsor key must be embedded in wasm
 Shipped: SDK runtime, browser IDE, platform layer, Tempo native AA, Anthropic +
 OpenAI backends, scheduling + recursion, Mock backend, economy rungs 1–4 +
 Reputation + colony, x402, host::compose, TBA act panel, SessionRoom KV (#22),
-at-rest OPFS encryption. Still open:
+at-rest OPFS enc. Still open:
 
 - **Stripe MPP** — fiat agent-payments rail beside the live x402 `$LH` path.
-- **SessionRoom phase 2** — multi-identity rooms: ECIES-grant `K_room` to members
-  enrolled via `roomAddMember` (facet/driver ready; only the off-chain grant +
-  browser KV tools remain). v1 (single-identity) is shipped + proven live.
-- **More backends** — local-WebGPU finish (`design/model-agnostic.md`).
-- **P2P teams** — 2-device E2E test, mutable shared-FS, team UI.
+- **SessionRoom phase 2** — multi-identity rooms: ECIES-grant `K_room` via
+  `roomAddMember` (facet/driver ready; off-chain grant + KV tools remain). v1
+  single-identity shipped live.
+- **More backends** — local-WebGPU (`design/model-agnostic.md`).
+- **P2P teams** — 2-device E2E, mutable shared-FS, team UI.
 
 ## Filesystem trait
 

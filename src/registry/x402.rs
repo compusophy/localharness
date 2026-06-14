@@ -177,6 +177,29 @@ pub fn auto_pay_amount(advertised: Option<u128>, cap: u128) -> Result<u128, u128
     }
 }
 
+/// Price-lock overpay tolerance, in basis points (1% = 100 bps). The x402
+/// `PaymentAuthorization` signs an EXACT `value`, and on-chain `settle` moves
+/// EXACTLY that — a facilitator can never settle LESS than the signed amount,
+/// so "pay the cheaper of signed/current" is impossible without a re-sign.
+/// Instead the gate locks the signed value to the live price: an underpay is
+/// rejected (the floor), and an overpay BEYOND this slack is rejected too so a
+/// caller whose quote went stale (price dropped after they signed) re-quotes at
+/// the current price instead of SILENTLY overpaying. The band absorbs benign
+/// drift / deliberate small tips; only a real, money-losing gap rejects.
+pub const PRICE_LOCK_OVERPAY_TOLERANCE_BPS: u128 = 1000; // 10%
+
+/// The maximum `value` the price-lock gate will settle against a live
+/// `required` price: `required + tolerance`, where the tolerance is
+/// [`PRICE_LOCK_OVERPAY_TOLERANCE_BPS`] of `required` (saturating). A signed
+/// authorization at or below this ceiling settles as signed; above it the gate
+/// rejects and returns `required` so the caller re-quotes — preventing a stale
+/// quote from silently overpaying when the price dropped. Pure; the proxy's
+/// `priceLockCeiling` in `proxy/api/mcp.ts` mirrors it (kept in lockstep).
+pub fn price_lock_ceiling(required: u128) -> u128 {
+    let slack = required.saturating_mul(PRICE_LOCK_OVERPAY_TOLERANCE_BPS) / 10_000;
+    required.saturating_add(slack)
+}
+
 /// Read an agent's advertised per-call price (wei). `None` when never
 /// set (callers should fall back to [`DEFAULT_ASK_PRICE_WEI`]).
 pub async fn x402_price_of(token_id: u64) -> Result<Option<u128>, String> {
@@ -452,6 +475,28 @@ mod x402_tests {
         assert!(DEFAULT_ASK_PRICE_WEI <= cap);
         // The fallback is still capped (fallback-then-cap order).
         assert_eq!(auto_pay_amount(None, 1), Err(DEFAULT_ASK_PRICE_WEI));
+    }
+
+    /// The price-lock ceiling pins the overpay-acceptance band. A signed value
+    /// in `[required, required + tolerance]` settles as signed; above it the
+    /// gate must reject (the caller's quote went stale → re-quote, never silent
+    /// overpay). Checks the exact boundary, the default-price band, and that
+    /// saturating math can't panic / wrap on extreme inputs.
+    #[test]
+    fn price_lock_ceiling_band() {
+        let p = DEFAULT_ASK_PRICE_WEI; // 0.01 $LH
+                                       // Default tolerance is 10%, so the ceiling is required * 1.10.
+        assert_eq!(price_lock_ceiling(p), p + p / 10);
+        // Exactly at the price and exactly at the ceiling are both inside the band.
+        assert!(p <= price_lock_ceiling(p));
+        assert!(price_lock_ceiling(p) >= p + p * PRICE_LOCK_OVERPAY_TOLERANCE_BPS / 10_000);
+        // One wei over the ceiling is OUTSIDE the band (the reject case).
+        assert!(price_lock_ceiling(p) + 1 > price_lock_ceiling(p));
+        // A zero price (unreachable in practice — the default floor applies) has
+        // a zero-width band: only an exact-zero value is inside.
+        assert_eq!(price_lock_ceiling(0), 0);
+        // Saturating: u128::MAX must not panic or wrap below the input.
+        assert!(price_lock_ceiling(u128::MAX) >= u128::MAX - 1);
     }
 
     #[test]

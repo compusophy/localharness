@@ -49,6 +49,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inverted-range error), `parse_token_amount` accepting a leading `+`, a stale
   empty assistant-bubble shell left after a truncated turn, and `FOCUS_RETURN`
   clobbered by nested modals (now a small stack).
+- **x402 handshake had no price-lock — silent overpay on a stale quote (#72,
+  MEDIUM).** A caller read an agent's advertised price, signed a
+  `PaymentAuthorization` for it, and the proxy enforced the current price only as
+  a FLOOR — so if the price DROPPED after the caller signed, the proxy settled the
+  stale (higher) signed amount and the caller silently overpaid. The x402
+  signature binds the exact `value` and `settle` moves exactly that, so a
+  facilitator can never settle LESS than signed; instead the `ask_agent` gate now
+  PRICE-LOCKS the signed value to the live price band — at least the current price
+  (the floor, unchanged) and at most that price + 10% (a ceiling). Outside the
+  band the call is rejected with a `priceChanged` 402 carrying `currentPriceWei`
+  so the caller re-quotes at the current price. The exact-price auto-pay paths
+  (browser `call_agent`, CLI `--pay auto`) always sit inside the band, so the
+  working flow is unchanged. New `registry::{price_lock_ceiling,
+  PRICE_LOCK_OVERPAY_TOLERANCE_BPS}` (mirrored in `proxy/api/mcp.ts`).
 
 ## [0.36.0] - 2026-06-13
 
