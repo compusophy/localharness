@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.36.0] - 2026-06-13
 
 ### Added
 
@@ -27,8 +27,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     grant to enrolled members) are phase 2 — the facet/driver already support
     `roomAddMember`/`roomMembersOf`.
 
+- **SessionRoom phase 2 — multi-identity rooms via ECIES key grant (#22).**
+  `kv_room::{key_grant_seal,key_grant_open}` let a room creator generate a random
+  `K_room`, ECIES-seal it to each member's identity pubkey (k256 ECDH + keccak KDF
+  + AES-256-GCM), and hand it to members enrolled via the facet's `roomAddMember`
+  — so a room can be shared across DIFFERENT identities, not just one identity's
+  devices. Purely additive (v1 derivation + the facet are unchanged); native
+  round-trip / wrong-key / tamper tests.
+
 ### Security & correctness (parallel bug-sweep wave)
 
+- **`?compose=` ran untrusted cartridge wasm on the MAIN thread (#77, HIGH).**
+  The multi-module compose path executed each child's `frame()` directly on the
+  main thread (no Web Worker, no watchdog), so one hung composed cartridge
+  re-bricked the tab — the exact failure the single-cartridge worker isolation
+  was built to prevent. It now runs through the same Web Worker + main-thread
+  watchdog as the single-cartridge path (the worker already had a recursive
+  compose tree); the in-thread cartridge runtime is deleted (−660 lines). A hung
+  child now only stalls the worker, which the watchdog terminates.
+- **Conversation history was double-encrypted (#79).** `save_from_agent` sealed
+  with the per-origin DEVICE key (localStorage) THEN wrote through the seed-keyed
+  `EncryptedFilesystem` (sealing again) — history was the only persisted file
+  with the extra device-key layer, so clearing localStorage (but keeping the
+  seed) lost all history. It now writes raw bytes and lets the seed-keyed
+  filesystem be the sole at-rest layer (with a backward-read fallback for
+  existing double-encrypted history).
+- **Confirm-gate auto-continue burned credits on a denied call.** A
+  CONFIRM_GATED tool denied by the typed-confirmation gate still emitted a tool
+  call, so the turn classified Incomplete and auto-continued — the model
+  re-supplied the same code, the gate re-denied, and the loop spun up to 10 full
+  model round-trips (each costing `$LH`) on a guaranteed failure. A denial now
+  ends the turn (returns control to the owner, whose next message can carry the
+  code).
+- **Tenant "create identity" button was dead.** The tenant arm called the apex
+  signer with `overwrite=true`, which the signer rejects cross-origin, so the
+  button always errored. Switched to `overwrite=false` (ENSURE), the
+  create-if-missing path that's allowed cross-origin.
 - **Compose children allocated uncapped framebuffers (#78, medium).**
   `ComposeBudget` bounded only wasm bytes (256 KB total) and node count (24),
   never framebuffer memory — so a ~16 KB cartridge declaring `dims()`=1024x1024
