@@ -25,7 +25,11 @@
 > the per-agent SANDBOX diamond the safety model rests on. **Gas note:** genesis OOG'd at a 4M
 > limit (the constructor's `diamondCut` does many cold SSTOREs at Tempo's high storage-gas
 > rates; `cast run`'s 690k replay number was misleading — `debug_traceTransaction` showed the
-> real OOG); 25M succeeded. Remaining: the live `diamondCut` of a real facet INTO the child + call.
+> real OOG); 25M succeeded. **Installment 0 E2E is now COMPLETE:** `examples/diamond_cut_e2e.rs`
+> cut the CounterFacet into the child diamond (`facetAddress(increment)` → CounterFacet) and
+> called `increment()` through the diamond — `countOf` == 1. The full deploy → `diamondCut` →
+> call loop works on Moderato; an agent can extend a diamond it owns. Next: **Installment 1 —
+> the actual SolidityLite compiler** (Yul-shaped subset → EVM bytecode + a revm diff harness).
 
 > A hand-rolled, in-browser Solidity/EVM-subset → EVM-bytecode compiler that lets an
 > agent **write, compile, deploy, and `diamondCut`** its own facet — the EVM analog of
