@@ -75,8 +75,9 @@ src/                  library crate
 ├── x402_hook.rs      app-injected x402 signer + proxy-route hooks for
 │                     call_agent (feature "wallet")
 ├── tempo_tx.rs       Tempo Transaction (tx 0x76) encoder; see Tempo section
-├── raster.rs compose.rs sharedfs_reconcile.rs signaling_seal.rs   native-
-│                     testable cores (framebuffer/compose/P2P reconcile/SDP seal)
+├── raster.rs compose.rs sharedfs_reconcile.rs signaling_seal.rs kv_reduce.rs
+│                     kv_room.rs   native-testable cores (framebuffer/compose/
+│                     reconcile/SDP seal/#22 KV CRDT + AES op-seal)
 ├── rustlite/         Rust-subset → wasm compiler: lexer / parser / ast /
 │                     typecheck / codegen(wasm emitter) / loader(wasm32 cartridge)
 ├── app/              browser-resident IDE (browser-app + wasm32) — see below
@@ -123,7 +124,7 @@ src/app/ (browser IDE):
 
 src/bin/localharness/  — agent-onboarding CLI (feature wallet+native). main.rs
   dispatcher + one module per command family (identity publish call mcp status
-  credits schedule invite bounty reputation colony tba guild vote probe) +
+  credits schedule invite bounty reputation colony tba guild vote probe room) +
   util.rs (load_signer*/take_value_flag/parse_id shared helpers). ~30 commands
   (create/compile/publish/face/persona/price/call/status/list/redeem/mcp-call/
   schedule/jobs/unschedule/notify/invite*/bounty*/party*/release(typed-confirm)/
@@ -179,14 +180,12 @@ wasm-opt rejects post-MVP features modern rustc emits).
 - **`browser-app`** (off): `src/app/` as wasm cdylib. Pulls maud, pulldown-cmark,
   +wallet, +anthropic, +openai transitively. No native effect.
 - **`anthropic`** / **`openai`** (off): Claude Messages / OpenAI Chat Completions
-  backends. ADDITIVE — no new deps. BYOK (`Agent::start_anthropic`/`start_openai`)
-  or platform `$LH` via the proxy. OpenAI gotcha: streamed `tool_calls` are
-  index-keyed fragments, `arguments` string pieces to concat (`openai/loop.rs`).
+  backends. ADDITIVE — no new deps. BYOK or platform `$LH` via the proxy. OpenAI
+  gotcha: streamed `tool_calls` are index-keyed fragments to concat (`openai/loop.rs`).
 - **`local`** (off): in-browser Gemma 3 270M via Burn wgpu/WebGPU (no proxy/key).
-  HEAVY (~570MB weights); NOT in browser-app — build `--features browser-app,local`.
-  Gotchas: getrandom-0.4 needs `.cargo/config.toml getrandom_backend="wasm_js"` +
-  the renamed `getrandom_v04` dep; burn-store is DIRECT (memmap2 is wasm-broken);
-  GPU read-back MUST be `into_data_async().await` (sync panics on wasm).
+  HEAVY (~570MB); NOT in browser-app. Gotchas: getrandom-0.4 needs `.cargo/
+  config.toml getrandom_backend="wasm_js"` + renamed `getrandom_v04`; burn-store
+  DIRECT (memmap2 wasm-broken); GPU read-back MUST `into_data_async().await`.
 - wasm targets auto-drop walkdir/tempfile, add wasm-bindgen-futures, uuid/js,
   getrandom/js via target-cfg.
 
@@ -244,13 +243,11 @@ modules don't trip a default `cargo check`).
   `Invoke-Native` (PS5 turns cargo stderr into a terminating error) — don't call
   `cargo`/`git`/`gh` directly there. ALSO a `"` inside a here-string commit
   message shreds PS5 native-arg quoting into pathspecs — keep `"` out of messages.
-- **Wallet vs meter — two $LH pots, AUTO-BRIDGED both ways.** The proxy debits
-  the per-request METER (`creditOf`); `send`/`redeem` fund the WALLET; x402
-  `settle` pulls from the WALLET. Bridges: wallet→meter lazy deposit
-  (`call.rs::ensure_meter_funded`, 0.2 before a call) and meter→wallet
-  `withdrawCredits` (paid calls auto-pull the shortfall — browser
-  `remote_call.rs` + CLI `mcp.rs::ensure_diamond_allowance`). "has $LH but
-  402s" should only happen when BOTH pots are empty.
+- **Wallet vs meter — two $LH pots, AUTO-BRIDGED both ways.** Proxy debits the
+  per-request METER (`creditOf`); `send`/`redeem` fund the WALLET; x402 `settle`
+  pulls the WALLET. Bridges: wallet→meter lazy deposit
+  (`call.rs::ensure_meter_funded`, 0.2/call) + meter→wallet `withdrawCredits`
+  (paid calls auto-pull the shortfall). "has $LH but 402s" = BOTH pots empty.
   Colony judges pre-fund from the caller.
 - **Gemini 3.x `thought` parts + `thoughtSignature` echo.** Untagged wire
   `Part`; `Part::Thought` is BEFORE `Part::Text`, and 3.x stamps every part with
@@ -463,8 +460,12 @@ semantics live in `contracts/README.md`** — this list is one line each.
   `$LH` behind a verdict on a workRef; `challengeValidation` counter-stakes;
   bounty-poster-of-`uint256(workRef)` (or diamond owner) resolves, winner takes
   both; disjoint 3d/7d windows; unchallenged-refund + unresolved-draw paths.
-- **PairingFacet** — REMOVED from the live diamond 2026-06-10 (QR seed-adoption
-  superseded it). **OwnedTokens** (`tokensOfOwner`) — DRAFT, not cut.
+- **SessionRoomFacet** (#22, cut live) — member-gated append-only logs of OPAQUE
+  encrypted KV ops (shared agent state). `room`-prefixed selectors (avoid
+  `membersOf` collision). CRDT fold + AES seal off-chain (`kv_reduce`/`kv_room`);
+  `K_room`=derive(identity_secret, roomId) → one identity's devices share a room
+  keyless. createRoom ≈1.3M gas; cast-estimate it.
+- **PairingFacet** — REMOVED (QR seed-adoption superseded it).
 
 **ERC-6551 account** (`MultiSignerAccount`): CALL-only; additional-signer set on top
 of the NFT holder + EIP-1271 `isValidSignature`, so a MAIN can be controlled by
@@ -593,17 +594,16 @@ must come from the root key, which is why a sponsor key must be embedded in wasm
 ## What's pending
 
 Shipped: SDK runtime, browser IDE, platform layer, Tempo native AA, Anthropic +
-OpenAI backends, tool-call replay, scheduling + recursion, Mock backend, economy
-rungs 1–4 + ReputationFacet + colony, x402, host::compose, TBA act panel, at-rest
-OPFS encryption (unreleased). Still open:
+OpenAI backends, scheduling + recursion, Mock backend, economy rungs 1–4 +
+Reputation + colony, x402, host::compose, TBA act panel, SessionRoom KV (#22),
+at-rest OPFS encryption. Still open:
 
 - **Stripe MPP** — fiat agent-payments rail beside the live x402 `$LH` path.
-- **Validation/Party** — both facets CUT LIVE 2026-06-13 (Party CLI works;
-  addrs via loupe). TODO: Validation CLI + browser tools (drivers exist).
-- **More backends** — OpenAI backend SHIPPED; local-WebGPU finish
-  (`design/model-agnostic.md`).
-- **P2P teams** — 2-device E2E test, mutable shared-FS, team UI. (SDP sealing
-  DONE — `signaling_seal.rs` sender-signed envelope, hard-cut v2.)
+- **SessionRoom phase 2** — multi-identity rooms: ECIES-grant `K_room` to members
+  enrolled via `roomAddMember` (facet/driver ready; only the off-chain grant +
+  browser KV tools remain). v1 (single-identity) is shipped + proven live.
+- **More backends** — local-WebGPU finish (`design/model-agnostic.md`).
+- **P2P teams** — 2-device E2E test, mutable shared-FS, team UI.
 
 ## Filesystem trait
 
@@ -637,5 +637,4 @@ Five surfaces — keep in sync on every change: **docs.rs** (`///` in source, ev
 module → CLAUDE.md tree; new agent tool → `llms.txt` + session prompt; new facet →
 CLAUDE.md on-chain + `contracts/README.md` + `llms.txt`; release → CHANGELOG.
 
-**Verify before release:** `cargo doc --no-deps 2>&1 | grep "warning.*missing"` +
-`curl -s https://localharness.xyz/llms.txt | head -5`.
+**Verify before release:** `cargo doc --no-deps 2>&1 | grep "warning.*missing"`.

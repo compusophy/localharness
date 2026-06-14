@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **SessionRoom — encrypted on-chain shared key/value state (#22, cut live).** A
+  new `SessionRoomFacet` stores member-gated, append-only logs of OPAQUE
+  ciphertext ops; an agent persists state across turns/devices by appending
+  sealed ops instead of re-sending full context. The chain never sees plaintext:
+  - `src/kv_reduce.rs` — pure Last-Writer-Wins CRDT (order-independent,
+    idempotent, optional TTL); the convergence proof under `cargo test`.
+  - `src/kv_room.rs` — AES-256-GCM op sealing inside a writer-signed,
+    room-bound `signaling_seal` envelope; `K_room` derived deterministically
+    from the identity secret + room id (single-identity rooms need no key
+    exchange — every device of one identity computes the same key).
+  - `registry::{create_room,append_op,clear_room,room_add_member,ops_of,…}` —
+    sponsored writes + decoded reads (`Op` ABI matches `Signal`, reuses the
+    decoder); gas set from `cast estimate` (createRoom ≈ 1.3M live).
+  - CLI `localharness room <create|set|get|list|clear>`. Proven E2E on-chain:
+    create → set → LWW-update → converged read. Multi-identity rooms (ECIES key
+    grant to enrolled members) are phase 2 — the facet/driver already support
+    `roomAddMember`/`roomMembersOf`.
+
 ### Security & correctness (parallel bug-sweep wave)
 
 - **Guild treasury could be stranded by `releaseName` (HIGH, fixed + cut live).**

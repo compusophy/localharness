@@ -443,6 +443,41 @@ design: the poster/owner is the oracle; staked juries,
 reputation-weighted resolution, and resolver fees are additive
 cuts later (the seam is the `resolveValidation` gate).
 
+### SessionRoomFacet — encrypted on-chain shared key/value state (#22)
+
+**Cut live.** The substrate for durable shared agent state: a room is
+a member-gated, append-only log of OPAQUE ciphertext ops. An agent
+persists state across turns/devices (or shares it with enrolled
+members) by appending sealed ops instead of re-sending full context.
+Storage: `LibSessionRoomStorage` at
+`keccak256("localharness.sessionroom.storage.v1")` — a monotonic
+`nextRoomId`, per-room `{creator, exists, epoch}`, an `isMember`
+mapping + enumerable `memberList`, and the append-only `Op[]` log
+(`Op = (address writer, uint64 ts, bytes blob)` — identical to
+SignalingFacet's `Signal`, so off-chain decoders are shared).
+
+Self-contained — no dependency on other facets' storage. The chain
+enforces only WHO may write; the blobs are undecryptable without the
+off-chain room key, so reads are open. **All KV/CRDT/crypto is
+off-chain** (`src/kv_reduce.rs` LWW-CRDT fold + `src/kv_room.rs`
+AES-256-GCM op-seal inside a writer-signed, room-bound envelope); the
+room key is derived from the owner's identity secret + roomId, so a
+single identity's devices share a room with no key exchange (v1).
+
+**API:** `createRoom() → roomId` (caller = creator + first member);
+`roomAddMember/roomRemoveMember(roomId, addr)` (creator-only);
+`appendOp(roomId, blob) → index` (member-gated, ≤2048-byte blob);
+`clearRoom(roomId) → epoch` (creator-only; wipes the log, bumps the
+epoch so readers re-poll from 0); views `opsOf(roomId, fromIndex)`,
+`opCount`, `roomEpoch`, `roomCreator`, `roomIsMember`,
+`roomMembersOf`. Selectors are `room`-prefixed where a bare name
+would collide with TeamFacet/GuildFacet `membersOf` (a diamond can't
+share a selector). Cut via `script/AddSessionRoomFacet.s.sol`
+(11 selectors); 8 Foundry tests (member-gate, creator-gate,
+clear-epoch, paging, blob bounds). Multi-identity rooms (ECIES key
+grant to enrolled members) are phase 2 — the membership is already
+on-chain.
+
 ## Why a Diamond
 
 The flat contract works fine for a single-purpose registry. But the

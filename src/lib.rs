@@ -109,6 +109,18 @@ pub mod sharedfs_reconcile;
 #[cfg(feature = "wallet")]
 pub mod signaling_seal;
 
+/// Pure Last-Writer-Wins key/value CRDT for SessionRoom shared state (#22):
+/// folds a set of decrypted ops into a converged map (order-independent,
+/// idempotent, optional TTL). Native-testable. See `src/kv_reduce.rs`.
+pub mod kv_reduce;
+
+/// SessionRoom op sealing/opening + deterministic per-room key derivation (#22):
+/// AES-256-GCM confidentiality under `K_room` inside a writer-signed,
+/// room-bound `signaling_seal` envelope. Needs `wallet` for k256/keccak.
+/// Native-testable. See `src/kv_room.rs`.
+#[cfg(feature = "wallet")]
+pub mod kv_room;
+
 /// Pure typed-confirmation challenge gate for destructive tools
 /// (native-testable, `turn_flow` hoisting pattern): single-use random nonce
 /// bound to exact tool+args, valid only when typed by the USER. Enforced by

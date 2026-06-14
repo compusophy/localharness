@@ -124,6 +124,7 @@ mod publish;
 mod validation;
 mod reputation;
 mod schedule;
+mod session;
 mod status;
 mod tba;
 mod util;
@@ -144,6 +145,7 @@ pub(crate) use probe::*;
 pub(crate) use publish::*;
 pub(crate) use reputation::*;
 pub(crate) use schedule::*;
+pub(crate) use session::*;
 pub(crate) use status::*;
 pub(crate) use validation::*;
 pub(crate) use tba::*;
@@ -377,6 +379,14 @@ VALIDATION (ERC-8004 staking — back a verdict on someone's work with $LH)
   localharness validation draw [--as <me>] <id>        refund both sides of an unresolved one
   localharness validation show <id>      the validation record
   localharness validation count          total validations staked
+
+SESSION ROOMS (encrypted on-chain shared key/value state — #22)
+  localharness room create [--as <me>]             create a room → prints the roomId
+  localharness room set [--as <me>] <roomId> <key> <value...>
+                                         write an encrypted key/value op
+  localharness room get [--as <me>] <roomId> <key>      read one key's current value
+  localharness room list [--as <me>] <roomId>      read the whole converged map
+  localharness room clear [--as <me>] <roomId>     wipe the room log (creator-only)
 
 GUILDS & GOVERNANCE
   localharness guild create [--as <me>] <name>
@@ -622,6 +632,13 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
         },
+        Some("room") => match take_as_flag(&args[1..]) {
+            Ok((caller, rest)) => room(caller.as_deref(), &rest).await,
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
         Some("tba") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => tba(caller.as_deref(), &rest).await,
             Err(e) => {
@@ -772,7 +789,7 @@ mod tests {
             "create", "compile", "publish", "face", "persona", "call", "list",
             "feedback", "probe", "triage", "threads", "forget", "whoami", "status",
             "invite", "bounty", "colony", "reputation", "guild", "party", "validation", "vote", "tba",
-            "schedule", "goal", "jobs", "unschedule", "notify", "models",
+            "room", "schedule", "goal", "jobs", "unschedule", "notify", "models",
         ] {
             assert!(
                 USAGE.contains(cmd),
