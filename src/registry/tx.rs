@@ -211,6 +211,55 @@ pub async fn submit_tempo_sponsored(
     Err(last_err)
 }
 
+/// Deploy `init_code` as a NEW contract via a SPONSORED Tempo CREATE tx and
+/// return the deployed contract address. `sender` is the deployer (its nonce
+/// determines the address, signs the intent, needs no balance); `fee_payer`
+/// pays the fees in `fee_token`. The CREATE twin of [`submit_tempo_sponsored`]:
+/// same stale-nonce resubmit, but with the `create()` builder flag + an empty
+/// `to`, and it returns the receipt's `contractAddress`. This is the library
+/// primitive behind the SolidityLite facet-deploy path (CLI `facet deploy`).
+pub async fn create_sponsored(
+    sender: &SigningKey,
+    fee_payer: &SigningKey,
+    init_code: Vec<u8>,
+    fee_token: &str,
+    gas_limit: u128,
+) -> Result<String, String> {
+    use crate::tempo_tx::{sign_sponsored, TempoCall, TempoTxBuilder};
+    let sender_addr = wallet::address(sender);
+    let sender_hex = address_to_hex(&sender_addr);
+    let fee_token_addr = parse_eth_address(fee_token)?;
+    let gas_price = eth_gas_price().await?;
+    let mut last_err = String::new();
+    for attempt in 0..2 {
+        let nonce = eth_get_transaction_count(&sender_hex).await?;
+        let tx = TempoTxBuilder::new(CHAIN_ID)
+            .max_priority_fee_per_gas(gas_price)
+            .max_fee_per_gas(gas_price)
+            .gas_limit(gas_limit)
+            .nonce(nonce)
+            .call(TempoCall { to: [0u8; 20], value_wei: 0, input: init_code.clone() })
+            .fee_token(fee_token_addr)
+            .sponsored()
+            .create()
+            .build();
+        let raw = sign_sponsored(tx, sender, fee_payer);
+        let raw_hex = format!("0x{}", bytes_to_hex(&raw));
+        match eth_send_raw_transaction(&raw_hex).await {
+            Ok(tx_hash) => {
+                wait_for_receipt(&tx_hash).await?;
+                return receipt_contract_address(&tx_hash).await;
+            }
+            Err(e) if e.starts_with(STALE_NONCE_ERR) && attempt == 0 => {
+                last_err = e;
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_err)
+}
+
 pub(crate) fn parse_eth_address(hex_str: &str) -> Result<[u8; 20], String> {
     let bytes = hex_to_bytes(hex_str)?;
     if bytes.len() != 20 {

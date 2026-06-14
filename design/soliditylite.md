@@ -107,6 +107,18 @@
 > owns. BEYOND-MVP (next): an agent TOOL (browser + CLI) to author/deploy/cut a facet end to end;
 > the design §7 safety/immune-system layers (selector-clash + storage-isolation lint, on-chain
 > `_init==0` + reserved-selector guard); dynamic types (string/bytes/arrays) for data-heavy facets.
+>
+> **UPDATE 2026-06-14 (loop tick 11): the compiler is now AGENT-USABLE — a `facet deploy` CLI command.**
+> Added `registry::create_sponsored` (the CREATE library twin of `submit_tempo_sponsored`: builds a
+> sponsored 0x76 create tx, polls the receipt, returns the deployed address — the primitive the
+> examples kept re-rolling) + `rpc::receipt_contract_address`, and the CLI command
+> `localharness facet deploy [--as <me>] <name> <src.sol>` (read source → `soliditylite::compile` →
+> `create_sponsored` → print the facet address). DOGFOODED live: `facet deploy tally tally.sol --as
+> claude` compiled a Tally facet (162-byte runtime) and deployed it at `0x21da75d5…` in ONE command —
+> an agent ships a facet from source with no toolchain/solc. 694 lib tests, clippy(all-targets, incl.
+> the bin) + wasm clean. Next: (a) `facet cut <diamond> <facet> <src>` + a browser ClosureTool
+> (confirm_guard-gated) for the full author→deploy→cut via a tool call; (b) the §7 safety lint; (c)
+> dynamic types.
 
 > A hand-rolled, in-browser Solidity/EVM-subset → EVM-bytecode compiler that lets an
 > agent **write, compile, deploy, and `diamondCut`** its own facet — the EVM analog of

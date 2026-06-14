@@ -120,6 +120,7 @@ mod models;
 mod notify;
 mod party;
 mod probe;
+mod facet;
 mod publish;
 mod validation;
 mod reputation;
@@ -238,6 +239,11 @@ CARTRIDGES & PUBLISHING
                                          key — one command)
   localharness face <name> <directory|app|html>
                                          set what visitors see (publish sets it)
+  localharness facet deploy [--as <me>] <name> <src.sol>
+                                         compile a SolidityLite (Solidity/EVM-
+                                         subset) facet IN-CRATE + deploy it
+                                         on-chain (sponsored CREATE); prints the
+                                         facet address to diamondCut into a diamond
 
 CALLING & MCP
   localharness call [--as <me>] [--fresh] [--pay <amt>] <name> <message>
@@ -634,6 +640,13 @@ async fn run(args: &[String]) -> i32 {
         },
         Some("room") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => room(caller.as_deref(), &rest).await,
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
+        Some("facet") => match take_as_flag(&args[1..]) {
+            Ok((caller, rest)) => facet::facet(caller.as_deref(), &rest).await,
             Err(e) => {
                 eprintln!("{e}");
                 2

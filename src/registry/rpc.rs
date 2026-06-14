@@ -602,6 +602,34 @@ pub(crate) async fn wait_for_receipt(tx_hash: &str) -> Result<(), String> {
     Err(format!("receipt timeout for {tx_hash}"))
 }
 
+/// Fetch a mined tx's `contractAddress` — the address of a contract deployed by
+/// a CREATE tx. Call AFTER [`wait_for_receipt`] confirmed success. Errors if the
+/// receipt carries no `contractAddress` (i.e. the tx was not a contract
+/// creation). Used by the sponsored-CREATE deploy path ([`super::create_sponsored`]).
+pub(crate) async fn receipt_contract_address(tx_hash: &str) -> Result<String, String> {
+    let body = RpcRequest {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "eth_getTransactionReceipt",
+        params: serde_json::json!([tx_hash]),
+    };
+    let client = reqwest::Client::new();
+    let json: serde_json::Value = client
+        .post(RPC_URL)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("receipt fetch: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("receipt parse: {e}"))?;
+    json.get("result")
+        .and_then(|r| r.get("contractAddress"))
+        .and_then(|a| a.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| format!("no contractAddress in receipt for {tx_hash}"))
+}
+
 /// Cross-target sleep — `tokio::time::sleep` on native, a Promise around
 /// `setTimeout` on wasm. Re-exported from the crate-canonical
 /// [`crate::runtime::sleep_ms`] (identical semantics + signature) so
