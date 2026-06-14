@@ -78,18 +78,14 @@ async fn facet_deploy(caller: Option<&str>, rest: &[String]) -> i32 {
 }
 
 async fn facet_diamond(caller: Option<&str>) -> i32 {
-    // Diamond creation bytecode (from forge output — run `forge build` in contracts/).
-    let bytecode = match std::fs::read_to_string("contracts/out/Diamond.sol/Diamond.json")
+    // Diamond creation bytecode: PREFER a local forge build (in-repo dev with an
+    // edited Diamond.sol), else fall back to the embedded bytecode so an INSTALLED
+    // CLI (no `contracts/out`) can still genesis a diamond anywhere.
+    let bytecode = std::fs::read_to_string("contracts/out/Diamond.sol/Diamond.json")
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|j| j["bytecode"]["object"].as_str().map(str::to_string))
-    {
-        Some(b) => b,
-        None => {
-            eprintln!("could not read contracts/out/Diamond.sol/Diamond.json — run `forge build` in contracts/ first");
-            return 1;
-        }
-    };
+        .unwrap_or_else(|| crate::diamond_bytecode::DIAMOND_INIT_HEX.to_string());
     let mut init = match hex_decode(bytecode.trim_start_matches("0x")) {
         Ok(b) => b,
         Err(e) => {

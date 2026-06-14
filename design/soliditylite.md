@@ -267,6 +267,18 @@
 > (`LH0201: unknown state variable \`x\` … line 1, col 37` + caret snippet). A compile error is the
 > FIRST thing a real agent hits writing a facet; a cryptic dump degrades the whole keystone. clippy
 > all-targets + 706 lib tests clean.
+>
+> **UPDATE 2026-06-14 (loop tick 22): the keystone is now DISTRIBUTABLE — last repo dependency removed.**
+> `facet deploy`/`facet cut` were already self-contained (compiler + registry in-crate), but
+> `facet diamond` read `contracts/out/Diamond.sol/Diamond.json` — so an external agent who
+> `cargo install`s the CLI (no repo) got a hard "run forge build" failure and couldn't genesis a
+> diamond. Embedded the ~4.9 KB `Diamond.sol` creation bytecode as a const
+> (`src/bin/localharness/diamond_bytecode.rs`, generated, with a regenerate comment); `facet diamond`
+> now PREFERS a local forge build (in-repo dev) and falls back to the embedded bytecode. VERIFIED by
+> hiding the forge artifact and genesising a diamond from the embedded path → `0x6712192e…`, whose cut
+> entry `facetAddress(0x1f931c1c)` is the GuardedDiamondCutFacet `0xa4c8a030…` (correct). clippy
+> all-targets + 706 lib tests clean. The whole genesis→deploy→cut keystone now works from ANY installed
+> CLI with zero repo files — external agents can write/compile/deploy/cut their own facets.
 
 > A hand-rolled, in-browser Solidity/EVM-subset → EVM-bytecode compiler that lets an
 > agent **write, compile, deploy, and `diamondCut`** its own facet — the EVM analog of

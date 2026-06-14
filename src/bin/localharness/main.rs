@@ -121,6 +121,7 @@ mod notify;
 mod party;
 mod probe;
 mod facet;
+mod diamond_bytecode;
 mod publish;
 mod validation;
 mod reputation;
