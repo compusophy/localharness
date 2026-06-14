@@ -126,6 +126,13 @@ pub struct TempoTx {
     /// `set_sponsored`. Kept here (not in the builder alone) so
     /// `sender_hash()` can read it without an extra arg.
     pub(crate) sponsored: bool,
+    /// Contract-creation flag. When true, each call's `to` is RLP-encoded as
+    /// the EMPTY byte string (0x80) — the EVM null-target convention — so the
+    /// call's `input` is run as init-code and its returned runtime bytecode is
+    /// deployed; the created address comes back in the receipt's
+    /// `contractAddress`. Set via [`TempoTxBuilder::create`]. Default false:
+    /// every existing flow is a plain call to a real 20-byte address.
+    pub(crate) create: bool,
 }
 
 /// EIP-2930 access list entry. Unused so far; kept for completeness.
@@ -308,6 +315,7 @@ impl TempoTxBuilder {
                 aa_authorization_list: Vec::new(),
                 key_authorization: None,
                 sponsored: false,
+                create: false,
             },
             sponsored: false,
         }
@@ -351,6 +359,15 @@ impl TempoTxBuilder {
     pub fn sponsored(mut self) -> Self {
         self.sponsored = true;
         self.inner.sponsored = true;
+        self
+    }
+    /// Mark this tx as a CONTRACT CREATION: each call's `to` is encoded empty
+    /// (0x80) so its `input` is executed as init-code and the returned runtime
+    /// bytecode is deployed. Pair with a single `.call(...)` whose `to` is
+    /// ignored and whose `input` is the init-code; read the created address
+    /// from the receipt's `contractAddress`. Composes with `.sponsored()`.
+    pub fn create(mut self) -> Self {
+        self.inner.create = true;
         self
     }
 
@@ -453,6 +470,17 @@ fn rlp_call(call: &TempoCall) -> Vec<u8> {
     ])
 }
 
+/// Like [`rlp_call`] but for a CONTRACT CREATION: `to` is encoded as the empty
+/// byte string (0x80) — the EVM null-target convention — so `input` is treated
+/// as init-code. `call.to` is ignored.
+fn rlp_create_call(call: &TempoCall) -> Vec<u8> {
+    wallet::rlp_list(&[
+        wallet::rlp_bytes(&[]),
+        wallet::rlp_uint(call.value_wei),
+        wallet::rlp_bytes(&call.input),
+    ])
+}
+
 fn rlp_access_list(list: &[AccessListItem]) -> Vec<u8> {
     // EIP-2930 layout: list of [address, [storage_key, ...]]. Empty
     // by default for our usage.
@@ -505,7 +533,11 @@ impl TempoTx {
     /// First ten fields, shared between sender hash, fee_payer hash,
     /// and the serialized tx body (before the signature trailers).
     fn common_rlp_items(&self) -> Vec<Vec<u8>> {
-        let call_items: Vec<Vec<u8>> = self.calls.iter().map(rlp_call).collect();
+        let call_items: Vec<Vec<u8>> = self
+            .calls
+            .iter()
+            .map(|c| if self.create { rlp_create_call(c) } else { rlp_call(c) })
+            .collect();
         vec![
             wallet::rlp_uint(self.chain_id as u128),
             wallet::rlp_uint(self.max_priority_fee_per_gas),
@@ -550,6 +582,33 @@ fn keccak(input: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn create_flag_encodes_empty_to() {
+        // A creation tx must RLP each call's `to` as the empty byte string
+        // (0x80, the EVM null-target convention) — NOT the 20-byte address —
+        // so the chain runs `input` as init-code. Regression guard for the
+        // SolidityLite facet-deploy path.
+        let init = vec![0x60u8, 0x00, 0x60, 0x00, 0xf3]; // PUSH1 0 PUSH1 0 RETURN
+        let calls_rlp = |creating: bool| {
+            let mut b = TempoTxBuilder::new(1)
+                .gas_limit(1_000_000)
+                .call(TempoCall { to: [0xab; 20], value_wei: 0, input: init.clone() });
+            if creating {
+                b = b.create();
+            }
+            b.build().common_rlp_items()[4].clone() // items[4] = the calls rlp_list
+        };
+        // The 20-byte `to` (0xab*20) is present in a plain call, absent in a create.
+        assert!(
+            calls_rlp(false).windows(20).any(|w| w == [0xab; 20]),
+            "plain call must carry the 20-byte `to`"
+        );
+        assert!(
+            !calls_rlp(true).windows(20).any(|w| w == [0xab; 20]),
+            "create tx leaked the `to` address — it must encode empty (0x80)"
+        );
+    }
 
     fn dummy_tx() -> TempoTx {
         TempoTxBuilder::new(42431)

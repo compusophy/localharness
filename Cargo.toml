@@ -336,6 +336,13 @@ required-features = ["wallet"]
 name = "push_sub_live"
 required-features = ["wallet"]
 
+# Probe: does a SPONSORED Tempo 0x76 CONTRACT-CREATION tx deploy on Moderato?
+# The gating experiment for the SolidityLite facet-deploy stage — verifies the
+# new TempoTxBuilder::create() empty-`to` path actually deploys on-chain.
+[[example]]
+name = "tempo_create_probe"
+required-features = ["wallet"]
+
 # Minimal getting-started example: one agent turn with a custom tool. Needs only
 # the default `native` feature (tokio) + a GEMINI_API_KEY at runtime — no wallet,
 # no chain. The smallest end-to-end use of the core agent loop.
