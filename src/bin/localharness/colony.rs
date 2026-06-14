@@ -159,10 +159,11 @@ pub(crate) struct ParsedColonyRun {
     ttl_secs: u64,
 }
 
-/// Wallet floor below which the colony tops a judge up before its turn:
-/// the lazy meter deposit pulls 0.2 `$LH` from the judge's own wallet, so a
-/// judge under ~0.25 can't pay its metered turn and would 402 out of the
-/// panel.
+/// Judge WALLET-balance floor (0.25 `$LH`) below which the colony tops a judge
+/// up before its turn: a judge under this can't reliably fund the lazy meter
+/// deposit for its metered turn and would 402 out of the panel. When tripped
+/// the colony sends a fixed 0.5 `$LH` top-up (see the `send_lh` call below) —
+/// comfortably above the floor so one top-up covers several turns.
 pub(crate) const JUDGE_FUND_FLOOR_WEI: u128 = 250_000_000_000_000_000;
 
 /// Default neutral-judge panel size for `colony run` (median of N). Odd so the
