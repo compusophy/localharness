@@ -147,12 +147,35 @@ pub struct Function {
     pub span: Span,
 }
 
+/// A comparison operator (the relational stretch). Each lowers to an EVM
+/// comparison opcode (`GT`/`LT`/`EQ`), with `<=`/`>=` synthesized via `ISZERO` of
+/// the strict comparison. EVM `GT`/`LT` are UNSIGNED, which is correct for the v1
+/// `uint256`/`address`/`bytes32` value types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmpOp {
+    /// `>` — `GT`.
+    Gt,
+    /// `<` — `LT`.
+    Lt,
+    /// `>=` — `ISZERO(LT(a, b))` (true iff not `a < b`).
+    Ge,
+    /// `<=` — `ISZERO(GT(a, b))` (true iff not `a > b`).
+    Le,
+    /// `==` — `EQ`.
+    Eq,
+}
+
 /// A statement. View getters are a single `return <expr>;`; mutating functions
-/// are a `{ <assign>* }` block of state-var (or mapping-entry) assignments.
+/// are a `{ (<assign>|<require>)* }` block of state-var/mapping assignments and
+/// `require` guards.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     /// `return <expr>;` — evaluate the expression and return it as the 32-byte word.
     Return(Expr),
+    /// `require(<cond>, "<msg>");` — evaluate `<cond>`; if it is FALSE (zero),
+    /// `REVERT(0,0)`. The message is parsed but DISCARDED (an empty-data revert is
+    /// enough to abort the call). `span` is the `require` keyword's span.
+    Require { cond: Expr, span: Span },
     /// `<stateVar> = <expr>;` — evaluate `<expr>` and `SSTORE` it to the state
     /// var's keccak-namespaced slot (the storage-write stretch). `name` is the
     /// assignment target; `span` is the target identifier's span.
@@ -188,6 +211,10 @@ pub enum Expr {
     /// A binary `lhs + rhs` — both operands are evaluated onto the stack, then
     /// `ADD` (the arithmetic stretch; left-associative, e.g. `n = n + 1`).
     Add { lhs: Box<Expr>, rhs: Box<Expr>, span: Span },
+    /// A comparison `lhs <op> rhs` (the relational stretch) — both operands are
+    /// evaluated, then the comparison opcode(s) for `op`, leaving a `0`/`1` word.
+    /// Binds LOOSER than `+`, so `n + 1 > 0` parses as `(n + 1) > 0`.
+    Cmp { op: CmpOp, lhs: Box<Expr>, rhs: Box<Expr>, span: Span },
 }
 
 impl Expr {
@@ -199,6 +226,7 @@ impl Expr {
             Expr::MsgSender { span, .. } => *span,
             Expr::Index { span, .. } => *span,
             Expr::Add { span, .. } => *span,
+            Expr::Cmp { span, .. } => *span,
         }
     }
 }

@@ -43,8 +43,14 @@ pub mod op {
     pub const CALLDATALOAD: u8 = 0x35;
     /// Unsigned less-than (`a < b`).
     pub const LT: u8 = 0x10;
+    /// Unsigned greater-than (`a > b`).
+    pub const GT: u8 = 0x11;
     /// Equality (`a == b`).
     pub const EQ: u8 = 0x14;
+    /// Logical NOT: `1` if the top item is `0`, else `0` (`ISZERO(x)`). Used to
+    /// invert a comparison (`a <= b` = `ISZERO(a > b)`) and to branch on a failed
+    /// `require` condition (`cond ISZERO … JUMPI` → revert when the cond is false).
+    pub const ISZERO: u8 = 0x15;
     /// Logical right shift (`SHR(shift, value)`).
     pub const SHR: u8 = 0x1C;
     /// Addition.

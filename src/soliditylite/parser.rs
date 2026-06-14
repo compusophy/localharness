@@ -16,9 +16,12 @@
 //! params := "(" ( Ty Ident ("," Ty Ident)* )? ")"
 //! function := "function" Ident params "external"
 //!             ( view? "returns" "(" Ty ")" "{" "return" expr ";" "}"   (view getter)
-//!             | "{" assign* "}" )                        (mutating)
-//! assign := Ident ("[" expr "]")? "=" expr ";"           (scalar / mapping write)
-//! expr   := term ("+" term)*                             (left-assoc +)
+//!             | "{" stmt* "}" )                          (mutating)
+//! stmt   := "require" "(" expr "," StrLit ")" ";"        (guard / revert)
+//!         | Ident ("[" expr "]")? ("=" | "+=") expr ";"  (scalar / mapping write)
+//! expr   := cmp                                          (top level)
+//! cmp    := add ( ("<"|">"|"<="|">="|"==") add )?        (non-assoc comparison)
+//! add    := term ("+" term)*                             (left-assoc +, binds tighter)
 //! term   := IntLit | "msg" "." "sender" | Ident ("[" expr "]")?
 //!           (Ident = scalar/param read; Ident[expr] = mapping read)
 //! ```
@@ -57,6 +60,12 @@ impl Parser<'_> {
     fn peek(&self) -> &SolKind {
         // The stream always ends with Eof, so indexing is safe; clamp defensively.
         &self.tokens[self.pos.min(self.tokens.len() - 1)].kind
+    }
+
+    /// Peek `offset` tokens ahead (clamped to the trailing `Eof`). Used for the
+    /// one-token lookahead that distinguishes `require(` from a bare `require` ref.
+    fn peek_at(&self, offset: usize) -> &SolKind {
+        &self.tokens[(self.pos + offset).min(self.tokens.len() - 1)].kind
     }
 
     fn span(&self) -> Span {
@@ -287,10 +296,49 @@ impl Parser<'_> {
         self.expect(&SolKind::LBrace, "`{`")?;
         let mut stmts = Vec::new();
         while !matches!(self.peek(), SolKind::RBrace) {
-            stmts.push(self.parse_assign_stmt()?);
+            stmts.push(self.parse_stmt()?);
         }
         self.expect(&SolKind::RBrace, "`}`")?;
         Ok(Stmt::Block(stmts))
+    }
+
+    /// Parse one statement inside a mutating body: a `require(...)` guard or an
+    /// assignment. `require` is a contextual keyword (a plain identifier elsewhere),
+    /// recognized only when it leads a statement and is followed by `(`.
+    fn parse_stmt(&mut self) -> Result<Stmt, CompileError> {
+        if matches!(self.peek(), SolKind::Ident(name) if name == "require")
+            && matches!(self.peek_at(1), SolKind::LParen)
+        {
+            return self.parse_require_stmt();
+        }
+        self.parse_assign_stmt()
+    }
+
+    /// Parse `require ( <cond> , <strlit> ) ;`. The condition can be any expression
+    /// (typically a comparison). The message string is required by the floor grammar
+    /// but DISCARDED by codegen (an empty-data revert aborts the call regardless).
+    fn parse_require_stmt(&mut self) -> Result<Stmt, CompileError> {
+        let span = self.span();
+        self.advance(); // `require` (the contextual keyword)
+        self.expect(&SolKind::LParen, "`(`")?;
+        let cond = self.parse_expr()?;
+        self.expect(&SolKind::Comma, "`,`")?;
+        // The message: a string literal (consumed, then ignored by codegen).
+        match self.peek().clone() {
+            SolKind::Str(_) => {
+                self.advance();
+            }
+            other => {
+                return Err(CompileError::at_code(
+                    codes::EXPECTED_EXPRESSION,
+                    format!("expected a string message in `require(cond, \"…\")`, got {other:?}"),
+                    self.span(),
+                ))
+            }
+        }
+        self.expect(&SolKind::RParen, "`)`")?;
+        self.expect(&SolKind::Semi, "`;`")?;
+        Ok(Stmt::Require { cond, span })
     }
 
     /// Parse one assignment: `<stateVar> = <expr> ;` or `<mapping>[<key>] = <expr> ;`.
@@ -320,21 +368,62 @@ impl Parser<'_> {
         } else {
             None
         };
-        self.expect(&SolKind::Assign, "`=`")?;
-        let value = self.parse_expr()?;
+        // Either `=` (plain assign) or `+=` (compound, lexed as `+` then `=`). The
+        // compound form desugars `t += e` to `t = t + e`, reusing the target as a
+        // read of itself (`x += e` → `x = x + e`; `m[k] += e` → `m[k] = m[k] + e`).
+        let compound = matches!(self.peek(), SolKind::Plus)
+            && matches!(self.peek_at(1), SolKind::Assign);
+        if compound {
+            self.advance(); // `+`
+            self.advance(); // `=`
+        } else {
+            self.expect(&SolKind::Assign, "`=` or `+=`")?;
+        }
+        let rhs = self.parse_expr()?;
         self.expect(&SolKind::Semi, "`;`")?;
+        let value = if compound {
+            // Desugar: build `<target_read> + <rhs>`.
+            let target_read = match &index_key {
+                Some(key) => Expr::Index { base: name.clone(), key: Box::new(key.clone()), span },
+                None => Expr::StateVar { name: name.clone(), span },
+            };
+            Expr::Add { lhs: Box::new(target_read), rhs: Box::new(rhs), span }
+        } else {
+            rhs
+        };
         match index_key {
             Some(key) => Ok(Stmt::IndexAssign { base: name, key, value, span }),
             None => Ok(Stmt::Assign { name, value, span }),
         }
     }
 
-    /// Parse an expression: `term ("+" term)*`, left-associative (e.g. `n + 1`).
+    /// Parse an expression. The top level is a comparison (binds loosest), which in
+    /// turn parses additions (bind tighter), which parse terms.
     fn parse_expr(&mut self) -> Result<Expr, CompileError> {
         self.enter()?;
-        let result = self.parse_add();
+        let result = self.parse_cmp();
         self.leave();
         result
+    }
+
+    /// `add ( <cmp_op> add )?` — a single, NON-associative comparison (`a > b`).
+    /// Comparisons bind LOOSER than `+`, so `n + 1 > 0` is `(n + 1) > 0`. Chaining
+    /// (`a < b < c`) is not part of the grammar; a second comparison operator is a
+    /// clean error at the enclosing `;`/`)` rather than silently mis-associating.
+    fn parse_cmp(&mut self) -> Result<Expr, CompileError> {
+        let lhs = self.parse_add()?;
+        let op = match self.peek() {
+            SolKind::Gt => CmpOp::Gt,
+            SolKind::Lt => CmpOp::Lt,
+            SolKind::Ge => CmpOp::Ge,
+            SolKind::Le => CmpOp::Le,
+            SolKind::EqEq => CmpOp::Eq,
+            _ => return Ok(lhs),
+        };
+        let op_span = self.span();
+        self.advance(); // the comparison operator
+        let rhs = self.parse_add()?;
+        Ok(Expr::Cmp { op, lhs: Box::new(lhs), rhs: Box::new(rhs), span: op_span })
     }
 
     /// `term ("+" term)*` — folds left so `a + b + c` parses as `(a + b) + c`.
@@ -704,5 +793,154 @@ mod tests {
         let e = parse_src("facet C { function f(uint256 a,) external { } }").unwrap_err();
         // After the comma the parser expects a type, but sees `)`.
         assert_eq!(e.code, Some(codes::EXPECTED_TYPE));
+    }
+
+    #[test]
+    fn comparison_parses_below_addition() {
+        // `n + 1 > 0` parses as `(n + 1) > 0`: a Cmp whose lhs is an Add.
+        let f = parse_src(
+            "facet C { uint256 n; function f() external view returns (uint256) { return n + 1 > 0; } }",
+        )
+        .unwrap();
+        match &f.functions[0].body {
+            Stmt::Return(Expr::Cmp { op, lhs, rhs, .. }) => {
+                assert_eq!(*op, CmpOp::Gt);
+                assert!(matches!(**lhs, Expr::Add { .. }), "lhs must be the `n + 1` Add");
+                assert!(matches!(**rhs, Expr::IntLit { .. }), "rhs is the literal 0");
+            }
+            other => panic!("expected a Cmp(Add, IntLit), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn all_comparison_operators_parse() {
+        for (src_op, want) in [
+            (">", CmpOp::Gt),
+            ("<", CmpOp::Lt),
+            (">=", CmpOp::Ge),
+            ("<=", CmpOp::Le),
+            ("==", CmpOp::Eq),
+        ] {
+            let src = format!(
+                "facet C {{ function f(uint256 a) external view returns (uint256) {{ return a {src_op} 1; }} }}"
+            );
+            let f = parse_src(&src).unwrap();
+            match &f.functions[0].body {
+                Stmt::Return(Expr::Cmp { op, .. }) => assert_eq!(*op, want, "for `{src_op}`"),
+                other => panic!("`{src_op}` did not parse to a Cmp: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn require_statement_parses() {
+        let f = parse_src(
+            "facet C { function f(uint256 n) external { require(n > 0, \"zero\"); } }",
+        )
+        .unwrap();
+        match &f.functions[0].body {
+            Stmt::Block(stmts) => {
+                assert_eq!(stmts.len(), 1);
+                match &stmts[0] {
+                    Stmt::Require { cond: Expr::Cmp { op, .. }, .. } => assert_eq!(*op, CmpOp::Gt),
+                    other => panic!("expected a Require(Cmp), got {other:?}"),
+                }
+            }
+            other => panic!("unexpected body {other:?}"),
+        }
+    }
+
+    #[test]
+    fn require_then_assignment_parses_in_order() {
+        // Two requires followed by a mapping write — the CounterFacet incrementBy shape.
+        let f = parse_src(
+            "facet C { mapping(address => uint256) count; uint256 total; \
+             function incrementBy(uint256 n) external { require(n > 0, \"zero\"); \
+             require(n <= 100, \"too big\"); count[msg.sender] = count[msg.sender] + n; \
+             total = total + n; } }",
+        )
+        .unwrap();
+        match &f.functions[0].body {
+            Stmt::Block(stmts) => {
+                assert_eq!(stmts.len(), 4);
+                assert!(matches!(stmts[0], Stmt::Require { .. }));
+                assert!(matches!(stmts[1], Stmt::Require { .. }));
+                assert!(matches!(stmts[2], Stmt::IndexAssign { .. }));
+                assert!(matches!(stmts[3], Stmt::Assign { .. }));
+            }
+            other => panic!("unexpected body {other:?}"),
+        }
+    }
+
+    #[test]
+    fn require_without_a_message_is_a_clean_error() {
+        // `require(n > 0)` — missing the message operand. A clean error, not a panic.
+        let e = parse_src("facet C { function f(uint256 n) external { require(n > 0); } }")
+            .unwrap_err();
+        assert!(e.code.is_some(), "must carry an LH code");
+    }
+
+    #[test]
+    fn bad_comparison_rhs_is_a_clean_error() {
+        // `n > ;` — a comparison with no right operand. Clean error, no panic.
+        let e = parse_src("facet C { function f(uint256 n) external { require(n > , \"x\"); } }")
+            .unwrap_err();
+        assert_eq!(e.code, Some(codes::EXPECTED_EXPRESSION));
+    }
+
+    #[test]
+    fn require_is_still_usable_as_a_plain_identifier() {
+        // `require` is contextual: a bare `require` (not followed by `(`) is a normal
+        // state-var reference, NOT the keyword. (Edge-case robustness.)
+        let f = parse_src(
+            "facet C { uint256 require; function f() external view returns (uint256) { return require; } }",
+        )
+        .unwrap();
+        match &f.functions[0].body {
+            Stmt::Return(Expr::StateVar { name, .. }) => assert_eq!(name, "require"),
+            other => panic!("unexpected body {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compound_plus_assign_desugars() {
+        // `total += n` parses to `total = total + n`.
+        let f = parse_src(
+            "facet C { uint256 total; function f(uint256 n) external { total += n; } }",
+        )
+        .unwrap();
+        match &f.functions[0].body {
+            Stmt::Block(stmts) => match &stmts[0] {
+                Stmt::Assign { name, value: Expr::Add { lhs, rhs, .. }, .. } => {
+                    assert_eq!(name, "total");
+                    // lhs is a read of `total`; rhs is `n`.
+                    assert!(matches!(**lhs, Expr::StateVar { .. }));
+                    assert!(matches!(**rhs, Expr::StateVar { .. }));
+                }
+                other => panic!("expected a desugared Assign(Add), got {other:?}"),
+            },
+            other => panic!("unexpected body {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compound_plus_assign_on_a_mapping_desugars() {
+        // `count[msg.sender] += n` parses to `count[msg.sender] = count[msg.sender] + n`.
+        let f = parse_src(
+            "facet C { mapping(address => uint256) count; \
+             function f(uint256 n) external { count[msg.sender] += n; } }",
+        )
+        .unwrap();
+        match &f.functions[0].body {
+            Stmt::Block(stmts) => match &stmts[0] {
+                Stmt::IndexAssign { base, value: Expr::Add { lhs, rhs, .. }, .. } => {
+                    assert_eq!(base, "count");
+                    assert!(matches!(**lhs, Expr::Index { .. }), "lhs is a read of count[..]");
+                    assert!(matches!(**rhs, Expr::StateVar { .. }), "rhs is `n`");
+                }
+                other => panic!("expected a desugared IndexAssign(Add), got {other:?}"),
+            },
+            other => panic!("unexpected body {other:?}"),
+        }
     }
 }

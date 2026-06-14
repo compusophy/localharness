@@ -18,7 +18,7 @@ use crate::soliditylite::CompiledArtifact;
 // `Expr`/`Facet`/`Stmt` + the `CompileError` diagnostics are only used by the
 // source-compile path, which is wallet-gated (selector + slot keccak live there).
 #[cfg(feature = "wallet")]
-use crate::soliditylite::ast::{Expr, Facet, StateVarKind, Stmt};
+use crate::soliditylite::ast::{CmpOp, Expr, Facet, StateVarKind, Stmt};
 #[cfg(feature = "wallet")]
 use crate::rustlite::CompileError;
 
@@ -45,18 +45,29 @@ pub enum BodyValue {
 ///   gate) — the simple return keeps `PUSH32`.
 /// - [`Body::ViewExpr`] is a getter whose return is a COMPOUND expression
 ///   (`return a + b;`): the lowered expr leaves one word, then the same tail.
-/// - [`Body::Mutating`] is the write-stretch function (`{ <assign>* }`): each
+/// - [`Body::Mutating`] is the write-stretch function (`{ (<require>|<assign>)* }`):
+///   each `require` guard (`cond ISZERO PUSH2 <revert> JUMPI`) and each
 ///   `SSTORE(slot, eval(expr))` in order, then an empty `RETURN(0,0)` (the diamond
-///   fallback returns cleanly).
+///   fallback returns cleanly); if any `require` is present, one shared
+///   `<revert>: REVERT(0,0)` stub is emitted after the return.
 #[cfg(feature = "wallet")]
 enum Body {
     /// A simple view getter: push one [`BodyValue`], store + return it.
     View(BodyValue),
     /// A view getter returning a compound expression (e.g. `a + b`).
     ViewExpr(LoweredExpr),
-    /// A mutating function: a sequence of (scalar or mapping-entry) assignments,
-    /// then `RETURN(0,0)`.
-    Mutating(Vec<LoweredAssign>),
+    /// A mutating function: a sequence of statements (`require` guards + scalar /
+    /// mapping-entry assignments), then `RETURN(0,0)`.
+    Mutating(Vec<LoweredStmt>),
+}
+
+/// One statement inside a mutating body: a `require` guard or an assignment.
+#[cfg(feature = "wallet")]
+enum LoweredStmt {
+    /// `require(cond, …)` — branch to the shared revert stub when `cond` is FALSE.
+    Require(LoweredExpr),
+    /// A scalar or mapping-entry store.
+    Assign(LoweredAssign),
 }
 
 /// A resolved expression — names already mapped to slots / param indices — ready
@@ -80,6 +91,11 @@ enum LoweredExpr {
     MapLoad { base_slot: [u8; 32], key: Box<LoweredExpr> },
     /// `<lhs> <rhs> ADD` — a binary addition (left operand pushed first).
     Add(Box<LoweredExpr>, Box<LoweredExpr>),
+    /// `<lhs> <rhs> <cmp>` — a comparison leaving a `0`/`1` word (the relational
+    /// stretch). The operand order matters: both EVM `GT`/`LT` pop `a` (top) then
+    /// `b` and compute `a <cmp> b`, so we push `lhs` first then `rhs` and the strict
+    /// ops map directly; `<=`/`>=` append an `ISZERO` to invert the strict result.
+    Cmp { op: CmpOp, lhs: Box<LoweredExpr>, rhs: Box<LoweredExpr> },
 }
 
 /// Emit the mapping-entry SLOT-DERIVATION for `keccak256(pad32(key) ++ pad32(base))`,
@@ -129,6 +145,33 @@ impl LoweredExpr {
                 lhs.emit(a);
                 rhs.emit(a);
                 a.emit(op::ADD);
+            }
+            LoweredExpr::Cmp { op: cmp, lhs, rhs } => {
+                // Push `lhs` (deeper) then `rhs` (top). EVM `GT`/`LT`/`EQ` pop the
+                // top operand as `a` and the next as `b`, computing `a <op> b`. With
+                // `rhs` on top, `GT` yields `rhs > lhs`, which is NOT what we want;
+                // we want `lhs <op> rhs`. So push `rhs` FIRST then `lhs` so `lhs` is
+                // on top → `GT` = `lhs > rhs`, `LT` = `lhs < rhs`. `EQ` is symmetric.
+                rhs.emit(a);
+                lhs.emit(a);
+                match cmp {
+                    CmpOp::Gt => {
+                        a.emit(op::GT);
+                    }
+                    CmpOp::Lt => {
+                        a.emit(op::LT);
+                    }
+                    CmpOp::Eq => {
+                        a.emit(op::EQ);
+                    }
+                    // `a <= b` ⇔ NOT (a > b); `a >= b` ⇔ NOT (a < b).
+                    CmpOp::Le => {
+                        a.emit(op::GT).emit(op::ISZERO);
+                    }
+                    CmpOp::Ge => {
+                        a.emit(op::LT).emit(op::ISZERO);
+                    }
+                }
             }
         }
     }
@@ -256,13 +299,32 @@ fn emit_full_body(a: &mut Asm, body: Label, b: &Body) {
                 .push_u64(0x00)
                 .emit(op::RETURN);
         }
-        Body::Mutating(assigns) => {
+        Body::Mutating(stmts) => {
             a.jumpdest(body);
-            for assign in assigns {
-                assign.emit(a);
+            // Allocate ONE shared revert label for this function's `require`s; only
+            // emit the stub if at least one require references it (a require-free
+            // body keeps byte-identical to the pre-require Mutating shape).
+            let has_require = stmts.iter().any(|s| matches!(s, LoweredStmt::Require(_)));
+            let revert = if has_require { Some(a.new_label()) } else { None };
+            for stmt in stmts {
+                match stmt {
+                    LoweredStmt::Require(cond) => {
+                        // Emit cond; if FALSE (zero) jump to the revert stub.
+                        // `cond ISZERO PUSH2 <revert> JUMPI`.
+                        cond.emit(a);
+                        a.emit(op::ISZERO).push_label(revert.expect("revert label allocated when a require is present")).emit(op::JUMPI);
+                    }
+                    LoweredStmt::Assign(assign) => assign.emit(a),
+                }
             }
             // Empty return so the diamond fallback returns cleanly.
             a.push_u64(0x00).push_u64(0x00).emit(op::RETURN);
+            // The shared revert stub (only when a require exists): a failed guard
+            // lands here. REVERT with empty data aborts the call (no message — the
+            // tx revert is the behavior we need).
+            if let Some(revert) = revert {
+                a.jumpdest(revert).push_u64(0x00).push_u64(0x00).emit(op::REVERT);
+            }
         }
     }
 }
@@ -462,6 +524,11 @@ impl Resolver<'_> {
                 Box::new(self.lower_expr(lhs)?),
                 Box::new(self.lower_expr(rhs)?),
             )),
+            Expr::Cmp { op, lhs, rhs, .. } => Ok(LoweredExpr::Cmp {
+                op: *op,
+                lhs: Box::new(self.lower_expr(lhs)?),
+                rhs: Box::new(self.lower_expr(rhs)?),
+            }),
         }
     }
 }
@@ -480,9 +547,11 @@ fn function_signature(func: &crate::soliditylite::ast::Function) -> String {
 /// computed via the shared [`crate::registry::selector`] helper. A view getter's
 /// `return <expr>;` lowers to a [`Body::View`]/[`Body::ViewExpr`] (`<intlit>` →
 /// constant, scalar `<stateVar>` → `SLOAD`, parameter → `CALLDATALOAD(4+32*i)`,
-/// `msg.sender` → `CALLER`, `<map>[<key>]` → keccak-slot `SLOAD`, `a + b` → `ADD`);
-/// a mutating function's `<stateVar> = <expr>;` / `<map>[<key>] = <expr>;`
-/// assignments lower to a [`Body::Mutating`] that `SSTORE`s each then `RETURN(0,0)`.
+/// `msg.sender` → `CALLER`, `<map>[<key>]` → keccak-slot `SLOAD`, `a + b` → `ADD`,
+/// `a <op> b` → `GT`/`LT`/`EQ` (`<=`/`>=` via `ISZERO`)); a mutating function's
+/// `require(cond, "…")` guards and `<stateVar> = <expr>;` / `<map>[<key>] = <expr>;`
+/// assignments lower to a [`Body::Mutating`] that branches a failed `require` to a
+/// shared `REVERT(0,0)` stub and `SSTORE`s each assignment, then `RETURN(0,0)`.
 ///
 /// Gated on `wallet` because selector keccak + storage-slot keccak both live
 /// behind that feature (sha3/registry); without it, the frontend still
@@ -519,37 +588,40 @@ pub fn compile(facet: &Facet) -> Result<CompiledArtifact, CompileError> {
                 Body::View(BodyValue::StorageSlot(r.scalar_slot(name, *span)?))
             }
             Stmt::Return(expr) => Body::ViewExpr(r.lower_expr(expr)?),
-            // Mutating function: `{ (<stateVar>|<map>[<key>]) = <expr>; … }`.
+            // Mutating function: `{ (require(...)|<stateVar> = e|<map>[k] = e); … }`.
             Stmt::Block(stmts) => {
-                let mut assigns = Vec::with_capacity(stmts.len());
+                let mut lowered_stmts = Vec::with_capacity(stmts.len());
                 for stmt in stmts {
                     match stmt {
+                        Stmt::Require { cond, .. } => {
+                            lowered_stmts.push(LoweredStmt::Require(r.lower_expr(cond)?));
+                        }
                         Stmt::Assign { name, value, span } => {
-                            assigns.push(LoweredAssign::Scalar {
+                            lowered_stmts.push(LoweredStmt::Assign(LoweredAssign::Scalar {
                                 slot: r.scalar_slot(name, *span)?,
                                 value: r.lower_expr(value)?,
-                            });
+                            }));
                         }
                         Stmt::IndexAssign { base: map_name, key, value, span } => {
-                            assigns.push(LoweredAssign::MapEntry {
+                            lowered_stmts.push(LoweredStmt::Assign(LoweredAssign::MapEntry {
                                 base_slot: r.mapping_base_slot(map_name, *span)?,
                                 key: r.lower_expr(key)?,
                                 value: r.lower_expr(value)?,
-                            });
+                            }));
                         }
-                        // A non-assignment inside a mutating block is unreachable
-                        // from the parser (it only emits assignments), but guard
-                        // it as a clean error rather than panicking.
+                        // A return/nested block inside a mutating block is unreachable
+                        // from the parser (it only emits requires + assignments), but
+                        // guard it as a clean error rather than panicking.
                         other => {
                             return Err(CompileError::at_code(
                                 codes::UNSUPPORTED_FEATURE,
-                                format!("only assignments are supported in a mutating body, got {other:?}"),
+                                format!("only `require` and assignments are supported in a mutating body, got {other:?}"),
                                 func.span,
                             ))
                         }
                     }
                 }
-                Body::Mutating(assigns)
+                Body::Mutating(lowered_stmts)
             }
             // A bare assignment as a whole function body is parser-unreachable; treat
             // it as an unsupported shape rather than panicking.
@@ -893,6 +965,215 @@ mod tests {
         )
         .expect_err("an unknown name must fail cleanly");
         assert_eq!(err.code, Some(crate::error_codes::UNDEFINED_VARIABLE));
+    }
+
+    // ── COMPARISONS + require/revert (Installment 1 CounterFacet) ─────────────
+
+    /// `n > 0` lowers to `…GT` and `n <= 100` lowers to `…GT…ISZERO` — the
+    /// comparison opcode shapes the task pins.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn comparison_lowers_to_gt_and_gt_iszero() {
+        use super::super::asm::op;
+        // `n > 0` → GT present; `n <= 100` → GT then ISZERO present.
+        let art = super::super::compile(
+            "facet C { function f(uint256 n) external { require(n > 0, \"a\"); require(n <= 100, \"b\"); } }",
+        )
+        .unwrap();
+        let rt = &art.runtime;
+        assert!(rt.contains(&op::GT), "a `>` (and the `<=` inversion) must emit GT");
+        // The `<=` is `ISZERO(GT(..))`: a GT immediately followed by ISZERO.
+        assert!(
+            rt.windows(2).any(|w| w == [op::GT, op::ISZERO]),
+            "`n <= 100` must emit GT then ISZERO; runtime = {}",
+            to_hex(rt)
+        );
+    }
+
+    /// Each comparison operator emits its mandated opcode sequence.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn each_comparison_emits_its_opcodes() {
+        use super::super::asm::op;
+        let cases: &[(&str, &[u8])] = &[
+            (">", &[op::GT]),
+            ("<", &[op::LT]),
+            ("==", &[op::EQ]),
+            ("<=", &[op::GT, op::ISZERO]), // a <= b ⇔ !(a > b)
+            (">=", &[op::LT, op::ISZERO]), // a >= b ⇔ !(a < b)
+        ];
+        for (src_op, want) in cases {
+            let src = format!(
+                "facet C {{ function f(uint256 n) external {{ require(n {src_op} 1, \"x\"); }} }}"
+            );
+            let rt = super::super::compile(&src).unwrap().runtime;
+            assert!(
+                rt.windows(want.len()).any(|w| w == *want),
+                "`{src_op}` must emit {want:02x?}; runtime = {}",
+                to_hex(&rt)
+            );
+        }
+    }
+
+    /// A `require` emits `<cond> ISZERO PUSH2 <revert> JUMPI`, and the referenced
+    /// label lands on a `JUMPDEST` that begins a `REVERT(0,0)` stub.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn require_emits_iszero_jumpi_to_a_revert_stub() {
+        use super::super::asm::op;
+        let art = super::super::compile(
+            "facet C { function f(uint256 n) external { require(n > 0, \"zero\"); } }",
+        )
+        .unwrap();
+        let rt = &art.runtime;
+
+        // Find `ISZERO PUSH2 <hi> <lo> JUMPI` — the require branch.
+        let pos = rt
+            .windows(5)
+            .position(|w| w[0] == op::ISZERO && w[1] == op::PUSH2 && w[4] == op::JUMPI)
+            .expect("require must emit ISZERO PUSH2 <revert> JUMPI");
+        let target = u16::from_be_bytes([rt[pos + 2], rt[pos + 3]]) as usize;
+        // The target is a JUMPDEST beginning a REVERT(0,0) stub.
+        assert_eq!(rt[target], op::JUMPDEST, "the require target must be a JUMPDEST");
+        assert_eq!(
+            &rt[target..target + 6],
+            &[op::JUMPDEST, op::PUSH1, 0x00, op::PUSH1, 0x00, op::REVERT],
+            "the revert stub must be JUMPDEST PUSH1 0 PUSH1 0 REVERT"
+        );
+    }
+
+    /// Two `require`s in one function SHARE a single revert stub (only one extra
+    /// JUMPDEST+REVERT(0,0) is emitted beyond the dispatcher fallback).
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn multiple_requires_share_one_revert_stub() {
+        use super::super::asm::op;
+        let art = super::super::compile(
+            "facet C { function f(uint256 n) external { require(n > 0, \"a\"); require(n <= 100, \"b\"); } }",
+        )
+        .unwrap();
+        let rt = &art.runtime;
+        // Two require branches (two `ISZERO … JUMPI`).
+        let jumpis = rt
+            .windows(5)
+            .filter(|w| w[0] == op::ISZERO && w[1] == op::PUSH2 && w[4] == op::JUMPI)
+            .count();
+        assert_eq!(jumpis, 2, "two requires → two ISZERO/JUMPI branches");
+        // Both branches resolve to the SAME revert target.
+        let targets: Vec<usize> = rt
+            .windows(5)
+            .filter(|w| w[0] == op::ISZERO && w[1] == op::PUSH2 && w[4] == op::JUMPI)
+            .map(|w| u16::from_be_bytes([w[2], w[3]]) as usize)
+            .collect();
+        assert_eq!(targets[0], targets[1], "both requires share ONE revert stub");
+        // Exactly TWO REVERT(0,0) stubs total in the runtime: the dispatcher
+        // fallback + the one shared require stub (no per-require duplication).
+        let revert_stubs = rt
+            .windows(6)
+            .filter(|w| w == &[op::JUMPDEST, op::PUSH1, 0x00, op::PUSH1, 0x00, op::REVERT])
+            .count();
+        assert_eq!(revert_stubs, 2, "only the fallback + one shared require stub");
+    }
+
+    /// A require-FREE mutating body emits NO revert stub (no JUMPDEST/REVERT beyond
+    /// the dispatcher fallback) — requires don't bloat functions that lack them.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn require_free_body_has_no_extra_revert_stub() {
+        use super::super::asm::op;
+        let art = super::super::compile(
+            "facet C { uint256 n; function bump() external { n = n + 1; } }",
+        )
+        .unwrap();
+        let rt = &art.runtime;
+        let revert_stubs = rt
+            .windows(6)
+            .filter(|w| w == &[op::JUMPDEST, op::PUSH1, 0x00, op::PUSH1, 0x00, op::REVERT])
+            .count();
+        assert_eq!(revert_stubs, 1, "only the dispatcher fallback REVERT(0,0)");
+    }
+
+    /// A `require(true, …)` style guard with a constant condition still compiles to
+    /// a well-formed branch (codegen-shape check — a truthy constant never reverts
+    /// at runtime because ISZERO(1) = 0, so the JUMPI is not taken).
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn require_with_true_constant_compiles_and_does_not_take_the_branch() {
+        use super::super::asm::op;
+        // `1 == 1` is always true; the require branch exists but ISZERO(EQ(1,1))=0.
+        let art = super::super::compile(
+            "facet C { function f() external { require(1 == 1, \"never\"); } }",
+        )
+        .unwrap();
+        let rt = &art.runtime;
+        // The shape is present: an EQ feeding an ISZERO feeding a JUMPI.
+        assert!(rt.contains(&op::EQ), "1 == 1 emits EQ");
+        assert!(
+            rt.windows(5).any(|w| w[0] == op::ISZERO && w[1] == op::PUSH2 && w[4] == op::JUMPI),
+            "the require branch is well-formed"
+        );
+        assert_eq!(art.init_code, super::super::asm::init_wrapper(rt));
+    }
+
+    /// A malformed `require` (bad comparison operand) surfaces a clean `CompileError`
+    /// (from the parser), never a panic.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn malformed_require_is_a_clean_compile_error() {
+        // `n > ` has no right operand.
+        let err = super::super::compile(
+            "facet C { function f(uint256 n) external { require(n > , \"x\"); } }",
+        )
+        .expect_err("a malformed comparison must fail cleanly");
+        assert!(err.code.is_some(), "carries an LH code");
+        assert!(err.to_string().starts_with("LH0"));
+        // An unknown variable inside a require condition is also a clean error.
+        let err = super::super::compile(
+            "facet C { function f() external { require(ghost > 0, \"x\"); } }",
+        )
+        .expect_err("an unknown var in a require must fail cleanly");
+        assert_eq!(err.code, Some(crate::error_codes::UNDEFINED_VARIABLE));
+    }
+
+    /// THE INSTALLMENT-1 TARGET: the full `CounterFacet` (minus the event) compiles
+    /// and all four selectors are dispatched with the canonical hashes.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn counter_target_facet_compiles_with_canonical_selectors() {
+        use super::super::asm::op;
+        const SRC: &str = "facet Counter { mapping(address => uint256) count; uint256 total; \
+             function increment() external { count[msg.sender] = count[msg.sender] + 1; total = total + 1; } \
+             function incrementBy(uint256 n) external { require(n > 0, \"zero\"); require(n <= 100, \"too big\"); \
+             count[msg.sender] = count[msg.sender] + n; total = total + n; } \
+             function countOf(address who) external view returns (uint256) { return count[who]; } \
+             function totalCount() external view returns (uint256) { return total; } }";
+        let art = super::super::compile(SRC).expect("the CounterFacet TARGET must compile");
+        let rt = &art.runtime;
+
+        // The four canonical selectors (pinned in the task).
+        let sels: [(&str, [u8; 4]); 4] = [
+            ("increment()", [0xd0, 0x9d, 0xe0, 0x8a]),
+            ("incrementBy(uint256)", [0x03, 0xdf, 0x17, 0x9c]),
+            ("countOf(address)", [0xf8, 0x97, 0x7e, 0x96]),
+            ("totalCount()", [0x34, 0xea, 0xfb, 0x11]),
+        ];
+        for (sig, want) in sels {
+            assert_eq!(crate::registry::selector(sig), want, "selector pin for {sig}");
+            let push4: Vec<u8> = std::iter::once(op::PUSH1 + 3).chain(want).collect();
+            assert!(
+                rt.windows(5).any(|w| w == push4.as_slice()),
+                "{sig} selector {want:02x?} must be dispatched"
+            );
+        }
+        // The relational + require primitives are exercised.
+        assert!(rt.contains(&op::GT), "incrementBy uses `>` / `<=` → GT");
+        assert!(rt.windows(2).any(|w| w == [op::GT, op::ISZERO]), "`<=` → GT ISZERO");
+        assert!(
+            rt.windows(5).any(|w| w[0] == op::ISZERO && w[1] == op::PUSH2 && w[4] == op::JUMPI),
+            "require → ISZERO/JUMPI"
+        );
+        // init_code wraps the runtime.
+        assert_eq!(art.init_code, super::super::asm::init_wrapper(rt));
     }
 
     /// 0x-prefixed lowercase hex (test helper).

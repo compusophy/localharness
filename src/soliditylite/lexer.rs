@@ -4,11 +4,10 @@
 //! `pos` cursor, `//`/`/* */` comment skipping, spans on every token) but its
 //! token set is the Solidity-subset surface: the `facet`/`function`/`external`/
 //! `view`/`returns`/`return`/`mapping`/`uint256` keywords, the structural
-//! punctuation (`{ } ( ) [ ] ; , = => . +`), identifiers, and decimal/hex integer
-//! literals. Floats, chars,
-//! and string literals are intentionally absent from the floor grammar (design
-//! §3) — a string would only ever be a `require`/`event` operand, neither of
-//! which the floor grammar admits, so an unexpected `"` is a clean error.
+//! punctuation (`{ } ( ) [ ] ; , = => . + > < >= <= ==`), identifiers,
+//! decimal/hex integer literals, and double-quoted string literals (the
+//! `require(cond, "msg")` message operand). Floats and char literals stay absent
+//! from the grammar — an unexpected byte is a clean error.
 
 use crate::rustlite::{CompileError, Span};
 use crate::error_codes as codes;
@@ -50,6 +49,10 @@ pub enum SolKind {
     Ident(String),
     /// An integer literal, already normalized to a big-endian 32-byte word.
     Int([u8; 32]),
+    /// A double-quoted string literal (its decoded contents, without the quotes).
+    /// Only ever a `require(cond, "msg")` operand in v1; codegen ignores the text
+    /// (a bare `REVERT(0,0)` is enough), but it must lex so the call parses.
+    Str(String),
     /// `{`
     LBrace,
     /// `}`
@@ -74,6 +77,16 @@ pub enum SolKind {
     Dot,
     /// `+` (addition).
     Plus,
+    /// `>` (greater-than comparison).
+    Gt,
+    /// `<` (less-than comparison).
+    Lt,
+    /// `>=` (greater-or-equal comparison).
+    Ge,
+    /// `<=` (less-or-equal comparison).
+    Le,
+    /// `==` (equality comparison).
+    EqEq,
     /// End of input.
     Eof,
 }
@@ -137,10 +150,25 @@ impl Lexer<'_> {
             return Ok(SolTok { kind: SolKind::Eof, span: Span { start, end: start } });
         }
         let b = self.src[self.pos];
-        // `=>` (two-byte) must be checked before the single-byte `=`.
-        if b == b'=' && self.pos + 1 < self.src.len() && self.src[self.pos + 1] == b'>' {
+        let next = self.src.get(self.pos + 1).copied();
+        // Two-byte operators must be checked before their single-byte prefixes.
+        // `=>` (mapping arrow) and `==` (equality) both start with `=`; `>=`/`<=`
+        // before `>`/`<`.
+        let two = match (b, next) {
+            (b'=', Some(b'>')) => Some(SolKind::FatArrow),
+            (b'=', Some(b'=')) => Some(SolKind::EqEq),
+            (b'>', Some(b'=')) => Some(SolKind::Ge),
+            (b'<', Some(b'=')) => Some(SolKind::Le),
+            _ => None,
+        };
+        if let Some(kind) = two {
             self.pos += 2;
-            return Ok(SolTok { kind: SolKind::FatArrow, span: Span { start, end: self.pos } });
+            return Ok(SolTok { kind, span: Span { start, end: self.pos } });
+        }
+        // String literal: `"…"` (the `require` message). No escape processing in v1
+        // (codegen ignores the text); an unterminated string is a clean error.
+        if b == b'"' {
+            return self.lex_string(start);
         }
         // Single-char punctuation.
         let punct = match b {
@@ -155,6 +183,8 @@ impl Lexer<'_> {
             b'=' => Some(SolKind::Assign),
             b'.' => Some(SolKind::Dot),
             b'+' => Some(SolKind::Plus),
+            b'>' => Some(SolKind::Gt),
+            b'<' => Some(SolKind::Lt),
             _ => None,
         };
         if let Some(kind) = punct {
@@ -231,6 +261,30 @@ impl Lexer<'_> {
             parse_dec_be32(word, span)?
         };
         Ok(SolTok { kind: SolKind::Int(word_be32), span })
+    }
+
+    /// Lex a double-quoted string literal `"…"`. The opening `"` is at `start`.
+    /// v1 does NOT process escapes (the contents are only a `require` message,
+    /// which codegen discards) — it scans to the next `"` and takes the bytes
+    /// between verbatim. An unterminated string (no closing `"`) is a clean error.
+    fn lex_string(&mut self, start: usize) -> Result<SolTok, CompileError> {
+        self.pos += 1; // consume the opening `"`
+        let content_start = self.pos;
+        while self.pos < self.src.len() && self.src[self.pos] != b'"' {
+            self.pos += 1;
+        }
+        if self.pos >= self.src.len() {
+            return Err(CompileError::at_code(
+                codes::UNEXPECTED_BYTE,
+                "unterminated string literal".to_string(),
+                Span { start, end: self.pos },
+            ));
+        }
+        let text = std::str::from_utf8(&self.src[content_start..self.pos])
+            .unwrap_or("")
+            .to_string();
+        self.pos += 1; // consume the closing `"`
+        Ok(SolTok { kind: SolKind::Str(text), span: Span { start, end: self.pos } })
     }
 }
 
@@ -382,6 +436,47 @@ mod tests {
     #[test]
     fn unexpected_byte_is_a_clean_error() {
         let e = lex("facet C { @ }").unwrap_err();
+        assert_eq!(e.code, Some(codes::UNEXPECTED_BYTE));
+    }
+
+    #[test]
+    fn lexes_comparison_operators() {
+        let k = kinds("a > b < c >= d <= e == f");
+        assert!(k.contains(&SolKind::Gt), "`>`");
+        assert!(k.contains(&SolKind::Lt), "`<`");
+        assert!(k.contains(&SolKind::Ge), "`>=`");
+        assert!(k.contains(&SolKind::Le), "`<=`");
+        assert!(k.contains(&SolKind::EqEq), "`==`");
+        // `==` must NOT lex as two `=` Assigns.
+        assert!(!k.contains(&SolKind::Assign), "`==` is one EqEq, not two Assigns");
+    }
+
+    #[test]
+    fn ge_le_eqeq_beat_their_single_char_prefixes() {
+        // `>=` is ONE token, not `>` then `=`.
+        let k = kinds(">=");
+        assert_eq!(k[0], SolKind::Ge);
+        assert!(matches!(k.get(1), Some(SolKind::Eof)));
+        // `<=` likewise.
+        let k = kinds("<=");
+        assert_eq!(k[0], SolKind::Le);
+        // `=>` (the mapping arrow) still beats `==`/`=`.
+        let k = kinds("=>");
+        assert_eq!(k[0], SolKind::FatArrow);
+    }
+
+    #[test]
+    fn lexes_a_string_literal() {
+        let k = kinds("require(n > 0, \"zero\")");
+        assert!(k.contains(&SolKind::Str("zero".into())), "the message string");
+        // An empty string is fine too.
+        let k = kinds("\"\"");
+        assert_eq!(k[0], SolKind::Str(String::new()));
+    }
+
+    #[test]
+    fn unterminated_string_is_a_clean_error() {
+        let e = lex("\"no closing quote").unwrap_err();
         assert_eq!(e.code, Some(codes::UNEXPECTED_BYTE));
     }
 

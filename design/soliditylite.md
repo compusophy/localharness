@@ -72,6 +72,15 @@
 > `balanceOf` selector == canonical ERC-20 `0x70a08231`, confirming correct keccak). 59 soliditylite
 > tests, wasm+clippy clean. Only `require`/revert + events (LOG) remain before the FULL CounterFacet
 > compiles from source.
+>
+> **UPDATE 2026-06-14 (loop tick 8): the CounterFacet LOGIC compiles from source — require enforced live.**
+> Added comparison ops (`> < >= <= ==` → GT/LT/EQ + ISZERO), `require(cond,"msg")` (→ ISZERO + JUMPI to a
+> shared `REVERT(0,0)` stub), string literals, and `+=` desugar. LIVE: compiled the CounterFacet-core
+> (`mapping count` + `total`; increment / incrementBy(uint256) with `require(n>0)`+`require(n<=100)` /
+> countOf(address) / totalCount) FROM SOURCE → deployed → `incrementBy(5)`→countOf 5, `incrementBy(101)`
+> **REVERTS** (require enforced, state unchanged at 5), `increment()`→6, totalCount==6. All 4 selectors ==
+> canonical keccak. 82 soliditylite tests, wasm+clippy clean. ONLY EVENTS (LOG) now remain for the
+> literal full CounterFacet → then deploy+cut into a child diamond = SolidityLite MVP done.
 
 > A hand-rolled, in-browser Solidity/EVM-subset → EVM-bytecode compiler that lets an
 > agent **write, compile, deploy, and `diamondCut`** its own facet — the EVM analog of

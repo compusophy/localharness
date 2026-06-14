@@ -409,6 +409,61 @@ mod tests {
         assert_eq!(art.init_code, super::asm::init_wrapper(rt));
     }
 
+    /// THE INSTALLMENT-1 CounterFacet TARGET (require + comparisons): the full
+    /// `Counter` facet (minus the event) compiles end-to-end via [`compile`], all
+    /// four canonical selectors are dispatched, and the runtime exercises the new
+    /// relational/guard primitives (GT, GT+ISZERO for `<=`, and the require
+    /// ISZERO/JUMPI branch to a REVERT stub).
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn compile_counter_target_facet() {
+        const SRC: &str = "facet Counter { mapping(address => uint256) count; uint256 total; \
+             function increment() external { count[msg.sender] = count[msg.sender] + 1; total = total + 1; } \
+             function incrementBy(uint256 n) external { require(n > 0, \"zero\"); require(n <= 100, \"too big\"); \
+             count[msg.sender] = count[msg.sender] + n; total = total + n; } \
+             function countOf(address who) external view returns (uint256) { return count[who]; } \
+             function totalCount() external view returns (uint256) { return total; } }";
+        let art = super::compile(SRC).expect("the CounterFacet TARGET must compile");
+        let rt = &art.runtime;
+
+        // The four canonical selectors (pinned in the task).
+        for (sig, want) in [
+            ("increment()", [0xd0u8, 0x9d, 0xe0, 0x8a]),
+            ("incrementBy(uint256)", [0x03, 0xdf, 0x17, 0x9c]),
+            ("countOf(address)", [0xf8, 0x97, 0x7e, 0x96]),
+            ("totalCount()", [0x34, 0xea, 0xfb, 0x11]),
+        ] {
+            assert_eq!(crate::registry::selector(sig), want, "selector pin for {sig}");
+            let push4: Vec<u8> = std::iter::once(op::PUSH1 + 3).chain(want).collect();
+            assert!(
+                rt.windows(push4.len()).any(|w| w == push4.as_slice()),
+                "{sig} selector must be dispatched"
+            );
+        }
+        // The new primitives are present.
+        assert!(rt.contains(&op::GT), "comparisons emit GT");
+        assert!(rt.windows(2).any(|w| w == [op::GT, op::ISZERO]), "`<=` → GT ISZERO");
+        assert!(
+            rt.windows(5).any(|w| w[0] == op::ISZERO && w[1] == op::PUSH2 && w[4] == op::JUMPI),
+            "require → ISZERO/JUMPI branch"
+        );
+        // init_code wraps the runtime.
+        assert_eq!(art.init_code, super::asm::init_wrapper(rt));
+    }
+
+    /// A require with a true constant compiles (codegen-shape); ISZERO of a truthy
+    /// constant is 0 so the branch is never taken at runtime — proving a passing
+    /// guard does not revert.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn compile_require_true_constant_is_well_formed() {
+        let art = super::compile(
+            "facet C { function f() external { require(1 == 1, \"never\"); } }",
+        )
+        .expect("require(true) must compile");
+        assert_eq!(art.init_code, super::asm::init_wrapper(&art.runtime));
+    }
+
     /// Breadth must NOT trip the depth guard: a facet with far more functions than
     /// `MAX_RECURSION_DEPTH` still compiles, proving the guard counts NESTING (per
     /// parse path), not the number of declared functions. (The guard's depth-cap
