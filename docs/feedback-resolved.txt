@@ -111,3 +111,11 @@
 #            rounds with LATEST prompt count (merge_round) instead of
 #            summing - also fixes auto-compaction firing early on
 #            tool-heavy turns; cross-turn cumulative_usage keeps summing
+175 549af37  CLI default x402 rate is 0.01 $LH (main.rs:211 + status.rs test);
+#            the 0.05 in call.rs is a stale comment about a past bug
+182 c9b3406  autocapitalize=none/autocorrect=off on the claim/adopt inputs
+186 549af37  proxy no longer charges on upstream rejection — gemini.ts returns
+#            on !upstream.ok BEFORE meterDebit (charge-before-success fix)
+201 549af37  (dup of 186) empty/4xx requests pass through unbilled
+183 549af37  (dup of 198) call transaction-modal focus-trap — tracked as the
+#            canonical open a11y issue, not double-filed
