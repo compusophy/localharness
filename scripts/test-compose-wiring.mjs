@@ -316,7 +316,75 @@ const childWasm = compileSource(childSrc, 'child');
   worker.composeReset();
 }
 
+// ---- 7. FRAMEBUFFER BUDGET (issue #78): a giant dims() can't OOM the worker -
+// The wasm-byte caps don't bound the surface a child allocates: a tiny cartridge
+// declaring dims()=1024x1024 wants a 4 MB framebuffer. The per-child + tree-wide
+// FB caps reject it AFTER instantiate (when dims() is known) and account every
+// admitted FB so the aggregate can't be exceeded.
+{
+  const MOD_FAILED = 2, MOD_READY = 1;
+  const ab = (w) => w.buffer.slice(w.byteOffset, w.byteOffset + w.byteLength);
+  const fbCart = (w, h) => `fn dims() -> i32 { (${w} << 16) | ${h} }\nfn frame(t: i32) { host::display::clear(0x000000); host::display::present(); }\n`;
+  // 1024x1024 = 4 MB > 1 MB per-child cap.
+  const hugeWasm = compileSource(fbCart(1024, 1024), 'fbhuge');
+  // 512x512 = 1 MB = exactly the per-child cap (allowed).
+  const okWasm = compileSource(fbCart(512, 512), 'fbok');
+
+  worker.composeReset();
+  check('7a tree FB bytes start at 0', worker.composeTotalFbBytes() === 0);
+
+  // A 4 MB child is refused (per-child FB cap) and leaves no FB accounted.
+  const hHuge = worker.composeMountForTest('huge', 0, 0, 64, 64);
+  worker.composeInstantiateForTest(hHuge, ab(hugeWasm));
+  const huge = worker.composeChildren()[hHuge];
+  check('7b oversized-dims child is FAILED, not READY', huge && huge.state === MOD_FAILED,
+    huge ? `state=${huge.state}` : 'no child');
+  check('7c refused child added nothing to the FB total', worker.composeTotalFbBytes() === 0,
+    `total=${worker.composeTotalFbBytes()}`);
+
+  // A 1 MB child (at the per-child cap) is admitted and accounted.
+  worker.composeReset();
+  const hOk = worker.composeMountForTest('ok', 0, 0, 64, 64);
+  worker.composeInstantiateForTest(hOk, ab(okWasm));
+  const ok = worker.composeChildren()[hOk];
+  check('7d at-cap child instantiates READY', ok && ok.state === MOD_READY && ok.w === 512,
+    ok ? `state=${ok.state} ${ok.w}x${ok.h}` : 'no child');
+  check('7e admitted child FB is accounted (1 MB)', worker.composeTotalFbBytes() === 512 * 512 * 4,
+    `total=${worker.composeTotalFbBytes()}`);
+
+  // The tree-wide aggregate (8 MB) is independent of the per-node count cap (8):
+  // spread 1 MB children across a 2-level tree so the FB cap — not the count cap
+  // — is what stops the (cap/1MB + 1)th. Once the total reaches the cap, the next
+  // instantiate is refused (FAILED) and adds nothing.
+  worker.composeReset();
+  const cap = worker.COMPOSE_MAX_TOTAL_FB_BYTES;
+  const per = 512 * 512 * 4;          // 1 MB
+  const maxAdmit = Math.floor(cap / per); // 8 children fit (8 MB == cap)
+  // root holds up to COMPOSE_MAX_CHILDREN; park the rest under the first child.
+  const roots = [];
+  for (let i = 0; i < Math.min(maxAdmit, 8); i++) roots.push(worker.composeMountForTest('ok', 0, 0, 16, 16));
+  let admitted = 0;
+  for (const h of roots) {
+    if (h < 0) continue;
+    worker.composeInstantiateForTest(h, ab(okWasm));
+    if (worker.composeChildren()[h].state === MOD_READY) admitted++;
+  }
+  // Mount one MORE 1 MB child (under the first root child, so the per-node count
+  // cap is NOT what bites): the FB total is already at the 8 MB aggregate cap, so
+  // it must be refused.
+  const parent = worker.composeChildren()[roots[0]];
+  const hOver = worker.composeMountInto(parent, 'over', 0, 0, 16, 16);
+  check('7f a 9th 1 MB child mounts past the count cap', hOver >= 0, `h=${hOver}`);
+  worker.composeInstantiateForTest(hOver, ab(okWasm), parent);
+  check('7g child over the aggregate FB cap is refused', parent.children[hOver].state === MOD_FAILED,
+    `state=${parent.children[hOver].state}`);
+  check('7h FB total never exceeds the aggregate cap', worker.composeTotalFbBytes() === admitted * per && worker.composeTotalFbBytes() <= cap,
+    `total=${worker.composeTotalFbBytes()} admitted=${admitted}`);
+  worker.composeReset();
+  check('7i reset clears the FB total', worker.composeTotalFbBytes() === 0);
+}
+
 console.log('');
-if (fail === 0) console.log('PASS: cartridge-in-cartridge composition wired (composite + pointer + parity + budget + recursion + depth cap)');
+if (fail === 0) console.log('PASS: cartridge-in-cartridge composition wired (composite + pointer + parity + budget + fb-budget + recursion + depth cap)');
 else console.error(`FAIL: ${fail} compose-wiring check(s) failed`);
 process.exit(fail === 0 ? 0 : 1);

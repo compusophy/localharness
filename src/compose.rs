@@ -258,12 +258,23 @@ pub struct ComposeBudget {
     /// Live nodes across the WHOLE tree — the fork-bomb backstop independent of
     /// the per-node child cap (a balanced tree could otherwise explode).
     pub max_total_nodes: usize,
+    /// Framebuffer bytes (`w*h*4`) across the WHOLE tree. The wasm-byte caps
+    /// don't bound this: a tiny (16 KB) cartridge can declare `dims()`=1024x1024
+    /// and allocate a 4 MB framebuffer, so 24 such nodes = 96 MB+ of host memory
+    /// while staying inside every byte/node cap. This is the per-child FB ceiling
+    /// AND the tree-wide aggregate that closes that hole.
+    pub max_total_fb_bytes: usize,
+    /// Per-child framebuffer bytes ceiling — a single composed panel can't
+    /// allocate a fullscreen-sized surface (the worker's `FB_MAX`=1024 allows a
+    /// 4 MB child standalone; composited, a child is far smaller).
+    pub max_fb_bytes_per_child: usize,
 }
 
 impl ComposeBudget {
     /// v1 caps. Composition is RECURSIVE (the fractal): a child gets its own
     /// table and may spawn grandchildren, bounded by depth + global node/byte
-    /// caps. 8 children/node, 16 KB each, 256 KB total, depth 5, 24 nodes total.
+    /// caps. 8 children/node, 16 KB each, 256 KB total, depth 5, 24 nodes total,
+    /// 1 MB framebuffer per child, 8 MB framebuffer across the whole tree.
     pub fn v1() -> Self {
         Self {
             max_children: 8,
@@ -271,6 +282,8 @@ impl ComposeBudget {
             max_total_bytes: 256 * 1024,
             max_depth: 5,
             max_total_nodes: 24,
+            max_fb_bytes_per_child: 1024 * 1024,
+            max_total_fb_bytes: 8 * 1024 * 1024,
         }
     }
 
@@ -291,6 +304,29 @@ impl ComposeBudget {
             return Err(format!(
                 "compose: mounting {child_bytes} more bytes would exceed the {}-byte total cap",
                 self.max_total_bytes
+            ));
+        }
+        Ok(())
+    }
+
+    /// Whether a child whose declared surface is `child_fb_bytes` (`w*h*4`) may
+    /// be admitted given the `total_fb_bytes` of framebuffers already mounted
+    /// across the tree. Checked AFTER instantiate (a child's `dims()` needs a
+    /// live instance), the same way the wasm-byte caps in [`admit`] are. `Err`
+    /// carries the reason so a refused mount logs WHY (a silent cap reads as
+    /// "worked"). This is the cap the wasm-byte budget can't enforce: a 16 KB
+    /// cartridge declaring `dims()`=1024x1024 wants a 4 MB framebuffer.
+    pub fn admit_fb(&self, total_fb_bytes: usize, child_fb_bytes: usize) -> Result<(), String> {
+        if child_fb_bytes > self.max_fb_bytes_per_child {
+            return Err(format!(
+                "compose: child framebuffer is {child_fb_bytes} bytes, over the {}-byte per-child cap",
+                self.max_fb_bytes_per_child
+            ));
+        }
+        if total_fb_bytes.saturating_add(child_fb_bytes) > self.max_total_fb_bytes {
+            return Err(format!(
+                "compose: mounting a {child_fb_bytes}-byte framebuffer would exceed the {}-byte total cap",
+                self.max_total_fb_bytes
             ));
         }
         Ok(())
@@ -540,6 +576,26 @@ mod tests {
         assert!(b.admit(1, 200 * 1024, 8 * 1024).is_ok()); // still room under 256 KB
         // saturating_add can't be tricked into wrapping past the cap.
         assert!(b.admit(0, usize::MAX, 1).is_err());
+    }
+
+    #[test]
+    fn compose_budget_admit_fb_caps_per_child_and_total_framebuffer() {
+        let b = ComposeBudget::v1();
+        // A default 256x144 child surface (147,456 bytes) is well within caps.
+        let default_fb = 256 * 144 * 4;
+        assert!(b.admit_fb(0, default_fb).is_ok());
+        // A 512x512 child (1 MB) is exactly the per-child ceiling — allowed.
+        assert!(b.admit_fb(0, 1024 * 1024).is_ok());
+        // The hole this closes: a 1024x1024 child (4 MB) busts the per-child cap
+        // even though the cartridge declaring it is tiny (passes admit()).
+        assert!(b.admit_fb(0, 1024 * 1024 + 1).is_err());
+        assert!(b.admit_fb(0, 1024 * 1024 * 4).is_err());
+        // The tree-wide aggregate: 8 MB total. Seven 1 MB children fit (7 MB);
+        // the eighth would push to 8 MB (== cap, still ok); a ninth busts it.
+        assert!(b.admit_fb(7 * 1024 * 1024, 1024 * 1024).is_ok()); // → 8 MB, at the cap
+        assert!(b.admit_fb(8 * 1024 * 1024, 1).is_err()); // already at the cap
+        // saturating_add can't wrap past the total cap.
+        assert!(b.admit_fb(usize::MAX, 1).is_err());
     }
 
     #[test]

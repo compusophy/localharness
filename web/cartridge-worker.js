@@ -430,6 +430,13 @@ const COMPOSE_MAX_BYTES_PER_CHILD = 16 * 1024;
 const COMPOSE_MAX_TOTAL_BYTES = 256 * 1024;
 const COMPOSE_MAX_DEPTH = 5;
 const COMPOSE_MAX_NODES = 24;
+// Framebuffer-memory caps (mirror compose.rs ComposeBudget v1). The wasm-byte
+// caps above DON'T bound this: a 16 KB cartridge can declare dims()=1024x1024
+// and allocate `new Uint32Array(1024*1024)` = 4 MB, so 24 such nodes = 96 MB+
+// of worker memory while passing every byte/node cap (issue #78). Each child's
+// surface is w*h*4 bytes; cap it per-child AND tree-wide.
+const COMPOSE_MAX_FB_BYTES_PER_CHILD = 1024 * 1024; // 1 MB (≈512x512)
+const COMPOSE_MAX_TOTAL_FB_BYTES = 8 * 1024 * 1024; // 8 MB across the whole tree
 
 // Child module states (mirror the host::compose status() ABI).
 const MOD_LOADING = 0;
@@ -445,6 +452,7 @@ const MOD_FAILED = 2;
 // A child node additionally owns w/h/fb/instance-memory/frame/state/ptr.
 let rootNode = { children: [], focus: -1, depth: 0, memory: null };
 let composeTotalBytes = 0;       // wasm bytes across the whole tree
+let composeTotalFbBytes = 0;     // framebuffer bytes (w*h*4) across the whole tree
 let composeTotalNodes = 0;       // live (non-failed) child nodes across the tree
 let composeNextUid = 1;          // monotonic; the compose_bytes round-trip key
 const composeNodeIndex = new Map(); // uid -> child node (main-thread reply target)
@@ -467,7 +475,7 @@ function makeChildSlot(name, x, y, w, h, depth, uid) {
     name, uid, depth, state: MOD_LOADING,
     vp: { x: x | 0, y: y | 0, w: Math.max(1, w | 0), h: Math.max(1, h | 0) },
     w: FB_W_DEFAULT, h: FB_H_DEFAULT, fb: null,
-    memory: null, frame: null, bytes: 0,
+    memory: null, frame: null, bytes: 0, fbBytes: 0,
     state_regs: new Int32Array(64),
     ptr: { x: -1, y: -1, down: 0 },
     children: [], focus: -1,
@@ -484,7 +492,10 @@ function reclaimSubtree(child) {
     reclaimSubtree(child.children[i]);
     child.children[i] = null;
   }
-  if (child.state === MOD_READY) composeTotalBytes -= child.bytes;
+  if (child.state === MOD_READY) {
+    composeTotalBytes -= child.bytes;
+    composeTotalFbBytes -= child.fbBytes; // its framebuffer is freed with the node
+  }
   if (child.state !== MOD_FAILED) composeTotalNodes -= 1; // a FAILED node was already uncounted
   composeNodeIndex.delete(child.uid);
 }
@@ -640,6 +651,17 @@ function instantiateChild(child, wasmBuf) {
   }
   const exp = instance.exports;
   const [dw, dh] = childDims(exp);
+  // FRAMEBUFFER BUDGET (issue #78): the wasm-byte caps above don't bound the
+  // surface a child allocates — childDims clamps to [FB_MIN, FB_MAX], so a tiny
+  // cartridge can still ask for a 1024x1024 (4 MB) framebuffer. Cap it per-child
+  // AND against the tree-wide aggregate BEFORE the allocation; over-budget →
+  // failed (never drawable), so the 96 MB-from-24-tiny-nodes hole is closed.
+  const fbBytes = dw * dh * 4;
+  if (fbBytes > COMPOSE_MAX_FB_BYTES_PER_CHILD ||
+      composeTotalFbBytes + fbBytes > COMPOSE_MAX_TOTAL_FB_BYTES) {
+    failLoadingChild(child);
+    return;
+  }
   child.w = dw;
   child.h = dh;
   child.fb = new Uint32Array(dw * dh);
@@ -648,7 +670,9 @@ function instantiateChild(child, wasmBuf) {
     : (typeof exp.render === 'function') ? exp.render : null;
   if (!child.frame) { failLoadingChild(child); return; }
   composeTotalBytes += bytes.length;
+  composeTotalFbBytes += fbBytes;
   child.bytes = bytes.length;
+  child.fbBytes = fbBytes;
   child.state = MOD_READY;
 }
 
@@ -737,6 +761,7 @@ function composeReset() {
   rootNode.depth = 0;
   rootNode.memory = null;
   composeTotalBytes = 0;
+  composeTotalFbBytes = 0;
   composeTotalNodes = 0;
   composeNextUid = 1;
   composeNodeIndex.clear();
@@ -1366,6 +1391,9 @@ if (typeof module !== 'undefined' && module.exports) {
     composeChildren: () => rootNode.children,
     composeFocus: () => rootNode.focus,
     COMPOSE_MAX_DEPTH,
+    COMPOSE_MAX_FB_BYTES_PER_CHILD,
+    COMPOSE_MAX_TOTAL_FB_BYTES,
+    composeTotalFbBytes: () => composeTotalFbBytes,
     // Mount a LOADING child slot into a node's table directly (test shim —
     // drives the real tree + budget caps, avoiding spawn_module's readString/
     // postMessage path, which needs a live worker + the parent's linear memory).

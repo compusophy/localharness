@@ -300,13 +300,14 @@ the chat column (feedback #62).
 **host::compose (cartridge-in-cartridge, NO iframes — RECURSIVE).** A parent
 `compose::spawn_module(name,x,y,w,h)`s another subdomain's `app.wasm` as a CHILD
 in a sub-rect. Pixel math = `src/compose.rs` (`blit_child`, `map_pointer_into_child`,
-`ComposeBudget::v1` 8/node · 16K · 256K total · depth 5 · 24 nodes). Worker
+`ComposeBudget::v1` 8/node · 16K · 256K total · depth 5 · 24 nodes · FB-area cap
+1M/child·8M total, #78). Worker
 (`cartridge-worker.js`) is a TREE: every node owns a `children`/`focus` table via
 `makeComposeApi(node)`, so a child spawns grandchildren — `compositeChildren`
 recurses (the fractal). Node AT depth cap → `INERT_COMPOSE` (spawn -1). Handles
 per-node; `compose_spawn`/`compose_bytes` key on a GLOBAL `uid`. JS
 `blitChild`/`mapPointerIntoChild` HAND PORT the Rust impls — parity-tested
-(`test-compose-wiring.mjs`, verify.sh stage 10; recursion + depth cap).
+(`test-compose-wiring.mjs`, verify.sh stage 10).
 `composeReset` MUTATES `rootNode` (never reassign — `host_compose` closes over
 it). `fractal.rl` = the Droste demo.
 

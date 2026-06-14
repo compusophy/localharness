@@ -29,6 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security & correctness (parallel bug-sweep wave)
 
+- **Compose children allocated uncapped framebuffers (#78, medium).**
+  `ComposeBudget` bounded only wasm bytes (256 KB total) and node count (24),
+  never framebuffer memory — so a ~16 KB cartridge declaring `dims()`=1024x1024
+  allocated a 4 MB surface, and 24 such nodes = 96 MB+ of worker memory while
+  passing every existing cap. A framebuffer-area budget now caps each child's
+  surface (`w*h*4`) per-child (1 MB) AND tree-wide (8 MB), enforced after
+  `dims()` is known and BEFORE the `new Uint32Array(w*h)` allocation; an
+  over-budget child fails to load instead of mounting. Mirrored across
+  `src/compose.rs` (`ComposeBudget::admit_fb` + caps) and the worker
+  (`web/cartridge-worker.js`, with `composeTotalFbBytes` tracked + reclaimed on
+  close/trap/reset); parity-tested (`scripts/test-compose-wiring.mjs` §7).
 - **Guild treasury could be stranded by `releaseName` (HIGH, fixed + cut live).**
   A guild is minted as a normal identity NFT held by its founder, so
   `releaseName(guildId)` would burn it — but `_burn` only clears registry
