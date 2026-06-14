@@ -81,6 +81,20 @@
 > **REVERTS** (require enforced, state unchanged at 5), `increment()`→6, totalCount==6. All 4 selectors ==
 > canonical keccak. 82 soliditylite tests, wasm+clippy clean. ONLY EVENTS (LOG) now remain for the
 > literal full CounterFacet → then deploy+cut into a child diamond = SolidityLite MVP done.
+>
+> **UPDATE 2026-06-14 (loop tick 9): EVENTS land — the SolidityLite language MVP is COMPLETE.** Added
+> `event E(type [indexed] arg, …);` decls + `emit E(...)` → `LOGn` (topic0 = full keccak of the
+> canonical event sig; indexed args → topics; non-indexed → ABI-encoded data via MSTORE; exact LOG
+> stack order; data staged above the keccak scratch so a mapping-read arg can't corrupt a log word).
+> LIVE: the **FULL CounterFacet** (count mapping + total + the `Incremented` event; increment /
+> incrementBy(require) / countOf / totalCount) compiled FROM SOURCE → deployed → `increment()` →
+> countOf==1, totalCount==1, AND emitted `Incremented(caller, 1, 1)` with topic0 `0xcd5ad702…fdb5`
+> (== the topic embedded in tick-2's forge CounterFacet — independent keccak confirmation), indexed
+> caller in topic1, data `[1,1]`. 97 soliditylite tests, wasm+clippy clean. **Every CounterFacet
+> primitive — mappings, params, msg.sender, arithmetic, require, events — now compiles from a source
+> string and executes on the real Tempo EVM.** Next (capstone): compile the full CounterFacet →
+> deploy → genesis a fresh child diamond → cut → call through the diamond (the existing child already
+> holds those selectors), the full agent-authored-facet-in-its-own-diamond demo.
 
 > A hand-rolled, in-browser Solidity/EVM-subset → EVM-bytecode compiler that lets an
 > agent **write, compile, deploy, and `diamondCut`** its own facet — the EVM analog of

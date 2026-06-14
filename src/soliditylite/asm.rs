@@ -71,6 +71,16 @@ pub mod op {
     pub const JUMPI: u8 = 0x57;
     /// Valid jump target marker (`JUMPDEST`).
     pub const JUMPDEST: u8 = 0x5B;
+    /// `LOG0(offset, len)` — emit a log with 0 topics over `mem[offset..offset+len]`.
+    pub const LOG0: u8 = 0xA0;
+    /// `LOG1(offset, len, topic0)` — a log with 1 topic.
+    pub const LOG1: u8 = 0xA1;
+    /// `LOG2(offset, len, topic0, topic1)` — a log with 2 topics.
+    pub const LOG2: u8 = 0xA2;
+    /// `LOG3(offset, len, topic0, topic1, topic2)` — a log with 3 topics.
+    pub const LOG3: u8 = 0xA3;
+    /// `LOG4(offset, len, topic0..topic3)` — a log with 4 topics (the EVM max).
+    pub const LOG4: u8 = 0xA4;
     /// `PUSH1` base; `PUSH<n>` = `PUSH1 + (n - 1)`.
     pub const PUSH1: u8 = 0x60;
     /// `PUSH2` (push 2 bytes) — the fixed width used for every label reference.

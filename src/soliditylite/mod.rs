@@ -451,6 +451,52 @@ mod tests {
         assert_eq!(art.init_code, super::asm::init_wrapper(rt));
     }
 
+    /// THE INSTALLMENT-1 MVP CAPSTONE: the FULL `CounterFacet` (mappings + scalars +
+    /// require + comparisons + an `event` declaration + two `emit`s) compiles
+    /// end-to-end via [`compile`], all four canonical selectors are dispatched, and
+    /// the `Incremented` LOG2 fires with the correct full-keccak `topic0`. This is
+    /// the exact target source pinned in the task.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn compile_full_counter_facet_with_event() {
+        const SRC: &str = "facet CounterFacet { mapping(address => uint256) count; uint256 total; \
+             event Incremented(address indexed who, uint256 newCount, uint256 newTotal); \
+             function increment() external { count[msg.sender] = count[msg.sender] + 1; total = total + 1; \
+             emit Incremented(msg.sender, count[msg.sender], total); } \
+             function incrementBy(uint256 n) external { require(n > 0, \"zero\"); require(n <= 100, \"too big\"); \
+             count[msg.sender] = count[msg.sender] + n; total = total + n; \
+             emit Incremented(msg.sender, count[msg.sender], total); } \
+             function countOf(address who) external view returns (uint256) { return count[who]; } \
+             function totalCount() external view returns (uint256) { return total; } }";
+        let art = super::compile(SRC).expect("the FULL CounterFacet (with events) must compile");
+        let rt = &art.runtime;
+
+        // The four canonical selectors (pinned in the task).
+        for (sig, want) in [
+            ("increment()", [0xd0u8, 0x9d, 0xe0, 0x8a]),
+            ("incrementBy(uint256)", [0x03, 0xdf, 0x17, 0x9c]),
+            ("countOf(address)", [0xf8, 0x97, 0x7e, 0x96]),
+            ("totalCount()", [0x34, 0xea, 0xfb, 0x11]),
+        ] {
+            assert_eq!(crate::registry::selector(sig), want, "selector pin for {sig}");
+            let push4: Vec<u8> = std::iter::once(op::PUSH1 + 3).chain(want).collect();
+            assert!(
+                rt.windows(push4.len()).any(|w| w == push4.as_slice()),
+                "{sig} selector must be dispatched"
+            );
+        }
+        // The Incremented topic0 (full keccak, NOT the 4-byte selector) is PUSH32'd.
+        let topic0 = super::codegen::event_topic0("Incremented(address,uint256,uint256)");
+        let mut push32: Vec<u8> = vec![op::PUSH1 + 31];
+        push32.extend_from_slice(&topic0);
+        assert!(
+            rt.windows(33).any(|w| w == push32.as_slice()),
+            "the Incremented event topic0 must be PUSH32'd"
+        );
+        // init_code wraps the runtime.
+        assert_eq!(art.init_code, super::asm::init_wrapper(rt));
+    }
+
     /// A require with a true constant compiles (codegen-shape); ISZERO of a truthy
     /// constant is 0 so the branch is never taken at runtime — proving a passing
     /// guard does not revert.

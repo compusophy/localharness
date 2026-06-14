@@ -10,14 +10,17 @@
 //!
 //! Grammar (design §3 floor + the storage / mapping / param / msg.sender stretch):
 //! ```text
-//! facet  := ("facet"|"contract") Ident "{" state_var* function+ "}"
+//! facet  := ("facet"|"contract") Ident "{" (state_var|event_decl)* function+ "}"
 //! state_var := Ty Ident ";"                              (scalar slot)
 //!            | "mapping" "(" Ty "=>" Ty ")" Ident ";"    (mapping)
+//! event_decl := "event" Ident "(" ( Ty "indexed"? Ident
+//!                 ("," Ty "indexed"? Ident)* )? ")" ";"  (log signature)
 //! params := "(" ( Ty Ident ("," Ty Ident)* )? ")"
 //! function := "function" Ident params "external"
 //!             ( view? "returns" "(" Ty ")" "{" "return" expr ";" "}"   (view getter)
 //!             | "{" stmt* "}" )                          (mutating)
 //! stmt   := "require" "(" expr "," StrLit ")" ";"        (guard / revert)
+//!         | "emit" Ident "(" ( expr ("," expr)* )? ")" ";"  (LOGn)
 //!         | Ident ("[" expr "]")? ("=" | "+=") expr ";"  (scalar / mapping write)
 //! expr   := cmp                                          (top level)
 //! cmp    := add ( ("<"|">"|"<="|">="|"==") add )?        (non-assoc comparison)
@@ -131,19 +134,29 @@ impl Parser<'_> {
         self.expect(&SolKind::LBrace, "`{`")?;
 
         let mut state_vars = Vec::new();
+        let mut events = Vec::new();
         let mut functions = Vec::new();
-        // Members: state vars (TypeName-led) then functions (`function`-led), in any
-        // interleaving the floor grammar+stretch admit.
+        // Members: state vars (TypeName-led), event decls (contextual `event`),
+        // then functions (`function`-led), in any interleaving the grammar admits.
+        // `event` is a CONTEXTUAL keyword (a plain identifier elsewhere): it only
+        // leads an event declaration when followed by `<Name> (` at facet top-level.
         loop {
             match self.peek() {
                 SolKind::Function => functions.push(self.parse_function()?),
                 SolKind::Mapping => state_vars.push(self.parse_mapping_var()?),
                 SolKind::TypeName(_) => state_vars.push(self.parse_state_var()?),
+                SolKind::Ident(name)
+                    if name == "event"
+                        && matches!(self.peek_at(1), SolKind::Ident(_))
+                        && matches!(self.peek_at(2), SolKind::LParen) =>
+                {
+                    events.push(self.parse_event_decl()?)
+                }
                 SolKind::RBrace => break,
                 other => {
                     return Err(CompileError::at_code(
                         codes::UNEXPECTED_TOKEN,
-                        format!("expected `function`, a state-var type, or `}}`, got {other:?}"),
+                        format!("expected `function`, a state-var type, an `event`, or `}}`, got {other:?}"),
                         self.span(),
                     ))
                 }
@@ -158,7 +171,7 @@ impl Parser<'_> {
                 facet_span,
             ));
         }
-        Ok(Facet { name, state_vars, functions, span: facet_span })
+        Ok(Facet { name, state_vars, events, functions, span: facet_span })
     }
 
     fn parse_ty(&mut self) -> Result<Ty, CompileError> {
@@ -204,6 +217,38 @@ impl Parser<'_> {
         let name = self.expect_ident()?;
         self.expect(&SolKind::Semi, "`;`")?;
         Ok(StateVar { kind: StateVarKind::Mapping { key, value }, name, span })
+    }
+
+    /// Parse an event declaration: `event <Name> ( <ty> [indexed] <name>
+    /// ("," <ty> [indexed] <name>)* ) ;`. `event` (the contextual keyword) and the
+    /// leading `<Name> (` are already confirmed by the caller's lookahead.
+    fn parse_event_decl(&mut self) -> Result<EventDecl, CompileError> {
+        let span = self.span();
+        self.advance(); // `event` (the contextual keyword)
+        let name = self.expect_ident()?;
+        self.expect(&SolKind::LParen, "`(`")?;
+        let mut args = Vec::new();
+        if !matches!(self.peek(), SolKind::RParen) {
+            loop {
+                let arg_span = self.span();
+                let ty = self.parse_ty()?;
+                // Optional `indexed` modifier (a contextual keyword) before the name.
+                let indexed = matches!(self.peek(), SolKind::Ident(kw) if kw == "indexed");
+                if indexed {
+                    self.advance(); // `indexed`
+                }
+                let arg_name = self.expect_ident()?;
+                args.push(EventArg { ty, indexed, name: arg_name, span: arg_span });
+                if matches!(self.peek(), SolKind::Comma) {
+                    self.advance(); // `,`
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(&SolKind::RParen, "`)`")?;
+        self.expect(&SolKind::Semi, "`;`")?;
+        Ok(EventDecl { name, args, span })
     }
 
     /// Parse a function parameter list `( )` or `( <ty> <name> ("," <ty> <name>)* )`.
@@ -311,7 +356,40 @@ impl Parser<'_> {
         {
             return self.parse_require_stmt();
         }
+        // `emit` is contextual (a plain identifier elsewhere): it leads an emit
+        // statement only when followed by `<Name> (`.
+        if matches!(self.peek(), SolKind::Ident(name) if name == "emit")
+            && matches!(self.peek_at(1), SolKind::Ident(_))
+            && matches!(self.peek_at(2), SolKind::LParen)
+        {
+            return self.parse_emit_stmt();
+        }
         self.parse_assign_stmt()
+    }
+
+    /// Parse `emit <Name> ( <expr> ("," <expr>)* ) ;`. The argument count is checked
+    /// against the event declaration at codegen (the parser doesn't know the
+    /// declared events). Each argument is an expression in the same lattice as a
+    /// `return`/assignment value.
+    fn parse_emit_stmt(&mut self) -> Result<Stmt, CompileError> {
+        let span = self.span();
+        self.advance(); // `emit` (the contextual keyword)
+        let name = self.expect_ident()?;
+        self.expect(&SolKind::LParen, "`(`")?;
+        let mut args = Vec::new();
+        if !matches!(self.peek(), SolKind::RParen) {
+            loop {
+                args.push(self.parse_expr()?);
+                if matches!(self.peek(), SolKind::Comma) {
+                    self.advance(); // `,`
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(&SolKind::RParen, "`)`")?;
+        self.expect(&SolKind::Semi, "`;`")?;
+        Ok(Stmt::Emit { name, args, span })
     }
 
     /// Parse `require ( <cond> , <strlit> ) ;`. The condition can be any expression
@@ -921,6 +999,80 @@ mod tests {
             },
             other => panic!("unexpected body {other:?}"),
         }
+    }
+
+    #[test]
+    fn event_declaration_parses_with_indexed_and_data_args() {
+        let f = parse_src(
+            "facet C { event Incremented(address indexed who, uint256 newCount, uint256 newTotal); \
+             function f() external { } }",
+        )
+        .unwrap();
+        assert_eq!(f.events.len(), 1);
+        let ev = &f.events[0];
+        assert_eq!(ev.name, "Incremented");
+        assert_eq!(ev.args.len(), 3);
+        // who is indexed; the two counts are not.
+        assert_eq!(ev.args[0].ty, Ty::Address);
+        assert!(ev.args[0].indexed, "who is indexed");
+        assert_eq!(ev.args[0].name, "who");
+        assert_eq!(ev.args[1].ty, Ty::Uint256);
+        assert!(!ev.args[1].indexed, "newCount is data");
+        assert!(!ev.args[2].indexed, "newTotal is data");
+    }
+
+    #[test]
+    fn event_with_no_args_parses() {
+        let f = parse_src("facet C { event Pinged(); function f() external { } }").unwrap();
+        assert_eq!(f.events.len(), 1);
+        assert_eq!(f.events[0].name, "Pinged");
+        assert!(f.events[0].args.is_empty());
+    }
+
+    #[test]
+    fn emit_statement_parses() {
+        let f = parse_src(
+            "facet C { event E(address indexed a, uint256 b); \
+             function f(uint256 n) external { emit E(msg.sender, n); } }",
+        )
+        .unwrap();
+        match &f.functions[0].body {
+            Stmt::Block(stmts) => match &stmts[0] {
+                Stmt::Emit { name, args, .. } => {
+                    assert_eq!(name, "E");
+                    assert_eq!(args.len(), 2);
+                    assert!(matches!(args[0], Expr::MsgSender { .. }));
+                    assert!(matches!(args[1], Expr::StateVar { .. }));
+                }
+                other => panic!("expected an Emit, got {other:?}"),
+            },
+            other => panic!("unexpected body {other:?}"),
+        }
+    }
+
+    #[test]
+    fn emit_is_contextual_and_usable_as_an_identifier() {
+        // `emit` not followed by `<Name> (` is a normal state-var reference.
+        let f = parse_src(
+            "facet C { uint256 emit; function f() external view returns (uint256) { return emit; } }",
+        )
+        .unwrap();
+        match &f.functions[0].body {
+            Stmt::Return(Expr::StateVar { name, .. }) => assert_eq!(name, "emit"),
+            other => panic!("unexpected body {other:?}"),
+        }
+    }
+
+    #[test]
+    fn event_is_contextual_and_usable_as_an_identifier() {
+        // `event` not followed by `<Name> (` is a normal state-var type/name pair.
+        let f = parse_src(
+            "facet C { uint256 event; function f() external view returns (uint256) { return event; } }",
+        )
+        .unwrap();
+        assert_eq!(f.state_vars.len(), 1);
+        assert_eq!(f.state_vars[0].name, "event");
+        assert!(f.events.is_empty());
     }
 
     #[test]

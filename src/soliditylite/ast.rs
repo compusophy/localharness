@@ -27,6 +27,10 @@ pub struct Facet {
     /// The facet's state variables, in declaration order. Empty for the floor
     /// grammar; one `uint256 <name>;` per entry for the storage stretch.
     pub state_vars: Vec<StateVar>,
+    /// The facet's event declarations, in declaration order. Empty unless the
+    /// facet declares `event <Name>(<args>);` (the events stretch). Each `emit`
+    /// statement resolves its name against this list for the LOG topic0 signature.
+    pub events: Vec<EventDecl>,
     /// The facet's functions, in declaration order (the dispatch order).
     pub functions: Vec<Function>,
     /// Source span of the `facet` keyword (for top-level diagnostics).
@@ -96,6 +100,42 @@ pub struct StateVar {
     /// The variable name, referenced by `return <name>;` / `<name>[<key>]`.
     pub name: String,
     /// Source span of the declaration.
+    pub span: Span,
+}
+
+/// One event argument: `<ty> [indexed] <name>` inside the event parameter list.
+///
+/// `indexed` args become extra LOG topics (one 32-byte word each, in declaration
+/// order after topic0); non-`indexed` args are ABI-encoded sequentially into the
+/// log's data region (design §6 events). v1 value types are all a single word.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventArg {
+    /// The declared value type (`uint256`/`address`/… — a single 32-byte word).
+    pub ty: Ty,
+    /// Whether the arg is `indexed` (a LOG topic) vs. part of the data region.
+    pub indexed: bool,
+    /// The argument name (cosmetic in v1 — it doesn't affect the LOG; the
+    /// selector signature uses the TYPE, not the name). Kept for diagnostics.
+    pub name: String,
+    /// Source span of the argument.
+    pub span: Span,
+}
+
+/// An event declaration: `event <Name>(<ty> [indexed] <name>, …);` at facet
+/// top-level (the events stretch — the last CounterFacet primitive).
+///
+/// `topic0` of an emitted log is `keccak256("<Name>(<type>,<type>,…)")` (the FULL
+/// 32-byte hash, NOT the 4-byte selector). Each `indexed` arg adds a topic; each
+/// non-`indexed` arg is appended to the log data region. An `emit <Name>(…)`
+/// statement's argument count must match this declaration's arg count.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventDecl {
+    /// The event name (`event <Name>`), combined with the arg types into the
+    /// topic0 signature `keccak256("<Name>(<types>)")`.
+    pub name: String,
+    /// The declared arguments, in order. The `indexed`/data split is preserved.
+    pub args: Vec<EventArg>,
+    /// Source span of the `event` keyword.
     pub span: Span,
 }
 
@@ -184,6 +224,13 @@ pub enum Stmt {
     /// `keccak256(pad32(key) ++ pad32(baseSlot))` (the mapping-write stretch).
     /// `base` is the mapping name; `key` is the index expression.
     IndexAssign { base: String, key: Expr, value: Expr, span: Span },
+    /// `emit <Name>(<expr>, …);` — append an EVM log (`LOGn`). `topic0` is
+    /// `keccak256("<Name>(<types>)")`; each `indexed` event arg becomes an extra
+    /// topic and each non-`indexed` arg is ABI-encoded into the log data region
+    /// (design §6 events). `name` is the event name (resolved against the facet's
+    /// [`EventDecl`]s); `args` are the value expressions, positionally matched to
+    /// the declared args. `span` is the `emit` keyword's span.
+    Emit { name: String, args: Vec<Expr>, span: Span },
     /// A `{ <stmt>* }` block — a mutating function body holding zero or more
     /// statements, emitted in order. (View getters never use this; their body is a
     /// bare [`Stmt::Return`], so tick-5's pattern-matches are unaffected.)

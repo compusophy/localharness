@@ -61,13 +61,30 @@ enum Body {
     Mutating(Vec<LoweredStmt>),
 }
 
-/// One statement inside a mutating body: a `require` guard or an assignment.
+/// One statement inside a mutating body: a `require` guard, an assignment, or an
+/// `emit`.
 #[cfg(feature = "wallet")]
 enum LoweredStmt {
     /// `require(cond, …)` — branch to the shared revert stub when `cond` is FALSE.
     Require(LoweredExpr),
     /// A scalar or mapping-entry store.
     Assign(LoweredAssign),
+    /// `emit <Event>(…)` — append an EVM `LOGn`.
+    Emit(LoweredEmit),
+}
+
+/// A resolved `emit` statement: the event's topic0 (the FULL 32-byte keccak of the
+/// canonical signature, NOT the 4-byte selector), the indexed-arg expressions (each
+/// becomes an extra LOG topic, in declaration order), and the non-indexed-arg
+/// expressions (each is ABI-encoded into the log data region). See [`emit_log`].
+#[cfg(feature = "wallet")]
+struct LoweredEmit {
+    /// `topic0` = `keccak256("<Event>(<types>)")` — the full 32-byte hash.
+    topic0: [u8; 32],
+    /// The `indexed` args, in declaration order → topics 1..=N.
+    indexed: Vec<LoweredExpr>,
+    /// The non-`indexed` args, in declaration order → the data region words.
+    data: Vec<LoweredExpr>,
 }
 
 /// A resolved expression — names already mapped to slots / param indices — ready
@@ -207,6 +224,74 @@ impl LoweredAssign {
     }
 }
 
+/// The memory offset where a log's DATA region is staged, ABOVE the keccak scratch
+/// region (`mem[0x00..0x40]`, used by [`emit_map_slot`]). Staging the data at
+/// `0x40` means evaluating a mapping-read arg (which clobbers `mem[0x00..0x40]`
+/// during its keccak) never corrupts a data/topic word — order-independent and
+/// robust for the general case. The resulting log is identical regardless of which
+/// scratch offset stages it (the EVM reads `mem[offset..offset+len]`).
+#[cfg(feature = "wallet")]
+const LOG_DATA_BASE: u64 = 0x40;
+
+#[cfg(feature = "wallet")]
+impl LoweredEmit {
+    /// Emit the `LOGn` for this `emit` statement. The EVM `LOGn` pops (top → bottom)
+    /// `offset, length, topic0, topic1, …, topic(n-1)`, so we leave the stack in
+    /// exactly that arrangement before the opcode:
+    ///
+    /// ```text
+    /// ; 1. stage the data region at mem[0x40 + 0x20*i] (above the keccak scratch)
+    /// for i: <data[i]>  PUSH (0x40 + 0x20*i)  MSTORE
+    /// ; 2. push the topics DEEPEST-first so topic0 ends up shallowest:
+    /// <indexed[last]> … <indexed[0]>  PUSH32 <topic0>
+    /// ; 3. push length then offset (offset ends on top), then LOGn:
+    /// PUSH <0x20*numData>  PUSH 0x40  LOGn          (n = 1 + numIndexed)
+    /// ```
+    ///
+    /// `n` (the LOG topic count) is `1 + indexed.len()` (topic0 is always present);
+    /// `LOGn` = `LOG0 + n`. The data region is `0x20 * data.len()` bytes; with no
+    /// data args the length is 0 (and the offset is harmless).
+    fn emit(&self, a: &mut Asm) {
+        // 1. Stage each non-indexed arg into the data region (above keccak scratch),
+        //    in declaration order. Evaluating a mapping-read arg uses mem[0..0x40]
+        //    scratch, which never overlaps the 0x40+ data region.
+        for (i, word) in self.data.iter().enumerate() {
+            word.emit(a); // value on top
+            a.push_u64(LOG_DATA_BASE + 0x20 * i as u64).emit(op::MSTORE);
+        }
+        // 2. Push the topics deepest-first: the LAST indexed arg goes deepest, the
+        //    FIRST shallowest, and topic0 (the signature hash) shallowest of all so
+        //    it pops first as topic0.
+        for indexed in self.indexed.iter().rev() {
+            indexed.emit(a);
+        }
+        a.push32(&self.topic0);
+        // 3. length = 0x20 * numData, then offset = LOG_DATA_BASE (offset on top),
+        //    then LOGn.
+        let length = 0x20u64 * self.data.len() as u64;
+        a.push_u64(length).push_u64(LOG_DATA_BASE);
+        let n = 1 + self.indexed.len(); // topic0 + one topic per indexed arg
+        a.emit(log_op(n));
+    }
+}
+
+/// The `LOG<n>` opcode for `n` topics (`n` in `0..=4`, the EVM maximum). v1 supports
+/// at most one indexed arg beyond topic0 in practice, but the full `LOG0..LOG4`
+/// range is mapped so more-indexed events lower without a special case.
+#[cfg(feature = "wallet")]
+fn log_op(n: usize) -> u8 {
+    match n {
+        0 => op::LOG0,
+        1 => op::LOG1,
+        2 => op::LOG2,
+        3 => op::LOG3,
+        4 => op::LOG4,
+        // Unreachable: the emit lowering caps indexed topics at 3 (+ topic0 = 4)
+        // via a clean CompileError before this is reached.
+        _ => op::LOG4,
+    }
+}
+
 /// One dispatchable function lowered to its selector + body value. The body
 /// `Label` is allocated by the caller (so the dispatch arm can reference it before
 /// the body is placed — a forward jump).
@@ -315,6 +400,7 @@ fn emit_full_body(a: &mut Asm, body: Label, b: &Body) {
                         a.emit(op::ISZERO).push_label(revert.expect("revert label allocated when a require is present")).emit(op::JUMPI);
                     }
                     LoweredStmt::Assign(assign) => assign.emit(a),
+                    LoweredStmt::Emit(ev) => ev.emit(a),
                 }
             }
             // Empty return so the diamond fallback returns cleanly.
@@ -541,6 +627,91 @@ fn function_signature(func: &crate::soliditylite::ast::Function) -> String {
     format!("{}({})", func.name, types.join(","))
 }
 
+/// The canonical event signature `<Name>(<type>,<type>,…)` — the ABI form whose
+/// FULL `keccak256` (all 32 bytes, NOT the 4-byte selector) is the log's `topic0`.
+/// `indexed`/non-`indexed` does NOT change the signature (only the type list does),
+/// matching Solidity's `eventID` rule.
+#[cfg(feature = "wallet")]
+fn event_signature(ev: &crate::soliditylite::ast::EventDecl) -> String {
+    let types: Vec<&str> = ev.args.iter().map(|arg| arg.ty.abi_name()).collect();
+    format!("{}({})", ev.name, types.join(","))
+}
+
+/// `topic0` for an event = the FULL 32-byte `keccak256` of its canonical signature
+/// (`keccak256("Incremented(address,uint256,uint256)")`). This is the whole hash,
+/// NOT the 4-byte function-selector truncation — events index on the full word.
+#[cfg(feature = "wallet")]
+pub fn event_topic0(signature: &str) -> [u8; 32] {
+    use sha3::{Digest, Keccak256};
+    let mut h = Keccak256::new();
+    h.update(signature.as_bytes());
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&h.finalize());
+    out
+}
+
+/// Lower an `emit <Event>(<args>)` statement: resolve the event by name, check the
+/// argument count matches the declaration, compute `topic0` (the full keccak of the
+/// canonical signature), and split the args into indexed (topics) and non-indexed
+/// (data) by the DECLARED `indexed` flags — each lowered against the function's
+/// resolver.
+///
+/// Errors (all clean [`CompileError`]s, never a panic):
+/// - `UNKNOWN_FUNCTION` — no `event <name>` declared in the facet;
+/// - `ARITY_MISMATCH` — the emit arg count ≠ the declared arg count;
+/// - `UNSUPPORTED_FEATURE` — more than 3 `indexed` args (EVM `LOG`s cap at 4 topics,
+///   one of which is always `topic0`).
+#[cfg(feature = "wallet")]
+fn lower_emit(
+    facet: &Facet,
+    r: &Resolver,
+    ev_name: &str,
+    args: &[Expr],
+    span: crate::rustlite::Span,
+) -> Result<LoweredEmit, CompileError> {
+    use crate::error_codes as codes;
+    let decl = facet.events.iter().find(|e| e.name == ev_name).ok_or_else(|| {
+        CompileError::at_code(
+            codes::UNKNOWN_FUNCTION,
+            format!("unknown event `{ev_name}` (no matching `event` declaration)"),
+            span,
+        )
+    })?;
+    if args.len() != decl.args.len() {
+        return Err(CompileError::at_code(
+            codes::ARITY_MISMATCH,
+            format!(
+                "event `{ev_name}` expects {} argument(s), got {}",
+                decl.args.len(),
+                args.len()
+            ),
+            span,
+        ));
+    }
+    let num_indexed = decl.args.iter().filter(|a| a.indexed).count();
+    // EVM LOGs carry at most 4 topics; topic0 is the signature hash, so at most 3
+    // indexed args. (Solidity has the same 3-indexed limit for non-anonymous events.)
+    if num_indexed > 3 {
+        return Err(CompileError::at_code(
+            codes::UNSUPPORTED_FEATURE,
+            format!("event `{ev_name}` has {num_indexed} indexed args; at most 3 are allowed (LOG topic cap)"),
+            span,
+        ));
+    }
+    let topic0 = event_topic0(&event_signature(decl));
+    let mut indexed = Vec::with_capacity(num_indexed);
+    let mut data = Vec::with_capacity(decl.args.len() - num_indexed);
+    for (arg_decl, arg_expr) in decl.args.iter().zip(args) {
+        let lowered = r.lower_expr(arg_expr)?;
+        if arg_decl.indexed {
+            indexed.push(lowered);
+        } else {
+            data.push(lowered);
+        }
+    }
+    Ok(LoweredEmit { topic0, indexed, data })
+}
+
 /// Compile a typed [`Facet`] to a deployable [`CompiledArtifact`].
 ///
 /// Selectors are `keccak256("<name>(<types>)")[..4]` (the ABI canonical signature)
@@ -608,6 +779,9 @@ pub fn compile(facet: &Facet) -> Result<CompiledArtifact, CompileError> {
                                 key: r.lower_expr(key)?,
                                 value: r.lower_expr(value)?,
                             }));
+                        }
+                        Stmt::Emit { name: ev_name, args, span } => {
+                            lowered_stmts.push(LoweredStmt::Emit(lower_emit(facet, &r, ev_name, args, *span)?));
                         }
                         // A return/nested block inside a mutating block is unreachable
                         // from the parser (it only emits requires + assignments), but
@@ -1176,6 +1350,256 @@ mod tests {
         assert_eq!(art.init_code, super::super::asm::init_wrapper(rt));
     }
 
+    // ── EVENTS + emit → LOGn (Installment 1 capstone) ────────────────────────
+
+    /// `topic0` for `Incremented(address,uint256,uint256)` is the FULL 32-byte
+    /// keccak256 of the signature, NOT the 4-byte selector — cross-checked against
+    /// an independent keccak of the same string.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn event_topic0_is_full_keccak_of_the_signature() {
+        use sha3::{Digest, Keccak256};
+        const SIG: &str = "Incremented(address,uint256,uint256)";
+        let topic0 = super::event_topic0(SIG);
+        // Independent keccak of the same string.
+        let mut want = [0u8; 32];
+        want.copy_from_slice(&Keccak256::digest(SIG.as_bytes()));
+        assert_eq!(topic0, want, "topic0 must be the full keccak of the event sig");
+        // It must NOT be the 4-byte selector zero-extended — the full word is used.
+        let sel = crate::registry::selector(SIG);
+        assert_eq!(&topic0[..4], &sel, "the first 4 bytes coincide with the selector");
+        assert!(topic0[4..].iter().any(|&b| b != 0), "topic0 is more than 4 bytes");
+        // Pin the exact hash (printed for the report).
+        assert_eq!(to_hex(&topic0), TOPIC0_INCREMENTED, "Incremented topic0 drifted");
+    }
+
+    /// The pinned topic0 for `Incremented(address,uint256,uint256)` — the FULL
+    /// 32-byte keccak256 of the canonical event signature.
+    #[cfg(feature = "wallet")]
+    const TOPIC0_INCREMENTED: &str =
+        "0xcd5ad702c30bb253c9e421ea7f3e00faee62ce859708bfdaf949788e5ba0fdb5";
+
+    /// `event_signature` builds the canonical ABI form, IGNORING `indexed`/names.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn event_signature_uses_types_only() {
+        use super::super::ast::*;
+        use crate::rustlite::Span;
+        let sp = Span { start: 0, end: 0 };
+        let ev = EventDecl {
+            name: "Incremented".into(),
+            args: vec![
+                EventArg { ty: Ty::Address, indexed: true, name: "who".into(), span: sp },
+                EventArg { ty: Ty::Uint256, indexed: false, name: "newCount".into(), span: sp },
+                EventArg { ty: Ty::Uint256, indexed: false, name: "newTotal".into(), span: sp },
+            ],
+            span: sp,
+        };
+        assert_eq!(super::event_signature(&ev), "Incremented(address,uint256,uint256)");
+    }
+
+    /// `emit Incremented(msg.sender, count[msg.sender], total)` lowers to a `LOG2`
+    /// (topic0 + the one indexed `who`), with `topic0` PUSH32'd and the two
+    /// non-indexed words MSTORE'd into the data region before the LOG.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn emit_lowers_to_log2_with_topic0_push32_and_data_mstores() {
+        use super::super::asm::op;
+        const SRC: &str = "facet C { mapping(address => uint256) count; uint256 total; \
+             event Incremented(address indexed who, uint256 newCount, uint256 newTotal); \
+             function increment() external { count[msg.sender] = count[msg.sender] + 1; \
+             total = total + 1; emit Incremented(msg.sender, count[msg.sender], total); } }";
+        let art = super::super::compile(SRC).expect("emit facet must compile");
+        let rt = &art.runtime;
+
+        // A LOG2 (1 indexed + topic0) is emitted exactly once; no other LOGn opcode
+        // (decoding push widths so data bytes equal to a LOG opcode don't false-hit).
+        assert_eq!(count_op(rt, op::LOG2), 1, "exactly one LOG2");
+        for other in [op::LOG0, op::LOG1, op::LOG3, op::LOG4] {
+            assert_eq!(count_op(rt, other), 0, "no other LOGn opcode, found {other:#x}");
+        }
+
+        // topic0 is PUSH32'd as the full event-sig hash.
+        let topic0 = super::event_topic0("Incremented(address,uint256,uint256)");
+        let mut push32_topic0 = vec![op::PUSH1 + 31];
+        push32_topic0.extend_from_slice(&topic0);
+        assert!(
+            rt.windows(33).any(|w| w == push32_topic0.as_slice()),
+            "topic0 must be PUSH32'd; runtime = {}",
+            to_hex(rt)
+        );
+
+        // The data region is staged with MSTOREs before the LOG.
+        assert!(count_op(rt, op::MSTORE) >= 2, "the two data words are MSTORE'd into memory");
+
+        // The LOG2's immediate stack setup ends with PUSH length then PUSH offset
+        // then LOG2. Locate the REAL LOG2 opcode and check the two preceding pushes.
+        let log_pos = real_opcodes(rt)
+            .iter()
+            .find(|(_, o)| *o == op::LOG2)
+            .map(|(off, _)| *off)
+            .unwrap();
+        // offset (on top) = PUSH1 0x40.
+        assert_eq!(
+            &rt[log_pos - 2..log_pos],
+            &[op::PUSH1, 0x40],
+            "LOG2 is preceded by PUSH1 0x40 (the data offset on top of the stack)"
+        );
+        // length (below offset) = 0x40 = 0x20 * 2 data words.
+        assert_eq!(
+            &rt[log_pos - 4..log_pos - 2],
+            &[op::PUSH1, 0x40],
+            "the length (0x40 = two 32-byte data words) is pushed before the offset"
+        );
+
+        assert_eq!(art.init_code, super::super::asm::init_wrapper(rt));
+    }
+
+    /// THE LOG STACK ORDER (the load-bearing invariant): the bytes immediately
+    /// before a 1-indexed `LOG2` are, in order, `CALLER` (topic1, deepest), `PUSH32
+    /// topic0` (shallowest topic), `PUSH length`, `PUSH offset` (on top), `LOG2`.
+    /// A swapped topic/data or topic1/topic0 would be a silent wrong-log bug.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn emit_stack_order_is_topic1_topic0_len_offset_logn() {
+        use super::super::asm::op;
+        // ONE indexed (who → topic1 = CALLER), ONE data word (n → mem). LOG2.
+        const SRC: &str = "facet C { event E(address indexed who, uint256 amt); \
+             function f(uint256 n) external { emit E(msg.sender, n); } }";
+        let rt = &super::super::compile(SRC).unwrap().runtime;
+        let topic0 = super::event_topic0("E(address,uint256)");
+
+        // The exact emit tail: CALLER, PUSH32 topic0, PUSH1 0x20 (len=1 data word),
+        // PUSH1 0x40 (offset), LOG2.
+        let mut tail = vec![op::CALLER, op::PUSH1 + 31];
+        tail.extend_from_slice(&topic0);
+        tail.extend_from_slice(&[op::PUSH1, 0x20, op::PUSH1, 0x40, op::LOG2]);
+        assert!(
+            rt.windows(tail.len()).any(|w| w == tail.as_slice()),
+            "emit tail must be CALLER, PUSH32 topic0, PUSH len, PUSH offset, LOG2 (in that \
+             order so the EVM pops offset, length, topic0, topic1); runtime = {}",
+            to_hex(rt)
+        );
+        // The single data word `n` (CALLDATALOAD(0x04)) is MSTORE'd at the data base
+        // (mem[0x40]) BEFORE the topic pushes — i.e. a `PUSH1 0x40 MSTORE` exists.
+        assert!(
+            rt.windows(3).any(|w| w == [op::PUSH1, 0x40, op::MSTORE]),
+            "the data word is MSTORE'd at the data base mem[0x40]"
+        );
+    }
+
+    /// An indexed arg becomes a LOG TOPIC, not a data word: an event with ONE
+    /// indexed and ZERO data args lowers to a LOG2 (topic0 + the indexed) with a
+    /// zero-length data region.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn indexed_only_event_has_zero_length_data() {
+        use super::super::asm::op;
+        const SRC: &str = "facet C { event Hit(address indexed who); \
+             function f() external { emit Hit(msg.sender); } }";
+        let rt = &super::super::compile(SRC).unwrap().runtime;
+        // LOG2: topic0 + who.
+        assert_eq!(count_op(rt, op::LOG2), 1, "one LOG2 (topic0 + who)");
+        let log_pos = real_opcodes(rt)
+            .iter()
+            .find(|(_, o)| *o == op::LOG2)
+            .map(|(off, _)| *off)
+            .expect("a LOG2");
+        // length = 0 (no data args): PUSH1 0x00 then PUSH1 0x40 (offset) then LOG2.
+        assert_eq!(&rt[log_pos - 2..log_pos], &[op::PUSH1, 0x40], "offset on top");
+        assert_eq!(&rt[log_pos - 4..log_pos - 2], &[op::PUSH1, 0x00], "zero length");
+        // CALLER (the indexed who) is pushed as a topic.
+        assert!(count_op(rt, op::CALLER) >= 1, "the indexed who emits CALLER");
+    }
+
+    /// A no-arg event lowers to a LOG1 (just topic0) with a zero-length data region.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn no_arg_event_lowers_to_log1() {
+        use super::super::asm::op;
+        const SRC: &str = "facet C { event Ping(); function f() external { emit Ping(); } }";
+        let rt = &super::super::compile(SRC).unwrap().runtime;
+        assert_eq!(count_op(rt, op::LOG1), 1, "one LOG1");
+        let topic0 = super::event_topic0("Ping()");
+        let mut push32 = vec![op::PUSH1 + 31];
+        push32.extend_from_slice(&topic0);
+        assert!(rt.windows(33).any(|w| w == push32.as_slice()), "topic0 PUSH32");
+    }
+
+    /// `emit` of an undeclared event is a clean `UNKNOWN_FUNCTION` (no panic).
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn emit_unknown_event_is_a_clean_error() {
+        let err = super::super::compile(
+            "facet C { function f() external { emit Ghost(1); } }",
+        )
+        .expect_err("emitting an undeclared event must fail cleanly");
+        assert_eq!(err.code, Some(crate::error_codes::UNKNOWN_FUNCTION));
+        assert!(err.to_string().starts_with("LH0"));
+    }
+
+    /// `emit` with the wrong argument count is a clean `ARITY_MISMATCH`.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn emit_arg_count_mismatch_is_a_clean_error() {
+        // Declared 2 args, emitted 1.
+        let err = super::super::compile(
+            "facet C { event E(address indexed a, uint256 b); \
+             function f() external { emit E(msg.sender); } }",
+        )
+        .expect_err("an arg-count mismatch must fail cleanly");
+        assert_eq!(err.code, Some(crate::error_codes::ARITY_MISMATCH));
+        // Too many args is also caught.
+        let err = super::super::compile(
+            "facet C { event E(uint256 a); function f(uint256 n) external { emit E(n, n); } }",
+        )
+        .expect_err("too many args must fail cleanly");
+        assert_eq!(err.code, Some(crate::error_codes::ARITY_MISMATCH));
+    }
+
+    /// THE INSTALLMENT-1 CAPSTONE: the FULL CounterFacet (with the event + emits)
+    /// compiles end-to-end, all four canonical selectors are dispatched, and the
+    /// `Incremented` LOG2 fires (its topic0 is the full event-sig keccak).
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn full_counter_facet_with_events_compiles() {
+        use super::super::asm::op;
+        const SRC: &str = "facet CounterFacet { mapping(address => uint256) count; uint256 total; \
+             event Incremented(address indexed who, uint256 newCount, uint256 newTotal); \
+             function increment() external { count[msg.sender] = count[msg.sender] + 1; total = total + 1; \
+             emit Incremented(msg.sender, count[msg.sender], total); } \
+             function incrementBy(uint256 n) external { require(n > 0, \"zero\"); require(n <= 100, \"too big\"); \
+             count[msg.sender] = count[msg.sender] + n; total = total + n; \
+             emit Incremented(msg.sender, count[msg.sender], total); } \
+             function countOf(address who) external view returns (uint256) { return count[who]; } \
+             function totalCount() external view returns (uint256) { return total; } }";
+        let art = super::super::compile(SRC).expect("the FULL CounterFacet must compile");
+        let rt = &art.runtime;
+
+        // All four canonical selectors are dispatched.
+        let sels: [(&str, [u8; 4]); 4] = [
+            ("increment()", [0xd0, 0x9d, 0xe0, 0x8a]),
+            ("incrementBy(uint256)", [0x03, 0xdf, 0x17, 0x9c]),
+            ("countOf(address)", [0xf8, 0x97, 0x7e, 0x96]),
+            ("totalCount()", [0x34, 0xea, 0xfb, 0x11]),
+        ];
+        for (sig, want) in sels {
+            assert_eq!(crate::registry::selector(sig), want, "selector pin for {sig}");
+            let push4: Vec<u8> = std::iter::once(op::PUSH1 + 3).chain(want).collect();
+            assert!(rt.windows(5).any(|w| w == push4.as_slice()), "{sig} dispatched");
+        }
+        // BOTH increment() and incrementBy() emit the event → exactly two LOG2s
+        // (opcode-decoded so PUSH operand bytes equal to 0xA2 don't false-count).
+        assert_eq!(count_op(rt, op::LOG2), 2, "two Incremented LOG2s");
+        // The shared topic0 is PUSH32'd (appears at least twice, once per emit).
+        let topic0 = super::event_topic0("Incremented(address,uint256,uint256)");
+        let mut push32_topic0 = vec![op::PUSH1 + 31];
+        push32_topic0.extend_from_slice(&topic0);
+        let occurrences = rt.windows(33).filter(|w| *w == push32_topic0.as_slice()).count();
+        assert_eq!(occurrences, 2, "topic0 PUSH32'd once per emit");
+        assert_eq!(art.init_code, super::super::asm::init_wrapper(rt));
+    }
+
     /// 0x-prefixed lowercase hex (test helper).
     fn to_hex(bytes: &[u8]) -> String {
         use core::fmt::Write;
@@ -1185,5 +1609,35 @@ mod tests {
             let _ = write!(s, "{b:02x}");
         }
         s
+    }
+
+    /// Walk EVM bytecode opcode-by-opcode, SKIPPING `PUSH<n>` operand bytes, and
+    /// return the list of real instruction `(offset, opcode)` pairs. Naively
+    /// scanning the byte stream for an opcode value is WRONG — an opcode byte can
+    /// appear inside a PUSH immediate (a hash/slot word) — so opcode-presence /
+    /// counting must decode the push widths. (Test helper.)
+    #[cfg(feature = "wallet")]
+    fn real_opcodes(code: &[u8]) -> Vec<(usize, u8)> {
+        use super::super::asm::op;
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < code.len() {
+            let opc = code[i];
+            out.push((i, opc));
+            // PUSH1..PUSH32 carry 1..=32 operand bytes after the opcode.
+            if (op::PUSH1..=op::PUSH1 + 31).contains(&opc) {
+                let n = (opc - op::PUSH1) as usize + 1;
+                i += 1 + n;
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// Count REAL occurrences of an opcode (not operand bytes).
+    #[cfg(feature = "wallet")]
+    fn count_op(code: &[u8], opcode: u8) -> usize {
+        real_opcodes(code).iter().filter(|(_, o)| *o == opcode).count()
     }
 }
