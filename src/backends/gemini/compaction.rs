@@ -131,8 +131,19 @@ async fn summarize(client: &SharedClient, model: &str, prompt: String) -> Result
         for cand in chunk.candidates {
             if let Some(content) = cand.content {
                 for part in content.parts {
-                    if let Part::Text { text } = part {
-                        out.push_str(&text);
+                    // Gemini 3.x stamps EVERY part with `thought`, so visible
+                    // summary text arrives as `Thought { thought: false,
+                    // text: Some(_) }` — same quirk the main loop guards
+                    // (`loop.rs`). Without the second arm the summary came back
+                    // EMPTY on 3.x (issue #83).
+                    match part {
+                        Part::Text { text }
+                        | Part::Thought {
+                            thought: false,
+                            text: Some(text),
+                            ..
+                        } => out.push_str(&text),
+                        _ => {}
                     }
                 }
             }
