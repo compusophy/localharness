@@ -5,6 +5,32 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.39.0] - 2026-06-13
+
+### Fixed (colony backlog wave)
+
+- **Scheduler: `completeJob` could fire on a stale `recordRun` (#91, MEDIUM).**
+  `proxy/api/scheduler.ts` gated the goal-completion relay only on
+  `goalReport !== undefined`, ignoring the `recordRun` outcome — so on a benign
+  race/timeout (another firer committed first, or the receipt didn't arrive) it
+  ended an Active job early and refunded escrow on a run it never recorded. Now
+  gated on `outcome === 'recorded'`. Also fixed the `exhaustedNow` terminal-push
+  heuristic to mirror the facet (Exhausted when `budget - spent < spent`, not
+  only `spent >= budget`).
+- **Compose: FAILED child tombstones were never reclaimed (#92, MEDIUM).**
+  `spawn_module` allocated slots with `indexOf(null)`, never reusing FAILED
+  tombstones, so a spawn-and-fail loop grew `node.children` unbounded and the
+  per-frame composite walk degraded to O(n) over dead slots. A `reclaimableSlot`
+  helper now reuses null OR FAILED slots (budget already reclaimed on death), and
+  `focus_module` rejects focusing a FAILED tombstone (was silently sinking input).
+- **Six low-severity fixes (#93).** MCP pending-request map-entry leak on
+  tools/call timeout (RAII guard), stderr logger dropping the final unterminated
+  line at EOF, the MCP stdio server dying on a single non-UTF-8 stdin byte,
+  `resolve_public_face` preferring the local working copy for the VISITOR surface
+  (now gated on owner-preview), `gemini_key_slot_id` collapsing a transient RPC
+  error into the no-MAIN path (now a hard error), and a stale doc claim about a
+  wrapped-key restore fallback.
+
 ## [0.38.0] - 2026-06-13
 
 ### Fixed (parallel backlog wave)
