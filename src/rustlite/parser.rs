@@ -310,7 +310,7 @@ impl<'a> Parser<'a> {
 
     fn parse_param_list(&mut self) -> Result<Vec<Param>, CompileError> {
         let mut params = Vec::new();
-        loop {
+        while !matches!(self.peek(), TokenKind::RParen) {
             let start = self.span();
             let name = self.expect_ident()?;
             self.expect(&TokenKind::Colon)?;
@@ -318,6 +318,8 @@ impl<'a> Parser<'a> {
             params.push(Param { name, ty, span: Span { start: start.start, end: self.tokens[self.pos - 1].span.end } });
             if !matches!(self.peek(), TokenKind::Comma) { break; }
             self.advance();
+            // Trailing comma: `fn f(a: i32,)` — the comma may be the last token.
+            if matches!(self.peek(), TokenKind::RParen) { break; }
         }
         Ok(params)
     }
@@ -981,31 +983,28 @@ impl<'a> Parser<'a> {
                 self.advance();
                 Ok(Pattern { kind: PatternKind::Wildcard, span: Span { start: start.start, end: self.tokens[self.pos - 1].span.end } })
             }
+            // A leading `-` negates the integer literal (or range lower bound):
+            // `-1 =>` and `-5..=5 =>` are both idiomatic match arms.
+            TokenKind::Minus => {
+                self.advance();
+                let n = match self.peek().clone() {
+                    TokenKind::IntLit(n) => {
+                        self.advance();
+                        -n
+                    }
+                    _ => {
+                        return Err(CompileError::at_code(
+                            codes::EXPECTED_PATTERN,
+                            "`-` in a pattern must be followed by an integer literal",
+                            self.span(),
+                        ))
+                    }
+                };
+                self.parse_int_pattern_tail(n, start)
+            }
             TokenKind::IntLit(n) => {
                 self.advance();
-                // Range pattern? `lo..=hi` (inclusive) or `lo..hi` (exclusive).
-                if matches!(self.peek(), TokenKind::DotDot | TokenKind::DotDotEq) {
-                    let inclusive = matches!(self.peek(), TokenKind::DotDotEq);
-                    self.advance();
-                    let hi = match self.peek().clone() {
-                        TokenKind::IntLit(h) => {
-                            self.advance();
-                            h
-                        }
-                        _ => {
-                            return Err(CompileError::at_code(
-                                codes::EXPECTED_PATTERN,
-                                "range pattern needs an integer upper bound",
-                                self.span(),
-                            ))
-                        }
-                    };
-                    return Ok(Pattern {
-                        kind: PatternKind::IntRange { lo: n, hi, inclusive },
-                        span: Span { start: start.start, end: self.tokens[self.pos - 1].span.end },
-                    });
-                }
-                Ok(Pattern { kind: PatternKind::Literal(LitPattern::Int(n)), span: Span { start: start.start, end: self.tokens[self.pos - 1].span.end } })
+                self.parse_int_pattern_tail(n, start)
             }
             TokenKind::FloatLit(n) => {
                 self.advance();
@@ -1074,6 +1073,36 @@ impl<'a> Parser<'a> {
                 self.span(),
             )),
         }
+    }
+
+    /// Finish an integer pattern after its (possibly negated) lower bound `lo`
+    /// has been consumed: either a bare literal or `lo..=hi` / `lo..hi` where
+    /// `hi` may itself be negated (`-5..=-1`).
+    fn parse_int_pattern_tail(&mut self, lo: i64, start: Span) -> Result<Pattern, CompileError> {
+        if matches!(self.peek(), TokenKind::DotDot | TokenKind::DotDotEq) {
+            let inclusive = matches!(self.peek(), TokenKind::DotDotEq);
+            self.advance();
+            let neg = matches!(self.peek(), TokenKind::Minus);
+            if neg { self.advance(); }
+            let hi = match self.peek().clone() {
+                TokenKind::IntLit(h) => {
+                    self.advance();
+                    if neg { -h } else { h }
+                }
+                _ => {
+                    return Err(CompileError::at_code(
+                        codes::EXPECTED_PATTERN,
+                        "range pattern needs an integer upper bound",
+                        self.span(),
+                    ))
+                }
+            };
+            return Ok(Pattern {
+                kind: PatternKind::IntRange { lo, hi, inclusive },
+                span: Span { start: start.start, end: self.tokens[self.pos - 1].span.end },
+            });
+        }
+        Ok(Pattern { kind: PatternKind::Literal(LitPattern::Int(lo)), span: Span { start: start.start, end: self.tokens[self.pos - 1].span.end } })
     }
 
     fn parse_while_expr(&mut self) -> Result<Expr, CompileError> {
@@ -1206,6 +1235,8 @@ impl<'a> Parser<'a> {
                 args.push(p.parse_expr()?);
                 if !matches!(p.peek(), TokenKind::Comma) { break; }
                 p.advance();
+                // Trailing comma: `g(1, 2,)` — the comma may close the list.
+                if matches!(p.peek(), TokenKind::RParen) { break; }
             }
             Ok(args)
         })
@@ -1430,6 +1461,92 @@ mod tests {
         assert!(matches!(
             &arms[0].pattern.kind,
             PatternKind::IntRange { lo: 0, hi: 5, inclusive: true }
+        ));
+    }
+
+    #[test]
+    fn parse_trailing_comma_in_fn_params() {
+        // `fn f(a: i32,)` — idiomatic Rust; the trailing comma must not error.
+        let m = parse_str("fn f(a: i32,) -> i32 { a }");
+        let Item::Fn(f) = &m.items[0] else {
+            panic!("expected fn")
+        };
+        assert_eq!(f.params.len(), 1);
+        assert_eq!(f.params[0].name, "a");
+        // Multiple params with a trailing comma too.
+        let m = parse_str("fn g(a: i32, b: i32,) -> i32 { a + b }");
+        let Item::Fn(g) = &m.items[0] else {
+            panic!("expected fn")
+        };
+        assert_eq!(g.params.len(), 2);
+    }
+
+    #[test]
+    fn parse_trailing_comma_in_call_args() {
+        // `g(1, 2,)` and `g(1,)` — a trailing arg comma must not error.
+        let m = parse_str("fn f() -> i32 { g(1, 2,) } fn g(a: i32, b: i32) -> i32 { a + b }");
+        let Item::Fn(f) = &m.items[0] else {
+            panic!("expected fn")
+        };
+        let tail = f.body.tail.as_deref().expect("call tail");
+        let ExprKind::Call { args, .. } = &tail.kind else {
+            panic!("expected call")
+        };
+        assert_eq!(args.len(), 2);
+        // Single arg with a trailing comma.
+        let m = parse_str("fn f() -> i32 { g(1,) } fn g(a: i32) -> i32 { a }");
+        let Item::Fn(f) = &m.items[0] else {
+            panic!("expected fn")
+        };
+        let tail = f.body.tail.as_deref().expect("call tail");
+        let ExprKind::Call { args, .. } = &tail.kind else {
+            panic!("expected call")
+        };
+        assert_eq!(args.len(), 1);
+    }
+
+    #[test]
+    fn parse_negative_int_and_range_patterns() {
+        // A negative literal arm: `-1 => …`.
+        let m = parse_str("fn f(x: i32) -> i32 { match x { -1 => 1, _ => 2 } }");
+        let Item::Fn(f) = &m.items[0] else {
+            panic!("expected fn")
+        };
+        let tail = f.body.tail.as_deref().expect("match tail");
+        let ExprKind::Match { arms, .. } = &tail.kind else {
+            panic!("expected match")
+        };
+        assert!(matches!(
+            &arms[0].pattern.kind,
+            PatternKind::Literal(LitPattern::Int(-1))
+        ));
+
+        // A negative-bounded range arm: `-5..=5 => …`.
+        let m = parse_str("fn f(x: i32) -> i32 { match x { -5..=5 => 1, _ => 2 } }");
+        let Item::Fn(f) = &m.items[0] else {
+            panic!("expected fn")
+        };
+        let tail = f.body.tail.as_deref().expect("match tail");
+        let ExprKind::Match { arms, .. } = &tail.kind else {
+            panic!("expected match")
+        };
+        assert!(matches!(
+            &arms[0].pattern.kind,
+            PatternKind::IntRange { lo: -5, hi: 5, inclusive: true }
+        ));
+
+        // Both bounds negative: `-5..=-1 => …`.
+        let m = parse_str("fn f(x: i32) -> i32 { match x { -5..=-1 => 1, _ => 2 } }");
+        let Item::Fn(f) = &m.items[0] else {
+            panic!("expected fn")
+        };
+        let tail = f.body.tail.as_deref().expect("match tail");
+        let ExprKind::Match { arms, .. } = &tail.kind else {
+            panic!("expected match")
+        };
+        assert!(matches!(
+            &arms[0].pattern.kind,
+            PatternKind::IntRange { lo: -5, hi: -1, inclusive: true }
         ));
     }
 
