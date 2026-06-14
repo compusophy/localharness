@@ -51,6 +51,13 @@ contract SignalingAuthTest is Test {
         return keccak256(abi.encodePacked(topic, eph, pubkey));
     }
 
+    /// The digest a signer authorizes to evict `eph` from `topic`:
+    /// keccak256("localharness.leave" || topic || ephemeral) — DOMAIN-SEPARATED
+    /// from `_digest` so an `announce` sig can't be replayed as a `leave`.
+    function _leaveDigest(bytes32 topic, address eph) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked("localharness.leave", topic, eph));
+    }
+
     /// Sign `digest` with `pk` and pack r‖s‖v (65 bytes), v in {27,28} — the
     /// layout `_recover` (and `wallet::sign_hash`) use.
     function _sign(uint256 pk, bytes32 digest) internal pure returns (bytes memory) {
@@ -187,15 +194,95 @@ contract SignalingAuthTest is Test {
         assertEq(r[0].ts, uint64(block.timestamp), "ts refreshed");
     }
 
-    function test_leave_removes_entry() public {
+    // --- leave auth (devices topic) -------------------------------------
+
+    /// The owner can evict an entry from their OWN devices roster with a valid
+    /// owner-signed leave digest.
+    function test_leave_owner_signed_removes_entry() public {
         bytes32 topic = _devicesTopic(owner);
         address eph = address(0x8);
         bytes memory pubkey = _pubkey(eph);
         sig.announce(topic, owner, eph, pubkey, _sign(ownerPk, _digest(topic, eph, pubkey)));
         assertEq(sig.peersOf(topic).length, 1, "announced");
 
-        sig.leave(topic, eph);
-        assertEq(sig.peersOf(topic).length, 0, "left");
+        sig.leave(topic, owner, eph, _sign(ownerPk, _leaveDigest(topic, eph)));
+        assertEq(sig.peersOf(topic).length, 0, "owner-signed leave removed it");
+    }
+
+    /// The bug this fixes: an attacker (no seed, wrong sig) must NOT be able to
+    /// evict a victim's real device from the victim's devices roster — an
+    /// unauthenticated `leave` would let them break the announce integrity
+    /// property by kicking the legitimate device out.
+    function test_leave_attacker_sig_reverts_and_roster_intact() public {
+        bytes32 topic = _devicesTopic(owner);
+        address eph = address(0xBADBAD);
+        bytes memory pubkey = _pubkey(eph);
+        sig.announce(topic, owner, eph, pubkey, _sign(ownerPk, _digest(topic, eph, pubkey)));
+        assertEq(sig.peersOf(topic).length, 1, "victim device announced");
+
+        // Attacker signs the leave digest with THEIR key → recovers to attacker,
+        // not owner → must revert, roster untouched.
+        bytes memory bad = _sign(attackerPk, _leaveDigest(topic, eph));
+        vm.expectRevert(SignalingFacet.Unauthorized.selector);
+        sig.leave(topic, owner, eph, bad);
+        assertEq(sig.peersOf(topic).length, 1, "roster intact after blocked leave");
+    }
+
+    /// An `announce` signature must NOT be replayable as a `leave` (domain
+    /// separation): the owner-signed announce digest does not authorize a leave.
+    function test_leave_cannot_replay_announce_sig() public {
+        bytes32 topic = _devicesTopic(owner);
+        address eph = address(0x9);
+        bytes memory pubkey = _pubkey(eph);
+        bytes memory announceSig = _sign(ownerPk, _digest(topic, eph, pubkey));
+        sig.announce(topic, owner, eph, pubkey, announceSig);
+
+        // Reuse the announce sig for leave — recovers to owner over the WRONG
+        // (announce) digest, so vs the leave digest it does NOT recover to owner.
+        vm.expectRevert(SignalingFacet.Unauthorized.selector);
+        sig.leave(topic, owner, eph, announceSig);
+        assertEq(sig.peersOf(topic).length, 1, "announce sig can't drive a leave");
+    }
+
+    /// High-s leave signature is rejected (EIP-2), like announce.
+    function test_leave_high_s_reverts() public {
+        bytes32 topic = _devicesTopic(owner);
+        address eph = address(0xA1);
+        bytes memory pubkey = _pubkey(eph);
+        sig.announce(topic, owner, eph, pubkey, _sign(ownerPk, _digest(topic, eph, pubkey)));
+
+        bytes32 ld = _leaveDigest(topic, eph);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(ownerPk, ld);
+        bytes32 sHigh = bytes32(N - uint256(s));
+        uint8 vFlip = v == 27 ? 28 : 27;
+        bytes memory sigHigh = abi.encodePacked(r, sHigh, vFlip);
+
+        vm.expectRevert(SignalingFacet.Unauthorized.selector);
+        sig.leave(topic, owner, eph, sigHigh);
+        assertEq(sig.peersOf(topic).length, 1, "high-s leave blocked");
+    }
+
+    // --- leave auth (non-devices / team topic) --------------------------
+
+    /// On a team (non-devices) topic, a device may remove ITSELF: a sig
+    /// recovering to the ephemeral authorizes its own leave. An unrelated
+    /// signer is rejected.
+    function test_leave_team_self_signed_ok_others_revert() public {
+        bytes32 teamTopic = keccak256(abi.encodePacked("localharness.team", uint256(7)));
+        uint256 ephPk = 0xEEEE;
+        address eph = vm.addr(ephPk);
+        bytes memory pubkey = _pubkey(eph);
+        sig.announce(teamTopic, address(0), eph, pubkey, _sign(ephPk, _digest(teamTopic, eph, pubkey)));
+        assertEq(sig.peersOf(teamTopic).length, 1, "team peer announced");
+
+        // Attacker can't evict it.
+        vm.expectRevert(SignalingFacet.Unauthorized.selector);
+        sig.leave(teamTopic, address(0), eph, _sign(attackerPk, _leaveDigest(teamTopic, eph)));
+        assertEq(sig.peersOf(teamTopic).length, 1, "attacker can't evict team peer");
+
+        // The ephemeral removes itself.
+        sig.leave(teamTopic, address(0), eph, _sign(ephPk, _leaveDigest(teamTopic, eph)));
+        assertEq(sig.peersOf(teamTopic).length, 0, "self-signed team leave removed it");
     }
 
     /// A team (non-devices) topic accepts a SELF-signed announce (sig ==

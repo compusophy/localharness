@@ -199,7 +199,33 @@ contract SignalingFacet {
     }
 
     /// Drop a no-longer-online `ephemeral` from `topic`'s roster (swap-pop).
-    function leave(bytes32 topic, address ephemeral) external {
+    ///
+    /// Auth — mirrors `announce` (an UNGATED `leave` is the same MITM hole in
+    /// reverse: anyone could evict any device from any roster, defeating the
+    /// owner-gated integrity property `announce` establishes — e.g. kick the
+    /// victim's real device out so only an attacker's lingering entry remains).
+    /// `sig` is taken over a DOMAIN-SEPARATED digest
+    /// `keccak256(abi.encodePacked("localharness.leave", topic, ephemeral))` —
+    /// the `localharness.leave` prefix prevents replaying an `announce`
+    /// signature, which signs `keccak256(topic || ephemeral || pubkey)`:
+    ///   - DEVICES topic: `topic` MUST equal
+    ///     `keccak256(abi.encodePacked("localharness.devices", owner))` and `sig`
+    ///     MUST recover to `owner` (only the seed holder edits the roster).
+    ///   - any OTHER topic (team / future): `sig` must recover to `ephemeral`
+    ///     (self-control floor — a device removes only itself), matching
+    ///     `announce`'s non-devices branch.
+    /// Reject high-s (EIP-2) via `_recover`, like `announce`.
+    function leave(bytes32 topic, address owner, address ephemeral, bytes calldata sig) external {
+        bytes32 digest = keccak256(abi.encodePacked("localharness.leave", topic, ephemeral));
+        bytes32 devicesTopic =
+            keccak256(abi.encodePacked("localharness.devices", owner));
+        if (topic == devicesTopic) {
+            if (owner == address(0)) revert Unauthorized();
+            if (_recover(digest, sig) != owner) revert Unauthorized();
+        } else {
+            if (_recover(digest, sig) != ephemeral) revert Unauthorized();
+        }
+
         LibSignalingStorage.Presence[] storage r = LibSignalingStorage.load().roster[topic];
         uint256 n = r.length;
         for (uint256 i = 0; i < n; i++) {
