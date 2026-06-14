@@ -338,19 +338,60 @@ impl Parser<'_> {
     }
 
     fn parse_mutating_block_inner(&mut self) -> Result<Stmt, CompileError> {
+        Ok(Stmt::Block(self.parse_brace_block()?))
+    }
+
+    /// Parse a `{ <stmt>* }` brace block into its statement list (reused by the
+    /// function body and by both `if`/`else` branches). The braces are required.
+    fn parse_brace_block(&mut self) -> Result<Vec<Stmt>, CompileError> {
         self.expect(&SolKind::LBrace, "`{`")?;
         let mut stmts = Vec::new();
         while !matches!(self.peek(), SolKind::RBrace) {
             stmts.push(self.parse_stmt()?);
         }
         self.expect(&SolKind::RBrace, "`}`")?;
-        Ok(Stmt::Block(stmts))
+        Ok(stmts)
+    }
+
+    /// Parse `if ( <cond> ) { <stmt>* } [ else ( { <stmt>* } | <if> ) ]`. `if` and
+    /// `else` are contextual identifiers (reserved nowhere else in the v1 grammar).
+    /// An `else if` chains by recursing, so the else branch is a single nested `If`.
+    /// `enter`/`leave` bound nesting depth so deeply-nested `if`s error cleanly.
+    fn parse_if_stmt(&mut self) -> Result<Stmt, CompileError> {
+        self.enter()?;
+        let span = self.span();
+        self.advance(); // `if`
+        self.expect(&SolKind::LParen, "`(`")?;
+        let cond = self.parse_expr()?;
+        self.expect(&SolKind::RParen, "`)`")?;
+        let then_body = self.parse_brace_block()?;
+        let else_body = if matches!(self.peek(), SolKind::Ident(name) if name == "else") {
+            self.advance(); // `else`
+            if matches!(self.peek(), SolKind::Ident(name) if name == "if")
+                && matches!(self.peek_at(1), SolKind::LParen)
+            {
+                vec![self.parse_if_stmt()?] // `else if` → nested If
+            } else {
+                self.parse_brace_block()?
+            }
+        } else {
+            Vec::new()
+        };
+        self.leave();
+        Ok(Stmt::If { cond, then_body, else_body, span })
     }
 
     /// Parse one statement inside a mutating body: a `require(...)` guard or an
     /// assignment. `require` is a contextual keyword (a plain identifier elsewhere),
     /// recognized only when it leads a statement and is followed by `(`.
     fn parse_stmt(&mut self) -> Result<Stmt, CompileError> {
+        // `if` is contextual (a plain identifier elsewhere): it leads an `if`
+        // statement only when followed by `(`.
+        if matches!(self.peek(), SolKind::Ident(name) if name == "if")
+            && matches!(self.peek_at(1), SolKind::LParen)
+        {
+            return self.parse_if_stmt();
+        }
         if matches!(self.peek(), SolKind::Ident(name) if name == "require")
             && matches!(self.peek_at(1), SolKind::LParen)
         {
@@ -496,6 +537,7 @@ impl Parser<'_> {
             SolKind::Ge => CmpOp::Ge,
             SolKind::Le => CmpOp::Le,
             SolKind::EqEq => CmpOp::Eq,
+            SolKind::BangEq => CmpOp::Neq,
             _ => return Ok(lhs),
         };
         let op_span = self.span();

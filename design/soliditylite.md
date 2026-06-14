@@ -167,6 +167,21 @@
 > cut lands (loupe records it). The off-chain lint catches mistakes pre-gas; this binds the invariant
 > even for a raw agent-signed tx. Next: the browser cut ClosureTool (confirm_guard-gated, in-tab
 > surface), dynamic types (string/bytes/arrays), embed Diamond bytecode for a distributable CLI.
+>
+> **UPDATE 2026-06-14 (loop tick 15): `if`/`else` control flow + `!=` — the branch stretch.** The
+> compiler could express straight-line writes + `require` guards but had NO conditionals — agents
+> couldn't write access branches, clamps, or state machines. Added `if (<cond>) { … } [else { … }]`
+> (incl. `else if` chains, arbitrary nesting, any mutating stmt in a branch incl. nested `require`) and
+> the `!=` comparison. VALUE-TYPE-ONLY → additive, no dynamic-ABI risk: `Stmt::If` /
+> `LoweredStmt::If`, a recursive `emit_stmts`/`lower_stmts`, and `cut_guard`-style
+> `cond ISZERO PUSH2 <else|end> JUMPI … [PUSH2 <end> JUMP] <else> <end>:` codegen on the existing
+> two-pass label machinery (the unused `op::_JUMP` is now `op::JUMP`). The 4 value-type return/assign
+> tails stay BYTE-IDENTICAL (all 97 prior soliditylite golden tests + 701 lib tests green; clippy
+> all-targets + wasm clean). PROVEN LIVE on Tempo: a `Clamp` facet (`if (x > 100) { v = 100; } else
+> { v = x; }`) compiled in-crate, deployed via `facet deploy` to `0xe4ce1c6d…` →
+> `setClamped(50)` ⇒ `get()==50` (else branch), `setClamped(200)` ⇒ `get()==100` (then branch). Both
+> branches execute correctly on the real EVM. Next: dynamic types (string/bytes/arrays — the bigger,
+> multi-tick codec+storage rewrite), the browser cut ClosureTool, embed Diamond bytecode.
 
 > A hand-rolled, in-browser Solidity/EVM-subset → EVM-bytecode compiler that lets an
 > agent **write, compile, deploy, and `diamondCut`** its own facet — the EVM analog of

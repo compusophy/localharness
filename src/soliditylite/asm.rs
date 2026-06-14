@@ -66,7 +66,7 @@ pub mod op {
     /// Pop the top stack item (`POP`).
     pub const POP: u8 = 0x50;
     /// Unconditional absolute jump (`JUMP(dest)`).
-    pub const _JUMP: u8 = 0x56;
+    pub const JUMP: u8 = 0x56;
     /// Conditional absolute jump (`JUMPI(dest, cond)`).
     pub const JUMPI: u8 = 0x57;
     /// Valid jump target marker (`JUMPDEST`).
@@ -365,9 +365,9 @@ mod tests {
         let mut a = Asm::new();
         let l = a.new_label();
         a.jumpdest(l); // L = offset 0
-        a.push_label(l).emit(op::_JUMP);
+        a.push_label(l).emit(op::JUMP);
         let out = a.finish();
-        assert_eq!(out, vec![op::JUMPDEST, op::PUSH2, 0x00, 0x00, op::_JUMP]);
+        assert_eq!(out, vec![op::JUMPDEST, op::PUSH2, 0x00, 0x00, op::JUMP]);
         let operand = u16::from_be_bytes([out[2], out[3]]) as usize;
         assert_eq!(operand, 0);
     }

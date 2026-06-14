@@ -320,6 +320,33 @@ mod tests {
         assert_eq!(art.init_code, super::asm::init_wrapper(rt));
     }
 
+    /// `if`/`else`/`else if` control flow + `==`/`!=` compile (the branch
+    /// stretch). One facet exercises every new shape: an `if (==)`, an
+    /// `else if (!=)` chain, a `require` NESTED inside a branch (which must still
+    /// allocate the shared revert stub), and a plain `else`. Behavior is proven
+    /// live on-chain (see the loop-tick report); this pins that the front-to-back
+    /// pipeline accepts the grammar and lowers the nested branch without error.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn compile_if_else_and_neq() {
+        let art = super::compile(
+            "facet Gate { uint256 v; \
+             function set(uint256 x) external { \
+                 if (x == 0) { v = 1; } \
+                 else if (x != 5) { require(x < 100, \"hi\"); v = x; } \
+                 else { v = 5; } \
+             } \
+             function get() external view returns (uint256) { return v; } }",
+        )
+        .expect("if/else/else-if + ==/!= + nested require must compile");
+        assert_eq!(art.selectors.len(), 2, "set + get");
+        // The branch emits an unconditional JUMP over the else, and the nested
+        // require keeps the REVERT stub.
+        assert!(art.runtime.contains(&op::JUMP), "an if/else must JUMP over the else branch");
+        assert!(art.runtime.contains(&op::REVERT), "a require nested in a branch keeps the revert stub");
+        assert_eq!(art.init_code, super::asm::init_wrapper(&art.runtime));
+    }
+
     /// Bad source returns a clean `CompileError` (not a panic), with a coded,
     /// span-pinned diagnostic that `render`s a caret.
     #[cfg(feature = "wallet")]

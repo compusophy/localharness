@@ -71,6 +71,13 @@ enum LoweredStmt {
     Assign(LoweredAssign),
     /// `emit <Event>(…)` — append an EVM `LOGn`.
     Emit(LoweredEmit),
+    /// `if (<cond>) { <then> } else { <else> }` — branch on `cond` (the branch
+    /// stretch). `else_body` is empty when there is no `else`.
+    If {
+        cond: LoweredExpr,
+        then_body: Vec<LoweredStmt>,
+        else_body: Vec<LoweredStmt>,
+    },
 }
 
 /// A resolved `emit` statement: the event's topic0 (the FULL 32-byte keccak of the
@@ -180,6 +187,10 @@ impl LoweredExpr {
                     }
                     CmpOp::Eq => {
                         a.emit(op::EQ);
+                    }
+                    // `a != b` ⇔ NOT (a == b).
+                    CmpOp::Neq => {
+                        a.emit(op::EQ).emit(op::ISZERO);
                     }
                     // `a <= b` ⇔ NOT (a > b); `a >= b` ⇔ NOT (a < b).
                     CmpOp::Le => {
@@ -386,23 +397,13 @@ fn emit_full_body(a: &mut Asm, body: Label, b: &Body) {
         }
         Body::Mutating(stmts) => {
             a.jumpdest(body);
-            // Allocate ONE shared revert label for this function's `require`s; only
-            // emit the stub if at least one require references it (a require-free
-            // body keeps byte-identical to the pre-require Mutating shape).
-            let has_require = stmts.iter().any(|s| matches!(s, LoweredStmt::Require(_)));
+            // Allocate ONE shared revert label for this function's `require`s (incl.
+            // any nested inside `if` branches); only emit the stub if at least one
+            // require references it (a require-free body keeps byte-identical to the
+            // pre-require Mutating shape).
+            let has_require = stmts.iter().any(stmt_has_require);
             let revert = if has_require { Some(a.new_label()) } else { None };
-            for stmt in stmts {
-                match stmt {
-                    LoweredStmt::Require(cond) => {
-                        // Emit cond; if FALSE (zero) jump to the revert stub.
-                        // `cond ISZERO PUSH2 <revert> JUMPI`.
-                        cond.emit(a);
-                        a.emit(op::ISZERO).push_label(revert.expect("revert label allocated when a require is present")).emit(op::JUMPI);
-                    }
-                    LoweredStmt::Assign(assign) => assign.emit(a),
-                    LoweredStmt::Emit(ev) => ev.emit(a),
-                }
-            }
+            emit_stmts(a, stmts, revert);
             // Empty return so the diamond fallback returns cleanly.
             a.push_u64(0x00).push_u64(0x00).emit(op::RETURN);
             // The shared revert stub (only when a require exists): a failed guard
@@ -410,6 +411,65 @@ fn emit_full_body(a: &mut Asm, body: Label, b: &Body) {
             // tx revert is the behavior we need).
             if let Some(revert) = revert {
                 a.jumpdest(revert).push_u64(0x00).push_u64(0x00).emit(op::REVERT);
+            }
+        }
+    }
+}
+
+/// `true` if `s` (or any statement nested inside its `if` branches) is a
+/// `require` — so a function with a guarded branch still allocates the shared
+/// revert stub.
+#[cfg(feature = "wallet")]
+fn stmt_has_require(s: &LoweredStmt) -> bool {
+    match s {
+        LoweredStmt::Require(_) => true,
+        LoweredStmt::If { then_body, else_body, .. } => {
+            then_body.iter().any(stmt_has_require) || else_body.iter().any(stmt_has_require)
+        }
+        _ => false,
+    }
+}
+
+/// Emit a sequence of [`LoweredStmt`] in order, branching to the shared `revert`
+/// stub on a failed `require`. Recurses for `if`/`else`. Emitting `Require`,
+/// `Assign`, and `Emit` is byte-identical to the pre-branch inline loop, so the
+/// golden gates for those shapes are unaffected.
+#[cfg(feature = "wallet")]
+fn emit_stmts(a: &mut Asm, stmts: &[LoweredStmt], revert: Option<Label>) {
+    for stmt in stmts {
+        match stmt {
+            LoweredStmt::Require(cond) => {
+                // Emit cond; if FALSE (zero) jump to the revert stub.
+                // `cond ISZERO PUSH2 <revert> JUMPI`.
+                cond.emit(a);
+                a.emit(op::ISZERO)
+                    .push_label(revert.expect("revert label allocated when a require is present"))
+                    .emit(op::JUMPI);
+            }
+            LoweredStmt::Assign(assign) => assign.emit(a),
+            LoweredStmt::Emit(ev) => ev.emit(a),
+            LoweredStmt::If { cond, then_body, else_body } => {
+                // `cond ISZERO` → if cond is FALSE, skip the then-branch.
+                cond.emit(a);
+                a.emit(op::ISZERO);
+                if else_body.is_empty() {
+                    //   <cond> ISZERO PUSH2 <end> JUMPI ; <then> ; <end>:
+                    let end = a.new_label();
+                    a.push_label(end).emit(op::JUMPI);
+                    emit_stmts(a, then_body, revert);
+                    a.jumpdest(end);
+                } else {
+                    //   <cond> ISZERO PUSH2 <else> JUMPI ; <then> ; PUSH2 <end> JUMP ;
+                    //   <else>: <else-body> ; <end>:
+                    let else_lbl = a.new_label();
+                    let end = a.new_label();
+                    a.push_label(else_lbl).emit(op::JUMPI);
+                    emit_stmts(a, then_body, revert);
+                    a.push_label(end).emit(op::JUMP);
+                    a.jumpdest(else_lbl);
+                    emit_stmts(a, else_body, revert);
+                    a.jumpdest(end);
+                }
             }
         }
     }
@@ -714,6 +774,47 @@ fn lower_emit(
     Ok(LoweredEmit { topic0, indexed, data })
 }
 
+/// Lower a list of mutating-body statements (a function body or an `if`/`else`
+/// branch). Recurses for `if`.
+#[cfg(feature = "wallet")]
+fn lower_stmts(facet: &Facet, r: &Resolver, stmts: &[Stmt]) -> Result<Vec<LoweredStmt>, CompileError> {
+    stmts.iter().map(|s| lower_stmt(facet, r, s)).collect()
+}
+
+/// Lower one mutating-body statement: a `require` guard, a scalar/mapping
+/// assignment, an `emit`, or an `if`/`else` branch (its bodies lowered
+/// recursively). Anything else (a bare `return`, a nested raw block) is
+/// parser-unreachable in a mutating body and surfaces a clean error.
+#[cfg(feature = "wallet")]
+fn lower_stmt(facet: &Facet, r: &Resolver, stmt: &Stmt) -> Result<LoweredStmt, CompileError> {
+    use crate::error_codes as codes;
+    Ok(match stmt {
+        Stmt::Require { cond, .. } => LoweredStmt::Require(r.lower_expr(cond)?),
+        Stmt::Assign { name, value, span } => LoweredStmt::Assign(LoweredAssign::Scalar {
+            slot: r.scalar_slot(name, *span)?,
+            value: r.lower_expr(value)?,
+        }),
+        Stmt::IndexAssign { base: map_name, key, value, span } => LoweredStmt::Assign(LoweredAssign::MapEntry {
+            base_slot: r.mapping_base_slot(map_name, *span)?,
+            key: r.lower_expr(key)?,
+            value: r.lower_expr(value)?,
+        }),
+        Stmt::Emit { name: ev_name, args, span } => LoweredStmt::Emit(lower_emit(facet, r, ev_name, args, *span)?),
+        Stmt::If { cond, then_body, else_body, .. } => LoweredStmt::If {
+            cond: r.lower_expr(cond)?,
+            then_body: lower_stmts(facet, r, then_body)?,
+            else_body: lower_stmts(facet, r, else_body)?,
+        },
+        other => {
+            return Err(CompileError::at_code(
+                codes::UNSUPPORTED_FEATURE,
+                format!("only `require`, `if`, `emit`, and assignments are supported in a mutating body, got {other:?}"),
+                r.func.span,
+            ))
+        }
+    })
+}
+
 /// Compile a typed [`Facet`] to a deployable [`CompiledArtifact`].
 ///
 /// Selectors are `keccak256("<name>(<types>)")[..4]` (the ABI canonical signature)
@@ -761,44 +862,8 @@ pub fn compile(facet: &Facet) -> Result<CompiledArtifact, CompileError> {
                 Body::View(BodyValue::StorageSlot(r.scalar_slot(name, *span)?))
             }
             Stmt::Return(expr) => Body::ViewExpr(r.lower_expr(expr)?),
-            // Mutating function: `{ (require(...)|<stateVar> = e|<map>[k] = e); … }`.
-            Stmt::Block(stmts) => {
-                let mut lowered_stmts = Vec::with_capacity(stmts.len());
-                for stmt in stmts {
-                    match stmt {
-                        Stmt::Require { cond, .. } => {
-                            lowered_stmts.push(LoweredStmt::Require(r.lower_expr(cond)?));
-                        }
-                        Stmt::Assign { name, value, span } => {
-                            lowered_stmts.push(LoweredStmt::Assign(LoweredAssign::Scalar {
-                                slot: r.scalar_slot(name, *span)?,
-                                value: r.lower_expr(value)?,
-                            }));
-                        }
-                        Stmt::IndexAssign { base: map_name, key, value, span } => {
-                            lowered_stmts.push(LoweredStmt::Assign(LoweredAssign::MapEntry {
-                                base_slot: r.mapping_base_slot(map_name, *span)?,
-                                key: r.lower_expr(key)?,
-                                value: r.lower_expr(value)?,
-                            }));
-                        }
-                        Stmt::Emit { name: ev_name, args, span } => {
-                            lowered_stmts.push(LoweredStmt::Emit(lower_emit(facet, &r, ev_name, args, *span)?));
-                        }
-                        // A return/nested block inside a mutating block is unreachable
-                        // from the parser (it only emits requires + assignments), but
-                        // guard it as a clean error rather than panicking.
-                        other => {
-                            return Err(CompileError::at_code(
-                                codes::UNSUPPORTED_FEATURE,
-                                format!("only `require` and assignments are supported in a mutating body, got {other:?}"),
-                                func.span,
-                            ))
-                        }
-                    }
-                }
-                Body::Mutating(lowered_stmts)
-            }
+            // Mutating function: `{ (require|if|emit|<stateVar> = e|<map>[k] = e); … }`.
+            Stmt::Block(stmts) => Body::Mutating(lower_stmts(facet, &r, stmts)?),
             // A bare assignment as a whole function body is parser-unreachable; treat
             // it as an unsupported shape rather than panicking.
             other => {

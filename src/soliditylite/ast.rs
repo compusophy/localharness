@@ -203,6 +203,8 @@ pub enum CmpOp {
     Le,
     /// `==` — `EQ`.
     Eq,
+    /// `!=` — `ISZERO(EQ(a, b))` (true iff not equal).
+    Neq,
 }
 
 /// A statement. View getters are a single `return <expr>;`; mutating functions
@@ -235,6 +237,13 @@ pub enum Stmt {
     /// statements, emitted in order. (View getters never use this; their body is a
     /// bare [`Stmt::Return`], so tick-5's pattern-matches are unaffected.)
     Block(Vec<Stmt>),
+    /// `if (<cond>) { <stmt>* } [else { <stmt>* }]` — conditional control flow in a
+    /// mutating body (the branch stretch). `cond` is evaluated; when FALSE (zero),
+    /// execution skips `then_body` and runs `else_body` (empty when there is no
+    /// `else`). `else if` chains desugar to a nested `If` as the sole `else_body`
+    /// statement. Branches may nest and hold any mutating statement (assignments,
+    /// `require`, `emit`, further `if`s). `span` is the `if` keyword's span.
+    If { cond: Expr, then_body: Vec<Stmt>, else_body: Vec<Stmt>, span: Span },
 }
 
 /// An expression. The floor grammar has the integer literal; the storage stretch

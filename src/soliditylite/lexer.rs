@@ -87,6 +87,8 @@ pub enum SolKind {
     Le,
     /// `==` (equality comparison).
     EqEq,
+    /// `!=` (inequality comparison).
+    BangEq,
     /// End of input.
     Eof,
 }
@@ -157,6 +159,7 @@ impl Lexer<'_> {
         let two = match (b, next) {
             (b'=', Some(b'>')) => Some(SolKind::FatArrow),
             (b'=', Some(b'=')) => Some(SolKind::EqEq),
+            (b'!', Some(b'=')) => Some(SolKind::BangEq),
             (b'>', Some(b'=')) => Some(SolKind::Ge),
             (b'<', Some(b'=')) => Some(SolKind::Le),
             _ => None,
