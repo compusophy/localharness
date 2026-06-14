@@ -32,6 +32,12 @@ thread_local! {
     /// recorded by `run_send`. The confirming call is only accepted when the
     /// pending code appears here — i.e. the user actually typed it.
     static LAST_USER_MSG: RefCell<String> = const { RefCell::new(String::new()) };
+    /// Set whenever the gate DENIES a call (a fresh challenge or a
+    /// not-typed-by-user re-deny). The auto-continue loop reads + clears this
+    /// to STOP and wait for the owner to type the code — otherwise the denied
+    /// tool call still counts as turn activity and the loop would re-issue the
+    /// same (guaranteed-failing) call up to the cap, burning credits.
+    static AWAITING_CONFIRMATION: RefCell<bool> = const { RefCell::new(false) };
 }
 
 /// Tools that must never execute without a user-typed confirmation:
@@ -48,6 +54,14 @@ const CONFIRM_GATED: &[&str] = &[
 /// validates against something the user typed.
 pub(crate) fn note_user_message(text: &str) {
     LAST_USER_MSG.with(|m| *m.borrow_mut() = text.to_string());
+}
+
+/// Read + clear the "a confirm-gated call was denied this turn, awaiting the
+/// owner to type the code" flag. Called by `stream_turn` to convert a turn
+/// whose only tool activity was a blocked confirmation into a STOP (wait for
+/// the user's next message) instead of an auto-continue.
+pub(crate) fn take_awaiting_confirmation() -> bool {
+    AWAITING_CONFIRMATION.with(|f| f.replace(false))
 }
 
 /// A fresh single-use confirmation code from the platform CSPRNG
@@ -80,6 +94,11 @@ impl PreToolCallDecideHook for TypedConfirmationGuard {
         let last_user = LAST_USER_MSG.with(|m| m.borrow().clone());
         let outcome =
             GATE.with(|g| g.borrow_mut().check(&fp, confirmation, &last_user, fresh_nonce()));
+        // A denial means the loop must STOP and wait for the owner to type the
+        // code; an approval clears any stale flag from a prior turn.
+        AWAITING_CONFIRMATION.with(|f| {
+            *f.borrow_mut() = !matches!(outcome, ConfirmOutcome::Approved);
+        });
         match outcome {
             ConfirmOutcome::Approved => Ok(HookResult::allow()),
             ConfirmOutcome::Challenge { nonce } => {

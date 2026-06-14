@@ -696,13 +696,25 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
     // becomes the RETRYABLE `EmptyTruncated` so the loop continues toward an
     // answer instead of dead-ending.
     let retryable_empty = matches!(empty_kind, Some(EmptyKind::Truncated));
-    classify_turn(
+    // A confirm-gated tool that was DENIED (challenge issued, or the code
+    // wasn't typed by the owner) emitted a ToolCall chunk → `saw_tool_call`,
+    // which would classify as `Incomplete` and auto-continue. But the gate is
+    // waiting on the OWNER to type the code in their NEXT message; re-running
+    // the turn just re-supplies the same code and re-denies, burning credits up
+    // to the cap. Stop instead — like a `FinalAnswer` — so control returns to
+    // the user (whose next message refreshes `LAST_USER_MSG`).
+    let awaiting_confirmation = confirm_guard::take_awaiting_confirmation();
+    let outcome = classify_turn(
         saw_finish,
         saw_question,
         saw_tool_call,
         any_visible,
         retryable_empty,
-    )
+    );
+    if awaiting_confirmation && matches!(outcome, TurnOutcome::Incomplete) {
+        return TurnOutcome::FinalAnswer;
+    }
+    outcome
 }
 
 /// Surface a turn failure. Renders the error INTO the assistant bubble
