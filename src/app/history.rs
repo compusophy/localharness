@@ -10,6 +10,12 @@
 //! After every successful turn: snapshot the agent's history and
 //! atomically rewrite `HISTORY_FILE`. Best-effort — failures log to
 //! the console but don't bubble up to the UI.
+//!
+//! At-rest encryption is the seed-keyed [`super::shared_opfs`]
+//! `EncryptedFilesystem` ALONE — the same single layer the model /
+//! lessons / agent-config files use. (Pre-#79 history carried an extra
+//! per-origin device-key layer that [`load_into_pending`] still peels for
+//! backward-read.)
 
 use maud::html;
 
@@ -34,7 +40,12 @@ pub(crate) async fn load_into_pending() {
         // Empty or missing — fresh session.
         _ => return,
     };
-    // Decrypt at-rest history; legacy plaintext falls through unchanged.
+    // `shared_opfs()` (the seed-keyed `EncryptedFilesystem`) already decrypted
+    // the at-rest layer on `read`, so `bytes` is the transcript JSON for
+    // anything saved by the current single-layer path. BACKWARD-READ: history
+    // written before issue #79 carried a SECOND device-key layer underneath, so
+    // try peeling it; `encryption::open` returns `None` for non-device-key bytes
+    // (the new single-layer/plaintext case), leaving them untouched.
     let bytes = super::encryption::open(&bytes).await.unwrap_or(bytes);
 
     // Project the bytes into a transcript and paint each entry. Try BOTH wire
@@ -72,10 +83,15 @@ pub(crate) async fn save_from_agent() {
     });
     let Some(bytes) = bytes else { return };
     let fs = super::shared_opfs();
-    // Encrypt at rest; fall back to plaintext if sealing fails so we
-    // never drop a snapshot.
-    let data = super::encryption::seal(&bytes).await.unwrap_or(bytes);
-    if let Err(err) = fs.write_atomic(HISTORY_FILE, &data).await {
+    // Write raw bytes: `shared_opfs()` is the seed-keyed `EncryptedFilesystem`
+    // once a wallet is loaded, so it seals at rest on its own. The old
+    // app-level device-key `encryption::seal` on top was a redundant SECOND
+    // layer (issue #79) — and unlike the seed layer it keyed off localStorage,
+    // so losing that key while keeping the seed lost ALL history. Match the
+    // sibling persisters (model/lessons/agent_config), which already lean
+    // solely on the seed layer. Seedless origins (no `EncryptedFilesystem`
+    // installed) persist plaintext, same as those siblings.
+    if let Err(err) = fs.write_atomic(HISTORY_FILE, &bytes).await {
         web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
             "history save: {err}"
         )));
