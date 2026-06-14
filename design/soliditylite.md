@@ -41,6 +41,17 @@
 > real chain is the authoritative validator and it avoids a heavy dev-dep. Next: the FRONTEND
 > (lexer/parser/typecheck forked from rustlite) + storage/ABI codegen, so a real facet compiles
 > from SOURCE (then deploy+cut it via the proven path).
+>
+> **UPDATE 2026-06-14 (loop tick 5): facets compile FROM SOURCE — frontend live.** Added the
+> SolidityLite frontend `src/soliditylite/{lexer,ast,parser,codegen}.rs` (recursive-descent,
+> rustlite-style, MAX_RECURSION_DEPTH guard, reuses rustlite's `CompileError`/`Span`) + a
+> `compile(src) -> CompiledArtifact`. Grammar: `facet { (function name() external view returns
+> (uint256) { return <intlit | stateVar>; })+ }`, incl. a `uint256` state-var read → SLOAD at the
+> keccak storage slot. GOLDEN GATE: `compile(get→42)` == tick-4's live-proven `emit_constant_getter`
+> BYTE-FOR-BYTE. LIVE: compiled a 2-function facet from source → deployed → `a()`==1, `b()`==2 on
+> Moderato (multi-function dispatch from source works). 34 soliditylite tests, wasm+clippy clean.
+> Next: parameters (calldata decode) + `SSTORE` + `require` + events → compile the full CounterFacet
+> from source, then deploy+cut it via the proven path.
 
 > A hand-rolled, in-browser Solidity/EVM-subset → EVM-bytecode compiler that lets an
 > agent **write, compile, deploy, and `diamondCut`** its own facet — the EVM analog of

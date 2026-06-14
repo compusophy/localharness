@@ -34,7 +34,7 @@ pub mod op {
     /// Store a 32-byte word into memory (`MSTORE(off, word)`).
     pub const MSTORE: u8 = 0x52;
     /// Load a 32-byte word from storage (`SLOAD(slot)`).
-    pub const _SLOAD: u8 = 0x54;
+    pub const SLOAD: u8 = 0x54;
     /// Store a 32-byte word into storage (`SSTORE(slot, word)`).
     pub const _SSTORE: u8 = 0x55;
     /// Size of the call's calldata in bytes (`CALLDATASIZE`).

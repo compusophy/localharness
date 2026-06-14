@@ -9,23 +9,36 @@
 //! calls) — the same self-sovereign property that lets it run in the user's
 //! browser with no toolchain.
 //!
-//! ## What's here (Installment 1 foundation)
+//! ## What's here (Installment 1)
 //!
 //! - [`asm`] — the EVM bytecode assembler: raw opcodes, minimal-width `push`,
 //!   two-pass absolute-jump label resolution, and [`asm::init_wrapper`] (the
 //!   `CODECOPY`/`RETURN` contract-creation constructor).
-//! - [`emit_constant_getter`] — a worked emitter that mirrors design §5's
-//!   dispatcher + getter snippet exactly, producing a [`CompiledArtifact`] whose
-//!   `init_code` is directly deployable via a CREATE transaction.
-//!
-//! The real compiler pipeline (`lex → parse → typecheck → codegen`, mirroring
-//! [`crate::rustlite::compile`]) is the next layer and is NOT yet built.
+//! - [`lexer`] / [`ast`] / [`parser`] — the FRONTEND: a `facet { fn+ }` source
+//!   string → tokens → a [`ast::Facet`] tree, in the recursive-descent style of
+//!   [`crate::rustlite`] (same `MAX_RECURSION_DEPTH` guard, same shared
+//!   [`crate::rustlite::CompileError`]/[`crate::rustlite::Span`] diagnostics).
+//! - [`codegen`] — the EVM emitter: a typed [`ast::Facet`] → runtime bytecode,
+//!   wrapped into deployable init code. Owns the SHARED dispatch/body emission.
+//! - [`compile`] — the top-level `&str → CompiledArtifact` pipeline, mirroring
+//!   [`crate::rustlite::compile`].
+//! - [`emit_constant_getter`] — the worked single-function emitter, refactored to
+//!   drive [`codegen::assemble`] so its bytes are byte-IDENTICAL to the
+//!   source-compiled path for the constant-getter case (the golden gate). Its
+//!   `init_code` is the same shape already proven deployable on the live Tempo
+//!   EVM (design `soliditylite.md` §4 update, loop tick 4).
 
 /// EVM bytecode assembler: opcodes, minimal-width push, two-pass label
 /// resolution, and the init-wrapper constructor.
 pub mod asm;
-
-use asm::{op, Asm};
+/// SolidityLite AST — the parsed shape of the v1 facet subset.
+pub mod ast;
+/// EVM codegen — a typed facet → runtime bytecode + the shared dispatch/body emit.
+pub mod codegen;
+/// Byte-level lexer for the v1 Solidity-subset surface.
+pub mod lexer;
+/// Recursive-descent parser (with the rustlite recursion guard).
+pub mod parser;
 
 /// A compiled contract: the deployed runtime bytecode plus the full init code
 /// (constructor + runtime) to hand to a CREATE transaction.
@@ -60,54 +73,35 @@ pub struct CompiledArtifact {
 /// `value_be32` is returned verbatim as the 32-byte ABI-encoded `uint256`/word.
 /// The all-zero placeholders for `<FB>`/`<BODY>` are back-patched by the
 /// assembler in pass 2. Zeros use `PUSH1 0x00`, never `PUSH0`.
+///
+/// This now drives the SHARED [`codegen::assemble`] (a one-function call), so its
+/// output is byte-IDENTICAL to [`compile`]'ing a single `return <intlit>;` facet
+/// — the golden invariant the source-driven path is gated against.
 pub fn emit_constant_getter(selector: [u8; 4], value_be32: [u8; 32]) -> CompiledArtifact {
-    let mut a = Asm::new();
-    let fb = a.new_label();
-    let body = a.new_label();
-
-    // --- calldatasize guard: `< 4 bytes → fallback revert` ---
-    // PUSH1 0x04 CALLDATASIZE LT PUSH2 <FB> JUMPI
-    a.push_u64(0x04)
-        .emit(op::CALLDATASIZE)
-        .emit(op::LT)
-        .push_label(fb)
-        .emit(op::JUMPI);
-
-    // --- selector extract: `calldata[0:32] >> 224` ---
-    // PUSH1 0x00 CALLDATALOAD PUSH1 0xE0 SHR
-    a.push_u64(0x00)
-        .emit(op::CALLDATALOAD)
-        .push_u64(0xE0)
-        .emit(op::SHR);
-
-    // --- dispatch: `DUP1 PUSH4 <sel> EQ PUSH2 <BODY> JUMPI` ---
-    a.emit(op::DUP1)
-        .push(&selector) // PUSH4 (selectors are 4 significant bytes; non-zero high byte)
-        .emit(op::EQ)
-        .push_label(body)
-        .emit(op::JUMPI);
-
-    // --- fallback: no match → REVERT(0, 0) ---
-    // FB: JUMPDEST PUSH1 0x00 PUSH1 0x00 REVERT
-    a.jumpdest(fb)
-        .push_u64(0x00)
-        .push_u64(0x00)
-        .emit(op::REVERT);
-
-    // --- body: MSTORE(0, value) ; RETURN(0, 0x20) ---
-    // BODY: JUMPDEST PUSH32 <value> PUSH1 0x00 MSTORE PUSH1 0x20 PUSH1 0x00 RETURN
-    a.jumpdest(body)
-        .push32(&value_be32) // PUSH32 — the full 32-byte word, per design §5
-        .push_u64(0x00)
-        .emit(op::MSTORE)
-        .push_u64(0x20)
-        .push_u64(0x00)
-        .emit(op::RETURN);
-
-    let runtime = a.finish();
-    let init_code = asm::init_wrapper(&runtime);
-    CompiledArtifact { init_code, runtime }
+    codegen::assemble(&[(selector, codegen::BodyValue::Const(value_be32))])
 }
+
+/// Compile a SolidityLite source string into a deployable [`CompiledArtifact`].
+///
+/// Pipeline (mirroring [`crate::rustlite::compile`]): `lex → parse → codegen`. The
+/// v1 floor grammar is `facet <Ident> { <fn>+ }` where each `<fn>` is `function
+/// <ident>() external view returns (uint256) { return <intlit>; }`; a
+/// `return <stateVar>;` over a declared `uint256 <name>;` lowers to an `SLOAD` of
+/// the keccak-namespaced slot (design §5 storage). Selectors are
+/// `keccak256("<name>()")[..4]`.
+///
+/// Errors are the shared [`crate::rustlite::CompileError`] (`LH0xxx` codes), each
+/// pinned to a source span — `err.render(source)` shows the offending line + a
+/// caret. Gated on `wallet` because selector + storage-slot keccak live there.
+#[cfg(feature = "wallet")]
+pub fn compile(source: &str) -> Result<CompiledArtifact, CompileError> {
+    let tokens = lexer::lex(source)?;
+    let facet = parser::parse(&tokens)?;
+    codegen::compile(&facet)
+}
+
+#[cfg(feature = "wallet")]
+use crate::rustlite::CompileError;
 
 #[cfg(test)]
 mod tests {
@@ -258,6 +252,99 @@ mod tests {
             5b7f000000000000000000000000000000000000000000000000000000000000002a6000526020600 0f3"
             .replace([' ', '\n'], ""); // readability-split literal; whitespace stripped
         assert_eq!(hex, expected, "init_code drifted: {hex}");
+    }
+
+    // ── FRONTEND (source → bytecode) tests ──────────────────────────────────
+
+    /// THE GOLDEN GATE: the source-driven path produces the SAME bytecode as the
+    /// hand-built emitter (which is already proven to deploy + run live). If this
+    /// holds, `compile`'s output for the constant-getter case inherits the live
+    /// proof for free.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn compile_get_42_equals_emit_constant_getter() {
+        let from_source =
+            super::compile("facet C { function get() external view returns (uint256) { return 42; } }")
+                .expect("floor-grammar source must compile");
+        let from_emitter = emit_constant_getter([0x6d, 0x4c, 0xe6, 0x3c], word_42());
+        assert_eq!(
+            from_source.init_code, from_emitter.init_code,
+            "source-compiled init_code must be byte-identical to the hand-built emitter"
+        );
+        assert_eq!(from_source.runtime, from_emitter.runtime);
+    }
+
+    /// A 2-function facet compiles; each function's body returns its own constant
+    /// when reached via its own selector. Spot-check the structure: two dispatch
+    /// arms (each `DUP1 PUSH4 <sel> EQ PUSH2 <body> JUMPI`) before the fallback.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn compile_two_function_facet() {
+        let art = super::compile(
+            "facet Two { function a() external view returns (uint256) { return 1; } \
+             function b() external view returns (uint256) { return 2; } }",
+        )
+        .expect("a 2-function facet must compile");
+        let rt = &art.runtime;
+        // Selectors: a() and b().
+        let sel_a = crate::registry::selector("a()");
+        let sel_b = crate::registry::selector("b()");
+        // Both PUSH4 selector immediates appear in the dispatch region.
+        let push4_a: Vec<u8> = std::iter::once(op::PUSH1 + 3).chain(sel_a).collect();
+        let push4_b: Vec<u8> = std::iter::once(op::PUSH1 + 3).chain(sel_b).collect();
+        assert!(
+            rt.windows(push4_a.len()).any(|w| w == push4_a.as_slice()),
+            "a() selector PUSH4 must be present"
+        );
+        assert!(
+            rt.windows(push4_b.len()).any(|w| w == push4_b.as_slice()),
+            "b() selector PUSH4 must be present"
+        );
+        // The constants 1 and 2 are each returned by a PUSH32 body.
+        let mut one = [0u8; 32];
+        one[31] = 1;
+        let mut two = [0u8; 32];
+        two[31] = 2;
+        assert!(rt.windows(32).any(|w| w == one), "constant 1 must be embedded");
+        assert!(rt.windows(32).any(|w| w == two), "constant 2 must be embedded");
+        // init_code wraps the runtime.
+        assert_eq!(art.init_code, super::asm::init_wrapper(rt));
+    }
+
+    /// Bad source returns a clean `CompileError` (not a panic), with a coded,
+    /// span-pinned diagnostic that `render`s a caret.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn bad_source_is_a_clean_compile_error() {
+        // Missing the trailing `;` after the return.
+        let src = "facet C { function get() external view returns (uint256) { return 42 } }";
+        let err = super::compile(src).expect_err("missing semicolon must fail cleanly");
+        assert!(err.code.is_some(), "error must carry an LH code");
+        assert!(err.to_string().starts_with("LH0"), "surfaced: {err}");
+        // The rendered diagnostic points at a source location.
+        assert!(err.render(src).contains("line "), "{}", err.render(src));
+        // An empty facet is also a clean error, never a panic.
+        assert!(super::compile("facet C { }").is_err());
+        // A stray byte the floor grammar can't begin a token with.
+        assert!(super::compile("facet C { @ }").is_err());
+    }
+
+    /// Breadth must NOT trip the depth guard: a facet with far more functions than
+    /// `MAX_RECURSION_DEPTH` still compiles, proving the guard counts NESTING (per
+    /// parse path), not the number of declared functions. (The guard's depth-cap
+    /// trigger itself is unit-tested directly in `parser::tests::recursion_guard_*`,
+    /// since the floor grammar's flat expressions can't naturally nest 96 deep.)
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn breadth_does_not_trip_the_depth_guard() {
+        let mut src = String::from("facet Many {");
+        for i in 0..300 {
+            src.push_str(&format!(
+                " function f{i}() external view returns (uint256) {{ return {i}; }}"
+            ));
+        }
+        src.push('}');
+        assert!(super::compile(&src).is_ok(), "breadth (many fns) must not trip the depth guard");
     }
 
     /// 0x-prefixed lowercase hex of a byte slice (test helper).
