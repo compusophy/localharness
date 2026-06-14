@@ -556,19 +556,47 @@ impl Parser<'_> {
 
     /// `term ("+" term)*` — folds left so `a + b + c` parses as `(a + b) + c`.
     fn parse_add(&mut self) -> Result<Expr, CompileError> {
-        let mut lhs = self.parse_primary()?;
+        let mut lhs = self.parse_mul()?;
         loop {
             let op_span = self.span();
             match self.peek() {
                 SolKind::Plus => {
                     self.advance(); // `+`
-                    let rhs = self.parse_primary()?;
+                    let rhs = self.parse_mul()?;
                     lhs = Expr::Add { lhs: Box::new(lhs), rhs: Box::new(rhs), span: op_span };
                 }
                 SolKind::Minus => {
                     self.advance(); // `-`
-                    let rhs = self.parse_primary()?;
+                    let rhs = self.parse_mul()?;
                     lhs = Expr::Sub { lhs: Box::new(lhs), rhs: Box::new(rhs), span: op_span };
+                }
+                _ => break,
+            }
+        }
+        Ok(lhs)
+    }
+
+    /// `primary ( ("*"|"/"|"%") primary )*` — the multiplicative tier, binding
+    /// TIGHTER than `+`/`-` so `a + b * c` is `a + (b * c)`. Left-associative.
+    fn parse_mul(&mut self) -> Result<Expr, CompileError> {
+        let mut lhs = self.parse_primary()?;
+        loop {
+            let op_span = self.span();
+            match self.peek() {
+                SolKind::Star => {
+                    self.advance(); // `*`
+                    let rhs = self.parse_primary()?;
+                    lhs = Expr::Mul { lhs: Box::new(lhs), rhs: Box::new(rhs), span: op_span };
+                }
+                SolKind::Slash => {
+                    self.advance(); // `/`
+                    let rhs = self.parse_primary()?;
+                    lhs = Expr::Div { lhs: Box::new(lhs), rhs: Box::new(rhs), span: op_span };
+                }
+                SolKind::Percent => {
+                    self.advance(); // `%`
+                    let rhs = self.parse_primary()?;
+                    lhs = Expr::Mod { lhs: Box::new(lhs), rhs: Box::new(rhs), span: op_span };
                 }
                 _ => break,
             }

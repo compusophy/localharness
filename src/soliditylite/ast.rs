@@ -280,6 +280,15 @@ pub enum Expr {
     /// on underflow (no 0.8 revert in v1); guard with `require` where it matters,
     /// e.g. `require(bal[from] >= amt, …)` before `bal[from] = bal[from] - amt`.
     Sub { lhs: Box<Expr>, rhs: Box<Expr>, span: Span },
+    /// `lhs * rhs` — `MUL`. Binds TIGHTER than `+`/`-` (the multiplicative tier),
+    /// so `a + b * c` is `a + (b * c)`. Wraps on overflow (no 0.8 revert in v1).
+    Mul { lhs: Box<Expr>, rhs: Box<Expr>, span: Span },
+    /// `lhs / rhs` — `DIV` (integer division; EVM `DIV` yields 0 when `rhs == 0`,
+    /// NOT a revert). Multiplicative precedence.
+    Div { lhs: Box<Expr>, rhs: Box<Expr>, span: Span },
+    /// `lhs % rhs` — `MOD` (EVM `MOD` yields 0 when `rhs == 0`). Multiplicative
+    /// precedence. Useful for round-robin / wrapping / fee-remainder math.
+    Mod { lhs: Box<Expr>, rhs: Box<Expr>, span: Span },
     /// A comparison `lhs <op> rhs` (the relational stretch) — both operands are
     /// evaluated, then the comparison opcode(s) for `op`, leaving a `0`/`1` word.
     /// Binds LOOSER than `+`, so `n + 1 > 0` parses as `(n + 1) > 0`.
@@ -301,6 +310,9 @@ impl Expr {
             Expr::Index { span, .. } => *span,
             Expr::Add { span, .. } => *span,
             Expr::Sub { span, .. } => *span,
+            Expr::Mul { span, .. } => *span,
+            Expr::Div { span, .. } => *span,
+            Expr::Mod { span, .. } => *span,
             Expr::Cmp { span, .. } => *span,
             Expr::StrLit { span, .. } => *span,
         }

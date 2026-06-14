@@ -122,6 +122,12 @@ enum LoweredExpr {
     Add(Box<LoweredExpr>, Box<LoweredExpr>),
     /// `lhs - rhs` — `SUB` (`lhs` pushed on TOP so `SUB` = top − next = `lhs − rhs`).
     Sub(Box<LoweredExpr>, Box<LoweredExpr>),
+    /// `lhs * rhs` — `MUL` (commutative; operand order irrelevant).
+    Mul(Box<LoweredExpr>, Box<LoweredExpr>),
+    /// `lhs / rhs` — `DIV` (`lhs` on TOP so `DIV` = top / next = `lhs / rhs`).
+    Div(Box<LoweredExpr>, Box<LoweredExpr>),
+    /// `lhs % rhs` — `MOD` (`lhs` on TOP so `MOD` = top % next = `lhs % rhs`).
+    Mod(Box<LoweredExpr>, Box<LoweredExpr>),
     /// `<lhs> <rhs> <cmp>` — a comparison leaving a `0`/`1` word (the relational
     /// stretch). The operand order matters: both EVM `GT`/`LT` pop `a` (top) then
     /// `b` and compute `a <cmp> b`, so we push `lhs` first then `rhs` and the strict
@@ -182,6 +188,23 @@ impl LoweredExpr {
                 rhs.emit(a);
                 lhs.emit(a);
                 a.emit(op::SUB);
+            }
+            LoweredExpr::Mul(lhs, rhs) => {
+                lhs.emit(a);
+                rhs.emit(a);
+                a.emit(op::MUL); // commutative — order irrelevant
+            }
+            LoweredExpr::Div(lhs, rhs) => {
+                // lhs on top so `DIV` = μs[0] / μs[1] = lhs / rhs.
+                rhs.emit(a);
+                lhs.emit(a);
+                a.emit(op::DIV);
+            }
+            LoweredExpr::Mod(lhs, rhs) => {
+                // lhs on top so `MOD` = μs[0] % μs[1] = lhs % rhs.
+                rhs.emit(a);
+                lhs.emit(a);
+                a.emit(op::MOD);
             }
             LoweredExpr::Cmp { op: cmp, lhs, rhs } => {
                 // Push `lhs` (deeper) then `rhs` (top). EVM `GT`/`LT`/`EQ` pop the
@@ -707,6 +730,18 @@ impl Resolver<'_> {
                 Box::new(self.lower_expr(rhs)?),
             )),
             Expr::Sub { lhs, rhs, .. } => Ok(LoweredExpr::Sub(
+                Box::new(self.lower_expr(lhs)?),
+                Box::new(self.lower_expr(rhs)?),
+            )),
+            Expr::Mul { lhs, rhs, .. } => Ok(LoweredExpr::Mul(
+                Box::new(self.lower_expr(lhs)?),
+                Box::new(self.lower_expr(rhs)?),
+            )),
+            Expr::Div { lhs, rhs, .. } => Ok(LoweredExpr::Div(
+                Box::new(self.lower_expr(lhs)?),
+                Box::new(self.lower_expr(rhs)?),
+            )),
+            Expr::Mod { lhs, rhs, .. } => Ok(LoweredExpr::Mod(
                 Box::new(self.lower_expr(lhs)?),
                 Box::new(self.lower_expr(rhs)?),
             )),

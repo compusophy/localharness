@@ -375,6 +375,25 @@ mod tests {
         assert!(art.runtime.contains(&op::SUB), "`n - 1` must emit SUB");
     }
 
+    /// The multiplicative tier (`*`, `/`, `%`) compiles and emits MUL/DIV/MOD.
+    /// Precedence (`*`/`/`/`%` bind tighter than `+`/`-`) is proven live on-chain
+    /// (e.g. `poly(3) = 3 + 3*3 = 12`, not `(3+3)*3 = 18`).
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn compile_multiplicative_tier() {
+        let art = super::compile(
+            "facet Math { \
+             function fee(uint256 amount, uint256 rate) external pure returns (uint256) { return amount * rate / 10000; } \
+             function slot(uint256 n) external pure returns (uint256) { return n % 3; } \
+             function poly(uint256 x) external pure returns (uint256) { return x + x * x; } }",
+        )
+        .expect("the multiplicative tier must compile");
+        assert_eq!(art.selectors.len(), 3);
+        assert!(art.runtime.contains(&op::MUL), "must emit MUL");
+        assert!(art.runtime.contains(&op::DIV), "must emit DIV");
+        assert!(art.runtime.contains(&op::MOD), "must emit MOD");
+    }
+
     /// `string` is accepted ONLY as a return type and a string literal ONLY as a
     /// whole `return` — every other position is a clean error, never a silent
     /// single-word miscompile (the dynamic-type safety boundary).

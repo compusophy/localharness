@@ -79,6 +79,12 @@ pub enum SolKind {
     Plus,
     /// `-` (subtraction).
     Minus,
+    /// `*` (multiplication).
+    Star,
+    /// `/` (integer division; `//` and `/* */` are comments, stripped earlier).
+    Slash,
+    /// `%` (modulo).
+    Percent,
     /// `>` (greater-than comparison).
     Gt,
     /// `<` (less-than comparison).
@@ -189,6 +195,9 @@ impl Lexer<'_> {
             b'.' => Some(SolKind::Dot),
             b'+' => Some(SolKind::Plus),
             b'-' => Some(SolKind::Minus),
+            b'*' => Some(SolKind::Star),
+            b'/' => Some(SolKind::Slash),
+            b'%' => Some(SolKind::Percent),
             b'>' => Some(SolKind::Gt),
             b'<' => Some(SolKind::Lt),
             _ => None,

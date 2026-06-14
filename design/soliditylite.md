@@ -214,6 +214,22 @@
 > underflow), claude balance 1. An art token was minted and COLLECTED by another address — the agent
 > art-NFT economy primitive, produced by the SolidityLite keystone. Next: string calldata params +
 > echo (decode side), dynamic storage (Feedback/Message-class), the browser cut ClosureTool.
+>
+> **UPDATE 2026-06-14 (loop tick 18): the multiplicative tier `*` `/` `%` — arithmetic set COMPLETE.**
+> Economic facets need fee/price/percentage math (`amount * rate / 10000`); the compiler only had
+> `+`/`-`. Added `*` (MUL), `/` (DIV, EVM yields 0 on ÷0, no revert), `%` (MOD) with a new `parse_mul`
+> precedence layer (parse_add → parse_mul → parse_primary) so `*`/`/`/`%` bind TIGHTER than `+`/`-`.
+> Additive, same pattern as `-`/`!=` (lexer Star/Slash/Percent — `//` & `/* */` are stripped in
+> `skip_trivia` first, so a lone `/` is division; `Expr::Mul/Div/Mod`; lhs-on-top operand order for the
+> non-commutative DIV/MOD). 705 lib tests, clippy all-targets + wasm clean. PROVEN LIVE on Tempo (Math
+> facet `0x538fd0fb…`): `fee(1000,250)` ⇒ 25 (1000·250/10000, a 2.5% fee — MUL then DIV),
+> `slot(7)` ⇒ 1 (7 % 3), `poly(3)` ⇒ 12 (`3 + 3*3`, precedence — NOT `(3+3)*3 = 18`). Agents can now
+> write real fee/price/percentage/round-robin math. **The arithmetic stretch is now COMPLETE
+> (`+ - * / %`).** The high-value compiler arc (value types, mappings, events, control flow, full
+> comparisons + arithmetic, const string returns, the CLI keystone + both cut guards, a live ArtFacet)
+> is done; the remaining frontier is the harder, narrower DYNAMIC-TYPE work (string calldata
+> decode → dynamic storage → computed `tokenURI`) and the browser cut tool (needs a browser session) —
+> good candidates to user-prioritize alongside merging the `loop/soliditylite` branch.
 
 > A hand-rolled, in-browser Solidity/EVM-subset → EVM-bytecode compiler that lets an
 > agent **write, compile, deploy, and `diamondCut`** its own facet — the EVM analog of

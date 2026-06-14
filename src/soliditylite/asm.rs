@@ -58,6 +58,12 @@ pub mod op {
     /// Subtraction — `SUB` computes `μs[0] - μs[1]` (top minus next), wrapping mod
     /// 2^256 on underflow (NO 0.8-style revert in v1).
     pub const SUB: u8 = 0x03;
+    /// Multiplication — wraps mod 2^256 on overflow (no 0.8 revert in v1).
+    pub const MUL: u8 = 0x02;
+    /// Integer division `μs[0] / μs[1]` — yields 0 when the divisor is 0 (EVM, no revert).
+    pub const DIV: u8 = 0x04;
+    /// Modulo `μs[0] % μs[1]` — yields 0 when the divisor is 0 (EVM, no revert).
+    pub const MOD: u8 = 0x06;
     /// Keccak-256 of `mem[offset..offset+len]` (`KECCAK256(offset, len)`, aka SHA3) —
     /// used to derive a mapping-entry storage slot from `key ++ baseSlot`.
     pub const KECCAK256: u8 = 0x20;
