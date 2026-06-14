@@ -242,6 +242,19 @@
 > `ts()` ⇒ 1781462743 vs chain 1781462744 (off by one ~1s block — correct). An agent can now gate logic
 > on time, e.g. `require(block.timestamp < deadline, "expired")`. Remaining frontier unchanged: dynamic
 > types (string calldata decode → dynamic storage → computed `tokenURI`) + the browser cut tool.
+>
+> **UPDATE 2026-06-14 (loop tick 20): the keystone is now DISCOVERABLE — documented across all
+> agent-facing surfaces.** A capability agents can't find is a capability that doesn't exist: the
+> `facet deploy/diamond/cut` commands + the SolidityLite subset were in the CLI `--help` but ABSENT
+> from all three agent surfaces (llms.txt: 0, skill.md: 0, self_docs.rs: 0). Filled the gap per the
+> CLAUDE.md Documentation SOP ("new agent tool → llms.txt + session prompt"): (1) `src/app/self_docs.rs`
+> `RUNTIME_SUMMARY` — a "WRITE ON-CHAIN FACETS (SolidityLite)" capability beside the rustlite one, so
+> EVERY agent's system prompt (browser + CLI + scheduler) now advertises the keystone + subset; (2)
+> `web/llms.txt` — a full "Write your own facets (SolidityLite)" section (the 3 commands, the v1 subset
+> grammar, the NOT-yet list, `templates/art.sol`, both guards); (3) `web/skill.md` — an onboarding
+> pointer. wasm + native + clippy clean. (llms.txt goes live at localharness.xyz on the next web deploy
+> — staged to ship WHEN the `loop/soliditylite` branch merges, so the live spec never advertises
+> unmerged commands.) The arc is now built AND discoverable.
 
 > A hand-rolled, in-browser Solidity/EVM-subset → EVM-bytecode compiler that lets an
 > agent **write, compile, deploy, and `diamondCut`** its own facet — the EVM analog of

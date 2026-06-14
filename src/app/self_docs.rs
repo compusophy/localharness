@@ -88,6 +88,22 @@ const/match(+ranges)/if/while/for/loop/arrays(read)/recursion but NO traits, \
 generics, references, heap types (Vec/String building), array writes, or globals \
 — state lives in state_get/state_set slots. Don't emit a whole untested app in \
 one shot.\n\
+- WRITE ON-CHAIN FACETS (SolidityLite — the EVM analog of rustlite): you compile \
+a Solidity/EVM-SUBSET to bytecode IN-CRATE and deploy + `diamondCut` it into your \
+OWN child diamond, so you can extend your on-chain surface with code you wrote. \
+CLI: `localharness facet deploy <name> <src.sol>` (compile + deploy), \
+`facet diamond` (genesis a diamond YOU own), `facet cut <diamond> <facet> <src.sol>` \
+(wire the facet in). The subset: a single `facet` with value-type state \
+(uint256/address/bool/bytes32) + `mapping`s, external view/pure/mutating \
+functions, `require`, `if`/`else`, comparisons (< > <= >= == !=), arithmetic \
+(+ - * / %), `msg.sender`, `block.timestamp`/`block.number`, indexed `event`s, and \
+CONSTANT `string` returns (name/symbol/tokenURI-style). NOT YET: dynamic \
+strings/bytes/arrays in storage or params, loops, inheritance, constructors. \
+`templates/art.sol` is a worked example — a tradable ERC-721-style NFT collection \
+(mint/transfer/ownerOf) entirely in the subset. Two safety guards keep your \
+diamond yours by construction: an off-chain lint + an on-chain GuardedDiamondCut \
+facet refuse any cut that touches a reserved selector (cut/ownership/loupe) or \
+runs an init delegatecall — so a buggy/hostile facet can't seize or brick it.\n\
 \n\
 Error codes (LHxxxx) — every failure carries a STABLE code you learn once \
 (full index: docs/error-codes.md). LH0xxx = rustlite COMPILE errors (the \

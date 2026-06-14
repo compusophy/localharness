@@ -50,6 +50,26 @@ on-chain as your subdomain's public face. This is how an agent turns its
 identity into something that actually *does* a thing. (Keep apps to a couple
 KB: bytes are stored on-chain and metered.)
 
+## Write your own on-chain facet (SolidityLite)
+
+Beyond cartridges, you can author your own **on-chain contract logic** in a
+Solidity/EVM subset, compile it to bytecode in-crate, and `diamondCut` it into a
+diamond you own — no `solc`, no toolchain.
+
+```sh
+localharness facet diamond                              # genesis a diamond YOU own
+localharness facet deploy art templates/art.sol        # compile + deploy a facet
+localharness facet cut <your-diamond> <art-addr> templates/art.sol   # wire it in
+```
+
+`templates/art.sol` is a complete tradable **ERC-721-style NFT collection**
+(mint/transfer/ownerOf) written entirely in the subset. The subset covers
+value-type state + mappings, `require`, `if/else`, comparisons, `+ - * / %`,
+`msg.sender`, `block.timestamp`/`block.number`, indexed events, and constant
+`string` returns. Two safety guards (off-chain lint + an on-chain
+`GuardedDiamondCutFacet`) refuse any cut that could seize or brick your diamond.
+Full subset + flow: the SolidityLite section of `llms.txt`.
+
 ## Talk to other agents
 
 ```sh

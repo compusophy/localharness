@@ -213,6 +213,30 @@ localharness release [--as me] <name> --confirm <name>   # DESTRUCTIVE: burn an 
 
 `release` follows the platform's destructive-action convention: `--confirm` must repeat the exact name, and there is no force flag — a typed confirmation is always required, never auto-filled.
 
+### Write your own facets (SolidityLite) — extend your own on-chain surface
+
+The self-modifying-platform keystone: an agent writes a Solidity/EVM-SUBSET facet in source, compiles it to EVM bytecode IN-CRATE (no `solc`, no toolchain — the EVM analog of rustlite), deploys it, and `diamondCut`s it into its OWN child diamond. You can't cut the shared registry diamond (its `diamondCut` is owner-gated), so the model is per-agent CHILD diamonds you own — blast radius confined to your toy diamond.
+
+```sh
+localharness facet deploy [--as me] <name> <src.sol>          # compile (in-crate) + deploy a facet on-chain (sponsored CREATE); prints the address + selectors
+localharness facet diamond [--as me]                          # genesis a child diamond YOU own (seeded with the core cut/loupe/ownership facets)
+localharness facet cut [--as me] <diamond> <facet> <src.sol>  # diamondCut a deployed facet into your diamond — its functions go live behind the diamond
+```
+
+Typical flow: `facet diamond` → your diamond address; `facet deploy art templates/art.sol` → facet address; `facet cut <diamond> <facet-addr> templates/art.sol` → live. A standalone `facet deploy`'d contract also works on its own (it carries its own selector dispatcher + storage).
+
+**The v1 subset** (what compiles): a single `facet <Name> { … }` containing —
+- value-type state: `uint256` / `address` / `bool` / `bytes32` scalars, and `mapping(K => V)` (one keccak-namespaced slot each; no packing).
+- functions: `function f(<params>) external [view|pure] [returns (<ty>)] { … }`. Mutating bodies hold assignments, `require`, `if`/`else`, and `emit`; getters are a single `return <expr>;`.
+- expressions: integer/`address` literals, state-var & parameter reads, `msg.sender`, `block.timestamp`, `block.number`, `<mapping>[key]`, arithmetic `+ - * / %` (wrapping; `/` `%` yield 0 on a 0 divisor — guard with `require`), comparisons `< > <= >= == !=`.
+- `event E(<ty> [indexed] name, …)` + `emit E(args)` (≤3 indexed → LOG topics; non-indexed → data).
+- `require(cond, "msg")` (reverts when false; message currently discarded).
+- CONSTANT `string` returns only: `function name() external pure returns (string) { return "…"; }` (name/symbol/tokenURI-style).
+
+**NOT yet supported** (a clean compile error, never a silent miscompile): dynamic `string`/`bytes`/arrays in storage or parameters, loops, inheritance/`import`, constructors, custom modifiers, `payable`/`msg.value`, inline assembly. `templates/art.sol` is a worked example — a complete tradable ERC-721-style NFT collection (mint/transfer/ownerOf/balanceOf/name/symbol) entirely in the subset, proven live on Tempo.
+
+**Safety (your diamond stays yours, by construction):** every cut passes two guards. Off-chain, a lint refuses a cut that would clash with an existing selector, touch a RESERVED selector (`diamondCut`/`transferOwnership`/`owner`/the loupe set), or carry an `_init` delegatecall. On-chain, the child diamond's cut entry point is a `GuardedDiamondCutFacet` that re-enforces the reserved-selector + `_init==0` rules in the EVM — so even a raw, hand-signed `diamondCut` can't seize ownership, swap the cut/loupe, or run arbitrary init code. The guarded cut facet can't replace or remove itself (`diamondCut` is reserved), so the constraint is permanent.
+
 ## Agent tool surface
 
 Each agent has access to:
