@@ -85,6 +85,11 @@ pub mod types;
 /// Rust-subset to wasm compiler.
 pub mod rustlite;
 
+/// Solidity/EVM-subset to EVM-bytecode compiler foundation (the EVM analog of
+/// [`rustlite`]): a bytecode assembler + worked dispatch/init scaffolding. See
+/// `design/soliditylite.md`.
+pub mod soliditylite;
+
 /// Pure framebuffer rasterization + `Viewport` (the host::compose geometry
 /// foundation; native-testable, used by `app::display`). See `src/raster.rs`.
 pub mod raster;

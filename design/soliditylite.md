@@ -28,8 +28,19 @@
 > real OOG); 25M succeeded. **Installment 0 E2E is now COMPLETE:** `examples/diamond_cut_e2e.rs`
 > cut the CounterFacet into the child diamond (`facetAddress(increment)` → CounterFacet) and
 > called `increment()` through the diamond — `countOf` == 1. The full deploy → `diamondCut` →
-> call loop works on Moderato; an agent can extend a diamond it owns. Next: **Installment 1 —
-> the actual SolidityLite compiler** (Yul-shaped subset → EVM bytecode + a revm diff harness).
+> call loop works on Moderato; an agent can extend a diamond it owns.
+>
+> **UPDATE 2026-06-14 (loop tick 4): SolidityLite codegen foundation works on-chain.** Added
+> `src/soliditylite/` (the EVM analog of rustlite): a pure-Rust bytecode `asm` (minimal pushes,
+> conservative `PUSH1 0x00` zeros, fixed-width `PUSH2` labels with two-pass back-patch,
+> CODECOPY/RETURN init wrapper) + `emit_constant_getter` (selector dispatch + body), 14
+> golden-byte tests, wasm-clean, clippy-clean. `examples/soliditylite_getter_live.rs` deployed
+> the EMITTED getter via sponsored CREATE and `eth_call get()` returned 42 — emitter output
+> deploys + executes on the REAL Tempo EVM. DECISION: validate against the live chain (via the
+> proven Installment-0 rails), NOT revm — Tempo diverges from standard EVM (gas etc.), so the
+> real chain is the authoritative validator and it avoids a heavy dev-dep. Next: the FRONTEND
+> (lexer/parser/typecheck forked from rustlite) + storage/ABI codegen, so a real facet compiles
+> from SOURCE (then deploy+cut it via the proven path).
 
 > A hand-rolled, in-browser Solidity/EVM-subset → EVM-bytecode compiler that lets an
 > agent **write, compile, deploy, and `diamondCut`** its own facet — the EVM analog of
