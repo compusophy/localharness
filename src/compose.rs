@@ -181,9 +181,10 @@ pub fn blit_child(
 /// were running fullscreen at its native size.
 ///
 /// This is what gives a composed child correct input. It is the pure inverse of
-/// the blit's forward map and carries no browser dependency; the compositor in
-/// `app::display` calls it each frame to fill the focused child's `InputSource::Local`
-/// pointer cell (focus-gated so siblings stay isolated).
+/// the blit's forward map and carries no browser dependency; the live compositor
+/// (`web/cartridge-worker.js::mapPointerIntoChild`, a hand port of this) calls it
+/// each frame to fill the focused child's own pointer cell (focus-gated so
+/// siblings stay isolated). This Rust impl is the parity source of truth.
 #[allow(clippy::too_many_arguments)] // compositor primitive: pointer + viewport rect + child dims
 pub fn map_pointer_into_child(
     px: i32,

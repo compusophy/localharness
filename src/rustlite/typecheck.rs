@@ -1038,8 +1038,8 @@ fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, 
         // `draw_line(x0,y0,x1,y1,rgb)`; `fill_triangle(x0,y0,x1,y1,x2,y2,rgb)`
         // flat-fill (painter's order — depth/overlap is the cartridge's job; a
         // per-pixel z-buffered fill needs a packed ABI to fit the host closure
-        // arity limit, so it's deferred to v2). See `src/app/display.rs`
-        // build_host_display + `src/raster.rs`.
+        // arity limit, so it's deferred to v2). See `web/cartridge-worker.js`
+        // host_display + `src/raster.rs`.
         "display::draw_line" => (vec![I32, I32, I32, I32, I32], Void),
         "display::fill_triangle" => (vec![I32, I32, I32, I32, I32, I32, I32], Void),
         "display::present" => (vec![], Void),

@@ -50,12 +50,10 @@
 //! rule is untouched.
 
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
 
-use js_sys::{Function, Object, Reflect, WebAssembly};
+use js_sys::{Object, Reflect};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::{Clamped, JsCast};
-use wasm_bindgen_futures::JsFuture;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageData};
 
 use super::dom;
@@ -81,30 +79,17 @@ const FB_W: u32 = 256;
 const FB_H: u32 = 144;
 const FB_BYTES: usize = (FB_W * FB_H * 4) as usize;
 
-/// Shared host-owned framebuffer: `FB_W * FB_H` RGBA8888 pixels.
-type Framebuffer = Rc<RefCell<Vec<u8>>>;
-
-/// Self-referential holder for the rAF tick closure: the closure needs a
-/// handle to itself to reschedule, so it lives behind a shared `Option`
-/// that it clears to stop the loop.
-type FrameLoopHolder = Rc<RefCell<Option<Closure<dyn FnMut()>>>>;
-
 thread_local! {
-    /// Generation counter for the animation loop. Each `run_wasm` bumps
-    /// it; an in-flight rAF loop self-cancels when the global generation
-    /// moves past the one it started with. Cleaner than tracking handles.
+    /// Generation counter for cartridge launches. Each launch bumps it so a
+    /// stale launch's deferred work self-cancels when the global generation
+    /// moves past the one it started with.
     static FRAME_GEN: Cell<u32> = const { Cell::new(0) };
-    /// Holds the current cartridge's host-import closures alive for as
-    /// long as it runs. Replaced on the next load (dropping the prior
-    /// set, whose loop is already cancelled).
-    static RUNTIME: RefCell<Option<CartridgeRuntime>> = const { RefCell::new(None) };
     /// Latest cursor position in framebuffer coordinates. Updated by the
-    /// delegated `mousemove` listener (see `events.rs`), read by the
-    /// `pointer_x`/`pointer_y` host imports. Poll model — cartridges read
-    /// it each frame rather than receiving events.
+    /// delegated `mousemove` listener (see `events.rs`), forwarded to the
+    /// worker (which owns the cartridge's `pointer_*` host imports). Poll model.
     static POINTER: Cell<(i32, i32)> = const { Cell::new((0, 0)) };
     /// 1 while the primary mouse button is down over the canvas. Updated
-    /// by the delegated mousedown/mouseup listeners, read by `pointer_down`.
+    /// by the delegated mousedown/mouseup listeners, forwarded to the worker.
     static POINTER_DOWN: Cell<i32> = const { Cell::new(0) };
     /// The DOM id of the canvas the CURRENTLY-RUNNING cartridge draws into.
     /// v1 is single-worker (one cartridge active at a time, OVERLAY or an
@@ -113,77 +98,7 @@ thread_local! {
     /// (Concurrent embeds — a per-canvas worker registry — would replace this
     /// single id with per-worker input routing; see `run_in_canvas`.)
     static ACTIVE_CANVAS_ID: RefCell<String> = RefCell::new(String::from("display-canvas"));
-    /// A 64-slot integer register file the cartridge can read/write to
-    /// keep state across frames (rustlite has no globals). Zeroed when a
-    /// new cartridge loads.
-    static STATE: RefCell<[i32; 64]> = const { RefCell::new([0; 64]) };
 }
-
-/// Keeps every host import closure alive. wasm holds JS function
-/// references into these; they must outlive the instance. Covers both the
-/// `host_display` draw API and the `host_net` WebSocket API.
-#[allow(dead_code)]
-struct CartridgeRuntime {
-    clear: Closure<dyn FnMut(i32)>,
-    set_pixel: Closure<dyn FnMut(i32, i32, i32)>,
-    fill_rect: Closure<dyn FnMut(i32, i32, i32, i32, i32)>,
-    draw_char: Closure<dyn FnMut(i32, i32, i32, i32, i32)>,
-    draw_number: Closure<dyn FnMut(i32, i32, i32, i32, i32)>,
-    draw_line: Closure<dyn FnMut(i32, i32, i32, i32, i32)>,
-    // host_display::fill_triangle's ABI is genuinely 7 i32s (x0,y0,x1,y1,x2,y2,z).
-    #[allow(clippy::type_complexity)]
-    fill_triangle: Closure<dyn FnMut(i32, i32, i32, i32, i32, i32, i32)>,
-    present: Closure<dyn FnMut()>,
-    width: Closure<dyn FnMut() -> i32>,
-    height: Closure<dyn FnMut() -> i32>,
-    pointer_x: Closure<dyn FnMut() -> i32>,
-    pointer_y: Closure<dyn FnMut() -> i32>,
-    pointer_down: Closure<dyn FnMut() -> i32>,
-    state_get: Closure<dyn FnMut(i32) -> i32>,
-    state_set: Closure<dyn FnMut(i32, i32)>,
-    net: net::NetRuntime,
-    audio: audio::AudioRuntime,
-}
-
-/// Where a cartridge's `pointer_*` / `state_*` host imports read from. The
-/// single-cartridge path uses [`InputSource::Global`] (the shared thread-locals,
-/// driven by the delegated DOM listeners) — identical to before host::compose.
-/// A composed child uses [`InputSource::Local`]: its own pointer + 64-slot
-/// register file, which the compositor fills focus-gated each frame so siblings
-/// stay isolated (roadmap Track A / Phase 1a + 1c).
-enum InputSource {
-    // Retained as the in-thread single-cartridge fallback (reads the shared
-    // POINTER/POINTER_DOWN/STATE thread-locals). The default single-cartridge
-    // path now runs in a Web Worker (`mod worker`) which owns its own input +
-    // state cells, so `Global` is currently only the documented fallback and
-    // not constructed — composition uses `Local`. Keep it: it's the contract
-    // for re-enabling an in-thread run, and the thread-locals it reads are
-    // still live (the worker-input forwarder reads POINTER/POINTER_DOWN).
-    #[allow(dead_code)]
-    Global,
-    Local {
-        pointer: Rc<Cell<(i32, i32)>>,
-        down: Rc<Cell<i32>>,
-        state: Rc<RefCell<[i32; 64]>>,
-    },
-}
-
-/// One composited child held in the [`crate::compose::ModuleTable`]: its
-/// `frame`/`render` entry point, its focus-gated input cells (written by the
-/// compositor each tick), and the runtime/memory kept alive for its lifetime.
-struct ChildHandle {
-    frame: Function,
-    pointer: Rc<Cell<(i32, i32)>>,
-    down: Rc<Cell<i32>>,
-    _runtime: CartridgeRuntime,
-    _mem: SharedMemory,
-}
-
-/// Shared handle to the cartridge's linear memory. The `host_net`
-/// closures read/write length-prefixed strings through it, but memory
-/// only exists after instantiation — so the closures hold this cell and
-/// `run_with_ctx` fills it in once the instance is live.
-type SharedMemory = Rc<RefCell<JsValue>>;
 
 /// Instantiate `wasm_bytes` as a display cartridge in the display
 /// overlay (swaps in the overlay + surface). Used by the `run_cartridge`
@@ -344,10 +259,9 @@ pub(crate) fn render_html_in_root_canvas(source: &str) -> Result<(), JsValue> {
 /// This is the BRICK FIX: a cartridge persisted as the subdomain's public face
 /// can no longer wedge the tab (chat included) — synchronous wasm is
 /// un-preemptable from JS, so the only containment is "run it elsewhere + be
-/// able to kill it", which the worker + watchdog provide. The old in-thread
-/// `start_frame_loop` + `build_host_display` closures remain for the
-/// composition path (`mount_composition`), which is owner-driven and not the
-/// brick vector — see the note there.
+/// able to kill it", which the worker + watchdog provide. The `?compose=`
+/// composition path (`mount_composition`) runs in the SAME worker (issue #77) —
+/// a composed child is untrusted wasm too, so it must be contained off-thread.
 async fn run_with_ctx(
     wasm_bytes: &[u8],
     ctx: CanvasRenderingContext2d,
@@ -358,371 +272,57 @@ async fn run_with_ctx(
     // embed). v1 single-worker: the most-recent launch wins both the worker
     // slot AND the pointer routing.
     ACTIVE_CANVAS_ID.with(|c| *c.borrow_mut() = canvas_id.to_string());
-    // Bump the generation first so any previous cartridge's loop stops, and
-    // tear down the previous worker (terminate + drop its closures).
+    // Bump the generation first so any previous launch's deferred work stops,
+    // and tear down the previous worker (terminate + drop its closures).
     FRAME_GEN.with(|g| g.set(g.get().wrapping_add(1)));
     worker::stop_worker();
-    // Drop any in-thread runtime (composition path) so its closures release.
-    RUNTIME.with(|cell| *cell.borrow_mut() = None);
     // Silence the prior cartridge's scheduled voices so a long note can't
     // drone into the new one.
     audio::stop_all();
 
-    // Fresh cartridge starts with cleared input + state.
+    // Fresh cartridge starts with cleared input (the worker owns the 64-slot
+    // state register file and zeroes it on load).
     POINTER_DOWN.with(|d| d.set(0));
-    STATE.with(|s| *s.borrow_mut() = [0; 64]);
 
     worker::spawn_cartridge(wasm_bytes, ctx)
 }
 
-/// Composite several cartridges into ONE framebuffer, iframe-free — the live
-/// host::compose path (roadmap Track A), proven first in `scripts/render-
-/// compose.js`. Each module gets its own wasm `Instance` + `Memory`, its own
-/// 64-slot state, and a grid-cell [`crate::raster::Viewport`] it draws into via
-/// the SAME `build_host_display` closures the single-cartridge path uses (a
-/// child can't reach outside its rect — clipping is structural). Children are
-/// held in the native-tested [`crate::compose::ModuleTable`]; the compositor
-/// ticks each into the shared framebuffer and presents ONCE per frame (the
-/// present-ownership inversion of Phase 0a is what makes that single present
-/// possible). Admission is capped by [`crate::compose::ComposeBudget`] so an
-/// attacker-chosen `?compose=` graph can't exhaust host memory.
+/// Composite several published cartridges into ONE framebuffer, iframe-free —
+/// the `?compose=name1,name2,…` path (roadmap Track A). Runs in the SAME isolated
+/// Web Worker + main-thread watchdog as the single-cartridge path (issue #77): a
+/// composed child is UNTRUSTED wasm too, so a hung `frame()` must only stall the
+/// worker, never the main thread. This previously ran each child's `frame()`
+/// DIRECTLY on the main thread (an in-thread `start_compose_loop`), which had no
+/// isolation and re-bricked the tab.
 ///
-/// `host_net` is wired per-child as today; a per-child URL allowlist (so a
-/// composed module can't beacon under the compositor's origin) is the documented
-/// follow-up gate (roadmap A4 / cross-cutting risk #1), tracked before any
-/// agent-driven `host_compose` spawn ABI lands.
-pub(crate) async fn mount_composition(modules: Vec<Option<Vec<u8>>>) -> Result<(), JsValue> {
+/// `names` are the requested subdomains in order. The main thread lays them out
+/// in a near-square grid via the native-tested [`crate::compose::grid_viewports`]
+/// and hands the tiles to the worker, which mounts each as a compose-tree child
+/// and resolves its published on-chain `app.wasm` through the EXISTING
+/// `compose_spawn` / `compose_bytes` round-trip (a child that hasn't published an
+/// app just stays a black cell). Admission stays capped by the worker's mirror of
+/// [`crate::compose::ComposeBudget`] so an attacker-chosen graph can't exhaust it.
+pub(crate) async fn mount_composition(names: Vec<String>) -> Result<(), JsValue> {
     let ctx = size_and_get_ctx()?;
-    // Bump the generation so any previous cartridge/compositor loop stops.
-    let generation = FRAME_GEN.with(|g| {
-        let n = g.get().wrapping_add(1);
-        g.set(n);
-        n
-    });
-    RUNTIME.with(|cell| *cell.borrow_mut() = None);
+    // Bump the generation so any previous launch's deferred work stops, and
+    // record the overlay canvas so pointer events route to it. (The worker
+    // teardown happens inside `spawn_composition` → `spawn_worker`.)
+    ACTIVE_CANVAS_ID.with(|c| *c.borrow_mut() = "display-canvas".to_string());
+    FRAME_GEN.with(|g| g.set(g.get().wrapping_add(1)));
     // Silence any prior cartridge's scheduled voices on the shared engine.
     audio::stop_all();
-
-    let fb: Framebuffer = Rc::new(RefCell::new(black_framebuffer()));
     POINTER_DOWN.with(|d| d.set(0));
 
-    // Lay out a grid slot for EVERY requested module — including ones that failed
-    // to fetch (passed as `None`) — so an unavailable module leaves its cell black
-    // instead of shifting its siblings out of position. Layout is native-tested in
-    // `crate::compose`.
-    let viewports = crate::compose::grid_viewports(modules.len(), FB_W as i32, FB_H as i32);
-    let budget = crate::compose::ComposeBudget::v1();
-    let mut table: crate::compose::ModuleTable<ChildHandle> = crate::compose::ModuleTable::new();
-    let mut total_bytes = 0usize;
-
-    for (slot, vp) in modules.into_iter().zip(viewports) {
-        let Some(bytes) = slot else { continue }; // unavailable module -> black cell
-        if let Err(reason) = budget.admit(table.len(), total_bytes, bytes.len()) {
-            web_sys::console::warn_1(&JsValue::from_str(&reason));
-            continue;
-        }
-        let pointer = Rc::new(Cell::new((-1, -1)));
-        let down = Rc::new(Cell::new(0));
-        let state = Rc::new(RefCell::new([0i32; 64]));
-        let mem: SharedMemory = Rc::new(RefCell::new(JsValue::NULL));
-        let input = InputSource::Local { pointer: pointer.clone(), down: down.clone(), state };
-        let (imports, runtime) = build_host_display(&fb, &mem, vp, input)?;
-
-        let result = JsFuture::from(WebAssembly::instantiate_buffer(&bytes, &imports)).await?;
-        let instance = Reflect::get(&result, &JsValue::from_str("instance"))?;
-        let exports = Reflect::get(&instance, &JsValue::from_str("exports"))?;
-        *mem.borrow_mut() = Reflect::get(&exports, &JsValue::from_str("memory"))?;
-
-        let Some(frame) = export_fn(&exports, "frame").or_else(|| export_fn(&exports, "render"))
-        else {
-            web_sys::console::warn_1(&JsValue::from_str("compose: a module exports neither frame nor render — skipped"));
-            continue;
-        };
-        total_bytes += bytes.len();
-        table.push(ChildHandle { frame, pointer, down, _runtime: runtime, _mem: mem }, vp);
+    if names.is_empty() {
+        return Err(JsValue::from_str("compose: no module to composite"));
     }
-
-    if table.is_empty() {
-        return Err(JsValue::from_str("compose: no module could be mounted"));
-    }
-    start_compose_loop(table, generation, fb, ctx);
-    Ok(())
-}
-
-/// Set every framebuffer pixel to opaque black (the compositor clears the root
-/// once per frame before ticking children, so inter-cell gaps stay black).
-fn clear_black(buf: &mut [u8]) {
-    for px in buf.chunks_exact_mut(4) {
-        px[0] = 0;
-        px[1] = 0;
-        px[2] = 0;
-        px[3] = 255;
-    }
-}
-
-/// The compositor rAF loop: read the global pointer, hit-test it to the topmost
-/// child via [`crate::compose::ModuleTable::focus_at`], feed THAT child local
-/// pointer coords (siblings see `(-1,-1)`/up), clear the root, tick every child
-/// into the shared framebuffer, present once. Self-cancels when the generation
-/// moves past `generation` (a new load / `stop`), mirroring [`start_frame_loop`].
-fn start_compose_loop(
-    table: crate::compose::ModuleTable<ChildHandle>,
-    generation: u32,
-    fb: Framebuffer,
-    ctx: CanvasRenderingContext2d,
-) {
-    let start = js_sys::Date::now();
-    let table = Rc::new(RefCell::new(table));
-    let holder: FrameLoopHolder = Rc::new(RefCell::new(None));
-    let holder2 = holder.clone();
-
-    *holder.borrow_mut() = Some(Closure::wrap(Box::new(move || {
-        if FRAME_GEN.with(|g| g.get()) != generation {
-            let _ = holder2.borrow_mut().take();
-            return;
-        }
-        let t = (js_sys::Date::now() - start) as i32;
-        let (gx, gy) = POINTER.with(|p| p.get());
-        let gdown = POINTER_DOWN.with(|d| d.get());
-
-        let mut tb = table.borrow_mut();
-        let focus = tb.focus_at(gx, gy);
-        {
-            let mut buf = fb.borrow_mut();
-            clear_black(&mut buf);
-        }
-        tb.tick(|i, child, _vp, _pending| {
-            match focus {
-                Some((fi, lx, ly)) if fi == i => {
-                    child.pointer.set((lx, ly));
-                    child.down.set(gdown);
-                }
-                _ => {
-                    child.pointer.set((-1, -1));
-                    child.down.set(0);
-                }
-            }
-            // The child's host_display closures draw into `fb` through its own
-            // viewport; the compositor holds no `fb` borrow here.
-            let _ = child.frame.call1(&JsValue::NULL, &JsValue::from(t));
-        });
-        drop(tb);
-        present_framebuffer(&fb, &ctx);
-
-        if let Some(cb) = holder2.borrow().as_ref() {
-            let _ = request_af(cb);
-        }
-    }) as Box<dyn FnMut()>));
-
-    if let Some(cb) = holder.borrow().as_ref() {
-        let _ = request_af(cb);
-    }
-}
-
-/// Blit the host-owned framebuffer to the canvas. The host owns presenting now
-/// (the cartridge `present` import is a no-op) — called once after each
-/// `frame()`/`render()`, and once per compositor frame after every child has
-/// drawn. See `design/host-compose.md` (roadmap 0a).
-fn present_framebuffer(fb: &Framebuffer, ctx: &CanvasRenderingContext2d) {
-    let buf = fb.borrow();
-    if let Ok(img) = ImageData::new_with_u8_clamped_array_and_sh(Clamped(&buf[..]), FB_W, FB_H) {
-        let _ = ctx.put_image_data(&img, 0.0, 0.0);
-    }
-}
-
-/// Build the `host_display` import object (the Orbclient-style draw API)
-/// over a shared host-owned framebuffer, plus the runtime that keeps the
-/// closures alive.
-fn build_host_display(
-    fb: &Framebuffer,
-    mem: &SharedMemory,
-    vp: crate::raster::Viewport,
-    input: InputSource,
-) -> Result<(Object, CartridgeRuntime), JsValue> {
-    // The viewport translates+clips this cartridge's draws into its sub-rect of
-    // the shared framebuffer: a full-screen identity transform for a single
-    // cartridge, a grid cell for a composed child (host::compose / Track A). The
-    // pixel math lives in `crate::raster` (pure, native-tested) so the child path
-    // is the same closures over a different rect. See `src/raster.rs`.
-
-    let clear = {
-        let fb = fb.clone();
-        Closure::<dyn FnMut(i32)>::new(move |rgb: i32| {
-            let mut buf = fb.borrow_mut();
-            crate::raster::clear(&mut buf, FB_W as i32, &vp, rgb_components(rgb));
-        })
-    };
-
-    let set_pixel = {
-        let fb = fb.clone();
-        Closure::<dyn FnMut(i32, i32, i32)>::new(move |x: i32, y: i32, rgb: i32| {
-            let mut buf = fb.borrow_mut();
-            crate::raster::set_pixel(&mut buf, FB_W as i32, &vp, x, y, rgb_components(rgb));
-        })
-    };
-
-    let fill_rect = {
-        let fb = fb.clone();
-        Closure::<dyn FnMut(i32, i32, i32, i32, i32)>::new(
-            move |x: i32, y: i32, w: i32, h: i32, rgb: i32| {
-                let mut buf = fb.borrow_mut();
-                crate::raster::fill_rect(&mut buf, FB_W as i32, &vp, x, y, w, h, rgb_components(rgb));
-            },
-        )
-    };
-
-    // present-ownership inversion (roadmap Phase 0a): the cartridge's `present`
-    // import is now a NO-OP — the HOST presents once after each `frame()` (see
-    // `present_framebuffer` + `start_frame_loop`). A cartridge calling present()
-    // mid-frame no longer blits the whole canvas, which is what lets a future
-    // compositor draw several module framebuffers before a single present.
-    // Validated by scripts/render-cartridge.js (the present-after-frame model
-    // renders the real bitmask cartridge correctly).
-    let present = Closure::<dyn FnMut()>::new(move || {});
-
-    let draw_char = {
-        let fb = fb.clone();
-        Closure::<dyn FnMut(i32, i32, i32, i32, i32)>::new(
-            move |x: i32, y: i32, code: i32, rgb: i32, scale: i32| {
-                let mut buf = fb.borrow_mut();
-                crate::raster::blit_glyph(
-                    &mut buf, FB_W as i32, &vp, x, y, code as u32, rgb_components(rgb), scale,
-                );
-            },
-        )
-    };
-
-    let draw_number = {
-        let fb = fb.clone();
-        Closure::<dyn FnMut(i32, i32, i32, i32, i32)>::new(
-            move |x: i32, y: i32, value: i32, rgb: i32, scale: i32| {
-                let mut buf = fb.borrow_mut();
-                crate::raster::draw_number(
-                    &mut buf, FB_W as i32, &vp, x, y, value, rgb_components(rgb), scale,
-                );
-            },
-        )
-    };
-
-    // --- software-3D primitives (FB#12b): line + filled triangle + z-tested
-    // triangle over the SAME pixel/viewport model as every other primitive
-    // (no WebGL, no iframe — pure writes into the shared framebuffer). All
-    // i32 ABI; the pixel math is in `crate::raster` (pure, native-tested).
-    let draw_line = {
-        let fb = fb.clone();
-        Closure::<dyn FnMut(i32, i32, i32, i32, i32)>::new(
-            move |x0: i32, y0: i32, x1: i32, y1: i32, rgb: i32| {
-                let mut buf = fb.borrow_mut();
-                crate::raster::draw_line(
-                    &mut buf, FB_W as i32, &vp, x0, y0, x1, y1, rgb_components(rgb),
-                );
-            },
-        )
-    };
-
-    let fill_triangle = {
-        let fb = fb.clone();
-        Closure::<dyn FnMut(i32, i32, i32, i32, i32, i32, i32)>::new(
-            move |x0: i32, y0: i32, x1: i32, y1: i32, x2: i32, y2: i32, rgb: i32| {
-                let mut buf = fb.borrow_mut();
-                crate::raster::fill_triangle(
-                    &mut buf, FB_W as i32, &vp, x0, y0, x1, y1, x2, y2, rgb_components(rgb),
-                );
-            },
-        )
-    };
-
-    // A child sees a display the size of its viewport, like Orbclient.
-    let width = Closure::<dyn FnMut() -> i32>::new(move || vp.w);
-    let height = Closure::<dyn FnMut() -> i32>::new(move || vp.h);
-
-    // Input + per-cartridge state: the single cartridge reads the shared
-    // thread-local pointer/state (`Global` — byte-identical to before the
-    // refactor); a composed child reads ITS OWN cells (`Local`), which the
-    // compositor populates per frame, focus-gated, so a click in one panel
-    // can't drive a sibling and each child keeps its own 64-slot register file.
-    #[allow(clippy::type_complexity)] // 5 distinct host-input closures bound at once
-    let (pointer_x, pointer_y, pointer_down, state_get, state_set): (
-        Closure<dyn FnMut() -> i32>,
-        Closure<dyn FnMut() -> i32>,
-        Closure<dyn FnMut() -> i32>,
-        Closure<dyn FnMut(i32) -> i32>,
-        Closure<dyn FnMut(i32, i32)>,
-    ) = match input {
-        InputSource::Global => (
-            Closure::<dyn FnMut() -> i32>::new(move || POINTER.with(|p| p.get().0)),
-            Closure::<dyn FnMut() -> i32>::new(move || POINTER.with(|p| p.get().1)),
-            Closure::<dyn FnMut() -> i32>::new(move || POINTER_DOWN.with(|d| d.get())),
-            Closure::<dyn FnMut(i32) -> i32>::new(move |slot: i32| {
-                if !(0..64).contains(&slot) {
-                    return 0;
-                }
-                STATE.with(|s| s.borrow()[slot as usize])
-            }),
-            Closure::<dyn FnMut(i32, i32)>::new(move |slot: i32, value: i32| {
-                if !(0..64).contains(&slot) {
-                    return;
-                }
-                STATE.with(|s| s.borrow_mut()[slot as usize] = value);
-            }),
-        ),
-        InputSource::Local { pointer, down, state } => {
-            let (px, py, pd) = (pointer.clone(), pointer.clone(), down);
-            let (sg, ss) = (state.clone(), state);
-            (
-                Closure::<dyn FnMut() -> i32>::new(move || px.get().0),
-                Closure::<dyn FnMut() -> i32>::new(move || py.get().1),
-                Closure::<dyn FnMut() -> i32>::new(move || pd.get()),
-                Closure::<dyn FnMut(i32) -> i32>::new(move |slot: i32| {
-                    if !(0..64).contains(&slot) {
-                        return 0;
-                    }
-                    sg.borrow()[slot as usize]
-                }),
-                Closure::<dyn FnMut(i32, i32)>::new(move |slot: i32, value: i32| {
-                    if !(0..64).contains(&slot) {
-                        return;
-                    }
-                    ss.borrow_mut()[slot as usize] = value;
-                }),
-            )
-        }
-    };
-
-    let host_display = Object::new();
-    set_fn(&host_display, "clear", &clear)?;
-    set_fn(&host_display, "set_pixel", &set_pixel)?;
-    set_fn(&host_display, "fill_rect", &fill_rect)?;
-    set_fn(&host_display, "draw_char", &draw_char)?;
-    set_fn(&host_display, "draw_number", &draw_number)?;
-    set_fn(&host_display, "draw_line", &draw_line)?;
-    set_fn(&host_display, "fill_triangle", &fill_triangle)?;
-    set_fn(&host_display, "present", &present)?;
-    set_fn(&host_display, "width", &width)?;
-    set_fn(&host_display, "height", &height)?;
-    set_fn(&host_display, "pointer_x", &pointer_x)?;
-    set_fn(&host_display, "pointer_y", &pointer_y)?;
-    set_fn(&host_display, "pointer_down", &pointer_down)?;
-    set_fn(&host_display, "state_get", &state_get)?;
-    set_fn(&host_display, "state_set", &state_set)?;
-
-    let imports = Object::new();
-    Reflect::set(&imports, &JsValue::from_str("host_display"), &host_display)?;
-
-    // host_net — WebSocket-backed multiplayer / sync I/O (poll model).
-    let net = net::build_host_net(&imports, mem)?;
-
-    // host_audio — Web Audio (AudioContext) playback (fire-and-forget).
-    let audio = audio::build_host_audio(&imports)?;
-
-    Ok((
-        imports,
-        CartridgeRuntime {
-            clear, set_pixel, fill_rect, draw_char, draw_number, draw_line, fill_triangle,
-            present, width, height,
-            pointer_x, pointer_y, pointer_down, state_get, state_set, net, audio,
-        },
-    ))
+    // Lay out a grid cell for EVERY requested name (native-tested layout), so the
+    // worker mounts them in fixed positions; an unpublished name leaves its cell
+    // black instead of shifting its siblings.
+    let viewports = crate::compose::grid_viewports(names.len(), FB_W as i32, FB_H as i32);
+    let slots: Vec<(String, crate::raster::Viewport)> =
+        names.into_iter().zip(viewports).collect();
+    worker::spawn_composition(slots, ctx)
 }
 
 /// Draw one 5x7 glyph into `buf` at `(x, y)`, each source pixel expanded
@@ -735,10 +335,11 @@ pub(crate) fn set_pointer_down(down: bool) {
 }
 
 /// Forward the latest pointer state (position + button) to the cartridge
-/// worker if one is live. The single-cartridge path runs off-thread, so its
-/// `pointer_*` host imports read cells INSIDE the worker — we keep them fresh
-/// by posting on every pointer event. (The thread-local cells are still
-/// updated for the in-thread composition path.) No-op when no worker is active.
+/// worker if one is live. Every cartridge path — single, embed, and `?compose=`
+/// — runs off-thread, so the `pointer_*` host imports read cells INSIDE the
+/// worker; we keep them fresh by posting on every pointer event. The worker's
+/// `?compose=` loop hit-tests this pointer to the child under it (focus-gated).
+/// No-op when no worker is active.
 fn forward_pointer_to_worker() {
     if worker::is_active() {
         let (x, y) = POINTER.with(|p| p.get());
@@ -873,57 +474,23 @@ pub(crate) fn cartridge_canvas_present() -> bool {
         .is_some()
 }
 
-fn set_fn<T: ?Sized>(obj: &Object, name: &str, closure: &Closure<T>) -> Result<(), JsValue> {
-    Reflect::set(obj, &JsValue::from_str(name), closure.as_ref().unchecked_ref())?;
-    Ok(())
-}
+// NOTE: the old single-cartridge in-thread `start_frame_loop` AND the in-thread
+// `start_compose_loop` (the `?compose=` compositor) were removed — BOTH the
+// single-cartridge path and the `?compose=` composition now run in a Web Worker
+// (see `mod worker` + `web/cartridge-worker.js`) so a hung `frame()` can't freeze
+// the main thread. The compose tree (recursion, budget caps, focus) lives in the
+// worker; the main thread only blits frames, forwards input, and runs the
+// watchdog. This closed issue #77 (untrusted compose wasm on the main thread).
 
-/// Decode a `0xRRGGBB` colour into `(r, g, b)` bytes.
-fn rgb_components(c: i32) -> (u8, u8, u8) {
-    let u = c as u32;
-    (((u >> 16) & 0xff) as u8, ((u >> 8) & 0xff) as u8, (u & 0xff) as u8)
-}
-
-fn black_framebuffer() -> Vec<u8> {
-    let mut buf = vec![0u8; FB_BYTES];
-    // opaque black: alpha 255
-    let mut i = 3;
-    while i < buf.len() {
-        buf[i] = 255;
-        i += 4;
-    }
-    buf
-}
-
-/// Look up an exported function by name, `None` if missing/not callable.
-fn export_fn(exports: &JsValue, name: &str) -> Option<Function> {
-    Reflect::get(exports, &JsValue::from_str(name))
-        .ok()
-        .and_then(|v| v.dyn_into::<Function>().ok())
-}
-
-// NOTE: the old single-cartridge in-thread `start_frame_loop` was removed — the
-// single-cartridge path now runs in a Web Worker (see `mod worker`) so a hung
-// `frame()` can't freeze the main thread. The composition path keeps its own
-// in-thread loop (`start_compose_loop`) because it draws several owner-chosen
-// modules into one framebuffer via offset viewports, which the worker (identity
-// viewport, one cartridge) doesn't model yet. Composition is owner-driven, not
-// the brick vector; moving it off-thread is tracked as follow-up.
-
-fn request_af(cb: &Closure<dyn FnMut()>) -> Result<i32, JsValue> {
-    dom::window()?.request_animation_frame(cb.as_ref().unchecked_ref())
-}
-
-/// Stop any running cartridge loop (e.g. when the surface is closed).
+/// Stop any running cartridge (e.g. when the surface is closed).
 pub(crate) fn stop() {
     FRAME_GEN.with(|g| g.set(g.get().wrapping_add(1)));
-    RUNTIME.with(|cell| *cell.borrow_mut() = None);
-    // Terminate + drop the cartridge worker (the single-cartridge path runs
-    // off-thread now). Idempotent — a no-op when no worker is live.
+    // Terminate + drop the cartridge worker (every cartridge path — single,
+    // embed, and `?compose=` — runs off-thread). Idempotent — a no-op when no
+    // worker is live.
     worker::stop_worker();
-    // Dropping RUNTIME drops the per-cartridge GainNodes; stop_all also halts
-    // any voices already scheduled on the shared thread_local engine so a swap
-    // never leaves a drone playing.
+    // Halt any voices already scheduled on the shared thread_local engine so a
+    // swap never leaves a drone playing.
     audio::stop_all();
 }
 
@@ -1408,12 +975,94 @@ mod worker {
         }
     }
 
-    /// Spawn a worker for `wasm_bytes`, wire its message handler to the canvas
-    /// `ctx`, post the cartridge, and arm the watchdog. Replaces any previous
-    /// worker (its `Drop` terminates it + clears its interval).
+    /// Spawn a worker for a SINGLE `wasm_bytes` cartridge, wire its message
+    /// handler to the canvas `ctx`, post the cartridge, and arm the watchdog.
+    /// Replaces any previous worker (its `Drop` terminates it + clears its
+    /// interval).
     pub(super) fn spawn_cartridge(
         wasm_bytes: &[u8],
         ctx: CanvasRenderingContext2d,
+    ) -> Result<(), JsValue> {
+        let bytes = wasm_bytes.to_vec();
+        spawn_worker(ctx, move |worker| {
+            // Post the wasm. `instantiate` copies the bytes, so we don't need to
+            // transfer ownership of this buffer.
+            let arr = Uint8Array::from(&bytes[..]);
+            let msg = Object::new();
+            Reflect::set(&msg, &JsValue::from_str("type"), &JsValue::from_str("load"))?;
+            Reflect::set(&msg, &JsValue::from_str("wasm"), &arr.buffer())?;
+            attach_viewer_context(&msg)?;
+            worker
+                .post_message(&msg)
+                .map_err(|e| JsValue::from_str(&format!("worker post failed: {e:?}")))
+        })
+    }
+
+    /// Spawn a worker for a ROOTLESS `?compose=` composition (issue #77): the
+    /// grid-laid-out named modules run in the SAME isolated worker + watchdog as
+    /// a single cartridge, so a hung child can't freeze the tab. `slots` carries
+    /// `(name, x, y, w, h)` viewport tiles the main thread computed via
+    /// [`crate::compose::grid_viewports`]; the worker mounts each as a compose
+    /// child and resolves its on-chain `app.wasm` through the SAME
+    /// `compose_spawn` / `compose_bytes` round-trip a recursive spawn uses.
+    pub(super) fn spawn_composition(
+        slots: Vec<(String, crate::raster::Viewport)>,
+        ctx: CanvasRenderingContext2d,
+    ) -> Result<(), JsValue> {
+        spawn_worker(ctx, move |worker| {
+            let arr = js_sys::Array::new();
+            for (name, vp) in &slots {
+                let s = Object::new();
+                Reflect::set(&s, &JsValue::from_str("name"), &JsValue::from_str(name))?;
+                Reflect::set(&s, &JsValue::from_str("x"), &JsValue::from_f64(vp.ox as f64))?;
+                Reflect::set(&s, &JsValue::from_str("y"), &JsValue::from_f64(vp.oy as f64))?;
+                Reflect::set(&s, &JsValue::from_str("w"), &JsValue::from_f64(vp.w as f64))?;
+                Reflect::set(&s, &JsValue::from_str("h"), &JsValue::from_f64(vp.h as f64))?;
+                arr.push(&s);
+            }
+            let msg = Object::new();
+            Reflect::set(&msg, &JsValue::from_str("type"), &JsValue::from_str("compose_load"))?;
+            Reflect::set(&msg, &JsValue::from_str("slots"), &arr)?;
+            attach_viewer_context(&msg)?;
+            worker
+                .post_message(&msg)
+                .map_err(|e| JsValue::from_str(&format!("worker post failed: {e:?}")))
+        })
+    }
+
+    /// Stamp the load message with this device's viewer context (verified owner?
+    /// has a wallet?) for `host_agent`. Both read sync from APP state — cheap, no
+    /// RPC. A cartridge gates host-only controls on `viewer_is_owner`.
+    fn attach_viewer_context(msg: &Object) -> Result<(), JsValue> {
+        let (is_owner, has_identity) = crate::app::APP.with(|c| {
+            let app = c.borrow();
+            (
+                matches!(app.verify_state, crate::app::VerifyState::Verified { .. }),
+                app.wallet.is_some(),
+            )
+        });
+        Reflect::set(
+            msg,
+            &JsValue::from_str("viewerIsOwner"),
+            &JsValue::from_f64(if is_owner { 1.0 } else { 0.0 }),
+        )?;
+        Reflect::set(
+            msg,
+            &JsValue::from_str("viewerHasIdentity"),
+            &JsValue::from_f64(if has_identity { 1.0 } else { 0.0 }),
+        )?;
+        Ok(())
+    }
+
+    /// Spawn + wire a cartridge worker against canvas `ctx`, run `post_load` to
+    /// send the initial work (a single `load` or a `compose_load`), and arm the
+    /// watchdog. The message handler, watchdog, and teardown are IDENTICAL for
+    /// both the single-cartridge and `?compose=` paths — only the load message
+    /// differs — so both share this core. Replaces any previous worker (its
+    /// `Drop` terminates it + clears its interval).
+    fn spawn_worker(
+        ctx: CanvasRenderingContext2d,
+        post_load: impl FnOnce(&Worker) -> Result<(), JsValue>,
     ) -> Result<(), JsValue> {
         // Tear down the previous worker first (idempotent).
         stop_worker();
@@ -1603,36 +1252,9 @@ mod worker {
         };
         worker.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
 
-        // Post the wasm. `instantiate` copies the bytes, so we don't need to
-        // transfer ownership of this buffer.
-        let bytes = Uint8Array::from(wasm_bytes);
-        let msg = Object::new();
-        Reflect::set(&msg, &JsValue::from_str("type"), &JsValue::from_str("load"))?;
-        Reflect::set(&msg, &JsValue::from_str("wasm"), &bytes.buffer())?;
-        // Viewer context for host_agent (feedback #66/#103): is THIS device the
-        // verified owner of the subdomain, and does the viewer have a wallet?
-        // Both read sync from APP state — cheap, no RPC. A cartridge gates
-        // host-only controls on `viewer_is_owner`.
-        let (is_owner, has_identity) = crate::app::APP.with(|c| {
-            let app = c.borrow();
-            (
-                matches!(app.verify_state, crate::app::VerifyState::Verified { .. }),
-                app.wallet.is_some(),
-            )
-        });
-        Reflect::set(
-            &msg,
-            &JsValue::from_str("viewerIsOwner"),
-            &JsValue::from_f64(if is_owner { 1.0 } else { 0.0 }),
-        )?;
-        Reflect::set(
-            &msg,
-            &JsValue::from_str("viewerHasIdentity"),
-            &JsValue::from_f64(if has_identity { 1.0 } else { 0.0 }),
-        )?;
-        worker
-            .post_message(&msg)
-            .map_err(|e| JsValue::from_str(&format!("worker post failed: {e:?}")))?;
+        // Post the initial work — a single `load` or a `compose_load` — both
+        // already stamped with the viewer context via `attach_viewer_context`.
+        post_load(&worker)?;
 
         // Best-effort: resolve the live feed context (subscribed? count?) and
         // post it so host_agent::is_subscribed / subscriber_count reflect
@@ -2128,352 +1750,6 @@ fn paint_html_fb(blocks: &[HtmlBlock]) -> Vec<u8> {
     buf
 }
 
-// --- host_net: WebSocket-backed cartridge networking --------------------
-//
-// A cartridge is a sandbox — linear memory plus the imports we grant it,
-// no DOM. `host_net` grants it a **poll-model WebSocket**, the network
-// analog of the `host_display` framebuffer: integer-only host functions,
-// with strings (the URL and message bodies) passed as length-prefixed
-// pointers into cartridge memory. The cartridge opens a socket, sends
-// strings, and drains its inbox each `frame`. That's enough to build
-// multi-device sync and multiplayer apps without any DOM access.
-//
-// Cartridge ABI (`host_net`, all under `host::net::`):
-//   open(url_ptr) -> handle        connect; handle >= 0, or -1 on error
-//   send(handle, ptr) -> ok        send the string at `ptr`; 1 ok / 0 not
-//   poll(handle, out_ptr, max)     next inbound message into `out_ptr`
-//        -> len                    (length-prefixed, <= `max` payload bytes);
-//                                  returns payload len, 0 if empty, -1 bad handle
-//   status(handle) -> i32          0 connecting / 1 open / 2 closing /
-//                                  3 closed / -1 bad handle
-//   close(handle)                  close + drop the socket's inbox
-mod net {
-    use std::cell::RefCell;
-    use std::collections::VecDeque;
-    use std::rc::Rc;
-
-    use js_sys::{Object, Reflect};
-    use wasm_bindgen::prelude::*;
-    use wasm_bindgen::JsCast;
-    use web_sys::{MessageEvent, WebSocket};
-
-    use super::SharedMemory;
-
-    /// Cap the inbox so a chatty peer can't grow memory unbounded; oldest
-    /// messages drop first.
-    const MAX_INBOX: usize = 256;
-
-    /// Cap live sockets per cartridge. A `frame` loop calling `open` every
-    /// tick would otherwise flood connections (fd exhaustion / turn the
-    /// victim's tab into a connection-flood amplifier against a target). Once
-    /// at the cap, `open` refuses until the cartridge `close`s one.
-    const MAX_SOCKETS: usize = 8;
-
-    /// Reject any WebSocket URL a cartridge must NOT be able to open. A
-    /// cartridge is UNTRUSTED wasm published by any agent / fetched on-chain
-    /// and run in the visitor's tab, so `open(url)` is an SSRF surface:
-    /// without this gate it could connect to loopback / LAN / internal hosts
-    /// (router admin, dev servers, metadata endpoints) from inside the
-    /// victim's browser + network, or beacon to an arbitrary external host
-    /// under the victim's origin. Policy:
-    ///   * scheme MUST be `wss://` (encrypted). Plain `ws://` is refused —
-    ///     it's the loopback-SSRF vector browsers DON'T mixed-content-block,
-    ///     and it's cleartext exfil otherwise.
-    ///   * host must not be empty, an IP literal, `localhost`, `*.localhost`,
-    ///     or a `.local` mDNS name (no LAN / loopback reach).
-    ///
-    /// This is a deliberately conservative allowlist-by-shape — public TLS
-    /// endpoints only — matching the multiplayer/sync use case. (`design/
-    /// host-compose.md` A4 tracked a per-child variant; this lands the base
-    /// gate for both the single-cartridge and composed paths.)
-    fn url_is_allowed(url: &str) -> bool {
-        // Scheme: wss:// only (case-insensitive), and require the `//`.
-        let rest = match url
-            .split_once("://")
-            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("wss"))
-        {
-            Some((_, rest)) => rest,
-            None => return false,
-        };
-        // Authority is everything up to the first '/', '?' or '#'.
-        let authority = rest
-            .split(['/', '?', '#'])
-            .next()
-            .unwrap_or("");
-        // Strip userinfo (`user:pass@host`) — judge the real host only, and
-        // drop credentials-in-URL while we're here.
-        let hostport = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
-        // Host is hostport minus an optional `:port`. Bracketed IPv6 (`[::1]`)
-        // is rejected outright (it's an IP literal anyway).
-        if hostport.starts_with('[') {
-            return false; // IPv6 literal — never a public hostname
-        }
-        let host = hostport.split(':').next().unwrap_or("");
-        if host.is_empty() {
-            return false;
-        }
-        let lower = host.to_ascii_lowercase();
-        // Block loopback / LAN names.
-        if lower == "localhost"
-            || lower.ends_with(".localhost")
-            || lower.ends_with(".local")
-        {
-            return false;
-        }
-        // Block bare IPv4 literals (loopback 127/8, RFC-1918, link-local,
-        // metadata 169.254.169.254, etc. — a published cartridge has no
-        // legitimate reason to dial a raw IP, so refuse them all).
-        if lower.split('.').count() == 4
-            && lower.split('.').all(|o| !o.is_empty() && o.bytes().all(|b| b.is_ascii_digit()))
-        {
-            return false;
-        }
-        // Require at least one dot (a real DNS name like `host.example.com`);
-        // a bare single label can resolve to an intranet host.
-        lower.contains('.')
-    }
-
-    /// One open socket: the live `WebSocket` plus its not-yet-polled inbox
-    /// of received text messages.
-    struct Socket {
-        ws: WebSocket,
-        inbox: Rc<RefCell<VecDeque<String>>>,
-        _on_message: Closure<dyn FnMut(MessageEvent)>,
-    }
-
-    /// Handle-indexed socket table; closed sockets become `None` so handles
-    /// never alias.
-    type SocketTable = Rc<RefCell<Vec<Option<Socket>>>>;
-
-    /// Keeps the `host_net` import closures + socket table alive for the
-    /// cartridge's lifetime. wasm holds JS references into the closures.
-    #[allow(dead_code)]
-    pub(super) struct NetRuntime {
-        sockets: SocketTable,
-        open: Closure<dyn FnMut(i32) -> i32>,
-        send: Closure<dyn FnMut(i32, i32) -> i32>,
-        poll: Closure<dyn FnMut(i32, i32, i32) -> i32>,
-        status: Closure<dyn FnMut(i32) -> i32>,
-        close: Closure<dyn FnMut(i32)>,
-    }
-
-    /// Build the `host_net` import object on `imports` and return the
-    /// runtime that owns its closures (must outlive the wasm instance).
-    pub(super) fn build_host_net(
-        imports: &Object,
-        mem: &SharedMemory,
-    ) -> Result<NetRuntime, JsValue> {
-        let sockets: SocketTable = Rc::new(RefCell::new(Vec::new()));
-
-        let open = {
-            let sockets = sockets.clone();
-            let mem = mem.clone();
-            Closure::<dyn FnMut(i32) -> i32>::new(move |url_ptr: i32| {
-                let url = match read_string(&mem.borrow(), url_ptr) {
-                    Some(u) => u,
-                    None => return -1,
-                };
-                // SSRF/abuse gate: only public `wss://` hosts (no loopback /
-                // LAN / IP literals). UNTRUSTED cartridge -> refuse anything
-                // it shouldn't be able to dial before touching the network.
-                if !url_is_allowed(&url) {
-                    return -1;
-                }
-                // Connection cap: refuse once at MAX_SOCKETS live so a frame
-                // loop can't flood connections. Reuse a freed (`None`) slot if
-                // one exists so handles stay bounded.
-                let free_slot = {
-                    let table = sockets.borrow();
-                    let live = table.iter().filter(|s| s.is_some()).count();
-                    if live >= MAX_SOCKETS {
-                        return -1;
-                    }
-                    table.iter().position(|s| s.is_none())
-                };
-                let ws = match WebSocket::new(&url) {
-                    Ok(ws) => ws,
-                    Err(_) => return -1,
-                };
-                ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
-
-                let inbox: Rc<RefCell<VecDeque<String>>> =
-                    Rc::new(RefCell::new(VecDeque::new()));
-                let on_message = {
-                    let inbox = inbox.clone();
-                    Closure::<dyn FnMut(MessageEvent)>::new(move |e: MessageEvent| {
-                        if let Some(text) = e.data().as_string() {
-                            let mut q = inbox.borrow_mut();
-                            if q.len() >= MAX_INBOX {
-                                q.pop_front();
-                            }
-                            q.push_back(text);
-                        }
-                    })
-                };
-                ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
-
-                let socket = Socket { ws, inbox, _on_message: on_message };
-                let mut table = sockets.borrow_mut();
-                match free_slot {
-                    Some(i) => {
-                        table[i] = Some(socket);
-                        i as i32
-                    }
-                    None => {
-                        let handle = table.len() as i32;
-                        table.push(Some(socket));
-                        handle
-                    }
-                }
-            })
-        };
-
-        let send = {
-            let sockets = sockets.clone();
-            let mem = mem.clone();
-            Closure::<dyn FnMut(i32, i32) -> i32>::new(move |handle: i32, ptr: i32| {
-                let msg = match read_string(&mem.borrow(), ptr) {
-                    Some(m) => m,
-                    None => return 0,
-                };
-                let table = sockets.borrow();
-                match table.get(handle as usize).and_then(|s| s.as_ref()) {
-                    Some(sock) => match sock.ws.send_with_str(&msg) {
-                        Ok(()) => 1,
-                        Err(_) => 0,
-                    },
-                    None => 0,
-                }
-            })
-        };
-
-        let poll = {
-            let sockets = sockets.clone();
-            let mem = mem.clone();
-            Closure::<dyn FnMut(i32, i32, i32) -> i32>::new(
-                move |handle: i32, out_ptr: i32, max: i32| {
-                    let table = sockets.borrow();
-                    let sock = match table.get(handle as usize).and_then(|s| s.as_ref()) {
-                        Some(s) => s,
-                        None => return -1,
-                    };
-                    let msg = match sock.inbox.borrow_mut().pop_front() {
-                        Some(m) => m,
-                        None => return 0,
-                    };
-                    write_string(&mem.borrow(), out_ptr, &msg, max.max(0) as usize)
-                },
-            )
-        };
-
-        let status = {
-            let sockets = sockets.clone();
-            Closure::<dyn FnMut(i32) -> i32>::new(move |handle: i32| {
-                let table = sockets.borrow();
-                match table.get(handle as usize).and_then(|s| s.as_ref()) {
-                    Some(sock) => sock.ws.ready_state() as i32,
-                    None => -1,
-                }
-            })
-        };
-
-        let close = {
-            let sockets = sockets.clone();
-            Closure::<dyn FnMut(i32)>::new(move |handle: i32| {
-                let mut table = sockets.borrow_mut();
-                if let Some(slot) = table.get_mut(handle as usize) {
-                    if let Some(sock) = slot.take() {
-                        let _ = sock.ws.close();
-                    }
-                }
-            })
-        };
-
-        let host_net = Object::new();
-        super::set_fn(&host_net, "open", &open)?;
-        super::set_fn(&host_net, "send", &send)?;
-        super::set_fn(&host_net, "poll", &poll)?;
-        super::set_fn(&host_net, "status", &status)?;
-        super::set_fn(&host_net, "close", &close)?;
-        Reflect::set(imports, &JsValue::from_str("host_net"), &host_net)?;
-
-        Ok(NetRuntime { sockets, open, send, poll, status, close })
-    }
-
-    /// Read a length-prefixed UTF-8 string from cartridge memory at `ptr`
-    /// (4 bytes LE length, then payload) — the same layout the loader's
-    /// `read_string` uses. `None` on missing memory / bad length.
-    fn read_string(memory: &JsValue, ptr: i32) -> Option<String> {
-        if ptr < 0 || memory.is_null() {
-            return None;
-        }
-        let buffer = Reflect::get(memory, &JsValue::from_str("buffer")).ok()?;
-        let array = js_sys::Uint8Array::new(&buffer);
-        let cap = array.length() as u64;
-        let ptr = ptr as u64;
-        // Bounds the whole [ptr, ptr+4) length prefix against the cartridge's
-        // own memory. (OOB reads on a Uint8Array yield 0 in JS rather than
-        // host memory — the cartridge can only see its OWN linear memory — but
-        // we check explicitly so the read is well-defined and the `u32` adds
-        // below can't wrap.)
-        if ptr + 4 > cap {
-            return None;
-        }
-        let mut len_bytes = [0u8; 4];
-        for (i, b) in len_bytes.iter_mut().enumerate() {
-            *b = array.get_index(ptr as u32 + i as u32);
-        }
-        let len = u32::from_le_bytes(len_bytes) as u64;
-        if len > 65536 || ptr + 4 + len > cap {
-            return None;
-        }
-        let mut bytes = vec![0u8; len as usize];
-        for (i, b) in bytes.iter_mut().enumerate() {
-            *b = array.get_index(ptr as u32 + 4 + i as u32);
-        }
-        String::from_utf8(bytes).ok()
-    }
-
-    /// Write `s` into cartridge memory at `out_ptr` as a length-prefixed
-    /// UTF-8 string, truncating the payload to `max` bytes on a char
-    /// boundary. Returns the payload byte length written, or -1 if memory
-    /// is missing.
-    fn write_string(memory: &JsValue, out_ptr: i32, s: &str, max: usize) -> i32 {
-        if out_ptr < 0 || memory.is_null() {
-            return -1;
-        }
-        let buffer = match Reflect::get(memory, &JsValue::from_str("buffer")) {
-            Ok(b) => b,
-            Err(_) => return -1,
-        };
-        let array = js_sys::Uint8Array::new(&buffer);
-        let cap = array.length() as u64;
-        let ptr = out_ptr as u64;
-
-        let mut end = s.len().min(max);
-        while end > 0 && !s.is_char_boundary(end) {
-            end -= 1;
-        }
-        let bytes = &s.as_bytes()[..end];
-        let len = bytes.len() as u32;
-        // The full [out_ptr, out_ptr+4+len) write region must fit the
-        // cartridge's own memory. (An OOB `set_index` is a silent no-op in JS,
-        // so a wild pointer can never reach host memory — but check explicitly
-        // so a partial write can't land and the `u32` adds can't wrap.)
-        if ptr + 4 + len as u64 > cap {
-            return -1;
-        }
-        let ptr = ptr as u32;
-        for (i, b) in len.to_le_bytes().iter().enumerate() {
-            array.set_index(ptr + i as u32, *b);
-        }
-        for (i, b) in bytes.iter().enumerate() {
-            array.set_index(ptr + 4 + i as u32, *b);
-        }
-        len as i32
-    }
-}
-
 // --- host_audio: Web Audio (AudioContext) cartridge sound ---------------
 //
 // The audio analog of host_display's framebuffer: integer-only host fns a
@@ -2487,7 +1763,7 @@ mod net {
 mod audio {
     use std::cell::RefCell;
 
-    use js_sys::{Function, Object, Reflect};
+    use js_sys::{Function, Reflect};
     use wasm_bindgen::prelude::*;
     use wasm_bindgen::JsCast;
     use web_sys::{AudioContext, GainNode, OscillatorType};
@@ -2518,17 +1794,6 @@ mod audio {
         node: JsValue,
         /// Keeps the `onended` closure alive for the voice's lifetime.
         _onended: Closure<dyn FnMut()>,
-    }
-
-    /// Keeps the `host_audio` import closures alive for the cartridge's life
-    /// (wasm holds JS references into them after instantiation).
-    #[allow(dead_code)]
-    pub(super) struct AudioRuntime {
-        tone: Closure<dyn FnMut(i32, i32, i32) -> i32>,
-        tone_at: Closure<dyn FnMut(i32, i32, i32, i32) -> i32>,
-        noise: Closure<dyn FnMut(i32) -> i32>,
-        stop: Closure<dyn FnMut(i32)>,
-        set_volume: Closure<dyn FnMut(i32)>,
     }
 
     /// Get-or-create the shared engine, resuming the context (a no-op if
@@ -2708,31 +1973,11 @@ mod audio {
         });
     }
 
-    /// Build the `host_audio` import object on `imports` and return the
-    /// runtime that owns its closures (must outlive the wasm instance).
-    pub(super) fn build_host_audio(imports: &Object) -> Result<AudioRuntime, JsValue> {
-        let tone = Closure::<dyn FnMut(i32, i32, i32) -> i32>::new(
-            move |freq: i32, dur_ms: i32, wave: i32| play_tone(freq, dur_ms, wave, 0),
-        );
-        let tone_at = Closure::<dyn FnMut(i32, i32, i32, i32) -> i32>::new(
-            move |freq: i32, dur_ms: i32, wave: i32, delay_ms: i32| {
-                play_tone(freq, dur_ms, wave, delay_ms)
-            },
-        );
-        let noise = Closure::<dyn FnMut(i32) -> i32>::new(move |dur_ms: i32| play_noise(dur_ms));
-        let stop = Closure::<dyn FnMut(i32)>::new(move |handle: i32| stop_handle(handle));
-        let set_volume = Closure::<dyn FnMut(i32)>::new(move |pct: i32| set_master_volume(pct));
-
-        let host_audio = Object::new();
-        super::set_fn(&host_audio, "tone", &tone)?;
-        super::set_fn(&host_audio, "tone_at", &tone_at)?;
-        super::set_fn(&host_audio, "noise", &noise)?;
-        super::set_fn(&host_audio, "stop", &stop)?;
-        super::set_fn(&host_audio, "set_volume", &set_volume)?;
-        Reflect::set(imports, &JsValue::from_str("host_audio"), &host_audio)?;
-
-        Ok(AudioRuntime { tone, tone_at, noise, stop, set_volume })
-    }
+    // NOTE: the in-thread `build_host_audio` import builder was removed with the
+    // in-thread cartridge runtime (issue #77). The cartridge runs in a Web Worker
+    // now, which implements `host_audio` itself and FORWARDS each op to the main
+    // thread (only the main thread has an AudioContext); the worker bridge calls
+    // `play_tone`/`play_noise`/`stop_handle`/`set_master_volume`/`stop_all` here.
 
     /// Stop every scheduled voice + suspend the context (called on cartridge
     /// swap / `display::stop`) so a swap never leaves a drone playing.

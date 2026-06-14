@@ -356,33 +356,18 @@ fn mount() -> Result<(), JsValue> {
     }));
 
     // Compose mode short-circuit (?compose=name1,name2,...). The iframe-free
-    // host::compose path (roadmap Track A): fetch each named subdomain's
-    // PUBLISHED app.wasm and composite them into one framebuffer via
-    // `display::mount_composition` — no iframes, one shared canvas, focus-gated
-    // pointer routing, budget-capped. Works on any origin.
+    // host::compose path (roadmap Track A): composite each named subdomain's
+    // PUBLISHED app.wasm into one framebuffer via `display::mount_composition` —
+    // no iframes, one shared canvas, focus-gated pointer routing, budget-capped.
+    // Runs in the cartridge WORKER + watchdog (issue #77): a composed child is
+    // untrusted wasm too, so it must be contained off the main thread. The worker
+    // resolves each name's published app.wasm through the same compose round-trip
+    // a recursive spawn uses (an unpublished name just stays a black cell). Works
+    // on any origin.
     if let Some(names) = compose::compose_names() {
         root.set_inner_html(&templates::app_fullscreen(false).into_string());
         wasm_bindgen_futures::spawn_local(async move {
-            // Keep one slot per requested name (None = unavailable) so a module
-            // that hasn't published an app leaves its grid cell black instead of
-            // shifting the others.
-            let mut mods: Vec<Option<Vec<u8>>> = Vec::with_capacity(names.len());
-            for name in &names {
-                let bytes = compose_module_wasm(name).await;
-                if bytes.is_none() {
-                    web_sys::console::warn_1(&JsValue::from_str(&format!(
-                        "compose: {name} has no published app to composite"
-                    )));
-                }
-                mods.push(bytes);
-            }
-            if mods.iter().all(Option::is_none) {
-                if let Some(r) = dom::document().ok().and_then(|d| d.get_element_by_id("root")) {
-                    r.set_inner_html(
-                        "<main style=\"padding:24px;color:#7a8493;font:14px ui-monospace,Menlo,Consolas,monospace\">compose · no named module published an app to composite</main>",
-                    );
-                }
-            } else if let Err(err) = display::mount_composition(mods).await {
+            if let Err(err) = display::mount_composition(names).await {
                 web_sys::console::warn_1(&JsValue::from_str(&format!("compose failed: {err:?}")));
             }
         });

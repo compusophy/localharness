@@ -311,7 +311,7 @@ mod net {
     /// cleartext `ws://`, which is also the loopback vector browsers don't
     /// mixed-content-block), and the host must not be empty, an IP literal,
     /// `localhost`/`*.localhost`, or a `.local` mDNS name. Mirrors the gate
-    /// in `src/app/display.rs::net::url_is_allowed`.
+    /// in `web/cartridge-worker.js::urlIsAllowed` (the browser cartridge host).
     fn url_is_allowed(url: &str) -> bool {
         let rest = match url
             .split_once("://")

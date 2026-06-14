@@ -785,9 +785,110 @@ function composeCompositePass(t) {
   compositeChildren(rootNode, fb32, FB_W, FB_H, ptr, t);
 }
 
+// ---- ?compose= : a ROOTLESS composition of named modules (issue #77) ---------
+// The `?compose=name1,name2,…` path tiles several published cartridges in a grid
+// with NO parent cartridge driving them. It previously ran each child's frame()
+// on the MAIN thread (display.rs::start_compose_loop) — UNTRUSTED wasm with no
+// worker isolation or watchdog, so one hung child re-bricked the tab. Now it runs
+// HERE, in the worker, reusing the exact compose tree + budget caps + the main-
+// thread watchdog the single-cartridge path already has.
+//
+// There is no root cartridge: the SYNTHETIC root is `rootNode` itself, and
+// `composeTick` is its frame loop — it composites the grid children into the
+// shared framebuffer and presents once per frame, focus-gating the pointer to the
+// topmost child that contains it (the `focus_at` rule, mirroring the old main-
+// thread loop). Children are mounted as LOADING slots whose bytes arrive via the
+// SAME compose_bytes round-trip as a recursive spawn (the main thread resolves
+// each name's on-chain app.wasm).
+
+// The topmost ready child whose viewport contains (px, py), or -1. Last index =
+// topmost (z-order), matching ModuleTable::focus_at on the Rust side.
+function composeFocusAt(node, px, py) {
+  const children = node.children;
+  for (let i = children.length - 1; i >= 0; i--) {
+    const c = children[i];
+    if (!c || c.state !== MOD_READY) continue;
+    if (px >= c.vp.x && py >= c.vp.y && px < c.vp.x + c.vp.w && py < c.vp.y + c.vp.h) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+// The synthetic-root frame loop for a ?compose= composition. Clears the root FB
+// (inter-cell gaps stay black), focus-gates the pointer to the child under it,
+// composites every child, and presents — then self-paces like `tick`. The main-
+// thread watchdog terminates this worker if a child hangs and stops the frames.
+function composeTick() {
+  if (!running) return;
+  const t = (Date.now() - startMs) | 0;
+  try {
+    // Opaque-black the root framebuffer each frame (gaps between grid cells).
+    fb32.fill(packRgb(0x000000));
+    // Route the pointer to whichever child sits under it (topmost wins), so a
+    // click in one panel can't drive a sibling — same gate as the in-thread loop.
+    rootNode.focus = composeFocusAt(rootNode, ptr.x, ptr.y);
+    compositeChildren(rootNode, fb32, FB_W, FB_H, ptr, t);
+    present();
+  } catch (e) {
+    running = false;
+    postError(LH_RUNTIME.WASM_TRAP, 'compose pass failed: ' + (e && e.message ? e.message : String(e)));
+    return;
+  }
+  if (running) setTimeout(composeTick, 16);
+}
+
+// Start a rootless grid composition of `slots` ({ name, x, y, w, h }, … already
+// laid out by the main thread's grid_viewports). Resets the tree, mounts each
+// slot as a LOADING child of the synthetic root (budget-capped), kicks the bytes
+// round-trip for each, and starts `composeTick`. The main thread blits frames +
+// forwards input + arms the watchdog exactly as for a single cartridge.
+function composeLoad(slots) {
+  running = false;
+  closeAllSockets();
+  composeReset();
+  state.fill(0);
+  ptr.x = -1; ptr.y = -1; ptr.down = 0; // no pointer until the viewer moves it
+  memory = null;
+  // The composition uses the default 256x144 surface (the grid viewports the
+  // main thread sent are computed against it). A child still declares its OWN
+  // dims() and is scaled into its cell by blitChild.
+  FB_W = FB_W_DEFAULT;
+  FB_H = FB_H_DEFAULT;
+  fbBytes = new Uint8ClampedArray(FB_W * FB_H * 4);
+  fb32 = new Uint32Array(fbBytes.buffer);
+
+  for (const slot of (Array.isArray(slots) ? slots : [])) {
+    if (!slot || typeof slot.name !== 'string' || slot.name === '') continue;
+    if (liveChildCount(rootNode.children) >= COMPOSE_MAX_CHILDREN) break;
+    if (composeTotalNodes >= COMPOSE_MAX_NODES) break;
+    const uid = composeNextUid++;
+    const child = makeChildSlot(slot.name, slot.x, slot.y, slot.w, slot.h, rootNode.depth + 1, uid);
+    rootNode.children.push(child);
+    composeTotalNodes += 1;
+    composeNodeIndex.set(uid, child);
+    // Ask the main thread to resolve this name's published app.wasm; the
+    // compose_bytes reply instantiates the slot (or marks it Failed).
+    if (typeof self !== 'undefined' && self.postMessage) {
+      self.postMessage({ type: 'compose_spawn', uid, name: slot.name });
+    }
+  }
+
+  if (!rootNode.children.length) {
+    postError(LH_RUNTIME.NO_ENTRY, 'compose: no module to composite');
+    return;
+  }
+  running = true;
+  startMs = Date.now();
+  composeTick();
+}
+
 // ---- host_net: WebSocket (works in a worker) --------------------------------
-// Faithful port of display.rs::net — poll-model sockets, SSRF wss-only gate,
-// MAX_SOCKETS / MAX_INBOX caps, length-prefixed strings over cartridge memory.
+// The cartridge host's network surface (the in-thread Rust mirror was removed
+// with the in-thread cartridge runtime — issue #77; the native rustlite loader
+// keeps its own copy at src/rustlite/loader.rs). Poll-model sockets, SSRF
+// wss-only gate, MAX_SOCKETS / MAX_INBOX caps, length-prefixed strings over
+// cartridge memory.
 const MAX_INBOX = 256;
 const MAX_SOCKETS = 8;
 const sockets = []; // index = handle; closed slots become null
@@ -1205,6 +1306,14 @@ if (IS_WORKER) {
       case 'load':
         applyAgentContext(msg);
         load(msg.wasm);
+        break;
+      case 'compose_load':
+        // ?compose= : a rootless grid composition of named modules, run HERE so
+        // it gets the same worker isolation + watchdog as a single cartridge
+        // (issue #77). `slots` carries the grid viewports the main thread laid
+        // out; each child's bytes arrive via the compose_bytes round-trip.
+        applyAgentContext(msg);
+        composeLoad(msg.slots);
         break;
       case 'agent_context':
         applyAgentContext(msg);
