@@ -17,12 +17,24 @@
 
 use burn::tensor::{backend::Backend, Int, Tensor, TensorData};
 
-use super::gemma::GemmaModel;
+use super::gemma::{GemmaModel, ROPE_CACHE_LEN};
 use super::tokenizer::GemmaTokenizer;
 
 /// Gemma end-of-sequence token id. Generation stops as soon as the model emits
 /// this (it is NOT included in the decoded output).
 const EOS_ID: i64 = 1;
+
+/// Whether a forward pass over `seq` tokens would index past the RoPE cache.
+///
+/// `forward` (and the per-layer `RotaryEncoding`) index the precomputed cache by
+/// absolute position `0..seq`, so the largest valid sequence length is exactly
+/// `ROPE_CACHE_LEN` (positions `0..ROPE_CACHE_LEN`). A sequence of `ROPE_CACHE_LEN`
+/// or more tokens would read position `ROPE_CACHE_LEN` and panic the tab; the
+/// decoder stops cleanly instead. Pure so the bound is unit-tested without the
+/// (heavy) Burn backend.
+fn at_context_limit(seq: usize) -> bool {
+    seq >= ROPE_CACHE_LEN
+}
 
 /// Greedy argmax decode.
 ///
@@ -49,6 +61,15 @@ pub async fn generate<B: Backend>(
     let mut generated: Vec<i64> = Vec::with_capacity(max_new);
 
     for _ in 0..max_new {
+        // Clean stop before the forward pass would index past the RoPE cache.
+        // v1 has no KV cache, so `tokens` (prompt + continuation) grows every
+        // step; once it reaches `ROPE_CACHE_LEN`, `forward` would index the
+        // precomputed RoPE cache out of bounds and panic the tab. Degrade an
+        // over-length context to a clean stop instead (issue #96).
+        if at_context_limit(tokens.len()) {
+            break;
+        }
+
         // Build the input tensor [1, seq] from the running token sequence. We
         // construct a 1-D Int tensor from the i64 ids then reshape to add the
         // batch dim — portable across backends (the Int element may be i32 on
@@ -94,4 +115,22 @@ pub async fn generate<B: Backend>(
     }
 
     tok.decode(&generated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The forward pass indexes the RoPE cache by position `0..seq`, so the
+    // boundary is exactly `ROPE_CACHE_LEN`: `ROPE_CACHE_LEN - 1` tokens are the
+    // last SAFE length (positions `0..ROPE_CACHE_LEN`), and `ROPE_CACHE_LEN`
+    // tokens would read position `ROPE_CACHE_LEN` — out of bounds. The pre-fix
+    // loop had no such guard and panicked the tab there (issue #96).
+    #[test]
+    fn context_limit_guards_the_rope_cache_boundary() {
+        assert!(!at_context_limit(0));
+        assert!(!at_context_limit(ROPE_CACHE_LEN - 1)); // last safe length
+        assert!(at_context_limit(ROPE_CACHE_LEN)); // first out-of-bounds length
+        assert!(at_context_limit(ROPE_CACHE_LEN + 1));
+    }
 }

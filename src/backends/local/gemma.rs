@@ -34,7 +34,12 @@ use burn::tensor::{activation, backend::Backend, Int, Tensor};
 /// `max_position_embeddings` (32768), but a full 32768×256×2 f32 cache is ~64MB
 /// — too heavy to build eagerly in a browser tab. 4096 is plenty for the
 /// in-tab fast-path / first native validation; raise when long-context lands.
-const ROPE_CACHE_LEN: usize = 4096;
+///
+/// `pub(crate)` so the decoder ([`super::generate`]) can bound its sequence
+/// length against the SAME constant: `forward` indexes the RoPE cache by
+/// position, so a sequence reaching `ROPE_CACHE_LEN` would index past the cache
+/// and panic the tab. The generation loop guards on this for a clean stop.
+pub(crate) const ROPE_CACHE_LEN: usize = 4096;
 
 /// Verified Gemma 3 270M hyperparameters (`google/gemma-3-270m/config.json`).
 #[derive(Clone, Debug)]
