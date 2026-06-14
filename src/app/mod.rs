@@ -1346,8 +1346,6 @@ async fn local_public_html() -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// Cartridge bytes for `name`: the local `app.rl` working copy first (so
-/// the owner previews unpublished edits), else the on-chain published wasm.
 /// Fetch the PUBLISHED on-chain `app.wasm` for another subdomain `name` — no
 /// local working-copy fallback, since composing means showing what that
 /// subdomain publishes to the world. `None` if the name is unregistered or has
@@ -1357,9 +1355,15 @@ async fn compose_module_wasm(name: &str) -> Option<Vec<u8>> {
     registry::app_wasm_of(id).await.ok().flatten()
 }
 
-async fn resolve_cartridge(id: Option<u64>) -> Option<Vec<u8>> {
-    if let Some(w) = local_cartridge_wasm().await {
-        return Some(w);
+/// Cartridge bytes for the public face. When `prefer_local` (owner preview
+/// only), the device's unpublished `app.rl` working copy wins so the owner
+/// sees their edits; for a VISITOR `prefer_local` is false, so only the
+/// PUBLISHED on-chain wasm is shown — never the owner-device's local draft.
+async fn resolve_cartridge(id: Option<u64>, prefer_local: bool) -> Option<Vec<u8>> {
+    if prefer_local {
+        if let Some(w) = local_cartridge_wasm().await {
+            return Some(w);
+        }
     }
     match id {
         Some(i) => registry::app_wasm_of(i).await.ok().flatten(),
@@ -1368,12 +1372,15 @@ async fn resolve_cartridge(id: Option<u64>) -> Option<Vec<u8>> {
 }
 
 /// Resolve the public face for tenant `name`. Reads the on-chain choice
-/// (`directory` / `app` / `html`) and gathers content (local working copy
-/// first, else the published copy). An explicit choice with no content
-/// available falls back to the directory; an UNSET choice infers "app if a
-/// cartridge exists, else directory" so subdomains that published a
-/// cartridge before the picker shipped keep showing it.
-async fn resolve_public_face(name: &str) -> PublicFace {
+/// (`directory` / `app` / `html`) and gathers content. `is_owner_preview`
+/// (the owner viewing their own face via `?view=public`) prefers the device's
+/// local working copy so unpublished edits show; a VISITOR (false) only ever
+/// gets the PUBLISHED on-chain copy — the device-local OPFS draft must never
+/// leak to visitors. An explicit choice with no content available falls back
+/// to the directory; an UNSET choice infers "app if a published cartridge
+/// exists, else directory" so subdomains that published a cartridge before the
+/// picker shipped keep showing it.
+async fn resolve_public_face(name: &str, is_owner_preview: bool) -> PublicFace {
     let id = registry::id_of_name(name).await.ok().filter(|&i| i != 0);
     let choice = match id {
         Some(i) => registry::public_face_of(i).await.ok().flatten(),
@@ -1382,8 +1389,10 @@ async fn resolve_public_face(name: &str) -> PublicFace {
     match choice.as_deref() {
         Some("directory") => PublicFace::Directory,
         Some("html") => {
-            if let Some(h) = local_public_html().await {
-                return PublicFace::Html(h);
+            if is_owner_preview {
+                if let Some(h) = local_public_html().await {
+                    return PublicFace::Html(h);
+                }
             }
             if let Some(i) = id {
                 if let Ok(Some(bytes)) = registry::public_html_of(i).await {
@@ -1393,7 +1402,7 @@ async fn resolve_public_face(name: &str) -> PublicFace {
             PublicFace::Directory
         }
         // "app" or unset/legacy — prefer a cartridge, fall back to directory.
-        _ => match resolve_cartridge(id).await {
+        _ => match resolve_cartridge(id, is_owner_preview).await {
             Some(w) => PublicFace::Cartridge(w),
             None => PublicFace::Directory,
         },
@@ -1426,9 +1435,11 @@ fn paint_html_fullscreen(html: &str, owner_overlay: bool) -> bool {
 
 /// Paint the resolved public face for tenant `name`. Always takes over the
 /// page (directory is the universal fallback). `owner_overlay` shows the
-/// `[studio]` escape (owner preview only).
+/// `[studio]` escape AND signals an owner preview (`?view=public`), so the
+/// resolver may prefer the device's local working copy; a visitor
+/// (`owner_overlay == false`) only ever sees the published on-chain copy.
 async fn paint_public_face(host: &tenant::Host, name: &str, owner_overlay: bool) {
-    match resolve_public_face(name).await {
+    match resolve_public_face(name, owner_overlay).await {
         PublicFace::Cartridge(w) => {
             paint_cartridge_fullscreen(&w, owner_overlay).await;
         }

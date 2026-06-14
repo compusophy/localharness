@@ -35,7 +35,17 @@ pub(crate) async fn mcp_serve(args: &[String]) -> i32 {
     let mut out = tokio::io::stdout();
     eprintln!("localharness mcp: ready on stdio (acting as the local identity).");
 
-    while let Ok(Some(line)) = lines.next_line().await {
+    loop {
+        let line = match lines.next_line().await {
+            Ok(Some(line)) => line,
+            Ok(None) => break, // stdin EOF — the client closed the pipe
+            Err(e) => {
+                // A single bad read (e.g. a non-UTF-8 byte on stdin) must not
+                // tear down the whole server — log and keep serving.
+                eprintln!("localharness mcp: skipping unreadable stdin frame: {e}");
+                continue;
+            }
+        };
         let line = line.trim();
         if line.is_empty() {
             continue;

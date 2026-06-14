@@ -164,9 +164,42 @@ impl McpClient {
     }
 }
 
+/// RAII guard that removes the `pending` entry for `id` when dropped —
+/// closing the map-entry leak that a caller-side `timeout()` (or any cancel)
+/// would otherwise cause by dropping the [`request_via`] future mid-await,
+/// leaving its oneshot sender stranded in the table forever. Disarm via
+/// [`PendingGuard::disarm`] on the paths where the entry is already gone
+/// (delivered, or removed on a send error), so the common case spawns
+/// nothing. Drop uses a spawned removal because the table is behind an async
+/// mutex (a sync lock in `Drop` could deadlock the dispatcher).
+struct PendingGuard {
+    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Response>>>>,
+    id: u64,
+    armed: bool,
+}
+
+impl PendingGuard {
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let pending = self.pending.clone();
+        let id = self.id;
+        tokio::spawn(async move {
+            pending.lock().await.remove(&id);
+        });
+    }
+}
+
 async fn request_via(
     transport: &StdioTransport,
-    pending: &Mutex<HashMap<u64, oneshot::Sender<Response>>>,
+    pending: &Arc<Mutex<HashMap<u64, oneshot::Sender<Response>>>>,
     next_id: &AtomicU64,
     method: &str,
     params: Option<Value>,
@@ -174,6 +207,13 @@ async fn request_via(
     let id = next_id.fetch_add(1, Ordering::Relaxed);
     let (tx, rx) = oneshot::channel();
     pending.lock().await.insert(id, tx);
+    // Armed from here: any early return / dropped-future (timeout) below pops
+    // the entry on the way out.
+    let guard = PendingGuard {
+        pending: pending.clone(),
+        id,
+        armed: true,
+    };
 
     let req = Request::new(id, method, params);
     let payload = serde_json::to_string(&req)
@@ -181,12 +221,19 @@ async fn request_via(
     trace!(method, %payload, "mcp request");
 
     if let Err(e) = transport.send(&payload).await {
+        // Remove synchronously and disarm — nothing else can race a not-yet-
+        // sent id.
         pending.lock().await.remove(&id);
+        guard.disarm();
         return Err(e);
     }
 
     let resp = match rx.await {
-        Ok(r) => r,
+        // The dispatcher already removed the entry to deliver this response.
+        Ok(r) => {
+            guard.disarm();
+            r
+        }
         Err(_) => return Err(Error::Closed),
     };
     if let Some(err) = resp.error {
@@ -200,7 +247,7 @@ async fn request_via(
 
 async fn initialize_via(
     transport: &StdioTransport,
-    pending: &Mutex<HashMap<u64, oneshot::Sender<Response>>>,
+    pending: &Arc<Mutex<HashMap<u64, oneshot::Sender<Response>>>>,
     next_id: &AtomicU64,
 ) -> Result<InitializeResult> {
     let params = serde_json::to_value(InitializeParams {
@@ -229,7 +276,7 @@ async fn initialize_via(
 
 async fn list_tools_via(
     transport: &StdioTransport,
-    pending: &Mutex<HashMap<u64, oneshot::Sender<Response>>>,
+    pending: &Arc<Mutex<HashMap<u64, oneshot::Sender<Response>>>>,
     next_id: &AtomicU64,
 ) -> Result<Vec<McpToolDecl>> {
     let resp = request_via(transport, pending, next_id, "tools/list", None).await?;
@@ -540,5 +587,59 @@ mod tests {
         // Simulate teardown dropping all pending senders.
         pending.lock().await.clear();
         assert!(rx.await.is_err());
+    }
+
+    #[tokio::test]
+    async fn armed_pending_guard_removes_entry_on_drop() {
+        // A timed-out / cancelled request_via drops its PendingGuard with the
+        // entry still in the table. The guard must reap it (the map-entry leak
+        // bug). Drop spawns the removal, so yield until the table drains.
+        let pending = pending_map();
+        let _rx = register(&pending, 7).await;
+        assert!(pending.lock().await.contains_key(&7));
+        {
+            let _guard = PendingGuard {
+                pending: pending.clone(),
+                id: 7,
+                armed: true,
+            };
+        } // dropped here → spawns the removal
+        // Give the spawned removal task a turn to run.
+        for _ in 0..100 {
+            if !pending.lock().await.contains_key(&7) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !pending.lock().await.contains_key(&7),
+            "armed guard must remove the pending entry on drop"
+        );
+    }
+
+    #[tokio::test]
+    async fn disarmed_pending_guard_leaves_entry_alone() {
+        // The delivered / send-error paths disarm the guard (the entry is
+        // already gone or owned elsewhere) — drop must NOT spawn a spurious
+        // removal that could reap a re-used id.
+        let pending = pending_map();
+        let _rx = register(&pending, 9).await;
+        {
+            let guard = PendingGuard {
+                pending: pending.clone(),
+                id: 9,
+                armed: true,
+            };
+            guard.disarm();
+        }
+        // Yield a few times; a disarmed guard spawns nothing, so the entry
+        // stays.
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            pending.lock().await.contains_key(&9),
+            "disarmed guard must not touch the table"
+        );
     }
 }

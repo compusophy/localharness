@@ -14,13 +14,20 @@ pub(super) async fn gemini_key_slot_id(name: &str) -> Result<u64, String> {
         .await
         .map_err(|e| format!("owner: {e}"))?
         .ok_or_else(|| "name not registered on-chain".to_string())?;
-    let main_id = crate::app::registry::main_of(&owner).await.unwrap_or(0);
+    // Distinguish a transient RPC failure (Err) from a genuine no-MAIN
+    // (Ok(0)). Collapsing both to 0 would, on a hiccup, silently key the
+    // blob under the WRONG slot (the name's own id) instead of the shared
+    // MAIN — so an Err is a hard error the caller skips + retries.
+    let main_id = crate::app::registry::main_of(&owner)
+        .await
+        .map_err(|e| format!("main_of: {e}"))?;
     if main_id != 0 {
         return Ok(main_id);
     }
     match crate::app::registry::id_of_name(name).await {
         Ok(id) if id != 0 => Ok(id),
-        _ => Err("no token id for name".into()),
+        Ok(_) => Err("no token id for name".into()),
+        Err(e) => Err(format!("id_of_name: {e}")),
     }
 }
 
@@ -70,7 +77,8 @@ pub(crate) async fn sync_local_key_to_main(name: &str) {
 /// saved to this origin's OPFS + sessionStorage and `true` is returned,
 /// so the caller can skip the api-key modal. Returns `false` (silently)
 /// when there's no synced key OR this device lacks the seed (e.g. a phone
-/// linked by device key only — that path will use the wrapped-key blob).
+/// linked by device key only — that device just shows the api-key modal;
+/// there is no device-key/ECIES restore path here today).
 pub(crate) async fn try_auto_restore_gemini_key(name: &str) -> bool {
     if crate::app::key_store::load().await.is_some() {
         return true;
