@@ -54,6 +54,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   silently truncated number-typed `value`/`validBefore`/`validAfter` above
   2^53 via `Math.trunc`, corrupting a signed money field; it now rejects
   non-safe-integer numbers and requires large values as decimal strings.
+- **a11y: transaction-confirmation focus trap (GitHub #75).** Arming a
+  value-moving confirmation (the agent-wallet $LH send, a device unlink) left
+  keyboard focus on the page BEHIND the panel — a keyboard user had to Tab
+  through the whole page to reach [confirm]. The armed panel now takes focus on
+  open (`dom::focus_first_in`), Tab/Shift+Tab are CONFINED to it while it's open
+  (`[data-modal-trap]` + `dom::trap_tab_in`, handled in the one delegated keydown
+  listener — no new closure), Escape dismisses it (`data-modal-cancel`), and
+  closing returns focus to the trigger (`dom::restore_focus`).
 
 ## [0.35.0] - 2026-06-13
 

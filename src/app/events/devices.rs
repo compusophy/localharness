@@ -222,10 +222,16 @@ async fn owner_main_tba() -> Result<(k256::ecdsa::SigningKey, String, u64, Strin
 /// the owner / other devices keep their access.)
 pub(super) fn unlink_device_prompt(device_hex: String) {
     let short = short_addr(&device_hex);
+    // Remember the trigger (the × on the device row) BEFORE swapping in the
+    // panel, so closing returns focus there.
+    dom::remember_focus();
+    // `data-modal-trap`/`data-modal-cancel` make the delegated keydown listener
+    // confine Tab to this panel and route Escape to cancel (a11y #75).
     dom::swap_inner(
         "pair-msg",
         &format!(
-            "<div class=\"unlink-confirm\">\
+            "<div id=\"unlink-confirm-panel\" class=\"unlink-confirm\" role=\"dialog\" \
+               aria-modal=\"true\" data-modal-trap data-modal-cancel=\"unlink-cancel\">\
                <div>remove <code>{short}</code>? type <b>yes</b> to confirm.</div>\
                <input id=\"unlink-confirm-input\" type=\"text\" autocomplete=\"off\" \
                  placeholder=\"yes\">\
@@ -237,11 +243,15 @@ pub(super) fn unlink_device_prompt(device_hex: String) {
              </div>"
         ),
     );
+    // Pull focus INTO the armed panel (lands on the typed-confirm input).
+    dom::focus_first_in("unlink-confirm-panel");
 }
 
-/// Abort an in-progress unlink — clear the confirmation prompt.
+/// Abort an in-progress unlink — clear the confirmation prompt and return
+/// focus to the trigger (a11y #75; also the Escape target).
 pub(super) fn unlink_cancel_pressed() {
     dom::swap_inner("pair-msg", "");
+    dom::restore_focus();
 }
 
 /// Only unlink when the user typed `yes` in the confirmation input.
@@ -275,6 +285,9 @@ pub(super) fn unlink_confirm_pressed(device_hex: String) {
         match result {
             Ok(_) => {
                 dom::swap_inner("pair-msg", "");
+                // Panel gone — return focus to the trigger (a no-op if that
+                // device row was just removed from the list).
+                dom::restore_focus();
                 refresh_signer_list().await
             }
             Err(e) => {

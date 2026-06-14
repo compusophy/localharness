@@ -111,15 +111,21 @@ pub(crate) fn restore_focus() {
     });
 }
 
+/// CSS selector for natively-focusable elements (shared by [`focus_first_in`]
+/// and [`trap_tab_in`]). Excludes hidden inputs and `tabindex=-1` (programmatic-
+/// only focus), includes role="button" clickables we activate via the keydown
+/// handler.
+const FOCUSABLE_SEL: &str =
+    "button:not([disabled]), a[href], input:not([type=hidden]):not([disabled]), \
+     textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])";
+
 /// Move keyboard focus to the first focusable element inside `#container_id`
 /// (a11y #58: an opened modal/overlay should take focus so keyboard + screen-
 /// reader users land INSIDE it, not stranded on the trigger behind it). No-op
 /// if the container or a focusable child is missing.
 pub(crate) fn focus_first_in(container_id: &str) {
     let Some(c) = by_id(container_id) else { return };
-    let sel = "button:not([disabled]), a[href], input:not([type=hidden]):not([disabled]), \
-               textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])";
-    let Ok(list) = c.query_selector_all(sel) else { return };
+    let Ok(list) = c.query_selector_all(FOCUSABLE_SEL) else { return };
     // Pick the first VISIBLE focusable. A modal often renders inactive tab
     // panels as `display:none` (e.g. the admin Account/Usage/Feedback tabs);
     // `.focus()` no-ops on a non-rendered element, which would silently strand
@@ -132,6 +138,74 @@ pub(crate) fn focus_first_in(container_id: &str) {
                 return;
             }
         }
+    }
+}
+
+/// The id of the currently-open modal trap, if any — the `[data-modal-trap]`
+/// element a swapped-in confirmation/transaction panel carries while armed.
+/// One value-moving confirm is open at a time, so the first match wins. Used by
+/// the keydown listener to decide whether Tab should be CONFINED to the panel
+/// and whether Escape should dismiss it (a11y #75: a transaction confirmation
+/// must not strand keyboard focus on the page behind it).
+pub(crate) fn open_modal_trap() -> Option<String> {
+    let el = document().ok()?.query_selector("[data-modal-trap]").ok()??;
+    let id = el.id();
+    if id.is_empty() { None } else { Some(id) }
+}
+
+/// Confine Tab / Shift+Tab to the focusable elements inside `#container_id`
+/// (a focus TRAP). Returns `true` when it moved focus (the caller should then
+/// `prevent_default`), `false` when it left the browser's default tab order
+/// intact (no container, no visible focusables, or focus is mid-list so the
+/// native order already keeps it inside).
+///
+/// Only the EDGES are intercepted: Tab off the last element wraps to the first,
+/// Shift+Tab off the first wraps to the last, and a Tab from outside the panel
+/// (e.g. the trigger still has focus) is pulled to the first element. Skips
+/// `display:none` candidates (`offset_parent() == None`) like [`focus_first_in`].
+pub(crate) fn trap_tab_in(container_id: &str, shift: bool) -> bool {
+    let Some(c) = by_id(container_id) else { return false };
+    let Ok(list) = c.query_selector_all(FOCUSABLE_SEL) else { return false };
+    // Collect the visible focusables in tab order.
+    let mut items: Vec<web_sys::HtmlElement> = Vec::new();
+    for i in 0..list.length() {
+        if let Some(h) = list.get(i).and_then(|n| n.dyn_into::<web_sys::HtmlElement>().ok()) {
+            if h.offset_parent().is_some() {
+                items.push(h);
+            }
+        }
+    }
+    let Some(first) = items.first() else { return false };
+    let Some(last) = items.last() else { return false };
+    let active = document().ok().and_then(|d| d.active_element());
+    // Is focus currently inside this panel? `closest` walks up from the active
+    // element to the nearest `[data-modal-trap]` ancestor (or self); if that's
+    // this container, focus is inside it. (Avoids `Node::contains`, keeping this
+    // on the `Element` surface.)
+    let active_in_panel = active
+        .as_ref()
+        .and_then(|a| a.closest("[data-modal-trap]").ok().flatten())
+        .map(|m| m.id() == container_id)
+        .unwrap_or(false);
+    // Focus sitting OUTSIDE the panel (e.g. still on the trigger) → pull it in.
+    if !active_in_panel {
+        let target = if shift { last } else { first };
+        let _ = target.focus();
+        return true;
+    }
+    // Wrap only at the boundary; mid-list, the native order already stays inside.
+    let first_el: &Element = first.as_ref();
+    let last_el: &Element = last.as_ref();
+    let on_first = active.as_ref().map(|a| a == first_el).unwrap_or(false);
+    let on_last = active.as_ref().map(|a| a == last_el).unwrap_or(false);
+    if shift && on_first {
+        let _ = last.focus();
+        true
+    } else if !shift && on_last {
+        let _ = first.focus();
+        true
+    } else {
+        false
     }
 }
 

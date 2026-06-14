@@ -1380,8 +1380,12 @@ pub(crate) fn admin_tba_section() -> Markup {
 pub(crate) fn tba_send_confirm_panel(label: &str, to_hex: &str, amount_wei: u128) -> Markup {
     let amount_display = super::format_wei_as_test_eth(amount_wei);
     let arg = format!("{to_hex}:{amount_wei}");
+    // `data-modal-trap` makes the delegated keydown listener CONFINE Tab to this
+    // panel while it's armed; `data-modal-cancel` routes Escape to the cancel
+    // action (which restores focus to the trigger). a11y #75.
     html! {
-        div.unlink-confirm {
+        div #tba-send-confirm-panel .unlink-confirm role="dialog" aria-modal="true"
+            data-modal-trap data-modal-cancel="tba-send-cancel" {
             div {
                 "send " b { (amount_display) " $LH" } " from the agent wallet to "
                 code { (label) } "? type the amount to confirm."

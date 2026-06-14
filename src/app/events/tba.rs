@@ -109,11 +109,15 @@ pub(super) fn tba_send_pressed() {
                     Recipient::Address(_) => short_addr(&to_hex),
                     Recipient::Name(name) => format!("{name} ({})", short_addr(&to_hex)),
                 };
+                // Remember the trigger ([send]) so closing the confirm returns
+                // focus there, then pull focus INTO the armed panel (a11y #75).
+                dom::remember_focus();
                 dom::swap_inner(
                     "tba-send-confirm-slot",
                     &templates::tba_send_confirm_panel(&label, &to_hex, amount_wei)
                         .into_string(),
                 );
+                dom::focus_first_in("tba-send-confirm-panel");
             }
             Err(e) => {
                 dom::swap_inner("tba-send-msg", &dom::msg_span(dom::Msg::Error, &e));
@@ -122,10 +126,12 @@ pub(super) fn tba_send_pressed() {
     });
 }
 
-/// Abort an armed TBA send — clear the confirmation.
+/// Abort an armed TBA send — clear the confirmation and return focus to the
+/// trigger (a11y #75; also the Escape target via `data-modal-cancel`).
 pub(super) fn tba_send_cancel_pressed() {
     dom::swap_inner("tba-send-confirm-slot", "");
     dom::swap_inner("tba-send-msg", "");
+    dom::restore_focus();
 }
 
 /// Execute the armed send IFF the typed amount matches. `arg` is
@@ -156,6 +162,9 @@ pub(super) fn tba_send_confirm_pressed(arg: String) {
         match run_tba_send(&to_hex, amount_wei).await {
             Ok(tx_hash) => {
                 dom::swap_inner("tba-send-confirm-slot", "");
+                // The armed panel is gone — return focus to where it came from
+                // (the [send] trigger) instead of stranding it on <body>.
+                dom::restore_focus();
                 if let Some(input) = dom::input_by_id("tba-send-recipient") {
                     input.set_value("");
                 }

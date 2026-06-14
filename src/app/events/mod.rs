@@ -399,7 +399,21 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
         // any overlay, so a keyboard user (or anyone) had to find the × to
         // escape. Reuses the wired close/toggle actions.
         if key == "Escape" {
-            // The bell dropdown is the lightest layer — ESC takes it first.
+            // An armed value-moving confirmation (the transaction "modal") is
+            // the lightest, topmost layer — ESC dismisses IT first (a11y #75).
+            // Its root carries `data-modal-cancel="<action>"`; route that so the
+            // cancel handler also restores focus to the trigger.
+            if let Some(id) = dom::open_modal_trap() {
+                if let Some(cancel) = dom::by_id(&id)
+                    .and_then(|el| el.get_attribute("data-modal-cancel"))
+                    .and_then(|name| Action::parse(&name, None))
+                {
+                    event.prevent_default();
+                    dispatch(cancel);
+                    return;
+                }
+            }
+            // The bell dropdown is the lightest layer — ESC takes it next.
             if admin::notif_panel_open() {
                 event.prevent_default();
                 admin::close_notif_panel();
@@ -420,6 +434,20 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
             {
                 event.prevent_default();
                 dispatch(Action::HeaderAdminClose);
+            }
+            return;
+        }
+        // Trap Tab / Shift+Tab inside an armed value-moving confirmation (a11y
+        // #75). While `[data-modal-trap]` is in the DOM, Tab must cycle WITHIN
+        // it — off the last element it wraps to the first (and a Tab from the
+        // trigger still behind it is pulled in), so keyboard users don't have to
+        // tab through the whole page to reach [confirm]. No new listener: this
+        // rides the one delegated keydown, the way the rest of the app does.
+        if key == "Tab" {
+            if let Some(id) = dom::open_modal_trap() {
+                if dom::trap_tab_in(&id, event.shift_key()) {
+                    event.prevent_default();
+                }
             }
             return;
         }
