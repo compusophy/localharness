@@ -865,12 +865,9 @@ fn dispatch(action: Action) {
                     });
                 }
                 host => {
-                    // Explicit "create" button from tenant admin: pass
-                    // overwrite=true because the user has clicked the
-                    // create action with intent (just like at apex).
                     wasm_bindgen_futures::spawn_local(async move {
                         let _flow_guard = flow_guard;
-                        match super::verify::create_wallet_via_iframe(true).await {
+                        match super::verify::create_wallet_via_iframe(false).await {
                             Ok(_addr) => {
                                 if let super::tenant::Host::Tenant(name) = &host {
                                     super::paint_tenant(host.clone(), name.clone()).await;
