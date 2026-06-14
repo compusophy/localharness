@@ -62,6 +62,16 @@
 > state). 44 soliditylite tests, wasm+clippy clean. Next: function PARAMETERS (calldata decode) +
 > mappings (`count[msg.sender]`) + `require` + events → the full CounterFacet from source → cut into
 > a child diamond — that closes the SolidityLite MVP.
+>
+> **UPDATE 2026-06-14 (loop tick 7): mappings + params + msg.sender compile from source — live.**
+> Added function PARAMETERS (`CALLDATALOAD(4+32*i)`), `msg.sender` (`CALLER`), and MAPPINGS
+> (`m[k]` slot = `keccak256(pad32(key) ++ pad32(baseSlot))`, read + write) to the compiler. LIVE:
+> compiled `facet Ledger { mapping(address=>uint256) bal; add(uint256 amt){ bal[msg.sender] =
+> bal[msg.sender] + amt } balanceOf(address who) view -> bal[who] }` from source → deployed →
+> `add(5)`/`add(3)` → `balanceOf(me)` 0→5→8 on Moderato (per-caller mapping persists; the
+> `balanceOf` selector == canonical ERC-20 `0x70a08231`, confirming correct keccak). 59 soliditylite
+> tests, wasm+clippy clean. Only `require`/revert + events (LOG) remain before the FULL CounterFacet
+> compiles from source.
 
 > A hand-rolled, in-browser Solidity/EVM-subset → EVM-bytecode compiler that lets an
 > agent **write, compile, deploy, and `diamondCut`** its own facet — the EVM analog of

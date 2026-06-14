@@ -3,8 +3,9 @@
 //! Mirrors [`crate::rustlite::lexer`]'s byte-cursor discipline (one struct, a
 //! `pos` cursor, `//`/`/* */` comment skipping, spans on every token) but its
 //! token set is the Solidity-subset surface: the `facet`/`function`/`external`/
-//! `view`/`returns`/`return`/`uint256` keywords, the structural punctuation
-//! (`{ } ( ) ;`), identifiers, and decimal/hex integer literals. Floats, chars,
+//! `view`/`returns`/`return`/`mapping`/`uint256` keywords, the structural
+//! punctuation (`{ } ( ) [ ] ; , = => . +`), identifiers, and decimal/hex integer
+//! literals. Floats, chars,
 //! and string literals are intentionally absent from the floor grammar (design
 //! §3) — a string would only ever be a `require`/`event` operand, neither of
 //! which the floor grammar admits, so an unexpected `"` is a clean error.
@@ -41,6 +42,8 @@ pub enum SolKind {
     Returns,
     /// `return` (the statement keyword).
     Return,
+    /// `mapping` (the `mapping(K => V)` state-var keyword).
+    Mapping,
     /// A type keyword (`uint256`/`address`/`bool`/`bytes32`).
     TypeName(String),
     /// An identifier (function/facet/variable name).
@@ -55,10 +58,20 @@ pub enum SolKind {
     LParen,
     /// `)`
     RParen,
+    /// `[`
+    LBracket,
+    /// `]`
+    RBracket,
     /// `;`
     Semi,
+    /// `,` (parameter / argument separator).
+    Comma,
     /// `=` (assignment).
     Assign,
+    /// `=>` (the mapping key→value arrow, in `mapping(K => V)`).
+    FatArrow,
+    /// `.` (member access, in `msg.sender`).
+    Dot,
     /// `+` (addition).
     Plus,
     /// End of input.
@@ -124,14 +137,23 @@ impl Lexer<'_> {
             return Ok(SolTok { kind: SolKind::Eof, span: Span { start, end: start } });
         }
         let b = self.src[self.pos];
+        // `=>` (two-byte) must be checked before the single-byte `=`.
+        if b == b'=' && self.pos + 1 < self.src.len() && self.src[self.pos + 1] == b'>' {
+            self.pos += 2;
+            return Ok(SolTok { kind: SolKind::FatArrow, span: Span { start, end: self.pos } });
+        }
         // Single-char punctuation.
         let punct = match b {
             b'{' => Some(SolKind::LBrace),
             b'}' => Some(SolKind::RBrace),
             b'(' => Some(SolKind::LParen),
             b')' => Some(SolKind::RParen),
+            b'[' => Some(SolKind::LBracket),
+            b']' => Some(SolKind::RBracket),
             b';' => Some(SolKind::Semi),
+            b',' => Some(SolKind::Comma),
             b'=' => Some(SolKind::Assign),
+            b'.' => Some(SolKind::Dot),
             b'+' => Some(SolKind::Plus),
             _ => None,
         };
@@ -222,6 +244,7 @@ fn keyword(word: &str) -> Option<SolKind> {
         "pure" => SolKind::Pure,
         "returns" => SolKind::Returns,
         "return" => SolKind::Return,
+        "mapping" => SolKind::Mapping,
         "uint256" | "address" | "bool" | "bytes32" => SolKind::TypeName(word.to_string()),
         _ => return None,
     })
@@ -328,6 +351,25 @@ mod tests {
         let mut w = [0u8; 32];
         w[30] = 0x01;
         assert_eq!(dec, SolKind::Int(w));
+    }
+
+    #[test]
+    fn lexes_mapping_index_and_msg_sender_tokens() {
+        let k = kinds(
+            "mapping(address => uint256) bal; bal[msg.sender] = amt; f(uint256 a, address b)",
+        );
+        assert!(k.contains(&SolKind::Mapping), "`mapping` keyword");
+        assert!(k.contains(&SolKind::FatArrow), "`=>` arrow");
+        assert!(k.contains(&SolKind::LBracket), "`[`");
+        assert!(k.contains(&SolKind::RBracket), "`]`");
+        assert!(k.contains(&SolKind::Dot), "`.` (msg.sender)");
+        assert!(k.contains(&SolKind::Comma), "`,` param separator");
+        // `=>` must NOT lex as a bare `=` followed by `>` (no `>` token exists; `=>`
+        // is a single FatArrow). And a standalone `=` still lexes as Assign.
+        assert!(k.contains(&SolKind::Assign), "standalone `=` is Assign");
+        // `msg` and `sender` are plain identifiers around the Dot.
+        assert!(k.contains(&SolKind::Ident("msg".into())));
+        assert!(k.contains(&SolKind::Ident("sender".into())));
     }
 
     #[test]

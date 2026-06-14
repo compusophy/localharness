@@ -64,17 +64,50 @@ impl Ty {
     }
 }
 
-/// A facet state variable: `<ty> <name>;` (design §5 storage stretch).
+/// A facet state variable's shape: a scalar `<ty> <name>;` or a
+/// `mapping(<key> => <value>) <name>;` (design §5 storage + the mapping stretch).
+///
+/// Both occupy ONE declaration index (the base slot). A scalar lives directly at
+/// `BASE + index`; a mapping uses `BASE + index` as its keccak preimage base slot,
+/// with each entry at `keccak256(pad32(key) ++ pad32(baseSlot))`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StateVarKind {
+    /// A scalar slot: `<ty> <name>;` — the value lives directly at `BASE + index`.
+    Scalar(Ty),
+    /// A mapping: `mapping(<key> => <value>) <name>;` — `BASE + index` is the
+    /// preimage base slot; entries hash `keccak256(pad32(key) ++ pad32(baseSlot))`.
+    Mapping {
+        /// The key type (`address`/`uint256`/…). v1 keys are a single 32-byte word.
+        key: Ty,
+        /// The stored value type (v1: a single 32-byte word).
+        value: Ty,
+    },
+}
+
+/// A facet state variable: `<ty> <name>;` or `mapping(K => V) <name>;` (design §5).
 ///
 /// Laid out sequentially from the keccak-namespaced `BASE`; its index in
-/// [`Facet::state_vars`] is its slot offset (no packing in v1).
+/// [`Facet::state_vars`] is its slot offset (scalars) or preimage base slot
+/// (mappings). No packing in v1.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StateVar {
-    /// The declared value type (v1: `uint256` only for the storage stretch).
-    pub ty: Ty,
-    /// The variable name, referenced by `return <name>;`.
+    /// Whether this is a scalar or a mapping (and its element types).
+    pub kind: StateVarKind,
+    /// The variable name, referenced by `return <name>;` / `<name>[<key>]`.
     pub name: String,
     /// Source span of the declaration.
+    pub span: Span,
+}
+
+/// One function parameter: `<ty> <name>` inside the parameter list. ABI-decoded
+/// from calldata at offset `4 + 32*index` (design §5 calldata decode).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Param {
+    /// The declared value type (`uint256`/`address`/… — all a single 32-byte word).
+    pub ty: Ty,
+    /// The parameter name, referenced in the body as a bare identifier.
+    pub name: String,
+    /// Source span of the parameter.
     pub span: Span,
 }
 
@@ -92,12 +125,15 @@ pub enum Mutability {
     NonPayable,
 }
 
-/// One function: `function <name>() external <mut> returns (<ty>) { <body> }`.
+/// One function: `function <name>(<params>) external <mut> returns (<ty>) { <body> }`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
-    /// The function name; combined with the (empty, v1) parameter list into the
-    /// selector signature `keccak256("<name>()")[..4]`.
+    /// The function name; combined with the parameter types into the selector
+    /// signature `keccak256("<name>(<types>)")[..4]` (empty list → `<name>()`).
     pub name: String,
+    /// The declared parameters, in order. Each is ABI-decoded from calldata at
+    /// `4 + 32*index`. Empty for a no-arg function.
+    pub params: Vec<Param>,
     /// State mutability (`view`/`pure`/none).
     pub mutability: Mutability,
     /// The single return type, if the function declares `returns (...)`. A view
@@ -112,7 +148,7 @@ pub struct Function {
 }
 
 /// A statement. View getters are a single `return <expr>;`; mutating functions
-/// are a `{ <assign>* }` block of state-var assignments.
+/// are a `{ <assign>* }` block of state-var (or mapping-entry) assignments.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     /// `return <expr>;` — evaluate the expression and return it as the 32-byte word.
@@ -121,6 +157,10 @@ pub enum Stmt {
     /// var's keccak-namespaced slot (the storage-write stretch). `name` is the
     /// assignment target; `span` is the target identifier's span.
     Assign { name: String, value: Expr, span: Span },
+    /// `<mapping>[<key>] = <expr>;` — `SSTORE` `<expr>` to the mapping entry slot
+    /// `keccak256(pad32(key) ++ pad32(baseSlot))` (the mapping-write stretch).
+    /// `base` is the mapping name; `key` is the index expression.
+    IndexAssign { base: String, key: Expr, value: Expr, span: Span },
     /// A `{ <stmt>* }` block — a mutating function body holding zero or more
     /// statements, emitted in order. (View getters never use this; their body is a
     /// bare [`Stmt::Return`], so tick-5's pattern-matches are unaffected.)
@@ -128,14 +168,23 @@ pub enum Stmt {
 }
 
 /// An expression. The floor grammar has the integer literal; the storage stretch
-/// adds a bare state-variable reference and a left-associative `+` of operands.
+/// adds a bare name reference and a left-associative `+`; the mapping/param/sender
+/// stretch adds `msg.sender`, a `<mapping>[<key>]` index, and bare parameter refs.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     /// An integer literal — its big-endian 32-byte word and the literal's span.
     IntLit { value_be32: [u8; 32], span: Span },
-    /// A bare identifier — a state-variable read (`return <name>;`), resolved to
-    /// an `SLOAD` of its keccak-namespaced slot at codegen (storage stretch).
+    /// A bare identifier — a NAMED reference resolved at codegen to either a state
+    /// variable (`SLOAD` of its keccak-namespaced slot) or a function parameter
+    /// (`CALLDATALOAD(4 + 32*index)`). The parser cannot distinguish the two, so
+    /// resolution is deferred to codegen (which knows the param/state-var tables).
     StateVar { name: String, span: Span },
+    /// `msg.sender` — the caller address as a 32-byte word (`CALLER`).
+    MsgSender { span: Span },
+    /// `<mapping>[<key>]` — a mapping-entry read: derive the entry slot
+    /// `keccak256(pad32(key) ++ pad32(baseSlot))`, then `SLOAD`. `base` is the
+    /// mapping name; `key` is the index expression.
+    Index { base: String, key: Box<Expr>, span: Span },
     /// A binary `lhs + rhs` — both operands are evaluated onto the stack, then
     /// `ADD` (the arithmetic stretch; left-associative, e.g. `n = n + 1`).
     Add { lhs: Box<Expr>, rhs: Box<Expr>, span: Span },
@@ -147,6 +196,8 @@ impl Expr {
         match self {
             Expr::IntLit { span, .. } => *span,
             Expr::StateVar { span, .. } => *span,
+            Expr::MsgSender { span, .. } => *span,
+            Expr::Index { span, .. } => *span,
             Expr::Add { span, .. } => *span,
         }
     }

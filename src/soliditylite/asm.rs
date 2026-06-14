@@ -49,6 +49,12 @@ pub mod op {
     pub const SHR: u8 = 0x1C;
     /// Addition.
     pub const ADD: u8 = 0x01;
+    /// Keccak-256 of `mem[offset..offset+len]` (`KECCAK256(offset, len)`, aka SHA3) —
+    /// used to derive a mapping-entry storage slot from `key ++ baseSlot`.
+    pub const KECCAK256: u8 = 0x20;
+    /// The 20-byte caller address, left-padded to a 32-byte word (`CALLER`, aka
+    /// `msg.sender`).
+    pub const CALLER: u8 = 0x33;
     /// Duplicate the top stack item (`DUP1`).
     pub const DUP1: u8 = 0x80;
     /// Pop the top stack item (`POP`).

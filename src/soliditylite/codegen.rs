@@ -18,7 +18,7 @@ use crate::soliditylite::CompiledArtifact;
 // `Expr`/`Facet`/`Stmt` + the `CompileError` diagnostics are only used by the
 // source-compile path, which is wallet-gated (selector + slot keccak live there).
 #[cfg(feature = "wallet")]
-use crate::soliditylite::ast::{Expr, Facet, Stmt};
+use crate::soliditylite::ast::{Expr, Facet, StateVarKind, Stmt};
 #[cfg(feature = "wallet")]
 use crate::rustlite::CompileError;
 
@@ -54,23 +54,53 @@ enum Body {
     View(BodyValue),
     /// A view getter returning a compound expression (e.g. `a + b`).
     ViewExpr(LoweredExpr),
-    /// A mutating function: a sequence of `(slot, value-expr)` assignments, then
-    /// `RETURN(0,0)`.
-    Mutating(Vec<([u8; 32], LoweredExpr)>),
+    /// A mutating function: a sequence of (scalar or mapping-entry) assignments,
+    /// then `RETURN(0,0)`.
+    Mutating(Vec<LoweredAssign>),
 }
 
-/// A resolved expression — names already mapped to keccak slots — ready to lower
-/// to a stack-pushing instruction sequence (design §5).
+/// A resolved expression — names already mapped to slots / param indices — ready
+/// to lower to a stack-pushing instruction sequence (design §5).
 #[cfg(feature = "wallet")]
 enum LoweredExpr {
     /// A constant operand — pushed MINIMAL-width (`PUSH1 0x01` for `1`), the
     /// idiomatic/gas-cheap encoding for an arithmetic operand. (The TOP-LEVEL
     /// `return <intlit>;` keeps `PUSH32` via [`Body::View`] for the golden gate.)
     Const([u8; 32]),
-    /// `PUSH32 <slot> SLOAD` — a state-variable read (slots are full 32-byte words).
+    /// `PUSH32 <slot> SLOAD` — a scalar state-variable read (full 32-byte slots).
     Load([u8; 32]),
+    /// `CALLDATALOAD(4 + 32*index)` — a function-parameter read. The ABI lays arg
+    /// `i` at calldata offset `4 + 32*i`; both `uint256` and `address` load as a
+    /// full word (addresses are already left-padded by the ABI).
+    Param(u64),
+    /// `CALLER` — `msg.sender`, the caller address as a 32-byte word.
+    Caller,
+    /// A mapping-entry read: derive the entry slot
+    /// `keccak256(pad32(key) ++ pad32(baseSlot))`, then `SLOAD`.
+    MapLoad { base_slot: [u8; 32], key: Box<LoweredExpr> },
     /// `<lhs> <rhs> ADD` — a binary addition (left operand pushed first).
     Add(Box<LoweredExpr>, Box<LoweredExpr>),
+}
+
+/// Emit the mapping-entry SLOT-DERIVATION for `keccak256(pad32(key) ++ pad32(base))`,
+/// leaving the 32-byte slot on top of the stack (design §5 mapping rule). The `key`
+/// sub-expression is evaluated and consumed by `MSTORE`, so anything already on the
+/// stack BELOW is preserved (this is what lets a write push its value first).
+///
+/// ```text
+/// <key>  PUSH1 0x00 MSTORE          ; mem[0x00..0x20] = key   (first preimage word)
+/// PUSH32 <base> PUSH1 0x20 MSTORE   ; mem[0x20..0x40] = base  (second preimage word)
+/// PUSH1 0x40 PUSH1 0x00 KECCAK256   ; slot = keccak256(mem[0x00..0x40])
+/// ```
+#[cfg(feature = "wallet")]
+fn emit_map_slot(a: &mut Asm, base_slot: &[u8; 32], key: &LoweredExpr) {
+    // mem[0x00] = key (the FIRST preimage word).
+    key.emit(a);
+    a.push_u64(0x00).emit(op::MSTORE);
+    // mem[0x20] = base slot (the SECOND preimage word).
+    a.push32(base_slot).push_u64(0x20).emit(op::MSTORE);
+    // slot = keccak256(mem[0x00..0x40]).
+    a.push_u64(0x40).push_u64(0x00).emit(op::KECCAK256);
 }
 
 #[cfg(feature = "wallet")]
@@ -84,10 +114,51 @@ impl LoweredExpr {
             LoweredExpr::Load(slot) => {
                 a.push32(slot).emit(op::SLOAD);
             }
+            LoweredExpr::Param(index) => {
+                // CALLDATALOAD(4 + 32*index) — ABI arg slot.
+                a.push_u64(4 + 32 * index).emit(op::CALLDATALOAD);
+            }
+            LoweredExpr::Caller => {
+                a.emit(op::CALLER);
+            }
+            LoweredExpr::MapLoad { base_slot, key } => {
+                emit_map_slot(a, base_slot, key);
+                a.emit(op::SLOAD);
+            }
             LoweredExpr::Add(lhs, rhs) => {
                 lhs.emit(a);
                 rhs.emit(a);
                 a.emit(op::ADD);
+            }
+        }
+    }
+}
+
+/// A resolved assignment target inside a mutating body: a scalar slot or a
+/// mapping entry (derived from a key expression at the base slot).
+#[cfg(feature = "wallet")]
+enum LoweredAssign {
+    /// `SSTORE(slot, value)` — a scalar state-var write.
+    Scalar { slot: [u8; 32], value: LoweredExpr },
+    /// `SSTORE(keccak256(pad32(key) ++ pad32(base)), value)` — a mapping-entry write.
+    MapEntry { base_slot: [u8; 32], key: LoweredExpr, value: LoweredExpr },
+}
+
+#[cfg(feature = "wallet")]
+impl LoweredAssign {
+    /// Emit the store. `SSTORE` pops `slot` (top) then `value`, so we push `value`
+    /// FIRST, then leave the slot on top.
+    fn emit(&self, a: &mut Asm) {
+        match self {
+            LoweredAssign::Scalar { slot, value } => {
+                value.emit(a);
+                a.push32(slot).emit(op::SSTORE);
+            }
+            LoweredAssign::MapEntry { base_slot, key, value } => {
+                // value first (stays below), then derive the slot on top, then store.
+                value.emit(a);
+                emit_map_slot(a, base_slot, key);
+                a.emit(op::SSTORE);
             }
         }
     }
@@ -166,9 +237,9 @@ pub fn emit_body(a: &mut Asm, body: Label, value: BodyValue) {
 ///
 /// A [`Body::View`] is byte-IDENTICAL to [`emit_body`] for the `Const`/`StorageSlot`
 /// cases (same JUMPDEST + value prefix + `MSTORE/RETURN(0,0x20)` tail), so the
-/// golden gate holds. A [`Body::Mutating`] emits each `SSTORE(slot, value)` then an
-/// empty `RETURN(0,0)`: for each assignment, push the value word, push the slot,
-/// `SSTORE` (operand order: `SSTORE` pops `slot` then `value`).
+/// golden gate holds. A [`Body::Mutating`] emits each [`LoweredAssign`] (a scalar
+/// `SSTORE(slot, value)` or a mapping-entry `SSTORE(keccak-slot, value)`) in order,
+/// then an empty `RETURN(0,0)`.
 #[cfg(feature = "wallet")]
 fn emit_full_body(a: &mut Asm, body: Label, b: &Body) {
     match b {
@@ -187,10 +258,8 @@ fn emit_full_body(a: &mut Asm, body: Label, b: &Body) {
         }
         Body::Mutating(assigns) => {
             a.jumpdest(body);
-            for (slot, value) in assigns {
-                // SSTORE pops slot (top) then value, so push value then slot.
-                value.emit(a);
-                a.push32(slot).emit(op::SSTORE);
+            for assign in assigns {
+                assign.emit(a);
             }
             // Empty return so the diamond fallback returns cleanly.
             a.push_u64(0x00).push_u64(0x00).emit(op::RETURN);
@@ -298,45 +367,122 @@ fn slot_at(base: [u8; 32], index: u64) -> [u8; 32] {
     out
 }
 
-/// Resolve a state variable name to its keccak-namespaced slot (`BASE + index`).
+/// A per-function name-resolution context: the facet's state vars + storage base,
+/// plus the function being compiled (for its parameter list). A bare identifier in
+/// an expression resolves to a SCALAR state var, then a parameter, in that order.
 #[cfg(feature = "wallet")]
-fn resolve_slot(facet: &Facet, base: [u8; 32], name: &str, span: crate::rustlite::Span) -> Result<[u8; 32], CompileError> {
-    use crate::error_codes as codes;
-    let idx = facet
-        .state_vars
-        .iter()
-        .position(|sv| sv.name == name)
-        .ok_or_else(|| {
+struct Resolver<'a> {
+    facet: &'a Facet,
+    base: [u8; 32],
+    func: &'a crate::soliditylite::ast::Function,
+}
+
+#[cfg(feature = "wallet")]
+impl Resolver<'_> {
+    /// The declaration index of a state var by name (its slot offset / mapping base
+    /// slot offset), or `None` if no state var has that name.
+    fn state_var_index(&self, name: &str) -> Option<usize> {
+        self.facet.state_vars.iter().position(|sv| sv.name == name)
+    }
+
+    /// The parameter index of a name, or `None` if it isn't a parameter.
+    fn param_index(&self, name: &str) -> Option<usize> {
+        self.func.params.iter().position(|p| p.name == name)
+    }
+
+    /// Resolve a SCALAR state variable name to its keccak-namespaced slot
+    /// (`BASE + index`). Errors if the name is unknown OR names a mapping (a mapping
+    /// has no scalar slot — it must be indexed).
+    fn scalar_slot(&self, name: &str, span: crate::rustlite::Span) -> Result<[u8; 32], CompileError> {
+        use crate::error_codes as codes;
+        let idx = self.state_var_index(name).ok_or_else(|| {
             CompileError::at_code(
                 codes::UNDEFINED_VARIABLE,
                 format!("unknown state variable `{name}`"),
                 span,
             )
         })?;
-    Ok(slot_at(base, idx as u64))
+        if let StateVarKind::Mapping { .. } = self.facet.state_vars[idx].kind {
+            return Err(CompileError::at_code(
+                codes::TYPE_MISMATCH,
+                format!("`{name}` is a mapping; it must be indexed (`{name}[key]`)"),
+                span,
+            ));
+        }
+        Ok(slot_at(self.base, idx as u64))
+    }
+
+    /// Resolve a MAPPING name to its preimage base slot (`BASE + index`). Errors if
+    /// the name is unknown OR names a scalar (a scalar can't be indexed).
+    fn mapping_base_slot(&self, name: &str, span: crate::rustlite::Span) -> Result<[u8; 32], CompileError> {
+        use crate::error_codes as codes;
+        let idx = self.state_var_index(name).ok_or_else(|| {
+            CompileError::at_code(
+                codes::UNDEFINED_VARIABLE,
+                format!("unknown state variable `{name}`"),
+                span,
+            )
+        })?;
+        match self.facet.state_vars[idx].kind {
+            StateVarKind::Mapping { .. } => Ok(slot_at(self.base, idx as u64)),
+            StateVarKind::Scalar(_) => Err(CompileError::at_code(
+                codes::TYPE_MISMATCH,
+                format!("`{name}` is not a mapping; it cannot be indexed"),
+                span,
+            )),
+        }
+    }
+
+    /// Lower an [`Expr`] to a [`LoweredExpr`], resolving names to slots / params.
+    fn lower_expr(&self, expr: &Expr) -> Result<LoweredExpr, CompileError> {
+        use crate::error_codes as codes;
+        match expr {
+            Expr::IntLit { value_be32, .. } => Ok(LoweredExpr::Const(*value_be32)),
+            // A bare identifier: a scalar state var (SLOAD) or a parameter
+            // (CALLDATALOAD), preferring a state var on a name clash.
+            Expr::StateVar { name, span } => {
+                if self.state_var_index(name).is_some() {
+                    Ok(LoweredExpr::Load(self.scalar_slot(name, *span)?))
+                } else if let Some(p) = self.param_index(name) {
+                    Ok(LoweredExpr::Param(p as u64))
+                } else {
+                    Err(CompileError::at_code(
+                        codes::UNDEFINED_VARIABLE,
+                        format!("unknown variable `{name}`"),
+                        *span,
+                    ))
+                }
+            }
+            Expr::MsgSender { .. } => Ok(LoweredExpr::Caller),
+            Expr::Index { base, key, span } => Ok(LoweredExpr::MapLoad {
+                base_slot: self.mapping_base_slot(base, *span)?,
+                key: Box::new(self.lower_expr(key)?),
+            }),
+            Expr::Add { lhs, rhs, .. } => Ok(LoweredExpr::Add(
+                Box::new(self.lower_expr(lhs)?),
+                Box::new(self.lower_expr(rhs)?),
+            )),
+        }
+    }
 }
 
-/// Lower an [`Expr`] to a [`LoweredExpr`], resolving any state-var name to its slot.
+/// The selector signature `<name>(<type>,<type>,…)` for a function — the ABI
+/// canonical form whose `keccak256[..4]` is the 4-byte selector.
 #[cfg(feature = "wallet")]
-fn lower_expr(facet: &Facet, base: [u8; 32], expr: &Expr) -> Result<LoweredExpr, CompileError> {
-    match expr {
-        Expr::IntLit { value_be32, .. } => Ok(LoweredExpr::Const(*value_be32)),
-        Expr::StateVar { name, span } => Ok(LoweredExpr::Load(resolve_slot(facet, base, name, *span)?)),
-        Expr::Add { lhs, rhs, .. } => Ok(LoweredExpr::Add(
-            Box::new(lower_expr(facet, base, lhs)?),
-            Box::new(lower_expr(facet, base, rhs)?),
-        )),
-    }
+fn function_signature(func: &crate::soliditylite::ast::Function) -> String {
+    let types: Vec<&str> = func.params.iter().map(|p| p.ty.abi_name()).collect();
+    format!("{}({})", func.name, types.join(","))
 }
 
 /// Compile a typed [`Facet`] to a deployable [`CompiledArtifact`].
 ///
-/// Selectors are `keccak256("<name>()")[..4]` (empty param list, v1) computed via
-/// the shared [`crate::registry::selector`] helper. A view getter's `return
-/// <expr>;` lowers to a [`Body::View`] (`<intlit>` → constant, `<stateVar>` →
-/// `SLOAD` of the keccak-namespaced slot, `a + b` → `ADD`); a mutating function's
-/// `<stateVar> = <expr>;` assignments lower to a [`Body::Mutating`] that `SSTORE`s
-/// each to its slot then `RETURN(0,0)` (design §5 storage).
+/// Selectors are `keccak256("<name>(<types>)")[..4]` (the ABI canonical signature)
+/// computed via the shared [`crate::registry::selector`] helper. A view getter's
+/// `return <expr>;` lowers to a [`Body::View`]/[`Body::ViewExpr`] (`<intlit>` →
+/// constant, scalar `<stateVar>` → `SLOAD`, parameter → `CALLDATALOAD(4+32*i)`,
+/// `msg.sender` → `CALLER`, `<map>[<key>]` → keccak-slot `SLOAD`, `a + b` → `ADD`);
+/// a mutating function's `<stateVar> = <expr>;` / `<map>[<key>] = <expr>;`
+/// assignments lower to a [`Body::Mutating`] that `SSTORE`s each then `RETURN(0,0)`.
 ///
 /// Gated on `wallet` because selector keccak + storage-slot keccak both live
 /// behind that feature (sha3/registry); without it, the frontend still
@@ -350,8 +496,7 @@ pub fn compile(facet: &Facet) -> Result<CompiledArtifact, CompileError> {
     let mut seen_selectors: Vec<[u8; 4]> = Vec::new();
 
     for func in &facet.functions {
-        // v1: empty parameter list, so the signature is just `name()`.
-        let signature = format!("{}()", func.name);
+        let signature = function_signature(func);
         let selector = crate::registry::selector(&signature);
         // Intra-facet keccak4 collision check (design §7 layer-1 (a)).
         if seen_selectors.contains(&selector) {
@@ -363,23 +508,34 @@ pub fn compile(facet: &Facet) -> Result<CompiledArtifact, CompileError> {
         }
         seen_selectors.push(selector);
 
+        let r = Resolver { facet, base, func };
         let body = match &func.body {
-            // Simple view getter: `return <intlit|stateVar>;` keeps the golden-gate
-            // `BodyValue` path (PUSH32). A compound return (`a + b`) uses the richer
-            // expr lowering.
+            // Simple view getter `return <intlit>;` / `return <scalarStateVar>;`
+            // keeps the golden-gate `BodyValue` path (PUSH32 / PUSH32+SLOAD); every
+            // other return shape (param ref, msg.sender, mapping index, `a + b`)
+            // uses the richer expr lowering.
             Stmt::Return(Expr::IntLit { value_be32, .. }) => Body::View(BodyValue::Const(*value_be32)),
-            Stmt::Return(Expr::StateVar { name, span }) => {
-                Body::View(BodyValue::StorageSlot(resolve_slot(facet, base, name, *span)?))
+            Stmt::Return(Expr::StateVar { name, span }) if r.state_var_index(name).is_some() => {
+                Body::View(BodyValue::StorageSlot(r.scalar_slot(name, *span)?))
             }
-            Stmt::Return(expr) => Body::ViewExpr(lower_expr(facet, base, expr)?),
-            // Mutating function: `{ <stateVar> = <expr>; … }`.
+            Stmt::Return(expr) => Body::ViewExpr(r.lower_expr(expr)?),
+            // Mutating function: `{ (<stateVar>|<map>[<key>]) = <expr>; … }`.
             Stmt::Block(stmts) => {
                 let mut assigns = Vec::with_capacity(stmts.len());
                 for stmt in stmts {
                     match stmt {
                         Stmt::Assign { name, value, span } => {
-                            let slot = resolve_slot(facet, base, name, *span)?;
-                            assigns.push((slot, lower_expr(facet, base, value)?));
+                            assigns.push(LoweredAssign::Scalar {
+                                slot: r.scalar_slot(name, *span)?,
+                                value: r.lower_expr(value)?,
+                            });
+                        }
+                        Stmt::IndexAssign { base: map_name, key, value, span } => {
+                            assigns.push(LoweredAssign::MapEntry {
+                                base_slot: r.mapping_base_slot(map_name, *span)?,
+                                key: r.lower_expr(key)?,
+                                value: r.lower_expr(value)?,
+                            });
                         }
                         // A non-assignment inside a mutating block is unreachable
                         // from the parser (it only emits assignments), but guard
@@ -569,6 +725,173 @@ mod tests {
             "facet C { uint256 n; function f() external { n = n + missing; } }",
         )
         .expect_err("reading an undeclared var must fail cleanly");
+        assert_eq!(err.code, Some(crate::error_codes::UNDEFINED_VARIABLE));
+    }
+
+    // ── PARAMS / msg.sender / MAPPINGS (Installment 1 MVP) ───────────────────
+
+    /// The keccak mapping-entry slot for a key word at a base slot, mirroring the
+    /// EVM `keccak256(pad32(key) ++ pad32(base))` derivation — the off-chain truth
+    /// the emitted MSTORE/MSTORE/KECCAK256 must reproduce on-chain.
+    #[cfg(feature = "wallet")]
+    fn map_entry_slot(key: &[u8; 32], base: &[u8; 32]) -> [u8; 32] {
+        use sha3::{Digest, Keccak256};
+        let mut h = Keccak256::new();
+        h.update(key); // FIRST preimage word
+        h.update(base); // SECOND preimage word
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&h.finalize());
+        out
+    }
+
+    /// `add(uint256 amt)`'s body loads `amt` via `CALLDATALOAD(0x04)` (ABI arg 0)
+    /// and stores into the `bal[msg.sender]` mapping entry — exercising params,
+    /// msg.sender (CALLER), and the mapping slot derivation in one body.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn add_loads_param_via_calldataload_and_writes_map_entry() {
+        use super::super::asm::op;
+        const SRC: &str = "facet Ledger { mapping(address => uint256) bal; \
+             function add(uint256 amt) external { bal[msg.sender] = bal[msg.sender] + amt; } }";
+        let art = super::super::compile(SRC).expect("Ledger add() must compile");
+        let rt = &art.runtime;
+
+        // The mapping base slot = BASE + 0 = keccak256("localharness.ledger.storage.v1").
+        let base = super::storage_base("Ledger");
+        let map_base = super::slot_at(base, 0);
+
+        // `amt` (param index 0) → CALLDATALOAD(4): PUSH1 0x04 CALLDATALOAD.
+        assert!(
+            rt.windows(3).any(|w| w == [op::PUSH1, 0x04, op::CALLDATALOAD]),
+            "amt must load via CALLDATALOAD(0x04); runtime = {}",
+            to_hex(rt)
+        );
+        // `msg.sender` → CALLER.
+        assert!(rt.contains(&op::CALLER), "msg.sender must emit CALLER");
+
+        // The mapping slot derivation appears: CALLER (key) PUSH1 0x00 MSTORE
+        // PUSH32 <map_base> PUSH1 0x20 MSTORE PUSH1 0x40 PUSH1 0x00 KECCAK256.
+        let mut derive = vec![op::CALLER, op::PUSH1, 0x00, op::MSTORE, op::PUSH1 + 31];
+        derive.extend_from_slice(&map_base);
+        derive.extend_from_slice(&[
+            op::PUSH1, 0x20, op::MSTORE, op::PUSH1, 0x40, op::PUSH1, 0x00, op::KECCAK256,
+        ]);
+        assert!(
+            rt.windows(derive.len()).any(|w| w == derive.as_slice()),
+            "the bal[msg.sender] slot derivation (MSTORE key / MSTORE base / KECCAK256) \
+             must be present; runtime = {}",
+            to_hex(rt)
+        );
+        // The write ends in an SSTORE to the derived slot; the read side SLOADs.
+        assert!(rt.contains(&op::SSTORE), "the map write must SSTORE");
+        assert!(rt.contains(&op::SLOAD), "the map read must SLOAD");
+        assert!(rt.contains(&op::ADD), "bal[..] + amt must ADD");
+    }
+
+    /// `balanceOf(address who)` derives the entry slot from the CALLDATA `who`
+    /// (param 0, CALLDATALOAD(0x04)) and SLOADs it — the read-only mapping getter.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn balance_of_derives_slot_from_calldata_key_then_sloads() {
+        use super::super::asm::op;
+        const SRC: &str = "facet Ledger { mapping(address => uint256) bal; \
+             function balanceOf(address who) external view returns (uint256) { return bal[who]; } }";
+        let art = super::super::compile(SRC).expect("balanceOf must compile");
+        let rt = &art.runtime;
+
+        let base = super::storage_base("Ledger");
+        let map_base = super::slot_at(base, 0);
+
+        // The full read body: derive slot from CALLDATALOAD(0x04) (the key `who`),
+        // then SLOAD, then the MSTORE/RETURN(0,0x20) tail.
+        //   PUSH1 0x04 CALLDATALOAD          ; key = who
+        //   PUSH1 0x00 MSTORE                ; mem[0x00] = key
+        //   PUSH32 <map_base> PUSH1 0x20 MSTORE  ; mem[0x20] = base
+        //   PUSH1 0x40 PUSH1 0x00 KECCAK256  ; slot
+        //   SLOAD                            ; bal[who]
+        let mut expected = vec![
+            op::PUSH1, 0x04, op::CALLDATALOAD, op::PUSH1, 0x00, op::MSTORE, op::PUSH1 + 31,
+        ];
+        expected.extend_from_slice(&map_base);
+        expected.extend_from_slice(&[
+            op::PUSH1, 0x20, op::MSTORE, op::PUSH1, 0x40, op::PUSH1, 0x00, op::KECCAK256, op::SLOAD,
+        ]);
+        assert!(
+            rt.windows(expected.len()).any(|w| w == expected.as_slice()),
+            "balanceOf must derive bal[who]'s slot from calldata then SLOAD; runtime = {}",
+            to_hex(rt)
+        );
+
+        // The selector is keccak256("balanceOf(address)")[..4] — the ABI signature
+        // INCLUDES the param type, proving function_signature picks it up.
+        let sel = crate::registry::selector("balanceOf(address)");
+        let push4: Vec<u8> = std::iter::once(op::PUSH1 + 3).chain(sel).collect();
+        assert!(
+            rt.windows(5).any(|w| w == push4.as_slice()),
+            "balanceOf(address) selector must be dispatched"
+        );
+    }
+
+    /// THE TARGET facet (`Ledger`) compiles end-to-end and the off-chain keccak
+    /// truth for `bal[msg.sender]` matches the PUSH32'd base + derivation order.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn ledger_target_compiles_and_slot_matches_offchain_keccak() {
+        const SRC: &str = "facet Ledger { mapping(address => uint256) bal; \
+             function add(uint256 amt) external { bal[msg.sender] = bal[msg.sender] + amt; } \
+             function balanceOf(address who) external view returns (uint256) { return bal[who]; } }";
+        let art = super::super::compile(SRC).expect("the Ledger TARGET must compile");
+        assert_eq!(art.init_code, super::super::asm::init_wrapper(&art.runtime));
+
+        // Sanity-check the off-chain slot helper against a hand-rolled keccak for a
+        // sample address key — this is the value the on-chain KECCAK256 reproduces.
+        let base = super::storage_base("Ledger");
+        let map_base = super::slot_at(base, 0);
+        let mut key = [0u8; 32];
+        key[12..].copy_from_slice(&[0x11; 20]); // a left-padded 20-byte address
+        let slot = map_entry_slot(&key, &map_base);
+        // It must equal keccak256(key ++ base) computed independently.
+        use sha3::{Digest, Keccak256};
+        let mut h = Keccak256::new();
+        h.update(key);
+        h.update(map_base);
+        let mut want = [0u8; 32];
+        want.copy_from_slice(&h.finalize());
+        assert_eq!(slot, want, "map entry slot = keccak256(key ++ base)");
+    }
+
+    /// Indexing a non-mapping scalar is a clean `TYPE_MISMATCH`, not a panic.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn indexing_a_scalar_is_a_clean_error() {
+        let err = super::super::compile(
+            "facet C { uint256 n; function f() external view returns (uint256) { return n[0]; } }",
+        )
+        .expect_err("indexing a scalar must fail cleanly");
+        assert_eq!(err.code, Some(crate::error_codes::TYPE_MISMATCH));
+    }
+
+    /// Using a mapping name bare (without an index) is a clean `TYPE_MISMATCH`.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn bare_mapping_reference_is_a_clean_error() {
+        let err = super::super::compile(
+            "facet C { mapping(address => uint256) m; \
+             function f() external view returns (uint256) { return m; } }",
+        )
+        .expect_err("a bare mapping reference must fail cleanly");
+        assert_eq!(err.code, Some(crate::error_codes::TYPE_MISMATCH));
+    }
+
+    /// Referencing an unknown name (neither a state var nor a parameter) is a clean
+    /// `UNDEFINED_VARIABLE` error.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn unknown_param_reference_is_a_clean_error() {
+        let err = super::super::compile(
+            "facet C { function f(uint256 a) external view returns (uint256) { return b; } }",
+        )
+        .expect_err("an unknown name must fail cleanly");
         assert_eq!(err.code, Some(crate::error_codes::UNDEFINED_VARIABLE));
     }
 

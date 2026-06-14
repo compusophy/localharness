@@ -8,16 +8,19 @@
 //! is wired now so the expression/statement layers added later inherit it for
 //! free.
 //!
-//! Floor grammar (design §3) + the storage-write stretch:
+//! Grammar (design §3 floor + the storage / mapping / param / msg.sender stretch):
 //! ```text
 //! facet  := ("facet"|"contract") Ident "{" state_var* function+ "}"
-//! state_var := Ty Ident ";"                              (storage stretch)
-//! function := "function" Ident "(" ")" "external"
+//! state_var := Ty Ident ";"                              (scalar slot)
+//!            | "mapping" "(" Ty "=>" Ty ")" Ident ";"    (mapping)
+//! params := "(" ( Ty Ident ("," Ty Ident)* )? ")"
+//! function := "function" Ident params "external"
 //!             ( view? "returns" "(" Ty ")" "{" "return" expr ";" "}"   (view getter)
-//!             | "{" assign* "}" )                        (mutating, write stretch)
-//! assign := Ident "=" expr ";"                           (state-var write)
-//! expr   := term ("+" term)*                             (left-assoc +; stretch)
-//! term   := IntLit | Ident                               (Ident = state-var read)
+//!             | "{" assign* "}" )                        (mutating)
+//! assign := Ident ("[" expr "]")? "=" expr ";"           (scalar / mapping write)
+//! expr   := term ("+" term)*                             (left-assoc +)
+//! term   := IntLit | "msg" "." "sender" | Ident ("[" expr "]")?
+//!           (Ident = scalar/param read; Ident[expr] = mapping read)
 //! ```
 
 use crate::error_codes as codes;
@@ -125,6 +128,7 @@ impl Parser<'_> {
         loop {
             match self.peek() {
                 SolKind::Function => functions.push(self.parse_function()?),
+                SolKind::Mapping => state_vars.push(self.parse_mapping_var()?),
                 SolKind::TypeName(_) => state_vars.push(self.parse_state_var()?),
                 SolKind::RBrace => break,
                 other => {
@@ -173,10 +177,46 @@ impl Parser<'_> {
 
     fn parse_state_var(&mut self) -> Result<StateVar, CompileError> {
         let span = self.span();
-        let ty = self.parse_ty()?;
+        let kind = StateVarKind::Scalar(self.parse_ty()?);
         let name = self.expect_ident()?;
         self.expect(&SolKind::Semi, "`;`")?;
-        Ok(StateVar { ty, name, span })
+        Ok(StateVar { kind, name, span })
+    }
+
+    /// Parse a mapping state var: `mapping ( <key> => <value> ) <name> ;`.
+    fn parse_mapping_var(&mut self) -> Result<StateVar, CompileError> {
+        let span = self.span();
+        self.expect(&SolKind::Mapping, "`mapping`")?;
+        self.expect(&SolKind::LParen, "`(`")?;
+        let key = self.parse_ty()?;
+        self.expect(&SolKind::FatArrow, "`=>`")?;
+        let value = self.parse_ty()?;
+        self.expect(&SolKind::RParen, "`)`")?;
+        let name = self.expect_ident()?;
+        self.expect(&SolKind::Semi, "`;`")?;
+        Ok(StateVar { kind: StateVarKind::Mapping { key, value }, name, span })
+    }
+
+    /// Parse a function parameter list `( )` or `( <ty> <name> ("," <ty> <name>)* )`.
+    /// Each parameter is a value type plus a name; trailing commas are rejected.
+    fn parse_param_list(&mut self) -> Result<Vec<Param>, CompileError> {
+        self.expect(&SolKind::LParen, "`(`")?;
+        let mut params = Vec::new();
+        if !matches!(self.peek(), SolKind::RParen) {
+            loop {
+                let span = self.span();
+                let ty = self.parse_ty()?;
+                let name = self.expect_ident()?;
+                params.push(Param { ty, name, span });
+                if matches!(self.peek(), SolKind::Comma) {
+                    self.advance(); // `,`
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(&SolKind::RParen, "`)`")?;
+        Ok(params)
     }
 
     fn parse_function(&mut self) -> Result<Function, CompileError> {
@@ -190,9 +230,8 @@ impl Parser<'_> {
         let span = self.span();
         self.expect(&SolKind::Function, "`function`")?;
         let name = self.expect_ident()?;
-        // Empty parameter list `( )` — the floor grammar.
-        self.expect(&SolKind::LParen, "`(`")?;
-        self.expect(&SolKind::RParen, "`)` (v1 functions take no parameters)")?;
+        // Parameter list `( <ty> <name> ("," <ty> <name>)* )` (possibly empty).
+        let params = self.parse_param_list()?;
         // `external` is required by the floor grammar.
         self.expect(&SolKind::External, "`external`")?;
         // Optional mutability (`view`/`pure`).
@@ -219,11 +258,11 @@ impl Parser<'_> {
             self.expect(&SolKind::LBrace, "`{`")?;
             let body = self.parse_return_stmt()?;
             self.expect(&SolKind::RBrace, "`}`")?;
-            Ok(Function { name, mutability, returns: Some(returns), body, span })
+            Ok(Function { name, params, mutability, returns: Some(returns), body, span })
         } else {
             // Mutating function: no `returns`, body is a block of assignments.
             let body = self.parse_mutating_block()?;
-            Ok(Function { name, mutability, returns: None, body, span })
+            Ok(Function { name, params, mutability, returns: None, body, span })
         }
     }
 
@@ -254,8 +293,9 @@ impl Parser<'_> {
         Ok(Stmt::Block(stmts))
     }
 
-    /// Parse one `<stateVar> = <expr> ;` assignment. The target must be a bare
-    /// identifier — a literal/expression on the left is an invalid assign target.
+    /// Parse one assignment: `<stateVar> = <expr> ;` or `<mapping>[<key>] = <expr> ;`.
+    /// The target must be a bare identifier (optionally followed by an `[<key>]`
+    /// index) — a literal/expression on the left is an invalid assign target.
     fn parse_assign_stmt(&mut self) -> Result<Stmt, CompileError> {
         let span = self.span();
         let name = match self.peek().clone() {
@@ -271,10 +311,22 @@ impl Parser<'_> {
                 ))
             }
         };
+        // Optional index `[<key>]` for a mapping-entry assignment.
+        let index_key = if matches!(self.peek(), SolKind::LBracket) {
+            self.advance(); // `[`
+            let key = self.parse_expr()?;
+            self.expect(&SolKind::RBracket, "`]`")?;
+            Some(key)
+        } else {
+            None
+        };
         self.expect(&SolKind::Assign, "`=`")?;
         let value = self.parse_expr()?;
         self.expect(&SolKind::Semi, "`;`")?;
-        Ok(Stmt::Assign { name, value, span })
+        match index_key {
+            Some(key) => Ok(Stmt::IndexAssign { base: name, key, value, span }),
+            None => Ok(Stmt::Assign { name, value, span }),
+        }
     }
 
     /// Parse an expression: `term ("+" term)*`, left-associative (e.g. `n + 1`).
@@ -304,10 +356,32 @@ impl Parser<'_> {
                 self.advance();
                 Ok(Expr::IntLit { value_be32: word, span })
             }
-            // A bare identifier is a state-variable read (storage stretch).
+            // An identifier is `msg.sender`, a `<mapping>[<key>]` index, a bare
+            // state-variable read, or a bare parameter reference (the last two are
+            // both `Expr::StateVar`, disambiguated at codegen).
             SolKind::Ident(name) => {
                 let span = self.span();
                 self.advance();
+                // `msg.sender`: `msg` is a plain identifier, then `.` `sender`.
+                if name == "msg" && matches!(self.peek(), SolKind::Dot) {
+                    self.advance(); // `.`
+                    let member = self.expect_ident()?;
+                    if member != "sender" {
+                        return Err(CompileError::at_code(
+                            codes::UNSUPPORTED_FEATURE,
+                            format!("only `msg.sender` is supported, got `msg.{member}`"),
+                            span,
+                        ));
+                    }
+                    return Ok(Expr::MsgSender { span });
+                }
+                // `<mapping>[<key>]` index read.
+                if matches!(self.peek(), SolKind::LBracket) {
+                    self.advance(); // `[`
+                    let key = self.parse_expr()?;
+                    self.expect(&SolKind::RBracket, "`]`")?;
+                    return Ok(Expr::Index { base: name, key: Box::new(key), span });
+                }
                 Ok(Expr::StateVar { name, span })
             }
             other => Err(CompileError::at_code(
@@ -379,12 +453,35 @@ mod tests {
     }
 
     #[test]
-    fn parameters_are_rejected_in_v1() {
-        let e = parse_src(
-            "facet C { function get(uint256 x) external view returns (uint256) { return 42; } }",
+    fn function_parameters_parse() {
+        // Parameters are now supported: one `uint256 x` arg, referenced in the body.
+        let f = parse_src(
+            "facet C { function get(uint256 x) external view returns (uint256) { return x; } }",
         )
-        .unwrap_err();
-        assert_eq!(e.code, Some(codes::UNEXPECTED_TOKEN));
+        .unwrap();
+        let func = &f.functions[0];
+        assert_eq!(func.params.len(), 1);
+        assert_eq!(func.params[0].name, "x");
+        assert_eq!(func.params[0].ty, Ty::Uint256);
+        // The bare `x` in the body is a (param) StateVar reference.
+        match &func.body {
+            Stmt::Return(Expr::StateVar { name, .. }) => assert_eq!(name, "x"),
+            other => panic!("unexpected body {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multiple_parameters_parse_comma_separated() {
+        let f = parse_src(
+            "facet C { function f(uint256 a, address b) external { } }",
+        )
+        .unwrap();
+        let params = &f.functions[0].params;
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].name, "a");
+        assert_eq!(params[0].ty, Ty::Uint256);
+        assert_eq!(params[1].name, "b");
+        assert_eq!(params[1].ty, Ty::Address);
     }
 
     #[test]
@@ -519,5 +616,93 @@ mod tests {
     fn missing_semicolon_in_assignment_is_a_clean_error() {
         let e = parse_src("facet C { function f() external { n = 1 } }").unwrap_err();
         assert_eq!(e.code, Some(codes::UNEXPECTED_TOKEN));
+    }
+
+    #[test]
+    fn mapping_state_var_parses() {
+        let f = parse_src(
+            "facet L { mapping(address => uint256) bal; \
+             function get() external view returns (uint256) { return 0; } }",
+        )
+        .unwrap();
+        assert_eq!(f.state_vars.len(), 1);
+        assert_eq!(f.state_vars[0].name, "bal");
+        match &f.state_vars[0].kind {
+            StateVarKind::Mapping { key, value } => {
+                assert_eq!(*key, Ty::Address);
+                assert_eq!(*value, Ty::Uint256);
+            }
+            other => panic!("expected a mapping, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn index_expr_and_msg_sender_parse() {
+        // `bal[msg.sender]` as a return value: an Index whose key is MsgSender.
+        let f = parse_src(
+            "facet L { mapping(address => uint256) bal; \
+             function mine() external view returns (uint256) { return bal[msg.sender]; } }",
+        )
+        .unwrap();
+        match &f.functions[0].body {
+            Stmt::Return(Expr::Index { base, key, .. }) => {
+                assert_eq!(base, "bal");
+                assert!(matches!(**key, Expr::MsgSender { .. }));
+            }
+            other => panic!("unexpected body {other:?}"),
+        }
+    }
+
+    #[test]
+    fn index_assignment_parses() {
+        // `bal[msg.sender] = bal[msg.sender] + amt;` is an IndexAssign.
+        let f = parse_src(
+            "facet L { mapping(address => uint256) bal; \
+             function add(uint256 amt) external { bal[msg.sender] = bal[msg.sender] + amt; } }",
+        )
+        .unwrap();
+        match &f.functions[0].body {
+            Stmt::Block(stmts) => match &stmts[0] {
+                Stmt::IndexAssign { base, key, value, .. } => {
+                    assert_eq!(base, "bal");
+                    assert!(matches!(*key, Expr::MsgSender { .. }));
+                    // value is `bal[msg.sender] + amt`: Add(Index, StateVar amt).
+                    match value {
+                        Expr::Add { lhs, rhs, .. } => {
+                            assert!(matches!(**lhs, Expr::Index { .. }));
+                            assert!(matches!(**rhs, Expr::StateVar { .. }));
+                        }
+                        other => panic!("expected an Add, got {other:?}"),
+                    }
+                }
+                other => panic!("expected an IndexAssign, got {other:?}"),
+            },
+            other => panic!("unexpected body {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bare_msg_member_other_than_sender_is_rejected() {
+        let e = parse_src(
+            "facet C { function f() external view returns (uint256) { return msg.value; } }",
+        )
+        .unwrap_err();
+        assert_eq!(e.code, Some(codes::UNSUPPORTED_FEATURE));
+    }
+
+    #[test]
+    fn parameter_without_a_name_is_a_clean_error() {
+        // `function f(uint256) external` — a type with no parameter name. The param
+        // parser expects an identifier after the type; this is a clean error, not a
+        // panic (covers malformed/wrong-arity parameter lists).
+        let e = parse_src("facet C { function f(uint256) external { } }").unwrap_err();
+        assert_eq!(e.code, Some(codes::UNEXPECTED_TOKEN));
+    }
+
+    #[test]
+    fn trailing_comma_in_param_list_is_a_clean_error() {
+        let e = parse_src("facet C { function f(uint256 a,) external { } }").unwrap_err();
+        // After the comma the parser expects a type, but sees `)`.
+        assert_eq!(e.code, Some(codes::EXPECTED_TYPE));
     }
 }

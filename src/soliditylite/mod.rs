@@ -84,12 +84,17 @@ pub fn emit_constant_getter(selector: [u8; 4], value_be32: [u8; 32]) -> Compiled
 /// Compile a SolidityLite source string into a deployable [`CompiledArtifact`].
 ///
 /// Pipeline (mirroring [`crate::rustlite::compile`]): `lex → parse → codegen`. The
-/// v1 floor grammar is `facet <Ident> { <fn>+ }` where each `<fn>` is `function
-/// <ident>() external view returns (uint256) { return <intlit>; }`; a
-/// `return <stateVar>;` over a declared `uint256 <name>;` lowers to an `SLOAD` of
-/// the keccak-namespaced slot (design §5 storage). Selectors are
-/// `keccak256("<name>()")[..4]`.
+/// v1 subset is `facet <Ident> { <stateVar>* <fn>+ }`:
+/// - state vars: scalar `uint256 <name>;` (slot `BASE+i`) or
+///   `mapping(<key> => <value>) <name>;` (entry slot
+///   `keccak256(pad32(key) ++ pad32(BASE+i))`);
+/// - functions: `function <name>(<params>) external [view] [returns (<ty>)] { … }`,
+///   bodies of `return <expr>;` or `{ (<var>|<map>[<key>]) = <expr>; }*`;
+/// - expressions: int literals, scalar reads (`SLOAD`), parameter reads
+///   (`CALLDATALOAD(4+32*i)`), `msg.sender` (`CALLER`), `<map>[<key>]`
+///   (keccak-slot read/write), and left-associative `+`.
 ///
+/// Selectors are `keccak256("<name>(<types>)")[..4]` (the full ABI signature).
 /// Errors are the shared [`crate::rustlite::CompileError`] (`LH0xxx` codes), each
 /// pinned to a source span — `err.render(source)` shows the offending line + a
 /// caret. Gated on `wallet` because selector + storage-slot keccak live there.
@@ -363,6 +368,43 @@ mod tests {
         assert!(rt.contains(&op::SLOAD), "Tally must SLOAD (reads n)");
         assert!(rt.contains(&op::ADD), "Tally must ADD (n + 1)");
 
+        // init_code wraps the runtime.
+        assert_eq!(art.init_code, super::asm::init_wrapper(rt));
+    }
+
+    /// THE INSTALLMENT-1 TARGET: the `Ledger` facet — a `mapping(address =>
+    /// uint256)`, a mutating `add(uint256 amt)` that writes `bal[msg.sender]`, and a
+    /// view `balanceOf(address who)` — compiles end-to-end. Both selectors (which
+    /// now INCLUDE the param types) are dispatched, and the runtime exercises the
+    /// three new primitives: CALLDATALOAD (params), CALLER (msg.sender), KECCAK256
+    /// (mapping slot derivation).
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn compile_ledger_target_facet() {
+        let art = super::compile(
+            "facet Ledger { mapping(address => uint256) bal; \
+             function add(uint256 amt) external { bal[msg.sender] = bal[msg.sender] + amt; } \
+             function balanceOf(address who) external view returns (uint256) { return bal[who]; } }",
+        )
+        .expect("the Ledger TARGET facet must compile");
+        let rt = &art.runtime;
+
+        // Selectors are over the FULL ABI signature (with param types).
+        let sel_add = crate::registry::selector("add(uint256)");
+        let sel_balance_of = crate::registry::selector("balanceOf(address)");
+        for sel in [sel_add, sel_balance_of] {
+            let push4: Vec<u8> = std::iter::once(op::PUSH1 + 3).chain(sel).collect();
+            assert!(
+                rt.windows(push4.len()).any(|w| w == push4.as_slice()),
+                "selector PUSH4 {sel:02x?} must be dispatched"
+            );
+        }
+        // The three new primitives are all present in the runtime.
+        assert!(rt.contains(&op::CALLDATALOAD), "params decode via CALLDATALOAD");
+        assert!(rt.contains(&op::CALLER), "msg.sender emits CALLER");
+        assert!(rt.contains(&op::KECCAK256), "mapping slot derivation uses KECCAK256");
+        assert!(rt.contains(&op::SSTORE), "add() writes via SSTORE");
+        assert!(rt.contains(&op::SLOAD), "balanceOf reads via SLOAD");
         // init_code wraps the runtime.
         assert_eq!(art.init_code, super::asm::init_wrapper(rt));
     }
