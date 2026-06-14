@@ -119,3 +119,9 @@
 201 549af37  (dup of 186) empty/4xx requests pass through unbilled
 183 549af37  (dup of 198) call transaction-modal focus-trap — tracked as the
 #            canonical open a11y issue, not double-filed
+211 a97f243  (dup) call payment-modal focus trap — fixed by the #75 focus-trap
+#            (focus-into-panel + Tab-trap + Escape + restore-focus), shipped 0.36.0
+212 ddcf483  (addressed) x402 settles only AFTER a successful reply (issue #25),
+#            so a callee crash/timeout = no settlement = caller keeps funds
+214 549af37  (dup of 186) billing no longer charges on 4xx — proxy returns on
+#            !upstream.ok BEFORE meterDebit
