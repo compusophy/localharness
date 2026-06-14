@@ -185,7 +185,10 @@ fn read_and_compile(path: &str) -> Result<localharness::soliditylite::CompiledAr
         1
     })?;
     compile(&src).map_err(|e| {
-        eprintln!("compile error: {e:?}");
+        // Render the agent-friendly diagnostic (LHxxxx label + `line N, col M` +
+        // a caret-marked snippet), matching `compile_rustlite` / `publish` — NOT
+        // the raw `Debug` struct with byte offsets (cryptic + unactionable).
+        eprintln!("compile error:\n{}", e.render(&src));
         1
     })
 }

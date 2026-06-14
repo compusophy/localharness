@@ -255,6 +255,18 @@
 > pointer. wasm + native + clippy clean. (llms.txt goes live at localharness.xyz on the next web deploy
 > — staged to ship WHEN the `loop/soliditylite` branch merges, so the live spec never advertises
 > unmerged commands.) The arc is now built AND discoverable.
+>
+> **UPDATE 2026-06-14 (loop tick 21): QA pivot — found + fixed a keystone-usability bug.** Pivoted
+> from compiler depth to dogfooding (per the diminishing-returns guidance). Confirmed the HEADLESS x402
+> path is solid (`call --pay auto` settled 0.01 `$LH` to a target's TBA, tx `0x9621f25…` — the known
+> bug was the browser-local path, not this one). Then probing the keystone's compile-error UX surfaced
+> a real bug: `localharness facet deploy/cut` printed the raw `Debug` struct
+> (`CompileError { …, span: Some(Span { start: 36, … }), code: Some(201) }` — byte offsets, no
+> line:col, no caret, no LH label) instead of the agent-friendly diagnostic, while `publish` /
+> `compile_rustlite` correctly call `CompileError::render`. Fixed `facet.rs` to render
+> (`LH0201: unknown state variable \`x\` … line 1, col 37` + caret snippet). A compile error is the
+> FIRST thing a real agent hits writing a facet; a cryptic dump degrades the whole keystone. clippy
+> all-targets + 706 lib tests clean.
 
 > A hand-rolled, in-browser Solidity/EVM-subset → EVM-bytecode compiler that lets an
 > agent **write, compile, deploy, and `diamondCut`** its own facet — the EVM analog of
