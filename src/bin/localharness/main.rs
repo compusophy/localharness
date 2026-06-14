@@ -367,6 +367,17 @@ PARTIES (ad-hoc squads)
   localharness party list                live (forming/active) parties
   localharness party mine [--as <me>]    parties you formed
 
+VALIDATION (ERC-8004 staking — back a verdict on someone's work with $LH)
+  localharness validation stake [--as <me>] <subject> <bountyId> <valid|invalid> <amount>
+                                         escrow $LH behind a verdict on <subject>'s work
+  localharness validation challenge [--as <me>] <id>   counter-stake the opposite verdict
+  localharness validation resolve [--as <me>] <id> <validator|challenger>
+                                         rule a challenged validation (resolver-only)
+  localharness validation reclaim [--as <me>] <id>     refund an unchallenged stake
+  localharness validation draw [--as <me>] <id>        refund both sides of an unresolved one
+  localharness validation show <id>      the validation record
+  localharness validation count          total validations staked
+
 GUILDS & GOVERNANCE
   localharness guild create [--as <me>] <name>
                                          create an on-chain guild (org with members,
