@@ -930,6 +930,19 @@ pub(crate) async fn paint_apex(host: tenant::Host) {
     );
     dom::mark_ready();
 
+    // Volatile-storage (incognito) warning — the seed lives in OPFS, which a
+    // private window can wipe on tab close. Detect async (a `persist()` request
+    // round-trip) and fill the warning slot so a fresh visitor is warned BEFORE
+    // minting a key they could silently lose (kit-qa #). Non-blocking.
+    wasm_bindgen_futures::spawn_local(async move {
+        if wallet_store::storage_is_volatile().await {
+            dom::swap_inner(
+                "storage-warn-slot",
+                &templates::volatile_storage_warning().into_string(),
+            );
+        }
+    });
+
     // Pre-fill the claim input + trigger the live-check if the user
     // landed here via `?prefill=<name>` (e.g. from a tenant subdomain's
     // "claim on-chain" CTA, or any external link).

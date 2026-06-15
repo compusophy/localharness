@@ -866,6 +866,18 @@ fn dispatch(action: Action) {
                 "identity-msg",
                 "<span style=\"color:var(--muted)\">generating identity…</span>",
             );
+            // Volatile-storage (incognito) warning — the seed about to be minted
+            // lives in OPFS, which a private window wipes on tab close. Surface a
+            // non-blocking warning so the user backs it up (kit-qa #). Best-effort:
+            // a no-op when storage is durable / the API is missing.
+            wasm_bindgen_futures::spawn_local(async move {
+                if super::wallet_store::storage_is_volatile().await {
+                    dom::swap_inner(
+                        "storage-warn-slot",
+                        &templates::volatile_storage_warning().into_string(),
+                    );
+                }
+            });
             match super::tenant::current() {
                 super::tenant::Host::Apex => {
                     wasm_bindgen_futures::spawn_local(async move {
@@ -1016,12 +1028,15 @@ fn dispatch(action: Action) {
             });
         }
         Action::OpfsWipe => {
-            // Arm the wipe — swap the button into an inline confirm
-            // pair (yes / no). The actual wipe runs via OpfsWipeConfirm.
+            // Arm the wipe — swap the button into an inline confirm pair
+            // (yes / no), then pull focus onto [wipe?] so a keyboard user lands
+            // on the action (a11y #75). No focus-stack push: this lives inside
+            // the already-trapped files modal, whose stack entry restores focus.
             dom::swap_outer(
                 "opfs-wipe-slot",
                 &templates::opfs_wipe_confirm_inline().into_string(),
             );
+            dom::focus_first_in("opfs-wipe-slot");
         }
         Action::OpfsWipeConfirm => {
             // Restore the slot first so the in-flight wipe doesn't
@@ -1030,6 +1045,8 @@ fn dispatch(action: Action) {
                 "opfs-wipe-slot",
                 &templates::opfs_wipe_armed_inline().into_string(),
             );
+            // Return focus to the now-restored [wipe] trigger.
+            dom::focus_first_in("opfs-wipe-slot");
             wasm_bindgen_futures::spawn_local(async move {
                 super::opfs::wipe().await;
             });
@@ -1039,6 +1056,8 @@ fn dispatch(action: Action) {
                 "opfs-wipe-slot",
                 &templates::opfs_wipe_armed_inline().into_string(),
             );
+            // Return focus to the restored [wipe] trigger.
+            dom::focus_first_in("opfs-wipe-slot");
         }
         Action::CancelImport => {
             dom::swap_outer("import-slot", r#"<div id="import-slot"></div>"#);
@@ -1059,16 +1078,22 @@ fn dispatch(action: Action) {
             );
         }
         Action::ResetArm => {
+            // Remember the [reset…] trigger, swap in the typed-confirm dialog,
+            // then pull focus INTO it (lands on the RESET input) — a11y #75.
+            dom::remember_focus();
             dom::swap_outer(
                 "reset-confirm-slot",
                 &templates::reset_confirm_inline().into_string(),
             );
+            dom::focus_first_in("reset-confirm-slot");
         }
         Action::ResetCancel => {
             dom::swap_outer(
                 "reset-confirm-slot",
                 &templates::reset_armed_inline().into_string(),
             );
+            // Panel gone — return focus to the [reset…] trigger.
+            dom::restore_focus();
         }
         Action::ResetConfirm => layout::reset_confirm_pressed(),
         Action::PricingSave => layout::pricing_save_pressed(),

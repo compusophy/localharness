@@ -1206,6 +1206,12 @@ input, textarea {
   padding: 12px; border: 1px solid var(--border); background: var(--panel);
 }
 .pair-instructions { color: var(--muted); font-size: 12px; }
+.volatile-storage-warn {
+  margin: 8px 0; padding: 10px 12px;
+  border: 1px solid var(--error); color: var(--error);
+  font-size: 12px; line-height: 1.5;
+}
+.volatile-storage-warn a { color: var(--error); text-decoration: underline; }
 .pair-url {
   color: var(--fg); font-size: 12px; word-break: break-all;
   text-decoration: underline;

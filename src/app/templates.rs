@@ -853,6 +853,11 @@ pub(crate) fn apex(host: &Host, wallet_address_hex: Option<&str>) -> Markup {
                 // with invite-code redemption — claiming a name before they're
                 // funded stranded them. The claim-a-name form only appears once
                 // an identity exists (after redeem / create / import).
+                // Volatile-storage (incognito) warning lands here — empty by
+                // default, filled async by `paint_apex` when the browser refuses
+                // durable storage (kit-qa #). Above the onboarding so a fresh
+                // visitor sees it before minting a key they could lose on close.
+                div #storage-warn-slot {}
                 @if fresh {
                     (invite_onboarding())
                 } @else {
@@ -913,6 +918,25 @@ fn apex_claim() -> Markup {
 fn invite_onboarding() -> Markup {
     let prefill = crate::app::events::pending_invite_code();
     crate::landing::invite_onboarding(prefill.as_deref())
+}
+
+/// Volatile-storage warning (kit-qa #): the identity seed lives in OPFS, which
+/// a private / incognito window can WIPE on tab close — so a newly-minted
+/// subdomain key would be lost forever. Surfaced (non-blocking) when
+/// `wallet_store::storage_is_volatile()` reports the browser refused durable
+/// storage. The link banks the seed off-device via the QR `?adopt=1` flow.
+/// `role="alert"` so a screen reader announces it; everything is maud-escaped.
+pub(crate) fn volatile_storage_warning() -> Markup {
+    html! {
+        div .volatile-storage-warn role="alert" {
+            "this looks like a private / incognito window — your identity key "
+            "may NOT survive closing this tab. back it up via "
+            a href="https://localharness.xyz/?adopt=1" target="_top" rel="noopener" {
+                "add a device"
+            }
+            " or use a normal window."
+        }
+    }
 }
 
 /// Apex admin dropdown — single global header admin, same archetype
@@ -1224,6 +1248,9 @@ fn admin_identity_section(
                     }
                 }
                 div #import-slot {}
+                // Volatile-storage (incognito) warning target — filled async by
+                // the CreateIdentity handler when durable storage is refused.
+                div #storage-warn-slot {}
                 div #identity-msg .admin-msg-slot {}
                 div #seed-msg .admin-msg-slot {}
                 // Mobile lifeline: a TOP-LEVEL link to apex (the apex signer
@@ -1813,8 +1840,13 @@ pub(crate) fn admin_security_expanded() -> Markup {
 /// pick `confirm` (runs the wipe) or `cancel` (swaps back to the
 /// armed button). Pure HTML; no JS dialog.
 pub(crate) fn reset_confirm_inline() -> Markup {
+    // `data-modal-trap` confines Tab to this panel while armed; `data-modal-cancel`
+    // routes Escape to the cancel action (which restores focus to the trigger).
+    // role/aria-modal/aria-label give screen readers a labelled dialog (a11y #75).
     html! {
-        div #reset-confirm-slot .reset-confirm {
+        div #reset-confirm-slot .reset-confirm role="dialog" aria-modal="true"
+            aria-label="confirm device reset"
+            data-modal-trap data-modal-cancel="reset-cancel" {
             span.reset-confirm-prompt { "type RESET to clear this device — identity + names are kept" }
             input #reset-confirm-text .redeem-input type="text" aria-label="type RESET to confirm" placeholder="RESET";
             div.reset-confirm-actions {
@@ -1845,10 +1877,13 @@ pub(crate) fn opfs_wipe_armed_inline() -> Markup {
     }
 }
 
-/// Confirm-state for the OPFS panel's wipe button (after arm).
+/// Confirm-state for the OPFS panel's wipe button (after arm). It lives
+/// INSIDE the already-focus-trapped files modal, so it carries a labelled
+/// `role="group"` (not a nested dialog) and the arm handler pulls focus onto
+/// [wipe?] so a keyboard user lands on the action, not the trigger (a11y #75).
 pub(crate) fn opfs_wipe_confirm_inline() -> Markup {
     html! {
-        span #opfs-wipe-slot .opfs-wipe-confirm {
+        span #opfs-wipe-slot .opfs-wipe-confirm role="group" aria-label="confirm wipe all files" {
             button data-action="opfs-wipe-confirm" .danger { "wipe?" }
             button data-action="opfs-wipe-cancel" .ghost { "no" }
         }

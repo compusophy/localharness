@@ -170,6 +170,60 @@ pub(crate) async fn load_linked_owner() -> Option<String> {
     }
 }
 
+/// Whether this origin's OPFS is at risk of being WIPED on tab close —
+/// the private/incognito-window case (kit-qa #). The seed is the ONLY key
+/// to on-chain ownership and lives in OPFS, so a fresh identity minted in a
+/// volatile context is lost the moment the tab closes unless the user backs
+/// it up (the QR `?adopt=1` flow) or switches to a normal window.
+///
+/// We ASK the browser to make storage durable (`navigator.storage.persist()`)
+/// and treat a non-granted result as volatile. A user gesture (the create tap)
+/// is the best moment to request it. As a backstop, an `estimate()` quota near
+/// zero (some incognito modes report a tiny quota) is also treated as volatile.
+/// Conservative: any error / missing API → NOT volatile (don't false-warn a
+/// normal browser that simply lacks the API). Best-effort only — never blocks.
+pub(crate) async fn storage_is_volatile() -> bool {
+    use wasm_bindgen_futures::JsFuture;
+    let Some(win) = web_sys::window() else { return false };
+    let storage = win.navigator().storage();
+
+    // 1. Request durable storage (idempotent; resolves to true if already/now
+    //    persistent). A `false` here is the clearest volatility signal.
+    if let Ok(promise) = storage.persist() {
+        if let Ok(val) = JsFuture::from(promise).await {
+            if val.as_bool() == Some(true) {
+                return false; // storage is durable — safe
+            }
+            // Explicit `false` from persist() → volatile.
+            if val.as_bool() == Some(false) {
+                return true;
+            }
+        }
+    }
+    // 2. Fallback: persisted() check (some engines expose only this).
+    if let Ok(promise) = storage.persisted() {
+        if let Ok(val) = JsFuture::from(promise).await {
+            if val.as_bool() == Some(true) {
+                return false;
+            }
+        }
+    }
+    // 3. Heuristic backstop: a tiny quota is a known incognito tell.
+    if let Ok(promise) = storage.estimate() {
+        if let Ok(val) = JsFuture::from(promise).await {
+            if let Some(quota) = js_sys::Reflect::get(&val, &"quota".into())
+                .ok()
+                .and_then(|q| q.as_f64())
+            {
+                // < ~120MB quota → almost certainly a partitioned/incognito jar.
+                return quota < 120_000_000.0;
+            }
+        }
+    }
+    // No API / no signal — don't false-alarm a normal browser.
+    false
+}
+
 fn restore_from_phrase(phrase: &str) -> Result<MasterWallet, String> {
     let mnemonic = wallet::mnemonic_from_phrase(phrase)?;
     let signer = wallet::signer_from_mnemonic(&mnemonic);
