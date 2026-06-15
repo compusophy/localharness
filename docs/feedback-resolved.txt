@@ -149,3 +149,9 @@
 #            native <a>/<button> + role=button/tabindex=0 universally; the
 #            published HTML face renders as a PIXEL snapshot (no DOM at all), so
 #            no div-based trigger exists. No defect.
+225 303b0a9  (krafto) cross-agent notify reports HONEST status when the target
+#            isn't Web-Push enrolled: proxy /api/notify returns a structured
+#            {enrolled:false, message} 200 (no debit, notify.ts:560-577); the
+#            notify tool + CLI relay the note verbatim (misc.rs:478-493) instead
+#            of falsely reporting sent. Implemented in 303b0a9; PROXY REDEPLOYED
+#            2026-06-15 to clear drift (the likely cause of the re-report).
