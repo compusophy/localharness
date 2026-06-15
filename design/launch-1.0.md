@@ -1,7 +1,10 @@
 # localharness 1.0.0 — Launch Spec
 
 > **STATUS: open.** The 1.0 / **mainnet** moment has NOT happened — the project
-> is still on Tempo Moderato **testnet** at `0.x`. The *infrastructure* this spec
+> is still on Tempo Moderato **testnet** at `0.x`. (To be clear: **Tempo mainnet
+> itself IS live** — chain `4217`, `https://rpc.tempo.xyz`, launched 2026-03-18 by
+> Stripe + Paradigm. What's pending is *localharness's own* deploy onto it, not the
+> chain's existence — see `stripe-mainnet.md`.) The *infrastructure* this spec
 > calls for (on-chain identity + TBA, metered access, x402 escrow, templates +
 > one-click fork, scoped runtime keys) has largely shipped on testnet; the 1.0
 > *boundary itself* — mainnet, real `$LH` value, the Stripe on-ramp, and the

@@ -37,7 +37,7 @@ Backing invariant (the whole point): `circulating_$LH (totalSupply − treasury 
 - `proxy/api/_stripe.ts` — Stripe SDK init, HMAC verify wrapper, peg const, receiptId derivation (from trusted Stripe data only).
 
 **Config seam (testnet-buildable, no behavior change)**
-- `src/registry/chain.rs` (NEW) — `ChainConfig {rpc_url, chain_id, diamond, lh_token, fee_token}`; presets `MODERATO` (= today's values) + `MAINNET` (TODO/placeholder); `active()` selected by cargo `mainnet` feature OR build.rs+`LH_CHAIN` env.
+- `src/registry/chain.rs` (NEW) — `ChainConfig {rpc_url, chain_id, diamond, lh_token, fee_token}`; presets `MODERATO` (= today's values, chain `42431`, `https://rpc.moderato.tempo.xyz`) + `MAINNET` (chain **`4217`**, `https://rpc.tempo.xyz`; `diamond`/`lh_token`/`fee_token` still TODO until the mainnet deploy in step 12); `active()` selected by cargo `mainnet` feature OR build.rs+`LH_CHAIN` env.
 - `src/registry/mod.rs` — route existing `pub const` `RPC_URL/REGISTRY_ADDRESS/CHAIN_ID/LOCALHARNESS_TOKEN_ADDRESS` through `chain::active()`; names unchanged so 102 consumers / 27 files compile untouched.
 - `src/registry/tx.rs` — `ALPHA_USD_ADDRESS` (l.117) from active preset's `fee_token`.
 - `src/registry/x402.rs` — `x402_domain_matches_live_facet` (l.349) becomes per-preset expected hash.
@@ -63,7 +63,7 @@ Backing invariant (the whole point): `circulating_$LH (totalSupply − treasury 
 9. **[SAFE NOW]** Refund/chargeback on test mode (`stripe trigger charge.refunded` / `charge.dispute.created`) → `clawbackFiatMint` → assert locked burned.
 10. **[SAFE NOW]** Loss-enumeration doc + invariant def + read-only `circulatingSupply()` vs Stripe-balance reconciliation script.
 11. **[SAFE NOW]** DRY-RUN the Foundry mainnet runbook on a fresh Moderato deploy; `diff` loupe `facets()` testnet-vs-fresh to prove completeness BEFORE spending mainnet gas.
-12. **[BLOCKED: Tempo mainnet exists + params]** Fill `MAINNET` preset (RPC, chain_id, USD fee_token); deploy diamond + run the full ordered facet sequence (SKIP Pairing); grant diamond ISSUER_ROLE on new $LH.
+12. **[UNBLOCKED — needs mainnet deploy]** `MAINNET` preset RPC (`https://rpc.tempo.xyz`) + chain_id (`4217`) are known; remaining: pick the USD fee_token from the live token list, deploy diamond + run the full ordered facet sequence (SKIP Pairing), grant diamond ISSUER_ROLE on new $LH. Gated only on a funded mainnet deployer key (step 13's relay) + the sybil/legal decisions, NOT on mainnet existence.
 13. **[BLOCKED: §6.3 relay decision + funded mainnet sponsor]** Replace embedded sponsor with rate-capped relay; fund with mainnet fee_token. Shipping mainnet on the embedded-key model = money-loss bug.
 14. **[BLOCKED: mainnet diamond live]** Read mainnet `x402DomainSeparator()`; re-pin the x402 test hash for the MAINNET preset.
 15. **[BLOCKED: Stripe LIVE keys + legal go]** Set live Stripe + `FIAT_ISSUER_KEY`; owner-set `fiatIssuerSigner` + caps on mainnet MintGate; set proxy env to mainnet; build wasm with mainnet preset; deploy web + proxy.
@@ -72,10 +72,10 @@ Backing invariant (the whole point): `circulating_$LH (totalSupply − treasury 
 
 ## 4. External inputs the maintainer must provide
 
-- **[HARD BLOCKER]** Confirmation Tempo MAINNET exists and is open for deploys (launch-1.0.md: the mainnet moment has NOT happened).
-- Tempo mainnet **RPC URL** (replaces `rpc.moderato.tempo.xyz`).
-- Tempo mainnet **CHAIN_ID** (u64, replaces 42431) — wrong value invalidates every signature + the x402 domain.
-- Mainnet canonical **USD-currency TIP-20 stablecoin** as sponsor fee_token (AlphaUSD-equivalent; replaces `0x20c0…0001`).
+- ~~**[HARD BLOCKER]** Confirmation Tempo MAINNET exists~~ → **RESOLVED 2026-06-15** (web search). Tempo mainnet went live **2026-03-18** (Stripe + Paradigm). EVM-compatible, public RPC, stablecoin gas. Tempo IS the Stripe payments chain — it ships a native **Machine Payments Protocol** for autonomous AI-agent payments, so this on-ramp is aligned with the chain's own purpose, not fighting it.
+- ~~Tempo mainnet **RPC URL**~~ → **`https://rpc.tempo.xyz`** (ws `wss://rpc.tempo.xyz`; explorer `https://explore.tempo.xyz`).
+- ~~Tempo mainnet **CHAIN_ID**~~ → **`4217`** (testnet stays `42431`). Wrong value invalidates every signature + the x402 domain, so the seam MUST switch this atomically.
+- Mainnet canonical **USD-currency TIP-20 stablecoin** as sponsor fee_token (AlphaUSD-equivalent; replaces `0x20c0…0001`) — **still TODO**: Tempo mainnet uses any USD-currency TIP-20 with a Fee AMM auto-converting between them; pick one from the live token list (`docs.tempo.xyz/quickstart/tokenlist`) and confirm its address on the mainnet explorer before pinning.
 - Funded mainnet **deployer/owner key** controlling the mainnet diamond (today `0x313b…EF1e`; root `.env EVM_PRIVATE_KEY`).
 - Funded mainnet **sponsor/relay** holding the fee_token (real money) + the §6.3 relay rewrite.
 - Confirm **6551 Registry + MultiSignerAccount** re-deployed/canonical on mainnet.
