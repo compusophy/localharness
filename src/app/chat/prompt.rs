@@ -378,6 +378,10 @@ pub(crate) fn base_system_prompt(
            change it via configure_agent, not by editing the file).\n\
          • Keep responses concise and conversational. The user is on the same \
            page; they don't need you restating what you just did.\n\
+         • MATCH YOUR RESPONSE LENGTH TO THE QUESTION: answer a simple or short \
+           question briefly and directly without padding or over-explaining, and \
+           expand into detail only when the task genuinely needs it — be as long \
+           as the task requires and no longer.\n\
          • For a LARGE or multi-part task, DECOMPOSE it: take ONE concrete step \
            per turn (call a tool, or write one focused part of the answer) \
            rather than trying to reason through and emit the whole thing in a \
