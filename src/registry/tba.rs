@@ -651,6 +651,19 @@ pub async fn claim_and_maybe_set_main_sponsored(
     name: &str,
     fee_token: &str,
 ) -> Result<String, String> {
+    // Routable-label guard at the single first-claim chokepoint (juno-qa): the
+    // registry will happily mint a >63-char / bad-char label, but the DNS
+    // gateway then silently chokes on it — a zombie agent the owner already
+    // paid (sponsored) gas to create. Reject BEFORE the tx. Every client mint
+    // path (CLI create/publish, the apex form, and the signer-iframe used by
+    // the browser chat tools + tenant claim) funnels through here, so this is
+    // the belt-and-suspenders backstop for the per-call-site checks.
+    if !crate::subdomain::is_valid_subdomain_label(name) {
+        return Err(format!(
+            "'{name}' is not a routable subdomain label (1-63 chars of a-z, 0-9, \
+             hyphen; no leading/trailing hyphen)"
+        ));
+    }
     let cost = registration_cost().await.unwrap_or(0);
     let register_input = hex_to_bytes(&encode_register(name))?;
 

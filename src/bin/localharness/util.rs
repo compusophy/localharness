@@ -382,14 +382,11 @@ pub(crate) fn parse_proposal_id(raw: &str) -> Result<u64, String> {
 /// hyphen, and NO leading/trailing hyphen (RFC 1035 — a label like `-foo` or
 /// `foo-` is a dead-on-arrival subdomain). Surfaced by the test-user fleet
 /// (juno-qa) — emoji/oversized were already caught, the hyphen edge was not.
+/// Delegates to the library's canonical `subdomain::is_valid_subdomain_label`
+/// so the CLI and the browser mint paths enforce the SAME rule (one source of
+/// truth — the rule used to be forked here, drifting from the app).
 pub(crate) fn name_is_valid(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 63
-        && !name.starts_with('-')
-        && !name.ends_with('-')
-        && name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    localharness::subdomain::is_valid_subdomain_label(name)
 }
 
 #[cfg(test)]

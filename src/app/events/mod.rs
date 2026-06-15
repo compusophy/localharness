@@ -769,6 +769,17 @@ fn dispatch(action: Action) {
             let Some(name) = super::tenant::current_name() else {
                 return;
             };
+            // Guard the routable-label invariant BEFORE spending sponsored gas
+            // (juno-qa): an unroutable name (>63 chars / bad chars) would mint a
+            // zombie the DNS gateway can't serve. The chat-tool + apex-form
+            // paths already validate; this tenant-side claim was the gap.
+            if !crate::subdomain::is_valid_subdomain_label(&name) {
+                dom::swap_inner(
+                    "claim-msg",
+                    &dom::msg_span(dom::Msg::Error, "invalid name"),
+                );
+                return;
+            }
             dom::swap_inner(
                 "claim-msg",
                 "<span style=\"color:var(--muted)\">ensuring identity at apex…</span>",
