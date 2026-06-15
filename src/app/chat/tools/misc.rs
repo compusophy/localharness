@@ -373,7 +373,10 @@ pub(crate) fn notify_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          denied the result says so — then ask the user to press [enable \
          notifications] under admin → account → notifications instead of retrying. \
          Returns { notified, permission, vibrated } (local) or { sent, to } \
-         (cross-agent).",
+         (cross-agent). For a cross-agent send, if the target has not enrolled any \
+         device for Web Push the result is { sent: false, enrolled: false, note } — \
+         the note did NOT reach them (not your fault, not retryable); relay the \
+         `note` so the user knows the target must enable notifications first.",
         schema,
         |args: serde_json::Value, _ctx| async move {
             let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("").trim();
@@ -466,6 +469,27 @@ async fn notify_cross_agent(
             "notify {to} failed ({}): {msg}",
             status.as_u16()
         )));
+    }
+    // TOOL-LEVEL ENROLLMENT CHECK: the proxy returns 200 with `enrolled: false`
+    // when the target has no device enrolled for Web Push. The note did NOT
+    // reach them (the in-app inbox is fed by push too), but it is not a failure
+    // the sender should retry — surface a clear, non-error result the model can
+    // relay to the user instead of falsely reporting `sent: true`.
+    let enrolled = resp_body
+        .get("enrolled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    if !enrolled {
+        let message = resp_body
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("the target has not enrolled any device for Web Push, so the note did not reach them");
+        return Ok(serde_json::json!({
+            "sent": false,
+            "enrolled": false,
+            "to": to,
+            "note": message,
+        }));
     }
     Ok(serde_json::json!({ "sent": true, "to": to }))
 }

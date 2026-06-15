@@ -31,8 +31,14 @@
 // ORDER OF OPERATIONS (the fetch.ts invariant: nothing proxy-side may fail
 // AFTER the caller is charged except the actual upstream send): payload
 // validation → VAPID config check → RATE LIMIT (429 before auth — cheap
-// rejection on the CLAIMED address) → auth → subscription lookup (404 before
-// any debit) → credit gate + meter debit → the push itself (502 on failure).
+// rejection on the CLAIMED address) → auth → subscription lookup (before any
+// debit) → credit gate + meter debit → the push itself (502 on failure).
+//
+// CROSS-AGENT ENROLLMENT CHECK: when a `to:` target has NO device enrolled for
+// Web Push, the note cannot be delivered anywhere (the in-app inbox is fed by
+// push too — web/sw.js), so this returns a clear, structured `enrolled: false`
+// 200 with NO debit instead of a 404 — the sender did nothing wrong and must
+// not be told to retry. The client tool / CLI relay the `message` verbatim.
 //
 // RATE LIMITS (best-effort, PER-ISOLATE — see api/_ratelimit.ts for why
 // that's accepted; the meter debit stays the global hard backstop):
@@ -552,12 +558,34 @@ export default async function handler(req: Request): Promise<Response> {
       return json({ error: 'subscription lookup failed: ' + (e as Error).message }, 502, origin);
     }
     if (subs.length === 0) {
+      // TOOL-LEVEL ENROLLMENT CHECK (on-chain feedback): the target has NOT
+      // enrolled ANY device for Web Push. The in-app notification inbox (the
+      // header bell) is fed ONLY by a delivered push (web/sw.js relay/stash),
+      // so with no subscription there is no channel to reach them at all.
+      // CROSS-AGENT: this is NOT the sender's fault and must not look like a
+      // failure they should retry — return a clear, structured `enrolled:
+      // false` signal the client/CLI relays verbatim, with NO debit (there is
+      // nothing to deliver to charge for). SELF: the 404 + app hint is right.
+      if (to) {
+        return json(
+          {
+            sent: false,
+            delivered: false,
+            enrolled: false,
+            to,
+            message:
+              `"${to}" has not enrolled any device for Web Push, so this note will ` +
+              `NOT reach them — no phone or desktop push will arrive, and their ` +
+              `in-app notification inbox is fed by push too. Their owner must tap ` +
+              `the notification bell (or admin → account → notifications) on a ` +
+              `device once to enable it. You were not charged.`,
+          },
+          200,
+          origin,
+        );
+      }
       return json(
-        {
-          error: to
-            ? `"${to}" has no device enrolled for notifications — its owner must tap the bell (or admin → notifications) on a device first`
-            : 'no push subscription on-chain — enable notifications in the app first',
-        },
+        { error: 'no push subscription on-chain — enable notifications in the app first' },
         404,
         origin,
       );

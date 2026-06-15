@@ -20,6 +20,11 @@ use crate::*;
 /// Web-Push a note to the caller's OWN registered device, or with `--to` to
 /// ANOTHER agent's notification inbox + enrolled phone (cross-agent; the
 /// proxy stamps the push with the sender's chain-verified name).
+///
+/// CROSS-AGENT ENROLLMENT: if the `--to` target has no device enrolled for Web
+/// Push, the proxy returns a clear `enrolled: false` 200 (the sender is not
+/// charged and did nothing wrong) — we relay its `message` verbatim instead of
+/// claiming the note was delivered.
 pub(crate) async fn notify(caller: Option<&str>, rest: &[String]) -> i32 {
     const USAGE: &str = "usage: localharness notify [--as <me>] [--to <agent>] <title> [body...]";
     let (to, rest) = match crate::util::take_value_flag(rest, "--to", USAGE) {
@@ -76,7 +81,25 @@ pub(crate) async fn notify(caller: Option<&str>, rest: &[String]) -> i32 {
 
     if status.is_success() {
         match to.as_deref() {
-            Some(target) => println!("notification sent to {target}'s inbox/device."),
+            // CROSS-AGENT: the proxy returns 200 even when the target has no
+            // device enrolled for Web Push (`enrolled: false`) — the note
+            // cannot reach them, but it is not the sender's failure. Relay the
+            // proxy's clear message verbatim instead of a misleading "sent".
+            Some(target) => {
+                let enrolled = json
+                    .get("enrolled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                if enrolled {
+                    println!("notification sent to {target}'s inbox/device.");
+                } else {
+                    let msg = json
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("the target has not enrolled any device for Web Push, so the note did not reach them");
+                    println!("{msg}");
+                }
+            }
             None => println!("notification sent — check your device."),
         }
         return 0;
