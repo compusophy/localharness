@@ -120,7 +120,11 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
                     details.brand-menu {
                         summary.brand-summary { "localharness" }
                         nav.brand-menu-items {
-                            a href="/" { "home" }
+                            // Absolute apex URL, NOT "/": a relative home on a
+                            // subdomain (esp. an installed PWA scoped to that
+                            // subdomain) trapped the user there. Home is the
+                            // apex — the user's subdomain list + create (krafto #220).
+                            a href="https://localharness.xyz/" { "home" }
                             a href="https://github.com/compusophy/localharness"
                                 target="_blank" rel="noopener" { "repo" }
                             a href="https://crates.io/crates/localharness"
