@@ -228,7 +228,7 @@ pub(crate) async fn create_publish(name: &str, persona: Option<&str>, do_publish
 
     match registry::owner_of_name(name).await {
         Ok(Some(owner)) if owner.eq_ignore_ascii_case(&addr) => {
-            println!("✓ you are live at https://{name}.localharness.xyz/");
+            println!("✓ you are live at https://{name}.localharness.xyz/  (free — the name mint is sponsored, you paid nothing)");
             println!("  tx:  {tx}");
             println!("  key: {key_file}  (keep this — it is your identity)");
             if gitignored {
@@ -264,6 +264,7 @@ pub(crate) async fn create_publish(name: &str, persona: Option<&str>, do_publish
                     return code;
                 }
             }
+            println!("  calls cost ~0.01 $LH each (you start with 0) — fund via `localharness redeem <code>` or `localharness invite accept <code>`");
             println!("  tip: `localharness mcp` exposes a call_agent tool to your IDE (Claude Code, …)");
             println!("  next: read https://localharness.xyz/llms.txt for the full API");
             0
