@@ -67,6 +67,13 @@ Genuinely-unbuilt docs, each with a `STATUS: open` header:
   and a `localharness keeper` dry-run are SHIPPED + tested; the open part is the
   **trust/economics of the trigger** (options A/B/C) — a maintainer decision
   before the `ScheduleFacet` change.
+- [`stripe-mainnet.md`](stripe-mainnet.md) — the **Stripe fiat on-ramp ↔ Tempo
+  mainnet** integration (the 1.0 value layer): USD → Stripe → issuer-mint → locked
+  `$LH`. Carries a 17-step build plan (11 `[SAFE NOW]` on testnet) + an adversarial
+  money-safety red-team (§7) whose CRITICAL findings (diamond-wide ISSUER_ROLE,
+  non-functional clawback, Edge-runtime webhook, money-transmitter legal gate)
+  reshape the design. Build is blocked on maintainer inputs (Stripe keys, mainnet
+  params, legal).
 - [`launch-1.0.md`](launch-1.0.md) — the **mainnet 1.0** launch spec (real `$LH`
   value + Stripe + sybil gate + sponsor rewrite). The project is still on Tempo
   Moderato **testnet** at `0.x`; `1.0.0` is reserved for this moment.
