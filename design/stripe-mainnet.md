@@ -52,7 +52,7 @@ Backing invariant (the whole point): `circulating_$LH (totalSupply − treasury 
 
 ## 3. Sequenced build plan
 
-1. **[SAFE NOW]** Config seam (`chain.rs`) with `MODERATO` = today's exact consts; route the const names through it; prove `cargo test` + `cargo check --target wasm32` byte-for-byte unchanged. `MAINNET` left placeholder/unselected.
+1. ~~**[SAFE NOW]** Config seam (`chain.rs`)~~ → **SHIPPED 2026-06-15 (5091f16).** `src/registry/chain.rs` holds `ChainConfig` + `MODERATO` (today's exact consts) + `MAINNET` (chain 4217 / rpc.tempo.xyz; diamond/$LH/fee-token EMPTY until deploy). `RPC_URL/REGISTRY_ADDRESS/CHAIN_ID/LOCALHARNESS_TOKEN_ADDRESS` + `ALPHA_USD_ADDRESS` route through `chain::ACTIVE`; selected by the `mainnet` cargo feature (off = Moderato). Verified byte-for-byte: registry suite 126 + 2 chain tests, wasm32 (SDK+wallet) + `mainnet` feature compile.
 2. **[SAFE NOW]** Proxy `_chain.ts` from env with Moderato defaults; refactor all 6 TS files; verify LIVE testnet proxy unchanged (env unset).
 3. **[SAFE NOW]** Make `x402_domain_matches_live_facet` preset-aware (expected hash parameterized by active chain).
 4. **[SAFE NOW]** Audit 102 const-consumers (27 files) for INLINE `42431`/addresses bypassing the const (tempo_tx.rs:705/716 embed `0x20c0…0001` in test fixtures — confirm test-only, not a 2nd source of truth).

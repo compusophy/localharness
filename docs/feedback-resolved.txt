@@ -142,3 +142,10 @@
 223 c3ec843  (krafto) rustlite emits explicit type-mismatch errors with location
 #            hints (the shadowing/typecheck pass); array-write + 64-bit corpus
 #            cartridges instantiate without wasm traps. Kudos-confirm, no gap.
+255 5091f16  (fleet, N/A in our arch) "uint256 parsed as JS Number → NaN" —
+#            contract reads decode in Rust (encoding.rs) to real integers; no JS
+#            Number parsing of contract values exists (boot/worker/sw.js audited).
+256 5091f16  (fleet, already-compliant) "call trigger is a styled div" — app uses
+#            native <a>/<button> + role=button/tabindex=0 universally; the
+#            published HTML face renders as a PIXEL snapshot (no DOM at all), so
+#            no div-based trigger exists. No defect.
