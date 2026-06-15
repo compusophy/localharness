@@ -315,9 +315,10 @@ SCHEDULING
                                          agent declares the goal complete (defaults:
                                          --every 5m, --runs 100; budget = the hard stop)
   localharness jobs [--as <me>]          list your scheduled jobs (id, target, cadence, …)
-  localharness keeper                     dry-run a decentralized-keeper tick: show
-                                         every DUE job on-chain + what this peer would
-                                         fire (P2P keeper, krafto #1.5; triggering tbd)
+  localharness keeper                     run a decentralized-keeper tick: find every
+                                         DUE job on-chain + POKE the proxy to run each
+                                         (P2P scheduler heartbeat, krafto #1.5) — works
+                                         even if the Vercel cron stalls
   localharness unschedule [--as <me>] <jobId>  cancel a job (refunds its remaining budget)
 
 INVITES
@@ -806,13 +807,15 @@ async fn run(args: &[String]) -> i32 {
     }
 }
 
-/// `keeper` — a DRY-RUN tick of the decentralized scheduler keeper (krafto #1.5).
-/// Reads the full cross-owner due set on-chain (`registry::all_due_job_ids`, the
-/// same `jobsDue` view the Vercel worker pages through), builds the live job
-/// records, and runs the real `keeper::jobs_to_fire` decision core as the SOLE
-/// keeper (no keeper roster is announced yet → solo). It PRINTS what it would
-/// fire but does NOT trigger: a keeper triggering `recordRun` needs a ScheduleFacet
-/// change (recordRun is scheduler-role-only today), which is flagged, not cut.
+/// `keeper` — one tick of the decentralized scheduler keeper (krafto #1.5,
+/// option C). Reads the full cross-owner due set on-chain
+/// (`registry::all_due_job_ids`, the same `jobsDue` view the Vercel worker pages),
+/// runs the real `keeper::jobs_to_fire` decision core as the SOLE keeper, and
+/// POKES the proxy (`?poke=<id>`) to run each due job. The proxy re-validates
+/// due-ness and `recordRun` is CAS-guarded, so a poke only ever runs a genuinely-
+/// due job once — making any keeper (this CLI, a browser tab) a scheduler
+/// heartbeat, so jobs fire even when the single Vercel cron stalls. Trust-free:
+/// run+commit still happen in the (trusted) proxy executor.
 async fn keeper_plan() -> i32 {
     use std::time::{SystemTime, UNIX_EPOCH};
     println!("keeper: scanning on-chain for due jobs across all owners …");
@@ -843,11 +846,27 @@ async fn keeper_plan() -> i32 {
     }
     // Sole keeper: my_index 0, keeper_count 1, epoch 0, backoff 30s.
     let to_fire = localharness::keeper::jobs_to_fire(&jobs, now, CALL_COST_WEI, 0, 1, 0, 30);
-    println!("as the sole keeper, this peer would fire: {to_fire:?}");
-    println!(
-        "(dry-run — triggering recordRun from a keeper needs the ScheduleFacet \
-         keeper-trigger change, not yet cut)"
-    );
+    println!("as the sole keeper, firing {} job(s): {to_fire:?}", to_fire.len());
+
+    // POKE the proxy to run each due job — the decentralized heartbeat (option C,
+    // krafto #1.5). The proxy's `?poke=<id>` re-validates due-ness and recordRun is
+    // CAS-guarded, so a poke only ever runs a genuinely-due job once; a stalled
+    // Vercel cron no longer means stalled jobs.
+    let base = registry::CREDIT_PROXY_URL.trim_end_matches('/');
+    let client = reqwest::Client::new();
+    let mut fired = 0;
+    for id in &to_fire {
+        let url = format!("{base}/api/scheduler?poke={id}");
+        match client.get(&url).send().await {
+            Ok(resp) => {
+                let txt = resp.text().await.unwrap_or_default();
+                println!("  poked job #{id} → {}", txt.chars().take(220).collect::<String>());
+                fired += 1;
+            }
+            Err(e) => println!("  poke job #{id} failed: {e}"),
+        }
+    }
+    println!("keeper: poked {fired}/{} due job(s).", to_fire.len());
     0
 }
 

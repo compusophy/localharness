@@ -1794,6 +1794,36 @@ export default async function handler(req: Request): Promise<Response> {
       headers: { 'content-type': 'application/json' },
     });
   }
+
+  // PUBLIC keeper poke (decentralized heartbeat, krafto #1.5): `?poke=<jobId>`
+  // runs ONE specific job. It needs NO cron secret because processJob
+  // re-validates the job (known + Active + nextRun<=now) and recordRun is
+  // CAS-guarded — so a poke can ONLY ever run a genuinely-DUE job, exactly once.
+  // Not-due / unknown / paused → a safe no-write skip. This lets ANY keeper (a
+  // browser tab or the `localharness keeper` CLI) be the scheduler heartbeat, so
+  // due jobs fire even when the single Vercel cron stalls. The expensive path (a
+  // model call) is bounded by genuine due-ness + the CAS (one run per due slot);
+  // poke spam of not-due jobs is a cheap getJob read.
+  {
+    const poke = new URL(req.url).searchParams.get('poke');
+    if (poke !== null) {
+      let id: bigint;
+      try {
+        id = BigInt(poke);
+      } catch {
+        return new Response(JSON.stringify({ error: 'poke must be a numeric jobId' }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      const result = await processJob(id, newTickBudget(), Date.now() + TICK_SOFT_BUDGET_MS);
+      return new Response(JSON.stringify({ poked: poke, result }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+  }
+
   const secret = process.env.CRON_SECRET;
   if (!secret) {
     // Fail closed: with no secret configured, refuse to run rather than expose
