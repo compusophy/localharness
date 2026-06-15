@@ -5,6 +5,48 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.40.0] - 2026-06-15
+
+### Added
+
+- **Tempo mainnet config seam — mainnet is a feature flip, not a fork.** Tempo
+  mainnet is confirmed live (chain `4217`, `https://rpc.tempo.xyz`, launched
+  2026-03-18 by Stripe + Paradigm). New `registry::chain::{ChainConfig, MODERATO,
+  MAINNET, ACTIVE}` + a `mainnet` cargo feature; the five network consts
+  (`RPC_URL`/`REGISTRY_ADDRESS`/`CHAIN_ID`/`LOCALHARNESS_TOKEN_ADDRESS`/
+  `ALPHA_USD_ADDRESS`) now read from `chain::ACTIVE`, and the proxy mirrors it in
+  `proxy/api/_chain.ts` (env-driven, Moderato defaults). Default build is
+  byte-for-byte Moderato; flipping to mainnet needs no code edit. `self_docs`
+  and the x402 domain check are preset-aware too.
+- **Decentralized scheduler keeper (krafto #1.5).** `src/keeper.rs` — pure
+  fireability/roster decision cores + a `localharness keeper` dry-run that pokes
+  the proxy's public `?poke=<jobId>` branch: a P2P heartbeat alternative to the
+  single Vercel-cron trigger (option C).
+- **Shared-volume agent tools (krafto #1.4).** Encrypted cross-agent KV state
+  over `SessionRoomFacet` (#22), surfaced as agent tools.
+- **CLI one-command `publish <name>`** — claim + scaffold + publish a public face
+  in one step (no source arg).
+- **SolidityLite deploy stage** — sponsored Tempo `0x76` CONTRACT CREATION + a
+  live deploy probe.
+
+### Changed / Fixed
+
+- **krafto #220 — header "home" → absolute apex URL** (was relative `/`, which
+  trapped an installed PWA on the subdomain instead of the apex agent list).
+- **krafto — context/token bar removed entirely** (reported 3×).
+- **Cross-agent `notify` reports honest status** — `{enrolled:false, message}`
+  (no debit) when the target has no Web Push enrolled, instead of false success
+  (krafto #225; proxy + client + CLI).
+- **Registry — DNS-label name validation on every mint path** (on-chain feedback).
+- **CLI `--verify` tolerates fenced/prose JSON** (no false withhold; found by
+  dogfooding).
+- **SessionRoom — canonical (stable) shared-volume room per owner** (found by
+  dogfooding).
+- **x402 domain tests gated to the Moderato build** so a `mainnet` build is clean
+  (the live mainnet hash is pinned at deploy).
+- **chore — lean pass:** terser comments/tests across the keeper + loop files,
+  net SLOC reduction with no logic/coverage change.
+
 ## [0.39.0] - 2026-06-13
 
 ### Fixed (colony backlog wave)
