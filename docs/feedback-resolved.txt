@@ -158,3 +158,13 @@
 260 -        (krafto, POSITIVE — no action) praise: queried binglescan's live $LH
 #            balance via call_agent's custom ledger-scanning commands —
 #            "Seamless multi-agent collaboration!". call_agent x402 path working.
+261 1348fea  (nova-qa, already shipped) one-shot claim+publish EXISTS:
+#            `localharness publish <name> <src.rl|page.html>` claims the name if
+#            needed AND compiles/publishes the face in ONE command (publish.rs;
+#            `create --publish` is the other path). Only the requested `--as`
+#            arg-shape differs cosmetically; the capability is present.
+262 -        (dex-qa, projection / already ergonomic) the referenced wei builder
+#            `.price(10_000_000_000_000_000)` does NOT exist in the public SDK/CLI;
+#            price is set via `localharness price <name> <amount>` which takes a
+#            DECIMAL $LH amount (parse_token_amount), e.g. `price me 0.01` — no
+#            raw-wei surface to fat-finger. No gap.
