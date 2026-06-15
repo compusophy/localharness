@@ -49,15 +49,18 @@ happened. That is the whole problem; the pure cores deliberately don't touch it.
 
 ## Options (pick one — each implies a specific `ScheduleFacet` change)
 
-**A. Semi-trusted permissionless keepers (simplest).** Add
+**A. Semi-trusted permissionless keepers (simplest — but griefable, see con).** Add
 `keeperRun(jobId, expectedNextRun, resultHash)` callable by any address in the
 live keeper roster (or anyone). Keep all existing guards (not-due, CAS, budget
-cap) — they already bound abuse to *at most one run's budget per due slot*, and
-the job OWNER opted into the decentralized scheduler. A cheating keeper wastes
-one run; reputation (`ReputationFacet`) + roster eviction deter repeat offenders.
-*Pro:* shippable now, additive (a NEW selector via `diamondCut` ADD — does NOT
-touch `recordRun`, so zero brick-risk to the live Vercel path). *Con:* a keeper
-can advance-without-working; the budget owner bears bounded loss.
+cap). *Pro:* shippable now, additive (a NEW selector via `diamondCut` ADD — does
+NOT touch `recordRun`, so zero brick-risk to the live Vercel path).
+*Con (CORRECTED — worse than first written):* a keeper can advance-WITHOUT-working
+and claim the reimbursement. The not-due/CAS guards only bound it to one commit
+*per due slot* — but a malicious keeper does that EVERY slot, draining the job's
+WHOLE budget over time for zero work, and roster eviction is weak (a sybil
+re-announces). So pure-A is griefable; it really needs a keeper **bond slashed on
+a bad commit** — which drags in B's challenge machinery. Pure-A is NOT a clean
+ship.
 
 **B. Staked keepers + optimistic challenge.** A keeper stakes `$LH`, commits a
 run + result; a challenge window lets anyone dispute (re-run + compare); a proven
@@ -71,17 +74,25 @@ keeper-of-record) acts on; commits stay role-gated. *Pro:* no trust change, real
 liveness benefit (keepers ensure due jobs are noticed even if the cron stalls).
 *Con:* not "true" decentralization — still a privileged committer.
 
-## Recommendation
+## Recommendation (revised)
 
-**Start with A**, scoped as an ADDITIVE `keeperRun` selector (zero risk to the
-live scheduler), gated to the announced keeper roster (`SignalingFacet` presence
-on `keccak256("localharness.keepers")`, read via the existing roster path → the
-`roster_position` core). It ships the real P2P keeper with bounded, owner-opted
-risk, and B can layer staking on top later. The remaining work once A is chosen:
-the Solidity `keeperRun` + `Add*` script + cut (I do this with a rollback plan),
-the presence wiring (announce/read roster → `RosterEntry[]`), and the trigger
-wiring (run the turn, submit `keeperRun`).
+krafto's actual complaint is the centralized **cron heartbeat** — "is anyone
+watching for due jobs?" — NOT that the proxy executes the turn (the credit proxy
+is the project's one accepted off-chain component). That reframes the choice:
 
-This is a **trust-model decision for the maintainer**, which is why it's a doc and
-not a forced implementation — picking the wrong model would be costlier to unwind
-than to decide up front. Say which of A/B/C and I'll build it.
+- **Pure A is OUT** — griefable (whole-budget sybil-drain, see its con). Making it
+  safe requires a bond + challenge, i.e. it collapses into **B** (trustless but
+  weeks of work: re-execution determinism + challenge/slash UX).
+- **C is the clean minimal win** and directly fixes the complaint: keepers become
+  the decentralized HEARTBEAT (a P2P network that notices due jobs and pokes them)
+  while run+commit stay with the trusted proxy executor. No trust problem, no
+  griefing — a keeper poke is only acted on if the job is genuinely due. It removes
+  the single-cron dependency (many keepers vs one Vercel tick) without pretending
+  to remove the proxy. The decision cores already built decide *which* due jobs to
+  poke; the work is a proxy `pokeJob` endpoint + keepers calling it.
+
+**So: recommend C now** (decentralize the heartbeat, trust-free), and treat **B**
+as the later "trustless execution" upgrade. This is still a **maintainer call** —
+C accepts the proxy as executor; B is the heavier path to true autonomy — which is
+why it's a doc, not a forced implementation. Say **C** (I'll build the heartbeat:
+proxy `pokeJob` + keeper wiring over the existing cores) or **B**, and I'll start.
