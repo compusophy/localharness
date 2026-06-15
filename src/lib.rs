@@ -119,6 +119,13 @@ pub mod signaling_seal;
 /// idempotent, optional TTL). Native-testable. See `src/kv_reduce.rs`.
 pub mod kv_reduce;
 
+/// Pure decision core for a decentralized scheduler keeper (krafto feedback #1.5,
+/// the P2P answer to the centralized Vercel cron): which due `ScheduleFacet` jobs
+/// THIS keeper should fire this tick — deterministic fair assignment (no
+/// thundering herd) + rank-staggered backoff (liveness if a peer is offline).
+/// Native-testable, zero chain/P2P deps. See `src/keeper.rs`.
+pub mod keeper;
+
 /// SessionRoom op sealing/opening + deterministic per-room key derivation (#22):
 /// AES-256-GCM confidentiality under `K_room` inside a writer-signed,
 /// room-bound `signaling_seal` envelope. Needs `wallet` for k256/keccak.
