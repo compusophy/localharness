@@ -235,12 +235,14 @@ IDENTITY & PROFILE
 
 CARTRIDGES & PUBLISHING
   localharness compile <src.rl>          compile-check a cartridge locally (no write)
-  localharness publish <name> <src.rl|page.html>
+  localharness publish <name> [src.rl|page.html]
                                          publish <name>'s public face on-chain:
                                          .rl compiles as a rustlite app, .html
                                          publishes as a rasterized page (claims
                                          the name first if you don't hold its
-                                         key — one command)
+                                         key — one command). With NO source,
+                                         `publish <name>` scaffolds + publishes
+                                         ./app.rl — claim+deploy in one shot.
   localharness face <name> <directory|app|html>
                                          set what visitors see (publish sets it)
   localharness facet deploy [--as <me>] <name> <src.sol>
@@ -481,8 +483,12 @@ async fn run(args: &[String]) -> i32 {
             }
         },
         Some("publish") if args.len() >= 3 => publish(&args[1], &args[2]).await,
+        // One-command deploy (nova-qa feedback): `publish <name>` with no source
+        // claims the name if needed, scaffolds ./app.rl if absent, and publishes
+        // it — a live URL in one shot. The 2-arg form still takes an explicit source.
+        Some("publish") if args.len() == 2 => publish_scaffolded_face(&args[1]).await,
         Some("publish") => {
-            eprintln!("usage: localharness publish <name> <source.rl|page.html>");
+            eprintln!("usage: localharness publish <name> [source.rl|page.html]");
             2
         }
         Some("face") if args.len() >= 3 => set_face(&args[1], &args[2]).await,
