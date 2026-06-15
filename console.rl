@@ -44,13 +44,10 @@ fn frame(t: i32) {
     let spawned: i32 = host::display::state_get(0);
     if spawned == 0 {
         host::display::state_set(0, 1);
-        // NB: distinct names from hm/ht below — rustlite miscompiles a `let` that
-        // shadows an outer-scope `let` of the same name (the handle aliased the
-        // wrong local), so the spawn temporaries are h0/h1, not hm/ht.
-        let h0: i32 = host::compose::spawn_module("mario", 12, 28, 160, 144);
-        let h1: i32 = host::compose::spawn_module("tetris", 400, 400, 160, 144);
-        host::display::state_set(1, h0);
-        host::display::state_set(2, h1);
+        let hm: i32 = host::compose::spawn_module("mario", 12, 28, 160, 144);
+        let ht: i32 = host::compose::spawn_module("tetris", 400, 400, 160, 144);
+        host::display::state_set(1, hm);
+        host::display::state_set(2, ht);
     }
     let hm: i32 = host::display::state_get(1);
     let ht: i32 = host::display::state_get(2);

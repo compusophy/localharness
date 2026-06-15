@@ -142,6 +142,11 @@ struct WasmEmitter {
     fn_map: std::collections::HashMap<String, u32>,
     local_map: Vec<std::collections::HashMap<String, u32>>,
     local_types: Vec<u8>,
+    // Param count of the function currently being emitted. The next wasm local
+    // index is `current_params + local_types.len()` (params occupy 0..P, declared
+    // locals P..P+L). Tracked explicitly because a SHADOWING `let` overwrites its
+    // name in `local_map`, so `local_map.len()` stops counting declared locals.
+    current_params: u32,
     string_map: std::collections::HashMap<String, (u32, u32)>,
     // Control frames (if/match) currently open BETWEEN the emit point and the
     // innermost enclosing loop's body. `break`/`continue` add this to their
@@ -177,6 +182,7 @@ impl WasmEmitter {
             fn_map: std::collections::HashMap::new(),
             local_map: Vec::new(),
             local_types: Vec::new(),
+            current_params: 0,
             string_map: std::collections::HashMap::new(),
             extra_depth: 0,
         }
@@ -376,6 +382,7 @@ impl WasmEmitter {
         for (i, (name, _ty)) in f.params.iter().enumerate() {
             self.local_map.last_mut().unwrap().insert(name.clone(), i as u32);
         }
+        self.current_params = f.params.len() as u32;
 
         // Emit body
         let mut code = Vec::new();
@@ -416,13 +423,19 @@ impl WasmEmitter {
     }
 
     fn alloc_local(&mut self, name: &str, ty: &ResolvedType) -> u32 {
-        // The function uses ONE flat local map (params inserted first,
-        // then every declared local), so the next wasm local index is
-        // simply the current map size. Adding `local_types.len()` here
-        // double-counts the declared locals already in the map and makes
-        // indices for the 2nd+ local invalid.
+        // Wasm locals are laid out params (0..P) then declared locals (P..P+L).
+        // The next declared local's index is therefore `P + L`, where L is how
+        // many locals have been declared so far = `local_types.len()`.
+        //
+        // It is NOT `local_map.len()`: a SHADOWING `let x` (a second `let` of a
+        // name already bound — e.g. one inside an `if` and one in the function
+        // body) re-inserts the SAME key, so the map size does not grow, and the
+        // next local would reuse this one's index — every following local then
+        // collides on a single slot (the "swapped cartridge" miscompile). Keying
+        // off `local_types`, which grows once per declaration, is collision-proof
+        // and gives each shadow its own slot (last declaration wins for lookups).
         let wasm_ty = resolved_to_wasm(ty);
-        let local_idx = self.local_map.last().unwrap().len() as u32;
+        let local_idx = self.current_params + self.local_types.len() as u32;
         self.local_types.push(wasm_ty);
         self.local_map.last_mut().unwrap().insert(name.to_string(), local_idx);
         local_idx
@@ -441,8 +454,13 @@ impl WasmEmitter {
     fn emit_stmt(&mut self, stmt: &TypedStmt, code: &mut Vec<u8>) -> Result<(), CompileError> {
         match stmt {
             TypedStmt::Let { name, ty, init, .. } => {
-                let local_idx = self.alloc_local(name, ty);
+                // Evaluate the initializer FIRST (against the bindings in scope
+                // now), THEN bind the name — so `let x = x + 1` reads the OUTER
+                // `x` for its RHS before the new `x` shadows it. (Allocating the
+                // local before emitting the init would make the RHS read the new,
+                // still-uninitialized slot.)
                 self.emit_expr(init, code)?;
+                let local_idx = self.alloc_local(name, ty);
                 code.push(OP_LOCAL_SET);
                 leb128_u32(local_idx, code);
             }

@@ -358,6 +358,19 @@ const SPECS = {
       return { ok: true, detail: 'state[0] increments 1->2->3 across frames; bar tracks the count' };
     },
   },
+
+  // shadow: REGRESSION guard for the local-allocation bug. A name declared in an
+  // inner block AND again in the body, plus a same-scope self-ref shadow, pack
+  // p=11,q=22,r=4 into the clear colour. A slot collision (old bug) or a wrong
+  // emit order would regress this pixel away from [11,22,4].
+  'shadow.rl': (api) => {
+    const fb = api.renderAt(0);
+    const px = api.pixelRGB(fb, 0, 0);
+    if (!api.eqRGB(px, [11, 22, 4])) {
+      return { ok: false, detail: `expected [11,22,4] (p=11,q=22 distinct slots; r=3->4 self-ref), got [${px}] — shadowing miscompiled` };
+    }
+    return { ok: true, detail: 'shadowed lets get distinct slots; self-ref shadow reads the old value' };
+  },
 };
 
 // Default check for any cartridge without an explicit spec: must be non-blank.
