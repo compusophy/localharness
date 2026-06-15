@@ -62,6 +62,11 @@ For the full historical sequencing that got us here, see
 
 Genuinely-unbuilt docs, each with a `STATUS: open` header:
 
+- [`keeper.md`](keeper.md) — a **decentralized scheduler keeper** (P2P heartbeat,
+  krafto #1.5). The pure decision + roster cores, the cross-owner due enumeration,
+  and a `localharness keeper` dry-run are SHIPPED + tested; the open part is the
+  **trust/economics of the trigger** (options A/B/C) — a maintainer decision
+  before the `ScheduleFacet` change.
 - [`launch-1.0.md`](launch-1.0.md) — the **mainnet 1.0** launch spec (real `$LH`
   value + Stripe + sybil gate + sponsor rewrite). The project is still on Tempo
   Moderato **testnet** at `0.x`; `1.0.0` is reserved for this moment.
