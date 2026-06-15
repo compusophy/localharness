@@ -304,8 +304,67 @@ pub(crate) fn set_status(message: &str, is_error: bool) {
     scroll_to_bottom("transcript");
 }
 
-/// Minimal text→HTML escaping for status text (it can carry raw error
-/// strings — never inject them as markup).
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+/// HTML-escape an UNTRUSTED string before it is concatenated into a raw
+/// HTML string that is then injected via [`swap_inner`] / [`swap_outer`] /
+/// [`append_html`] / `set_inner_html` etc.
+///
+/// **Prefer wrapping dynamic text in a maud `html! { (text) }` block** — maud
+/// auto-escapes its interpolations and is the idiomatic path in this app (see
+/// [`msg_span`]). Reach for this helper only when a sink is unavoidably built
+/// with `format!("…{x}…")` raw HTML and routing through maud would be awkward
+/// (e.g. interpolating a value into a fixed wrapper element, as [`set_status`]
+/// does). NEVER inject an unescaped dynamic/external string: the seed sits in
+/// OPFS as plaintext (it is the key root, so it can't be sealed without a
+/// passphrase), and any localharness origin can iframe the apex signer, so an
+/// XSS in a wallet-bearing origin is full wallet compromise. Untrusted sources
+/// include error strings (RPC / proxy / registry / `anyhow` Display) and any
+/// on-chain text rendered in the UI (persona, feedback, names, metadata, call
+/// replies).
+///
+/// Escapes the five HTML-significant characters so the result is safe in BOTH
+/// element-text and double/single-quoted attribute contexts: `&` `<` `>` `"`
+/// `'`. Escape `&` FIRST so the entities this introduces aren't re-escaped.
+pub(crate) fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+#[cfg(test)]
+mod html_escape_tests {
+    use super::html_escape;
+
+    #[test]
+    fn escapes_all_five_html_significant_chars() {
+        assert_eq!(
+            html_escape(r#"<>&"'"#),
+            "&lt;&gt;&amp;&quot;&#39;"
+        );
+    }
+
+    #[test]
+    fn ampersand_is_escaped_first_so_entities_are_not_double_escaped() {
+        // Naive ordering would turn `<` into `&lt;` then re-escape the `&`,
+        // yielding `&amp;lt;`. `&`-first keeps a single round of escaping.
+        assert_eq!(html_escape("<"), "&lt;");
+        assert_eq!(html_escape("&amp;"), "&amp;amp;");
+    }
+
+    #[test]
+    fn neutralizes_a_script_injection_attempt() {
+        // A hostile error / on-chain string must reach the DOM as inert text.
+        let evil = r#"</span><img src=x onerror="alert(document.cookie)">"#;
+        let out = html_escape(evil);
+        assert!(!out.contains("<img"), "live <img> leaked: {out}");
+        assert!(!out.contains("</span>"), "live tag leaked: {out}");
+        assert!(out.contains("&lt;img"), "img not escaped: {out}");
+        assert!(out.contains("&quot;"), "attribute quote not escaped: {out}");
+    }
+
+    #[test]
+    fn leaves_plain_text_untouched() {
+        assert_eq!(html_escape("redeem failed: node down (502)"), "redeem failed: node down (502)");
+    }
 }
