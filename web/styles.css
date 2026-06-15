@@ -282,9 +282,8 @@ main.layout {
   overflow: hidden;       /* prevent the page from growing with chat */
 }
 
-/* The chat column — vertical stack: ctx-bar / transcript /
-   terminal-panel. The transcript scrolls internally; the prompt input
-   stays pinned at the bottom. */
+/* The chat column — vertical stack: transcript / terminal-panel. The
+   transcript scrolls internally; the prompt input stays pinned at the bottom. */
 main.layout .col-chat {
   flex: 1;
   min-width: 0;
@@ -292,22 +291,6 @@ main.layout .col-chat {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-/* Context-fullness bar (feedback #59/#62, GitHub #28) — a 2px monochrome strip
-   at the TOP of the chat column; fill grows toward the compaction threshold,
-   so a full bar means auto-compaction is next. flex-shrink:0 keeps it exactly
-   2px in the column flex. Painted by chat::update_context_bar. */
-main.layout .ctx-bar {
-  flex-shrink: 0;
-  height: 2px;
-  width: 100%;
-  background: var(--border);
-}
-main.layout .ctx-fill {
-  height: 100%;
-  width: 0;
-  background: var(--fg);
-  transition: width 0.4s ease;
 }
 main.layout .terminal-panel {
   flex-shrink: 0;
