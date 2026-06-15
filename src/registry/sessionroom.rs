@@ -165,6 +165,11 @@ pub async fn room_id_created_by(creator_hex: &str) -> Result<Option<u64>, String
     ];
     let logs = eth_get_logs(REGISTRY_ADDRESS, topics, &from_hex).await?;
 
+    // Return the CANONICAL (lowest = first-created) room for this creator, NOT
+    // the most recent. An owner's shared volume must be STABLE: if a later
+    // `createRoom` shifted the answer to a higher id, sibling subdomains (and the
+    // CLI vs the browser tool) could diverge onto different rooms and split the
+    // shared state. Lowest-id = the owner's first room = the one everyone agrees on.
     let mut best: Option<u64> = None;
     for log in &logs {
         if let Some(id) = log
@@ -174,7 +179,7 @@ pub async fn room_id_created_by(creator_hex: &str) -> Result<Option<u64>, String
             .and_then(|t| t.as_str())
             .and_then(|t| u64::from_str_radix(t.trim_start_matches("0x").trim_start_matches('0'), 16).ok())
         {
-            best = Some(best.map_or(id, |b| b.max(id)));
+            best = Some(best.map_or(id, |b| b.min(id)));
         }
     }
     Ok(best)

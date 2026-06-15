@@ -59,10 +59,19 @@ async fn session_create(caller: Option<&str>) -> i32 {
         Ok(pair) => pair,
         Err(code) => return code,
     };
+    let creator = format!("0x{}", localharness::encoding::bytes_to_hex(&localharness::wallet::address(&signer)));
+    // Idempotent: an identity has ONE canonical shared-volume room. If one already
+    // exists, REUSE it instead of minting a duplicate (a second room would split
+    // the shared volume — its sibling subdomains/devices converge on the first).
+    if let Ok(Some(id)) = registry::room_id_created_by(&creator).await {
+        println!("✓ you already have room #{id} — reusing it (one shared room per identity)");
+        println!("  set:  localharness room set {id} <key> <value>");
+        println!("  read: localharness room list {id}");
+        return 0;
+    }
     println!("creating session room …");
     match registry::create_room_sponsored(&signer, &sponsor, registry::ALPHA_USD_ADDRESS).await {
         Ok(_tx) => {
-            let creator = format!("0x{}", localharness::encoding::bytes_to_hex(&localharness::wallet::address(&signer)));
             match registry::room_id_created_by(&creator).await {
                 Ok(Some(id)) => {
                     println!("✓ room #{id} created");
