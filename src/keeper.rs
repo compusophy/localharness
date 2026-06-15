@@ -1,45 +1,23 @@
-//! keeper.rs — the PURE decision core for a decentralized scheduler keeper.
-//!
-//! krafto on-chain feedback #1.5: "Scheduled jobs depend on a centralized Vercel
-//! cron worker. A peer-to-peer keeper network to trigger due jobs would achieve
-//! true autonomy." This module is the brain of that keeper: given the on-chain
-//! [`ScheduleFacet`](crate::registry) jobs, the current time, and which keeper
-//! *this* peer is in the roster, it decides **which due jobs this peer should
-//! fire this tick** — fairly (no thundering herd) and with liveness (a dead
-//! peer's jobs still get fired by a backup).
-//!
-//! It is pure control-flow + integer math, native-tested, with ZERO chain / P2P
-//! dependency — exactly the project's pattern ([`crate::compose`],
-//! [`crate::kv_reduce`]). The keeper *wiring* (deferred) is a thin shell:
-//!   1. discover the live keeper roster over `SignalingFacet` presence (sorted by
-//!      address → a consistent `my_index` / `keeper_count` on every peer),
-//!   2. read the jobs (`registry::list_*`) + `now`,
-//!   3. call [`jobs_to_fire`], and submit a trigger tx for each.
-//! It also needs an on-chain change letting a *keeper* (not only the single
-//! scheduler-role key) trigger `recordRun` — both are flagged, not done here.
+//! Pure decision core for a decentralized scheduler keeper (krafto #1.5): given
+//! the on-chain ScheduleFacet jobs + this peer's roster position, decide which due
+//! jobs to fire this tick — herd-free (one primary per job) with backup liveness.
+//! No chain/P2P deps; the wiring is a thin shell (`localharness keeper` + the
+//! proxy `?poke`).
 
-/// The fields of a `ScheduleFacet` job a keeper needs to decide firing. Mirrors
-/// [`crate::registry::ScheduledJob`] (status: 0 Active / 1 Paused / 2 Cancelled
-/// / 3 Exhausted; `next_run` is unix seconds, 0 once terminal).
+/// Job fields a keeper needs (mirrors `registry::ScheduledJob`; status 0 Active /
+/// 1 Paused / 2 Cancelled / 3 Exhausted; `next_run` unix secs, 0 = terminal).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeeperJob {
-    /// On-chain job id (the dedup/assignment key).
     pub id: u64,
-    /// Raw lifecycle byte: 0 Active, 1 Paused, 2 Cancelled, 3 Exhausted.
     pub status: u8,
-    /// Unix seconds of the next due fire; 0 once terminal.
     pub next_run: u64,
-    /// `$LH` (wei) still escrowed — a run can't fire without covering its cost.
     pub budget_wei: u128,
-    /// Remaining runs (the hard count cap).
     pub runs_left: u32,
 }
 
 impl KeeperJob {
-    /// Is this job FIREABLE at `now` for a run that needs at least `per_run_wei`
-    /// of budget? Mirrors the on-chain due-condition so a keeper never wastes a
-    /// trigger tx the facet would just revert: Active, not terminal, due now,
-    /// runs remaining, and funded.
+    /// The on-chain due-condition (Active, due, funded, runs left), so a keeper
+    /// never wastes a tx the facet would revert.
     pub fn is_fireable(&self, now: u64, per_run_wei: u128) -> bool {
         self.status == 0
             && self.next_run != 0
@@ -48,19 +26,14 @@ impl KeeperJob {
             && self.budget_wei >= per_run_wei
     }
 
-    /// Seconds this job is overdue at `now` (0 when not yet due / terminal).
-    /// Drives the backup keepers' staggered backoff.
+    /// Seconds overdue at `now` (0 if not due/terminal); drives backup backoff.
     pub fn overdue_by(&self, now: u64) -> u64 {
-        if self.next_run == 0 || self.next_run > now {
-            0
-        } else {
-            now - self.next_run
-        }
+        if self.next_run == 0 || self.next_run > now { 0 } else { now - self.next_run }
     }
 }
 
-/// Deterministic 64-bit hash (FNV-1a) of `(job_id, salt)` — the same on every
-/// peer, so the network agrees on assignment with NO gossip. No deps.
+/// Deterministic FNV-1a of `(job_id, salt)` — identical on every peer, so keeper
+/// assignment needs no gossip.
 fn fnv1a(job_id: u64, salt: u64) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in job_id.to_le_bytes().iter().chain(salt.to_le_bytes().iter()) {
@@ -70,11 +43,8 @@ fn fnv1a(job_id: u64, salt: u64) -> u64 {
     h
 }
 
-/// The PRIMARY keeper index responsible for `job_id` during `epoch`, over a
-/// roster of `keeper_count` peers. Deterministic — every peer computes the same
-/// owner, so exactly one fires the job when it comes due (no thundering herd).
-/// `epoch` rotates the owner over time so responsibility spreads and a churning
-/// roster re-balances. Returns 0 for an empty roster (degenerate; solo path).
+/// The primary keeper for `job_id` this `epoch` over `keeper_count` peers (fires
+/// it at due-time). `epoch` rotates ownership; 0 for an empty roster.
 pub fn primary_keeper(job_id: u64, epoch: u64, keeper_count: u32) -> u32 {
     if keeper_count == 0 {
         return 0;
@@ -82,16 +52,10 @@ pub fn primary_keeper(job_id: u64, epoch: u64, keeper_count: u32) -> u32 {
     (fnv1a(job_id, epoch) % keeper_count as u64) as u32
 }
 
-/// Should THIS keeper (`my_index` of `keeper_count`, sorted-roster position) fire
-/// `job` at `now`? Tiered so the common case is herd-free but a dead primary
-/// can't strand a job:
-///   1. not fireable → never.
-///   2. solo keeper (`keeper_count <= 1`) → fire every fireable job.
-///   3. the PRIMARY fires the instant it's due.
-///   4. a BACKUP fires only once the job is overdue past `rank * backoff_secs`,
-///      where `rank` is this peer's ring-distance from the primary (1, 2, …) —
-///      so backups engage one at a time, deterministically, and only if the
-///      primary (and nearer backups) failed to fire.
+/// Should THIS peer fire `job` at `now`? Primary fires immediately; each backup
+/// waits `rank * backoff_secs` overdue (rank = ring distance from the primary),
+/// so the steady state is herd-free yet a dead primary can't strand a job. Solo
+/// (`keeper_count <= 1`) fires everything fireable.
 pub fn should_fire(
     job: &KeeperJob,
     now: u64,
@@ -111,13 +75,11 @@ pub fn should_fire(
     if my_index == primary {
         return true;
     }
-    // Ring distance from the primary, in 1..keeper_count.
     let rank = (my_index + keeper_count - primary) % keeper_count;
     job.overdue_by(now) >= (rank as u64).saturating_mul(backoff_secs)
 }
 
-/// The ids of the jobs THIS keeper should fire this tick — a pure filter over
-/// [`should_fire`]; the wiring submits one trigger tx per returned id.
+/// The job ids this peer should fire this tick (filter over `should_fire`).
 pub fn jobs_to_fire(
     jobs: &[KeeperJob],
     now: u64,
@@ -133,32 +95,19 @@ pub fn jobs_to_fire(
         .collect()
 }
 
-/// A keeper-roster entry as read from on-chain presence (`SignalingFacet`): the
-/// keeper's identity address and the unix-seconds expiry of its presence
-/// announcement (stale entries age out, matching `PRESENCE_TTL_SECS`).
+/// A keeper presence entry from SignalingFacet (addr + unix expiry).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RosterEntry {
-    /// The keeper's identity address (20 bytes), the roster's sort key.
     pub addr: [u8; 20],
-    /// Unix seconds after which this presence announcement is stale.
     pub expiry: u64,
 }
 
-/// Derive THIS peer's consistent position in the keeper roster from a presence
-/// snapshot: the LIVE peers (`expiry > now`), deduped and sorted by address, then
-/// `(my_index, keeper_count)`. Deterministic — every peer that reads the same
-/// on-chain snapshot computes the identical roster, so they all agree on
-/// [`primary_keeper`] WITHOUT any extra gossip. That agreement is what makes the
-/// no-thundering-herd guarantee hold across a real network.
-///
-/// Returns `None` when `me` is not a live keeper in the snapshot — that peer
-/// fires nothing (it isn't part of the roster this round).
+/// This peer's `(index, count)` in the roster: live peers (expiry > now), deduped
+/// + sorted, so every peer agrees on `primary_keeper` with no gossip. None if
+/// `me` isn't a live keeper.
 pub fn roster_position(entries: &[RosterEntry], now: u64, me: &[u8; 20]) -> Option<(u32, u32)> {
-    let mut live: Vec<[u8; 20]> = entries
-        .iter()
-        .filter(|e| e.expiry > now)
-        .map(|e| e.addr)
-        .collect();
+    let mut live: Vec<[u8; 20]> =
+        entries.iter().filter(|e| e.expiry > now).map(|e| e.addr).collect();
     live.sort_unstable();
     live.dedup();
     let idx = live.iter().position(|a| a == me)? as u32;
@@ -174,139 +123,101 @@ mod tests {
     }
 
     #[test]
-    fn fireable_only_when_active_due_funded_and_with_runs() {
-        let now = 100;
-        assert!(active(1, 100).is_fireable(now, 100)); // due exactly now
-        assert!(active(1, 50).is_fireable(now, 100)); // overdue
-        assert!(!active(1, 101).is_fireable(now, 100)); // not yet due
-        assert!(!active(1, 0).is_fireable(now, 100)); // terminal (next_run 0)
-        // paused / cancelled / exhausted are never fireable.
+    fn fireable_requires_active_due_funded_with_runs() {
+        assert!(active(1, 100).is_fireable(100, 100)); // due now
+        assert!(active(1, 50).is_fireable(100, 100)); // overdue
+        assert!(!active(1, 101).is_fireable(100, 100)); // not due
+        assert!(!active(1, 0).is_fireable(100, 100)); // terminal
         for status in [1u8, 2, 3] {
-            let j = KeeperJob { status, ..active(1, 50) };
-            assert!(!j.is_fireable(now, 100));
+            assert!(!KeeperJob { status, ..active(1, 50) }.is_fireable(100, 100));
         }
-        // out of runs / underfunded.
-        assert!(!KeeperJob { runs_left: 0, ..active(1, 50) }.is_fireable(now, 100));
-        assert!(!KeeperJob { budget_wei: 99, ..active(1, 50) }.is_fireable(now, 100));
+        assert!(!KeeperJob { runs_left: 0, ..active(1, 50) }.is_fireable(100, 100));
+        assert!(!KeeperJob { budget_wei: 99, ..active(1, 50) }.is_fireable(100, 100));
     }
 
     #[test]
-    fn primary_is_deterministic_and_in_range() {
+    fn primary_is_deterministic_in_range_and_rotates() {
         for id in 0..50u64 {
             for epoch in 0..5u64 {
-                let p = primary_keeper(id, epoch, 4);
-                assert!(p < 4);
-                assert_eq!(p, primary_keeper(id, epoch, 4), "deterministic");
+                assert!(primary_keeper(id, epoch, 4) < 4);
             }
         }
-        // epoch rotates ownership for at least some jobs (not a fixed owner).
-        let rotated = (0..20u64).any(|id| primary_keeper(id, 0, 4) != primary_keeper(id, 1, 4));
-        assert!(rotated, "epoch must rotate primary ownership");
+        assert!((0..20u64).any(|id| primary_keeper(id, 0, 4) != primary_keeper(id, 1, 4)));
     }
 
     #[test]
     fn solo_keeper_fires_every_due_job() {
-        let now = 100;
-        let due = active(7, 100);
-        assert!(should_fire(&due, now, 100, 0, 1, 0, 30));
-        assert!(should_fire(&due, now, 100, 0, 0, 0, 30)); // empty roster ⇒ solo
-        let not_due = active(7, 200);
-        assert!(!should_fire(&not_due, now, 100, 0, 1, 0, 30));
+        assert!(should_fire(&active(7, 100), 100, 100, 0, 1, 0, 30));
+        assert!(should_fire(&active(7, 100), 100, 100, 0, 0, 0, 30)); // empty roster = solo
+        assert!(!should_fire(&active(7, 200), 100, 100, 0, 1, 0, 30)); // not due
     }
 
     #[test]
-    fn no_thundering_herd_then_liveness_via_backoff() {
-        // 3 keepers; a job due exactly now. Only the primary fires immediately;
-        // each backup waits rank*backoff before stepping in.
-        let count = 3u32;
-        let epoch = 0;
-        let backoff = 30;
+    fn no_herd_at_due_time_then_backup_liveness() {
+        let (count, backoff) = (3u32, 30u64);
         let job = active(42, 100);
-        let primary = primary_keeper(job.id, epoch, count);
-
-        // At due-time (overdue 0): exactly ONE keeper (the primary) fires.
-        let firing_now: Vec<u32> = (0..count)
-            .filter(|&i| should_fire(&job, 100, 100, i, count, epoch, backoff))
-            .collect();
-        assert_eq!(firing_now, vec![primary], "only the primary fires at due-time");
-
-        // Primary offline + 30s overdue ⇒ the rank-1 backup now also fires.
-        let firing_30: Vec<u32> = (0..count)
-            .filter(|&i| should_fire(&job, 130, 100, i, count, epoch, backoff))
-            .collect();
-        assert!(firing_30.contains(&primary));
-        let rank1 = (primary + 1) % count;
-        assert!(firing_30.contains(&rank1), "rank-1 backup engages at 1*backoff overdue");
-
-        // LIVENESS: once overdue past (count-1)*backoff, EVERY keeper would fire,
-        // so the job can never be stranded by offline peers.
+        let primary = primary_keeper(job.id, 0, count);
+        // Due-time: only the primary fires.
+        let now: Vec<u32> = (0..count).filter(|&i| should_fire(&job, 100, 100, i, count, 0, backoff)).collect();
+        assert_eq!(now, vec![primary]);
+        // +backoff overdue: the rank-1 backup joins.
+        assert!(should_fire(&job, 130, 100, (primary + 1) % count, count, 0, backoff));
+        // Past (count-1)*backoff: every peer fires, so an offline set can't strand it.
         for i in 0..count {
-            assert!(should_fire(&job, 100 + (count as u64) * backoff, 100, i, count, epoch, backoff));
+            assert!(should_fire(&job, 100 + (count as u64) * backoff, 100, i, count, 0, backoff));
         }
     }
 
     #[test]
-    fn jobs_to_fire_filters_to_this_keepers_due_set() {
-        let now = 1_000;
+    fn jobs_to_fire_covers_due_set_once() {
         let jobs = vec![
-            active(1, 900),                                    // due
-            active(2, 2_000),                                  // future
-            KeeperJob { status: 2, ..active(3, 900) },         // cancelled
-            active(4, 1_000),                                  // due now
+            active(1, 900),
+            active(2, 2_000),                          // future
+            KeeperJob { status: 2, ..active(3, 900) }, // cancelled
+            active(4, 1_000),
         ];
-        // A solo keeper fires exactly the fireable ones (ids 1 and 4).
-        let mut got = jobs_to_fire(&jobs, now, 100, 0, 1, 0, 30);
-        got.sort_unstable();
-        assert_eq!(got, vec![1, 4]);
-
-        // Across a 3-keeper roster at due-time, every due job is fired by exactly
-        // one keeper (union = all due, no duplicates) — herd-free coverage.
-        let count = 3u32;
-        let mut union: Vec<u64> = (0..count)
-            .flat_map(|i| jobs_to_fire(&jobs, now, 100, i, count, 0, 30))
-            .collect();
+        let mut solo = jobs_to_fire(&jobs, 1_000, 100, 0, 1, 0, 30);
+        solo.sort_unstable();
+        assert_eq!(solo, vec![1, 4]);
+        // Across a 3-keeper roster: union = the due set, no duplicates.
+        let mut union: Vec<u64> =
+            (0..3u32).flat_map(|i| jobs_to_fire(&jobs, 1_000, 100, i, 3, 0, 30)).collect();
         union.sort_unstable();
         union.dedup();
-        assert_eq!(union, vec![1, 4], "every due job covered exactly once at due-time");
+        assert_eq!(union, vec![1, 4]);
     }
 
     #[test]
-    fn roster_position_is_live_sorted_and_deterministic() {
+    fn roster_is_live_sorted_deterministic() {
         let (a, b, c, d) = ([1u8; 20], [2u8; 20], [3u8; 20], [4u8; 20]);
-        let now = 100;
-        // live {a,b,c} (d expired); any input order → sorted a,b,c.
         let entries = vec![
             RosterEntry { addr: c, expiry: 200 },
             RosterEntry { addr: a, expiry: 200 },
             RosterEntry { addr: d, expiry: 50 }, // expired
             RosterEntry { addr: b, expiry: 200 },
         ];
-        assert_eq!(roster_position(&entries, now, &a), Some((0, 3)));
-        assert_eq!(roster_position(&entries, now, &b), Some((1, 3)));
-        assert_eq!(roster_position(&entries, now, &c), Some((2, 3)));
-        assert_eq!(roster_position(&entries, now, &d), None, "expired peer not in roster");
-        assert_eq!(roster_position(&entries, now, &[9u8; 20]), None, "stranger not in roster");
+        assert_eq!(roster_position(&entries, 100, &a), Some((0, 3)));
+        assert_eq!(roster_position(&entries, 100, &c), Some((2, 3)));
+        assert_eq!(roster_position(&entries, 100, &d), None); // expired
+        assert_eq!(roster_position(&entries, 100, &[9u8; 20]), None); // stranger
     }
 
     #[test]
-    fn roster_dedups_double_announce_and_drops_expired_from_count() {
+    fn roster_dedups_and_drops_expired() {
         let (a, b) = ([1u8; 20], [2u8; 20]);
-        let now = 100;
         let entries = vec![
             RosterEntry { addr: a, expiry: 200 },
-            RosterEntry { addr: a, expiry: 300 }, // double announce → counted once
+            RosterEntry { addr: a, expiry: 300 }, // dup
             RosterEntry { addr: b, expiry: 200 },
-            RosterEntry { addr: [7u8; 20], expiry: 1 }, // expired → excluded from count
+            RosterEntry { addr: [7u8; 20], expiry: 1 }, // expired
         ];
-        assert_eq!(roster_position(&entries, now, &a), Some((0, 2)));
-        assert_eq!(roster_position(&entries, now, &b), Some((1, 2)));
-        assert_eq!(roster_position(&[], now, &a), None, "empty snapshot → no roster");
+        assert_eq!(roster_position(&entries, 100, &a), Some((0, 2)));
+        assert_eq!(roster_position(&entries, 100, &b), Some((1, 2)));
+        assert_eq!(roster_position(&[], 100, &a), None);
     }
 
     #[test]
-    fn roster_feeds_exactly_one_primary_across_peers() {
-        // Three peers reading the SAME snapshot agree on the roster, so exactly
-        // one of them is the primary for any job (the no-herd consensus).
+    fn roster_yields_exactly_one_primary() {
         let (a, b, c) = ([10u8; 20], [20u8; 20], [30u8; 20]);
         let entries = vec![
             RosterEntry { addr: b, expiry: 9 },
@@ -318,7 +229,6 @@ mod tests {
         let (ic, _) = roster_position(&entries, 0, &c).unwrap();
         assert_eq!((ia, ib, ic, n), (0, 1, 2, 3));
         let primary = primary_keeper(7, 0, n);
-        let primaries = [ia, ib, ic].iter().filter(|&&i| i == primary).count();
-        assert_eq!(primaries, 1, "exactly one roster member is primary for a job");
+        assert_eq!([ia, ib, ic].iter().filter(|&&i| i == primary).count(), 1);
     }
 }

@@ -84,6 +84,11 @@ import {
   http,
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
+import { SlidingWindow } from './_ratelimit';
+
+// Per-IP cap for the public `?poke` heartbeat (best-effort, per-isolate); the
+// only abuse is read-spam — a due poke is already CAS-bounded to one run/slot.
+const pokeWindow = new SlidingWindow(60, 60_000);
 
 // Edge runtime — matches gemini.ts / mcp.ts, which use the SAME Web
 // `Request`->`Response` handler shape. That shape runs on Edge, NOT on Vercel's
@@ -1796,17 +1801,21 @@ export default async function handler(req: Request): Promise<Response> {
   }
 
   // PUBLIC keeper poke (decentralized heartbeat, krafto #1.5): `?poke=<jobId>`
-  // runs ONE specific job. It needs NO cron secret because processJob
-  // re-validates the job (known + Active + nextRun<=now) and recordRun is
-  // CAS-guarded — so a poke can ONLY ever run a genuinely-DUE job, exactly once.
-  // Not-due / unknown / paused → a safe no-write skip. This lets ANY keeper (a
-  // browser tab or the `localharness keeper` CLI) be the scheduler heartbeat, so
-  // due jobs fire even when the single Vercel cron stalls. The expensive path (a
-  // model call) is bounded by genuine due-ness + the CAS (one run per due slot);
-  // poke spam of not-due jobs is a cheap getJob read.
+  // runs ONE job. No cron secret needed — processJob re-validates (known + Active
+  // + due) and recordRun is CAS-guarded, so a poke can only run a genuinely-due
+  // job once; not-due → safe no-write skip. Lets any keeper be the heartbeat when
+  // the Vercel cron stalls. Rate-limited per IP (read-spam is the only abuse).
   {
     const poke = new URL(req.url).searchParams.get('poke');
     if (poke !== null) {
+      const ip = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || 'unknown';
+      const retry = pokeWindow.hit(ip);
+      if (retry > 0) {
+        return new Response(JSON.stringify({ error: 'rate limited', retryAfterSeconds: retry }), {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'retry-after': String(retry) },
+        });
+      }
       let id: bigint;
       try {
         id = BigInt(poke);

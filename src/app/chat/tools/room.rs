@@ -1,46 +1,22 @@
-// =============================================================================
-// Shared-volume agent tools — a cross-subdomain, owner-scoped encrypted KV store
-// (SessionRoomFacet, GitHub #22). Addresses on-chain feedback from `krafto`:
-// strict cross-origin OPFS walls isolate the file systems of an owner's SIBLING
-// subdomains, blocking a "shared volume" for multi-agent (coordinator + worker)
-// workflows. This is the BROWSER/agent surface over the proven #22 plumbing —
-// the exact end-to-end flow the `localharness room` CLI already runs, ported to
-// the browser's sponsored-tx path (apex iframe signs the sender, embedded
-// sponsor pays gas), so an owner's agents share state with NO external DB.
-//
-// HOW THE VOLUME IS SHARED across an owner's subdomains (the magic):
-//   * The room is keyed to the OWNER's identity. `room_id_created_by(owner)`
-//     resolves the SAME room id from every sibling subdomain, and the room key
-//     `K_room = derive_room_key(identity_secret, room_id)` is deterministic — so
-//     `coordinator.<owner>` and `worker.<owner>` (which share the owner's seed
-//     in their OPFS, via the apex/seed-pull) compute the SAME key and converge
-//     on the SAME on-chain log WITHOUT any key exchange (#22 v1 single-identity).
-//   * A VISITOR (no owner seed) has a different local key whose address is not
-//     the on-chain owner — handled gracefully with an "owner-only" message, no
-//     panic. They also could not derive `K_room`, so the ciphertext stays opaque.
-//
-// ADDITIVE: no existing tool or flow changes. Not value-moving ($LH), so — like
-// create_subdomain / set_persona — NO confirm-gate.
-// =============================================================================
+// Shared-volume agent tools (krafto #1.4): a cross-subdomain, owner-scoped
+// encrypted KV over SessionRoomFacet (#22), so an owner's sibling subdomains share
+// state with no external DB despite per-origin OPFS walls. The room is keyed to
+// the owner (`room_id_created_by` + deterministic `K_room`), so every sibling
+// converges on the same log with no key exchange; visitors get an owner-only
+// error. Browser port of the proven `localharness room` CLI flow over the
+// sponsored-tx path. Additive, not value-moving → no confirm-gate.
 
 use crate::encoding::parse_address;
 use crate::tools::ClosureTool;
 
-/// `cast estimate createRoom()` on the live diamond ≈ 1.31M gas (cold SSTOREs +
-/// diamond fallback routing); + ~275k AA/sponsor overhead → 2M leaves headroom.
-/// Mirrors `registry::create_room_sponsored`'s constant (CLAUDE.md: cast
-/// estimate, never guess — a 1.2M cap out-of-gassed the inner call).
+/// createRoom gas (cast-estimated ≈1.31M + AA overhead → 2M); mirrors
+/// `registry::create_room_sponsored`.
 const CREATE_ROOM_GAS: u128 = 2_000_000;
 
-/// The viewer's identity + the current tenant's on-chain owner, gated to the
-/// OWNER. Returns `(identity_secret, writer_addr, owner_hex, room_id)` where
-/// `room_id` is the owner's shared-volume room (lazily CREATED on first use).
-///
-/// `identity_secret` is the 32-byte k256 scalar (`signer.to_bytes()`, EXACTLY as
-/// the CLI's `caller_secret_and_addr` does) that derives `K_room`; `writer_addr`
-/// is the op writer (== on-chain `msg.sender` when the apex iframe signs the
-/// sponsored append). Errors (never panics) if there is no local identity, or if
-/// the local identity is not this subdomain's on-chain owner (a visitor).
+/// Owner-gated context: `(identity_secret, writer_addr, owner_hex, room_id)`,
+/// lazily creating the owner's room. `identity_secret` (32-byte k256 scalar)
+/// derives `K_room`; `writer_addr` is the on-chain op writer. Errors (no panic)
+/// for no local identity or a non-owner visitor.
 async fn owner_room_context() -> Result<([u8; 32], [u8; 20], String, u64), crate::error::Error> {
     // The LOCAL credit signer = the owner's master wallet on the owner's device
     // (same key the apex iframe signs the sponsored tx with, so the on-chain

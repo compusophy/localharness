@@ -807,15 +807,10 @@ async fn run(args: &[String]) -> i32 {
     }
 }
 
-/// `keeper` — one tick of the decentralized scheduler keeper (krafto #1.5,
-/// option C). Reads the full cross-owner due set on-chain
-/// (`registry::all_due_job_ids`, the same `jobsDue` view the Vercel worker pages),
-/// runs the real `keeper::jobs_to_fire` decision core as the SOLE keeper, and
-/// POKES the proxy (`?poke=<id>`) to run each due job. The proxy re-validates
-/// due-ness and `recordRun` is CAS-guarded, so a poke only ever runs a genuinely-
-/// due job once — making any keeper (this CLI, a browser tab) a scheduler
-/// heartbeat, so jobs fire even when the single Vercel cron stalls. Trust-free:
-/// run+commit still happen in the (trusted) proxy executor.
+/// `keeper` — one decentralized-keeper tick (krafto #1.5): read the cross-owner
+/// due set (`registry::all_due_job_ids`), pick via `keeper::jobs_to_fire` (solo),
+/// and POKE the proxy (`?poke`) to run each. Trust-free — the proxy re-validates
+/// due-ness + CAS, so any keeper is a heartbeat when the Vercel cron stalls.
 async fn keeper_plan() -> i32 {
     use std::time::{SystemTime, UNIX_EPOCH};
     println!("keeper: scanning on-chain for due jobs across all owners …");
