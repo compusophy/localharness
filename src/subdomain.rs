@@ -24,8 +24,7 @@
 /// `name_is_valid` delegates here so the binary and the browser agree.
 pub fn is_valid_subdomain_label(name: &str) -> bool {
     let len = name.len(); // ASCII past the all-ascii char check, so byte len == char len
-    1 <= len
-        && len <= 63
+    (1..=63).contains(&len)
         && !name.starts_with('-')
         && !name.ends_with('-')
         && name

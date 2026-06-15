@@ -1784,7 +1784,9 @@ mod tests {
         assert_eq!(art.init_code, super::super::asm::init_wrapper(rt));
     }
 
-    /// 0x-prefixed lowercase hex (test helper).
+    /// 0x-prefixed lowercase hex (test helper). `allow(dead_code)`: the call
+    /// sites are gated, so it reads idle under the default feature set.
+    #[allow(dead_code)]
     fn to_hex(bytes: &[u8]) -> String {
         use core::fmt::Write;
         let mut s = String::with_capacity(2 + bytes.len() * 2);

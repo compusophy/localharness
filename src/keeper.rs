@@ -103,7 +103,7 @@ pub struct RosterEntry {
 }
 
 /// This peer's `(index, count)` in the roster: live peers (expiry > now), deduped
-/// + sorted, so every peer agrees on `primary_keeper` with no gossip. None if
+/// and sorted, so every peer agrees on `primary_keeper` with no gossip. None if
 /// `me` isn't a live keeper.
 pub fn roster_position(entries: &[RosterEntry], now: u64, me: &[u8; 20]) -> Option<(u32, u32)> {
     let mut live: Vec<[u8; 20]> =
