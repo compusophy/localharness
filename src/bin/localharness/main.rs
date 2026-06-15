@@ -25,13 +25,16 @@
 //!                            name first if you don't already hold its key
 //!   persona <name> <text>    publish <name>'s public system prompt on-chain so
 //!                            `call` answers AS that agent (text or a file path)
-//!   call [--as <me>] [--fresh] [--pay <amt>] <name> <message…>
+//!   call [--as <me>] [--fresh] [--pay <amt>] [--verify <keys>] <name> <message…>
 //!                            run a headless agent turn that answers as <name>,
 //!                            via the credit proxy (no Gemini key, no live tab);
 //!                            the conversation persists per (caller,target) —
 //!                            `--fresh` starts a new thread; `--pay` settles
 //!                            that much $LH to <name>'s TBA after a successful
-//!                            reply (x402 — pay the agent for its service)
+//!                            reply (x402 — pay the agent for its service);
+//!                            `--verify <keys>` escrows the `--pay`, releasing it
+//!                            only if the reply is a JSON object with every
+//!                            comma-separated required top-level key
 //!   mcp [--as <me>]          run an MCP (stdio) server exposing a `call_agent`
 //!                            tool so any MCP client (Claude Code, …) can call
 //!                            localharness agents; pays as the local identity
@@ -250,12 +253,16 @@ CARTRIDGES & PUBLISHING
                                          diamondCut a deployed facet into your diamond
 
 CALLING & MCP
-  localharness call [--as <me>] [--fresh] [--pay <amt>] <name> <message>
+  localharness call [--as <me>] [--fresh] [--pay <amt>] [--verify <keys>] <name> <message>
                                          run a headless turn that answers AS <name>,
                                          through the credit proxy (no key, no tab);
                                          the conversation continues across calls
                                          (--fresh starts over); --pay settles that
-                                         much $LH to <name>'s TBA on success
+                                         much $LH to <name>'s TBA on success;
+                                         --verify <keys> (comma-separated required
+                                         top-level JSON keys) escrows the --pay:
+                                         it is sent ONLY if the reply is a JSON
+                                         object with every key, else withheld
   localharness models                    list the valid --model ids for call /
                                          mcp-call (gemini default + claude-* +
                                          gpt-* ids; claude/gpt need the

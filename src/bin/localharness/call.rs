@@ -21,22 +21,38 @@ pub(crate) struct ParsedCall {
     fresh: bool,
     model: Option<String>,
     pay: Option<String>,
+    /// `--verify <keys>`: comma-separated REQUIRED top-level JSON keys the reply
+    /// must contain (an escrow gate that only matters together with `--pay`).
+    /// `None` = no verification; settle on any non-empty reply as before.
+    verify: Option<Vec<String>>,
     target: String,
     message: String,
 }
 
 pub(crate) const CALL_USAGE: &str =
-    "usage: localharness call [--as <yourname>] [--fresh] [--model <id>] [--pay <amount>] <target> <message>";
+    "usage: localharness call [--as <yourname>] [--fresh] [--model <id>] [--pay <amount>] [--verify <keys>] <target> <message>";
+
+/// Split a `--verify` flag value into the list of required top-level JSON keys.
+/// Comma-separated, each trimmed of surrounding whitespace; blank entries are
+/// dropped (so `a,,b` → `["a","b"]` and a trailing comma is harmless). Pure.
+pub(crate) fn parse_verify_keys(spec: &str) -> Vec<String> {
+    spec.split(',')
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .map(str::to_string)
+        .collect()
+}
 
 pub(crate) fn parse_call_args(rest: &[String]) -> Result<ParsedCall, String> {
     // `--as` is pulled from ANY position (via take_as_flag — consistent with
     // schedule/invite/send), so `call <target> "msg" --as me` works, not just
-    // the leading form. --model/--fresh/--pay stay leading flags before the
-    // target.
+    // the leading form. --model/--fresh/--pay/--verify stay leading flags before
+    // the target.
     let (caller, rest) = take_as_flag(rest)?;
     let mut fresh = false;
     let mut model = None;
     let mut pay = None;
+    let mut verify = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -54,6 +70,13 @@ pub(crate) fn parse_call_args(rest: &[String]) -> Result<ParsedCall, String> {
                 }
                 None => return Err(CALL_USAGE.to_string()),
             },
+            "--verify" => match rest.get(i + 1) {
+                Some(v) => {
+                    verify = Some(parse_verify_keys(v));
+                    i += 2;
+                }
+                None => return Err(CALL_USAGE.to_string()),
+            },
             "--fresh" => {
                 fresh = true;
                 i += 1;
@@ -67,11 +90,33 @@ pub(crate) fn parse_call_args(rest: &[String]) -> Result<ParsedCall, String> {
             fresh,
             model,
             pay,
+            verify,
             target: t.clone(),
             message: msg.join(" "),
         }),
         _ => Err(CALL_USAGE.to_string()),
     }
+}
+
+/// Check that `reply` is a JSON OBJECT containing every key in `required`.
+/// The escrow gate behind `--verify`: `Ok(())` → the reply satisfies the
+/// schema; `Err(reason)` → a human-readable failure ("reply not JSON",
+/// "missing key 'X'") to surface BEFORE withholding payment. `serde_json` is
+/// already a crate dependency, so this is a real structural JSON parse — not a
+/// substring heuristic — but it is a key-PRESENCE check, NOT full JSON Schema
+/// (value types/shapes are not validated). Pure.
+pub(crate) fn verify_reply(reply: &str, required: &[String]) -> Result<(), String> {
+    let value: serde_json::Value = serde_json::from_str(reply.trim())
+        .map_err(|_| "reply not JSON".to_string())?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "reply not a JSON object".to_string())?;
+    for key in required {
+        if !obj.contains_key(key) {
+            return Err(format!("missing key '{key}'"));
+        }
+    }
+    Ok(())
 }
 
 /// The directory holding persisted `call` conversations.
@@ -176,6 +221,7 @@ pub(crate) async fn call(rest: &[String]) -> i32 {
         fresh,
         model,
         pay,
+        verify,
         target,
         message,
     } = match parse_call_args(rest) {
@@ -280,8 +326,23 @@ pub(crate) async fn call(rest: &[String]) -> i32 {
                 }
                 let _ = std::fs::write(&hist_file, bytes);
             }
-            // `--pay`: settle the $LH to the target AFTER a successful reply —
-            // a failed call costs the caller nothing.
+            // `--verify <keys>`: a native escrow gate — withhold the payment
+            // unless the reply is a JSON object carrying every required key.
+            // Only meaningful WITH `--pay` (no payment ⇒ nothing to withhold);
+            // the reply is still shown above either way. A failure prints why
+            // and DOES NOT settle (the $LH stays with the caller).
+            if let (Some(required), Some(value_wei)) = (verify.as_deref(), pay_wei) {
+                if let Err(reason) = verify_reply(&text, required) {
+                    eprintln!(
+                        "--verify: {reason} — payment NOT sent ({} withheld)",
+                        fmt_lh(value_wei)
+                    );
+                    return 1;
+                }
+            }
+            // `--pay`: settle the $LH to the target AFTER a successful (and, with
+            // `--verify`, schema-valid) reply — a failed call costs the caller
+            // nothing.
             match pay_wei {
                 Some(value_wei) => settle_call_payment(&key_hex, &target, value_wei).await,
                 None => 0,
@@ -784,6 +845,73 @@ mod tests {
         }
         // `--pay` requires a value.
         assert!(parse_call_args(&args(&["--pay"])).is_err());
+    }
+
+    #[test]
+    fn parse_call_verify_flag() {
+        // No --verify → None (no escrow gate).
+        let p = parse_call_args(&args(&["alice", "hi"])).unwrap();
+        assert_eq!(p.verify, None);
+        // --verify before the target, in any order with the other flags, and the
+        // comma-separated keys are split + trimmed.
+        for parts in [
+            vec!["--verify", "answer,score", "alice", "hi"],
+            vec!["--pay", "0.05", "--verify", "answer, score", "alice", "hi"],
+            vec!["--verify", "answer ,score", "--pay", "auto", "alice", "hi"],
+        ] {
+            let p = parse_call_args(&args(&parts)).unwrap();
+            assert_eq!(
+                p.verify.as_deref(),
+                Some(["answer".to_string(), "score".to_string()].as_slice())
+            );
+            assert_eq!(p.target, "alice");
+            assert_eq!(p.message, "hi");
+        }
+        // `--verify` requires a value.
+        assert!(parse_call_args(&args(&["--verify"])).is_err());
+    }
+
+    #[test]
+    fn parse_verify_keys_splits_trims_and_drops_blanks() {
+        assert_eq!(parse_verify_keys("a,b,c"), vec!["a", "b", "c"]);
+        // Whitespace around each key is trimmed; blank entries (incl. a trailing
+        // comma) are dropped.
+        assert_eq!(parse_verify_keys(" a , b ,, c,"), vec!["a", "b", "c"]);
+        // A single key, no commas.
+        assert_eq!(parse_verify_keys("answer"), vec!["answer"]);
+        // All-blank → empty (vacuously satisfied by any JSON object).
+        assert!(parse_verify_keys(" , , ").is_empty());
+    }
+
+    #[test]
+    fn verify_reply_accepts_object_with_all_keys() {
+        let required = vec!["answer".to_string(), "score".to_string()];
+        assert!(verify_reply(r#"{"answer":"yes","score":9}"#, &required).is_ok());
+        // Surrounding whitespace is tolerated (trimmed before parse).
+        assert!(verify_reply("  {\"answer\":1,\"score\":2}  \n", &required).is_ok());
+        // Extra keys are fine — only the required ones must be present.
+        assert!(verify_reply(r#"{"answer":1,"score":2,"extra":true}"#, &required).is_ok());
+        // No required keys → any object passes.
+        assert!(verify_reply(r#"{"x":1}"#, &[]).is_ok());
+    }
+
+    #[test]
+    fn verify_reply_rejects_missing_key_non_object_and_non_json() {
+        let required = vec!["answer".to_string(), "score".to_string()];
+        // A present-but-incomplete object names the FIRST missing key.
+        let err = verify_reply(r#"{"answer":"yes"}"#, &required).unwrap_err();
+        assert!(err.contains("missing key 'score'"), "got: {err}");
+        // Valid JSON but not an object (array / scalar) → not an object.
+        assert!(verify_reply(r#"["answer","score"]"#, &required)
+            .unwrap_err()
+            .contains("not a JSON object"));
+        assert!(verify_reply("42", &required)
+            .unwrap_err()
+            .contains("not a JSON object"));
+        // Not JSON at all → not JSON (e.g. a prose reply that ignored the schema).
+        assert!(verify_reply("the answer is yes", &required)
+            .unwrap_err()
+            .contains("not JSON"));
     }
 
     #[test]
