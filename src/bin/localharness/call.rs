@@ -106,8 +106,17 @@ pub(crate) fn parse_call_args(rest: &[String]) -> Result<ParsedCall, String> {
 /// substring heuristic — but it is a key-PRESENCE check, NOT full JSON Schema
 /// (value types/shapes are not validated). Pure.
 pub(crate) fn verify_reply(reply: &str, required: &[String]) -> Result<(), String> {
-    let value: serde_json::Value = serde_json::from_str(reply.trim())
-        .map_err(|_| "reply not JSON".to_string())?;
+    // Agents routinely wrap JSON in markdown fences (```json … ```) or surround it
+    // with prose, so extract the object (first '{' .. last '}') before parsing —
+    // otherwise a perfectly valid reply would falsely WITHHOLD payment (the
+    // false-negative the zero-trust gate must avoid).
+    let trimmed = reply.trim();
+    let json = match (trimmed.find('{'), trimmed.rfind('}')) {
+        (Some(a), Some(b)) if b >= a => &trimmed[a..=b],
+        _ => trimmed,
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|_| "reply not JSON".to_string())?;
     let obj = value
         .as_object()
         .ok_or_else(|| "reply not a JSON object".to_string())?;
@@ -893,6 +902,11 @@ mod tests {
         assert!(verify_reply(r#"{"answer":1,"score":2,"extra":true}"#, &required).is_ok());
         // No required keys → any object passes.
         assert!(verify_reply(r#"{"x":1}"#, &[]).is_ok());
+        // Markdown-fenced JSON (the common LLM output) must NOT falsely withhold.
+        assert!(verify_reply("```json\n{\"answer\":1,\"score\":2}\n```", &required).is_ok());
+        assert!(verify_reply("```\n{\"answer\":1,\"score\":2}\n```", &required).is_ok());
+        // JSON surrounded by prose is extracted (first '{' .. last '}').
+        assert!(verify_reply("Here you go: {\"answer\":1,\"score\":2}. Done!", &required).is_ok());
     }
 
     #[test]
