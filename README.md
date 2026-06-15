@@ -341,8 +341,10 @@ git clone https://github.com/compusophy/localharness && cd localharness
 python -m http.server 8765 -d web
 ```
 
-On-chain features target Tempo Moderato (chain `42431`); production serves
-`localharness.xyz` + wildcard subdomains.
+On-chain features target Tempo Moderato testnet (chain `42431`); Tempo mainnet
+is live (chain `4217`, `rpc.tempo.xyz`) and selectable via the `mainnet` cargo
+feature / `registry::chain` (the platform still runs on testnet). Production
+serves `localharness.xyz` + wildcard subdomains.
 
 > **Scope (honest).** This runs on Tempo Moderato **testnet** — `$LH` is
 > in-system credit, not money; gas is sponsored from a capped, rotatable key
