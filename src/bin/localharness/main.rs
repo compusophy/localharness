@@ -313,6 +313,9 @@ SCHEDULING
                                          agent declares the goal complete (defaults:
                                          --every 5m, --runs 100; budget = the hard stop)
   localharness jobs [--as <me>]          list your scheduled jobs (id, target, cadence, …)
+  localharness keeper                     dry-run a decentralized-keeper tick: show
+                                         every DUE job on-chain + what this peer would
+                                         fire (P2P keeper, krafto #1.5; triggering tbd)
   localharness unschedule [--as <me>] <jobId>  cancel a job (refunds its remaining budget)
 
 INVITES
@@ -589,6 +592,7 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
         },
+        Some("keeper") => keeper_plan().await,
         Some("unschedule") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) if !rest.is_empty() => unschedule(caller.as_deref(), &rest[0]).await,
             Ok(_) => {
@@ -794,6 +798,51 @@ async fn run(args: &[String]) -> i32 {
             2
         }
     }
+}
+
+/// `keeper` — a DRY-RUN tick of the decentralized scheduler keeper (krafto #1.5).
+/// Reads the full cross-owner due set on-chain (`registry::all_due_job_ids`, the
+/// same `jobsDue` view the Vercel worker pages through), builds the live job
+/// records, and runs the real `keeper::jobs_to_fire` decision core as the SOLE
+/// keeper (no keeper roster is announced yet → solo). It PRINTS what it would
+/// fire but does NOT trigger: a keeper triggering `recordRun` needs a ScheduleFacet
+/// change (recordRun is scheduler-role-only today), which is flagged, not cut.
+async fn keeper_plan() -> i32 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    println!("keeper: scanning on-chain for due jobs across all owners …");
+    let due = match registry::all_due_job_ids().await {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("keeper: {e}");
+            return 1;
+        }
+    };
+    if due.is_empty() {
+        println!("no jobs are due right now.");
+        return 0;
+    }
+    println!("{} due job(s) on-chain: {due:?}", due.len());
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let mut jobs = Vec::new();
+    for id in &due {
+        if let Ok(j) = registry::get_job(*id).await {
+            jobs.push(localharness::keeper::KeeperJob {
+                id: *id,
+                status: j.status,
+                next_run: j.next_run,
+                budget_wei: j.budget_wei,
+                runs_left: j.runs_left,
+            });
+        }
+    }
+    // Sole keeper: my_index 0, keeper_count 1, epoch 0, backoff 30s.
+    let to_fire = localharness::keeper::jobs_to_fire(&jobs, now, CALL_COST_WEI, 0, 1, 0, 30);
+    println!("as the sole keeper, this peer would fire: {to_fire:?}");
+    println!(
+        "(dry-run — triggering recordRun from a keeper needs the ScheduleFacet \
+         keeper-trigger change, not yet cut)"
+    );
+    0
 }
 
 #[cfg(test)]

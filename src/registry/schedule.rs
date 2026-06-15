@@ -191,6 +191,103 @@ pub async fn get_job(job_id: u64) -> Result<ScheduledJob, String> {
     })
 }
 
+/// Read `jobsDue(startAfter, limit) -> (uint256[] ids, uint256 nextCursor)`: the
+/// DUE jobs in the index window `[startAfter, startAfter+limit)` across ALL
+/// owners, plus the cursor after the window. This is the cross-owner enumeration
+/// a decentralized keeper needs — the same view the Vercel scheduler worker pages
+/// through. The return is a TUPLE, so it decodes explicitly (NOT via
+/// `decode_u64_array`, which assumes the length sits at word 1 — here word 1 is
+/// `nextCursor`): word0 = offset to the ids array, word1 = nextCursor, and at
+/// that offset `[len][id0]…`.
+pub async fn jobs_due(start_after: u64, limit: u64) -> Result<(Vec<u64>, u64), String> {
+    let result = read_view(
+        selector("jobsDue(uint256,uint256)"),
+        &[u256_be(start_after as u128), u256_be(limit as u128)],
+    )
+    .await?;
+    let bytes = hex_to_bytes(&result)?;
+    if bytes.len() < 64 {
+        return Err(format!("jobsDue: short response {} bytes", bytes.len()));
+    }
+    Ok(decode_jobs_due(&bytes))
+}
+
+/// Pure decode of a `jobsDue` return — the `(uint256[] ids, uint256 nextCursor)`
+/// tuple. Factored out so the offset arithmetic is unit-testable without an RPC:
+/// word0 = offset to the ids array, word1 = nextCursor, and `[len][id0]…` at that
+/// offset. Bounds-safe (truncates rather than panics on a short/hostile blob).
+fn decode_jobs_due(bytes: &[u8]) -> (Vec<u64>, u64) {
+    if bytes.len() < 64 {
+        return (Vec::new(), 0);
+    }
+    let next_cursor = u64_low(&bytes[32..64]); // word1 = nextCursor (static)
+    let off = u64_low(&bytes[0..32]) as usize; // word0 = offset to the ids array
+    let mut ids = Vec::new();
+    if bytes.len() >= off + 32 {
+        let len = u64_low(&bytes[off..off + 32]) as usize;
+        for i in 0..len {
+            let s = off + 32 + i * 32;
+            let Some(word) = bytes.get(s..s + 32) else { break };
+            ids.push(u64_low(word));
+        }
+    }
+    (ids, next_cursor)
+}
+
+#[cfg(test)]
+mod jobs_due_tests {
+    use super::*;
+
+    #[test]
+    fn decode_jobs_due_tuple_array_then_cursor() {
+        // (uint256[] ids = [5, 9], uint256 nextCursor = 128):
+        //   word0 = offset to ids = 0x40 ; word1 = 128 ; at 0x40 → [len=2][5][9]
+        let mut b = Vec::new();
+        b.extend_from_slice(&u256_be(0x40));
+        b.extend_from_slice(&u256_be(128));
+        b.extend_from_slice(&u256_be(2));
+        b.extend_from_slice(&u256_be(5));
+        b.extend_from_slice(&u256_be(9));
+        assert_eq!(decode_jobs_due(&b), (vec![5, 9], 128));
+
+        // empty array, nonzero cursor.
+        let mut e = Vec::new();
+        e.extend_from_slice(&u256_be(0x40));
+        e.extend_from_slice(&u256_be(64));
+        e.extend_from_slice(&u256_be(0)); // len 0
+        assert_eq!(decode_jobs_due(&e), (Vec::new(), 64));
+
+        // short / hostile blobs never panic.
+        assert_eq!(decode_jobs_due(&[]), (Vec::new(), 0));
+        assert_eq!(decode_jobs_due(&[0u8; 40]), (Vec::new(), 0));
+        // length claims 3 ids but only 1 word follows → truncates, no panic.
+        let mut t = Vec::new();
+        t.extend_from_slice(&u256_be(0x40));
+        t.extend_from_slice(&u256_be(0));
+        t.extend_from_slice(&u256_be(3));
+        t.extend_from_slice(&u256_be(7));
+        assert_eq!(decode_jobs_due(&t), (vec![7], 0));
+    }
+}
+
+/// Collect the FULL cross-owner due set by following [`jobs_due`]'s cursor across
+/// pages (bounded at 64 pages of 64 so a huge job index can't spin — mirrors the
+/// scheduler worker's scan). The decentralized keeper reads this each tick, then
+/// `keeper::jobs_to_fire` decides which of these IDs THIS peer should trigger.
+pub async fn all_due_job_ids() -> Result<Vec<u64>, String> {
+    let mut all = Vec::new();
+    let mut cursor = 0u64;
+    for _ in 0..64 {
+        let (ids, next) = jobs_due(cursor, 64).await?;
+        all.extend(ids);
+        if next <= cursor {
+            break; // cursor didn't advance → index fully scanned
+        }
+        cursor = next;
+    }
+    Ok(all)
+}
+
 /// Read `lastRunOf(uint256)` → (unix timestamp, status byte) of the job's most
 /// recent `recordRun`, or `(0, 0)` if it has never run (GitHub #52). The view
 /// returns two ABI words: the `uint64` timestamp then the `uint8` status enum
