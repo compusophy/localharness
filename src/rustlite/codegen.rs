@@ -441,14 +441,32 @@ impl WasmEmitter {
         local_idx
     }
 
+    /// Resolve a variable name to its wasm local index, searching scopes from
+    /// INNERMOST (last) to OUTERMOST (first) so a block-local `let` shadows an
+    /// outer binding only within its block. `None` ⇒ the name is not in scope
+    /// (the caller maps this to an UNDEFINED_VARIABLE error).
+    fn lookup_local(&self, name: &str) -> Option<u32> {
+        self.local_map.iter().rev().find_map(|scope| scope.get(name).copied())
+    }
+
     fn emit_block_code(&mut self, block: &TypedBlock, code: &mut Vec<u8>) -> Result<(), CompileError> {
-        for stmt in &block.stmts {
-            self.emit_stmt(stmt, code)?;
-        }
-        if let Some(tail) = &block.tail {
-            self.emit_expr(tail, code)?;
-        }
-        Ok(())
+        // Each block gets its OWN scope, so a `let` declared inside it is visible
+        // only until the block ends, then the outer binding is restored
+        // (Rust-correct lexical scoping). The wasm local SLOT is never reclaimed
+        // — `alloc_local` keeps `local_types` monotonic so popping this scope only
+        // drops the NAME→index mapping, not the function-wide local declaration.
+        self.local_map.push(std::collections::HashMap::new());
+        let result = (|| {
+            for stmt in &block.stmts {
+                self.emit_stmt(stmt, code)?;
+            }
+            if let Some(tail) = &block.tail {
+                self.emit_expr(tail, code)?;
+            }
+            Ok(())
+        })();
+        self.local_map.pop();
+        result
     }
 
     fn emit_stmt(&mut self, stmt: &TypedStmt, code: &mut Vec<u8>) -> Result<(), CompileError> {
@@ -483,7 +501,7 @@ impl WasmEmitter {
                     leb128_u32(0, code); // static offset
                 } else {
                     self.emit_expr(value, code)?;
-                    let local_idx = *self.local_map.last().unwrap().get(&place.root)
+                    let local_idx = self.lookup_local(&place.root)
                         .ok_or_else(|| CompileError::new_code(codes::UNDEFINED_VARIABLE, format!("undefined local '{}'", place.root)))?;
                     code.push(OP_LOCAL_SET);
                     leb128_u32(local_idx, code);
@@ -511,7 +529,7 @@ impl WasmEmitter {
     /// `local.get root` that the read side emits for `ExprKind::Index { base:
     /// Var(root), .. }` — reads and writes share the same base.
     fn emit_place_base_pointer(&mut self, place: &crate::rustlite::ast::Place, code: &mut Vec<u8>) -> Result<(), CompileError> {
-        let local_idx = *self.local_map.last().unwrap().get(&place.root)
+        let local_idx = self.lookup_local(&place.root)
             .ok_or_else(|| CompileError::new_code(codes::UNDEFINED_VARIABLE, format!("undefined local '{}'", place.root)))?;
         code.push(OP_LOCAL_GET);
         leb128_u32(local_idx, code);
@@ -565,7 +583,7 @@ impl WasmEmitter {
                 leb128_i32(ptr as i32, code);
             }
             TypedExprKind::Var(name) => {
-                let local_idx = *self.local_map.last().unwrap().get(name)
+                let local_idx = self.lookup_local(name)
                     .ok_or_else(|| CompileError::new_code(codes::UNDEFINED_VARIABLE, format!("undefined local '{name}'")))?;
                 code.push(OP_LOCAL_GET);
                 leb128_u32(local_idx, code);
@@ -1558,5 +1576,51 @@ mod tests {
         // Backward-compat: a module with no host calls has no import
         // section, so function indices are unshifted.
         assert!(!section_ids(&wasm).contains(&SEC_IMPORT), "no host calls => no import section");
+    }
+
+    #[test]
+    fn block_local_shadow_does_not_leak_past_its_block() {
+        // True lexical block scoping: a `let x` inside an `if`/`while` block is
+        // visible only inside that block; after the block ends, `x` resolves to
+        // the OUTER binding again — and the inner shadow gets its OWN wasm local
+        // slot (monotonic `alloc_local`), so the read after the block reads the
+        // OUTER slot's index, not the inner one. This compiles to valid wasm;
+        // the run-proof (scripts/test-cartridges.mjs shadow.rl) asserts the
+        // value semantics round-trip.
+        let wasm = compile_to_wasm(
+            r#"
+            fn f(n: i32) -> i32 {
+                let x: i32 = 1;
+                if n > 0 {
+                    let x: i32 = 100;
+                    return x;
+                }
+                x
+            }
+        "#,
+        );
+        assert_eq!(&wasm[0..4], WASM_MAGIC);
+
+        // A same-scope shadow (`let x = x + 1`) still works: the init reads the
+        // outer `x` (emitted before the bind), the new `x` takes a fresh slot.
+        let wasm2 = compile_to_wasm(
+            "fn g() -> i32 { let x: i32 = 1; let x: i32 = x + 1; x }",
+        );
+        assert_eq!(&wasm2[0..4], WASM_MAGIC);
+
+        // A name declared INSIDE a block and read OUTSIDE it is now out of scope.
+        // The typechecker rejects this (UNDEFINED_VARIABLE) before codegen, which
+        // confirms the scoping is observed end-to-end.
+        let leaked = {
+            let tokens = lexer::lex(
+                "fn h(n: i32) -> i32 { if n > 0 { let y: i32 = 5; } y }",
+            ).unwrap();
+            let module = parser::parse(&tokens).unwrap();
+            typecheck::check(&module).err()
+        };
+        assert!(
+            leaked.is_some(),
+            "a block-local declared in an `if` must NOT be visible after the block",
+        );
     }
 }
