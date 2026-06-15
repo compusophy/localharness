@@ -125,3 +125,10 @@
 #            so a callee crash/timeout = no settlement = caller keeps funds
 214 549af37  (dup of 186) billing no longer charges on 4xx — proxy returns on
 #            !upstream.ok BEFORE meterDebit
+220 1340f72  (krafto) home link → absolute apex URL, not relative "/" — escapes
+#            the subdomain + installed-PWA scope so home lands on the apex
+#            (the user's subdomain list + create new), templates.rs site_header
+222 1340f72  (krafto) UI/UX cluster already shipped: textarea resize:none
+#            (styles.css .terminal-row textarea), autogrow_textarea
+#            (events/mod.rs:672 + max-height cap), send/stop are flex siblings
+#            in .terminal-row, context bar removed (#62, 652fdb6)
