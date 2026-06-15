@@ -342,16 +342,24 @@ mod x402_tests {
     use super::*;
 
     #[test]
+    #[cfg(not(feature = "mainnet"))]
     fn x402_domain_matches_live_facet() {
-        // Pinned to the deployed X402Facet's `x402DomainSeparator()` on the
-        // diamond — guards the Rust EIP-712 encoding against the contract.
+        // Pinned to the deployed Moderato X402Facet's `x402DomainSeparator()` —
+        // cross-checks the Rust EIP-712 encoding against the live contract. The
+        // domain binds chainId + diamond, so the MAINNET preset has a DIFFERENT
+        // separator (and an as-yet-empty diamond), hence this guard runs only on
+        // the default build; the mainnet hash gets pinned at deploy
+        // (stripe-mainnet.md step 14).
         let expected =
             "54530933a67f96286ac528dbff39d00c0ea49f4c6bd0f034343a0c78927f0b7a";
         let got = x402_domain_separator().unwrap();
         assert_eq!(bytes_to_hex(&got), expected);
     }
 
+    // Builds the EIP-712 digest off the domain separator (→ diamond address), so
+    // it needs a non-empty diamond — the MAINNET preset's is empty until deploy.
     #[test]
+    #[cfg(not(feature = "mainnet"))]
     fn x402_sign_recovers_payer() {
         let w = crate::wallet::generate();
         let from = w.address;
