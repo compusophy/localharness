@@ -865,6 +865,12 @@ pub(crate) fn apex(host: &Host, wallet_address_hex: Option<&str>) -> Markup {
                 // visitor sees it before minting a key they could lose on close.
                 div #storage-warn-slot {}
                 @if fresh {
+                    // The OBVIOUS first step: a big, unmistakable
+                    // create-identity CTA leads the fresh-visitor page
+                    // (pip-qa: "I don't see a Create button anywhere").
+                    // The invite-redeem stays below as the funded-onboarding
+                    // path; import-seed is the quiet returning-user door.
+                    (apex_create_identity())
                     (invite_onboarding())
                 } @else {
                     (apex_claim())
@@ -899,6 +905,51 @@ fn apex_claim() -> Markup {
                     required {}
                 button #create-btn type="submit" .create-button disabled { "create" }
             }
+        }
+    }
+}
+
+/// The fresh-visitor PRIMARY call-to-action — the one big, unmistakable
+/// "create your identity" step (pip-qa feedback: a newbie couldn't find a
+/// Create button anywhere). Leads the apex landing ABOVE the invite-redeem
+/// path. Monochrome brutalist: a strong-bordered card whose prominence
+/// comes from a heavy headline, a one-line plain explanation, and a large
+/// FILLED-INVERSE primary button — never a colored accent. Importing an
+/// existing seed is the quiet secondary door.
+///
+/// Wiring is load-bearing — `data-action="create-identity"` →
+/// `Action::CreateIdentity` (generates + funds + repaints on apex) and
+/// `data-action="show-import"` → `Action::ShowImport` (swaps the import
+/// textarea into `#import-slot`, picked up by `Action::ImportSeed`). The
+/// `#identity-msg` / `#seed-msg` / `#import-slot` slots MUST exist for the
+/// handlers' DOM swaps to land — keep them. No silent generation: the
+/// button is an explicit user gesture, so the no-auto-create gate holds.
+fn apex_create_identity() -> Markup {
+    html! {
+        section.apex-onboard {
+            h2.apex-onboard-title { "Create your identity" }
+            p.apex-onboard-blurb {
+                "One tap mints your self-sovereign wallet — your agent then "
+                "lives at its own "
+                span.apex-tagline-host { "<name>.localharness.xyz" }
+                "."
+            }
+            button #create-identity-btn
+                type="button"
+                data-action="create-identity"
+                .apex-onboard-cta {
+                "Create your identity"
+            }
+            div #identity-msg .step-msg {}
+            // Quiet secondary path for returning users / recovery. ShowImport
+            // swaps the textarea into #import-slot in place of this button row.
+            div.apex-onboard-secondary {
+                button type="button" data-action="show-import" .apex-onboard-import {
+                    "Import an existing seed"
+                }
+            }
+            div #import-slot {}
+            div #seed-msg .step-msg {}
         }
     }
 }

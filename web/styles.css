@@ -1020,6 +1020,78 @@ h1 a:hover { color: var(--accent); }
   color: var(--error);
 }
 .apex-hero .step-msg { margin-top: 16px; }
+
+/* Fresh-visitor PRIMARY onboarding CTA (templates::apex_create_identity).
+   pip-qa couldn't find a Create button — so this leads the page as the one
+   obvious first step. Prominence is monochrome-only: a heavy strong border,
+   a large headline, generous spacing, and a FILLED-INVERSE button. No
+   colored accent — every tone is --fg / --bg / --muted / --border. */
+.apex-onboard {
+  margin: 14vh auto 0;
+  width: 100%;
+  max-width: 440px;
+  padding: 40px 32px 32px;
+  border: 2px solid var(--fg);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.apex-onboard-title {
+  margin: 0;
+  font-size: clamp(26px, 6vw, 34px);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  color: var(--fg);
+}
+.apex-onboard-blurb {
+  margin: 16px 0 0;
+  max-width: 44ch;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+/* The page's ONE action: large, full-width, filled-inverse so it
+   outweighs everything else by weight + fill, not color. */
+.apex-onboard-cta {
+  margin: 28px 0 0;
+  width: 100%;
+  padding: 18px 32px;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  background: var(--fg);
+  border: 1px solid var(--fg);
+  color: var(--bg);
+  cursor: pointer;
+  font-family: inherit;
+}
+.apex-onboard-cta:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+}
+.apex-onboard-cta:disabled { opacity: 0.5; cursor: default; }
+/* Quiet secondary door — text-link weight, never competes with the CTA. */
+.apex-onboard-secondary { margin: 18px 0 0; }
+.apex-onboard-import {
+  background: transparent;
+  border: 0;
+  padding: 4px;
+  font-size: 13px;
+  color: var(--muted);
+  text-decoration: underline;
+  cursor: pointer;
+  font-family: inherit;
+}
+.apex-onboard-import:hover { color: var(--fg); }
+/* When the invite hero follows the primary create CTA it's the SECONDARY
+   path — tighten its top margin (no second viewport-push) and shrink the
+   wordmark so it doesn't rival the create card above it. */
+.apex-onboard + .apex-hero { margin-top: 48px; }
+.apex-onboard + .apex-hero .apex-wordmark { font-size: clamp(20px, 5vw, 28px); }
+
 /* Signer chrome (signer_no_identity / signer_chrome) still uses the old
    headline scale. */
 .apex-headline {
