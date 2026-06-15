@@ -40,6 +40,9 @@ use super::tools::platform::{
     create_subdomain_tool, discover_agents_tool, embed_app_tool, list_subdomains_tool,
     release_subdomain_tool, batch_send_lh_tool, check_balances_tool, send_lh_tool,
 };
+use super::tools::room::{
+    shared_state_get_tool, shared_state_list_tool, shared_state_set_tool,
+};
 use super::tools::validation::{
     challenge_validation_tool, get_validation_tool, reclaim_validation_tool,
     resolve_validation_tool, stake_validation_tool,
@@ -253,6 +256,9 @@ pub(crate) async fn start_session(
             .with_tool(send_lh_tool())
             .with_tool(batch_send_lh_tool())
             .with_tool(check_balances_tool())
+            .with_tool(shared_state_set_tool())
+            .with_tool(shared_state_get_tool())
+            .with_tool(shared_state_list_tool())
             .with_tool(post_bounty_tool())
             .with_tool(claim_bounty_tool())
             .with_tool(submit_result_tool())
@@ -354,6 +360,9 @@ pub(crate) async fn start_session(
             .with_tool(send_lh_tool())
             .with_tool(batch_send_lh_tool())
             .with_tool(check_balances_tool())
+            .with_tool(shared_state_set_tool())
+            .with_tool(shared_state_get_tool())
+            .with_tool(shared_state_list_tool())
             .with_tool(post_bounty_tool())
             .with_tool(claim_bounty_tool())
             .with_tool(submit_result_tool())

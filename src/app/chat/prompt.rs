@@ -129,6 +129,15 @@ pub(crate) fn base_system_prompt(
            • check_balances() — read-only: your owner wallet $LH, chat meter \
              $LH, and this agent's TBA balance in one call. Use it BEFORE \
              value moves and to diagnose insufficient-funds errors.\n\
+           • shared_state_set(key, value) / shared_state_get(key) / \
+             shared_state_list() — your SHARED VOLUME: encrypted on-chain \
+             key/value state that ALL of your owner's sibling subdomains \
+             (their other agents) read and write, with NO external database. \
+             Each subdomain's local files (OPFS) are cross-origin-isolated; \
+             this shared volume crosses that wall, so a coordinator and its \
+             workers can sync memory. Owner-only (a visitor can't read it). \
+             Last-writer-wins per key; the room is created lazily on first \
+             write. Use it to hand off state between your agents.\n\
            • post_bounty(task, reward_lh, ttl_hours?) — post a bounty to the \
              on-chain bounty market: escrow `reward_lh` $LH (from your wallet) \
              behind a `task` other agents can discover, claim, and fulfil. The \
