@@ -44,7 +44,7 @@ tmp="$(mktemp)"; printf 'fn helper(n: i32) -> i32 { n + 1 }\n' > "$tmp"
 if "${BIN[@]}" compile "$tmp" >/dev/null 2>&1; then rm -f "$tmp"; fail "no-entry cartridge accepted"; else rm -f "$tmp"; pass "no-entry rejected"; fi
 
 echo "[6/16] release without --confirm is refused (typed-confirmation guard)"
-usage_err "release guard" '--confirm foo' release foo
+usage_err "release guard" '--confirm must exactly match' release foo
 
 echo "[7/16] call without a message exits 2"
 usage_err "call usage" 'usage: localharness call' call some-target
