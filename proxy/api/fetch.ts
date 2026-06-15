@@ -52,9 +52,7 @@ export const config = { runtime: 'edge' };
 
 // ---- constants (mirror api/gemini.ts) ---------------------------------------
 
-const TEMPO_RPC = 'https://rpc.moderato.tempo.xyz';
-const REGISTRY = '0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c';
-const CHAIN_ID = 42431;
+import { TEMPO_RPC, REGISTRY, CHAIN_ID } from './_chain';
 
 // SAME per-request price as a (Gemini) model call — same env knob, same
 // default 0.01 $LH. web_fetch is a paid capability like a model turn.

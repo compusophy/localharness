@@ -101,10 +101,8 @@ export const config = { runtime: 'edge' };
 
 // ---- constants (shared with gemini.ts / mcp.ts) ----------------------------
 
-const TEMPO_RPC = 'https://rpc.moderato.tempo.xyz';
-const REGISTRY = '0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c';
+import { TEMPO_RPC, REGISTRY, CHAIN_ID } from './_chain';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
-const CHAIN_ID = 42431;
 // Mirrors mcp.ts ASK_MODEL / the headless `call` default. No per-job model
 // selection in the MVP — every scheduled run uses the platform Gemini model.
 const RUN_MODEL = process.env.MCP_ASK_MODEL ?? 'gemini-3.5-flash';

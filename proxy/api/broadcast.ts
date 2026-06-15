@@ -55,8 +55,7 @@ export const config = { runtime: 'edge' };
 
 // ---- constants (mirror api/notify.ts) ---------------------------------------
 
-const TEMPO_RPC = 'https://rpc.moderato.tempo.xyz';
-const REGISTRY = '0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c';
+import { TEMPO_RPC, REGISTRY } from './_chain';
 
 const FRESHNESS_WINDOW_SECS = 300; // same tight replay window as notify.ts
 const ALLOWED_ORIGIN_SUFFIX = '.localharness.xyz';

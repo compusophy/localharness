@@ -73,9 +73,7 @@ export const config = { runtime: 'edge' };
 
 // ---- constants (mirror api/fetch.ts) ----------------------------------------
 
-const TEMPO_RPC = 'https://rpc.moderato.tempo.xyz';
-const REGISTRY = '0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c';
-const CHAIN_ID = 42431;
+import { TEMPO_RPC, REGISTRY, CHAIN_ID } from './_chain';
 
 // SAME per-request price as a model call — same env knob, same default
 // 0.01 $LH. A self-push is a paid capability like a model turn (the meter IS

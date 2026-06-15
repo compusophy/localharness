@@ -49,8 +49,7 @@ export const config = { runtime: 'edge' };
 
 // ---- constants (shared with gemini.ts) -------------------------------------
 
-const TEMPO_RPC = 'https://rpc.moderato.tempo.xyz';
-const REGISTRY = '0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c';
+import { TEMPO_RPC, REGISTRY, LH_TOKEN, CHAIN_ID } from './_chain';
 // $LH token (LocalharnessCredits, TIP-20). `X402Facet.settle` moves $LH
 // payer->payee via `transferFrom`, so the payer needs BOTH a balance and an
 // allowance to the diamond. Under settle-on-success the model runs before the
@@ -58,9 +57,7 @@ const REGISTRY = '0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c';
 // spend — without that, a $LH-less payer with a validly signed authorization
 // would farm free answers (every settle would fail into the serve-anyway
 // policy). Mirrors `registry::LH_TOKEN_ADDRESS`.
-const LH_TOKEN = '0x90B84c7234Aae89BadA7f69160B9901B9bc37B17';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
-const CHAIN_ID = 42431;
 // The non-streaming model used to answer `ask_agent`. Mirrors the headless
 // `localharness call` default; kept simple (no per-call model selection for now).
 const ASK_MODEL = process.env.MCP_ASK_MODEL ?? 'gemini-3.5-flash';

@@ -45,13 +45,11 @@ export const config = { runtime: 'edge' };
 
 // ---- constants -------------------------------------------------------------
 
-const TEMPO_RPC = 'https://rpc.moderato.tempo.xyz';
-const REGISTRY = '0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c';
+import { TEMPO_RPC, REGISTRY, CHAIN_ID } from './_chain';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
 const ANTHROPIC_BASE = 'https://api.anthropic.com';
 const ANTHROPIC_VERSION = '2023-06-01';
 const OPENAI_BASE = 'https://api.openai.com';
-const CHAIN_ID = 42431;
 // `$LH` (18-decimal wei) debited per request in per-request mode.
 // Env-overridable; default 0.01 LH.
 const COST_PER_REQUEST_WEI = ((): bigint => {
