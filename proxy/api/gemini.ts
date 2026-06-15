@@ -119,6 +119,34 @@ function isHexAddress(s: string): boolean {
   return /^0x[0-9a-fA-F]{40}$/.test(s);
 }
 
+/**
+ * Reject an EMPTY/malformed request payload BEFORE the on-chain gate so a no-op
+ * never reaches the meter. Returns an error string (caller maps to a 400, NO
+ * charge) or `null` if the payload carries real work.
+ *
+ * Charging was already deferred to a 2xx upstream (so a bad payload that the
+ * upstream 400s costs nothing), but an empty message still burned a wasted
+ * upstream round-trip and — when the upstream itself was degraded — could 5xx
+ * and look like an outage. Rejecting locally is cheaper, clearer, and closes
+ * the "charged for a nop" report class (QA fleet juno-qa/rho-qa/nova-qa).
+ *
+ * Gemini carries `contents: [...]`; Anthropic & OpenAI carry `messages: [...]`.
+ * In every case the turn must contain at least one entry, else there is nothing
+ * to send. `parsed` is the already-JSON-parsed body (Gemini is parsed here too,
+ * even though it forwards the raw `requestBody` verbatim downstream).
+ */
+function payloadError(provider: Provider, parsed: unknown): string | null {
+  if (typeof parsed !== 'object' || parsed === null) {
+    return 'empty or malformed request body';
+  }
+  const turn = provider === 'gemini' ? 'contents' : 'messages';
+  const arr = (parsed as Record<string, unknown>)[turn];
+  if (!Array.isArray(arr) || arr.length === 0) {
+    return `empty request: \`${turn}\` must be a non-empty array`;
+  }
+  return null;
+}
+
 const TEMPO_CHAIN = defineChain({
   id: CHAIN_ID,
   name: 'Tempo Moderato',
@@ -446,6 +474,17 @@ export default async function handler(req: Request): Promise<Response> {
       provider = 'gemini';
       model = gem[1];
       requestBody = await readTextCapped(req);
+      // Validate the payload locally (parse for the check only; the raw
+      // `requestBody` is still forwarded verbatim) so an EMPTY turn 400s here
+      // with NO charge, instead of burning an upstream round-trip.
+      let parsedGem: unknown;
+      try {
+        parsedGem = JSON.parse(requestBody);
+      } catch {
+        return json({ error: 'invalid JSON body' }, 400, origin);
+      }
+      const gemErr = payloadError('gemini', parsedGem);
+      if (gemErr) return json({ error: gemErr }, 400, origin);
     } else if (
       reqUrl.pathname === '/v1/messages' ||
       reqUrl.pathname === '/v1/chat/completions'
@@ -462,6 +501,9 @@ export default async function handler(req: Request): Promise<Response> {
       if (!model || !MODEL_RE.test(model)) {
         return json({ error: 'missing or invalid model' }, 400, origin);
       }
+      // Reject an EMPTY turn locally (400, NO charge) before the gate.
+      const payErr = payloadError(provider, parsed);
+      if (payErr) return json({ error: payErr }, 400, origin);
     } else {
       return json({ error: 'unsupported path' }, 400, origin);
     }
