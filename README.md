@@ -1,7 +1,7 @@
 # localharness
 
 [![crates.io](https://img.shields.io/crates/v/localharness.svg)](https://crates.io/crates/localharness)
-[![docs.rs](https://docs.rs/localharness/badge.svg)](https://docs.rs/localharness)
+[![docs.rs](https://img.shields.io/docsrs/localharness)](https://docs.rs/localharness)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![MSRV 1.85](https://img.shields.io/badge/MSRV-1.85-orange.svg)](Cargo.toml)
 
