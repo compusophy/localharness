@@ -120,13 +120,29 @@ You can read your FULL live spec with the `read_self_docs` tool (fetches \
 https://localharness.xyz/llms.txt). Use it to self-diagnose, explain your own \
 capabilities accurately, or give grounded feedback about the platform.";
 
+/// [`RUNTIME_SUMMARY`] with the chain-specific facts (network name, chain id,
+/// RPC, diamond, $LH token) rewritten to the ACTIVE chain, so a `mainnet` build's
+/// self-knowledge stays correct. On the default (Moderato) build every rewrite is
+/// an identity swap, so the output equals the const verbatim.
+pub(crate) fn runtime_summary() -> String {
+    use crate::registry::{chain, CHAIN_ID, LOCALHARNESS_TOKEN_ADDRESS, REGISTRY_ADDRESS, RPC_URL};
+    RUNTIME_SUMMARY
+        .replace(
+            "Tempo Moderato (chain 42431, RPC https://rpc.moderato.tempo.xyz)",
+            &format!("{} (chain {CHAIN_ID}, RPC {RPC_URL})", chain::ACTIVE.name),
+        )
+        .replace("0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c", REGISTRY_ADDRESS)
+        .replace("0x90B84c7234Aae89BadA7f69160B9901B9bc37B17", LOCALHARNESS_TOKEN_ADDRESS)
+}
+
 /// A trimmed slice of [`RUNTIME_SUMMARY`] for the system prompt. We inject
 /// the whole summary today (it is already short); the helper exists so the
 /// injection site can be tuned without editing the prompt string.
 pub(crate) fn system_prompt_digest() -> String {
     format!(
-        "=== Your runtime (localharness self-knowledge) ===\n{RUNTIME_SUMMARY}\n\n\
+        "=== Your runtime (localharness self-knowledge) ===\n{}\n\n\
          === Error-code index (LHxxxx) ===\n{}",
+        runtime_summary(),
         crate::error_codes::compact_index()
     )
 }
@@ -176,7 +192,7 @@ pub(crate) fn read_self_docs_tool() -> Arc<dyn crate::tools::Tool> {
             };
             Ok(serde_json::json!({
                 "source": source,
-                "summary": RUNTIME_SUMMARY,
+                "summary": runtime_summary(),
                 "error_codes": crate::error_codes::compact_index(),
                 "llms_txt": live,
             }))

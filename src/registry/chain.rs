@@ -6,6 +6,8 @@
 /// Network constants the registry/tx layer depends on. Pure data; [`ACTIVE`]
 /// picks the preset at compile time.
 pub struct ChainConfig {
+    /// Human-facing network name (e.g. for self-docs / UI), NOT a wire value.
+    pub name: &'static str,
     /// JSON-RPC endpoint.
     pub rpc_url: &'static str,
     /// EIP-155 chain id (binds every signature + the x402 domain).
@@ -20,6 +22,7 @@ pub struct ChainConfig {
 
 /// Tempo Moderato testnet — the live deployment today.
 pub const MODERATO: ChainConfig = ChainConfig {
+    name: "Tempo Moderato",
     rpc_url: "https://rpc.moderato.tempo.xyz",
     chain_id: 42431,
     diamond: "0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c",
@@ -33,6 +36,7 @@ pub const MODERATO: ChainConfig = ChainConfig {
 /// than silently transacting against the testnet deployment, so the `mainnet`
 /// feature cannot ship by accident before those addresses are filled in.
 pub const MAINNET: ChainConfig = ChainConfig {
+    name: "Tempo mainnet",
     rpc_url: "https://rpc.tempo.xyz",
     chain_id: 4217,
     diamond: "",
