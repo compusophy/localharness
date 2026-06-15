@@ -133,6 +133,38 @@ pub fn jobs_to_fire(
         .collect()
 }
 
+/// A keeper-roster entry as read from on-chain presence (`SignalingFacet`): the
+/// keeper's identity address and the unix-seconds expiry of its presence
+/// announcement (stale entries age out, matching `PRESENCE_TTL_SECS`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RosterEntry {
+    /// The keeper's identity address (20 bytes), the roster's sort key.
+    pub addr: [u8; 20],
+    /// Unix seconds after which this presence announcement is stale.
+    pub expiry: u64,
+}
+
+/// Derive THIS peer's consistent position in the keeper roster from a presence
+/// snapshot: the LIVE peers (`expiry > now`), deduped and sorted by address, then
+/// `(my_index, keeper_count)`. Deterministic — every peer that reads the same
+/// on-chain snapshot computes the identical roster, so they all agree on
+/// [`primary_keeper`] WITHOUT any extra gossip. That agreement is what makes the
+/// no-thundering-herd guarantee hold across a real network.
+///
+/// Returns `None` when `me` is not a live keeper in the snapshot — that peer
+/// fires nothing (it isn't part of the roster this round).
+pub fn roster_position(entries: &[RosterEntry], now: u64, me: &[u8; 20]) -> Option<(u32, u32)> {
+    let mut live: Vec<[u8; 20]> = entries
+        .iter()
+        .filter(|e| e.expiry > now)
+        .map(|e| e.addr)
+        .collect();
+    live.sort_unstable();
+    live.dedup();
+    let idx = live.iter().position(|a| a == me)? as u32;
+    Some((idx, live.len() as u32))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,5 +268,57 @@ mod tests {
         union.sort_unstable();
         union.dedup();
         assert_eq!(union, vec![1, 4], "every due job covered exactly once at due-time");
+    }
+
+    #[test]
+    fn roster_position_is_live_sorted_and_deterministic() {
+        let (a, b, c, d) = ([1u8; 20], [2u8; 20], [3u8; 20], [4u8; 20]);
+        let now = 100;
+        // live {a,b,c} (d expired); any input order → sorted a,b,c.
+        let entries = vec![
+            RosterEntry { addr: c, expiry: 200 },
+            RosterEntry { addr: a, expiry: 200 },
+            RosterEntry { addr: d, expiry: 50 }, // expired
+            RosterEntry { addr: b, expiry: 200 },
+        ];
+        assert_eq!(roster_position(&entries, now, &a), Some((0, 3)));
+        assert_eq!(roster_position(&entries, now, &b), Some((1, 3)));
+        assert_eq!(roster_position(&entries, now, &c), Some((2, 3)));
+        assert_eq!(roster_position(&entries, now, &d), None, "expired peer not in roster");
+        assert_eq!(roster_position(&entries, now, &[9u8; 20]), None, "stranger not in roster");
+    }
+
+    #[test]
+    fn roster_dedups_double_announce_and_drops_expired_from_count() {
+        let (a, b) = ([1u8; 20], [2u8; 20]);
+        let now = 100;
+        let entries = vec![
+            RosterEntry { addr: a, expiry: 200 },
+            RosterEntry { addr: a, expiry: 300 }, // double announce → counted once
+            RosterEntry { addr: b, expiry: 200 },
+            RosterEntry { addr: [7u8; 20], expiry: 1 }, // expired → excluded from count
+        ];
+        assert_eq!(roster_position(&entries, now, &a), Some((0, 2)));
+        assert_eq!(roster_position(&entries, now, &b), Some((1, 2)));
+        assert_eq!(roster_position(&[], now, &a), None, "empty snapshot → no roster");
+    }
+
+    #[test]
+    fn roster_feeds_exactly_one_primary_across_peers() {
+        // Three peers reading the SAME snapshot agree on the roster, so exactly
+        // one of them is the primary for any job (the no-herd consensus).
+        let (a, b, c) = ([10u8; 20], [20u8; 20], [30u8; 20]);
+        let entries = vec![
+            RosterEntry { addr: b, expiry: 9 },
+            RosterEntry { addr: a, expiry: 9 },
+            RosterEntry { addr: c, expiry: 9 },
+        ];
+        let (ia, n) = roster_position(&entries, 0, &a).unwrap();
+        let (ib, _) = roster_position(&entries, 0, &b).unwrap();
+        let (ic, _) = roster_position(&entries, 0, &c).unwrap();
+        assert_eq!((ia, ib, ic, n), (0, 1, 2, 3));
+        let primary = primary_keeper(7, 0, n);
+        let primaries = [ia, ib, ic].iter().filter(|&&i| i == primary).count();
+        assert_eq!(primaries, 1, "exactly one roster member is primary for a job");
     }
 }
