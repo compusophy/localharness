@@ -361,9 +361,13 @@ pub(crate) fn set_pointer(client_x: f64, client_y: f64) {
     let active_id = ACTIVE_CANVAS_ID.with(|c| c.borrow().clone());
     let Some(el) = dom::by_id(&active_id) else { return };
     let Ok(canvas) = el.dyn_into::<HtmlCanvasElement>() else { return };
+    // The LIVE rect carries both the canvas's current page OFFSET (left/top —
+    // robust to the container sitting anywhere in the layout) and its RENDERED
+    // size (width/height — what CSS letterboxing scaled it to). Reading it every
+    // event means a moved/resized/letterboxed canvas never desyncs the map.
     let rect = canvas.get_bounding_client_rect();
-    let (w, h) = (rect.width(), rect.height());
-    if w <= 0.0 || h <= 0.0 {
+    let (rect_w, rect_h) = (rect.width(), rect.height());
+    if rect_w <= 0.0 || rect_h <= 0.0 {
         return;
     }
     // Map into the canvas's ACTUAL backing-store resolution — the cartridge's
@@ -372,8 +376,12 @@ pub(crate) fn set_pointer(client_x: f64, client_y: f64) {
     // space. Fall back to the default before the first frame sizes the canvas.
     let fb_w = if canvas.width() > 0 { canvas.width() } else { FB_W };
     let fb_h = if canvas.height() > 0 { canvas.height() } else { FB_H };
-    let fx = (((client_x - rect.left()) / w) * fb_w as f64).clamp(0.0, (fb_w - 1) as f64) as i32;
-    let fy = (((client_y - rect.top()) / h) * fb_h as f64).clamp(0.0, (fb_h - 1) as f64) as i32;
+    // framebuffer_x = (clientX - rect.left) * (fb_width / rect.width); same for y.
+    // (clientX - rect.left) is the cursor's offset INTO the rendered canvas and
+    // (fb / rect) is the rendered→framebuffer scale, so together they undo any
+    // page offset AND any letterbox scaling.
+    let fx = ((client_x - rect.left()) * (fb_w as f64 / rect_w)).clamp(0.0, (fb_w - 1) as f64) as i32;
+    let fy = ((client_y - rect.top()) * (fb_h as f64 / rect_h)).clamp(0.0, (fb_h - 1) as f64) as i32;
     POINTER.with(|p| p.set((fx, fy)));
     forward_pointer_to_worker();
 }

@@ -366,6 +366,9 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
         match el.id().as_str() {
             "key" => on_key_input(),
             "apex-input" => claim::on_apex_input(),
+            // Auto-grow the prompt textarea: reset to its single-row height,
+            // then size to the content (CSS caps it at max-height + scrolls).
+            "prompt" => autogrow_textarea(&el),
             _ => {}
         }
     });
@@ -658,6 +661,19 @@ fn on_key_input() {
             super::key_store::save(&value).await;
         });
     }
+}
+
+/// Auto-grow the prompt textarea to its content: collapse to `auto` so the
+/// scroll height reflects the real text height (not the last grown height),
+/// then pin the element to that scroll height. CSS caps it (`max-height`) and
+/// scrolls past the cap. Routed through the ONE delegated `input` listener — no
+/// per-element closure (the app's no-imperative-DOM rule). No-op off a real
+/// `HtmlElement`.
+fn autogrow_textarea(el: &Element) {
+    let Some(ta) = el.dyn_ref::<HtmlElement>() else { return };
+    let style = ta.style();
+    let _ = style.set_property("height", "auto");
+    let _ = style.set_property("height", &format!("{}px", ta.scroll_height()));
 }
 
 /// Recompute the "(N chars)" hint next to the key input. Called from

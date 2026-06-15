@@ -179,6 +179,9 @@ pub(crate) async fn run_send() {
 
     // Clear the prompt, keep focus — the value is already captured above.
     prompt_area.set_value("");
+    // Collapse the auto-grown height back to one row (the `input` listener only
+    // fires on typing, so an empty value would otherwise keep the grown height).
+    let _ = prompt_area.style().set_property("height", "auto");
     let _ = prompt_area.focus();
 
     // Swap the send arrow for the stop button for the whole (possibly
