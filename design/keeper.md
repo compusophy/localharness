@@ -1,11 +1,16 @@
 # design/keeper — a decentralized scheduler keeper (P2P heartbeat)
 
-> **STATUS: open.** The pure decision + roster cores and the live enumeration are
-> SHIPPED and tested (`src/keeper.rs`, `registry::jobs_due`/`all_due_job_ids`, the
-> `localharness keeper` dry-run CLI). What's NOT built — and needs a design
-> decision before any contract change — is the **decentralized trigger**: how a
-> permissionless keeper runs a due job and gets reimbursed without the trusted
-> scheduler-role. This doc lays out that decision.
+> **STATUS: option C SHIPPED; B open.** The decentralized HEARTBEAT (option C) is
+> live: the pure decision + roster cores (`src/keeper.rs`), the cross-owner due
+> enumeration (`registry::jobs_due`/`all_due_job_ids`), the proxy's public
+> `?poke=<jobId>` trigger (`proxy/api/scheduler.ts`, deployed), and the
+> `localharness keeper` CLI that reads the due set and pokes the proxy to run each.
+> Any keeper (CLI / browser tab) is now a scheduler heartbeat, so jobs fire even if
+> the single Vercel cron stalls — trust-free (run+commit stay in the proxy
+> executor; a poke only ever runs a genuinely-due job once). What remains OPEN is
+> **B: trustless EXECUTION** (stake + challenge/slash so the executor itself is
+> decentralized, not just the heartbeat). The trust analysis below is why A was
+> rejected and C shipped first.
 
 ## Why
 
