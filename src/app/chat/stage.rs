@@ -23,10 +23,16 @@ thread_local! {
 
 /// Arm the painter for a fresh turn: empty pipeline, swap target
 /// `#stage-{turn_id}` (the container is already in the turn's body —
-/// `templates::stage_container`). Nothing paints until the first [`enter`].
+/// `templates::stage_container`). Paints the indicator-only line IMMEDIATELY
+/// (no words yet) so the single unified indicator is live from the click and
+/// the line holds a stable height before the first [`enter`] — every later
+/// stage is then an in-place swap, never a first-paint reflow.
 pub(crate) fn begin(turn_id: u32) {
     PIPELINE.with(|p| *p.borrow_mut() = StagePipeline::new());
-    TARGET.with(|t| *t.borrow_mut() = Some(format!("stage-{turn_id}")));
+    let target = format!("stage-{turn_id}");
+    let slots = PIPELINE.with(|p| p.borrow().slots());
+    dom::swap_inner(&target, &templates::stage_line(&slots).into_string());
+    TARGET.with(|t| *t.borrow_mut() = Some(target));
 }
 
 /// Record that `stage` is happening NOW and repaint the line iff it changed

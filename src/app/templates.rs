@@ -550,12 +550,18 @@ pub(crate) fn stage_container(turn_id: u32) -> Markup {
     }
 }
 
-/// The stage pipeline line itself: lowercase stage words joined by `→`,
-/// the CURRENT one emphasized (`st-now`, pulses), crossed ones muted
-/// (`st-past`), re-walked ones dim (`st-dim`). Monochrome, terse, no prose.
+/// The stage pipeline line itself: a SINGLE persistent monochrome indicator
+/// (`.st-dot`, the one animated cue for every stage — no per-stage spinner)
+/// followed by the lowercase stage words joined by `→`, the CURRENT one
+/// emphasized (`st-now`, static weight/color), crossed ones muted (`st-past`),
+/// re-walked ones dim (`st-dim`). Rendered even with no slots yet (the dot
+/// alone) so the line occupies a stable height the moment the turn begins and
+/// every state change is an in-place text/class swap — never an appear/vanish
+/// reflow of the transcript below. Monochrome, terse, no prose.
 pub(crate) fn stage_line(slots: &[(crate::turn_stage::Stage, crate::turn_stage::Slot)]) -> Markup {
     use crate::turn_stage::Slot;
     html! {
+        span.st-dot aria-hidden="true" {}
         @for (i, (stage, slot)) in slots.iter().enumerate() {
             @if i > 0 { span.st-sep { " → " } }
             span class=(match slot {
