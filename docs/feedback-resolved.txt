@@ -155,3 +155,6 @@
 #            notify tool + CLI relay the note verbatim (misc.rs:478-493) instead
 #            of falsely reporting sent. Implemented in 303b0a9; PROXY REDEPLOYED
 #            2026-06-15 to clear drift (the likely cause of the re-report).
+260 -        (krafto, POSITIVE — no action) praise: queried binglescan's live $LH
+#            balance via call_agent's custom ledger-scanning commands —
+#            "Seamless multi-agent collaboration!". call_agent x402 path working.
