@@ -14,6 +14,7 @@
 
 mod abi;
 mod bounty;
+pub mod chain;
 mod credits;
 mod diamond;
 mod feedback;
@@ -56,26 +57,21 @@ pub use validation::*;
 pub use voting::*;
 pub use x402::*;
 
-/// Tempo Moderato testnet RPC. Per the tempo-x402 reference.
-pub const RPC_URL: &str = "https://rpc.moderato.tempo.xyz";
+/// Active-chain RPC endpoint (default Moderato testnet; `mainnet` feature →
+/// Tempo mainnet). Sourced from [`chain::ACTIVE`].
+pub const RPC_URL: &str = chain::ACTIVE.rpc_url;
 
-/// `LocalharnessRegistry` Diamond on Tempo Moderato testnet
-/// (chain id 42431). **Fresh deployment 2026-05-25** —
-/// `DeployDiamond.s.sol` + `AddErc721Fresh.s.sol` + `AddTbaFacet.s.sol`.
-/// Replaces the previous diamond at `0xed7a2d…c656d` (test registrations
-/// abandoned; old NFTs orphan in their owners' wallets).
+/// `LocalharnessRegistry` Diamond address on the active chain (default the
+/// Moderato deployment; `mainnet` feature → the mainnet diamond). Sourced from
+/// [`chain::ACTIVE`].
 ///
-/// The diamond proxy holds the storage; the actual `register /
-/// ownerOfName / idOfName / …` selectors dispatch to per-facet
-/// addresses. ABI-compatible with the previous diamond — bundle code
-/// reads `nextId() / ownerOfName(string) / …` unchanged.
-///
-/// Owner (deployer / admin): 0x313b1659F5037080aA0C113D386C5954F348EF1e
-/// Predecessor (diamond v1): 0xed7a2d170ab2d41721c9bd7368adbff6df0c656d
-pub const REGISTRY_ADDRESS: &str = "0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c";
+/// The diamond proxy holds the storage; `register / ownerOfName / idOfName / …`
+/// selectors dispatch to per-facet addresses. Owner (deployer/admin):
+/// `0x313b1659F5037080aA0C113D386C5954F348EF1e`.
+pub const REGISTRY_ADDRESS: &str = chain::ACTIVE.diamond;
 
-/// Tempo Moderato chain id — used in EIP-155 v computation.
-pub const CHAIN_ID: u64 = 42431;
+/// Active-chain id — used in EIP-155 v computation. Sourced from [`chain::ACTIVE`].
+pub const CHAIN_ID: u64 = chain::ACTIVE.chain_id;
 
 // `BOOTSTRAP_FAUCET_ADDRESS` (the dormant BootstrapFaucet.sol breadcrumb —
 // unusable on Tempo Moderato, which refuses EOA↔contract native value
@@ -93,8 +89,9 @@ pub const CHAIN_ID: u64 = 42431;
 /// fresh supply is through the facet's `claimDaily()`. Owner can
 /// tune the per-day allowance via `setDailyAllowance` on the diamond.
 ///
-/// name: "localharness credits", symbol: "LH", decimals: 18.
-pub const LOCALHARNESS_TOKEN_ADDRESS: &str = "0x90B84c7234Aae89BadA7f69160B9901B9bc37B17";
+/// name: "localharness credits", symbol: "LH", decimals: 18. Address sourced
+/// from [`chain::ACTIVE`] (default Moderato; `mainnet` feature → mainnet $LH).
+pub const LOCALHARNESS_TOKEN_ADDRESS: &str = chain::ACTIVE.lh_token;
 
 // Shared test helpers re-exported for the facet submodules' own test mods. The
 // `use` precedes the module so `test_support` stays the file's LAST item (Rust

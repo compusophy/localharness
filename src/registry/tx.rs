@@ -111,10 +111,10 @@ pub(crate) fn decode_u256_as_u128(hex: &str) -> Result<u128, String> {
 
 // --- Tempo tx submission ---------------------------------------------
 
-/// Native TIP-20 stablecoins on Tempo Moderato. These ARE eligible as
-/// `fee_token` on a Tempo Transaction; our $LH is not (TIP-20-compliance
-/// check fails). Pick one as the default fee_token for user-facing txs.
-pub const ALPHA_USD_ADDRESS: &str = "0x20c0000000000000000000000000000000000001";
+/// Default USD-currency TIP-20 used as the sponsor `fee_token` (our $LH is NOT
+/// eligible — its TIP-20 `currency()` is "credits", not "USD"). Sourced from
+/// the active chain ([`super::chain::ACTIVE`]); on Moderato this is AlphaUSD.
+pub const ALPHA_USD_ADDRESS: &str = super::chain::ACTIVE.fee_token;
 
 /// Sign and submit a SELF-PAID Tempo tx. Sender pays fees in
 /// `fee_token` (`None` = native). Returns the tx hash once mined.

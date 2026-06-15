@@ -77,6 +77,11 @@ wallet = ["dep:k256", "dep:sha3", "dep:rand_core", "dep:bip39", "dep:zeroize"]
 # does not touch the default build or the Gemini backend. BYOK only here;
 # the credit-proxy/credits routing is Phase C (out of scope).
 anthropic = []
+# `mainnet` flips `registry::chain::ACTIVE` from Moderato testnet to Tempo
+# mainnet (chain 4217). Default OFF = byte-for-byte testnet. Do NOT ship until
+# the mainnet diamond/$LH/fee-token addresses are filled in (chain.rs MAINNET
+# placeholders are empty on purpose — see design/stripe-mainnet.md step 12).
+mainnet = []
 # `openai` compiles the OpenAI Chat Completions backend
 # (`src/backends/openai/`): `POST /v1/chat/completions` as a
 # `ConnectionStrategy`. Purely additive — off by default, pulls no new deps
