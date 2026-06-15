@@ -128,7 +128,17 @@
 220 1340f72  (krafto) home link → absolute apex URL, not relative "/" — escapes
 #            the subdomain + installed-PWA scope so home lands on the apex
 #            (the user's subdomain list + create new), templates.rs site_header
+221 c3ec843  (krafto) consolidated: 4/5 sub-points shipped — .2 PartyFacet IS
+#            cut (0xAF1f6A28…, verified via loupe facetAddress), .3 rustlite
+#            array writes work (arrays.rl + life.rl corpus tests pass), .4
+#            shared volume = SessionRoom #22 (0xa867Dde2…), .5 P2P keeper
+#            shipped (option C). REMAINING: .1 fiat/L2 on-ramps = the Stripe ↔
+#            Tempo-mainnet work, now UNBLOCKED (mainnet live, chain 4217) and
+#            designed in design/stripe-mainnet.md — tracked there, not re-filed.
 222 1340f72  (krafto) UI/UX cluster already shipped: textarea resize:none
 #            (styles.css .terminal-row textarea), autogrow_textarea
 #            (events/mod.rs:672 + max-height cap), send/stop are flex siblings
 #            in .terminal-row, context bar removed (#62, 652fdb6)
+223 c3ec843  (krafto) rustlite emits explicit type-mismatch errors with location
+#            hints (the shadowing/typecheck pass); array-write + 64-bit corpus
+#            cartridges instantiate without wasm traps. Kudos-confirm, no gap.
