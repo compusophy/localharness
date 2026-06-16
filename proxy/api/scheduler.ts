@@ -322,6 +322,25 @@ const SCHEDULE_ABI = [
   },
 ] as const;
 
+// TitheFacet ABI — only `collectTithe(account)`, the PERMISSIONLESS revenue→
+// treasury pull the scheduler may trigger (TitheFacet.sol). It reads ONLY
+// `account`'s OWN stored `(guildId, bps)` and pulls
+// `min(bps·balanceOf(account)/10000, allowance(account, diamond))` into the
+// account's own pre-consented guild — the caller can neither redirect (guild/bps
+// come from the account's config, never the caller) nor over-pull (capped by the
+// account's own `approve` ceiling). So the scheduler key signs it with ZERO new
+// authority: it is exactly the "anyone may trigger" path the facet was built for.
+// Returns the amount pulled (0 reverts NothingToCollect on-chain).
+const TITHE_ABI = [
+  {
+    name: 'collectTithe',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'account', type: 'address' }],
+    outputs: [{ name: 'amount', type: 'uint256' }],
+  },
+] as const;
+
 // metadata(uint256,bytes32) -> bytes — persona lookup (shared with mcp.ts).
 const METADATA_ABI = [
   {
@@ -639,8 +658,10 @@ function decodeUtf8Bytes(hex: `0x${string}`): string {
 // target persona) is a BOUNDED tool loop: the scheduled agent gets
 // `call_agent(name, message)` (consult/delegate to another agent IN-TICK),
 // `schedule_task(target, task, interval_seconds, budget_lh, runs)` (spawn a
-// CROSS-TICK follow-up job), and `notify_owner(title, body)` (Web-Push the JOB
-// OWNER's registered device — feedback #69). Each loop round is one generateContent under the
+// CROSS-TICK follow-up job), `notify_owner(title, body)` (Web-Push the JOB
+// OWNER's registered device — feedback #69), and `collect_tithe(account)` (trigger
+// the permissionless TitheFacet revenue→treasury pull for a consented account).
+// Each loop round is one generateContent under the
 // JOB's target persona; a `call_agent` functionCall resolves that target's on-chain
 // persona and runs ONE generateContent for the sub-agent (sub-agents are SINGLE
 // turns — no nested loops, so the call tree is bounded to depth 1), feeding the
@@ -731,7 +752,7 @@ interface GeminiContent {
 }
 
 // The tools the scheduled agent gets. Single-`type` schemas with no union /
-// additionalProperties (Gemini 400s on those — see CLAUDE.md gotcha). FOUR tools:
+// additionalProperties (Gemini 400s on those — see CLAUDE.md gotcha). FIVE tools:
 //   * call_agent      — consult/delegate to another agent THIS run (in-tick).
 //   * schedule_task   — spawn a FOLLOW-UP scheduled job funded from THIS job's
 //                       remaining budget (cross-tick recursion via
@@ -742,6 +763,19 @@ interface GeminiContent {
 //   * finish_goal     — declare the job's GOAL verifiably complete: ends the
 //                       recurring job on-chain (completeJob) and refunds the
 //                       remaining escrow to the owner. The /goal ralph-loop exit.
+//   * collect_tithe   — trigger TitheFacet.collectTithe(account), the
+//                       PERMISSIONLESS revenue→treasury pull. Zero new authority
+//                       (the facet pulls only the account's OWN consented share
+//                       into its OWN guild); budget-counted like a model call for
+//                       anti-spam. The treasurer-without-a-tab affordance.
+//
+// NOTE: there is NO `post_bounty` tool. The existing permissionless
+// `BountyFacet.postBounty` escrows from `msg.sender` (the scheduler key → the
+// PLATFORM funds the reward, not the job's escrow) and gates accept/cancel on the
+// poster (→ the bounty + its refund strand under the PLATFORM). It needs a
+// net-new scheduler-role `postBountyFromJob(jobId, …)` that draws from the job's
+// ScheduleFacet escrow + sets the OWNER as poster (the maintainer cuts it); only
+// then is `post_bounty` wired. See `findToolCall`.
 const AGENT_TOOLS = {
   functionDeclarations: [
     {
@@ -837,6 +871,22 @@ const AGENT_TOOLS = {
         required: ['report'],
       },
     },
+    {
+      name: 'collect_tithe',
+      description:
+        'Trigger the on-chain auto-tithe for an account that has opted in (via setTithe): pull its consented share of $LH from its own balance into the guild treasury it chose. The destination guild and percentage come from THAT account\'s own prior consent, never from you — you can only TRIGGER a collection the account already configured, never redirect or inflate it. Use it as a guild treasurer to sweep a member\'s pledged revenue into the treasury without their tab open. The account address is a 0x… address with a live tithe consent.',
+      parameters: {
+        type: 'object',
+        properties: {
+          account: {
+            type: 'string',
+            description:
+              'The 0x… account address whose consented tithe to collect. It must have an active setTithe consent and a standing $LH allowance to the diamond, or the collection reverts.',
+          },
+        },
+        required: ['account'],
+      },
+    },
   ],
 } as const;
 
@@ -883,7 +933,18 @@ function partsText(parts: GeminiPart[]): string {
 }
 
 /** First functionCall part addressed to a known tool (call_agent /
- * schedule_task / notify_owner / finish_goal), if any. */
+ * schedule_task / notify_owner / finish_goal / collect_tithe), if any.
+ *
+ * NOTE: `post_bounty` is deliberately NOT here. It cannot reuse the existing
+ * permissionless `BountyFacet.postBounty` from the scheduler key — that escrows
+ * `transferFrom(msg.sender, …)` (so the PLATFORM funds the reward, not the job's
+ * own escrow) and gates `acceptResult`/`cancelBounty` on `msg.sender == poster`
+ * (so the bounty + its refund strand under the PLATFORM, never the owner). Wiring
+ * it would silently spend platform funds and break the trust envelope. It needs a
+ * net-new scheduler-role `postBountyFromJob(jobId, …)` facet fn that DRAWS the
+ * reward from the job's ScheduleFacet escrow and sets the JOB OWNER as poster
+ * (mirroring `scheduleChildJob`'s escrow-draw + pinned-parent pattern); the
+ * maintainer cuts that, then `post_bounty` joins this allowlist + the tool list. */
 function findToolCall(parts: GeminiPart[]): GeminiFunctionCall | null {
   for (const p of parts) {
     if (
@@ -891,7 +952,8 @@ function findToolCall(parts: GeminiPart[]): GeminiFunctionCall | null {
       (p.functionCall.name === 'call_agent' ||
         p.functionCall.name === 'schedule_task' ||
         p.functionCall.name === 'notify_owner' ||
-        p.functionCall.name === 'finish_goal')
+        p.functionCall.name === 'finish_goal' ||
+        p.functionCall.name === 'collect_tithe')
     ) {
       return p.functionCall;
     }
@@ -1027,10 +1089,13 @@ interface PingPongResult {
  * Tools the agent may call: `call_agent` (consult/delegate in-tick, depth-1 sub-
  * agents that never recurse), `schedule_task` (spawn a child job funded from
  * THIS job's remaining escrow via `scheduleChildJob`, with `parentJobId` pinned
- * to the running job — the facet enforces budget draw + MAX_DEPTH), and
+ * to the running job — the facet enforces budget draw + MAX_DEPTH),
  * `notify_owner` (Web-Push a note to the JOB owner's registered device via
  * `sendOwnerPush` — the owner is wired from the job record, never from model
- * args, so a run can only ever buzz its OWN owner). A tool error (bad args,
+ * args, so a run can only ever buzz its OWN owner), and `collect_tithe` (trigger
+ * the permissionless `TitheFacet.collectTithe(account)` — the facet pulls only
+ * the account's OWN consented share into its OWN guild, so the scheduler signs it
+ * with zero new authority). A tool error (bad args,
  * unregistered target, facet revert) becomes an error functionResponse — the
  * loop continues, never hangs.
  *
@@ -1251,6 +1316,48 @@ async function runPingPong(
       continue;
     }
 
+    if (call.name === 'collect_tithe') {
+      // PERMISSIONLESS TITHE PULL (TitheFacet.collectTithe). Not a model call,
+      // but COUNTED through the same gate + ledger as one (mirrors schedule_task /
+      // notify_owner): it spends scheduler gas + is an agent-initiated action, so
+      // metering it keeps a loop from spamming collectTithe for free AND keeps the
+      // per-job-budget / per-tick-cap accounting in lockstep. No new authority —
+      // the facet pulls only `account`'s own consented share into the account's own
+      // guild; a revert (NotConfigured / UnknownGuild / NothingToCollect) is fed
+      // back so the agent reacts or finishes.
+      const account = asAddress(call.args?.account); // null on a malformed arg
+      if (account === null) {
+        responsePayload = { error: 'account must be a 0x… 20-byte address' };
+      } else if (!mayMeterCall()) {
+        responsePayload = {
+          error: budgetCapped
+            ? 'budget exhausted: not enough remaining $LH to collect a tithe'
+            : clockCapped
+              ? 'tick wall-clock budget reached: cannot collect a tithe this run'
+              : 'per-tick spend cap reached: cannot collect a tithe this tick',
+        };
+      } else {
+        calls++;
+        commitSpend(tb, owner, COST_WEI);
+        try {
+          const amount = await collectTithe(account);
+          responsePayload = { collected: true, amountWei: amount.toString() };
+        } catch (e) {
+          // A facet revert (NotConfigured / UnknownGuild / NothingToCollect) or
+          // an unconfirmed receipt — surface it; never hang.
+          responsePayload = { error: (e as Error).message };
+        }
+      }
+      contents.push({
+        role: 'function',
+        parts: [
+          { functionResponse: { name: 'collect_tithe', response: responsePayload } },
+        ],
+      });
+      if (tickCapped || clockCapped) break; // a tick cap / spent wall-clock share halts the run
+      continue;
+    }
+
     // call.name === 'call_agent'
     const targetName =
       typeof call.args?.name === 'string' ? (call.args.name as string).trim() : '';
@@ -1443,6 +1550,59 @@ async function scheduleChildJob(
     throw new Error(`scheduleChildJob unconfirmed: ${(e as Error).message}`);
   }
   // simulateContract returned the would-be childJobId; the write matched it.
+  return result as bigint;
+}
+
+/** Normalize a Gemini-supplied `account` arg to a checksummed-lowercase 0x EVM
+ * address, or null if it isn't a 20-byte hex address — so a malformed arg becomes
+ * a functionResponse error and never reaches the chain. */
+function asAddress(v: unknown): `0x${string}` | null {
+  const s = (typeof v === 'string' ? v : '').trim();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(s)) return null;
+  return s.toLowerCase() as `0x${string}`;
+}
+
+/**
+ * collectTithe — the PERMISSIONLESS revenue→treasury pull (TitheFacet), signed
+ * by the scheduler key. Same plumbing as `scheduleChildJob`: simulate first so a
+ * facet revert (NotConfigured / UnknownGuild / NothingToCollect) is decoded into
+ * a readable reason BEFORE spending gas, then write + await the 12s receipt.
+ *
+ * ZERO new authority is granted by the signer: the facet reads ONLY `account`'s
+ * own stored `(guildId, bps)` and clamps the pull to the account's own
+ * balance·bps AND its own `approve` ceiling, into the account's own consented
+ * guild — the scheduler can neither redirect nor over-pull. The scheduler funds
+ * only the tx gas; the $LH moved comes from `account`. Returns the amount pulled
+ * (simulate's return value); throws a readable reason on a revert / unconfirmed
+ * receipt so the caller feeds it back as a functionResponse error (never hangs).
+ */
+async function collectTithe(account: `0x${string}`): Promise<bigint> {
+  const wallet = schedulerWallet();
+  const pub = publicClient();
+  const { request, result } = await pub.simulateContract({
+    address: REGISTRY as `0x${string}`,
+    abi: TITHE_ABI,
+    functionName: 'collectTithe',
+    args: [account],
+    account: wallet.account!,
+  });
+  const hash = await wallet.writeContract(request);
+  try {
+    const { status } = await pub.waitForTransactionReceipt({
+      hash,
+      timeout: 12_000,
+      pollingInterval: 500,
+    });
+    if (status === 'reverted') {
+      throw new Error(`collectTithe reverted on-chain (tx ${hash})`);
+    }
+  } catch (e) {
+    // simulate already passed, so a timeout most likely means it WILL land — but
+    // we can't confirm the amount, so surface it rather than claim a pull we
+    // didn't observe. A hard revert is rethrown verbatim.
+    throw new Error(`collectTithe unconfirmed: ${(e as Error).message}`);
+  }
+  // simulateContract returned the would-be `amount`; the write matched it.
   return result as bigint;
 }
 
