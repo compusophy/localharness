@@ -96,6 +96,44 @@ function payloadError(provider: Provider, parsed: unknown): string | null {
   return null;
 }
 
+/**
+ * Cap the provider's max-output field DOWN to `MAX_OUTPUT_TOKENS` (Option B,
+ * design/metering.md), mutating `body`. Returns true if it changed (→
+ * re-serialize the forwarded body). No-op when the cap is unset, so flag-off is
+ * byte-identical. Gemini: generationConfig.maxOutputTokens (SET if absent — the
+ * model's default is otherwise unbounded to its 66k ceiling). Anthropic:
+ * max_tokens (required, so always present → cap if above). OpenAI: cap
+ * max_tokens / max_completion_tokens if present (don't set-if-absent — the field
+ * name varies by model, and OpenAI is the smaller exploit surface).
+ */
+function capOutputTokens(provider: Provider, body: Record<string, unknown>): boolean {
+  if (!(MAX_OUTPUT_TOKENS > 0)) return false;
+  const cap = MAX_OUTPUT_TOKENS;
+  if (provider === 'gemini') {
+    const gc = (typeof body.generationConfig === 'object' && body.generationConfig !== null
+      ? body.generationConfig
+      : {}) as Record<string, unknown>;
+    const cur = typeof gc.maxOutputTokens === 'number' ? gc.maxOutputTokens : Infinity;
+    if (cur <= cap) return false;
+    gc.maxOutputTokens = cap;
+    body.generationConfig = gc;
+    return true;
+  }
+  let changed = false;
+  if (provider === 'anthropic' && typeof body.max_tokens !== 'number') {
+    body.max_tokens = cap; // Anthropic requires max_tokens; bind it to the cap.
+    changed = true;
+  }
+  for (const field of ['max_tokens', 'max_completion_tokens']) {
+    const cur = body[field];
+    if (typeof cur === 'number' && cur > cap) {
+      body[field] = cap;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 const TEMPO_CHAIN = defineChain({
   id: CHAIN_ID,
   name: 'Tempo Moderato',
@@ -122,6 +160,14 @@ const FRESHNESS_WINDOW_SECS = 300; // 5 min — tight replay window (clients sig
 // caller can't make the proxy buffer a multi-GB body. Real LLM requests (long
 // context + tools) are a few MB; 16 MB is comfortably above legitimate use.
 const MAX_BODY_BYTES = 16_000_000;
+// Env-gated request guardrails (Option B, design/metering.md). BOTH default OFF
+// (0/unset) -> byte-identical to today. LH_MAX_OUTPUT_TOKENS caps the upstream
+// max-output per request (the dominant exploit: a tiny prompt eliciting a
+// model's 66k/128k-token max output costs us 16-59x the flat charge).
+// LH_MAX_CREDITS_BODY_BYTES bounds input (context-stuffing). The real margin fix
+// is usage-based billing (Option A) — these only cap the catastrophic tail.
+const MAX_OUTPUT_TOKENS = Number(process.env.LH_MAX_OUTPUT_TOKENS ?? '0');
+const MAX_CREDITS_BODY_BYTES = Number(process.env.LH_MAX_CREDITS_BODY_BYTES ?? '0');
 // Only browser origins under our own domain may invoke the proxy (H2). A
 // server-side caller sends no Origin header and is allowed through.
 const ALLOWED_ORIGIN_SUFFIX = '.localharness.xyz';
@@ -434,6 +480,10 @@ export default async function handler(req: Request): Promise<Response> {
       }
       const gemErr = payloadError('gemini', parsedGem);
       if (gemErr) return json({ error: gemErr }, 400, origin);
+      // Cap upstream max-output (Option B; no-op unless LH_MAX_OUTPUT_TOKENS set).
+      if (capOutputTokens('gemini', parsedGem as Record<string, unknown>)) {
+        requestBody = JSON.stringify(parsedGem);
+      }
     } else if (
       reqUrl.pathname === '/v1/messages' ||
       reqUrl.pathname === '/v1/chat/completions'
@@ -453,8 +503,18 @@ export default async function handler(req: Request): Promise<Response> {
       // Reject an EMPTY turn locally (400, NO charge) before the gate.
       const payErr = payloadError(provider, parsed);
       if (payErr) return json({ error: payErr }, 400, origin);
+      // Cap upstream max-output (Option B; no-op unless LH_MAX_OUTPUT_TOKENS set).
+      if (capOutputTokens(provider, parsed as Record<string, unknown>)) {
+        requestBody = JSON.stringify(parsed);
+      }
     } else {
       return json({ error: 'unsupported path' }, 400, origin);
+    }
+
+    // Env-gated input bound (Option B): reject an oversized credits-path body
+    // (context-stuffing) when LH_MAX_CREDITS_BODY_BYTES is set. Off by default.
+    if (MAX_CREDITS_BODY_BYTES > 0 && requestBody.length > MAX_CREDITS_BODY_BYTES) {
+      return json({ error: 'request body exceeds the credits-path limit' }, 413, origin);
     }
 
     // AUTH — the localharness token `<address>:<timestamp>:<signature>` rides in
