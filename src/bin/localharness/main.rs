@@ -427,6 +427,8 @@ GUILDS & GOVERNANCE
                                          pay $LH from the guild treasury (admin/officer)
   localharness guild members <guildId>   list a guild's members + their roles
   localharness guild treasury <guildId>  show a guild's $LH balance + wallet address
+  localharness tithe --as <agent> <guildId> <amount>
+                                         agent's TBA contributes its earnings to the treasury (revenue->treasury)
   localharness guild mine [--as <me>]    list the guilds you belong to
   localharness vote propose [--as <me>] <guildId> <to> <amount> [--period <dur>] [memo...]
                                          a guild member proposes a treasury spend,
@@ -564,6 +566,19 @@ async fn run(args: &[String]) -> i32 {
             }
             Ok(_) => {
                 eprintln!("usage: localharness send [--as <me>] <recipient> <amount>");
+                2
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
+        Some("tithe") => match take_as_flag(&args[1..]) {
+            Ok((caller, rest)) if rest.len() == 2 => {
+                tithe(caller.as_deref(), &rest[0], &rest[1]).await
+            }
+            Ok(_) => {
+                eprintln!("usage: localharness tithe --as <agent> <guildId> <amount>");
                 2
             }
             Err(e) => {

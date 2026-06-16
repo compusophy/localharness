@@ -389,6 +389,104 @@ pub(crate) async fn guild_fund(caller: Option<&str>, id_arg: &str, amount: &str)
     }
 }
 
+/// `tithe --as <agent> <guildId> <amount>` — an agent's token-bound account
+/// contributes <amount> $LH of its OWN earnings to a guild's treasury (the
+/// revenue→treasury leg that makes a guild self-funding). The agent's TBA
+/// executes a batched approve(diamond)+fundGuild in ONE sponsored tx
+/// (auto-deploys the TBA if needed). Driven by the agent's own key (--as).
+pub(crate) async fn tithe(caller: Option<&str>, id_arg: &str, amount: &str) -> i32 {
+    let guild_id = match parse_guild_id(id_arg) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let amount_wei = match localharness::encoding::parse_token_amount(amount) {
+        Some(w) if w > 0 => w,
+        _ => {
+            eprintln!("tithe: invalid amount '{amount}' (expected a positive number of $LH)");
+            return 2;
+        }
+    };
+    let Some(agent) = caller else {
+        eprintln!("tithe: --as <agent> is required (the agent whose TBA tithes its earnings)");
+        return 2;
+    };
+    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    let tba_addr = match registry::tba_of_name(agent).await {
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            eprintln!("tithe: '{agent}' is not registered (no token-bound account)");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("tithe: RPC error resolving '{agent}': {e}");
+            return 1;
+        }
+    };
+    let token_id = registry::id_of_name(agent).await.unwrap_or(0);
+    if token_id == 0 {
+        eprintln!("tithe: '{agent}' has no token id");
+        return 1;
+    }
+    // The TBA tithes its OWN balance — refuse if it can't cover it.
+    let bal = registry::token_balance_of(&tba_addr).await.unwrap_or(0);
+    if bal < amount_wei {
+        eprintln!(
+            "tithe: {agent}'s TBA holds {} but you asked to tithe {}",
+            fmt_lh(bal),
+            fmt_lh(amount_wei)
+        );
+        return 1;
+    }
+    let approve = match registry::approve_credits_call(amount_wei) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("tithe: {e}");
+            return 1;
+        }
+    };
+    let fund = match registry::fund_guild_call(guild_id, amount_wei) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("tithe: {e}");
+            return 1;
+        }
+    };
+    let targets = vec![(approve.to, approve.input), (fund.to, fund.input)];
+    println!(
+        "{agent}'s TBA {tba_addr} tithing {} to guild #{guild_id}'s treasury …",
+        fmt_lh(amount_wei)
+    );
+    match registry::tba_execute_batch_sponsored(
+        &signer,
+        &sponsor,
+        token_id,
+        &tba_addr,
+        &targets,
+        registry::ALPHA_USD_ADDRESS,
+        2_000_000,
+    )
+    .await
+    {
+        Ok(tx) => {
+            println!(
+                "✓ {agent} tithed {} to guild #{guild_id}'s treasury  tx: {tx}",
+                fmt_lh(amount_wei)
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("tithe failed: {e}");
+            1
+        }
+    }
+}
+
 /// `guild spend <guildId> <to> <amount> [memo]` — pay `$LH` from the guild
 /// treasury to a name/address (`spendTreasury`). Admin/officer-gated on-chain.
 pub(crate) async fn guild_spend(caller: Option<&str>, id_arg: &str, to: &str, amount: &str, memo: &str) -> i32 {

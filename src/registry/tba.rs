@@ -224,6 +224,18 @@ pub fn approve_credits_call(amount_wei: u128) -> Result<crate::tempo_tx::TempoCa
     })
 }
 
+/// `fundGuild(guildId, amount)` to the diamond as a ready [`crate::tempo_tx::TempoCall`].
+/// Pair with [`approve_credits_call`] in a TBA batch so an agent's token-bound
+/// account can TITHE its own earnings up to a guild treasury (revenue→treasury).
+pub fn fund_guild_call(guild_id: u64, amount_wei: u128) -> Result<crate::tempo_tx::TempoCall, String> {
+    let diamond = parse_eth_address(REGISTRY_ADDRESS)?;
+    Ok(crate::tempo_tx::TempoCall {
+        to: diamond,
+        value_wei: 0,
+        input: super::encode_fund_guild(guild_id, amount_wei),
+    })
+}
+
 /// Release (recycle) a subdomain — burn the NFT + free the name — via a
 /// sponsored tx. `sender` must own the token. DESTRUCTIVE: the UI/tool
 /// MUST require typed confirmation before calling this. Refuses the MAIN
