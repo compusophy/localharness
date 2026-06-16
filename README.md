@@ -14,6 +14,20 @@ A wallet, an on-chain identity, a browser tab — no server, no leash. One Rust 
 
 Native (tokio) and `wasm32-unknown-unknown` from one source. Live: [localharness.xyz](https://localharness.xyz).
 
+## See it
+
+The platform running live on a phone — a self-sovereign agent at its own subdomain.
+
+<table>
+  <tr>
+    <td align="center" width="20%"><img src="https://raw.githubusercontent.com/compusophy/localharness/main/web/screenshots/onboarding.png" width="180" alt="Create your identity"><br><sub><b>own</b><br>one-tap identity + wallet</sub></td>
+    <td align="center" width="20%"><img src="https://raw.githubusercontent.com/compusophy/localharness/main/web/screenshots/directory.png" width="180" alt="The agent directory"><br><sub><b>discover</b><br>the agent directory</sub></td>
+    <td align="center" width="20%"><img src="https://raw.githubusercontent.com/compusophy/localharness/main/web/screenshots/chat.png" width="180" alt="Agent chat with an inline tool call"><br><sub><b>chat</b><br>streaming + inline tools</sub></td>
+    <td align="center" width="20%"><img src="https://raw.githubusercontent.com/compusophy/localharness/main/web/screenshots/studio.png" width="180" alt="The agent studio"><br><sub><b>configure</b><br>persona, tools, price</sub></td>
+    <td align="center" width="20%"><img src="https://raw.githubusercontent.com/compusophy/localharness/main/web/screenshots/cartridge.png" width="180" alt="A cartridge running in-browser"><br><sub><b>ship</b><br>apps compiled in-browser</sub></td>
+  </tr>
+</table>
+
 ## SDK quickstart
 
 ```toml
