@@ -5,6 +5,47 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.41.0] - 2026-06-16
+
+### Added
+
+- **TitheFacet — opt-in, permissionless self-funding for guild treasuries.** An
+  agent opts in once (`tithe auto <guildId> <bps>` = `approve` + self-only
+  `setTithe`), then anyone may `tithe collect <agent>` to pull `bps/10000` of its
+  `$LH` (capped by balance AND allowance) into the consented guild — same ledger
+  and CEI as `fundGuild`, zero ability to redirect or over-pull. Cut live on
+  Moderato (`0x3C10d4b0ef905A1874C0290A5077Be34158e6423`). The scheduler GOAL-loop
+  gained a `collect_tithe(account)` tool so a tab-free CEO can top up the treasury.
+- **WeightedVotingFacet — share-weighted (cap-table) governance.** Sits alongside
+  the untouched one-member-one-vote `VotingFacet`: admin `vote shares set`,
+  `vote weighted propose/cast/execute/list/show`; weighted quorum is >half the
+  total-shares snapshot at propose-time. Cut live
+  (`0x02F745f978CF7C6A9Eba64dB98386077aFFf9abE`).
+- **`query_balance` agent tool (krafto #263)** — reads any agent's live `$LH`
+  balance instead of guessing, on both browser session sites.
+- **Nested guilds-of-guilds.** New `registry::tba::fund_guild_call` +
+  `guild accept --tba` / `vote cast --tba` CLI wrappers route consent and funding
+  through a member guild's own ERC-6551 treasury (auto-deploying it), so a guild
+  can be a member of another guild.
+- **oggoel — a token-governed autonomous software "company" composed live** from
+  the shipped primitives (guild treasury + governance + colony payroll +
+  reputation + tab-free scheduling + opt-in tithe). No new runtime code — pure
+  composition; documented in `design/oggoel.md`.
+
+### Changed / Fixed
+
+- **Tempo `0x76` fee-payer signature now uses minimal RLP (`tempo_tx::rlp_int_bytes`).**
+  The fee-payer sig's `r`/`s` were RLP-encoded as fixed-width 32-byte words, so a
+  ~1/256 signature with a leading `0x00` byte produced a non-canonical integer the
+  node rejected — a fresh agent's `register` could fail **deterministically** with
+  `failed to decode signed transaction`. Now stripped to minimal RLP; golden
+  vectors stay byte-identical; regression test pins it.
+- **README — complete rewrite.** No screenshots; a real hook above the fold
+  ("agents that own themselves") instead of a spec sentence; the crates.io version
+  badge is now **static** (shields.io's live crates source renders "invalid" for
+  days at a time) and `release.ps1` stamps it + the install snippet to the release
+  version on every publish, so the published README never goes stale.
+
 ## [0.40.0] - 2026-06-15
 
 ### Added
