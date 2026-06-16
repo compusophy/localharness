@@ -234,50 +234,6 @@ export function centsToWei(cents: number): bigint {
   return BigInt(cents) * PEG_WEI_PER_USD_CENT;
 }
 
-// --- off-session (Tier 2) customer mapping -----------------------------
-//
-// The lh_address ↔ Stripe Customer link is stored IN STRIPE
-// (Customer.metadata.lh_address) — NOT an off-chain DB (respects the no-server-
-// state rule) and NOT on-chain (no new gas/selector). The webhook tags the
-// Customer on the first Checkout; the off-session top-up resolves it live. Cards
-// are resolved live from Stripe at charge time (Stripe is the source of truth —
-// never cache PaymentMethod ids).
-
-// Tag a (Checkout-created) Customer with its lh_address so later off-session
-// top-ups can find it. Idempotent (overwrites the same value).
-export async function tagCustomerLhAddress(customerId: string, lhAddress: string): Promise<void> {
-  await stripe().customers.update(customerId, {
-    metadata: { lh_address: lhAddress.toLowerCase() },
-  });
-}
-
-// Resolve the Stripe Customer for an lh_address (tagged on its first Checkout).
-// null when the buyer has never completed a browser Checkout (→ no saved card).
-export async function findCustomerIdByLhAddress(lhAddress: string): Promise<string | null> {
-  const res = await stripe().customers.search({
-    query: `metadata['lh_address']:'${lhAddress.toLowerCase()}'`,
-    limit: 1,
-  });
-  return res.data[0]?.id ?? null;
-}
-
-// Sum (in cents) the SUCCEEDED off-session top-ups for a Customer since
-// `sinceUnix` — the per-address rolling cap so a leaked auth token can't drain a
-// saved card. Reads from Stripe (the source of truth); no local counter to drift.
-// Bounded to one 100-item page (a sane day never has more off-session top-ups).
-export async function rollingOffsessionCents(customerId: string, sinceUnix: number): Promise<number> {
-  const page = await stripe().paymentIntents.list({
-    customer: customerId,
-    created: { gte: sinceUnix },
-    limit: 100,
-  });
-  let total = 0;
-  for (const pi of page.data) {
-    if (pi.status === 'succeeded' && pi.metadata?.lh_flow === 'offsession_topup') total += pi.amount;
-  }
-  return total;
-}
-
 // --- caller auth (mirrors gemini.ts personal-sign auth token) ----------
 
 function keccak(data: Uint8Array): Uint8Array {

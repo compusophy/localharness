@@ -79,13 +79,6 @@ export default async function handler(req: Request): Promise<Response> {
   }
   const lhWei = usdCentsToWei(usdCents).toString();
 
-  // Tier 2 (off-session) enrolment is gated by the SAME flag as the topup
-  // endpoint: only when ON do we create a Customer + save the card with an
-  // off-session mandate, so deploying this file changes NOTHING about the live
-  // one-time checkout until off-session is deliberately enabled (post legal
-  // sign-off). The webhook tags the created Customer with lh_address.
-  const offSession = process.env.LH_OFFSESSION_TOPUP_ENABLED === '1';
-
   // card + Link only — both settle synchronously (the webhook's NET amount is
   // ready at mint time; it fails closed otherwise). Link gives returning buyers
   // one-click saved cards.
@@ -103,13 +96,7 @@ export default async function handler(req: Request): Promise<Response> {
       },
     ],
     metadata: { lh_address: lhAddress, lh_wei: lhWei },
-    payment_intent_data: {
-      metadata: { lh_address: lhAddress, lh_wei: lhWei },
-      // Save the card for headless top-ups later (off-session mandate).
-      ...(offSession ? { setup_future_usage: 'off_session' as const } : {}),
-    },
-    // Create a Customer so the saved card can be charged off-session by address.
-    ...(offSession ? { customer_creation: 'always' as const } : {}),
+    payment_intent_data: { metadata: { lh_address: lhAddress, lh_wei: lhWei } },
   };
 
   try {

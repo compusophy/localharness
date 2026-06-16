@@ -26,7 +26,6 @@ import {
   readReceipt,
   isHexAddress,
   centsToWei,
-  tagCustomerLhAddress,
 } from './_stripe';
 
 function paymentIntentId(obj: { payment_intent?: unknown }): string | null {
@@ -73,38 +72,18 @@ export default async function handler(req: Request): Promise<Response> {
       if (!isHexAddress(lhAddress) || !piId) {
         return json({ received: true, skipped: 'no lh_address/payment_intent' }, 200);
       }
-      await mintFiatForPi(piId, lhAddress);
+      const receiptId = receiptIdFor(piId);
+      const r = await readReceipt(receiptId);
+      if (r.used) return json({ received: true, idempotent: true }, 200);
 
-      // Tier 2 enrolment: tag the Checkout-created Customer with lh_address so a
-      // later off-session top-up can find its saved card. Best-effort — a tag
-      // failure must NOT fail the webhook (the mint already succeeded); it only
-      // means the buyer re-enters a card next time. Only present when off-session
-      // is enabled (customer_creation:'always' in stripe-checkout.ts).
-      const custId =
-        typeof session.customer === 'string' ? session.customer : session.customer?.id;
-      if (custId) {
-        try {
-          await tagCustomerLhAddress(custId, lhAddress);
-        } catch {
-          /* best-effort: the mint already landed */
-        }
-      }
-    } else if (event.type === 'payment_intent.succeeded') {
-      // Tier 2 OFF-SESSION top-up mint. CRITICAL anti-double-mint: a browser
-      // Checkout ALSO fires payment_intent.succeeded, but its PI carries NO
-      // lh_flow tag (Checkout mints via checkout.session.completed above) — so we
-      // mint here ONLY for PIs explicitly tagged by /api/stripe-topup. This tag
-      // gate is LOAD-BEARING; do not rely on receiptId alone (the two paths share
-      // receiptIdFor(piId), so the tag is what keeps a Checkout PI out of here).
-      const pi = event.data.object as import('stripe').Stripe.PaymentIntent;
-      if (pi.metadata?.lh_flow !== 'offsession_topup') {
-        return json({ received: true, skipped: 'not an off-session topup' }, 200);
-      }
-      const lhAddress = pi.metadata?.lh_address ?? '';
-      if (!isHexAddress(lhAddress)) {
-        return json({ received: true, skipped: 'no lh_address' }, 200);
-      }
-      await mintFiatForPi(pi.id, lhAddress);
+      // Mint against NET settled USD (fees out) so circulating ≤ usd_held/peg.
+      // FAIL-CLOSED: if net isn't known yet, netSettledCents THROWS → 500 → the
+      // one-shot receipt makes Stripe's retry idempotent. Never mint gross.
+      const netCents = await netSettledCents(piId);
+      const amountWei = centsToWei(netCents);
+      const validBefore = BigInt(Math.floor(Date.now() / 1000) + 3600);
+      const signature = await signFiatMint(lhAddress, amountWei, receiptId, validBefore);
+      await submitMintFromFiat(lhAddress, amountWei, receiptId, validBefore, signature);
     } else if (event.type === 'charge.refunded' || event.type === 'charge.dispute.created') {
       const obj = event.data.object as { payment_intent?: unknown; amount_refunded?: unknown };
       const piId = paymentIntentId(obj);
@@ -145,24 +124,6 @@ function json(body: unknown, status: number): Response {
     status,
     headers: { 'content-type': 'application/json' },
   });
-}
-
-// Mint NET-settled $LH for a PaymentIntent against its idempotent on-chain
-// receipt. Shared by the Checkout (checkout.session.completed) and the
-// off-session top-up (payment_intent.succeeded) paths — both bind to the same
-// receiptIdFor(piId) one-shot, so a replay (or a stray re-delivery) is a no-op.
-// FAIL-CLOSED: netSettledCents THROWS if net isn't known yet → the caller 500s
-// and Stripe retries; the receipt one-shot keeps the eventual retry idempotent.
-// Never mints gross.
-async function mintFiatForPi(piId: string, lhAddress: string): Promise<void> {
-  const receiptId = receiptIdFor(piId);
-  const r = await readReceipt(receiptId);
-  if (r.used) return; // already minted — idempotent
-  const netCents = await netSettledCents(piId);
-  const amountWei = centsToWei(netCents);
-  const validBefore = BigInt(Math.floor(Date.now() / 1000) + 3600);
-  const signature = await signFiatMint(lhAddress, amountWei, receiptId, validBefore);
-  await submitMintFromFiat(lhAddress, amountWei, receiptId, validBefore, signature);
 }
 
 // NET settled amount in cents: expand the PaymentIntent → latest charge →
