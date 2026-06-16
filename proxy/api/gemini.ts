@@ -46,71 +46,22 @@ export const config = { runtime: 'edge' };
 // ---- constants -------------------------------------------------------------
 
 import { TEMPO_RPC, REGISTRY, CHAIN_ID } from './_chain';
+import { priceOf, type Provider } from './_prices';
+import { verifyX402Payment, settleX402NoWait, type X402Auth } from './_x402';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
 const ANTHROPIC_BASE = 'https://api.anthropic.com';
 const ANTHROPIC_VERSION = '2023-06-01';
 const OPENAI_BASE = 'https://api.openai.com';
-// `$LH` (18-decimal wei) debited per request in per-request mode.
-// Env-overridable; default 0.01 LH.
-const COST_PER_REQUEST_WEI = ((): bigint => {
-  try {
-    return BigInt(process.env.COST_PER_REQUEST_WEI ?? '10000000000000000');
-  } catch {
-    return 10_000_000_000_000_000n;
-  }
-})();
+// The per-model `$LH` price table moved to `_prices.ts` (single source of truth
+// shared with the GET /prices route). `priceOf(provider, model)` + `Provider`
+// are imported above.
 
-// Per-model price in `$LH` wei. Gemini stays FLAT (COST_PER_REQUEST_WEI —
-// unchanged, so its pricing is byte-identical); Anthropic is per-model. An
-// unknown anthropic model falls to a mid price, NEVER free (so a caller can't
-// request an unpriced model to dodge the meter). All env-overridable.
-function envWei(name: string, def: bigint): bigint {
-  try {
-    const v = process.env[name];
-    return v ? BigInt(v) : def;
-  } catch {
-    return def;
-  }
-}
-const PRICE_ANTHROPIC: Record<string, bigint> = {
-  'claude-haiku-4-5-20251001': envWei('PRICE_ANTHROPIC_HAIKU_WEI', 10_000_000_000_000_000n), // 0.01
-  'claude-sonnet-4-6': envWei('PRICE_ANTHROPIC_SONNET_WEI', 50_000_000_000_000_000n), // 0.05
-  'claude-opus-4-8': envWei('PRICE_ANTHROPIC_OPUS_WEI', 200_000_000_000_000_000n), // 0.20
-};
-const PRICE_ANTHROPIC_DEFAULT = envWei('PRICE_ANTHROPIC_DEFAULT_WEI', 50_000_000_000_000_000n);
-
-// OpenAI pricing mirrors the Anthropic tiers (mini ≙ Haiku, flagship ≙ Sonnet,
-// pro ≙ Opus). Same rule: an UNKNOWN model falls to the mid default, NEVER free.
-const PRICE_OPENAI: Record<string, bigint> = {
-  'gpt-5-nano': envWei('PRICE_OPENAI_NANO_WEI', 10_000_000_000_000_000n), // 0.01
-  'gpt-5-mini': envWei('PRICE_OPENAI_MINI_WEI', 10_000_000_000_000_000n), // 0.01
-  'gpt-5.1': envWei('PRICE_OPENAI_FLAGSHIP_WEI', 50_000_000_000_000_000n), // 0.05
-  'gpt-5-pro': envWei('PRICE_OPENAI_PRO_WEI', 200_000_000_000_000_000n), // 0.20
-};
-const PRICE_OPENAI_DEFAULT = envWei('PRICE_OPENAI_DEFAULT_WEI', 50_000_000_000_000_000n);
-
-// Hard ceiling on the `$LH` a SINGLE request may debit. Bill-shock guard: a
-// stateless Edge function has no per-identity rate store, so the spend cap is
-// the user's on-chain `creditOf` balance — but a misconfigured price env (an
-// extra zero on PRICE_ANTHROPIC_*_WEI) or any future code path must never debit
-// an absurd amount in one shot. Anything above this is clamped DOWN to it, so
-// the meter can never charge more than the configured maximum per call. 1 $LH
-// is ~100x the default per-request cost — comfortably above any real model
-// price, far below "drain the wallet in one call". Env-overridable.
-const MAX_COST_PER_REQUEST_WEI = envWei('MAX_COST_PER_REQUEST_WEI', 1_000_000_000_000_000_000n);
-
-type Provider = 'gemini' | 'anthropic' | 'openai';
-
-function priceOf(provider: Provider, model: string): bigint {
-  const raw =
-    provider === 'gemini'
-      ? COST_PER_REQUEST_WEI
-      : provider === 'anthropic'
-        ? (PRICE_ANTHROPIC[model] ?? PRICE_ANTHROPIC_DEFAULT)
-        : (PRICE_OPENAI[model] ?? PRICE_OPENAI_DEFAULT);
-  // Clamp to the per-request ceiling — never debit more than the cap in one call.
-  return raw > MAX_COST_PER_REQUEST_WEI ? MAX_COST_PER_REQUEST_WEI : raw;
-}
+// The platform `$LH` sink for x402-metered inference. When SET, a caller may pay
+// per-call by signing an x402 authorization to THIS address (X-PAYMENT header)
+// instead of pre-funding the creditOf meter — the mainnet-safe meter (the caller
+// signs the exact price; the proxy can't over-debit, the nonce is one-shot).
+// UNSET → x402 metering is off and the session/creditOf path is unchanged.
+const METER_PAYEE = (process.env.LH_METER_PAYEE ?? '').toLowerCase();
 
 /** Whether `s` is a well-formed 0x-prefixed 20-byte hex address. */
 function isHexAddress(s: string): boolean {
@@ -584,8 +535,9 @@ export default async function handler(req: Request): Promise<Response> {
       );
     }
 
-    // On-chain gate: serve if the caller has an active TIME session OR a
-    // funded PER-REQUEST balance. Both modes supported transparently.
+    // On-chain gate: serve if the caller has an active TIME session, a funded
+    // PER-REQUEST balance, OR a signed x402 per-call authorization. All three
+    // supported transparently; session/creditOf are unchanged.
     const cost = priceOf(provider, model);
     const [expiry, credit] = await Promise.all([
       sessionExpiryOf(address),
@@ -593,11 +545,54 @@ export default async function handler(req: Request): Promise<Response> {
     ]);
     const hasSession = expiry > BigInt(now);
     const hasCredit = credit >= cost;
-    if (!hasSession && !hasCredit) {
+
+    // x402 per-call payment — the mainnet-safe meter (spec §134): the caller
+    // signs an x402 authorization paying the platform meter payee EXACTLY `cost`
+    // and sends it as X-PAYMENT; the proxy can't over-debit, the nonce is
+    // one-shot (no race), and gas is the proxy's not the user's. Verified LOCALLY
+    // here; SETTLED on-chain only after a 2xx upstream (below) so a failed LLM
+    // call costs nothing — the same "don't charge for failures" rule as the
+    // meter. Off unless LH_METER_PAYEE is set.
+    const x402Header = req.headers.get('x-payment') ?? req.headers.get('x-x402-authorization');
+    let x402Auth: X402Auth | null = null;
+    if (x402Header && METER_PAYEE) {
+      const verdict = await verifyX402Payment(x402Header, {
+        expectedFrom: address,
+        payee: METER_PAYEE,
+        requiredWei: cost,
+      });
+      // A PRESENT-but-invalid authorization is a hard, specific 402 — do NOT
+      // silently fall back to credit/session; the caller meant to pay via x402.
+      if (verdict && !verdict.ok) {
+        return json(
+          { error: verdict.error, ...(verdict.quote ? { x402: verdict.quote } : {}) },
+          verdict.status,
+          origin,
+        );
+      }
+      if (verdict && verdict.ok) x402Auth = verdict.auth;
+    }
+    const paidViaX402 = x402Auth !== null;
+
+    if (!hasSession && !hasCredit && !paidViaX402) {
       return json(
         {
           error:
-            'no $LH credit or active session for this identity — fund the per-request meter (localharness redeem / send / topup) or open a session explicitly (localharness session). See https://localharness.xyz/llms.txt',
+            'no $LH credit or active session for this identity — fund the per-request meter (localharness redeem / send / topup), open a session (localharness session), or pay per-call via x402. See https://localharness.xyz/llms.txt',
+          // x402 challenge (Coinbase 402→attach→retry): an x402-capable client
+          // signs an authorization for `value` $LH to `payTo` and retries with
+          // the X-PAYMENT header. Only advertised when x402 metering is enabled.
+          ...(METER_PAYEE
+            ? {
+                x402: {
+                  payTo: METER_PAYEE,
+                  value: cost.toString(),
+                  scheme: 'x402-exact',
+                  asset: '$LH',
+                  chainId: CHAIN_ID,
+                },
+              }
+            : {}),
         },
         402,
         origin,
@@ -671,13 +666,25 @@ export default async function handler(req: Request): Promise<Response> {
       });
     }
 
-    // SUCCESS (2xx). NOW debit the per-request meter. PREFER per-request
-    // metering: a FUNDED meter (`creditOf >= cost`) means the caller opted into
-    // real per-call billing, so debit even if a (free-beta `sessionPrice==0`)
-    // session is ALSO active — else the free session would silently make every
-    // call free. Callers with ONLY a session and no meter balance stay free.
-    // Fail closed if the debit can't be submitted.
-    if (hasCredit) {
+    // SUCCESS (2xx). NOW take payment. PREFER x402 if the caller signed one
+    // (they explicitly opted into trustless pay-per-call); else debit the
+    // creditOf meter; a session-only caller stays free. Like the meter, the
+    // settle broadcasts WITHOUT blocking first-byte on its receipt.
+    if (paidViaX402 && x402Auth) {
+      try {
+        await settleX402NoWait(x402Auth);
+      } catch (e) {
+        // The broadcast itself failed (RPC/infra). The one-shot nonce is
+        // UNCONSUMED, so a retry of the SAME authorization is clean — 502 rather
+        // than serve a call we couldn't charge (no session fallback for x402).
+        return json({ error: 'x402 settlement submission failed, retry: ' + (e as Error).message }, 502, origin);
+      }
+    } else if (hasCredit) {
+      // PREFER per-request metering: a FUNDED meter (`creditOf >= cost`) means
+      // the caller opted into real per-call billing, so debit even if a
+      // (free-beta `sessionPrice==0`) session is ALSO active — else the free
+      // session would silently make every call free. Session-only callers with
+      // no meter balance stay free. Fail closed if the debit can't be submitted.
       try {
         // Submit the debit but DON'T block first-byte on the receipt: streaming
         // responses must flow immediately, not after the meter tx confirms

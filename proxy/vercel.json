@@ -2,6 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
     { "source": "/mcp", "destination": "/api/mcp" },
+    { "source": "/prices", "destination": "/api/prices" },
     { "source": "/scheduler", "destination": "/api/scheduler" },
     { "source": "/stripe/checkout", "destination": "/api/stripe-checkout" },
     { "source": "/stripe/webhook", "destination": "/api/stripe-webhook" },
