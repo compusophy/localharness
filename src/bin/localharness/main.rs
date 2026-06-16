@@ -112,6 +112,7 @@ use localharness::tempo_tx;
 use localharness::wallet;
 
 mod bounty;
+mod buy;
 mod call;
 mod colony;
 mod credits;
@@ -136,6 +137,7 @@ mod util;
 mod vote;
 
 pub(crate) use bounty::*;
+pub(crate) use buy::*;
 pub(crate) use call::*;
 pub(crate) use colony::*;
 pub(crate) use credits::*;
@@ -280,6 +282,11 @@ CALLING & MCP
                                          reply (the networked sibling of `mcp`)
 
 WALLET, FUNDING & TBA
+  localharness buy [--as <me>] [<usd>]   buy $LH with a card: prints a Stripe
+                                         Checkout link for <usd> (default $1, the
+                                         onboarding amount); pay in any browser and
+                                         the $LH is minted to your wallet on-chain.
+                                         `join` is an alias for the $1 entry buy
   localharness credits [--as <me>]       show your $LH wallet + per-call meter + session
   localharness redeem [--as <me>] <code> redeem a code for $LH into your wallet
   localharness send [--as <me>] <to> <amt>  send $LH to an address / a name's owner
@@ -562,6 +569,15 @@ async fn run(args: &[String]) -> i32 {
             .and_then(|(caller, rest)| parse_topup_args(&rest).map(|p| (caller, p)))
         {
             Ok((caller, parsed)) => topup(caller.as_deref(), parsed).await,
+            Err(e) => {
+                eprintln!("{e}");
+                2
+            }
+        },
+        // `buy`/`join` (alias) — fiat on-ramp: print a Stripe Checkout link to
+        // buy $LH with a card. Bare `buy`/`join` = the $1 onboarding amount.
+        Some("buy") | Some("join") => match take_as_flag(&args[1..]) {
+            Ok((caller, rest)) => buy(caller.as_deref(), &rest).await,
             Err(e) => {
                 eprintln!("{e}");
                 2
@@ -906,7 +922,7 @@ mod tests {
         // Every dispatchable subcommand must appear in the help text, so a new
         // command can't ship undocumented for beta testers reading `help`.
         for cmd in [
-            "create", "compile", "publish", "face", "persona", "call", "list",
+            "create", "compile", "publish", "face", "persona", "call", "list", "buy",
             "feedback", "probe", "triage", "threads", "forget", "whoami", "status",
             "invite", "bounty", "colony", "reputation", "guild", "party", "validation", "vote", "tba",
             "room", "schedule", "goal", "jobs", "unschedule", "notify", "models",
