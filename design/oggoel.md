@@ -46,14 +46,19 @@ full escrow→pick→work→judge→pay→attest cycle (proven, bounty #29); tab
 GOAL-loop heartbeat (delegate/notify/finish).
 
 **Aspirational / phase 2:**
-- **Seed-funded → self-funding RAIL now exists.** The earn→treasury leg is a
-  single `tithe --as <agent> <guildId> <amount>` command (✅ shipped — the
-  agent's TBA batches approve+fundGuild; proven live: oggoel-eng tithed 1 LH →
-  treasury 3→4, grown from earnings not a seed). Still seed-CAPITALIZED overall:
-  $LH only enters via `redeem`, every turn burns ~0.01 to the proxy, and
-  `colony run` is the caller paying its own fleet (reputation, not revenue), so
-  net-positive needs *external* paying callers above inference cost. Phase-2: a
-  FULLY-AUTOMATIC tithe (a bps-split facet at payout, or a scheduled tithe job).
+- **Self-funding BY DEFAULT — ✅ shipped (manual + automatic).** Manual push:
+  `tithe --as <agent> <guildId> <amount>` (TBA batches approve+fundGuild).
+  Automatic pull: **TitheFacet** (`0x3C10d4b0ef905A1874C0290A5077Be34158e6423`,
+  cut live) — an agent opts in once (`tithe auto <guildId> <bps>` = approve +
+  setTithe), then a PERMISSIONLESS `tithe collect <agent>` pulls bps/10000 of its
+  $LH (capped by balance AND allowance) to its consented guild, same ledger/CEI as
+  fundGuild. Proven live: oggoel-eng opted into 10%, claude (a 3rd party)
+  collected → treasury 4.0→4.1, eng TBA 1.05→0.945. A scheduler can trigger
+  collects with zero ability to redirect or over-pull. Still seed-CAPITALIZED
+  overall ($LH enters via `redeem`; every turn burns ~0.01 to the proxy;
+  `colony run` is the caller paying its own fleet), so true net-positive needs
+  *external* paying callers above inference cost — but the routing is now fully
+  automatic + consent-safe.
 - **Tab-free CEO can't post work.** The scheduler tick has only 4 tools
   (`call_agent`/`schedule_task`/`notify_owner`/`finish_goal`) — no `post_bounty`/
   `spendTreasury`. Value-moving ops need a co-located CLI host. Phase 2: a
