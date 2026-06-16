@@ -70,6 +70,9 @@ pub(super) fn on_apex_input() {
         // Reflect the canonical form so the user sees the live filter.
         input.set_value(&cleaned);
     }
+    // A keystroke dismisses a stale "need N LH"/buy affordance, same as it
+    // clears the failed-button state (no-op when the slot's already empty).
+    dom::swap_inner("claim-fund-slot", "");
 
     // Length check first — short-circuit before hitting the registry
     // for input we already know won't pass on-chain validation.
@@ -218,6 +221,11 @@ pub(super) async fn run_apex_claim(name: String, create_if_missing: bool) {
             // "✗ failed".
             if let Some(rest) = err.strip_prefix("__NEED_LH__") {
                 set_create_button_failed_with(&format!("need {rest} more LH"));
+                // Give the 0-$LH visitor a way OUT: open the buy modal and fund
+                // the apex wallet, then re-click create (now covered). The apex
+                // wallet (set above / by CreateIdentity) IS `credit_signer`'s
+                // identity, so the buy mints to it — no claimed name needed.
+                dom::swap_inner("claim-fund-slot", &templates::buy_to_claim().into_string());
             } else {
                 set_create_button_state(CreateBtnState::Failed);
             }

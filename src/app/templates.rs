@@ -925,6 +925,26 @@ fn apex_claim() -> Markup {
                     required {}
                 button #create-btn type="submit" .create-button disabled { "create" }
             }
+            // Funding affordance slot — empty unless a claim hits `__NEED_LH__`
+            // (registration costs `$LH` and this 0-balance apex wallet can't
+            // cover it). Filled by `claim::run_apex_claim` with `buy_to_claim`.
+            // Stays empty when registration is free (today), so nothing shows.
+            div #claim-fund-slot {}
+        }
+    }
+}
+
+/// Pre-claim funding affordance — shown only when a first claim hits
+/// `__NEED_LH__` (registration costs `$LH`, this fresh apex wallet has 0).
+/// One click opens the SAME Stripe Embedded Checkout buy modal as admin
+/// (`buy-lh` → `credits::buy_lh_pressed`, fixed $1 with no `#buy-usd` input),
+/// minting `$LH` to the apex wallet so the user can re-click create.
+pub(crate) fn buy_to_claim() -> Markup {
+    html! {
+        div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;\
+                    margin-top:8px;font-size:12px;color:var(--muted)" {
+            button type="button" data-action="buy-lh" .ghost { "buy $1 to claim" }
+            div #fund-msg .admin-msg-slot style="margin-top:0;flex-basis:100%" {}
         }
     }
 }

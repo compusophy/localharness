@@ -391,10 +391,20 @@ pub(super) fn redeem_invite_onboard_pressed() {
 /// mints `$LH` to THIS identity once the payment settles. Empty/invalid amount
 /// is a silent no-op.
 pub(super) fn buy_lh_pressed() {
-    let Some(input) = dom::input_by_id("buy-usd") else { return };
-    let Some(cents) = parse_usd_cents(input.value().trim()) else { return };
+    // Amount source: the admin field if present, else a fixed $1 — the
+    // pre-claim "[buy $1 to claim]" affordance has no `#buy-usd` input.
+    let cents = match dom::input_by_id("buy-usd") {
+        Some(input) => match parse_usd_cents(input.value().trim()) {
+            Some(c) => c,
+            None => return,
+        },
+        None => 100,
+    };
+    // Status slot: the admin `#buy-msg`, falling back to the pre-claim
+    // `#fund-msg` so the affordance shows "opening checkout…" too.
+    let msg_id = if dom::by_id("buy-msg").is_some() { "buy-msg" } else { "fund-msg" };
     dom::swap_inner(
-        "buy-msg",
+        msg_id,
         "<span style=\"color:var(--muted)\">opening checkout…</span>",
     );
     wasm_bindgen_futures::spawn_local(async move {
@@ -402,12 +412,12 @@ pub(super) fn buy_lh_pressed() {
             Ok(client_secret) => {
                 open_buy_modal(&net_lh_label(cents));
                 call_js("lhBuyLh", Some(&client_secret));
-                dom::swap_inner("buy-msg", "");
+                dom::swap_inner(msg_id, "");
             }
             Err(e) => {
                 web_sys::console::warn_1(&JsValue::from_str(&format!("buy $LH: {e}")));
                 dom::swap_inner(
-                    "buy-msg",
+                    msg_id,
                     &dom::msg_span(dom::Msg::Error, "couldn't start checkout"),
                 );
             }
