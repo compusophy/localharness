@@ -5,6 +5,34 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.43.0] - 2026-06-16
+
+### Added
+
+- **Card-payment CLI (`buy` / `join`).** `localharness buy [<usd>]` (and the
+  `join` alias) creates a Stripe Checkout link from a shell to buy `$LH` with a
+  card — fiat onboarding with no browser app. No card data touches the CLI (PCI
+  stays with Stripe); the proxy webhook mints USD-backed `$LH` to the caller.
+- **x402 per-call metering — the mainnet-safe meter.** A platform-credits LLM
+  call can be paid per-request with a CALLER-SIGNED x402 `$LH` authorization over
+  the shipped `X402Facet`, instead of trusting the proxy meter key (no over-debit,
+  one-shot nonce, gas on the proxy not the user). Proxy: shared `_x402.ts`
+  verify+settle (digest-parity with `ask_agent`), `_prices.ts` + public
+  `GET /prices`, an additive `X-PAYMENT` gate in the credit proxy — OFF unless
+  `LH_METER_PAYEE` is set, and the session/creditOf paths are byte-for-byte
+  unchanged. CLI: `call` reads `/prices` and signs `X-PAYMENT` proactively; a
+  general `with_extra_header` on the Gemini/Anthropic agent configs carries it.
+- **Apex "buy to claim" affordance.** When a claim needs `$LH`, the apex
+  pre-claim view offers a one-click Stripe buy that funds the apex wallet.
+
+### Changed
+
+- **Subdomain registration now costs 1 `$LH`** (was free) — a one-time sybil
+  guard; gas stays sponsored, only the 1 `$LH` fee is pulled from the claimer's
+  wallet. Onboarding buys default to **$2** (Stripe's 2.9%+$0.30 nets only
+  ~0.67 `$LH` on $1, below the 1 `$LH` cost; $2 nets ~1.64 → covers the claim +
+  leaves starting credit). Agent docs (`llms.txt`, runtime summary) updated.
+
 ## [0.42.0] - 2026-06-16
 
 ### Added
