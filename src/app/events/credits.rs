@@ -4,6 +4,7 @@
 use wasm_bindgen::prelude::*;
 
 use crate::app::{dom, templates};
+use crate::encoding::bytes_to_hex_str;
 
 
 /// Show or hide the inline no-funds funding banner (`#fund-banner` in the
@@ -378,6 +379,87 @@ pub(super) fn redeem_invite_onboard_pressed() {
             }
         }
     });
+}
+
+/// Buy `$LH` with a card. Reads a USD amount from `#buy-usd`, builds the SAME
+/// proxy auth token the model path uses (local key personal-signs
+/// `localharness-proxy:<addr>:<ts>`), POSTs it to the credit proxy's
+/// `/stripe/checkout`, and redirects to the returned Stripe Checkout URL. The
+/// proxy mints `$LH` to THIS identity once the payment settles (webhook). Empty
+/// / invalid amount is a silent no-op (no explanatory-validation text).
+pub(super) fn buy_lh_pressed() {
+    let Some(input) = dom::input_by_id("buy-usd") else { return };
+    let Some(cents) = parse_usd_cents(input.value().trim()) else { return };
+    dom::swap_inner(
+        "buy-msg",
+        "<span style=\"color:var(--muted)\">opening checkout…</span>",
+    );
+    wasm_bindgen_futures::spawn_local(async move {
+        match start_checkout(cents).await {
+            Ok(url) => {
+                if let Some(w) = web_sys::window() {
+                    let _ = w.location().set_href(&url);
+                }
+            }
+            Err(e) => {
+                web_sys::console::warn_1(&JsValue::from_str(&format!("buy $LH: {e}")));
+                dom::swap_inner(
+                    "buy-msg",
+                    &dom::msg_span(dom::Msg::Error, "couldn't start checkout"),
+                );
+            }
+        }
+    });
+}
+
+/// Parse a USD amount ("5", "$5", "5.50") into integer cents. `None` on
+/// empty / invalid / non-positive.
+fn parse_usd_cents(raw: &str) -> Option<u64> {
+    let s = raw.trim().trim_start_matches('$').trim();
+    if s.is_empty() {
+        return None;
+    }
+    let dollars: f64 = s.parse().ok()?;
+    if !dollars.is_finite() || dollars <= 0.0 {
+        return None;
+    }
+    let cents = (dollars * 100.0).round();
+    if cents < 1.0 {
+        return None;
+    }
+    Some(cents as u64)
+}
+
+/// POST an authenticated checkout request to the credit proxy; returns the
+/// Stripe Checkout URL. Auth token mirrors `chat::access::resolve_credit_access`.
+async fn start_checkout(cents: u64) -> Result<String, String> {
+    let (signer, addr) = crate::app::chat::credit_signer()
+        .await
+        .ok_or_else(|| "no identity".to_string())?;
+    let addr_hex = bytes_to_hex_str(&addr); // lowercase 0x — matches the proxy
+    let ts = (js_sys::Date::now() / 1000.0) as u64;
+    let msg = format!("localharness-proxy:{addr_hex}:{ts}");
+    let sig = crate::wallet::personal_sign(&signer, msg.as_bytes());
+    let token = format!("{addr_hex}:{ts}:{}", bytes_to_hex_str(&sig));
+    let url = format!("{}stripe/checkout", crate::registry::CREDIT_PROXY_URL);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .header("x-goog-api-key", token)
+        .header("content-type", "application/json")
+        .body(format!("{{\"usd_cents\":{cents}}}"))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let ok = resp.status().is_success();
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+    if !ok {
+        return Err(text);
+    }
+    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    v.get("url")
+        .and_then(|u| u.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "no checkout url in response".to_string())
 }
 
 /// localStorage handle (best-effort).

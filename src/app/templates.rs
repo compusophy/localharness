@@ -1293,6 +1293,14 @@ pub(crate) fn admin_credits_section() -> Markup {
                 input #redeem-code .redeem-input type="text" aria-label="redeem code" placeholder="redeem code";
                 button type="button" data-action="redeem-code" .ghost { "redeem" }
             }
+            // Buy $LH with a card — opens Stripe Checkout; the proxy mints $LH to
+            // this identity once payment settles.
+            div.redeem-row {
+                input #buy-usd .redeem-input type="text"
+                    inputmode="decimal" aria-label="amount in USD" placeholder="USD amount";
+                button type="button" data-action="buy-lh" .ghost { "buy $LH" }
+            }
+            div #buy-msg .admin-msg-slot {}
             div #credits-msg .admin-msg-slot {}
         }
     }

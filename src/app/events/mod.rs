@@ -156,6 +156,8 @@ enum Action {
     RedeemInviteOnboard,
     /// Redeem a one-time code for `$LH` credits.
     RedeemCode,
+    /// Buy `$LH` with a card via Stripe Checkout (proxy on-ramp).
+    BuyLh,
     /// Redeem a one-time code from the inline no-funds banner above the prompt.
     RedeemBanner,
     /// Escrow the owner's `$LH` behind a fresh bearer code + surface the
@@ -276,6 +278,7 @@ impl Action {
             "download-local-model" => Action::DownloadLocalModel,
             "redeem-invite-onboard" => Action::RedeemInviteOnboard,
             "redeem-code" => Action::RedeemCode,
+            "buy-lh" => Action::BuyLh,
             "redeem-banner" => Action::RedeemBanner,
             "create-invite" => Action::CreateInvite,
             "schedule-job" => Action::ScheduleJob,
@@ -1127,6 +1130,7 @@ fn dispatch(action: Action) {
         Action::DownloadLocalModel => credits::run_download_local_model(),
         Action::RedeemInviteOnboard => credits::redeem_invite_onboard_pressed(),
         Action::RedeemCode => credits::redeem_code_pressed(),
+        Action::BuyLh => credits::buy_lh_pressed(),
         Action::RedeemBanner => credits::redeem_banner_pressed(),
         Action::CreateInvite => credits::create_invite_pressed(),
         Action::ScheduleJob => schedule::schedule_job_pressed(),
