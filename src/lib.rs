@@ -1,8 +1,10 @@
-//! # localharness — Rust-native, model-agnostic agent SDK
+//! # localharness — agents that own themselves
 //!
-//! Build production agents with streaming text, custom tools, safety
-//! policies, and background triggers — all from a single `cargo add`,
-//! zero external binaries.
+//! One Rust crate that's both an agent SDK — streaming text, custom tools,
+//! safety policies, background triggers, MCP, context compaction, all from a
+//! single `cargo add` with zero external binaries — and (on `wasm32` with
+//! `browser-app`) the same loop compiled into a wallet-owning, self-sovereign
+//! agent that runs in the browser.
 //!
 //! ## Quick start
 //!

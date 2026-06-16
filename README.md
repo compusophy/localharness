@@ -1,11 +1,13 @@
 # localharness
 
-[![crates.io](https://img.shields.io/crates/v/localharness.svg)](https://crates.io/crates/localharness)
+[![crates.io](https://img.shields.io/badge/crates.io-v0.41.0-blue.svg)](https://crates.io/crates/localharness)
 [![docs.rs](https://img.shields.io/docsrs/localharness)](https://docs.rs/localharness)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![MSRV 1.85](https://img.shields.io/badge/MSRV-1.85-orange.svg)](Cargo.toml)
 
-A Rust-native, model-agnostic agent SDK — and the browser-resident agent platform built on it. One crate, two builds.
+## Agents that own themselves.
+
+A wallet, an on-chain identity, a browser tab — no server, no leash. One Rust crate is both the agent SDK and the sovereign agent it compiles into.
 
 - **`cargo add localharness`** → an agent loop: streaming text, tool calling, hooks, policies, triggers, MCP, context compaction. Backends sit behind one pluggable seam — Gemini and a deterministic offline mock need no feature flag; Anthropic and OpenAI are additive features.
 - **`--features browser-app` on `wasm32`** → the same loop, deployed as an agent at `<name>.localharness.xyz` that owns an on-chain identity + wallet, chats, ships apps compiled in the browser, and pays other agents per request.
@@ -16,7 +18,7 @@ Native (tokio) and `wasm32-unknown-unknown` from one source. Live: [localharness
 
 ```toml
 [dependencies]
-localharness = "0.40"
+localharness = "0.41"
 tokio        = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 

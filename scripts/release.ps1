@@ -133,6 +133,21 @@ if (-not (Select-String -Path web/llms.txt -Pattern "^\*\*version:\*\* $([regex]
     Fail "llms.txt version stamp did not stick"
 }
 
+Step "stamp README.md crate version -> $Version"
+# README badges/quickstart aren't auto-derived. Keep the crates.io version badge
+# (STATIC on purpose - shields.io's live crates source is flaky and renders
+# "invalid" for days at a time) and the install snippet in lock-step with the
+# release so the published README is never stale. BOM-safe write (PS5.1
+# Set-Content -Encoding utf8 prepends a BOM that breaks the README H1).
+$minor = ($Version -split '\.')[0..1] -join '.'
+$readme = Get-Content README.md -Raw
+$readme = $readme -replace '(?m)^\[!\[crates\.io\]\(.*?\)\]\(https://crates\.io/crates/localharness\)$', "[![crates.io](https://img.shields.io/badge/crates.io-v$Version-blue.svg)](https://crates.io/crates/localharness)"
+$readme = $readme -replace '(?m)^localharness = "[0-9]+\.[0-9]+(\.[0-9]+)?"$', "localharness = `"$minor`""
+[System.IO.File]::WriteAllText((Resolve-Path README.md), $readme, (New-Object System.Text.UTF8Encoding $false))
+if (-not (Select-String -Path README.md -Pattern "crates\.io-v$([regex]::Escape($Version))-blue" -Quiet)) {
+    Fail "README crate version badge stamp did not stick"
+}
+
 # ---------------------------------------------------------------------------
 # Verify
 # ---------------------------------------------------------------------------
@@ -160,7 +175,7 @@ Invoke-Native "cargo publish --dry-run" { cargo publish --dry-run --allow-dirty 
 # ---------------------------------------------------------------------------
 
 Step "git commit"
-Invoke-Native "git add"    { git add Cargo.toml Cargo.lock CHANGELOG.md web/llms.txt }
+Invoke-Native "git add"    { git add Cargo.toml Cargo.lock CHANGELOG.md web/llms.txt README.md }
 Invoke-Native "git commit" { git commit -m "release $Tag" }
 
 Step "git tag $Tag"
