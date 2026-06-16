@@ -1105,7 +1105,7 @@ mod tests {
         assert!(!cartridge_has_entry(&without), "no entry must be rejected");
 
         // The shipped bitmask cartridge has an entry.
-        let bitmask = localharness::rustlite::compile(include_str!("../../../bitmask.rl")).unwrap();
+        let bitmask = localharness::rustlite::compile(include_str!("../../../examples/cartridges/bitmask.rl")).unwrap();
         assert!(cartridge_has_entry(&bitmask));
 
         // Malformed / truncated bytes never panic and report no entry.

@@ -105,7 +105,7 @@ const CART_WASM = join(ROOT, 'target', '.worker-parity-cartridge.wasm');
 console.log('\ncompiling bitmask.rl -> wasm via the CLI...');
 execFileSync(
   'cargo',
-  ['run', '--quiet', '--features', 'wallet', '--bin', 'localharness', '--', 'compile', 'bitmask.rl', CART_WASM],
+  ['run', '--quiet', '--features', 'wallet', '--bin', 'localharness', '--', 'compile', 'examples/cartridges/bitmask.rl', CART_WASM],
   { cwd: ROOT, stdio: 'inherit' },
 );
 const wasmBytes = readFileSync(CART_WASM);

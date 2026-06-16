@@ -309,7 +309,7 @@ per-node; `compose_spawn`/`compose_bytes` key on a GLOBAL `uid`. JS
 `blitChild`/`mapPointerIntoChild` HAND PORT the Rust impls — parity-tested
 (`test-compose-wiring.mjs`, verify.sh stage 10).
 `composeReset` MUTATES `rootNode` (never reassign — `host_compose` closes over
-it). `fractal.rl` = the Droste demo.
+it). `examples/cartridges/fractal.rl` = the Droste demo.
 
 **Mount-time routing (`mod.rs::mount`):**
 1. `?signer=1` → minimal signer chrome + postMessage listener, return. No apex

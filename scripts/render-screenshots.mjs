@@ -27,7 +27,7 @@ const worker = require(join(ROOT, 'web', 'cartridge-worker.js'));
 
 // ---- compile a .rl cartridge to wasm via the CLI ----------------------------
 function compile(rl) {
-  const out = join(ROOT, 'target', rl.replace('.rl', '.wasm'));
+  const out = join(ROOT, 'target', rl.split('/').pop().replace('.rl', '.wasm'));
   execFileSync('cargo', ['run', '--quiet', '--features', 'wallet', '--bin', 'localharness',
     '--', 'compile', join(ROOT, rl), out], { cwd: ROOT, stdio: ['ignore', 'ignore', 'pipe'] });
   const b = readFileSync(out);
@@ -122,8 +122,8 @@ function renderFractal(bytes) {
 
 // ---- run --------------------------------------------------------------------
 mkdirSync(join(ROOT, 'web', 'screenshots'), { recursive: true });
-const readyupBytes = compile('readyup.rl');
-const fractalBytes = compile('fractal.rl');
+const readyupBytes = compile('examples/cartridges/readyup.rl');
+const fractalBytes = compile('examples/cartridges/fractal.rl');
 
 const shots = [
   { name: 'readyup', url: 'readyup.localharness.xyz', ...renderReadyup(readyupBytes) },

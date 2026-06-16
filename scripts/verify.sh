@@ -38,7 +38,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-CART_SRC="${1:-bitmask.rl}"
+CART_SRC="${1:-examples/cartridges/bitmask.rl}"
 mkdir -p target
 CART_WASM="target/.verify-cartridge.wasm"
 trap 'rm -f "$CART_WASM"' EXIT

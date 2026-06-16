@@ -37,7 +37,7 @@ echo "[3/18] unknown command exits non-zero"
 if "${BIN[@]}" definitely-not-a-command >/dev/null 2>&1; then fail "unknown cmd exited 0"; else pass "unknown cmd rejected"; fi
 
 echo "[4/18] a valid cartridge compiles"
-"${BIN[@]}" compile bitmask.rl >/dev/null && pass "compile bitmask.rl" || fail "compile bitmask.rl"
+"${BIN[@]}" compile examples/cartridges/bitmask.rl >/dev/null && pass "compile bitmask.rl" || fail "compile bitmask.rl"
 
 echo "[5/18] an entry-less cartridge is rejected"
 tmp="$(mktemp)"; printf 'fn helper(n: i32) -> i32 { n + 1 }\n' > "$tmp"
