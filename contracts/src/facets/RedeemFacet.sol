@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import {LibDiamond} from "../libraries/LibDiamond.sol";
 import {LibRedeemStorage} from "../libraries/LibRedeemStorage.sol";
 import {LibCreditsStorage} from "../libraries/LibCreditsStorage.sol";
+import {LibRegistryStorage} from "../libraries/LibRegistryStorage.sol";
 
 interface ILocalharnessCredits {
     function mintWithMemo(address to, uint256 amount, bytes32 memo) external;
@@ -28,6 +29,7 @@ contract RedeemFacet {
     error NotConfigured();
     error InvalidCode();
     error CodeAlreadyUsed();
+    error NoIdentity(); // redeemer must already hold a registered identity
 
     /// Memo stamped on the mint so off-chain indexers can identify
     /// redeem flows in `MintWithMemo` logs without a side database.
@@ -68,7 +70,15 @@ contract RedeemFacet {
     /// the code is burned (marked claimed) before the mint (CEI), so
     /// it can never be redeemed twice. Reverts on unknown / already-
     /// used codes, or if the credits token isn't configured.
+    ///
+    /// EXISTING ACCOUNTS ONLY: the caller must already hold a registered
+    /// identity (own >= 1 name). Redeem is a TOP-UP reward for paid
+    /// identities, NOT a free-account bootstrap — onboarding is the fiat
+    /// buy or an invite (which pays a newcomer who then claims). With
+    /// registration now costing 1 `$LH`, this keeps fresh `$LH` from
+    /// minting to zero-cost throwaway addresses.
     function redeem(string calldata code) external returns (uint256) {
+        if (LibRegistryStorage.load().balanceOf[msg.sender] == 0) revert NoIdentity();
         bytes32 h = keccak256(bytes(code));
         LibRedeemStorage.Storage storage s = LibRedeemStorage.load();
         uint256 amount = s.codeAmount[h];

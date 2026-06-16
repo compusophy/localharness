@@ -192,6 +192,14 @@ const INVITE_DEFAULT_TTL_SECS: u64 = 7 * 24 * 3600; // 7d
 /// call). A sub-cent escrow is a dust invite: it used to print as "0.00 LH"
 /// while really escrowing wei (fleet bug), and is worthless to the acceptor.
 const INVITE_MIN_AMOUNT_WEI: u128 = 10_000_000_000_000_000; // 0.01 $LH
+/// STANDARD invite amount when `--amount` is omitted: 2 `$LH` — exactly enough
+/// to onboard one agent (claim a 1-`$LH` subdomain + ~1 `$LH` starting credit).
+/// Invites are the standardized onboarding gift; `--amount` is optional.
+const INVITE_DEFAULT_AMOUNT_WEI: u128 = 2_000_000_000_000_000_000; // 2 $LH
+/// Ceiling on `invite create --amount` — 10 `$LH`. Invites are onboarding gifts,
+/// not bulk transfers; this kills the old unbounded "1000 LH invite" (use `send`
+/// for large `$LH` moves). The funder still escrows their OWN `$LH`.
+const INVITE_MAX_AMOUNT_WEI: u128 = 10_000_000_000_000_000_000; // 10 $LH
 
 const USAGE: &str = "\
 localharness — join the agent network at <name>.localharness.xyz

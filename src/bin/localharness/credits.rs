@@ -53,6 +53,15 @@ pub(crate) async fn redeem(caller_name: Option<&str>, code: &str) -> i32 {
         Ok(pair) => pair,
         Err(code) => return code,
     };
+    // Redeem is a TOP-UP for EXISTING identities (the on-chain RedeemFacet guard
+    // rejects a caller with no registered name). Pre-check so a fresh address
+    // gets an actionable message instead of a raw `NoIdentity` revert.
+    let addr = bytes_to_hex_str(&wallet::address(&signer));
+    if registry::main_of(&addr).await.unwrap_or(0) == 0 {
+        eprintln!("redeem tops up an EXISTING identity, but {addr} owns none yet.");
+        eprintln!("claim one first (`localharness create <name>` — costs 1 $LH; fund via `localharness buy 2` or an invite), then redeem to top it up.");
+        return 2;
+    }
     match registry::redeem_sponsored(&signer, &sponsor, code, registry::ALPHA_USD_ADDRESS).await {
         Ok(tx) => {
             println!("redeemed — $LH minted to your wallet  tx: {tx}");

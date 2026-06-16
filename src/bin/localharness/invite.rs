@@ -3,12 +3,12 @@ use crate::*;
 
 pub(crate) const INVITE_USAGE: &str = "\
 usage: localharness invite <create|accept|reclaim|list> ...
-  invite create [--as <me>] --amount <X> [--ttl <dur>]   escrow X $LH behind a fresh
+  invite create [--as <me>] [--amount <X>] [--ttl <dur>]  escrow X $LH behind a fresh
                                                           code; prints the share link
   invite accept [--as <me>] <code>                        accept an invite (paid to you)
   invite reclaim [--as <me>] <code>                       refund an EXPIRED invite
   invite list [--as <me>]                                 your total escrowed $LH
-  dur: 1h / 7d / 30d   (1h … 90d, default 7d)   amount: $LH (min 0.01, e.g. 100 or 10.5)";
+  dur: 1h / 7d / 30d   (1h … 90d, default 7d)   amount: $LH (default 2, range 0.01–10)";
 
 /// Parse an invite TTL like `1h` / `7d` / `30m` / `3600` (bare = seconds) into
 /// seconds, enforcing the facet's `[MIN_TTL, MAX_TTL]` = 1h…90d bound. Pure +
@@ -207,16 +207,31 @@ pub(crate) fn parse_invite_create_args(rest: &[String]) -> Result<ParsedInviteCr
             other => return Err(format!("unexpected argument '{other}'\n{INVITE_USAGE}")),
         }
     }
-    let amount_label = amount.ok_or_else(|| format!("invite create needs --amount <X $LH>\n{INVITE_USAGE}"))?;
-    let amount_wei = match localharness::encoding::parse_token_amount(&amount_label) {
-        Some(w) if w > 0 => w,
-        _ => return Err(format!("--amount must be a positive $LH amount, got '{amount_label}'")),
+    // `--amount` is OPTIONAL: omitted → the STANDARD 2 $LH onboarding gift
+    // (enough to claim a 1-$LH subdomain + ~1 $LH starting credit).
+    let (amount_label, amount_wei) = match amount {
+        None => ("2".to_string(), INVITE_DEFAULT_AMOUNT_WEI),
+        Some(label) => {
+            let wei = match localharness::encoding::parse_token_amount(&label) {
+                Some(w) if w > 0 => w,
+                _ => return Err(format!("--amount must be a positive $LH amount, got '{label}'")),
+            };
+            (label, wei)
+        }
     };
     // Dust guard: below 0.01 $LH the escrow is real but every display rounds
     // it away — reject it outright rather than create a worthless invite.
     if amount_wei < INVITE_MIN_AMOUNT_WEI {
         return Err(format!(
             "--amount must be at least 0.01 $LH, got '{amount_label}'"
+        ));
+    }
+    // Ceiling: invites are STANDARDIZED onboarding gifts, not bulk transfers —
+    // cap at 10 $LH (use `send` for larger $LH moves). Kills the unbounded
+    // "1000 LH invite".
+    if amount_wei > INVITE_MAX_AMOUNT_WEI {
+        return Err(format!(
+            "--amount must be at most 10 $LH (invites are onboarding gifts; use `send` for larger transfers), got '{amount_label}'"
         ));
     }
     let ttl_secs = match ttl {
@@ -551,21 +566,30 @@ mod tests {
 
     #[test]
     fn parse_invite_create_args_full_and_defaults() {
-        // Full: explicit amount + ttl.
-        let p = parse_invite_create_args(&args(&["--amount", "100", "--ttl", "30d"])).unwrap();
-        assert_eq!(p.amount_label, "100");
-        assert_eq!(p.amount_wei, 100 * 1_000_000_000_000_000_000);
+        // Full: explicit amount + ttl (within the 0.01–10 range).
+        let p = parse_invite_create_args(&args(&["--amount", "5", "--ttl", "30d"])).unwrap();
+        assert_eq!(p.amount_label, "5");
+        assert_eq!(p.amount_wei, 5 * 1_000_000_000_000_000_000);
         assert_eq!(p.ttl_secs, 30 * 86_400);
-        // --ttl defaults to 7d; flags order-independent; fractional amount.
-        let p = parse_invite_create_args(&args(&["--amount", "10.5"])).unwrap();
-        assert_eq!(p.amount_wei, 10_500_000_000_000_000_000);
+        // Fractional amount; --ttl defaults to 7d.
+        let p = parse_invite_create_args(&args(&["--amount", "1.5"])).unwrap();
+        assert_eq!(p.amount_wei, 1_500_000_000_000_000_000);
         assert_eq!(p.ttl_secs, INVITE_DEFAULT_TTL_SECS);
+        // --amount is OPTIONAL → the STANDARD 2 $LH onboarding gift.
+        let p = parse_invite_create_args(&args(&[])).unwrap();
+        assert_eq!(p.amount_label, "2");
+        assert_eq!(p.amount_wei, INVITE_DEFAULT_AMOUNT_WEI);
+        let p = parse_invite_create_args(&args(&["--ttl", "30d"])).unwrap();
+        assert_eq!(p.amount_wei, INVITE_DEFAULT_AMOUNT_WEI);
     }
 
     #[test]
     fn parse_invite_create_args_rejects_bad_input() {
-        // Missing --amount.
-        assert!(parse_invite_create_args(&args(&["--ttl", "7d"])).is_err());
+        // Above the 10 $LH ceiling is rejected; the exact 10 is allowed.
+        assert!(parse_invite_create_args(&args(&["--amount", "11"])).is_err());
+        assert!(parse_invite_create_args(&args(&["--amount", "10.01"])).is_err());
+        let p = parse_invite_create_args(&args(&["--amount", "10"])).unwrap();
+        assert_eq!(p.amount_wei, INVITE_MAX_AMOUNT_WEI);
         // Zero / non-numeric amount.
         assert!(parse_invite_create_args(&args(&["--amount", "0"])).is_err());
         assert!(parse_invite_create_args(&args(&["--amount", "nope"])).is_err());
