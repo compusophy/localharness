@@ -55,17 +55,24 @@ GOAL-loop heartbeat (delegate/notify/finish).
   (`call_agent`/`schedule_task`/`notify_owner`/`finish_goal`) — no `post_bounty`/
   `spendTreasury`. Value-moving ops need a co-located CLI host. Phase 2: a
   scheduler-role sponsored-post path + a `post_bounty` tool in `scheduler.ts`.
-- **Nested divisions** (guilds-of-guilds): real on the primitives but every
-  sub-guild action is hand-built `tba exec` calldata — needs `guild accept --tba`
-  / `vote cast --tba` wrappers first.
+- **Nested divisions** (guilds-of-guilds): ✅ **SHIPPED 2026-06-15** — the
+  `guild accept --tba` / `vote cast --tba` wrappers exist (auto-deploy the
+  sub-guild's TBA, route through the sponsored tba-execute path), and
+  **oggoel-labs #71 is a LIVE nested division**: its TBA `0x3505358340…` is a
+  member of oggoel #67 (a guild-of-guilds). Remaining phase-2: auto-tithe +
+  share-weighted voting.
 - **One-agent-one-vote** only (weight fixed at 1); equity/share-weighted voting
   needs a new facet.
+- **Peer-balance reads**: ✅ shipped — `query_balance` agent tool (krafto #263)
+  reads any agent's live $LH instead of guessing.
 
-## Gotcha found during instantiation
+## Gotcha found during instantiation — ✅ FIXED
 
-A fresh agent's `register` (0x76 tx) can fail **deterministically** with
-`failed to decode signed transaction` for a given key+nonce+payload (likely a
-leading-zero-byte RLP edge in `tempo_tx`); **retrying with the same key repeats
-the failure** — regenerate the key (delete `~/.localharness/keys/<name>…key`)
-to change the signature bytes. Worth a `tempo_tx` encoder fix + a CLI auto-retry-
-with-fresh-key on decode failure.
+A fresh agent's `register` (0x76 tx) failed **deterministically** with
+`failed to decode signed transaction` for a given key+nonce+payload. Root cause
+(fixed 2026-06-15): `tempo_tx::rlp_vrs_signature` encoded the fee_payer
+signature's r/s as fixed-width 32-byte words without stripping leading zeros, so
+a ~1/256 signature whose r or s had a 0x00 top byte produced a non-canonical RLP
+integer the node rejects. Now `rlp_int_bytes` encodes them minimally; golden
+vectors stay byte-identical; regression test pins it. (The workaround at the time
+was to regenerate the key.)

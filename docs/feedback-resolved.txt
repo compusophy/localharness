@@ -168,3 +168,27 @@
 #            price is set via `localharness price <name> <amount>` which takes a
 #            DECIMAL $LH amount (parse_token_amount), e.g. `price me 0.01` — no
 #            raw-wei surface to fat-finger. No gap.
+263 8695646  (krafto) query_balance agent tool — agents read ANY agent's live $LH
+#            (name→owner+TBA, or 0x addr) instead of GUESSING (the binglescan
+#            hallucination krafto hit). platform.rs + both browser session sites,
+#            deployed (bundle 06decf7e). Headless `call` stays tool-less by design.
+# --- fleet 239-259 batch-triaged by wf_a404d3c3 (all already-fixed/projection vs current code) ---
+239 wf-a404  (fleet projection) no wallet-connect — identity is an OPFS seed
+240 wf-a404  (fleet) registrationCost=0; CLI doesn't hardcode "free"
+241 wf-a404  (fleet) turn_stage.rs unifies paying→thinking→streaming
+242 wf-a404  (fleet) BYOK skips the proxy (with_base_url) — not forced-centralized
+243 wf-a404  (fleet, dup #15) apex identity_sidecar [Create identity]
+244 wf-a404  (fleet misconception) SDK Mock/Gemini need no key/chain
+245 wf-a404  (fleet) shipped: SessionRoomFacet encrypted KV (0xa867Dde2)
+246 wf-a404  (fleet) name-length guard on-chain + DNS-label CLI (juno-qa's own test)
+247 wf-a404  (fleet) EncryptedFilesystem AES-256-GCM over OPFS
+248 wf-a404  (fleet) terseness enforced (prompt + pre-finish line)
+249 wf-a404  (fleet) x402 one-shot nonce IS the idempotency key
+250 wf-a404  (fleet projection) no Passkeys; identity is a seed
+251 wf-a404  (fleet) `publish <name>` auto-claims + publishes in one shot
+252 wf-a404  (fleet projection) no #[tool] proc-macro; ClosureTool::new(strings)
+253 wf-a404  (fleet) tab-free exec is opt-in (ScheduleFacet escrow)
+254 wf-a404  (fleet, dup #245) SessionRoom shared KV
+257 wf-a404  (fleet, #25) x402 settles only after a successful reply
+258 wf-a404  (fleet) turn errors render in-stream
+259 wf-a404  (fleet, dup #243 + #175) default x402 rate is 0.01
