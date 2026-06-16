@@ -13,37 +13,36 @@
 //! # then open target/landing-preview.html
 //! ```
 //!
-//! Funnel: INVITE-FIRST. A fresh visitor's ONLY action is redeeming an
-//! invite code (`?invite=` links prefill the input); the explore directory
-//! is the escape hatch for the uninvited. The create-identity /
-//! import-seed buttons were removed from this surface DELIBERATELY (an
-//! unfunded identity stranded people) — do not re-add them here; seed
-//! import stays reachable from the admin panel.
+//! Funnel: INVITE/REDEEM-FIRST. A fresh visitor's ONLY action is redeeming
+//! a code — an invite (`inv-…`, `?invite=` links prefill the input) or a
+//! redeem code — which mints AND funds the wallet in one tap. There is no
+//! standalone free "create" path (an unfunded identity stranded people, and
+//! let 0-$LH visitors squat names). Seed import is the quiet
+//! returning-device door inside the card; the explore directory is the
+//! escape hatch for the uninvited.
 
 use maud::{Markup, html};
 
-/// The fresh-visitor hero: large wordmark, ONE value-prop line, the invite
-/// input as the centerpiece. Hierarchy is size + spacing only (monochrome
-/// brutalist — styles in `web/styles.css` under `.apex-hero`).
+/// The fresh-visitor front door: a single white-bordered card whose ONLY
+/// action is redeeming a code. An invite (`inv-…`) or a redeem code mints
+/// AND funds the wallet in one tap, so there is no unfunded-wallet path. No
+/// wordmark or tagline — the site header already carries the brand. Seed
+/// import is the quiet returning-device door; the `#import-slot` /
+/// `#seed-msg` slots MUST exist for the ShowImport/ImportSeed DOM swaps to
+/// land. Element ids + `data-action` are load-bearing
+/// (`events/credits.rs::RedeemInviteOnboard`, `Action::ShowImport`) — keep
+/// them stable.
 ///
-/// `prefill` = an invite code captured from an `?invite=CODE` link, so the
-/// visitor just taps [redeem] instead of re-copying a code that already
-/// rode in on the URL. Element ids + `data-action` are load-bearing
-/// (`events/credits.rs::RedeemInviteOnboard`) — keep them stable.
+/// `prefill` = an invite code captured from an `?invite=CODE` link.
 pub(crate) fn invite_onboarding(prefill: Option<&str>) -> Markup {
     html! {
-        section.apex-hero {
-            h2.apex-wordmark { "localharness" }
-            p.apex-tagline {
-                "self-sovereign agents — each one lives at "
-                span.apex-tagline-host { "<name>.localharness.xyz" }
-            }
+        section.apex-onboard {
             form.create-form data-action="redeem-invite-onboard" {
                 input #invite-onboard-input
                     .create-input
                     type="text"
-                    aria-label="invite code"
-                    placeholder="invite code"
+                    aria-label="invite or redeem code"
+                    placeholder="invite or redeem code"
                     value=[prefill]
                     autocomplete="off"
                     spellcheck="false"
@@ -51,6 +50,13 @@ pub(crate) fn invite_onboarding(prefill: Option<&str>) -> Markup {
                 button type="submit" .create-button { "redeem" }
             }
             div #invite-onboard-msg .step-msg {}
+            div.apex-onboard-secondary {
+                button type="button" data-action="show-import" .apex-onboard-import {
+                    "import an existing seed"
+                }
+            }
+            div #import-slot {}
+            div #seed-msg .step-msg {}
         }
     }
 }
