@@ -1,7 +1,19 @@
 # Tempo mainnet deploy runbook (chain 4217)
 
-> STATUS: validated by dry-run (base diamond simulates on mainnet for ~0.89
-> PathUSD); blocked ONLY on funding the deployer. Full stack ≈ $6–10 of gas.
+> STATUS (2026-06-16): the **on-ramp slice IS LIVE on mainnet** — diamond
+> `0x8ab4f3a57643410cdf4022cdaf1faeef234f3a77`, $LH token
+> `0x7ba3c9a39596e438b05c56dfc779700b58aea814`, with CreditMeter (lock-aware) +
+> MintGate cut & configured, C1 cap = 100k $LH/day, and a direct
+> mint→lock→clawback proven on-chain. Fee token = USDC.e (deployer + submitter
+> fee-token set via Fee Manager `setUserToken`). The full economy ladder
+> (steps 7–14 below) is NOT yet cut on mainnet. Remaining for a LIVE card buy:
+> the maintainer's LIVE Stripe key + a live webhook (then redeploy the proxy with
+> ONRAMP_SUBMITTER_KEY + FIAT_ISSUER_KEY).
+>
+> Bootstrap gotcha (solved): Tempo charges gas in pathUSD by default; the
+> deployer held only USDC.e. Fix = Fee Manager `setUserToken(USDC.e)` (precompile
+> `0xfeec…`) via a viem/tempo 0x76 tx that pays its own fee in USDC.e — after
+> that, plain forge/cast txs from the account pay gas in USDC.e.
 
 Reproduces the live Moderato diamond's final facet state on Tempo **mainnet**
 (chain 4217, `https://rpc.tempo.xyz`, fee token = USDC.e

@@ -39,11 +39,13 @@ pub const MAINNET: ChainConfig = ChainConfig {
     name: "Tempo mainnet",
     rpc_url: "https://rpc.tempo.xyz",
     chain_id: 4217,
-    diamond: "",
-    lh_token: "",
+    // Deployed 2026-06-16 (on-ramp money core). The full economy ladder is not
+    // yet cut on mainnet (testnet has it); this is the diamond + token + meter +
+    // MintGate on-ramp slice.
+    diamond: "0x8ab4f3a57643410cdf4022cdaf1faeef234f3a77",
+    lh_token: "0x7ba3c9a39596e438b05c56dfc779700b58aea814",
     // USDC.e (Stargate-bridged USDC) — a USD-currency TIP-20 the chain accepts as
-    // a gas/fee token (Tempo has no native coin). Confirmed live on the mainnet
-    // token list; `diamond`/`lh_token` stay empty until the step-12 deploy.
+    // a gas/fee token (Tempo has no native coin); confirmed on the mainnet token list.
     fee_token: "0x20c000000000000000000000b9537d11c60e8b50",
 };
 
@@ -70,12 +72,14 @@ mod tests {
         assert_eq!(ACTIVE.fee_token, "0x20c0000000000000000000000000000000000001");
     }
 
-    /// Mainnet rpc/chain are known; addresses are intentionally unset until the
-    /// deploy fills them in (and this guard is removed). Empty = can't ship.
+    /// Mainnet on-ramp deployed 2026-06-16: diamond + $LH token + fee token all
+    /// pinned. (The full economy ladder is not yet cut on mainnet.)
     #[test]
-    fn mainnet_addresses_unset_until_deploy() {
+    fn mainnet_addresses_pinned() {
         assert_eq!(MAINNET.chain_id, 4217);
         assert_eq!(MAINNET.rpc_url, "https://rpc.tempo.xyz");
-        assert!(MAINNET.diamond.is_empty(), "fill mainnet diamond + drop this guard at deploy");
+        assert_eq!(MAINNET.diamond, "0x8ab4f3a57643410cdf4022cdaf1faeef234f3a77");
+        assert_eq!(MAINNET.lh_token, "0x7ba3c9a39596e438b05c56dfc779700b58aea814");
+        assert_eq!(MAINNET.fee_token, "0x20c000000000000000000000b9537d11c60e8b50");
     }
 }

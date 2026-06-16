@@ -21,7 +21,13 @@ import {
   http,
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { TEMPO_RPC, REGISTRY, CHAIN_ID } from './_chain';
+
+// The on-ramp targets Tempo MAINNET, decoupled from `_chain.ts` (which the
+// AI-metering path still points at testnet). Override via ONRAMP_* env. Defaults
+// are the live mainnet diamond + $LH token (chain 4217).
+const TEMPO_RPC = process.env.ONRAMP_RPC ?? 'https://rpc.tempo.xyz';
+const REGISTRY = process.env.ONRAMP_REGISTRY ?? '0x8ab4f3a57643410cdf4022cdaf1faeef234f3a77';
+const CHAIN_ID = Number(process.env.ONRAMP_CHAIN_ID ?? '4217');
 
 // --- peg ---------------------------------------------------------------
 
@@ -122,14 +128,14 @@ function normKey(k: string): `0x${string}` {
 }
 
 // FIAT_ISSUER_KEY only signs the EIP-712 FiatMint — never mints directly, and
-// MUST be distinct from PROXY_METER_KEY (red-team M: a proxy RCE then leaks a
-// cap-bounded signing oracle, not the gas/meter key).
+// MUST be distinct from the on-ramp submitter key (red-team M: a proxy RCE then
+// leaks a cap-bounded signing oracle, not the gas/submit key).
 export function issuerAccount() {
   const k = process.env.FIAT_ISSUER_KEY;
   if (!k) throw new Error('missing FIAT_ISSUER_KEY');
-  const meter = process.env.PROXY_METER_KEY;
-  if (meter && normKey(k).toLowerCase() === normKey(meter).toLowerCase()) {
-    throw new Error('FIAT_ISSUER_KEY must be distinct from PROXY_METER_KEY');
+  const submitter = process.env.ONRAMP_SUBMITTER_KEY ?? process.env.PROXY_METER_KEY;
+  if (submitter && normKey(k).toLowerCase() === normKey(submitter).toLowerCase()) {
+    throw new Error('FIAT_ISSUER_KEY must be distinct from the on-ramp submitter key');
   }
   return privateKeyToAccount(normKey(k));
 }
@@ -163,11 +169,13 @@ export async function signFiatMint(
   });
 }
 
-// The submitter pays gas only (PROXY_METER_KEY, already funded). mintFromFiat's
-// authorization is the signature, so msg.sender is irrelevant.
+// The submitter pays gas only (its account fee token is set to USDC.e on Tempo).
+// mintFromFiat's authorization is the signature, so msg.sender is irrelevant. A
+// dedicated mainnet on-ramp key, separate from the testnet metering PROXY_METER_KEY
+// (falls back to it only if unset, for the testnet-pipe path).
 function submitterWallet() {
-  const k = process.env.PROXY_METER_KEY;
-  if (!k) throw new Error('missing PROXY_METER_KEY');
+  const k = process.env.ONRAMP_SUBMITTER_KEY ?? process.env.PROXY_METER_KEY;
+  if (!k) throw new Error('missing ONRAMP_SUBMITTER_KEY');
   return createWalletClient({
     account: privateKeyToAccount(normKey(k)),
     chain: TEMPO_CHAIN,
