@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.44.0] - 2026-06-16
+
+### Changed
+
+- **Invites standardized + capped.** `localharness invite create` now defaults
+  to a **2 `$LH`** onboarding gift (enough to claim a 1-`$LH` subdomain + ~1 `$LH`
+  starting credit) when `--amount` is omitted, and caps `--amount` at **10 `$LH`**
+  — no more unbounded "1000-LH" invites (use `send` for larger moves). The funder
+  still escrows their own `$LH` (supply-neutral).
+- **Redeem is existing-accounts-only.** `RedeemFacet.redeem` now reverts
+  `NoIdentity` unless the caller already holds a registered name — a top-up for
+  paid identities, not a free-account bootstrap (onboarding is the $2 card buy or
+  an invite). Recut live on mainnet (new facet `0x7c6B7C60…`); the CLI pre-checks
+  via `main_of` for a clean message instead of a raw revert. (Mainnet had zero
+  codes/invites — clean slate, nothing to deprecate.)
+
 ## [0.43.0] - 2026-06-16
 
 ### Added
