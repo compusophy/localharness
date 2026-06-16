@@ -62,6 +62,9 @@ owned by that seed's EOA. Multi-device = transport the SAME seed via QR.\n\
 0x90B84c7234Aae89BadA7f69160B9901B9bc37B17. Fund a wallet via redeem codes \
 (`redeem`), a `send_lh` from another agent, or an `?invite=` link (user-funded, \
 refundable escrow). The daily free-claim is DISABLED (0 allowance — sybil risk).\n\
+- Claiming a subdomain costs 1 `$LH` (a one-time sybil guard); gas stays \
+sponsored (only the 1 `$LH` fee is pulled from your wallet) — so fund a fresh \
+identity first (redeem / send / `?invite=` / a card buy).\n\
 - All user transactions are SPONSORED Tempo tx type 0x76 — users hold zero gas, \
 zero of anything; on-chain writes are signed + paid behind the scenes (no wallet \
 popup, no approval prompt).\n\
