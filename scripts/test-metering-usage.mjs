@@ -1,0 +1,113 @@
+// Runnable proof for proxy/api/_usage.ts (Option A metering foundation).
+//
+// Node 20 can't run .ts directly, so this is a faithful PORT of _usage.ts's pure
+// logic (the repo's .mjs parity-test pattern — cf. test-compose-wiring.mjs),
+// asserted against INDEPENDENTLY hand-computed expected values. The assertions
+// are the real check: a shared bug in both copies would fail a hand-computed
+// assertion. Keep this in lockstep with _usage.ts. Run: node scripts/test-metering-usage.mjs
+
+// ---- port of _usage.ts ----
+function perMillion(d) { return BigInt(Math.round(d * 1e12)); }
+const RATE_USD = {
+  'gemini-3.5-flash': [1.5, 9.0, 0.15],
+  'gemini-2.5-flash': [0.3, 2.5, 0.03],
+  'claude-haiku-4-5-20251001': [1.0, 5.0, 0.1],
+  'claude-sonnet-4-6': [3.0, 15.0, 0.3],
+  'claude-opus-4-8': [5.0, 25.0, 0.5],
+  'gpt-5-nano': [0.2, 1.25, 0.02],
+  'gpt-5-mini': [0.75, 4.5, 0.075],
+  'gpt-5.1': [2.5, 15.0, 0.25],
+  'gpt-5-pro': [30.0, 180.0, 3.0],
+};
+const DEFAULT_USD = { gemini: [1.5, 9.0, 0.15], anthropic: [3.0, 15.0, 0.3], openai: [2.5, 15.0, 0.25] };
+function rateFor(provider, model) {
+  const usd = RATE_USD[model] ?? DEFAULT_USD[provider];
+  return { input: perMillion(usd[0]), output: perMillion(usd[1]), cached: perMillion(usd[2]) };
+}
+function usageCostWei(provider, model, usage, marginBps) {
+  const r = rateFor(provider, model);
+  const input = BigInt(Math.max(0, Math.floor(usage.inputTokens)));
+  const output = BigInt(Math.max(0, Math.floor(usage.outputTokens)));
+  const cached = BigInt(Math.max(0, Math.min(Math.floor(usage.cachedInputTokens), Number(input))));
+  const billedInput = input - cached;
+  const raw = billedInput * r.input + cached * r.cached + output * r.output;
+  return (raw * marginBps) / 10000n;
+}
+function sseJsonFrames(sse) {
+  const out = [];
+  for (const line of sse.split('\n')) {
+    const t = line.trim();
+    if (!t.startsWith('data:')) continue;
+    const payload = t.slice(5).trim();
+    if (!payload || payload === '[DONE]') continue;
+    try { const o = JSON.parse(payload); if (o && typeof o === 'object') out.push(o); } catch { /* skip */ }
+  }
+  return out;
+}
+function num(v) { return typeof v === 'number' && Number.isFinite(v) ? v : 0; }
+function extractUsage(provider, sse) {
+  const frames = sseJsonFrames(sse);
+  if (provider === 'gemini') {
+    let last = null;
+    for (const f of frames) if (f.usageMetadata && typeof f.usageMetadata === 'object') last = f;
+    if (!last) return null;
+    const u = last.usageMetadata;
+    return { inputTokens: num(u.promptTokenCount), outputTokens: num(u.candidatesTokenCount), cachedInputTokens: num(u.cachedContentTokenCount) };
+  }
+  if (provider === 'anthropic') {
+    let input = 0, cached = 0, output = 0, sawUsage = false;
+    for (const f of frames) {
+      if (f.type === 'message_start') {
+        const u = (f.message ?? {}).usage ?? {};
+        input = num(u.input_tokens); cached = num(u.cache_read_input_tokens); sawUsage = true;
+      } else if (f.type === 'message_delta') {
+        const u = f.usage ?? {};
+        if (typeof u.output_tokens === 'number') { output = num(u.output_tokens); sawUsage = true; }
+      }
+    }
+    if (!sawUsage) return null;
+    return { inputTokens: input, outputTokens: output, cachedInputTokens: cached };
+  }
+  let usageFrame = null;
+  for (const f of frames) if (f.usage && typeof f.usage === 'object') usageFrame = f;
+  if (!usageFrame) return null;
+  const u = usageFrame.usage;
+  const d = u.prompt_tokens_details ?? {};
+  return { inputTokens: num(u.prompt_tokens), outputTokens: num(u.completion_tokens), cachedInputTokens: num(d.cached_tokens) };
+}
+
+// ---- assertions (hand-computed) ----
+let fails = 0;
+function eq(label, got, want) {
+  const g = JSON.stringify(got, (_, v) => (typeof v === 'bigint' ? v.toString() : v));
+  const w = JSON.stringify(want, (_, v) => (typeof v === 'bigint' ? v.toString() : v));
+  if (g !== w) { console.error(`FAIL ${label}\n  got  ${g}\n  want ${w}`); fails++; }
+  else console.log(`ok   ${label}`);
+}
+
+// usageCostWei — hand-computed:
+// flash 1000in/500out @1.3x = (1000*1.5e12 + 500*9e12)*1.3 = 6e15*1.3 = 7.8e15
+eq('cost flash 1000/500 x1.3', usageCostWei('gemini', 'gemini-3.5-flash', { inputTokens: 1000, outputTokens: 500, cachedInputTokens: 0 }, 13000n), 7800000000000000n);
+// flash 1000in(400 cached)/0out @1.0x = 600*1.5e12 + 400*1.5e11 = 9e14 + 6e13 = 9.6e14
+eq('cost flash cached x1.0', usageCostWei('gemini', 'gemini-3.5-flash', { inputTokens: 1000, outputTokens: 0, cachedInputTokens: 400 }, 10000n), 960000000000000n);
+// opus 2000in/1000out @1.3x = (2000*5e12 + 1000*2.5e13)*1.3 = 3.5e16*1.3 = 4.55e16
+eq('cost opus 2000/1000 x1.3', usageCostWei('anthropic', 'claude-opus-4-8', { inputTokens: 2000, outputTokens: 1000, cachedInputTokens: 0 }, 13000n), 45500000000000000n);
+// unknown anthropic → default $3/1M in: 1000*3e12 = 3e15
+eq('cost unknown anthropic fallback', usageCostWei('anthropic', 'claude-future-9', { inputTokens: 1000, outputTokens: 0, cachedInputTokens: 0 }, 10000n), 3000000000000000n);
+// clamp: negative/over-cached → 0/clamped (no throw, no negative)
+eq('cost clamps junk to 0', usageCostWei('gemini', 'gemini-3.5-flash', { inputTokens: -5, outputTokens: -1, cachedInputTokens: 999 }, 10000n), 0n);
+
+// extractUsage — gemini (last cumulative chunk wins)
+const GEM = 'data: {"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":200,"totalTokenCount":1200}}\n\ndata: {"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":500,"cachedContentTokenCount":300,"totalTokenCount":1500}}\n';
+eq('extract gemini', extractUsage('gemini', GEM), { inputTokens: 1000, outputTokens: 500, cachedInputTokens: 300 });
+// anthropic — input from message_start, cumulative output from last message_delta
+const ANT = 'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":1200,"cache_read_input_tokens":200}}}\n\nevent: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":50}}\n\nevent: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":420}}\n';
+eq('extract anthropic', extractUsage('anthropic', ANT), { inputTokens: 1200, outputTokens: 420, cachedInputTokens: 200 });
+// openai — usage chunk + [DONE]
+const OAI = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":800,"completion_tokens":150,"prompt_tokens_details":{"cached_tokens":100}}}\n\ndata: [DONE]\n';
+eq('extract openai', extractUsage('openai', OAI), { inputTokens: 800, outputTokens: 150, cachedInputTokens: 100 });
+// null when no usage frame present (→ integration falls back to the flat floor)
+eq('extract null when absent', extractUsage('gemini', 'data: {"candidates":[]}\n'), null);
+
+if (fails) { console.error(`\n${fails} assertion(s) FAILED`); process.exit(1); }
+console.log('\nall metering-usage assertions passed');

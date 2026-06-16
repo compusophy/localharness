@@ -94,10 +94,28 @@ nonce), not stock MPP.
   current figures are aggregator estimates; GPT-5.5 Pro at ~$30/$180 would be a
   landmine at a 0.20 flat.
 
-## Shipped now (this pass)
+## Shipped so far
 - **Env-gated request caps** in `gemini.ts` (Option B, OFF by default →
   byte-identical to today): set `LH_MAX_OUTPUT_TOKENS` to cap upstream max-output
   per request (kills the 59× output attack), and `LH_MAX_CREDITS_BODY_BYTES` to
-  bound input. Deployed flag-off; flip the envs to enable.
-- The usage-based FLOOR (Option A) + x402 "Upto" remain TODO — gated on the margin
-  decision above.
+  bound input. Deployed flag-off; flip the envs to enable. (OpenAI now also
+  set-if-absent so the cap binds there too.)
+- **Option A FOUNDATION (`proxy/api/_usage.ts`) — built + tested, STAGED (unwired).**
+  Pure, verified building blocks: a per-model per-token rate table (live-verified
+  Gemini + Anthropic; OpenAI estimated), `usageCostWei(provider, model, usage,
+  marginBps)`, and `extractUsage(provider, sse)` SSE parsers for all three
+  providers. Verified by `scripts/test-metering-usage.mjs` (9 hand-computed
+  assertions, runnable on Node 20). Imported by nothing yet → not bundled → zero
+  live effect.
+
+## Remaining for Option A (the SUPERVISED integration step)
+1. **Margin decision** (business): set `marginBps` (e.g. 13000 = 1.3×). Env-driven.
+2. **Wire `_usage.ts` into `gemini.ts`**: tee the streamed `upstream.body`
+   (passthrough + accumulate), and on stream close use Edge `ctx.waitUntil(...)`
+   to `extractUsage` → `usageCostWei` → debit `max(flat_floor, cost)` (via
+   `meterDebit` or x402 settle). For OpenAI, inject `stream_options.include_usage`
+   so usage is emitted.
+3. **LIVE-verify** each provider actually emits usage in its SSE (the one thing
+   fixtures can't prove) before relying on it — fall back to the flat floor when
+   `extractUsage` returns null.
+4. x402 "Upto" (sign-max / settle-actual) as the medium-term settlement rail.
