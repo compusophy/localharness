@@ -62,9 +62,11 @@ export default async function handler(req: Request): Promise<Response> {
   }
 
   let usdCents: number;
+  let embedded = false;
   try {
     const body = JSON.parse((await req.text()) || '{}');
     usdCents = Number(body.usd_cents);
+    embedded = body.embedded === true;
   } catch {
     return json({ error: 'invalid JSON body' }, 400, origin);
   }
@@ -77,26 +79,42 @@ export default async function handler(req: Request): Promise<Response> {
   }
   const lhWei = usdCentsToWei(usdCents).toString();
 
-  try {
-    const session = await stripe().checkout.sessions.create({
-      mode: 'payment',
-      // Card only: async methods (ACH/SEPA) settle later, so the webhook's NET
-      // amount wouldn't be known at mint time (the webhook fails closed on that).
-      payment_method_types: ['card'],
-      line_items: [
-        {
-          price_data: {
-            currency: 'usd',
-            product_data: { name: 'localharness $LH credits' },
-            unit_amount: usdCents,
-          },
-          quantity: 1,
+  // card + Link only — both settle synchronously (the webhook's NET amount is
+  // ready at mint time; it fails closed otherwise). Link gives returning buyers
+  // one-click saved cards.
+  const base = {
+    mode: 'payment' as const,
+    payment_method_types: ['card', 'link'] as Array<'card' | 'link'>,
+    line_items: [
+      {
+        price_data: {
+          currency: 'usd' as const,
+          product_data: { name: 'localharness $LH credits' },
+          unit_amount: usdCents,
         },
-      ],
+        quantity: 1,
+      },
+    ],
+    metadata: { lh_address: lhAddress, lh_wei: lhWei },
+    payment_intent_data: { metadata: { lh_address: lhAddress, lh_wei: lhWei } },
+  };
+
+  try {
+    if (embedded) {
+      // Embedded Checkout: rendered INSIDE our branded modal (no redirect). We
+      // handle completion client-side, so no return_url is needed.
+      const session = await stripe().checkout.sessions.create({
+        ...base,
+        ui_mode: 'embedded',
+        redirect_on_completion: 'never',
+      });
+      return json({ client_secret: session.client_secret, lh_wei: lhWei }, 200, origin);
+    }
+    // Hosted Checkout (redirect) — kept for non-browser callers.
+    const session = await stripe().checkout.sessions.create({
+      ...base,
       success_url: SUCCESS_URL,
       cancel_url: CANCEL_URL,
-      metadata: { lh_address: lhAddress, lh_wei: lhWei },
-      payment_intent_data: { metadata: { lh_address: lhAddress, lh_wei: lhWei } },
     });
     return json({ url: session.url, lh_wei: lhWei }, 200, origin);
   } catch (e) {

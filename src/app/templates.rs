@@ -48,6 +48,27 @@ pub(crate) fn api_key_modal() -> Markup {
     }
 }
 
+/// Branded "buy $LH" modal — Stripe Embedded Checkout mounts into
+/// `#stripe-checkout-mount` (via `web/stripe-embed.js`), so card entry is in-app
+/// (no redirect). `lh_label` previews the net `$LH`; the hidden `#buy-modal-done`
+/// success state is revealed by the shim's onComplete after payment (the proxy
+/// webhook does the on-chain mint).
+pub(crate) fn buy_modal(lh_label: &str) -> Markup {
+    html! {
+        div #buy-modal .api-key-modal {
+            div.api-key-card {
+                div.api-key-title { "buy $LH" }
+                div.api-key-hint { "you'll receive about " (lh_label) " (net of card fees), minted on-chain" }
+                div #stripe-checkout-mount style="min-height:320px;margin:12px 0" {}
+                div #buy-modal-done style="display:none" {
+                    div.api-key-hint { "✓ payment received — your $LH is minting on-chain and will appear shortly." }
+                }
+                button type="button" data-action="close-buy-modal" .ghost { "close" }
+            }
+        }
+    }
+}
+
 /// Render assistant markdown to HTML and wrap as `Markup` for direct DOM
 /// insertion.
 ///

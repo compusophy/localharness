@@ -73,6 +73,7 @@ HASH="$( (sha256sum web/pkg/localharness_bg.wasm 2>/dev/null || shasum -a 256 we
 if [ -n "$HASH" ]; then
     sed -i.bak -E "s/const LH_BUILD = \"[^\"]*\"/const LH_BUILD = \"${HASH}\"/" web/boot.js && rm -f web/boot.js.bak
     sed -i.bak -E "s|(boot\.js\?v=)[A-Za-z0-9]*|\1${HASH}|" web/index.html && rm -f web/index.html.bak
+    sed -i.bak -E "s|(stripe-embed\.js\?v=)[A-Za-z0-9]*|\1${HASH}|" web/index.html && rm -f web/index.html.bak
     echo "→ stamped bundle cache-buster: ${HASH}"
 else
     echo "WARNING: could not hash wasm; bundle cache-buster NOT stamped" >&2

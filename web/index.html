@@ -47,6 +47,9 @@
 <!-- ?v= is the per-build cache-buster (stamped by scripts/build-web.sh); it
      busts a stale-cached boot.js so a redeploy's new wasm url reaches returning
      visitors. index.html itself is the navigation document and revalidates. -->
-<script type="module" src="./boot.js?v=1027b498f3f1"></script>
+<!-- Stripe Embedded Checkout shim (window.lhBuyLh) — loaded before boot so the
+     wasm app can call it; ?v= cache-buster stamped by build-web.sh. -->
+<script src="./stripe-embed.js?v=4470e0379032"></script>
+<script type="module" src="./boot.js?v=4470e0379032"></script>
 </body>
 </html>

@@ -2,6 +2,7 @@
 //! download, redeem codes, and invites.
 
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 use crate::app::{dom, templates};
 use crate::encoding::bytes_to_hex_str;
@@ -381,12 +382,14 @@ pub(super) fn redeem_invite_onboard_pressed() {
     });
 }
 
-/// Buy `$LH` with a card. Reads a USD amount from `#buy-usd`, builds the SAME
-/// proxy auth token the model path uses (local key personal-signs
-/// `localharness-proxy:<addr>:<ts>`), POSTs it to the credit proxy's
-/// `/stripe/checkout`, and redirects to the returned Stripe Checkout URL. The
-/// proxy mints `$LH` to THIS identity once the payment settles (webhook). Empty
-/// / invalid amount is a silent no-op (no explanatory-validation text).
+/// Buy `$LH` with a card via an in-app Stripe **Embedded Checkout** modal (no
+/// redirect). Reads a USD amount from `#buy-usd`, builds the SAME proxy auth
+/// token the model path uses (local key personal-signs
+/// `localharness-proxy:<addr>:<ts>`), fetches an embedded Checkout
+/// `client_secret` from the proxy, swaps in the branded modal, and mounts
+/// Stripe's embedded checkout into it (`web/stripe-embed.js`). The proxy webhook
+/// mints `$LH` to THIS identity once the payment settles. Empty/invalid amount
+/// is a silent no-op.
 pub(super) fn buy_lh_pressed() {
     let Some(input) = dom::input_by_id("buy-usd") else { return };
     let Some(cents) = parse_usd_cents(input.value().trim()) else { return };
@@ -395,11 +398,11 @@ pub(super) fn buy_lh_pressed() {
         "<span style=\"color:var(--muted)\">opening checkout…</span>",
     );
     wasm_bindgen_futures::spawn_local(async move {
-        match start_checkout(cents).await {
-            Ok(url) => {
-                if let Some(w) = web_sys::window() {
-                    let _ = w.location().set_href(&url);
-                }
+        match start_checkout_embedded(cents).await {
+            Ok(client_secret) => {
+                open_buy_modal(&net_lh_label(cents));
+                call_js("lhBuyLh", Some(&client_secret));
+                dom::swap_inner("buy-msg", "");
             }
             Err(e) => {
                 web_sys::console::warn_1(&JsValue::from_str(&format!("buy $LH: {e}")));
@@ -410,6 +413,49 @@ pub(super) fn buy_lh_pressed() {
             }
         }
     });
+}
+
+/// Close + tear down the buy modal (unmount Stripe's embedded checkout first).
+pub(super) fn close_buy_modal() {
+    call_js("lhUnmountCheckout", None);
+    if let Some(el) = dom::by_id("buy-modal") {
+        if let Some(p) = el.parent_element() {
+            let _ = p.remove_child(&el);
+        }
+    }
+}
+
+/// Insert the branded buy modal once (mirrors `show_api_key_modal`).
+fn open_buy_modal(lh_label: &str) {
+    let Ok(doc) = dom::document() else { return };
+    if doc.get_element_by_id("buy-modal").is_some() {
+        return;
+    }
+    if let Some(body) = doc.body() {
+        let _ = body
+            .insert_adjacent_html("beforeend", &templates::buy_modal(lh_label).into_string());
+    }
+}
+
+/// Net `$LH` after Stripe's fee (~2.9% + $0.30), for the modal preview. Cosmetic
+/// — the webhook mints the exact settled-net amount.
+fn net_lh_label(cents: u64) -> String {
+    let fee = (cents as f64 * 0.029).ceil() as u64 + 30;
+    let net = cents.saturating_sub(fee);
+    format!("{:.2} $LH", net as f64 / 100.0)
+}
+
+/// Call a global JS function from the Stripe shim (`window.<name>`); no-op if
+/// absent. Keeps the imperative Stripe.js wiring in the JS glue layer.
+fn call_js(name: &str, arg: Option<&str>) {
+    let Some(w) = web_sys::window() else { return };
+    let Ok(f) = js_sys::Reflect::get(&w, &JsValue::from_str(name)) else { return };
+    if let Some(func) = f.dyn_ref::<js_sys::Function>() {
+        let _ = match arg {
+            Some(a) => func.call1(&w, &JsValue::from_str(a)),
+            None => func.call0(&w),
+        };
+    }
 }
 
 /// Parse a USD amount ("5", "$5", "5.50") into integer cents. `None` on
@@ -430,9 +476,9 @@ fn parse_usd_cents(raw: &str) -> Option<u64> {
     Some(cents as u64)
 }
 
-/// POST an authenticated checkout request to the credit proxy; returns the
-/// Stripe Checkout URL. Auth token mirrors `chat::access::resolve_credit_access`.
-async fn start_checkout(cents: u64) -> Result<String, String> {
+/// POST an authenticated EMBEDDED checkout request to the credit proxy; returns
+/// the Checkout `client_secret`. Auth token mirrors `resolve_credit_access`.
+async fn start_checkout_embedded(cents: u64) -> Result<String, String> {
     let (signer, addr) = crate::app::chat::credit_signer()
         .await
         .ok_or_else(|| "no identity".to_string())?;
@@ -446,7 +492,7 @@ async fn start_checkout(cents: u64) -> Result<String, String> {
         .post(&url)
         .header("x-goog-api-key", token)
         .header("content-type", "application/json")
-        .body(format!("{{\"usd_cents\":{cents}}}"))
+        .body(format!("{{\"usd_cents\":{cents},\"embedded\":true}}"))
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -456,10 +502,10 @@ async fn start_checkout(cents: u64) -> Result<String, String> {
         return Err(text);
     }
     let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    v.get("url")
+    v.get("client_secret")
         .and_then(|u| u.as_str())
         .map(|s| s.to_string())
-        .ok_or_else(|| "no checkout url in response".to_string())
+        .ok_or_else(|| "no client_secret in response".to_string())
 }
 
 /// localStorage handle (best-effort).
