@@ -84,3 +84,24 @@ a ~1/256 signature whose r or s had a 0x00 top byte produced a non-canonical RLP
 integer the node rejects. Now `rlp_int_bytes` encodes them minimally; golden
 vectors stay byte-identical; regression test pins it. (The workaround at the time
 was to regenerate the key.)
+
+## 2026-06-15 — parallel frontier wave (3 workflows)
+
+- **Share-weighted governance — ✅ live.** `WeightedVotingFacet`
+  (`0x02F745f978CF7C6A9Eba64dB98386077aFFf9abE`, cut live) adds a cap-table board
+  alongside the 1m1v `VotingFacet` (untouched): admin `vote shares set <guild>
+  <member> <n>`; weighted proposals tally SHARES, quorum = >half the total-shares
+  snapshot; `executeWeighted` reuses `_spendCore`. Red-team ok=true (no
+  double-vote / weight-forgery / snapshot-bypass / over-spend). Proven live:
+  oggoel-eng = 100/100 shares in #67.
+- **Tab-free tithe trigger — ✅ live.** The scheduler GOAL-loop tick gained
+  `collect_tithe(account)` (proxy deployed) → the permissionless
+  `TitheFacet.collectTithe`, so a no-tab CEO can top up the treasury from members'
+  consented tithes. (Zero new authority — only honors on-chain consent.)
+- **Deferred (re-queued):** (1) tab-free `post_bounty` — needs a net-new
+  scheduler-role `postBountyFromJob(jobId,…)` facet that draws from the job's
+  escrow (the existing permissionless `postBounty` would escrow from / make the
+  scheduler key the poster — wrong wallet + authority). (2) The `TitheFacet`
+  regression test — written but its two-base harness (`is TitheFacet, GuildFacet`)
+  hits solc's duplicate-inherited-error rule; fix = inherit TitheFacet only +
+  direct `LibGuildStorage` setup (task #11).
