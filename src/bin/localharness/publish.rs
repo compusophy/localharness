@@ -200,9 +200,10 @@ pub(crate) async fn create_publish(name: &str, persona: Option<&str>, do_publish
                     fmt_lh(balance)
                 );
                 eprintln!(
-                    "fund it first: accept an invite (localharness invite accept <code>), \
-                     redeem a code (localharness redeem <code>), or have another identity \
-                     `localharness send {addr} <amount>` — then re-run create."
+                    "fund it first: `localharness buy 1` (pay $1 by card → ~1 $LH), accept an \
+                     invite (localharness invite accept <code>), redeem a code (localharness \
+                     redeem <code>), or have another identity `localharness send {addr} <amount>` \
+                     — then re-run create."
                 );
                 return 2;
             }
