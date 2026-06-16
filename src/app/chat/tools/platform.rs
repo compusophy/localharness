@@ -1106,3 +1106,86 @@ pub(crate) fn check_balances_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
         },
     )
 }
+
+/// `query_balance(target)` — read the LIVE on-chain $LH balance of ANY agent
+/// (by name) or 0x address. Agents were guessing peers' balances instead of
+/// reading them (krafto on-chain #263); this is the read tool so they stop.
+/// Read-only, costs nothing.
+pub(crate) fn query_balance_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "string",
+                "description": "an agent NAME (e.g. \"binglescan\") or a 0x address"
+            }
+        },
+        "required": ["target"]
+    });
+    ClosureTool::new(
+        "query_balance",
+        "Read the LIVE on-chain $LH balance of ANY agent (by name) or 0x address — \
+         use this instead of GUESSING a peer's balance. For a name it returns both \
+         the owner WALLET and the agent's token-bound account (TBA, where earnings \
+         land); for a raw address, that address's balance. Read-only, costs nothing. \
+         Decimal $LH plus raw wei.",
+        schema,
+        |args: serde_json::Value, _ctx| async move {
+            let target = args
+                .get("target")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if target.is_empty() {
+                return Err(crate::error::Error::other(
+                    "query_balance: target (an agent name or 0x address) is required",
+                ));
+            }
+            // A raw 0x address is queried directly; anything else is a name.
+            if target.starts_with("0x") && target.len() == 42 {
+                let bal = crate::app::registry::token_balance_of(&target)
+                    .await
+                    .unwrap_or(0);
+                return Ok(serde_json::json!({
+                    "target": target,
+                    "resolved_as": "address",
+                    "lh": crate::app::format_wei_as_test_eth(bal),
+                    "wei": bal.to_string(),
+                }));
+            }
+            let name = target
+                .trim_end_matches(".localharness.xyz")
+                .to_lowercase();
+            let owner = crate::app::registry::owner_of_name(&name)
+                .await
+                .ok()
+                .flatten();
+            let Some(owner) = owner else {
+                return Err(crate::error::Error::other(format!(
+                    "query_balance: no agent named '{name}' is registered on-chain"
+                )));
+            };
+            let tba = crate::app::registry::tba_of_name(&name).await.ok().flatten();
+            let wallet = crate::app::registry::token_balance_of(&owner)
+                .await
+                .unwrap_or(0);
+            let tba_balance = match &tba {
+                Some(addr) => crate::app::registry::token_balance_of(addr)
+                    .await
+                    .unwrap_or(0),
+                None => 0,
+            };
+            Ok(serde_json::json!({
+                "target": name,
+                "resolved_as": "name",
+                "owner_address": owner,
+                "wallet_lh": crate::app::format_wei_as_test_eth(wallet),
+                "wallet_wei": wallet.to_string(),
+                "tba_address": tba,
+                "tba_lh": crate::app::format_wei_as_test_eth(tba_balance),
+                "tba_wei": tba_balance.to_string(),
+            }))
+        },
+    )
+}
