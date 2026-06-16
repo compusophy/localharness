@@ -1010,11 +1010,9 @@ h1 a:hover { color: var(--accent); }
    a large headline, generous spacing, and a FILLED-INVERSE button. No
    colored accent — every tone is --fg / --bg / --muted / --border. */
 .apex-onboard {
-  margin: 14vh auto 0;
+  margin: 18vh auto 0;
   width: 100%;
-  max-width: 440px;
-  padding: 40px 32px 32px;
-  border: 2px solid var(--fg);
+  max-width: 360px;
   text-align: center;
   display: flex;
   flex-direction: column;
@@ -1038,7 +1036,7 @@ h1 a:hover { color: var(--accent); }
 /* The page's ONE action: large, full-width, filled-inverse so it
    outweighs everything else by weight + fill, not color. */
 .apex-onboard-cta {
-  margin: 28px 0 0;
+  margin: 0;
   width: 100%;
   padding: 18px 32px;
   font-size: 16px;

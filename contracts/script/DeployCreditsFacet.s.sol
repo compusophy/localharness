@@ -24,23 +24,51 @@ import {IDiamondCut} from "../src/interfaces/IDiamondCut.sol";
 /// - dailyAllowance = 100e18 (100 LH per user per UTC day)
 contract DeployCreditsFacet is Script {
     uint256 constant INITIAL_SUPPLY_CAP = 1_000_000_000 ether;
-    uint256 constant INITIAL_DAILY_ALLOWANCE = 100 ether;
 
     function run() external {
         address diamond = vm.envAddress("DIAMOND");
         uint256 pk = vm.envUint("EVM_PRIVATE_KEY");
-        address deployer = vm.addr(pk);
 
         vm.startBroadcast(pk);
 
-        // 1. Deploy the credit token. Deployer is initial owner so it
-        // can grant ISSUER_ROLE to the diamond in the next step.
-        LocalharnessCredits credits = new LocalharnessCredits(
-            INITIAL_SUPPLY_CAP,
-            deployer
-        );
+        // 1. Deploy the credit token. Deployer is initial owner so it can grant
+        // ISSUER_ROLE to the diamond + set the global mint cap.
+        LocalharnessCredits credits = new LocalharnessCredits(INITIAL_SUPPLY_CAP, vm.addr(pk));
+
+        // 1b. C1 global rolling-window mint cap on the FRESH token, BEFORE any
+        // mint path is live (red-team launch gate). 0 = uncapped (fail-open) — a
+        // mainnet deploy MUST pass a finite MINT_WINDOW_CAP_WEI. uncapped→finite
+        // is an immediate "tighten".
+        uint256 cap = vm.envOr("MINT_WINDOW_CAP_WEI", uint256(0));
+        if (cap != 0) {
+            credits.tightenMintWindow(cap, vm.envOr("MINT_WINDOW_SECS", uint256(1 days)));
+        } else {
+            console.log("WARNING: MINT_WINDOW_CAP_WEI=0 -> global mint cap DISABLED (set before mainnet)");
+        }
 
         // 2. Cut the facet.
+        address facet = _cutCreditsFacet(diamond);
+
+        // 3. Grant the diamond ISSUER_ROLE so claimDaily/redeem/MintGate can mint.
+        credits.grantRole(credits.ISSUER_ROLE(), diamond);
+        CreditsFacet(diamond).setCreditsToken(address(credits));
+
+        // 4. Daily faucet defaults to 0 (DISABLED) — a free daily mint is a sybil
+        // hole on a value-real chain. Pass INITIAL_DAILY_ALLOWANCE for a testnet
+        // faucet only.
+        uint256 dailyAllowance = vm.envOr("INITIAL_DAILY_ALLOWANCE", uint256(0));
+        if (dailyAllowance != 0) CreditsFacet(diamond).setDailyAllowance(dailyAllowance);
+
+        vm.stopBroadcast();
+
+        console.log("--- Credits + CreditsFacet deployed ---");
+        console.log("creditsToken:   ", address(credits));
+        console.log("creditsFacet:   ", facet);
+        console.log("mintWindowCap:  ", cap / 1 ether);
+        console.log("dailyAllow (LH):", dailyAllowance / 1 ether);
+    }
+
+    function _cutCreditsFacet(address diamond) internal returns (address) {
         CreditsFacet facet = new CreditsFacet();
         bytes4[] memory selectors = new bytes4[](7);
         selectors[0] = CreditsFacet.setCreditsToken.selector;
@@ -58,23 +86,6 @@ contract DeployCreditsFacet is Script {
             functionSelectors: selectors
         });
         IDiamondCut(diamond).diamondCut(cuts, address(0), "");
-
-        // 3. Grant the diamond ISSUER_ROLE on the token so claimDaily
-        // can mint. Deployer (owner) is the only one who can do this.
-        credits.grantRole(credits.ISSUER_ROLE(), diamond);
-
-        // 4. Configure the facet via cast-through-diamond calls. Both
-        // are owner-only on the facet side.
-        CreditsFacet(diamond).setCreditsToken(address(credits));
-        CreditsFacet(diamond).setDailyAllowance(INITIAL_DAILY_ALLOWANCE);
-
-        vm.stopBroadcast();
-
-        console.log("--- Credits + CreditsFacet deployed ---");
-        console.log("diamond:        ", diamond);
-        console.log("creditsToken:   ", address(credits));
-        console.log("creditsFacet:   ", address(facet));
-        console.log("supplyCap (LH): ", INITIAL_SUPPLY_CAP / 1 ether);
-        console.log("dailyAllow (LH):", INITIAL_DAILY_ALLOWANCE / 1 ether);
+        return address(facet);
     }
 }

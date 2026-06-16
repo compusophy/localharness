@@ -49,10 +49,15 @@ export function stripe(): Stripe {
   if (_stripe) return _stripe;
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key) throw new Error('missing STRIPE_SECRET_KEY');
-  // apiVersion omitted → uses the account's pinned default (test mode first).
-  _stripe = new Stripe(key);
+  // Edge runtime: Stripe must use fetch (no Node http module). apiVersion
+  // omitted → the account's pinned default (test mode first).
+  _stripe = new Stripe(key, { httpClient: Stripe.createFetchHttpClient() });
   return _stripe;
 }
+
+// WebCrypto-based HMAC verifier for the webhook (Edge has no Node crypto, so
+// `constructEvent` (sync) is unavailable — use `constructEventAsync` with this).
+export const stripeCryptoProvider = Stripe.createSubtleCryptoProvider();
 
 // --- receiptId ---------------------------------------------------------
 

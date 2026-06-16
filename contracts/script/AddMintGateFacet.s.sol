@@ -30,20 +30,19 @@ contract AddMintGateFacet is Script {
         address diamond = vm.envAddress("DIAMOND");
         uint256 pk = vm.envUint("EVM_PRIVATE_KEY");
 
-        // Owner config (optional; defaults are testnet-safe).
-        address fiatSigner = vm.envOr("FIAT_ISSUER_SIGNER", address(0));
-        address clawbacker = vm.envOr("CLAWBACKER", address(0));
-        uint256 lockSecs = vm.envOr("FIAT_LOCK_SECS", uint256(90 days));
-        uint256 perReceiptMax = vm.envOr("PER_RECEIPT_MAX_WEI", uint256(0));
-        uint256 windowCap = vm.envOr("FIAT_WINDOW_CAP_WEI", uint256(0));
-        uint256 windowSecs = vm.envOr("FIAT_WINDOW_SECS", uint256(1 days));
-
         vm.startBroadcast(pk);
+        address mintGate = address(new MintGateFacet());
+        address meter = address(new CreditMeterFacet());
+        _cut(diamond, mintGate, meter);
+        _configure(diamond);
+        vm.stopBroadcast();
 
-        MintGateFacet mintGate = new MintGateFacet();
-        CreditMeterFacet meter = new CreditMeterFacet();
+        console.log("--- MintGateFacet cut + CreditMeter upgrade ---");
+        console.log("mintGateFacet:   ", mintGate);
+        console.log("creditMeterFacet:", meter);
+    }
 
-        // 1) Add the 17 MintGate selectors.
+    function _cut(address diamond, address mintGate, address meter) internal {
         bytes4[] memory mg = new bytes4[](17);
         mg[0] = MintGateFacet.mintFromFiat.selector;
         mg[1] = MintGateFacet.clawbackFiatMint.selector;
@@ -63,49 +62,28 @@ contract AddMintGateFacet is Script {
         mg[15] = MintGateFacet.circulatingSupply.selector;
         mg[16] = MintGateFacet.fiatMintDomainSeparator.selector;
 
-        // 2) Replace the two CreditMeter selectors whose behaviour changed.
         bytes4[] memory meterReplace = new bytes4[](2);
         meterReplace[0] = CreditMeterFacet.withdrawCredits.selector;
         meterReplace[1] = CreditMeterFacet.meter.selector;
 
-        // 3) Add the new withdrawableOf view.
         bytes4[] memory meterAdd = new bytes4[](1);
         meterAdd[0] = CreditMeterFacet.withdrawableOf.selector;
 
         IDiamond.FacetCut[] memory cuts = new IDiamond.FacetCut[](3);
-        cuts[0] = IDiamond.FacetCut({
-            facetAddress: address(mintGate),
-            action: IDiamond.FacetCutAction.Add,
-            functionSelectors: mg
-        });
-        cuts[1] = IDiamond.FacetCut({
-            facetAddress: address(meter),
-            action: IDiamond.FacetCutAction.Replace,
-            functionSelectors: meterReplace
-        });
-        cuts[2] = IDiamond.FacetCut({
-            facetAddress: address(meter),
-            action: IDiamond.FacetCutAction.Add,
-            functionSelectors: meterAdd
-        });
+        cuts[0] = IDiamond.FacetCut(mintGate, IDiamond.FacetCutAction.Add, mg);
+        cuts[1] = IDiamond.FacetCut(meter, IDiamond.FacetCutAction.Replace, meterReplace);
+        cuts[2] = IDiamond.FacetCut(meter, IDiamond.FacetCutAction.Add, meterAdd);
         IDiamondCut(diamond).diamondCut(cuts, address(0), "");
+    }
 
-        // 4) Owner one-time config on the freshly-cut MintGate.
+    function _configure(address diamond) internal {
         MintGateFacet g = MintGateFacet(diamond);
+        address fiatSigner = vm.envOr("FIAT_ISSUER_SIGNER", address(0));
+        address clawbacker = vm.envOr("CLAWBACKER", address(0));
         if (fiatSigner != address(0)) g.setFiatIssuerSigner(fiatSigner);
         if (clawbacker != address(0)) g.setClawbacker(clawbacker);
-        g.setFiatLockSecs(lockSecs);
-        g.setPerReceiptMaxWei(perReceiptMax);
-        g.setFiatMintWindow(windowCap, windowSecs);
-
-        vm.stopBroadcast();
-
-        console.log("--- MintGateFacet cut + CreditMeter upgrade ---");
-        console.log("diamond:        ", diamond);
-        console.log("mintGateFacet:  ", address(mintGate));
-        console.log("creditMeterFacet:", address(meter));
-        console.log("fiatIssuerSigner:", fiatSigner);
-        console.log("clawbacker:     ", clawbacker);
-        console.log("fiatLockSecs:   ", lockSecs);
+        g.setFiatLockSecs(vm.envOr("FIAT_LOCK_SECS", uint256(90 days)));
+        g.setPerReceiptMaxWei(vm.envOr("PER_RECEIPT_MAX_WEI", uint256(0)));
+        g.setFiatMintWindow(vm.envOr("FIAT_WINDOW_CAP_WEI", uint256(0)), vm.envOr("FIAT_WINDOW_SECS", uint256(1 days)));
     }
 }

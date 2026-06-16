@@ -9,6 +9,7 @@ remappings = []
 
 [rpc_endpoints]
 tempo_moderato = "https://rpc.moderato.tempo.xyz"
+tempo_mainnet = "https://rpc.tempo.xyz"
 
 [etherscan]
 # Tempo doesn't have a verified-source explorer endpoint yet; leave empty.

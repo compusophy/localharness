@@ -41,7 +41,10 @@ pub const MAINNET: ChainConfig = ChainConfig {
     chain_id: 4217,
     diamond: "",
     lh_token: "",
-    fee_token: "",
+    // USDC.e (Stargate-bridged USDC) — a USD-currency TIP-20 the chain accepts as
+    // a gas/fee token (Tempo has no native coin). Confirmed live on the mainnet
+    // token list; `diamond`/`lh_token` stay empty until the step-12 deploy.
+    fee_token: "0x20c000000000000000000000b9537d11c60e8b50",
 };
 
 /// The compile-time-selected active chain. `mainnet` feature off (default) =

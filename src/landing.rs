@@ -13,62 +13,42 @@
 //! # then open target/landing-preview.html
 //! ```
 //!
-//! Funnel: INVITE/REDEEM-FIRST. A fresh visitor's ONLY action is redeeming
-//! a code — an invite (`inv-…`, `?invite=` links prefill the input) or a
-//! redeem code — which mints AND funds the wallet in one tap. There is no
-//! standalone free "create" path (an unfunded identity stranded people, and
-//! let 0-$LH visitors squat names). Seed import is the quiet
-//! returning-device door inside the card; the explore directory is the
-//! escape hatch for the uninvited.
+//! Funnel: ONE decision — create a wallet. The fresh-visitor front door is a
+//! single `create wallet` CTA (the paid entry: it creates AND funds the
+//! wallet, so there's no unfunded-wallet path and no 0-$LH name-squatting).
+//! Invited users skip this entirely — an `?invite=CODE` link/QR auto-redeems
+//! on mount (`app/mod.rs` → `try_redeem_pending_invite`). Redeeming a code and
+//! importing a seed are recovery/edge paths and live in the admin panel, NOT
+//! here. Explore is post-auth only (no account yet → nothing to browse).
 
 use maud::{Markup, html};
 
-/// The fresh-visitor front door: a single white-bordered card whose ONLY
-/// action is redeeming a code. An invite (`inv-…`) or a redeem code mints
-/// AND funds the wallet in one tap, so there is no unfunded-wallet path. No
-/// wordmark or tagline — the site header already carries the brand. Seed
-/// import is the quiet returning-device door; the `#import-slot` /
-/// `#seed-msg` slots MUST exist for the ShowImport/ImportSeed DOM swaps to
-/// land. Element ids + `data-action` are load-bearing
-/// (`events/credits.rs::RedeemInviteOnboard`, `Action::ShowImport`) — keep
-/// them stable.
-///
-/// `prefill` = an invite code captured from an `?invite=CODE` link.
-pub(crate) fn invite_onboarding(prefill: Option<&str>) -> Markup {
+/// The fresh-visitor front door: ONE white-bordered card with a single
+/// `create wallet` CTA. It's the paid entry — wired to a checkout session
+/// that creates AND funds the wallet — so a 0-$LH visitor never exists. No
+/// code input or seed-import here (both live in admin; `?invite=` links
+/// auto-redeem on mount). `data-action="create-wallet"` is load-bearing.
+pub(crate) fn create_wallet_cta() -> Markup {
     html! {
         section.apex-onboard {
-            form.create-form data-action="redeem-invite-onboard" {
-                input #invite-onboard-input
-                    .create-input
-                    type="text"
-                    aria-label="invite or redeem code"
-                    placeholder="invite or redeem code"
-                    value=[prefill]
-                    autocomplete="off"
-                    spellcheck="false"
-                    required {}
-                button type="submit" .create-button { "redeem" }
+            button type="button" data-action="create-wallet" .apex-onboard-cta {
+                "create wallet"
             }
-            div #invite-onboard-msg .step-msg {}
-            div.apex-onboard-secondary {
-                button type="button" data-action="show-import" .apex-onboard-import {
-                    "import an existing seed"
-                }
-            }
-            div #import-slot {}
-            div #seed-msg .step-msg {}
+            div #onboard-msg .step-msg {}
         }
     }
 }
 
-/// The muted footer links under the apex column. Explore is the visible
-/// escape hatch for visitors WITHOUT an invite; skill.md is the agent
-/// front door. Shared by the fresh-visitor and returning-owner states.
-pub(crate) fn apex_links() -> Markup {
+/// The muted footer link(s) under the apex column. A fresh visitor (no
+/// account) sees only the agent-onboarding door; explore is added once an
+/// identity exists — nothing to browse before you're in.
+pub(crate) fn apex_links(fresh: bool) -> Markup {
     html! {
         nav.apex-links {
-            a href="?explore=1" { "explore all agents →" }
-            a href="/skill.md" { "for agents: how to join →" }
+            @if !fresh {
+                a href="?explore=1" { "explore all agents →" }
+            }
+            a href="/skill.md" { "for agents →" }
         }
     }
 }
@@ -122,8 +102,8 @@ mod tests {
                         main.apex-main {
                             div.col-chat {
                                 div #status .terminal-status {}
-                                (invite_onboarding(None))
-                                (apex_links())
+                                (create_wallet_cta())
+                                (apex_links(true))
                             }
                         }
                     }

@@ -866,16 +866,15 @@ pub(crate) fn apex(host: &Host, wallet_address_hex: Option<&str>) -> Markup {
                 // visitor sees it before minting a key they could lose on close.
                 div #storage-warn-slot {}
                 @if fresh {
-                    // Invite/redeem-FIRST: the ONE front door. Redeeming a code
-                    // (an invite `inv-…` or a redeem code) mints AND funds the
-                    // wallet in a single tap — there is no unfunded-wallet path,
-                    // so a 0-$LH visitor can't squat a name. Seed import is the
-                    // quiet returning-device door inside the card.
-                    (invite_onboarding())
+                    // ONE front door: create a wallet (paid entry that creates
+                    // AND funds it, so a 0-$LH visitor never exists). Invited
+                    // users skip this — `?invite=` links auto-redeem on mount.
+                    // Redeem + import live in admin; explore is post-auth only.
+                    (crate::landing::create_wallet_cta())
                 } @else {
                     (apex_claim())
                 }
-                (crate::landing::apex_links())
+                (crate::landing::apex_links(fresh))
             }
         }
     }
@@ -910,28 +909,6 @@ fn apex_claim() -> Markup {
 }
 
 
-/// Invite-code-FIRST onboarding — the ONLY surface for a fresh visitor
-/// with no identity. A brand-new visitor has no `$LH`, so anything else on
-/// this page is a dead end (an unfunded identity can't do a single thing) —
-/// the invite code IS the front door: paste (or arrive via an `?invite=`
-/// link, which PREFILLS the field) → `redeem` accepts the InviteFacet
-/// escrow, creating + funding the identity in one tap. The claim form
-/// appears once funded.
-///
-/// The create-identity / import-seed buttons were REMOVED from this hero
-/// (an identity without credits stranded people — the user's call): seed
-/// import + explicit create stay reachable from the admin panel and the
-/// claim interstitial for the returning-user/recovery case. The redeem tap
-/// is the explicit gesture that may generate a wallet, so the
-/// no-silent-generation gate still holds. No explanatory-validation prose.
-///
-/// The MARKUP lives in `crate::landing` (native-renderable — the
-/// `landing_preview` test screenshots it); this wrapper only supplies the
-/// browser-side prefill captured from an `?invite=CODE` link.
-fn invite_onboarding() -> Markup {
-    let prefill = crate::app::events::pending_invite_code();
-    crate::landing::invite_onboarding(prefill.as_deref())
-}
 
 /// Volatile-storage warning (kit-qa #): the identity seed lives in OPFS, which
 /// a private / incognito window can WIPE on tab close — so a newly-minted
