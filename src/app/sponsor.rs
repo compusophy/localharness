@@ -48,9 +48,16 @@ use k256::ecdsa::SigningKey;
 /// `0x313b1659F5037080aA0C113D386C5954F348EF1e`. Funds remain there
 /// untouched; they can be reclaimed by the deployer key.
 ///
-/// The key lives here so the build is self-contained — no env-var or
-/// runtime fetch needed. **Do not commit a mainnet key here.** Use
-/// a build-time env mechanism for that.
+/// The testnet key lives here so the default build is self-contained. The
+/// MAINNET key is NEVER committed: on a `mainnet`-feature build it is read from
+/// the `LH_MAINNET_SPONSOR_KEY` env at COMPILE time (`env!`, so a mainnet build
+/// without it fails closed). It still lands in the wasm (extractable → loss
+/// capped at the sponsor's small balance, same trust model as testnet); the
+/// proper fix is the rate-capped relay (stripe-mainnet §6.3). Mainnet sponsor:
+/// `0xE70f4B23322A954A1881B8DC3Db5781f9D22065E` (fee token USDC.e).
+#[cfg(feature = "mainnet")]
+const SPONSOR_PRIVATE_KEY_HEX: &str = env!("LH_MAINNET_SPONSOR_KEY");
+#[cfg(not(feature = "mainnet"))]
 const SPONSOR_PRIVATE_KEY_HEX: &str =
     "0x046a830b5203d1d2c0a205a1432746e4381d0874711b2de7f575a973644b9d43";
 

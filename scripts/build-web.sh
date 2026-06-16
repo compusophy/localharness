@@ -19,6 +19,15 @@ if ! command -v wasm-pack >/dev/null 2>&1; then
     exit 1
 fi
 
+# The platform runs on Tempo MAINNET (chain 4217) — the bundle is built with the
+# `mainnet` feature, which reads the embedded sponsor key from this env at
+# compile time (never committed). Fail closed if it's missing.
+if [ -z "${LH_MAINNET_SPONSOR_KEY:-}" ]; then
+    echo "LH_MAINNET_SPONSOR_KEY not set — the mainnet build embeds the sponsor key from it." >&2
+    echo "  export LH_MAINNET_SPONSOR_KEY=\$(cat ~/.lh_sponsor_mainnet.key)" >&2
+    exit 1
+fi
+
 # Stamp the crate version into web/llms.txt so the deployed bundle
 # advertises its freshness (curl llms.txt | head). Keeps it from drifting
 # from Cargo.toml without a manual bump step.
@@ -48,13 +57,13 @@ export RUSTFLAGS="${RUSTFLAGS:-} \
  --remap-path-prefix=${HOME_WIN}=/home \
  --remap-path-prefix=${HOME}=/home"
 
-echo "→ wasm-pack build (release, browser-app)..."
+echo "→ wasm-pack build (release, browser-app, mainnet)..."
 wasm-pack build . \
     --target web \
     --out-dir web/pkg \
     --release \
     --no-default-features \
-    --features browser-app
+    --features browser-app,mainnet
 
 # Guard: the published wasm must not contain the builder's username.
 USERPART="$(basename "$HOME_WIN" 2>/dev/null || basename "$HOME")"

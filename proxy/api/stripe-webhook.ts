@@ -55,8 +55,18 @@ export default async function handler(req: Request): Promise<Response> {
   }
 
   try {
-    if (event.type === 'checkout.session.completed') {
+    if (
+      event.type === 'checkout.session.completed' ||
+      event.type === 'checkout.session.async_payment_succeeded'
+    ) {
       const session = event.data.object as import('stripe').Stripe.Checkout.Session;
+      // A delayed-funding method (some bank-backed paths) completes 'unpaid' then
+      // fires async_payment_succeeded on settlement — mint ONLY once settled-paid
+      // (the one-shot receipt keeps both events idempotent). card + Link settle
+      // synchronously, so this is normally 'paid' on the completed event.
+      if (session.payment_status !== 'paid') {
+        return json({ received: true, pending: true }, 200);
+      }
       const lhAddress = session.metadata?.lh_address ?? '';
       const piId = paymentIntentId(session);
       if (!isHexAddress(lhAddress) || !piId) {
@@ -121,8 +131,9 @@ function json(body: unknown, status: number): Response {
 // #4): if net isn't available yet (async settlement / transient API error) we
 // THROW so the handler 500s and Stripe retries — minting GROSS would over-issue
 // by the Stripe fee and permanently breach circulating ≤ usd_held/peg. The
-// one-shot receiptId makes the eventual retry idempotent. Checkout restricts to
-// card so net is normally settled by webhook time.
+// one-shot receiptId makes the eventual retry idempotent. Checkout uses card +
+// Link (both settle synchronously), and the handler only mints once
+// payment_status=='paid', so net is normally available by webhook time.
 async function netSettledCents(piId: string): Promise<number> {
   const pi = await stripe().paymentIntents.retrieve(piId, {
     expand: ['latest_charge.balance_transaction'],
