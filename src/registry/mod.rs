@@ -34,6 +34,7 @@ mod tithe;
 mod tx;
 mod validation;
 mod voting;
+mod weighted_voting;
 mod x402;
 
 pub(crate) use abi::*;
@@ -57,6 +58,7 @@ pub use tithe::*;
 pub use tx::*;
 pub use validation::*;
 pub use voting::*;
+pub use weighted_voting::*;
 pub use x402::*;
 
 /// Active-chain RPC endpoint (default Moderato testnet; `mainnet` feature →

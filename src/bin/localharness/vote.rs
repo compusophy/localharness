@@ -12,7 +12,7 @@ use crate::*;
 // `resolve_member_address` split), or accepts a raw `0x…` address.
 
 pub(crate) const VOTE_USAGE: &str = "\
-usage: localharness vote <propose|cast|execute|list|show> ...
+usage: localharness vote <propose|cast|execute|list|show|shares|weighted> ...
   vote propose [--as <me>] <guildId> <to> <amount> [--period <dur>] [memo...]
                                        a member proposes a treasury spend (opens a vote)
   vote cast    [--as <me>] [--tba <subguild>] <proposalId> <for|against>
@@ -22,7 +22,20 @@ usage: localharness vote <propose|cast|execute|list|show> ...
   vote list    <guildId>                                list a guild's proposals + tally
   vote show    <proposalId>                             full proposal detail + tally + passing
   to: a subdomain name (resolved to its owner) or a raw 0x address   amount: $LH (e.g. 5 or 0.5)
-  dur: 1h / 7d / 30d   (1h … 30d, default 7d)";
+  dur: 1h / 7d / 30d   (1h … 30d, default 7d)
+
+  SHARE-WEIGHTED board (a cap table — runs in PARALLEL to the 1m1v vote above):
+  vote shares set  [--as <me>] <guildId> <member> <count>
+                                       admin sets a member's share weight (cap table)
+  vote shares show <guildId> [member]  show the cap table (a member's shares, or the total)
+  vote weighted propose [--as <me>] <guildId> <to> <amount> [--period <dur>] [memo...]
+                                       a member opens a SHARE-WEIGHTED treasury-spend proposal
+  vote weighted cast    [--as <me>] [--tba <subguild>] <proposalId> <for|against>
+                                       cast a ballot weighted by YOUR shares
+  vote weighted execute [--as <me>] <proposalId>        resolve a closed weighted proposal
+  vote weighted list    <guildId>                       list a guild's weighted proposals + share tally
+  vote weighted show    <proposalId>                    full weighted-proposal detail + share tally
+  count: a whole number of shares (unitless, e.g. 60 — NOT $LH)";
 
 /// VotingFacet's `MAX_VOTING_PERIOD` (`LibVotingStorage`): 30 days. `parse_ttl`
 /// already enforces the shared 1h minimum (== `MIN_VOTING_PERIOD`), but its
@@ -42,6 +55,15 @@ pub(crate) fn parse_vote_support(raw: &str) -> Result<bool, String> {
         "against" | "no" | "n" | "nay" | "oppose" => Ok(false),
         other => Err(format!("ballot must be 'for' or 'against', got '{other}'")),
     }
+}
+
+/// Parse a `vote shares set` share count — a plain unitless WHOLE number (NOT
+/// 18-dec `$LH`; shares are a cap-table integer). 0 is allowed (revokes a
+/// member's weight). Pure + testable.
+pub(crate) fn parse_share_count(raw: &str) -> Result<u128, String> {
+    raw.trim()
+        .parse::<u128>()
+        .map_err(|_| format!("share count must be a whole number, got '{raw}'"))
 }
 
 /// Parse a voting `--period <dur>` to seconds, bounded to VotingFacet's
@@ -131,8 +153,86 @@ pub(crate) async fn vote(caller: Option<&str>, rest: &[String]) -> i32 {
                 2
             }
         },
+        // --- share-weighted board (the cap-table layer) ---
+        Some("shares") => vote_shares(caller, &rest[1..]).await,
+        Some("weighted") => vote_weighted(caller, &rest[1..]).await,
         _ => {
             eprintln!("{VOTE_USAGE}");
+            2
+        }
+    }
+}
+
+/// `vote shares <set|show> …` — the cap-table sub-router (admin assigns share
+/// weights; anyone reads them).
+pub(crate) async fn vote_shares(caller: Option<&str>, rest: &[String]) -> i32 {
+    match rest.first().map(String::as_str) {
+        Some("set") => match (rest.get(1), rest.get(2), rest.get(3)) {
+            (Some(g), Some(m), Some(c)) => vote_shares_set(caller, g, m, c).await,
+            _ => {
+                eprintln!("usage: localharness vote shares set [--as <me>] <guildId> <member> <count>");
+                2
+            }
+        },
+        Some("show") => match rest.get(1) {
+            Some(g) => vote_shares_show(g, rest.get(2).map(String::as_str)).await,
+            None => {
+                eprintln!("usage: localharness vote shares show <guildId> [member]");
+                2
+            }
+        },
+        _ => {
+            eprintln!("usage: localharness vote shares <set|show> …");
+            2
+        }
+    }
+}
+
+/// `vote weighted <propose|cast|execute|list|show> …` — the share-weighted
+/// board sub-router (the same lifecycle as the 1m1v `vote`, but tallying
+/// shares).
+pub(crate) async fn vote_weighted(caller: Option<&str>, rest: &[String]) -> i32 {
+    match rest.first().map(String::as_str) {
+        Some("propose") => vote_weighted_propose(caller, &rest[1..]).await,
+        Some("cast") => {
+            let (tba, positional) = match take_tba_flag(&rest[1..]) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("{e}");
+                    return 2;
+                }
+            };
+            match (positional.first(), positional.get(1)) {
+                (Some(id), Some(ballot)) => vote_weighted_cast(caller, id, ballot, tba.as_deref()).await,
+                _ => {
+                    eprintln!("usage: localharness vote weighted cast [--as <me>] [--tba <subguild>] <proposalId> <for|against>");
+                    2
+                }
+            }
+        }
+        Some("execute") => match rest.get(1) {
+            Some(id) => vote_weighted_execute(caller, id).await,
+            None => {
+                eprintln!("usage: localharness vote weighted execute [--as <me>] <proposalId>");
+                2
+            }
+        },
+        Some("list") => match rest.get(1) {
+            Some(id) => vote_weighted_list(id).await,
+            None => {
+                eprintln!("usage: localharness vote weighted list <guildId>");
+                2
+            }
+        },
+        Some("show") => match rest.get(1) {
+            Some(id) => vote_weighted_show(id).await,
+            None => {
+                eprintln!("usage: localharness vote weighted show <proposalId>");
+                2
+            }
+        },
+        _ => {
+            eprintln!("usage: localharness vote weighted <propose|cast|execute|list|show> …");
             2
         }
     }
@@ -430,6 +530,379 @@ pub(crate) async fn vote_show(id_arg: &str) -> i32 {
     0
 }
 
+// ---- share-weighted board (WeightedVotingFacet) -------------------------
+//
+// A cap-table layer that COEXISTS with the 1m1v board above over the SAME
+// guild treasury: an Admin assigns SHARES, a member proposes a treasury spend,
+// members vote with weight == their shares, a passed measure executes via the
+// shared GuildFacet `_spendCore`. Quorum = more than half of a total-shares
+// snapshot; threshold = strict majority of cast shares.
+
+/// `vote shares set <guildId> <member> <count>` — admin sets a member's share
+/// weight (`setShares`). `<member>` is resolved the same way as `vote propose`'s
+/// `to` (a name → its owner address, or a raw 0x). Owner/admin-gated on-chain.
+pub(crate) async fn vote_shares_set(caller: Option<&str>, guild_arg: &str, member_arg: &str, count_arg: &str) -> i32 {
+    let guild_id = match parse_guild_id(guild_arg) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let shares = match parse_share_count(count_arg) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("vote shares set: {e}");
+            return 2;
+        }
+    };
+    let member_hex = match resolve_member_address(member_arg).await {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("vote shares set: {e}");
+            return 1;
+        }
+    };
+    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    println!("setting {member_hex} to {shares} share(s) in guild #{guild_id} …");
+    match registry::set_shares_sponsored(&signer, &sponsor, guild_id, &member_hex, shares, registry::ALPHA_USD_ADDRESS).await {
+        Ok(tx) => {
+            let total = registry::total_shares_of(guild_id).await.unwrap_or(0);
+            println!("✓ {member_hex} now holds {shares} of {total} share(s) in guild #{guild_id}  tx: {tx}");
+            0
+        }
+        Err(e) => {
+            eprintln!("vote shares set failed: {e}");
+            1
+        }
+    }
+}
+
+/// `vote shares show <guildId> [member]` — read the cap table. With a `member`,
+/// show that member's shares (and the guild total); without, just the total.
+pub(crate) async fn vote_shares_show(guild_arg: &str, member_arg: Option<&str>) -> i32 {
+    let guild_id = match parse_guild_id(guild_arg) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let total = match registry::total_shares_of(guild_id).await {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("vote shares show failed: {e}");
+            return 1;
+        }
+    };
+    println!("guild #{guild_id} — {total} total share(s)");
+    if let Some(member) = member_arg {
+        let member_hex = match resolve_member_address(member).await {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("vote shares show: {e}");
+                return 1;
+            }
+        };
+        match registry::shares_of(guild_id, &member_hex).await {
+            Ok(s) => println!("  {member_hex}: {s} share(s)"),
+            Err(e) => {
+                eprintln!("vote shares show: {e}");
+                return 1;
+            }
+        }
+    }
+    0
+}
+
+/// `vote weighted propose <guildId> <to> <amount> [--period <dur>] [memo]` — a
+/// member opens a SHARE-WEIGHTED treasury-spend proposal (`proposeWeighted`).
+/// Reuses the SAME positional/period parsing as the 1m1v `vote propose`.
+pub(crate) async fn vote_weighted_propose(caller: Option<&str>, rest: &[String]) -> i32 {
+    let ParsedVotePropose { guild_id, to, amount_wei, period_secs, memo } =
+        match parse_vote_propose_args(rest) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("{e}");
+                return 2;
+            }
+        };
+    let to_hex = match resolve_member_address(&to).await {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("vote weighted propose: {e}");
+            return 1;
+        }
+    };
+    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    println!(
+        "proposing (share-weighted) to spend {} from guild #{guild_id} to {to_hex} (votes for {}) …",
+        fmt_lh(amount_wei),
+        fmt_ttl(period_secs)
+    );
+    match registry::propose_weighted_sponsored(
+        &signer,
+        &sponsor,
+        guild_id,
+        &to_hex,
+        amount_wei,
+        period_secs,
+        memo.as_bytes(),
+        registry::ALPHA_USD_ADDRESS,
+    )
+    .await
+    {
+        Ok(tx) => {
+            let id_note = match registry::weighted_proposals_of(guild_id, 0, VOTE_LIST_SCAN).await {
+                Ok(ids) if !ids.is_empty() => Some(ids[ids.len() - 1]),
+                _ => None,
+            };
+            match id_note {
+                Some(id) => {
+                    println!("✓ weighted proposal #{id} opened — voting closes in {}", fmt_ttl(period_secs));
+                    println!("  share-holders vote:  vote weighted cast {id} <for|against>");
+                    println!("  after it closes, anyone runs:  vote weighted execute {id}");
+                }
+                None => {
+                    println!("✓ weighted proposal opened — see it with `vote weighted list {guild_id}`");
+                }
+            }
+            println!("  tx: {tx}");
+            0
+        }
+        Err(e) => {
+            eprintln!("vote weighted propose failed: {e}");
+            1
+        }
+    }
+}
+
+/// `vote weighted cast [--tba <subguild>] <proposalId> <for|against>` — cast a
+/// ballot weighted by YOUR shares (`voteWeighted`). With `--tba <subguild>` the
+/// sub-guild's TBA casts the ballot (nested divisions). The voter must be a
+/// member with > 0 shares and not have voted (enforced on-chain).
+pub(crate) async fn vote_weighted_cast(caller: Option<&str>, id_arg: &str, ballot: &str, tba: Option<&str>) -> i32 {
+    let proposal_id = match parse_proposal_id(id_arg) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let support = match parse_vote_support(ballot) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("vote weighted cast: {e}");
+            return 2;
+        }
+    };
+    if let Some(subguild) = tba {
+        let side = if support { "for" } else { "against" };
+        return tba_execute_diamond_call(
+            caller,
+            subguild,
+            registry::encode_vote_weighted_calldata(proposal_id, support),
+            &format!("'{subguild}' weighted-voting {side} on proposal #{proposal_id}"),
+        )
+        .await;
+    }
+    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    let side = if support { "for" } else { "against" };
+    println!("casting a share-weighted '{side}' vote on proposal #{proposal_id} …");
+    match registry::vote_weighted_sponsored(&signer, &sponsor, proposal_id, support, registry::ALPHA_USD_ADDRESS).await {
+        Ok(tx) => {
+            println!("✓ voted {side} (weighted) on proposal #{proposal_id}  tx: {tx}");
+            0
+        }
+        Err(e) => {
+            eprintln!("vote weighted cast failed: {e}");
+            1
+        }
+    }
+}
+
+/// `vote weighted execute <proposalId>` — resolve a closed weighted proposal
+/// (`executeWeighted`). PERMISSIONLESS; spends the treasury if it passed.
+pub(crate) async fn vote_weighted_execute(caller: Option<&str>, id_arg: &str) -> i32 {
+    let proposal_id = match parse_proposal_id(id_arg) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    println!("executing weighted proposal #{proposal_id} …");
+    match registry::execute_weighted_proposal_sponsored(&signer, &sponsor, proposal_id, registry::ALPHA_USD_ADDRESS).await {
+        Ok(tx) => {
+            let outcome = match registry::get_weighted_proposal(proposal_id).await {
+                Ok(p) => match p.status {
+                    3 => " — PASSED, treasury spent".to_string(),
+                    2 => " — FAILED, no spend".to_string(),
+                    _ => String::new(),
+                },
+                Err(_) => String::new(),
+            };
+            println!("✓ weighted proposal #{proposal_id} resolved{outcome}  tx: {tx}");
+            0
+        }
+        Err(e) => {
+            eprintln!("vote weighted execute failed: {e}");
+            1
+        }
+    }
+}
+
+/// Render one weighted-proposal row for `vote weighted list`. Pure (no I/O) so
+/// the layout is unit-testable: id, status, for/against/quorum SHARE tally,
+/// deadline (relative), passing flag, memo snippet. Analogue of
+/// [`format_proposal_row`] but showing shares.
+pub(crate) fn format_weighted_proposal_row(
+    id: u64,
+    p: &registry::WeightedProposal,
+    t: &registry::WeightedTally,
+    memo: &str,
+    now: u64,
+) -> String {
+    let when = if p.deadline == 0 {
+        "—".to_string()
+    } else if p.deadline <= now {
+        "CLOSED".to_string()
+    } else {
+        format!("in {}", fmt_interval(p.deadline - now))
+    };
+    let snippet = truncate_words(memo, 60);
+    format!(
+        "  #{id}  [{status}]  for {f} / against {a} shares  quorum {q} shares  closes {when}  {passing}\n      {snippet}",
+        status = p.status_label(),
+        f = t.for_shares,
+        a = t.against_shares,
+        q = t.quorum_shares,
+        passing = if t.passing { "(passing)" } else { "(not passing)" },
+    )
+}
+
+/// `vote weighted list <guildId>` — list a guild's weighted proposals + their
+/// live SHARE tally. Read-only.
+pub(crate) async fn vote_weighted_list(id_arg: &str) -> i32 {
+    let guild_id = match parse_guild_id(id_arg) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let ids = match registry::weighted_proposals_of(guild_id, 0, VOTE_LIST_SCAN).await {
+        Ok(ids) => ids,
+        Err(e) => {
+            eprintln!("vote weighted list failed: {e}");
+            return 1;
+        }
+    };
+    let name = registry::guild_name(guild_id).await.unwrap_or_default();
+    let label = if name.is_empty() {
+        format!("guild #{guild_id}")
+    } else {
+        format!("guild #{guild_id} '{name}'")
+    };
+    if ids.is_empty() {
+        println!("{label} has no weighted proposals — open one with `vote weighted propose {guild_id} <to> <amount>`");
+        return 0;
+    }
+    let total = registry::total_shares_of(guild_id).await.unwrap_or(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    println!("{label} — {} weighted proposal(s)  ({total} total shares):", ids.len());
+    for id in ids {
+        let p = match registry::get_weighted_proposal(id).await {
+            Ok(p) => p,
+            Err(e) => {
+                println!("  #{id}  (could not read: {e})");
+                continue;
+            }
+        };
+        let t = registry::weighted_tally_of(id).await.unwrap_or(registry::WeightedTally {
+            for_shares: 0,
+            against_shares: 0,
+            quorum_shares: 0,
+            cast_shares: 0,
+            passing: false,
+        });
+        let memo = registry::weighted_proposal_memo_of(id).await.unwrap_or_default();
+        println!("{}", format_weighted_proposal_row(id, &p, &t, &memo, now));
+    }
+    0
+}
+
+/// `vote weighted show <proposalId>` — full weighted-proposal detail + share
+/// tally + whether it WOULD pass right now. Read-only.
+pub(crate) async fn vote_weighted_show(id_arg: &str) -> i32 {
+    let proposal_id = match parse_proposal_id(id_arg) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let p = match registry::get_weighted_proposal(proposal_id).await {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("vote weighted show: {e}");
+            return 1;
+        }
+    };
+    let t = registry::weighted_tally_of(proposal_id).await.ok();
+    let memo = registry::weighted_proposal_memo_of(proposal_id).await.unwrap_or_default();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let when = if p.deadline == 0 {
+        "—".to_string()
+    } else if p.deadline <= now {
+        "CLOSED (ready to execute)".to_string()
+    } else {
+        format!("in {}", fmt_interval(p.deadline - now))
+    };
+    println!("weighted proposal #{proposal_id}  [{}]", p.status_label());
+    println!("  guild     #{}", p.guild_id);
+    println!("  proposer  {}", p.proposer);
+    println!("  spend     {} -> {}", fmt_lh(p.amount), p.to);
+    println!("  closes    {when}");
+    println!("  snapshot  {} total share(s) at propose", p.snapshot_total_shares);
+    match t {
+        Some(t) => {
+            println!(
+                "  tally     for {} / against {} shares   quorum {} shares  cast {}  {}",
+                t.for_shares,
+                t.against_shares,
+                t.quorum_shares,
+                t.cast_shares,
+                if t.passing { "(passing)" } else { "(not passing)" }
+            );
+        }
+        None => println!("  tally     for {} / against {} shares", p.for_shares, p.against_shares),
+    }
+    if !memo.is_empty() {
+        println!("  memo      {memo}");
+    }
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -532,5 +1005,51 @@ mod tests {
         assert!(row.contains("[failed]"));
         assert!(row.contains("closes CLOSED"));
         assert!(row.contains("(not passing)"));
+    }
+
+    /// `parse_share_count` takes a plain whole number (NOT 18-dec $LH); 0 is
+    /// allowed (revokes); decimals / negatives / garbage are rejected.
+    #[test]
+    fn parse_share_count_whole_numbers_only() {
+        assert_eq!(parse_share_count("60"), Ok(60));
+        assert_eq!(parse_share_count(" 0 "), Ok(0)); // 0 revokes; trimmed
+        assert_eq!(parse_share_count("1000000"), Ok(1_000_000));
+        assert!(parse_share_count("2.5").is_err()); // not 18-dec $LH
+        assert!(parse_share_count("-1").is_err());
+        assert!(parse_share_count("abc").is_err());
+        assert!(parse_share_count("").is_err());
+    }
+
+    /// `format_weighted_proposal_row` shows id, status, the SHARE tally
+    /// (for/against/quorum shares), relative deadline, the passing flag, and a
+    /// flattened memo snippet.
+    #[test]
+    fn format_weighted_proposal_row_contains_share_fields() {
+        let p = registry::WeightedProposal {
+            guild_id: 5,
+            proposer: "0xproposer".into(),
+            to: "0xrecipient".into(),
+            amount: 2_000_000_000_000_000_000,
+            deadline: 1_000 + 3600, // 1h out from `now`
+            status: 0,              // active
+            for_shares: 60,
+            against_shares: 10,
+            snapshot_total_shares: 100,
+        };
+        let t = registry::WeightedTally {
+            for_shares: 60,
+            against_shares: 10,
+            quorum_shares: 51,
+            cast_shares: 70,
+            passing: true,
+        };
+        let row = format_weighted_proposal_row(9, &p, &t, "fund\nthe audit", 1_000);
+        assert!(row.contains("#9"));
+        assert!(row.contains("[active]"));
+        assert!(row.contains("for 60 / against 10 shares"));
+        assert!(row.contains("quorum 51 shares"));
+        assert!(row.contains("closes in 1h"));
+        assert!(row.contains("(passing)"));
+        assert!(row.contains("fund the audit")); // newline flattened
     }
 }

@@ -444,6 +444,19 @@ GUILDS & GOVERNANCE
                                          resolve a closed proposal (spends if passed)
   localharness vote list <guildId>       list a guild's open proposals + their tally
   localharness vote show <proposalId>    full proposal detail + tally + whether passing
+  localharness vote shares set [--as <me>] <guildId> <member> <count>
+                                         admin sets a member's share weight (the cap table)
+  localharness vote shares show <guildId> [member]
+                                         read the cap table (a member's shares, or the total)
+  localharness vote weighted propose [--as <me>] <guildId> <to> <amount> [--period <dur>] [memo...]
+                                         open a SHARE-WEIGHTED treasury-spend proposal
+                                         (quorum = >half the total-shares snapshot)
+  localharness vote weighted cast [--as <me>] [--tba <subguild>] <proposalId> <for|against>
+                                         cast a ballot weighted by your shares
+  localharness vote weighted execute [--as <me>] <proposalId>
+                                         resolve a closed weighted proposal (spends if passed)
+  localharness vote weighted list <guildId>   list a guild's weighted proposals + share tally
+  localharness vote weighted show <proposalId> full weighted-proposal detail + share tally
 
 FEEDBACK & QA
   localharness feedback [--as <me>] [text|--json]  submit on-chain feedback, or read
