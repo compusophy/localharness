@@ -429,6 +429,11 @@ GUILDS & GOVERNANCE
   localharness guild treasury <guildId>  show a guild's $LH balance + wallet address
   localharness tithe --as <agent> <guildId> <amount>
                                          agent's TBA contributes its earnings to the treasury (revenue->treasury)
+  localharness tithe auto --as <agent> <guildId> <bps>
+                                         opt in: TBA approves diamond + setTithe(bps); a later
+                                         permissionless `tithe collect` pulls bps/10000 of its balance
+  localharness tithe collect [--as <me>] <agent>
+                                         permissionless trigger: pull an opted-in agent's tithe into its guild
   localharness guild mine [--as <me>]    list the guilds you belong to
   localharness vote propose [--as <me>] <guildId> <to> <amount> [--period <dur>] [memo...]
                                          a guild member proposes a treasury spend,
@@ -574,13 +579,7 @@ async fn run(args: &[String]) -> i32 {
             }
         },
         Some("tithe") => match take_as_flag(&args[1..]) {
-            Ok((caller, rest)) if rest.len() == 2 => {
-                tithe(caller.as_deref(), &rest[0], &rest[1]).await
-            }
-            Ok(_) => {
-                eprintln!("usage: localharness tithe --as <agent> <guildId> <amount>");
-                2
-            }
+            Ok((caller, rest)) => tithe(caller.as_deref(), &rest).await,
             Err(e) => {
                 eprintln!("{e}");
                 2

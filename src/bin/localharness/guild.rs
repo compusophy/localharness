@@ -389,12 +389,57 @@ pub(crate) async fn guild_fund(caller: Option<&str>, id_arg: &str, amount: &str)
     }
 }
 
-/// `tithe --as <agent> <guildId> <amount>` — an agent's token-bound account
-/// contributes <amount> $LH of its OWN earnings to a guild's treasury (the
-/// revenue→treasury leg that makes a guild self-funding). The agent's TBA
-/// executes a batched approve(diamond)+fundGuild in ONE sponsored tx
-/// (auto-deploys the TBA if needed). Driven by the agent's own key (--as).
-pub(crate) async fn tithe(caller: Option<&str>, id_arg: &str, amount: &str) -> i32 {
+/// `tithe …` router — three flavors of agent→guild treasury funding:
+///   • `tithe <guildId> <amount>`        MANUAL one-shot: the TBA contributes
+///                                       `<amount>` $LH of its earnings now.
+///   • `tithe auto <guildId> <bps>`      OPT-IN auto-tithe: the TBA approves the
+///                                       diamond + `setTithe(guildId, bps)` so a
+///                                       PERMISSIONLESS `collectTithe` can later
+///                                       pull `bps/10000` of its balance.
+///   • `tithe collect <agent>`           PERMISSIONLESS trigger: pull `<agent>`'s
+///                                       consented tithe into its chosen guild.
+/// `auto`/`collect` are dispatched by keyword; anything else is the manual path
+/// (first positional = guildId), preserving the shipped `tithe <id> <amt>` ABI.
+pub(crate) async fn tithe(caller: Option<&str>, rest: &[String]) -> i32 {
+    match rest.first().map(String::as_str) {
+        Some("auto") => match (rest.get(1), rest.get(2)) {
+            (Some(id), Some(bps)) => tithe_auto(caller, id, bps).await,
+            _ => {
+                eprintln!("usage: localharness tithe auto --as <agent> <guildId> <bps>");
+                2
+            }
+        },
+        Some("collect") => match rest.get(1) {
+            // `collect <agent>` defaults to the caller's own agent when --as set
+            // and no explicit agent positional is given.
+            Some(agent) => tithe_collect(caller, agent).await,
+            None => match caller {
+                Some(c) => tithe_collect(caller, c).await,
+                None => {
+                    eprintln!("usage: localharness tithe collect [--as <me>] <agent>");
+                    2
+                }
+            },
+        },
+        // Manual one-shot: `tithe <guildId> <amount>`.
+        _ => match (rest.first(), rest.get(1)) {
+            (Some(id), Some(amount)) => tithe_manual(caller, id, amount).await,
+            _ => {
+                eprintln!("usage: localharness tithe --as <agent> <guildId> <amount>");
+                eprintln!("       localharness tithe auto    --as <agent> <guildId> <bps>");
+                eprintln!("       localharness tithe collect  [--as <me>] <agent>");
+                2
+            }
+        },
+    }
+}
+
+/// `tithe <guildId> <amount>` — an agent's token-bound account contributes
+/// <amount> $LH of its OWN earnings to a guild's treasury (the revenue→treasury
+/// leg that makes a guild self-funding). The agent's TBA executes a batched
+/// approve(diamond)+fundGuild in ONE sponsored tx (auto-deploys the TBA if
+/// needed). Driven by the agent's own key (--as).
+pub(crate) async fn tithe_manual(caller: Option<&str>, id_arg: &str, amount: &str) -> i32 {
     let guild_id = match parse_guild_id(id_arg) {
         Ok(id) => id,
         Err(e) => {
@@ -482,6 +527,164 @@ pub(crate) async fn tithe(caller: Option<&str>, id_arg: &str, amount: &str) -> i
         }
         Err(e) => {
             eprintln!("tithe failed: {e}");
+            1
+        }
+    }
+}
+
+/// `tithe auto <guildId> <bps>` — OPT IN to the auto-tithe: the agent's TBA
+/// `approve`s the diamond to spend its `$LH` AND `setTithe(guildId, bps)` in ONE
+/// sponsored batch. Afterwards a PERMISSIONLESS `tithe collect <agent>` (a
+/// scheduler / guild officer / anyone) can pull `bps/10000` of the agent's
+/// CURRENT balance into the guild it chose — bounded by the approved allowance,
+/// and unable to redirect funds because collect reads only the agent's own
+/// stored config. `bps` is basis points (1..=10000; 10000 = 100%). The approve
+/// allowance is the agent's hard ceiling on cumulative tithing — we approve a
+/// generous standing amount (the agent's full current balance) so repeated
+/// collects don't each need a fresh approve; the agent revokes via `revokeTithe`
+/// (or by re-approving 0) to stop.
+pub(crate) async fn tithe_auto(caller: Option<&str>, id_arg: &str, bps_arg: &str) -> i32 {
+    let guild_id = match parse_guild_id(id_arg) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("{e}");
+            return 2;
+        }
+    };
+    let bps: u64 = match bps_arg.trim().parse() {
+        Ok(b) if (1..=registry::TITHE_MAX_BPS).contains(&b) => b,
+        _ => {
+            eprintln!(
+                "tithe auto: invalid bps '{bps_arg}' (expected 1..={} basis points; 10000 = 100%)",
+                registry::TITHE_MAX_BPS
+            );
+            return 2;
+        }
+    };
+    let Some(agent) = caller else {
+        eprintln!("tithe auto: --as <agent> is required (the agent whose TBA opts in)");
+        return 2;
+    };
+    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    let tba_addr = match registry::tba_of_name(agent).await {
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            eprintln!("tithe auto: '{agent}' is not registered (no token-bound account)");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("tithe auto: RPC error resolving '{agent}': {e}");
+            return 1;
+        }
+    };
+    let token_id = registry::id_of_name(agent).await.unwrap_or(0);
+    if token_id == 0 {
+        eprintln!("tithe auto: '{agent}' has no token id");
+        return 1;
+    }
+    // Standing allowance = the TBA's full current balance, so repeated collects
+    // draw against one approve. The on-chain pull is the authoritative gate;
+    // this just sets the ceiling. (Zero balance still opts in — the rate is set
+    // and collection sizes against whatever the TBA later holds, up to this.)
+    let allowance = registry::token_balance_of(&tba_addr).await.unwrap_or(0);
+    let approve = match registry::approve_credits_call(allowance) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("tithe auto: {e}");
+            return 1;
+        }
+    };
+    let set = match registry::set_tithe_call(guild_id, bps) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("tithe auto: {e}");
+            return 1;
+        }
+    };
+    let targets = vec![(approve.to, approve.input), (set.to, set.input)];
+    let pct = bps as f64 / 100.0;
+    println!(
+        "{agent}'s TBA {tba_addr} opting in to tithe {pct}% of its balance to guild #{guild_id} …"
+    );
+    match registry::tba_execute_batch_sponsored(
+        &signer,
+        &sponsor,
+        token_id,
+        &tba_addr,
+        &targets,
+        registry::ALPHA_USD_ADDRESS,
+        2_000_000,
+    )
+    .await
+    {
+        Ok(tx) => {
+            println!("✓ {agent} now tithes {pct}% to guild #{guild_id} on each collect  tx: {tx}");
+            println!("  collect it:  tithe collect {agent}");
+            println!("  stop:        (re-run with a new rate, or revoke the approve)");
+            0
+        }
+        Err(e) => {
+            eprintln!("tithe auto failed: {e}");
+            1
+        }
+    }
+}
+
+/// `tithe collect <agent>` — PERMISSIONLESS: trigger `<agent>`'s consented
+/// auto-tithe (`collectTithe(<agent>'s TBA)`). Pulls `bps/10000` of the agent's
+/// CURRENT `$LH` balance (capped by the allowance it approved) into the guild
+/// the agent chose, crediting the treasury exactly like `fundGuild`. SAFE for
+/// anyone to run — the on-chain facet reads only the agent's OWN stored config,
+/// so the trigger can't redirect or inflate the tithe. Signed by the caller
+/// (`--as`); the agent need not be online.
+pub(crate) async fn tithe_collect(caller: Option<&str>, agent: &str) -> i32 {
+    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    let tba_addr = match registry::tba_of_name(agent).await {
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            eprintln!("tithe collect: '{agent}' is not registered (no token-bound account)");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("tithe collect: RPC error resolving '{agent}': {e}");
+            return 1;
+        }
+    };
+    // Surface the consented config so the operator sees what will move.
+    match registry::tithe_of(&tba_addr).await {
+        Ok((_, 0)) => {
+            eprintln!("tithe collect: '{agent}' has not opted in (run `tithe auto --as {agent} <guildId> <bps>`)");
+            return 1;
+        }
+        Ok((guild_id, bps)) => {
+            let pct = bps as f64 / 100.0;
+            println!("collecting {agent}'s tithe ({pct}% to guild #{guild_id}) …");
+        }
+        Err(e) => {
+            eprintln!("tithe collect: RPC error reading config: {e}");
+            return 1;
+        }
+    }
+    match registry::collect_tithe_sponsored(
+        &signer,
+        &sponsor,
+        &tba_addr,
+        registry::ALPHA_USD_ADDRESS,
+    )
+    .await
+    {
+        Ok(tx) => {
+            println!("✓ collected {agent}'s tithe into its guild treasury  tx: {tx}");
+            0
+        }
+        Err(e) => {
+            eprintln!("tithe collect failed: {e}");
             1
         }
     }
