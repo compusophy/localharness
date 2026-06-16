@@ -391,14 +391,16 @@ pub(super) fn redeem_invite_onboard_pressed() {
 /// mints `$LH` to THIS identity once the payment settles. Empty/invalid amount
 /// is a silent no-op.
 pub(super) fn buy_lh_pressed() {
-    // Amount source: the admin field if present, else a fixed $1 — the
-    // pre-claim "[buy $1 to claim]" affordance has no `#buy-usd` input.
+    // Amount source: the admin field if present, else a fixed $2 — the
+    // pre-claim "[buy $2 to claim]" affordance has no `#buy-usd` input. $2 (not
+    // $1) because Stripe's 2.9%+$0.30 nets only ~0.67 $LH on $1, BELOW the 1 $LH
+    // registration cost; $2 nets ~1.64 $LH → covers the claim + leaves credit.
     let cents = match dom::input_by_id("buy-usd") {
         Some(input) => match parse_usd_cents(input.value().trim()) {
             Some(c) => c,
             None => return,
         },
-        None => 100,
+        None => 200,
     };
     // Status slot: the admin `#buy-msg`, falling back to the pre-claim
     // `#fund-msg` so the affordance shows "opening checkout…" too.
