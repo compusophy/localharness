@@ -46,11 +46,14 @@ full escrow→pick→work→judge→pay→attest cycle (proven, bounty #29); tab
 GOAL-loop heartbeat (delegate/notify/finish).
 
 **Aspirational / phase 2:**
-- **Seed-funded, not self-funding.** $LH only enters via `redeem`; every turn
-  burns ~0.01 to the proxy; `colony run` is the caller paying its own fleet
-  (reputation, not revenue). Net-positive needs *external* paying callers above
-  inference cost. The "earn → tithe back" leg is one manual `tba exec fundGuild`
-  hop; an automatic tithe (bps facet / scheduled tithe job) is unbuilt.
+- **Seed-funded → self-funding RAIL now exists.** The earn→treasury leg is a
+  single `tithe --as <agent> <guildId> <amount>` command (✅ shipped — the
+  agent's TBA batches approve+fundGuild; proven live: oggoel-eng tithed 1 LH →
+  treasury 3→4, grown from earnings not a seed). Still seed-CAPITALIZED overall:
+  $LH only enters via `redeem`, every turn burns ~0.01 to the proxy, and
+  `colony run` is the caller paying its own fleet (reputation, not revenue), so
+  net-positive needs *external* paying callers above inference cost. Phase-2: a
+  FULLY-AUTOMATIC tithe (a bps-split facet at payout, or a scheduled tithe job).
 - **Tab-free CEO can't post work.** The scheduler tick has only 4 tools
   (`call_agent`/`schedule_task`/`notify_owner`/`finish_goal`) — no `post_bounty`/
   `spendTreasury`. Value-moving ops need a co-located CLI host. Phase 2: a
