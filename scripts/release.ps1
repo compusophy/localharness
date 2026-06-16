@@ -140,7 +140,10 @@ Step "stamp README.md crate version -> $Version"
 # release so the published README is never stale. BOM-safe write (PS5.1
 # Set-Content -Encoding utf8 prepends a BOM that breaks the README H1).
 $minor = ($Version -split '\.')[0..1] -join '.'
-$readme = Get-Content README.md -Raw
+# -Encoding utf8 is REQUIRED: README.md is UTF-8 with no BOM, and PS5.1's
+# Get-Content defaults to the ANSI code page for BOM-less files, which mangles
+# every em-dash/arrow into mojibake before WriteAllText persists it.
+$readme = Get-Content README.md -Raw -Encoding utf8
 $readme = $readme -replace '(?m)^\[!\[crates\.io\]\(.*?\)\]\(https://crates\.io/crates/localharness\)$', "[![crates.io](https://img.shields.io/badge/crates.io-v$Version-blue.svg)](https://crates.io/crates/localharness)"
 $readme = $readme -replace '(?m)^localharness = "[0-9]+\.[0-9]+(\.[0-9]+)?"$', "localharness = `"$minor`""
 [System.IO.File]::WriteAllText((Resolve-Path README.md), $readme, (New-Object System.Text.UTF8Encoding $false))
