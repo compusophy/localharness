@@ -500,6 +500,101 @@ pub(crate) async fn ensure_meter_funded(caller: &k256::ecdsa::SigningKey) {
     }
 }
 
+/// The `X-PAYMENT` request header name the proxy reads for an x402 per-call
+/// authorization (also accepts `x-x402-authorization`; case-insensitive).
+const X402_PAYMENT_HEADER: &str = "X-PAYMENT";
+
+/// The provider + model id the proxy `/prices` table is keyed by: a `claude-*`
+/// id routes to `anthropic`, anything else to `gemini` (the only providers the
+/// CLI `call` uses). Returns `(provider, model_id)` — model `""` for Gemini,
+/// whose table row is the single `*`. Pure.
+fn provider_and_model(model: Option<&str>) -> (&'static str, &str) {
+    match model {
+        Some(m) if m.starts_with("claude") => ("anthropic", m),
+        _ => ("gemini", ""),
+    }
+}
+
+/// Resolve a model's price (in `$LH` wei) from the proxy `/prices` `prices[]`
+/// array: an exact `(provider, model)` row, else the provider's `*` fallback
+/// row. `None` when neither is present. Pure (testable). Gemini always matches
+/// its `*` row (it passes `model == "*"`-equivalent `""`, so only the fallback
+/// arm fires).
+fn price_wei_for_model(prices: &serde_json::Value, provider: &str, model: &str) -> Option<u128> {
+    let rows = prices.as_array()?;
+    let lookup = |want_model: &str| -> Option<u128> {
+        rows.iter().find_map(|r| {
+            if r.get("provider")?.as_str()? == provider && r.get("model")?.as_str()? == want_model {
+                r.get("price_wei")?.as_str()?.parse::<u128>().ok()
+            } else {
+                None
+            }
+        })
+    };
+    lookup(model).or_else(|| lookup("*"))
+}
+
+/// Proactively build an `X-PAYMENT` x402 header (name, JSON value) for a metered
+/// call, or `None` to use the existing meter/session path. Takes the x402 path
+/// ONLY when the proxy advertises a payee (`/prices`.x402.payTo) AND the caller's
+/// wallet covers the chosen model's price. Signs an authorization to the payee
+/// for exactly the price, ensuring the diamond allowance so `settle`'s
+/// `transferFrom` works. Best-effort: every failure returns `None` (fall back).
+async fn try_build_x402_payment(
+    caller: &k256::ecdsa::SigningKey,
+    model: Option<&str>,
+) -> Option<(String, String)> {
+    let base = registry::CREDIT_PROXY_URL.trim_end_matches('/');
+    let prices: serde_json::Value = reqwest::Client::new()
+        .get(format!("{base}/prices"))
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+
+    // x402 metering must be ON (payTo non-null), else use the meter path.
+    let payee_hex = prices.get("x402")?.get("payTo")?.as_str()?.to_string();
+    let payee = parse_address(&payee_hex).ok()?;
+
+    let (provider, model_id) = provider_and_model(model);
+    let cost = price_wei_for_model(prices.get("prices")?, provider, model_id)?;
+
+    let from = wallet::address(caller);
+    let from_hex = bytes_to_hex_str(&from);
+    // Only pay per-call if the WALLET can cover the price (else fall back to the
+    // meter, which auto-bridges from unspent credits).
+    if registry::token_balance_of(&from_hex).await.unwrap_or(0) < cost {
+        return None;
+    }
+    // settle pulls via the diamond's transferFrom → ensure the one-time approve.
+    if ensure_diamond_allowance(caller, &from_hex, cost).await.is_err() {
+        return None;
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let valid_before = now + 300;
+    let nonce = registry::random_x402_nonce();
+    let sig = registry::sign_x402(caller, &from, &payee, cost, 0, valid_before, &nonce).ok()?;
+    let auth = registry::x402_authorization_json(
+        &from_hex,
+        &payee_hex,
+        cost,
+        0,
+        valid_before,
+        &nonce,
+        &sig,
+    );
+    // eprintln (NOT println): `run_agent_turn` is shared with the MCP server,
+    // whose stdout IS the JSON-RPC channel — a stray stdout line corrupts it.
+    eprintln!("x402: paying {} per call to the platform meter", fmt_lh(cost));
+    Some((X402_PAYMENT_HEADER.to_string(), auth.to_string()))
+}
+
 pub(crate) async fn run_agent_turn(
     key_hex: &str,
     target: &str,
@@ -541,11 +636,20 @@ pub(crate) async fn run_agent_turn(
         fmt_lh(price_wei)
     );
 
-    // Pay PER REQUEST, not by the hour: fund the per-request meter so the proxy
-    // debits ~CALL_COST_WEI per call. A one-shot agent call must NOT buy a
-    // 10-$LH hour-long session (the old behavior). Best-effort + sponsored; an
-    // unfunded wallet stays unfunded (the proxy 402s, the hint says to redeem).
-    ensure_meter_funded(&caller).await;
+    // PAY-PER-CALL: when the proxy advertises x402 metering (`/prices`.x402.payTo
+    // non-null) AND the caller's wallet covers the chosen model's price, sign an
+    // x402 authorization to the platform meter payee and carry it as `X-PAYMENT`
+    // — the proxy serves + settles on-chain and does NOT touch the creditOf
+    // meter, so we skip the lazy meter top-up. Best-effort: any failure (off,
+    // unfunded, RPC) falls back UNCHANGED to the meter path below.
+    let x402_header = try_build_x402_payment(&caller, model).await;
+    if x402_header.is_none() {
+        // Pay PER REQUEST via the meter: fund it so the proxy debits ~CALL_COST_WEI
+        // per call. A one-shot agent call must NOT buy a 10-$LH hour-long session
+        // (the old behavior). Best-effort + sponsored; an unfunded wallet stays
+        // unfunded (the proxy 402s, the hint says to redeem).
+        ensure_meter_funded(&caller).await;
+    }
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -581,6 +685,9 @@ pub(crate) async fn run_agent_turn(
                     .with_model(model.clone())
                     .with_system_instructions(system.clone())
                     .with_capabilities(caps.clone());
+                if let Some((name, value)) = x402_header.clone() {
+                    cfg = cfg.with_extra_header(name, value);
+                }
                 if let Some(bytes) = history {
                     cfg = cfg.with_history_bytes(bytes);
                 }
@@ -604,6 +711,9 @@ pub(crate) async fn run_agent_turn(
             .with_base_url(base.clone())
             .with_system_instructions(system.clone())
             .with_capabilities(caps.clone());
+        if let Some((name, value)) = x402_header.clone() {
+            cfg = cfg.with_extra_header(name, value);
+        }
         if let Some(bytes) = history {
             cfg = cfg.with_history_bytes(bytes);
         }
@@ -1062,6 +1172,39 @@ mod tests {
         assert!(hint_for_call_error("429 Too Many Requests")
             .unwrap()
             .contains("rate limited"));
+    }
+
+    #[test]
+    fn provider_and_model_routes_claude_to_anthropic_else_gemini() {
+        assert_eq!(provider_and_model(Some("claude-opus-4-8")), ("anthropic", "claude-opus-4-8"));
+        // Gemini always queries the single `*` row → empty model id.
+        assert_eq!(provider_and_model(Some("gemini-3.5-flash")), ("gemini", ""));
+        assert_eq!(provider_and_model(None), ("gemini", ""));
+    }
+
+    #[test]
+    fn price_wei_for_model_matches_exact_then_falls_back_to_star() {
+        let prices = serde_json::json!([
+            { "provider": "gemini", "model": "*", "price_wei": "10000000000000000" },
+            { "provider": "anthropic", "model": "claude-opus-4-8", "price_wei": "200000000000000000" },
+            { "provider": "anthropic", "model": "*", "price_wei": "50000000000000000" },
+        ]);
+        // Gemini → its `*` row.
+        assert_eq!(price_wei_for_model(&prices, "gemini", ""), Some(10_000_000_000_000_000));
+        // Exact anthropic model row.
+        assert_eq!(
+            price_wei_for_model(&prices, "anthropic", "claude-opus-4-8"),
+            Some(200_000_000_000_000_000)
+        );
+        // Unlisted anthropic model → provider `*` fallback.
+        assert_eq!(
+            price_wei_for_model(&prices, "anthropic", "claude-future"),
+            Some(50_000_000_000_000_000)
+        );
+        // A provider with no row at all → None.
+        assert_eq!(price_wei_for_model(&prices, "openai", "gpt-5"), None);
+        // Non-array prices → None (malformed payload, fall back to meter).
+        assert_eq!(price_wei_for_model(&serde_json::json!({}), "gemini", ""), None);
     }
 
     #[test]

@@ -43,6 +43,9 @@ pub struct AnthropicClient {
     api_key: Box<str>,
     key_provider: Option<crate::backends::KeyProvider>,
     base_url: Url,
+    /// Extra headers attached to EVERY outbound request (e.g. an `X-PAYMENT`
+    /// x402 authorization). Empty by default — a no-op.
+    extra_headers: Vec<(String, String)>,
 }
 
 impl fmt::Debug for AnthropicClient {
@@ -72,7 +75,23 @@ impl AnthropicClient {
             api_key: api_key.into().into_boxed_str(),
             key_provider: None,
             base_url: Url::parse(DEFAULT_BASE_URL).expect("default base url is valid"),
+            extra_headers: Vec::new(),
         })
+    }
+
+    /// Attach extra headers to every outbound request (e.g. an `X-PAYMENT`
+    /// x402 authorization). No-op when empty.
+    pub fn with_extra_headers(mut self, headers: Vec<(String, String)>) -> Self {
+        self.extra_headers = headers;
+        self
+    }
+
+    /// Apply [`Self::extra_headers`] onto a request builder (no-op when empty).
+    fn apply_extra_headers(&self, mut rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        for (name, value) in &self.extra_headers {
+            rb = rb.header(name.as_str(), value.as_str());
+        }
+        rb
     }
 
     /// Install a per-request key provider (see
@@ -114,11 +133,13 @@ impl AnthropicClient {
         let mut body = req.clone();
         body.stream = false;
         let response = self
-            .http
-            .post(url)
-            .header("x-api-key", self.current_key())
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("content-type", "application/json")
+            .apply_extra_headers(
+                self.http
+                    .post(url)
+                    .header("x-api-key", self.current_key())
+                    .header("anthropic-version", ANTHROPIC_VERSION)
+                    .header("content-type", "application/json"),
+            )
             .json(&body)
             .send()
             .await
@@ -146,12 +167,14 @@ impl AnthropicClient {
         let mut body = req.clone();
         body.stream = true;
         let response = self
-            .http
-            .post(url)
-            .header("x-api-key", self.current_key())
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("content-type", "application/json")
-            .header("accept", "text/event-stream")
+            .apply_extra_headers(
+                self.http
+                    .post(url)
+                    .header("x-api-key", self.current_key())
+                    .header("anthropic-version", ANTHROPIC_VERSION)
+                    .header("content-type", "application/json")
+                    .header("accept", "text/event-stream"),
+            )
             .json(&body)
             .send()
             .await

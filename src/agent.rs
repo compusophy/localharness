@@ -276,6 +276,14 @@ impl GeminiAgentConfig {
         self
     }
 
+    /// Attach an extra header to every outbound request (e.g. an `X-PAYMENT`
+    /// x402 authorization carried alongside the proxy auth token). No-op when
+    /// unset.
+    pub fn with_extra_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.gemini = self.gemini.with_extra_header(name, value);
+        self
+    }
+
     /// Plug in a custom [`Filesystem`] impl for the 6 fs built-ins.
     /// Without this, native builds use `NativeFilesystem`; wasm builds
     /// have no filesystem and the fs builtins skip registration.
@@ -538,6 +546,14 @@ impl AnthropicAgentConfig {
     /// [`GeminiAgentConfig::with_auth_provider`].
     pub fn with_auth_provider(mut self, provider: crate::backends::KeyProvider) -> Self {
         self.anthropic.api_key_provider = Some(crate::backends::AuthTokenProvider(provider));
+        self
+    }
+
+    /// Attach an extra header to every outbound request (e.g. an `X-PAYMENT`
+    /// x402 authorization carried alongside the proxy auth token). No-op when
+    /// unset.
+    pub fn with_extra_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.anthropic = self.anthropic.with_extra_header(name, value);
         self
     }
 

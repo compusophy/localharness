@@ -37,6 +37,9 @@ pub struct GeminiClient {
     api_key: Box<str>,
     key_provider: Option<KeyProvider>,
     base_url: Url,
+    /// Extra headers attached to EVERY outbound request (e.g. an `X-PAYMENT`
+    /// x402 authorization). Empty by default — a no-op.
+    extra_headers: Vec<(String, String)>,
 }
 
 impl fmt::Debug for GeminiClient {
@@ -64,12 +67,28 @@ impl GeminiClient {
             api_key: api_key.into().into_boxed_str(),
             key_provider: None,
             base_url: Url::parse(DEFAULT_BASE_URL).expect("default base url is valid"),
+            extra_headers: Vec::new(),
         })
     }
 
     pub fn with_base_url(mut self, url: Url) -> Self {
         self.base_url = url;
         self
+    }
+
+    /// Attach extra headers to every outbound request (e.g. an `X-PAYMENT`
+    /// x402 authorization). No-op when empty.
+    pub fn with_extra_headers(mut self, headers: Vec<(String, String)>) -> Self {
+        self.extra_headers = headers;
+        self
+    }
+
+    /// Apply [`Self::extra_headers`] onto a request builder (no-op when empty).
+    fn apply_extra_headers(&self, mut rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        for (name, value) in &self.extra_headers {
+            rb = rb.header(name.as_str(), value.as_str());
+        }
+        rb
     }
 
     /// Install a per-request key provider (see [`KeyProvider`]). The static
@@ -102,9 +121,11 @@ impl GeminiClient {
             .map_err(|e| Error::other(format!("invalid model url: {e}")))?;
 
         let response = self
-            .http
-            .post(url)
-            .header("x-goog-api-key", self.current_key())
+            .apply_extra_headers(
+                self.http
+                    .post(url)
+                    .header("x-goog-api-key", self.current_key()),
+            )
             .json(req)
             .send()
             .await
@@ -144,10 +165,12 @@ impl GeminiClient {
         url.query_pairs_mut().append_pair("alt", "sse");
 
         let response = self
-            .http
-            .post(url)
-            .header("x-goog-api-key", self.current_key())
-            .header("accept", "text/event-stream")
+            .apply_extra_headers(
+                self.http
+                    .post(url)
+                    .header("x-goog-api-key", self.current_key())
+                    .header("accept", "text/event-stream"),
+            )
             .json(req)
             .send()
             .await

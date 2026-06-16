@@ -79,6 +79,9 @@ pub struct GeminiBackendConfig {
     /// a fresh credential instead of reusing `api_key` (which becomes a
     /// fallback). Required for the credit proxy's 5-minute token window.
     pub api_key_provider: Option<crate::backends::AuthTokenProvider>,
+    /// Extra headers attached to EVERY outbound request (e.g. an `X-PAYMENT`
+    /// x402 authorization). Empty by default — a no-op.
+    pub extra_headers: Vec<(String, String)>,
 }
 
 impl GeminiBackendConfig {
@@ -97,7 +100,15 @@ impl GeminiBackendConfig {
             capabilities: CapabilitiesConfig::default(),
             filesystem: None,
             api_key_provider: None,
+            extra_headers: Vec::new(),
         }
+    }
+
+    /// Attach extra headers to every outbound HTTP request (e.g. an
+    /// `X-PAYMENT` x402 authorization). No-op when empty.
+    pub fn with_extra_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.extra_headers.push((name.into(), value.into()));
+        self
     }
 
     /// Plug in a custom [`Filesystem`] implementation that the 6 fs
@@ -225,6 +236,9 @@ impl ConnectionStrategy for GeminiConnectionStrategy {
         }
         if let Some(provider) = &self.config.api_key_provider {
             client = client.with_key_provider(provider.0.clone());
+        }
+        if !self.config.extra_headers.is_empty() {
+            client = client.with_extra_headers(self.config.extra_headers.clone());
         }
         let client: SharedClient = Arc::new(client);
 
