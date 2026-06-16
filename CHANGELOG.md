@@ -5,11 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.42.0] - 2026-06-16
 
 ### Added
 
-- **Stripe → Tempo fiat on-ramp — on-chain money core (testnet) + test-mode proxy.**
+- **Full platform LIVE on Tempo MAINNET (chain 4217).** The entire localharness
+  platform migrated to mainnet — a clean relaunch (testnet `$LH` balances + names
+  do NOT carry over; the mainnet `$LH` token starts fresh). Diamond
+  `0x8ab4f3a57643410cdf4022cdaf1faeef234f3a77`, `$LH`
+  `0x7ba3c9a39596e438b05c56dfc779700b58aea814` (pinned in `chain.rs` MAINNET;
+  fee token USDC.e). All 36 facets cut. App built `--features browser-app,mainnet`
+  + proxy env flipped to mainnet, both deployed. Mainnet sponsor embedded via
+  `env!(LH_MAINNET_SPONSOR_KEY)` at compile time (never committed); `build-web.sh`
+  builds the mainnet bundle and requires the env. Fee-token bootstrap solved via
+  the Fee Manager precompile (`setUserToken(USDC.e)`).
+- **Fiat on-ramp — real card → mainnet `$LH`, end-to-end PROVEN.** Sell USD on
+  Stripe, mint USD-backed `$LH`. In-app branded Stripe **Embedded Checkout** modal
+  (card + Link, no redirect; `web/stripe-embed.js` shim + `buy_modal`), webhook
+  gates on `payment_status=='paid'` + handles `async_payment_succeeded`, CSP
+  allows Stripe domains. Implements the §7 red-team must-fixes:
+- **Stripe → Tempo fiat on-ramp — on-chain money core + Stripe proxy.**
   Sell USD on Stripe, mint USD-backed `$LH` on Tempo. Implements the three
   red-team must-fixes from `design/stripe-mainnet.md` §7:
   - **MintGateFacet (C2)** — `mintFromFiat(to,amount,receiptId,validBefore,sig)`
@@ -4706,6 +4721,6 @@ implemented. Subagents land in 0.3.x.
   the working tree.
 
 [upstream]: https://github.com/google-antigravity/antigravity-sdk-python
-[Unreleased]: https://github.com/compusophy/localharness/compare/v0.41.0...HEAD
+[0.42.0]: https://github.com/compusophy/localharness/compare/v0.41.0...v0.42.0
 [0.31.0]: https://github.com/compusophy/localharness/compare/v0.30.0...v0.31.0
 [0.1.0]: https://github.com/compusophy/localharness/releases/tag/v0.1.0

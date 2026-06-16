@@ -1,6 +1,6 @@
 [package]
 name = "localharness"
-version = "0.41.0"
+version = "0.42.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "Agents that own themselves: one Rust crate that's both an agent SDK (streaming, tools, hooks, policies, triggers, MCP) and a wallet-owning, self-sovereign agent that runs in the browser."
