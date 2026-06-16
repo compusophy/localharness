@@ -55,10 +55,14 @@ pub(crate) async fn redeem(caller_name: Option<&str>, code: &str) -> i32 {
     };
     // Redeem is a TOP-UP for EXISTING identities (the on-chain RedeemFacet guard
     // rejects a caller with no registered name). Pre-check so a fresh address
-    // gets an actionable message instead of a raw `NoIdentity` revert.
+    // gets an actionable message instead of a raw `NoIdentity` revert. Gate on
+    // the SAME predicate as the contract — the ERC-721 NAME count
+    // (`name_balance_of`), NOT `main_of` (which can be 0 for a real name-holder
+    // whose MAIN-set tx failed or who released their MAIN). Block only on a
+    // CONFIRMED zero; on an RPC error fall through and let the contract decide.
     let addr = bytes_to_hex_str(&wallet::address(&signer));
-    if registry::main_of(&addr).await.unwrap_or(0) == 0 {
-        eprintln!("redeem tops up an EXISTING identity, but {addr} owns none yet.");
+    if let Ok(0) = registry::name_balance_of(&addr).await {
+        eprintln!("redeem tops up an EXISTING identity, but {addr} owns no subdomain yet.");
         eprintln!("claim one first (`localharness create <name>` — costs 1 $LH; fund via `localharness buy 2` or an invite), then redeem to top it up.");
         return 2;
     }

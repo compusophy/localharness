@@ -65,6 +65,15 @@ pub async fn token_balance_of(holder_hex: &str) -> Result<u128, String> {
     erc20_balance_of(LOCALHARNESS_TOKEN_ADDRESS, holder_hex).await
 }
 
+/// `balanceOf(holder)` on the DIAMOND — the ERC-721 NAME count (how many
+/// subdomains the holder owns), NOT the `$LH` balance. Mirrors exactly the
+/// on-chain `LibRegistryStorage.balanceOf` the `RedeemFacet` `NoIdentity` guard
+/// reads (`balanceOf == 0` ⇒ not a registered identity). Same `balanceOf(address)`
+/// selector as the ERC-20 read, pointed at the diamond instead of the token.
+pub async fn name_balance_of(holder_hex: &str) -> Result<u128, String> {
+    erc20_balance_of(REGISTRY_ADDRESS, holder_hex).await
+}
+
 /// `balanceOf(holder)` on an arbitrary ERC-20/TIP-20 token. Used by the
 /// sponsor balance monitor to read the sponsor's fee-token (AlphaUSD)
 /// balance and warn when it runs low.

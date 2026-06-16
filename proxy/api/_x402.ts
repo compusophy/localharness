@@ -201,7 +201,7 @@ function x402Digest(domainSeparator: Uint8Array, a: X402Auth): Uint8Array {
   return keccak32(concatBytes(new Uint8Array([0x19, 0x01]), domainSeparator, structHash));
 }
 
-// Price-lock overpay tolerance (1% = 100 bps); 10% mirrors
+// Price-lock overpay tolerance: 10% (1000 bps), mirroring
 // registry::PRICE_LOCK_OVERPAY_TOLERANCE_BPS. settle moves EXACTLY the signed
 // value, so an underpay is rejected (floor) and an overpay beyond this band is
 // rejected too (re-quote) — no silent overpay from a stale quote.

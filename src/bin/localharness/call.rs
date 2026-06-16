@@ -642,6 +642,14 @@ pub(crate) async fn run_agent_turn(
     // — the proxy serves + settles on-chain and does NOT touch the creditOf
     // meter, so we skip the lazy meter top-up. Best-effort: any failure (off,
     // unfunded, RPC) falls back UNCHANGED to the meter path below.
+    //
+    // INVARIANT (load-bearing): the X-PAYMENT carries a ONE-SHOT nonce, valid for
+    // exactly ONE request. This turn fires exactly one upstream request (`caps`
+    // below disables builtins + subagents, no compaction is set), so the header
+    // (attached at the connection level) is never replayed. Do NOT enable
+    // compaction / subagents / image on an x402-bearing turn — a second request
+    // would replay the spent nonce and 402 mid-turn with no meter fallback. If
+    // ever needed, scope X-PAYMENT per request (fresh nonce each) instead.
     let x402_header = try_build_x402_payment(&caller, model).await;
     if x402_header.is_none() {
         // Pay PER REQUEST via the meter: fund it so the proxy debits ~CALL_COST_WEI

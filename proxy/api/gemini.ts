@@ -103,8 +103,8 @@ function payloadError(provider: Provider, parsed: unknown): string | null {
  * byte-identical. Gemini: generationConfig.maxOutputTokens (SET if absent — the
  * model's default is otherwise unbounded to its 66k ceiling). Anthropic:
  * max_tokens (required, so always present → cap if above). OpenAI: cap
- * max_tokens / max_completion_tokens if present (don't set-if-absent — the field
- * name varies by model, and OpenAI is the smaller exploit surface).
+ * max_tokens / max_completion_tokens if present, and set max_completion_tokens
+ * (the GPT-5 max-output field) when absent so the cap binds there too.
  */
 function capOutputTokens(provider: Provider, body: Record<string, unknown>): boolean {
   if (!(MAX_OUTPUT_TOKENS > 0)) return false;
@@ -120,8 +120,20 @@ function capOutputTokens(provider: Provider, body: Record<string, unknown>): boo
     return true;
   }
   let changed = false;
+  // Anthropic + OpenAI default to a large max-output → SET it so the cap binds,
+  // not just cap-if-present (else a request omitting the field dodges the cap —
+  // the exact output-asymmetry exploit). Anthropic uses max_tokens (required
+  // anyway); GPT-5 uses max_completion_tokens.
   if (provider === 'anthropic' && typeof body.max_tokens !== 'number') {
-    body.max_tokens = cap; // Anthropic requires max_tokens; bind it to the cap.
+    body.max_tokens = cap;
+    changed = true;
+  }
+  if (
+    provider === 'openai' &&
+    typeof body.max_tokens !== 'number' &&
+    typeof body.max_completion_tokens !== 'number'
+  ) {
+    body.max_completion_tokens = cap;
     changed = true;
   }
   for (const field of ['max_tokens', 'max_completion_tokens']) {
