@@ -55,6 +55,41 @@ contract LocalharnessCredits {
     /// we want: credits are not for paying gas).
     string public constant currency = "credits";
 
+    // --- Global mint rate-limit (rolling window) --------------------------
+    //
+    // Defense-in-depth against ISSUER_ROLE being diamond-wide (red-team C1):
+    // EVERY mint path — `CreditsFacet.claimDaily`, `RedeemFacet.redeem`,
+    // `MintGateFacet.mintFromFiat`, and ANY future or owner-cut malicious
+    // facet (all of which run as `msg.sender == diamond`) — finalizes through
+    // `_mint`. A ceiling enforced HERE therefore bounds TOTAL issuance
+    // regardless of which facet calls, so a leaked fiat-issuer signer (or a
+    // rogue second facet) cannot mint past it: the blast radius is this cap,
+    // NOT `supplyCap`. NOTE it is a FIXED/tumbling window — across a boundary an
+    // attacker can mint the full cap at the end of one window and again at the
+    // start of the next, so the true worst case is <=2x cap per `windowSecs`.
+    // Size the cap at HALF the tolerable per-interval loss.
+
+    /// Max wei mintable per rolling window. `0` = uncapped (legacy behaviour).
+    /// A value-real (mainnet) deploy MUST set a finite cap — it is a launch
+    /// gate (see `design/custody-security.md`).
+    uint256 public mintWindowCapWei;
+    /// Rolling-window length in seconds. Must be > 0 whenever the cap is set.
+    uint256 public mintWindowSecs;
+    /// Unix start of the current window; rolls forward in `_mint`.
+    uint256 public mintWindowStart;
+    /// Wei minted so far in the current window.
+    uint256 public mintedInWindow;
+
+    /// Loosening the rate-limit — RAISING the cap, going uncapped, or
+    /// SHORTENING the window (each raises max throughput) — is time-locked so
+    /// an owner-key compromise cannot do a same-block `setCap(∞)` + drain
+    /// (red-team M). TIGHTENING (lower cap / longer window) is immediate.
+    uint256 public constant CAP_LOOSEN_TIMELOCK = 2 days;
+    uint256 public pendingWindowCapWei;
+    uint256 public pendingWindowSecs;
+    /// Unix time the pending loosen may be applied; `0` = none pending.
+    uint256 public pendingWindowEffectiveAt;
+
     // --- Roles ------------------------------------------------------------
 
     /// Caller can `mint`. Granted to the registry diamond's
@@ -92,6 +127,9 @@ contract LocalharnessCredits {
     );
     event SupplyCapUpdate(address indexed updater, uint256 newSupplyCap);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event MintWindowSet(uint256 capWei, uint256 windowSecs);
+    event MintWindowLoosenProposed(uint256 capWei, uint256 windowSecs, uint256 effectiveAt);
+    event MintWindowLoosenCancelled();
 
     // --- Errors -----------------------------------------------------------
 
@@ -102,6 +140,11 @@ contract LocalharnessCredits {
     error InsufficientBalance(uint256 currentBalance, uint256 requested, address from);
     error InsufficientAllowance();
     error SupplyCapExceeded();
+    error MintWindowCapExceeded();
+    error InvalidWindow();
+    error NotTightening();
+    error NothingPending();
+    error TimelockNotElapsed();
 
     // --- Construction -----------------------------------------------------
 
@@ -216,6 +259,63 @@ contract LocalharnessCredits {
         emit SupplyCapUpdate(msg.sender, newCap);
     }
 
+    // --- Global mint rate-limit admin ------------------------------------
+
+    /// TIGHTEN the rolling mint cap — immediate. A change qualifies as a
+    /// tightening iff the new cap is finite AND no larger than the current
+    /// effective cap (current `0` = uncapped = +∞, so any finite cap tightens)
+    /// AND the window is no shorter. Anything else (raise / uncap / shorten)
+    /// must go through the time-locked loosen path. Does NOT reset the running
+    /// window — already-minted wei still counts against the new cap.
+    function tightenMintWindow(uint256 capWei, uint256 windowSecs) external {
+        if (msg.sender != owner) revert Unauthorized();
+        if (!_isTightening(capWei, windowSecs)) revert NotTightening();
+        _applyWindow(capWei, windowSecs);
+    }
+
+    /// Propose a LOOSENING (raise cap / uncap / shorten window). Takes effect
+    /// only after `CAP_LOOSEN_TIMELOCK`, via `applyLoosenMintWindow` — the
+    /// delay window in which a same-block owner-key-compromise drain is caught.
+    function proposeLoosenMintWindow(uint256 capWei, uint256 windowSecs) external {
+        if (msg.sender != owner) revert Unauthorized();
+        if (capWei != 0 && windowSecs == 0) revert InvalidWindow();
+        pendingWindowCapWei = capWei;
+        pendingWindowSecs = windowSecs;
+        pendingWindowEffectiveAt = block.timestamp + CAP_LOOSEN_TIMELOCK;
+        emit MintWindowLoosenProposed(capWei, windowSecs, pendingWindowEffectiveAt);
+    }
+
+    /// Apply a previously-proposed loosen once the timelock has elapsed.
+    /// Callable by anyone (the timelock, not the caller, is the gate).
+    function applyLoosenMintWindow() external {
+        if (pendingWindowEffectiveAt == 0) revert NothingPending();
+        if (block.timestamp < pendingWindowEffectiveAt) revert TimelockNotElapsed();
+        _applyWindow(pendingWindowCapWei, pendingWindowSecs);
+        pendingWindowEffectiveAt = 0;
+    }
+
+    /// Cancel a pending loosen (owner) — the emergency brake if the proposal
+    /// itself was the attack.
+    function cancelLoosenMintWindow() external {
+        if (msg.sender != owner) revert Unauthorized();
+        pendingWindowEffectiveAt = 0;
+        emit MintWindowLoosenCancelled();
+    }
+
+    function _isTightening(uint256 newCap, uint256 newSecs) internal view returns (bool) {
+        if (newCap == 0) return false; // uncapping is always a loosening
+        bool capOk = mintWindowCapWei == 0 || newCap <= mintWindowCapWei;
+        bool secsOk = newSecs >= mintWindowSecs;
+        return capOk && secsOk;
+    }
+
+    function _applyWindow(uint256 capWei, uint256 windowSecs) internal {
+        if (capWei != 0 && windowSecs == 0) revert InvalidWindow();
+        mintWindowCapWei = capWei;
+        mintWindowSecs = windowSecs;
+        emit MintWindowSet(capWei, windowSecs);
+    }
+
     // --- TIP-20 metadata stubs -------------------------------------------
 
     function paused() external pure returns (bool) {
@@ -249,6 +349,17 @@ contract LocalharnessCredits {
         if (!_roles[ISSUER_ROLE][msg.sender]) revert Unauthorized();
         if (to == address(0)) revert InvalidRecipient();
         if (amount == 0) revert InvalidAmount();
+        // Global rolling-window ceiling (C1): bounds EVERY mint path, not just
+        // the one we remembered to route. `0` cap = disabled.
+        if (mintWindowCapWei != 0) {
+            if (block.timestamp >= mintWindowStart + mintWindowSecs) {
+                mintWindowStart = block.timestamp;
+                mintedInWindow = 0;
+            }
+            uint256 windowTotal = mintedInWindow + amount;
+            if (windowTotal > mintWindowCapWei) revert MintWindowCapExceeded();
+            mintedInWindow = windowTotal;
+        }
         uint256 newSupply = totalSupply + amount;
         if (newSupply > supplyCap) revert SupplyCapExceeded();
         totalSupply = newSupply;

@@ -284,6 +284,33 @@ Two ways an agent reaches Gemini:
 
 The credit proxy is a Vercel Edge Function at `https://proxy-tau-ten-15.vercel.app` — a transparent Gemini passthrough holding the platform key in env. Auth = an Ethereum personal-sign in the `x-goog-api-key` header (`address:timestamp:signature`); it gates on an active session OR a meter balance, debiting per-request mode via the meter key. This is the ONLY server in the system; everything else is Tempo + browser.
 
+### Buy `$LH` with fiat (Stripe on-ramp)
+
+Pay USD on Stripe → get `$LH` on Tempo. Flow: the proxy's `stripe-checkout.ts`
+(authed by the same `address:timestamp:signature` personal-sign as the model
+proxy) binds your `lh_address` at Checkout-session-CREATE; on
+`checkout.session.completed` the Node-runtime `stripe-webhook.ts` verifies the
+HMAC, derives a one-shot `receiptId` from the immutable Stripe event id, EIP-712
+signs a `FiatMint` with the dedicated fiat-issuer key, and submits
+`mintFromFiat` to MintGateFacet.
+
+Bought `$LH` lands **spendable on compute immediately** (you can `meter` it for
+model access right away) but **LOCKED against withdraw / transfer / x402** for the
+lock window (`fiatLockSecs`, default ~90d — covers the card-dispute window):
+`withdrawCredits` refuses the still-locked portion; `withdrawableOf(addr)` reports
+what's movable. On a refund or `charge.dispute.created`, the proxy calls
+`clawbackFiatMint(receiptId)` which BURNS the still-locked escrow (already-spent
+`$LH` is final). The mint is bounded on-chain by a global rolling-window cap (in
+`LocalharnessCredits`, raising it is 2-day timelocked), a fiat-specific window, and
+a per-receipt cap — a leaked issuer key cannot exceed them.
+
+New proxy env: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `FIAT_ISSUER_KEY`
+(dedicated EOA, distinct from `PROXY_METER_KEY`), `LH_PEG_WEI_PER_USD_CENT` (peg,
+default `1e16` = 1 `$LH`/USD), plus the `_chain.ts` vars. **Status: testnet +
+Stripe TEST MODE today** — mainnet deploy + live Stripe keys + the legal
+(money-transmitter) decision are still pending maintainer inputs. See
+`design/stripe-mainnet.md` + `design/custody-security.md`.
+
 The same proxy also hosts the **`/scheduler`** Vercel-Cron worker — the engine that makes scheduled jobs (ScheduleFacet) run with NO browser tab. A cron tick (GET, gated by `Authorization: Bearer ${CRON_SECRET}` — the public can never trigger a spend) reads `jobsDue`, runs each due job through the headless Gemini path under its target's on-chain persona, and commits each with `recordRun` (which debits the job's escrowed `$LH` budget and advances its clock). The worker holds the `scheduler` role (the proxy meter key) and gains NO new authority — it can only fire owner-defined jobs and spend their pre-committed budgets. (Operational caveat: a 1-minute cron cadence needs Vercel Pro; on the free tier the tick fires less often or is triggered manually/externally with the same secret.)
 
 ### Credit / payment contract surface (CUT, live)
@@ -307,6 +334,14 @@ sessionPrice() → uint256             # $LH cost per session (1e19 = 10 $LH/hr;
 depositCredits(uint256)              # top up a per-request $LH balance
 withdrawCredits(uint256)             # pull UNSPENT credits back out as wallet $LH (paid agent calls auto-bridge from this)
 creditOf(address) → uint256          # current metered balance
+withdrawableOf(address) → uint256    # metered balance MINUS the still-locked fiat portion (what withdrawCredits will release)
+# MintGateFacet (Stripe fiat on-ramp — mints USD-backed $LH into diamond escrow + a LOCKED buyer balance; testnet/test-mode today)
+mintFromFiat(address to,uint256 amount,bytes32 receiptId,uint256 validBefore,bytes sig)  # fiat-issuer-signed (EIP-712); one-shot receiptId; per-receipt + rolling-window capped; mints to-self + locks the buyer balance
+clawbackFiatMint(bytes32 receiptId) → uint256 recovered  # clawbacker/owner: burn the still-locked escrow on refund/dispute
+fiatLockedOf(address) → (uint256 amount,uint256 unlockAt)  # buyer's locked fiat-$LH and when it unlocks
+fiatMintDomainSeparator() → bytes32  # read live; binds chainId + diamond (name "localharness-mintgate", v1)
+circulatingSupply() → uint256        # totalSupply − diamond escrow = $LH outside escrow (the backing-invariant numerator)
+receiptUsed(bytes32) → bool / receiptInfo(bytes32) / fiatMintWindow()  # idempotency + window introspection
 # X402Facet
 settle(...)                          # x402 "exact" EIP-712 settlement in $LH (agent-to-agent)
 x402DomainSeparator() → bytes32      # read live; binds chainId + diamond address

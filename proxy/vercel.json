@@ -3,6 +3,8 @@
   "rewrites": [
     { "source": "/mcp", "destination": "/api/mcp" },
     { "source": "/scheduler", "destination": "/api/scheduler" },
+    { "source": "/stripe/checkout", "destination": "/api/stripe-checkout" },
+    { "source": "/stripe/webhook", "destination": "/api/stripe-webhook" },
     { "source": "/v1beta/(.*)", "destination": "/api/gemini" },
     { "source": "/v1/(.*)", "destination": "/api/gemini" }
   ],

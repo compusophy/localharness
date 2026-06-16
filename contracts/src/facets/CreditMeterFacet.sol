@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import {LibDiamond} from "../libraries/LibDiamond.sol";
 import {LibCreditMeterStorage} from "../libraries/LibCreditMeterStorage.sol";
 import {LibCreditsStorage} from "../libraries/LibCreditsStorage.sol";
+import {LibMintGateStorage} from "../libraries/LibMintGateStorage.sol";
 
 interface IERC20Min {
     function transferFrom(address from, address to, uint256 amount) external returns (bool);
@@ -61,12 +62,32 @@ contract CreditMeterFacet {
         if (token == address(0)) revert NotConfigured();
         LibCreditMeterStorage.Storage storage s = LibCreditMeterStorage.load();
         uint256 bal = s.creditOf[msg.sender];
-        if (bal < amount) revert InsufficientCredits();
+        // Lock-aware (C2): the still-locked fiat-origin portion is NOT
+        // withdrawable until unlockAt — spendable on compute, clawable on
+        // chargeback, but never movable to wallet `$LH` while the dispute
+        // window is open. The token only reaches a user's wallet (and thus
+        // transfer / x402) via this path, so the lock is the closed-loop gate.
+        LibMintGateStorage.FiatLock storage lock = LibMintGateStorage.load().fiatLocked[msg.sender];
+        uint256 locked = block.timestamp < lock.unlockAt ? lock.amount : 0;
+        uint256 withdrawable = bal > locked ? bal - locked : 0;
+        if (amount > withdrawable) revert InsufficientCredits();
         unchecked {
             s.creditOf[msg.sender] = bal - amount;
         }
+        // Post-unlock a withdrawal can drop the balance below the recorded
+        // lock; keep the clawable lock no larger than what remains.
+        if (lock.amount > s.creditOf[msg.sender]) lock.amount = s.creditOf[msg.sender];
         require(IERC20Min(token).transfer(msg.sender, amount), "withdraw: transfer failed");
-        emit CreditsWithdrawn(msg.sender, amount, bal - amount);
+        emit CreditsWithdrawn(msg.sender, amount, s.creditOf[msg.sender]);
+    }
+
+    /// Withdrawable (unlocked) portion of `user`'s metered balance — the proxy
+    /// / wallet UI reads this so it never offers to withdraw locked fiat-`$LH`.
+    function withdrawableOf(address user) external view returns (uint256) {
+        uint256 bal = LibCreditMeterStorage.load().creditOf[user];
+        LibMintGateStorage.FiatLock storage lock = LibMintGateStorage.load().fiatLocked[user];
+        uint256 locked = block.timestamp < lock.unlockAt ? lock.amount : 0;
+        return bal > locked ? bal - locked : 0;
     }
 
     // --- Metering (proxy only) ------------------------------------------
@@ -82,7 +103,12 @@ contract CreditMeterFacet {
         unchecked {
             s.creditOf[user] = bal - amount;
         }
-        emit Metered(user, amount, bal - amount);
+        // Spending drains the UNLOCKED portion first; once that's exhausted it
+        // eats into the locked (clawable) part, so metered spend shrinks what a
+        // future chargeback can recover — and that spend is final/non-clawable.
+        LibMintGateStorage.FiatLock storage lock = LibMintGateStorage.load().fiatLocked[user];
+        if (lock.amount > s.creditOf[user]) lock.amount = s.creditOf[user];
+        emit Metered(user, amount, s.creditOf[user]);
     }
 
     // --- Owner ----------------------------------------------------------

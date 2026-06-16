@@ -5,6 +5,68 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Stripe → Tempo fiat on-ramp — on-chain money core (testnet) + test-mode proxy.**
+  Sell USD on Stripe, mint USD-backed `$LH` on Tempo. Implements the three
+  red-team must-fixes from `design/stripe-mainnet.md` §7:
+  - **MintGateFacet (C2)** — `mintFromFiat(to,amount,receiptId,validBefore,sig)`
+    verifies an EIP-712 `FiatMint` from the configured `fiatIssuerSigner` (EOA
+    low-s or EIP-1271), enforces a one-shot `receiptId`, a per-receipt cap, and a
+    fiat-specific rolling window, then mints into the diamond's OWN escrow
+    (mint-to-self) and credits the buyer a spendable-but-LOCKED balance
+    (`fiatLocked{amount, unlockAt}`). `clawbackFiatMint(receiptId)` burns the
+    still-locked escrow on refund/dispute. `CreditMeterFacet` is now lock-aware:
+    `withdrawCredits` refuses the still-locked portion until `unlockAt` (locked
+    fiat-`$LH` is spend-on-compute only, never withdrawable/transferable while the
+    dispute window is open) and metered spend drains the UNLOCKED portion first.
+    New views `fiatLockedOf`/`receiptUsed`/`receiptInfo`/`fiatMintWindow`/
+    `circulatingSupply`/`fiatMintDomainSeparator` + `withdrawableOf`. EIP-712
+    domain `"localharness-mintgate"` v1. `contracts/src/facets/MintGateFacet.sol`,
+    `contracts/src/libraries/LibMintGateStorage.sol`,
+    `contracts/script/AddMintGateFacet.s.sol`,
+    `contracts/test/MintGateFacet.t.sol` (25 invariant tests).
+  - **Global rolling-window mint cap (C1/M)** — `LocalharnessCredits._mint` now
+    enforces a GLOBAL rolling-window ceiling that bounds EVERY mint path (claimDaily,
+    redeem, MintGate, any owner-cut facet), since all mints finalize through `_mint`.
+    `0` = uncapped. Loosening (raise cap / uncap / shorten window) is TIME-LOCKED
+    (`CAP_LOOSEN_TIMELOCK = 2 days`; `proposeLoosenMintWindow`/`apply…`/`cancel…`);
+    tightening is immediate (`tightenMintWindow`). Defeats a same-block
+    `setCap(∞)` + drain on owner-key compromise — the cap now lives where the only
+    issuer lives.
+  - **Stripe proxy on the Node runtime (C3)** — the webhook is a Vercel NODE
+    function (raw body + `stripe.webhooks.constructEvent`), NOT Edge (Edge silently
+    breaks HMAC = open money-printer). `proxy/api/_stripe.ts`,
+    `stripe-checkout.ts`, `stripe-webhook.ts`: checkout binds `lh_address`
+    (authed by the same personal-sign as `gemini.ts`), the webhook derives
+    `receiptId` from the immutable Stripe event id, EIP-712-signs with
+    `FIAT_ISSUER_KEY`, submits `mintFromFiat`, and clawbacks on
+    refund/`charge.dispute.created`. New env: `STRIPE_SECRET_KEY`,
+    `STRIPE_WEBHOOK_SECRET`, `FIAT_ISSUER_KEY` (distinct from `PROXY_METER_KEY`),
+    `LH_PEG_WEI_PER_USD_CENT`.
+  - **`src/registry/mint_gate.rs`** — Rust driver mirroring the facet
+    (`fiat_mint_domain_separator`/`fiat_mint_digest`/`sign_fiat_mint`/
+    `encode_mint_from_fiat`/`mint_from_fiat_sponsored`/`circulating_supply`/
+    `fiat_locked_of`/`receipt_used`/`fiat_mint_window`/`token_mint_window`).
+  - **`design/custody-security.md`** — backing invariant, loss-enumeration table,
+    lock-window rationale, key custody, and the OPEN money-transmitter (H2) decision
+    log. `web/llms.txt` documents the buy-`$LH` flow.
+  - **Adversarial-review hardening** — a multi-agent red-team of the money core
+    surfaced and closed: webhook **durability** (a refund/dispute arriving before
+    the mint lands now 500-retries instead of silently dropping the clawback);
+    **amount-aware cumulative clawback** (`clawbackFiatMint(receiptId, maxWei)` so a
+    PARTIAL Stripe refund claws only the refunded delta, not the whole receipt);
+    **fail-closed NET** (the webhook never mints gross — it 500-retries until the
+    settled net is known; checkout is card-only); and an honest note that the
+    global cap is a FIXED window (≤2× cap across a boundary — size at half the
+    tolerable loss). +2 invariant tests.
+- **Honest scope:** all of the above compiles + 606 forge tests pass, but it is
+  **testnet + Stripe TEST MODE only**. Mainnet deploy, live Stripe keys, a funded
+  treasury reserve, and the MTL/MSB legal decision (H2) remain gated — see
+  `design/stripe-mainnet.md` §3 steps 11–17 + §4.
+
 ## [0.41.0] - 2026-06-16
 
 ### Added
@@ -4644,6 +4706,6 @@ implemented. Subagents land in 0.3.x.
   the working tree.
 
 [upstream]: https://github.com/google-antigravity/antigravity-sdk-python
-[Unreleased]: https://github.com/compusophy/localharness/compare/v0.31.0...HEAD
+[Unreleased]: https://github.com/compusophy/localharness/compare/v0.41.0...HEAD
 [0.31.0]: https://github.com/compusophy/localharness/compare/v0.30.0...v0.31.0
 [0.1.0]: https://github.com/compusophy/localharness/releases/tag/v0.1.0
