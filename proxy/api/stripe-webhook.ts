@@ -85,7 +85,11 @@ export default async function handler(req: Request): Promise<Response> {
       const signature = await signFiatMint(lhAddress, amountWei, receiptId, validBefore);
       await submitMintFromFiat(lhAddress, amountWei, receiptId, validBefore, signature);
     } else if (event.type === 'charge.refunded' || event.type === 'charge.dispute.created') {
-      const obj = event.data.object as { payment_intent?: unknown; amount_refunded?: unknown };
+      const obj = event.data.object as {
+        payment_intent?: unknown;
+        amount_refunded?: unknown;
+        amount?: unknown;
+      };
       const piId = paymentIntentId(obj);
       if (piId) {
         const receiptId = receiptIdFor(piId);
@@ -100,12 +104,20 @@ export default async function handler(req: Request): Promise<Response> {
         if (event.type === 'charge.dispute.created') {
           if (r.clawedWei < r.amount) await submitClawback(receiptId, 0n); // full
         } else {
-          // Refund (possibly PARTIAL): claw only the cumulative refunded amount.
+          // Refund (possibly PARTIAL). The mint was NET of Stripe fees
+          // (r.amount = net), but Stripe's amount_refunded is GROSS, so clawing
+          // centsToWei(grossRefunded) over-burns the buyer by the fee share of
+          // the refund. Claw the PROPORTIONAL net amount instead: the cumulative
+          // net-refunded = r.amount × (cumulative gross refunded ÷ gross charge).
+          // amount_refunded + amount are both cumulative/gross on the Charge.
           const refundedCents = Number(obj.amount_refunded ?? 0);
-          if (refundedCents > 0) {
-            const targetWei = centsToWei(refundedCents);
-            const capped = targetWei > r.amount ? r.amount : targetWei;
-            if (capped > r.clawedWei) await submitClawback(receiptId, targetWei);
+          const grossCents = Number(obj.amount ?? 0);
+          if (refundedCents > 0 && grossCents > 0) {
+            const proportional = (r.amount * BigInt(refundedCents)) / BigInt(grossCents);
+            // Cap at the full net mint; submit the SAME value we compare against
+            // (avoids redundant reverting resubmits once the cumulative is met).
+            const targetWei = proportional > r.amount ? r.amount : proportional;
+            if (targetWei > r.clawedWei) await submitClawback(receiptId, targetWei);
           }
         }
       }
