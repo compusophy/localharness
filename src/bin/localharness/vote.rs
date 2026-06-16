@@ -15,7 +15,9 @@ pub(crate) const VOTE_USAGE: &str = "\
 usage: localharness vote <propose|cast|execute|list|show> ...
   vote propose [--as <me>] <guildId> <to> <amount> [--period <dur>] [memo...]
                                        a member proposes a treasury spend (opens a vote)
-  vote cast    [--as <me>] <proposalId> <for|against>   cast your one-member-one-vote ballot
+  vote cast    [--as <me>] [--tba <subguild>] <proposalId> <for|against>
+                                       cast a one-member-one-vote ballot;
+                                       --tba: a sub-guild's TBA votes in a parent guild's DAO
   vote execute [--as <me>] <proposalId>                 resolve a closed proposal (spends if passed)
   vote list    <guildId>                                list a guild's proposals + tally
   vote show    <proposalId>                             full proposal detail + tally + passing
@@ -89,13 +91,25 @@ pub(crate) fn parse_vote_propose_args(rest: &[String]) -> Result<ParsedVotePropo
 pub(crate) async fn vote(caller: Option<&str>, rest: &[String]) -> i32 {
     match rest.first().map(String::as_str) {
         Some("propose") => vote_propose(caller, &rest[1..]).await,
-        Some("cast") => match (rest.get(1), rest.get(2)) {
-            (Some(id), Some(ballot)) => vote_cast(caller, id, ballot).await,
-            _ => {
-                eprintln!("usage: localharness vote cast [--as <me>] <proposalId> <for|against>");
-                2
+        Some("cast") => {
+            // Optional `--tba <subguild-name>`: a SUB-guild's TBA casts its
+            // member-guild ballot in a PARENT guild's DAO (nested divisions) —
+            // the TBA executes `vote`, not the caller's own EOA.
+            let (tba, positional) = match take_tba_flag(&rest[1..]) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("{e}");
+                    return 2;
+                }
+            };
+            match (positional.first(), positional.get(1)) {
+                (Some(id), Some(ballot)) => vote_cast(caller, id, ballot, tba.as_deref()).await,
+                _ => {
+                    eprintln!("usage: localharness vote cast [--as <me>] [--tba <subguild>] <proposalId> <for|against>");
+                    2
+                }
             }
-        },
+        }
         Some("execute") => match rest.get(1) {
             Some(id) => vote_execute(caller, id).await,
             None => {
@@ -191,10 +205,13 @@ pub(crate) async fn vote_propose(caller: Option<&str>, rest: &[String]) -> i32 {
     }
 }
 
-/// `vote cast <proposalId> <for|against>` — cast your one-member-one-vote ballot
-/// (`vote(proposalId, support)`). Caller must be a member of the proposal's guild
-/// and not have voted already (enforced on-chain).
-pub(crate) async fn vote_cast(caller: Option<&str>, id_arg: &str, ballot: &str) -> i32 {
+/// `vote cast [--tba <subguild>] <proposalId> <for|against>` — cast a
+/// one-member-one-vote ballot (`vote(proposalId, support)`). With `--tba
+/// <subguild-name>` the SUB-guild's TBA casts the ballot (NESTED divisions: a
+/// member-guild votes in a parent guild's DAO), routed through the sponsored
+/// tba-execute path; without it the caller's own EOA votes. The voter must be a
+/// member of the proposal's guild and not have voted already (enforced on-chain).
+pub(crate) async fn vote_cast(caller: Option<&str>, id_arg: &str, ballot: &str, tba: Option<&str>) -> i32 {
     let proposal_id = match parse_proposal_id(id_arg) {
         Ok(id) => id,
         Err(e) => {
@@ -209,6 +226,17 @@ pub(crate) async fn vote_cast(caller: Option<&str>, id_arg: &str, ballot: &str) 
             return 2;
         }
     };
+    // NESTED path: a sub-guild's TBA casts the ballot in the parent guild's DAO.
+    if let Some(subguild) = tba {
+        let side = if support { "for" } else { "against" };
+        return tba_execute_diamond_call(
+            caller,
+            subguild,
+            registry::encode_vote_calldata(proposal_id, support),
+            &format!("'{subguild}' voting {side} on proposal #{proposal_id}"),
+        )
+        .await;
+    }
     let (signer, sponsor) = match load_signer_and_sponsor(caller) {
         Ok(pair) => pair,
         Err(code) => return code,

@@ -14,7 +14,8 @@ pub(crate) const GUILD_USAGE: &str = "\
 usage: localharness guild <create|invite|accept|leave|role|fund|spend|members|treasury|mine> ...
   guild create [--as <me>] <name>                       create a guild (you're its admin)
   guild invite [--as <me>] <guildId> <member>           invite a name/0x address to join
-  guild accept [--as <me>] <guildId>                    accept an invite (join the guild)
+  guild accept [--as <me>] [--tba <subguild>] <guildId> accept an invite (join the guild);
+                                                        --tba: a sub-guild's TBA joins a parent guild
   guild leave  [--as <me>] <guildId>                    leave a guild
   guild role   [--as <me>] <guildId> <member> <member|officer|admin>   set a role (admin)
   guild fund   [--as <me>] <guildId> <amount>           deposit $LH into the treasury
@@ -57,13 +58,25 @@ pub(crate) async fn guild(caller: Option<&str>, rest: &[String]) -> i32 {
                 2
             }
         },
-        Some("accept") => match rest.get(1) {
-            Some(id) => guild_accept(caller, id).await,
-            None => {
-                eprintln!("usage: localharness guild accept [--as <me>] <guildId>");
-                2
+        Some("accept") => {
+            // Optional `--tba <subguild-name>`: a SUB-guild's TBA accepts the
+            // invite to a PARENT guild (nested divisions) — the TBA executes
+            // `acceptGuildInvite`, not the caller's own EOA.
+            let (tba, positional) = match take_tba_flag(&rest[1..]) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("{e}");
+                    return 2;
+                }
+            };
+            match positional.first() {
+                Some(id) => guild_accept(caller, id, tba.as_deref()).await,
+                None => {
+                    eprintln!("usage: localharness guild accept [--as <me>] [--tba <subguild>] <guildId>");
+                    2
+                }
             }
-        },
+        }
         Some("leave") => match rest.get(1) {
             Some(id) => guild_leave(caller, id).await,
             None => {
@@ -203,9 +216,12 @@ pub(crate) async fn guild_invite(caller: Option<&str>, id_arg: &str, member: &st
     }
 }
 
-/// `guild accept <guildId>` — accept a pending invite and join
-/// (`acceptGuildInvite`).
-pub(crate) async fn guild_accept(caller: Option<&str>, id_arg: &str) -> i32 {
+/// `guild accept [--tba <subguild>] <guildId>` — accept a pending invite and
+/// join (`acceptGuildInvite`). With `--tba <subguild-name>` the SUB-guild's TBA
+/// executes the accept (NESTED divisions: a guild's wallet joins a PARENT
+/// guild), routed through the sponsored tba-execute path; without it the
+/// caller's own EOA joins directly.
+pub(crate) async fn guild_accept(caller: Option<&str>, id_arg: &str, tba: Option<&str>) -> i32 {
     let guild_id = match parse_guild_id(id_arg) {
         Ok(id) => id,
         Err(e) => {
@@ -213,6 +229,16 @@ pub(crate) async fn guild_accept(caller: Option<&str>, id_arg: &str) -> i32 {
             return 2;
         }
     };
+    // NESTED path: a sub-guild's TBA accepts the invite to the parent guild.
+    if let Some(subguild) = tba {
+        return tba_execute_diamond_call(
+            caller,
+            subguild,
+            registry::encode_accept_guild_invite_calldata(guild_id),
+            &format!("'{subguild}' joining guild #{guild_id}"),
+        )
+        .await;
+    }
     let (signer, sponsor) = match load_signer_and_sponsor(caller) {
         Ok(pair) => pair,
         Err(code) => return code,

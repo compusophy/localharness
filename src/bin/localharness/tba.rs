@@ -410,3 +410,93 @@ pub(crate) async fn tba_exec(caller: Option<&str>, rest: &[String]) -> i32 {
     }
 }
 
+/// Drive a `--tba <subguild-name>`'s token-bound account to EXECUTE a diamond
+/// call with `calldata` — the shared spine of the phase-2 nested-division
+/// wrappers (`guild accept --tba`, `vote cast --tba`). Resolves
+/// `<subguild-name>` → its TBA (`tba_of_name`) + backing tokenId (for an
+/// auto-deploy), warns (doesn't block — the chain is the real gate) when the
+/// caller doesn't own the name, deploys the counterfactual TBA if needed, then
+/// routes ONE sponsored `execute(diamond, 0, calldata)` through the SAME
+/// `tba_execute_call_sponsored` path `tba exec` uses (the NFT holder = the local
+/// key signs; the sponsor pays gas). The diamond (`REGISTRY_ADDRESS`) is always
+/// the inner `to`; value is always 0 (these calls move no native token).
+/// `action` labels progress lines. Returns a process exit code.
+pub(crate) async fn tba_execute_diamond_call(
+    caller: Option<&str>,
+    subguild: &str,
+    calldata: Vec<u8>,
+    action: &str,
+) -> i32 {
+    let (signer, sponsor) = match load_signer_and_sponsor(caller) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    let caller_addr = bytes_to_hex_str(&wallet::address(&signer));
+
+    // Resolve the acting (sub)guild's TBA + its backing tokenId.
+    let tba_addr = match registry::tba_of_name(subguild).await {
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            eprintln!("{action}: '{subguild}' is not registered (no token-bound account)");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("{action}: RPC error resolving '{subguild}': {e}");
+            return 1;
+        }
+    };
+    // Client-side owner check: warn (don't block) when the name's controlling
+    // NFT owner isn't the caller. The TBA's on-chain `_isAuthorized` still gates.
+    if let Ok(Some(o)) = registry::owner_of_name(subguild).await {
+        if !o.eq_ignore_ascii_case(&caller_addr) {
+            eprintln!(
+                "warning: '{subguild}' is controlled by {o}, not you ({caller_addr}) — \
+                 its TBA will reject this unless you're an enrolled signer."
+            );
+        }
+    }
+    let token_id = registry::id_of_name(subguild).await.unwrap_or(0);
+
+    // The TBA must be deployed before it can execute; deploy first if needed.
+    if !registry::is_contract_deployed(&tba_addr).await.unwrap_or(false) {
+        if token_id == 0 {
+            eprintln!("{action}: '{subguild}' has no token id to deploy its TBA — run `tba deploy {subguild}`");
+            return 1;
+        }
+        println!("{subguild}'s TBA {tba_addr} isn't deployed yet — deploying first …");
+        if let Err(e) = registry::create_token_bound_account_sponsored(
+            &signer,
+            &sponsor,
+            token_id,
+            registry::ALPHA_USD_ADDRESS,
+        )
+        .await
+        {
+            eprintln!("{action}: TBA deploy failed: {e}");
+            return 1;
+        }
+    }
+
+    println!("{subguild}'s TBA {tba_addr} → {action} …");
+    match registry::tba_execute_call_sponsored(
+        &signer,
+        &sponsor,
+        &tba_addr,
+        registry::REGISTRY_ADDRESS, // inner `to` = the diamond
+        0,                          // no native value
+        &calldata,
+        registry::ALPHA_USD_ADDRESS,
+    )
+    .await
+    {
+        Ok(tx) => {
+            println!("✓ {action}  tx: {tx}");
+            0
+        }
+        Err(e) => {
+            eprintln!("{action} failed: {e}");
+            1
+        }
+    }
+}
+

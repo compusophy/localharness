@@ -114,6 +114,15 @@ pub(crate) fn encode_vote(proposal_id: u64, support: bool) -> Vec<u8> {
     out
 }
 
+/// Public ABI calldata for `vote(uint256 proposalId, bool support)` — the inner
+/// call a guild's TBA executes to cast a member-guild's ballot in a PARENT
+/// guild's DAO (nested divisions). Thin `pub` wrapper over the `pub(crate)`
+/// `encode_vote`, so a caller (the CLI `vote cast --tba`) can route it through
+/// `tba_execute_call_sponsored` without re-rolling ABI.
+pub fn encode_vote_calldata(proposal_id: u64, support: bool) -> Vec<u8> {
+    encode_vote(proposal_id, support)
+}
+
 /// Open a proposal via a sponsored Tempo tx (`propose(guildId, to, amount, memo,
 /// votingPeriod)`): a guild member proposes spending `amount_wei` of the guild
 /// treasury to `to_hex`, opening a vote that closes at `now + voting_period_secs`.

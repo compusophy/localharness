@@ -157,6 +157,15 @@ pub(crate) fn encode_spend_treasury(guild_id: u64, to: &[u8; 20], amount_wei: u1
     out
 }
 
+/// Public ABI calldata for `acceptGuildInvite(uint256 guildId)` — the inner
+/// call a guild's TBA executes to join a PARENT guild (nested divisions). Thin
+/// `pub` wrapper over the same `call_uint_bytes` the sponsored helper uses, so a
+/// caller (the CLI `guild accept --tba`) can route it through
+/// `tba_execute_call_sponsored` without re-rolling ABI.
+pub fn encode_accept_guild_invite_calldata(guild_id: u64) -> Vec<u8> {
+    call_uint_bytes("acceptGuildInvite(uint256)", guild_id)
+}
+
 /// Create a guild via a sponsored Tempo tx: `createGuild(name)` mints the org
 /// (caller becomes its Admin), returning the tx hash once mined. Read the new
 /// guildId back from `guilds_of(creator)` (its last entry, like `bounties_of`).
