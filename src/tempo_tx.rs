@@ -518,13 +518,30 @@ fn rlp_compact_signature(sig: &[u8; 65]) -> Vec<u8> {
 /// Different from `rlp_compact_signature` (which is used for the
 /// sender slot). Empirically: fee_payer expects the list form,
 /// sender expects the flat form.
+///
+/// `r` and `s` are RLP INTEGERS here, so each MUST be minimal
+/// big-endian — leading zero bytes stripped. A fixed-width 32-byte
+/// `r`/`s` whose top byte is `0x00` (≈1/256 of signatures per
+/// component) would otherwise encode as `0xa0 00 ..` (non-canonical),
+/// and a strict node decoder rejects it with "failed to decode signed
+/// transaction" — deterministic per (sender key + nonce + payload),
+/// intermittent across keys. `rlp_int_bytes` does the stripping.
 fn rlp_vrs_signature(sig: &[u8; 65]) -> Vec<u8> {
     let v = sig[64].saturating_sub(27); // 27/28 → 0/1
     wallet::rlp_list(&[
         wallet::rlp_uint(v as u128),
-        wallet::rlp_bytes(&sig[..32]),
-        wallet::rlp_bytes(&sig[32..64]),
+        rlp_int_bytes(&sig[..32]),
+        rlp_int_bytes(&sig[32..64]),
     ])
+}
+
+/// RLP-encode an arbitrary-width big-endian integer (e.g. a 32-byte
+/// signature `r`/`s`) MINIMALLY: strip leading zero bytes, then encode
+/// as a byte string (zero → empty `0x80`). Unlike [`wallet::rlp_uint`]
+/// this takes a byte slice, so it handles values wider than `u128`.
+fn rlp_int_bytes(be: &[u8]) -> Vec<u8> {
+    let first_non_zero = be.iter().position(|&b| b != 0).unwrap_or(be.len());
+    wallet::rlp_bytes(&be[first_non_zero..])
 }
 
 // --- helpers --------------------------------------------------------
@@ -607,6 +624,52 @@ mod tests {
         assert!(
             !calls_rlp(true).windows(20).any(|w| w == [0xab; 20]),
             "create tx leaked the `to` address — it must encode empty (0x80)"
+        );
+    }
+
+    #[test]
+    fn rlp_vrs_signature_strips_leading_zero_r_and_s() {
+        // A fee_payer sig whose r AND s each have a high (leading) zero byte.
+        // As RLP INTEGERS inside rlp([v, r, s]) they MUST be minimal
+        // big-endian; a non-stripped 32-byte word encodes as `0xa0 00 ..`,
+        // which a strict node decoder rejects ("failed to decode signed
+        // transaction"). This is the deterministic-per-key live bug.
+        let mut sig = [0u8; 65];
+        // r = 0x00aa..aa (31 bytes after stripping), s = 0x0011..11 (31 bytes).
+        for i in 0..32 {
+            sig[i] = 0xaa;
+            sig[32 + i] = 0x11;
+        }
+        sig[0] = 0x00; // r leading zero
+        sig[32] = 0x00; // s leading zero
+        sig[64] = 28; // v = 28 → 1
+
+        let enc = rlp_vrs_signature(&sig);
+        // Walk the list: [v, r, s]. r and s must be 31-byte minimal strings
+        // (header 0x9f = 0x80+31), NOT 32-byte (0xa0) with a 0x00 prefix.
+        let (body_off, body_len, is_list) = rlp_header(&enc, 0);
+        assert!(is_list, "fee_payer sig must be an RLP list");
+        let mut i = body_off;
+        // v
+        let (voff, vlen, _) = rlp_header(&enc, i);
+        i = voff + vlen;
+        // r
+        let (roff, rlen, _) = rlp_header(&enc, i);
+        assert_eq!(rlen, 31, "r must be stripped to 31 minimal bytes, not 32");
+        assert_ne!(enc[roff], 0x00, "r must not start with a zero byte");
+        i = roff + rlen;
+        // s
+        let (soff, slen, _) = rlp_header(&enc, i);
+        assert_eq!(slen, 31, "s must be stripped to 31 minimal bytes, not 32");
+        assert_ne!(enc[soff], 0x00, "s must not start with a zero byte");
+        i = soff + slen;
+        assert_eq!(i, body_off + body_len, "list body must be fully consumed");
+
+        // No `0xa0 00` (32-byte string with a leading zero) anywhere in the
+        // encoding — the exact non-canonical shape the node rejected.
+        assert!(
+            !enc.windows(2).any(|w| w == [0xa0, 0x00]),
+            "non-minimal integer (0xa0 0x00 ..) leaked into the fee_payer sig RLP"
         );
     }
 
