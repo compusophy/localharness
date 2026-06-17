@@ -5,6 +5,49 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.46.0] - 2026-06-17
+
+### Security
+
+- **`spend_treasury` now requires typed owner confirmation (CONFIRM-1).** The
+  guild-treasury payout tool moved arbitrary `$LH` to an arbitrary recipient with
+  no dispatch-layer confirmation — the same risk class as the already-gated
+  `send_lh`. Added to `CONFIRM_GATED` (plus a `confirmation` schema field) so a
+  prompt-injected / poisoned-persona agent can't drain a funded treasury without
+  the owner typing a single-use code. Escrow tools (`fund_*`/`post_bounty`) stay
+  ungated (refundable); `execute_proposal` stays quorum-gated.
+- **Guild 1m1v governance can no longer be sybil-drained by an Officer (VOTE-1).**
+  `VotingFacet` snapshotted only the member COUNT, not the eligible-voter set, so
+  a rogue/compromised Officer could free-invite + self-accept sybil Members and
+  pass a self-serving treasury spend on a bare majority — bypassing the
+  Admin-only `spendTreasury` gate. A passing treasury proposal now requires at
+  least one **Admin FOR** vote (`Proposal.forAdminVotes`, appended to storage:
+  append-only + fail-safe — a pre-fix in-flight proposal reads 0 and can't
+  execute until re-proposed). Single-facet recut, NO selector change.
+  `WeightedVotingFacet` was already immune (share gate).
+- **Credit-proxy burst free-inference closed (METER-1/2).** The credit path
+  gated on a lock-free `creditOf` read and debited fire-and-forget, so a
+  concurrent burst funded by one call's `$LH` could harvest unbounded free
+  inference; and (behind `LH_TOKEN_METERING`) the usage debit lived only in the
+  stream flush, so a client disconnect yielded a free call. The meter floor is
+  now debited UP FRONT (account-nonce-serialized) on both paths with an
+  in-isolate per-address reservation, `meteredBody` charges only the usage
+  remainder, and `LH_MAX_OUTPUT_TOKENS` defaults to 8192. (Residual: a
+  cross-Edge-isolate burst still races to a bounded, non-amplified degree; the
+  trustless fix remains per-request x402.)
+- **Sponsored gas price clamped (TEMPO-3).** Sponsored Tempo txs took the node
+  `eth_gasPrice` verbatim; a hostile / MITM'd RPC could inflate the sponsor's
+  fee. `current_gas_price` now REFUSES (not clamps) above a 1000-gwei ceiling.
+
+### Notes
+
+- `settleUpto` must be `diamondCut` into X402Facet BEFORE `LH_TOKEN_METERING` is
+  enabled (X402-1) — it is the sole gate on the `settleUpto` broadcast and would
+  otherwise hard-revert `FunctionNotFound`. Documented at the call site.
+- All six fixes were surfaced by a multi-agent security audit
+  (`design/security-audit-2026-06-17.md`); 11 further findings were adversarially
+  verified as non-exploitable and recorded there.
+
 ## [0.45.0] - 2026-06-17
 
 ### Changed
