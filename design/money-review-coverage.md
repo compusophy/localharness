@@ -17,11 +17,24 @@
 | Guild treasury + DAO governance | `GuildFacet.sol`, `VotingFacet.sol`, `WeightedVotingFacet.sol` | **1 HIGH** (weighted snapshot-quorum bypass, un-deployed) | `334f41b` + test `5b0bc29` |
 | Agent-to-agent x402 (`ask_agent`) | `proxy/api/mcp.ts` `handleAskAgent` + helpers | clean | — |
 | Bounty + Party escrow/payout | `BountyFacet.sol`, `PartyFacet.sol` | clean | — |
-| Validation staking escrow/payout | `ValidationFacet.sol` | clean core; 1 hardening applied | `(this tick)` |
+| Validation staking escrow/payout | `ValidationFacet.sol` | clean core; 1 hardening applied | `f00716c` |
+| Destructive-action confirm gate | `confirm.rs` (+ `confirm_guard.rs`/dispatch) | clean | — |
+| Tempo AA tx encoder + codecs | `tempo_tx.rs`, `encoding.rs` | clean | — |
 
-**Totals: 10 surfaces reviewed; 6 bugs fixed (4 MED + 2 HIGH) + 1 defense-in-depth
-hardening; 4 surfaces (buy/onboarding, ask_agent, bounty/party) and the 1m1v
-voting path clean.**
+**Totals: 12 surfaces reviewed; 6 bugs fixed (4 MED + 2 HIGH) + 1 defense-in-depth
+hardening; 6 surfaces (buy/onboarding, ask_agent, bounty/party, confirm gate, tx
+encoder) and the 1m1v voting path clean.**
+
+## Confirm-gate coverage (OWNER decision — not a bug)
+The typed-confirmation gate (`confirm.rs`) is sound — single-use, exact-arg-bound,
+no model-self-confirm, CSPRNG codes, fails-closed — verified clean. It gates the 4
+IRREVERSIBLE / direct-transfer tools (`send_lh`, `batch_send_lh`,
+`release_subdomain`, `bulk_release_subdomains`). Other value-touching MODEL tools
+(`spend_treasury`, `fund_guild`/`fund_party`, `post_bounty`, `stake_validation`,
+`execute_proposal`) are NOT gated — by design, since they're escrow/refundable or
+governance-quorum-protected, not one-shot irreversible. No bypass exists; whether
+to also gate `spend_treasury`/`execute_proposal` (which do move funds out, gated
+only by the holder's own key) is a deliberate UX-vs-safety call for the owner.
 
 ## Notable findings (detail)
 - **Scheduler hot-loop (HIGH, fixed live):** per-run debit capped to the stale
