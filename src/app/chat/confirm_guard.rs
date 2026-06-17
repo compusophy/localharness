@@ -41,12 +41,20 @@ thread_local! {
 }
 
 /// Tools that must never execute without a user-typed confirmation:
-/// irreversible burns and value moves.
+/// irreversible burns and value moves. `spend_treasury` is here for the same
+/// reason as `send_lh` — it pays an arbitrary, model-supplied `$LH` amount to
+/// an arbitrary recipient and the transfer is an unconditional, non-refundable
+/// outbound move (the on-chain Admin gate restricts WHO may spend, not WHETHER
+/// the owner approved this specific payout, and the agent's own key IS that
+/// Admin). The escrow tools (`fund_guild`/`fund_party`/`post_bounty`) stay
+/// ungated by design — their funds are refundable via the disband/reclaim
+/// paths — and `execute_proposal` is governance-quorum-gated.
 const CONFIRM_GATED: &[&str] = &[
     "release_subdomain",
     "bulk_release_subdomains",
     "send_lh",
     "batch_send_lh",
+    "spend_treasury",
 ];
 
 /// Record the latest REAL user message (called by `run_send` before the turn

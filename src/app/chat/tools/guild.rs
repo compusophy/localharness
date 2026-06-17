@@ -232,6 +232,13 @@ pub(crate) fn spend_treasury_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             "memo": {
                 "type": "string",
                 "description": "OPTIONAL note recorded with the payment (what it's for)."
+            },
+            "confirmation": {
+                "type": "string",
+                "description": "Single-use confirmation code. OMIT (or pass \"\") on the \
+                    first call — it returns a challenge code shown to the owner. Relay \
+                    it, wait for the owner to TYPE the code in chat, then retry with it. \
+                    Never invent it; only the platform issues it."
             }
         },
         "required": ["guild_id", "to", "amount_lh"]
@@ -240,8 +247,11 @@ pub(crate) fn spend_treasury_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
         "spend_treasury",
         "Pay $LH OUT of a guild's pooled treasury to an address or subdomain name, with \
          an optional memo. Admin-gated ON-CHAIN: only a guild Admin can spend (the call \
-         reverts otherwise). Moves value: confirm the recipient + amount with the owner \
-         before calling. Returns { guild_id, to, resolved_to, amount_lh, tx_hash }.",
+         reverts otherwise). MOVES VALUE (non-refundable, arbitrary recipient) — the \
+         first call does NOT execute: it returns a single-use confirmation code (also \
+         shown to the owner in the UI). State the recipient + amount, ask the owner to \
+         TYPE the code, then retry with `confirmation` set to it. Returns \
+         { guild_id, to, resolved_to, amount_lh, tx_hash }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
             let guild_id = args
