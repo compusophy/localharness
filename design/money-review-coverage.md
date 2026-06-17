@@ -21,10 +21,27 @@
 | Destructive-action confirm gate | `confirm.rs` (+ `confirm_guard.rs`/dispatch) | clean | — |
 | Tempo AA tx encoder + codecs | `tempo_tx.rs`, `encoding.rs` | clean | — |
 | Inter-agent call (caller-pays x402) | `builtins/call_agent.rs`, `x402_hook.rs` | clean | — |
+| Crypto foundation (seed/keys/sign) | `wallet.rs` | clean (derivation frozen by vector) | — |
+| On-chain calldata encoders | `registry/*.rs` (per-facet `encode_*`) | clean (144 tests; vs .sol sigs) | — |
 
-**Totals: 13 surfaces reviewed; 6 bugs fixed (4 MED + 2 HIGH) + 1 defense-in-depth
-hardening; 7 surfaces (buy/onboarding, ask_agent, bounty/party, confirm gate, tx
-encoder, inter-agent call) and the 1m1v voting path clean.**
+**Totals: 15 surfaces reviewed; 6 bugs fixed (4 MED + 2 HIGH) + 1 defense-in-depth
+hardening; 9 surfaces (buy/onboarding, ask_agent, bounty/party, confirm gate, tx
+encoder, inter-agent call, crypto foundation, calldata encoders) and the 1m1v
+voting path clean.**
+
+## Crypto foundation + calldata encoders — verified clean (the catastrophic surfaces)
+- **`wallet.rs`** — the mnemonic→key→address derivation is FROZEN by a hardcoded
+  test vector (`mnemonic_known_vector_pins_identity_derivation`), reproduced from
+  scratch with independent keccak+secp256k1 — so a refactor can't silently orphan
+  existing identities. Full 128-bit entropy used; signatures low-s (EIP-2),
+  v∈{27,28}, r‖s‖v order; `from_slice` rejects k≥n / zero; address slice + RLP +
+  the 4 domain-separated AES key tags all correct. The non-HD design (entropy →
+  keccak → scalar) is deliberate + internally consistent.
+- **`registry/*` encoders** — every per-facet `encode_*` calldata builder +
+  selector checked against the Solidity `function` signatures (transfer / settle /
+  mintFromFiat / execute / diamondCut / setMetadata / formParty / announce): no
+  swapped args, wrong selector, truncated amount, or mis-sized dynamic-`bytes`
+  offset. All 144 registry tests pass; `u256_be(u128)` is sound (wei + ids fit).
 
 ## Inter-agent call (`call_agent`) — verified clean
 The caller-pays x402 path (an agent paying another agent up to a hard per-call
