@@ -290,11 +290,20 @@ pub(crate) fn pick_split<A: CompactionModel>(history: &[A::Message], keep_pairs:
 }
 
 /// True if keeping `history[split..]` would orphan a leading tool result:
-/// the first kept message is a user turn of only tool-result parts, whose
-/// matching tool call lives at `split-1` (and would be summarized away).
+/// the first kept message is a tool-result turn whose matching tool call lives
+/// at `split-1` (and would be summarized away).
+///
+/// Tests `is_tool_result_turn` ALONE — NOT `is_user && is_tool_result_turn`. On
+/// Anthropic/Gemini a tool-result turn IS a user turn, so the two are equivalent;
+/// but on OpenAI a tool result is its OWN `role:"tool"` message (never user), so
+/// the `is_user` conjunct made this ALWAYS FALSE there — and a parallel-tool-call
+/// run split mid-way left orphaned leading `tool` messages, which OpenAI 400s
+/// ("messages with role 'tool' must be a response to a preceding 'tool_calls'"),
+/// bricking the next request after compaction. The walk steps back through the
+/// whole run of leading tool results to the assistant turn that issued them.
 fn is_leading_orphan<A: CompactionModel>(history: &[A::Message], split: usize) -> bool {
     match history.get(split) {
-        Some(m) => A::is_user(m) && A::is_tool_result_turn(m),
+        Some(m) => A::is_tool_result_turn(m),
         None => false,
     }
 }
@@ -372,6 +381,89 @@ fn drop_oldest_fallback<A: CompactionModel>(
     hist.extend(kept);
     debug!(new_len = hist.len(), "compaction: drop-oldest fallback applied");
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A mock backend with OpenAI-style DISTINCT roles: a tool result is its OWN
+    // role, NOT a user turn (unlike Anthropic/Gemini, where a tool-result turn IS
+    // a user turn). This is the shape that exposed the orphan bug.
+    #[derive(Clone, PartialEq, Debug)]
+    enum Role {
+        User,
+        Assistant,
+        Tool,
+    }
+    #[derive(Clone)]
+    struct MockMsg {
+        role: Role,
+        text: String,
+    }
+    fn m(role: Role) -> MockMsg {
+        MockMsg { role, text: String::new() }
+    }
+    struct MockModel;
+    impl CompactionModel for MockModel {
+        type Message = MockMsg;
+        fn is_user(m: &MockMsg) -> bool {
+            m.role == Role::User
+        }
+        fn sole_text(m: &MockMsg) -> Option<&str> {
+            (!m.text.is_empty()).then_some(m.text.as_str())
+        }
+        fn is_tool_result_turn(m: &MockMsg) -> bool {
+            m.role == Role::Tool
+        }
+        fn user_text(text: String) -> MockMsg {
+            MockMsg { role: Role::User, text }
+        }
+        fn render_message(m: &MockMsg, out: &mut String) {
+            out.push_str(&m.text);
+            out.push('\n');
+        }
+    }
+
+    #[test]
+    fn pick_split_walks_back_past_a_leading_tool_run_when_roles_are_distinct() {
+        // OpenAI parallel tool calls: one assistant turn issues N calls, followed
+        // by N SEPARATE `role:tool` messages. A keep-window boundary landing
+        // mid-run must walk back to the issuing assistant — never leave an
+        // orphaned leading tool result (OpenAI 400s: "role 'tool' must follow
+        // 'tool_calls'"). Before the fix, `is_user && is_tool_result` was always
+        // false for distinct roles, so the walk-back never fired → orphan.
+        let h = vec![
+            m(Role::User),
+            m(Role::Assistant),
+            m(Role::Tool), m(Role::Tool), m(Role::Tool), m(Role::Tool), // call_0 ×4
+            m(Role::Assistant),
+            m(Role::Tool), m(Role::Tool), m(Role::Tool), m(Role::Tool), // call_1 ×4
+            m(Role::Assistant),
+            m(Role::Tool), m(Role::Tool), m(Role::Tool), m(Role::Tool), // call_2 ×4
+        ]; // len 16
+        // keep_pairs=6 → keep_entries=12 → raw split = 16-12 = 4, which is a Tool.
+        let split = pick_split::<MockModel>(&h, 6);
+        assert!(
+            !MockModel::is_tool_result_turn(&h[split]),
+            "kept head at split={split} must not be an orphaned tool result"
+        );
+        assert_eq!(h[split].role, Role::Assistant, "walks back to the issuing assistant turn");
+    }
+
+    #[test]
+    fn pick_split_keeps_a_clean_user_boundary_as_is() {
+        // A boundary on a normal (non-tool) user turn is kept verbatim — the
+        // walk-back must NOT over-trigger on ordinary history.
+        let h = vec![
+            m(Role::User), m(Role::Assistant),
+            m(Role::User), m(Role::Assistant),
+            m(Role::User), m(Role::Assistant),
+        ]; // len 6
+        let split = pick_split::<MockModel>(&h, 1); // keep_entries=2 → split=4 (a User turn)
+        assert_eq!(split, 4);
+        assert_eq!(h[split].role, Role::User);
+    }
 }
 
 /// Decide whether to attempt compaction based on the running token
