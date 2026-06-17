@@ -446,7 +446,12 @@ async fn signer_iframe_request(
 
         if msg_type == MSG_SIGNER_READY {
             *ready_for_handler.borrow_mut() = true;
-            if let Some(waker) = ready_waker_for_handler.borrow_mut().take() {
+            // Take the waker out FIRST (dropping the borrow) and only THEN call
+            // it — never hold a `RefCell` guard across `call0`, which resolves a
+            // Promise and can drive the wasm executor on the same tick (the iOS
+            // re-entrant-borrow class).
+            let waker = ready_waker_for_handler.borrow_mut().take();
+            if let Some(waker) = waker {
                 let _ = waker.call0(&JsValue::NULL);
             }
             return;
@@ -471,7 +476,11 @@ async fn signer_iframe_request(
             Ok(data.clone())
         };
         *result_for_handler.borrow_mut() = Some(outcome);
-        if let Some(waker) = waker_for_handler.borrow_mut().take() {
+        // Drop the borrow before calling the waker (see the ready-waker note
+        // above): `call0` resolves the Promise and must not run while a guard
+        // on these per-request cells is held.
+        let waker = waker_for_handler.borrow_mut().take();
+        if let Some(waker) = waker {
             let _ = waker.call0(&JsValue::NULL);
         }
     });

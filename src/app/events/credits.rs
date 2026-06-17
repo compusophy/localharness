@@ -307,7 +307,7 @@ pub(super) fn redeem_invite_onboard_pressed() {
         "<span style=\"color:var(--muted)\">creating identity…</span>",
     );
     wasm_bindgen_futures::spawn_local(async move {
-        let _flow_guard = flow_guard; // released on every exit path
+        let flow_guard = flow_guard; // released on every exit path
         let result = async {
             // Explicit user action → generating the device/credit key here is
             // ALLOWED (not silent). Reuses `credit_signer` (master wallet if
@@ -364,9 +364,15 @@ pub(super) fn redeem_invite_onboard_pressed() {
                     &dom::msg_span(dom::Msg::Accent, "redeemed — $LH added"),
                 );
                 crate::app::chat::ensure_credit_meter().await;
-                // Re-paint the apex: the visitor now has an identity, so
-                // `paint_apex` renders the claim-a-name surface (+ agents list).
-                crate::app::paint_apex(crate::app::tenant::Host::Apex).await;
+                // Re-paint the apex on a FRESH executor tick (not inline): the
+                // visitor now has an identity, so `paint_apex` renders the
+                // claim-a-name surface (+ agents list). Deferring avoids the iOS
+                // re-entrant-`Task::run` "RefCell already borrowed" panic — see
+                // `super::defer_onboard_repaint`. The guard rides along so a
+                // re-press stays blocked until the surface is up.
+                super::defer_onboard_repaint(flow_guard, async {
+                    crate::app::paint_apex(crate::app::tenant::Host::Apex).await;
+                });
             }
             Err(e) => {
                 web_sys::console::warn_1(&JsValue::from_str(&format!("invite redeem: {e}")));

@@ -176,31 +176,32 @@ pub(crate) async fn load_linked_owner() -> Option<String> {
 /// volatile context is lost the moment the tab closes unless the user backs
 /// it up (the QR `?adopt=1` flow) or switches to a normal window.
 ///
-/// We ASK the browser to make storage durable (`navigator.storage.persist()`)
-/// and treat a non-granted result as volatile. A user gesture (the create tap)
-/// is the best moment to request it. As a backstop, an `estimate()` quota near
-/// zero (some incognito modes report a tiny quota) is also treated as volatile.
-/// Conservative: any error / missing API → NOT volatile (don't false-warn a
-/// normal browser that simply lacks the API). Best-effort only — never blocks.
+/// We ASK the browser to make storage durable (`navigator.storage.persist()`).
+/// A granted (`true`) result is a definitive "safe". But a NON-granted result is
+/// **NOT** a volatility signal: many normal browsers (Edge/Silk/most mobile
+/// engines) decline to mark storage durable by default while still persisting
+/// data across tab close / reload / device restart — treating that as volatile
+/// false-flagged real users as "incognito". The ONLY signal we now warn on is a
+/// genuinely tiny `estimate()` quota, which is a reliable private-window tell
+/// (incognito jars report a few MB; a normal origin gets hundreds of MB to GBs).
+/// Conservative everywhere else: any error / missing API / merely-undurable but
+/// adequately-sized storage → NOT volatile. Best-effort only — never blocks.
 pub(crate) async fn storage_is_volatile() -> bool {
     use wasm_bindgen_futures::JsFuture;
     let Some(win) = web_sys::window() else { return false };
     let storage = win.navigator().storage();
 
-    // 1. Request durable storage (idempotent; resolves to true if already/now
-    //    persistent). A `false` here is the clearest volatility signal.
+    // 1. Request durable storage (idempotent). GRANTED → definitively safe.
+    //    A `false`/empty result is NOT treated as volatile (see the doc note):
+    //    most non-incognito browsers simply don't grant durability on request.
     if let Ok(promise) = storage.persist() {
         if let Ok(val) = JsFuture::from(promise).await {
             if val.as_bool() == Some(true) {
                 return false; // storage is durable — safe
             }
-            // Explicit `false` from persist() → volatile.
-            if val.as_bool() == Some(false) {
-                return true;
-            }
         }
     }
-    // 2. Fallback: persisted() check (some engines expose only this).
+    // 2. Already-persistent check (some engines expose only this). TRUE → safe.
     if let Ok(promise) = storage.persisted() {
         if let Ok(val) = JsFuture::from(promise).await {
             if val.as_bool() == Some(true) {
@@ -208,15 +209,17 @@ pub(crate) async fn storage_is_volatile() -> bool {
             }
         }
     }
-    // 3. Heuristic backstop: a tiny quota is a known incognito tell.
+    // 3. The one volatility signal we trust: a tiny quota. Real incognito jars
+    //    report only a few MB; a normal origin reports hundreds of MB+. Use a
+    //    low threshold (~32MB) so durable-but-undurable-flagged normal browsers
+    //    (Edge/Silk/mobile), which report large quotas, are never false-warned.
     if let Ok(promise) = storage.estimate() {
         if let Ok(val) = JsFuture::from(promise).await {
             if let Some(quota) = js_sys::Reflect::get(&val, &"quota".into())
                 .ok()
                 .and_then(|q| q.as_f64())
             {
-                // < ~120MB quota → almost certainly a partitioned/incognito jar.
-                return quota < 120_000_000.0;
+                return quota > 0.0 && quota < 32_000_000.0;
             }
         }
     }

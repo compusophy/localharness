@@ -68,6 +68,29 @@ impl Drop for OnboardFlowGuard {
         ONBOARD_BUSY.with(|b| b.set(false));
     }
 }
+
+/// Spawn `repaint` on a FRESH executor tick while keeping the onboarding
+/// flow guard held until it finishes.
+///
+/// The post-onboarding repaint (`paint_apex` / `paint_tenant`) itself
+/// `spawn_local`s sub-tasks and awaits OPFS + on-chain reads. Awaiting it
+/// inline from the onboarding task deepens the wasm-bindgen single-thread
+/// executor's poll chain; on iOS WebKit's microtask timing this can re-enter
+/// `Task::run` for a task whose `RefCell` is still borrowed by the in-progress
+/// poll → the `already mutably borrowed: BorrowError` panic that crashed the
+/// "create wallet" front door. Returning from the onboarding task BEFORE the
+/// repaint releases that executor borrow, so the repaint runs on a clean tick.
+/// The guard moves into the new task so a re-press stays blocked until the
+/// surface is actually up.
+pub(super) fn defer_onboard_repaint<F>(guard: OnboardFlowGuard, repaint: F)
+where
+    F: std::future::Future<Output = ()> + 'static,
+{
+    wasm_bindgen_futures::spawn_local(async move {
+        let _flow_guard = guard;
+        repaint.await;
+    });
+}
 pub(crate) use key_sync::{sync_local_key_to_main, try_auto_restore_gemini_key};
 pub(crate) use subdomains::{run_batch_create_subdomains, run_bulk_release, run_release_subdomain};
 
@@ -936,16 +959,36 @@ fn dispatch(action: Action) {
                             "identity-msg",
                             "<span style=\"color:var(--muted)\">identity created — loading…</span>",
                         );
-                        super::paint_apex(super::tenant::Host::Apex).await;
+                        // Run the repaint on a FRESH executor tick, not inline.
+                        // `paint_apex` itself `spawn_local`s several sub-tasks and
+                        // awaits OPFS/RPC; awaiting it from inside THIS onboarding
+                        // task deepens the wasm-bindgen single-thread executor's
+                        // poll chain, and on iOS WebKit's microtask timing that
+                        // re-enters `Task::run` for an already-borrowed task → the
+                        // "RefCell already borrowed" panic. Deferring lets this
+                        // task fully return (releasing the executor borrow) before
+                        // the heavy paint runs. The flow guard rides along so a
+                        // re-press is still blocked until the surface is up.
+                        defer_onboard_repaint(_flow_guard, async {
+                            super::paint_apex(super::tenant::Host::Apex).await;
+                        });
                     });
                 }
                 host => {
                     wasm_bindgen_futures::spawn_local(async move {
-                        let _flow_guard = flow_guard;
+                        let flow_guard = flow_guard;
                         match super::verify::create_wallet_via_iframe(false).await {
                             Ok(_addr) => {
                                 if let super::tenant::Host::Tenant(name) = &host {
-                                    super::paint_tenant(host.clone(), name.clone()).await;
+                                    // Defer the repaint to a fresh executor tick —
+                                    // same iOS re-entrant-`Task::run` hazard as the
+                                    // apex branch above (paint_tenant spawns + awaits
+                                    // OPFS/RPC). The guard rides along.
+                                    let host = host.clone();
+                                    let name = name.clone();
+                                    defer_onboard_repaint(flow_guard, async move {
+                                        super::paint_tenant(host, name).await;
+                                    });
                                 }
                             }
                             Err(err) => {

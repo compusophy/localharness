@@ -41,15 +41,13 @@ pub(crate) fn create_wallet_cta() -> Markup {
     }
 }
 
-/// The muted footer link(s) under the apex column. A fresh visitor (no
-/// account) sees only the agent-onboarding door; explore is added once an
-/// identity exists — nothing to browse before you're in.
-pub(crate) fn apex_links(fresh: bool) -> Markup {
+/// The muted footer link(s) under the apex column. The home screen stays a
+/// single front door — the public agent directory (`?explore=1`) is reachable
+/// from the admin panel / direct link, not surfaced here (per request). Only
+/// the agent-onboarding pointer remains.
+pub(crate) fn apex_links(_fresh: bool) -> Markup {
     html! {
         nav.apex-links {
-            @if !fresh {
-                a href="?explore=1" { "explore all agents →" }
-            }
             a href="/skill.md" { "for agents →" }
         }
     }
