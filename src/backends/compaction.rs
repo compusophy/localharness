@@ -383,6 +383,15 @@ fn drop_oldest_fallback<A: CompactionModel>(
     true
 }
 
+/// Decide whether to attempt compaction based on the running token
+/// count. `threshold` of `None` disables compaction entirely.
+pub fn should_compact(total_tokens: Option<i32>, threshold: Option<u32>) -> bool {
+    match (total_tokens, threshold) {
+        (Some(t), Some(th)) => t as u32 > th,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,14 +472,5 @@ mod tests {
         let split = pick_split::<MockModel>(&h, 1); // keep_entries=2 → split=4 (a User turn)
         assert_eq!(split, 4);
         assert_eq!(h[split].role, Role::User);
-    }
-}
-
-/// Decide whether to attempt compaction based on the running token
-/// count. `threshold` of `None` disables compaction entirely.
-pub fn should_compact(total_tokens: Option<i32>, threshold: Option<u32>) -> bool {
-    match (total_tokens, threshold) {
-        (Some(t), Some(th)) => t as u32 > th,
-        _ => false,
     }
 }
