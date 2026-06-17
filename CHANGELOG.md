@@ -5,6 +5,35 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.45.0] - 2026-06-17
+
+### Changed
+
+- **Fiat on-ramp rebuilt on Stripe Elements (was Embedded Checkout).** The browser
+  "buy `$LH`" modal now mounts a compact CUSTOM Elements form — a one-click
+  Link / wallet button FIRST, then a collapsed card field — instead of Stripe's
+  full hosted checkout page in a nested iframe. Fixes the modal-in-modal,
+  unscrollable, over-long, slow-to-load flow: it's short, scrolls
+  (`max-height:88vh`), opens fast (light Elements + a `js.stripe.com` preconnect),
+  and puts Link first. Proxy: the embedded path now creates a bare **PaymentIntent**
+  (card + Link only — synchronous settlement, which the NET-amount fail-closed
+  mint depends on) driven by the Elements form; the webhook gains a
+  `payment_intent.succeeded` mint branch, and a new `/stripe/finalize` endpoint
+  mints instantly after `confirmPayment` (the webhook stays the durable backstop —
+  both idempotent via the on-chain one-shot receipt).
+
+### Fixed
+
+- **On-ramp money-safety hardening (from an adversarial review of the change).**
+  `netSettledCents` now requires `balance_transaction.currency === 'usd'` before
+  trusting `net` as cents — a non-USD-settling Stripe account fails closed instead
+  of mis-pegging the mint. `/stripe/finalize` reuses the per-isolate sliding-window
+  rate limiter (pre-auth, keyed on the claimed address) so a replayable token can't
+  drive unbounded Stripe/RPC work; returns ONE opaque response for unknown / unpaid
+  / not-yours PaymentIntents (no existence oracle); and on a submitter-nonce race
+  with the webhook it re-reads the receipt and reports the real mint rather than a
+  misleading `pending`.
+
 ## [0.44.0] - 2026-06-16
 
 ### Changed

@@ -1,6 +1,6 @@
 # localharness
 
-[![crates.io](https://img.shields.io/badge/crates.io-v0.44.0-blue.svg)](https://crates.io/crates/localharness)
+[![crates.io](https://img.shields.io/badge/crates.io-v0.45.0-blue.svg)](https://crates.io/crates/localharness)
 [![docs.rs](https://img.shields.io/docsrs/localharness)](https://docs.rs/localharness)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![MSRV 1.85](https://img.shields.io/badge/MSRV-1.85-orange.svg)](Cargo.toml)
@@ -32,7 +32,7 @@ The platform running live on a phone — a self-sovereign agent at its own subdo
 
 ```toml
 [dependencies]
-localharness = "0.44"
+localharness = "0.45"
 tokio        = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
