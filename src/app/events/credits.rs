@@ -397,11 +397,12 @@ pub(super) fn redeem_invite_onboard_pressed() {
 /// shim POSTs `/stripe/finalize` for an instant mint; the proxy webhook is the
 /// durable backstop. Both mint `$LH` to THIS identity. Empty/invalid amount is a
 /// silent no-op.
-pub(super) fn buy_lh_pressed() {
-    // Amount source: the admin field if present, else a fixed $2 — the
-    // pre-claim "[buy $2 to claim]" affordance has no `#buy-usd` input. $2 (not
-    // $1) because Stripe's 2.9%+$0.30 nets only ~0.67 $LH on $1, BELOW the 1 $LH
-    // registration cost; $2 nets ~1.64 $LH → covers the claim + leaves credit.
+pub(super) fn buy_lh_pressed(onboarding: bool) {
+    // Amount: the admin field if present, else a fixed $2 — the onboarding
+    // "create agent · $2" path has no `#buy-usd` input. $2 = 200 $LH at the
+    // $1 = 100 $LH rate (200 starter messages; claiming a name costs 1 $LH).
+    // `onboarding` re-paints the apex on a successful mint so a fresh buyer
+    // lands on the (now-funded) name-claim input instead of staying put.
     let cents = match dom::input_by_id("buy-usd") {
         Some(input) => match parse_usd_cents(input.value().trim()) {
             Some(c) => c,
@@ -419,7 +420,7 @@ pub(super) fn buy_lh_pressed() {
     wasm_bindgen_futures::spawn_local(async move {
         match start_checkout_embedded(cents).await {
             Ok((client_secret, payment_intent)) => {
-                open_buy_modal(&net_lh_label(cents));
+                open_buy_modal(&lh_label(cents));
                 // The shim only needs the client_secret (mounts the native
                 // Stripe elements). Minting is driven by the Rust poll below with
                 // a freshly signed token — never a stale modal-open one.
@@ -427,7 +428,7 @@ pub(super) fn buy_lh_pressed() {
                 call_js("lhBuyLh", Some(&opts));
                 dom::swap_inner(msg_id, "");
                 // Reactivity loop: watch the PaymentIntent; on success, mint.
-                poll_and_finalize(payment_intent, net_lh_label(cents)).await;
+                poll_and_finalize(payment_intent, lh_label(cents), onboarding).await;
             }
             Err(e) => {
                 web_sys::console::warn_1(&JsValue::from_str(&format!("buy $LH: {e}")));
@@ -468,12 +469,11 @@ fn open_buy_modal(lh_label: &str) {
     }
 }
 
-/// Net `$LH` after Stripe's fee (~2.9% + $0.30), for the modal preview. Cosmetic
-/// — the webhook mints the exact settled-net amount.
-fn net_lh_label(cents: u64) -> String {
-    let fee = (cents as f64 * 0.029).ceil() as u64 + 30;
-    let net = cents.saturating_sub(fee);
-    format!("{:.2} $LH", net as f64 / 100.0)
+/// `$LH` minted for `cents` USD, for the modal preview. $LH is decoupled from $
+/// and minted on the GROSS at $1 = 100 $LH (fees absorbed), so 1 cent = 1 $LH
+/// exactly — a $2 buy shows "200 $LH". Round, no decimals.
+fn lh_label(cents: u64) -> String {
+    format!("{cents} $LH")
 }
 
 /// Call a global JS function from the Stripe shim (`window.<name>`); no-op if
@@ -556,7 +556,7 @@ async fn start_checkout_embedded(cents: u64) -> Result<(String, String), String>
 /// mint (the bug that charged a card but credited no `$LH`). On a confirmed mint
 /// it flips the modal to the done state and refreshes the balance. Stops if the
 /// user closes the modal; the proxy webhook stays a backstop for tab-close / 3DS.
-async fn poll_and_finalize(payment_intent: String, lh_label: String) {
+async fn poll_and_finalize(payment_intent: String, lh_label: String, onboarding: bool) {
     if payment_intent.is_empty() {
         return;
     }
@@ -582,13 +582,18 @@ async fn poll_and_finalize(payment_intent: String, lh_label: String) {
             return;
         }
         if let Ok(true) = finalize_mint(&payment_intent).await {
-            call_js(
-                "lhBuySuccess",
-                Some(&format!("✓ {lh_label} added — your balance is updated")),
-            );
+            call_js("lhBuySuccess", Some(&format!("✓ {lh_label} added")));
             crate::app::chat::ensure_credit_meter().await;
             super::refresh_credits_pill().await;
             refresh_fund_banner().await;
+            // Onboarding: the fresh buyer is now funded — re-paint the apex on a
+            // FRESH executor tick (avoids the iOS re-entrant-paint panic) so the
+            // claim-a-name input appears (no "need 1 more LH" surprise).
+            if onboarding {
+                wasm_bindgen_futures::spawn_local(async {
+                    crate::app::paint_apex(crate::app::tenant::Host::Apex).await;
+                });
+            }
             return;
         }
         crate::runtime::sleep_ms(4000).await;

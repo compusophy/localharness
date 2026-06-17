@@ -116,6 +116,10 @@ enum Action {
     HideSeed,
     ImportSeed,
     CreateIdentity,
+    /// Pay-first onboarding (the fresh-visitor "create agent · $2" CTA):
+    /// create the identity, then open the $2 checkout immediately so the price
+    /// is the FIRST step — no surprise paywall after the user picks a name.
+    CreateAccount,
     ShowImport,
     CancelImport,
     HeaderAdminToggle,
@@ -271,6 +275,7 @@ impl Action {
             "hide-seed" => Action::HideSeed,
             "import-seed" => Action::ImportSeed,
             "create-identity" => Action::CreateIdentity,
+            "create-account" => Action::CreateAccount,
             "show-import" => Action::ShowImport,
             "cancel-import" => Action::CancelImport,
             "header-admin-toggle" => Action::HeaderAdminToggle,
@@ -895,6 +900,40 @@ fn dispatch(action: Action) {
                 r#"<button type="button" data-action="reveal-seed">I have a pen and paper — reveal</button>"#,
             );
         }
+        Action::CreateAccount => {
+            // Pay-first onboarding: create the identity, then open the $2
+            // checkout immediately (the "create agent · $2" step IS the
+            // purchase). On a successful mint, buy_lh_pressed(true) re-paints to
+            // the now-funded name-claim input — no surprise paywall.
+            let Some(flow_guard) = onboard_flow_begin() else {
+                return;
+            };
+            dom::swap_inner(
+                "onboard-msg",
+                "<span style=\"color:var(--muted)\">creating your account…</span>",
+            );
+            wasm_bindgen_futures::spawn_local(async move {
+                let _flow_guard = flow_guard;
+                match super::net::with_timeout(15_000, super::wallet_store::create_and_persist())
+                    .await
+                {
+                    Err(_) => dom::swap_inner(
+                        "onboard-msg",
+                        &dom::msg_span(dom::Msg::Error, "create timed out — reload and try again"),
+                    ),
+                    Ok(Err(err)) => dom::swap_inner(
+                        "onboard-msg",
+                        &dom::msg_span(dom::Msg::Error, &format!("create failed: {err}")),
+                    ),
+                    Ok(Ok(_)) => {
+                        dom::swap_inner("onboard-msg", "");
+                        // Identity exists → open the $2 checkout (mints 200 $LH);
+                        // its poll re-paints the apex to the funded name input.
+                        credits::buy_lh_pressed(true);
+                    }
+                }
+            });
+        }
         Action::CreateIdentity => {
             // Apex: generate locally + bootstrap-fund + re-paint.
             // Tenant: route through the apex signer iframe so the wallet
@@ -1178,7 +1217,7 @@ fn dispatch(action: Action) {
         Action::DownloadLocalModel => credits::run_download_local_model(),
         Action::RedeemInviteOnboard => credits::redeem_invite_onboard_pressed(),
         Action::RedeemCode => credits::redeem_code_pressed(),
-        Action::BuyLh => credits::buy_lh_pressed(),
+        Action::BuyLh => credits::buy_lh_pressed(false),
         Action::CloseBuyModal => credits::close_buy_modal(),
         Action::RedeemBanner => credits::redeem_banner_pressed(),
         Action::CreateInvite => credits::create_invite_pressed(),

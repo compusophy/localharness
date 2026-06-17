@@ -23,18 +23,19 @@
 
 use maud::{Markup, html};
 
-/// The fresh-visitor front door: ONE white-bordered card with a single
-/// `create wallet` CTA that creates the agent identity (`Action::CreateIdentity`,
-/// the same wired flow the admin identity sidecar uses; success reloads into the
-/// app). No code input or seed-import here (both live in admin; `?invite=` links
-/// auto-redeem on mount). `data-action="create-identity"` is load-bearing — it
-/// MUST match a `Action::parse` arm (a fresh visitor's only control). Future:
-/// a paid create+fund checkout so a 0-$LH visitor never exists.
+/// The fresh-visitor front door: ONE CTA whose PRICE is on the button —
+/// pay-first onboarding (`Action::CreateAccount`): it creates the identity then
+/// opens the $2 checkout immediately, so there's no surprise paywall after the
+/// user has invested in picking a name. The mint ($2 = 200 $LH) lands them on
+/// the (now-funded) name-claim input. No code input or seed-import here (both
+/// live in admin; `?invite=` links auto-redeem on mount). `#onboard-msg` is the
+/// status slot; `data-action="create-account"` is load-bearing (MUST match a
+/// `Action::parse` arm — a fresh visitor's only control).
 pub(crate) fn create_wallet_cta() -> Markup {
     html! {
         section.apex-onboard {
-            button type="button" data-action="create-identity" .apex-onboard-cta {
-                "create wallet"
+            button type="button" data-action="create-account" .apex-onboard-cta {
+                "create agent · $2"
             }
             div #onboard-msg .step-msg {}
         }
