@@ -19,8 +19,8 @@ pub struct KvOp {
     pub value: Option<Vec<u8>>,
     /// Logical clock — higher wins. A writer stamps `next_lamport(seen)`.
     pub lamport: u64,
-    /// Writer address (20 bytes) — the deterministic tiebreak when two ops for
-    /// the same key share a `lamport`.
+    /// Writer address (20 bytes) — the first deterministic tiebreak when two ops
+    /// for the same key share a `lamport` (the `value` breaks a further tie).
     pub writer: [u8; 20],
     /// Wall-clock seconds when written. Used ONLY for optional TTL filtering,
     /// never for ordering (clocks are not trustworthy across writers).
@@ -28,11 +28,18 @@ pub struct KvOp {
 }
 
 /// Does `candidate` beat `current` for the same key? Higher `lamport` wins; on a
-/// tie the lexicographically greater `writer` wins. This is a strict total order
-/// over `(lamport, writer)`, so the fold is order-independent and symmetric —
-/// the same tiebreak discipline as `sharedfs_reconcile`'s hash tiebreak.
+/// tie the lexicographically greater `writer` wins; on a FURTHER tie the greater
+/// `value` wins (a tombstone `None` sorts below any `Some`, so a concurrent write
+/// beats a delete at an equal clock — "add-wins"). The `value` tiebreak is what
+/// makes this a genuine TOTAL order over op CONTENT, not just over
+/// `(lamport, writer)`: two distinct ops sharing a `(lamport, writer)` — a normal
+/// event, since one identity's devices share a `writer` and `next_lamport` can
+/// re-stamp the same clock — would otherwise be incomparable, so the FIRST in the
+/// log won and the converged map depended on log order (a divergence bug). With
+/// the value tiebreak every replica picks the same winner in any order.
 fn op_wins(candidate: &KvOp, current: &KvOp) -> bool {
-    (candidate.lamport, candidate.writer) > (current.lamport, current.writer)
+    (candidate.lamport, candidate.writer, &candidate.value)
+        > (current.lamport, current.writer, &current.value)
 }
 
 /// Fold `ops` into the converged map. A tombstone that wins suppresses its key.
@@ -125,6 +132,28 @@ mod tests {
             op("a", Some(b"v2"), 3, 1, 100),
         ];
         assert_eq!(reduce(&revive, 0, 0), map_of(&[("a", b"v2")]));
+    }
+
+    #[test]
+    fn value_tiebreak_on_equal_lamport_and_writer() {
+        // Two distinct writes sharing (lamport, writer) — a NORMAL event (one
+        // identity's devices share a writer; `next_lamport` can re-stamp a clock).
+        // Without the value tiebreak the FIRST in the log won → replicas diverged.
+        // Now the greater value wins in BOTH orders.
+        let a = op("k", Some(b"AAA"), 5, 1, 100);
+        let b = op("k", Some(b"BBB"), 5, 1, 100);
+        assert_eq!(reduce(&[a.clone(), b.clone()], 0, 0), map_of(&[("k", b"BBB")]));
+        assert_eq!(reduce(&[b, a], 0, 0), map_of(&[("k", b"BBB")]));
+    }
+
+    #[test]
+    fn write_beats_tombstone_at_equal_clock_deterministically() {
+        // write vs delete at the SAME (lamport, writer): add-wins, order-
+        // independent (previously the key was present or absent by log order).
+        let write = op("k", Some(b"v"), 9, 7, 100);
+        let tomb = op("k", None, 9, 7, 100);
+        assert_eq!(reduce(&[write.clone(), tomb.clone()], 0, 0), map_of(&[("k", b"v")]));
+        assert_eq!(reduce(&[tomb, write], 0, 0), map_of(&[("k", b"v")]));
     }
 
     #[test]

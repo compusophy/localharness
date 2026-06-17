@@ -81,8 +81,23 @@ pub fn room_recipient(room_id: u64) -> [u8; 20] {
 /// Serialize a `KvOp` to its stable plaintext framing (before sealing):
 /// `version | key_len(u16) | key | val_tag(u8) | [val_len(u32) | val] |
 /// lamport(u64) | writer(20) | ts(u64)` — all big-endian.
-pub fn encode_op(op: &KvOp) -> Vec<u8> {
+///
+/// Returns `None` if the key exceeds `u16::MAX` bytes or the value exceeds
+/// `u32::MAX` bytes — those don't fit the length prefixes, and a silent `as u16`
+/// / `as u32` truncation produced a blob that `decode_op` could not round-trip
+/// (silent state LOSS at write time). Rejecting here makes an over-length write
+/// fail loudly at the writer; `seal_op` already propagates the `None` and both
+/// call sites handle it.
+pub fn encode_op(op: &KvOp) -> Option<Vec<u8>> {
     let key = op.key.as_bytes();
+    if key.len() > u16::MAX as usize {
+        return None;
+    }
+    if let Some(v) = &op.value {
+        if v.len() > u32::MAX as usize {
+            return None;
+        }
+    }
     let mut out = Vec::with_capacity(1 + 2 + key.len() + 1 + 4 + 8 + 20 + 8);
     out.push(OP_VERSION);
     out.extend_from_slice(&(key.len() as u16).to_be_bytes());
@@ -98,7 +113,7 @@ pub fn encode_op(op: &KvOp) -> Vec<u8> {
     out.extend_from_slice(&op.lamport.to_be_bytes());
     out.extend_from_slice(&op.writer);
     out.extend_from_slice(&op.ts.to_be_bytes());
-    out
+    Some(out)
 }
 
 /// Parse [`encode_op`] bytes back into a `KvOp`. `None` on any malformed input.
@@ -150,7 +165,7 @@ pub fn seal_op(
 ) -> Option<Vec<u8>> {
     let cipher = Aes256Gcm::new_from_slice(k_room).ok()?;
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-    let ct = cipher.encrypt(&nonce, encode_op(op).as_slice()).ok()?;
+    let ct = cipher.encrypt(&nonce, encode_op(op)?.as_slice()).ok()?;
     let mut sealed = Vec::with_capacity(NONCE_LEN + ct.len());
     sealed.extend_from_slice(nonce.as_slice());
     sealed.extend_from_slice(&ct);
@@ -289,17 +304,39 @@ mod tests {
     #[test]
     fn encode_decode_round_trip_value_and_tombstone() {
         let v = sample([9u8; 20]);
-        assert_eq!(decode_op(&encode_op(&v)).unwrap(), v);
+        assert_eq!(decode_op(&encode_op(&v).unwrap()).unwrap(), v);
         let t = KvOp {
             value: None,
             ..sample([3u8; 20])
         };
-        assert_eq!(decode_op(&encode_op(&t)).unwrap(), t);
+        assert_eq!(decode_op(&encode_op(&t).unwrap()).unwrap(), t);
         // trailing garbage and truncation are rejected.
-        let mut buf = encode_op(&v);
+        let mut buf = encode_op(&v).unwrap();
         buf.push(0xff);
         assert!(decode_op(&buf).is_none());
-        assert!(decode_op(&encode_op(&v)[..3]).is_none());
+        assert!(decode_op(&encode_op(&v).unwrap()[..3]).is_none());
+    }
+
+    #[test]
+    fn encode_op_rejects_oversize_key_instead_of_truncating() {
+        // A key past the u16 length prefix used to be silently truncated
+        // (`len as u16`) → a blob that no reader could decode (silent state loss).
+        // It now fails loudly at encode (and `seal_op` propagates the None).
+        let big = KvOp {
+            key: "k".repeat(u16::MAX as usize + 1),
+            ..sample([1u8; 20])
+        };
+        assert!(encode_op(&big).is_none(), "oversize key must not encode");
+        assert!(
+            seal_op(&big, &[7u8; 32], &key(1), 1).is_none(),
+            "seal must propagate the rejection"
+        );
+        // exactly u16::MAX is the boundary that still encodes + round-trips.
+        let edge = KvOp {
+            key: "k".repeat(u16::MAX as usize),
+            ..sample([1u8; 20])
+        };
+        assert_eq!(decode_op(&encode_op(&edge).unwrap()).unwrap(), edge);
     }
 
     #[test]
