@@ -48,13 +48,13 @@ pub(crate) fn api_key_modal() -> Markup {
     }
 }
 
-/// Branded "buy $LH" modal — a COMPACT Stripe **Elements** form mounts into
-/// `#lh-express` (Link / wallet one-click) + `#lh-payment` (card) via
-/// `web/stripe-embed.js`, so card entry is in-app (no redirect, no nested hosted
-/// checkout iframe). `lh_label` previews the net `$LH`; the pay button label is
-/// set by the shim. The hidden `#buy-modal-done` success state is revealed by the
-/// shim after `confirmPayment` succeeds (the proxy then mints on-chain). The card
-/// is height-capped + scrollable so a tall form never overflows a small screen.
+/// Branded "buy $LH" modal — Stripe's NATIVE Elements mount into `#lh-express`
+/// (Link / wallet one-click) + `#lh-payment` (Link "use this card" inline + card)
+/// via `web/stripe-embed.js`. There is NO custom pay button: the user pays with
+/// Stripe's own buttons. A Rust poll watches the PaymentIntent and, on success,
+/// mints via `/stripe/finalize` and reveals `#buy-modal-done` (set by the shim's
+/// `lhBuySuccess`). `lh_label` previews the net `$LH`. Height-capped + scrollable
+/// so the form never overflows a small screen.
 pub(crate) fn buy_modal(lh_label: &str) -> Markup {
     html! {
         div #buy-modal .api-key-modal {
@@ -63,13 +63,11 @@ pub(crate) fn buy_modal(lh_label: &str) -> Markup {
                 div.api-key-hint { "you'll receive about " (lh_label) " (net of card fees), minted on-chain" }
                 div #lh-pay-region {
                     div #lh-express style="margin:10px 0" {}
-                    div #lh-or-card style="text-align:center;color:var(--muted);font-size:11px;margin:6px 0" { "or pay with card" }
                     div #lh-payment style="margin:6px 0" {}
                     div #lh-pay-error role="alert" aria-live="assertive" style="color:#ff6b6b;font-size:12px;min-height:1em;margin:4px 0" {}
-                    button type="button" #lh-pay-btn style="width:100%;margin-top:6px" { "pay" }
                 }
-                div #buy-modal-done style="display:none" {
-                    div.api-key-hint { "✓ payment received — your $LH is minting on-chain and will appear shortly." }
+                div #buy-modal-done .api-key-hint style="display:none" {
+                    "✓ payment received — your $LH is minting on-chain and will appear shortly."
                 }
                 button type="button" data-action="close-buy-modal" .ghost style="margin-top:8px" { "close" }
             }

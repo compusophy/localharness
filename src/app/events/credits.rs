@@ -412,20 +412,16 @@ pub(super) fn buy_lh_pressed() {
     );
     wasm_bindgen_futures::spawn_local(async move {
         match start_checkout_embedded(cents).await {
-            Ok((client_secret, payment_intent, token)) => {
+            Ok((client_secret, payment_intent)) => {
                 open_buy_modal(&net_lh_label(cents));
-                let finalize_url =
-                    format!("{}stripe/finalize", crate::registry::CREDIT_PROXY_URL);
-                let opts = serde_json::json!({
-                    "clientSecret": client_secret,
-                    "paymentIntentId": payment_intent,
-                    "finalizeUrl": finalize_url,
-                    "authToken": token,
-                    "payLabel": format!("pay ${:.2}", cents as f64 / 100.0),
-                })
-                .to_string();
+                // The shim only needs the client_secret (mounts the native
+                // Stripe elements). Minting is driven by the Rust poll below with
+                // a freshly signed token — never a stale modal-open one.
+                let opts = serde_json::json!({ "clientSecret": client_secret }).to_string();
                 call_js("lhBuyLh", Some(&opts));
                 dom::swap_inner(msg_id, "");
+                // Reactivity loop: watch the PaymentIntent; on success, mint.
+                poll_and_finalize(payment_intent, net_lh_label(cents)).await;
             }
             Err(e) => {
                 web_sys::console::warn_1(&JsValue::from_str(&format!("buy $LH: {e}")));
@@ -506,10 +502,10 @@ fn parse_usd_cents(raw: &str) -> Option<u64> {
 }
 
 /// POST an authenticated embedded buy request to the credit proxy; returns
-/// `(client_secret, payment_intent_id, auth_token)` for the Stripe Elements form.
-/// The auth token (`<addr>:<ts>:<sig>`, mirrors `resolve_credit_access`) is also
-/// handed to the shim so it can POST `/stripe/finalize` for an instant mint.
-async fn start_checkout_embedded(cents: u64) -> Result<(String, String, String), String> {
+/// `(client_secret, payment_intent_id)` for the Stripe Elements form. The
+/// `client_secret` mounts the native elements; the `payment_intent_id` is what
+/// the reactivity poll finalizes once the payment succeeds.
+async fn start_checkout_embedded(cents: u64) -> Result<(String, String), String> {
     let (signer, addr) = crate::app::chat::credit_signer()
         .await
         .ok_or_else(|| "no identity".to_string())?;
@@ -521,7 +517,7 @@ async fn start_checkout_embedded(cents: u64) -> Result<(String, String, String),
     let url = format!("{}stripe/checkout", crate::registry::CREDIT_PROXY_URL);
     let resp = reqwest::Client::new()
         .post(&url)
-        .header("x-goog-api-key", token.clone())
+        .header("x-goog-api-key", token)
         .header("content-type", "application/json")
         .body(format!("{{\"usd_cents\":{cents},\"embedded\":true}}"))
         .send()
@@ -543,7 +539,107 @@ async fn start_checkout_embedded(cents: u64) -> Result<(String, String, String),
         .and_then(|u| u.as_str())
         .unwrap_or("")
         .to_string();
-    Ok((client_secret, payment_intent, token))
+    Ok((client_secret, payment_intent))
+}
+
+/// Reactivity loop for the buy modal. Polls the PaymentIntent (a cheap
+/// client-side Stripe call via the shim's `lhPaymentStatus`) until it succeeds —
+/// catching EVERY confirm path (popup Link, inline "use this card", the express
+/// button) — then mints via `/stripe/finalize` with a FRESHLY signed token, so a
+/// slow payer can't outrun the 300s token-freshness window and silently fail the
+/// mint (the bug that charged a card but credited no `$LH`). On a confirmed mint
+/// it flips the modal to the done state and refreshes the balance. Stops if the
+/// user closes the modal; the proxy webhook stays a backstop for tab-close / 3DS.
+async fn poll_and_finalize(payment_intent: String, lh_label: String) {
+    if payment_intent.is_empty() {
+        return;
+    }
+    // Phase 1 — wait for the PaymentIntent to succeed (~6 min budget).
+    let mut succeeded = false;
+    for _ in 0..120 {
+        if dom::by_id("buy-modal").is_none() {
+            return; // user closed the modal
+        }
+        if js_payment_status().await == "succeeded" {
+            succeeded = true;
+            break;
+        }
+        crate::runtime::sleep_ms(3000).await;
+    }
+    if !succeeded {
+        return;
+    }
+    // Phase 2 — mint. Retry a few times: finalize fails closed (minted:false)
+    // in the brief window before Stripe's NET-settled amount is available.
+    for _ in 0..6 {
+        if dom::by_id("buy-modal").is_none() {
+            return;
+        }
+        if let Ok(true) = finalize_mint(&payment_intent).await {
+            call_js(
+                "lhBuySuccess",
+                Some(&format!("✓ {lh_label} added — your balance is updated")),
+            );
+            crate::app::chat::ensure_credit_meter().await;
+            super::refresh_credits_pill().await;
+            refresh_fund_banner().await;
+            return;
+        }
+        crate::runtime::sleep_ms(4000).await;
+    }
+    // Couldn't confirm the mint in-page; the webhook backstop will mint and the
+    // "minting shortly" line stays up.
+}
+
+/// Resolve the shim's `window.lhPaymentStatus()` (a JS `Promise<string>`) to the
+/// PaymentIntent status string. Empty string on any failure.
+async fn js_payment_status() -> String {
+    let Some(w) = web_sys::window() else {
+        return String::new();
+    };
+    let Ok(f) = js_sys::Reflect::get(&w, &JsValue::from_str("lhPaymentStatus")) else {
+        return String::new();
+    };
+    let Some(func) = f.dyn_ref::<js_sys::Function>() else {
+        return String::new();
+    };
+    let Ok(ret) = func.call0(&w) else {
+        return String::new();
+    };
+    let Ok(promise) = ret.dyn_into::<js_sys::Promise>() else {
+        return String::new();
+    };
+    match wasm_bindgen_futures::JsFuture::from(promise).await {
+        Ok(v) => v.as_string().unwrap_or_default(),
+        Err(_) => String::new(),
+    }
+}
+
+/// Mint a settled PaymentIntent via `/stripe/finalize` with a FRESH auth token
+/// (signed now, never the stale modal-open one). `Ok(true)` once the on-chain
+/// mint lands (idempotent), `Ok(false)` while pending/not-yet-settled, `Err` on
+/// transport failure.
+async fn finalize_mint(payment_intent: &str) -> Result<bool, String> {
+    let (signer, addr) = crate::app::chat::credit_signer()
+        .await
+        .ok_or_else(|| "no identity".to_string())?;
+    let addr_hex = bytes_to_hex_str(&addr);
+    let ts = (js_sys::Date::now() / 1000.0) as u64;
+    let msg = format!("localharness-proxy:{addr_hex}:{ts}");
+    let sig = crate::wallet::personal_sign(&signer, msg.as_bytes());
+    let token = format!("{addr_hex}:{ts}:{}", bytes_to_hex_str(&sig));
+    let url = format!("{}stripe/finalize", crate::registry::CREDIT_PROXY_URL);
+    let resp = reqwest::Client::new()
+        .post(&url)
+        .header("x-goog-api-key", token)
+        .header("content-type", "application/json")
+        .body(format!("{{\"payment_intent\":\"{payment_intent}\"}}"))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let text = resp.text().await.map_err(|e| e.to_string())?;
+    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    Ok(v.get("minted").and_then(|b| b.as_bool()).unwrap_or(false))
 }
 
 /// localStorage handle (best-effort).
