@@ -87,6 +87,27 @@ export function usageCostWei(
   return (raw * marginBps) / 10_000n;
 }
 
+/**
+ * The $LH-wei to DEBIT for a finished streamed response — the live integration's
+ * whole amount decision in one pure, testable call:
+ * `max(floorCost, usageCostWei(extractUsage(sse), marginBps))`. Falls back to the
+ * flat `floorCost` when the SSE carries NO usage frame (or the client cut the
+ * stream short) so a served call is never free, and never charges BELOW the floor
+ * for a tiny request. Pure. Used by gemini.ts's metered passthrough (Option A).
+ */
+export function meteredAmountWei(
+  provider: Provider,
+  model: string,
+  sse: string,
+  floorCost: bigint,
+  marginBps: bigint,
+): bigint {
+  const usage = extractUsage(provider, sse);
+  if (!usage) return floorCost;
+  const metered = usageCostWei(provider, model, usage, marginBps);
+  return metered > floorCost ? metered : floorCost;
+}
+
 // --- SSE usage extraction (per provider) -----------------------------------
 //
 // Parse the ACCUMULATED SSE text (all `data:` frames of a streamed response)

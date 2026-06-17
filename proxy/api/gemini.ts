@@ -48,6 +48,7 @@ export const config = { runtime: 'edge' };
 import { TEMPO_RPC, REGISTRY, CHAIN_ID } from './_chain';
 import { priceOf, type Provider } from './_prices';
 import { verifyX402Payment, settleX402NoWait, type X402Auth } from './_x402';
+import { meteredAmountWei } from './_usage';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
 const ANTHROPIC_BASE = 'https://api.anthropic.com';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -180,6 +181,19 @@ const MAX_BODY_BYTES = 16_000_000;
 // is usage-based billing (Option A) — these only cap the catastrophic tail.
 const MAX_OUTPUT_TOKENS = Number(process.env.LH_MAX_OUTPUT_TOKENS ?? '0');
 const MAX_CREDITS_BODY_BYTES = Number(process.env.LH_MAX_CREDITS_BODY_BYTES ?? '0');
+// Option A (design/metering.md): charge ACTUAL token usage instead of the flat
+// per-request price. OFF by default — when unset the flat-debit path below is
+// byte-identical to today. When `LH_TOKEN_METERING=1`, a METER-path caller
+// (funded `creditOf`, NOT x402 / not session-only-free) is debited
+// `max(flatFloor, usageCostWei(usage, MARGIN_BPS))`, where `usage` is read from
+// the response SSE via a passthrough tee (the caller's bytes are untouched).
+// x402 stays flat-exact (token-based x402 needs the "Upto" scheme — Phase 2);
+// session-only callers stay free. MARGIN_BPS: 10000 = raw cost, 13000 = +30%.
+const TOKEN_METERING = (process.env.LH_TOKEN_METERING ?? '') === '1';
+const MARGIN_BPS = (() => {
+  const n = BigInt(Math.trunc(Number(process.env.LH_MARGIN_BPS ?? '13000')));
+  return n > 0n ? n : 13000n; // never zero/negative → never free / never credit back
+})();
 // Only browser origins under our own domain may invoke the proxy (H2). A
 // server-side caller sends no Origin header and is allowed through.
 const ALLOWED_ORIGIN_SUFFIX = '.localharness.xyz';
@@ -398,6 +412,53 @@ async function meterDebit(user: string, amount: bigint, confirm = true): Promise
   }
 }
 
+/**
+ * Option A passthrough: wrap a 2xx SSE body so every byte streams to the caller
+ * UNCHANGED while the text is accumulated, and when the stream ENDS (`flush`,
+ * which runs within the response lifetime — no `waitUntil` needed) the caller is
+ * debited `meteredAmountWei(...)` = `max(floorCost, actual-token cost × margin)`.
+ *
+ * The debit BROADCAST is awaited in flush (so the Edge function stays alive long
+ * enough to send it) but, exactly like the flat meter, does NOT await the
+ * receipt — the close is delayed only by the broadcast, after the user already
+ * has every token. A broadcast failure / an early client disconnect (flush never
+ * runs) at worst serves one call under the flat gate already checked; the
+ * platform eats the rare miss rather than risk a double-charge. The amount math
+ * lives in `_usage.ts` (pure + unit-tested); this only does the plumbing.
+ */
+function meteredBody(
+  body: ReadableStream<Uint8Array>,
+  provider: Provider,
+  model: string,
+  address: string,
+  floorCost: bigint,
+): ReadableStream<Uint8Array> {
+  const decoder = new TextDecoder();
+  let acc = '';
+  let debited = false;
+  const transform = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      controller.enqueue(chunk); // passthrough — the caller sees bytes verbatim
+      try {
+        acc += decoder.decode(chunk, { stream: true });
+      } catch {
+        /* a split multibyte boundary — the next chunk completes it; ignore */
+      }
+    },
+    async flush() {
+      if (debited) return;
+      debited = true;
+      const amount = meteredAmountWei(provider, model, acc, floorCost, MARGIN_BPS);
+      try {
+        await meterDebit(address, amount, false);
+      } catch {
+        /* broadcast failed — served under the gate; platform eats the rare miss */
+      }
+    },
+  });
+  return body.pipeThrough(transform);
+}
+
 // ---- body reading (size-capped) --------------------------------------------
 
 /** Thrown by `readTextCapped` when the streamed body exceeds `MAX_BODY_BYTES`. */
@@ -516,7 +577,23 @@ export default async function handler(req: Request): Promise<Response> {
       const payErr = payloadError(provider, parsed);
       if (payErr) return json({ error: payErr }, 400, origin);
       // Cap upstream max-output (Option B; no-op unless LH_MAX_OUTPUT_TOKENS set).
-      if (capOutputTokens(provider, parsed as Record<string, unknown>)) {
+      let bodyChanged = capOutputTokens(provider, parsed as Record<string, unknown>);
+      // Option A: OpenAI only emits token usage in the stream when explicitly
+      // asked. Inject `stream_options.include_usage` so the post-stream meter can
+      // read actual tokens (no-op unless token-metering is on; Gemini/Anthropic
+      // always emit usage, so this is OpenAI-only).
+      if (TOKEN_METERING && provider === 'openai') {
+        const p = parsed as Record<string, unknown>;
+        const so = (typeof p.stream_options === 'object' && p.stream_options !== null
+          ? p.stream_options
+          : {}) as Record<string, unknown>;
+        if (so.include_usage !== true) {
+          so.include_usage = true;
+          p.stream_options = so;
+          bodyChanged = true;
+        }
+      }
+      if (bodyChanged) {
         requestBody = JSON.stringify(parsed);
       }
     } else {
@@ -742,6 +819,14 @@ export default async function handler(req: Request): Promise<Response> {
     // (they explicitly opted into trustless pay-per-call); else debit the
     // creditOf meter; a session-only caller stays free. Like the meter, the
     // settle broadcasts WITHOUT blocking first-byte on its receipt.
+    //
+    // Token-metering (Option A) applies ONLY to the meter path: when on, the
+    // flat debit here is SKIPPED and the response body is wrapped so the ACTUAL
+    // usage is debited on stream-end (see `meteredBody`). x402 stays flat-exact
+    // (the caller signed a fixed value — token-based x402 = "Upto", Phase 2).
+    const tokenMeterActive =
+      TOKEN_METERING && hasCredit && !paidViaX402 && upstream.body !== null;
+
     if (paidViaX402 && x402Auth) {
       try {
         await settleX402NoWait(x402Auth);
@@ -751,7 +836,7 @@ export default async function handler(req: Request): Promise<Response> {
         // than serve a call we couldn't charge (no session fallback for x402).
         return json({ error: 'x402 settlement submission failed, retry: ' + (e as Error).message }, 502, origin);
       }
-    } else if (hasCredit) {
+    } else if (hasCredit && !tokenMeterActive) {
       // PREFER per-request metering: a FUNDED meter (`creditOf >= cost`) means
       // the caller opted into real per-call billing, so debit even if a
       // (free-beta `sessionPrice==0`) session is ALSO active — else the free
@@ -771,7 +856,15 @@ export default async function handler(req: Request): Promise<Response> {
       }
     }
 
-    return new Response(upstream.body, {
+    // The body: token-metering active → wrap so actual usage is debited on
+    // stream-end; otherwise stream the upstream body straight through (the flat
+    // debit, if any, already happened above). Flag-off → byte-identical.
+    const respBody =
+      tokenMeterActive && upstream.body
+        ? meteredBody(upstream.body, provider, model, address, cost)
+        : upstream.body;
+
+    return new Response(respBody, {
       status: upstream.status,
       headers: {
         'content-type':

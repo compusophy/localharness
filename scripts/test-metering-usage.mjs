@@ -75,6 +75,13 @@ function extractUsage(provider, sse) {
   const d = u.prompt_tokens_details ?? {};
   return { inputTokens: num(u.prompt_tokens), outputTokens: num(u.completion_tokens), cachedInputTokens: num(d.cached_tokens) };
 }
+// port of meteredAmountWei: max(floorCost, usageCostWei(extractUsage(sse))), floor on no-usage.
+function meteredAmountWei(provider, model, sse, floorCost, marginBps) {
+  const usage = extractUsage(provider, sse);
+  if (!usage) return floorCost;
+  const metered = usageCostWei(provider, model, usage, marginBps);
+  return metered > floorCost ? metered : floorCost;
+}
 
 // ---- assertions (hand-computed) ----
 let fails = 0;
@@ -108,6 +115,43 @@ const OAI = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: {"choices":
 eq('extract openai', extractUsage('openai', OAI), { inputTokens: 800, outputTokens: 150, cachedInputTokens: 100 });
 // null when no usage frame present (→ integration falls back to the flat floor)
 eq('extract null when absent', extractUsage('gemini', 'data: {"candidates":[]}\n'), null);
+
+// meteredAmountWei — floor fallback vs metered-above-floor (the live debit amount)
+const FLOOR = 10000000000000000n; // 0.01 $LH flat floor (priceOf default)
+// usage present + above floor → the metered amount (flash 1000/500 x1.3 = 7.8e15 < floor → floor!)
+eq('amount small-usage hits floor', meteredAmountWei('gemini', 'gemini-3.5-flash', GEM, FLOOR, 13000n), 10000000000000000n);
+// a big opus response blows past the floor → charge actual (2000in/1000out x1.3 = 4.55e16)
+const BIGOPUS = 'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":2000}}}\n\nevent: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":1000}}\n';
+eq('amount big-usage above floor', meteredAmountWei('anthropic', 'claude-opus-4-8', BIGOPUS, FLOOR, 13000n), 45500000000000000n);
+// no usage frame in the SSE → fall back to the flat floor (never free)
+eq('amount no-usage → floor', meteredAmountWei('gemini', 'gemini-3.5-flash', 'data: {"candidates":[]}\n', FLOOR, 13000n), FLOOR);
+
+// --- passthrough plumbing: the metered TransformStream streams bytes VERBATIM
+//     and computes the right debit on flush (mirrors gemini.ts meteredBody, sans
+//     the on-chain debit — the amount is captured instead). ------------------
+async function passthroughProof() {
+  const provider = 'anthropic', model = 'claude-opus-4-8';
+  const decoder = new TextDecoder();
+  let acc = '', captured = null;
+  const transform = new TransformStream({
+    transform(chunk, controller) { controller.enqueue(chunk); acc += decoder.decode(chunk, { stream: true }); },
+    flush() { captured = meteredAmountWei(provider, model, acc, FLOOR, 13000n); },
+  });
+  // Feed BIGOPUS split across arbitrary chunk boundaries (incl. mid-frame).
+  const enc = new TextEncoder();
+  const bytes = enc.encode(BIGOPUS);
+  const src = new ReadableStream({
+    start(c) { for (let i = 0; i < bytes.length; i += 7) c.enqueue(bytes.slice(i, i + 7)); c.close(); },
+  });
+  const outChunks = [];
+  const reader = src.pipeThrough(transform).getReader();
+  for (;;) { const { done, value } = await reader.read(); if (done) break; outChunks.push(value); }
+  const out = new Uint8Array(outChunks.reduce((n, c) => n + c.length, 0));
+  let off = 0; for (const c of outChunks) { out.set(c, off); off += c.length; }
+  eq('passthrough bytes verbatim', new TextDecoder().decode(out), BIGOPUS);
+  eq('passthrough flush amount', captured, 45500000000000000n);
+}
+await passthroughProof();
 
 if (fails) { console.error(`\n${fails} assertion(s) FAILED`); process.exit(1); }
 console.log('\nall metering-usage assertions passed');

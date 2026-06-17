@@ -100,22 +100,42 @@ nonce), not stock MPP.
   per request (kills the 59× output attack), and `LH_MAX_CREDITS_BODY_BYTES` to
   bound input. Deployed flag-off; flip the envs to enable. (OpenAI now also
   set-if-absent so the cap binds there too.)
-- **Option A FOUNDATION (`proxy/api/_usage.ts`) — built + tested, STAGED (unwired).**
-  Pure, verified building blocks: a per-model per-token rate table (live-verified
-  Gemini + Anthropic; OpenAI estimated), `usageCostWei(provider, model, usage,
-  marginBps)`, and `extractUsage(provider, sse)` SSE parsers for all three
-  providers. Verified by `scripts/test-metering-usage.mjs` (9 hand-computed
-  assertions, runnable on Node 20). Imported by nothing yet → not bundled → zero
-  live effect.
+- **Option A FOUNDATION (`proxy/api/_usage.ts`) — built + tested.** Pure, verified
+  building blocks: a per-model per-token rate table (live-verified Gemini +
+  Anthropic; OpenAI estimated), `usageCostWei(provider, model, usage, marginBps)`,
+  `extractUsage(provider, sse)` SSE parsers for all three providers, and
+  `meteredAmountWei(...)` = `max(floor, usageCostWei(extractUsage(sse)))` (the
+  whole live debit decision, one pure call). Verified by
+  `scripts/test-metering-usage.mjs` (14 hand-computed assertions, Node 20).
+- **Option A WIRED into `gemini.ts` — FLAG-GATED, default OFF (byte-identical to
+  today when off; verified by reading + `tsc`).** When `LH_TOKEN_METERING=1`, a
+  METER-path caller (funded `creditOf`, NOT x402 / not session-only-free) gets a
+  passthrough `meteredBody` tee: every byte streams to the caller VERBATIM, and on
+  stream-END (`TransformStream.flush`, which runs inside the response lifetime — no
+  `waitUntil` dependency) the caller is debited `meteredAmountWei(...)`. OpenAI gets
+  `stream_options.include_usage` injected so it emits usage. x402 stays flat-exact
+  (token-based x402 = "Upto", below); session-only stays free. No-usage SSE / early
+  client disconnect → falls back to the flat floor (never free). The
+  passthrough-byte-fidelity + flush-amount are unit-proven (test above).
 
-## Remaining for Option A (the SUPERVISED integration step)
-1. **Margin decision** (business): set `marginBps` (e.g. 13000 = 1.3×). Env-driven.
-2. **Wire `_usage.ts` into `gemini.ts`**: tee the streamed `upstream.body`
-   (passthrough + accumulate), and on stream close use Edge `ctx.waitUntil(...)`
-   to `extractUsage` → `usageCostWei` → debit `max(flat_floor, cost)` (via
-   `meterDebit` or x402 settle). For OpenAI, inject `stream_options.include_usage`
-   so usage is emitted.
-3. **LIVE-verify** each provider actually emits usage in its SSE (the one thing
-   fixtures can't prove) before relying on it — fall back to the flat floor when
-   `extractUsage` returns null.
-4. x402 "Upto" (sign-max / settle-actual) as the medium-term settlement rail.
+## Go-live for Option A (the SUPERVISED activation — ~2 min, owner-watched)
+The CODE is shipped; activating it is intentionally a supervised flip because
+**Vercel Edge inlines `process.env` at BUILD time** — flipping the flag needs a
+redeploy, not just a dashboard env change:
+1. **Pick the margin** (business): `LH_MARGIN_BPS` (default `13000` = 1.3×; 10000 =
+   raw cost). Also strongly consider setting `LH_MAX_OUTPUT_TOKENS` (Option B) so a
+   max-output request can't outrun the affordability gate (the gate still checks
+   `creditOf >= flat floor`, not the actual).
+2. **Set the envs** on the `proxy` Vercel project: `LH_TOKEN_METERING=1` (+
+   `LH_MARGIN_BPS`, `LH_MAX_OUTPUT_TOKENS`).
+3. **Redeploy** the proxy (`cd proxy && vercel --prod`) so the new env is inlined.
+4. **LIVE-verify** each provider actually emits usage in its SSE (the one thing
+   fixtures can't prove): make one real metered call per provider and confirm the
+   debit ≈ the hand-computed token cost (not the flat floor). If a provider returns
+   no usage frame, `meteredAmountWei` falls back to the floor — so a wiring miss
+   under-charges, never over-charges.
+
+## Still future
+- **x402 "Upto"** (sign-max / settle-actual) — token-based metering for the
+  agent-to-agent x402 path (today it settles the flat exact value).
+- **`$LH` streaming vouchers** — the whole `run_send` loop as one capped channel.

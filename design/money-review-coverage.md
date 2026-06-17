@@ -62,6 +62,9 @@ voting path clean.**
 ## Cross-cutting OPEN items (owner decisions — gate further money work)
 - **Chain coherence** (`design/chain-coherence.md`): CLI = testnet, web+proxy =
   mainnet → CLI agents can't transact on the live platform. THE top blocker.
-- **Metering Option A** (`design/metering.md`): flat-per-request loses money;
-  foundation built + tested (`_usage.ts`), wiring needs the margin + a supervised
-  live tee. Option B caps shipped flag-off (enable via `LH_MAX_OUTPUT_TOKENS`).
+- **Metering Option A** (`design/metering.md`): flat-per-request loses money past
+  ~1.4k tokens. NOW WIRED into `gemini.ts` behind `LH_TOKEN_METERING` (default OFF,
+  byte-identical when off); a meter-path caller is debited actual token cost via a
+  passthrough tee. Go-live = an owner-watched flip: set `LH_TOKEN_METERING=1` +
+  `LH_MARGIN_BPS` + redeploy (Edge env is build-time-inlined) + live-verify each
+  provider's SSE usage. Option B caps also shipped flag-off (`LH_MAX_OUTPUT_TOKENS`).
