@@ -63,21 +63,32 @@
   // never calls this. Either way the Rust poll catches `succeeded` and mints.
   // Resolves `{ ok }` so the pay button can re-enable itself on failure. Success
   // is detected by the status poll (which flips the modal to done), not here.
+  //
+  // Stripe REQUIRES `elements.submit()` before `confirmPayment()` whenever the
+  // clientSecret is passed to confirmPayment (it validates the form + collects the
+  // payment details). It must run synchronously on the pay gesture, before any
+  // await — so it is the FIRST call here, and both confirm paths (the card pay
+  // button AND the Express Checkout `confirm` event) go through it.
   function confirmPay() {
     if (!state) return Promise.resolve({ ok: false });
     var o = state.opts;
     var returnUrl = o.returnUrl || (window.location.origin + window.location.pathname + '?bought=1');
     showError('');
-    return state.stripe
-      .confirmPayment({
-        elements: state.elements,
-        clientSecret: o.clientSecret,
-        confirmParams: { return_url: returnUrl },
-        redirect: 'if_required',
-      })
-      .then(function (res) {
-        if (res && res.error) { showError(res.error.message || 'payment failed'); return { ok: false }; }
-        return { ok: true };
+    return state.elements
+      .submit()
+      .then(function (sub) {
+        if (sub && sub.error) { showError(sub.error.message || 'check your card details'); return { ok: false }; }
+        return state.stripe
+          .confirmPayment({
+            elements: state.elements,
+            clientSecret: o.clientSecret,
+            confirmParams: { return_url: returnUrl },
+            redirect: 'if_required',
+          })
+          .then(function (res) {
+            if (res && res.error) { showError(res.error.message || 'payment failed'); return { ok: false }; }
+            return { ok: true };
+          });
       })
       .catch(function (e) { showError((e && e.message) || 'payment error'); return { ok: false }; });
   }
@@ -173,11 +184,14 @@
         if (slot) slot.style.display = 'none';
       }
 
-      // Payment Element — Link inline "use this card" (self-confirming) + card.
+      // Payment Element — card + inline Link. `fields.billingDetails.{email,phone}
+      // = 'never'` drops the optional email + mobile-number fields (Link still
+      // collects what it needs inside its own popup / the express button above).
       var payment = elements.create('payment', {
         layout: { type: 'accordion', defaultCollapsed: true, radios: true, spacedAccordionItems: false },
         paymentMethodOrder: ['card', 'link'],
         wallets: { applePay: 'never', googlePay: 'never' },
+        fields: { billingDetails: { email: 'never', phone: 'never' } },
       });
       payment.mount('#lh-payment');
 
