@@ -21,20 +21,16 @@ use super::dom;
 use super::templates;
 
 mod admin;
-mod bounty;
 mod claim;
 mod credits;
 mod devices;
-mod governance;
-mod guild;
 mod key_sync;
 mod layout;
 mod public_face;
 // `pub(crate)` so the schedule_task chat tool can reuse submit_schedule_job /
-// parse_schedule_interval (the same escrow core the admin form + [background] use).
+// parse_schedule_interval (the same escrow core the chat tool uses).
 pub(crate) mod schedule;
 mod subdomains;
-mod tba;
 
 pub(crate) use credits::{finalize_after_payment, refresh_fund_banner, try_redeem_pending_invite};
 
@@ -214,47 +210,8 @@ enum Action {
     /// Escrow the owner's `$LH` behind a fresh bearer code + surface the
     /// `?invite=` share link (InviteFacet `createInvite`).
     CreateInvite,
-    /// Escrow `$LH` to run a target agent on a fixed interval with no tab
-    /// open (ScheduleFacet `scheduleJob`).
-    ScheduleJob,
-    /// Cancel a scheduled job + refund its remaining budget (ScheduleFacet
-    /// `cancelJob`); the `data-arg` is the job id.
-    CancelJob(String),
-    /// Post a bounty: escrow `$LH` behind a task the agent economy can claim +
-    /// fulfil (BountyFacet `postBounty`).
-    PostBounty,
-    /// Claim an open bounty from the board (BountyFacet `claimBounty`); the
-    /// `data-arg` is the bounty id.
-    ClaimBounty(String),
-    /// Create an on-chain guild — a durable org with members, roles, and a
-    /// pooled `$LH` treasury (GuildFacet `createGuild`).
-    CreateGuild,
-    /// Fund a guild's pooled treasury with `$LH` (GuildFacet `fundGuild`); the
-    /// `data-arg` is the guild id (the amount is read from its per-row input).
-    FundGuild(String),
-    /// Load (and paint) a guild's governance proposals into `#governance-list`
-    /// (VotingFacet `proposalsOf`); the guild id is read from `#governance-guild`.
-    LoadProposals,
-    /// Open a treasury-spend governance proposal (VotingFacet `propose`); the
-    /// guild/to/amount/period are read from the `#governance-*` fields.
-    ProposeMeasure,
-    /// Cast a vote on an open proposal (VotingFacet `vote`); the `data-arg` is
-    /// `"<proposal_id>:<for|against>"`.
-    Vote(String),
-    /// Execute a passed proposal past its deadline (VotingFacet `executeProposal`);
-    /// the `data-arg` is the proposal id.
-    ExecuteProposal(String),
     /// Save this agent's per-call x402 price (`.lh_x402_price`).
     SaveX402Price,
-    /// Arm a `$LH` send FROM this agent's token-bound account (the act
-    /// panel): resolve the recipient (0x… address, or a name → its TBA) and
-    /// swap in a typed-amount confirmation. Never submits by itself.
-    TbaSend,
-    /// Execute the armed TBA send once the typed amount matches; the
-    /// `data-arg` is `"<resolved 0x…>:<amount wei>"` stamped by the panel.
-    TbaSendConfirm(String),
-    /// Abort the armed TBA send.
-    TbaSendCancel,
     /// Unlink a device (remove its signer + index entry) — the X opens a
     /// typed confirmation; UnlinkConfirm performs it; UnlinkCancel aborts.
     UnlinkDevice(String),
@@ -335,20 +292,7 @@ impl Action {
             "close-buy-modal" => Action::CloseBuyModal,
             "redeem-banner" => Action::RedeemBanner,
             "create-invite" => Action::CreateInvite,
-            "schedule-job" => Action::ScheduleJob,
-            "cancel-job" => Action::CancelJob(arg.unwrap_or_default()),
-            "post-bounty" => Action::PostBounty,
-            "claim-bounty" => Action::ClaimBounty(arg.unwrap_or_default()),
-            "create-guild" => Action::CreateGuild,
-            "fund-guild" => Action::FundGuild(arg.unwrap_or_default()),
-            "load-proposals" => Action::LoadProposals,
-            "propose-measure" => Action::ProposeMeasure,
-            "vote" => Action::Vote(arg.unwrap_or_default()),
-            "execute-proposal" => Action::ExecuteProposal(arg.unwrap_or_default()),
             "save-x402-price" => Action::SaveX402Price,
-            "tba-send" => Action::TbaSend,
-            "tba-send-confirm" => Action::TbaSendConfirm(arg.unwrap_or_default()),
-            "tba-send-cancel" => Action::TbaSendCancel,
             "unlink-device" => Action::UnlinkDevice(arg.unwrap_or_default()),
             "unlink-confirm" => Action::UnlinkConfirm(arg.unwrap_or_default()),
             "unlink-cancel" => Action::UnlinkCancel,
@@ -1265,20 +1209,7 @@ fn dispatch(action: Action) {
         Action::CloseBuyModal => credits::close_buy_modal(),
         Action::RedeemBanner => credits::redeem_banner_pressed(),
         Action::CreateInvite => credits::create_invite_pressed(),
-        Action::ScheduleJob => schedule::schedule_job_pressed(),
-        Action::CancelJob(id) => schedule::cancel_job_pressed(id),
-        Action::PostBounty => bounty::post_bounty_pressed(),
-        Action::ClaimBounty(id) => bounty::claim_bounty_pressed(id),
-        Action::CreateGuild => guild::create_guild_pressed(),
-        Action::FundGuild(id) => guild::fund_guild_pressed(id),
-        Action::LoadProposals => governance::load_proposals_pressed(),
-        Action::ProposeMeasure => governance::propose_measure_pressed(),
-        Action::Vote(arg) => governance::vote_pressed(arg),
-        Action::ExecuteProposal(id) => governance::execute_proposal_pressed(id),
         Action::SaveX402Price => admin::save_x402_price_pressed(),
-        Action::TbaSend => tba::tba_send_pressed(),
-        Action::TbaSendConfirm(arg) => tba::tba_send_confirm_pressed(arg),
-        Action::TbaSendCancel => tba::tba_send_cancel_pressed(),
         Action::UnlinkDevice(addr) => devices::unlink_device_prompt(addr),
         Action::UnlinkConfirm(addr) => devices::unlink_confirm_pressed(addr),
         Action::UnlinkCancel => devices::unlink_cancel_pressed(),

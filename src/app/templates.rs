@@ -49,21 +49,23 @@ pub(crate) fn api_key_modal() -> Markup {
 }
 
 /// Branded "buy $LH" modal — Stripe's NATIVE Elements mount into `#lh-express`
-/// (Link / wallet one-click) + `#lh-payment` (Link "use this card" inline + card)
-/// via `web/stripe-embed.js`. There is NO custom pay button: the user pays with
-/// Stripe's own buttons. A Rust poll watches the PaymentIntent and, on success,
-/// mints via `/stripe/finalize` and reveals `#buy-modal-done` (set by the shim's
-/// `lhBuySuccess`). `lh_label` previews the net `$LH`. Height-capped + scrollable
-/// so the form never overflows a small screen.
+/// (Link / wallet one-click, self-confirming) + `#lh-payment` (card + inline Link)
+/// via `web/stripe-embed.js`. The Payment Element (card) renders NO Stripe button,
+/// so `#lh-pay-button` (revealed + wired by the shim to `confirmPayment`) is OUR
+/// submit control for the card path; the express button confirms itself. A JS poll
+/// watches the PaymentIntent and, on success, mints via `/stripe/finalize` and
+/// reveals `#buy-modal-done` (shim `lhBuySuccess`). `lh_label` previews the `$LH`.
+/// Height-capped + scrollable so the form never overflows a small screen.
 pub(crate) fn buy_modal(lh_label: &str) -> Markup {
     html! {
         div #buy-modal .api-key-modal {
             div.api-key-card style="max-height:88vh;overflow-y:auto" {
                 div.api-key-title { "buy $LH" }
-                div.api-key-hint { "you'll receive " (lh_label) }
+                div.api-key-hint { (lh_label) }
                 div #lh-pay-region {
                     div #lh-express style="margin:10px 0" {}
                     div #lh-payment style="margin:6px 0" {}
+                    button #lh-pay-button type="button" .apex-onboard-cta style="display:none;width:100%;margin:8px 0 0" { "pay" }
                     div #lh-pay-error role="alert" aria-live="assertive" style="color:#ff6b6b;font-size:12px;min-height:1em;margin:4px 0" {}
                 }
                 div #buy-modal-done .api-key-hint style="display:none" {
@@ -94,6 +96,7 @@ pub(crate) fn onboard_checkout() -> Markup {
             div #lh-pay-region {
                 div #lh-express style="margin:10px 0" {}
                 div #lh-payment style="margin:6px 0" {}
+                button #lh-pay-button type="button" .apex-onboard-cta style="display:none;width:100%;margin:8px 0 0" { "pay" }
                 div #lh-pay-error role="alert" aria-live="assertive" style="color:#ff6b6b;font-size:12px;min-height:1em;margin:4px 0" {}
             }
             div #buy-modal-done .api-key-hint style="display:none" {
@@ -1068,10 +1071,6 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
                 div.admin-tab-panel.panel-usage {
                     @if has_wallet { (admin_credits_section()) }
                     @if has_wallet { (admin_invite_section()) }
-                    @if has_wallet { (admin_schedule_section()) }
-                    @if has_wallet { (admin_bounty_section()) }
-                    @if has_wallet { (admin_guild_section()) }
-                    @if has_wallet { (admin_governance_section()) }
                 }
                 div.admin-footer {
                     span.admin-version { (APP_VERSION) }
@@ -1121,28 +1120,12 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                     // pricing), folded in from the retired right rail.
                     // Injected from App state by header_admin_toggle.
                     div #financial-slot .financial-placeholder { "—" }
-                    // Act FROM the agent's token-bound account: balance +
-                    // send $LH (typed-amount confirmation; owner-signed,
-                    // sponsored — TbaFacet + MultiSignerAccount.execute).
-                    (admin_tba_section())
                     // Platform credits only (the BYOK gemini-key UI is hidden —
                     // the handlers + auto-restore stay, just no admin clutter).
                     (admin_credits_section())
                     // Owner-funded invites: escrow your own $LH behind a
                     // shareable `?invite=` link (InviteFacet createInvite).
                     (admin_invite_section())
-                    // Recurring jobs: escrow $LH to run an agent on a fixed
-                    // interval with no tab open (ScheduleFacet scheduleJob).
-                    (admin_schedule_section())
-                    // Bounty market: escrow $LH behind a task the agent economy
-                    // can claim + fulfil (BountyFacet postBounty).
-                    (admin_bounty_section())
-                    // Guilds: a durable on-chain org with members, roles, and a
-                    // pooled $LH treasury (GuildFacet createGuild / fundGuild).
-                    (admin_guild_section())
-                    // DAO governance: propose + vote on treasury spends from a
-                    // guild's pooled $LH (VotingFacet propose / vote / execute).
-                    (admin_governance_section())
                     // Notifications: permission + Web Push subscription,
                     // published on-chain for the tab-closed scheduler pushes.
                     (admin_notify_section())
@@ -1391,9 +1374,11 @@ pub(crate) fn admin_credits_section() -> Markup {
             }
             // Buy $LH with a card — opens Stripe Checkout; the proxy mints $LH to
             // this identity once payment settles.
+            // Whole-dollar amount, $2 minimum (≥ 200 $LH at $1 = 100 $LH) — the
+            // same bundle floor as onboarding; the modal pay button shows the price.
             div.redeem-row {
-                input #buy-usd .redeem-input type="text"
-                    inputmode="decimal" aria-label="amount in USD" placeholder="USD amount";
+                input #buy-usd .redeem-input type="number"
+                    min="2" step="1" value="2" inputmode="numeric" aria-label="amount in USD";
                 button type="button" data-action="buy-lh" .ghost { "buy $LH" }
             }
             div #buy-msg .admin-msg-slot {}
@@ -1450,263 +1435,6 @@ pub(crate) fn invite_result_panel(code: &str, link: &str) -> Markup {
             }
             div.pair-instructions {
                 "the $LH is escrowed; it returns to you if the link goes unclaimed past its expiry."
-            }
-        }
-    }
-}
-
-/// "Agent wallet" panel — act FROM this name's ERC-6551 token-bound account.
-/// Shows the TBA address + its `$LH` balance (filled async by
-/// `events::tba::refresh_tba_panel` on admin-open) and sends `$LH` from the
-/// TBA to a `0x…` address or another agent's name (paid to that agent's own
-/// TBA). The [send] button only ARMS a typed-amount confirmation
-/// (`tba_send_confirm_panel`) — sending value is irreversible, so it follows
-/// the destructive-action convention. The owner's EOA signs; the on-chain
-/// `MultiSignerAccount.execute` is the real authorization gate.
-pub(crate) fn admin_tba_section() -> Markup {
-    html! {
-        div #tba-section .admin-section {
-            div.admin-section-title { "agent wallet" }
-            div.admin-identity-row {
-                span.admin-identity-label { "address" }
-                code #tba-act-address .admin-identity-value { "…" }
-            }
-            div.admin-identity-row {
-                span.admin-identity-label { "balance" }
-                code #tba-act-balance .admin-identity-value { "…" }
-            }
-            div.redeem-row {
-                input #tba-send-recipient .redeem-input type="text"
-                    aria-label="recipient address or agent name" placeholder="recipient (0x… or name)";
-            }
-            div.redeem-row {
-                input #tba-send-amount .redeem-input type="text"
-                    inputmode="decimal" aria-label="amount in $LH" placeholder="$LH amount";
-                button type="button" data-action="tba-send" .ghost { "send" }
-            }
-            div #tba-send-confirm-slot {}
-            div #tba-send-msg .admin-msg-slot {}
-        }
-    }
-}
-
-/// The armed TBA-send confirmation. `label` is what the user is paying
-/// (name + short address, or just the short address); `to_hex` + `amount_wei`
-/// are stamped into the confirm button's `data-arg` so the submit handler
-/// acts on EXACTLY what this panel displayed (re-reading the original inputs
-/// could desync). The confirmation input starts EMPTY and is never
-/// auto-filled — the user must type the amount (hard convention for
-/// irreversible actions). Everything is maud-escaped (`label` can carry a
-/// user-typed name; `to_hex` comes from an RPC node).
-pub(crate) fn tba_send_confirm_panel(label: &str, to_hex: &str, amount_wei: u128) -> Markup {
-    let amount_display = super::format_wei_as_test_eth(amount_wei);
-    let arg = format!("{to_hex}:{amount_wei}");
-    // `data-modal-trap` makes the delegated keydown listener CONFINE Tab to this
-    // panel while it's armed; `data-modal-cancel` routes Escape to the cancel
-    // action (which restores focus to the trigger). a11y #75.
-    html! {
-        div #tba-send-confirm-panel .unlink-confirm role="dialog" aria-modal="true"
-            data-modal-trap data-modal-cancel="tba-send-cancel" {
-            div {
-                "send " b { (amount_display) " $LH" } " from the agent wallet to "
-                code { (label) } "? type the amount to confirm."
-            }
-            input #tba-send-confirm-input type="text"
-                inputmode="decimal" autocomplete="off"
-                aria-label="type the amount to confirm";
-            div.pair-confirm-actions {
-                button type="button" class="ghost" data-action="tba-send-cancel" { "cancel" }
-                button type="button" class="button-link" data-action="tba-send-confirm"
-                    data-arg=(arg) { "send" }
-            }
-        }
-    }
-}
-
-/// "Schedule a job" panel — the browser surface for ScheduleFacet (mirrors
-/// `admin_invite_section`). Inputs for target subdomain, task prompt, cadence
-/// (e.g. `5m`/`1h`, 60s min), `$LH` budget to escrow, and an optional run
-/// cap (default 100). `events::schedule_job_pressed` resolves the target
-/// name→id, escrows the budget behind `scheduleJob` in ONE sponsored tx, and
-/// swaps `#schedule-result` for a success panel. `#schedule-jobs` is filled by
-/// `events::refresh_jobs_list` (the caller's `jobsOf`) on admin open + after
-/// every schedule/cancel. No explanatory-validation text — bad/empty input is
-/// a silent no-op.
-pub(crate) fn admin_schedule_section() -> Markup {
-    html! {
-        div #schedule-section .admin-section {
-            div.admin-section-title { "schedule a job" }
-            div.redeem-row {
-                input #schedule-target .redeem-input type="text"
-                    aria-label="target agent name" placeholder="target (agent name)";
-            }
-            div.redeem-row {
-                input #schedule-task .redeem-input type="text"
-                    aria-label="task prompt" placeholder="task";
-            }
-            div.redeem-row {
-                input #schedule-interval .redeem-input type="text"
-                    aria-label="interval" placeholder="every (e.g. 5m, 1h)";
-                input #schedule-budget .redeem-input type="text"
-                    inputmode="decimal" aria-label="budget in $LH" placeholder="$LH budget";
-            }
-            div.redeem-row {
-                input #schedule-runs .redeem-input type="text"
-                    inputmode="numeric" aria-label="max runs" placeholder="runs (default 100)";
-                button type="button" data-action="schedule-job" .ghost { "schedule" }
-            }
-            div #schedule-result .admin-msg-slot {}
-            div #schedule-jobs {}
-        }
-    }
-}
-
-/// The freshly-scheduled job — shown after `scheduleJob` mines. Reassures the
-/// owner the job is durable: it fires on its cadence with NO browser tab open
-/// (the on-chain ScheduleFacet + the cron worker). `id` is escaped by maud.
-pub(crate) fn schedule_result_panel(job_id: u64) -> Markup {
-    html! {
-        div.invite-result-card {
-            div.pair-instructions { "scheduled — job #" (job_id) }
-            div.pair-instructions {
-                "it fires on its cadence with no tab open; the escrowed $LH backs each run \
-                 and the remainder refunds when you cancel or it exhausts."
-            }
-        }
-    }
-}
-
-/// "Post a bounty" panel — the human-facing surface of the on-chain bounty
-/// market (BountyFacet). The owner types a task + `$LH` reward + optional TTL
-/// hours; `events::post_bounty_pressed` escrows the reward behind the task in
-/// ONE sponsored tx and swaps `#bounty-result` for a confirmation. `#bounty-list`
-/// is filled by `events::refresh_bounty_list` (the open-bounties scan) on admin
-/// open + after every post/claim — each open bounty rendered with a `[claim]`
-/// button (the agent-facing claim/submit/accept flow runs through the chat
-/// tools). No explanatory-validation text — bad/empty input is a silent no-op.
-pub(crate) fn admin_bounty_section() -> Markup {
-    html! {
-        div #bounty-section .admin-section {
-            div.admin-section-title { "post a bounty" }
-            div.redeem-row {
-                input #bounty-task .redeem-input type="text"
-                    aria-label="bounty task" placeholder="task";
-            }
-            div.redeem-row {
-                input #bounty-reward .redeem-input type="text"
-                    inputmode="decimal" aria-label="reward in $LH" placeholder="$LH reward";
-                input #bounty-ttl .redeem-input type="text"
-                    inputmode="numeric" aria-label="ttl hours" placeholder="ttl hrs (default 24)";
-                button type="button" data-action="post-bounty" .ghost { "post" }
-            }
-            div #bounty-result .admin-msg-slot {}
-            div #bounty-list {}
-        }
-    }
-}
-
-/// The freshly-posted bounty — shown after `postBounty` mines. `id` + `reward`
-/// are escaped by maud. Reassures the owner the reward is escrowed and pays out
-/// only on acceptance of a submitted result.
-pub(crate) fn bounty_result_panel(bounty_id: u64, reward_lh: &str) -> Markup {
-    html! {
-        div.invite-result-card {
-            div.pair-instructions { "posted — bounty #" (bounty_id) " (" (reward_lh) " $LH escrowed)" }
-            div.pair-instructions {
-                "other agents can now discover + claim it; the reward pays out when you \
-                 accept a submitted result, and refunds if it expires unclaimed."
-            }
-        }
-    }
-}
-
-/// "Create a guild" panel — the human-facing surface of the on-chain guild
-/// (GuildFacet): a durable org with members, roles, and a pooled `$LH`
-/// treasury. The owner types a name; `events::create_guild_pressed` mints the
-/// guild (the caller becomes its founding Admin) in ONE sponsored tx and swaps
-/// `#guild-result` for a confirmation. `#guild-list` is filled by
-/// `events::refresh_guild_list` (the caller's `guilds_of`, each with name +
-/// treasury balance + a fund field) on admin open + after every create/fund. No
-/// explanatory-validation text — bad/empty input is a silent no-op.
-pub(crate) fn admin_guild_section() -> Markup {
-    html! {
-        div #guild-section .admin-section {
-            div.admin-section-title { "create a guild" }
-            div.redeem-row {
-                input #guild-name .redeem-input type="text"
-                    aria-label="guild name" placeholder="guild name";
-                button type="button" data-action="create-guild" .ghost { "create" }
-            }
-            div #guild-result .admin-msg-slot {}
-            div #guild-list {}
-        }
-    }
-}
-
-/// The freshly-created guild — shown after `createGuild` mines. `id` + `name`
-/// are escaped by maud. Reassures the owner they're the founding Admin and the
-/// treasury is ready to fund.
-pub(crate) fn guild_result_panel(guild_id: u64, name: &str) -> Markup {
-    html! {
-        div.invite-result-card {
-            div.pair-instructions { "created — guild #" (guild_id) " (" (name) ")" }
-            div.pair-instructions {
-                "you're its founding Admin; fund the shared treasury below and invite \
-                 members — only Admins can spend it."
-            }
-        }
-    }
-}
-
-/// "Govern a guild treasury" panel — the human-facing surface of the on-chain DAO
-/// governance (VotingFacet): guild members propose treasury spends, vote, and
-/// execute once a proposal passes past its deadline. The owner picks a guild id +
-/// types a spend (to / amount / voting period); `events::propose_measure_pressed`
-/// opens the proposal in ONE sponsored tx and swaps `#governance-result` for a
-/// confirmation. `#governance-list` is filled by `events::refresh_governance_list`
-/// (the guild's `proposals_of`, each with its tally + vote/execute buttons) when
-/// the guild field is set + after every propose/vote/execute. No
-/// explanatory-validation text — bad/empty input is a silent no-op.
-pub(crate) fn admin_governance_section() -> Markup {
-    html! {
-        div #governance-section .admin-section {
-            div.admin-section-title { "govern a treasury" }
-            div.redeem-row {
-                input #governance-guild .redeem-input type="text"
-                    inputmode="numeric" aria-label="guild id"
-                    placeholder="guild id";
-                button type="button" data-action="load-proposals" .ghost { "load" }
-            }
-            div.redeem-row {
-                input #governance-to .redeem-input type="text"
-                    aria-label="spend recipient" placeholder="to (address or name)";
-            }
-            div.redeem-row {
-                input #governance-amount .redeem-input type="text"
-                    inputmode="decimal" aria-label="amount in $LH" placeholder="$LH amount";
-                input #governance-period .redeem-input type="text"
-                    inputmode="numeric" aria-label="voting period hours"
-                    placeholder="vote hrs (default 48)";
-                button type="button" data-action="propose-measure" .ghost { "propose" }
-            }
-            div #governance-result .admin-msg-slot {}
-            div #governance-list {}
-        }
-    }
-}
-
-/// The freshly-opened proposal — shown after `propose` mines. `id` + `amount`
-/// are escaped by maud. Reassures the owner the proposal is open for votes and
-/// can be executed once it passes past its deadline.
-pub(crate) fn governance_result_panel(proposal_id: u64, amount_lh: &str) -> Markup {
-    html! {
-        div.invite-result-card {
-            div.pair-instructions {
-                "proposed — measure #" (proposal_id) " (" (amount_lh) " $LH)"
-            }
-            div.pair-instructions {
-                "guild members can now vote for/against; once it passes and the \
-                 voting deadline elapses, it can be executed to pay out the treasury."
             }
         }
     }

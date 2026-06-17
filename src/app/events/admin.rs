@@ -475,27 +475,6 @@ pub(super) fn header_admin_toggle() {
     wasm_bindgen_futures::spawn_local(async move {
         super::refresh_credits_pill().await;
     });
-    // Recurring jobs list (ScheduleFacet) — no-ops if the slot isn't mounted
-    // (no wallet) or no identity exists yet. Same fire-and-forget shape as
-    // the credits pill so the dropdown paints immediately.
-    wasm_bindgen_futures::spawn_local(async move {
-        super::schedule::refresh_jobs_list().await;
-    });
-    // Open bounties list (BountyFacet) — same fire-and-forget shape; no-ops if
-    // the slot isn't mounted (no wallet).
-    wasm_bindgen_futures::spawn_local(async move {
-        super::bounty::refresh_bounty_list().await;
-    });
-    // The caller's guilds (GuildFacet) — same fire-and-forget shape; no-ops if
-    // the slot isn't mounted (no wallet) or no identity exists yet.
-    wasm_bindgen_futures::spawn_local(async move {
-        super::guild::refresh_guild_list().await;
-    });
-    // Agent-wallet (TBA) act panel — same fire-and-forget shape; no-ops when
-    // the slot isn't mounted (apex) or the host isn't a registered tenant.
-    wasm_bindgen_futures::spawn_local(async move {
-        super::tba::refresh_tba_panel().await;
-    });
     // Device/signer management lives at the apex only.
     if matches!(crate::app::tenant::current(), crate::app::tenant::Host::Apex) {
         wasm_bindgen_futures::spawn_local(async move {

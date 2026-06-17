@@ -87,7 +87,7 @@ thread_local! {
     /// The elements focused when modals/overlays opened, so closing each returns
     /// focus where it was when THAT modal opened (a11y #58) instead of stranding
     /// the user on `<body>`. A STACK, not a single slot: nested modals (e.g.
-    /// unlink / tba-send opened from inside the admin dropdown) each push their
+    /// unlink opened from inside the admin dropdown) each push their
     /// own return target; closing them pops in reverse so the innermost restores
     /// to the dropdown and the dropdown to the original trigger. A lone slot let
     /// the inner open clobber the outer's saved focus.

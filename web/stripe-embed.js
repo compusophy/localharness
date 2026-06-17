@@ -5,11 +5,14 @@
 //                  SELF-CONFIRMING via its own `confirm` event.
 //   #lh-payment  — Payment Element (Link "use this card" inline + card).
 //
-// There is NO custom pay button: the user pays by clicking Stripe's OWN buttons
-// (the green Link button or the inline "use this card"). Because those confirm
-// the PaymentIntent directly — sometimes without our confirmPayment call ever
-// resolving in our code — the SUCCESS + on-chain mint are driven by a poll
-// HERE in JS: `window.lhWatchPayment` setIntervals `retrievePaymentIntent` and,
+// The Express Checkout button (#lh-express) SELF-CONFIRMS via its own `confirm`
+// event. The Payment Element (#lh-payment, card + inline Link) renders NO button
+// of its own — so #lh-pay-button (revealed + wired in lhBuyLh) is OUR submit
+// control for the card path; it calls stripe.confirmPayment. (Without it the user
+// fills the card and there is nothing to click — the "no button to proceed" bug.)
+// Either confirm path drives the PaymentIntent; the SUCCESS + on-chain mint are
+// driven by a poll HERE in JS: `window.lhWatchPayment` setIntervals
+// `retrievePaymentIntent` and,
 // when the PaymentIntent is `succeeded`, calls `window.lh_payment_succeeded`
 // (the wasm export, wired in boot.js) which mints via /stripe/finalize with a
 // FRESHLY signed token (so a slow payer's modal-open token can't go stale and
@@ -58,8 +61,10 @@
   // event (the green Link/wallet button) so the charge actually goes through.
   // The Payment Element's inline Link "use this card" confirms on its own and
   // never calls this. Either way the Rust poll catches `succeeded` and mints.
+  // Resolves `{ ok }` so the pay button can re-enable itself on failure. Success
+  // is detected by the status poll (which flips the modal to done), not here.
   function confirmPay() {
-    if (!state) return Promise.resolve();
+    if (!state) return Promise.resolve({ ok: false });
     var o = state.opts;
     var returnUrl = o.returnUrl || (window.location.origin + window.location.pathname + '?bought=1');
     showError('');
@@ -71,10 +76,10 @@
         redirect: 'if_required',
       })
       .then(function (res) {
-        if (res && res.error) showError(res.error.message || 'payment failed');
-        // Success is handled by the Rust status poll, not here.
+        if (res && res.error) { showError(res.error.message || 'payment failed'); return { ok: false }; }
+        return { ok: true };
       })
-      .catch(function (e) { showError((e && e.message) || 'payment error'); });
+      .catch(function (e) { showError((e && e.message) || 'payment error'); return { ok: false }; });
   }
 
   // Watch the PaymentIntent until it `succeeded`, then mint via wasm. Runs the
@@ -175,6 +180,28 @@
         wallets: { applePay: 'never', googlePay: 'never' },
       });
       payment.mount('#lh-payment');
+
+      // OUR submit button for the Payment Element (card / inline Link): the
+      // Payment Element renders no button of its own, so without this the user
+      // fills the card and has nothing to click to pay. (The Express Checkout
+      // button above self-confirms and needs none.) Reveal it now that the form
+      // is mounted and wire it to confirmPayment; the status poll handles success.
+      var payBtn = byId('lh-pay-button');
+      if (payBtn) {
+        if (o.payLabel) payBtn.textContent = o.payLabel;
+        var payLabel = payBtn.textContent;
+        payBtn.style.display = '';
+        payBtn.disabled = false;
+        payBtn.onclick = function () {
+          payBtn.disabled = true;
+          payBtn.textContent = 'processing…';
+          confirmPay().then(function (r) {
+            // Success → the status poll flips the modal to done; keep it disabled.
+            // Failure (declined / incomplete) → re-enable so the user can retry.
+            if (!r || !r.ok) { payBtn.disabled = false; payBtn.textContent = payLabel; }
+          });
+        };
+      }
     });
   };
 

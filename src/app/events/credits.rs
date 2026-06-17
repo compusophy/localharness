@@ -410,6 +410,9 @@ pub(super) fn buy_lh_pressed(onboarding: bool) {
         },
         None => 200,
     };
+    // Whole-dollar amounts, $2 minimum (the onboarding bundle floor): $LH mints
+    // 1:1 on cents, so this clamps every buy to a round $LH count of ≥ 200.
+    let cents = (cents / 100).max(2) * 100;
     if onboarding {
         // INSTANT FEEDBACK (the core fix for "nothing happens"): synchronously,
         // BEFORE any await, replace the "create agent · $2" button in place with
@@ -427,7 +430,11 @@ pub(super) fn buy_lh_pressed(onboarding: bool) {
                     // (`lh_payment_succeeded` → `finalize_after_payment`) ONLY on
                     // success — no pre-payment wasm async loop (the iOS WebKit
                     // BorrowError fix). The freshly signed token is minted there.
-                    let opts = serde_json::json!({ "clientSecret": client_secret }).to_string();
+                    let opts = serde_json::json!({
+                        "clientSecret": client_secret,
+                        "payLabel": format!("pay ${}", cents / 100),
+                    })
+                    .to_string();
                     call_js("lhBuyLh", Some(&opts));
                     // Form is up → clear the interstitial line.
                     dom::swap_inner("onboard-checkout-msg", "");
@@ -475,7 +482,11 @@ pub(super) fn buy_lh_pressed(onboarding: bool) {
                 // (`lhWatchPayment`) which calls back into wasm only on success
                 // (`lh_payment_succeeded` → `finalize_after_payment`) with a
                 // freshly signed token — no pre-payment wasm async loop (iOS fix).
-                let opts = serde_json::json!({ "clientSecret": client_secret }).to_string();
+                let opts = serde_json::json!({
+                    "clientSecret": client_secret,
+                    "payLabel": format!("pay ${}", cents / 100),
+                })
+                .to_string();
                 call_js("lhBuyLh", Some(&opts));
                 dom::swap_inner(msg_id, "");
                 // Watch the PaymentIntent in JS; on success, mint via the wasm
