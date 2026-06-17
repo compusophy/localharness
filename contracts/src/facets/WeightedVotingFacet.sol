@@ -112,6 +112,7 @@ contract WeightedVotingFacet is GuildFacet {
     error ProposalNotActive(); // vote/execute on a non-Active (terminal) proposal
     error VotingNotEnded(); // execute before the deadline
     error NoVotingPower(); // a member with 0 shares attempting to vote
+    error SharesLockedDuringVote(); // setShares while a weighted proposal is open
 
     // --- Shares (Admin-gated cap table) ---------------------------------
 
@@ -131,6 +132,11 @@ contract WeightedVotingFacet is GuildFacet {
         if (gs.roleOf[guildId][msg.sender] != LibGuildStorage.Role.Admin) revert NotAdmin();
 
         LibWeightedVotingStorage.Storage storage ws = LibWeightedVotingStorage.load();
+        // The cap table is FROZEN while a weighted proposal is open: each ballot's
+        // weight is the live share count but the quorum denominator is snapshotted
+        // at propose, so re-weighting mid-vote could blow past the frozen quorum.
+        // `shareLockUntil` is the latest open proposal's deadline; auto-releases.
+        if (block.timestamp < ws.shareLockUntil[guildId]) revert SharesLockedDuringVote();
         uint256 old = ws.shares[guildId][member];
         if (old == shares) return; // no-op
         // O(1) running total. Under Solidity 0.8 checked arithmetic this never
@@ -182,6 +188,10 @@ contract WeightedVotingFacet is GuildFacet {
         LibWeightedVotingStorage.Storage storage ws = LibWeightedVotingStorage.load();
         proposalId = ++ws.nextProposalId; // ids start at 1
         uint64 deadline = uint64(block.timestamp) + uint64(period);
+        // FREEZE the cap table for this proposal's voting window: setShares
+        // reverts until the latest open proposal's deadline, so the live per-ballot
+        // weight can't be inflated past the snapshotted quorum denominator.
+        if (deadline > ws.shareLockUntil[guildId]) ws.shareLockUntil[guildId] = deadline;
         uint256 snapshot = ws.totalShares[guildId];
         ws.proposals[proposalId] = LibWeightedVotingStorage.WProposal({
             guildId: guildId,
@@ -209,10 +219,12 @@ contract WeightedVotingFacet is GuildFacet {
     /// quorum-by-distinct-voters can't be gamed by zero-share members.
     ///
     /// Membership is read LIVE from `LibGuildStorage` (a member who left can't
-    /// vote); shares are read LIVE too (an Admin may re-weight a voter before
-    /// they cast — the cap table is the source of truth at cast time, while the
-    /// quorum DENOMINATOR is the propose-time snapshot — the same "live
-    /// eligibility, snapshot denominator" split as `VotingFacet`).
+    /// vote). Shares are read live too, BUT the cap table is FROZEN for the whole
+    /// voting window — `setShares` reverts `SharesLockedDuringVote` until the
+    /// latest open proposal's deadline (`shareLockUntil`) — so a live read here
+    /// can't be inflated past the propose-time `snapshotTotalShares` denominator.
+    /// (For 1m1v `VotingFacet` weight is the constant 1, so it needs no such lock;
+    /// only the weighted board, where weight itself is the lever, does.)
     ///
     /// Reverts if: the proposal doesn't exist (`UnknownProposal`), it is not
     /// Active (`ProposalNotActive`), voting has closed (`VotingClosed`), the

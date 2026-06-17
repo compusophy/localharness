@@ -111,6 +111,15 @@ library LibWeightedVotingStorage {
         /// `weightedProposalsOf`). Append-only, so an id's position is stable
         /// and the paginated cursor stays valid across calls.
         mapping(uint256 => uint256[]) proposalsOfGuild;
+        /// guildId -> unix seconds until which `setShares` is LOCKED — the
+        /// LATEST open weighted-proposal deadline. The quorum DENOMINATOR is
+        /// snapshotted at propose, but each ballot's WEIGHT is the live share
+        /// count; without this, an Admin could re-weight a friendly voter AFTER
+        /// propose and blow past the frozen quorum (a snapshot bypass). Setting
+        /// this to a proposal's deadline freezes the cap table for the whole
+        /// voting window, so cast weights stay consistent with the snapshot.
+        /// Auto-releases when the deadline passes (time-based, no sweep needed).
+        mapping(uint256 => uint64) shareLockUntil;
     }
 
     function load() internal pure returns (Storage storage s) {
