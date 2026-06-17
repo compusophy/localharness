@@ -135,7 +135,23 @@ redeploy, not just a dashboard env change:
    no usage frame, `meteredAmountWei` falls back to the floor — so a wiring miss
    under-charges, never over-charges.
 
+## x402 "Upto" (sign-max / settle-actual) — FACET BUILT + tested, staged
+The agent-to-agent x402 rail (today flat-exact) gets token-metering via the same
+sign-max/settle-actual shape as Coinbase x402 "Upto":
+- **`X402Facet.settleUpto(from, to, maxValue, actualValue, …)` — DONE + tested**
+  (`contracts/test/X402Upto.t.sol`, 9 tests). The payer signs an authorization
+  whose `value` is a MAX; the facilitator measures the actual and this moves
+  `min(actual, max)` — never more (`AmountExceedsMax`). Reuses the existing
+  `PaymentAuthorization` typehash (the signed digest is over `maxValue`) and SHARES
+  the one-shot `(from, nonce)` with `settle`, so a max-auth is consumable exactly
+  once by either path. CEI/replay/window/low-s/EIP-1271 identical to `settle`.
+- **Remaining (supervised):** (1) `diamondCut` ADD the new `settleUpto` selector to
+  the live X402Facet (a money-critical recut — NOT done autonomously); (2) proxy
+  `_x402.ts`: a `settleUptoNoWait` + treat the X-PAYMENT `value` as a MAX when
+  token-metering is on, settling `meteredAmountWei(...)` after the 2xx; (3) the
+  caller/CLI signs a MAX (sized from `max_tokens × rate × margin`) instead of the
+  flat exact value. All three land together (the client must sign a max for the
+  proxy path to have callers).
+
 ## Still future
-- **x402 "Upto"** (sign-max / settle-actual) — token-based metering for the
-  agent-to-agent x402 path (today it settles the flat exact value).
 - **`$LH` streaming vouchers** — the whole `run_send` loop as one capped channel.

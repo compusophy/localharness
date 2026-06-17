@@ -42,6 +42,7 @@ contract X402Facet {
     error AuthExpired();
     error BadSignature();
     error NotConfigured();
+    error AmountExceedsMax(); // settleUpto: actualValue > the signed maxValue
 
     bytes32 private constant EIP712_DOMAIN_TYPEHASH = keccak256(
         "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
@@ -100,6 +101,57 @@ contract X402Facet {
         require(IERC20Min(token).transferFrom(from, to, value), "x402: transfer failed");
 
         emit PaymentSettled(from, to, value, nonce);
+    }
+
+    /// Settle an x402 "UPTO" payment (sign-max / settle-actual — the
+    /// token-metering rail). The payer signs an authorization whose `value` is a
+    /// MAXIMUM (sized from a max-token budget × list rate × margin); the
+    /// facilitator measures the ACTUAL cost from the response and submits it
+    /// here, moving `actualValue` `$LH` — capped at the signed `maxValue` and
+    /// NEVER more. The signature is verified over `maxValue` (the signed
+    /// ceiling), so a facilitator can charge LESS but can't over-charge beyond
+    /// what the payer authorized; the unspent remainder simply never moves (no
+    /// refund leg needed). Same one-shot `(from, nonce)` as `settle` — a max-auth
+    /// is consumable EXACTLY once, by EITHER path, so it can't be double-settled.
+    /// Reverts `AmountExceedsMax` if `actualValue > maxValue`.
+    function settleUpto(
+        address from,
+        address to,
+        uint256 maxValue,
+        uint256 actualValue,
+        uint256 validAfter,
+        uint256 validBefore,
+        bytes32 nonce,
+        bytes calldata signature
+    ) external {
+        if (actualValue > maxValue) revert AmountExceedsMax();
+        LibX402Storage.Storage storage s = LibX402Storage.load();
+        if (s.authState[from][nonce]) revert AuthAlreadyUsed();
+        if (block.timestamp <= validAfter) revert AuthNotYetValid();
+        if (block.timestamp >= validBefore) revert AuthExpired();
+
+        // Digest is over the SIGNED max (`value == maxValue`); the facilitator
+        // passes `maxValue` matching what was signed (else BadSignature) plus the
+        // separately-measured `actualValue`.
+        bytes32 structHash = keccak256(
+            abi.encode(PAYMENT_TYPEHASH, from, to, maxValue, validAfter, validBefore, nonce)
+        );
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", x402DomainSeparator(), structHash)
+        );
+        if (!_isValidSignature(from, digest, signature)) revert BadSignature();
+
+        // Effect before the external token call (CEI / replay safety) — the
+        // nonce is consumed even on a 0-cost settle so the auth can't be reused.
+        s.authState[from][nonce] = true;
+
+        if (actualValue > 0) {
+            address token = LibCreditsStorage.load().creditsToken;
+            if (token == address(0)) revert NotConfigured();
+            require(IERC20Min(token).transferFrom(from, to, actualValue), "x402: transfer failed");
+        }
+
+        emit PaymentSettled(from, to, actualValue, nonce);
     }
 
     function authorizationState(address from, bytes32 nonce) external view returns (bool) {
