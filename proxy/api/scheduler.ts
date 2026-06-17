@@ -1843,13 +1843,23 @@ async function processJob(
     console.error(`[scheduler] job ${idStr} target ${name} run ERROR (will still recordRun): ${runNote}`);
   }
 
-  // METER: debit calls * COST_WEI, CAPPED to budgetWei (the facet reverts
-  // SpendExceedsBudget if spentWei > remaining). `calls` is already bounded by
-  // maxCalls in the success path; the `min` is belt-and-suspenders for the error
-  // path's default and any rounding. When this debit consumes the budget the
-  // facet marks the job Exhausted + refunds the remainder.
+  // METER: debit calls * COST_WEI, CAPPED to the budget (the facet reverts
+  // SpendExceedsBudget if spentWei > remaining). When this debit consumes the
+  // budget the facet marks the job Exhausted + refunds the remainder.
+  //
+  // CRITICAL: cap to the LIVE budget, not the start-of-run `job` snapshot. The
+  // agent can call schedule_task (scheduleChildJob) MID-RUN, which draws down the
+  // parent's on-chain budget; capping to the stale snapshot would let spentWei
+  // exceed the live budget → recordRun reverts SpendExceedsBudget → the worker
+  // treats it as 'stale' → nextRun never advances → the job HOT-LOOPS every tick,
+  // burning real upstream spend without ever debiting (the budget leash defeated).
+  // Re-read here so the debit always lands (exhausting the job if depleted). On a
+  // read failure, fall back to the snapshot (no worse than before on that path).
   let spentWei = BigInt(calls) * COST_WEI;
-  if (spentWei > job.budgetWei) spentWei = job.budgetWei;
+  const liveBudgetWei = await getJob(id)
+    .then((j) => j.budgetWei)
+    .catch(() => job.budgetWei);
+  if (spentWei > liveBudgetWei) spentWei = liveBudgetWei;
 
   const outcome = await recordRun(id, expectedNextRun, spentWei);
 
