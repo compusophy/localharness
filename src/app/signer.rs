@@ -254,8 +254,12 @@ fn handle_message(event: &MessageEvent) -> Result<(), String> {
             return Ok(());
         }
         MSG_OPEN_KEY => {
+            // Owner-gated inside run_open_key — the requesting subdomain must be
+            // one THIS identity owns, so a hostile origin a victim merely visits
+            // can't have the apex signer decrypt the victim's on-chain key.
             let ciphertext = require_str("ciphertext")?;
-            spawn_reply("open-key", id, source_jsval, origin, run_open_key(ciphertext));
+            let req_origin = origin.clone();
+            spawn_reply("open-key", id, source_jsval, origin, run_open_key(req_origin, ciphertext));
             return Ok(());
         }
         _ => return Ok(()), // not for us
@@ -353,12 +357,13 @@ async fn run_create_wallet(overwrite: bool) -> Result<ReplyFields, String> {
 /// so any device that imports the seed derives the same key and can
 /// decrypt the on-chain ciphertext.
 ///
-/// SECURITY: this is honored for any trusted (`*.localharness.xyz`)
-/// origin, so a malicious subdomain could in principle ask to `lh-open-key`
-/// a victim's (public, on-chain) ciphertext and learn their Gemini key.
-/// Accepted for testnet — Gemini keys are free + revocable (small blast
-/// radius), and this matches the existing cross-origin signer model.
-/// Revisit before mainnet (e.g. per-origin scoping / explicit consent).
+/// SECURITY: this key opens ANY seed-sealed ciphertext, so the cross-origin
+/// `lh-open-key` op ([`run_open_key`]) is gated on the requesting subdomain
+/// being one THIS identity OWNS on-chain (the #81 ownership pattern) — a
+/// hostile `*.localharness.xyz` a victim merely visits can no longer have the
+/// apex signer decrypt the victim's on-chain Gemini key. Sealing
+/// ([`run_seal_key`]) stays open cross-origin: it only returns ciphertext of
+/// the CALLER's own value and writes nothing.
 fn seed_sync_key() -> Result<[u8; 32], String> {
     let entropy = super::APP
         .with(|cell| cell.borrow().wallet.as_ref().map(|w| w.mnemonic.to_entropy()))
@@ -377,8 +382,29 @@ async fn run_seal_key(plaintext: String) -> Result<ReplyFields, String> {
     Ok(vec![("ciphertext", bytes_to_hex_str(&ct))])
 }
 
-/// Open seed-sealed ciphertext and return the plaintext (the Gemini key).
-async fn run_open_key(ciphertext_hex: String) -> Result<ReplyFields, String> {
+/// Open seed-sealed ciphertext → plaintext (the Gemini key), but ONLY for a
+/// subdomain THIS identity owns on-chain. The seed-derived keysync key opens
+/// ANY ciphertext, so without this gate a hostile `*.localharness.xyz` a victim
+/// merely VISITS could ask the apex signer to decrypt the victim's (public,
+/// on-chain) sealed key — the confused-deputy the `seed_sync_key` note flagged.
+/// Mirrors the #81 tx-ownership gate: the legit cross-origin restore is the
+/// user's OWN subdomain pulling its own key (passes); a foreign/missing owner or
+/// an RPC error fails CLOSED. The local-first path (`verify::open_key_via_iframe`)
+/// never reaches here on a seed-bearing device.
+async fn run_open_key(origin: String, ciphertext_hex: String) -> Result<ReplyFields, String> {
+    let (_, address) = wallet_handle()?;
+    let sub = super::tenant::tenant_name_from_origin(&origin).ok_or_else(|| {
+        "refusing to open a sealed key: request is not from a tenant subdomain".to_string()
+    })?;
+    match crate::registry::owner_of_name(&sub).await {
+        Ok(Some(owner)) if owner.eq_ignore_ascii_case(&bytes_to_hex_str(&address)) => {}
+        Ok(_) => {
+            return Err(format!(
+                "refusing to open a sealed key for '{sub}': that subdomain is not owned by this identity"
+            ));
+        }
+        Err(e) => return Err(format!("open-key ownership check failed: {e}")),
+    }
     let key = seed_sync_key()?;
     let ct = hex_to_bytes(&ciphertext_hex)?;
     let pt = super::encryption::open_with_raw_key(&key, &ct)
