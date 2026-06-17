@@ -33,7 +33,7 @@ use maud::{Markup, html};
 /// `Action::parse` arm — a fresh visitor's only control).
 pub(crate) fn create_wallet_cta() -> Markup {
     html! {
-        section.apex-onboard {
+        section #apex-onboard .apex-onboard {
             button type="button" data-action="create-account" .apex-onboard-cta {
                 "create agent · $2"
             }

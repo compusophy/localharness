@@ -936,22 +936,34 @@ fn dispatch(action: Action) {
             let Some(flow_guard) = onboard_flow_begin() else {
                 return;
             };
-            dom::swap_inner(
-                "onboard-msg",
-                "<span style=\"color:var(--muted)\">setting up…</span>",
+            // INSTANT FEEDBACK (the core fix for "nothing happens"): SYNCHRONOUSLY
+            // on the click — before any await — replace the "create agent · $2"
+            // button in place with the inline checkout card ("preparing secure
+            // checkout…"). $2 = 200 $LH at $1 = 100 $LH. The card carries the
+            // Stripe mount ids; the spawned work below fills it.
+            dom::swap_outer(
+                "apex-onboard",
+                &templates::onboard_checkout("200 $LH").into_string(),
             );
             wasm_bindgen_futures::spawn_local(async move {
                 let _flow_guard = flow_guard;
                 match super::wallet_store::generate_in_memory().await {
-                    Err(err) => dom::swap_inner(
-                        "onboard-msg",
-                        &dom::msg_span(dom::Msg::Error, &format!("create failed: {err}")),
-                    ),
+                    Err(err) => {
+                        // Restore the CTA so the user can retry.
+                        dom::swap_outer(
+                            "apex-onboard",
+                            &crate::landing::create_wallet_cta().into_string(),
+                        );
+                        dom::swap_inner(
+                            "onboard-msg",
+                            &dom::msg_span(dom::Msg::Error, &format!("create failed: {err}")),
+                        );
+                    }
                     Ok(_) => {
-                        dom::swap_inner("onboard-msg", "");
-                        // Identity exists in memory → open the $2 checkout (mints
-                        // 200 $LH); on a confirmed mint the poll persists the seed
-                        // and re-paints the apex to the funded name input.
+                        // Identity exists in memory → drive the $2 checkout into
+                        // the inline card already on screen (mints 200 $LH); on a
+                        // confirmed mint the poll persists the seed and renders the
+                        // seed-backup step.
                         credits::buy_lh_pressed(true);
                     }
                 }

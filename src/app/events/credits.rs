@@ -410,6 +410,39 @@ pub(super) fn buy_lh_pressed(onboarding: bool) {
         },
         None => 200,
     };
+    if onboarding {
+        // INSTANT FEEDBACK (the core fix for "nothing happens"): synchronously,
+        // BEFORE any await, replace the "create agent · $2" button in place with
+        // the inline checkout card showing "preparing secure checkout…". The
+        // card already carries the `#lh-pay-region` mount ids, so there's no
+        // modal to open later — the shim mounts straight into it.
+        dom::swap_outer("apex-onboard", &templates::onboard_checkout(&lh_label(cents)).into_string());
+        wasm_bindgen_futures::spawn_local(async move {
+            match start_checkout_embedded(cents).await {
+                Ok((client_secret, payment_intent)) => {
+                    // Mount Stripe's native elements into the INLINE region (same
+                    // ids as the modal). Minting is driven by the Rust poll below
+                    // with a freshly signed token — never a stale open-time one.
+                    let opts = serde_json::json!({ "clientSecret": client_secret }).to_string();
+                    call_js("lhBuyLh", Some(&opts));
+                    // Form is up → clear the interstitial line.
+                    dom::swap_inner("onboard-checkout-msg", "");
+                    poll_and_finalize(payment_intent, lh_label(cents), true).await;
+                }
+                Err(e) => {
+                    web_sys::console::warn_1(&JsValue::from_str(&format!("buy $LH: {e}")));
+                    // Swap the onboarding card back so the user can retry.
+                    dom::swap_outer("apex-onboard", &crate::landing::create_wallet_cta().into_string());
+                    dom::swap_inner(
+                        "onboard-msg",
+                        &dom::msg_span(dom::Msg::Error, "couldn't start checkout — try again"),
+                    );
+                }
+            }
+        });
+        return;
+    }
+    // ADMIN "buy $LH" path (modal) — unchanged.
     // Status slot: the admin `#buy-msg`, falling back to the pre-claim
     // `#fund-msg` so the affordance shows "opening checkout…" too.
     let msg_id = if dom::by_id("buy-msg").is_some() { "buy-msg" } else { "fund-msg" };
@@ -428,7 +461,7 @@ pub(super) fn buy_lh_pressed(onboarding: bool) {
                 call_js("lhBuyLh", Some(&opts));
                 dom::swap_inner(msg_id, "");
                 // Reactivity loop: watch the PaymentIntent; on success, mint.
-                poll_and_finalize(payment_intent, lh_label(cents), onboarding).await;
+                poll_and_finalize(payment_intent, lh_label(cents), false).await;
             }
             Err(e) => {
                 web_sys::console::warn_1(&JsValue::from_str(&format!("buy $LH: {e}")));
@@ -563,8 +596,8 @@ async fn poll_and_finalize(payment_intent: String, lh_label: String, onboarding:
     // Phase 1 — wait for the PaymentIntent to succeed (~6 min budget).
     let mut succeeded = false;
     for _ in 0..120 {
-        if dom::by_id("buy-modal").is_none() {
-            return; // user closed the modal
+        if checkout_gone() {
+            return; // checkout dismissed (modal closed / inline navigated away)
         }
         if js_payment_status().await == "succeeded" {
             succeeded = true;
@@ -578,7 +611,7 @@ async fn poll_and_finalize(payment_intent: String, lh_label: String, onboarding:
     // Phase 2 — mint. Retry a few times: finalize fails closed (minted:false)
     // in the brief window before Stripe's NET-settled amount is available.
     for _ in 0..6 {
-        if dom::by_id("buy-modal").is_none() {
+        if checkout_gone() {
             return;
         }
         if let Ok(true) = finalize_mint(&payment_intent).await {
@@ -589,12 +622,12 @@ async fn poll_and_finalize(payment_intent: String, lh_label: String, onboarding:
             // Onboarding: the fresh buyer is now funded. PAY-FIRST RULE — the
             // seed has been held IN MEMORY ONLY until this moment; now that the
             // payment confirmed, persist it to disk. This is the FIRST thing
-            // after the mint, so the pay→persist window is tiny (the buy modal
-            // keeps the page open, so the only residual risk is a reload between
-            // the mint confirming and this write — narrow, and the webhook still
-            // minted to the address). If persist FAILS, surface it loudly: the
-            // user paid and the seed is still in memory (reveal/retry possible),
-            // so we must NOT swallow it — the seed MUST land.
+            // after the mint, so the pay→persist window is tiny (the inline
+            // checkout keeps the page open, so the only residual risk is a reload
+            // between the mint confirming and this write — narrow, and the webhook
+            // still minted to the address). If persist FAILS, surface it loudly:
+            // the user paid and the seed is still in memory (reveal/retry
+            // possible), so we must NOT swallow it — the seed MUST land.
             if onboarding {
                 if let Err(err) = crate::app::wallet_store::persist_current_seed().await {
                     call_js(
@@ -610,17 +643,13 @@ async fn poll_and_finalize(payment_intent: String, lh_label: String, onboarding:
                 // request): show the recovery phrase with copy/download so a
                 // device loss / OPFS wipe / the narrow reload-before-persist
                 // window can't strand the just-paid identity. [continue]
-                // (onboard-continue) proceeds to the name-claim. Close the buy
-                // modal first so the backup is the focus.
+                // (onboard-continue) proceeds to the name-claim. Tear down the
+                // Stripe Elements instance first; the inline checkout card lives
+                // inside `#root`, so the seed-backup swap below removes it.
                 let words = crate::app::APP
                     .with(|c| c.borrow().wallet.as_ref().map(|w| w.mnemonic.to_string()))
                     .unwrap_or_default();
                 call_js("lhUnmountCheckout", None);
-                if let Some(el) = dom::by_id("buy-modal") {
-                    if let Some(p) = el.parent_element() {
-                        let _ = p.remove_child(&el);
-                    }
-                }
                 if let Some(root) = dom::by_id("root") {
                     root.set_inner_html(&templates::onboard_seed_backup(&words).into_string());
                 }
@@ -631,6 +660,15 @@ async fn poll_and_finalize(payment_intent: String, lh_label: String, onboarding:
     }
     // Couldn't confirm the mint in-page; the webhook backstop will mint and the
     // "minting shortly" line stays up.
+}
+
+/// The checkout surface is gone → stop polling. True only when NEITHER the
+/// admin `#buy-modal` NOR the inline onboarding `#lh-pay-region` is in the DOM,
+/// so one check covers both paths (a closed modal or a navigated-away inline
+/// card). The inline card lives inside `#apex-onboard`; `#lh-pay-region` is its
+/// unique marker (the modal carries the same id, hence the OR).
+fn checkout_gone() -> bool {
+    dom::by_id("buy-modal").is_none() && dom::by_id("lh-pay-region").is_none()
 }
 
 /// Resolve the shim's `window.lhPaymentStatus()` (a JS `Promise<string>`) to the
