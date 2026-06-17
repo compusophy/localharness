@@ -14,6 +14,8 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <!-- Warm the TLS connection to Stripe.js so the buy-$LH Elements modal opens fast. -->
+  <link rel="preconnect" href="https://js.stripe.com" />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   <title>localharness</title>
   <!--
@@ -47,9 +49,9 @@
 <!-- ?v= is the per-build cache-buster (stamped by scripts/build-web.sh); it
      busts a stale-cached boot.js so a redeploy's new wasm url reaches returning
      visitors. index.html itself is the navigation document and revalidates. -->
-<!-- Stripe Embedded Checkout shim (window.lhBuyLh) — loaded before boot so the
+<!-- Stripe Elements on-ramp shim (window.lhBuyLh) — loaded before boot so the
      wasm app can call it; ?v= cache-buster stamped by build-web.sh. -->
-<script src="./stripe-embed.js?v=cccee16a6aa4"></script>
-<script type="module" src="./boot.js?v=cccee16a6aa4"></script>
+<script src="./stripe-embed.js?v=75002bb1b369"></script>
+<script type="module" src="./boot.js?v=75002bb1b369"></script>
 </body>
 </html>

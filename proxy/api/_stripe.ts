@@ -270,6 +270,55 @@ function recoverAddress(message: string, sigHex: string): string {
   return '0x' + bytesToHex(keccak(point.toRawBytes(false).slice(1)).slice(12));
 }
 
+// --- mint orchestration (shared by the webhook + the client finalize path) ---
+
+// NET settled amount in cents: expand the PaymentIntent → latest charge →
+// balance transaction `net` (gross minus Stripe fees). FAIL-CLOSED: if net
+// isn't available yet (async settlement / transient API error) we THROW so the
+// caller can retry — minting GROSS would over-issue by the Stripe fee and
+// permanently breach circulating ≤ usd_held/peg. The one-shot receiptId makes
+// the eventual retry idempotent. Card + Link both settle synchronously, so net
+// is normally available by webhook/finalize time.
+export async function netSettledCents(piId: string): Promise<number> {
+  const pi = await stripe().paymentIntents.retrieve(piId, {
+    expand: ['latest_charge.balance_transaction'],
+  });
+  const charge = pi.latest_charge as Stripe.Charge | null;
+  const bt = charge?.balance_transaction as Stripe.BalanceTransaction | null;
+  // FAIL CLOSED on the peg: `bt.net` is in the ACCOUNT's SETTLEMENT currency's
+  // minor unit, which `centsToWei` treats as USD cents. The charge is created in
+  // USD, so a USD-settling account gives `bt.currency==='usd'` and net IS cents.
+  // But if the account ever settled in another currency (esp. a zero-decimal one
+  // like JPY, where `net` is whole units), `centsToWei(net)` would mis-mint. So
+  // require USD settlement explicitly — never guess the peg.
+  if (bt && bt.currency === 'usd' && typeof bt.net === 'number' && bt.net > 0) {
+    return bt.net;
+  }
+  throw new Error(`net settled USD amount not yet available for ${piId}; retry`);
+}
+
+// Idempotent NET mint for a SETTLED PaymentIntent. Mints `mintFromFiat` to the
+// PI's bound `lh_address` for the NET-of-fees settled USD, guarded by the
+// on-chain one-shot receipt — so the webhook AND the client `/stripe/finalize`
+// call are both idempotent (whichever lands first wins; the other is a no-op).
+// THROWS on "net not ready" / RPC / submit failure so the webhook 500s → Stripe
+// retries; the finalize endpoint catches the throw and reports `pending`.
+export async function mintSettledPayment(
+  piId: string,
+  lhAddress: string,
+): Promise<{ minted: boolean; idempotent?: boolean; tx?: string }> {
+  if (!isHexAddress(lhAddress)) return { minted: false };
+  const receiptId = receiptIdFor(piId);
+  const r = await readReceipt(receiptId);
+  if (r.used) return { minted: true, idempotent: true };
+  const netCents = await netSettledCents(piId); // THROWS if net unknown → retry
+  const amountWei = centsToWei(netCents);
+  const validBefore = BigInt(Math.floor(Date.now() / 1000) + 3600);
+  const signature = await signFiatMint(lhAddress, amountWei, receiptId, validBefore);
+  const tx = await submitMintFromFiat(lhAddress, amountWei, receiptId, validBefore, signature);
+  return { minted: true, tx };
+}
+
 const FRESHNESS_WINDOW_SECS = 300;
 
 // Verify the `<address>:<timestamp>:<signature>` auth token (same scheme as the

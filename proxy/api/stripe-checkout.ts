@@ -101,14 +101,24 @@ export default async function handler(req: Request): Promise<Response> {
 
   try {
     if (embedded) {
-      // Embedded Checkout: rendered INSIDE our branded modal (no redirect). We
-      // handle completion client-side, so no return_url is needed.
-      const session = await stripe().checkout.sessions.create({
-        ...base,
-        ui_mode: 'embedded',
-        redirect_on_completion: 'never',
+      // Browser path: a BARE PaymentIntent driven by our custom Stripe Elements
+      // form (Express Checkout + Payment Element) — NOT Embedded Checkout (whose
+      // full hosted page in a nested iframe was the slow, unscrollable
+      // modal-in-modal). card + Link only keeps settlement synchronous (the
+      // webhook's NET-amount fail-closed mint depends on it). lh_address is bound
+      // here from the AUTHENTICATED caller, never a buyer field.
+      const pi = await stripe().paymentIntents.create({
+        amount: usdCents,
+        currency: 'usd',
+        payment_method_types: ['card', 'link'],
+        description: 'localharness $LH credits',
+        metadata: { lh_address: lhAddress, lh_wei: lhWei },
       });
-      return json({ client_secret: session.client_secret, lh_wei: lhWei }, 200, origin);
+      return json(
+        { client_secret: pi.client_secret, payment_intent: pi.id, lh_wei: lhWei },
+        200,
+        origin,
+      );
     }
     // Hosted Checkout (redirect) — kept for non-browser callers.
     const session = await stripe().checkout.sessions.create({

@@ -20,12 +20,10 @@ import {
   stripe,
   stripeCryptoProvider,
   receiptIdFor,
-  signFiatMint,
-  submitMintFromFiat,
+  mintSettledPayment,
   submitClawback,
   readReceipt,
   isHexAddress,
-  centsToWei,
 } from './_stripe';
 
 function paymentIntentId(obj: { payment_intent?: unknown }): string | null {
@@ -72,18 +70,20 @@ export default async function handler(req: Request): Promise<Response> {
       if (!isHexAddress(lhAddress) || !piId) {
         return json({ received: true, skipped: 'no lh_address/payment_intent' }, 200);
       }
-      const receiptId = receiptIdFor(piId);
-      const r = await readReceipt(receiptId);
-      if (r.used) return json({ received: true, idempotent: true }, 200);
-
-      // Mint against NET settled USD (fees out) so circulating ≤ usd_held/peg.
-      // FAIL-CLOSED: if net isn't known yet, netSettledCents THROWS → 500 → the
-      // one-shot receipt makes Stripe's retry idempotent. Never mint gross.
-      const netCents = await netSettledCents(piId);
-      const amountWei = centsToWei(netCents);
-      const validBefore = BigInt(Math.floor(Date.now() / 1000) + 3600);
-      const signature = await signFiatMint(lhAddress, amountWei, receiptId, validBefore);
-      await submitMintFromFiat(lhAddress, amountWei, receiptId, validBefore, signature);
+      // Idempotent NET mint (fees out); THROWS if net isn't settled yet → outer
+      // catch 500s → Stripe retries; the one-shot receipt keeps it idempotent.
+      await mintSettledPayment(piId, lhAddress);
+    } else if (event.type === 'payment_intent.succeeded') {
+      // The browser Stripe Elements path drives a BARE PaymentIntent (no
+      // Checkout Session), so this is its mint trigger. The hosted Checkout
+      // path ALSO fires this — the on-chain one-shot receipt keeps the
+      // double-fire idempotent. `lh_address` is bound server-side at PI-create
+      // (never a buyer field), so the mint can only ever credit the buyer.
+      const pi = event.data.object as import('stripe').Stripe.PaymentIntent;
+      const lhAddress = (pi.metadata?.lh_address as string | undefined) ?? '';
+      if (isHexAddress(lhAddress)) {
+        await mintSettledPayment(pi.id, lhAddress);
+      }
     } else if (event.type === 'charge.refunded' || event.type === 'charge.dispute.created') {
       const obj = event.data.object as {
         payment_intent?: unknown;
@@ -136,22 +136,4 @@ function json(body: unknown, status: number): Response {
     status,
     headers: { 'content-type': 'application/json' },
   });
-}
-
-// NET settled amount in cents: expand the PaymentIntent → latest charge →
-// balance transaction `net` (gross minus Stripe fees). FAIL-CLOSED (red-team
-// #4): if net isn't available yet (async settlement / transient API error) we
-// THROW so the handler 500s and Stripe retries — minting GROSS would over-issue
-// by the Stripe fee and permanently breach circulating ≤ usd_held/peg. The
-// one-shot receiptId makes the eventual retry idempotent. Checkout uses card +
-// Link (both settle synchronously), and the handler only mints once
-// payment_status=='paid', so net is normally available by webhook time.
-async function netSettledCents(piId: string): Promise<number> {
-  const pi = await stripe().paymentIntents.retrieve(piId, {
-    expand: ['latest_charge.balance_transaction'],
-  });
-  const charge = pi.latest_charge as import('stripe').Stripe.Charge | null;
-  const bt = charge?.balance_transaction as import('stripe').Stripe.BalanceTransaction | null;
-  if (bt && typeof bt.net === 'number' && bt.net > 0) return bt.net;
-  throw new Error(`net settled amount not yet available for ${piId}; retry`);
 }
