@@ -135,7 +135,7 @@ redeploy, not just a dashboard env change:
    no usage frame, `meteredAmountWei` falls back to the floor — so a wiring miss
    under-charges, never over-charges.
 
-## x402 "Upto" (sign-max / settle-actual) — FACET BUILT + tested, staged
+## x402 "Upto" (sign-max / settle-actual) — FACET + PROXY built, staged
 The agent-to-agent x402 rail (today flat-exact) gets token-metering via the same
 sign-max/settle-actual shape as Coinbase x402 "Upto":
 - **`X402Facet.settleUpto(from, to, maxValue, actualValue, …)` — DONE + tested**
@@ -145,13 +145,20 @@ sign-max/settle-actual shape as Coinbase x402 "Upto":
   `PaymentAuthorization` typehash (the signed digest is over `maxValue`) and SHARES
   the one-shot `(from, nonce)` with `settle`, so a max-auth is consumable exactly
   once by either path. CEI/replay/window/low-s/EIP-1271 identical to `settle`.
-- **Remaining (supervised):** (1) `diamondCut` ADD the new `settleUpto` selector to
-  the live X402Facet (a money-critical recut — NOT done autonomously); (2) proxy
-  `_x402.ts`: a `settleUptoNoWait` + treat the X-PAYMENT `value` as a MAX when
-  token-metering is on, settling `meteredAmountWei(...)` after the 2xx; (3) the
-  caller/CLI signs a MAX (sized from `max_tokens × rate × margin`) instead of the
-  flat exact value. All three land together (the client must sign a max for the
-  proxy path to have callers).
+- **Proxy side — DONE (staged, flag-gated, byte-identical when off; tsc clean).**
+  `_x402.ts`: an X402Auth `scheme` field (`'exact'` default / `'upto'`), the
+  overpay-ceiling skipped for `'upto'` (a generous max is intended), and
+  `settleUptoNoWait(auth, actualWei)` (caps the actual at the signed max).
+  `gemini.ts`: when `LH_TOKEN_METERING` is on and the caller's x402 auth is
+  `'upto'`, the settle is DEFERRED to the response tee — `meteredAmountWei(...)` is
+  settled via `settleUpto` on stream-end (vs the immediate exact settle). An
+  `'upto'` auth with token-metering OFF is rejected (would overcharge as exact).
+- **Remaining (supervised):** (1) `diamondCut` ADD the `settleUpto` selector to the
+  live X402Facet (a money-critical recut — NOT done autonomously); (2) the
+  caller/CLI signs a MAX + sets `scheme:'upto'` in X-PAYMENT (sized from
+  `max_tokens × rate × margin`), and the proxy advertises `x402-upto` in its 402
+  challenge. Until (1)+(2) the proxy ACCEPTS upto but no client sends it and the
+  selector isn't cut — fully inert.
 
 ## Still future
 - **`$LH` streaming vouchers** — the whole `run_send` loop as one capped channel.

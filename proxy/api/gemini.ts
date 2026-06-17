@@ -47,7 +47,7 @@ export const config = { runtime: 'edge' };
 
 import { TEMPO_RPC, REGISTRY, CHAIN_ID } from './_chain';
 import { priceOf, type Provider } from './_prices';
-import { verifyX402Payment, settleX402NoWait, type X402Auth } from './_x402';
+import { verifyX402Payment, settleX402NoWait, settleUptoNoWait, type X402Auth } from './_x402';
 import { meteredAmountWei } from './_usage';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
 const ANTHROPIC_BASE = 'https://api.anthropic.com';
@@ -433,12 +433,12 @@ function meteredBody(
   body: ReadableStream<Uint8Array>,
   provider: Provider,
   model: string,
-  address: string,
   floorCost: bigint,
+  onMetered: (amountWei: bigint) => Promise<unknown>,
 ): ReadableStream<Uint8Array> {
   const decoder = new TextDecoder();
   let acc = '';
-  let debited = false;
+  let settled = false;
   const transform = new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       controller.enqueue(chunk); // passthrough — the caller sees bytes verbatim
@@ -449,11 +449,13 @@ function meteredBody(
       }
     },
     async flush() {
-      if (debited) return;
-      debited = true;
+      if (settled) return;
+      settled = true;
       const amount = meteredAmountWei(provider, model, acc, floorCost, MARGIN_BPS);
       try {
-        await meterDebit(address, amount, false);
+        // meter path → meterDebit; x402 "Upto" path → settleUpto. Either way the
+        // broadcast is awaited (keeps the Edge fn alive) but not the receipt.
+        await onMetered(amount);
       } catch {
         /* broadcast failed — served under the gate; platform eats the rare miss */
       }
@@ -823,16 +825,35 @@ export default async function handler(req: Request): Promise<Response> {
     // creditOf meter; a session-only caller stays free. Like the meter, the
     // settle broadcasts WITHOUT blocking first-byte on its receipt.
     //
-    // Token-metering (Option A) applies ONLY to the meter path: when on, the
-    // flat debit here is SKIPPED and the response body is wrapped so the ACTUAL
-    // usage is debited on stream-end (see `meteredBody`). x402 stays flat-exact
-    // (the caller signed a fixed value — token-based x402 = "Upto", Phase 2).
+    // Token-metering (Option A) wraps the meter path (flat debit → actual-usage
+    // debit on stream-end) AND the x402 "Upto" path (the caller signed a MAX; the
+    // proxy settles the measured actual ≤ max on stream-end). x402 "exact" is
+    // unchanged (settle the signed value now). Flag OFF → all paths byte-identical.
+    const isUpto = paidViaX402 && x402Auth?.scheme === 'upto';
+    // An 'upto' auth needs token-metering (the proxy must MEASURE the actual);
+    // with it off, settling the signed max as 'exact' would overcharge — reject so
+    // the caller re-signs 'exact'. (The proxy only advertises 'upto' when on.)
+    if (isUpto && !TOKEN_METERING) {
+      return json(
+        { error: 'x402 "upto" scheme needs token-metering (disabled here) — re-sign as exact' },
+        402,
+        origin,
+      );
+    }
     const tokenMeterActive =
       TOKEN_METERING && hasCredit && !paidViaX402 && upstream.body !== null;
+    const tokenX402Active = TOKEN_METERING && isUpto && upstream.body !== null;
 
-    if (paidViaX402 && x402Auth) {
+    if (paidViaX402 && x402Auth && !tokenX402Active) {
+      // Settle NOW (not deferred to the stream tee). 'exact' → the signed value;
+      // an 'upto' auth that can't be measured (no body) → settle the floor, NEVER
+      // the max. The one-shot nonce makes a stray double-submit a no-op revert.
       try {
-        await settleX402NoWait(x402Auth);
+        if (isUpto) {
+          await settleUptoNoWait(x402Auth, cost);
+        } else {
+          await settleX402NoWait(x402Auth);
+        }
       } catch (e) {
         // The broadcast itself failed (RPC/infra). The one-shot nonce is
         // UNCONSUMED, so a retry of the SAME authorization is clean — 502 rather
@@ -859,12 +880,14 @@ export default async function handler(req: Request): Promise<Response> {
       }
     }
 
-    // The body: token-metering active → wrap so actual usage is debited on
-    // stream-end; otherwise stream the upstream body straight through (the flat
-    // debit, if any, already happened above). Flag-off → byte-identical.
-    const respBody =
-      tokenMeterActive && upstream.body
-        ? meteredBody(upstream.body, provider, model, address, cost)
+    // The body: a token-metered path (meter debit OR x402-Upto settle) wraps the
+    // SSE so the ACTUAL usage is charged on stream-end; otherwise stream straight
+    // through (the flat debit / exact settle already happened above). Flag-off →
+    // byte-identical (both flags are false → upstream.body).
+    const respBody = tokenMeterActive
+      ? meteredBody(upstream.body!, provider, model, cost, (wei) => meterDebit(address, wei, false))
+      : tokenX402Active && x402Auth
+        ? meteredBody(upstream.body!, provider, model, cost, (wei) => settleUptoNoWait(x402Auth, wei))
         : upstream.body;
 
     return new Response(respBody, {

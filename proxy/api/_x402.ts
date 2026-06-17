@@ -46,6 +46,25 @@ const X402_ABI = [
     ],
     outputs: [],
   },
+  {
+    // x402 "Upto": the payer signed a MAX (`maxValue`, == the authorization's
+    // signed `value`); the facilitator settles the measured `actualValue` capped
+    // at it. Needs the matching `settleUpto` selector cut into the live diamond.
+    name: 'settleUpto',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'from', type: 'address' },
+      { name: 'to', type: 'address' },
+      { name: 'maxValue', type: 'uint256' },
+      { name: 'actualValue', type: 'uint256' },
+      { name: 'validAfter', type: 'uint256' },
+      { name: 'validBefore', type: 'uint256' },
+      { name: 'nonce', type: 'bytes32' },
+      { name: 'signature', type: 'bytes' },
+    ],
+    outputs: [],
+  },
 ] as const;
 
 // ---- crypto / ABI helpers (verbatim from mcp.ts → digest parity) -----------
@@ -173,11 +192,16 @@ async function lhAllowanceToDiamond(payer: string): Promise<bigint> {
 export interface X402Auth {
   from: string; // payer (0x address)
   to: string; // payee (0x address)
-  value: bigint; // $LH wei
+  value: bigint; // $LH wei — the EXACT amount ('exact'), or the signed MAX ('upto')
   validAfter: bigint;
   validBefore: bigint;
   nonce: string; // 0x + 32-byte hex
   signature: string; // 0x + 65-byte hex
+  // Settlement scheme. 'exact' (default) → settle() moves `value`. 'upto' →
+  // `value` is a MAX ceiling; the proxy measures actual token cost and settles
+  // min(actual, value) via settleUpto(). The signed digest is identical (over
+  // `value`), so the scheme is metadata, not part of the signature.
+  scheme: 'exact' | 'upto';
 }
 
 const PAYMENT_TYPEHASH = keccak32(
@@ -244,6 +268,12 @@ export function parseX402Header(headerVal: string | null): X402Auth | null {
   if (!/^0x[0-9a-fA-F]{64}$/.test(nonce)) throw new Error('x402 authorization: nonce must be 32 bytes');
   const signature = str(o.signature, 'signature');
   if (!/^0x[0-9a-fA-F]{130}$/.test(signature)) throw new Error('x402 authorization: signature must be 65 bytes');
+  // Scheme is optional; absent / 'exact' = the original exact-value settlement.
+  const schemeRaw = o.scheme;
+  if (schemeRaw !== undefined && schemeRaw !== 'exact' && schemeRaw !== 'upto') {
+    throw new Error('x402 authorization: scheme must be "exact" or "upto"');
+  }
+  const scheme: 'exact' | 'upto' = schemeRaw === 'upto' ? 'upto' : 'exact';
   return {
     from,
     to,
@@ -252,6 +282,7 @@ export function parseX402Header(headerVal: string | null): X402Auth | null {
     validBefore: toBig(o.validBefore, 'validBefore'),
     nonce,
     signature,
+    scheme,
   };
 }
 
@@ -299,14 +330,20 @@ export async function verifyX402Payment(
       quote: { payTo: payee, scheme: 'x402-exact', asset: '$LH', chainId: CHAIN_ID, minValue: requiredWei.toString() },
     };
   }
-  const ceiling = priceLockCeiling(requiredWei);
-  if (auth.value > ceiling) {
-    return {
-      ok: false,
-      status: 402,
-      error: `x402 overpay: authorized ${auth.value} wei, current price ${requiredWei} wei (re-sign for the current price)`,
-      quote: { payTo: payee, scheme: 'x402-exact', asset: '$LH', chainId: CHAIN_ID, priceChanged: true, currentPriceWei: requiredWei.toString(), maxValue: ceiling.toString() },
-    };
+  // The overpay ceiling applies to 'exact' only: there `value` is the amount
+  // MOVED, so a stale-quote overpay must be rejected. For 'upto', `value` is a
+  // MAX the payer is willing to pay and the proxy settles only the measured
+  // actual (<= max) — a generous ceiling is intended, not an overpay.
+  if (auth.scheme === 'exact') {
+    const ceiling = priceLockCeiling(requiredWei);
+    if (auth.value > ceiling) {
+      return {
+        ok: false,
+        status: 402,
+        error: `x402 overpay: authorized ${auth.value} wei, current price ${requiredWei} wei (re-sign for the current price)`,
+        quote: { payTo: payee, scheme: 'x402-exact', asset: '$LH', chainId: CHAIN_ID, priceChanged: true, currentPriceWei: requiredWei.toString(), maxValue: ceiling.toString() },
+      };
+    }
   }
   // Validity window (the contract enforces this too; fail fast before gas).
   const now = BigInt(Math.floor(Date.now() / 1000));
@@ -372,6 +409,39 @@ export async function settleX402NoWait(a: X402Auth): Promise<`0x${string}`> {
       a.from as `0x${string}`,
       a.to as `0x${string}`,
       a.value,
+      a.validAfter,
+      a.validBefore,
+      a.nonce as `0x${string}`,
+      a.signature as `0x${string}`,
+    ],
+  });
+  return wallet.sendTransaction({ to: REGISTRY as `0x${string}`, data, value: 0n });
+}
+
+/**
+ * Submit `X402Facet.settleUpto(...)` for the "Upto" scheme: the payer signed a
+ * MAX (`a.value`); this settles the measured `actualWei`, which the caller MUST
+ * cap at the max (the contract reverts `AmountExceedsMax` otherwise). Broadcast-
+ * only, same gas key + non-blocking semantics as `settleX402NoWait`. Requires the
+ * `settleUpto` selector to be cut into the live diamond (a money-critical recut —
+ * staged until then). Returns the tx hash; throws only if the broadcast fails.
+ */
+export async function settleUptoNoWait(a: X402Auth, actualWei: bigint): Promise<`0x${string}`> {
+  const pk = process.env.PROXY_METER_KEY;
+  if (!pk) throw new Error('missing PROXY_METER_KEY (x402 settlement account)');
+  // Defense-in-depth: never submit an actual above the signed max (the contract
+  // would revert; cap here so a measurement overshoot still settles the max).
+  const actual = actualWei > a.value ? a.value : actualWei < 0n ? 0n : actualWei;
+  const account = privateKeyToAccount((pk.startsWith('0x') ? pk : `0x${pk}`) as `0x${string}`);
+  const wallet = createWalletClient({ account, chain: TEMPO_CHAIN, transport: http(TEMPO_RPC) });
+  const data = encodeFunctionData({
+    abi: X402_ABI,
+    functionName: 'settleUpto',
+    args: [
+      a.from as `0x${string}`,
+      a.to as `0x${string}`,
+      a.value, // maxValue == the signed value
+      actual, // actualValue (capped at max)
       a.validAfter,
       a.validBefore,
       a.nonce as `0x${string}`,
