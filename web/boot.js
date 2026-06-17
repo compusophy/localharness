@@ -35,6 +35,32 @@ window.addEventListener("appinstalled", () => {
   window.__lhInstall = null;
 });
 
+// PWA identity per agent: name the installed app after THIS subdomain (the
+// agent) so a main and its alts each install as their OWN distinct app on the
+// home screen — "krafto", not a generic "localharness". Sets the page title
+// (browser/desktop) and apple-mobile-web-app-title (iOS Add-to-Home-Screen
+// label). The apex stays "localharness". Display-only host parse — a single
+// label under the apex; the canonical tenant classification lives in tenant.rs.
+(function () {
+  try {
+    const APEX = "localharness.xyz";
+    const h = location.hostname;
+    let name = "localharness";
+    if (h !== APEX && h.endsWith("." + APEX)) {
+      const sub = h.slice(0, h.length - APEX.length - 1);
+      if (sub && sub.indexOf(".") === -1 && sub !== "www") name = sub;
+    }
+    document.title = name;
+    let m = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+    if (!m) {
+      m = document.createElement("meta");
+      m.setAttribute("name", "apple-mobile-web-app-title");
+      document.head.appendChild(m);
+    }
+    m.setAttribute("content", name);
+  } catch {}
+})();
+
 // Per-build cache-buster. Chrome's WebAssembly compiled-module code cache is
 // keyed on the wasm URL, and serves a STALE compiled module for the unchanged
 // /pkg/localharness_bg.wasm path even under `max-age=0, must-revalidate` — so a
@@ -45,7 +71,7 @@ window.addEventListener("appinstalled", () => {
 // cannot 404. Bust the shim AND the wasm (the shim drops the query when it
 // resolves the wasm relative to import.meta.url, so the wasm url is passed
 // explicitly to init).
-const LH_BUILD = "822c3fe22d68";
+const LH_BUILD = "3d8b4fbf8d7f";
 try {
   const mod = await import("./pkg/localharness.js?v=" + LH_BUILD);
   // Object form (not a bare string) — the bare-path arg is deprecated in this

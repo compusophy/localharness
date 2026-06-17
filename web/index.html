@@ -37,6 +37,14 @@
   <link rel="manifest" href="./manifest.webmanifest" />
   <meta name="theme-color" content="#000000" />
   <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
+  <!-- iOS Add-to-Home-Screen: standalone (no Safari chrome) + the icon. The
+       per-AGENT name (apple-mobile-web-app-title / page title) is set in boot.js
+       from the subdomain, so a main and its alts each install as their OWN app
+       ("krafto", not "localharness"). The apex stays "localharness". -->
+  <link rel="apple-touch-icon" href="./icons/icon-192.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="localharness" />
 </head>
 <body>
 <!--
@@ -51,7 +59,7 @@
      visitors. index.html itself is the navigation document and revalidates. -->
 <!-- Stripe Elements on-ramp shim (window.lhBuyLh) — loaded before boot so the
      wasm app can call it; ?v= cache-buster stamped by build-web.sh. -->
-<script src="./stripe-embed.js?v=822c3fe22d68"></script>
-<script type="module" src="./boot.js?v=822c3fe22d68"></script>
+<script src="./stripe-embed.js?v=3d8b4fbf8d7f"></script>
+<script type="module" src="./boot.js?v=3d8b4fbf8d7f"></script>
 </body>
 </html>
