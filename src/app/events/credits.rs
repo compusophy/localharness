@@ -606,12 +606,24 @@ async fn poll_and_finalize(payment_intent: String, lh_label: String, onboarding:
                     );
                     return;
                 }
-                // Seed safely on disk → re-paint the apex on a FRESH executor tick
-                // (avoids the iOS re-entrant-paint panic) so the claim-a-name input
-                // appears (no "need 1 more LH" surprise).
-                wasm_bindgen_futures::spawn_local(async {
-                    crate::app::paint_apex(crate::app::tenant::Host::Apex).await;
-                });
+                // Seed safely on disk → BACK IT UP at this safest moment (owner
+                // request): show the recovery phrase with copy/download so a
+                // device loss / OPFS wipe / the narrow reload-before-persist
+                // window can't strand the just-paid identity. [continue]
+                // (onboard-continue) proceeds to the name-claim. Close the buy
+                // modal first so the backup is the focus.
+                let words = crate::app::APP
+                    .with(|c| c.borrow().wallet.as_ref().map(|w| w.mnemonic.to_string()))
+                    .unwrap_or_default();
+                call_js("lhUnmountCheckout", None);
+                if let Some(el) = dom::by_id("buy-modal") {
+                    if let Some(p) = el.parent_element() {
+                        let _ = p.remove_child(&el);
+                    }
+                }
+                if let Some(root) = dom::by_id("root") {
+                    root.set_inner_html(&templates::onboard_seed_backup(&words).into_string());
+                }
             }
             return;
         }

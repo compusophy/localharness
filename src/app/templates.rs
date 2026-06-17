@@ -2166,6 +2166,28 @@ pub(crate) fn seed_phrase(words: &str) -> Markup {
     }
 }
 
+/// Post-payment seed backup (owner request): the safest moment to bank the
+/// recovery phrase is right after the paid mint persisted it. Shows the words
+/// with copy/download (the `seed_phrase` view) + a [continue] to the name-claim,
+/// so a device loss / OPFS wipe / a reload in the narrow pay→persist window
+/// can't strand the just-paid identity. Rendered into `#root` by
+/// `credits::poll_and_finalize` on a confirmed onboarding mint.
+pub(crate) fn onboard_seed_backup(words: &str) -> Markup {
+    html! {
+        (site_header(&Host::Apex))
+        main.apex-main {
+            div.col-chat {
+                div #status .terminal-status role="status" aria-live="polite" {}
+                section.step {
+                    p { "you're in. save your recovery phrase first — it's the only key to this identity, and it's shown once." }
+                    (seed_phrase(words))
+                    button type="button" data-action="onboard-continue" .create-button { "I've saved it — continue" }
+                }
+            }
+        }
+    }
+}
+
 /// Chrome shown when the signer iframe loads but no identity exists
 /// at the apex origin. The postMessage handler errors on every
 /// challenge in this state — owner verification on the parent

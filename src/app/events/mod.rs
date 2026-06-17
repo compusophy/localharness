@@ -137,6 +137,9 @@ enum Action {
     /// create the identity, then open the $2 checkout immediately so the price
     /// is the FIRST step — no surprise paywall after the user picks a name.
     CreateAccount,
+    /// "I've saved it — continue" from the post-payment seed-backup step →
+    /// paint the funded apex (the name-claim input).
+    OnboardContinue,
     ShowImport,
     CancelImport,
     HeaderAdminToggle,
@@ -293,6 +296,7 @@ impl Action {
             "import-seed" => Action::ImportSeed,
             "create-identity" => Action::CreateIdentity,
             "create-account" => Action::CreateAccount,
+            "onboard-continue" => Action::OnboardContinue,
             "show-import" => Action::ShowImport,
             "cancel-import" => Action::CancelImport,
             "header-admin-toggle" => Action::HeaderAdminToggle,
@@ -951,6 +955,12 @@ fn dispatch(action: Action) {
                         credits::buy_lh_pressed(true);
                     }
                 }
+            });
+        }
+        Action::OnboardContinue => {
+            // From the post-payment seed-backup step → the funded name-claim.
+            wasm_bindgen_futures::spawn_local(async {
+                super::paint_apex(super::tenant::Host::Apex).await;
             });
         }
         Action::CreateIdentity => {
