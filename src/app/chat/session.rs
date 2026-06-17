@@ -32,7 +32,7 @@ use super::tools::party::{
 use super::tools::misc::{
     dwell_tool,
     clear_context_tool, compact_context_tool, consolidate_lessons_tool, notify_tool,
-    record_lesson_tool, set_lessons_tool,
+    record_lesson_tool, schedule_task_tool, set_lessons_tool,
     set_persona_tool, spawn_recursive_subagent_tool, submit_feedback_tool, web_fetch_tool,
 };
 use super::tools::platform::{
@@ -296,6 +296,7 @@ pub(crate) async fn start_session(
             .with_tool(list_proposals_tool())
             .with_tool(submit_feedback_tool())
             .with_tool(notify_tool())
+            .with_tool(schedule_task_tool())
             .with_tool(record_lesson_tool())
             .with_tool(consolidate_lessons_tool())
             .with_tool(set_lessons_tool())
@@ -401,6 +402,7 @@ pub(crate) async fn start_session(
             .with_tool(list_proposals_tool())
             .with_tool(submit_feedback_tool())
             .with_tool(notify_tool())
+            .with_tool(schedule_task_tool())
             .with_tool(record_lesson_tool())
             .with_tool(consolidate_lessons_tool())
             .with_tool(set_lessons_tool())

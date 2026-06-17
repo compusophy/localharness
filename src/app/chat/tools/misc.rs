@@ -421,6 +421,117 @@ pub(crate) fn notify_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     )
 }
 
+/// `schedule_task(task, interval, budget, runs?, target?)` — escrow `$LH` to run
+/// a recurring or DELAYED task tab-free (durable, via ScheduleFacet + the cron
+/// worker) instead of faking it with a timer cartridge (on-chain feature
+/// request). Reuses the admin form's escrow core verbatim. Defaults `target` to
+/// THIS agent; the escrow is refundable (cancel under admin → account → schedule).
+pub(crate) fn schedule_task_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "task": {
+                "type": "string",
+                "description": "The instruction the scheduled run executes on each \
+                    fire (a self-contained prompt). Prefix with \"GOAL: \" for a \
+                    goal-loop that ends + refunds early once finished."
+            },
+            "interval": {
+                "type": "string",
+                "description": "Cadence between runs: \"60s\", \"5m\", \"1h\" (a bare \
+                    number = seconds; minimum 60s). For a ONE-SHOT delayed task, set \
+                    this to the delay and `runs` to 1."
+            },
+            "budget": {
+                "type": "string",
+                "description": "Total `$LH` to escrow across all runs, as a decimal \
+                    (e.g. \"1\", \"0.5\"). Each run draws from it; the job stops when it \
+                    runs out. Refundable on cancel."
+            },
+            "runs": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "OPTIONAL max number of runs (default 100). Set 1 for a \
+                    single delayed task."
+            },
+            "target": {
+                "type": "string",
+                "description": "OPTIONAL subdomain that runs the task (defaults to THIS \
+                    agent). Another agent's name schedules work on them."
+            }
+        },
+        "required": ["task", "interval", "budget"]
+    });
+    ClosureTool::new(
+        "schedule_task",
+        "Escrow `$LH` to run a recurring or DELAYED task WITHOUT a tab open (durable, \
+         via ScheduleFacet + the platform cron worker) — use this for \"every hour…\" / \
+         \"in 10 minutes…\" instead of a fake timer cartridge. `interval` is the cadence \
+         (\"5m\", \"1h\"; min 60s); for a one-shot delayed task set `runs: 1` and \
+         `interval` to the delay. `budget` is the total `$LH` to escrow (refundable — \
+         the owner can cancel under admin → account → schedule). Defaults `target` to \
+         this agent. Returns { scheduled, job_id, target, interval_secs, runs, budget }.",
+        schema,
+        |args: serde_json::Value, _ctx| async move {
+            let task = args.get("task").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if task.is_empty() {
+                return Err(crate::error::Error::other("schedule_task: task cannot be empty"));
+            }
+            let interval_raw = args.get("interval").and_then(|v| v.as_str()).unwrap_or("");
+            let interval_secs =
+                crate::app::events::schedule::parse_schedule_interval(interval_raw).ok_or_else(
+                    || {
+                        crate::error::Error::other(
+                            "interval must be at least 60s — e.g. \"60s\", \"5m\", \"1h\"",
+                        )
+                    },
+                )?;
+            let budget_raw = args.get("budget").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let budget_wei = crate::encoding::parse_token_amount(budget_raw).ok_or_else(|| {
+                crate::error::Error::other(
+                    "could not parse budget — pass a decimal $LH figure like \"1\" or \"0.5\"",
+                )
+            })?;
+            if budget_wei == 0 {
+                return Err(crate::error::Error::other("budget must be greater than 0"));
+            }
+            let runs = args
+                .get("runs")
+                .and_then(|v| v.as_u64())
+                .map(|r| r.max(1) as u32)
+                .unwrap_or(100);
+            let target = args
+                .get("target")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_lowercase())
+                .filter(|s| !s.is_empty())
+                .or_else(crate::app::tenant::current_name)
+                .ok_or_else(|| {
+                    crate::error::Error::other(
+                        "no target — this isn't a named agent subdomain; pass an explicit target",
+                    )
+                })?;
+            let job_id = crate::app::events::schedule::submit_schedule_job(
+                &target,
+                task,
+                interval_secs,
+                budget_wei,
+                runs,
+            )
+            .await
+            .map_err(crate::error::Error::other)?;
+            Ok(serde_json::json!({
+                "scheduled": true,
+                "job_id": job_id,
+                "target": target,
+                "interval_secs": interval_secs,
+                "runs": runs,
+                "budget": budget_raw,
+            }))
+        },
+    )
+}
+
 /// Cross-agent notify: POST `{title, body, to}` to the proxy's `/api/notify`
 /// with a fresh credit-signed auth token. The proxy resolves the target's
 /// enrolled push subscription on-chain, stamps the sender's chain-verified

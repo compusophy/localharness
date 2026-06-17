@@ -30,7 +30,9 @@ mod guild;
 mod key_sync;
 mod layout;
 mod public_face;
-mod schedule;
+// `pub(crate)` so the schedule_task chat tool can reuse submit_schedule_job /
+// parse_schedule_interval (the same escrow core the admin form + [background] use).
+pub(crate) mod schedule;
 mod subdomains;
 mod tba;
 

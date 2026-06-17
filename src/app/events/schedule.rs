@@ -16,7 +16,7 @@ const SCHEDULE_DEFAULT_RUNS: u32 = 100;
 /// seconds, enforcing the 60s floor. Mirrors the CLI's `parse_interval`
 /// EXACTLY so the browser + CLI accept the same strings. `None` on garbage
 /// or sub-minimum (handled by a silent no-op — no explanatory-validation).
-fn parse_schedule_interval(raw: &str) -> Option<u64> {
+pub(crate) fn parse_schedule_interval(raw: &str) -> Option<u64> {
     let s = raw.trim().to_ascii_lowercase();
     if s.is_empty() {
         return None;
@@ -142,7 +142,7 @@ pub(super) fn schedule_job_pressed() {
 /// `withdrawCredits` call in the SAME atomic tx (the escrow auto-bridge —
 /// on-chain feedback #63), so "has metered credits but the escrow fails"
 /// can only mean BOTH pots together are short.
-async fn submit_schedule_job(
+pub(crate) async fn submit_schedule_job(
     target: &str,
     task: &str,
     interval_secs: u64,
