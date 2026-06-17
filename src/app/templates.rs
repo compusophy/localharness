@@ -88,7 +88,7 @@ pub(crate) fn onboard_checkout(lh_label: &str) -> Markup {
             div #onboard-checkout-msg .step-msg style="color:var(--muted)" {
                 "preparing secure checkout…"
             }
-            div.api-key-hint { "you'll receive " (lh_label) }
+            div.api-key-hint { "you'll receive 1 agent + " (lh_label) }
             div #lh-pay-region {
                 div #lh-express style="margin:10px 0" {}
                 div #lh-payment style="margin:6px 0" {}

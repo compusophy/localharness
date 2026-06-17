@@ -34,8 +34,13 @@ use maud::{Markup, html};
 pub(crate) fn create_wallet_cta() -> Markup {
     html! {
         section #apex-onboard .apex-onboard {
+            // Pitch ABOVE the button so the cost + what you get are known BEFORE
+            // the tap — no surprise charge, and the credits are part of the offer.
+            p style="font-size:13px;color:var(--muted);margin:0 0 10px" {
+                "LIMITED TIME — for $2 you'll receive 1 agent + 200 $LH"
+            }
             button type="button" data-action="create-account" .apex-onboard-cta {
-                "create agent · $2"
+                "create agent"
             }
             div #onboard-msg .step-msg {}
         }

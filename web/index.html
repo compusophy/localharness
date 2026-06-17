@@ -16,6 +16,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <!-- Warm the TLS connection to Stripe.js so the buy-$LH Elements modal opens fast. -->
   <link rel="preconnect" href="https://js.stripe.com" />
+  <!-- Warm the connection to the $LH credit proxy so the first checkout POST
+       (creating the PaymentIntent) doesn't pay a cold DNS + TLS handshake. -->
+  <link rel="preconnect" href="https://proxy-tau-ten-15.vercel.app" />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   <title>localharness</title>
   <!--
@@ -59,7 +62,7 @@
      visitors. index.html itself is the navigation document and revalidates. -->
 <!-- Stripe Elements on-ramp shim (window.lhBuyLh) — loaded before boot so the
      wasm app can call it; ?v= cache-buster stamped by build-web.sh. -->
-<script src="./stripe-embed.js?v=a6c2583ad3d0"></script>
-<script type="module" src="./boot.js?v=a6c2583ad3d0"></script>
+<script src="./stripe-embed.js?v=72f9b9fe88f1"></script>
+<script type="module" src="./boot.js?v=72f9b9fe88f1"></script>
 </body>
 </html>

@@ -80,7 +80,7 @@ fi
 # own self-referential LH_BUILD line, to avoid a circular hash) so a JS-ONLY
 # change to boot.js also busts — the buster used to key on the wasm alone, so a
 # boot.js edit with unchanged wasm shipped stale to returning visitors.
-HASH="$( { cat web/pkg/localharness_bg.wasm; grep -v 'const LH_BUILD =' web/boot.js; } | (sha256sum 2>/dev/null || shasum -a 256) | cut -c1-12 )"
+HASH="$( { cat web/pkg/localharness_bg.wasm; grep -v 'const LH_BUILD =' web/boot.js; cat web/stripe-embed.js; } | (sha256sum 2>/dev/null || shasum -a 256) | cut -c1-12 )"
 if [ -n "$HASH" ]; then
     sed -i.bak -E "s/const LH_BUILD = \"[^\"]*\"/const LH_BUILD = \"${HASH}\"/" web/boot.js && rm -f web/boot.js.bak
     sed -i.bak -E "s|(boot\.js\?v=)[A-Za-z0-9]*|\1${HASH}|" web/index.html && rm -f web/index.html.bak

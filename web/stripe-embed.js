@@ -139,4 +139,9 @@
   };
 
   window.lhUnmountCheckout = function () { state = null; };
+
+  // Warm Stripe.js on page load so mounting the Elements is INSTANT when the
+  // user taps "create agent" (instead of loading the ~heavy Stripe.js on the
+  // critical path mid-checkout). preconnect to js.stripe.com is in index.html.
+  loadStripe().catch(function () {});
 })();
