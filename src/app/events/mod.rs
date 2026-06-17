@@ -91,6 +91,23 @@ where
         repaint.await;
     });
 }
+
+/// Probe storage durability and, if volatile (incognito/private window), paint
+/// the non-blocking "back up your seed" warning into `#storage-warn-slot`.
+///
+/// MUST be awaited SEQUENTIALLY — after the seed write, never concurrently with
+/// it. `storage_is_volatile()` round-trips `navigator.storage`; racing it
+/// against `create_and_persist`'s first OPFS write interleaved two futures on
+/// the single-thread wasm executor and tripped the iOS "RefCell already
+/// borrowed" panic at the seed write (the create-wallet front-door crash).
+pub(super) async fn warn_if_storage_volatile() {
+    if super::wallet_store::storage_is_volatile().await {
+        dom::swap_inner(
+            "storage-warn-slot",
+            &templates::volatile_storage_warning().into_string(),
+        );
+    }
+}
 pub(crate) use key_sync::{sync_local_key_to_main, try_auto_restore_gemini_key};
 pub(crate) use subdomains::{run_batch_create_subdomains, run_bulk_release, run_release_subdomain};
 
@@ -910,7 +927,7 @@ fn dispatch(action: Action) {
             };
             dom::swap_inner(
                 "onboard-msg",
-                "<span style=\"color:var(--muted)\">creating your account…</span>",
+                "<span style=\"color:var(--muted)\">setting up…</span>",
             );
             wasm_bindgen_futures::spawn_local(async move {
                 let _flow_guard = flow_guard;
@@ -927,6 +944,10 @@ fn dispatch(action: Action) {
                     ),
                     Ok(Ok(_)) => {
                         dom::swap_inner("onboard-msg", "");
+                        // Seed persisted — probe durability sequentially (never
+                        // racing the write; the iOS borrow-panic class) and warn
+                        // if the OPFS jar is volatile (incognito) before paywall.
+                        warn_if_storage_volatile().await;
                         // Identity exists → open the $2 checkout (mints 200 $LH);
                         // its poll re-paints the apex to the funded name input.
                         credits::buy_lh_pressed(true);
@@ -947,18 +968,14 @@ fn dispatch(action: Action) {
                 "identity-msg",
                 "<span style=\"color:var(--muted)\">generating identity…</span>",
             );
-            // Volatile-storage (incognito) warning — the seed about to be minted
-            // lives in OPFS, which a private window wipes on tab close. Surface a
-            // non-blocking warning so the user backs it up (kit-qa #). Best-effort:
-            // a no-op when storage is durable / the API is missing.
-            wasm_bindgen_futures::spawn_local(async move {
-                if super::wallet_store::storage_is_volatile().await {
-                    dom::swap_inner(
-                        "storage-warn-slot",
-                        &templates::volatile_storage_warning().into_string(),
-                    );
-                }
-            });
+            // Volatile-storage (incognito) warning is surfaced AFTER the seed
+            // write completes (see `warn_if_storage_volatile` calls below), NOT
+            // concurrently: racing `storage_is_volatile()`'s `navigator.storage`
+            // round-trip against `create_and_persist`'s first OPFS write
+            // interleaved two tasks on the single-thread executor and tripped the
+            // iOS "RefCell already borrowed" panic at the seed write. The warning
+            // is about BACKING UP a freshly-minted seed, so showing it once the
+            // seed exists is equally timely.
             match super::tenant::current() {
                 super::tenant::Host::Apex => {
                     wasm_bindgen_futures::spawn_local(async move {
@@ -991,6 +1008,10 @@ fn dispatch(action: Action) {
                             }
                             Ok(Ok(_)) => {}
                         }
+                        // Seed is now safely persisted — only NOW probe storage
+                        // durability (sequentially, never racing the write) and
+                        // surface the incognito back-up warning if volatile.
+                        warn_if_storage_volatile().await;
                         // Progress BEFORE the repaint: paint_apex does on-chain
                         // reads that can be slow on mobile — the identity is
                         // already safe at this point and the user should know.
@@ -1018,6 +1039,9 @@ fn dispatch(action: Action) {
                         let flow_guard = flow_guard;
                         match super::verify::create_wallet_via_iframe(false).await {
                             Ok(_addr) => {
+                                // Seed persisted — probe durability now, never
+                                // racing the write (the iOS borrow-panic class).
+                                warn_if_storage_volatile().await;
                                 if let super::tenant::Host::Tenant(name) = &host {
                                     // Defer the repaint to a fresh executor tick —
                                     // same iOS re-entrant-`Task::run` hazard as the

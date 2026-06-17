@@ -46,7 +46,11 @@ pub(crate) fn log(msg: &str) {
 }
 
 fn crumbs_snapshot() -> Vec<String> {
-    CRUMBS.with(|c| c.borrow().clone())
+    // `try_borrow`, not `borrow`: this is called from the PANIC hook, and a
+    // panic raised while `log()` held `borrow_mut()` would otherwise double-
+    // borrow and panic INSIDE the panic hook (aborting with no banner). A
+    // contended borrow just yields no crumbs — the panic message still paints.
+    CRUMBS.with(|c| c.try_borrow().map(|v| v.clone()).unwrap_or_default())
 }
 
 /// `?debug=1` anywhere in the query turns the live overlay on.

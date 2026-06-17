@@ -57,8 +57,15 @@ impl OpfsFilesystem {
     }
 
     async fn root_handle(&self) -> Result<FileSystemDirectoryHandle> {
-        if let Some(h) = self.root.borrow().as_ref() {
-            return Ok(h.clone());
+        // NEVER hold a `Ref`/`RefMut` across the `getDirectory().await` below.
+        // The single-threaded wasm executor interleaves tasks at await points,
+        // and on iOS WebKit's microtask timing a borrow held across an await can
+        // be re-entered by a concurrent OPFS op → "RefCell already borrowed".
+        // Take an OWNED clone out of the borrow in its own statement, so the
+        // guard is dropped before we await.
+        let cached = self.root.borrow().clone();
+        if let Some(h) = cached {
+            return Ok(h);
         }
         let window = web_sys::window().ok_or_else(|| Error::other("no window: not in a browser"))?;
         let storage = window.navigator().storage();
@@ -69,6 +76,10 @@ impl OpfsFilesystem {
         let handle: FileSystemDirectoryHandle = val
             .dyn_into()
             .map_err(|_| Error::other("getDirectory: not a FileSystemDirectoryHandle"))?;
+        // Cache in a brief, await-free borrow. Two concurrent first-init callers
+        // each resolve their own `getDirectory()` (OPFS returns the same logical
+        // root every time), so a double-init just caches the equivalent handle
+        // twice — harmless, never a borrow conflict.
         *self.root.borrow_mut() = Some(handle.clone());
         Ok(handle)
     }
