@@ -191,8 +191,11 @@ const MAX_CREDITS_BODY_BYTES = Number(process.env.LH_MAX_CREDITS_BODY_BYTES ?? '
 // session-only callers stay free. MARGIN_BPS: 10000 = raw cost, 13000 = +30%.
 const TOKEN_METERING = (process.env.LH_TOKEN_METERING ?? '') === '1';
 const MARGIN_BPS = (() => {
-  const n = BigInt(Math.trunc(Number(process.env.LH_MARGIN_BPS ?? '13000')));
-  return n > 0n ? n : 13000n; // never zero/negative → never free / never credit back
+  // Parse defensively: a malformed env (e.g. a typo) must NOT throw at module
+  // load — `BigInt(NaN)` would, bricking the whole Edge function (all chat down),
+  // not just disabling metering. Fall back to the 1.3× default on any bad value.
+  const n = Math.trunc(Number(process.env.LH_MARGIN_BPS ?? '13000'));
+  return Number.isFinite(n) && n > 0 ? BigInt(n) : 13000n; // never zero/neg → never free
 })();
 // Only browser origins under our own domain may invoke the proxy (H2). A
 // server-side caller sends no Origin header and is allowed through.
