@@ -34,7 +34,7 @@ mod schedule;
 mod subdomains;
 mod tba;
 
-pub(crate) use credits::{pending_invite_code, refresh_fund_banner, try_redeem_pending_invite};
+pub(crate) use credits::{refresh_fund_banner, try_redeem_pending_invite};
 
 thread_local! {
     /// One identity/onboarding flow at a time. Mashing a (perceived-stuck)
