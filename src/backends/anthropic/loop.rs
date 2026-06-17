@@ -778,10 +778,13 @@ impl LoopState {
         // loop) — dropping results left live tool blocks "running" with an
         // empty result panel until a reload replayed them from history.
         match chunk {
+            // DONE, not Active — the tool was already dispatched inline; an
+            // Active step makes the Agent's spawn_tool_dispatcher re-execute it
+            // (double-fire, + re-fire on replay). See the gemini loop / mock.
             StreamChunk::ToolCall(tc) => self.emit(Step::tool_call(
                 self.alloc_step_index(),
                 tc,
-                StepStatus::Active,
+                StepStatus::Done,
             )),
             StreamChunk::ToolResult(tr) => {
                 self.emit(Step::tool_result(self.alloc_step_index(), tr))
@@ -1138,5 +1141,26 @@ mod tests {
             "cumulative deltas: final reported output is the LAST value (25), not 2+10+25"
         );
         assert_eq!(round.input_tokens, Some(20));
+    }
+
+    /// REGRESSION: the inline-dispatched tool's observability step MUST be Done,
+    /// not Active — an Active step makes the Agent's spawn_tool_dispatcher
+    /// re-execute the (already inline-dispatched) tool. See the gemini loop.
+    #[tokio::test]
+    async fn inline_tool_call_step_is_done_so_dispatcher_skips_it() {
+        let (tx, mut rx) = broadcast::channel::<Step>(8);
+        let state = LoopState::new(tx);
+        state.emit_chunk_step(StreamChunk::ToolCall(crate::types::ToolCall {
+            name: "create_file".into(),
+            args: serde_json::Value::Null,
+            id: None,
+            canonical_path: None,
+        }));
+        let step = rx.recv().await.expect("a tool-call step was emitted");
+        assert_eq!(
+            step.status,
+            StepStatus::Done,
+            "inline-dispatched tool-call step must be Done, not Active",
+        );
     }
 }

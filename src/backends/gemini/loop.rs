@@ -617,10 +617,16 @@ impl LoopState {
         // otherwise) left every live tool block "running" with an EMPTY
         // result panel until a reload replayed it from history.
         match chunk {
+            // DONE, not Active. This tool was ALREADY dispatched inline (above),
+            // and the Agent's `spawn_tool_dispatcher` RE-EXECUTES any non-Done
+            // registered tool-call step it sees on the broadcast — so emitting
+            // Active here double-fires every tool (and re-fires it on history
+            // replay). Done = "observability only, already handled", exactly the
+            // contract the mock backend documents.
             StreamChunk::ToolCall(tc) => self.emit(Step::tool_call(
                 self.alloc_step_index(),
                 tc,
-                StepStatus::Active,
+                StepStatus::Done,
             )),
             StreamChunk::ToolResult(tr) => {
                 self.emit(Step::tool_result(self.alloc_step_index(), tr))
@@ -704,5 +710,30 @@ mod tests {
         assert_eq!(step.source, StepSource::System);
         assert_eq!(step.status, StepStatus::Error);
         assert!(step.error.contains("turn denied by hook: nope"));
+    }
+
+    /// REGRESSION: the inline-dispatched tool's observability step MUST be Done,
+    /// not Active. The Agent's `spawn_tool_dispatcher` RE-EXECUTES any non-Done
+    /// registered tool-call step it sees on the broadcast — so an Active step
+    /// double-fires every tool (gemini already dispatched it inline) and
+    /// re-fires it on history replay. Pins the Done contract the mock documents.
+    #[tokio::test]
+    async fn inline_tool_call_step_is_done_so_dispatcher_skips_it() {
+        let (tx, mut rx) = broadcast::channel::<Step>(8);
+        let state = LoopState::new(tx);
+        state.emit_chunk_step(StreamChunk::ToolCall(crate::types::ToolCall {
+            name: "create_file".into(),
+            args: serde_json::Value::Null,
+            id: None,
+            canonical_path: None,
+        }));
+        let step = rx.recv().await.expect("a tool-call step was emitted");
+        assert!(!step.tool_calls.is_empty(), "it carries the tool call");
+        assert_eq!(
+            step.status,
+            StepStatus::Done,
+            "inline-dispatched tool-call step must be Done; Active makes \
+             spawn_tool_dispatcher re-execute the tool",
+        );
     }
 }
