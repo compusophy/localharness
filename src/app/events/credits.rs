@@ -655,47 +655,66 @@ pub(crate) async fn finalize_after_payment(
             crate::app::chat::ensure_credit_meter().await;
             super::refresh_credits_pill().await;
             refresh_fund_banner().await;
-            // Onboarding: the fresh buyer is now funded. PAY-FIRST RULE — the
-            // seed has been held IN MEMORY ONLY until this moment; now that the
-            // payment confirmed, persist it to disk. This is the FIRST thing
-            // after the mint, so the pay→persist window is tiny (the inline
-            // checkout keeps the page open, so the only residual risk is a reload
-            // between the mint confirming and this write — narrow, and the webhook
-            // still minted to the address). If persist FAILS, surface it loudly:
-            // the user paid and the seed is still in memory (reveal/retry
-            // possible), so we must NOT swallow it — the seed MUST land.
+            // Onboarding: payment confirmed → persist the in-memory seed and show
+            // the backup card (the seed was held in memory only until paid).
             if onboarding {
-                if let Err(err) = crate::app::wallet_store::persist_current_seed().await {
-                    call_js(
-                        "lhBuyError",
-                        Some(&format!(
-                            "paid ✓ but saving your identity failed: {err} — do NOT close \
-                             this tab; reveal & back up your seed phrase, then reload"
-                        )),
-                    );
+                if let Err(err) = persist_seed_and_show_backup().await {
+                    call_js("lhBuyError", Some(&seed_persist_failed_msg(&err)));
                     return;
-                }
-                // Seed safely on disk → BACK IT UP at this safest moment (owner
-                // request): show the recovery phrase with copy/download so a
-                // device loss / OPFS wipe / the narrow reload-before-persist
-                // window can't strand the just-paid identity. [continue]
-                // (onboard-continue) proceeds to the name-claim. Tear down the
-                // Stripe Elements instance first; the inline checkout card lives
-                // inside `#root`, so the seed-backup swap below removes it.
-                let words = crate::app::APP
-                    .with(|c| c.borrow().wallet.as_ref().map(|w| w.mnemonic.to_string()))
-                    .unwrap_or_default();
-                call_js("lhUnmountCheckout", None);
-                if let Some(root) = dom::by_id("root") {
-                    root.set_inner_html(&templates::onboard_seed_backup(&words).into_string());
                 }
             }
             return;
         }
         crate::runtime::sleep_ms(4000).await;
     }
-    // Couldn't confirm the mint in-page; the webhook backstop will mint and the
-    // "minting shortly" line stays up.
+    // All in-page retries failed, but the PAYMENT succeeded (this fn runs only on
+    // a `succeeded` PI) and the webhook now mints `payment_intent.succeeded`
+    // server-side — so resolve gracefully instead of hanging the pay button on
+    // "processing…" forever.
+    if checkout_gone() {
+        return;
+    }
+    if onboarding {
+        // Seed safety is independent of the mint: persist + back up now (paid);
+        // the webhook credits the $LH to the address.
+        if let Err(err) = persist_seed_and_show_backup().await {
+            call_js("lhBuyError", Some(&seed_persist_failed_msg(&err)));
+        }
+        return;
+    }
+    call_js(
+        "lhBuySuccess",
+        Some(&format!(
+            "✓ payment received — {lh_label} is being credited and will appear shortly"
+        )),
+    );
+    super::refresh_credits_pill().await;
+    refresh_fund_banner().await;
+}
+
+/// Onboarding only: the payment is confirmed, so persist the in-memory seed and
+/// show the backup card (copy/download). `Err` if the OPFS write failed — the
+/// caller surfaces it loudly via [`seed_persist_failed_msg`] (the user paid; the
+/// seed must not be silently lost).
+async fn persist_seed_and_show_backup() -> Result<(), String> {
+    crate::app::wallet_store::persist_current_seed()
+        .await
+        .map_err(|e| e.to_string())?;
+    let words = crate::app::APP
+        .with(|c| c.borrow().wallet.as_ref().map(|w| w.mnemonic.to_string()))
+        .unwrap_or_default();
+    call_js("lhUnmountCheckout", None);
+    if let Some(root) = dom::by_id("root") {
+        root.set_inner_html(&templates::onboard_seed_backup(&words).into_string());
+    }
+    Ok(())
+}
+
+fn seed_persist_failed_msg(err: &str) -> String {
+    format!(
+        "paid ✓ but saving your identity failed: {err} — do NOT close this tab; \
+         reveal & back up your seed phrase, then reload"
+    )
 }
 
 /// The checkout surface is gone → stop polling. True only when NEITHER the
