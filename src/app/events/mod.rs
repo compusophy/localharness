@@ -918,10 +918,17 @@ fn dispatch(action: Action) {
             );
         }
         Action::CreateAccount => {
-            // Pay-first onboarding: create the identity, then open the $2
-            // checkout immediately (the "create agent · $2" step IS the
-            // purchase). On a successful mint, buy_lh_pressed(true) re-paints to
-            // the now-funded name-claim input — no surprise paywall.
+            // Pay-first onboarding: generate the keypair IN MEMORY ONLY (no seed
+            // written to disk yet — the owner's rule), then open the $2 checkout
+            // immediately (the "create agent · $2" step IS the purchase). The
+            // keypair must exist to authenticate the checkout + bind the mint
+            // recipient; it's persisted to OPFS ONLY once the payment confirms
+            // (credits::poll_and_finalize → wallet_store::persist_current_seed).
+            // No OPFS write happens here, so there's no need for the net timeout
+            // wrapper / storage-volatility probe (both were about the seed write,
+            // which has moved to the quiet post-payment moment — also side-stepping
+            // the iOS landing-paint borrow panic). On a successful mint,
+            // buy_lh_pressed(true) re-paints to the funded name-claim input.
             let Some(flow_guard) = onboard_flow_begin() else {
                 return;
             };
@@ -931,25 +938,16 @@ fn dispatch(action: Action) {
             );
             wasm_bindgen_futures::spawn_local(async move {
                 let _flow_guard = flow_guard;
-                match super::net::with_timeout(15_000, super::wallet_store::create_and_persist())
-                    .await
-                {
-                    Err(_) => dom::swap_inner(
-                        "onboard-msg",
-                        &dom::msg_span(dom::Msg::Error, "create timed out — reload and try again"),
-                    ),
-                    Ok(Err(err)) => dom::swap_inner(
+                match super::wallet_store::generate_in_memory().await {
+                    Err(err) => dom::swap_inner(
                         "onboard-msg",
                         &dom::msg_span(dom::Msg::Error, &format!("create failed: {err}")),
                     ),
-                    Ok(Ok(_)) => {
+                    Ok(_) => {
                         dom::swap_inner("onboard-msg", "");
-                        // Seed persisted — probe durability sequentially (never
-                        // racing the write; the iOS borrow-panic class) and warn
-                        // if the OPFS jar is volatile (incognito) before paywall.
-                        warn_if_storage_volatile().await;
-                        // Identity exists → open the $2 checkout (mints 200 $LH);
-                        // its poll re-paints the apex to the funded name input.
+                        // Identity exists in memory → open the $2 checkout (mints
+                        // 200 $LH); on a confirmed mint the poll persists the seed
+                        // and re-paints the apex to the funded name input.
                         credits::buy_lh_pressed(true);
                     }
                 }

@@ -4,8 +4,9 @@
 
 use crate::app::{dom, templates};
 
-/// Inline-confirmed reset: clear local app data at OPFS root, reload.
-/// Identity-preserving — keeps the seed + owner hint (see the loop below).
+/// Inline-confirmed reset: FULL wipe of OPFS root (seed included), then reload
+/// back to the fresh "create agent" stage. Destroys the identity — gated by the
+/// typed "RESET" + the panel's back-up-your-seed warning.
 /// Replaces the old `window.confirm()` flow per [[feedback-no-js-alerts]].
 pub(super) fn reset_confirm_pressed() {
     // Typed confirmation — reset still clears app data/keys, so require the
@@ -24,15 +25,12 @@ pub(super) fn reset_confirm_pressed() {
         let fs = crate::app::shared_opfs();
         if let Ok(entries) = fs.read_dir("").await {
             for entry in entries {
-                // Identity-preserving reset: KEEP the seed (`.lh_wallet`) and the
-                // proven-owner hint (`.lh_owner`) so the device re-verifies on
-                // reload instead of bricking. Everything else — history, app.rl,
-                // cached keys, working files — is cleared. The seed is the ONLY
-                // key to on-chain ownership; a local-only delete with no backup
-                // was the brick (mobile especially: no signer-iframe path back).
-                if entry.name == ".lh_wallet" || entry.name == ".lh_owner" {
-                    continue;
-                }
+                // FULL wipe — INCLUDING the seed (`.lh_wallet`) + owner hint
+                // (`.lh_owner`), so reset returns to the fresh "create agent"
+                // stage (the whole point of a reset on a test/second device).
+                // The typed-"RESET" gate + the panel's identity-loss warning are
+                // the deliberate-action safeguard against the old brick — reveal
+                // and back up your seed first if you want to keep this identity.
                 let _ = fs.delete(&entry.name).await;
             }
         }

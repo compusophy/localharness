@@ -586,10 +586,29 @@ async fn poll_and_finalize(payment_intent: String, lh_label: String, onboarding:
             crate::app::chat::ensure_credit_meter().await;
             super::refresh_credits_pill().await;
             refresh_fund_banner().await;
-            // Onboarding: the fresh buyer is now funded — re-paint the apex on a
-            // FRESH executor tick (avoids the iOS re-entrant-paint panic) so the
-            // claim-a-name input appears (no "need 1 more LH" surprise).
+            // Onboarding: the fresh buyer is now funded. PAY-FIRST RULE — the
+            // seed has been held IN MEMORY ONLY until this moment; now that the
+            // payment confirmed, persist it to disk. This is the FIRST thing
+            // after the mint, so the pay→persist window is tiny (the buy modal
+            // keeps the page open, so the only residual risk is a reload between
+            // the mint confirming and this write — narrow, and the webhook still
+            // minted to the address). If persist FAILS, surface it loudly: the
+            // user paid and the seed is still in memory (reveal/retry possible),
+            // so we must NOT swallow it — the seed MUST land.
             if onboarding {
+                if let Err(err) = crate::app::wallet_store::persist_current_seed().await {
+                    call_js(
+                        "lhBuyError",
+                        Some(&format!(
+                            "paid ✓ but saving your identity failed: {err} — do NOT close \
+                             this tab; reveal & back up your seed phrase, then reload"
+                        )),
+                    );
+                    return;
+                }
+                // Seed safely on disk → re-paint the apex on a FRESH executor tick
+                // (avoids the iOS re-entrant-paint panic) so the claim-a-name input
+                // appears (no "need 1 more LH" surprise).
                 wasm_bindgen_futures::spawn_local(async {
                     crate::app::paint_apex(crate::app::tenant::Host::Apex).await;
                 });

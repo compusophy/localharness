@@ -86,6 +86,13 @@
     }
   };
 
+  // Surface a LOUD post-payment error in the modal (e.g. the seed persist
+  // failed after a confirmed mint). Keeps the modal open so the user can act
+  // (reveal/back up their seed, reload) — never a silent swallow of a paid PI.
+  window.lhBuyError = function (msg) {
+    showError(msg || 'something went wrong — do not close this tab');
+  };
+
   window.lhBuyLh = function (optsJson) {
     var o;
     try { o = typeof optsJson === 'string' ? JSON.parse(optsJson) : optsJson; }

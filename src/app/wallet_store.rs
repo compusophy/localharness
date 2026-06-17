@@ -83,6 +83,61 @@ pub(crate) async fn create_and_persist() -> Result<MasterWallet, String> {
     })
 }
 
+/// Pay-first onboarding step 1: generate a fresh keypair **IN MEMORY ONLY**
+/// and install it as `APP.wallet`, writing NOTHING to disk and NOT installing
+/// the at-rest encryption layer. The seed exists only in process memory until
+/// the user has paid — see [`persist_current_seed`], called on a confirmed mint.
+///
+/// This honors the rule that no mnemonic is written to disk before payment, and
+/// also moves the eventual OPFS write out of the busy landing paint (where a
+/// concurrent task tripped the iOS WebKit "RefCell already borrowed" panic) into
+/// the quiet post-payment moment. Keygen is synchronous; `async` only so callers
+/// can await it uniformly alongside the persist step.
+///
+/// If the user abandons before paying, the in-memory wallet is simply discarded
+/// on reload — no orphan seed is ever persisted.
+pub(crate) async fn generate_in_memory() -> Result<MasterWallet, String> {
+    super::debuglog::log("create wallet: generating mnemonic (in memory, no disk)");
+    let (mnemonic, signer) = wallet::generate_with_mnemonic();
+    let address = wallet::address(&signer);
+    // Install a clone into APP so `chat::credit_signer` (which reads APP.wallet
+    // FIRST) authenticates the Stripe checkout as THIS new keypair and binds the
+    // mint recipient to its address. `Mnemonic`/`SigningKey` are both `Clone`.
+    let app_copy = MasterWallet {
+        mnemonic: mnemonic.clone(),
+        signer: signer.clone(),
+        address,
+    };
+    super::APP.with(|cell| cell.borrow_mut().wallet = Some(app_copy));
+    Ok(MasterWallet {
+        mnemonic,
+        signer,
+        address,
+    })
+}
+
+/// Pay-first onboarding step 2: persist the IN-MEMORY seed (the wallet set by
+/// [`generate_in_memory`]) to OPFS and install the at-rest encryption layer.
+/// Called ONLY after a payment confirms, so the seed lands the moment the user
+/// has actually bought. Idempotent — a second call rewrites the same seed.
+///
+/// Errors (non-silently — the caller surfaces it) if there is no in-memory
+/// wallet to persist, or if the OPFS write fails. After a successful payment the
+/// seed is still in memory, so the caller can retry / reveal it.
+pub(crate) async fn persist_current_seed() -> Result<(), String> {
+    let mnemonic = super::APP
+        .with(|cell| cell.borrow().wallet.as_ref().map(|w| w.mnemonic.clone()))
+        .ok_or_else(|| "no in-memory wallet to persist".to_string())?;
+    super::debuglog::log("persist seed: writing seed (opfs write, post-payment)");
+    let fs = super::shared_opfs();
+    fs.write_atomic(WALLET_FILE, mnemonic.to_string().as_bytes())
+        .await
+        .map_err(|e| format!("wallet save: {e}"))?;
+    super::debuglog::log("persist seed: seed written — installing at-rest key");
+    install_at_rest(&mnemonic);
+    Ok(())
+}
+
 /// Import an existing wallet from a user-supplied seed phrase.
 /// Overwrites whatever's on disk — the caller is responsible for
 /// confirming the user really wants to replace.

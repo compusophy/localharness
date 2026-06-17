@@ -1913,7 +1913,7 @@ pub(crate) fn reset_confirm_inline() -> Markup {
         div #reset-confirm-slot .reset-confirm role="dialog" aria-modal="true"
             aria-label="confirm device reset"
             data-modal-trap data-modal-cancel="reset-cancel" {
-            span.reset-confirm-prompt { "type RESET to clear this device — identity + names are kept" }
+            span.reset-confirm-prompt { "type RESET to wipe this device — your identity (seed) is DELETED; back it up first" }
             input #reset-confirm-text .redeem-input type="text" aria-label="type RESET to confirm" placeholder="RESET";
             div.reset-confirm-actions {
                 button type="button" data-action="reset-confirm" .danger { "reset" }
