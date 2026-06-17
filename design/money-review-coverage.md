@@ -16,8 +16,12 @@
 | Scheduler | `ScheduleFacet.sol`, `proxy/api/scheduler.ts` | **1 HIGH** (budget hot-loop) | `4a372fa` |
 | Guild treasury + DAO governance | `GuildFacet.sol`, `VotingFacet.sol`, `WeightedVotingFacet.sol` | **1 HIGH** (weighted snapshot-quorum bypass, un-deployed) | `334f41b` + test `5b0bc29` |
 | Agent-to-agent x402 (`ask_agent`) | `proxy/api/mcp.ts` `handleAskAgent` + helpers | clean | — |
+| Bounty + Party escrow/payout | `BountyFacet.sol`, `PartyFacet.sol` | clean | — |
+| Validation staking escrow/payout | `ValidationFacet.sol` | clean core; 1 hardening applied | `(this tick)` |
 
-**Totals: 8 surfaces reviewed; 6 bugs fixed (4 MED + 2 HIGH); 2 surfaces (buy/onboarding, ask_agent) and the 1m1v voting path clean.**
+**Totals: 10 surfaces reviewed; 6 bugs fixed (4 MED + 2 HIGH) + 1 defense-in-depth
+hardening; 4 surfaces (buy/onboarding, ask_agent, bounty/party) and the 1m1v
+voting path clean.**
 
 ## Notable findings (detail)
 - **Scheduler hot-loop (HIGH, fixed live):** per-run debit capped to the stale
@@ -34,9 +38,23 @@
 - **ask_agent serve-then-dodge:** bounded to ONE model-cost per drained auth
   (funds pre-flight + one-shot nonce + `validBefore`), documented testnet policy —
   the payer's money is never wrongly taken; no amplification.
+- **Bounty + Party (clean):** lifecycle states disjoint + terminal-guarded under
+  CEI; escrow conserved (every wei refunded or paid); party split is exact
+  (10000-bps, no dust/over-distribute); payouts bind to the deterministic claimed
+  TBA (claim-squatting just pays the squatter); no reentrancy ($LH has no transfer
+  callback). No bugs.
+- **Validation self-deal (defense-in-depth, applied; recut deferred):** the resolve
+  trust model is poster-is-oracle (intentional, same as BountyFacet) and the
+  resolver is DISCLOSED via `validationResolverOf` — not a hidden vuln. Hardened
+  anyway: a resolver who is also a disputant (`msg.sender == validator || ==
+  challenger`) now reverts `ResolverIsDisputant`, forcing the owner-arbiter / draw
+  path; the diamond owner (trusted platform arbiter) stays exempt. Source + 4
+  regression tests landed (`ValidationResolverDisputant.t.sol`); the live facet
+  still carries the documented boundary until the next ValidationFacet `diamondCut`
+  (low-urgency — no honest party can be drained, the resolver is on-chain visible).
 
 ## NOT yet reviewed (mature, lower-probability; chain-independent logic)
-- BountyFacet / PartyFacet / ValidationFacet / ReputationFacet escrow+payout math.
+- ReputationFacet (free attestations — no escrow, lowest money-risk).
 - SessionRoom (#22) encrypted-KV append + the CRDT/AES cores.
 - The rustlite compiler + cartridge runtime (chain-independent; agent-app-breaking
   if buggy, but not money).

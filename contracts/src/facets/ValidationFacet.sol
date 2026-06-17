@@ -129,6 +129,7 @@ contract ValidationFacet {
     error ResolveWindowStillOpen(); // reclaimUnresolved before the resolve deadline
     error SelfChallenge(); // the validator challenging their own stake
     error NotResolver(); // resolver gate: not the work's poster nor the diamond owner
+    error ResolverIsDisputant(); // the poster-resolver is also a disputant (self-deal)
 
     // --- Stake (permissionless; validator escrows their own $LH) --------
 
@@ -283,6 +284,17 @@ contract ValidationFacet {
         if (block.timestamp > v.resolveDeadline) revert ResolveWindowClosed();
         if (msg.sender != _posterOf(v.workRef) && msg.sender != LibDiamond.contractOwner()) {
             revert NotResolver();
+        }
+        // Defense-in-depth: a disputant must never be their own judge. The legit
+        // resolver is a NEUTRAL third party (the work's bounty-poster). If that
+        // poster is also the validator/challenger it's a self-deal — force the
+        // owner-arbiter / draw path instead. The diamond owner (the platform
+        // arbiter of last resort) is exempt, as it is already fully trusted.
+        if (
+            msg.sender != LibDiamond.contractOwner()
+                && (msg.sender == v.validator || msg.sender == v.challenger)
+        ) {
+            revert ResolverIsDisputant();
         }
 
         uint128 stake = v.stakeWei;
