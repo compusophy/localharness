@@ -20,10 +20,23 @@
 | Validation staking escrow/payout | `ValidationFacet.sol` | clean core; 1 hardening applied | `f00716c` |
 | Destructive-action confirm gate | `confirm.rs` (+ `confirm_guard.rs`/dispatch) | clean | — |
 | Tempo AA tx encoder + codecs | `tempo_tx.rs`, `encoding.rs` | clean | — |
+| Inter-agent call (caller-pays x402) | `builtins/call_agent.rs`, `x402_hook.rs` | clean | — |
 
-**Totals: 12 surfaces reviewed; 6 bugs fixed (4 MED + 2 HIGH) + 1 defense-in-depth
-hardening; 6 surfaces (buy/onboarding, ask_agent, bounty/party, confirm gate, tx
-encoder) and the 1m1v voting path clean.**
+**Totals: 13 surfaces reviewed; 6 bugs fixed (4 MED + 2 HIGH) + 1 defense-in-depth
+hardening; 7 surfaces (buy/onboarding, ask_agent, bounty/party, confirm gate, tx
+encoder, inter-agent call) and the 1m1v voting path clean.**
+
+## Inter-agent call (`call_agent`) — verified clean
+The caller-pays x402 path (an agent paying another agent up to a hard per-call
+cap) is sound against a HOSTILE callee: the per-call cap (`MAX_PAY_PER_CALL_WEI`)
+is enforced BEFORE signing; the amount parses via `u128::from_str` (garbage /
+negative / overflow → error, never a wrapped value); the payee is resolved by the
+CALLER from the registry (`tba_of_name`) and the callee's `to` is only accepted if
+it byte-equals it (no redirect); `sign_x402` binds payee+value+nonce into the
+EIP-712 digest (a posted-back tamper diverges from the signature); and
+`proxy_fallback` re-routes ONLY on `NO_SESSION_ERR`, so a timeout after a payment
+was signed never double-pays. The builtins sweep (configure_agent / generate_image
+/ compile_rustlite / start_subagent / finish) was also clean.
 
 ## Confirm-gate coverage (OWNER decision — not a bug)
 The typed-confirmation gate (`confirm.rs`) is sound — single-use, exact-arg-bound,
