@@ -108,11 +108,11 @@ impl Conversation {
     /// Raw send: dispatches the prompt and returns once the bytes are on
     /// the wire. Use `chat()` for higher-level turn semantics.
     pub async fn send(&self, content: Content) -> Result<()> {
-        {
-            let mut state = self.state.lock();
-            state.last_turn_usage = Some(UsageMetadata::default());
-        }
-        self.connection.send(content).await
+        // Reset per-turn usage only AFTER the connection accepts the send — a
+        // rejected send must not clear the prior turn's usage.
+        self.connection.send(content).await?;
+        self.state.lock().last_turn_usage = Some(UsageMetadata::default());
+        Ok(())
     }
 
     /// Drains steps from the connection, accumulating into history and
@@ -135,7 +135,15 @@ impl Conversation {
                         s.last_turn_usage = Some(fresh);
                     }
                 }
-                if step.is_terminal_response() {
+                // Only a SUCCESSFUL terminal carrying real text updates
+                // last_response. An empty finish-/tool-only terminal, or an error
+                // terminal, must NOT clobber the prior answer (the ChatResponse
+                // producer guards the same write); an empty-but-streamed success
+                // is recovered there via its emitted_text fallback.
+                if step.is_terminal_response()
+                    && !step.content.is_empty()
+                    && step.error.is_empty()
+                {
                     s.last_response = Some(step.content.clone());
                 }
                 if let Some(out) = &step.structured_output {
@@ -161,11 +169,13 @@ impl Conversation {
         // Subscribe BEFORE sending so the producer doesn't miss the first
         // step in the rare case the harness responds before we register.
         let steps = self.receive_steps();
+        self.send(content.into()).await?;
+        // Count the turn only once the send is accepted (turn_count = turns
+        // SENT) — a rejected send must not increment it.
         {
             let mut s = self.state.lock();
             s.turn_count = s.turn_count.saturating_add(1);
         }
-        self.send(content.into()).await?;
         Ok(ChatResponse::new(steps, self.state.clone()))
     }
 }
@@ -264,7 +274,9 @@ impl ChatResponse {
                             } else {
                                 emitted_text.clone()
                             };
-                            if !final_text.is_empty() {
+                            // Don't commit a failed turn's text (empty OR a
+                            // half-streamed fragment) as the last response.
+                            if !final_text.is_empty() && step.error.is_empty() {
                                 s.last_response = Some(final_text);
                             }
                             break;
@@ -855,6 +867,7 @@ mod tests {
     struct MockConn {
         steps_tx: broadcast::Sender<Step>,
         idle: AtomicBool,
+        fail_send: AtomicBool,
     }
 
     impl MockConn {
@@ -863,6 +876,7 @@ mod tests {
             Arc::new(Self {
                 steps_tx,
                 idle: AtomicBool::new(true),
+                fail_send: AtomicBool::new(false),
             })
         }
         /// Push one step onto the broadcast (what a live turn's producer does).
@@ -880,6 +894,9 @@ mod tests {
             "mock"
         }
         async fn send(&self, _content: Content) -> Result<()> {
+            if self.fail_send.load(Ordering::Acquire) {
+                return Err(Error::other("mock send rejected"));
+            }
             Ok(())
         }
         async fn send_trigger(&self, _content: String) -> Result<()> {
@@ -1065,5 +1082,76 @@ mod tests {
             "send primes last_turn_usage to Some(default)"
         );
         assert_eq!(conv.last_turn_usage().unwrap(), UsageMetadata::default());
+    }
+
+    /// A terminal step carrying an error (the backend turn-failure shape):
+    /// empty content + a non-empty `error`.
+    fn error_terminal(msg: &str) -> Step {
+        serde_json::from_value(serde_json::json!({
+            "content": "",
+            "is_complete_response": true,
+            "error": msg,
+        }))
+        .expect("valid Step json")
+    }
+
+    /// REGRESSION: a finish-only / tool-only terminal (no text) must not clobber
+    /// the prior textual answer to `Some("")`. The `receive_steps` accumulator
+    /// used to write `last_response` unconditionally on any terminal.
+    #[tokio::test]
+    async fn empty_terminal_does_not_clobber_last_response() {
+        let conn = MockConn::new();
+        let conv = Conversation::new(conn.clone());
+        run_turn(&conv, &conn, vec![terminal_step("real answer")]).await;
+        assert_eq!(conv.last_response().as_deref(), Some("real answer"));
+        // A terminal with NO text (e.g. a pure tool/finish turn) must preserve it.
+        run_turn(&conv, &conn, vec![terminal_step("")]).await;
+        assert_eq!(
+            conv.last_response().as_deref(),
+            Some("real answer"),
+            "an empty terminal must not erase the prior answer",
+        );
+    }
+
+    /// REGRESSION: a turn that ERRORS (even after streaming a partial fragment)
+    /// must not overwrite the last good answer — not with `""` and not with the
+    /// half-streamed fragment.
+    #[tokio::test]
+    async fn errored_turn_does_not_corrupt_last_response() {
+        let conn = MockConn::new();
+        let conv = Conversation::new(conn.clone());
+        run_turn(&conv, &conn, vec![terminal_step("good")]).await;
+        assert_eq!(conv.last_response().as_deref(), Some("good"));
+        run_turn(
+            &conv,
+            &conn,
+            vec![delta_step(0, "partial"), error_terminal("boom")],
+        )
+        .await;
+        assert_eq!(
+            conv.last_response().as_deref(),
+            Some("good"),
+            "a failed turn must not commit its partial/empty text as last_response",
+        );
+    }
+
+    /// REGRESSION: a `chat()` whose `send()` is REJECTED must not count a turn
+    /// nor reset the prior turn's usage — `turn_count` = turns actually SENT.
+    #[tokio::test]
+    async fn failed_send_does_not_count_turn_or_reset_usage() {
+        let conn = MockConn::new();
+        let conv = Conversation::new(conn.clone());
+        run_turn(&conv, &conn, vec![terminal_with_usage("ok", 10, 5, 15)]).await;
+        assert_eq!(conv.turn_count(), 1);
+        assert_eq!(conv.last_turn_usage().unwrap().total_token_count, Some(15));
+
+        conn.fail_send.store(true, Ordering::Release);
+        assert!(conv.chat("hi").await.is_err(), "the rejected send must error");
+        assert_eq!(conv.turn_count(), 1, "a rejected send must not count a turn");
+        assert_eq!(
+            conv.last_turn_usage().unwrap().total_token_count,
+            Some(15),
+            "a rejected send must not reset the prior turn's usage",
+        );
     }
 }
