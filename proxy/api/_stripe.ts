@@ -31,13 +31,16 @@ const CHAIN_ID = Number(process.env.ONRAMP_CHAIN_ID ?? '4217');
 
 // --- peg ---------------------------------------------------------------
 
-// $LH wei per USD cent. Default: 1 $LH = $1 → 1e16 wei/cent (1e18/dollar).
-// Env-overridable so the peg is config, not a code constant.
+// $LH wei per USD cent. $LH is DECOUPLED from the dollar (a credit/points token,
+// NOT a stablecoin), so this "peg" is just the issuance RATE we choose, not a
+// backing ratio. Default: $1 = 100 $LH → 1e18 wei/cent (1e20/dollar). At
+// 1 $LH = 1 message that's "$1 = 100 messages"; a $2 buy mints 200 $LH (the
+// first-subdomain bundle amount). Env-overridable so the rate is config.
 export const PEG_WEI_PER_USD_CENT = ((): bigint => {
   try {
-    return BigInt(process.env.LH_PEG_WEI_PER_USD_CENT ?? '10000000000000000');
+    return BigInt(process.env.LH_PEG_WEI_PER_USD_CENT ?? '1000000000000000000');
   } catch {
-    return 10_000_000_000_000_000n;
+    return 1_000_000_000_000_000_000n;
   }
 })();
 
@@ -297,12 +300,37 @@ export async function netSettledCents(piId: string): Promise<number> {
   throw new Error(`net settled USD amount not yet available for ${piId}; retry`);
 }
 
-// Idempotent NET mint for a SETTLED PaymentIntent. Mints `mintFromFiat` to the
-// PI's bound `lh_address` for the NET-of-fees settled USD, guarded by the
-// on-chain one-shot receipt — so the webhook AND the client `/stripe/finalize`
-// call are both idempotent (whichever lands first wins; the other is a no-op).
-// THROWS on "net not ready" / RPC / submit failure so the webhook 500s → Stripe
-// retries; the finalize endpoint catches the throw and reports `pending`.
+// GROSS amount the buyer was charged, in USD cents. $LH is DECOUPLED from the
+// dollar (NOT a stablecoin), so we mint the full round amount at the rate and
+// ABSORB Stripe fees — no net-of-fees haircut (the old "$1 → 0.67 $LH"). The PI
+// `amount_received` is known immediately on a succeeded charge (no
+// balance_transaction wait), so the prior "net not ready, retry" path is gone.
+// Requires a succeeded USD charge; FAIL-CLOSED otherwise (never mint on a
+// non-succeeded or non-USD PI).
+export async function grossPaidCents(piId: string): Promise<number> {
+  const pi = await stripe().paymentIntents.retrieve(piId);
+  if (pi.status !== 'succeeded') {
+    throw new Error(`PaymentIntent ${piId} not succeeded (${pi.status})`);
+  }
+  if (pi.currency !== 'usd') {
+    throw new Error(`PaymentIntent ${piId} not charged in USD (${pi.currency})`);
+  }
+  const cents =
+    typeof pi.amount_received === 'number' && pi.amount_received > 0
+      ? pi.amount_received
+      : pi.amount;
+  if (!Number.isInteger(cents) || cents <= 0) {
+    throw new Error(`PaymentIntent ${piId} has no positive charged amount`);
+  }
+  return cents;
+}
+
+// Idempotent GROSS mint for a SETTLED PaymentIntent. Mints `mintFromFiat` to the
+// PI's bound `lh_address` for the GROSS charged USD at the issuance rate, guarded
+// by the on-chain one-shot receipt — so the webhook AND the client
+// `/stripe/finalize` call are both idempotent (whichever lands first wins; the
+// other is a no-op). THROWS on not-succeeded / RPC / submit failure so the
+// webhook 500s → Stripe retries; finalize catches the throw and reports `pending`.
 export async function mintSettledPayment(
   piId: string,
   lhAddress: string,
@@ -311,8 +339,8 @@ export async function mintSettledPayment(
   const receiptId = receiptIdFor(piId);
   const r = await readReceipt(receiptId);
   if (r.used) return { minted: true, idempotent: true };
-  const netCents = await netSettledCents(piId); // THROWS if net unknown → retry
-  const amountWei = centsToWei(netCents);
+  const grossCents = await grossPaidCents(piId); // THROWS if not succeeded → retry
+  const amountWei = centsToWei(grossCents);
   const validBefore = BigInt(Math.floor(Date.now() / 1000) + 3600);
   const signature = await signFiatMint(lhAddress, amountWei, receiptId, validBefore);
   const tx = await submitMintFromFiat(lhAddress, amountWei, receiptId, validBefore, signature);

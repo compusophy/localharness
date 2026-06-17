@@ -17,29 +17,34 @@ function envWei(name: string, def: bigint): bigint {
 
 // `$LH` (18-decimal wei) per Gemini request — FLAT (byte-identical to the prior
 // COST_PER_REQUEST_WEI), so Gemini pricing is unchanged. Default 0.01 $LH.
-export const COST_PER_REQUEST_WEI = envWei('COST_PER_REQUEST_WEI', 10_000_000_000_000_000n);
+// $LH is DECOUPLED from the dollar (a credit/points token, NOT a stablecoin) —
+// the user-facing unit is "1 $LH = 1 message", so the default model costs a
+// FLAT 1 $LH/request.
+export const COST_PER_REQUEST_WEI = envWei('COST_PER_REQUEST_WEI', 1_000_000_000_000_000_000n); // 1 $LH
 
-// Anthropic is per-model; an UNKNOWN model falls to a mid price, NEVER free (so
-// a caller can't request an unpriced model to dodge the meter).
+// Anthropic is per-model and TIERED by real cost (1 / 5 / 20 $LH) so premium
+// models stay sustainable while the default tier stays dead-simple. An UNKNOWN
+// model falls to a mid price, NEVER free (so a caller can't dodge the meter).
 const PRICE_ANTHROPIC: Record<string, bigint> = {
-  'claude-haiku-4-5-20251001': envWei('PRICE_ANTHROPIC_HAIKU_WEI', 10_000_000_000_000_000n), // 0.01
-  'claude-sonnet-4-6': envWei('PRICE_ANTHROPIC_SONNET_WEI', 50_000_000_000_000_000n), // 0.05
-  'claude-opus-4-8': envWei('PRICE_ANTHROPIC_OPUS_WEI', 200_000_000_000_000_000n), // 0.20
+  'claude-haiku-4-5-20251001': envWei('PRICE_ANTHROPIC_HAIKU_WEI', 1_000_000_000_000_000_000n), // 1 $LH
+  'claude-sonnet-4-6': envWei('PRICE_ANTHROPIC_SONNET_WEI', 5_000_000_000_000_000_000n), // 5 $LH
+  'claude-opus-4-8': envWei('PRICE_ANTHROPIC_OPUS_WEI', 20_000_000_000_000_000_000n), // 20 $LH
 };
-const PRICE_ANTHROPIC_DEFAULT = envWei('PRICE_ANTHROPIC_DEFAULT_WEI', 50_000_000_000_000_000n);
+const PRICE_ANTHROPIC_DEFAULT = envWei('PRICE_ANTHROPIC_DEFAULT_WEI', 5_000_000_000_000_000_000n); // 5 $LH
 
 // OpenAI mirrors the Anthropic tiers; same UNKNOWN -> mid default, never free.
 const PRICE_OPENAI: Record<string, bigint> = {
-  'gpt-5-nano': envWei('PRICE_OPENAI_NANO_WEI', 10_000_000_000_000_000n), // 0.01
-  'gpt-5-mini': envWei('PRICE_OPENAI_MINI_WEI', 10_000_000_000_000_000n), // 0.01
-  'gpt-5.1': envWei('PRICE_OPENAI_FLAGSHIP_WEI', 50_000_000_000_000_000n), // 0.05
-  'gpt-5-pro': envWei('PRICE_OPENAI_PRO_WEI', 200_000_000_000_000_000n), // 0.20
+  'gpt-5-nano': envWei('PRICE_OPENAI_NANO_WEI', 1_000_000_000_000_000_000n), // 1 $LH
+  'gpt-5-mini': envWei('PRICE_OPENAI_MINI_WEI', 1_000_000_000_000_000_000n), // 1 $LH
+  'gpt-5.1': envWei('PRICE_OPENAI_FLAGSHIP_WEI', 5_000_000_000_000_000_000n), // 5 $LH
+  'gpt-5-pro': envWei('PRICE_OPENAI_PRO_WEI', 20_000_000_000_000_000_000n), // 20 $LH
 };
-const PRICE_OPENAI_DEFAULT = envWei('PRICE_OPENAI_DEFAULT_WEI', 50_000_000_000_000_000n);
+const PRICE_OPENAI_DEFAULT = envWei('PRICE_OPENAI_DEFAULT_WEI', 5_000_000_000_000_000_000n); // 5 $LH
 
 // Hard per-request ceiling: a misconfigured price env (an extra zero) must never
-// debit an absurd amount in one shot. Anything above is clamped DOWN to this.
-export const MAX_COST_PER_REQUEST_WEI = envWei('MAX_COST_PER_REQUEST_WEI', 1_000_000_000_000_000_000n);
+// debit an absurd amount in one shot. 100 $LH — above the 20 $LH Opus tier, well
+// below an extra-zero blowout. Anything above is clamped DOWN to this.
+export const MAX_COST_PER_REQUEST_WEI = envWei('MAX_COST_PER_REQUEST_WEI', 100_000_000_000_000_000_000n);
 
 export function priceOf(provider: Provider, model: string): bigint {
   const raw =
