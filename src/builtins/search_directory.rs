@@ -110,7 +110,12 @@ impl Tool for SearchDirectory {
                 Ok(s) => s,
                 Err(_) => continue, // skip binary files
             };
-            for (i, line) in text.split('\n').enumerate() {
+            for (i, raw_line) in text.split('\n').enumerate() {
+                // Strip a trailing CR so `$`-anchored patterns match on CRLF
+                // files (common on Windows) and the surfaced `text` doesn't carry
+                // a stray `\r`. Splitting on `\n` alone left every CRLF line
+                // ending in `\r`, so `alpha$` silently missed `alpha\r\n`.
+                let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
                 if regex.is_match(line) {
                     if matches.len() >= MAX_MATCHES {
                         truncated = true;
@@ -158,6 +163,30 @@ mod tests {
             std::fs::create_dir_all(parent).unwrap();
         }
         std::fs::write(&p, content).unwrap();
+    }
+
+    #[tokio::test]
+    async fn crlf_lines_match_dollar_anchor_without_cr_leak() {
+        // A Windows-authored (CRLF) file. Splitting on `\n` alone left each line
+        // ending in `\r`, so `alpha$` silently missed it and the surfaced text
+        // leaked the `\r`. The trailing-CR strip fixes both.
+        let root = unique_dir("crlf");
+        write(&root, "win.txt", "alpha\r\nbeta\r\n");
+        let tool = SearchDirectory::new(Arc::new(NativeFilesystem::new()));
+        let out = tool
+            .execute(
+                json!({ "path": root.display().to_string(), "pattern": "alpha$" }),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["count"].as_u64(), Some(1), "alpha$ must match a CRLF line: {out}");
+        assert_eq!(
+            out["matches"][0]["text"],
+            json!("alpha"),
+            "surfaced text must not carry the trailing CR",
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[tokio::test]

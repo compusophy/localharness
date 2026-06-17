@@ -68,6 +68,17 @@ impl Tool for RenameFile {
         if crate::builtins::is_protected_path(&args.to) {
             return Err(crate::builtins::protected_path_error(&args.to));
         }
+        // Refuse to SILENTLY clobber an existing destination — native rename
+        // overwrites by platform default, which is irreversible data loss and
+        // rename_file is not confirm-gated. Best-effort existence check (a
+        // transient metadata error falls through to the rename, as before); the
+        // caller deletes `to` first to intentionally overwrite.
+        if matches!(self.fs.metadata(&args.to).await, Ok(Some(_))) {
+            return Err(Error::other(format!(
+                "destination '{}' already exists — delete it first to overwrite",
+                args.to
+            )));
+        }
         self.fs.rename(&args.from, &args.to).await?;
         Ok(json!({ "ok": true, "from": args.from, "to": args.to }))
     }
@@ -105,5 +116,28 @@ mod tests {
             .execute(json!({"from": "x.txt", "to": "x.txt"}), None)
             .await;
         assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn refuses_to_clobber_existing_destination() {
+        // Native rename overwrites by platform default — silent, irreversible
+        // data loss, and rename_file isn't confirm-gated. It must refuse instead.
+        let dir = std::env::temp_dir();
+        let from = dir.join(format!("rn_from_{}.txt", uuid::Uuid::new_v4()));
+        let to = dir.join(format!("rn_to_{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(&from, "SOURCE").unwrap();
+        std::fs::write(&to, "IMPORTANT").unwrap();
+        let tool = RenameFile::new(Arc::new(NativeFilesystem::new()));
+        let res = tool
+            .execute(
+                json!({"from": from.display().to_string(), "to": to.display().to_string()}),
+                None,
+            )
+            .await;
+        assert!(res.is_err(), "must refuse to clobber an existing destination");
+        assert_eq!(std::fs::read_to_string(&to).unwrap(), "IMPORTANT", "dest untouched");
+        assert_eq!(std::fs::read_to_string(&from).unwrap(), "SOURCE", "source untouched");
+        let _ = std::fs::remove_file(from);
+        let _ = std::fs::remove_file(to);
     }
 }
