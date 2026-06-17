@@ -25,9 +25,12 @@
 // KNOWN LIMIT (accepted for the invited testnet beta; see the credit-proxy
 // memory): a session is time-bounded and all-you-can-use within its window,
 // and the auth token is replayable within FRESHNESS_WINDOW_SECS. Abuse is
-// bounded by the on-chain session + Gemini's own rate limits. The public /
-// mainnet-safe fix is per-request x402 metering (pay-per-call) — not shipped
-// here.
+// bounded by the on-chain session + the provider's own rate limits. The
+// public / mainnet-safe fix is per-request x402 metering (pay-per-call) — the
+// credit path stays a server-trust meter. Burst safety on the credit path: the
+// floor is debited UP FRONT (nonce-serialized) + an in-isolate per-address
+// reservation + a default output cap → bounded, non-amplified loss (an x402
+// authorization, which the proxy can't over-debit, is the trustless path).
 
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3';
@@ -173,13 +176,14 @@ const FRESHNESS_WINDOW_SECS = 300; // 5 min — tight replay window (clients sig
 // caller can't make the proxy buffer a multi-GB body. Real LLM requests (long
 // context + tools) are a few MB; 16 MB is comfortably above legitimate use.
 const MAX_BODY_BYTES = 16_000_000;
-// Env-gated request guardrails (Option B, design/metering.md). BOTH default OFF
-// (0/unset) -> byte-identical to today. LH_MAX_OUTPUT_TOKENS caps the upstream
-// max-output per request (the dominant exploit: a tiny prompt eliciting a
-// model's 66k/128k-token max output costs us 16-59x the flat charge).
-// LH_MAX_CREDITS_BODY_BYTES bounds input (context-stuffing). The real margin fix
-// is usage-based billing (Option A) — these only cap the catastrophic tail.
-const MAX_OUTPUT_TOKENS = Number(process.env.LH_MAX_OUTPUT_TOKENS ?? '0');
+// Env-gated request guardrails (Option B, design/metering.md).
+// LH_MAX_OUTPUT_TOKENS caps the upstream max-output per request (the dominant
+// exploit: a tiny prompt eliciting a model's 66k/128k-token max output costs us
+// 16-59x the flat charge). DEFAULT 8192 (was 0/uncapped) — bounds the provider-
+// dollar blast-radius of any over-served call; env-override to raise/lower (set
+// 0 to disable). LH_MAX_CREDITS_BODY_BYTES bounds input (context-stuffing),
+// default OFF. The real margin fix is usage-based billing (Option A).
+const MAX_OUTPUT_TOKENS = Number(process.env.LH_MAX_OUTPUT_TOKENS ?? '8192');
 const MAX_CREDITS_BODY_BYTES = Number(process.env.LH_MAX_CREDITS_BODY_BYTES ?? '0');
 // Option A (design/metering.md): charge ACTUAL token usage instead of the flat
 // per-request price. OFF by default — when unset the flat-debit path below is
@@ -351,6 +355,30 @@ async function creditOf(address: string): Promise<bigint> {
  * distinct from an ambiguous RPC failure (502). */
 class InsufficientCreditError extends Error {}
 
+// In-isolate per-address in-flight RESERVATION. `creditOf` is a lock-free RPC
+// read, and `meter()` has NO on-chain CAS — so N concurrent requests from one
+// address in this isolate would all read the same balance, all pass the gate,
+// and only ~1 debit would land (the rest revert silently → N-1 free calls).
+// We subtract the sum of this address's still-pending charges from its `creditOf`
+// snapshot, so a burst within one isolate serializes against the live balance.
+// CAVEAT: per-isolate only — it does NOT de-dupe across Edge isolates/regions, so
+// a distributed burst still races to a BOUNDED degree (closed further by the
+// up-front floor debit advancing the account nonce + the output cap).
+const inflightCharges = new Map<string, bigint>();
+function reserve(address: string, amount: bigint): void {
+  const k = address.toLowerCase();
+  inflightCharges.set(k, (inflightCharges.get(k) ?? 0n) + amount);
+}
+function release(address: string, amount: bigint): void {
+  const k = address.toLowerCase();
+  const next = (inflightCharges.get(k) ?? 0n) - amount;
+  if (next > 0n) inflightCharges.set(k, next);
+  else inflightCharges.delete(k);
+}
+function reservedFor(address: string): bigint {
+  return inflightCharges.get(address.toLowerCase()) ?? 0n;
+}
+
 /**
  * Debit `amount` `$LH` from `user` via `CreditMeterFacet.meter`, signed by
  * the proxy's meter key (env `PROXY_METER_KEY`, set as the diamond's
@@ -393,10 +421,12 @@ async function meterDebit(user: string, amount: bigint, confirm = true): Promise
 
   // Streaming callers (`confirm=false`) await only the broadcast above — they
   // must NOT serialize first-byte latency behind the receipt (up to the 12s
-  // timeout below). The credit gate already verified `creditOf >= cost` and
-  // `meter()` is CAS-guarded against double-charge, so the residual race
-  // (balance dropped between gate-read and debit) at worst serves one call for
-  // free rather than adding seconds of head-of-line delay to every request.
+  // timeout below). NOTE: `meter()` is NOT CAS-guarded on-chain (it just reverts
+  // when the balance is short). Burst safety comes from elsewhere: awaiting the
+  // broadcast assigns this address's account nonce SERIALLY (concurrent same-
+  // address debits queue on-chain), the caller subtracts an in-isolate
+  // reservation from the gate snapshot, and an up-front floor debit is charged
+  // before streaming — so a stale read can't yield N-1 free calls per burst.
   if (!confirm) return;
 
   const pub = createPublicClient({ chain: TEMPO_CHAIN, transport: http(TEMPO_RPC) });
@@ -417,24 +447,24 @@ async function meterDebit(user: string, amount: bigint, confirm = true): Promise
 
 /**
  * Option A passthrough: wrap a 2xx SSE body so every byte streams to the caller
- * UNCHANGED while the text is accumulated, and when the stream ENDS (`flush`,
- * which runs within the response lifetime — no `waitUntil` needed) the caller is
- * debited `meteredAmountWei(...)` = `max(floorCost, actual-token cost × margin)`.
+ * UNCHANGED while the text is accumulated, and when the stream ENDS (`flush`)
+ * the caller is debited the usage-based REMAINDER above the floor:
+ * `max(0, meteredAmountWei(...) − floorCost)`. The floor itself is charged
+ * UP FRONT (before streaming) by the handler, so an early client disconnect —
+ * `flush()` runs on stream close, NOT on a reader-abort — can never yield a
+ * fully un-debited call; only the usage remainder is at risk on a disconnect,
+ * which the platform eats. `onMetered` receives the REMAINDER, not the total.
  *
- * The debit BROADCAST is awaited in flush (so the Edge function stays alive long
- * enough to send it) but, exactly like the flat meter, does NOT await the
- * receipt — the close is delayed only by the broadcast, after the user already
- * has every token. A broadcast failure / an early client disconnect (flush never
- * runs) at worst serves one call under the flat gate already checked; the
- * platform eats the rare miss rather than risk a double-charge. The amount math
- * lives in `_usage.ts` (pure + unit-tested); this only does the plumbing.
+ * The remainder broadcast is awaited in flush (keeps the Edge fn alive) but, like
+ * the flat meter, does NOT await the receipt. The amount math lives in `_usage.ts`
+ * (pure + unit-tested); this only does the plumbing.
  */
 function meteredBody(
   body: ReadableStream<Uint8Array>,
   provider: Provider,
   model: string,
   floorCost: bigint,
-  onMetered: (amountWei: bigint) => Promise<unknown>,
+  onMetered: (remainderWei: bigint) => Promise<unknown>,
 ): ReadableStream<Uint8Array> {
   const decoder = new TextDecoder();
   let acc = '';
@@ -451,13 +481,15 @@ function meteredBody(
     async flush() {
       if (settled) return;
       settled = true;
-      const amount = meteredAmountWei(provider, model, acc, floorCost, MARGIN_BPS);
+      const total = meteredAmountWei(provider, model, acc, floorCost, MARGIN_BPS);
+      const remainder = total > floorCost ? total - floorCost : 0n;
+      if (remainder <= 0n) return; // floor already charged up front — nothing more
       try {
-        // meter path → meterDebit; x402 "Upto" path → settleUpto. Either way the
-        // broadcast is awaited (keeps the Edge fn alive) but not the receipt.
-        await onMetered(amount);
+        // meter path → meterDebit(remainder); x402 "Upto" → settleUpto(total).
+        // Broadcast awaited (keeps the Edge fn alive); the receipt is not.
+        await onMetered(remainder);
       } catch {
-        /* broadcast failed — served under the gate; platform eats the rare miss */
+        /* broadcast failed — floor already taken; platform eats the remainder */
       }
     },
   });
@@ -520,6 +552,11 @@ export default async function handler(req: Request): Promise<Response> {
   if (Number.isFinite(declaredLen) && declaredLen > MAX_BODY_BYTES) {
     return json({ error: 'request body too large' }, 413, origin);
   }
+
+  // In-isolate floor reservation tracked at function scope so the `finally`
+  // releases it on every exit. Set when the meter floor is reserved below.
+  let reservedAddr: string | null = null;
+  let reservedWei = 0n;
 
   try {
     // Route by path → provider + model. Gemini: /v1beta/models/<model>:<method>
@@ -698,7 +735,10 @@ export default async function handler(req: Request): Promise<Response> {
       creditOf(address),
     ]);
     const hasSession = expiry > BigInt(now);
-    const hasCredit = credit >= cost;
+    // Subtract this address's still-in-flight charges from the (lock-free) snapshot
+    // so a burst within this isolate can't all pass a stale `creditOf` read.
+    const availCredit = credit - reservedFor(address);
+    const hasCredit = availCredit >= cost;
 
     // x402 per-call payment — the mainnet-safe meter (spec §134): the caller
     // signs an x402 authorization paying the platform meter payee EXACTLY `cost`
@@ -727,6 +767,17 @@ export default async function handler(req: Request): Promise<Response> {
       if (verdict && verdict.ok) x402Auth = verdict.auth;
     }
     const paidViaX402 = x402Auth !== null;
+
+    // RESERVE the meter floor in-isolate NOW (before the long upstream await), so
+    // a concurrent same-address request that reads `creditOf` while this one is
+    // in flight sees the pending charge subtracted (`availCredit`) and can't pass
+    // a stale snapshot. Released in the handler's `finally` (every exit path).
+    // Only when this request will actually debit the meter (funded, not x402).
+    if (hasCredit && !paidViaX402) {
+      reserve(address, cost);
+      reservedAddr = address;
+      reservedWei = cost;
+    }
 
     if (!hasSession && !hasCredit && !paidViaX402) {
       return json(
@@ -822,13 +873,18 @@ export default async function handler(req: Request): Promise<Response> {
 
     // SUCCESS (2xx). NOW take payment. PREFER x402 if the caller signed one
     // (they explicitly opted into trustless pay-per-call); else debit the
-    // creditOf meter; a session-only caller stays free. Like the meter, the
-    // settle broadcasts WITHOUT blocking first-byte on its receipt.
+    // creditOf meter; a session-only caller stays free.
     //
-    // Token-metering (Option A) wraps the meter path (flat debit → actual-usage
-    // debit on stream-end) AND the x402 "Upto" path (the caller signed a MAX; the
-    // proxy settles the measured actual ≤ max on stream-end). x402 "exact" is
-    // unchanged (settle the signed value now). Flag OFF → all paths byte-identical.
+    // CREDIT/METER PATH: a non-refundable FLOOR (= `cost`) is debited UP FRONT,
+    // before streaming, so neither a concurrent burst nor a client that
+    // disconnects before stream-end can yield a fully un-debited call. The floor
+    // broadcast is AWAITED (assigns the account nonce serially → concurrent
+    // same-address debits queue on-chain) but its receipt is not (no first-byte
+    // latency). Token-metering then reconciles the usage REMAINDER above the
+    // floor in the stream tee's flush().
+    //
+    // x402 is unchanged — its one-shot nonce already serializes: 'exact' settles
+    // the signed value now, 'upto' settles the measured actual on stream-end.
     const isUpto = paidViaX402 && x402Auth?.scheme === 'upto';
     // An 'upto' auth needs token-metering (the proxy must MEASURE the actual);
     // with it off, settling the signed max as 'exact' would overcharge — reject so
@@ -860,16 +916,18 @@ export default async function handler(req: Request): Promise<Response> {
         // than serve a call we couldn't charge (no session fallback for x402).
         return json({ error: 'x402 settlement submission failed, retry: ' + (e as Error).message }, 502, origin);
       }
-    } else if (hasCredit && !tokenMeterActive) {
-      // PREFER per-request metering: a FUNDED meter (`creditOf >= cost`) means
+    } else if (hasCredit) {
+      // PREFER per-request metering: a FUNDED meter (`availCredit >= cost`) means
       // the caller opted into real per-call billing, so debit even if a
       // (free-beta `sessionPrice==0`) session is ALSO active — else the free
-      // session would silently make every call free. Session-only callers with
-      // no meter balance stay free. Fail closed if the debit can't be submitted.
+      // session would silently make every call free. Session-only callers with no
+      // meter balance stay free. Charge the non-refundable FLOOR up front (both
+      // the flat AND the token path) so a disconnect/burst can't yield a free
+      // call. The in-isolate reservation was taken just after the x402 check and
+      // is released in this handler's `finally` once the request is done.
       try {
-        // Submit the debit but DON'T block first-byte on the receipt: streaming
-        // responses must flow immediately, not after the meter tx confirms
-        // (which added up to 12s of head-of-line latency to every metered call).
+        // Await the BROADCAST (serializes the nonce) but not the receipt:
+        // streaming responses flow immediately, not after the meter tx confirms.
         await meterDebit(address, cost, false);
       } catch (e) {
         // Broadcast itself failed (RPC/infra). Without a (free-beta) session
@@ -880,12 +938,12 @@ export default async function handler(req: Request): Promise<Response> {
       }
     }
 
-    // The body: a token-metered path (meter debit OR x402-Upto settle) wraps the
-    // SSE so the ACTUAL usage is charged on stream-end; otherwise stream straight
-    // through (the flat debit / exact settle already happened above). Flag-off →
-    // byte-identical (both flags are false → upstream.body).
+    // The body: token-metering wraps the SSE so the usage REMAINDER above the
+    // floor is charged on stream-end (the floor was already taken up front); the
+    // x402-Upto path settles the measured actual on stream-end. Otherwise stream
+    // straight through (floor / exact settle already happened above).
     const respBody = tokenMeterActive
-      ? meteredBody(upstream.body!, provider, model, cost, (wei) => meterDebit(address, wei, false))
+      ? meteredBody(upstream.body!, provider, model, cost, (remainder) => meterDebit(address, remainder, false))
       : tokenX402Active && x402Auth
         ? meteredBody(upstream.body!, provider, model, cost, (wei) => settleUptoNoWait(x402Auth, wei))
         : upstream.body;
@@ -903,5 +961,10 @@ export default async function handler(req: Request): Promise<Response> {
       return json({ error: 'request body too large' }, 413, origin);
     }
     return json({ error: (e as Error).message }, 500, origin);
+  } finally {
+    // Release the in-isolate floor reservation on EVERY exit path (the meter
+    // broadcast above already serialized this charge's nonce). Only fires when
+    // a reservation was actually taken.
+    if (reservedAddr) release(reservedAddr, reservedWei);
   }
 }
