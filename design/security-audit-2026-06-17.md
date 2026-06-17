@@ -4,16 +4,21 @@
 > surface. 6 findings confirmed, 11 refuted. Scope: logic + money-safety only
 > (no UI). Live on Tempo MAINNET (chain 4217), real fiat→$LH.
 
-## Confirmed (action)
+## Confirmed (action) — ALL FIXED + DEPLOYED 2026-06-17
 
 | ID | Sev | Where | Status |
 |----|-----|-------|--------|
-| CONFIRM-1 | high | `spend_treasury` not in `CONFIRM_GATED` | **FIXED** (this commit) |
-| VOTE-1 | high | `VotingFacet` 1m1v Officer sybil-flood → treasury drain | open — on-chain recut |
-| METER-1 | high | `gemini.ts` burst race → free LLM inference (platform loss) | open — proxy redeploy |
-| METER-2 | med | `gemini.ts` token-metering debit only in flush → disconnect = free call | open — fix BEFORE flipping `LH_TOKEN_METERING` |
-| X402-1 | info | `settleUpto` implemented+tested but not cut into diamond | open — known staging gap |
-| TEMPO-3 | info | sponsor fee-per-gas verbatim from node, no ceiling | open — hardening |
+| CONFIRM-1 | high | `spend_treasury` not in `CONFIRM_GATED` | ✅ fixed → web bundle `879bf42592cc` LIVE |
+| VOTE-1 | high | `VotingFacet` 1m1v Officer sybil-flood → treasury drain | ✅ fixed → mainnet diamondCut LIVE (new facet `0x056Fc5e62Ca37cc57b20C000842E68B2c26A271F`) |
+| METER-1 | high | `gemini.ts` burst race → free LLM inference (platform loss) | ✅ fixed → proxy redeployed LIVE |
+| METER-2 | med | `gemini.ts` token-metering debit only in flush → disconnect = free call | ✅ fixed → proxy redeployed (closed before `LH_TOKEN_METERING` flip) |
+| X402-1 | info | `settleUpto` implemented+tested but not cut into diamond | ✅ precondition note added; still MUST cut `settleUpto` before flipping `LH_TOKEN_METERING` |
+| TEMPO-3 | info | sponsor fee-per-gas verbatim from node, no ceiling | ✅ fixed → web bundle `879bf42592cc` LIVE |
+
+Deploys: proxy `proxy-tau-ten-15.vercel.app`, web `localharness.xyz` bundle
+`879bf42592cc`, mainnet VotingFacet recut tx via
+`ReplaceVotingFacetAdminGate.s.sol` (owner `0x313b…EF1e`, simulated then
+broadcast; 626/626 tests green). Commits `3344c36`..`1a5f176`.
 
 ### CONFIRM-1 (FIXED) — `spend_treasury` bypassed the typed-confirm gate
 `CONFIRM_GATED` listed only release/send_lh tools. `spend_treasury(guild_id, to,
