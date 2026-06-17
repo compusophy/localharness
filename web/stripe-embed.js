@@ -184,14 +184,13 @@
         if (slot) slot.style.display = 'none';
       }
 
-      // Payment Element — card + inline Link. `fields.billingDetails.{email,phone}
-      // = 'never'` drops the optional email + mobile-number fields (Link still
-      // collects what it needs inside its own popup / the express button above).
+      // Payment Element — card + inline Link. We collect default fields (email,
+      // phone) so confirmPayment has everything; opting out with `fields: never`
+      // requires passing that data back in confirmPayment, which broke the pay.
       var payment = elements.create('payment', {
         layout: { type: 'accordion', defaultCollapsed: true, radios: true, spacedAccordionItems: false },
         paymentMethodOrder: ['card', 'link'],
         wallets: { applePay: 'never', googlePay: 'never' },
-        fields: { billingDetails: { email: 'never', phone: 'never' } },
       });
       payment.mount('#lh-payment');
 
