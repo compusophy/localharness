@@ -45,13 +45,19 @@
 //! [`plan_pulls`](crate::sharedfs_reconcile::plan_pulls) to decide what to
 //! fetch from a peer and what conflict-copies to write.
 
-/// Number of hex chars of the loser's content hash appended to a conflict copy
-/// (`name.conflict-<shorthash>`). 8 hex = 32 bits of the hash — enough to make
-/// the name content-derived (so both devices generate the IDENTICAL conflict
-/// name and the set still converges) without bloating the file name. The suffix
-/// is purely a deterministic, collision-resistant-enough label, not a security
-/// boundary.
-pub const CONFLICT_HASH_HEX_LEN: usize = 8;
+/// Max hex chars of the loser's content hash appended to a conflict copy
+/// (`name.conflict-<hash>`). 32 hex = 16 bytes (128 bits) of the hash —
+/// cryptographically collision-resistant, so distinct losing contents under one
+/// filename get distinct conflict names and "no edit is silently lost" holds in
+/// practice. The previous 8 hex (32 bits) let two different losing contents whose
+/// hashes shared a 4-byte prefix collide onto ONE conflict name — birthday-bound
+/// at ~2^32, or adversarially craftable by a hostile peer to DROP your edit (the
+/// name is content-derived, so both devices still agree on it → the set stays
+/// convergent; the collision just aliased two edits). 16 bytes raises that to
+/// ~2^128 (infeasible) while keeping `NAME_MAX_LEN - CONFLICT_SUFFIX_MAX_LEN`
+/// headroom reasonable. A deterministic label, not a secret; shorter caller
+/// hashes (the tests) are used in full.
+pub const CONFLICT_HASH_HEX_LEN: usize = 32;
 
 /// The fixed literal a conflict copy inserts between the base name and the short
 /// hash: `<name>` + `CONFLICT_SEP` + `<shorthash>`. Pinned so the name guard in
@@ -188,7 +194,10 @@ pub struct ReconcilePlan {
 /// idempotent: a second pass over converged folders yields an empty plan.
 pub fn plan_pulls(local: &[FileMeta], remote: &[FileMeta]) -> ReconcilePlan {
     let mut plan = ReconcilePlan::default();
-    let have_name = |n: &str| local.iter().any(|f| f.name == n);
+    // Do we ALREADY hold a file named `n` whose content is `h`? Used to skip a
+    // conflict-copy we've already preserved WITHOUT skipping (and so dropping) a
+    // loser whose conflict name is merely occupied by some unrelated content.
+    let have_content = |n: &str, h: &[u8]| local.iter().any(|f| f.name == n && f.hash.as_slice() == h);
 
     for r in remote {
         match local.iter().find(|l| l.name == r.name) {
@@ -215,7 +224,12 @@ pub fn plan_pulls(local: &[FileMeta], remote: &[FileMeta]) -> ReconcilePlan {
                     // losing edit as a local conflict copy.
                     plan.want.push(r.name.clone());
                     let our_conflict = conflict_name(&l.name, &l.hash);
-                    if !have_name(&our_conflict) {
+                    // Skip the preserve-copy ONLY if our conflict copy already
+                    // holds THIS losing content (idempotent re-sync). A name-only
+                    // guard (`have_name`) silently dropped the loser when an
+                    // UNRELATED file happened to sit at the conflict name; check
+                    // the hash so the loser is never lost.
+                    if !have_content(&our_conflict, &l.hash) {
                         plan.rename_local
                             .push((l.name.clone(), our_conflict));
                     }
@@ -223,7 +237,9 @@ pub fn plan_pulls(local: &[FileMeta], remote: &[FileMeta]) -> ReconcilePlan {
                     // We win `name`; the peer's losing bytes survive on our side
                     // as a conflict copy pulled from the peer.
                     let peer_conflict = conflict_name(&r.name, &r.hash);
-                    if !have_name(&peer_conflict) {
+                    // Same content-aware guard: only skip the pull if we already
+                    // hold the peer's losing content under its conflict name.
+                    if !have_content(&peer_conflict, &r.hash) {
                         plan.want.push(peer_conflict);
                     }
                 }
@@ -342,6 +358,46 @@ mod tests {
         assert_eq!(get(&m_ab, &loser_copy), Some(b"\x10\x00".to_vec()));
     }
 
+    /// A losing edit must be preserved even when its conflict name is already
+    /// occupied by UNRELATED content. The old name-only guard skipped the
+    /// preserve-copy and silently dropped the loser (the "no edit is lost"
+    /// invariant violated); the content-aware guard preserves it.
+    #[test]
+    fn loser_preserved_when_conflict_name_holds_other_content() {
+        let lo = vec![0x01u8; 32];
+        let hi = vec![0x02u8; 32]; // hi > lo → B (hi) wins `doc`
+        let cname = conflict_name("doc", &lo);
+        // A holds `doc`(lo) AND an unrelated file sitting at doc's conflict name.
+        let a = vec![f("doc", &lo), f(&cname, b"unrelated")];
+        let b = vec![f("doc", &hi)];
+        let plan = plan_pulls(&a, &b);
+        assert!(plan.want.contains(&"doc".to_string()), "adopt the winner");
+        assert!(
+            plan.rename_local.contains(&("doc".to_string(), cname.clone())),
+            "the loser must be scheduled for preservation, not dropped"
+        );
+        // Idempotent: if A ALREADY holds `lo` under its conflict name, skip.
+        let a2 = vec![f("doc", &lo), f(&cname, &lo)];
+        assert!(
+            plan_pulls(&a2, &b).rename_local.is_empty(),
+            "an already-preserved loser is not re-copied"
+        );
+    }
+
+    /// Distinct losing contents whose hashes share a prefix must get DISTINCT
+    /// conflict names — the old 8-hex (4-byte) suffix aliased them onto one name
+    /// and dropped an edit. The full-hash suffix keeps them apart.
+    #[test]
+    fn conflict_name_uses_full_hash_no_prefix_aliasing() {
+        let h1 = vec![0xaa, 0xbb, 0xcc, 0xdd, 0x01];
+        let h2 = vec![0xaa, 0xbb, 0xcc, 0xdd, 0x02]; // same first 4 bytes
+        assert_ne!(
+            conflict_name("doc", &h1),
+            conflict_name("doc", &h2),
+            "distinct content must yield distinct conflict names"
+        );
+    }
+
     /// Distinct names just union (the non-regressing v1 behaviour).
     #[test]
     fn distinct_names_union() {
@@ -426,9 +482,10 @@ mod tests {
     /// passes the guard ALWAYS yields a conflict name that fits too (#85).
     #[test]
     fn conflict_suffix_len_matches_what_conflict_name_appends() {
-        // A full-length short hash (>= CONFLICT_HASH_HEX_LEN hex chars worth of
-        // bytes) appends the maximum: `.conflict-` + CONFLICT_HASH_HEX_LEN hex.
-        let max = conflict_name("x", &[0xab, 0xcd, 0xef, 0x01, 0x23]);
+        // A hash with >= CONFLICT_HASH_HEX_LEN hex chars (>= 16 bytes; a full
+        // 32-byte keccak256 has 64) appends the maximum: `.conflict-` +
+        // CONFLICT_HASH_HEX_LEN hex (the input is truncated to that).
+        let max = conflict_name("x", &[0xab; 32]);
         assert_eq!(max.len() - "x".len(), CONFLICT_SUFFIX_MAX_LEN);
         // For ANY base + hash, the appended length never exceeds the budget.
         for base in ["a", "notes.txt", &"z".repeat(64)] {
@@ -448,7 +505,7 @@ mod tests {
     #[test]
     fn capped_base_yields_in_bounds_conflict_name() {
         const NAME_CAP: usize = 128;
-        let base = "n".repeat(NAME_CAP - CONFLICT_SUFFIX_MAX_LEN); // 110 chars
+        let base = "n".repeat(NAME_CAP - CONFLICT_SUFFIX_MAX_LEN); // the reserved-headroom cap
         assert!(base.len() <= NAME_CAP - CONFLICT_SUFFIX_MAX_LEN);
         let cn = conflict_name(&base, &[0xde, 0xad, 0xbe, 0xef, 0x99]);
         assert!(
@@ -476,7 +533,7 @@ mod tests {
         // Empty base or empty/over-long/non-hex/upper short hash is rejected.
         assert!(!is_conflict_name(".conflict-ab"));
         assert!(!is_conflict_name("x.conflict-"));
-        assert!(!is_conflict_name("x.conflict-abcdef012")); // 9 > 8 hex
+        assert!(!is_conflict_name(&format!("x.conflict-{}", "a".repeat(33)))); // 33 > 32 hex
         assert!(!is_conflict_name("x.conflict-zz")); // non-hex
         assert!(!is_conflict_name("x.conflict-AB")); // uppercase
     }
