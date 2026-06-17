@@ -16,6 +16,7 @@ import {LibRedeemStorage} from "../src/libraries/LibRedeemStorage.sol";
 import {LibCreditMeterStorage} from "../src/libraries/LibCreditMeterStorage.sol";
 import {LibSessionStorage} from "../src/libraries/LibSessionStorage.sol";
 import {LibX402Storage} from "../src/libraries/LibX402Storage.sol";
+import {LibRegistryStorage} from "../src/libraries/LibRegistryStorage.sol";
 import {LibDiamond} from "../src/libraries/LibDiamond.sol";
 
 /// @title FinancialAdversarial
@@ -48,6 +49,11 @@ contract RedeemHarness is RedeemFacet {
     }
     function _setDiamondOwner(address ownr) external {
         LibDiamond.setContractOwner(ownr);
+    }
+    /// `redeem` is existing-accounts-only (NoIdentity guard) — give a test
+    /// redeemer a registered identity (a non-zero ERC-721 name balance).
+    function _grantIdentity(address holder) external {
+        LibRegistryStorage.load().balanceOf[holder] = 1;
     }
 }
 
@@ -212,6 +218,10 @@ contract FinancialAdversarialTest is Test {
         x4._setDiamondOwner(diamondOwner);
         cred._setDiamondOwner(diamondOwner);
 
+        // redeem() is existing-accounts-only — the test redeemers need an identity.
+        rdm._grantIdentity(alice);
+        rdm._grantIdentity(bob);
+
         // Deploy the real credits token. Each harness IS its own diamond, so
         // grant ISSUER_ROLE to the two that mint (Redeem, Credits); the other
         // three only pull via transferFrom. We grant it to all so any harness
@@ -372,6 +382,7 @@ contract FinancialAdversarialTest is Test {
     function test_redeem_reverts_when_token_unconfigured() public {
         RedeemHarness h2 = new RedeemHarness();
         h2._setDiamondOwner(diamondOwner);
+        h2._grantIdentity(alice);
         // No creditsToken set.
         bytes32 hsh = keccak256(bytes("nocfg"));
         vm.prank(diamondOwner);
