@@ -16,6 +16,12 @@
 //! inversion are deferred to the follow-up, which lands them under a real
 //! wasm-instantiation render test (the part a pure unit test can't prove).
 
+/// Upper bound on an integer glyph scale (`blit_glyph` / `draw_number`). A
+/// glyph scaled past this already exceeds any framebuffer; the cap stops a
+/// hostile/garbage scale from overflowing `col*scale` or turning the
+/// `scale x scale` fill into a multi-billion-iteration hang.
+const MAX_GLYPH_SCALE: i32 = 256;
+
 /// A sub-rectangle of the shared framebuffer a cartridge draws into. Child-
 /// local coordinates are translated by `(ox, oy)` and clipped to
 /// `[0, w) x [0, h)` (the viewport) and then to the framebuffer bounds.
@@ -41,15 +47,25 @@ pub fn set_pixel(buf: &mut [u8], fb_w: i32, vp: &Viewport, x: i32, y: i32, rgb: 
     if x < 0 || y < 0 || x >= vp.w || y >= vp.h {
         return;
     }
-    let gx = vp.ox + x;
-    let gy = vp.oy + y;
-    if gx < 0 || gy < 0 || gx >= fb_w {
+    // Global coord + byte index in i64 (with saturating mul) so a pathological
+    // viewport — huge `ox`/`oy`, or a height past 2^20 — can't overflow the
+    // offset past the bounds guard into an OOB write. The previous `usize` math
+    // was sound on native (64-bit) but DEFEATED on wasm32 (the live target,
+    // 32-bit usize): `gy*fb_w` could wrap to a small in-bounds index. i64 is
+    // 64-bit on every target, so the guard now holds everywhere.
+    let gx = vp.ox as i64 + x as i64;
+    let gy = vp.oy as i64 + y as i64;
+    if gx < 0 || gy < 0 || gx >= fb_w as i64 {
         return;
     }
-    let idx = ((gy as usize) * (fb_w as usize) + gx as usize) * 4;
-    if idx + 3 >= buf.len() {
+    let idx = gy
+        .saturating_mul(fb_w as i64)
+        .saturating_add(gx)
+        .saturating_mul(4);
+    if idx < 0 || idx.saturating_add(3) >= buf.len() as i64 {
         return;
     }
+    let idx = idx as usize;
     buf[idx] = rgb.0;
     buf[idx + 1] = rgb.1;
     buf[idx + 2] = rgb.2;
@@ -105,7 +121,10 @@ pub fn blit_glyph(
     scale: i32,
 ) {
     let glyph = glyph_5x7(code);
-    let scale = scale.max(1);
+    // Clamp the scale: a glyph past 256x already dwarfs any framebuffer, and an
+    // unbounded scale both overflows `col*scale` AND makes the `scale x scale`
+    // fill loop a hang (a brick). 256 keeps `col*scale`/`6*scale` well within i32.
+    let scale = scale.clamp(1, MAX_GLYPH_SCALE);
     for (row, bits) in glyph.iter().enumerate() {
         for col in 0..5i32 {
             if (bits >> (4 - col)) & 1 == 0 {
@@ -133,7 +152,7 @@ pub fn draw_number(
     color: (u8, u8, u8),
     scale: i32,
 ) {
-    let s = scale.max(1);
+    let s = scale.clamp(1, MAX_GLYPH_SCALE); // see blit_glyph: bounds 6*s + the fill loop
     let advance = 6 * s; // 5px glyph + 1px gap, scaled
     let mut cx = x;
     let mut n = (value as i64).unsigned_abs();
@@ -175,6 +194,11 @@ pub fn draw_line(
     y1: i32,
     rgb: (u8, u8, u8),
 ) {
+    // NOTE: extreme endpoints (e.g. i32::MIN..i32::MAX) overflow `.abs()` (debug
+    // panic) and, more fundamentally, make the Bresenham walk |x1-x0| ≈ 2^32
+    // steps — a hang. The complete fix is to CLIP the segment to the viewport
+    // before walking (Cohen-Sutherland); deferred. Not cartridge-reachable in the
+    // current wiring (host-supplied coords) and the worker watchdog kills a hang.
     let dx = (x1 - x0).abs();
     let dy = -(y1 - y0).abs();
     let sx = if x0 < x1 { 1 } else { -1 };
@@ -203,7 +227,14 @@ pub fn draw_line(
 /// (up to the 1024×1024 cartridge-declared max) can't overflow the cross product.
 #[inline]
 fn edge(ax: i32, ay: i32, bx: i32, by: i32, cx: i32, cy: i32) -> i64 {
-    (bx - ax) as i64 * (cy - ay) as i64 - (by - ay) as i64 * (cx - ax) as i64
+    // Widen to i64 BEFORE subtracting — `(bx - ax)` in i32 first would overflow
+    // on extreme coords (e.g. i32::MAX - i32::MIN) despite the i64 product. The
+    // i64 PRODUCT is safe for any realistic coord (deltas to ~±1.5e9, vastly
+    // beyond any framebuffer); two FULL-i32-range deltas (~2^32 each) would still
+    // overflow i64 → that absurd case needs i128, deferred (unreachable: vertices
+    // come from cartridge draw calls at framebuffer scale).
+    (bx as i64 - ax as i64) * (cy as i64 - ay as i64)
+        - (by as i64 - ay as i64) * (cx as i64 - ax as i64)
 }
 
 /// Fill the triangle `(x0,y0),(x1,y1),(x2,y2)` with a flat colour, scanline-
@@ -558,6 +589,33 @@ mod tests {
         assert_eq!(px(&buf, w, 4, 4), [9, 9, 9, 255], "interior pixel filled");
         // A point past the hypotenuse stays blank.
         assert_eq!(px(&buf, w, 18, 18), [0, 0, 0, 0], "outside the triangle blank");
+    }
+
+    #[test]
+    fn extreme_coords_never_panic_or_write_oob() {
+        // Cartridge-controlled coords/scales at the i32 extremes must not
+        // overflow into a panic (debug) or an OOB write / hang (release/wasm32).
+        // Every primitive routes through the now-i64/saturating-bounded set_pixel.
+        let (w, h) = (8, 8);
+        let mut buf = fb(w, h);
+        let full = Viewport::full(w, h);
+        // Pathological viewport offsets + a huge fb_w — set_pixel must no-op.
+        let evil = Viewport { ox: i32::MAX, oy: i32::MAX, w: i32::MAX, h: i32::MAX };
+        set_pixel(&mut buf, w, &evil, 0, 0, (1, 2, 3));
+        set_pixel(&mut buf, i32::MAX, &full, 0, 0, (1, 2, 3));
+        // A triangle with an i32::MIN..i32::MAX axis must not overflow edge()'s
+        // (formerly i32) subtract, and its bbox is viewport-clipped so the scan
+        // stays bounded. (A SECOND full-range axis would overflow the i64 product
+        // — a documented, unreachable limit; one extreme axis exercises the fix.)
+        fill_triangle(&mut buf, w, &full, i32::MIN, 0, i32::MAX, 0, 0, 1, (7, 8, 9));
+        // A garbage scale must neither overflow `col*scale` nor hang the
+        // `scale x scale` fill loop (clamped to MAX_GLYPH_SCALE).
+        blit_glyph(&mut buf, w, &full, 0, 0, 'A' as u32, (1, 1, 1), i32::MAX);
+        draw_number(&mut buf, w, &full, 0, 0, -5, (1, 1, 1), i32::MAX);
+        // The buffer is exactly w*h*4 bytes — surviving the above (no panic, no
+        // OOB) is the assertion; a normal in-bounds draw still works afterwards.
+        set_pixel(&mut buf, w, &full, 3, 3, (10, 20, 30));
+        assert_eq!(px(&buf, w, 3, 3), [10, 20, 30, 255], "normal draw still works");
     }
 
     #[test]

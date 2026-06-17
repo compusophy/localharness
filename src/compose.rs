@@ -454,8 +454,18 @@ impl<H> ModuleTable<H> {
     pub fn focus_at(&self, x: i32, y: i32) -> Option<(usize, i32, i32)> {
         for i in (0..self.modules.len()).rev() {
             let vp = &self.modules[i].viewport;
-            if x >= vp.ox && y >= vp.oy && x < vp.ox + vp.w && y < vp.oy + vp.h {
-                return Some((i, x - vp.ox, y - vp.oy));
+            // Saturating arithmetic: a viewport rect is attacker-supplied (the
+            // parent calls spawn_module with arbitrary i32 x/y/w/h), so a raw
+            // `vp.ox + vp.w` could overflow → a debug panic (brick) or a release
+            // wrap that mis-routes the pointer. The rest of the compositor
+            // (blit_child / map_pointer_into_child) is already saturating; this
+            // was the lone inconsistency.
+            if x >= vp.ox
+                && y >= vp.oy
+                && x < vp.ox.saturating_add(vp.w)
+                && y < vp.oy.saturating_add(vp.h)
+            {
+                return Some((i, x.saturating_sub(vp.ox), y.saturating_sub(vp.oy)));
             }
         }
         None
@@ -630,6 +640,21 @@ mod tests {
         t.push(1, Viewport { ox: 0, oy: 0, w: 100, h: 100 }); // same rect, on top
         // Last-pushed (index 1) wins the click.
         assert_eq!(t.focus_at(10, 10), Some((1, 10, 10)));
+    }
+
+    #[test]
+    fn focus_at_does_not_overflow_on_extreme_viewport() {
+        // A viewport rect is attacker-supplied (spawn_module's x/y/w/h). An
+        // `ox + w` that overflows i32 used to panic (debug) / wrap (release) and
+        // mis-route the pointer. The saturating check must neither panic nor
+        // claim a hit it shouldn't.
+        let mut t: ModuleTable<i32> = ModuleTable::new();
+        t.push(0, Viewport { ox: i32::MAX, oy: 0, w: 1, h: 1 });
+        // No panic; the point isn't inside the (saturated) rect.
+        assert_eq!(t.focus_at(i32::MAX, 0), None);
+        // A second, normal rect underneath still routes correctly.
+        t.push(1, Viewport { ox: 0, oy: 0, w: 10, h: 10 });
+        assert_eq!(t.focus_at(3, 4), Some((1, 3, 4)));
     }
 
     #[test]
