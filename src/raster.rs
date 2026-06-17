@@ -22,6 +22,13 @@
 /// `scale x scale` fill into a multi-billion-iteration hang.
 const MAX_GLYPH_SCALE: i32 = 256;
 
+/// Max endpoint span (in either axis) for which [`draw_line`] takes its exact
+/// Bresenham path. Far beyond any framebuffer (2^20 = ~1M px) yet small enough
+/// that the walk can't hang and the i32 deltas can't overflow; a longer span is
+/// clipped to the viewport first. Lines within this (every reachable line) are
+/// unchanged.
+const MAX_LINE_SPAN: i64 = 1 << 20;
+
 /// A sub-rectangle of the shared framebuffer a cartridge draws into. Child-
 /// local coordinates are translated by `(ox, oy)` and clipped to
 /// `[0, w) x [0, h)` (the viewport) and then to the framebuffer bounds.
@@ -179,6 +186,53 @@ pub fn draw_number(
     }
 }
 
+/// Clip segment `(x0,y0)-(x1,y1)` to the viewport rect `[0, w-1] x [0, h-1]`
+/// (Liang-Barsky in f64 — exact for i32 coords since |coord| < 2^31 < 2^52, and
+/// overflow-free, the same f64 approach `fill_triangle_z` already uses). Returns
+/// the clipped integer endpoints, or `None` if the segment is entirely outside.
+/// Only used by [`draw_line`] for spans past `MAX_LINE_SPAN`, to bound the walk.
+fn clip_line(w: i32, h: i32, x0: i32, y0: i32, x1: i32, y1: i32) -> Option<(i32, i32, i32, i32)> {
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    let (fx0, fy0) = (x0 as f64, y0 as f64);
+    let dx = x1 as f64 - x0 as f64; // cast BEFORE subtracting (i32 sub would overflow)
+    let dy = y1 as f64 - y0 as f64;
+    let (xmax, ymax) = ((w - 1) as f64, (h - 1) as f64);
+    let (mut t0, mut t1) = (0.0f64, 1.0f64);
+    // Each clip boundary as (p, q): the segment is inside where p*t <= q.
+    for (p, q) in [(-dx, fx0), (dx, xmax - fx0), (-dy, fy0), (dy, ymax - fy0)] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return None; // parallel to this edge and outside it
+            }
+        } else {
+            let t = q / p;
+            if p < 0.0 {
+                if t > t1 {
+                    return None;
+                }
+                if t > t0 {
+                    t0 = t;
+                }
+            } else {
+                if t < t0 {
+                    return None;
+                }
+                if t < t1 {
+                    t1 = t;
+                }
+            }
+        }
+    }
+    Some((
+        (fx0 + t0 * dx).round() as i32,
+        (fy0 + t0 * dy).round() as i32,
+        (fx0 + t1 * dx).round() as i32,
+        (fy0 + t1 * dy).round() as i32,
+    ))
+}
+
 /// Draw a 1px line from child-local `(x0,y0)` to `(x1,y1)` (integer
 /// Bresenham), every pixel routed through [`set_pixel`] so it translates+
 /// clips by the viewport. The line counterpart of the triangle fill —
@@ -194,11 +248,20 @@ pub fn draw_line(
     y1: i32,
     rgb: (u8, u8, u8),
 ) {
-    // NOTE: extreme endpoints (e.g. i32::MIN..i32::MAX) overflow `.abs()` (debug
-    // panic) and, more fundamentally, make the Bresenham walk |x1-x0| ≈ 2^32
-    // steps — a hang. The complete fix is to CLIP the segment to the viewport
-    // before walking (Cohen-Sutherland); deferred. Not cartridge-reachable in the
-    // current wiring (host-supplied coords) and the worker watchdog kills a hang.
+    // Bound the Bresenham walk. A line whose span fits MAX_LINE_SPAN (any line a
+    // framebuffer could hold, and then some) takes the original exact path —
+    // byte-identical to before. Only an EXTREME endpoint (which would overflow
+    // `(x1-x0).abs()` and make the walk |dx| ≈ 2^32 steps — a hang) is first
+    // CLIPPED to the viewport, so the walk is always bounded and overflow-free.
+    let span = (x1 as i64 - x0 as i64).abs().max((y1 as i64 - y0 as i64).abs());
+    let (x0, y0, x1, y1) = if span > MAX_LINE_SPAN {
+        match clip_line(vp.w, vp.h, x0, y0, x1, y1) {
+            Some(c) => c,
+            None => return, // segment entirely outside the viewport
+        }
+    } else {
+        (x0, y0, x1, y1)
+    };
     let dx = (x1 - x0).abs();
     let dy = -(y1 - y0).abs();
     let sx = if x0 < x1 { 1 } else { -1 };
@@ -625,10 +688,29 @@ mod tests {
         // `scale x scale` fill loop (clamped to MAX_GLYPH_SCALE).
         blit_glyph(&mut buf, w, &full, 0, 0, 'A' as u32, (1, 1, 1), i32::MAX);
         draw_number(&mut buf, w, &full, 0, 0, -5, (1, 1, 1), i32::MAX);
+        // draw_line with i32::MIN..i32::MAX endpoints: clipped to the viewport, so
+        // the Bresenham walk is bounded (would otherwise be ~2^32 steps — a hang).
+        draw_line(&mut buf, w, &full, i32::MIN, 3, i32::MAX, 4, (4, 5, 6));
+        draw_line(&mut buf, w, &full, 3, i32::MIN, 4, i32::MAX, (4, 5, 6));
         // The buffer is exactly w*h*4 bytes — surviving the above (no panic, no
         // OOB) is the assertion; a normal in-bounds draw still works afterwards.
         set_pixel(&mut buf, w, &full, 3, 3, (10, 20, 30));
         assert_eq!(px(&buf, w, 3, 3), [10, 20, 30, 255], "normal draw still works");
+    }
+
+    #[test]
+    fn clip_line_preserves_inside_clips_outside_rejects_disjoint() {
+        // Fully inside → returned unchanged (so draw_line's fast/clip paths agree
+        // on in-viewport segments).
+        assert_eq!(clip_line(10, 10, 1, 2, 8, 7), Some((1, 2, 8, 7)));
+        // Crosses the viewport far-left → far-right: clips to the x bounds, y kept.
+        assert_eq!(clip_line(10, 10, -1000, 5, 1000, 5), Some((0, 5, 9, 5)));
+        // Entirely above the viewport → None.
+        assert_eq!(clip_line(10, 10, 0, -5, 9, -1), None);
+        // Extreme endpoints must clip without overflowing (the draw_line DoS case).
+        assert!(clip_line(8, 8, i32::MIN, 4, i32::MAX, 4).is_some());
+        // Degenerate viewport → None (never a panic).
+        assert_eq!(clip_line(0, 0, 1, 1, 2, 2), None);
     }
 
     #[test]
