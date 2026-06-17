@@ -226,15 +226,14 @@ pub fn draw_line(
 /// barycentric coverage. `> 0` is CCW; widened to `i64` so framebuffer coords
 /// (up to the 1024×1024 cartridge-declared max) can't overflow the cross product.
 #[inline]
-fn edge(ax: i32, ay: i32, bx: i32, by: i32, cx: i32, cy: i32) -> i64 {
-    // Widen to i64 BEFORE subtracting — `(bx - ax)` in i32 first would overflow
-    // on extreme coords (e.g. i32::MAX - i32::MIN) despite the i64 product. The
-    // i64 PRODUCT is safe for any realistic coord (deltas to ~±1.5e9, vastly
-    // beyond any framebuffer); two FULL-i32-range deltas (~2^32 each) would still
-    // overflow i64 → that absurd case needs i128, deferred (unreachable: vertices
-    // come from cartridge draw calls at framebuffer scale).
-    (bx as i64 - ax as i64) * (cy as i64 - ay as i64)
-        - (by as i64 - ay as i64) * (cx as i64 - ax as i64)
+fn edge(ax: i32, ay: i32, bx: i32, by: i32, cx: i32, cy: i32) -> i128 {
+    // i128 so NO i32 input can overflow: each delta widens to i128 before the
+    // subtract (an i32 `bx-ax` overflowed on e.g. i32::MAX-i32::MIN), and the
+    // product of two full-i32-range deltas (~2^32 each → ~2^64) fits i128 with
+    // room to spare. Coverage sign tests + the i128→f64 barycentric cast are
+    // unaffected; for framebuffer-scale coords the value is identical to before.
+    (bx as i128 - ax as i128) * (cy as i128 - ay as i128)
+        - (by as i128 - ay as i128) * (cx as i128 - ax as i128)
 }
 
 /// Fill the triangle `(x0,y0),(x1,y1),(x2,y2)` with a flat colour, scanline-
@@ -259,8 +258,8 @@ pub fn fill_triangle(
 ) {
     let min_x = x0.min(x1).min(x2).max(0);
     let min_y = y0.min(y1).min(y2).max(0);
-    let max_x = x0.max(x1).max(x2).min(vp.w - 1);
-    let max_y = y0.max(y1).max(y2).min(vp.h - 1);
+    let max_x = x0.max(x1).max(x2).min(vp.w.saturating_sub(1));
+    let max_y = y0.max(y1).max(y2).min(vp.h.saturating_sub(1));
     if min_x > max_x || min_y > max_y {
         return;
     }
@@ -318,8 +317,8 @@ pub fn fill_triangle_z(
 ) {
     let min_x = x0.min(x1).min(x2).max(0);
     let min_y = y0.min(y1).min(y2).max(0);
-    let max_x = x0.max(x1).max(x2).min(vp.w - 1);
-    let max_y = y0.max(y1).max(y2).min(vp.h - 1);
+    let max_x = x0.max(x1).max(x2).min(vp.w.saturating_sub(1));
+    let max_y = y0.max(y1).max(y2).min(vp.h.saturating_sub(1));
     if min_x > max_x || min_y > max_y {
         return;
     }
@@ -348,12 +347,17 @@ pub fn fill_triangle_z(
                 let l1 = w1 as f64 / area_f;
                 let l2 = w2 as f64 / area_f;
                 let z = (l0 * z0 as f64 + l1 * z1 as f64 + l2 * z2 as f64) as i32;
-                let gx = vp.ox + px;
-                let gy = vp.oy + py;
-                if gx >= 0 && gy >= 0 && gx < fb_w {
-                    let di = (gy as usize) * (fb_w as usize) + gx as usize;
-                    if di < depth.len() && z < depth[di] {
-                        depth[di] = z;
+                // Depth index in i64/saturating — this path computes `di` itself
+                // (it doesn't route through set_pixel), so it needs the SAME
+                // overflow safety: `vp.ox + px` and `gy*fb_w` would otherwise
+                // panic (debug) or wrap on wasm32 (32-bit usize) into the wrong
+                // depth slot. Mirror set_pixel.
+                let gx = vp.ox as i64 + px as i64;
+                let gy = vp.oy as i64 + py as i64;
+                if gx >= 0 && gy >= 0 && gx < fb_w as i64 {
+                    let di = gy.saturating_mul(fb_w as i64).saturating_add(gx);
+                    if di < depth.len() as i64 && z < depth[di as usize] {
+                        depth[di as usize] = z;
                         set_pixel(buf, fb_w, vp, px, py, rgb);
                     }
                 }
@@ -603,11 +607,20 @@ mod tests {
         let evil = Viewport { ox: i32::MAX, oy: i32::MAX, w: i32::MAX, h: i32::MAX };
         set_pixel(&mut buf, w, &evil, 0, 0, (1, 2, 3));
         set_pixel(&mut buf, i32::MAX, &full, 0, 0, (1, 2, 3));
-        // A triangle with an i32::MIN..i32::MAX axis must not overflow edge()'s
-        // (formerly i32) subtract, and its bbox is viewport-clipped so the scan
-        // stays bounded. (A SECOND full-range axis would overflow the i64 product
-        // — a documented, unreachable limit; one extreme axis exercises the fix.)
-        fill_triangle(&mut buf, w, &full, i32::MIN, 0, i32::MAX, 0, 0, 1, (7, 8, 9));
+        // A triangle with FULL i32::MIN..i32::MAX vertices on BOTH axes must not
+        // overflow edge() (now i128) — its bbox is viewport-clipped so the scan
+        // stays bounded.
+        fill_triangle(&mut buf, w, &full, i32::MIN, i32::MIN, i32::MAX, i32::MIN, 0, i32::MAX, (7, 8, 9));
+        // fill_triangle_z computes its OWN depth index (bypassing set_pixel) — the
+        // same extreme coords must not overflow that path either.
+        let mut depth = vec![i32::MAX; (w * h) as usize];
+        fill_triangle_z(
+            &mut buf, &mut depth, w, &full,
+            i32::MIN, i32::MIN, 0, i32::MAX, i32::MIN, 1, 0, i32::MAX, 2, (7, 8, 9),
+        );
+        // A pathological viewport width must not panic the `vp.w - 1` bbox clamp.
+        let neg = Viewport { ox: 0, oy: 0, w: i32::MIN, h: i32::MIN };
+        fill_triangle(&mut buf, w, &neg, 0, 0, 5, 0, 0, 5, (1, 1, 1));
         // A garbage scale must neither overflow `col*scale` nor hang the
         // `scale x scale` fill loop (clamped to MAX_GLYPH_SCALE).
         blit_glyph(&mut buf, w, &full, 0, 0, 'A' as u32, (1, 1, 1), i32::MAX);
