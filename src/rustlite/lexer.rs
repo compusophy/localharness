@@ -390,14 +390,18 @@ impl<'a> Lexer<'a> {
             })? as i64;
             return Ok(TokenKind::IntLit(val));
         }
-        while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+        // `_` digit separators are valid in decimal too (the hex branch above
+        // already allows them) — `1_000` / `16_777_215` are valid Rust and a
+        // natural way to write the large color/coordinate constants cartridges
+        // use. They're stripped before `parse` below.
+        while self.peek().is_some_and(|c| c.is_ascii_digit() || c == b'_') {
             self.advance();
         }
 
         let is_float = self.peek() == Some(b'.') && self.peek2().is_some_and(|c| c.is_ascii_digit());
         if is_float {
             self.advance(); // '.'
-            while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+            while self.peek().is_some_and(|c| c.is_ascii_digit() || c == b'_') {
                 self.advance();
             }
             // optional f32/f64 suffix
@@ -409,7 +413,7 @@ impl<'a> Lexer<'a> {
                 else { self.pos = suffix_start; }
             }
             let text = std::str::from_utf8(&self.src[_start..self.pos]).unwrap();
-            let text = text.trim_end_matches("f32").trim_end_matches("f64");
+            let text = text.trim_end_matches("f32").trim_end_matches("f64").replace('_', "");
             let val: f64 = text.parse().map_err(|e| CompileError::at_code(codes::BAD_NUMBER, format!("bad float: {e}"), Span { start: _start, end: self.pos }))?;
             Ok(TokenKind::FloatLit(val))
         } else {
@@ -422,7 +426,7 @@ impl<'a> Lexer<'a> {
                 else { self.pos = suffix_start; }
             }
             let text = std::str::from_utf8(&self.src[_start..self.pos]).unwrap();
-            let text = text.trim_end_matches("i32").trim_end_matches("i64");
+            let text = text.trim_end_matches("i32").trim_end_matches("i64").replace('_', "");
             let val: i64 = text.parse().map_err(|e| CompileError::at_code(codes::BAD_NUMBER, format!("bad int: {e}"), Span { start: _start, end: self.pos }))?;
             Ok(TokenKind::IntLit(val))
         }
@@ -478,6 +482,19 @@ mod tests {
         assert!(lex("0x").is_err());
         // Regression guard: a bare `0` still lexes as decimal zero.
         assert_eq!(lex("0").unwrap()[0].kind, TokenKind::IntLit(0));
+    }
+
+    #[test]
+    fn lex_decimal_digit_separators() {
+        // `_` separators are valid Rust in DECIMAL too (the hex branch already
+        // allowed them). Before the fix `1_000` lexed as `IntLit(1) Ident("_000")`
+        // and parsing then failed on valid agent source.
+        assert_eq!(lex("1_000").unwrap()[0].kind, TokenKind::IntLit(1000));
+        assert_eq!(lex("16_777_215").unwrap()[0].kind, TokenKind::IntLit(16_777_215));
+        // fractional part too, with a suffix.
+        assert_eq!(lex("3_000.500_5f64").unwrap()[0].kind, TokenKind::FloatLit(3000.5005));
+        // a trailing/loose `_` is stripped before parse (matches Rust: `1_` == 1).
+        assert_eq!(lex("1_").unwrap()[0].kind, TokenKind::IntLit(1));
     }
 
     #[test]

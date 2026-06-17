@@ -487,6 +487,38 @@ mod tests {
     }
 
     #[test]
+    fn match_binding_arm_binds_the_scrutinee() {
+        // A binding arm (`n => n`) binds the whole scrutinee to `n`. Before the
+        // fix codegen never mapped the name to the scrutinee local, so this
+        // failed with "undefined local 'n'" (LH0201) — accepted source the
+        // compiler then refused to lower. The LAST-arm binding is the supported
+        // shape (a non-last one is rejected, see the test above).
+        assert!(compile(
+            "fn frame(t: i32) { let v = match t { 0 => 100, n => n }; host::display::clear(v); host::display::present(); }"
+        )
+        .is_ok());
+        // A binding that SHADOWS an outer local still lowers (and now reads the
+        // scrutinee, not the outer 7 — value correctness verified via wasm exec).
+        assert!(compile(
+            "fn frame(t: i32) { let x = 7; let v = match t { 0 => 1, x => x }; host::display::clear(v); host::display::present(); }"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn struct_literals_are_rejected_not_miscompiled() {
+        // The struct codegen path was a stub that pushed every field value and
+        // aggregated none → INVALID (stack-imbalanced) wasm that failed
+        // instantiation. Until structs are materialised in memory, reject them
+        // with a clear diagnostic rather than emit a broken cartridge.
+        let e = compile(
+            "struct P { x: i32, y: i32 } fn frame(t: i32) { let p = P { x: 11, y: 22 }; host::display::clear(p.x); host::display::present(); }"
+        )
+        .expect_err("struct literals must be rejected, not miscompiled");
+        assert_eq!(e.code, Some(codes::UNSUPPORTED_FEATURE), "{e}");
+    }
+
+    #[test]
     fn array_return_type_is_rejected() {
         // RETURNING an array is unsound under the static-region model: the region
         // a returned array points into is reused on every call, so two live

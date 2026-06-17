@@ -639,16 +639,21 @@ impl WasmEmitter {
                 code.push(OP_I32_CONST);
                 leb128_i32(0, code);
             }
-            TypedExprKind::StructLit { fields, .. } => {
-                // For now, push each field value onto stack
-                // In a real impl, allocate arena memory and store fields
-                for (_, val) in fields {
-                    self.emit_expr(val, code)?;
-                }
-                // If more than one field, only keep the last (simplified)
-                for _ in 1..fields.len() {
-                    // In the real version, we'd store each to memory
-                }
+            TypedExprKind::StructLit { name, .. } => {
+                // Struct literals are NOT yet lowered: the old stub pushed every
+                // field value and aggregated none, leaving extra operands on the
+                // stack → an INVALID (stack-imbalanced) wasm module that fails
+                // instantiation. Fail fast with a clear diagnostic instead of
+                // emitting a broken cartridge. (A proper impl must materialise the
+                // struct in linear memory and store each field at its DECLARED
+                // index — `FieldAccess` reads `base + declared_index*4`, but the
+                // typed literal carries fields in SOURCE order, so codegen needs
+                // the struct's field order threaded in first. Tracked as future
+                // work.) typecheck still accepts structs; only codegen rejects.
+                return Err(CompileError::new_code(
+                    codes::UNSUPPORTED_FEATURE,
+                    format!("struct literals (`{name}`) are not yet supported by the cartridge compiler"),
+                ));
             }
             TypedExprKind::TupleLit(exprs) => {
                 for e in exprs {
@@ -909,7 +914,25 @@ impl WasmEmitter {
                         code.push(block_ty);
                         self.extra_depth += 1; // arm body is one if-frame deeper
                     }
+                    // A binding arm (`x => …`) binds the whole scrutinee to `x`;
+                    // alias the name to the scrutinee local (NOT a fresh local —
+                    // the value already lives there) for the body's scope, exactly
+                    // as typecheck's `bind_pattern` does. Without this the body's
+                    // `x` resolved to an OUTER local (wrong value) or failed
+                    // codegen with "undefined local".
+                    let bound_name = match &arm.pattern.kind {
+                        crate::rustlite::ast::PatternKind::Binding(n) => Some(n.clone()),
+                        _ => None,
+                    };
+                    if let Some(name) = &bound_name {
+                        let mut scope = std::collections::HashMap::new();
+                        scope.insert(name.clone(), scrutinee_local);
+                        self.local_map.push(scope);
+                    }
                     self.emit_expr(&arm.body, code)?;
+                    if bound_name.is_some() {
+                        self.local_map.pop();
+                    }
                     if !is_wildcard(&arm.pattern) && !is_last {
                         code.push(OP_ELSE);
                     }
