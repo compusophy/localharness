@@ -417,6 +417,7 @@ pub(super) fn buy_lh_pressed(onboarding: bool) {
         // card already carries the `#lh-pay-region` mount ids, so there's no
         // modal to open later — the shim mounts straight into it.
         dom::swap_outer("apex-onboard", &templates::onboard_checkout().into_string());
+        crate::app::debuglog::log("checkout: card shown → POST /stripe/checkout");
         wasm_bindgen_futures::spawn_local(async move {
             match start_checkout_embedded(cents).await {
                 Ok((client_secret, payment_intent)) => {
@@ -441,8 +442,10 @@ pub(super) fn buy_lh_pressed(onboarding: bool) {
                             .to_string(),
                         ),
                     );
+                    crate::app::debuglog::log("checkout: form mounted + JS watching (no wasm loop)");
                 }
                 Err(e) => {
+                    crate::app::debuglog::log("checkout: REVERT to CTA — start_checkout error");
                     web_sys::console::warn_1(&JsValue::from_str(&format!("buy $LH: {e}")));
                     // Swap the onboarding card back so the user can retry.
                     dom::swap_outer("apex-onboard", &crate::landing::create_wallet_cta().into_string());

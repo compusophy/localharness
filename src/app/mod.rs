@@ -314,6 +314,7 @@ fn inject_token_styles(doc: &web_sys::Document) {
 }
 
 fn mount() -> Result<(), JsValue> {
+    debuglog::log("mount (page load / reload)");
     let doc = dom::document()?;
     let root = doc
         .get_element_by_id("root")
@@ -620,6 +621,7 @@ async fn paint_workshop(host: &tenant::Host) {
 /// 3. No local marker AND no on-chain owner → genuinely unclaimed;
 ///    paint the "claim this name?" prompt.
 pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
+    debuglog::log("paint_tenant");
     let Ok(doc) = dom::document() else { return };
     let Some(root) = doc.get_element_by_id("root") else { return };
 
@@ -923,6 +925,7 @@ async fn kick_verification(host: tenant::Host, name: String, painted_from_hint: 
 /// wallet, if it doesn't exist yet, gets generated as a side effect of
 /// the user's first claim submit (handled in `run_apex_claim`).
 pub(crate) async fn paint_apex(host: tenant::Host) {
+    debuglog::log("paint_apex (re-render apex → CTA)");
     let Ok(doc) = dom::document() else { return };
     let Some(root) = doc.get_element_by_id("root") else { return };
 
