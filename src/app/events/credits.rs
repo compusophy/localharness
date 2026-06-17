@@ -416,7 +416,7 @@ pub(super) fn buy_lh_pressed(onboarding: bool) {
         // the inline checkout card showing "preparing secure checkout…". The
         // card already carries the `#lh-pay-region` mount ids, so there's no
         // modal to open later — the shim mounts straight into it.
-        dom::swap_outer("apex-onboard", &templates::onboard_checkout(&lh_label(cents)).into_string());
+        dom::swap_outer("apex-onboard", &templates::onboard_checkout().into_string());
         wasm_bindgen_futures::spawn_local(async move {
             match start_checkout_embedded(cents).await {
                 Ok((client_secret, payment_intent)) => {

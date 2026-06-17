@@ -82,13 +82,15 @@ pub(crate) fn buy_modal(lh_label: &str) -> Markup {
 /// `#buy-modal-done`) plus an interstitial line (`#onboard-checkout-msg`) the
 /// Rust side clears once `lhBuyLh` mounts the form. Same visual family as the
 /// apex onboard card; minimal copy.
-pub(crate) fn onboard_checkout(lh_label: &str) -> Markup {
+pub(crate) fn onboard_checkout() -> Markup {
     html! {
         section #apex-onboard .apex-onboard {
+            // Keep the offer pitch at the top so "limited time" / the deal does
+            // NOT vanish when the user taps create (same pitch as the button card).
+            (crate::landing::onboard_pitch())
             div #onboard-checkout-msg .step-msg style="color:var(--muted)" {
                 "preparing secure checkout…"
             }
-            div.api-key-hint { "you'll receive 1 agent + " (lh_label) }
             div #lh-pay-region {
                 div #lh-express style="margin:10px 0" {}
                 div #lh-payment style="margin:6px 0" {}

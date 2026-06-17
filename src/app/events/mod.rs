@@ -943,7 +943,7 @@ fn dispatch(action: Action) {
             // Stripe mount ids; the spawned work below fills it.
             dom::swap_outer(
                 "apex-onboard",
-                &templates::onboard_checkout("200 $LH").into_string(),
+                &templates::onboard_checkout().into_string(),
             );
             wasm_bindgen_futures::spawn_local(async move {
                 let _flow_guard = flow_guard;

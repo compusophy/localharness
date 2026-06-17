@@ -31,14 +31,24 @@ use maud::{Markup, html};
 /// live in admin; `?invite=` links auto-redeem on mount). `#onboard-msg` is the
 /// status slot; `data-action="create-account"` is load-bearing (MUST match a
 /// `Action::parse` arm — a fresh visitor's only control).
+/// The two-line offer pitch: a "limited time" label + the offer. Shown ABOVE the
+/// create button AND kept at the top of the inline checkout card, so the offer
+/// (and "limited time") does NOT vanish the moment the user taps create.
+pub(crate) fn onboard_pitch() -> Markup {
+    html! {
+        p style="font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);margin:0 0 4px" {
+            "limited time"
+        }
+        p style="font-size:14px;margin:0 0 12px" {
+            "1 agent + 200 $LH for $2"
+        }
+    }
+}
+
 pub(crate) fn create_wallet_cta() -> Markup {
     html! {
         section #apex-onboard .apex-onboard {
-            // Pitch ABOVE the button so the cost + what you get are known BEFORE
-            // the tap — no surprise charge, and the credits are part of the offer.
-            p style="font-size:13px;color:var(--muted);margin:0 0 10px" {
-                "LIMITED TIME — for $2 you'll receive 1 agent + 200 $LH"
-            }
+            (onboard_pitch())
             button type="button" data-action="create-account" .apex-onboard-cta {
                 "create agent"
             }
