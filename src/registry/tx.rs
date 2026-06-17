@@ -42,9 +42,31 @@ pub fn set_metadata_gas(byte_len: usize) -> u128 {
     1_200_000 + byte_len as u128 * 8_500
 }
 
-/// Current `eth_gasPrice` reported by the node, in wei.
+/// Absolute ceiling on the per-gas price we'll authorize for a sponsored tx,
+/// in wei. Tempo gas prices sit around 1 gwei; 1000 gwei is ~1000x headroom yet
+/// caps a hostile/MITM'd RPC from inflating `gas_limit * price` to drain the
+/// embedded sponsor's fee-token float (the price is taken verbatim from the
+/// node). Refuse rather than clamp — never silently authorize an absurd fee.
+pub const MAX_GAS_PRICE_WEI: u128 = 1_000_000_000_000; // 1000 gwei
+
+/// Current `eth_gasPrice` reported by the node, in wei — REFUSING (Err) when it
+/// exceeds [`MAX_GAS_PRICE_WEI`], so every sponsored builder that prices off the
+/// node can't be tricked into an absurd fee by a compromised RPC.
 pub async fn current_gas_price() -> Result<u128, String> {
-    eth_gas_price().await
+    let price = eth_gas_price().await?;
+    clamp_gas_price(price)
+}
+
+/// Reject a node-reported gas price above [`MAX_GAS_PRICE_WEI`]. Pure so the
+/// guard is unit-tested without an RPC.
+pub(crate) fn clamp_gas_price(price: u128) -> Result<u128, String> {
+    if price > MAX_GAS_PRICE_WEI {
+        return Err(format!(
+            "node-reported gas price {price} wei exceeds the {MAX_GAS_PRICE_WEI} wei ceiling — \
+             refusing to sign (possible hostile/MITM'd RPC)"
+        ));
+    }
+    Ok(price)
 }
 
 /// Submit a signed raw tx hex and block until the receipt is mined.
@@ -137,7 +159,7 @@ pub async fn submit_tempo_self_paid(
     let sender_addr = wallet::address(sender);
     let sender_hex = address_to_hex(&sender_addr);
     let fee_token_addr = fee_token.map(parse_eth_address).transpose()?;
-    let gas_price = eth_gas_price().await?;
+    let gas_price = current_gas_price().await?;
     // See `submit_tempo_sponsored` for the stale-nonce resubmit rationale.
     let mut last_err = String::new();
     for attempt in 0..2 {
@@ -183,7 +205,7 @@ pub async fn submit_tempo_sponsored(
     let sender_addr = wallet::address(sender);
     let sender_hex = address_to_hex(&sender_addr);
     let fee_token_addr = parse_eth_address(fee_token)?;
-    let gas_price = eth_gas_price().await?;
+    let gas_price = current_gas_price().await?;
     // Build + sign + submit with a freshly-read nonce; on a STALE-nonce
     // rejection (a "pending" read that lagged a just-submitted sibling tx —
     // e.g. the meter→wallet bridge that runs right before the x402 approve)
@@ -238,7 +260,7 @@ pub async fn create_sponsored(
     let sender_addr = wallet::address(sender);
     let sender_hex = address_to_hex(&sender_addr);
     let fee_token_addr = parse_eth_address(fee_token)?;
-    let gas_price = eth_gas_price().await?;
+    let gas_price = current_gas_price().await?;
     let mut last_err = String::new();
     for attempt in 0..2 {
         let nonce = eth_get_transaction_count(&sender_hex).await?;
@@ -432,6 +454,17 @@ mod tests {
             assert_eq!(a.value_wei, b.value_wei);
             assert_eq!(a.input, b.input);
         }
+    }
+
+    /// The sponsored-tx gas-price guard: an in-range price passes through; a
+    /// price above the ceiling (an inflated/hostile RPC report) is REFUSED, so
+    /// no builder can be tricked into authorizing an absurd `gas_limit * price`.
+    #[test]
+    fn clamp_gas_price_passes_sane_and_refuses_inflated() {
+        assert_eq!(clamp_gas_price(1_000_000_000), Ok(1_000_000_000)); // ~1 gwei
+        assert_eq!(clamp_gas_price(MAX_GAS_PRICE_WEI), Ok(MAX_GAS_PRICE_WEI)); // ceiling inclusive
+        assert!(clamp_gas_price(MAX_GAS_PRICE_WEI + 1).is_err());
+        assert!(clamp_gas_price(u128::MAX).is_err());
     }
 
     #[test]
