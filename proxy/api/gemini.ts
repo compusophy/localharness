@@ -738,7 +738,14 @@ export default async function handler(req: Request): Promise<Response> {
     // Subtract this address's still-in-flight charges from the (lock-free) snapshot
     // so a burst within this isolate can't all pass a stale `creditOf` read.
     const availCredit = credit - reservedFor(address);
-    const hasCredit = availCredit >= cost;
+    // A POSITIVE meter balance is ALWAYS spendable down to zero. A balance below
+    // one message's list price (`cost`) is NOT stranded — the credit path debits
+    // what's actually there (`min(cost, avail)`) for that final call, so e.g. a
+    // leftover 0.62 $LH still buys a message rather than being locked out. (x402
+    // below still requires the full exact `cost` — a fresh trustless payment has
+    // no partial.)
+    const meterCharge = availCredit < cost ? availCredit : cost; // min(cost, avail)
+    const hasCredit = availCredit > 0n;
 
     // x402 per-call payment — the mainnet-safe meter (spec §134): the caller
     // signs an x402 authorization paying the platform meter payee EXACTLY `cost`
@@ -774,9 +781,9 @@ export default async function handler(req: Request): Promise<Response> {
     // a stale snapshot. Released in the handler's `finally` (every exit path).
     // Only when this request will actually debit the meter (funded, not x402).
     if (hasCredit && !paidViaX402) {
-      reserve(address, cost);
+      reserve(address, meterCharge);
       reservedAddr = address;
-      reservedWei = cost;
+      reservedWei = meterCharge;
     }
 
     if (!hasSession && !hasCredit && !paidViaX402) {
@@ -896,8 +903,12 @@ export default async function handler(req: Request): Promise<Response> {
         origin,
       );
     }
+    // Token-metering reconciles a usage REMAINDER above the floor — only when the
+    // floor charged was the FULL `cost` (a fully-funded balance). A partial
+    // spend-down (meterCharge < cost) already exhausts the balance, so there's
+    // nothing left to meter on top.
     const tokenMeterActive =
-      TOKEN_METERING && hasCredit && !paidViaX402 && upstream.body !== null;
+      TOKEN_METERING && hasCredit && meterCharge >= cost && !paidViaX402 && upstream.body !== null;
     const tokenX402Active = TOKEN_METERING && isUpto && upstream.body !== null;
 
     if (paidViaX402 && x402Auth && !tokenX402Active) {
@@ -917,7 +928,7 @@ export default async function handler(req: Request): Promise<Response> {
         return json({ error: 'x402 settlement submission failed, retry: ' + (e as Error).message }, 502, origin);
       }
     } else if (hasCredit) {
-      // PREFER per-request metering: a FUNDED meter (`availCredit >= cost`) means
+      // PREFER per-request metering: a FUNDED meter (`availCredit > 0`) means
       // the caller opted into real per-call billing, so debit even if a
       // (free-beta `sessionPrice==0`) session is ALSO active — else the free
       // session would silently make every call free. Session-only callers with no
@@ -928,7 +939,7 @@ export default async function handler(req: Request): Promise<Response> {
       try {
         // Await the BROADCAST (serializes the nonce) but not the receipt:
         // streaming responses flow immediately, not after the meter tx confirms.
-        await meterDebit(address, cost, false);
+        await meterDebit(address, meterCharge, false);
       } catch (e) {
         // Broadcast itself failed (RPC/infra). Without a (free-beta) session
         // covering the caller, that's a real 502; otherwise serve under it.
