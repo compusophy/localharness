@@ -17,6 +17,36 @@ What lives here:
 
 ---
 
+## ⚡ Awaiting maintainer activation (built + staged this loop, NOT live)
+
+The autonomous loop hardened the codebase (~13 bugs fixed; every money/security
+core reviewed) and built the metering fix end-to-end on the proxy + contract side.
+What it could NOT do autonomously — a decision, a live deploy, or a recut — is
+queued here. All of it is **flag-off / un-cut safe** (merged code changes nothing
+live until you act). Each is a few minutes.
+
+1. **Token-metering go-live** (the flat $0.01/request loses money past ~1.4k
+   tokens). Code is wired + staged behind `LH_TOKEN_METERING` (off). Activate:
+   pick the margin + an output cap, set the proxy envs, redeploy (Edge inlines env
+   at build time), live-verify each provider's SSE. → [`metering.md`](metering.md)
+   "Go-live".
+2. **x402 `settleUpto` recut** — the facet + proxy "Upto" (sign-max/settle-actual)
+   rail is built + tested + staged; going live needs a `diamondCut` ADD of the
+   `settleUpto` selector (money-critical, owner key) + the browser/SDK x402 client
+   to sign a max. → [`metering.md`](metering.md) "Remaining (supervised)".
+3. **Chain coherence** — the published CLI is testnet (Moderato) while the web +
+   proxy are mainnet, so CLI agents can't transact on the live platform. A product
+   call (default to mainnet / opt-in flag / document the split).
+   → [`chain-coherence.md`](chain-coherence.md).
+4. **Confirm-gate coverage** — the typed-confirm gate (verified sound) covers the 4
+   irreversible-transfer tools; `spend_treasury` / `execute_proposal` move funds
+   out gated only by the holder key. A deliberate UX-vs-safety call.
+   → [`money-review-coverage.md`](money-review-coverage.md).
+
+Provenance for the review pass: [`money-review-coverage.md`](money-review-coverage.md).
+
+---
+
 ## What's built (one line each → the doc that designed it)
 
 - **Agent scheduling** — tab-free recurring jobs on `ScheduleFacet` + a
