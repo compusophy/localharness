@@ -421,13 +421,26 @@ pub(super) fn buy_lh_pressed(onboarding: bool) {
             match start_checkout_embedded(cents).await {
                 Ok((client_secret, payment_intent)) => {
                     // Mount Stripe's native elements into the INLINE region (same
-                    // ids as the modal). Minting is driven by the Rust poll below
-                    // with a freshly signed token — never a stale open-time one.
+                    // ids as the modal). Minting is driven by the JS status
+                    // watcher (`lhWatchPayment`) which calls back into wasm
+                    // (`lh_payment_succeeded` → `finalize_after_payment`) ONLY on
+                    // success — no pre-payment wasm async loop (the iOS WebKit
+                    // BorrowError fix). The freshly signed token is minted there.
                     let opts = serde_json::json!({ "clientSecret": client_secret }).to_string();
                     call_js("lhBuyLh", Some(&opts));
                     // Form is up → clear the interstitial line.
                     dom::swap_inner("onboard-checkout-msg", "");
-                    poll_and_finalize(payment_intent, lh_label(cents), true).await;
+                    call_js(
+                        "lhWatchPayment",
+                        Some(
+                            &serde_json::json!({
+                                "payment_intent": payment_intent,
+                                "onboarding": true,
+                                "lh_label": lh_label(cents),
+                            })
+                            .to_string(),
+                        ),
+                    );
                 }
                 Err(e) => {
                     web_sys::console::warn_1(&JsValue::from_str(&format!("buy $LH: {e}")));
@@ -455,13 +468,26 @@ pub(super) fn buy_lh_pressed(onboarding: bool) {
             Ok((client_secret, payment_intent)) => {
                 open_buy_modal(&lh_label(cents));
                 // The shim only needs the client_secret (mounts the native
-                // Stripe elements). Minting is driven by the Rust poll below with
-                // a freshly signed token — never a stale modal-open one.
+                // Stripe elements). Minting is driven by the JS status watcher
+                // (`lhWatchPayment`) which calls back into wasm only on success
+                // (`lh_payment_succeeded` → `finalize_after_payment`) with a
+                // freshly signed token — no pre-payment wasm async loop (iOS fix).
                 let opts = serde_json::json!({ "clientSecret": client_secret }).to_string();
                 call_js("lhBuyLh", Some(&opts));
                 dom::swap_inner(msg_id, "");
-                // Reactivity loop: watch the PaymentIntent; on success, mint.
-                poll_and_finalize(payment_intent, lh_label(cents), false).await;
+                // Watch the PaymentIntent in JS; on success, mint via the wasm
+                // export. No wasm loop remains; this spawned task can end.
+                call_js(
+                    "lhWatchPayment",
+                    Some(
+                        &serde_json::json!({
+                            "payment_intent": payment_intent,
+                            "onboarding": false,
+                            "lh_label": lh_label(cents),
+                        })
+                        .to_string(),
+                    ),
+                );
             }
             Err(e) => {
                 web_sys::console::warn_1(&JsValue::from_str(&format!("buy $LH: {e}")));
@@ -581,34 +607,30 @@ async fn start_checkout_embedded(cents: u64) -> Result<(String, String), String>
     Ok((client_secret, payment_intent))
 }
 
-/// Reactivity loop for the buy modal. Polls the PaymentIntent (a cheap
-/// client-side Stripe call via the shim's `lhPaymentStatus`) until it succeeds —
-/// catching EVERY confirm path (popup Link, inline "use this card", the express
-/// button) — then mints via `/stripe/finalize` with a FRESHLY signed token, so a
-/// slow payer can't outrun the 300s token-freshness window and silently fail the
-/// mint (the bug that charged a card but credited no `$LH`). On a confirmed mint
-/// it flips the modal to the done state and refreshes the balance. Stops if the
-/// user closes the modal; the proxy webhook stays a backstop for tab-close / 3DS.
-async fn poll_and_finalize(payment_intent: String, lh_label: String, onboarding: bool) {
+/// Finalize a SUCCEEDED PaymentIntent: mint, confirm, persist. Driven from JS —
+/// `web/stripe-embed.js`'s `lhWatchPayment` runs the status poll in JS (the shim
+/// already holds the Stripe instance) and calls `window.lh_payment_succeeded`
+/// (→ `lh_payment_succeeded` wasm export → here) ONLY once the PaymentIntent is
+/// `succeeded`. There is NO pre-payment wasm async loop: the repeated JsFuture +
+/// timer churn re-entered the wasm-bindgen single-thread executor on iOS WebKit
+/// ("already mutably borrowed: BorrowError"), killing the app mid-checkout.
+///
+/// Mints via `/stripe/finalize` with a FRESHLY signed token, so a slow payer
+/// can't outrun the 300s token-freshness window and silently fail the mint (the
+/// bug that charged a card but credited no `$LH`). On a confirmed mint it flips
+/// the modal to the done state and refreshes the balance. `finalize_mint` is
+/// idempotent (the on-chain mint + the webhook backstop are too), so a
+/// double-fire of `lh_payment_succeeded` is safe. Stops early if the user closed
+/// the modal; the proxy webhook stays a backstop for tab-close / 3DS.
+pub(crate) async fn finalize_after_payment(
+    payment_intent: String,
+    lh_label: String,
+    onboarding: bool,
+) {
     if payment_intent.is_empty() {
         return;
     }
-    // Phase 1 — wait for the PaymentIntent to succeed (~6 min budget).
-    let mut succeeded = false;
-    for _ in 0..120 {
-        if checkout_gone() {
-            return; // checkout dismissed (modal closed / inline navigated away)
-        }
-        if js_payment_status().await == "succeeded" {
-            succeeded = true;
-            break;
-        }
-        crate::runtime::sleep_ms(3000).await;
-    }
-    if !succeeded {
-        return;
-    }
-    // Phase 2 — mint. Retry a few times: finalize fails closed (minted:false)
+    // Mint. Retry a few times: finalize fails closed (minted:false)
     // in the brief window before Stripe's NET-settled amount is available.
     for _ in 0..6 {
         if checkout_gone() {
@@ -669,30 +691,6 @@ async fn poll_and_finalize(payment_intent: String, lh_label: String, onboarding:
 /// unique marker (the modal carries the same id, hence the OR).
 fn checkout_gone() -> bool {
     dom::by_id("buy-modal").is_none() && dom::by_id("lh-pay-region").is_none()
-}
-
-/// Resolve the shim's `window.lhPaymentStatus()` (a JS `Promise<string>`) to the
-/// PaymentIntent status string. Empty string on any failure.
-async fn js_payment_status() -> String {
-    let Some(w) = web_sys::window() else {
-        return String::new();
-    };
-    let Ok(f) = js_sys::Reflect::get(&w, &JsValue::from_str("lhPaymentStatus")) else {
-        return String::new();
-    };
-    let Some(func) = f.dyn_ref::<js_sys::Function>() else {
-        return String::new();
-    };
-    let Ok(ret) = func.call0(&w) else {
-        return String::new();
-    };
-    let Ok(promise) = ret.dyn_into::<js_sys::Promise>() else {
-        return String::new();
-    };
-    match wasm_bindgen_futures::JsFuture::from(promise).await {
-        Ok(v) => v.as_string().unwrap_or_default(),
-        Err(_) => String::new(),
-    }
 }
 
 /// Mint a settled PaymentIntent via `/stripe/finalize` with a FRESH auth token

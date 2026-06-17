@@ -268,6 +268,23 @@ pub fn push_arrived(title: String, body: String) {
     notifications::push_arrived(&title, &body);
 }
 
+/// Stripe payment → mint bridge. `web/stripe-embed.js`'s `lhWatchPayment` polls
+/// the PaymentIntent status IN JS (the shim holds the Stripe instance) and calls
+/// `window.lh_payment_succeeded` (wired in `web/boot.js`) ONLY when it reaches
+/// `succeeded`. We then finalize the mint off the wasm executor — moving the
+/// status poll out of wasm fixed an iOS WebKit "already mutably borrowed"
+/// BorrowError that the repeated pre-payment JsFuture + timer loop triggered.
+/// Idempotent: `finalize_after_payment` mints at most once, so a double-fire is
+/// safe.
+#[wasm_bindgen]
+pub fn lh_payment_succeeded(payment_intent: String, onboarding: bool, lh_label: String) {
+    wasm_bindgen_futures::spawn_local(events::finalize_after_payment(
+        payment_intent,
+        lh_label,
+        onboarding,
+    ));
+}
+
 /// Inject the Rust-owned design tokens (`style::root_tokens_css`) into
 /// `<head>` as `<style id="lh-tokens">`, once. Idempotent: re-running the
 /// mount (or a paint that re-enters) won't stack duplicate blocks. The

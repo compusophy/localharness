@@ -71,7 +71,7 @@ window.addEventListener("appinstalled", () => {
 // cannot 404. Bust the shim AND the wasm (the shim drops the query when it
 // resolves the wasm relative to import.meta.url, so the wasm url is passed
 // explicitly to init).
-const LH_BUILD = "ada2447383e2";
+const LH_BUILD = "277259ad4c34";
 try {
   const mod = await import("./pkg/localharness.js?v=" + LH_BUILD);
   // Object form (not a bare string) — the bare-path arg is deprecated in this
@@ -91,6 +91,17 @@ try {
       }
     });
   }
+  // Stripe payment → mint bridge. The status poll runs in JS (stripe-embed.js's
+  // `lhWatchPayment` — moving it OUT of the wasm executor fixed an iOS WebKit
+  // BorrowError) and calls back into wasm here ONLY on `succeeded`. The export
+  // is on the imported `mod`, not on window, so expose it for the shim to call.
+  window.lh_payment_succeeded = (pi, ob, label) => {
+    try {
+      mod.lh_payment_succeeded(String(pi || ""), Boolean(ob), String(label || ""));
+    } catch (e) {
+      console.error(e);
+    }
+  };
 } catch (e) {
   // Boot failed (wasm/shim fetch 404 mid-deploy, instantiation failure,
   // network drop). Swap #root to a minimal monochrome failure line —

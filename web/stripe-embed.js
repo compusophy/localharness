@@ -8,12 +8,16 @@
 // There is NO custom pay button: the user pays by clicking Stripe's OWN buttons
 // (the green Link button or the inline "use this card"). Because those confirm
 // the PaymentIntent directly — sometimes without our confirmPayment call ever
-// resolving in our code — the SUCCESS + on-chain mint are driven by a poll on
-// the Rust side: it watches `window.lhPaymentStatus()` and, when the
-// PaymentIntent is `succeeded`, mints via /stripe/finalize with a FRESHLY signed
-// token (so a slow payer's modal-open token can't go stale and silently 401 the
-// mint — the bug that charged a card but credited no $LH). `window.lhBuySuccess`
-// flips the modal to the done state once the mint lands.
+// resolving in our code — the SUCCESS + on-chain mint are driven by a poll
+// HERE in JS: `window.lhWatchPayment` setIntervals `retrievePaymentIntent` and,
+// when the PaymentIntent is `succeeded`, calls `window.lh_payment_succeeded`
+// (the wasm export, wired in boot.js) which mints via /stripe/finalize with a
+// FRESHLY signed token (so a slow payer's modal-open token can't go stale and
+// silently 401 the mint — the bug that charged a card but credited no $LH). The
+// poll lives in JS, NOT wasm: the old wasm JsFuture + timer loop re-entered the
+// wasm-bindgen single-thread executor on iOS WebKit ("already mutably borrowed:
+// BorrowError") and killed the app mid-checkout. `window.lhBuySuccess` flips the
+// modal to the done state once the mint lands.
 //
 // The publishable key is PUBLIC by design (Stripe pk_live_). All imperative
 // Stripe.js wiring lives here in the JS glue layer (like boot.js).
@@ -22,6 +26,17 @@
     'pk_live_51Tiu4kLz8dIS1FUar4pfDglshUY9Fw9xSPEq4aSc2dmx14X1gk4evtWtEVP2kAXB87f5HVEKIRLKnuFluRI3IGpw004331RqyZ';
   var stripeLoad = null;
   var state = null; // { stripe, elements, opts }
+  var watchTimer = null; // setInterval id for the JS payment-status poll
+
+  // Stop the JS payment-status poll (idempotent). Called on success, on
+  // teardown (`lhUnmountCheckout`), and after the time cap — the interval must
+  // never leak past a closed/torn-down checkout.
+  function stopWatch() {
+    if (watchTimer !== null) {
+      clearInterval(watchTimer);
+      watchTimer = null;
+    }
+  }
 
   function loadStripe() {
     if (window.Stripe) return Promise.resolve(window.Stripe);
@@ -62,16 +77,41 @@
       .catch(function (e) { showError((e && e.message) || 'payment error'); });
   }
 
-  // Polled by the Rust reactivity loop. Resolves the PaymentIntent status
-  // ('requires_payment_method' | 'processing' | 'succeeded' | ...). Client-side
-  // (publishable-key) call, so it's cheap to poll and works for EVERY confirm
-  // path — popup Link, inline "use this card", or the express button.
-  window.lhPaymentStatus = function () {
-    if (!state) return Promise.resolve('none');
-    return state.stripe
-      .retrievePaymentIntent(state.opts.clientSecret)
-      .then(function (r) { return (r && r.paymentIntent && r.paymentIntent.status) || 'unknown'; })
-      .catch(function () { return 'error'; });
+  // Watch the PaymentIntent until it `succeeded`, then mint via wasm. Runs the
+  // status poll IN JS (the iOS BorrowError fix — see the header) using the
+  // publishable-key `retrievePaymentIntent`, cheap and covering EVERY confirm
+  // path (popup Link, inline "use this card", express button). On success it
+  // stops the interval and calls `window.lh_payment_succeeded` (the wasm export,
+  // wired in boot.js); the wasm side mints with a freshly signed token. The
+  // interval is cleared on success, when the checkout was torn down (`state`
+  // null), and after a ~6-min cap. `lhUnmountCheckout` also stops it.
+  window.lhWatchPayment = function (optsJson) {
+    var o;
+    try { o = typeof optsJson === 'string' ? JSON.parse(optsJson) : optsJson; }
+    catch (e) { return; }
+    if (!o || !o.payment_intent) return;
+    stopWatch(); // never run two watchers at once
+    var ticks = 0;
+    var maxTicks = 120; // 120 * 3s = 6 min cap
+    watchTimer = setInterval(function () {
+      // Checkout torn down or capped → stop; the proxy webhook is the backstop.
+      if (!state || ++ticks > maxTicks) {
+        stopWatch();
+        return;
+      }
+      state.stripe
+        .retrievePaymentIntent(state.opts.clientSecret)
+        .then(function (r) {
+          var st = r && r.paymentIntent && r.paymentIntent.status;
+          if (st === 'succeeded') {
+            stopWatch();
+            if (typeof window.lh_payment_succeeded === 'function') {
+              window.lh_payment_succeeded(o.payment_intent, !!o.onboarding, o.lh_label || '');
+            }
+          }
+        })
+        .catch(function () { /* transient — keep polling until the cap */ });
+    }, 3000);
   };
 
   // Flip the modal to the done state once the on-chain mint lands. `msg` is the
@@ -138,7 +178,7 @@
     });
   };
 
-  window.lhUnmountCheckout = function () { state = null; };
+  window.lhUnmountCheckout = function () { stopWatch(); state = null; };
 
   // Warm Stripe.js on page load so mounting the Elements is INSTANT when the
   // user taps "create agent" (instead of loading the ~heavy Stripe.js on the
