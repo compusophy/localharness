@@ -50,6 +50,26 @@ pub(crate) fn is_local(model: &str) -> bool {
     model.starts_with("gemma-")
 }
 
+/// A human-readable description of `model` for the system prompt, e.g.
+/// "Claude Opus (claude-opus-4-8) via the Anthropic backend" — the friendly
+/// [`MODELS`] label + the raw id + the backend, so the agent can answer "which
+/// model are you?" instead of guessing (on-chain feedback).
+pub(crate) fn describe(model: &str) -> String {
+    let label = MODELS
+        .iter()
+        .find(|(id, _)| *id == model)
+        .map(|(_, label)| *label)
+        .unwrap_or(model);
+    let backend = if is_anthropic(model) {
+        "the Anthropic backend"
+    } else if is_local(model) {
+        "the local in-browser Gemma backend (no network)"
+    } else {
+        "the Gemini backend"
+    };
+    format!("{label} ({model}) via {backend}")
+}
+
 /// Read the persisted model id, validated against [`MODELS`]. A missing,
 /// empty, or unrecognised file falls back to [`DEFAULT_MODEL`] — the
 /// selector is never left pointing at a model the bundle can't route.

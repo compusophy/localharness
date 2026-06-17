@@ -996,7 +996,14 @@ pub(crate) fn batch_send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                     )));
                 }
                 let to_hex = resolve_lh_recipient(&recipient).await?;
-                total_wei = total_wei.saturating_add(amount_wei);
+                // checked, not saturating: a hostile/overflowing total must be a
+                // clear error (matching parse_token_amount's reject-don't-wrap
+                // contract), not a silently-clamped wrong bridge/display amount.
+                total_wei = total_wei.checked_add(amount_wei).ok_or_else(|| {
+                    crate::error::Error::other(
+                        "batch total exceeds the maximum representable amount — split the batch",
+                    )
+                })?;
                 resolved.push((recipient, to_hex, amount_wei, amount_str));
             }
 

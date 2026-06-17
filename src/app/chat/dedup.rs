@@ -68,6 +68,20 @@ const GUARDED: &[&str] = &[
     "release_subdomain",
 ];
 
+/// Read-only scans where an IDENTICAL repeat in one request is pure waste —
+/// the registry can't change mid-turn, the result is already in the transcript,
+/// and (feedback) each call is metered, so a model that loops `discover_agents`
+/// is billed every time. Denied like GUARDED but with a "reuse it" message;
+/// the model can still vary the query to scan again.
+const READ_DEDUP: &[&str] = &[
+    "discover_agents",
+    "discover_bounties",
+    "list_subdomains",
+    "list_my_guilds",
+    "list_proposals",
+    "read_self_docs",
+];
+
 /// Reset at the START of each user request (`run_send`).
 pub(crate) fn reset_run() {
     RUN_HASHES.with(|h| h.borrow_mut().clear());
@@ -90,7 +104,9 @@ impl PreToolCallDecideHook for DuplicateActionGuard {
     }
 
     async fn run(&self, ctx: &OperationContext, call: &ToolCall) -> Result<HookResult> {
-        if !GUARDED.contains(&call.name.as_str()) {
+        let guarded = GUARDED.contains(&call.name.as_str());
+        let read_dedup = READ_DEDUP.contains(&call.name.as_str());
+        if !guarded && !read_dedup {
             return Ok(HookResult::allow());
         }
         let h = call_hash(call);
@@ -101,13 +117,26 @@ impl PreToolCallDecideHook for DuplicateActionGuard {
         // parallel functionCalls), double-firing notifications. A user who
         // genuinely wants a repeat can vary the args or ask again.
         if already_ran {
-            return Ok(HookResult::deny(format!(
-                "duplicate suppressed: `{}` with these exact arguments already \
-                 executed during this request — do NOT repeat side-effecting \
-                 actions. If the user explicitly wants it again, vary the \
-                 arguments; if the request is fulfilled, call `finish` now.",
-                call.name
-            )));
+            let msg = if guarded {
+                format!(
+                    "duplicate suppressed: `{}` with these exact arguments already \
+                     executed during this request — do NOT repeat side-effecting \
+                     actions. If the user explicitly wants it again, vary the \
+                     arguments; if the request is fulfilled, call `finish` now.",
+                    call.name
+                )
+            } else {
+                // Read-only repeat (feedback): the result is already in the
+                // transcript and every call is metered — reuse it, don't re-bill.
+                format!(
+                    "`{}` already ran with these exact arguments this request — its \
+                     result is already in the transcript above; reuse it instead of \
+                     calling again (each call is metered). Vary the arguments to scan \
+                     differently, otherwise continue or call `finish`.",
+                    call.name
+                )
+            };
+            return Ok(HookResult::deny(msg));
         }
         // We just inserted `h`. Hand it to the paired post-hook so a FAILED
         // execution can revert the insert (issue #84) and the model may retry.

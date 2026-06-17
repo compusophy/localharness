@@ -113,6 +113,15 @@ pub(crate) async fn run_send() {
     // admin open just to host the input field.
     // Resolve how this turn reaches the model: platform credits (proxy
     // auth token + proxy base URL) or BYOK (the stored Gemini key).
+    // Cheap empty-input reject FIRST — a blank/whitespace-only send must be a
+    // true zero-cost no-op, so it runs BEFORE resolve_credit_access (which mints
+    // a proxy-auth token) and ensure_credit_meter (which can fire a sponsored
+    // deposit tx). Silent — no explanatory validation text. (on-chain feedback)
+    let prompt = prompt_area.value().trim().to_string();
+    if prompt.is_empty() {
+        return;
+    }
+
     let access = match resolve_credit_access().await {
         Some(a) => a,
         None => {
@@ -126,12 +135,6 @@ pub(crate) async fn run_send() {
         ensure_credit_meter().await;
     }
     let key = access.cfg_auth;
-
-    let prompt = prompt_area.value().trim().to_string();
-    if prompt.is_empty() {
-        // Silent no-op — no explanatory validation text. (on-chain feedback)
-        return;
-    }
 
     // One turn at a time. A second send (e.g. Enter pressed again mid-
     // turn) is ignored rather than racing a concurrent stream.
@@ -756,32 +759,33 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
         || lower.contains("quota")
         || lower.contains("429");
 
-    // Visible, escaped message in the transcript bubble. This is the
-    // primary surface — the status line is a secondary mirror.
-    let bubble = if stale_token {
-        format!(
-            "request auth went stale — your device clock looks off by more \
-             than 5 minutes; sync it and retry. Raw error: {err}"
-        )
-    } else if looks_like_credits {
-        "request rejected (no credits / session for this origin). Open the \
-         account tab → platform credits to redeem or open a session, or \
-         switch to your own Gemini key. Raw error: "
-            .to_string()
-            + err
-    } else if looks_like_auth {
-        format!("model rejected the API key — check your Gemini key. Raw error: {err}")
-    } else {
-        format!("{context} failed: {err}")
-    };
+    // Visible message in the transcript. The credits/402 case renders a clean,
+    // actionable CARD (on-chain feedback: never dump the raw JSON 402 at the
+    // user) — the raw error is logged to the console for debugging only. Every
+    // other failure keeps the escaped error bubble (its raw text is dev-facing).
     let body_id = format!("turn-body-{assistant_turn_id}");
-    dom::append_html(
-        &body_id,
-        &format!(
-            "<div class=\"turn-error\">{}</div>",
-            dom::msg_span(dom::Msg::Error, &bubble)
-        ),
-    );
+    if looks_like_credits {
+        web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(err));
+        dom::append_html(&body_id, &super::templates::out_of_credits_card().into_string());
+    } else {
+        let bubble = if stale_token {
+            format!(
+                "request auth went stale — your device clock looks off by more \
+                 than 5 minutes; sync it and retry. Raw error: {err}"
+            )
+        } else if looks_like_auth {
+            format!("model rejected the API key — check your Gemini key. Raw error: {err}")
+        } else {
+            format!("{context} failed: {err}")
+        };
+        dom::append_html(
+            &body_id,
+            &format!(
+                "<div class=\"turn-error\">{}</div>",
+                dom::msg_span(dom::Msg::Error, &bubble)
+            ),
+        );
+    }
     dom::scroll_to_bottom("transcript");
 
     if stale_token {

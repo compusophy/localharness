@@ -24,14 +24,16 @@
 use maud::{Markup, html};
 
 /// The fresh-visitor front door: ONE white-bordered card with a single
-/// `create wallet` CTA. It's the paid entry — wired to a checkout session
-/// that creates AND funds the wallet — so a 0-$LH visitor never exists. No
-/// code input or seed-import here (both live in admin; `?invite=` links
-/// auto-redeem on mount). `data-action="create-wallet"` is load-bearing.
+/// `create wallet` CTA that creates the agent identity (`Action::CreateIdentity`,
+/// the same wired flow the admin identity sidecar uses; success reloads into the
+/// app). No code input or seed-import here (both live in admin; `?invite=` links
+/// auto-redeem on mount). `data-action="create-identity"` is load-bearing — it
+/// MUST match a `Action::parse` arm (a fresh visitor's only control). Future:
+/// a paid create+fund checkout so a 0-$LH visitor never exists.
 pub(crate) fn create_wallet_cta() -> Markup {
     html! {
         section.apex-onboard {
-            button type="button" data-action="create-wallet" .apex-onboard-cta {
+            button type="button" data-action="create-identity" .apex-onboard-cta {
                 "create wallet"
             }
             div #onboard-msg .step-msg {}

@@ -265,6 +265,26 @@ pub(crate) fn fund_banner_body() -> Markup {
     }
 }
 
+/// The friendly out-of-credits card rendered in the transcript when a turn
+/// 402s for lack of `$LH`/session — replaces dumping the raw JSON 402 error at
+/// the user (on-chain feedback: "better handling than showing this"). Inline-
+/// styled, monochrome, reusing already-wired data-actions: buy `$LH`, open the
+/// account panel (redeem a code / open a session), or switch to your own key.
+/// No raw error text, no rule prose.
+pub(crate) fn out_of_credits_card() -> Markup {
+    html! {
+        div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;\
+                    padding:8px 10px;\
+                    border:1px solid var(--border);background:var(--panel);\
+                    font-size:12px;color:var(--muted)" {
+            span style="flex-basis:100%" { "out of $LH for this origin — top up to keep chatting" }
+            button type="button" data-action="buy-lh" .ghost { "buy $LH" }
+            button type="button" data-action="header-admin-toggle" .ghost { "redeem / open session" }
+            button type="button" data-action="set-model-access" data-arg="byok" .ghost { "use my own key" }
+        }
+    }
+}
+
 /// The verification status pill that lives in the header on tenant
 /// subdomains. Reflects the current `VerifyState`; mounted with
 /// `#verify-pill` so background verification can swap it in place.

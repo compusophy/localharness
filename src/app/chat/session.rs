@@ -118,6 +118,14 @@ pub(crate) async fn start_session(
         None => system_instructions,
     };
 
+    // Model self-knowledge (on-chain feedback): the agent must be able to say
+    // which model/backend it runs on instead of "I'm not sure". The active id is
+    // resolved above (`model`); fold one line like the other self-docs.
+    let system_instructions = format!(
+        "{system_instructions}\n\n=== Your model ===\nYou are running on {}. When asked which model or LLM you are, answer with this — do not claim you're unsure.",
+        crate::app::model::describe(&model)
+    );
+
     // The agent's OWN advertised per-call price (GitHub #49) — so it can answer
     // "what do you charge?" accurately instead of guessing or stating a price
     // that mismatches the chain. Effective price = advertised on-chain, else the
