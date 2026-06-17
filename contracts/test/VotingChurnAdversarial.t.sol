@@ -203,12 +203,14 @@ contract VotingChurnAdversarialTest is Test {
 
         vm.prank(alice);
         uint256 pid = g.propose(id, payee, 300 ether, "grant", PERIOD);
+        vm.prank(founder); // Admin FOR (satisfies the admin-consent gate)
+        g.vote(pid, true);
         vm.prank(alice);
         g.vote(pid, true);
         vm.prank(bob);
         g.vote(pid, true);
         vm.prank(carol);
-        g.vote(pid, true); // 3 for, quorum 2 met, majority
+        g.vote(pid, true); // 4 for, quorum 2 met, majority
 
         // Even if the guild GROWS afterward, the snapshot bar is unchanged.
         _seat(id, dave);
@@ -236,10 +238,12 @@ contract VotingChurnAdversarialTest is Test {
 
         vm.prank(alice);
         uint256 pid = g.propose(id, payee, 200 ether, "grant", PERIOD);
+        vm.prank(founder); // Admin FOR (satisfies the admin-consent gate)
+        g.vote(pid, true);
         vm.prank(alice);
         g.vote(pid, true);
         vm.prank(bob);
-        g.vote(pid, true); // 2 for, snapshot quorum 2 met
+        g.vote(pid, true); // 3 for, snapshot quorum 2 met
 
         // A griefer floods the guild with sybil members AFTER the vote to
         // inflate the LIVE quorum (would be ceil(9/2)=5) above the 2 cast.
@@ -304,11 +308,16 @@ contract VotingChurnAdversarialTest is Test {
         vm.prank(alice);
         uint256 p2 = g.propose(id, payee, 700 ether, "b", PERIOD);
 
-        // Both pass (2 for each).
+        // Both pass (founder=Admin + alice + bob FOR each — the Admin FOR
+        // satisfies the admin-consent gate).
+        vm.prank(founder);
+        g.vote(p1, true);
         vm.prank(alice);
         g.vote(p1, true);
         vm.prank(bob);
         g.vote(p1, true);
+        vm.prank(founder);
+        g.vote(p2, true);
         vm.prank(alice);
         g.vote(p2, true);
         vm.prank(bob);
@@ -341,6 +350,8 @@ contract VotingChurnAdversarialTest is Test {
 
         vm.prank(alice);
         uint256 pid = g.propose(id, payee, 600 ether, "vote-spend", PERIOD);
+        vm.prank(founder); // Admin FOR (satisfies the admin-consent gate)
+        g.vote(pid, true);
         vm.prank(alice);
         g.vote(pid, true);
         vm.prank(bob);
@@ -408,6 +419,8 @@ contract VotingChurnAdversarialTest is Test {
 
         vm.prank(alice);
         uint256 pid = g.propose(a, payee, 250 ether, "", PERIOD);
+        vm.prank(founder); // Admin FOR (satisfies the admin-consent gate)
+        g.vote(pid, true);
         vm.prank(alice);
         g.vote(pid, true);
         vm.prank(bob);

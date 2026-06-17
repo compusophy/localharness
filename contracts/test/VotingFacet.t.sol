@@ -193,7 +193,10 @@ contract VotingFacetTest is Test {
         uint256 id = _guild4(); // 4 members, quorum = 2
         uint256 pid = _propose(id, alice, 300 ether);
 
-        // 3 for, 0 against (quorum 2 met, strict majority).
+        // 4 for, 0 against (quorum 2 met, strict majority, founder=Admin FOR
+        // satisfies the admin-consent gate).
+        vm.prank(founder);
+        g.vote(pid, true);
         vm.prank(alice);
         g.vote(pid, true);
         vm.prank(bob);
@@ -203,7 +206,7 @@ contract VotingFacetTest is Test {
 
         (,,,,, uint8 st, uint256 fv, uint256 av) = g.getProposal(pid);
         assertEq(st, uint8(LibVotingStorage.VStatus.Active), "still active before deadline");
-        assertEq(fv, 3);
+        assertEq(fv, 4);
         assertEq(av, 0);
 
         // Can't execute before the deadline.
@@ -489,6 +492,8 @@ contract VotingFacetTest is Test {
         // reverts AmountExceedsTreasury, leaves the proposal Active to retry.
         uint256 id = _guild4(); // FUND
         uint256 pid = _propose(id, alice, 800 ether);
+        vm.prank(founder); // Admin FOR (satisfies the admin-consent gate)
+        g.vote(pid, true);
         vm.prank(alice);
         g.vote(pid, true);
         vm.prank(bob);
@@ -592,7 +597,12 @@ contract VotingFacetTest is Test {
         g.vote(pid, true);
         (,,, uint256 cast2, bool passing2) = g.tallyOf(pid);
         assertEq(cast2, 2);
-        assertTrue(passing2, "quorum met + majority -> passing");
+        assertFalse(passing2, "quorum + majority met but no Admin FOR yet -> not passing");
+        vm.prank(founder); // Admin FOR satisfies the admin-consent gate
+        g.vote(pid, true);
+        (,,, uint256 cast3, bool passing3) = g.tallyOf(pid);
+        assertEq(cast3, 3);
+        assertTrue(passing3, "quorum + majority + Admin FOR -> passing");
     }
 
     // =====================================================================
@@ -660,6 +670,8 @@ contract VotingFacetTest is Test {
         // facet keys purely on msg.sender, never on EOA-ness, the whole
         // recursive point).
         uint256 pid = _propose(parent, alice, 400 ether);
+        vm.prank(founder); // Admin FOR (satisfies the admin-consent gate)
+        g.vote(pid, true);
         vm.prank(alice);
         g.vote(pid, true);
         vm.prank(childAddr); // <-- a CONTRACT votes
@@ -668,8 +680,8 @@ contract VotingFacetTest is Test {
 
         (,, uint256 q, uint256 cast, bool passing) = g.tallyOf(pid);
         assertEq(q, 2, "3-member quorum");
-        assertEq(cast, 2, "alice + the child-DAO");
-        assertTrue(passing, "2 for, quorum met -> passes with a contract voter");
+        assertEq(cast, 3, "founder + alice + the child-DAO");
+        assertTrue(passing, "quorum met + Admin FOR -> passes with a contract voter");
 
         vm.warp(block.timestamp + PERIOD + 1);
         g.execute(pid);
@@ -681,6 +693,8 @@ contract VotingFacetTest is Test {
         // re-target by proposing to the child directly:
         vm.prank(alice);
         uint256 pid3 = g.propose(parent, childAddr, 100 ether, "sub-dao grant", PERIOD);
+        vm.prank(founder); // Admin FOR (satisfies the admin-consent gate)
+        g.vote(pid3, true);
         vm.prank(alice);
         g.vote(pid3, true);
         vm.prank(childAddr);

@@ -126,6 +126,15 @@ library LibVotingStorage {
         /// to quorum 1 via `_quorum` (the divide-by-zero guard), so a vote is
         /// always required.
         uint64 snapshotMemberCount;
+        /// Count of FOR ballots cast by ADMINs (the privilege-escalation fix).
+        /// A passing 1m1v treasury spend MUST include >= 1 Admin FOR vote, so a
+        /// rogue Officer that floods sybil Members can't move the treasury
+        /// without Admin consent (restoring the `spendTreasury` Admin-gate
+        /// invariant the bare-majority path silently dropped). Tallied live at
+        /// `vote` (Admin-role read on the FOR path), checked by `_passed`.
+        /// APPEND-ONLY: a pre-fix in-flight proposal reads 0 here, so it can no
+        /// longer execute until re-proposed — fail-safe, never a silent spend.
+        uint256 forAdminVotes;
     }
 
     struct Storage {

@@ -57,6 +57,11 @@ import {LibVotingStorage} from "../libraries/LibVotingStorage.sol";
 ///           • THRESHOLD = STRICT majority of cast votes (`for > against`);
 ///             a tie FAILS. One-member-one-vote (weight 1) in the MVP. (Purely
 ///             the cast tally — unaffected by churn regardless.)
+///           • ADMIN GATE = a passing treasury spend MUST carry >= 1 Admin FOR
+///             vote (`forAdminVotes > 0`). 1m1v with Officer-controlled
+///             membership growth let a rogue Officer flood sybil Members and
+///             drain the treasury on a bare majority, bypassing the Admin-only
+///             `spendTreasury` gate; requiring Admin consent restores it.
 ///         A proposal that misses quorum OR fails the threshold by its
 ///         deadline goes Active → Failed with NO spend (idempotent).
 ///
@@ -175,7 +180,8 @@ contract VotingFacet is GuildFacet {
             status: LibVotingStorage.VStatus.Active,
             forVotes: 0,
             againstVotes: 0,
-            snapshotMemberCount: gs.guilds[guildId].memberCount
+            snapshotMemberCount: gs.guilds[guildId].memberCount,
+            forAdminVotes: 0
         });
         if (memo.length != 0) vs.memo[proposalId] = memo;
         vs.proposalsOfGuild[guildId].push(proposalId);
@@ -216,6 +222,11 @@ contract VotingFacet is GuildFacet {
         uint256 weight = 1; // one-member-one-vote (MVP)
         if (support) {
             p.forVotes += weight;
+            // Track Admin FOR ballots: a passing treasury spend needs >= 1
+            // (the privilege-escalation gate — see `_passed`).
+            if (gs.roleOf[p.guildId][msg.sender] == LibGuildStorage.Role.Admin) {
+                p.forAdminVotes += 1;
+            }
         } else {
             p.againstVotes += weight;
         }
@@ -400,12 +411,13 @@ contract VotingFacet is GuildFacet {
 
     /// Whether a proposal passes: quorum met (distinct votes cast >=
     /// ceil(SNAPSHOT members / 2)) AND a STRICT majority for (for > against; a
-    /// tie fails). The quorum denominator is the member count SNAPSHOTTED at
-    /// propose (`p.snapshotMemberCount`), NOT the live count — membership
-    /// churn between propose and execute can't move the bar (the
-    /// governance-robustness fix). `gs` is retained in the signature for the
-    /// caller's storage-handle convention / future weight upgrades but the
-    /// quorum no longer reads from it.
+    /// tie fails) AND at least one ADMIN FOR vote (`forAdminVotes > 0` — the
+    /// privilege-escalation gate; a rogue Officer flooding sybil Members can't
+    /// move the treasury without Admin consent). The quorum denominator is the
+    /// member count SNAPSHOTTED at propose (`p.snapshotMemberCount`), NOT the
+    /// live count — membership churn between propose and execute can't move the
+    /// bar (the governance-robustness fix). `gs` is retained in the signature
+    /// for the caller's storage-handle convention but is unused.
     function _passed(LibGuildStorage.Storage storage gs, LibVotingStorage.Proposal storage p)
         internal
         view
@@ -415,6 +427,14 @@ contract VotingFacet is GuildFacet {
         uint256 votesCast = p.forVotes + p.againstVotes;
         uint256 quorum = _quorum(p.snapshotMemberCount);
         if (votesCast < quorum) return false; // quorum not met
-        return p.forVotes > p.againstVotes; // strict majority for
+        if (p.forVotes <= p.againstVotes) return false; // strict majority for
+        // PRIVILEGE-ESCALATION GATE: a treasury spend MUST carry >= 1 Admin FOR
+        // vote. 1m1v with Officer-controlled membership growth (Officer+ invites,
+        // free accept) let a rogue Officer flood sybil Members and pass a
+        // self-serving drain on a bare majority — bypassing the Admin-only
+        // `spendTreasury` gate. Requiring Admin consent restores that invariant
+        // (sybil Members carry no Admin weight). A guild always has >= 1 Admin
+        // (the last-Admin guard), so an honest Admin-backed measure is unaffected.
+        return p.forAdminVotes > 0;
     }
 }
