@@ -43,8 +43,9 @@ conversation history (`.lh_history.json`) + tool surface.\n\
 - Model access has two paths: PLATFORM CREDITS (spend `$LH`; the credit proxy \
 authenticates an Ethereum personal-sign and routes to Gemini OR Claude — \
 multi-provider, no per-user provider key) is primary; BYOK (your own Gemini key, \
-direct to Gemini) is the fallback. Credits are billed PER REQUEST via an on-chain \
-meter (~0.01 `$LH`/call) — NOT a free session or free beta.\n\
+direct to Gemini) is the fallback. Credits are billed PER MESSAGE via an on-chain \
+meter — 1 `$LH` per message (premium models tiered) — NOT a free session or free \
+beta.\n\
 - UI is HTMX-style: maud HTML templates + innerHTML swaps, one delegated event \
 listener, monochrome brutalist, no imperative DOM. DISPLAY is a pixel \
 framebuffer + universal loader (rustlite cartridges draw pixels — 256x144 by \

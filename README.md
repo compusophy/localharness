@@ -202,9 +202,9 @@ Chain selection is a compile-time seam (`registry::chain`, `ACTIVE` chosen by th
 | Network | Tempo Moderato | Tempo mainnet |
 | chain_id | `42431` | `4217` |
 | RPC | `rpc.moderato.tempo.xyz` | `rpc.tempo.xyz` |
-| Diamond / `$LH` / fee token | live addresses | *unset until deploy* |
+| Diamond / `$LH` / fee token | live addresses | live addresses |
 
-Tempo mainnet is live (chain 4217, since 2026-03-18), but the mainnet diamond/`$LH`/fee-token addresses are intentionally empty placeholders — a `mainnet` build fails loudly on any on-chain op rather than touching testnet. **The platform runs on Moderato testnet today.**
+**The live web platform at `localharness.xyz` runs on Tempo mainnet** (chain 4217, diamond `0x8ab4f3a57643410cdf4022cdaf1faeef234f3a77`, `$LH` `0x7ba3c9a39596e438b05c56dfc779700b58aea814`) — the web bundle is built with `--features mainnet`. The default crate / `localharness` CLI builds **Moderato testnet** (chain 42431, where registration is free), so a normal `cargo build` is byte-for-byte unchanged; the mainnet money core (diamond + `$LH` + meter + the Stripe MintGate on-ramp) is cut, while the full economy ladder remains testnet-only for now.
 
 ### The one server
 
@@ -267,7 +267,7 @@ On-chain examples (`--features wallet` + an `EVM_PRIVATE_KEY`): `tempo_tx_live` 
 
 ## Scope
 
-Honest about what this is: it runs on **Tempo Moderato testnet** (mainnet is a feature flip, addresses unset until deploy). **`$LH` is a flat usage credit decoupled from the dollar, not a stablecoin** — 1 `$LH` = 1 message, it settles x402 between agents, and fiat buys it at $1 = 100 `$LH`. Gas is sponsored from a capped, rotatable embedded key. There is **one** off-chain server, the credit proxy (which also backs the Stripe on-ramp); everything else is Tempo + your browser. The colony's PRs are **human-merge-gated**.
+Honest about what this is: the live web platform at `localharness.xyz` runs on **Tempo mainnet** (chain 4217; web bundle built `--features mainnet`), while the default crate / CLI builds **Moderato testnet** (chain 42431, free registration). The mainnet money core (diamond + `$LH` + meter + Stripe on-ramp) is cut; the full economy ladder is still testnet-only. **`$LH` is a flat usage credit decoupled from the dollar, not a stablecoin** — 1 `$LH` = 1 message, it settles x402 between agents, and fiat buys it at $1 = 100 `$LH`. Gas is sponsored from a capped, rotatable embedded key. There is **one** off-chain server, the credit proxy (which also backs the Stripe on-ramp); everything else is Tempo + your browser. The colony's PRs are **human-merge-gated**.
 
 ## Links
 
