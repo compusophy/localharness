@@ -49,8 +49,12 @@ pub struct MessagesRequest {
     /// REQUIRED by the API — never omit.
     pub max_tokens: u32,
     /// Top-level system prompt (Anthropic puts it here, not in `messages`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub system: Option<String>,
+    /// Serialized as the content-block ARRAY form (`[{type:"text",...}]`) so a
+    /// `cache_control` breakpoint can pin the (large, stable) system prompt for
+    /// prompt caching — a cache READ is ~10% the input cost and lower latency.
+    /// Empty → omitted. Build via [`MessagesRequest::system_from`].
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub system: Vec<SystemBlock>,
     pub messages: Vec<Message>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub tools: Vec<ToolDef>,
@@ -63,6 +67,52 @@ pub struct MessagesRequest {
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ThinkingConfig>,
+}
+
+impl MessagesRequest {
+    /// Build the `system` field from a flat prompt string, attaching a
+    /// `cache_control: {type:"ephemeral"}` breakpoint so the (large, stable)
+    /// system prompt caches across turns. A `None`/empty prompt → no system
+    /// blocks (omitted from the wire). The single Option<String> entry point
+    /// the loop/compaction call sites adapt to.
+    pub fn system_from(prompt: Option<String>) -> Vec<SystemBlock> {
+        match prompt {
+            Some(text) if !text.is_empty() => vec![SystemBlock {
+                kind: "text",
+                text,
+                cache_control: Some(CacheControl::ephemeral()),
+            }],
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// One top-level `system` content block. Always `type:"text"`; an optional
+/// `cache_control` marks it as a prompt-cache breakpoint.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SystemBlock {
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
+}
+
+/// A prompt-caching breakpoint marker (`{"type":"ephemeral"}`). Placed on the
+/// last stable prefix block (system text + last tool def) so tools + system
+/// cache across turns; GA — no `anthropic-beta` header required. A cache read
+/// is billed ~0.1× and lowers latency.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CacheControl {
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+}
+
+impl CacheControl {
+    /// The default 5-minute ephemeral breakpoint.
+    pub fn ephemeral() -> Self {
+        Self { kind: "ephemeral" }
+    }
 }
 
 /// One conversation message. Anthropic only knows `user` / `assistant`.
@@ -156,12 +206,16 @@ pub struct ImageSource {
 }
 
 /// A tool declaration. `input_schema` takes the neutral
-/// `Tool::input_schema()` JSON verbatim (same as Gemini's `parameters`).
+/// `Tool::input_schema()` JSON verbatim (same as Gemini's `parameters`). The
+/// LAST tool in the request carries a `cache_control` breakpoint so the whole
+/// (stable) tool block caches across turns alongside the system prompt.
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct ToolDef {
     pub name: String,
     pub description: String,
     pub input_schema: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
 }
 
 /// `tool_choice` selector.
@@ -578,7 +632,7 @@ mod tests {
         let req = MessagesRequest {
             model: DEFAULT_MODEL.to_string(),
             max_tokens: DEFAULT_MAX_TOKENS,
-            system: Some("be terse".to_string()),
+            system: MessagesRequest::system_from(Some("be terse".to_string())),
             messages: vec![Message::user_text("hi")],
             tools: Vec::new(),
             tool_choice: None,
@@ -589,7 +643,11 @@ mod tests {
         let v = serde_json::to_value(&req).unwrap();
         assert_eq!(v["model"], DEFAULT_MODEL);
         assert_eq!(v["max_tokens"], DEFAULT_MAX_TOKENS);
-        assert_eq!(v["system"], "be terse");
+        // System is now the content-block ARRAY form, with a cache_control
+        // breakpoint pinning the prompt for prompt caching.
+        assert_eq!(v["system"][0]["type"], "text");
+        assert_eq!(v["system"][0]["text"], "be terse");
+        assert_eq!(v["system"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(v["stream"], true);
         assert_eq!(v["messages"][0]["role"], "user");
         assert_eq!(v["messages"][0]["content"][0]["type"], "text");
@@ -598,5 +656,49 @@ mod tests {
         assert!(v.get("thinking").is_none());
         assert!(v.get("temperature").is_none());
         assert!(v.get("tool_choice").is_none());
+    }
+
+    /// `system_from(None)` / an empty prompt → no system blocks, omitted from
+    /// the wire (`skip_serializing_if = Vec::is_empty`). The compaction summary
+    /// path relies on this (it passes `None`).
+    #[test]
+    fn empty_system_is_omitted_from_wire() {
+        assert!(MessagesRequest::system_from(None).is_empty());
+        assert!(MessagesRequest::system_from(Some(String::new())).is_empty());
+        let req = MessagesRequest {
+            model: DEFAULT_MODEL.to_string(),
+            max_tokens: DEFAULT_MAX_TOKENS,
+            system: MessagesRequest::system_from(None),
+            messages: vec![Message::user_text("hi")],
+            tools: Vec::new(),
+            tool_choice: None,
+            stream: false,
+            temperature: None,
+            thinking: None,
+        };
+        let v = serde_json::to_value(&req).unwrap();
+        assert!(v.get("system").is_none(), "empty system must be omitted");
+    }
+
+    /// A `ToolDef` carrying a `cache_control` breakpoint (the last tool in a
+    /// request) serializes the GA `{type:"ephemeral"}` marker; a plain tool
+    /// omits it entirely.
+    #[test]
+    fn tool_def_cache_control_shape() {
+        let cached = ToolDef {
+            name: "view_file".into(),
+            description: "read a file".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+            cache_control: Some(CacheControl::ephemeral()),
+        };
+        let v = serde_json::to_value(&cached).unwrap();
+        assert_eq!(v["cache_control"]["type"], "ephemeral");
+
+        let plain = ToolDef {
+            cache_control: None,
+            ..cached
+        };
+        let pv = serde_json::to_value(&plain).unwrap();
+        assert!(pv.get("cache_control").is_none(), "uncached tool omits the marker");
     }
 }

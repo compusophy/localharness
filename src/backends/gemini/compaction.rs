@@ -19,6 +19,13 @@ use crate::backends::gemini::wire::{
 };
 use crate::error::Result;
 
+/// Model used to fold the rolling summary — a FIXED cheap/fast tier, NOT the
+/// session model. The engine's own `SUMMARY_PROMPT` notes cheap+fast is right
+/// here, so a session on a heavier model folds its summary on flash instead of
+/// paying the session-model rate per compaction. `gemini-3.5-flash` is the
+/// crate default (the cheapest chat tier).
+const SUMMARIZER_MODEL: &str = crate::types::DEFAULT_MODEL;
+
 /// The Gemini side of the [`CompactionModel`] seam — a zero-sized marker the
 /// engine is monomorphized over.
 struct GeminiCompaction;
@@ -99,13 +106,17 @@ fn turn_is_function_response(c: &Content) -> bool {
 /// Try to compact `history` in place. Returns `true` if anything
 /// changed. Safe to call from inside the agent loop — never errors out,
 /// only logs.
+///
+/// The `_session_model` is intentionally ignored: compaction folds with the
+/// fixed cheap [`SUMMARIZER_MODEL`], never the session model. Kept in the
+/// signature so callers don't need to change.
 pub async fn try_compact(
     history: &Mutex<Vec<Content>>,
     client: &SharedClient,
-    model: &str,
+    _session_model: &str,
 ) -> bool {
     engine::try_compact::<GeminiCompaction, _, _>(history, |prompt| {
-        summarize(client, model, prompt)
+        summarize(client, SUMMARIZER_MODEL, prompt)
     })
     .await
 }

@@ -269,6 +269,23 @@ pub(crate) async fn start_session(
             // Parity with the Gemini path: give a hard task room to answer in
             // one call (the 8192 default is tight for a long reasoning turn).
             .with_max_tokens(ANTHROPIC_MAX_OUTPUT_TOKENS)
+            // Extended thinking — the Anthropic in-tab path never enabled it,
+            // so Opus (the Rust-coding tier) reasoned with ZERO thinking budget
+            // in the browser, unlike the Gemini path (ThinkingLevel::High). High
+            // for Opus/Sonnet; Medium for the cheaper Haiku tier. On Anthropic
+            // thinking and temperature are mutually exclusive (the loop drops
+            // temperature when thinking is on) — so thinking wins for the coding
+            // tier, and the temperature set below only applies if thinking is off.
+            .with_thinking(if model.contains("haiku") {
+                ThinkingLevel::Medium
+            } else {
+                ThinkingLevel::High
+            })
+            // Lower sampling temperature for better first-try-valid rustlite /
+            // edits. Anthropic applies this ONLY when thinking is off (mutually
+            // exclusive), so it's effectively a no-op while thinking is on — but
+            // set for parity + any future thinking-off tier.
+            .with_temperature(0.2)
             .with_tool(create_subdomain_tool())
             .with_tool(create_and_publish_app_tool())
             .with_tool(batch_create_subdomains_tool())
@@ -383,6 +400,10 @@ pub(crate) async fn start_session(
             // visible PLAN-FIRST + compile-in-the-loop discipline below leans on
             // this headroom.
             .with_thinking(ThinkingLevel::High)
+            // Lower sampling temperature for better first-try-valid rustlite /
+            // edits. Gemini applies temperature AND thinking independently (both
+            // ride generation_config), so this composes with the High budget.
+            .with_temperature(0.2)
             .with_tool(create_subdomain_tool())
             .with_tool(create_and_publish_app_tool())
             .with_tool(batch_create_subdomains_tool())

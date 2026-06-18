@@ -61,6 +61,10 @@ pub struct GeminiBackendConfig {
     /// text → "(empty response)"). Set this high so a hard task can BOTH reason
     /// AND answer in one call.
     pub max_output_tokens: Option<u32>,
+    /// Sampling temperature (`generationConfig.temperature`). `None` lets
+    /// Gemini apply its default. A low value (e.g. 0.2) favors first-try-valid
+    /// code/edits. Composes with `thinking` — both ride `generationConfig`.
+    pub temperature: Option<f32>,
     /// Override the Gemini base URL — useful for tests, proxies, or
     /// regional endpoints.
     pub base_url: Option<url::Url>,
@@ -95,6 +99,7 @@ impl GeminiBackendConfig {
             thinking: None,
             response_schema: None,
             max_output_tokens: None,
+            temperature: None,
             base_url: None,
             conversation_id: None,
             capabilities: CapabilitiesConfig::default(),
@@ -152,6 +157,13 @@ impl GeminiBackendConfig {
     /// text on a 3.x model, ending the turn `MAX_TOKENS` with no output.
     pub fn with_max_output_tokens(mut self, max: u32) -> Self {
         self.max_output_tokens = Some(max);
+        self
+    }
+
+    /// Set the sampling temperature (`generationConfig.temperature`). A low
+    /// value (e.g. 0.2) favors first-try-valid code/edits.
+    pub fn with_temperature(mut self, t: f32) -> Self {
+        self.temperature = Some(t);
         self
     }
 
@@ -282,6 +294,7 @@ impl ConnectionStrategy for GeminiConnectionStrategy {
             self.config.capabilities.compaction_threshold,
         )?;
         loop_config.max_output_tokens = self.config.max_output_tokens;
+        loop_config.temperature = self.config.temperature;
 
         let (steps_tx, _) = broadcast::channel::<Step>(STEP_BROADCAST_CAPACITY);
         let state = Arc::new(LoopState::new(steps_tx));

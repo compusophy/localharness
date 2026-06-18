@@ -314,15 +314,25 @@ fn default_filesystem() -> Option<crate::filesystem::SharedFilesystem> {
 }
 
 fn build_tool_declarations(runner: &ToolRunner) -> Vec<ToolDef> {
-    runner
+    let mut decls: Vec<ToolDef> = runner
         .iter_tools()
         .into_iter()
         .map(|tool| ToolDef {
             name: tool.name().to_string(),
             description: tool.description().to_string(),
             input_schema: tool.input_schema(),
+            cache_control: None,
         })
-        .collect()
+        .collect();
+    // Prompt caching: a single `cache_control` breakpoint on the LAST tool
+    // pins the whole (stable) tool block — ~50 schemas — for the cache, which
+    // tools+system then read at ~0.1× cost on every later turn. GA; no beta
+    // header. The tool ORDER is deterministic (registration order), so the
+    // cached prefix stays byte-stable across turns.
+    if let Some(last) = decls.last_mut() {
+        last.cache_control = Some(crate::backends::anthropic::wire::CacheControl::ephemeral());
+    }
+    decls
 }
 
 // =============================================================================

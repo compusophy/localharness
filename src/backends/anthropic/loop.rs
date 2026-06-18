@@ -694,7 +694,10 @@ pub(crate) fn build_request(config: &LoopConfig, history: &[Message]) -> Message
     MessagesRequest {
         model: config.model.clone(),
         max_tokens,
-        system: config.system.clone(),
+        // System → content-block array with a cache_control breakpoint (the
+        // ~15KB system prompt caches across turns). `system_from` handles the
+        // None/empty case (omitted).
+        system: MessagesRequest::system_from(config.system.clone()),
         messages: history.to_vec(),
         tools: config.tool_declarations.clone(),
         tool_choice: None,
@@ -910,7 +913,10 @@ mod tests {
         assert!(req.thinking.is_none());
         assert_eq!(req.temperature, Some(0.3));
         assert_eq!(req.max_tokens, 4096);
-        assert_eq!(req.system.as_deref(), Some("sys"));
+        // System renders as the cache-controlled content-block array.
+        assert_eq!(req.system.len(), 1);
+        assert_eq!(req.system[0].text, "sys");
+        assert!(req.system[0].cache_control.is_some());
     }
 
     /// REGRESSION: Anthropic splits usage across two events — `message_start`

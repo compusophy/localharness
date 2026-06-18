@@ -245,6 +245,14 @@ impl GeminiAgentConfig {
         self
     }
 
+    /// Set the sampling temperature (`generationConfig.temperature`). A low
+    /// value (e.g. 0.2) favors first-try-valid code/edits; composes with
+    /// extended thinking.
+    pub fn with_temperature(mut self, t: f32) -> Self {
+        self.gemini = self.gemini.with_temperature(t);
+        self
+    }
+
     /// Set a JSON schema for structured output via the `finish` tool.
     pub fn with_response_schema(mut self, schema: impl Into<String>) -> Self {
         let s = schema.into();

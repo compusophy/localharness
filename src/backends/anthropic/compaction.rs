@@ -11,10 +11,19 @@
 use parking_lot::Mutex;
 
 use crate::backends::anthropic::api::SharedClient;
-use crate::backends::anthropic::wire::{Block, Message, MessagesRequest, Role, DEFAULT_MAX_TOKENS};
+use crate::backends::anthropic::wire::{
+    Block, Message, MessagesRequest, Role, DEFAULT_MAX_TOKENS, DEFAULT_MODEL,
+};
 use crate::backends::compaction::{self as engine, CompactionModel};
 pub use crate::backends::compaction::{should_compact, COMPACTION_TAG};
 use crate::error::Result;
+
+/// Model used to fold the rolling summary — a FIXED cheap/fast tier, NOT the
+/// session model. The engine's own `SUMMARY_PROMPT` notes cheap+fast is right
+/// here (the summary must be faithful, not brilliant), so an Opus session folds
+/// its summary on Haiku instead of paying Opus rates per compaction. Haiku is
+/// already this backend's `DEFAULT_MODEL` (the cheapest tier).
+const SUMMARIZER_MODEL: &str = DEFAULT_MODEL;
 
 /// The Anthropic side of the [`CompactionModel`] seam — a zero-sized marker
 /// the engine is monomorphized over.
@@ -93,9 +102,17 @@ fn turn_is_tool_result(m: &Message) -> bool {
 
 /// Try to compact `history` in place. Returns `true` if anything changed.
 /// Safe to call from inside the agent loop — never errors, only logs.
-pub async fn try_compact(history: &Mutex<Vec<Message>>, client: &SharedClient, model: &str) -> bool {
+///
+/// The `_session_model` is intentionally ignored: compaction folds with the
+/// fixed cheap [`SUMMARIZER_MODEL`], never the (possibly Opus-tier) session
+/// model. Kept in the signature so callers don't need to change.
+pub async fn try_compact(
+    history: &Mutex<Vec<Message>>,
+    client: &SharedClient,
+    _session_model: &str,
+) -> bool {
     engine::try_compact::<AnthropicCompaction, _, _>(history, |prompt| {
-        summarize(client, model, prompt)
+        summarize(client, SUMMARIZER_MODEL, prompt)
     })
     .await
 }
@@ -106,7 +123,7 @@ async fn summarize(client: &SharedClient, model: &str, prompt: String) -> Result
     let req = MessagesRequest {
         model: model.to_string(),
         max_tokens: DEFAULT_MAX_TOKENS,
-        system: None,
+        system: MessagesRequest::system_from(None),
         messages: vec![Message {
             role: Role::User,
             content: vec![Block::Text { text: prompt }],
