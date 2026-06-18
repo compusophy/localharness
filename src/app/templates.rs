@@ -1947,9 +1947,9 @@ pub(crate) fn seed_phrase(words: &str) -> Markup {
         // view before the words are saved. Make the risk explicit AND give a
         // one-tap save (copy or download) so the words are banked first.
         p.seed-warn {
-            "Save these words now — copy or download them before you switch apps. "
-            "Backgrounding the browser can refresh this tab and lose them; "
-            "they are shown once and never leave this device."
+            "These words are the only key to this identity — anyone who has them "
+            "controls it. Keep a copy somewhere safe. They never leave this device, "
+            "and you can view them here whenever you need them."
         }
         p.apex-fine {
             button #seed-copy type="button" data-action="copy-seed" data-arg=(words)
