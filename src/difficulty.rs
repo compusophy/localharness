@@ -281,6 +281,61 @@ pub fn route_model(_tier: TurnTier, _session_model: &str) -> Option<String> {
     None
 }
 
+/// The backend a `consult_model` call routes to, picked PURELY from the
+/// requested model id. Hoisted here (the `difficulty`/`turn_flow` pattern) so
+/// the model→backend decision is native-testable, independent of the wasm
+/// `app::chat::tools::misc::consult_model_tool` that consumes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsultBackend {
+    /// A `gemini-*` id → the Gemini backend.
+    Gemini,
+    /// A `claude-*` id → the Anthropic backend.
+    Anthropic,
+}
+
+/// The model ids `consult_model` accepts, as `(id, label)` — the Claude tiers
+/// plus the Gemini default. The single allowlist behind both the tool's enum
+/// schema and [`select_consult_backend`], so the schema can never advertise an
+/// id the router rejects. References the canonical backend consts (no re-typed
+/// literal to drift); `anthropic`-gated so the Claude ids resolve, with a
+/// Gemini-only fallback when the feature is off (the tool itself only exists in
+/// `browser-app`, which always pulls `anthropic`).
+#[cfg(feature = "anthropic")]
+pub const CONSULT_MODELS: &[(&str, &str)] = &[
+    (crate::types::DEFAULT_MODEL, "Gemini (default)"),
+    (crate::backends::anthropic::OPUS_MODEL, "Claude Opus"),
+    (crate::backends::anthropic::SONNET_MODEL, "Claude Sonnet"),
+    (crate::backends::anthropic::DEFAULT_MODEL, "Claude Haiku"),
+];
+
+/// Gemini-only fallback allowlist when the `anthropic` backend is absent.
+#[cfg(not(feature = "anthropic"))]
+pub const CONSULT_MODELS: &[(&str, &str)] = &[(crate::types::DEFAULT_MODEL, "Gemini (default)")];
+
+/// Pick the backend for a `consult_model` request, validated against
+/// [`CONSULT_MODELS`]. An id outside the allowlist (unknown, or a model this
+/// path can't route — local Gemma, a GPT id, junk) is rejected with a clear
+/// error rather than silently routed. PURE — unit-tested natively below.
+/// `claude-*` → [`ConsultBackend::Anthropic`]; everything else (the Gemini
+/// default) → [`ConsultBackend::Gemini`].
+pub fn select_consult_backend(model: &str) -> crate::error::Result<ConsultBackend> {
+    if !CONSULT_MODELS.iter().any(|(id, _)| *id == model) {
+        let supported = CONSULT_MODELS
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(crate::error::Error::other(format!(
+            "consult_model: unsupported model {model:?} — choose one of: {supported}"
+        )));
+    }
+    if model.starts_with("claude-") {
+        Ok(ConsultBackend::Anthropic)
+    } else {
+        Ok(ConsultBackend::Gemini)
+    }
+}
+
 /// Clamp a thinking budget to a CEILING. The router only ever LOWERS thinking
 /// below the session baseline for routine turns; it never raises it above what
 /// the session was built with. Ordering: `Minimal < Low < Medium < High`.
@@ -574,6 +629,58 @@ mod tests {
                         assert_ne!(id, session, "{session}/{tier:?} returned the session model");
                     }
                 }
+            }
+        }
+    }
+
+    // --- select_consult_backend (consult_model routing) ----------------------
+
+    #[cfg(feature = "anthropic")]
+    mod consult {
+        use super::*;
+        use crate::backends::anthropic::{
+            DEFAULT_MODEL as HAIKU, OPUS_MODEL as OPUS, SONNET_MODEL as SONNET,
+        };
+
+        /// Each Claude tier routes to the Anthropic backend; the Gemini default
+        /// routes to Gemini. Every advertised id must classify (no allowlisted id
+        /// is silently rejected).
+        #[test]
+        fn known_models_pick_the_right_backend() {
+            assert_eq!(
+                select_consult_backend(crate::types::DEFAULT_MODEL).unwrap(),
+                ConsultBackend::Gemini
+            );
+            for claude in [HAIKU, SONNET, OPUS] {
+                assert_eq!(
+                    select_consult_backend(claude).unwrap(),
+                    ConsultBackend::Anthropic,
+                    "{claude}"
+                );
+            }
+            // Every id in the allowlist must resolve (none rejected).
+            for (id, _) in CONSULT_MODELS {
+                assert!(select_consult_backend(id).is_ok(), "{id}");
+            }
+        }
+
+        /// An unknown id, or a known-but-unroutable model (local Gemma, a GPT id,
+        /// junk, empty), is REJECTED — never silently routed.
+        #[test]
+        fn unknown_or_unsupported_models_are_rejected() {
+            for bad in [
+                "gemma-3-270m",        // local backend — not a consult target
+                "gpt-5-nano",          // OpenAI — no consult path
+                "claude-imaginary-9",  // claude-shaped but not a real tier
+                "gemini-2.5-flash",    // a dead/non-default Gemini id
+                "",                    // empty
+                "garbage",
+            ] {
+                let err = select_consult_backend(bad).unwrap_err();
+                assert!(
+                    err.to_string().contains("unsupported model"),
+                    "{bad}: {err}"
+                );
             }
         }
     }

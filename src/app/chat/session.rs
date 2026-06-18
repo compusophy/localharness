@@ -33,7 +33,7 @@ use super::tools::party::{
     fund_party_tool, get_party_tool, join_party_tool,
 };
 use super::tools::misc::{
-    create_skill_tool, delete_skill_tool, dwell_tool, execute_script_tool,
+    consult_model_tool, create_skill_tool, delete_skill_tool, dwell_tool, execute_script_tool,
     clear_context_tool, compact_context_tool, consolidate_lessons_tool, list_skills_tool,
     notify_tool, record_lesson_tool, run_wasm_cli_tool, schedule_task_tool, set_lessons_tool,
     set_persona_tool, spawn_recursive_subagent_tool, submit_feedback_tool, web_fetch_tool,
@@ -354,6 +354,7 @@ pub(crate) async fn start_session(
             .with_tool(dwell_tool())
             .with_tool(clear_context_tool())
             .with_tool(compact_context_tool())
+            .with_tool(consult_model_tool(captured_key.clone(), base_url.clone()))
             .with_tool(spawn_recursive_subagent_tool(captured_key, base_url.clone()));
         // Self-edit tool — gated on the allowlist (see `set_persona_allowed`).
         if set_persona_allowed {
@@ -476,6 +477,7 @@ pub(crate) async fn start_session(
             .with_tool(dwell_tool())
             .with_tool(clear_context_tool())
             .with_tool(compact_context_tool())
+            .with_tool(consult_model_tool(captured_key.clone(), base_url.clone()))
             .with_tool(spawn_recursive_subagent_tool(captured_key, base_url.clone()));
         // Self-edit tool — gated on the allowlist (see `set_persona_allowed`).
         if set_persona_allowed {

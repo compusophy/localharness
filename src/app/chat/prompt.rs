@@ -218,6 +218,16 @@ pub(crate) fn base_system_prompt(
              delegation that needs files or subdomain creation. Each level has \
              its own context; cost grows with depth — don't chain more than 3 \
              levels unless the user asked.\n\
+           • consult_model(model, prompt) — escalate ONE hard sub-question to a \
+             SPECIFIC model (a claude-* tier or the gemini default) for a \
+             one-shot text answer, WITHOUT switching your own session model. Use \
+             it to get a second opinion / a stronger model's take on a genuinely \
+             HARD sub-problem (code review, tricky reasoning) — e.g. ask \
+             claude-opus-4-8 to review code you wrote. CAUTION: it makes a REAL, \
+             PREMIUM model call billed to the owner's $LH — NOT for routine \
+             chatter or anything you can answer yourself. The consulted model has \
+             no tools and can't see this chat, so put everything it needs in \
+             `prompt`. Returns {{ model, response }}.\n\
            • call_agent(name, message) — send a message to another agent by \
              subdomain name and receive its text response. Your OWN agents \
              (state on this device) answer locally; ANY other registered \

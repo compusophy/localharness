@@ -1,9 +1,11 @@
 //! Agent self-management + delegation tools: persona self-edit, deferred
 //! context clear/compact (via the `chat` pending accessors), on-chain
-//! feedback, and the recursive subagent spawner.
+//! feedback, the recursive subagent spawner, and `consult_model` (one-shot
+//! escalation to a chosen model).
 
 use futures_util::StreamExt;
 
+use crate::difficulty::{select_consult_backend, ConsultBackend, CONSULT_MODELS};
 use crate::encoding::parse_address;
 use crate::policy;
 use crate::tools::ClosureTool;
@@ -1106,6 +1108,173 @@ pub(crate) fn spawn_recursive_subagent_tool(
             }
         },
     )
+}
+
+/// Max output tokens for a one-shot `consult_model` answer. Generous enough for
+/// a code review / hard-reasoning reply, but capped so a single consult can't
+/// run away (it is one bounded turn, no tool loop).
+const CONSULT_MAX_OUTPUT_TOKENS: u32 = 8_192;
+
+/// `consult_model(model, prompt)` — EXPLICITLY escalate ONE hard sub-question to
+/// a CHOSEN model mid-conversation (on-chain feedback #21.2), getting a one-shot
+/// text answer inline WITHOUT switching this session's own model. Distinct from
+/// the automatic per-turn router (#7, picks a model behind the scenes) and from
+/// `spawn_recursive_subagent` (#6, a SAME-model tool-bearing subagent): this is
+/// a deliberate, one-shot call to a model the agent names (e.g. "ask claude-opus
+/// to review this code").
+///
+/// Routes by model id ([`select_consult_backend`]): `claude-*` → a one-shot
+/// `Agent::start_anthropic`, else `Agent::start_gemini`. The sub-config carries
+/// NO tools (`enabled_tools: Some(vec![])`), a capped output budget, and the
+/// SAME proxy `base_url` + per-request credit auth as the session, so the call
+/// is METERED to the owner's `$LH` exactly like a normal model round. Bounded:
+/// one turn, no tool loop, no recursion.
+pub(crate) fn consult_model_tool(
+    captured_key: String,
+    base_url: Option<url::Url>,
+) -> std::sync::Arc<dyn crate::tools::Tool> {
+    let enum_ids: Vec<serde_json::Value> = CONSULT_MODELS
+        .iter()
+        .map(|(id, _)| serde_json::Value::String((*id).to_string()))
+        .collect();
+    let model_desc = CONSULT_MODELS
+        .iter()
+        .map(|(id, label)| format!("{id} ({label})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "model": {
+                "type": "string",
+                "enum": enum_ids,
+                "description": format!(
+                    "Which model to consult — one of: {model_desc}. Pick a STRONGER \
+                     model than your own (e.g. claude-opus-4-8) for a hard review / \
+                     tricky reasoning sub-question."
+                )
+            },
+            "prompt": {
+                "type": "string",
+                "description": "The self-contained sub-question to ask. Include all \
+                    context the consulted model needs (it can't see this \
+                    conversation) — e.g. paste the code to review and what to check."
+            }
+        },
+        "required": ["model", "prompt"]
+    });
+    ClosureTool::new(
+        "consult_model",
+        "Consult ANOTHER specific model for a ONE-SHOT text answer to a hard \
+         sub-question, WITHOUT switching your own session model. Pick `model` (a \
+         claude-* tier or the gemini default) and send a self-contained `prompt`; \
+         you get back just that model's reply. Use it to escalate a genuinely HARD \
+         sub-problem — code review, tricky reasoning, a second opinion — to a \
+         stronger model (e.g. claude-opus-4-8) than the one you're running on. \
+         CAUTION: this makes a REAL, PREMIUM model call billed to the owner's $LH \
+         (a stronger model costs more) — use it for hard sub-questions, NOT routine \
+         chatter or things you can answer yourself. The consulted model has NO tools \
+         and CANNOT see this conversation, so put everything it needs in `prompt`. \
+         Returns { model, response }.",
+        schema,
+        move |args: serde_json::Value, _ctx| {
+            let captured_key = captured_key.clone();
+            let base_url = base_url.clone();
+            async move {
+                let model = args.get("model").and_then(|v| v.as_str()).unwrap_or("").trim();
+                let prompt = args.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+                if prompt.trim().is_empty() {
+                    return Err(crate::error::Error::other(
+                        "consult_model: prompt cannot be empty",
+                    ));
+                }
+                // Reject an unknown/unsupported model BEFORE spinning anything up.
+                let backend = select_consult_backend(model)?;
+
+                // ONE-SHOT config: no tools, capped output. Same credit path as
+                // the session — fresh per-request proxy token (the captured key
+                // may be past the proxy's 5-minute window by now), so the consult
+                // is metered to the owner's $LH exactly like a normal round.
+                let no_tools = {
+                    let mut caps = CapabilitiesConfig::unrestricted();
+                    caps.enabled_tools = Some(vec![]);
+                    caps
+                };
+                let auth_provider = if base_url.is_some() {
+                    crate::app::chat::credit_signer().await.map(|(signer, _)| {
+                        std::sync::Arc::new(move || {
+                            let now = (js_sys::Date::now() / 1000.0) as u64;
+                            crate::registry::proxy_auth_token(&signer, now)
+                        }) as crate::backends::KeyProvider
+                    })
+                } else {
+                    None
+                };
+
+                let response_text = match backend {
+                    ConsultBackend::Anthropic => {
+                        let mut cfg = crate::AnthropicAgentConfig::new(captured_key.clone())
+                            .with_model(model.to_string())
+                            .with_capabilities(no_tools)
+                            .with_policies(vec![policy::allow_all()])
+                            .with_max_tokens(CONSULT_MAX_OUTPUT_TOKENS);
+                        if let Some(b) = &base_url {
+                            cfg = cfg.with_base_url(b.clone());
+                        }
+                        if let Some(p) = &auth_provider {
+                            cfg = cfg.with_auth_provider(p.clone());
+                        }
+                        let sub = Agent::start_anthropic(cfg).await.map_err(|e| {
+                            crate::error::Error::other(format!("start_anthropic: {e}"))
+                        })?;
+                        drain_final_text(sub.chat(prompt.to_string()).await.map_err(|e| {
+                            crate::error::Error::other(format!("consult chat: {e}"))
+                        })?)
+                        .await?
+                    }
+                    ConsultBackend::Gemini => {
+                        let mut cfg = GeminiAgentConfig::new(captured_key.clone())
+                            .with_model(model.to_string())
+                            .with_capabilities(no_tools)
+                            .with_policies(vec![policy::allow_all()])
+                            .with_max_output_tokens(CONSULT_MAX_OUTPUT_TOKENS);
+                        if let Some(b) = &base_url {
+                            cfg = cfg.with_base_url(b.clone());
+                        }
+                        if let Some(p) = &auth_provider {
+                            cfg = cfg.with_auth_provider(p.clone());
+                        }
+                        let sub = Agent::start_gemini(cfg).await.map_err(|e| {
+                            crate::error::Error::other(format!("start_gemini: {e}"))
+                        })?;
+                        drain_final_text(sub.chat(prompt.to_string()).await.map_err(|e| {
+                            crate::error::Error::other(format!("consult chat: {e}"))
+                        })?)
+                        .await?
+                    }
+                };
+                Ok(serde_json::json!({ "model": model, "response": response_text }))
+            }
+        },
+    )
+}
+
+/// Drain a one-shot [`crate::ChatResponse`]'s stream to its final assistant
+/// TEXT — the only thing a `consult_model` call returns (no tools fire, so
+/// ToolCall/ToolResult/Thought chunks are ignored). Shared by both backends.
+async fn drain_final_text(
+    response: crate::ChatResponse,
+) -> crate::error::Result<String> {
+    let mut cursor = response.chunks();
+    let mut text = String::new();
+    while let Some(item) = cursor.next().await {
+        match item {
+            Ok(StreamChunk::Text { text: t, .. }) => text.push_str(&t),
+            Ok(_) => {}
+            Err(e) => return Err(crate::error::Error::other(format!("consult chunk: {e}"))),
+        }
+    }
+    Ok(text)
 }
 
 /// `run_wasm_cli(path, args?)` — the CLI SANDBOX (on-chain feedback #6): run a
