@@ -36,10 +36,10 @@ use maud::{Markup, html};
 /// (and "limited time") does NOT vanish the moment the user taps create.
 pub(crate) fn onboard_pitch() -> Markup {
     html! {
-        p style="font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);margin:0 0 4px" {
+        p style="font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);margin:0 0 var(--space-1)" {
             "limited time"
         }
-        p style="font-size:14px;margin:0 0 12px" {
+        p style="font-size:14px;margin:0 0 var(--chrome-pad)" {
             "1 agent + 200 $LH for $2"
         }
     }
