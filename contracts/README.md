@@ -478,6 +478,111 @@ clear-epoch, paging, blob bounds). Multi-identity rooms (ECIES key
 grant to enrolled members) are phase 2 — the membership is already
 on-chain.
 
+## Core + platform facet reference
+
+The coordination/trust facets above (Party / Guild / Voting / Reputation
+/ Validation / SessionRoom) have full sections. This is the operational
+detail for the remaining facets — the identity, money, and scheduling
+layer. Storage for each is `keccak256("localharness.<facet>.storage.v1")`
+in a `LibXyzStorage` lib; each cut via `script/Add<Facet>.s.sol`.
+
+- **DiamondCut / DiamondLoupe / Ownership** — owner-only `diamondCut`;
+  introspection + `supportsInterface`; EIP-173 `owner()` +
+  `transferOwnership`.
+- **LocalharnessRegistryFacet** — `register / ownerOfName / idOfName /
+  nameOfId / setMetadata / metadata / isTaken / nextId`. Mints emit
+  `Transfer(0,owner,id)`. `register` can pull `registrationCost()` via
+  `transferFrom`; **currently 0 (FREE)**. `setMetadata` writes are
+  gas-HUNGRY (≈7.6k gas/BYTE → budget `1.2M + bytes*8500`); never guess a
+  client cap — `cast estimate`.
+- **ERC721Facet** — full ERC-721 + Metadata; every name is an NFT.
+  `tokenURI(id)` → `https://<name>.localharness.xyz/`.
+- **TbaFacet** — EIP-6551. `tokenBoundAccount(id)` / `…ByName(name)`
+  counterfactual; `createTokenBoundAccount(id)` deploys (anyone,
+  idempotent).
+- **MainIdentityFacet** — `registerMain / mainOf / mainNameOf / isMain`.
+  Primary identity NFT; auto-set on first-claim.
+- **FeedbackFacet** — `submitFeedback(string)` appends on-chain + emits an
+  event. Read views `feedbackCount/feedbackAt/feedbackRange`. 2048-byte
+  cap; gas is the spam filter (a short note ≈1.3M, near the cap ≈17M gas —
+  a flat 800k cap out-of-gassed EVERY feedback). Owner-only
+  `clearFeedback()` (TRANSIENT inbox — harvest via
+  `test-fleet/feedback-to-issues.mjs` + `clear-feedback.sh`; the event log
+  survives a clear).
+- **CreditsFacet** — `LocalharnessCredits` TIP-20 distribution. Diamond
+  holds `ISSUER_ROLE`. `dailyAllowance` **0 (DISABLED** — free daily mint
+  = sybil hole); facet stays cut. Funding = redeem codes + `send_lh`.
+- **RedeemFacet** — bootstraps $LH: owner
+  `addRedeemCodes(bytes32[],uint256)`, holder `redeem(string code)` (mints
+  via ISSUER_ROLE, burns code).
+- **InviteFacet** — PERMISSIONLESS refundable onboarding codes: any holder
+  `createInvite(codeHash, amount, ttl)` ESCROWS their OWN `$LH` behind a
+  bearer code; `acceptInvite(code)` pays the first presenter;
+  `reclaimInvite` refunds the FUNDER 100% once Open+expired (disjoint
+  windows). SUPPLY-NEUTRAL. Bearer MVP; bound vouchers = Phase 2.
+- **SessionFacet** — coarse time-boxed sessions (3600s/1e19 = 10 $LH/hr;
+  `setSessionPrice(0)` reopens free). Shelved in the UI — metering is the
+  live path.
+- **CreditMeterFacet** — per-MESSAGE metering. `depositCredits` tops up;
+  `creditOf` reads; `meter(addr,amt)` debits (meter-key only);
+  `withdrawCredits` pulls UNSPENT credits back. Spend-down: debits
+  `min(cost,balance)`, so a positive balance is usable to zero.
+- **MintGateFacet** — fiat→`$LH` valve: issuer-signed `mintFromFiat` →
+  buyer's METER (one-shot receipt per PI, capped); `clawbackFiatMint` on
+  refund. Proxy webhook fires it on Stripe `payment_intent.succeeded`.
+  Recovery `MintForReceipt.s.sol`.
+- **X402Facet** — x402 EIP-712 "exact" settlement in $LH (agent-to-agent).
+  `settle(...)` (EOA ecrecover + EIP-1271, one-shot nonce) moves
+  payer→payee; `x402DomainSeparator()` read live (binds chainId+diamond →
+  the reset changed it). Proxy ask_agent + CLI `--pay` settle only AFTER a
+  reply (#25); ask_agent price-LOCKS signed value (floor + 10% ceiling, no
+  silent over/under-pay #72).
+- **DeviceRegistryFacet** — enumerable linked-device index in ONE call:
+  `linkDevice / unlinkDevice / devicesOf / isDeviceLinked` (replaces log
+  scraping; Tempo RPC caps at 100k blocks).
+- **ReleaseFacet** — `releaseName(tokenId)` holder burn (refuses caller's
+  MAIN). Plus owner-only `adminBurnNames`/`adminResetAll` (testnet clean
+  slate); `_burn` clears exactly what `register()` writes so names
+  re-register cleanly.
+- **ScheduleFacet** — durable, tab-independent recurring jobs.
+  `scheduleJob(targetId, task, interval, budgetWei, maxRuns)` ESCROWS owner
+  `$LH` (60s min). `recordRun` is SCHEDULER-ROLE-ONLY (the worker):
+  atomically debits budget + advances `nextRun` (CAS-guarded vs
+  double-fire). `budgetWei` is the HARD STOP; `cancelJob` refunds.
+  **Recursion:** each fire is a bounded loop with `call_agent` (ping-pong)
+  + `scheduleChildJob` (scheduler-only, child budget FROM parent escrow,
+  depth-capped). Anti-griefing: per-owner job cap + per-tick spend caps.
+  `setScheduler` = proxy meter key; fired by the `/scheduler` cron worker.
+  **/goal:** a `GOAL: `-prefixed task gets a goal-loop frame + `finish_goal`
+  tool → worker relays to `completeJob`; job ends EARLY, escrow refunds.
+  **The task view is `taskOf(uint256)` here — BountyFacet must use
+  `bountyTaskOf` to avoid the selector clash (a diamond can't share a
+  selector).**
+- **SignalingFacet** — on-chain WebRTC signaling + presence for P2P teams.
+  `announce(topic, owner, ephemeral, pubkey, sig)` is **OWNER-SIGNED**:
+  requires `topic == keccak256("localharness.devices"‖owner)` AND
+  `ecrecover(...)==owner` (high-s rejected) — only the seed holder can
+  populate their devices roster (closed a folder-theft MITM). Preimages
+  pinned across facet / `registry::announce_digest` / `teams_sync`; stale
+  entries age out (10-min `PRESENCE_TTL_SECS`).
+- **BountyFacet** — agent-economy demand primitive (rung 1 of
+  agent-coordination). `postBounty(task, rewardWei, ttl)` ESCROWS;
+  `claimBounty(id, claimantTokenId)` + `submitResult(id, result)`; poster
+  `acceptResult(id)` settles to the **worker's TBA** (x402 payout).
+  `cancelBounty`/`reclaimExpired` refund. Payout BOUND to the claimed
+  identity's TBA (claim-squatting just pays them). **The task view is
+  `bountyTaskOf`, NOT `taskOf` — ScheduleFacet already owns
+  `taskOf(uint256)`.** Proven E2E.
+- **PairingFacet** — REMOVED (QR seed-adoption superseded it).
+
+**ERC-6551 account** (`MultiSignerAccount`): CALL-only; additional-signer
+set on top of the NFT holder + EIP-1271 `isValidSignature`, so a MAIN can
+be controlled by multiple device EOAs without sharing the seed. Signers
+bound to the enrolling holder (`_signerEnroller[signer]==owner()`) → an NFT
+transfer revokes prior device signers; rejects high-s. Bundle reads TBA
+addrs via the diamond (impl swap needs no bundle change; prior-infra TBAs
+resolve differently).
+
 ## Why a Diamond
 
 The flat contract works fine for a single-purpose registry. But the

@@ -1,5 +1,11 @@
 # lh session: shared encrypted KV rooms (GitHub #22)
 
+> **STATUS: SHIPPED (0.36.0).** `SessionRoomFacet` is cut live; the off-chain
+> CRDT/AES layer is `src/kv_reduce.rs` + `src/kv_room.rs` with a `room` CLI.
+> Single-identity rooms (one owner's devices share a room keyless) are live;
+> multi-identity rooms (ECIES `K_room` grant to enrolled members) remain Phase 2.
+> Facet semantics in `contracts/README.md`. This is the original design note.
+
 ## Problem
 
 When two+ agents collaborate over `call_agent`/`mcp-call`/`--pay`, the only way to carry shared state today is to re-send it in every call payload (full context in each prompt). That bloats every metered request, costs $LH per byte of re-sent context, and has no shared mutable surface — there is no "scratchpad both agents read and write." Issue #22 asks for an **encrypted, ephemeral, shared key-value store** that a small set of invited peer agents sync against, so a call carries a *room id + a few keys* instead of the whole state. API surface requested: `lh session create / join / set / get`.
