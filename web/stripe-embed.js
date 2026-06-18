@@ -171,7 +171,13 @@
     try { o = typeof optsJson === 'string' ? JSON.parse(optsJson) : optsJson; }
     catch (e) { return Promise.reject(e); }
     return loadStripe().then(function (Stripe) {
-      window.lhUnmountCheckout();
+      // Do NOT call lhUnmountCheckout() here. The Rust side arms the success
+      // watcher (lhWatchPayment → watchOpts + poll) RIGHT AFTER lhBuyLh, but this
+      // .then runs as a LATER microtask — so tearing the watcher down here killed
+      // the unstick for EVERY payment (card and bank alike): the modal hung on
+      // "processing…" forever even though the webhook credited. A fresh mount just
+      // reassigns `state` below; lhWatchPayment's own stopWatch() clears any prior
+      // poll, so there's nothing to tear down here.
       // Reuse ONE Stripe instance across buys — constructing Stripe(PK) repeatedly
       // hinders performance (each instance re-inits fraud/telemetry signals).
       if (!stripeInstance) stripeInstance = Stripe(PK);
