@@ -48,13 +48,11 @@ pub(crate) fn api_key_modal() -> Markup {
     }
 }
 
-/// Branded "buy $LH" modal — Stripe's NATIVE Elements mount into `#lh-express`
-/// (Link / wallet one-click, self-confirming) + `#lh-payment` (card + inline Link)
-/// via `web/stripe-embed.js`. The Payment Element (card) renders NO Stripe button,
-/// so `#lh-pay-button` (revealed + wired by the shim to `confirmPayment`) is OUR
-/// submit control for the card path; the express button confirms itself. A JS poll
-/// watches the PaymentIntent and, on success, mints via `/stripe/finalize` and
-/// reveals `#buy-modal-done` (shim `lhBuySuccess`). `lh_label` previews the `$LH`.
+/// Branded "buy $LH" modal — Stripe's Payment Element (card + inline Link) mounts
+/// into `#lh-payment` via `web/stripe-embed.js`. It renders no button of its own,
+/// so `#lh-pay-button` (revealed + wired by the shim to `confirmPayment`) is the
+/// submit control. On success the shim flips to `#buy-modal-done` (`lhBuySuccess`)
+/// and the proxy webhook mints the `$LH`. `lh_label` previews the `$LH`.
 /// Height-capped + scrollable so the form never overflows a small screen.
 pub(crate) fn buy_modal(lh_label: &str) -> Markup {
     html! {
@@ -63,7 +61,6 @@ pub(crate) fn buy_modal(lh_label: &str) -> Markup {
                 div.api-key-title { "buy $LH" }
                 div.api-key-hint { (lh_label) }
                 div #lh-pay-region {
-                    div #lh-express style="margin:10px 0" {}
                     div #lh-payment style="margin:6px 0" {}
                     button #lh-pay-button type="button" .apex-onboard-cta style="display:none;width:100%;margin:8px 0 0" { "pay" }
                     div #lh-pay-error role="alert" aria-live="assertive" style="color:#ff6b6b;font-size:12px;min-height:1em;margin:4px 0" {}
@@ -80,7 +77,7 @@ pub(crate) fn buy_modal(lh_label: &str) -> Markup {
 /// INLINE onboarding checkout — the pay-first "create agent · $2" flow renders
 /// this IN PLACE of `#apex-onboard` (NOT a modal/overlay), so the card appears
 /// on the page the instant the button is tapped. Carries the SAME Stripe mount
-/// ids the shim needs (`#lh-express`, `#lh-payment`, `#lh-pay-error`,
+/// ids the shim needs (`#lh-payment`, `#lh-pay-error`,
 /// `#buy-modal-done`) plus an interstitial line (`#onboard-checkout-msg`) the
 /// Rust side clears once `lhBuyLh` mounts the form. Same visual family as the
 /// apex onboard card; minimal copy.
@@ -94,7 +91,6 @@ pub(crate) fn onboard_checkout() -> Markup {
                 "preparing secure checkout…"
             }
             div #lh-pay-region {
-                div #lh-express style="margin:10px 0" {}
                 div #lh-payment style="margin:6px 0" {}
                 button #lh-pay-button type="button" .apex-onboard-cta style="display:none;width:100%;margin:8px 0 0" { "pay" }
                 div #lh-pay-error role="alert" aria-live="assertive" style="color:#ff6b6b;font-size:12px;min-height:1em;margin:4px 0" {}

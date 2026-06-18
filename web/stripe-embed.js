@@ -1,18 +1,17 @@
 // Stripe Elements on-ramp shim. The wasm app fetches a PaymentIntent
-// `client_secret` from the proxy, swaps in our branded modal (maud), then calls
-// `window.lhBuyLh(optsJson)` to mount Stripe's native Elements inside it:
-//   #lh-express  — Express Checkout (Link / Apple Pay / Google Pay), one-click,
-//                  SELF-CONFIRMING via its own `confirm` event.
-//   #lh-payment  — Payment Element (Link "use this card" inline + card).
+// `client_secret` from the proxy, swaps in our branded card form (maud), then
+// calls `window.lhBuyLh(optsJson)` to mount Stripe's Payment Element into
+// `#lh-payment` (card + inline Link). The PaymentIntent is card+link-only, and we
+// mount ONLY the Payment Element (no Express Checkout Element — its express
+// buttons surfaced useless bank/Klarna options and tangled the confirm).
 //
-// The Express Checkout button (#lh-express) SELF-CONFIRMS via its own `confirm`
-// event. The Payment Element (#lh-payment, card + inline Link) renders NO button
-// of its own — so #lh-pay-button (revealed + wired in lhBuyLh) is OUR submit
-// control for the card path; it calls stripe.confirmPayment. (Without it the user
-// fills the card and there is nothing to click — the "no button to proceed" bug.)
-// Either confirm path drives the PaymentIntent; the SUCCESS + on-chain mint are
-// driven by a poll HERE in JS: `window.lhWatchPayment` setIntervals
-// `retrievePaymentIntent` and,
+// The Payment Element renders NO button of its own, so #lh-pay-button (revealed +
+// wired in lhBuyLh) is OUR submit control — it calls stripe.confirmPayment via the
+// CANONICAL clientSecret flow ({elements, confirmParams, redirect:'if_required'},
+// no elements.submit(), no clientSecret arg). On success confirmPayment resolves
+// with {paymentIntent:'succeeded'} → handleSucceeded flips the modal to done
+// immediately. A JS status poll (`window.lhWatchPayment`, setInterval over
+// `retrievePaymentIntent`) is the BACKSTOP for redirect/late-settle returns and
 // when the PaymentIntent is `succeeded`, calls `window.lh_payment_succeeded`
 // (the wasm export, wired in boot.js) which mints via /stripe/finalize with a
 // FRESHLY signed token (so a slow payer's modal-open token can't go stale and
@@ -79,42 +78,30 @@
   function byId(id) { return document.getElementById(id); }
   function showError(msg) { var el = byId('lh-pay-error'); if (el) el.textContent = msg || ''; }
 
-  // Confirm the PaymentIntent. Required inside the Express Checkout `confirm`
-  // event (the green Link/wallet button) so the charge actually goes through.
-  // The Payment Element's inline Link "use this card" confirms on its own and
-  // never calls this. Either way the Rust poll catches `succeeded` and mints.
-  // Resolves `{ ok }` so the pay button can re-enable itself on failure. Success
-  // is detected by the status poll (which flips the modal to done), not here.
-  //
-  // Stripe REQUIRES `elements.submit()` before `confirmPayment()` whenever the
-  // clientSecret is passed to confirmPayment (it validates the form + collects the
-  // payment details). It must run synchronously on the pay gesture, before any
-  // await — so it is the FIRST call here, and both confirm paths (the card pay
-  // button AND the Express Checkout `confirm` event) go through it.
+  // Confirm the PaymentIntent for the card pay button. The CANONICAL Payment
+  // Element clientSecret flow (Stripe docs, verbatim): pass `elements` (the
+  // clientSecret is already on it) + `confirmParams`, with redirect:'if_required'.
+  // Do NOT call elements.submit() and do NOT pass clientSecret here — that
+  // combination (a relic of the now-removed Express Checkout Element) is what
+  // wedged the confirm. A card resolves inline with `{ paymentIntent }`; status
+  // 'succeeded' drives the done state immediately via handleSucceeded. Resolves
+  // `{ ok }` so the pay button re-enables itself on failure.
   function confirmPay() {
     if (!state) return Promise.resolve({ ok: false });
     var o = state.opts;
     var returnUrl = o.returnUrl || (window.location.origin + window.location.pathname + '?bought=1');
     showError('');
-    return state.elements
-      .submit()
-      .then(function (sub) {
-        if (sub && sub.error) { showError(sub.error.message || 'check your card details'); return { ok: false }; }
-        return state.stripe
-          .confirmPayment({
-            elements: state.elements,
-            clientSecret: o.clientSecret,
-            confirmParams: { return_url: returnUrl },
-            redirect: 'if_required',
-          })
-          .then(function (res) {
-            if (res && res.error) { showError(res.error.message || 'payment failed'); return { ok: false }; }
-            // Confirmed inline (no redirect) → drive success NOW, don't wait on the
-            // 3s poll. The poll stays a backstop for redirect / late-settle returns.
-            var pi = res && res.paymentIntent;
-            if (pi && pi.status === 'succeeded') handleSucceeded();
-            return { ok: true };
-          });
+    return state.stripe
+      .confirmPayment({
+        elements: state.elements,
+        confirmParams: { return_url: returnUrl },
+        redirect: 'if_required',
+      })
+      .then(function (result) {
+        if (result && result.error) { showError(result.error.message || 'payment failed'); return { ok: false }; }
+        var pi = result && result.paymentIntent;
+        if (pi && pi.status === 'succeeded') handleSucceeded();
+        return { ok: true };
       })
       .catch(function (e) { showError((e && e.message) || 'payment error'); return { ok: false }; });
   }
@@ -197,25 +184,14 @@
       var elements = stripe.elements({ clientSecret: o.clientSecret, appearance: appearance });
       state = { stripe: stripe, elements: elements, opts: o };
 
-      // Express Checkout (Link / Apple Pay / Google Pay) — one-click, on top.
-      try {
-        var express = elements.create('expressCheckout', {
-          paymentMethods: { applePay: 'auto', googlePay: 'auto' },
-        });
-        express.on('confirm', function () { confirmPay(); });
-        express.mount('#lh-express');
-      } catch (e) {
-        var slot = byId('lh-express');
-        if (slot) slot.style.display = 'none';
-      }
-
-      // Payment Element — card + inline Link. We collect default fields (email,
-      // phone) so confirmPayment has everything; opting out with `fields: never`
-      // requires passing that data back in confirmPayment, which broke the pay.
+      // Payment Element ONLY (card + inline Link) — the canonical clientSecret
+      // flow. NO Express Checkout Element: its auto-detected express buttons
+      // surfaced the useless bank/Klarna options, and pairing it with
+      // clientSecret + confirmPayment is what wedged the confirm (the submit()
+      // tangle). The PaymentIntent is card+link-only (proxy), so nothing else shows.
       var payment = elements.create('payment', {
-        layout: { type: 'accordion', defaultCollapsed: true, radios: true, spacedAccordionItems: false },
+        layout: { type: 'accordion', defaultCollapsed: false, radios: true, spacedAccordionItems: false },
         paymentMethodOrder: ['card', 'link'],
-        wallets: { applePay: 'never', googlePay: 'never' },
       });
       payment.mount('#lh-payment');
 
