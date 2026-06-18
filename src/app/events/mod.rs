@@ -345,6 +345,14 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
             admin::close_notif_panel();
         }
 
+        // Same treatment for the top-left `localharness` brand menu: a native
+        // <details> won't dismiss on its own, so any click outside .brand-menu
+        // closes it. A click on the summary/items IS inside .brand-menu, so the
+        // native open-toggle / link-navigation still runs untouched.
+        if admin::brand_menu_open() && node.closest(".brand-menu").ok().flatten().is_none() {
+            admin::close_brand_menu();
+        }
+
         // Backdrop-click dismissal: a click whose RAW target IS the overlay
         // backdrop itself (the dark area, never a child inside the dialog —
         // those bubble up with a different target) closes the modal. Standard
@@ -449,6 +457,11 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
             if admin::notif_panel_open() {
                 event.prevent_default();
                 admin::close_notif_panel();
+            } else if admin::brand_menu_open() {
+                // The brand menu sits in the same chrome layer as the bell;
+                // ESC dismisses it like the other dropdowns.
+                event.prevent_default();
+                admin::close_brand_menu();
             } else if super::display::broadcast_composer_open() {
                 // The broadcast composer floats over the cartridge canvas —
                 // dismiss IT, not the whole display surface beneath it.

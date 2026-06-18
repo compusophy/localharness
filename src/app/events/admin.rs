@@ -320,6 +320,28 @@ pub(super) fn close_notif_panel() {
     );
 }
 
+/// Whether the top-left `localharness` brand menu is open. It is a native
+/// `<details class="brand-menu">` disclosure, so its open state IS the `open`
+/// attribute the browser toggles on summary-click.
+pub(super) fn brand_menu_open() -> bool {
+    dom::document()
+        .ok()
+        .and_then(|d| d.query_selector(".brand-menu[open]").ok().flatten())
+        .is_some()
+}
+
+/// Close the brand menu (ESC or any outside click), mirroring the bell/admin
+/// dropdowns. Native `<details>` does NOT auto-dismiss, so we clear `open`
+/// ourselves — a plain attribute mutation, no new listener / DOM tree.
+pub(super) fn close_brand_menu() {
+    if let Some(el) = dom::document()
+        .ok()
+        .and_then(|d| d.query_selector(".brand-menu[open]").ok().flatten())
+    {
+        let _ = el.remove_attribute("open");
+    }
+}
+
 /// [clear all] tapped: re-render the OPEN panel with the inline yes/cancel
 /// confirm (no JS alert — on-chain feedback). Nothing is cleared yet.
 pub(super) fn notif_clear_all_pressed() {
