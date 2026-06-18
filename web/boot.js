@@ -21,43 +21,6 @@ try {
   /* non-secure context / exotic browser — installability is best-effort */
 }
 
-// Cross-reload crash telemetry (shared sessionStorage keys with
-// src/app/debuglog.rs). An iOS WebContent OOM kill is a
-// RESET (Safari respawns the renderer and reloads the tab), not a JS error or a
-// wasm panic — so it leaves no trail in the reloaded page. The discriminator: a
-// user-initiated reload/navigation fires `pagehide`; an abrupt OOM kill does
-// NOT. So marking the active checkout stage "clean" on pagehide is what lets
-// debuglog::detect_previous_crash tell a benign reload from a crash on next
-// boot. The error/rejection traps APPEND a breadcrumb (without disturbing the
-// precise stage) so a JS-side throw also leaves a trail (surfaced under
-// ?debug=1).
-(function () {
-  function stashCrumb(msg) {
-    try {
-      var s = window.sessionStorage;
-      if (!s) return;
-      var crumbs = [];
-      try { crumbs = JSON.parse(s.getItem("lh_crash_crumbs") || "[]"); } catch (e) {}
-      if (!Array.isArray(crumbs)) crumbs = [];
-      crumbs.push(String(msg).slice(0, 140));
-      s.setItem("lh_crash_crumbs", JSON.stringify(crumbs.slice(-12)));
-    } catch (e) {}
-  }
-  window.addEventListener("pagehide", function () {
-    try {
-      var s = window.sessionStorage;
-      if (s) s.setItem("lh_crash_clean", "1"); // clean unload — not an OOM kill
-    } catch (e) {}
-  });
-  window.addEventListener("error", function (e) {
-    stashCrumb("js.error: " + ((e && e.message) || e));
-  });
-  window.addEventListener("unhandledrejection", function (e) {
-    var r = e && e.reason;
-    stashCrumb("js.rejection: " + ((r && r.message) || r));
-  });
-})();
-
 // Stash Chrome's install prompt so the APP can offer an [install] button
 // (admin → account) instead of making the user dig through browser menus.
 // The event only fires when the PWA is installable AND not yet installed;
@@ -108,7 +71,7 @@ window.addEventListener("appinstalled", () => {
 // cannot 404. Bust the shim AND the wasm (the shim drops the query when it
 // resolves the wasm relative to import.meta.url, so the wasm url is passed
 // explicitly to init).
-const LH_BUILD = "681fba3b4bbb";
+const LH_BUILD = "19c0382afd71";
 try {
   const mod = await import("./pkg/localharness.js?v=" + LH_BUILD);
   // Object form (not a bare string) — the bare-path arg is deprecated in this
@@ -128,9 +91,17 @@ try {
       }
     });
   }
-  // (Stripe checkout no longer calls back into wasm: the card form runs on the
-  // separate wasm-free /pay.html and returns via ?bought=1&pi=…, which the wasm
-  // app finalizes on the next mount — see src/app/mod.rs payment_return_params.)
+  // Stripe payment → mint bridge. The status poll runs in JS (stripe-embed.js's
+  // `lhWatchPayment` — moving it OUT of the wasm executor fixed an iOS WebKit
+  // BorrowError) and calls back into wasm here ONLY on `succeeded`. The export
+  // is on the imported `mod`, not on window, so expose it for the shim to call.
+  window.lh_payment_succeeded = (pi, ob, label) => {
+    try {
+      mod.lh_payment_succeeded(String(pi || ""), Boolean(ob), String(label || ""));
+    } catch (e) {
+      console.error(e);
+    }
+  };
 } catch (e) {
   // Boot failed (wasm/shim fetch 404 mid-deploy, instantiation failure,
   // network drop). Swap #root to a minimal monochrome failure line —

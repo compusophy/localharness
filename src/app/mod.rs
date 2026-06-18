@@ -268,6 +268,22 @@ pub fn push_arrived(title: String, body: String) {
     notifications::push_arrived(&title, &body);
 }
 
+/// Stripe payment → mint bridge. `web/stripe-embed.js`'s `lhWatchPayment` polls
+/// the PaymentIntent status IN JS (the shim holds the Stripe instance) and calls
+/// `window.lh_payment_succeeded` (wired in `web/boot.js`) ONLY when it reaches
+/// `succeeded`. We then finalize the mint off the wasm executor — moving the
+/// status poll out of wasm fixed an iOS WebKit "already mutably borrowed"
+/// BorrowError that the repeated pre-payment JsFuture + timer loop triggered.
+/// Idempotent: `finalize_after_payment` mints at most once, so a double-fire is
+/// safe.
+#[wasm_bindgen]
+pub fn lh_payment_succeeded(payment_intent: String, onboarding: bool, lh_label: String) {
+    wasm_bindgen_futures::spawn_local(events::finalize_after_payment(
+        payment_intent,
+        lh_label,
+        onboarding,
+    ));
+}
 
 /// Inject the Rust-owned design tokens (`style::root_tokens_css`) into
 /// `<head>` as `<style id="lh-tokens">`, once. Idempotent: re-running the
@@ -297,70 +313,12 @@ fn inject_token_styles(doc: &web_sys::Document) {
     }
 }
 
-/// Parse `?bought=1&pi=<id>&ob=<0|1>` — the return query the dedicated checkout
-/// page (`web/pay.html`) sets after a confirmed card payment. Returns
-/// `(payment_intent, onboarding)`. Stripe PaymentIntent ids are URL-safe
-/// (`[A-Za-z0-9_]`), so no percent-decode is needed.
-fn payment_return_params() -> Option<(String, bool)> {
-    let search = web_sys::window()?.location().search().ok()?;
-    if !search.contains("bought=1") {
-        return None;
-    }
-    let pi = query_param(&search, "pi")?;
-    if pi.is_empty() {
-        return None;
-    }
-    let onboarding = query_param(&search, "ob").as_deref() == Some("1");
-    Some((pi, onboarding))
-}
-
-/// Tiny query-string reader (the bundle doesn't pull in `UrlSearchParams`).
-fn query_param(search: &str, key: &str) -> Option<String> {
-    let q = search.strip_prefix('?').unwrap_or(search);
-    q.split('&').find_map(|pair| {
-        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-        (k == key).then(|| v.to_string())
-    })
-}
-
-/// Drop the query string from the address bar (`history.replaceState`) so a
-/// refresh of the returned page can't re-fire the payment-return mint.
-fn clear_query_string() {
-    let Some(w) = web_sys::window() else { return };
-    let Ok(history) = w.history() else { return };
-    let path = w.location().pathname().unwrap_or_else(|_| "/".to_string());
-    let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&path));
-}
-
 fn mount() -> Result<(), JsValue> {
     debuglog::log("mount (page load / reload)");
-    // If the PREVIOUS run was killed mid-checkout (iOS WebContent OOM reset —
-    // a reload, not a panic, so the panic banner never fired and the in-wasm
-    // crumbs were wiped), surface what stage it died at. No-op on a clean load.
-    debuglog::detect_previous_crash();
     let doc = dom::document()?;
     let root = doc
         .get_element_by_id("root")
         .ok_or_else(|| JsValue::from_str("missing <div id=\"root\"> in the host page"))?;
-
-    // Return from the dedicated checkout page (`web/pay.html` → `?bought=1&pi=&ob=`):
-    // the card was confirmed on the wasm-free page; mint the PaymentIntent now.
-    // `/stripe/finalize` only mints a genuinely-succeeded PI bound to this owner,
-    // so a forged query mints nothing. Onboarding (ob=1) paints the seed-backup
-    // step itself → skip the normal apex paint; admin (ob=0) falls through to the
-    // normal tenant chrome and just gets a balance refresh.
-    if let Some((pi, onboarding)) = payment_return_params() {
-        clear_query_string();
-        if onboarding {
-            root.set_inner_html(
-                "<div class=\"boot-loading\">✓ payment received — finalizing your identity…</div>",
-            );
-            wasm_bindgen_futures::spawn_local(events::finalize_payment_return(pi, true));
-            return Ok(());
-        }
-        wasm_bindgen_futures::spawn_local(events::finalize_payment_return(pi, false));
-        // fall through to paint the normal (tenant) chrome
-    }
 
     // Design tokens are the Rust source of truth. Inject the `:root { … }`
     // block (from `style::root_tokens_css`) into <head> ahead of the static

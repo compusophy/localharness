@@ -32,63 +32,6 @@ fn install_at_rest(mnemonic: &bip39::Mnemonic) {
     super::install_at_rest_encryption(key);
 }
 
-/// localStorage fallback key for the plaintext seed. **iOS Safari's OPFS
-/// `createWritable()`/`close()` can HANG forever on the main thread** (it only
-/// shipped in Safari 18 and still stalls in places) — which wedged onboarding at
-/// the very first seed write ("opening secure checkout…" stuck). localStorage is
-/// synchronous and reliable on every browser, so the seed lands there FIRST and
-/// the OPFS write becomes best-effort. The seed is plaintext in OPFS by design
-/// (it's the at-rest key root, [`crate::filesystem::encrypted::EXEMPT_FILES`]),
-/// so localStorage — same-origin, same XSS exposure — is no weaker for it.
-const SEED_LS_KEY: &str = "lh_seed";
-
-fn local_storage() -> Option<web_sys::Storage> {
-    web_sys::window().and_then(|w| w.local_storage().ok().flatten())
-}
-
-fn ls_write_seed(phrase: &str) -> bool {
-    local_storage()
-        .map(|s| s.set_item(SEED_LS_KEY, phrase).is_ok())
-        .unwrap_or(false)
-}
-
-fn ls_read_seed() -> Option<String> {
-    local_storage()?
-        .get_item(SEED_LS_KEY)
-        .ok()
-        .flatten()
-        .filter(|s| !s.is_empty())
-}
-
-/// Persist the seed phrase durably WITHOUT EVER HANGING OR BLOCKING. localStorage
-/// gets it synchronously (reliable on iOS, where the OPFS write stalls), then the
-/// OPFS `.lh_wallet` mirror fires in the BACKGROUND (not awaited) so the caller —
-/// e.g. onboarding before navigating to the pay page — never waits on a slow/hung
-/// iOS write. `write_atomic` is itself timeout-bounded, so the spawned task can't
-/// leak forever. Installs the at-rest key. `Err` only if localStorage was
-/// unavailable AND the (then-awaited, bounded) OPFS write also failed.
-async fn persist_seed(mnemonic: &bip39::Mnemonic) -> Result<(), String> {
-    let phrase = mnemonic.to_string();
-    let ls_ok = ls_write_seed(&phrase);
-    install_at_rest(mnemonic);
-    let fs = super::shared_opfs();
-    if ls_ok {
-        // localStorage holds the seed → mirror to OPFS best-effort, off the
-        // critical path (iOS OPFS writes can take seconds or hang).
-        super::debuglog::log("persist seed: saved (localStorage); mirroring to OPFS in background");
-        wasm_bindgen_futures::spawn_local(async move {
-            let _ = fs.write_atomic(WALLET_FILE, phrase.as_bytes()).await;
-        });
-        return Ok(());
-    }
-    // localStorage unavailable (locked-down private window) — fall back to a
-    // BLOCKING but timeout-bounded OPFS write so the seed isn't silently lost.
-    super::debuglog::log("persist seed: localStorage unavailable — writing OPFS (bounded)");
-    fs.write_atomic(WALLET_FILE, phrase.as_bytes())
-        .await
-        .map_err(|e| format!("could not save seed: {e}"))
-}
-
 pub(crate) struct MasterWallet {
     pub(crate) mnemonic: bip39::Mnemonic,
     /// Signs owner proofs, sponsored Tempo txs, and key seal/open —
@@ -109,15 +52,11 @@ impl MasterWallet {
 /// [`create_and_persist`] or [`import`].
 pub(crate) async fn load() -> Option<MasterWallet> {
     let fs = super::shared_opfs();
-    // OPFS is the native store; localStorage is the fallback for browsers where
-    // the OPFS WRITE hangs (iOS Safari) so the seed only landed in localStorage.
-    // Bound the read too, so a hung OPFS read can't wedge boot — fall through to
-    // localStorage. A fresh device (no seed anywhere) → None (never auto-create).
-    let phrase = match super::net::with_timeout(5_000, fs.read(WALLET_FILE)).await {
-        Ok(Ok(bytes)) if !bytes.is_empty() => String::from_utf8(bytes).ok(),
-        _ => None,
+    let bytes = fs.read(WALLET_FILE).await.ok()?;
+    if bytes.is_empty() {
+        return None;
     }
-    .or_else(ls_read_seed)?;
+    let phrase = String::from_utf8(bytes).ok()?;
     let w = restore_from_phrase(&phrase).ok()?;
     install_at_rest(&w.mnemonic);
     Some(w)
@@ -128,8 +67,14 @@ pub(crate) async fn load() -> Option<MasterWallet> {
 /// overwrites any existing wallet file at the apex origin.
 pub(crate) async fn create_and_persist() -> Result<MasterWallet, String> {
     super::debuglog::log("create wallet: generating mnemonic");
+    let fs = super::shared_opfs();
     let (mnemonic, signer) = wallet::generate_with_mnemonic();
-    persist_seed(&mnemonic).await?;
+    super::debuglog::log("create wallet: writing seed (opfs write)");
+    fs.write_atomic(WALLET_FILE, mnemonic.to_string().as_bytes())
+        .await
+        .map_err(|e| format!("wallet save: {e}"))?;
+    super::debuglog::log("create wallet: seed written — installing at-rest key");
+    install_at_rest(&mnemonic);
     let address = wallet::address(&signer);
     Ok(MasterWallet {
         mnemonic,
@@ -183,7 +128,14 @@ pub(crate) async fn persist_current_seed() -> Result<(), String> {
     let mnemonic = super::APP
         .with(|cell| cell.borrow().wallet.as_ref().map(|w| w.mnemonic.clone()))
         .ok_or_else(|| "no in-memory wallet to persist".to_string())?;
-    persist_seed(&mnemonic).await
+    super::debuglog::log("persist seed: writing seed (opfs write, post-payment)");
+    let fs = super::shared_opfs();
+    fs.write_atomic(WALLET_FILE, mnemonic.to_string().as_bytes())
+        .await
+        .map_err(|e| format!("wallet save: {e}"))?;
+    super::debuglog::log("persist seed: seed written — installing at-rest key");
+    install_at_rest(&mnemonic);
+    Ok(())
 }
 
 /// Import an existing wallet from a user-supplied seed phrase.
@@ -191,7 +143,11 @@ pub(crate) async fn persist_current_seed() -> Result<(), String> {
 /// confirming the user really wants to replace.
 pub(crate) async fn import(phrase: &str) -> Result<MasterWallet, String> {
     let mnemonic = wallet::mnemonic_from_phrase(phrase)?;
-    persist_seed(&mnemonic).await?;
+    let fs = super::shared_opfs();
+    fs.write_atomic(WALLET_FILE, mnemonic.to_string().as_bytes())
+        .await
+        .map_err(|e| format!("wallet save: {e}"))?;
+    install_at_rest(&mnemonic);
     let signer = wallet::signer_from_mnemonic(&mnemonic);
     let address = wallet::address(&signer);
     Ok(MasterWallet {

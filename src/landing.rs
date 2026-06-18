@@ -73,6 +73,24 @@ pub(crate) fn create_wallet_cta() -> Markup {
     }
 }
 
+/// Shown on the apex front door INSTEAD of the create CTA when the visitor is on
+/// iOS / iPadOS (detected in `templates::is_ios`). iOS Safari's OPFS writes stall
+/// the single-threaded wasm app, so onboarding can't reliably complete there —
+/// gate it off with an honest message rather than ship a broken flow. Same
+/// `#apex-onboard` shell so the page layout is unchanged.
+pub(crate) fn ios_unavailable() -> Markup {
+    html! {
+        section #apex-onboard .apex-onboard {
+            p style="font-size:14px;margin:0 0 8px" {
+                "localharness isn't available on iOS yet."
+            }
+            p style="font-size:12px;color:var(--muted);margin:0" {
+                "open it on Android or a desktop browser to create your agent."
+            }
+        }
+    }
+}
+
 /// The muted footer link(s) under the apex column. The home screen stays a
 /// single front door — the public agent directory (`?explore=1`) is reachable
 /// from the admin panel / direct link, not surfaced here (per request). Only

@@ -136,15 +136,10 @@ pub(crate) async fn credit_signer() -> Option<(k256::ecdsa::SigningKey, [u8; 20]
     crate::app::debuglog::log("credit_signer: no key — generating");
     let w = crate::wallet::generate();
     crate::app::debuglog::log("credit_signer: persisting device key (opfs write)");
-    // Best-effort: the OPFS write is timeout-bounded (iOS can stall it), and a
-    // device key is regenerable — so DON'T fail the credit path if the persist
-    // times out/errors; proceed with the in-memory key this session.
-    if crate::app::wallet_store::persist_device_key(&w.private_key_hex)
+    crate::app::wallet_store::persist_device_key(&w.private_key_hex)
         .await
-        .is_err()
-    {
-        crate::app::debuglog::log("credit_signer: device key persist failed/timed out — using in-memory key");
-    }
+        .ok()?;
+    crate::app::debuglog::log("credit_signer: device key persisted");
     // `w` is Drop (zeroizes its hex) — clone the signer, copy the address.
     Some((w.signer.clone(), w.address))
 }

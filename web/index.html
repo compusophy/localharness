@@ -59,9 +59,10 @@
 <div id="root"><div class="boot-loading">loading…</div></div>
 <!-- ?v= is the per-build cache-buster (stamped by scripts/build-web.sh); it
      busts a stale-cached boot.js so a redeploy's new wasm url reaches returning
-     visitors. index.html itself is the navigation document and revalidates.
-     The Stripe card form lives on the separate wasm-free /pay.html (the iOS-OOM
-     fix), so no Stripe shim loads on this heavy page anymore. -->
-<script type="module" src="./boot.js?v=681fba3b4bbb"></script>
+     visitors. index.html itself is the navigation document and revalidates. -->
+<!-- Stripe Elements on-ramp shim (window.lhBuyLh) — loaded before boot so the
+     wasm app can call it; ?v= cache-buster stamped by build-web.sh. -->
+<script src="./stripe-embed.js?v=19c0382afd71"></script>
+<script type="module" src="./boot.js?v=19c0382afd71"></script>
 </body>
 </html>
