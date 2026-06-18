@@ -28,12 +28,11 @@ use maud::{Markup, html};
 /// (and "limited time") does NOT vanish the moment the user starts checkout.
 pub(crate) fn onboard_pitch() -> Markup {
     html! {
-        p style="font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);margin:0 0 var(--space-1)" {
-            "limited time"
-        }
-        p style="font-size:14px;margin:0 0 var(--chrome-pad)" {
-            "1 agent + 200 $LH for $2"
-        }
+        // The label width is the NARROW measure of the chiasma — the CREATE
+        // button matches it (`.create-button` in `.apex-onboard`); the offer line
+        // is the WIDE measure the input field matches. Styling in `.onboard-pitch-*`.
+        p.onboard-pitch-label { "limited time" }
+        p.onboard-pitch-offer { "1 agent + 200 $LH for $2" }
     }
 }
 
@@ -62,7 +61,7 @@ pub(crate) fn settings_glyph() -> Markup {
 /// in one go; `apex-claim` on the authed apex → claim only).
 pub(crate) fn claim_name_form(action: &str) -> Markup {
     html! {
-        form.create-form data-action=(action) {
+        form.create-form.claim-form data-action=(action) {
             input #apex-input
                 .create-input
                 type="text"
@@ -184,6 +183,78 @@ mod tests {
         let path = dir.join("landing-preview.html");
         std::fs::write(&path, page.into_string())
             .expect("write landing-preview.html");
+        println!("wrote {}", path.display());
+    }
+
+    /// Writes the AUTHED apex (existing user: agents list + the shared claim
+    /// form) to `target/authed-preview.html` to verify it shares the fresh
+    /// door's centered layout + footer. The agents-list markup mirrors the
+    /// wasm-gated `templates::agents_list` (which can't be called natively).
+    ///
+    /// Run: `cargo test --features browser-app authed_preview`
+    #[test]
+    fn authed_preview() {
+        let agent_row = |name: &str, main: bool| {
+            html! {
+                li.agent-row {
+                    a.agent-row-line href=(format!("https://{name}.localharness.xyz/")) {
+                        span.agent-name { (name) }
+                        span.agent-row-spacer {}
+                        @if main { span.main-badge { "main" } }
+                        @else { span.alt-badge { "alt" } }
+                    }
+                }
+            }
+        };
+        let page = html! {
+            (DOCTYPE)
+            html lang="en" {
+                head {
+                    meta charset="utf-8";
+                    meta name="viewport" content="width=device-width,initial-scale=1";
+                    link rel="stylesheet"
+                        href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap";
+                    link rel="stylesheet" href="../web/styles.css";
+                    title { "localharness — authed preview" }
+                }
+                body {
+                    div #root {
+                        header.site-header {
+                            div.header-inner {
+                                h1.header-brand { "localharness" }
+                                div.header-admin {
+                                    button type="button" aria-label="settings"
+                                        title="settings"
+                                        .header-button.admin-button { (settings_glyph()) }
+                                }
+                            }
+                        }
+                        // Mirrors `templates::apex` authed branch: centered
+                        // step-agents (list + the SAME claim form) + footer.
+                        main.apex-main.apex-front {
+                            div.col-chat {
+                                div #status .terminal-status {}
+                                section.step.step-agents {
+                                    div #agents-list .agents-list {
+                                        ul.agents-rows {
+                                            (agent_row("krafto", true))
+                                            (agent_row("console", false))
+                                        }
+                                    }
+                                    (claim_name_form("apex-claim"))
+                                    div #claim-fund-slot {}
+                                }
+                            }
+                        }
+                        footer.apex-footer { (apex_links(true)) }
+                    }
+                }
+            }
+        };
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        std::fs::create_dir_all(&dir).expect("create target/");
+        let path = dir.join("authed-preview.html");
+        std::fs::write(&path, page.into_string()).expect("write authed-preview.html");
         println!("wrote {}", path.display());
     }
 }

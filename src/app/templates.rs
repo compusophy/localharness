@@ -1040,9 +1040,10 @@ pub(crate) fn apex(host: &Host, wallet_address_hex: Option<&str>) -> Markup {
     let fresh = wallet_address_hex.is_none();
     html! {
         (site_header(host))
-        // `apex-front` (fresh only) vertically centers the single create CTA;
-        // the claim page keeps the default top-aligned block flow.
-        main.apex-main.apex-front[fresh] {
+        // `apex-front` vertically centers the create cluster on BOTH the fresh
+        // front door and the authed apex (the agents list + claim form), so the
+        // two screens share one centered layout.
+        main.apex-main.apex-front {
             div.col-chat {
                 // Dispatcher/status messages (invite auto-redeem lands here —
                 // without this node `dom::set_status` is silently dropped on
@@ -1071,15 +1072,11 @@ pub(crate) fn apex(host: &Host, wallet_address_hex: Option<&str>) -> Markup {
                     (crate::landing::create_wallet_cta())
                 } @else {
                     (apex_claim())
-                    (crate::landing::apex_links(fresh))
                 }
             }
         }
-        // The "for agents →" pointer sits in a page footer on the fresh front
-        // door (the claim page keeps it inline above).
-        @if fresh {
-            footer.apex-footer { (crate::landing::apex_links(true)) }
-        }
+        // "for agents →" lives in the page footer on BOTH apex screens.
+        footer.apex-footer { (crate::landing::apex_links(true)) }
     }
 }
 

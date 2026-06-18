@@ -1075,11 +1075,12 @@ h1 a:hover { color: var(--accent); }
    a large headline, generous spacing, and a FILLED-INVERSE button. No
    colored accent — every tone is --fg / --bg / --muted / --border. */
 .apex-onboard {
-  /* margin auto top+bottom: when the parent (.apex-front) centers it via
-     flex, this stays centered; on the non-flex fallback it sits near the top. */
+  /* Shrink-wrap the WIDEST line (the offer) so the stretched input below it
+     ends up exactly the offer's width — the WIDE half of the chiasma the user
+     wants. `.apex-front` centers the whole cluster in the viewport. */
+  width: fit-content;
+  max-width: 90vw;
   margin: 0 auto;
-  width: 100%;
-  max-width: 360px;
   text-align: center;
   display: flex;
   flex-direction: column;
@@ -1100,11 +1101,56 @@ h1 a:hover { color: var(--accent); }
   line-height: 1.6;
   color: var(--muted);
 }
-/* The fresh front door now uses the shared `.create-form` + `.create-button`
-   (landing::claim_name_form) — the same control as the authed apex. Inside
-   `.apex-onboard` the form drops its generic 64px top margin so the gap below
-   the pitch is the brand 16px rhythm. */
-.apex-onboard .create-form { margin-top: 0; }
+/* Onboarding pitch (landing::onboard_pitch). The label is the NARROW half of
+   the chiasma — same 14ch width as the CREATE button below. The offer is the
+   WIDE half — its natural width sets the column, which the input then matches. */
+.onboard-pitch-label {
+  width: 14ch;
+  align-self: center;
+  margin: 0 0 var(--space-1);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.onboard-pitch-offer {
+  margin: 0 0 var(--chrome-pad);   /* 16px to the input — equals the form's gap */
+  /* 16px (== the input's font, incl. the iOS no-zoom floor) so the offer line
+     and the 24ch input field render the SAME monospace width on every screen. */
+  font-size: 16px;
+}
+/* The shared claim form (fresh door + authed apex). Uniform control heights ==
+   the header bell/cog box (16px glyph + 2×10 pad + 2×1 border = 38px). The
+   input fills the WIDE measure; CREATE matches the NARROW label (14ch). The
+   input→button gap equals the offer→input gap (the brand 16px). */
+/* `.create-form.claim-form` (two classes) outranks the base `.create-form`
+   rule that lands later in the file, so the 64px top margin is actually
+   dropped — the form is positioned by its container's gap / the pitch margin. */
+.create-form.claim-form {
+  margin: 0;
+  gap: var(--chrome-pad);
+  width: auto;
+}
+.claim-form .create-input {
+  height: 38px;
+  padding: 0 12px;
+  /* 24ch == the offer line's character count, both at 16px monospace → the
+     field is exactly as wide as "1 agent + 200 $LH for $2". Fixed (not 100%) so
+     the fresh door and the authed apex render an identical-width field. */
+  width: 24ch;
+  font-size: 16px;
+}
+.claim-form .create-button {
+  height: 38px;
+  width: 14ch;
+  min-width: 0;
+  padding: 0;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 /* Filled-inverse CTA — now used only by the checkout "pay" button
    (#lh-pay-button); the front-door CREATE moved to the shared .create-button.
    Width is set inline on the pay button (100%), so none here. */
@@ -1951,6 +1997,18 @@ button.danger:hover { color: var(--bg); background: var(--error); }
 /* Step-based apex onboarding */
 .step { margin: 48px 0 0; min-height: 200px; }
 .step-agents { margin-top: 48px; padding: 0 24px; }
+/* Authed apex shares the fresh front door's centered layout (`.apex-front`):
+   no top margin (so the cluster centers, not pushed down), a centered column
+   with the brand 16px gap between the agents list, the shared claim form, and
+   the fund slot. */
+.apex-front .step-agents {
+  margin-top: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--chrome-pad);
+}
 
 /* identity-actions inherits the global button style */
 .step-msg { font-size: 12px; min-height: 16px; margin-top: 12px; color: var(--muted); }
