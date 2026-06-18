@@ -1414,6 +1414,45 @@ mod tests {
     }
 
     #[test]
+    fn emit_host_http_import() {
+        // A cartridge that fetches a URL through host::http and reads the body
+        // back (the issue #19 poll-model HTTP client). Asserts the `host_http`
+        // import module + its fields land in the wasm import section — codegen
+        // is generic over `host_<module>`, so the only compiler change for a new
+        // host module is the typecheck signature table; this guards the wiring.
+        let wasm = compile_to_wasm(
+            r#"
+            use host::http;
+            fn frame(t: i32) {
+                let h: i32 = http::get("https://example.com/", 20);
+                let r: i32 = http::ready(h);
+                let s: i32 = http::status(h);
+                let n: i32 = http::body_len(h);
+                let got: i32 = http::read_body(h, 0, 256);
+                let txt: i32 = http::parse_text("<p>hi</p>", 9, 0, 256);
+            }
+        "#,
+        );
+        assert_eq!(&wasm[0..4], WASM_MAGIC);
+        assert!(section_ids(&wasm).contains(&SEC_IMPORT), "expected an import section");
+        for needle in [
+            &b"host_http"[..],
+            b"get",
+            b"ready",
+            b"status",
+            b"body_len",
+            b"read_body",
+            b"parse_text",
+        ] {
+            assert!(
+                wasm.windows(needle.len()).any(|w| w == needle),
+                "wasm should reference {:?}",
+                std::str::from_utf8(needle).unwrap(),
+            );
+        }
+    }
+
+    #[test]
     fn emit_host_display_3d_import() {
         // A cartridge drawing software 3D primitives: a flat-filled triangle
         // and a line. Asserts the new host_display 3D fields (FB#12b) land in

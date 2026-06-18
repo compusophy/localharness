@@ -611,9 +611,14 @@ function buildChildImports(child) {
   // grandchildren (the fractal) — UNLESS it sits at the depth cap, where
   // makeComposeApi hands back the inert stub and spawn_module returns -1.
   const child_compose = makeComposeApi(child);
-  // A child gets its own (no-op) net/audio/agent so its imports link, but it
-  // can't reach the platform from inside a panel (the parent is the surface).
+  // A child gets its own (no-op) net/http/audio/agent so its imports link, but
+  // it can't reach the network/platform from inside a panel (the parent is the
+  // surface). http: get refuses, pollers report bad-handle, parse_text no-ops.
   const child_net = { open: () => -1, send: () => 0, poll: () => -1, status: () => -1, close: () => {} };
+  const child_http = {
+    get: () => -1, ready: () => -1, status: () => -1,
+    body_len: () => -1, read_body: () => -1, parse_text: () => 0,
+  };
   const child_audio = { tone: () => -1, tone_at: () => -1, noise: () => -1, stop: () => {}, set_volume: () => {} };
   const child_agent = {
     notify: () => 0, viewer_is_owner: () => 0, viewer_has_identity: () => 0,
@@ -625,6 +630,7 @@ function buildChildImports(child) {
     host_display: child_display,
     host_compose: child_compose,
     host_net: child_net,
+    host_http: child_http,
     host_audio: child_audio,
     host_agent: child_agent,
     host_log, host_time, host_abort,
@@ -890,6 +896,7 @@ function composeTick() {
 function composeLoad(slots) {
   running = false;
   closeAllSockets();
+  clearAllHttp();
   composeReset();
   state.fill(0);
   ptr.x = -1; ptr.y = -1; ptr.down = 0; // no pointer until the viewer moves it
@@ -1061,6 +1068,155 @@ function closeAllSockets() {
   sockets.length = 0;
 }
 
+// ---- host_http: one-shot HTTP GET via the proxy + HTML→text (issue #19) ------
+// A cartridge can't fetch arbitrary origins itself (no DOM; CORS; and the worker
+// has no auth signer to mint the proxy token). So host_http mirrors the
+// host::compose spawn round-trip EXACTLY: `get(url)` allocates a PENDING handle,
+// posts an `http_fetch { id, url }` to the MAIN thread, and returns the handle.
+// The main thread does the SAME authed `/api/fetch` proxy POST the agent
+// web_fetch tool uses (signed token, https-only, private hosts denied, 200KB
+// cap) and posts an `http_result { id, status, body }` (or `{ id, error: true }`)
+// back; `applyHttpResult` marks the handle READY/ERROR. The cartridge POLLS
+// `ready(handle)` each frame (poll-model, like host_net's drain) and then
+// `read_body` the length-prefixed body out of its memory. `parse_text` is PURE
+// (no network) — strip tags + decode entities, in-worker.
+const MAX_HTTP_REQUESTS = 8; // live request cap (mirror MAX_SOCKETS; flood guard)
+const HTTP_PENDING = 0;
+const HTTP_READY = 1;
+const HTTP_ERROR = 2;
+const httpReqs = []; // index = handle; { state, status, body }. Closed slots → null.
+let httpNextId = 1;  // global id stamped on the fetch round-trip (the reply key)
+const httpIdToHandle = new Map(); // id -> handle (resolve a reply to its slot)
+
+// Decode the handful of HTML entities that actually matter for readable text.
+// Numeric (&#NN; / &#xHH;) + the 5 named XML ones + a few common HTML ones.
+function decodeEntities(s) {
+  return s.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (m, body) => {
+    if (body[0] === '#') {
+      const code = body[1] === 'x' || body[1] === 'X'
+        ? parseInt(body.slice(2), 16)
+        : parseInt(body.slice(1), 10);
+      if (Number.isFinite(code) && code > 0 && code <= 0x10ffff) {
+        try { return String.fromCodePoint(code); } catch (_e) { return m; }
+      }
+      return m;
+    }
+    switch (body.toLowerCase()) {
+      case 'amp': return '&';
+      case 'lt': return '<';
+      case 'gt': return '>';
+      case 'quot': return '"';
+      case 'apos': return "'";
+      case 'nbsp': return ' ';
+      case 'copy': return '©';
+      case 'reg': return '®';
+      case 'mdash': return '—';
+      case 'ndash': return '–';
+      case 'hellip': return '…';
+      default: return m;
+    }
+  });
+}
+
+// Minimal HTML → plain text: drop <script>/<style> contents, treat block-level
+// closers as newlines, strip the rest of the tags, decode entities, and collapse
+// runs of whitespace. Not a full parser — a lightweight readability pass for an
+// in-sandbox document reader (the SAME altitude as the proxy's textual handling).
+function htmlToText(html) {
+  let s = String(html);
+  // Remove script/style blocks entirely (their text is never readable content).
+  s = s.replace(/<script[\s\S]*?<\/script>/gi, ' ');
+  s = s.replace(/<style[\s\S]*?<\/style>/gi, ' ');
+  s = s.replace(/<!--[\s\S]*?-->/g, ' ');
+  // Block-level boundaries → newlines BEFORE stripping tags, so structure shows.
+  s = s.replace(/<\/(p|div|h[1-6]|li|tr|section|article|header|footer|blockquote)>/gi, '\n');
+  s = s.replace(/<br\s*\/?>/gi, '\n');
+  s = s.replace(/<\/?(ul|ol|table|thead|tbody)[^>]*>/gi, '\n');
+  // Strip every remaining tag.
+  s = s.replace(/<[^>]*>/g, '');
+  s = decodeEntities(s);
+  // Collapse whitespace: trim each line, drop blank-line runs to a single \n.
+  s = s.replace(/[ \t\f\v]+/g, ' ');
+  s = s.replace(/ *\n */g, '\n');
+  s = s.replace(/\n{3,}/g, '\n\n');
+  return s.trim();
+}
+
+const host_http = {
+  get(urlPtr, _urlLen) {
+    const url = readString(urlPtr);
+    if (url === null || url === '') return -1;
+    // The proxy enforces the real SSRF/scheme policy (https-only, private hosts
+    // denied) AND it's authed+metered there — but cheaply reject the obvious
+    // non-https here so a bad URL never burns the round-trip.
+    if (!/^https:\/\//i.test(url)) return -1;
+    const live = httpReqs.filter((r) => r !== null && r.state === HTTP_PENDING).length;
+    if (live >= MAX_HTTP_REQUESTS) return -1;
+    const id = httpNextId++;
+    const req = { id, state: HTTP_PENDING, status: 0, body: '' };
+    let handle = httpReqs.indexOf(null);
+    if (handle < 0) { handle = httpReqs.length; httpReqs.push(req); }
+    else httpReqs[handle] = req;
+    httpIdToHandle.set(id, handle);
+    if (typeof self !== 'undefined' && self.postMessage) {
+      self.postMessage({ type: 'http_fetch', id, url });
+    }
+    return handle;
+  },
+  ready(handle) {
+    const r = httpReqs[handle];
+    if (!r) return -1;
+    if (r.state === HTTP_ERROR) return -2;
+    return r.state === HTTP_READY ? 1 : 0;
+  },
+  status(handle) {
+    const r = httpReqs[handle];
+    if (!r) return -1;
+    return r.state === HTTP_READY ? (r.status | 0) : 0;
+  },
+  body_len(handle) {
+    const r = httpReqs[handle];
+    if (!r) return -1;
+    if (r.state !== HTTP_READY) return 0;
+    return new TextEncoder().encode(r.body).length;
+  },
+  read_body(handle, outPtr, max) {
+    const r = httpReqs[handle];
+    if (!r) return -1;
+    if (r.state !== HTTP_READY) return 0;
+    return writeString(outPtr, r.body, Math.max(0, max));
+  },
+  parse_text(htmlPtr, _htmlLen, outPtr, max) {
+    const html = readString(htmlPtr);
+    if (html === null) return -1;
+    return writeString(outPtr, htmlToText(html), Math.max(0, max));
+  },
+};
+
+// The main thread resolved an `http_fetch` (the authed /api/fetch proxy POST).
+// Mark the matching handle READY (with the upstream status + body) or ERROR.
+// Keyed by the global id (a handle slot may have been reused after close).
+function applyHttpResult(msg) {
+  const handle = httpIdToHandle.get(msg.id | 0);
+  if (handle === undefined) return;
+  httpIdToHandle.delete(msg.id | 0);
+  const r = httpReqs[handle];
+  if (!r || r.id !== (msg.id | 0)) return; // slot reused — drop the stale reply
+  if (msg.error) {
+    r.state = HTTP_ERROR;
+    return;
+  }
+  r.status = msg.status | 0;
+  r.body = typeof msg.body === 'string' ? msg.body : '';
+  r.state = HTTP_READY;
+}
+
+// Drop every in-flight/finished request (a fresh cartridge load resets them).
+function clearAllHttp() {
+  httpReqs.length = 0;
+  httpIdToHandle.clear();
+}
+
 // ---- host_audio: forward to the main thread (AudioContext isn't in a worker) -
 // The cartridge ABI returns a voice handle; from a worker we can't know the
 // real handle synchronously, so we return a monotonic local handle and forward
@@ -1206,7 +1362,7 @@ function applyAgentContext(msg) {
 }
 
 function buildImports() {
-  return { host_display, host_net, host_audio, host_log, host_time, host_abort, host_agent, host_compose };
+  return { host_display, host_net, host_http, host_audio, host_log, host_time, host_abort, host_agent, host_compose };
 }
 
 // ---- present + frame loop ----------------------------------------------------
@@ -1251,6 +1407,7 @@ function tick() {
 async function load(wasmBuf) {
   running = false;
   closeAllSockets();
+  clearAllHttp();
   composeReset(); // a fresh parent clears the whole compose graph
   state.fill(0);
   ptr.x = 0; ptr.y = 0; ptr.down = 0;
@@ -1372,6 +1529,12 @@ if (IS_WORKER) {
           failLoadingChild(composeNodeIndex.get(msg.uid | 0));
         }
         break;
+      case 'http_result':
+        // Main thread resolved a `http_fetch` (the authed /api/fetch proxy
+        // POST). Mark the matching handle READY (status + body) or ERROR; the
+        // cartridge sees it on its next ready()/read_body() poll.
+        applyHttpResult(msg);
+        break;
       case 'input':
         ptr.x = msg.x | 0;
         ptr.y = msg.y | 0;
@@ -1380,6 +1543,7 @@ if (IS_WORKER) {
       case 'stop':
         running = false;
         closeAllSockets();
+        clearAllHttp();
         break;
       default:
         break;
@@ -1402,6 +1566,10 @@ if (typeof module !== 'undefined' && module.exports) {
     liveDims: () => [FB_W, FB_H],
     host_display, // the re-implemented draw ABI under test
     host_agent,
+    host_http, // the HTTP poll-model ABI (get/ready/status/body_len/read_body/parse_text)
+    htmlToText, // the pure HTML→text pass (exercised directly by tests)
+    decodeEntities,
+    applyHttpResult, // drive an http_fetch reply in a test (no main thread)
     host_compose, // the window-manager ABI (spawn/status/focus/close/...)
     // The JS mirrors of compose.rs (under parity test vs the Rust impls).
     blitChild,

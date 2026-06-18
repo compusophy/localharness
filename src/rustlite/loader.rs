@@ -282,6 +282,30 @@ fn build_host_imports(mem: &SharedMemory) -> Result<(js_sys::Object, NetRuntime)
     disp_state_set.forget();
     let _ = Reflect::set(&imports, &JsValue::from_str("host_display"), &host_display);
 
+    // host_http module — inert stub. The REAL HTTP host (fetch through the
+    // platform's `/api/fetch` proxy + HTML→text) lives in the Web Worker
+    // (web/cartridge-worker.js); this bare loader (SDK / `compile_rustlite`
+    // compile-check path) has no proxy, so `get` refuses (-1), every poller
+    // reports a bad handle, and `parse_text` writes nothing (0). Without this a
+    // cartridge that imports host_http would fail instantiation with a missing-
+    // import LinkError. ABI mirrors src/rustlite/typecheck.rs http::*.
+    let host_http = Object::new();
+    let http_get = Closure::<dyn Fn(i32, i32) -> i32>::new(|_a, _b| -1);
+    let http_one = Closure::<dyn Fn(i32) -> i32>::new(|_a| -1);
+    let http_read = Closure::<dyn Fn(i32, i32, i32) -> i32>::new(|_a, _b, _c| -1);
+    let http_parse = Closure::<dyn Fn(i32, i32, i32, i32) -> i32>::new(|_a, _b, _c, _d| 0);
+    let _ = Reflect::set(&host_http, &JsValue::from_str("get"), http_get.as_ref());
+    let _ = Reflect::set(&host_http, &JsValue::from_str("ready"), http_one.as_ref());
+    let _ = Reflect::set(&host_http, &JsValue::from_str("status"), http_one.as_ref());
+    let _ = Reflect::set(&host_http, &JsValue::from_str("body_len"), http_one.as_ref());
+    let _ = Reflect::set(&host_http, &JsValue::from_str("read_body"), http_read.as_ref());
+    let _ = Reflect::set(&host_http, &JsValue::from_str("parse_text"), http_parse.as_ref());
+    http_get.forget();
+    http_one.forget();
+    http_read.forget();
+    http_parse.forget();
+    let _ = Reflect::set(&imports, &JsValue::from_str("host_http"), &host_http);
+
     // host_net module — WebSocket-backed multiplayer / sync I/O. Mirrors
     // host_display: integer-only host functions a rustlite cartridge calls,
     // strings passed as length-prefixed pointers into cartridge memory.

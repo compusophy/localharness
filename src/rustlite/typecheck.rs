@@ -1072,6 +1072,52 @@ fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, 
         "net::poll" => (vec![I32, I32, I32], I32),
         "net::status" => (vec![I32], I32),
         "net::close" => (vec![I32], Void),
+        // --- http (host_http): one-shot HTTP GET + HTML→text, the SAME POLL
+        // MODEL as host_net (open a request → get a handle, poll `ready` until
+        // the body lands, then read it out of cartridge memory). A cartridge
+        // can't fetch arbitrary origins itself (no DOM, CORS), so the host
+        // fetches through the platform's `/api/fetch` proxy — the SAME
+        // CORS-bypassing route the agent `web_fetch` tool uses (https-only,
+        // private/internal hosts denied, ≤3 redirects, 200KB body cap, textual
+        // content only). Strings (URL in, body/text out) use the same
+        // length-prefixed memory layout as host_net: 4 bytes LE length, then
+        // UTF-8 payload, at the given cartridge-memory pointer.
+        //
+        // `get(url, url_len) -> handle`  start a GET of the URL at `url` — a
+        //                             length-prefixed string pointer (a string
+        //                             literal; same wire form as host_net). The
+        //                             `url_len` i32 is ADVISORY (the layout is
+        //                             self-describing). Returns a handle >= 0, or
+        //                             -1 on a bad URL / cap hit.
+        // `ready(handle) -> i32`      0 pending, 1 ready (body available), <0 on
+        //                             error (-1 bad handle, -2 fetch failed/
+        //                             denied/timed out).
+        // `status(handle) -> i32`     the UPSTREAM site's HTTP status (200/404/…)
+        //                             once ready, 0 while pending, -1 bad handle.
+        //                             Check it before trusting the body.
+        // `body_len(handle) -> i32`   byte length of the ready body (0 pending or
+        //                             empty, -1 bad handle) — size an out buffer.
+        // `read_body(handle, out_ptr, max) -> len`  copy the body (length-
+        //                             prefixed) into memory at `out_ptr`, writing
+        //                             at most `max` payload bytes; returns the
+        //                             bytes written, 0 if not ready, -1 bad handle.
+        // `parse_text(html, html_len, out_ptr, max) -> len`  PURE (no network):
+        //                             strip HTML tags + decode common entities of
+        //                             the length-prefixed HTML at `html` (a string
+        //                             pointer) into plain text written length-
+        //                             prefixed at `out_ptr` (≤ `max` payload
+        //                             bytes); returns the bytes written. Turns a
+        //                             fetched body into readable text. (`html_len`
+        //                             advisory.) NB: the read pointers are typed
+        //                             `String` so a string literal flows straight
+        //                             in (the only pointer rustlite can produce);
+        //                             the out pointer + lengths are i32.
+        "http::get" => (vec![String, I32], I32),
+        "http::ready" => (vec![I32], I32),
+        "http::status" => (vec![I32], I32),
+        "http::body_len" => (vec![I32], I32),
+        "http::read_body" => (vec![I32, I32, I32], I32),
+        "http::parse_text" => (vec![String, I32, I32, I32], I32),
         // --- audio (host_audio): Web Audio (AudioContext) playback. Integer
         // ABI, fire-and-forget like host_net. `wave`: 0 sine, 1 square,
         // 2 sawtooth, 3 triangle. A handle >= 0 names a voice for `stop`;
@@ -1248,6 +1294,45 @@ mod host_fn_tests {
         }
         // The module-elision default (display) must NOT swallow compose fns.
         assert!(resolve_host_fn("compose::spawn_module").is_some());
+    }
+
+    #[test]
+    fn host_http_signatures_resolve() {
+        use ResolvedType::{String as Str, I32};
+        // get(url, url_len) -> handle. The url is a string-pointer (typed String
+        // so a literal flows straight in, like agent::notify), plus an advisory
+        // i32 length.
+        let (m, f, p, r) = resolve_host_fn("host::http::get").expect("get resolves");
+        assert_eq!((m.as_str(), f.as_str()), ("http", "get"));
+        assert_eq!(p, vec![Str, I32], "url string + advisory len");
+        assert_eq!(r, I32, "get returns a request handle");
+
+        // Single-handle pollers: ready / status / body_len take one handle -> i32.
+        for name in [
+            "host::http::ready",
+            "host::http::status",
+            "host::http::body_len",
+        ] {
+            let (m, _f, p, r) = resolve_host_fn(name).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(m, "http");
+            assert_eq!(p, vec![I32], "{name} takes one handle");
+            assert_eq!(r, I32);
+        }
+
+        // read_body(handle, out_ptr, max) -> len (poll-model copy, like net::poll).
+        let (_m, _f, p, r) = resolve_host_fn("host::http::read_body").unwrap();
+        assert_eq!(p, vec![I32, I32, I32]);
+        assert_eq!(r, I32);
+
+        // parse_text(html, html_len, out_ptr, max) -> len (pure HTML->text); the
+        // html read pointer is a String, the rest i32.
+        let (_m, _f, p, r) = resolve_host_fn("host::http::parse_text").unwrap();
+        assert_eq!(p, vec![Str, I32, I32, I32]);
+        assert_eq!(r, I32);
+
+        // The elided / `use host::http` spelling must resolve to the http
+        // module, not get swallowed by the display-default.
+        assert!(resolve_host_fn("http::get").is_some());
     }
 
     #[test]
