@@ -110,131 +110,146 @@ pub(super) fn on_apex_input() {
     });
 }
 
-/// Full apex claim flow: faucet → registration tx → confirm → redirect.
-/// Silent except for the button itself — disabled with text "creating…"
-/// while in flight, redirects on success, reverts to the input-driven
-/// state on failure. All status/error chatter goes to `console.warn`
-/// for debuggability. Per [[feedback-no-explanatory-validation]].
-pub(super) async fn run_apex_claim(name: String, create_if_missing: bool) {
-    set_create_button_busy(true);
-
-    // Trap fix: a device with NO wallet that claims a name used to silently
-    // mint a brand-new seed (see the `None` branch below) — which is how a
-    // returning user on a second device ended up owning a *different* EOA's
-    // subdomains, splitting their identity. Now we refuse to mint silently:
-    // if there's no wallet and the user hasn't explicitly chosen "create a
-    // new identity", show the choice (create new / adopt existing) instead.
-    let has_wallet = crate::app::APP.with(|cell| cell.borrow().wallet.is_some());
-    if !has_wallet && !create_if_missing {
-        set_create_button_busy(false);
-        dom::swap_outer("agents-list", &templates::identity_choice(&name).into_string());
-        return;
+/// The on-chain first-claim core, with NO DOM/UI — callers own their own
+/// surface (`run_apex_claim` drives the create button; `onboard_claim` shows a
+/// post-payment interstitial). Re-confirms availability, ensures the wallet
+/// exists (create+persist if missing), runs a pot-aware cost pre-check, then
+/// submits the sponsored register tx and returns the tx hash. On a missing
+/// wallet + `!create_if_missing` it returns the `__NO_WALLET__` sentinel so the
+/// caller can show the identity choice instead of silently minting a new seed.
+async fn submit_claim(name: &str, create_if_missing: bool) -> Result<String, String> {
+    // 1. Re-confirm availability — the user might have been overtaken between
+    //    the live-check and submit.
+    match crate::app::registry::check_name(name).await {
+        Ok(crate::app::registry::Status::Available) => {}
+        Ok(other) => return Err(format!("name not available: {other:?}")),
+        Err(err) => return Err(format!("check_name: {err}")),
     }
 
-    let result: Result<String, String> = async {
-        // 1. Re-confirm availability — the user might have been
-        //    overtaken between live-check and submit.
-        match crate::app::registry::check_name(&name).await {
-            Ok(crate::app::registry::Status::Available) => {}
-            Ok(other) => return Err(format!("name not available: {other:?}")),
-            Err(err) => return Err(format!("check_name: {err}")),
-        }
+    // 2. Pull the wallet out of App state — or generate one in place. The
+    //    subdomain IS the identity primitive: a visitor at apex without a wallet
+    //    is just one who hasn't claimed yet. Refuse to silently mint a NEW seed
+    //    when the caller hasn't opted in (the second-device identity-split trap).
+    let cached = crate::app::APP.with(|cell| {
+        cell.borrow()
+            .wallet
+            .as_ref()
+            .map(|w| (w.signer.clone(), bytes_to_hex_str(&w.address)))
+    });
+    let (signer, addr_hex) = match cached {
+        Some(pair) => pair,
+        None if !create_if_missing => return Err("__NO_WALLET__".to_string()),
+        None => match crate::app::wallet_store::create_and_persist().await {
+            Ok(wallet) => {
+                let pair = (wallet.signer.clone(), wallet.address_hex());
+                crate::app::APP.with(|cell| cell.borrow_mut().wallet = Some(wallet));
+                pair
+            }
+            Err(err) => return Err(format!("wallet: {err}")),
+        },
+    };
 
-        // 2. Pull the wallet out of App state — or generate one in
-        //    place. The subdomain IS the identity primitive: a visitor
-        //    arriving at apex without a wallet is just one who hasn't
-        //    claimed yet. Roll wallet creation into this submit so we
-        //    never end up with a wallet that doesn't own anything
-        //    on-chain.
-        let cached = crate::app::APP.with(|cell| {
-            cell.borrow()
-                .wallet
-                .as_ref()
-                .map(|w| (w.signer.clone(), bytes_to_hex_str(&w.address)))
-        });
-        let (signer, addr_hex) = match cached {
-            Some(pair) => pair,
-            None => match crate::app::wallet_store::create_and_persist().await {
-                Ok(wallet) => {
-                    let pair = (wallet.signer.clone(), wallet.address_hex());
-                    crate::app::APP.with(|cell| cell.borrow_mut().wallet = Some(wallet));
-                    pair
-                }
-                Err(err) => return Err(format!("wallet: {err}")),
-            },
-        };
-
-        // 2.5. Cost-gate pre-check. Registration costs `registrationCost()` $LH,
-        //      charged via `transferFrom` from the WALLET. A fiat buyer's $LH is
-        //      in the METER, so count BOTH pots: the sponsored claim below bridges
-        //      the wallet shortfall out of the (now-unlocked) meter credits in the
-        //      same atomic tx. Only bail — before burning sponsor gas on a
-        //      guaranteed revert — when neither pot, nor both together, can cover
-        //      the cost.
-        let cost = crate::app::registry::registration_cost().await.unwrap_or(0);
-        if cost > 0 {
-            let wallet = crate::app::registry::token_balance_of(&addr_hex).await.unwrap_or(0);
-            if wallet < cost {
-                let meter = crate::app::registry::withdrawable_credit_of(&addr_hex)
-                    .await
-                    .unwrap_or(0);
-                if wallet + meter < cost {
-                    let deficit_lh = (cost - wallet - meter) / 1_000_000_000_000_000_000u128;
-                    return Err(format!("__NEED_LH__{deficit_lh}"));
-                }
+    // 2.5. Cost-gate pre-check. Registration costs `registrationCost()` $LH,
+    //      charged via `transferFrom` from the WALLET. A fiat buyer's $LH is in
+    //      the METER, so count BOTH pots: the sponsored claim bridges the wallet
+    //      shortfall out of the (now-unlocked) meter credits in the same atomic
+    //      tx. Only bail — before burning sponsor gas on a guaranteed revert —
+    //      when neither pot, nor both together, can cover the cost.
+    let cost = crate::app::registry::registration_cost().await.unwrap_or(0);
+    if cost > 0 {
+        let wallet = crate::app::registry::token_balance_of(&addr_hex).await.unwrap_or(0);
+        if wallet < cost {
+            let meter = crate::app::registry::withdrawable_credit_of(&addr_hex)
+                .await
+                .unwrap_or(0);
+            if wallet + meter < cost {
+                let deficit_lh = (cost - wallet - meter) / 1_000_000_000_000_000_000u128;
+                return Err(format!("__NEED_LH__{deficit_lh}"));
             }
         }
-
-        // 3. Submit the claim as a sponsored Tempo tx. The bundle's
-        //    sponsor wallet pays the fees in AlphaUSD; the user's
-        //    fresh apex wallet signs as sender and never needs any
-        //    native gas or any TIP-20 stablecoin. No faucet step.
-        let fee_payer = crate::app::sponsor::signer()
-            .map_err(|e| format!("sponsor key: {e}"))?;
-        crate::app::registry::claim_and_maybe_set_main_sponsored(
-            &signer,
-            &fee_payer,
-            &name,
-            crate::app::registry::ALPHA_USD_ADDRESS,
-        )
-        .await
-        .map_err(|e| format!("claim_name: {e}"))
     }
-    .await;
 
-    match result {
+    // 3. Submit the claim as a sponsored Tempo tx. The bundle's sponsor wallet
+    //    pays the fees in AlphaUSD; the user's apex wallet signs as sender and
+    //    needs no native gas / stablecoin. No faucet step.
+    let fee_payer =
+        crate::app::sponsor::signer().map_err(|e| format!("sponsor key: {e}"))?;
+    crate::app::registry::claim_and_maybe_set_main_sponsored(
+        &signer,
+        &fee_payer,
+        name,
+        crate::app::registry::ALPHA_USD_ADDRESS,
+    )
+    .await
+    .map_err(|e| format!("claim_name: {e}"))
+}
+
+/// Redirect into the just-claimed agent's chat.
+fn redirect_to_agent(name: &str) {
+    let target = format!("https://{name}.localharness.xyz/?claim=1");
+    if let Ok(window) = dom::window() {
+        let _ = window.location().assign(&target);
+    }
+}
+
+/// Apex claim flow driven by the create button: "creating…" while in flight,
+/// redirects on success, surfaces failure ON the button (a silent reset looks
+/// like "nothing happened" and invites re-clicking). `on_apex_input` clears the
+/// failed state on the next keystroke. Per [[feedback-no-explanatory-validation]].
+pub(super) async fn run_apex_claim(name: String, create_if_missing: bool) {
+    set_create_button_busy(true);
+    match submit_claim(&name, create_if_missing).await {
         Ok(tx_hash) => {
             web_sys::console::log_1(&JsValue::from_str(&format!(
                 "claimed {name} (tx {})",
                 tx_short_hash(&tx_hash)
             )));
-            let target = format!("https://{name}.localharness.xyz/?claim=1");
-            if let Ok(window) = dom::window() {
-                let _ = window.location().assign(&target);
-            }
+            redirect_to_agent(&name);
+        }
+        Err(err) if err == "__NO_WALLET__" => {
+            // No wallet + the user hasn't chosen "create a new identity": show the
+            // choice (create new / adopt existing) instead of splitting identity.
+            set_create_button_busy(false);
+            dom::swap_outer("agents-list", &templates::identity_choice(&name).into_string());
         }
         Err(err) => {
             web_sys::console::warn_1(&JsValue::from_str(&format!("apex claim failed: {err}")));
-            // Surface failure on the button itself so the user knows
-            // the click had an effect — a silent reset to disabled
-            // looks indistinguishable from "nothing happened" and
-            // invites frustrated re-clicking. `on_apex_input` clears
-            // the failed state on the next keystroke.
-            //
-            // Specific case: insufficient credits. Pre-check encodes
-            // the deficit in the error string with a sentinel prefix
-            // so we can show "need N more LH" instead of a generic
-            // "✗ failed".
+            // Insufficient credits: the pre-check encodes the deficit behind a
+            // sentinel so we can show "need N more LH" + a buy affordance instead
+            // of a generic "✗ failed".
             if let Some(rest) = err.strip_prefix("__NEED_LH__") {
                 set_create_button_failed_with(&format!("need {rest} more LH"));
-                // Give the 0-$LH visitor a way OUT: open the buy modal and fund
-                // the apex wallet, then re-click create (now covered). The apex
-                // wallet (set above / by CreateIdentity) IS `credit_signer`'s
-                // identity, so the buy mints to it — no claimed name needed.
                 dom::swap_inner("claim-fund-slot", &templates::buy_to_claim().into_string());
             } else {
                 set_create_button_state(CreateBtnState::Failed);
             }
+        }
+    }
+}
+
+/// Post-payment onboarding claim: the wallet is persisted + funded, so claim the
+/// name the visitor chose on the front door and drop them into its chat. Shows a
+/// brief "creating…" interstitial (the checkout card was just unmounted). On
+/// failure — e.g. the name was taken during checkout — it falls back to the
+/// funded name-claim apex so the just-paid user can pick another name instead of
+/// being stranded; their $LH is safe in the meter.
+pub(super) async fn onboard_claim(name: String) {
+    if let Some(root) = dom::by_id("root") {
+        root.set_inner_html(&templates::onboard_claiming(&name).into_string());
+    }
+    match submit_claim(&name, true).await {
+        Ok(tx_hash) => {
+            web_sys::console::log_1(&JsValue::from_str(&format!(
+                "onboard-claimed {name} (tx {})",
+                tx_short_hash(&tx_hash)
+            )));
+            redirect_to_agent(&name);
+        }
+        Err(err) => {
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "onboard claim failed: {err}"
+            )));
+            crate::app::paint_apex(crate::app::tenant::Host::Apex).await;
         }
     }
 }

@@ -23,17 +23,9 @@
 
 use maud::{Markup, html};
 
-/// The fresh-visitor front door: ONE CTA whose PRICE is on the button —
-/// pay-first onboarding (`Action::CreateAccount`): it creates the identity then
-/// opens the $2 checkout immediately, so there's no surprise paywall after the
-/// user has invested in picking a name. The mint ($2 = 200 $LH) lands them on
-/// the (now-funded) name-claim input. No code input or seed-import here (both
-/// live in admin; `?invite=` links auto-redeem on mount). `#onboard-msg` is the
-/// status slot; `data-action="create-account"` is load-bearing (MUST match a
-/// `Action::parse` arm — a fresh visitor's only control).
 /// The two-line offer pitch: a "limited time" label + the offer. Shown ABOVE the
-/// create button AND kept at the top of the inline checkout card, so the offer
-/// (and "limited time") does NOT vanish the moment the user taps create.
+/// create form AND kept at the top of the inline checkout card, so the offer
+/// (and "limited time") does NOT vanish the moment the user starts checkout.
 pub(crate) fn onboard_pitch() -> Markup {
     html! {
         p style="font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:var(--muted);margin:0 0 var(--space-1)" {
@@ -61,13 +53,41 @@ pub(crate) fn settings_glyph() -> Markup {
     }
 }
 
+/// The name-claim form — the SAME control on the fresh front door and the
+/// authed apex (one component, no per-page divergence). `#apex-input` (live
+/// availability check, wired in the delegated input handler) and `#create-btn`
+/// (the `claim` button-state machinery) are load-bearing ids; only one form is
+/// ever in the DOM at a time, so the shared ids never collide. `action` is the
+/// submit `data-action` (`onboard-create` on the fresh door → create+pay+claim
+/// in one go; `apex-claim` on the authed apex → claim only).
+pub(crate) fn claim_name_form(action: &str) -> Markup {
+    html! {
+        form.create-form data-action=(action) {
+            input #apex-input
+                .create-input
+                type="text"
+                aria-label="agent name to claim"
+                placeholder="choose a name"
+                autocomplete="off"
+                autocapitalize="none"
+                autocorrect="off"
+                spellcheck="false"
+                maxlength="32"
+                required {}
+            button #create-btn type="submit" .create-button disabled { "create" }
+        }
+    }
+}
+
+/// The fresh-visitor front door: pick a name + CREATE in ONE step. Submitting
+/// (`Action::OnboardCreate`) creates the identity, runs the $2 checkout, then —
+/// once paid — claims the chosen name and drops the user straight into their
+/// agent's chat. No separate post-payment name step, no second CREATE.
 pub(crate) fn create_wallet_cta() -> Markup {
     html! {
         section #apex-onboard .apex-onboard {
             (onboard_pitch())
-            button type="button" data-action="create-account" .apex-onboard-cta {
-                "create"
-            }
+            (claim_name_form("onboard-create"))
             div #onboard-msg .step-msg {}
         }
     }

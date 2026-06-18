@@ -1000,24 +1000,12 @@ fn apex_claim() -> Markup {
     html! {
         section.step.step-agents {
             div #agents-list .agents-list {}
-            form.create-form data-action="apex-claim" {
-                input #apex-input
-                    .create-input
-                    type="text"
-                    aria-label="agent name to claim"
-                    placeholder="choose a name"
-                    autocomplete="off"
-                    autocapitalize="none"
-                    autocorrect="off"
-                    spellcheck="false"
-                    maxlength="32"
-                    required {}
-                button #create-btn type="submit" .create-button disabled { "create" }
-            }
+            // SAME create form as the fresh front door (`landing::claim_name_form`)
+            // — here the submit just claims (the wallet already exists + is funded).
+            (crate::landing::claim_name_form("apex-claim"))
             // Funding affordance slot — empty unless a claim hits `__NEED_LH__`
-            // (registration costs `$LH` and this 0-balance apex wallet can't
-            // cover it). Filled by `claim::run_apex_claim` with `buy_to_claim`.
-            // Stays empty when registration is free (today), so nothing shows.
+            // (registration costs `$LH` and neither pot can cover it). Filled by
+            // `claim::run_apex_claim` with `buy_to_claim`.
             div #claim-fund-slot {}
         }
     }
@@ -1962,22 +1950,24 @@ pub(crate) fn seed_phrase(words: &str) -> Markup {
     }
 }
 
-/// Post-payment seed backup (owner request): the safest moment to bank the
-/// recovery phrase is right after the paid mint persisted it. Shows the words
-/// with copy/download (the `seed_phrase` view) + a [continue] to the name-claim,
-/// so a device loss / OPFS wipe / a reload in the narrow pay→persist window
-/// can't strand the just-paid identity. Rendered into `#root` by
-/// `credits::poll_and_finalize` on a confirmed onboarding mint.
-pub(crate) fn onboard_seed_backup(words: &str) -> Markup {
+// `onboard_seed_backup` (the post-payment "you're in — save your seed" step)
+// was removed: onboarding now claims the chosen name immediately after payment
+// and lands the user in their agent's chat. The seed is viewable any time in
+// the admin security tab (`seed_phrase`), so there's no shown-once moment to
+// bank. See `credits::persist_seed_and_claim`.
+
+/// Post-payment interstitial — the brief moment between the confirmed mint and
+/// the redirect into the new agent's chat, while `claim::onboard_claim` registers
+/// the chosen name. Rendered into `#root` by `credits::persist_seed_and_claim`.
+pub(crate) fn onboard_claiming(name: &str) -> Markup {
     html! {
         (site_header(&Host::Apex))
-        main.apex-main {
+        main.apex-main.apex-front {
             div.col-chat {
-                div #status .terminal-status role="status" aria-live="polite" {}
-                section.step {
-                    p { "you're in. save your recovery phrase first — it's the only key to this identity, and it's shown once." }
-                    (seed_phrase(words))
-                    button type="button" data-action="onboard-continue" .create-button { "I've saved it — continue" }
+                section.apex-onboard {
+                    p style="font-size:14px;color:var(--muted)" {
+                        "creating " (name) "…"
+                    }
                 }
             }
         }
