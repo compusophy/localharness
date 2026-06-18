@@ -1916,6 +1916,22 @@ pub(crate) fn tools_count_span(n: usize) -> String {
     html! { span #tools-count .financial-value { (n) } }.into_string()
 }
 
+/// Typed-confirmation prompt as a bordered system callout — visually distinct
+/// from the borderless gray chat turns so it never reads as user input
+/// (feedback). The code shows ONCE here (model-independent surfacing); the
+/// model is told not to repeat it. `tool_name` is a fixed allowlist and `code`
+/// is CSPRNG alnum, but maud escapes both regardless.
+pub(crate) fn confirm_callout(tool_name: &str, code: &str) -> Markup {
+    html! {
+        div #system-status .confirm-callout {
+            div.confirm-callout-head { "confirm · " (tool_name) }
+            div.confirm-callout-body {
+                "type " span.confirm-code { (code) } " in chat to proceed"
+            }
+        }
+    }
+}
+
 /// Pricing card body — owner-only edit form. Kept as a separate
 /// template so `Action::PricingSave` can swap-outer just the body
 /// after a successful save without re-rendering the slot.

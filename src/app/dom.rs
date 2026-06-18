@@ -304,6 +304,27 @@ pub(crate) fn set_status(message: &str, is_error: bool) {
     scroll_to_bottom("transcript");
 }
 
+/// Surface the typed-confirmation prompt as a bordered system callout at the
+/// transcript tail (a distinct system panel, NOT the borderless gray that
+/// reads as a chat turn). Reuses the `#system-status` id so the normal
+/// status-clear (next send / `set_status("")`) removes it.
+pub(crate) fn set_confirm_callout(tool_name: &str, code: &str) {
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    if let Some(el) = doc.get_element_by_id("system-status") {
+        el.remove();
+    }
+    let Some(transcript) = doc.get_element_by_id("transcript") else {
+        return;
+    };
+    let _ = transcript.insert_adjacent_html(
+        "beforeend",
+        &crate::app::templates::confirm_callout(tool_name, code).into_string(),
+    );
+    scroll_to_bottom("transcript");
+}
+
 /// HTML-escape an UNTRUSTED string before it is concatenated into a raw
 /// HTML string that is then injected via [`swap_inner`] / [`swap_outer`] /
 /// [`append_html`] / `set_inner_html` etc.

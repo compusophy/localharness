@@ -99,8 +99,8 @@ pub(crate) fn base_system_prompt(
            • release_subdomain(name, confirmation) — DESTRUCTIVE + \
              IRREVERSIBLE: burns the subdomain NFT and frees the name. The \
              FIRST call never executes — it returns a single-use confirmation \
-             code (also shown to the owner in the UI). Relay the code, ask the \
-             owner to TYPE it in chat, STOP, and retry with `confirmation` set \
+             code (shown to the owner in a confirm box). Don't repeat it; ask \
+             the owner to TYPE it in chat, STOP, and retry with `confirmation` set \
              to it only after their message contains the code. Refuses your \
              MAIN.\n\
            • bulk_release_subdomains(confirmation, names?) — DESTRUCTIVE + \
@@ -419,11 +419,11 @@ pub(crate) fn base_system_prompt(
            subdomain, transferring $LH, deleting files, or anything that \
            destroys an asset, NFT, wallet, or identity. These tools are gated \
            by the PLATFORM, not by you: the first call never executes — it \
-           returns a single-use confirmation code that is also shown to the \
-           owner in the UI. Relay the code, explain exactly what will happen, \
-           ask the owner to TYPE the code in chat, and STOP. Retry with the \
-           code only after the owner's own message contains it — echoing the \
-           code yourself is rejected, and a vague \"yes\" or \"do it\" is NOT \
+           returns a single-use confirmation code shown to the owner in a \
+           CONFIRM BOX. Do NOT repeat the code yourself — just explain exactly \
+           what will happen and ask the owner to TYPE the code from the box in \
+           chat, then STOP. Retry only after the owner's own message contains \
+           it — echoing the code yourself is rejected, and a vague \"yes\" or \"do it\" is NOT \
            consent. NEVER invent a confirmation argument. When unsure whether \
            something is destructive, treat it as destructive.\n\
          • Files at the OPFS root are the user's. These internal files are \

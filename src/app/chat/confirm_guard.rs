@@ -110,21 +110,22 @@ impl PreToolCallDecideHook for TypedConfirmationGuard {
         match outcome {
             ConfirmOutcome::Approved => Ok(HookResult::allow()),
             ConfirmOutcome::Challenge { nonce } => {
-                // Surface the code DIRECTLY to the user — the status line is
-                // model-independent, so the code arrives even if the model
-                // paraphrases or omits it.
-                crate::app::dom::set_status(
-                    &format!("confirm {}: type {nonce} to proceed", call.name),
-                    false,
-                );
+                // Surface the code DIRECTLY to the user in a bordered system
+                // callout — model-independent (arrives even if the model omits
+                // it) and visually distinct from chat turns so it never reads
+                // as the user's own input (feedback).
+                crate::app::dom::set_confirm_callout(&call.name, &nonce);
+                // The callout shows the code; the model must NOT echo it (that
+                // was the redundant code-spam) — keep the code out of this deny
+                // text entirely so the model can't repeat it.
                 Ok(HookResult::deny(format!(
-                    "`{}` NOT executed — this action requires a typed confirmation. \
-                     A single-use code has been issued and shown to the owner: {nonce}. \
-                     Explain exactly what this call will do, ask the owner to TYPE the \
-                     code {nonce} in chat, then STOP and wait. Only after a user message \
-                     containing the code, retry this call with the SAME arguments plus \
-                     `confirmation: \"{nonce}\"`. The code is bound to these exact \
-                     arguments and is replaced if you call again without it.",
+                    "`{}` NOT executed — requires the owner's typed confirmation. The \
+                     single-use code is shown to the owner in a confirm box; do NOT \
+                     repeat the code yourself. Briefly explain what this call will do, \
+                     ask the owner to type that code in chat, then STOP and wait. Once \
+                     their next message contains it, retry this SAME call with \
+                     `confirmation` set to the code they typed. The code is bound to \
+                     these exact arguments and is replaced if you call again without it.",
                     call.name
                 )))
             }
