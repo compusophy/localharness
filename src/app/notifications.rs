@@ -56,7 +56,7 @@ pub(crate) fn push_to_bell(title: &str, body: &str) {
         .unwrap_or(true);
     crate::app::dom::swap_outer(
         "notif-bell-panel",
-        &crate::app::templates::notif_list_panel(&bell_items(), None, hidden).into_string(),
+        &crate::app::templates::notif_list_panel(&bell_items(), None, hidden, false).into_string(),
     );
     wasm_bindgen_futures::spawn_local(persist_inbox());
 }
@@ -111,7 +111,7 @@ pub(crate) async fn load_inbox() {
     }
     crate::app::dom::swap_outer(
         "notif-bell-panel",
-        &crate::app::templates::notif_list_panel(&bell_items(), None, true).into_string(),
+        &crate::app::templates::notif_list_panel(&bell_items(), None, true, false).into_string(),
     );
 }
 
@@ -126,6 +126,20 @@ pub(crate) fn clear_bell_badge() {
         "notif-bell-badge",
         "<span id=\"notif-bell-badge\" class=\"notif-badge\" hidden></span>",
     );
+}
+
+/// Empty the in-app bell inbox (the "clear all" control, after its inline
+/// yes-confirm — on-chain feedback): wipe the log, hide the badge, re-render
+/// the (now empty) panel OPEN, and persist the cleared inbox to OPFS so it
+/// stays empty across reloads.
+pub(crate) fn clear_all() {
+    BELL.with(|b| b.borrow_mut().clear());
+    clear_bell_badge();
+    crate::app::dom::swap_outer(
+        "notif-bell-panel",
+        &crate::app::templates::notif_list_panel(&[], None, false, false).into_string(),
+    );
+    wasm_bindgen_futures::spawn_local(persist_inbox());
 }
 
 /// VAPID application-server PUBLIC key (base64url, uncompressed P-256 point)

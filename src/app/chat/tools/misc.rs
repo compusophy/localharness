@@ -938,7 +938,8 @@ pub(crate) fn dwell_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
         "WAIT cleanly for `seconds` (max 300) before continuing — use this to \
          respect contract cooldowns (e.g. the 1-minute feedback rate limit) or \
          to let a transaction confirm, instead of burning dummy read calls to \
-         pass time. Returns { slept_seconds }.",
+         pass time. Interruptible: pressing Stop ends the wait early. Returns \
+         { slept_seconds, interrupted }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
             let seconds = args
@@ -946,8 +947,26 @@ pub(crate) fn dwell_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0)
                 .clamp(1, 300);
-            crate::runtime::sleep_ms((seconds * 1000) as u32).await;
-            Ok(serde_json::json!({ "slept_seconds": seconds }))
+            // Sleep in short chunks so the stop button interrupts the wait
+            // mid-call (on-chain feedback): the chunk boundary yields to the
+            // event loop, letting request_stop_turn flip TURN_CANCEL, which we
+            // then observe and bail on — rather than blocking the whole wait.
+            let mut slept_ms = 0u32;
+            let total_ms = seconds as u32 * 1000;
+            let mut interrupted = false;
+            while slept_ms < total_ms {
+                if crate::app::chat::turn_cancelled() {
+                    interrupted = true;
+                    break;
+                }
+                let chunk = (total_ms - slept_ms).min(200);
+                crate::runtime::sleep_ms(chunk).await;
+                slept_ms += chunk;
+            }
+            Ok(serde_json::json!({
+                "slept_seconds": slept_ms / 1000,
+                "interrupted": interrupted
+            }))
         },
     )
 }

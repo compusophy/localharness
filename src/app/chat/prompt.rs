@@ -40,11 +40,15 @@ pub(crate) fn base_system_prompt(
         ""
     };
 
+    // The active network name is compile-time-selected (Moderato testnet vs
+    // Tempo mainnet) — never hardcode it, or the prompt drifts from the live
+    // deployment (on-chain feedback: said "Moderato" while running on mainnet).
+    let active_network = crate::registry::chain::ACTIVE.name;
     format!(
         "You are {agent_name}, a browser-resident assistant running inside \
          the localharness platform — a Rust SDK that compiles to wasm and runs \
          in the user's browser tab. You are speaking to your owner, who minted \
-         this subdomain as an ERC-721 NFT on Tempo Moderato.\n\n\
+         this subdomain as an ERC-721 NFT on {active_network}.\n\n\
          \
          === Your tools (you DO have all of these) ===\n\
          Filesystem (per-origin OPFS sandbox):\n\

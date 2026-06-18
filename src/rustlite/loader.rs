@@ -238,6 +238,50 @@ fn build_host_imports(mem: &SharedMemory) -> Result<(js_sys::Object, NetRuntime)
     compose_none.forget();
     let _ = Reflect::set(&imports, &JsValue::from_str("host_compose"), &host_compose);
 
+    // host_display module — ambient stub. The REAL framebuffer host lives in
+    // the Web Worker (web/cartridge-worker.js) / src/app/display.rs; this bare
+    // loader (SDK / `compile_rustlite` compile-check path) runs no canvas, so
+    // every draw op is a no-op and the queries return 0. Without this, a
+    // cartridge that imports host_display (any clear/set_pixel/draw_* call)
+    // failed instantiation with "Import #0 host_display: module is not an
+    // object or function" — forcing run_cartridge just to compile-check
+    // (on-chain feedback). ABI mirrors src/rustlite/typecheck.rs display::*.
+    let host_display = Object::new();
+    let disp_clear = Closure::<dyn Fn(i32)>::new(|_a| {});
+    let disp_void3 = Closure::<dyn Fn(i32, i32, i32)>::new(|_a, _b, _c| {});
+    let disp_void5 = Closure::<dyn Fn(i32, i32, i32, i32, i32)>::new(|_a, _b, _c, _d, _e| {});
+    let disp_tri = Closure::<dyn Fn(i32, i32, i32, i32, i32, i32, i32)>::new(
+        |_a, _b, _c, _d, _e, _f, _g| {},
+    );
+    let disp_present = Closure::<dyn Fn()>::new(|| {});
+    let disp_query = Closure::<dyn Fn() -> i32>::new(|| 0);
+    let disp_state_get = Closure::<dyn Fn(i32) -> i32>::new(|_a| 0);
+    let disp_state_set = Closure::<dyn Fn(i32, i32)>::new(|_a, _b| {});
+    let _ = Reflect::set(&host_display, &JsValue::from_str("clear"), disp_clear.as_ref());
+    let _ = Reflect::set(&host_display, &JsValue::from_str("set_pixel"), disp_void3.as_ref());
+    let _ = Reflect::set(&host_display, &JsValue::from_str("fill_rect"), disp_void5.as_ref());
+    let _ = Reflect::set(&host_display, &JsValue::from_str("draw_char"), disp_void5.as_ref());
+    let _ = Reflect::set(&host_display, &JsValue::from_str("draw_number"), disp_void5.as_ref());
+    let _ = Reflect::set(&host_display, &JsValue::from_str("draw_line"), disp_void5.as_ref());
+    let _ = Reflect::set(&host_display, &JsValue::from_str("fill_triangle"), disp_tri.as_ref());
+    let _ = Reflect::set(&host_display, &JsValue::from_str("present"), disp_present.as_ref());
+    let _ = Reflect::set(&host_display, &JsValue::from_str("width"), disp_query.as_ref());
+    let _ = Reflect::set(&host_display, &JsValue::from_str("height"), disp_query.as_ref());
+    let _ = Reflect::set(&host_display, &JsValue::from_str("pointer_x"), disp_query.as_ref());
+    let _ = Reflect::set(&host_display, &JsValue::from_str("pointer_y"), disp_query.as_ref());
+    let _ = Reflect::set(&host_display, &JsValue::from_str("pointer_down"), disp_query.as_ref());
+    let _ = Reflect::set(&host_display, &JsValue::from_str("state_get"), disp_state_get.as_ref());
+    let _ = Reflect::set(&host_display, &JsValue::from_str("state_set"), disp_state_set.as_ref());
+    disp_clear.forget();
+    disp_void3.forget();
+    disp_void5.forget();
+    disp_tri.forget();
+    disp_present.forget();
+    disp_query.forget();
+    disp_state_get.forget();
+    disp_state_set.forget();
+    let _ = Reflect::set(&imports, &JsValue::from_str("host_display"), &host_display);
+
     // host_net module — WebSocket-backed multiplayer / sync I/O. Mirrors
     // host_display: integer-only host functions a rustlite cartridge calls,
     // strings passed as length-prefixed pointers into cartridge memory.

@@ -82,6 +82,13 @@ pub(crate) fn request_stop_turn() {
     }
 }
 
+/// Whether the running turn has been asked to stop (the stop button). Tools
+/// that wait (e.g. `dwell`) poll this between chunks so Stop interrupts them
+/// mid-call instead of having to run to completion (on-chain feedback).
+pub(crate) fn turn_cancelled() -> bool {
+    TURN_CANCEL.with(|c| c.get())
+}
+
 /// RAII cleanup for a turn: clears the active/cancel flags and restores
 /// the send button (if the stop button is currently shown) on every
 /// exit path, including early returns and future cancellation.

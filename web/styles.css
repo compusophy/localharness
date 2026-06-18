@@ -523,6 +523,25 @@ main.layout .transcript > *:empty { display: none; }
 .notif-item:last-child { border-bottom: none; }
 .notif-item-title { color: var(--fg); }
 .notif-item-body { color: var(--muted); margin-top: 2px; }
+.notif-panel-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.notif-clear-prompt { font-size: 11px; color: var(--muted); margin-right: auto; }
+.notif-clear-btn {
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.notif-clear-btn:hover { color: var(--fg); text-decoration: underline; }
 
 .app-edit {
   position: absolute;

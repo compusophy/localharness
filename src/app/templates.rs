@@ -2379,7 +2379,7 @@ pub(crate) fn notif_bell() -> Markup {
                 (bell)
                 span #notif-bell-badge .notif-badge hidden {}
             }
-            (notif_list_panel(&[], None, true))
+            (notif_list_panel(&[], None, true, false))
         }
     }
 }
@@ -2392,6 +2392,7 @@ pub(crate) fn notif_list_panel(
     items: &[(String, String)],
     note: Option<&str>,
     hidden: bool,
+    confirm_clear: bool,
 ) -> Markup {
     html! {
         div #notif-bell-panel .notif-panel hidden[hidden] {
@@ -2403,6 +2404,17 @@ pub(crate) fn notif_list_panel(
                     div.notif-panel-empty { "no notifications yet" }
                 }
             } @else {
+                // Clear-all control with an inline two-step confirm (no JS
+                // alert): [clear all] → "clear all? [yes] [cancel]" (feedback).
+                div.notif-panel-actions {
+                    @if confirm_clear {
+                        span.notif-clear-prompt { "clear all?" }
+                        button type="button" data-action="notif-clear-confirm" .notif-clear-btn { "yes" }
+                        button type="button" data-action="notif-clear-cancel" .notif-clear-btn { "cancel" }
+                    } @else {
+                        button type="button" data-action="notif-clear-all" .notif-clear-btn { "clear all" }
+                    }
+                }
                 @for (title, body) in items {
                     div.notif-item {
                         div.notif-item-title { (title) }

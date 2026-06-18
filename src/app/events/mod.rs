@@ -225,6 +225,12 @@ enum Action {
     /// direct gesture) and open the in-app panel. The path a visitor uses to let
     /// their phone be pinged — the cartridge tap can't prompt for permission.
     NotifBell,
+    /// [clear all] in the bell dropdown: show the inline yes/cancel confirm.
+    NotifClearAll,
+    /// [yes] in the clear confirm: empty the in-app notification inbox.
+    NotifClearConfirm,
+    /// [cancel] in the clear confirm: dismiss it, keep the notifications.
+    NotifClearCancel,
     /// Fire a local test notification (+vibration) so the user can verify the
     /// permission + service-worker path without scheduling anything.
     TestNotification,
@@ -298,6 +304,9 @@ impl Action {
             "unlink-cancel" => Action::UnlinkCancel,
             "enable-notifications" => Action::EnableNotifications,
             "notif-bell" => Action::NotifBell,
+            "notif-clear-all" => Action::NotifClearAll,
+            "notif-clear-confirm" => Action::NotifClearConfirm,
+            "notif-clear-cancel" => Action::NotifClearCancel,
             "test-notification" => Action::TestNotification,
             "install-app" => Action::InstallApp,
             _ => return None,
@@ -1215,6 +1224,9 @@ fn dispatch(action: Action) {
         Action::UnlinkCancel => devices::unlink_cancel_pressed(),
         Action::EnableNotifications => admin::enable_notifications_pressed(),
         Action::NotifBell => admin::notif_bell_pressed(),
+        Action::NotifClearAll => admin::notif_clear_all_pressed(),
+        Action::NotifClearConfirm => admin::notif_clear_confirmed(),
+        Action::NotifClearCancel => admin::notif_clear_cancelled(),
         Action::TestNotification => admin::test_notification_pressed(),
         Action::InstallApp => admin::install_app_pressed(),
     }

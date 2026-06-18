@@ -315,9 +315,33 @@ pub(super) fn notif_panel_open() -> bool {
 pub(super) fn close_notif_panel() {
     dom::swap_outer(
         "notif-bell-panel",
-        &templates::notif_list_panel(&crate::app::notifications::bell_items(), None, true)
+        &templates::notif_list_panel(&crate::app::notifications::bell_items(), None, true, false)
             .into_string(),
     );
+}
+
+/// [clear all] tapped: re-render the OPEN panel with the inline yes/cancel
+/// confirm (no JS alert — on-chain feedback). Nothing is cleared yet.
+pub(super) fn notif_clear_all_pressed() {
+    dom::swap_outer(
+        "notif-bell-panel",
+        &templates::notif_list_panel(&crate::app::notifications::bell_items(), None, false, true)
+            .into_string(),
+    );
+}
+
+/// [cancel] in the clear confirm: re-render the OPEN panel without the confirm.
+pub(super) fn notif_clear_cancelled() {
+    dom::swap_outer(
+        "notif-bell-panel",
+        &templates::notif_list_panel(&crate::app::notifications::bell_items(), None, false, false)
+            .into_string(),
+    );
+}
+
+/// [yes] in the clear confirm: actually empty the inbox.
+pub(super) fn notif_clear_confirmed() {
+    crate::app::notifications::clear_all();
 }
 
 pub(super) fn notif_bell_pressed() {
@@ -332,7 +356,7 @@ pub(super) fn notif_bell_pressed() {
     let items = crate::app::notifications::bell_items();
     dom::swap_outer(
         "notif-bell-panel",
-        &templates::notif_list_panel(&items, None, false).into_string(),
+        &templates::notif_list_panel(&items, None, false, false).into_string(),
     );
     crate::app::notifications::clear_bell_badge();
     // Register this device for Web Push as a side effect of this real tap (the
@@ -348,7 +372,8 @@ pub(super) fn notif_bell_pressed() {
             let items = crate::app::notifications::bell_items();
             dom::swap_outer(
                 "notif-bell-panel",
-                &templates::notif_list_panel(&items, Some(&format!("⚠ {e}")), false).into_string(),
+                &templates::notif_list_panel(&items, Some(&format!("⚠ {e}")), false, false)
+                    .into_string(),
             );
         }
     });
