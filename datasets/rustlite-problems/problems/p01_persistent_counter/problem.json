@@ -1,0 +1,13 @@
+{
+  "id": "p01_persistent_counter",
+  "surface": ["state_get", "state_set", "fill_rect", "draw_number", "frame_entry"],
+  "difficulty": "easy",
+  "statement": "Write a rustlite cartridge with a `frame(t: i32)` entry point that maintains a persistent counter across frames. On every frame, read the value in host state slot 0, add 1, and store it back. Clear the screen to a dark colour, then draw the current count as a number near the top, and draw a green horizontal bar starting at (0, 60) whose width is `count * 4` pixels, clamped to the 256-pixel screen width, 30 pixels tall. The counter must survive between `frame()` calls because rustlite has no globals — the only durable storage is the 64 host state slots.",
+  "constraints": [
+    "Entry point is `fn frame(t: i32)`.",
+    "Use only host::display::* functions.",
+    "The count must be read from / written to state slot 0 (so after N frames slot 0 == N).",
+    "Bar width = count * 4, clamped to <= 256.",
+    "Call host::display::present() last."
+  ]
+}

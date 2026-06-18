@@ -1,0 +1,13 @@
+{
+  "id": "p06_array_max",
+  "surface": ["array_literal", "array_index_read", "array_param", "while_loop", "helper_fn", "clear", "frame_entry"],
+  "difficulty": "medium",
+  "statement": "Write a rustlite cartridge that finds the maximum of a fixed array of integers. Define a helper `fn max_of(xs: [i32; 5], n: i32) -> i32` that scans the first `n` elements of `xs` with a while loop and returns the largest. In `frame(t: i32)`, build the array `[12, 200, 47, 99, 5]`, call `max_of(arr, 5)` (which must be 200 = 0x0000C8), clear to that value so the blue channel reads 200, and present. Arrays are passed to helpers by their base pointer (C-style), so the callee reads the caller's backing region directly.",
+  "constraints": [
+    "Define `fn max_of(xs: [i32; 5], n: i32) -> i32` taking the array as a parameter.",
+    "Scan with a while loop and indexed reads xs[i].",
+    "Entry point is `fn frame(t: i32)`.",
+    "Clear to max_of(arr, 5) so the blue channel reads 200.",
+    "Call host::display::present() last."
+  ]
+}

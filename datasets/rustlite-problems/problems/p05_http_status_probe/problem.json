@@ -1,0 +1,14 @@
+{
+  "id": "p05_http_status_probe",
+  "surface": ["http::get", "http::ready", "http::status", "http::body_len", "state_get", "state_set", "frame_entry"],
+  "difficulty": "medium",
+  "statement": "Write a rustlite cartridge that performs a ONE-SHOT HTTPS GET through host::http and shows the result. Use the host::http poll model: on phase 0 fire `host::http::get(url, len)` exactly once and store the handle in state slot 1, advancing the phase in slot 0 to 1 (fetching) or 3 (error if the handle is negative). On phase 1, poll `host::http::ready(handle)` each frame: 1 -> phase 2 (done), negative -> phase 3 (error). Draw a status bar across the top: amber while pending, green when done, red on error. When done (phase 2), draw the upstream HTTP status (host::http::status) and the body byte length (host::http::body_len) as on-screen numbers. State slot 0 = phase, slot 1 = handle. Present each frame.",
+  "constraints": [
+    "Entry point is `fn frame(t: i32)`.",
+    "Fire host::http::get exactly once (guarded on phase 0).",
+    "Persist phase in state slot 0 and handle in state slot 1 across frames.",
+    "Draw a coloured top status bar reflecting the phase.",
+    "Call host::display::present() last.",
+    "The URL is passed as a string literal (the only pointer rustlite produces)."
+  ]
+}

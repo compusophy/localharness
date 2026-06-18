@@ -1,0 +1,41 @@
+{
+  "id": "p02_fill_rect_quadrants",
+  "entry": "frame",
+  "needs_state": false,
+  "fb_w": 256,
+  "fb_h": 144,
+  "checks": [
+    {
+      "kind": "pixel_at",
+      "frame": 0,
+      "x": 10,
+      "y": 10,
+      "expect_rgb": [255, 0, 0],
+      "rationale": "Top-left quadrant is red."
+    },
+    {
+      "kind": "pixel_at",
+      "frame": 0,
+      "x": 200,
+      "y": 10,
+      "expect_rgb": [0, 255, 0],
+      "rationale": "Top-right quadrant is green."
+    },
+    {
+      "kind": "pixel_at",
+      "frame": 0,
+      "x": 10,
+      "y": 120,
+      "expect_rgb": [0, 0, 255],
+      "rationale": "Bottom-left quadrant is blue."
+    },
+    {
+      "kind": "pixel_at",
+      "frame": 0,
+      "x": 200,
+      "y": 120,
+      "expect_rgb": [255, 255, 255],
+      "rationale": "Bottom-right quadrant is white."
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "id": "p03_arithmetic_expr",
+  "surface": ["arithmetic", "precedence", "helper_fn", "clear", "frame_entry"],
+  "difficulty": "easy",
+  "statement": "Write a rustlite cartridge that evaluates the integer expression `((7 * 6) + 100) / 2 - 3 % 4` in a helper function `compute() -> i32` (using Rust operator precedence: `*`, `/`, `%` bind tighter than `+`, `-`), then in `frame(t: i32)` clears the screen to the computed value used directly as a 0xRRGGBB colour, and presents. With correct precedence the result is 68 (= 0x000044), so the cleared blue channel reads 68.",
+  "constraints": [
+    "Define a helper `fn compute() -> i32` returning the expression value.",
+    "Entry point is `fn frame(t: i32)`.",
+    "Use the computed value as the argument to host::display::clear.",
+    "Call host::display::present() last."
+  ]
+}

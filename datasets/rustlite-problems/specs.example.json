@@ -1,0 +1,26 @@
+[
+  {
+    "id": "p08_xor_via_arithmetic",
+    "surface": ["helper_fn", "while_loop", "modulo", "clear", "frame_entry"],
+    "difficulty": "medium",
+    "statement": "rustlite has no bitwise operators. Write a helper `fn xor8(a: i32, b: i32) -> i32` that computes the 8-bit XOR of `a` and `b` using only arithmetic (loop over the 8 bit positions, extract each bit via division + modulo, XOR is `(x + y) % 2`, and re-accumulate with powers of two). In frame(t), compute `xor8(0xF0, 0x0F)` (== 255), clear to that value so the blue channel reads 255, and present.",
+    "constraints": [
+      "Define `fn xor8(a: i32, b: i32) -> i32` using only + - * / %.",
+      "Entry point is `fn frame(t: i32)`.",
+      "Clear to xor8(240, 15) so the blue channel reads 255.",
+      "Call host::display::present() last."
+    ]
+  },
+  {
+    "id": "p09_draw_checkerboard",
+    "surface": ["nested_loop", "modulo", "fill_rect", "frame_entry"],
+    "difficulty": "medium",
+    "statement": "Draw an 8x8 checkerboard of 16px cells onto the framebuffer. Use two nested while loops over rows and columns; a cell is white when `(row + col) % 2 == 0` else dark grey. Clear first, draw all 64 cells with fill_rect, then present.",
+    "constraints": [
+      "Entry point is `fn frame(t: i32)`.",
+      "Two nested loops (8x8).",
+      "Alternate colour by (row + col) % 2.",
+      "Call host::display::present() last."
+    ]
+  }
+]

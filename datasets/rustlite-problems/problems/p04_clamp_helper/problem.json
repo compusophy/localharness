@@ -1,0 +1,12 @@
+{
+  "id": "p04_clamp_helper",
+  "surface": ["helper_fn", "if_else", "comparison", "clear", "frame_entry"],
+  "difficulty": "easy",
+  "statement": "Write a rustlite cartridge with a helper `fn clamp(v: i32, lo: i32, hi: i32) -> i32` that returns `lo` if `v < lo`, `hi` if `v > hi`, else `v`. In `frame(t: i32)`, compute `clamp(300, 0, 255)` (which must be 255) and use it as the blue channel of a clear colour, i.e. clear to that value, then present. The cleared pixel's blue channel must read 255, proving the clamp upper bound fires.",
+  "constraints": [
+    "Define `fn clamp(v: i32, lo: i32, hi: i32) -> i32` with two comparison branches.",
+    "Entry point is `fn frame(t: i32)`.",
+    "Clear to clamp(300, 0, 255) so the blue channel is 255.",
+    "Call host::display::present() last."
+  ]
+}

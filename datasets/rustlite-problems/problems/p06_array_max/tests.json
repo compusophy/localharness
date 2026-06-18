@@ -1,0 +1,15 @@
+{
+  "id": "p06_array_max",
+  "entry": "frame",
+  "needs_state": false,
+  "checks": [
+    {
+      "kind": "pixel_at",
+      "frame": 0,
+      "x": 0,
+      "y": 0,
+      "expect_rgb": [0, 0, 200],
+      "rationale": "max_of([12,200,47,99,5],5) == 200 == 0x0000C8 -> blue channel 200."
+    }
+  ]
+}

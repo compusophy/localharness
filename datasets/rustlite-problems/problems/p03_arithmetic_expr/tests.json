@@ -1,0 +1,15 @@
+{
+  "id": "p03_arithmetic_expr",
+  "entry": "frame",
+  "needs_state": false,
+  "checks": [
+    {
+      "kind": "pixel_at",
+      "frame": 0,
+      "x": 0,
+      "y": 0,
+      "expect_rgb": [0, 0, 68],
+      "rationale": "compute() == 68 == 0x000044; the clear paints every pixel [0,0,68]."
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "id": "p07_collatz_steps",
+  "surface": ["while_loop", "if_else", "modulo", "helper_fn", "clear", "draw_number", "frame_entry"],
+  "difficulty": "medium",
+  "statement": "Write a rustlite cartridge that counts the Collatz stopping time. Define `fn collatz_steps(start: i32) -> i32` that, starting from `start`, repeatedly applies: if even, halve it; if odd, `3*n + 1`; counting the number of steps until it reaches 1. For start = 27 the answer is 111 steps. In `frame(t: i32)`, compute `collatz_steps(27)` (= 111 = 0x6F), clear to that value shifted into the GREEN channel (i.e. `steps * 256` -> 0x006F00) so the green channel reads 111, also draw the step count as a number, and present.",
+  "constraints": [
+    "Define `fn collatz_steps(start: i32) -> i32`.",
+    "Detect even/odd with the modulo operator (n % 2).",
+    "Entry point is `fn frame(t: i32)`.",
+    "Clear to collatz_steps(27) * 256 so the green channel reads 111.",
+    "Call host::display::present() last."
+  ]
+}

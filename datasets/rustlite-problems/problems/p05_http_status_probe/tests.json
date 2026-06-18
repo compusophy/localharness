@@ -1,0 +1,28 @@
+{
+  "id": "p05_http_status_probe",
+  "entry": "frame",
+  "needs_state": true,
+  "notes": "The corpus host stubs host_http::* to return 0, so get()->0 (valid handle), ready()->0 (pending). The cartridge advances phase 0 -> 1 and parks there, painting the amber pending bar. The check is: compiles, instantiates, runs across frames WITHOUT TRAPPING, draws the pending bar, and the phase slot advances to 1.",
+  "checks": [
+    {
+      "kind": "no_trap",
+      "frames": [0, 1, 2, 3],
+      "rationale": "host::http poll model must instantiate + run without trapping under the stubbed host."
+    },
+    {
+      "kind": "state_after_frames",
+      "frames": [0],
+      "slot": 0,
+      "expect": 1,
+      "rationale": "After one frame the GET fired (handle 0, non-negative) so phase advances to 1 (fetching)."
+    },
+    {
+      "kind": "pixel_after_frames",
+      "frames": [0],
+      "x": 10,
+      "y": 2,
+      "expect_rgb": [170, 119, 0],
+      "rationale": "Pending phase paints the amber 0xAA7700 status bar across the top 6px."
+    }
+  ]
+}

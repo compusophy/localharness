@@ -1,0 +1,12 @@
+{
+  "id": "p02_fill_rect_quadrants",
+  "surface": ["clear", "fill_rect", "width", "height", "frame_entry"],
+  "difficulty": "easy",
+  "statement": "Write a rustlite cartridge `frame(t: i32)` that paints the framebuffer as four equal quadrants of distinct solid colours. Query the framebuffer width and height from the host (do not hard-code 256/144), compute the half-width and half-height, then fill: top-left red (0xFF0000), top-right green (0x00FF00), bottom-left blue (0x0000FF), bottom-right white (0xFFFFFF). Present the frame.",
+  "constraints": [
+    "Entry point is `fn frame(t: i32)`.",
+    "Read dimensions via host::display::width() and host::display::height().",
+    "Exactly four fill_rect calls, one per quadrant.",
+    "Call host::display::present() last."
+  ]
+}

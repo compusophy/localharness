@@ -1,0 +1,15 @@
+{
+  "id": "p07_collatz_steps",
+  "entry": "frame",
+  "needs_state": false,
+  "checks": [
+    {
+      "kind": "pixel_at",
+      "frame": 0,
+      "x": 200,
+      "y": 120,
+      "expect_rgb": [0, 111, 0],
+      "rationale": "collatz_steps(27) == 111; clear to 111*256 == 0x006F00 -> green channel 111. (Pick a corner away from the drawn number.)"
+    }
+  ]
+}

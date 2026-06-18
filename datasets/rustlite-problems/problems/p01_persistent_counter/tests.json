@@ -1,0 +1,27 @@
+{
+  "id": "p01_persistent_counter",
+  "entry": "frame",
+  "needs_state": true,
+  "checks": [
+    {
+      "kind": "state_after_frames",
+      "frames": [0, 1, 2],
+      "slot": 0,
+      "expect": 3,
+      "rationale": "Slot 0 increments once per frame; after 3 frames it equals 3."
+    },
+    {
+      "kind": "pixel_after_frames",
+      "frames": [0, 1, 2],
+      "x": 4,
+      "y": 70,
+      "expect_rgb": [0, 255, 0],
+      "rationale": "At count=3 the green bar (width 12) covers x=4,y=70."
+    },
+    {
+      "kind": "non_blank",
+      "frames": [0],
+      "rationale": "The frame draws a number + bar, so it is never blank."
+    }
+  ]
+}
