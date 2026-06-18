@@ -30,6 +30,8 @@
   var stripeLoad = null;
   var state = null; // { stripe, elements, opts }
   var watchTimer = null; // setInterval id for the JS payment-status poll
+  var watchOpts = null; // {payment_intent, onboarding, lh_label} shared with confirmPay
+  var handledPI = null; // payment_intent already resolved — handleSucceeded is once-per-PI
 
   // Stop the JS payment-status poll (idempotent). Called on success, on
   // teardown (`lhUnmountCheckout`), and after the time cap — the interval must
@@ -38,6 +40,26 @@
     if (watchTimer !== null) {
       clearInterval(watchTimer);
       watchTimer = null;
+    }
+  }
+
+  // Drive the post-payment UI + wasm mint EXACTLY ONCE per PaymentIntent. Called
+  // from BOTH confirmPay's success (immediate — no redirect) and the status poll
+  // (a backstop for redirect / late-settle returns). A plain buy flips the modal
+  // to "received" right here in JS, so the pay button never hangs on "processing…"
+  // waiting on the slow wasm finalize loop; onboarding defers to the wasm side (it
+  // draws the seed-backup screen). The wasm callback still runs for the balance
+  // refresh + (onboarding) seed persist.
+  function handleSucceeded() {
+    var o = watchOpts;
+    if (!o || handledPI === o.payment_intent) return;
+    handledPI = o.payment_intent;
+    stopWatch();
+    if (!o.onboarding && typeof window.lhBuySuccess === 'function') {
+      window.lhBuySuccess('✓ payment received — your $LH is being credited');
+    }
+    if (typeof window.lh_payment_succeeded === 'function') {
+      window.lh_payment_succeeded(o.payment_intent, !!o.onboarding, o.lh_label || '');
     }
   }
 
@@ -87,6 +109,10 @@
           })
           .then(function (res) {
             if (res && res.error) { showError(res.error.message || 'payment failed'); return { ok: false }; }
+            // Confirmed inline (no redirect) → drive success NOW, don't wait on the
+            // 3s poll. The poll stays a backstop for redirect / late-settle returns.
+            var pi = res && res.paymentIntent;
+            if (pi && pi.status === 'succeeded') handleSucceeded();
             return { ok: true };
           });
       })
@@ -106,6 +132,8 @@
     try { o = typeof optsJson === 'string' ? JSON.parse(optsJson) : optsJson; }
     catch (e) { return; }
     if (!o || !o.payment_intent) return;
+    watchOpts = o; // share onboarding/payment_intent/lh_label with confirmPay
+    handledPI = null; // new payment session
     stopWatch(); // never run two watchers at once
     var ticks = 0;
     var maxTicks = 120; // 120 * 3s = 6 min cap
@@ -120,10 +148,7 @@
         .then(function (r) {
           var st = r && r.paymentIntent && r.paymentIntent.status;
           if (st === 'succeeded') {
-            stopWatch();
-            if (typeof window.lh_payment_succeeded === 'function') {
-              window.lh_payment_succeeded(o.payment_intent, !!o.onboarding, o.lh_label || '');
-            }
+            handleSucceeded();
           }
         })
         .catch(function () { /* transient — keep polling until the cap */ });
@@ -218,7 +243,7 @@
     });
   };
 
-  window.lhUnmountCheckout = function () { stopWatch(); state = null; };
+  window.lhUnmountCheckout = function () { stopWatch(); state = null; watchOpts = null; };
 
   // Warm Stripe.js on page load so mounting the Elements is INSTANT when the
   // user taps "create agent" (instead of loading the ~heavy Stripe.js on the
