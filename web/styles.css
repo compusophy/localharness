@@ -1101,10 +1101,29 @@ h1 a:hover { color: var(--accent); }
   color: var(--muted);
 }
 /* The fresh front door now uses the shared `.create-form` + `.create-button`
-   (landing::claim_name_form) — the same control as the authed apex — so the old
-   bespoke `.apex-onboard-cta` is gone. Inside `.apex-onboard` the form drops its
-   generic 64px top margin so the gap below the pitch is the brand 16px rhythm. */
+   (landing::claim_name_form) — the same control as the authed apex. Inside
+   `.apex-onboard` the form drops its generic 64px top margin so the gap below
+   the pitch is the brand 16px rhythm. */
 .apex-onboard .create-form { margin-top: 0; }
+/* Filled-inverse CTA — now used only by the checkout "pay" button
+   (#lh-pay-button); the front-door CREATE moved to the shared .create-button.
+   Width is set inline on the pay button (100%), so none here. */
+.apex-onboard-cta {
+  padding: 14px 32px;
+  font-size: 15px;
+  font-weight: 600;
+  background: var(--fg);
+  border: 1px solid var(--fg);
+  color: var(--bg);
+  cursor: pointer;
+  font-family: inherit;
+}
+.apex-onboard-cta:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+}
+.apex-onboard-cta:disabled { opacity: 0.5; cursor: default; }
 /* Quiet secondary door — text-link weight, never competes with the CTA. */
 .apex-onboard-secondary { margin: 18px 0 0; }
 .apex-onboard-import {
