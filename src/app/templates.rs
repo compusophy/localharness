@@ -82,7 +82,7 @@ pub(crate) fn buy_inline_form(lh_label: &str) -> Markup {
         div #buy-modal-done .api-key-hint style="display:none" {
             "✓ payment received — your $LH is being credited and will appear shortly."
         }
-        button type="button" data-action="cancel-buy" .ghost style="margin-top:6px" { "cancel" }
+        button #buy-cancel type="button" data-action="cancel-buy" .ghost style="margin-top:6px" { "cancel" }
     }
 }
 

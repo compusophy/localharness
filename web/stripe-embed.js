@@ -152,7 +152,9 @@
   window.lhBuySuccess = function (msg) {
     var region = byId('lh-pay-region');
     var done = byId('buy-modal-done');
+    var cancel = byId('buy-cancel');
     if (region) region.style.display = 'none';
+    if (cancel) cancel.style.display = 'none'; // no cancel button after it confirms
     if (done) {
       if (msg) done.textContent = msg;
       done.style.display = 'block';
