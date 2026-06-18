@@ -30,9 +30,15 @@
 14  975d232  admin tools count = LIVE agent surface (~70), not BuiltinTool::ALL (~18)
 16  975d232  GET /api/lessons — public read-only harvest of on-chain agent lessons
 17  975d232  design/architecture-analysis.md — comparative learn-from-other-harnesses
+0   22bb3a5  native multi-chain EVM + ENS read tools (evm_balance / resolve_ens /
+#            evm_call / evm_chains over a curated CORS-clean public-RPC table) — no
+#            more web_fetch to third-party explorers; live-verified vs Base/Ethereum
+6   67e4ca2  WASI-subset in-browser command runtime + terminal (run_wasm_cli runs a
+#            compiled wasm32-wasi _start, captures stdout/argv/exit); scoped POC,
+#            NOT x86/v86 (no iframes); proven in node via scripts/verify-wasi-cli.mjs
+13  6373a15  on-the-fly dynamic skills (create_skill / list_skills / delete_skill,
+#            folded into the prompt like lessons); crons/loops half already shipped
+19  e4675e2  host::http + HTML->text in rustlite cartridges (poll-model like host_net,
+#            fetch routed through the existing /api/fetch proxy to dodge CORS)
 #
-# STILL OPEN (large features, not yet built):
-#   0  — native multi-chain EVM / ENS read tools (vs web_fetch to third-party APIs)
-#   6  — WASI / x86 terminal emulator in the browser workspace
-#   13 — on-the-fly dynamic skill creation (crons/loops already shipped)
-#   19 — host::http + HTML/XML parsing inside rustlite cartridges
+# INBOX CLEAN: every mainnet feedback item addressed as of 2026-06-18.
