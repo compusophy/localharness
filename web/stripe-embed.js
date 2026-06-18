@@ -27,6 +27,7 @@
   var PK =
     'pk_live_51Tiu4kLz8dIS1FUar4pfDglshUY9Fw9xSPEq4aSc2dmx14X1gk4evtWtEVP2kAXB87f5HVEKIRLKnuFluRI3IGpw004331RqyZ';
   var stripeLoad = null;
+  var stripeInstance = null; // ONE Stripe(PK) instance, reused across buys
   var state = null; // { stripe, elements, opts }
   var watchTimer = null; // setInterval id for the JS payment-status poll
   var watchOpts = null; // {payment_intent, onboarding, lh_label} shared with confirmPay
@@ -167,7 +168,10 @@
     catch (e) { return Promise.reject(e); }
     return loadStripe().then(function (Stripe) {
       window.lhUnmountCheckout();
-      var stripe = Stripe(PK);
+      // Reuse ONE Stripe instance across buys — constructing Stripe(PK) repeatedly
+      // hinders performance (each instance re-inits fraud/telemetry signals).
+      if (!stripeInstance) stripeInstance = Stripe(PK);
+      var stripe = stripeInstance;
       var appearance = {
         theme: 'night',
         variables: {
