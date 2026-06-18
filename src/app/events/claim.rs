@@ -164,18 +164,24 @@ pub(super) async fn run_apex_claim(name: String, create_if_missing: bool) {
             },
         };
 
-        // 2.5. Cost-gate pre-check. Registration is currently free
-        //      (on-chain `registrationCost` is 0), so this is a no-op
-        //      today. It stays as a guard in case the cost gate is ever
-        //      re-enabled: if the registry charges LH and the user can't
-        //      cover it, bail before burning sponsor gas on a guaranteed
-        //      revert.
+        // 2.5. Cost-gate pre-check. Registration costs `registrationCost()` $LH,
+        //      charged via `transferFrom` from the WALLET. A fiat buyer's $LH is
+        //      in the METER, so count BOTH pots: the sponsored claim below bridges
+        //      the wallet shortfall out of the (now-unlocked) meter credits in the
+        //      same atomic tx. Only bail — before burning sponsor gas on a
+        //      guaranteed revert — when neither pot, nor both together, can cover
+        //      the cost.
         let cost = crate::app::registry::registration_cost().await.unwrap_or(0);
         if cost > 0 {
-            let bal = crate::app::registry::token_balance_of(&addr_hex).await.unwrap_or(0);
-            if bal < cost {
-                let deficit_lh = (cost - bal) / 1_000_000_000_000_000_000u128;
-                return Err(format!("__NEED_LH__{deficit_lh}"));
+            let wallet = crate::app::registry::token_balance_of(&addr_hex).await.unwrap_or(0);
+            if wallet < cost {
+                let meter = crate::app::registry::withdrawable_credit_of(&addr_hex)
+                    .await
+                    .unwrap_or(0);
+                if wallet + meter < cost {
+                    let deficit_lh = (cost - wallet - meter) / 1_000_000_000_000_000_000u128;
+                    return Err(format!("__NEED_LH__{deficit_lh}"));
+                }
             }
         }
 

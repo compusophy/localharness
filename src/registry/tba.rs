@@ -687,8 +687,22 @@ pub async fn claim_and_maybe_set_main_sponsored(
     // headroom; sponsor pays in AlphaUSD and only consumed gas is
     // debited, so over-budgeting is free.
     let tx_hash = if cost > 0 {
-        sponsored_escrow_diamond_call(sender, fee_payer, cost, register_input, fee_token, 2_200_000)
-            .await?
+        // `register`'s `transferFrom` pulls the cost from the sender's WALLET
+        // ($LH token balance). A fiat buyer's $LH sits in the METER (`creditOf`),
+        // not the wallet, so compute the wallet shortfall and PREPEND a
+        // `withdrawCredits(shortfall)` meter→wallet bridge into the SAME atomic
+        // tx (the exact pattern every escrow path — bounty/guild/party — uses).
+        // With `fiatLockSecs = 0` the meter credits are immediately withdrawable,
+        // so the bridge can cover the cost; the whole batch reverts atomically if
+        // neither pot can. bridge_wei = 0 (wallet already covers it) falls back to
+        // the plain approve→register batch.
+        let sender_hex = address_to_hex(&wallet::address(sender));
+        let wallet_bal = token_balance_of(&sender_hex).await.unwrap_or(0);
+        let bridge_wei = cost.saturating_sub(wallet_bal);
+        sponsored_escrow_diamond_call_bridged(
+            sender, fee_payer, cost, register_input, fee_token, 2_200_000, bridge_wei,
+        )
+        .await?
     } else {
         sponsored_diamond_call(sender, fee_payer, register_input, fee_token, 2_200_000).await?
     };
