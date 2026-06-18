@@ -45,12 +45,28 @@ pub(crate) fn onboard_pitch() -> Markup {
     }
 }
 
+/// The header settings (gear) glyph — a monochrome stroke icon in the same
+/// hand-drawn style as the notification bell (`fill=none`, `currentColor`,
+/// 1.3 stroke). Replaces the old "admin" text button. ONE source so the
+/// native landing replica and the wasm `site_header` stay identical.
+pub(crate) fn settings_glyph() -> Markup {
+    html! {
+        (maud::PreEscaped(
+            "<svg viewBox=\"0 0 24 24\" width=\"15\" height=\"15\" fill=\"none\" \
+             stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" \
+             stroke-linejoin=\"round\" aria-hidden=\"true\">\
+             <path d=\"M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z\"/>\
+             <circle cx=\"12\" cy=\"12\" r=\"3\"/></svg>",
+        ))
+    }
+}
+
 pub(crate) fn create_wallet_cta() -> Markup {
     html! {
         section #apex-onboard .apex-onboard {
             (onboard_pitch())
             button type="button" data-action="create-account" .apex-onboard-cta {
-                "create agent"
+                "create"
             }
             div #onboard-msg .step-msg {}
         }
@@ -108,20 +124,21 @@ mod tests {
                             div.header-inner {
                                 h1.header-brand { "localharness" }
                                 div.header-admin {
-                                    button type="button"
-                                        .header-button.admin-button { "admin" }
+                                    button type="button" aria-label="settings"
+                                        title="settings"
+                                        .header-button.admin-button { (settings_glyph()) }
                                 }
                             }
                         }
                         // The REAL fresh-apex content path (`templates::apex`
                         // with no wallet) — not a copy.
-                        main.apex-main {
+                        main.apex-main.apex-front {
                             div.col-chat {
                                 div #status .terminal-status {}
                                 (create_wallet_cta())
-                                (apex_links(true))
                             }
                         }
+                        footer.apex-footer { (apex_links(true)) }
                     }
                 }
             }

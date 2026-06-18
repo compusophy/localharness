@@ -142,17 +142,11 @@ pub(crate) fn rendered_markdown(raw: &str) -> Markup {
     html! { (PreEscaped(out)) }
 }
 
-/// Sticky header — brand left, [files] + bug-report glyph + admin button
-/// right. The insect icon (issue #15) sits immediately left of admin and
-/// opens the admin modal pre-switched to its `feedback` tab
-/// (`admin_feedback_section`) — same modal machinery, one click from the
-/// header to the report box. `files` paints the [files] entry that opens
-/// the OPFS browser as a modal (`templates::files_modal`) — only the full
-/// app chrome passes `true`; apex/explore/unclaimed pages have no
-/// `#files-modal` slot so the button would be dead there. The admin
-/// button uses a fixed min-width via `.header-button`; the icon button
-/// opts out (`.feedback-button`) so it stays square-ish instead of 96px
-/// wide.
+/// Sticky header — brand (left) + notification bell + settings gear (right).
+/// The settings button (`crate::landing::settings_glyph`, the same stroke
+/// style as the bell) opens the admin dropdown; both are square icon buttons
+/// that opt out of the `.header-button` 96px text min-width via `.admin-button`
+/// / `.notif-bell-btn`.
 pub(crate) fn site_header(_host: &Host) -> Markup {
     html! {
         header.site-header {
@@ -180,7 +174,8 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
                     (notif_bell())
                     button type="button"
                         data-action="header-admin-toggle"
-                        .header-button.admin-button { "admin" }
+                        aria-label="settings" title="settings"
+                        .header-button.admin-button { (crate::landing::settings_glyph()) }
                     div #header-admin-panel hidden {}
                 }
             }
@@ -911,7 +906,9 @@ pub(crate) fn apex(host: &Host, wallet_address_hex: Option<&str>) -> Markup {
     let fresh = wallet_address_hex.is_none();
     html! {
         (site_header(host))
-        main.apex-main {
+        // `apex-front` (fresh only) vertically centers the single create CTA;
+        // the claim page keeps the default top-aligned block flow.
+        main.apex-main.apex-front[fresh] {
             div.col-chat {
                 // Dispatcher/status messages (invite auto-redeem lands here —
                 // without this node `dom::set_status` is silently dropped on
@@ -934,9 +931,14 @@ pub(crate) fn apex(host: &Host, wallet_address_hex: Option<&str>) -> Markup {
                     (crate::landing::create_wallet_cta())
                 } @else {
                     (apex_claim())
+                    (crate::landing::apex_links(fresh))
                 }
-                (crate::landing::apex_links(fresh))
             }
+        }
+        // The "for agents →" pointer sits in a page footer on the fresh front
+        // door (the claim page keeps it inline above).
+        @if fresh {
+            footer.apex-footer { (crate::landing::apex_links(true)) }
         }
     }
 }

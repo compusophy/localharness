@@ -475,13 +475,13 @@ main.layout .transcript > *:empty { display: none; }
   justify-content: center;
   gap: 3px;
   /* Icon-only button: opt OUT of the .header-button 96px min-width (that's
-     for TEXT buttons like ADMIN). Without this the bell was a 96px-wide
-     empty box with a 15px glyph jammed in the left corner. Square it up. */
+     for text buttons). Without this the bell was a 96px-wide empty box with
+     a 15px glyph jammed in the left corner. Square it up. */
   min-width: 0;
   padding: 10px;
 }
 /* 16px (1:1 with the 0 0 16 16 viewBox — crisp) so the bell's box height
-   matches the ADMIN text button on the same row instead of sitting 1.5px
+   matches the settings gear on the same row instead of sitting 1.5px
    shorter. */
 .notif-bell-btn svg { display: block; width: 16px; height: 16px; }
 .notif-badge {
@@ -651,6 +651,16 @@ main.layout .transcript > *:empty { display: none; }
    INTERNALLY or the hero's lower half (the invite input!) gets clipped. */
 .apex-main { display: block; padding: 32px 24px; max-width: 1180px; overflow-y: auto; }
 .apex-main > .col-chat { max-width: 600px; margin: 0 auto; }
+/* Fresh front door (apex(), no wallet): fill the space between header and
+   footer and vertically center the single create CTA cluster. Scoped to
+   `.apex-front` so the claim/explore pages keep their top-aligned flow. */
+.apex-main.apex-front { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.apex-main.apex-front > .col-chat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
 /* The gap under the site-header is the `main` top padding alone (32px).
    The first content block inside an apex-family page must not stack its
    own top margin on top of that padding, or the gap reads larger than
@@ -679,6 +689,16 @@ main.layout .transcript > *:empty { display: none; }
 }
 .apex-links a { color: var(--muted); text-decoration: none; font-size: 12px; }
 .apex-links a:hover { color: var(--fg); }
+/* Page footer on the fresh front door — pins "for agents →" to the bottom
+   (sibling of .apex-main in the #root flex column). The links inside don't
+   need their inline 64px top push here. */
+.apex-footer {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: center;
+  padding: 20px 24px;
+}
+.apex-footer .apex-links { margin-top: 0; }
 
 /* Public agent directory (?explore=1) */
 .explore-main { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
@@ -1010,7 +1030,9 @@ h1 a:hover { color: var(--accent); }
    a large headline, generous spacing, and a FILLED-INVERSE button. No
    colored accent — every tone is --fg / --bg / --muted / --border. */
 .apex-onboard {
-  margin: 18vh auto 0;
+  /* margin auto top+bottom: when the parent (.apex-front) centers it via
+     flex, this stays centered; on the non-flex fallback it sits near the top. */
+  margin: 0 auto;
   width: 100%;
   max-width: 360px;
   text-align: center;
@@ -1033,11 +1055,13 @@ h1 a:hover { color: var(--accent); }
   line-height: 1.6;
   color: var(--muted);
 }
-/* The page's ONE action: large, full-width, filled-inverse so it
-   outweighs everything else by weight + fill, not color. */
+/* The page's ONE action: large, filled-inverse so it outweighs everything
+   else by weight + fill, not color. */
 .apex-onboard-cta {
   margin: 0;
-  width: 100%;
+  /* Golden-ratio width (φ⁻¹) — a centered pill, not a full-bleed bar.
+     `.apex-onboard` is align-items:center so it self-centers. */
+  width: 61.803%;
   padding: 18px 32px;
   font-size: 16px;
   font-weight: 600;
@@ -1734,7 +1758,16 @@ footer a:hover { text-decoration: underline; }
 /* === 4. OVERLAYS (cont.): admin modal/tabs, files modal, api-key ======== */
 /* Header admin dropdown — sits at top-right, click to expand.
    .header-admin { position: relative } is declared once near the top. */
-/* .admin-button inherits the global button style now */
+/* The admin button is now an icon (settings gear), so it opts OUT of the
+   .header-button 96px text min-width and squares up like the bell. */
+.admin-button {
+  min-width: 0;
+  padding: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.admin-button svg { display: block; width: 16px; height: 16px; }
 .header-admin-panel {
   position: fixed;
   inset: 0;
