@@ -465,32 +465,25 @@ pub(super) fn buy_lh_pressed(onboarding: bool) {
         });
         return;
     }
-    // ADMIN "buy $LH" path (modal) — unchanged.
-    // Status slot: the admin `#buy-msg`, falling back to the pre-claim
-    // `#fund-msg` so the affordance shows "opening checkout…" too.
-    let msg_id = if dom::by_id("buy-msg").is_some() { "buy-msg" } else { "fund-msg" };
+    // ADMIN "buy $LH" path — INLINE in the account tab (NO popup modal; the user
+    // asked for this repeatedly). Swap #buy-area to the checkout card FIRST
+    // (instant feedback), then mount Stripe into it, mirroring onboarding.
     dom::swap_inner(
-        msg_id,
-        "<span style=\"color:var(--muted)\">opening checkout…</span>",
+        "buy-area",
+        &templates::buy_inline_form(&lh_label(cents)).into_string(),
     );
     wasm_bindgen_futures::spawn_local(async move {
         match start_checkout_embedded(cents).await {
             Ok((client_secret, payment_intent)) => {
-                open_buy_modal(&lh_label(cents));
-                // The shim only needs the client_secret (mounts the native
-                // Stripe elements). Minting is driven by the JS status watcher
-                // (`lhWatchPayment`) which calls back into wasm only on success
-                // (`lh_payment_succeeded` → `finalize_after_payment`) with a
-                // freshly signed token — no pre-payment wasm async loop (iOS fix).
                 let opts = serde_json::json!({
                     "clientSecret": client_secret,
                     "payLabel": format!("pay ${}", cents / 100),
                 })
                 .to_string();
                 call_js("lhBuyLh", Some(&opts));
-                dom::swap_inner(msg_id, "");
-                // Watch the PaymentIntent in JS; on success, mint via the wasm
-                // export. No wasm loop remains; this spawned task can end.
+                dom::swap_inner("buy-checkout-msg", "");
+                // Watch the PaymentIntent in JS; success drives the done state +
+                // the wasm mint/refresh. No pre-payment wasm async loop (iOS fix).
                 call_js(
                     "lhWatchPayment",
                     Some(
@@ -505,41 +498,26 @@ pub(super) fn buy_lh_pressed(onboarding: bool) {
             }
             Err(e) => {
                 web_sys::console::warn_1(&JsValue::from_str(&format!("buy $LH: {e}")));
+                dom::swap_inner("buy-area", &templates::buy_area_default().into_string());
                 dom::swap_inner(
-                    msg_id,
-                    &dom::msg_span(dom::Msg::Error, "couldn't start checkout"),
+                    "buy-msg",
+                    &dom::msg_span(dom::Msg::Error, "couldn't start checkout — try again"),
                 );
             }
         }
     });
 }
 
-/// Close + tear down the buy modal (drop the Stripe Elements handle first), then
-/// refresh the balance pill + no-funds banner — a just-settled purchase may have
-/// already minted by the time the user closes the modal.
-pub(super) fn close_buy_modal() {
+/// Cancel the inline buy form: tear down the Stripe Elements handle, restore the
+/// default buy control in `#buy-area`, and refresh the balance pill + no-funds
+/// banner (a just-settled purchase may already have minted via the webhook).
+pub(super) fn cancel_buy_pressed() {
     call_js("lhUnmountCheckout", None);
-    if let Some(el) = dom::by_id("buy-modal") {
-        if let Some(p) = el.parent_element() {
-            let _ = p.remove_child(&el);
-        }
-    }
+    dom::swap_inner("buy-area", &templates::buy_area_default().into_string());
     wasm_bindgen_futures::spawn_local(async {
         super::refresh_credits_pill().await;
         refresh_fund_banner().await;
     });
-}
-
-/// Insert the branded buy modal once (mirrors `show_api_key_modal`).
-fn open_buy_modal(lh_label: &str) {
-    let Ok(doc) = dom::document() else { return };
-    if doc.get_element_by_id("buy-modal").is_some() {
-        return;
-    }
-    if let Some(body) = doc.body() {
-        let _ = body
-            .insert_adjacent_html("beforeend", &templates::buy_modal(lh_label).into_string());
-    }
 }
 
 /// `$LH` minted for `cents` USD, for the modal preview. $LH is decoupled from $

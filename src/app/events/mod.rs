@@ -203,8 +203,8 @@ enum Action {
     RedeemCode,
     /// Buy `$LH` with a card via Stripe Checkout (proxy on-ramp).
     BuyLh,
-    /// Close the embedded-checkout buy modal.
-    CloseBuyModal,
+    /// Cancel the inline buy-$LH checkout, restoring the buy control.
+    CancelBuy,
     /// Redeem a one-time code from the inline no-funds banner above the prompt.
     RedeemBanner,
     /// Escrow the owner's `$LH` behind a fresh bearer code + surface the
@@ -289,7 +289,7 @@ impl Action {
             "redeem-invite-onboard" => Action::RedeemInviteOnboard,
             "redeem-code" => Action::RedeemCode,
             "buy-lh" => Action::BuyLh,
-            "close-buy-modal" => Action::CloseBuyModal,
+            "cancel-buy" => Action::CancelBuy,
             "redeem-banner" => Action::RedeemBanner,
             "create-invite" => Action::CreateInvite,
             "save-x402-price" => Action::SaveX402Price,
@@ -1206,7 +1206,7 @@ fn dispatch(action: Action) {
         Action::RedeemInviteOnboard => credits::redeem_invite_onboard_pressed(),
         Action::RedeemCode => credits::redeem_code_pressed(),
         Action::BuyLh => credits::buy_lh_pressed(false),
-        Action::CloseBuyModal => credits::close_buy_modal(),
+        Action::CancelBuy => credits::cancel_buy_pressed(),
         Action::RedeemBanner => credits::redeem_banner_pressed(),
         Action::CreateInvite => credits::create_invite_pressed(),
         Action::SaveX402Price => admin::save_x402_price_pressed(),

@@ -79,12 +79,12 @@ export default async function handler(req: Request): Promise<Response> {
   }
   const lhWei = usdCentsToWei(usdCents).toString();
 
-  // card + Link only — both settle synchronously (the webhook's NET amount is
-  // ready at mint time; it fails closed otherwise). Link gives returning buyers
-  // one-click saved cards.
+  // CARD ONLY. Link defaulted returning buyers to a bank account, whose payment
+  // resolves 'processing' (not 'succeeded') and left the UI hung; card settles
+  // synchronously so the webhook's NET amount is ready at mint time.
   const base = {
     mode: 'payment' as const,
-    payment_method_types: ['card', 'link'] as Array<'card' | 'link'>,
+    payment_method_types: ['card'] as Array<'card'>,
     line_items: [
       {
         price_data: {
@@ -110,7 +110,7 @@ export default async function handler(req: Request): Promise<Response> {
       const pi = await stripe().paymentIntents.create({
         amount: usdCents,
         currency: 'usd',
-        payment_method_types: ['card', 'link'],
+        payment_method_types: ['card'],
         description: 'localharness $LH credits',
         metadata: { lh_address: lhAddress, lh_wei: lhWei },
       });

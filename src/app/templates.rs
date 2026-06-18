@@ -48,29 +48,41 @@ pub(crate) fn api_key_modal() -> Markup {
     }
 }
 
-/// Branded "buy $LH" modal — Stripe's Payment Element (card + inline Link) mounts
-/// into `#lh-payment` via `web/stripe-embed.js`. It renders no button of its own,
-/// so `#lh-pay-button` (revealed + wired by the shim to `confirmPayment`) is the
-/// submit control. On success the shim flips to `#buy-modal-done` (`lhBuySuccess`)
-/// and the proxy webhook mints the `$LH`. `lh_label` previews the `$LH`.
-/// Height-capped + scrollable so the form never overflows a small screen.
-pub(crate) fn buy_modal(lh_label: &str) -> Markup {
+/// The default buy-`$LH` control (amount input + button) shown inside `#buy-area`
+/// in the admin credits section. Clicking "buy $LH" swaps `#buy-area` to
+/// [`buy_inline_form`] (the inline Stripe card form) IN PLACE — no popup modal.
+/// `cancel` restores this. Whole-dollar amount, $2 minimum.
+pub(crate) fn buy_area_default() -> Markup {
     html! {
-        div #buy-modal .api-key-modal {
-            div.api-key-card style="max-height:88vh;overflow-y:auto" {
-                div.api-key-title { "buy $LH" }
-                div.api-key-hint { (lh_label) }
-                div #lh-pay-region {
-                    div #lh-payment style="margin:6px 0" {}
-                    button #lh-pay-button type="button" .apex-onboard-cta style="display:none;width:100%;margin:8px 0 0" { "pay" }
-                    div #lh-pay-error role="alert" aria-live="assertive" style="color:#ff6b6b;font-size:12px;min-height:1em;margin:4px 0" {}
-                }
-                div #buy-modal-done .api-key-hint style="display:none" {
-                    "✓ payment received — your $LH is minting on-chain and will appear shortly."
-                }
-                button type="button" data-action="close-buy-modal" .ghost style="margin-top:8px" { "close" }
-            }
+        div.redeem-row {
+            input #buy-usd .redeem-input type="number"
+                min="2" step="1" value="2" inputmode="numeric" aria-label="amount in USD";
+            button type="button" data-action="buy-lh" .ghost { "buy $LH" }
         }
+    }
+}
+
+/// The INLINE buy-`$LH` checkout — swapped into `#buy-area` (NOT a popup overlay)
+/// when the user clicks "buy $LH", mirroring the apex onboarding inline card.
+/// Carries the Stripe mount ids the shim needs (`#lh-payment`, `#lh-pay-button`,
+/// `#lh-pay-error`, `#buy-modal-done`). On success the shim flips to
+/// `#buy-modal-done` (`lhBuySuccess`) and the webhook mints. `cancel` (cancel-buy)
+/// restores [`buy_area_default`]. `lh_label` previews the `$LH`.
+pub(crate) fn buy_inline_form(lh_label: &str) -> Markup {
+    html! {
+        div.api-key-hint style="margin:2px 0 8px" { (lh_label) }
+        div #buy-checkout-msg .step-msg style="color:var(--muted)" {
+            "preparing secure checkout…"
+        }
+        div #lh-pay-region {
+            div #lh-payment style="margin:6px 0" {}
+            button #lh-pay-button type="button" .apex-onboard-cta style="display:none;width:100%;margin:8px 0 0" { "pay" }
+            div #lh-pay-error role="alert" aria-live="assertive" style="color:#ff6b6b;font-size:12px;min-height:1em;margin:4px 0" {}
+        }
+        div #buy-modal-done .api-key-hint style="display:none" {
+            "✓ payment received — your $LH is being credited and will appear shortly."
+        }
+        button type="button" data-action="cancel-buy" .ghost style="margin-top:6px" { "cancel" }
     }
 }
 
@@ -1368,14 +1380,11 @@ pub(crate) fn admin_credits_section() -> Markup {
                 input #redeem-code .redeem-input type="text" aria-label="redeem code" placeholder="redeem code";
                 button type="button" data-action="redeem-code" .ghost { "redeem" }
             }
-            // Buy $LH with a card — opens Stripe Checkout; the proxy mints $LH to
-            // this identity once payment settles.
-            // Whole-dollar amount, $2 minimum (≥ 200 $LH at $1 = 100 $LH) — the
-            // same bundle floor as onboarding; the modal pay button shows the price.
-            div.redeem-row {
-                input #buy-usd .redeem-input type="number"
-                    min="2" step="1" value="2" inputmode="numeric" aria-label="amount in USD";
-                button type="button" data-action="buy-lh" .ghost { "buy $LH" }
+            // Buy $LH with a card. "buy $LH" swaps #buy-area to the INLINE Stripe
+            // card form (buy_inline_form) IN PLACE — no popup modal (issue: the
+            // user asked for this repeatedly). $2 min, whole dollars.
+            div #buy-area {
+                (buy_area_default())
             }
             div #buy-msg .admin-msg-slot {}
             div #credits-msg .admin-msg-slot {}

@@ -100,8 +100,12 @@
       })
       .then(function (result) {
         if (result && result.error) { showError(result.error.message || 'payment failed'); return { ok: false }; }
-        var pi = result && result.paymentIntent;
-        if (pi && pi.status === 'succeeded') handleSucceeded();
+        // No error → the payment was accepted. Unstick the UI NOW regardless of
+        // status: a card resolves 'succeeded', but a bank-backed method (Link →
+        // bank account) resolves 'processing' — gating on 'succeeded' left those
+        // hung on "processing…". The webhook mints on the real
+        // payment_intent.succeeded; handleSucceeded is idempotent per PI.
+        handleSucceeded();
         return { ok: true };
       })
       .catch(function (e) { showError((e && e.message) || 'payment error'); return { ok: false }; });
@@ -195,7 +199,7 @@
       // tangle). The PaymentIntent is card+link-only (proxy), so nothing else shows.
       var payment = elements.create('payment', {
         layout: { type: 'accordion', defaultCollapsed: false, radios: true, spacedAccordionItems: false },
-        paymentMethodOrder: ['card', 'link'],
+        paymentMethodOrder: ['card'],
       });
       payment.mount('#lh-payment');
 
