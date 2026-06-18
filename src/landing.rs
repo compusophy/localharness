@@ -81,11 +81,8 @@ pub(crate) fn create_wallet_cta() -> Markup {
 pub(crate) fn ios_unavailable() -> Markup {
     html! {
         section #apex-onboard .apex-onboard {
-            p style="font-size:14px;margin:0 0 8px" {
-                "localharness isn't available on iOS yet."
-            }
-            p style="font-size:12px;color:var(--muted);margin:0" {
-                "open it on Android or a desktop browser to create your agent."
+            p style="font-size:14px;margin:0" {
+                "not available on iOS"
             }
         }
     }
