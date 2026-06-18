@@ -123,18 +123,24 @@ function decodeRange(h) {
 }
 
 import { readFileSync, existsSync } from 'node:fs';
-// Resolved-index skip set (testnet epoch). First whitespace token of each
-// non-comment, non-blank line is the resolved on-chain index.
-const RESOLVED = new Set();
-const rp = new URL('../docs/feedback-resolved.txt', import.meta.url);
-if (existsSync(rp)) {
-  for (const line of readFileSync(rp, 'utf8').split('\n')) {
-    const t = line.trim();
-    if (!t || t.startsWith('#')) continue;
-    const first = t.split(/\s+/)[0];
-    if (/^\d+$/.test(first)) RESOLVED.add(Number(first));
+// Per-chain resolved-index skip sets. The testnet and mainnet diamonds have
+// SEPARATE append-only feedback arrays, so each has its own resolved file.
+// First whitespace token of each non-comment, non-blank line = a resolved index.
+function loadResolved(relPath) {
+  const set = new Set();
+  const p = new URL(relPath, import.meta.url);
+  if (existsSync(p)) {
+    for (const line of readFileSync(p, 'utf8').split('\n')) {
+      const t = line.trim();
+      if (!t || t.startsWith('#')) continue;
+      const first = t.split(/\s+/)[0];
+      if (/^\d+$/.test(first)) set.add(Number(first));
+    }
   }
+  return set;
 }
+const RESOLVED_TESTNET = loadResolved('../docs/feedback-resolved.txt');
+const RESOLVED_MAINNET = loadResolved('../docs/feedback-resolved-mainnet.txt');
 const ONLY_OPEN = process.argv.includes('--open');
 
 const CHAINS = [
@@ -163,9 +169,10 @@ for (const c of CHAINS) {
     all.push(...decodeRange(h));
   }
   const isTestnet = c.name.startsWith('TESTNET');
+  const resolvedSet = isTestnet ? RESOLVED_TESTNET : RESOLVED_MAINNET;
   let open = 0;
   for (let i = 0; i < all.length; i++) {
-    const resolved = isTestnet && RESOLVED.has(i);
+    const resolved = resolvedSet.has(i);
     if (ONLY_OPEN && resolved) continue;
     const e = all[i];
     const when = new Date(e.timestamp * 1000).toISOString().replace('T', ' ').slice(0, 16);

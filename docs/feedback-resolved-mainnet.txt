@@ -1,0 +1,38 @@
+# Resolved on-chain feedback indices — MAINNET (Tempo 4217) epoch.
+#
+# Mirrors docs/feedback-resolved.txt but for the MAINNET diamond
+# (0x8ab4f3a57643410cdf4022cdaf1faeef234f3a77). Its FeedbackFacet indices are a
+# SEPARATE 0-based array from testnet's — do not cross-reference the two.
+# `node scripts/check-feedback.mjs --open` hides these for the mainnet chain.
+# One line per resolved index: <index>  <commit/version>  <note>. NEVER
+# renumber (append-only on-chain array); start over only across a clearFeedback().
+#
+# Epoch: mainnet on-ramp deploy 2026-06-16 onward.
+#
+# index  fixed-in   note
+1   c851a87  economy panels removed from account tab -> agent chat tools (0.47.0)
+8   c851a87  (dup of 1) scheduling/bounty/guild/treasury are chat tools, not UI
+2   c851a87  underlying model injected into the system prompt; 402 rendered as a card
+4   c851a87  out-of-credits raw 402 JSON replaced by out_of_credits_card
+5   0.47.0   schedule_task + notify + dwell native agent tools (no mock cartridges)
+7   0c7321c  "explore all agents" button removed from the home front door
+9   0.47.0   dwell(seconds) tool — cooldown waits without burning dummy read calls
+10  8242294  dwell() polls TURN_CANCEL in 200ms chunks — Stop now interrupts it
+15  8242294  rustlite loader host_display no-op stub — compile_rustlite instantiates
+#            display-importing cartridges without falling back to run_cartridge
+18  8242294  notifications "clear all" control + inline yes/cancel confirm (no JS alert)
+20  8242294  system prompt network name reads chain::ACTIVE.name (was hardcoded "Moderato")
+3   975d232  COST-AWARE prompt convention + honest billing doc (per MODEL ROUND, not
+#            per user message; tool use triggers more rounds; on-chain writes free)
+11  975d232  submit_feedback documented FREE / sponsored (prompt + llms.txt)
+12  975d232  CreditMeterFacet InsufficientCredits() -> LH2024 with a clear message;
+#            check_balances shows the withdrawable-vs-locked meter split + unlock time
+14  975d232  admin tools count = LIVE agent surface (~70), not BuiltinTool::ALL (~18)
+16  975d232  GET /api/lessons — public read-only harvest of on-chain agent lessons
+17  975d232  design/architecture-analysis.md — comparative learn-from-other-harnesses
+#
+# STILL OPEN (large features, not yet built):
+#   0  — native multi-chain EVM / ENS read tools (vs web_fetch to third-party APIs)
+#   6  — WASI / x86 terminal emulator in the browser workspace
+#   13 — on-the-fly dynamic skill creation (crons/loops already shipped)
+#   19 — host::http + HTML/XML parsing inside rustlite cartridges
