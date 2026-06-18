@@ -33,9 +33,9 @@ use super::tools::party::{
     fund_party_tool, get_party_tool, join_party_tool,
 };
 use super::tools::misc::{
-    dwell_tool,
-    clear_context_tool, compact_context_tool, consolidate_lessons_tool, notify_tool,
-    record_lesson_tool, schedule_task_tool, set_lessons_tool,
+    create_skill_tool, delete_skill_tool, dwell_tool,
+    clear_context_tool, compact_context_tool, consolidate_lessons_tool, list_skills_tool,
+    notify_tool, record_lesson_tool, schedule_task_tool, set_lessons_tool,
     set_persona_tool, spawn_recursive_subagent_tool, submit_feedback_tool, web_fetch_tool,
 };
 use super::tools::platform::{
@@ -116,6 +116,19 @@ pub(crate) async fn start_session(
         .await
         .as_deref()
         .and_then(crate::lessons::compose_section)
+    {
+        Some(section) => format!("{system_instructions}\n\n{section}"),
+        None => system_instructions,
+    };
+
+    // Self-defined skills: fold in the bounded skills blob (OPFS working copy,
+    // else the on-chain slot) so a skill the agent taught itself once stays
+    // available — the read half of the skills loop (`create_skill` is the
+    // write half). Folded the SAME way as lessons, on every surface.
+    let system_instructions = match crate::app::skills::load()
+        .await
+        .as_deref()
+        .and_then(crate::skills::compose_section)
     {
         Some(section) => format!("{system_instructions}\n\n{section}"),
         None => system_instructions,
@@ -307,6 +320,9 @@ pub(crate) async fn start_session(
             .with_tool(record_lesson_tool())
             .with_tool(consolidate_lessons_tool())
             .with_tool(set_lessons_tool())
+            .with_tool(create_skill_tool())
+            .with_tool(list_skills_tool())
+            .with_tool(delete_skill_tool())
             .with_tool(crate::app::self_docs::read_self_docs_tool())
             .with_tool(web_fetch_tool())
             .with_tool(dwell_tool())
@@ -417,6 +433,9 @@ pub(crate) async fn start_session(
             .with_tool(record_lesson_tool())
             .with_tool(consolidate_lessons_tool())
             .with_tool(set_lessons_tool())
+            .with_tool(create_skill_tool())
+            .with_tool(list_skills_tool())
+            .with_tool(delete_skill_tool())
             .with_tool(crate::app::self_docs::read_self_docs_tool())
             .with_tool(web_fetch_tool())
             .with_tool(dwell_tool())

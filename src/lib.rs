@@ -162,6 +162,12 @@ pub mod turn_stage;
 /// into the system prompt. See `src/lessons.rs`.
 pub mod lessons;
 
+/// Pure agent-skills blob (JSON array) upsert/remove + prompt-section
+/// composition for the agent SKILLS LOOP (native-testable). The browser
+/// `create_skill` tool, the headless CLI `call`, and the proxy scheduler worker
+/// all fold its output into the system prompt. See `src/skills.rs`.
+pub mod skills;
+
 /// Pure subdomain-name validation (native-testable) — the single source of
 /// truth shared by the browser create tools and kept in sync with the
 /// on-chain `LocalharnessRegistryFacet._isValidName` rule. See `src/subdomain.rs`.

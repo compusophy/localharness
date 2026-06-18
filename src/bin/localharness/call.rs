@@ -624,6 +624,13 @@ pub(crate) async fn run_agent_turn(
             system = format!("{system}\n\n{section}");
         }
     }
+    // Fold in the target's self-defined skills the SAME way, so a headless call
+    // can invoke the same named skills the agent uses in-tab. Best-effort.
+    if let Ok(Some(skills)) = registry::skills_of(target_id).await {
+        if let Some(section) = localharness::skills::compose_section(&skills) {
+            system = format!("{system}\n\n{section}");
+        }
+    }
     // Inject the target's advertised x402 price so the agent never misreports
     // itself as free/sponsored to a PAYING caller (fleet repro: an mcp-call
     // settled 0.05 $LH while the agent answered "my price is 0"). Best-effort:

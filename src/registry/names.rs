@@ -619,6 +619,28 @@ pub fn encode_set_lessons(token_id: u64, lessons: &str) -> Vec<u8> {
     encode_set_metadata_bytes(token_id, keccak_key(LESSONS_LABEL), lessons.as_bytes())
 }
 
+pub(crate) const SKILLS_LABEL: &[u8] = b"localharness.skills";
+
+/// Read a subdomain's self-defined skills blob (a JSON array of
+/// `{name, instructions}`; see `crate::skills`) — folded into the agent's
+/// system prompt on every surface so it can invoke a skill by name. `None`
+/// when unset.
+pub async fn skills_of(token_id: u64) -> Result<Option<String>, String> {
+    match metadata_bytes_of(token_id, keccak_key(SKILLS_LABEL)).await? {
+        Some(b) => Ok(String::from_utf8(b)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())),
+        None => Ok(None),
+    }
+}
+
+/// Encode `setMetadata` for a subdomain's skills blob. Owner-gated, same path
+/// as the published lessons.
+pub fn encode_set_skills(token_id: u64, skills: &str) -> Vec<u8> {
+    encode_set_metadata_bytes(token_id, keccak_key(SKILLS_LABEL), skills.as_bytes())
+}
+
 /// Read the personas for MANY tokens in ONE JSON-RPC batch POST (vs N
 /// serial `persona_of` round-trips). Returns one entry per input id, in
 /// input order: `Some(persona)` when set, `None` when unset / empty / the
@@ -937,6 +959,33 @@ mod tests {
             hex,
             "08564cae936ec460c48a23578c7df5665bad18fe42f3c5dbde517ad67a9d9c89"
         );
+    }
+
+    #[test]
+    fn encode_set_skills_abi_layout() {
+        let cd = encode_set_skills(7, "hi");
+        assert_eq!(&cd[0..4], &selector("setMetadata(uint256,bytes32,bytes)"));
+        assert_eq!(&cd[4..36], &u256_be(7));
+        assert_eq!(&cd[36..68], &keccak_key(SKILLS_LABEL));
+        assert_eq!(&cd[68..100], &u256_be(0x60), "bytes offset");
+        assert_eq!(&cd[100..132], &u256_be(2), "payload length");
+        assert_eq!(&cd[132..134], b"hi");
+        assert_eq!(
+            cd.len(),
+            4 + 96 + 32 + 32,
+            "selector + 3 words + len + padded payload"
+        );
+    }
+
+    #[test]
+    fn skills_key_distinct_from_other_metadata_keys() {
+        // The skills slot must never collide with persona/lessons/app/html/face.
+        let skills = keccak_key(SKILLS_LABEL);
+        assert_ne!(skills, keccak_key(LESSONS_LABEL));
+        assert_ne!(skills, keccak_key(PERSONA_LABEL));
+        assert_ne!(skills, keccak_key(PUBLIC_FACE_LABEL));
+        assert_ne!(skills, keccak_key(PUBLIC_HTML_LABEL));
+        assert_ne!(skills, app_metadata_key());
     }
 
     #[test]
