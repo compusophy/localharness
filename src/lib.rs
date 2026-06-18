@@ -87,6 +87,12 @@ pub mod types;
 /// Rust-subset to wasm compiler.
 pub mod rustlite;
 
+/// bashlite — a tiny, total, sandboxed shell that scripts the platform's
+/// filesystem in one pass (the cost unlock: a multi-step fs chore collapses
+/// from N LLM rounds to ONE `execute_script` tool call). Native-testable core
+/// over a [`bashlite::BashHost`] trait. See `src/bashlite/` + `design/bashlite.md`.
+pub mod bashlite;
+
 /// Solidity/EVM-subset to EVM-bytecode compiler foundation (the EVM analog of
 /// [`rustlite`]): a bytecode assembler + worked dispatch/init scaffolding. See
 /// `design/soliditylite.md`.
