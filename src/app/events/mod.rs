@@ -32,7 +32,7 @@ mod public_face;
 pub(crate) mod schedule;
 mod subdomains;
 
-pub(crate) use credits::{finalize_after_payment, refresh_fund_banner, try_redeem_pending_invite};
+pub(crate) use credits::{finalize_payment_return, refresh_fund_banner, try_redeem_pending_invite};
 
 thread_local! {
     /// One identity/onboarding flow at a time. Mashing a (perceived-stuck)
@@ -201,10 +201,8 @@ enum Action {
     RedeemInviteOnboard,
     /// Redeem a one-time code for `$LH` credits.
     RedeemCode,
-    /// Buy `$LH` with a card via Stripe Checkout (proxy on-ramp).
+    /// Buy `$LH` with a card — navigates to the dedicated `/pay.html` checkout.
     BuyLh,
-    /// Cancel the inline buy-$LH checkout, restoring the buy control.
-    CancelBuy,
     /// Redeem a one-time code from the inline no-funds banner above the prompt.
     RedeemBanner,
     /// Escrow the owner's `$LH` behind a fresh bearer code + surface the
@@ -289,7 +287,6 @@ impl Action {
             "redeem-invite-onboard" => Action::RedeemInviteOnboard,
             "redeem-code" => Action::RedeemCode,
             "buy-lh" => Action::BuyLh,
-            "cancel-buy" => Action::CancelBuy,
             "redeem-banner" => Action::RedeemBanner,
             "create-invite" => Action::CreateInvite,
             "save-x402-price" => Action::SaveX402Price,
@@ -1206,7 +1203,6 @@ fn dispatch(action: Action) {
         Action::RedeemInviteOnboard => credits::redeem_invite_onboard_pressed(),
         Action::RedeemCode => credits::redeem_code_pressed(),
         Action::BuyLh => credits::buy_lh_pressed(false),
-        Action::CancelBuy => credits::cancel_buy_pressed(),
         Action::RedeemBanner => credits::redeem_banner_pressed(),
         Action::CreateInvite => credits::create_invite_pressed(),
         Action::SaveX402Price => admin::save_x402_price_pressed(),

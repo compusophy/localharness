@@ -22,7 +22,7 @@ try {
 }
 
 // Cross-reload crash telemetry (shared sessionStorage keys with
-// web/stripe-embed.js + src/app/debuglog.rs). An iOS WebContent OOM kill is a
+// src/app/debuglog.rs). An iOS WebContent OOM kill is a
 // RESET (Safari respawns the renderer and reloads the tab), not a JS error or a
 // wasm panic — so it leaves no trail in the reloaded page. The discriminator: a
 // user-initiated reload/navigation fires `pagehide`; an abrupt OOM kill does
@@ -108,7 +108,7 @@ window.addEventListener("appinstalled", () => {
 // cannot 404. Bust the shim AND the wasm (the shim drops the query when it
 // resolves the wasm relative to import.meta.url, so the wasm url is passed
 // explicitly to init).
-const LH_BUILD = "7a2f9d663dc2";
+const LH_BUILD = "bc0c1e6940e3";
 try {
   const mod = await import("./pkg/localharness.js?v=" + LH_BUILD);
   // Object form (not a bare string) — the bare-path arg is deprecated in this
@@ -128,17 +128,9 @@ try {
       }
     });
   }
-  // Stripe payment → mint bridge. The status poll runs in JS (stripe-embed.js's
-  // `lhWatchPayment` — moving it OUT of the wasm executor fixed an iOS WebKit
-  // BorrowError) and calls back into wasm here ONLY on `succeeded`. The export
-  // is on the imported `mod`, not on window, so expose it for the shim to call.
-  window.lh_payment_succeeded = (pi, ob, label) => {
-    try {
-      mod.lh_payment_succeeded(String(pi || ""), Boolean(ob), String(label || ""));
-    } catch (e) {
-      console.error(e);
-    }
-  };
+  // (Stripe checkout no longer calls back into wasm: the card form runs on the
+  // separate wasm-free /pay.html and returns via ?bought=1&pi=…, which the wasm
+  // app finalizes on the next mount — see src/app/mod.rs payment_return_params.)
 } catch (e) {
   // Boot failed (wasm/shim fetch 404 mid-deploy, instantiation failure,
   // network drop). Swap #root to a minimal monochrome failure line —

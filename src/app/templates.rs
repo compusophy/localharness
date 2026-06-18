@@ -50,8 +50,8 @@ pub(crate) fn api_key_modal() -> Markup {
 
 /// The default buy-`$LH` control (amount input + button) shown inside `#buy-area`
 /// in the admin credits section. Clicking "buy $LH" swaps `#buy-area` to
-/// [`buy_inline_form`] (the inline Stripe card form) IN PLACE — no popup modal.
-/// `cancel` restores this. Whole-dollar amount, $2 minimum.
+/// [`buy_inline_form`] (a brief interstitial) then NAVIGATES to `/pay.html`.
+/// Whole-dollar amount, $2 minimum.
 pub(crate) fn buy_area_default() -> Markup {
     html! {
         div.redeem-row {
@@ -62,54 +62,29 @@ pub(crate) fn buy_area_default() -> Markup {
     }
 }
 
-/// The INLINE buy-`$LH` checkout — swapped into `#buy-area` (NOT a popup overlay)
-/// when the user clicks "buy $LH", mirroring the apex onboarding inline card.
-/// Carries the Stripe mount ids the shim needs (`#lh-payment`, `#lh-pay-button`,
-/// `#lh-pay-error`, `#buy-modal-done`). On success the shim flips to
-/// `#buy-modal-done` (`lhBuySuccess`) and the webhook mints. `cancel` (cancel-buy)
-/// restores [`buy_area_default`]. `lh_label` previews the `$LH`.
+/// Buy-`$LH` interstitial — swapped into `#buy-area` the instant the user taps
+/// "buy $LH", shown briefly while the seed is (onboarding) persisted and the
+/// PaymentIntent is fetched, before the page NAVIGATES to the wasm-FREE
+/// `/pay.html` checkout. The card form lives there, not here: iOS Safari OOM-kills
+/// the renderer if the 4.6 MB wasm app and Stripe's iframes share it. `lh_label`
+/// previews the `$LH`.
 pub(crate) fn buy_inline_form(lh_label: &str) -> Markup {
     html! {
         div.api-key-hint style="margin:2px 0 8px" { (lh_label) }
-        div #buy-checkout-msg .step-msg style="color:var(--muted)" {
-            "preparing secure checkout…"
-        }
-        div #lh-pay-region {
-            div #lh-payment style="margin:6px 0" {}
-            button #lh-pay-button type="button" .apex-onboard-cta style="display:none;width:100%;margin:8px 0 0" { "pay" }
-            div #lh-pay-error role="alert" aria-live="assertive" style="color:#ff6b6b;font-size:12px;min-height:1em;margin:4px 0" {}
-        }
-        div #buy-modal-done .api-key-hint style="display:none" {
-            "✓ payment received — your $LH is being credited and will appear shortly."
-        }
-        button #buy-cancel type="button" data-action="cancel-buy" .ghost style="margin-top:6px" { "cancel" }
+        div.step-msg style="color:var(--muted)" { "opening secure checkout…" }
     }
 }
 
-/// INLINE onboarding checkout — the pay-first "create agent · $2" flow renders
-/// this IN PLACE of `#apex-onboard` (NOT a modal/overlay), so the card appears
-/// on the page the instant the button is tapped. Carries the SAME Stripe mount
-/// ids the shim needs (`#lh-payment`, `#lh-pay-error`,
-/// `#buy-modal-done`) plus an interstitial line (`#onboard-checkout-msg`) the
-/// Rust side clears once `lhBuyLh` mounts the form. Same visual family as the
-/// apex onboard card; minimal copy.
+/// Onboarding checkout interstitial — replaces `#apex-onboard` the instant the
+/// user taps "create agent · $2", shown while the seed is persisted + the
+/// PaymentIntent fetched, before the page NAVIGATES to the wasm-FREE `/pay.html`
+/// checkout (same iOS-OOM reason as [`buy_inline_form`]). Keeps the offer pitch so
+/// it doesn't vanish under the user mid-tap.
 pub(crate) fn onboard_checkout() -> Markup {
     html! {
         section #apex-onboard .apex-onboard {
-            // Keep the offer pitch at the top so "limited time" / the deal does
-            // NOT vanish when the user taps create (same pitch as the button card).
             (crate::landing::onboard_pitch())
-            div #onboard-checkout-msg .step-msg style="color:var(--muted)" {
-                "preparing secure checkout…"
-            }
-            div #lh-pay-region {
-                div #lh-payment style="margin:6px 0" {}
-                button #lh-pay-button type="button" .apex-onboard-cta style="display:none;width:100%;margin:8px 0 0" { "pay" }
-                div #lh-pay-error role="alert" aria-live="assertive" style="color:#ff6b6b;font-size:12px;min-height:1em;margin:4px 0" {}
-            }
-            div #buy-modal-done .api-key-hint style="display:none" {
-                "✓ payment received — your $LH is minting on-chain and will appear shortly."
-            }
+            div.step-msg style="color:var(--muted)" { "opening secure checkout…" }
         }
     }
 }

@@ -96,7 +96,7 @@ fn paint_overlay() {
 // `pagehide` (a user-initiated reload/navigation fires it; an abrupt OOM kill
 // does NOT). On the reloaded tab [`detect_previous_crash`] reports "died at
 // stage X after Y ms" iff a stage was active and never cleanly exited. Keys are
-// shared verbatim with `web/stripe-embed.js` + `web/boot.js`.
+// shared verbatim with `web/boot.js` (the `pagehide`/error traps).
 
 const K_STAGE: &str = "lh_crash_stage";
 const K_T0: &str = "lh_crash_t0";
