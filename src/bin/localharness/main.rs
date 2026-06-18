@@ -159,14 +159,26 @@ pub(crate) use tba::*;
 pub(crate) use util::*;
 pub(crate) use vote::*;
 
-// Embedded testnet sponsor (same key as src/app/sponsor.rs — already public
-// in the repo + wasm bundle). Pays AlphaUSD fees so a new identity needs no
-// balance. Rotate before mainnet.
+// Embedded sponsor key (mirrors src/app/sponsor.rs) — signs as `fee_payer` on
+// every sponsored CLI op so a new identity needs no balance. Chain-gated like
+// the browser: the TESTNET key is the committed const (derives
+// 0x0aff88…a922c, AlphaUSD fees); on a `mainnet`-feature build the FUNDED
+// mainnet sponsor (0xE70f4B…065E, USDC.e fees) is read from the
+// `LH_MAINNET_SPONSOR_KEY` env at COMPILE time (`env!`, so a mainnet build
+// without it fails closed). Before this was hardcoded testnet-only, so the
+// mainnet CLI signed with an unfunded fee_payer → every sponsored write died
+// with "insufficient funds for gas" (found dogfooding the mainnet claim).
+#[cfg(feature = "mainnet")]
+const SPONSOR_KEY: &str = env!("LH_MAINNET_SPONSOR_KEY");
+#[cfg(not(feature = "mainnet"))]
 const SPONSOR_KEY: &str = "0x046a830b5203d1d2c0a205a1432746e4381d0874711b2de7f575a973644b9d43";
 
-/// The credit proxy debits ~this much `$LH` per request (mirrors the proxy's
-/// `COST_PER_REQUEST_WEI` = 1e16 = 0.01 `$LH`).
-const CALL_COST_WEI: u128 = 10_000_000_000_000_000;
+/// The credit proxy debits ~this much `$LH` per DEFAULT-model request (mirrors
+/// the proxy's `COST_PER_REQUEST_WEI` = 1e18 = 1 `$LH`; premium models cost more).
+/// Baseline estimate for the meter pre-fund check + keeper job costing — was a
+/// stale 0.01 `$LH` (pre-decoupling), which under-funded the meter so every call
+/// fell through to the x402 path (found dogfooding the mainnet call).
+const CALL_COST_WEI: u128 = 1_000_000_000_000_000_000;
 /// When the per-request meter can't cover a call, top it up with this much from
 /// the wallet — a small buffer (~20 calls) so we don't deposit on every call.
 /// A one-shot agent call pays PER REQUEST, not a 10-`$LH` hour-long session.
@@ -951,9 +963,14 @@ mod tests {
         // so a future rotation that forgets the bin won't ship broken.
         let signer = wallet::from_private_key_hex(SPONSOR_KEY).expect("SPONSOR_KEY must parse");
         let addr = bytes_to_hex_str(&wallet::address(&signer));
+        // Per-chain documented sponsor address (mirrors src/app/sponsor.rs).
+        #[cfg(not(feature = "mainnet"))]
+        let expected = "0x0aff88ad13ef24cac5befd0f9dc3a05df79a922c";
+        #[cfg(feature = "mainnet")]
+        let expected = "0xe70f4b23322a954a1881b8dc3db5781f9d22065e";
         assert_eq!(
             addr.to_ascii_lowercase(),
-            "0x0aff88ad13ef24cac5befd0f9dc3a05df79a922c",
+            expected,
             "SPONSOR_KEY no longer derives the documented sponsor address"
         );
     }
