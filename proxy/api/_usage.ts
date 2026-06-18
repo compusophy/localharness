@@ -1,12 +1,30 @@
-// _usage.ts — token-usage metering FOUNDATION (Option A, design/metering.md).
+// _usage.ts — token-usage metering (Option A, design/metering.md). Pure +
+// unit-tested (scripts/test-metering-usage.mjs, hand-computed).
 //
-// STAGED, NOT WIRED: these are pure, exported building blocks for the real fix
-// (charge actual tokens instead of a flat per-request fee). gemini.ts still bills
-// flat today; wiring this into the live debit path (a streaming-response tee +
-// Edge `waitUntil` post-stream debit, + the margin decision) is the SUPERVISED
-// next step that needs a LIVE call to confirm each provider emits usage in its
-// SSE. Until then this module is unused — so importing/typechecking it changes
-// nothing live. Verified by scripts/test-metering-usage.mjs (hand-computed).
+// WIRED, FLAG-GATED OFF: gemini.ts imports this and bills `max(flatFloor,
+// usageCostWei(extractUsage(sse), MARGIN_BPS))` via a passthrough stream tee —
+// but ONLY when `LH_TOKEN_METERING=1`. The flag is UNSET in prod, so the live
+// debit path is still the flat per-request price and importing/typechecking this
+// changes nothing live. Flipping it on needs a LIVE call per provider to confirm
+// the SSE carries a usage frame (the `extractUsage` shapes below) — see the
+// HUMAN-REVIEW CHECKLIST in gemini.ts at the `TOKEN_METERING` flag.
+//
+// SSE usage-field shape per provider (verified against the Rust backends, the
+// source of truth — src/backends/{gemini,anthropic}/wire.rs):
+//   gemini    — every streamed chunk carries a CUMULATIVE `usageMetadata`
+//               { promptTokenCount, candidatesTokenCount, cachedContentTokenCount? };
+//               the LAST chunk is final. `cachedContentTokenCount` only appears
+//               when implicit/explicit context caching hits (else absent → 0).
+//   anthropic — `message_start.message.usage` carries `input_tokens` +
+//               `cache_read_input_tokens?` (+ a 1-4 PLACEHOLDER `output_tokens`,
+//               which we IGNORE); each `message_delta.usage.output_tokens` is the
+//               running CUMULATIVE total → take the LAST. Caching just shipped on
+//               this path, so `cache_read_input_tokens` now flows when a turn hits
+//               the prompt cache.
+//   openai    — a single late chunk carries `usage` { prompt_tokens,
+//               completion_tokens, prompt_tokens_details.cached_tokens? } — ONLY
+//               when the request set `stream_options.include_usage` (gemini.ts
+//               injects this on the OpenAI path when metering is on).
 //
 // Pricing source: design/metering.md (live-verified Gemini + Anthropic 2026;
 // OpenAI GPT-5 family is third-party ESTIMATED — VERIFY before relying on a GPT

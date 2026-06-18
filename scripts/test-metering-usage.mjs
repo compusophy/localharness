@@ -104,6 +104,28 @@ eq('cost unknown anthropic fallback', usageCostWei('anthropic', 'claude-future-9
 // clamp: negative/over-cached → 0/clamped (no throw, no negative)
 eq('cost clamps junk to 0', usageCostWei('gemini', 'gemini-3.5-flash', { inputTokens: -5, outputTokens: -1, cachedInputTokens: 999 }, 10000n), 0n);
 
+// --- cached-input DISCOUNT (the prompt-caching savings must flow into billing) ---
+// opus rates: in=5e12, out=25e12, cached=5e11 wei/tok.
+// (A) 10000in (8000 cached)/2000out @1.0x: billed = 2000*5e12 + 8000*5e11 + 2000*25e12
+//     = 1e16 + 4e15 + 5e16 = 6.4e16.
+eq('cost opus cached-discount x1.0', usageCostWei('anthropic', 'claude-opus-4-8', { inputTokens: 10000, outputTokens: 2000, cachedInputTokens: 8000 }, 10000n), 64000000000000000n);
+// (B) SAME tokens, NO cache: 10000*5e12 + 2000*25e12 = 5e16 + 5e16 = 1e17. The
+//     delta vs (A) is the discount = 8000*(5e12-5e11) = 3.6e16 — proving the
+//     cheaper cached rate is applied to exactly the cached subset.
+eq('cost opus no-cache (discount baseline)', usageCostWei('anthropic', 'claude-opus-4-8', { inputTokens: 10000, outputTokens: 2000, cachedInputTokens: 0 }, 10000n), 100000000000000000n);
+const discount = usageCostWei('anthropic', 'claude-opus-4-8', { inputTokens: 10000, outputTokens: 2000, cachedInputTokens: 0 }, 10000n)
+  - usageCostWei('anthropic', 'claude-opus-4-8', { inputTokens: 10000, outputTokens: 2000, cachedInputTokens: 8000 }, 10000n);
+eq('cached discount == 8000*(in-cached)', discount, 36000000000000000n);
+// (C) FULLY cached input (every input token a cache hit) → only the cheap rate
+//     applies to input. flash: 1000 cached/0out @1.0x = 1000*1.5e11 = 1.5e14.
+eq('cost flash fully-cached x1.0', usageCostWei('gemini', 'gemini-3.5-flash', { inputTokens: 1000, outputTokens: 0, cachedInputTokens: 1000 }, 10000n), 150000000000000n);
+// (D) cachedInput > input is clamped to input (cached can't exceed prompt); with
+//     real output it doesn't zero the whole charge. flash 500in(clamped 500)/100out
+//     @1.0x = 0*1.5e12 + 500*1.5e11 + 100*9e12 = 7.5e13 + 9e14 = 9.75e14.
+eq('cost flash over-cached clamps to input', usageCostWei('gemini', 'gemini-3.5-flash', { inputTokens: 500, outputTokens: 100, cachedInputTokens: 900 }, 10000n), 975000000000000n);
+// (E) margin applies AFTER the cached split: (A) at 1.3x = 6.4e16*1.3 = 8.32e16.
+eq('cost opus cached-discount x1.3', usageCostWei('anthropic', 'claude-opus-4-8', { inputTokens: 10000, outputTokens: 2000, cachedInputTokens: 8000 }, 13000n), 83200000000000000n);
+
 // extractUsage — gemini (last cumulative chunk wins)
 const GEM = 'data: {"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":200,"totalTokenCount":1200}}\n\ndata: {"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":500,"cachedContentTokenCount":300,"totalTokenCount":1500}}\n';
 eq('extract gemini', extractUsage('gemini', GEM), { inputTokens: 1000, outputTokens: 500, cachedInputTokens: 300 });
@@ -125,6 +147,16 @@ const BIGOPUS = 'event: message_start\ndata: {"type":"message_start","message":{
 eq('amount big-usage above floor', meteredAmountWei('anthropic', 'claude-opus-4-8', BIGOPUS, FLOOR, 13000n), 45500000000000000n);
 // no usage frame in the SSE → fall back to the flat floor (never free)
 eq('amount no-usage → floor', meteredAmountWei('gemini', 'gemini-3.5-flash', 'data: {"candidates":[]}\n', FLOOR, 13000n), FLOOR);
+// END-TO-END cached discount: an anthropic SSE that reports cache_read_input_tokens
+// must bill the cheaper cached rate via the SSE → extractUsage → usageCostWei
+// path. opus 10000in (8000 cache_read)/2000out @1.3x = 6.4e16*1.3 = 8.32e16 (the
+// same as the unit case (E) — confirms the cache field survives extraction).
+const CACHED_SSE = 'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":10000,"cache_read_input_tokens":8000,"output_tokens":1}}}\n\nevent: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":2000}}\n';
+eq('amount cached SSE bills cached rate', meteredAmountWei('anthropic', 'claude-opus-4-8', CACHED_SSE, FLOOR, 13000n), 83200000000000000n);
+// the SAME SSE WITHOUT the cache field bills full input → strictly MORE (the
+// discount is observable end-to-end, not just in the unit math).
+const UNCACHED_SSE = 'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":10000,"output_tokens":1}}}\n\nevent: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":2000}}\n';
+eq('amount uncached SSE bills full input', meteredAmountWei('anthropic', 'claude-opus-4-8', UNCACHED_SSE, FLOOR, 13000n), 130000000000000000n);
 
 // --- passthrough plumbing: the metered TransformStream streams bytes VERBATIM
 //     and computes the right debit on flush (mirrors gemini.ts meteredBody, sans

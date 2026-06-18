@@ -193,6 +193,28 @@ const MAX_CREDITS_BODY_BYTES = Number(process.env.LH_MAX_CREDITS_BODY_BYTES ?? '
 // the response SSE via a passthrough tee (the caller's bytes are untouched).
 // x402 stays flat-exact (token-based x402 needs the "Upto" scheme — Phase 2);
 // session-only callers stay free. MARGIN_BPS: 10000 = raw cost, 13000 = +30%.
+//
+// ┌─ HUMAN-REVIEW CHECKLIST before flipping this ON (live billing) ────────────┐
+// │ 1. Make ONE real credit-path call per provider against the live proxy and  │
+// │    capture the raw SSE; confirm a usage frame is present and `extractUsage` │
+// │    (in _usage.ts) reads non-zero input/output:                             │
+// │      gemini    → last chunk's `usageMetadata.{promptTokenCount,            │
+// │                  candidatesTokenCount}` (and cachedContentTokenCount on a  │
+// │                  cache hit).                                               │
+// │      anthropic → `message_start...usage.input_tokens` (+ cache_read_input_ │
+// │                  tokens) and the LAST `message_delta.usage.output_tokens`. │
+// │      openai    → the late `usage` chunk (only with stream_options.include_ │
+// │                  usage, which the handler injects when metering is on).    │
+// │ 2. If a provider has NO usage frame, metering FALLS BACK to the flat floor │
+// │    (never free) — acceptable, but note it (you'll bill flat for it).       │
+// │ 3. Sanity-check RATE_USD in _usage.ts vs the live provider pricing pages   │
+// │    (model ids drift — CLAUDE.md). OpenAI rates are ESTIMATED.              │
+// │ 4. Decide MARGIN_BPS (default 13000 = +30% over raw provider cost).        │
+// │ 5. Enable on the proxy (separate Vercel project) ONLY:                     │
+// │      vercel env add LH_TOKEN_METERING   # value: 1                         │
+// │      vercel env add LH_MARGIN_BPS       # optional, default 13000          │
+// │    then `cd proxy && vercel --prod`. Watch the first metered debits.       │
+// └────────────────────────────────────────────────────────────────────────────┘
 const TOKEN_METERING = (process.env.LH_TOKEN_METERING ?? '') === '1';
 const MARGIN_BPS = (() => {
   // Parse defensively: a malformed env (e.g. a typo) must NOT throw at module
@@ -448,23 +470,30 @@ async function meterDebit(user: string, amount: bigint, confirm = true): Promise
 /**
  * Option A passthrough: wrap a 2xx SSE body so every byte streams to the caller
  * UNCHANGED while the text is accumulated, and when the stream ENDS (`flush`)
- * the caller is debited the usage-based REMAINDER above the floor:
- * `max(0, meteredAmountWei(...) − floorCost)`. The floor itself is charged
- * UP FRONT (before streaming) by the handler, so an early client disconnect —
- * `flush()` runs on stream close, NOT on a reader-abort — can never yield a
- * fully un-debited call; only the usage remainder is at risk on a disconnect,
- * which the platform eats. `onMetered` receives the REMAINDER, not the total.
+ * the usage-based amount is settled. The math lives in `_usage.ts` (pure +
+ * unit-tested); this only does the plumbing.
  *
- * The remainder broadcast is awaited in flush (keeps the Edge fn alive) but, like
- * the flat meter, does NOT await the receipt. The amount math lives in `_usage.ts`
- * (pure + unit-tested); this only does the plumbing.
+ * The flush passes the callback BOTH figures, because the two live paths charge
+ * against different bases (passing the wrong one under-charges):
+ *   - METER path: the floor was charged UP FRONT, so it debits only the
+ *     `remainderWei` above it (`max(0, total − floorCost)`).
+ *   - x402 "Upto" path: NOTHING was charged up front (the up-front settle is
+ *     skipped for `tokenX402Active`), so the one-shot-nonce `settleUpto` must
+ *     settle the FULL measured `totalWei`, NOT the remainder — passing the
+ *     remainder would under-settle by exactly the floor.
+ *
+ * `flush()` runs on stream close, NOT on a reader-abort, so an early client
+ * disconnect can't yield a fully un-debited METER call (the floor is already
+ * taken); only the usage remainder is at risk on a disconnect, which the
+ * platform eats. The broadcast is awaited in flush (keeps the Edge fn alive) but,
+ * like the flat meter, does NOT await the receipt.
  */
 function meteredBody(
   body: ReadableStream<Uint8Array>,
   provider: Provider,
   model: string,
   floorCost: bigint,
-  onMetered: (remainderWei: bigint) => Promise<unknown>,
+  onMetered: (amount: { remainderWei: bigint; totalWei: bigint }) => Promise<unknown>,
 ): ReadableStream<Uint8Array> {
   const decoder = new TextDecoder();
   let acc = '';
@@ -481,13 +510,16 @@ function meteredBody(
     async flush() {
       if (settled) return;
       settled = true;
-      const total = meteredAmountWei(provider, model, acc, floorCost, MARGIN_BPS);
-      const remainder = total > floorCost ? total - floorCost : 0n;
-      if (remainder <= 0n) return; // floor already charged up front — nothing more
+      const totalWei = meteredAmountWei(provider, model, acc, floorCost, MARGIN_BPS);
+      const remainderWei = totalWei > floorCost ? totalWei - floorCost : 0n;
+      // Both no-ops → nothing to do. The METER path is done once the remainder
+      // is 0 (floor covered it); the x402 path still owes `totalWei`, so let the
+      // callback pick its base and only short-circuit when BOTH are zero.
+      if (remainderWei <= 0n && totalWei <= 0n) return;
       try {
-        // meter path → meterDebit(remainder); x402 "Upto" → settleUpto(total).
+        // meter path → meterDebit(remainderWei); x402 "Upto" → settleUpto(totalWei).
         // Broadcast awaited (keeps the Edge fn alive); the receipt is not.
-        await onMetered(remainder);
+        await onMetered({ remainderWei, totalWei });
       } catch {
         /* broadcast failed — floor already taken; platform eats the remainder */
       }
@@ -954,9 +986,13 @@ export default async function handler(req: Request): Promise<Response> {
     // x402-Upto path settles the measured actual on stream-end. Otherwise stream
     // straight through (floor / exact settle already happened above).
     const respBody = tokenMeterActive
-      ? meteredBody(upstream.body!, provider, model, cost, (remainder) => meterDebit(address, remainder, false))
+      ? meteredBody(upstream.body!, provider, model, cost, ({ remainderWei }) =>
+          meterDebit(address, remainderWei, false),
+        )
       : tokenX402Active && x402Auth
-        ? meteredBody(upstream.body!, provider, model, cost, (wei) => settleUptoNoWait(x402Auth, wei))
+        ? meteredBody(upstream.body!, provider, model, cost, ({ totalWei }) =>
+            settleUptoNoWait(x402Auth, totalWei),
+          )
         : upstream.body;
 
     return new Response(respBody, {
