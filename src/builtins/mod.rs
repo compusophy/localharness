@@ -95,11 +95,14 @@ pub(crate) fn protected_path_error(path: &str) -> crate::error::Error {
 
 /// Construction dependencies the built-in tools optionally need.
 ///
-/// * `chat_client` + `chat_model` — used by `start_subagent`.
+/// * `chat_client` + `chat_model` — used by `start_subagent` (the model the
+///   spawned subagent runs against).
 /// * `image_client` + `image_model` — used by `generate_image`.
-/// * `fs` — used by the 6 filesystem builtins (list_directory, view_file,
-///   find_file, search_directory, create_file, edit_file). If `None`,
-///   those builtins are skipped.
+/// * `fs` — used by the 8 filesystem builtins (list_directory, view_file,
+///   find_file, search_directory, create_file, edit_file, delete_file,
+///   rename_file). If `None`, those builtins are skipped. ALSO handed to
+///   `start_subagent` so the spawned subagent's reduced fs builtins operate
+///   over the SAME store the parent uses.
 pub struct BuiltinDeps {
     pub chat_client: Option<SharedClient>,
     pub chat_model: String,
@@ -141,7 +144,15 @@ pub fn register_builtins(
                 Arc::new(GenerateImage::new(c.clone(), deps.image_model.clone())) as Arc<dyn Tool>
             }),
             BuiltinTool::StartSubagent => deps.chat_client.as_ref().map(|c| {
-                Arc::new(StartSubagent::new(c.clone(), deps.chat_model.clone())) as Arc<dyn Tool>
+                // The subagent is TOOL-BEARING: hand it the SAME filesystem the
+                // parent's fs builtins write to, so it can do real work over the
+                // shared OPFS (it gets a REDUCED allowlist — fs builtins + finish,
+                // never nested subagents / value-moving tools; see start_subagent.rs).
+                Arc::new(StartSubagent::with_filesystem(
+                    c.clone(),
+                    deps.chat_model.clone(),
+                    deps.fs.clone(),
+                )) as Arc<dyn Tool>
             }),
             BuiltinTool::ListDirectory => fs_tool!(deps, ListDirectory),
             BuiltinTool::ViewFile => fs_tool!(deps, ViewFile),
