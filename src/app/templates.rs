@@ -529,6 +529,7 @@ pub(crate) fn chrome(host: &Host) -> Markup {
         }
         div #files-modal hidden {}
         div #display-overlay hidden {}
+        div #terminal-overlay hidden {}
     }
 }
 
@@ -579,6 +580,53 @@ pub(crate) fn display_overlay() -> Markup {
 /// The closed state of the display overlay — the hidden swap target.
 pub(crate) fn display_overlay_closed() -> Markup {
     html! { div #display-overlay hidden {} }
+}
+
+/// The TERMINAL overlay — the text counterpart of [`display_overlay`] for the
+/// CLI sandbox (on-chain feedback #6). A fullscreen, dismissable monochrome
+/// terminal showing one WASI-command run: its argv line, stdout, stderr, and
+/// exit code. Opened by `cli::show_terminal` (the `run_wasm_cli` tool) or a
+/// transcript card's [show]; dismissed via `×` (`Action::ToggleTerminal`).
+/// Reuses the `.display-overlay` chrome so no new layout CSS is needed.
+pub(crate) fn terminal_overlay(argv: &str, run: &crate::app::cli::CliRun) -> Markup {
+    html! {
+        div #terminal-overlay .display-overlay {
+            button type="button" data-action="toggle-terminal"
+                .modal-close.display-close aria-label="close terminal" { "×" }
+            (terminal_surface(argv, run))
+        }
+    }
+}
+
+/// The closed state of the terminal overlay — the hidden swap target.
+pub(crate) fn terminal_overlay_closed() -> Markup {
+    html! { div #terminal-overlay hidden {} }
+}
+
+/// The terminal surface itself: a monochrome `<pre>` transcript of one CLI run.
+/// stdout and stderr are SEPARATE blocks (stderr only shown when non-empty) so
+/// a program's diagnostics are distinguishable from its output. The exit code
+/// + truncation note ride a footer line. Lives inside [`terminal_overlay`].
+fn terminal_surface(argv: &str, run: &crate::app::cli::CliRun) -> Markup {
+    html! {
+        div #terminal-surface .terminal-surface {
+            div.terminal-line.term-argv { "$ " (argv) }
+            @if !run.stdout.is_empty() {
+                pre.terminal-out { (run.stdout) }
+            }
+            @if !run.stderr.is_empty() {
+                div.terminal-label { "stderr" }
+                pre.terminal-err { (run.stderr) }
+            }
+            @if run.stdout.is_empty() && run.stderr.is_empty() {
+                div.terminal-line.term-muted { "(no output)" }
+            }
+            div.terminal-line.term-exit {
+                "exit " (run.exit_code)
+                @if run.truncated { " · output truncated" }
+            }
+        }
+    }
 }
 
 // site_footer() retired — the feedback button moved into site_header,
@@ -829,7 +877,52 @@ pub(crate) fn inline_result_card(
             let name = value.get("name").and_then(|v| v.as_str()).unwrap_or("app");
             Some(embed_app_card(name))
         }
+        "run_wasm_cli" => {
+            // CLI sandbox (on-chain feedback #6): a terminal card showing the
+            // captured stdout + exit code inline. The tool returns the run
+            // shape directly (no async pixels), so the card renders from the
+            // result on both the live path AND replay. `ran` is the success
+            // discriminant; a failed run errors above and never reaches here.
+            if value.get("ran").and_then(|v| v.as_bool()) != Some(true) {
+                return None;
+            }
+            Some(terminal_card(value))
+        }
         _ => None,
+    }
+}
+
+/// Inline terminal card for a `run_wasm_cli` result: the argv line, a capped
+/// monochrome stdout block, the exit code, and a [show] button that re-opens
+/// the full run in the terminal overlay (`Action::ToggleTerminal`, reusing the
+/// last-run stash like the display card's [show]). Renders from the structured
+/// tool result, so it paints identically live and on history replay.
+fn terminal_card(value: &serde_json::Value) -> Markup {
+    let argv = value.get("argv").and_then(|v| v.as_str()).unwrap_or("$");
+    let exit = value.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(0);
+    let stdout = value.get("stdout").and_then(|v| v.as_str()).unwrap_or("");
+    let stderr = value.get("stderr").and_then(|v| v.as_str()).unwrap_or("");
+    let truncated = value.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false);
+    let (shown, cut) = card_snippet(if stdout.is_empty() { stderr } else { stdout });
+    html! {
+        div.inline-card.terminal-card {
+            div.ic-head {
+                span.ic-title { "▷ " (argv) }
+                span.ic-meta { "exit " (exit) }
+                button.ghost data-action="toggle-terminal" { "show" }
+            }
+            @if shown.is_empty() {
+                pre.ic-body.term-muted { "(no output)" }
+            } @else {
+                pre.ic-body { (shown) }
+            }
+            @if cut > 0 {
+                div.ic-more { "… +" (cut) " more lines" }
+            }
+            @if truncated {
+                div.ic-more { "output truncated at the sandbox cap" }
+            }
+        }
     }
 }
 

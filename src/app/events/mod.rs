@@ -168,6 +168,10 @@ enum Action {
     ResetToolAllowlist,
     SaveApiKey,
     ToggleDisplay,
+    /// Open/close the CLI-sandbox terminal overlay (feedback #6): the terminal
+    /// card's [show] re-opens the last `run_wasm_cli` run; the overlay `×`
+    /// closes it. Mirrors `ToggleDisplay`.
+    ToggleTerminal,
     StopTurn,
     /// Broadcast-composer [send] — a cartridge's `broadcast_compose` opened
     /// a text input over the canvas; the payload is the notification TITLE
@@ -283,6 +287,7 @@ impl Action {
             "reset-tool-allowlist" => Action::ResetToolAllowlist,
             "save-api-key" => Action::SaveApiKey,
             "toggle-display" => Action::ToggleDisplay,
+            "toggle-terminal" => Action::ToggleTerminal,
             "stop-turn" => Action::StopTurn,
             "broadcast-send" => Action::BroadcastSend(arg.unwrap_or_default()),
             "broadcast-cancel" => Action::BroadcastCancel,
@@ -438,6 +443,9 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
             } else if dom::by_id("display-canvas").is_some() {
                 event.prevent_default();
                 dispatch(Action::ToggleDisplay);
+            } else if dom::by_id("terminal-surface").is_some() {
+                event.prevent_default();
+                dispatch(Action::ToggleTerminal);
             } else if dom::by_id("fs-list").is_some() {
                 event.prevent_default();
                 dispatch(Action::ToggleFiles);
@@ -707,6 +715,7 @@ fn dispatch(action: Action) {
         }
         Action::OpfsCloseViewer => super::opfs::close_viewer(),
         Action::ToggleDisplay => super::opfs::toggle_display(),
+        Action::ToggleTerminal => super::cli::toggle_terminal(),
         Action::BroadcastSend(title) => super::display::broadcast_send(title),
         Action::BroadcastCancel => super::display::close_broadcast_composer(),
         Action::StopTurn => super::chat::request_stop_turn(),

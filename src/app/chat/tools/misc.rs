@@ -1108,6 +1108,128 @@ pub(crate) fn spawn_recursive_subagent_tool(
     )
 }
 
+/// `run_wasm_cli(path, args?)` — the CLI SANDBOX (on-chain feedback #6): run a
+/// compiled wasm `_start` COMMAND from an OPFS `.wasm` file under a WASI-SUBSET
+/// host and capture its stdout/stderr + exit code as terminal text. The
+/// extensibility POC the feedback asked for ("run native CLI tools / compilers
+/// in the browser sandbox") — honestly bounded: a WASI-subset stdout sandbox,
+/// NOT a real filesystem, network, or x86 PC (see `app::cli` for the boundary).
+///
+/// Any wasm32-wasi command module works (`clang --target=wasm32-wasi`, `rustc
+/// --target wasm32-wasi`, TinyGo, hand-authored WAT). The committed example is
+/// `examples/cli/hello.wasm`. Reads the bytes from OPFS via the shared
+/// filesystem (so a file written by `create_file` / fetched into OPFS runs),
+/// runs them off-main-thread in the WASI worker (`web/wasi-worker.js`) with a
+/// watchdog, paints the terminal overlay, and returns the structured run.
+pub(crate) fn run_wasm_cli_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "OPFS path to a compiled `.wasm` CLI module — a \
+                    wasm32-wasi COMMAND that exports `_start` (the standard output \
+                    of `clang --target=wasm32-wasi`, `rustc --target wasm32-wasi`, \
+                    TinyGo, etc.). The committed demo is \"examples/cli/hello.wasm\" \
+                    if present in OPFS; otherwise point at a `.wasm` you placed in \
+                    OPFS."
+            },
+            "args": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "OPTIONAL command-line arguments passed as argv \
+                    (argv[0] is a synthetic program name; these follow it)."
+            }
+        },
+        "required": ["path"]
+    });
+    ClosureTool::new(
+        "run_wasm_cli",
+        "Run a compiled wasm CLI program (a wasm32-wasi COMMAND that exports \
+         `_start`) from an OPFS `.wasm` file under a WASI-SUBSET sandbox, capturing \
+         its stdout/stderr as TEXT in a terminal surface. This is the in-browser \
+         CLI sandbox: use it to run small compiled tools whose output is text. \
+         HONEST LIMITS — it is a WASI-subset stdout sandbox, NOT a real filesystem \
+         (no preopened dirs; file opens fail), NO network, NO threads, NOT an x86 \
+         PC or Linux container, and stdin is always empty. fd_write→captured text, \
+         proc_exit, args, environ (empty), clock/random are supported. A program \
+         that loops forever is terminated by a watchdog (~4s). A NONZERO exit is a \
+         successful RUN (reported, not an error). Returns { ran: true, exit_code, \
+         stdout, stderr, truncated, argv } on a completed run, or an error on a \
+         missing file / instantiate failure / trap / timeout.",
+        schema,
+        |args: serde_json::Value, _ctx| async move {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if path.is_empty() {
+                return Err(crate::error::Error::other("run_wasm_cli: path cannot be empty"));
+            }
+            let argv: Vec<String> = args
+                .get("args")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            // Read the module bytes from OPFS via the shared filesystem (the same
+            // one the fs builtins write to), so a file created/fetched in-app runs.
+            let fs = crate::app::shared_opfs();
+            let wasm = fs
+                .read(path)
+                .await
+                .map_err(|e| crate::error::Error::other(format!("read {path}: {e}")))?;
+            if wasm.is_empty() {
+                return Err(crate::error::Error::other(format!("{path} is empty")));
+            }
+            if wasm.len() < 4 || &wasm[..4] != b"\0asm" {
+                return Err(crate::error::Error::other(format!(
+                    "{path} is not a wasm module (bad magic) — pass a compiled `.wasm`"
+                )));
+            }
+            let argv_line = {
+                let mut s = String::from("prog");
+                for a in &argv {
+                    s.push(' ');
+                    s.push_str(a);
+                }
+                s
+            };
+
+            #[cfg(all(target_arch = "wasm32", feature = "browser-app"))]
+            {
+                match crate::app::cli::run_wasm_cli(&wasm, &argv).await {
+                    Ok(run) => {
+                        // Paint the terminal overlay + remember the run so the
+                        // inline card's [show] can re-open it.
+                        crate::app::cli::remember_run(&argv_line, &run);
+                        crate::app::cli::show_terminal(&argv_line, &run);
+                        Ok(serde_json::json!({
+                            "ran": true,
+                            "exit_code": run.exit_code,
+                            "stdout": run.stdout,
+                            "stderr": run.stderr,
+                            "truncated": run.truncated,
+                            "argv": argv_line,
+                        }))
+                    }
+                    Err(f) => Err(crate::error::Error::other(format!(
+                        "run failed: {}",
+                        f.detail
+                    ))),
+                }
+            }
+            #[cfg(not(all(target_arch = "wasm32", feature = "browser-app")))]
+            {
+                let _ = (argv_line, wasm);
+                Err(crate::error::Error::other(
+                    "the WASI CLI sandbox requires the browser app",
+                ))
+            }
+        },
+    )
+}
+
 /// `dwell(seconds)` — clean in-loop waiting (on-chain feedback #67): agents
 /// were burning "dummy" read-only tool calls to let contract cooldowns (the
 /// 1-minute feedback rate limit, block confirmation windows) elapse. Capped

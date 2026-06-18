@@ -20,6 +20,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   token?)`, `resolve_ens(name)`, `evm_call(chain, to, function_signature, args?)`,
   `evm_chains()`. Returned chain data is treated as untrusted. Native-tested
   (namehash canonical vector + ABI encoding); live-verified against Base/Ethereum.
+- **CLI sandbox (`run_wasm_cli`) — run compiled wasm CLI programs in-browser
+  (on-chain feedback #6).** A WASI-SUBSET runtime (`web/wasi-worker.js`) runs a
+  `wasm32-wasi` COMMAND (a module exporting `_start`) off-main-thread, capturing
+  its stdout/stderr as monochrome terminal text (a fullscreen overlay + an
+  inline transcript card with the argv line, stdout, and exit code). The new
+  `run_wasm_cli(path, args?)` chat tool reads a `.wasm` from OPFS, runs it under
+  the host with a ~4s watchdog, and returns `{ ran, exit_code, stdout, stderr,
+  truncated, argv }`. Implemented WASI subset: `fd_write` (stdout/stderr →
+  captured text), `proc_exit`, `args_*`, `environ_*` (empty), `fd_read` (stdin =
+  EOF), `clock_time_get`, `random_get`, plus defined-errno stubs for the wider
+  surface. **Honest boundary:** a WASI-subset *stdout* sandbox — NOT a real
+  filesystem (no preopened dirs), no network, no threads, and NOT an x86 PC /
+  Linux container (which would need iframes + multi-MB blobs, against this
+  project's design). Committed example `examples/cli/hello.wasm` (+ `.wat`
+  source); `scripts/verify-wasi-cli.mjs` runs it through the host in node.
+
+## [0.47.0] - 2026-06-18
 
 ### Changed
 

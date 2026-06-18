@@ -365,6 +365,32 @@ main.layout .transcript > *:empty { display: none; }
   z-index: 1;
 }
 .display-overlay .display-wrap { max-width: 1100px; }
+/* TERMINAL surface (CLI sandbox, feedback #6) — the text counterpart of the
+   display canvas. Reuses the .display-overlay chrome; this is just the scroll
+   box + monochrome stream inside it. */
+.terminal-surface {
+  width: 100%;
+  max-width: 900px;
+  max-height: 80vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.terminal-surface .terminal-line { white-space: pre-wrap; word-break: break-word; }
+.terminal-surface .term-argv { color: var(--fg); font-weight: 600; }
+.terminal-surface .term-muted { color: var(--muted); }
+.terminal-surface .term-exit { color: var(--muted); margin-top: 8px; }
+.terminal-surface .terminal-label { color: var(--muted); margin-top: 10px; }
+.terminal-surface pre.terminal-out,
+.terminal-surface pre.terminal-err {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.terminal-surface pre.terminal-err { color: var(--error); }
 /* Just the canvas stage — no toolbar. */
 .display-wrap {
   display: flex;

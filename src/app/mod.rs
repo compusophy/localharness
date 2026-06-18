@@ -28,6 +28,9 @@ mod debuglog;
 // pub(crate) so the `run_cartridge` builtin tool can hand a compiled
 // cartridge to the framebuffer (the agent→display loop).
 pub(crate) mod display;
+// CLI SANDBOX (on-chain feedback #6): run a compiled wasm `_start` command
+// under a WASI-subset host, capturing its stdout/stderr as terminal text.
+pub(crate) mod cli;
 pub(crate) mod agent_config;
 mod dom;
 mod embed;
