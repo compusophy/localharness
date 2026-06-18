@@ -9,7 +9,7 @@
 //
 // Flow: verify HMAC → derive receiptId from the immutable PaymentIntent id →
 // on `checkout.session.completed` sign an EIP-712 FiatMint (FIAT_ISSUER_KEY) for
-// the NET settled amount and submit `mintFromFiat`; on `charge.refunded` /
+// the GROSS charged amount and submit `mintFromFiat`; on `charge.refunded` /
 // `charge.dispute.created` submit an amount-aware `clawbackFiatMint`. The
 // on-chain receipt is the idempotency backstop: we read it first so a Stripe
 // retry is a clean 200.
@@ -70,8 +70,8 @@ export default async function handler(req: Request): Promise<Response> {
       if (!isHexAddress(lhAddress) || !piId) {
         return json({ received: true, skipped: 'no lh_address/payment_intent' }, 200);
       }
-      // Idempotent NET mint (fees out); THROWS if net isn't settled yet → outer
-      // catch 500s → Stripe retries; the one-shot receipt keeps it idempotent.
+      // Idempotent GROSS mint (fees absorbed); THROWS if the PI isn't succeeded →
+      // outer catch 500s → Stripe retries; the one-shot receipt keeps it idempotent.
       await mintSettledPayment(piId, lhAddress);
     } else if (event.type === 'payment_intent.succeeded') {
       // The browser Stripe Elements path drives a BARE PaymentIntent (no

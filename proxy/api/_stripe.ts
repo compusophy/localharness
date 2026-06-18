@@ -3,7 +3,8 @@
 // and stripe-webhook.ts (NODE runtime: raw-body HMAC → mintFromFiat / clawback).
 //
 // Money-safety rules encoded here (design/custody-security.md + stripe-mainnet §6):
-//   * PEG fixes $LH-wei per USD cent; mint against NET settled USD (fees out).
+//   * PEG fixes $LH-wei per USD cent; mint against GROSS charged USD (fees
+//     absorbed — $LH is decoupled from $, $1 = 100 $LH, no net-of-fees haircut).
 //   * receiptId derives ONLY from the immutable Stripe PaymentIntent id, so a
 //     replayed webhook hits the on-chain one-shot receipt (idempotent).
 //   * FIAT_ISSUER_KEY only SIGNS the EIP-712 FiatMint; it must be DISTINCT from

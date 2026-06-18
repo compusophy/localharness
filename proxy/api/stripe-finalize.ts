@@ -8,7 +8,7 @@
 // receipt, so whichever lands first wins and the other is a clean no-op.
 //
 // Money-safety: the mint RECIPIENT and AMOUNT come ONLY from the trusted Stripe
-// PI (`metadata.lh_address` set server-side at create + NET settled cents) and
+// PI (`metadata.lh_address` set server-side at create + GROSS charged cents) and
 // the on-chain receipt — never from client input. The caller can at most
 // ACCELERATE a mint the webhook would do anyway, for their OWN payment.
 

@@ -97,9 +97,9 @@ src/app/ (browser IDE):
   mod.rs(mount routing) templates.rs(all maud HTML) dom.rs(web-sys swaps)
   events/(Action enum + parse + the ONE delegated click/keydown/submit/input
     listener set + dispatch in mod.rs; handler bodies per domain: claim admin
-    credits schedule bounty guild governance devices subdomains key_sync
-    public_face layout tba(act-from-TBA: send $LH, typed-amount
-    confirm)) chat/(turn loop in mod.rs; session.rs prompt.rs
+    credits schedule devices subdomains key_sync public_face layout
+    (bounty/guild/governance/tba panels removed 0.47.0 — chat tools now)) chat/(
+    turn loop in mod.rs; session.rs prompt.rs
     access.rs tools/{platform,bounty,guild,governance,misc})
   history.rs(OPFS conversation + tool-call replay) opfs.rs(file browser/editor
     MODAL off the ADMIN panel — #71 killed the header [files] button)
@@ -402,13 +402,15 @@ semantics live in `contracts/README.md`** — this list is one line each.
   code; `acceptInvite(code)` pays the first presenter; `reclaimInvite` refunds
   the FUNDER 100% once Open+expired (disjoint windows). SUPPLY-NEUTRAL.
   Bearer MVP; bound vouchers = Phase 2.
-- **SessionFacet** — coarse time-boxed sessions. `openSession()` pulls
-  `sessionPrice()`, sets expiry = now + `sessionDuration()`. **Currently
-  3600s / 1e19 (10 $LH/hr)** — free session = sybil bypass on model access, so
-  priced; `setSessionPrice(0)` reopens free.
-- **CreditMeterFacet** — per-request metering. `depositCredits` tops up; `creditOf`
-  reads; `meter(addr,amt)` debits (meter-key only); `withdrawCredits` pulls
-  UNSPENT credits back to the wallet (escrow is 1:1-backed; metered spend final).
+- **SessionFacet** — coarse time-boxed sessions (3600s/1e19 = 10 $LH/hr;
+  `setSessionPrice(0)` reopens free). Shelved in the UI — metering is the live path.
+- **CreditMeterFacet** — per-MESSAGE metering. `depositCredits` tops up; `creditOf`
+  reads; `meter(addr,amt)` debits (meter-key only); `withdrawCredits` pulls UNSPENT
+  credits back. Spend-down: debits `min(cost,balance)`, so a positive balance is
+  usable to zero.
+- **MintGateFacet** — fiat→`$LH` valve: issuer-signed `mintFromFiat` → buyer's METER
+  (one-shot receipt per PI, capped); `clawbackFiatMint` on refund. Proxy webhook
+  fires it on Stripe `payment_intent.succeeded`. Recovery `MintForReceipt.s.sol`.
 - **X402Facet** — x402 EIP-712 "exact" settlement in $LH (agent-to-agent).
   `settle(...)` (EOA ecrecover + EIP-1271, one-shot nonce) moves payer→payee;
   `x402DomainSeparator()` read live (binds chainId+diamond → the reset changed it).
@@ -484,18 +486,16 @@ fetches + decrypts via the apex iframe BEFORE the api-key modal. Saving best-eff
 
 ## Credit proxy + $LH sessions/metering (LIVE)
 
-Proxy (separate Vercel project "proxy") is the ONE accepted off-chain component.
-Platform `$LH` credits are the **primary** usage path; **BYOK** (own key) is the
-fallback that skips the proxy. `api/gemini.ts` = transparent multi-provider
-passthrough (Gemini/Claude/OpenAI `/v1/chat/completions`) holding the platform
-keys; auth = Ethereum personal-sign in the `x-goog-api-key` header as
-`address:timestamp:signature`. Proxy verifies the sig, gates on a SessionFacet
-session OR CreditMeterFacet balance, debits via the meter key before streaming.
+Proxy (separate Vercel project "proxy") is the ONE off-chain component. Platform
+`$LH` is the **primary** path; **BYOK** is the fallback (skips the proxy).
+`api/gemini.ts` = multi-provider passthrough (Gemini/Claude/OpenAI); auth =
+Ethereum personal-sign `address:timestamp:signature` in `x-goog-api-key`; proxy
+gates on a session OR `creditOf`, debits the meter before streaming charging
+`min(cost,balance)` (a positive balance spends to zero). **0.47.0: `$LH` decoupled
+from $ — 1 `$LH`/message (premium tiered); fiat GROSS-mints at $1 = 100 `$LH`.**
 
-Bundle helpers (`registry.rs`): `*_sponsored` for redeem/open_session/deposit_
-credits/settle_x402/release_name/consolidate_into_main/remove_signer + reads
-`session_expiry_of`/`session_price`/`credit_balance_of`/`devices_of` + x402
-`x402_domain_separator`/`x402_digest`/`sign_x402`/`x402_authorization_state`.
+Bundle helpers (`registry.rs`): `*_sponsored` writes + `*_of` reads + x402 signing
+(`x402_digest`/`sign_x402`/…) — the flat `registry::` surface; see source.
 
 ## Agent tools + destructive-action convention
 
@@ -597,10 +597,9 @@ must come from the root key, which is why a sponsor key must be embedded in wasm
 
 Shipped: SDK runtime, browser IDE, platform layer, Tempo native AA, Anthropic +
 OpenAI backends, scheduling + recursion, Mock backend, economy rungs 1–4 +
-Reputation + colony, x402, host::compose, TBA act panel, SessionRoom KV (#22),
-at-rest OPFS enc. Still open:
+Reputation + colony, x402, host::compose, SessionRoom KV (#22), at-rest OPFS enc,
+**Stripe fiat on-ramp** (MintGateFacet, webhook-minted, inline card). Still open:
 
-- **Stripe MPP** — fiat agent-payments rail beside the live x402 `$LH` path.
 - **SessionRoom phase 2** — multi-identity rooms: ECIES-grant `K_room` via
   `roomAddMember` (facet/driver ready; off-chain grant + KV tools remain). v1
   single-identity shipped live.
