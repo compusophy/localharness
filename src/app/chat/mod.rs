@@ -271,6 +271,13 @@ pub(crate) async fn run_send() {
         if TURN_CANCEL.with(|c| c.get()) {
             break;
         }
+        // DIFFICULTY ROUTER: pick this turn's thinking budget from the prompt
+        // (greeting/short read → Minimal; build/debug/code → High), clamped to
+        // the session's ceiling so a routine turn is only ever DOWNGRADED, never
+        // upgraded past the user's model choice. Auto-continuations are mid-task
+        // (they follow tool/truncation activity) so they route Heavy and keep the
+        // full budget. A no-op for backends without thinking control.
+        apply_difficulty_route(&agent, &next_input);
         let outcome = stream_turn(&agent, next_input, preallocated.take()).await;
 
         // Persist + refresh after every turn so tool-created files and the
@@ -416,6 +423,37 @@ take the next step now without waiting.";
 /// leak it as a ghost user turn.
 pub(crate) fn is_internal_nudge(text: &str) -> bool {
     text == AUTO_CONTINUE_NUDGE || text == TRUNCATED_RETRY_NUDGE
+}
+
+/// DIFFICULTY ROUTER (per-turn): classify `input` and set the agent's per-turn
+/// thinking budget for the NEXT turn, clamped to the session ceiling recorded
+/// at start (`App::session_thinking_ceiling`). A real user message classifies
+/// off its own text with `last_turn_used_tools = false`; an internal
+/// auto-continuation / truncated-retry nudge is a continuation of tool /
+/// truncation activity, so it routes `Heavy` (full budget) — the router never
+/// starves a turn that's mid-task.
+///
+/// The override is applied via [`crate::Agent::set_thinking_override`], which is
+/// a no-op on backends without thinking control (local Gemma). If the session
+/// has no ceiling recorded, the override is cleared (the agent falls back to its
+/// configured level) — so the routing is purely additive and safe.
+fn apply_difficulty_route(agent: &Agent, input: &TurnInput) {
+    let ceiling = APP.with(|cell| cell.borrow().session_thinking_ceiling);
+    let Some(ceiling) = ceiling else {
+        // No thinking control for this backend (e.g. local) — make sure no
+        // stale override lingers, then leave it to the configured level.
+        agent.set_thinking_override(None);
+        return;
+    };
+    let (prompt, last_turn_used_tools) = match input {
+        TurnInput::User(p) => (p.as_str(), false),
+        // A nudge always follows tool activity (Incomplete) or a truncated
+        // answer — treat it as mid-task so it keeps the high budget.
+        TurnInput::AutoContinue | TurnInput::ResumeTruncated => ("", true),
+    };
+    let desired = crate::difficulty::route(prompt, last_turn_used_tools).thinking;
+    let applied = crate::difficulty::clamp_thinking(desired, ceiling);
+    agent.set_thinking_override(Some(applied));
 }
 
 /// What a single streamed turn carries in.

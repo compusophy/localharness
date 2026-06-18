@@ -316,6 +316,7 @@ impl ConnectionStrategy for GeminiConnectionStrategy {
             },
             state,
             conversation_id: conv_id.into(),
+            thinking_override: parking_lot::Mutex::new(None),
         });
         if let Some(slot) = &self.typed_capture {
             *slot.lock() = Some(typed.clone());
@@ -361,6 +362,13 @@ pub struct GeminiConnection {
     deps_template: TurnDeps,
     state: Arc<LoopState>,
     conversation_id: Arc<str>,
+    /// Optional PER-TURN thinking override (the difficulty router seam). When
+    /// `Some`, the NEXT [`Connection::send`] overrides the baked-in
+    /// `LoopConfig.thinking` for that turn only; when `None` the session's
+    /// configured level applies. Interior-mutable so the in-tab loop can retune
+    /// thinking per turn WITHOUT rebuilding the connection. `None` by default →
+    /// behavior is identical to before for every caller that never sets it.
+    thinking_override: parking_lot::Mutex<Option<ThinkingLevel>>,
 }
 
 impl GeminiConnection {
@@ -371,6 +379,15 @@ impl GeminiConnection {
         let snapshot = self.state.history.lock().clone();
         serde_json::to_vec(&snapshot)
             .map_err(|e| Error::other(format!("history_bytes: {e}")))
+    }
+
+    /// Set (or clear, with `None`) the PER-TURN thinking override — the
+    /// difficulty-router seam. Applies to the NEXT turn's model call only; the
+    /// session's configured thinking is restored after. `None` (the default)
+    /// means "use the configured level". Cheap to call between turns; does NOT
+    /// rebuild the connection or touch history.
+    pub fn set_thinking_override(&self, level: Option<ThinkingLevel>) {
+        *self.thinking_override.lock() = level;
     }
 
     /// Replace the entire conversation history with one previously
@@ -549,7 +566,13 @@ impl Connection for GeminiConnection {
         // Clone is cheap (media parts are `Bytes`); the original rides along
         // so pre-turn hooks inspect the SDK-level prompt, not wire JSON.
         let user = to_wire_user_content(content.clone())?;
-        let deps = self.deps_template.clone();
+        let mut deps = self.deps_template.clone();
+        // Apply the per-turn thinking override (difficulty router) for THIS
+        // turn only — the template is untouched, so the next turn without an
+        // override falls back to the configured level. `None` is a no-op.
+        if let Some(level) = *self.thinking_override.lock() {
+            deps.config.thinking = Some(level);
+        }
         crate::runtime::spawn(async move {
             if let Err(e) = run_turn(deps, user, content).await {
                 warn!(error = %e, "gemini turn failed");

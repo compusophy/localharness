@@ -50,6 +50,32 @@ pub(crate) fn is_local(model: &str) -> bool {
     model.starts_with("gemma-")
 }
 
+/// The thinking-budget CEILING a session on `model` is built with — the
+/// SINGLE SOURCE OF TRUTH for both `chat::session::start_session`'s
+/// `with_thinking(...)` and the difficulty router's per-turn clamp. The router
+/// may lower a routine turn below this, but never raises it past what the
+/// user's model selection implies. `None` for backends without thinking
+/// control (local Gemma), so the router leaves them alone.
+///
+/// - Gemini → [`crate::types::ThinkingLevel::High`] (the deep-think in-tab default).
+/// - Claude Haiku → `Medium`; other Claude (Sonnet/Opus) → `High`.
+/// - Local (Gemma) → `None`.
+pub(crate) fn session_thinking_ceiling(model: &str) -> Option<crate::types::ThinkingLevel> {
+    use crate::types::ThinkingLevel;
+    if is_local(model) {
+        None
+    } else if is_anthropic(model) {
+        if model.contains("haiku") {
+            Some(ThinkingLevel::Medium)
+        } else {
+            Some(ThinkingLevel::High)
+        }
+    } else {
+        // Gemini path.
+        Some(ThinkingLevel::High)
+    }
+}
+
 /// A human-readable description of `model` for the system prompt, e.g.
 /// "Claude Opus (claude-opus-4-8) via the Anthropic backend" — the friendly
 /// [`MODELS`] label + the raw id + the backend, so the agent can answer "which

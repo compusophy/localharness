@@ -293,6 +293,7 @@ impl ConnectionStrategy for AnthropicConnectionStrategy {
             },
             state,
             conversation_id: conv_id.into(),
+            thinking_override: parking_lot::Mutex::new(None),
         });
         if let Some(slot) = &self.typed_capture {
             *slot.lock() = Some(typed.clone());
@@ -344,6 +345,10 @@ pub struct AnthropicConnection {
     deps_template: TurnDeps,
     state: Arc<LoopState>,
     conversation_id: Arc<str>,
+    /// Optional PER-TURN thinking override (the difficulty router seam) — see
+    /// [`GeminiConnection::set_thinking_override`]. `None` by default → no
+    /// behavior change for callers that never set it.
+    thinking_override: parking_lot::Mutex<Option<ThinkingLevel>>,
 }
 
 impl AnthropicConnection {
@@ -353,6 +358,18 @@ impl AnthropicConnection {
     pub fn history_bytes(&self) -> Result<Vec<u8>> {
         let snapshot = self.state.history.lock().clone();
         serde_json::to_vec(&snapshot).map_err(|e| Error::other(format!("history_bytes: {e}")))
+    }
+
+    /// Set (or clear, with `None`) the PER-TURN thinking override — the
+    /// difficulty-router seam (parallels
+    /// [`super::gemini::GeminiConnection::set_thinking_override`]). Applies to
+    /// the NEXT turn only; the configured thinking is restored after. `None`
+    /// (the default) is a no-op. NOTE: on Anthropic, thinking and temperature
+    /// are mutually exclusive — the loop already drops temperature when
+    /// thinking is on, so an override that turns thinking on/off composes the
+    /// same way it does at session build.
+    pub fn set_thinking_override(&self, level: Option<ThinkingLevel>) {
+        *self.thinking_override.lock() = level;
     }
 
     /// Replace the entire conversation history with one previously returned
@@ -510,7 +527,12 @@ impl Connection for AnthropicConnection {
         // Clone is cheap (media parts are `Bytes`); the original rides along
         // so pre-turn hooks inspect the SDK-level prompt, not wire JSON.
         let user = to_wire_user_content(content.clone())?;
-        let deps = self.deps_template.clone();
+        let mut deps = self.deps_template.clone();
+        // Per-turn thinking override (difficulty router) for THIS turn only —
+        // the template is untouched. `None` is a no-op.
+        if let Some(level) = *self.thinking_override.lock() {
+            deps.config.thinking = Some(level);
+        }
         crate::runtime::spawn(async move {
             if let Err(e) = run_turn(deps, user, content).await {
                 warn!(error = %e, "anthropic turn failed");
@@ -734,6 +756,7 @@ mod tests {
             },
             state,
             conversation_id: "test".into(),
+            thinking_override: parking_lot::Mutex::new(None),
         })
     }
 

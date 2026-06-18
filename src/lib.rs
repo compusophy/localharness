@@ -162,6 +162,13 @@ pub mod turn_flow;
 /// same hoisting pattern as `turn_flow`). See `src/turn_stage.rs`.
 pub mod turn_stage;
 
+/// Pure DIFFICULTY ROUTER core (native-testable): classifies each chat turn
+/// into a [`difficulty::TurnTier`] (Light / Standard / Heavy) and maps it to a
+/// model preference + [`types::ThinkingLevel`], so the in-tab agent can route
+/// cheap/minimal-thinking turns away from the premium tier reserved for
+/// build/debug. Wired into `app::chat` per-turn. See `src/difficulty.rs`.
+pub mod difficulty;
+
 /// Pure lessons-blob merging + prompt-section composition for the agent
 /// LESSONS LOOP (native-testable). The browser `record_lesson` tool, the
 /// headless CLI `call`, and the proxy scheduler worker all fold its output

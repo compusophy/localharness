@@ -101,6 +101,13 @@ pub(crate) struct App {
     /// "user pasted a new key" and reset the session.
     pub(crate) session_key: Option<String>,
     pub(crate) turn_count: u32,
+    /// The thinking-budget CEILING the current `agent`'s session was built
+    /// with (from the user's model choice). The difficulty router lowers the
+    /// per-turn thinking for routine turns but NEVER raises it past this — so a
+    /// turn is clamped to what the user actually selected. `None` until a
+    /// session starts (or for backends without thinking control). See
+    /// [`crate::difficulty`] + `chat::session::start_session`.
+    pub(crate) session_thinking_ceiling: Option<crate::types::ThinkingLevel>,
     /// Monotonic id used for unique DOM ids on turns, segments, tool
     /// blocks. Never reused across resets so stale event targets are
     /// safe to drop.
@@ -184,6 +191,7 @@ impl App {
             agent_tool_count: None,
             session_key: None,
             turn_count: 0,
+            session_thinking_ceiling: None,
             next_id: 0,
             opfs_cwd: Vec::new(),
             opfs: None,

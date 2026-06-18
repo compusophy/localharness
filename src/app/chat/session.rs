@@ -77,6 +77,14 @@ pub(crate) async fn start_session(
     let model = crate::app::model::load().await;
     let on_anthropic = crate::app::model::is_anthropic(&model);
 
+    // DIFFICULTY ROUTER ceiling: the thinking budget this session is built with,
+    // derived ONCE from the user's model choice (`model::session_thinking_ceiling`
+    // is the single source of truth, shared by the `with_thinking(...)` calls
+    // below). The per-turn router (`chat::run_send`) reads this from APP and
+    // never raises a turn above it — only downgrades routine turns. `None` for
+    // the local backend (no thinking control), so the router leaves it alone.
+    let session_ceiling = crate::app::model::session_thinking_ceiling(&model);
+
     // SELF-EDIT GATE (computed up here so both the prompt line AND the tool
     // registration agree). `set_persona` lets the agent rewrite its own system
     // instruction — a higher-autonomy tool, so it's only granted when the
@@ -276,11 +284,10 @@ pub(crate) async fn start_session(
             // thinking and temperature are mutually exclusive (the loop drops
             // temperature when thinking is on) — so thinking wins for the coding
             // tier, and the temperature set below only applies if thinking is off.
-            .with_thinking(if model.contains("haiku") {
-                ThinkingLevel::Medium
-            } else {
-                ThinkingLevel::High
-            })
+            // The baseline = the router CEILING (`session_ceiling`) so the build
+            // level and the per-turn clamp agree (Medium for Haiku, High else);
+            // the difficulty router downgrades routine turns below it per-turn.
+            .with_thinking(session_ceiling.unwrap_or(ThinkingLevel::High))
             // Lower sampling temperature for better first-try-valid rustlite /
             // edits. Anthropic applies this ONLY when thinking is off (mutually
             // exclusive), so it's effectively a no-op while thinking is on — but
@@ -399,8 +406,11 @@ pub(crate) async fn start_session(
             // real room to PLAN + reason about rustlite WITHOUT starving the output
             // (the "(empty response)" fix holds because budget ≥ 2× thinking). The
             // visible PLAN-FIRST + compile-in-the-loop discipline below leans on
-            // this headroom.
-            .with_thinking(ThinkingLevel::High)
+            // this headroom. The baseline = the router CEILING (`session_ceiling`,
+            // High for Gemini) so the build level and the per-turn clamp share one
+            // source of truth; the difficulty router downgrades routine turns
+            // below it per-turn (Minimal on a greeting).
+            .with_thinking(session_ceiling.unwrap_or(ThinkingLevel::High))
             // Lower sampling temperature for better first-try-valid rustlite /
             // edits. Gemini applies temperature AND thinking independently (both
             // ride generation_config), so this composes with the High budget.
@@ -504,6 +514,10 @@ pub(crate) async fn start_session(
         // rotating credits token, so the session isn't restarted per turn.
         app.session_key = Some(identity.to_string());
         app.turn_count = 0;
+        // Record the router ceiling so `run_send` can clamp per-turn thinking to
+        // the level THIS session was actually built with (never raises past the
+        // user's model choice).
+        app.session_thinking_ceiling = session_ceiling;
     });
     // If the admin card is already on screen, refresh its tools line live.
     if crate::app::dom::by_id("tools-count").is_some() {

@@ -1175,6 +1175,29 @@ impl Agent {
         Ok(None)
     }
 
+    /// Set (or clear, with `None`) a PER-TURN thinking-budget override for the
+    /// NEXT turn — the difficulty-router seam. The in-tab agent classifies each
+    /// turn (greeting vs build/debug) and lowers the thinking budget for routine
+    /// turns instead of always running the session's configured level. Applies
+    /// to the Gemini and (with the `anthropic` feature) Anthropic backends; a
+    /// no-op for the mock / local backends (no thinking control). `None` (the
+    /// default) restores the configured level. Cheap — does NOT rebuild the
+    /// connection or touch history.
+    ///
+    /// This overrides only the thinking BUDGET, not the model. Per-turn MODEL
+    /// switching would require rebuilding the connection (the model id + HTTP
+    /// client are baked into the backend `LoopConfig` at connect time) and is
+    /// intentionally deferred — see the `app::chat` router wiring.
+    pub fn set_thinking_override(&self, level: Option<crate::types::ThinkingLevel>) {
+        if let Some(gc) = self.gemini_connection.as_ref() {
+            gc.set_thinking_override(level);
+        }
+        #[cfg(feature = "anthropic")]
+        if let Some(ac) = self.anthropic_connection.as_ref() {
+            ac.set_thinking_override(level);
+        }
+    }
+
     /// Manually trigger context compaction. Summarises older history
     /// entries and replaces them with a single synthetic turn, freeing
     /// context-window budget. Returns `true` if compaction changed the
