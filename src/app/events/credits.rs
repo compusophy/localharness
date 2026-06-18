@@ -633,10 +633,10 @@ pub(crate) async fn finalize_after_payment(
             crate::app::chat::ensure_credit_meter().await;
             super::refresh_credits_pill().await;
             refresh_fund_banner().await;
-            // Onboarding: payment confirmed → persist the in-memory seed and show
-            // the backup card (the seed was held in memory only until paid).
+            // Onboarding: payment confirmed → persist the in-memory seed, then
+            // claim the chosen name and redirect into the agent's chat.
             if onboarding {
-                if let Err(err) = persist_seed_and_show_backup().await {
+                if let Err(err) = persist_seed_and_claim().await {
                     call_js("lhBuyError", Some(&seed_persist_failed_msg(&err)));
                     return;
                 }
@@ -653,9 +653,9 @@ pub(crate) async fn finalize_after_payment(
         return;
     }
     if onboarding {
-        // Seed safety is independent of the mint: persist + back up now (paid);
+        // Seed safety is independent of the mint: persist + claim now (paid);
         // the webhook credits the $LH to the address.
-        if let Err(err) = persist_seed_and_show_backup().await {
+        if let Err(err) = persist_seed_and_claim().await {
             call_js("lhBuyError", Some(&seed_persist_failed_msg(&err)));
         }
         return;
@@ -670,20 +670,21 @@ pub(crate) async fn finalize_after_payment(
     refresh_fund_banner().await;
 }
 
-/// Onboarding only: the payment is confirmed, so persist the in-memory seed and
-/// show the backup card (copy/download). `Err` if the OPFS write failed — the
-/// caller surfaces it loudly via [`seed_persist_failed_msg`] (the user paid; the
-/// seed must not be silently lost).
-async fn persist_seed_and_show_backup() -> Result<(), String> {
+/// Onboarding only: the payment is confirmed, so persist the in-memory seed,
+/// then claim the name the visitor chose on the front door and redirect into the
+/// agent's chat. `Err` ONLY if the seed write failed — the user paid, so the seed
+/// must not be silently lost (the caller surfaces it loudly via
+/// [`seed_persist_failed_msg`]). A claim failure is non-fatal: `onboard_claim`
+/// falls back to the funded name-claim apex. No stashed name (e.g. a non-onboard
+/// top-up that somehow set `onboarding`) → just paint the funded apex.
+async fn persist_seed_and_claim() -> Result<(), String> {
     crate::app::wallet_store::persist_current_seed()
         .await
         .map_err(|e| e.to_string())?;
-    let words = crate::app::APP
-        .with(|c| c.borrow().wallet.as_ref().map(|w| w.mnemonic.to_string()))
-        .unwrap_or_default();
     call_js("lhUnmountCheckout", None);
-    if let Some(root) = dom::by_id("root") {
-        root.set_inner_html(&templates::onboard_seed_backup(&words).into_string());
+    match super::take_onboard_name() {
+        Some(name) => super::claim::onboard_claim(name).await,
+        None => crate::app::paint_apex(crate::app::tenant::Host::Apex).await,
     }
     Ok(())
 }

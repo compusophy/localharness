@@ -41,6 +41,24 @@ thread_local! {
     /// iOS executor `RefCell already borrowed` panic. Guarded flows: the
     /// onboarding redeem, create-identity, import-seed.
     static ONBOARD_BUSY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+
+    /// The name the visitor chose on the consolidated front door, stashed across
+    /// the async $2 checkout (the inline card replaces the input, so the value
+    /// can't be re-read from the DOM). `credits::persist_seed_and_claim` takes it
+    /// after payment to claim the name + redirect into the new agent's chat.
+    static ONBOARD_NAME: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Stash the front-door name for the post-payment claim. See [`ONBOARD_NAME`].
+pub(super) fn set_onboard_name(name: &str) {
+    ONBOARD_NAME.with(|c| *c.borrow_mut() = Some(name.to_string()));
+}
+
+/// Take (and clear) the stashed front-door name. `None` = the buyer reached
+/// checkout without a name (e.g. the admin top-up path), so claim is skipped.
+pub(super) fn take_onboard_name() -> Option<String> {
+    ONBOARD_NAME.with(|c| c.borrow_mut().take())
 }
 
 /// Begin an exclusive onboarding flow. `None` = one is already running
@@ -129,13 +147,10 @@ enum Action {
     HideSeed,
     ImportSeed,
     CreateIdentity,
-    /// Pay-first onboarding (the fresh-visitor "create agent · $2" CTA):
-    /// create the identity, then open the $2 checkout immediately so the price
-    /// is the FIRST step — no surprise paywall after the user picks a name.
-    CreateAccount,
-    /// "I've saved it — continue" from the post-payment seed-backup step →
-    /// paint the funded apex (the name-claim input).
-    OnboardContinue,
+    /// Consolidated front door: the visitor picked a name + hit CREATE. Stash
+    /// the name, create the identity, run the $2 checkout, then (once paid) claim
+    /// the name and redirect into the new agent's chat — all one step.
+    OnboardCreate,
     ShowImport,
     CancelImport,
     HeaderAdminToggle,
@@ -262,8 +277,7 @@ impl Action {
             "hide-seed" => Action::HideSeed,
             "import-seed" => Action::ImportSeed,
             "create-identity" => Action::CreateIdentity,
-            "create-account" => Action::CreateAccount,
-            "onboard-continue" => Action::OnboardContinue,
+            "onboard-create" => Action::OnboardCreate,
             "show-import" => Action::ShowImport,
             "cancel-import" => Action::CancelImport,
             "header-admin-toggle" => Action::HeaderAdminToggle,
@@ -883,26 +897,30 @@ fn dispatch(action: Action) {
                 r#"<button type="button" data-action="reveal-seed">I have a pen and paper — reveal</button>"#,
             );
         }
-        Action::CreateAccount => {
-            // Pay-first onboarding: generate the keypair IN MEMORY ONLY (no seed
-            // written to disk yet — the owner's rule), then open the $2 checkout
-            // immediately (the "create agent · $2" step IS the purchase). The
-            // keypair must exist to authenticate the checkout + bind the mint
-            // recipient; it's persisted to OPFS ONLY once the payment confirms
-            // (credits::poll_and_finalize → wallet_store::persist_current_seed).
-            // No OPFS write happens here, so there's no need for the net timeout
-            // wrapper / storage-volatility probe (both were about the seed write,
-            // which has moved to the quiet post-payment moment — also side-stepping
-            // the iOS landing-paint borrow panic). On a successful mint,
-            // buy_lh_pressed(true) re-paints to the funded name-claim input.
+        Action::OnboardCreate => {
+            // Consolidated front door: the visitor picked a name AND hit CREATE.
+            // 1) Validate + STASH the name (the checkout card replaces the input,
+            //    so it must survive the async flow); the live check already keeps
+            //    the button disabled for invalid/taken names, so this is a guard.
+            // 2) Generate the keypair IN MEMORY ONLY (persisted on confirmed
+            //    payment, not here — the owner's rule + the iOS borrow-panic fix).
+            // 3) Run the $2 checkout. Once paid, `credits::persist_seed_and_claim`
+            //    claims the stashed name and redirects into the agent's chat — no
+            //    second step, no shown-once seed page.
+            let raw = dom::input_by_id("apex-input")
+                .map(|i| i.value())
+                .unwrap_or_default();
+            let cleaned = super::tenant::sanitize(&raw);
+            if cleaned.len() < 3 || cleaned.len() > 32 {
+                return;
+            }
             let Some(flow_guard) = onboard_flow_begin() else {
                 return;
             };
-            // INSTANT FEEDBACK (the core fix for "nothing happens"): SYNCHRONOUSLY
-            // on the click — before any await — replace the "create agent · $2"
-            // button in place with the inline checkout card ("preparing secure
-            // checkout…"). $2 = 200 $LH at $1 = 100 $LH. The card carries the
-            // Stripe mount ids; the spawned work below fills it.
+            set_onboard_name(&cleaned);
+            // INSTANT FEEDBACK: swap the form for the inline checkout card before
+            // any await ($2 = 200 $LH at $1 = 100 $LH). The card carries the Stripe
+            // mount ids; the spawned work below fills it.
             dom::swap_outer(
                 "apex-onboard",
                 &templates::onboard_checkout().into_string(),
@@ -911,30 +929,29 @@ fn dispatch(action: Action) {
                 let _flow_guard = flow_guard;
                 match super::wallet_store::generate_in_memory().await {
                     Err(err) => {
-                        // Restore the CTA so the user can retry.
+                        // Restore the form (with the typed name preserved) so the
+                        // user can retry; drop the stale stash.
+                        let _ = take_onboard_name();
                         dom::swap_outer(
                             "apex-onboard",
                             &crate::landing::create_wallet_cta().into_string(),
                         );
+                        if let Some(input) = dom::input_by_id("apex-input") {
+                            input.set_value(&cleaned);
+                            claim::on_apex_input();
+                        }
                         dom::swap_inner(
                             "onboard-msg",
                             &dom::msg_span(dom::Msg::Error, &format!("create failed: {err}")),
                         );
                     }
                     Ok(_) => {
-                        // Identity exists in memory → drive the $2 checkout into
-                        // the inline card already on screen (mints 200 $LH); on a
-                        // confirmed mint the poll persists the seed and renders the
-                        // seed-backup step.
+                        // Identity in memory → drive the $2 checkout into the inline
+                        // card (mints 200 $LH); on a confirmed mint the poll persists
+                        // the seed, claims the stashed name, and redirects to chat.
                         credits::buy_lh_pressed(true);
                     }
                 }
-            });
-        }
-        Action::OnboardContinue => {
-            // From the post-payment seed-backup step → the funded name-claim.
-            wasm_bindgen_futures::spawn_local(async {
-                super::paint_apex(super::tenant::Host::Apex).await;
             });
         }
         Action::CreateIdentity => {

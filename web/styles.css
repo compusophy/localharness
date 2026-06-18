@@ -1100,29 +1100,11 @@ h1 a:hover { color: var(--accent); }
   line-height: 1.6;
   color: var(--muted);
 }
-/* The page's ONE action: large, filled-inverse so it outweighs everything
-   else by weight + fill, not color. */
-.apex-onboard-cta {
-  margin: 0;
-  /* Golden-ratio width (φ⁻¹) — a centered pill, not a full-bleed bar.
-     `.apex-onboard` is align-items:center so it self-centers. */
-  width: 61.803%;
-  padding: 18px 32px;
-  font-size: 16px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  background: var(--fg);
-  border: 1px solid var(--fg);
-  color: var(--bg);
-  cursor: pointer;
-  font-family: inherit;
-}
-.apex-onboard-cta:hover {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--bg);
-}
-.apex-onboard-cta:disabled { opacity: 0.5; cursor: default; }
+/* The fresh front door now uses the shared `.create-form` + `.create-button`
+   (landing::claim_name_form) — the same control as the authed apex — so the old
+   bespoke `.apex-onboard-cta` is gone. Inside `.apex-onboard` the form drops its
+   generic 64px top margin so the gap below the pitch is the brand 16px rhythm. */
+.apex-onboard .create-form { margin-top: 0; }
 /* Quiet secondary door — text-link weight, never competes with the CTA. */
 .apex-onboard-secondary { margin: 18px 0 0; }
 .apex-onboard-import {
