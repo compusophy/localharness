@@ -21,6 +21,15 @@ pub(crate) struct RpcResponse {
     pub(crate) error: Option<RpcError>,
 }
 
+impl RpcResponse {
+    /// The `result` field (private so the Tempo-pinned helpers stay the only
+    /// `RPC_URL` consumers); read it by reference for the per-chain
+    /// [`super::multichain`] reader, which races its own explicit URL.
+    pub(crate) fn result(&self) -> Option<&serde_json::Value> {
+        self.result.as_ref()
+    }
+}
+
 #[derive(Deserialize)]
 pub(crate) struct RpcError {
     #[allow(dead_code)]

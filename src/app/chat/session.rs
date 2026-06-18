@@ -18,6 +18,9 @@ use super::tools::bounty::{
     accept_result_tool, claim_bounty_tool, discover_bounties_tool, post_bounty_tool,
     submit_result_tool,
 };
+use super::tools::evm::{
+    evm_balance_tool, evm_call_tool, evm_chains_tool, resolve_ens_tool,
+};
 use super::tools::governance::{
     cast_vote_tool, execute_proposal_tool, list_proposals_tool, propose_measure_tool,
 };
@@ -265,6 +268,10 @@ pub(crate) async fn start_session(
             .with_tool(batch_send_lh_tool())
             .with_tool(check_balances_tool())
             .with_tool(query_balance_tool())
+            .with_tool(evm_chains_tool())
+            .with_tool(evm_balance_tool())
+            .with_tool(resolve_ens_tool())
+            .with_tool(evm_call_tool())
             .with_tool(shared_state_set_tool())
             .with_tool(shared_state_get_tool())
             .with_tool(shared_state_list_tool())
@@ -371,6 +378,10 @@ pub(crate) async fn start_session(
             .with_tool(batch_send_lh_tool())
             .with_tool(check_balances_tool())
             .with_tool(query_balance_tool())
+            .with_tool(evm_chains_tool())
+            .with_tool(evm_balance_tool())
+            .with_tool(resolve_ens_tool())
+            .with_tool(evm_call_tool())
             .with_tool(shared_state_set_tool())
             .with_tool(shared_state_get_tool())
             .with_tool(shared_state_list_tool())

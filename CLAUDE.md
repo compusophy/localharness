@@ -69,7 +69,9 @@ src/                  library crate
 ├── registry/         Diamond JSON-RPC + Tempo tx (feature "wallet"): one module
 │                     per facet (names tba credits x402 schedule invite bounty
 │                     party reputation validation guild voting feedback
-│                     signaling) + abi/rpc/tx
+│                     signaling) + abi/rpc/tx + multichain (READ-ONLY EVM:
+│                     per-chain eth_call/getBalance, ENS namehash+resolve, curated
+│                     CORS RPC table — the evm_* tools)
 │                     plumbing (read_view, sponsored_diamond_call skeletons);
 │                     mod.rs re-exports keep the flat registry:: surface
 ├── x402_hook.rs      app-injected x402 signer + proxy-route hooks for

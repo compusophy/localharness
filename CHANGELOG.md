@@ -5,7 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.47.0] - 2026-06-18
+## [Unreleased]
+
+### Added
+
+- **Multi-chain EVM READ tools** so an agent checks balances / reads contracts /
+  resolves ENS on OTHER EVM chains natively instead of `web_fetch`-ing
+  third-party explorer APIs. New `registry::multichain` module: a curated,
+  CORS-enabled public-RPC table (ethereum, base, optimism, arbitrum, polygon,
+  tempo) + generic per-chain `eth_call` / `eth_getBalance` (mirrors `rpc.rs` but
+  keyed on a per-chain URL), EIP-137 `namehash`, ENS forward resolution, and a
+  human-signature ABI encoder — all READ-ONLY, no writes/signing. Four new browser
+  agent tools (`src/app/chat/tools/evm.rs`): `evm_balance(chain, address,
+  token?)`, `resolve_ens(name)`, `evm_call(chain, to, function_signature, args?)`,
+  `evm_chains()`. Returned chain data is treated as untrusted. Native-tested
+  (namehash canonical vector + ABI encoding); live-verified against Base/Ethereum.
 
 ### Changed
 
