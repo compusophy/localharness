@@ -979,8 +979,12 @@ mod tests {
     fn llms_txt_publishes_canonical_onchain_constants() {
         // The agent-facing spec is read by agents to orient on-chain. It must
         // not drift from the code's source of truth — stale addresses would
-        // send an agent to the wrong chain/contract. Automates the manual
-        // "audit llms.txt vs registry.rs" pass.
+        // send an agent to the wrong chain/contract. These constants are
+        // `chain::ACTIVE`-derived, so this validates the ACTIVE chain: a default
+        // build checks the Moderato values, a `--features mainnet` build checks
+        // the mainnet values appear in the SERVED doc (the web bundle builds
+        // `--features mainnet`, so this is what visitors' agents actually read).
+        // Automates the manual "audit llms.txt vs registry.rs" pass.
         let spec = include_str!("../../../web/llms.txt");
         assert!(
             spec.contains(registry::REGISTRY_ADDRESS),
@@ -1002,5 +1006,47 @@ mod tests {
             "llms.txt missing chain id {}",
             registry::CHAIN_ID
         );
+    }
+
+    #[test]
+    fn llms_txt_does_not_present_testnet_as_the_live_platform() {
+        // The live WEB platform always runs on Tempo MAINNET (independent of
+        // which chain the CLI binary was compiled for). Containing both chains'
+        // addresses is fine — the testnet ones live on a clearly-labeled CLI
+        // line. What must NEVER happen — and is the exact mechanism that codified
+        // the chain drift — is the TESTNET (Moderato) diamond being presented as
+        // the live/active web-platform address. We pin the testnet diamond and
+        // assert it never appears on the authoritative "live web platform runs
+        // on … Diamond proxy at <addr>" line, on EITHER build.
+        let spec = include_str!("../../../web/llms.txt");
+        let testnet_diamond = registry::chain::MODERATO.diamond.to_ascii_lowercase();
+        for line in spec.lines() {
+            let lower = line.to_ascii_lowercase();
+            if lower.contains("live web platform runs on") {
+                assert!(
+                    !lower.contains(&testnet_diamond),
+                    "llms.txt presents the TESTNET diamond {} as the live web \
+                     platform address — chain drift: {line}",
+                    registry::chain::MODERATO.diamond
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn skill_md_has_no_stale_per_message_price_claim() {
+        // skill.md is the agent-onboarding front door. 0.47.0 decoupled $LH from
+        // dollars: a message now costs 1 $LH, not the old "~0.01 $LH" per-message
+        // inference price. Guard that the stale claim can't creep back in. (The
+        // legit "default 0.01 when unset" line is the x402 per-CALL price floor —
+        // "0.01" and "$LH" are not contiguous there, so this doesn't trip on it.)
+        let skill = include_str!("../../../web/skill.md");
+        for stale in ["~0.01 $LH", "0.01 $LH"] {
+            assert!(
+                !skill.contains(stale),
+                "skill.md contains the stale per-message price claim {stale:?} \
+                 (a message costs 1 $LH since 0.47.0)"
+            );
+        }
     }
 }
