@@ -5,6 +5,76 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.47.0] - 2026-06-18
+
+### Changed
+
+- **`$LH` is decoupled from the dollar — it is NOT a stablecoin.** Pricing is now
+  flat and legible: **1 `$LH` = 1 message** on the default model, premium models
+  tiered (more `$LH`/message). Fiat mints on the **GROSS** at **$1 = 100 `$LH`**
+  (Stripe fees absorbed), so a $2 buy is a round 200 `$LH`. A positive meter
+  balance is now **spendable down to zero** — a sub-one-message leftover (e.g.
+  0.62 `$LH`) is no longer stranded; the credit path debits `min(cost, balance)`.
+- **Onboarding is pay-first.** The fresh-visitor front door is one **"create
+  agent"** button with the offer up front (1 agent + 200 `$LH` for $2) — no
+  surprise paywall after a visitor has invested in picking a name. The seed is
+  held **in memory only until payment confirms**, then persisted and offered as a
+  downloadable/printable backup at the safest moment. Reset is now a true wipe.
+- **Fiat on-ramp rebuilt on inline Stripe Elements — card only.** The buy-`$LH`
+  form mounts **in place** (the apex onboarding card and the admin → account
+  buy-`$LH` area — no popup modal), restricted to **card** (no Link/bank/Klarna),
+  and confirms via the canonical Payment Element `clientSecret` flow. Minting is
+  **webhook-backed**: the proxy mints `$LH` server-side on
+  `payment_intent.succeeded`, so the credit lands even if the browser tab closes.
+- **Admin/account panel simplified to identity + credits.** Treasury (TBA send),
+  scheduling, bounties, guilds, and guild governance/DAO are **out of the panel** —
+  that coordination is driven from chat via agent tools now. The panel keeps
+  buy-`$LH`, redeem, invites, notifications, identity, devices, security, persona,
+  and public-face.
+
+### Added
+
+- **`schedule_task` agent tool** — an in-tab agent can escrow `$LH` for recurring
+  or delayed runs (durable via `ScheduleFacet` + the cron worker), no panel needed.
+- **Per-agent PWA install identity** — installing a subdomain as a PWA installs it
+  as **its own** app (e.g. "krafto"), not "localharness"; the apex stays
+  "localharness".
+- **Post-payment seed backup** — the just-paid identity's recovery phrase is shown
+  with copy + download the moment it's safe, so a device loss can't strand it.
+
+### Fixed
+
+- **On-ramp charged a card but credited no `$LH`.** The Stripe webhook endpoint
+  was subscribed to `checkout.session.completed` (the old hosted-Checkout flow),
+  not `payment_intent.succeeded` (the Elements bare-PaymentIntent flow), so the
+  durable mint backstop never fired. Fixed the subscription; added
+  `contracts/script/MintForReceipt.s.sol` to idempotently re-mint a
+  confirmed-but-unfulfilled payment.
+- **Checkout hung on "processing…".** `lhBuyLh` called `lhUnmountCheckout()` on
+  mount, tearing down the success watcher the Rust side armed immediately after
+  (microtask ordering) — so the success handler always short-circuited and the
+  button never resolved (the payment still succeeded + credited). Confirmation now
+  drives off `confirmPayment`'s own result via the canonical flow, with the JS
+  status poll as a redirect/late-settle backstop.
+- **iOS create-wallet crash ("RefCell already borrowed").** A concurrent
+  storage-volatility probe raced the first OPFS seed write, re-entering the
+  wasm-bindgen single-thread executor. The OPFS root-handle borrow is now
+  await-safe and the probe sequential.
+- **iOS ~10s checkout reset.** The wasm payment-status poll (JsFuture + timer loop)
+  re-entered the executor on iOS WebKit; the poll now runs in JS.
+
+### Security
+
+- **Owner-gated `lh-open-key`.** A visited (non-owned) subdomain could ask the apex
+  signer to decrypt the visitor's stored LLM key; the open-key challenge is now
+  owner-gated so only the seed holder's own surfaces can decrypt it.
+
+### Removed
+
+- The economy-coordination panel UI (`events/{tba,bounty,guild,governance}.rs`
+  plus their sections/actions) and the popup buy modal — superseded by the inline
+  checkout and chat-driven agent tools.
+
 ## [0.46.0] - 2026-06-17
 
 ### Security
