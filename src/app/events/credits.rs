@@ -420,7 +420,7 @@ pub(super) fn buy_lh_pressed(onboarding: bool) {
         // card already carries the `#lh-pay-region` mount ids, so there's no
         // modal to open later — the shim mounts straight into it.
         dom::swap_outer("apex-onboard", &templates::onboard_checkout().into_string());
-        crate::app::debuglog::log("checkout: card shown → POST /stripe/checkout");
+        crate::app::debuglog::stage("checkout:onboard_card_shown");
         wasm_bindgen_futures::spawn_local(async move {
             match start_checkout_embedded(cents).await {
                 Ok((client_secret, payment_intent)) => {
@@ -449,7 +449,7 @@ pub(super) fn buy_lh_pressed(onboarding: bool) {
                             .to_string(),
                         ),
                     );
-                    crate::app::debuglog::log("checkout: form mounted + JS watching (no wasm loop)");
+                    crate::app::debuglog::stage("checkout:onboard_form_mounted");
                 }
                 Err(e) => {
                     crate::app::debuglog::log("checkout: REVERT to CTA — start_checkout error");
@@ -622,6 +622,7 @@ pub(crate) async fn finalize_after_payment(
     if payment_intent.is_empty() {
         return;
     }
+    crate::app::debuglog::stage("checkout:finalize_mint");
     // Mint. Retry a few times: finalize fails closed (minted:false)
     // in the brief window before Stripe's NET-settled amount is available.
     for _ in 0..6 {
@@ -629,6 +630,7 @@ pub(crate) async fn finalize_after_payment(
             return;
         }
         if let Ok(true) = finalize_mint(&payment_intent).await {
+            crate::app::debuglog::stage_clean();
             call_js("lhBuySuccess", Some(&format!("✓ {lh_label} added")));
             crate::app::chat::ensure_credit_meter().await;
             super::refresh_credits_pill().await;
@@ -648,7 +650,9 @@ pub(crate) async fn finalize_after_payment(
     // All in-page retries failed, but the PAYMENT succeeded (this fn runs only on
     // a `succeeded` PI) and the webhook now mints `payment_intent.succeeded`
     // server-side — so resolve gracefully instead of hanging the pay button on
-    // "processing…" forever.
+    // "processing…" forever. Payment is done either way, so the checkout stage
+    // is cleanly past its crash-risk window.
+    crate::app::debuglog::stage_clean();
     if checkout_gone() {
         return;
     }

@@ -21,6 +21,43 @@ try {
   /* non-secure context / exotic browser — installability is best-effort */
 }
 
+// Cross-reload crash telemetry (shared sessionStorage keys with
+// web/stripe-embed.js + src/app/debuglog.rs). An iOS WebContent OOM kill is a
+// RESET (Safari respawns the renderer and reloads the tab), not a JS error or a
+// wasm panic — so it leaves no trail in the reloaded page. The discriminator: a
+// user-initiated reload/navigation fires `pagehide`; an abrupt OOM kill does
+// NOT. So marking the active checkout stage "clean" on pagehide is what lets
+// debuglog::detect_previous_crash tell a benign reload from a crash on next
+// boot. The error/rejection traps APPEND a breadcrumb (without disturbing the
+// precise stage) so a JS-side throw also leaves a trail (surfaced under
+// ?debug=1).
+(function () {
+  function stashCrumb(msg) {
+    try {
+      var s = window.sessionStorage;
+      if (!s) return;
+      var crumbs = [];
+      try { crumbs = JSON.parse(s.getItem("lh_crash_crumbs") || "[]"); } catch (e) {}
+      if (!Array.isArray(crumbs)) crumbs = [];
+      crumbs.push(String(msg).slice(0, 140));
+      s.setItem("lh_crash_crumbs", JSON.stringify(crumbs.slice(-12)));
+    } catch (e) {}
+  }
+  window.addEventListener("pagehide", function () {
+    try {
+      var s = window.sessionStorage;
+      if (s) s.setItem("lh_crash_clean", "1"); // clean unload — not an OOM kill
+    } catch (e) {}
+  });
+  window.addEventListener("error", function (e) {
+    stashCrumb("js.error: " + ((e && e.message) || e));
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    var r = e && e.reason;
+    stashCrumb("js.rejection: " + ((r && r.message) || r));
+  });
+})();
+
 // Stash Chrome's install prompt so the APP can offer an [install] button
 // (admin → account) instead of making the user dig through browser menus.
 // The event only fires when the PWA is installable AND not yet installed;
@@ -71,7 +108,7 @@ window.addEventListener("appinstalled", () => {
 // cannot 404. Bust the shim AND the wasm (the shim drops the query when it
 // resolves the wasm relative to import.meta.url, so the wasm url is passed
 // explicitly to init).
-const LH_BUILD = "cd440d148646";
+const LH_BUILD = "7a2f9d663dc2";
 try {
   const mod = await import("./pkg/localharness.js?v=" + LH_BUILD);
   // Object form (not a bare string) — the bare-path arg is deprecated in this

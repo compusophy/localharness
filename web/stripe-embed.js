@@ -33,14 +33,39 @@
   var watchOpts = null; // {payment_intent, onboarding, lh_label} shared with confirmPay
   var handledPI = null; // payment_intent already resolved — handleSucceeded is once-per-PI
 
+  // Cross-reload crash telemetry. An iOS WebContent OOM kill is a RESET (Safari
+  // respawns the renderer + reloads the tab), not a JS error or a wasm panic —
+  // so it leaves no trail. Mirror the active checkout stage + a timestamp into
+  // sessionStorage (survives the reload on the same tab); src/app/debuglog.rs
+  // reads these SAME keys on the next boot and, under ?debug=1, reports "died at
+  // stage X after Y ms". A clean exit (success / teardown / pagehide) sets
+  // `lh_crash_clean`, so a benign reload isn't mistaken for a crash.
+  function stashStage(name) {
+    try {
+      var s = window.sessionStorage;
+      if (!s) return;
+      s.setItem('lh_crash_stage', name);
+      s.setItem('lh_crash_t0', String(Date.now()));
+      s.removeItem('lh_crash_clean');
+    } catch (e) {}
+  }
+  function markClean() {
+    try {
+      var s = window.sessionStorage;
+      if (s) s.setItem('lh_crash_clean', '1');
+    } catch (e) {}
+  }
+
   // Stop the JS payment-status poll (idempotent). Called on success, on
   // teardown (`lhUnmountCheckout`), and after the time cap — the interval must
-  // never leak past a closed/torn-down checkout.
+  // never leak past a closed/torn-down checkout. Reaching any of those is a
+  // clean exit of the checkout's crash-risk window.
   function stopWatch() {
     if (watchTimer !== null) {
       clearInterval(watchTimer);
       watchTimer = null;
     }
+    markClean();
   }
 
   // Drive the post-payment UI + wasm mint EXACTLY ONCE per PaymentIntent. Called
@@ -92,6 +117,7 @@
     var o = state.opts;
     var returnUrl = o.returnUrl || (window.location.origin + window.location.pathname + '?bought=1');
     showError('');
+    stashStage('stripe_confirm');
     return state.stripe
       .confirmPayment({
         elements: state.elements,
@@ -127,6 +153,7 @@
     watchOpts = o; // share onboarding/payment_intent/lh_label with confirmPay
     handledPI = null; // new payment session
     stopWatch(); // never run two watchers at once
+    stashStage('stripe_poll'); // re-open the crash-risk window stopWatch just closed
     var ticks = 0;
     var maxTicks = 120; // 120 * 3s = 6 min cap
     watchTimer = setInterval(function () {
@@ -197,8 +224,14 @@
           spacingUnit: '3px',
         },
       };
+      // Tear down a prior Payment Element before re-mounting (cancel→retry):
+      // each mount spawns Stripe's cross-origin iframe tree, and orphaning one
+      // in the DOM bleeds memory on iOS (a suspected jetsam contributor).
+      if (state && state.payment) {
+        try { state.payment.destroy(); } catch (e) {}
+      }
       var elements = stripe.elements({ clientSecret: o.clientSecret, appearance: appearance });
-      state = { stripe: stripe, elements: elements, opts: o };
+      state = { stripe: stripe, elements: elements, opts: o, payment: null };
 
       // Payment Element ONLY (card + inline Link) — the canonical clientSecret
       // flow. NO Express Checkout Element: its auto-detected express buttons
@@ -209,6 +242,10 @@
         layout: { type: 'accordion', defaultCollapsed: false, radios: true, spacedAccordionItems: false },
         paymentMethodOrder: ['card'],
       });
+      state.payment = payment; // kept so lhUnmountCheckout can destroy() its iframes
+      // The mount + Stripe's post-mount fingerprinting iframes are the prime
+      // suspect for the iOS ~10s gray-screen reset — stamp it so the reload says so.
+      stashStage('stripe_payment_mount');
       payment.mount('#lh-payment');
 
       // OUR submit button for the Payment Element (card / inline Link): the
@@ -235,10 +272,19 @@
     });
   };
 
-  window.lhUnmountCheckout = function () { stopWatch(); state = null; watchOpts = null; };
+  window.lhUnmountCheckout = function () {
+    stopWatch(); // also markClean()s the crash-telemetry stage
+    if (state && state.payment) {
+      try { state.payment.destroy(); } catch (e) {}
+    }
+    state = null;
+    watchOpts = null;
+  };
 
-  // Warm Stripe.js on page load so mounting the Elements is INSTANT when the
-  // user taps "create agent" (instead of loading the ~heavy Stripe.js on the
-  // critical path mid-checkout). preconnect to js.stripe.com is in index.html.
-  loadStripe().catch(function () {});
+  // NOTE: Stripe.js is NOT warmed on page load. The old `loadStripe()` here
+  // pulled js.stripe.com/v3/ (and its hidden fraud/controller iframe) into
+  // EVERY apex visit — even non-buyers — taxing the memory-constrained iOS
+  // WebContent process and feeding the ~10s gray-screen reset. It now loads
+  // lazily on the first `lhBuyLh` (buy tap); the <link rel=preconnect
+  // href=js.stripe.com> in index.html keeps that first load fast.
 })();

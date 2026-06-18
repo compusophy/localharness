@@ -315,6 +315,10 @@ fn inject_token_styles(doc: &web_sys::Document) {
 
 fn mount() -> Result<(), JsValue> {
     debuglog::log("mount (page load / reload)");
+    // If the PREVIOUS run was killed mid-checkout (iOS WebContent OOM reset —
+    // a reload, not a panic, so the panic banner never fired and the in-wasm
+    // crumbs were wiped), surface what stage it died at. No-op on a clean load.
+    debuglog::detect_previous_crash();
     let doc = dom::document()?;
     let root = doc
         .get_element_by_id("root")
