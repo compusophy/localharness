@@ -211,6 +211,10 @@ pub const TX_NOT_CONFIGURED: u16 = 2021;
 pub const TX_REASON_STRING: u16 = 2022;
 /// `LH2023` — a `Panic(uint256)` (internal assert) revert — a platform bug.
 pub const TX_PANIC: u16 = 2023;
+/// `LH2024` — CreditMeterFacet `InsufficientCredits()` on `withdrawCredits` —
+/// the chat-meter credits being pulled out are LOCKED (fiat-minted $LH must be
+/// spent on inference, not transferred/bridged to the wallet) or simply short.
+pub const TX_INSUFFICIENT_CREDITS: u16 = 2024;
 
 /// The full registry — the SINGLE source of truth. `docs/error-codes.md` is
 /// generated/checked against this (the `index_doc_lists_every_code` test pins
@@ -330,6 +334,8 @@ pub const REGISTRY: &[ErrorCode] = &[
        "the decoded reason is shown inline; an escrow/balance reason means you need more $LH"),
     ec(TX_PANIC, Family::TxRevert, "Panic — internal assertion failed",
        "a platform bug, not your input; please `localharness feedback` it"),
+    ec(TX_INSUFFICIENT_CREDITS, Family::TxRevert, "InsufficientCredits — chat-meter credits locked or short",
+       "fiat-minted $LH is locked for spending on inference, not withdraw/transfer; check_balances shows the withdrawable amount + unlock time"),
 ];
 
 /// `const`-friendly constructor for a [`ErrorCode`] table entry.

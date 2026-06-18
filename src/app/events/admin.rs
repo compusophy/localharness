@@ -489,6 +489,11 @@ pub(super) fn header_admin_toggle() {
     if let Some(card) = crate::app::APP.with(|c| c.borrow().financial_card_html.clone()) {
         if dom::by_id("financial-slot").is_some() {
             dom::swap_outer("financial-slot", &card);
+            // The card was stashed pre-session (builtin-only count); if a
+            // session has since started, swap in the live tool count.
+            if let Some(n) = crate::app::APP.with(|c| c.borrow().agent_tool_count) {
+                dom::swap_outer("tools-count", &templates::tools_count_span(n));
+            }
         }
     }
 

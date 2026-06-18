@@ -1789,7 +1789,12 @@ pub(crate) fn financial_card(
     let tba_url = format!("https://moderato.tempo.xyz/address/{tba_hex}");
     let owner_url = format!("https://moderato.tempo.xyz/address/{owner_hex}");
     let balance_display = super::format_wei_as_test_eth(lh_balance_wei);
-    let tool_count = BuiltinTool::ALL.len();
+    // The agent's REAL tool count once a session has started (builtins + chat
+    // tools), falling back to the builtin-only count before first send. The old
+    // bare `BuiltinTool::ALL.len()` (~18) under-reported the ~70 live tools.
+    let tool_count = super::APP
+        .with(|c| c.borrow().agent_tool_count)
+        .unwrap_or_else(|| BuiltinTool::ALL.len());
     html! {
         section #financial-slot .financial-card {
             div.financial-line {
@@ -1825,6 +1830,12 @@ pub(crate) fn financial_card(
             // showing it here read as a broken link.)
         }
     }
+}
+
+/// The `#tools-count` span on its own — same markup the financial card renders,
+/// so a live tool-count refresh (session start / admin open) swaps in cleanly.
+pub(crate) fn tools_count_span(n: usize) -> String {
+    html! { span #tools-count .financial-value { (n) } }.into_string()
 }
 
 /// Pricing card body — owner-only edit form. Kept as a separate

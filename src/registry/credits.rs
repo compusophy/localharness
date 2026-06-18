@@ -151,6 +151,17 @@ pub async fn credit_balance_of(account_hex: &str) -> Result<u128, String> {
     decode_u256_as_u128(&result)
 }
 
+/// Read `withdrawableOf(address)` — the UNLOCKED portion of the meter balance
+/// (`creditOf` minus any still-locked fiat-minted `$LH`). This is the only part
+/// `withdrawCredits` / the meter→wallet bridge can pull out, so reading it tells
+/// the caller WHY a `send_lh`/bridge would revert `InsufficientCredits` (the
+/// rest is fiat-origin credit, spend-only on inference until its lock clears).
+pub async fn withdrawable_credit_of(account_hex: &str) -> Result<u128, String> {
+    let account = parse_eth_address(account_hex)?;
+    let result = read_view(selector("withdrawableOf(address)"), &[addr_word(&account)]).await?;
+    decode_u256_as_u128(&result)
+}
+
 /// Prepay `$LH` into the per-request credit meter via a sponsored Tempo
 /// tx — batches `approve(diamond, amount)` + `depositCredits(amount)`
 /// (same cost-gate shape as `open_session_sponsored`).

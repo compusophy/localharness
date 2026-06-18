@@ -92,6 +92,11 @@ For the full historical sequencing that got us here, see
 
 Genuinely-unbuilt docs, each with a `STATUS: open` header:
 
+- [`architecture-analysis.md`](architecture-analysis.md) — **what to learn from
+  other agentic harnesses** (Hermes, Claude Code/Codex, OpenClawd, antigravity),
+  axis by axis, ending each with a concrete candidate improvement tied to real
+  modules. A proposal for the maintainer to pick from (feedback #17; threads #13/
+  #14/#16) — not a roadmap.
 - [`keeper.md`](keeper.md) — a **decentralized scheduler keeper** (P2P heartbeat,
   krafto #1.5). The pure decision + roster cores, the cross-owner due enumeration,
   and a `localharness keeper` dry-run are SHIPPED + tested; the open part is the

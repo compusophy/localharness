@@ -413,6 +413,8 @@ pub(crate) const KNOWN_REVERTS: &[(&str, u16, &str)] = {
         ("ZeroBudget()", c::TX_ZERO_BUDGET, "the budget/amount must be greater than 0."),
         ("ZeroAmount()", c::TX_ZERO_AMOUNT, "the amount must be greater than 0."),
         ("NotConfigured()", c::TX_NOT_CONFIGURED, "the on-chain credits token isn't configured — this is a platform-side misconfiguration, not your input. Report it via `localharness feedback`."),
+        // --- CreditMeterFacet.withdrawCredits (the meter->wallet bridge under send_lh) ---
+        ("InsufficientCredits()", c::TX_INSUFFICIENT_CREDITS, "those chat-meter credits are LOCKED from withdrawal — fiat-minted $LH must be spent on inference, not transferred or bridged out to the wallet (the lock clears after the dispute window). Run `check_balances` to see the withdrawable (unlocked) amount and the unlock time; only that portion can be sent/bridged."),
         // --- Generic ERC-20 transferFrom failure (escrow pull) ---
         // The facets `require(transferFrom(...))` with these reason strings; if
         // the require trips it surfaces as Error(string). The selector branch
@@ -773,6 +775,7 @@ mod tests {
             ("NotDue()", "LH2001", "NotDue"),
             ("CodeTaken()", "LH2012", "CodeTaken"),
             ("Expired()", "LH2017", "Expired"),
+            ("InsufficientCredits()", "LH2024", "InsufficientCredits"),
         ];
         for (sig, code, name) in cases {
             let out = decode_known_revert_coded(selector(sig))

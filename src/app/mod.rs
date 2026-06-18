@@ -88,6 +88,11 @@ pub(crate) use crate::registry;
 /// page. Nothing here is `Send`/`Sync` — wasm32 is single-threaded.
 pub(crate) struct App {
     pub(crate) agent: Option<Rc<Agent>>,
+    /// Live count of tools the started `agent` exposes (builtins + chat
+    /// closure tools). `None` until a session starts; the admin card shows it
+    /// instead of the builtin-only count (on-chain feedback: "18 tools" was
+    /// stale — the agent actually has ~70).
+    pub(crate) agent_tool_count: Option<usize>,
     /// API key the current `agent` was started with. Used to detect
     /// "user pasted a new key" and reset the session.
     pub(crate) session_key: Option<String>,
@@ -172,6 +177,7 @@ impl App {
     fn new() -> Self {
         Self {
             agent: None,
+            agent_tool_count: None,
             session_key: None,
             turn_count: 0,
             next_id: 0,

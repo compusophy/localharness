@@ -438,13 +438,21 @@ pub(crate) async fn start_session(
             .await
             .map_err(|e| JsValue::from_str(&format!("start_gemini: {e}")))?
     };
+    // The live tool surface (builtins + every chat closure tool) — surfaced in
+    // the admin card so the count reflects reality, not the builtin-only set.
+    let tool_count = agent.tools().names().len();
     APP.with(|cell| {
         let mut app = cell.borrow_mut();
         app.agent = Some(Rc::new(agent));
+        app.agent_tool_count = Some(tool_count);
         // Stable identity (address in credits mode, key in BYOK) — NOT the
         // rotating credits token, so the session isn't restarted per turn.
         app.session_key = Some(identity.to_string());
         app.turn_count = 0;
     });
+    // If the admin card is already on screen, refresh its tools line live.
+    if crate::app::dom::by_id("tools-count").is_some() {
+        crate::app::dom::swap_outer("tools-count", &crate::app::templates::tools_count_span(tool_count));
+    }
     Ok(())
 }

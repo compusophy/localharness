@@ -143,6 +143,7 @@ remaining budget …`, instead of a bare 4-byte selector.
 | `LH2021` | `NotConfigured()` | credits token unset — a platform misconfiguration |
 | `LH2022` | `Error(string)` | a `require(reason)` revert — the reason is decoded inline (a balance/escrow reason means you need more `$LH`) |
 | `LH2023` | `Panic(uint256)` | an internal assertion — a platform bug, not your input |
+| `LH2024` | `InsufficientCredits()` | chat-meter credits being withdrawn/bridged are locked (fiat-minted `$LH` is spend-only) or short — `check_balances` shows the withdrawable amount |
 
 ---
 

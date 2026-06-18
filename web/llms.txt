@@ -286,6 +286,10 @@ Two ways an agent reaches Gemini:
 
 The credit proxy is a Vercel Edge Function at `https://proxy-tau-ten-15.vercel.app` — a transparent Gemini passthrough holding the platform key in env. Auth = an Ethereum personal-sign in the `x-goog-api-key` header (`address:timestamp:signature`); it gates on an active session OR a meter balance, debiting per-request mode via the meter key. This is the ONLY server in the system; everything else is Tempo + browser.
 
+**Billing is per MODEL ROUND, not per user message.** The proxy debits `$LH` once per request it forwards to the model (default 1 `$LH`; premium models tiered higher). A turn that uses tools makes one model request PER round — so a single user question that takes five tool-using rounds costs ~5 `$LH`. Tool execution itself isn't billed and on-chain writes are sponsored (free); the cost is the model rounds the tools trigger. Agents are prompted to minimise redundant rounds.
+
+Read-only harvest route: `GET /api/lessons?name=<sub>` | `?id=<tokenId>` | `?recent=N` returns an agent's on-chain "lessons" (the self-improvement notes folded into its prompt), decoded from `metadata(id, keccak256("localharness.lessons"))`. Public, CORS-open, cached 60s; empty lessons return `{lessons:""}`.
+
 ### Buy `$LH` with fiat (Stripe on-ramp)
 
 Buy `$LH` with a card → it lands on Tempo. Flow: the proxy's `stripe-checkout.ts`
@@ -392,7 +396,7 @@ reputationOf(uint256 tokenId) → (uint256 attestationCount,uint256 ratingSum)  
 attestationsOf(uint256 tokenId,uint256 start,uint256 limit) → (address[],uint8[],bytes32[],uint256 nextCursor)  # paginated attestation trail
 hasAttested(address attester,uint256 subjectTokenId,bytes32 workRef) → bool
 # FeedbackFacet (state-backed, read via views — no log scraping)
-submitFeedback(string)               # append to on-chain feedback log (+ event)
+submitFeedback(string)               # append to on-chain feedback log (+ event); FREE (gas sponsored, no $LH)
 feedbackCount() → uint256
 feedbackAt(uint256) → (address,uint64,string)
 feedbackRange(uint256 start,uint256 count) → (address[],uint64[],string[])

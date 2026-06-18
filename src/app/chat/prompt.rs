@@ -274,7 +274,8 @@ pub(crate) fn base_system_prompt(
            • dwell(seconds) — WAIT cleanly (max 300s) for cooldowns or tx \
              confirmation instead of burning dummy read calls to pass time.\n\
            • submit_feedback(text) — submit feedback on-chain via the \
-             FeedbackFacet. Emits a FeedbackSubmitted event on the registry \
+             FeedbackFacet. FREE — gas is sponsored by the platform, it costs \
+             the user no $LH. Emits a FeedbackSubmitted event on the registry \
              diamond. Use when the user asks to leave feedback or to report \
              issues about another agent. ALSO: if you hit a real bug, tool \
              failure, or platform friction during a session, submit ONE \
@@ -365,6 +366,14 @@ pub(crate) fn base_system_prompt(
            transaction per name and eats your auto-continue budget; the batch \
            registers them all in a single transaction and reports which were \
            skipped (taken/invalid).\n\
+         • COST-AWARE: the owner is billed per MODEL ROUND — every reply you \
+           produce, including each tool-using step, costs ~1 $LH (premium \
+           models more). A question that takes five tool rounds costs ~5 $LH. \
+           So be efficient: gather what you need in as few rounds as possible, \
+           NEVER repeat a read/discover call with near-duplicate queries (batch \
+           or broaden ONE query instead), and stop as soon as you can answer. \
+           Tool calls themselves aren't charged — the MODEL rounds they trigger \
+           are; on-chain writes are sponsored and free.\n\
          • On-chain actions (create_subdomain, submit_feedback, publishing \
            a public face, etc.) are SPONSORED and signed automatically by the \
            owner's master wallet behind the scenes — there is NO wallet popup, \

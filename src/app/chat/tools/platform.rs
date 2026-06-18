@@ -1074,8 +1074,12 @@ pub(crate) fn check_balances_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
         "Read this agent's $LH balances: the owner WALLET (pays send_lh and \
          x402 agent calls), the chat METER (pays model usage; auto-bridges \
          into the wallet when it is short), and this subdomain's token-bound \
-         account (TBA — where bounty rewards and x402 earnings land). \
-         Read-only, costs nothing. Returns decimal $LH figures plus raw wei.",
+         account (TBA — where bounty rewards and x402 earnings land). The meter \
+         splits into a WITHDRAWABLE portion (sendable / bridgeable to the wallet) \
+         and a LOCKED portion (fiat-minted $LH, spend-only on inference until its \
+         unlock time) — so a send_lh/bridge that would revert InsufficientCredits \
+         (LH2024) is visible BEFORE attempting it. Read-only, costs nothing. \
+         Returns decimal $LH figures plus raw wei.",
         schema,
         |_args: serde_json::Value, _ctx| async move {
             let (name, owner) = crate::app::tenant::current_tenant_owner()
@@ -1087,6 +1091,16 @@ pub(crate) fn check_balances_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let meter = crate::app::registry::credit_balance_of(&owner)
                 .await
                 .unwrap_or(0);
+            // Lock split: `withdrawableOf` is the unlocked part the meter→wallet
+            // bridge can pull; the rest is locked fiat-origin $LH (spend-only).
+            let withdrawable = crate::app::registry::withdrawable_credit_of(&owner)
+                .await
+                .unwrap_or(meter);
+            let meter_locked = meter.saturating_sub(withdrawable);
+            // Raw recorded lock (amount, unlockAt) so the agent can say WHEN it frees.
+            let (_lock_amt, unlock_at) = crate::app::registry::fiat_locked_of(&owner)
+                .await
+                .unwrap_or((0, 0));
             let tba_hex = crate::app::registry::tba_of_name(&name)
                 .await
                 .ok()
@@ -1103,11 +1117,18 @@ pub(crate) fn check_balances_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 "wallet_wei": wallet.to_string(),
                 "meter_lh": crate::app::format_wei_as_test_eth(meter),
                 "meter_wei": meter.to_string(),
+                "meter_withdrawable_lh": crate::app::format_wei_as_test_eth(withdrawable),
+                "meter_withdrawable_wei": withdrawable.to_string(),
+                "meter_locked_lh": crate::app::format_wei_as_test_eth(meter_locked),
+                "meter_locked_wei": meter_locked.to_string(),
+                "meter_lock_unlock_at": unlock_at,
                 "tba_address": tba_hex,
                 "tba_lh": crate::app::format_wei_as_test_eth(tba_balance),
                 "tba_wei": tba_balance.to_string(),
+                // Spendable on the WALLET path (send_lh / x402): wallet + the
+                // UNLOCKED meter only — locked fiat-$LH can't be bridged out.
                 "spendable_total_lh": crate::app::format_wei_as_test_eth(
-                    wallet.saturating_add(meter)
+                    wallet.saturating_add(withdrawable)
                 ),
             }))
         },
