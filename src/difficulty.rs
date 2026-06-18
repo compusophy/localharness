@@ -201,6 +201,86 @@ pub fn route(prompt: &str, last_turn_used_tools: bool) -> TurnRoute {
     route_tier(classify_turn(prompt, last_turn_used_tools))
 }
 
+/// Per-turn MODEL selection WITHIN the session's backend family (the #7
+/// follow-up to the per-turn thinking budget #2). Given the turn's [`TurnTier`]
+/// and the session's selected model id, return the model id to use for THIS
+/// turn — or `None` to leave the session model unchanged (the byte-identical
+/// no-op default).
+///
+/// Hard invariants (all unit-tested below):
+/// - **Same backend only.** The returned id is ALWAYS in the same provider
+///   family as `session_model` (a `claude-*` session never returns a `gemini-*`
+///   id and vice-versa). Cross-backend switching is unsafe (different wire
+///   format + history shape) and is never attempted — only the Anthropic family
+///   ever resolves a different id; everything else returns `None`.
+/// - **Ceiling = the session model.** A routine (`Light`/`Standard`) turn may
+///   only DOWNGRADE toward a cheaper same-family model; the desired rung is
+///   `min`-clamped to the session model's rung so it never exceeds the user's
+///   pick. `Heavy` always stays at the session model (the full pick → `None`).
+/// - **No-op outside the Anthropic family.** Gemini has a single in-tab flash
+///   model, so there is no cheaper same-family id to route to → always `None`
+///   (keep the session model). Local/BYOK/unknown ids → `None`.
+///
+/// Anthropic family ladder (cheap→premium): Haiku < Sonnet < Opus. Mapping,
+/// clamped to the session model as the ceiling: `Light`→Haiku, `Standard`→
+/// Sonnet, `Heavy`→the session model. Returns `None` whenever the resolved
+/// model equals the session model, so an override is only ever SET when it
+/// actually changes the model for the turn (keeps the no-op default exact).
+#[cfg(feature = "anthropic")]
+pub fn route_model(tier: TurnTier, session_model: &str) -> Option<String> {
+    // Only the Anthropic family has a same-backend cheaper rung to route to.
+    // A non-`claude-*` session (Gemini / local / BYOK / unknown) → no change.
+    if !session_model.starts_with("claude-") {
+        return None;
+    }
+    use crate::backends::anthropic::{DEFAULT_MODEL as HAIKU, OPUS_MODEL, SONNET_MODEL};
+
+    // Rank within the Claude ladder (cheap→premium). The session model is the
+    // CEILING. Match by family substring so a dated id (the Haiku
+    // `…-4-5-20251001`) still classifies; Haiku is the floor / default.
+    fn rank(model: &str) -> u8 {
+        if model.contains("opus") {
+            2
+        } else if model.contains("sonnet") {
+            1
+        } else {
+            0 // haiku or any other claude-* id → the cheap floor.
+        }
+    }
+
+    let ceiling = rank(session_model);
+    // Tier → desired rung, then `min`-clamp to the ceiling (NEVER upgrade).
+    let desired = match tier {
+        TurnTier::Light => 0,       // Haiku
+        TurnTier::Standard => 1,    // Sonnet
+        TurnTier::Heavy => ceiling, // session model — the full pick, no change
+    };
+    let chosen = desired.min(ceiling);
+    if chosen == ceiling {
+        // Heavy, or a session already at/below the desired rung → no change.
+        return None;
+    }
+    let id = match chosen {
+        0 => HAIKU,
+        _ => SONNET_MODEL, // chosen == 1 (chosen < ceiling <= 2 ⇒ chosen ∈ {0,1})
+    };
+    // Defensive: `OPUS_MODEL` is referenced so a rename trips here, and we never
+    // hand back the session model itself as an "override".
+    let _ = OPUS_MODEL;
+    if id == session_model {
+        None
+    } else {
+        Some(id.to_string())
+    }
+}
+
+/// Feature-off shim: without the `anthropic` backend there is no same-family
+/// cheaper model to route to, so per-turn model selection is always a no-op.
+#[cfg(not(feature = "anthropic"))]
+pub fn route_model(_tier: TurnTier, _session_model: &str) -> Option<String> {
+    None
+}
+
 /// Clamp a thinking budget to a CEILING. The router only ever LOWERS thinking
 /// below the session baseline for routine turns; it never raises it above what
 /// the session was built with. Ordering: `Minimal < Low < Medium < High`.
@@ -390,6 +470,110 @@ mod tests {
                 let applied = clamp_thinking(desired, ceiling);
                 // Idempotent + never exceeds ceiling.
                 assert_eq!(clamp_thinking(applied, ceiling), applied);
+            }
+        }
+    }
+
+    // --- route_model ---------------------------------------------------------
+
+    /// Non-Anthropic sessions (Gemini / local / BYOK / unknown) NEVER get a
+    /// per-turn model override — there is no cheaper same-family rung to route
+    /// to. Works in every feature config (the feature-off shim returns `None`
+    /// too), so this is the byte-identical no-op guarantee for those paths.
+    #[test]
+    fn route_model_is_noop_off_anthropic_family() {
+        for session in [
+            "gemini-3.5-flash",
+            "gemma-3-270m",
+            "gpt-4o",
+            "",
+            "something-weird",
+        ] {
+            for tier in [TurnTier::Light, TurnTier::Standard, TurnTier::Heavy] {
+                assert_eq!(route_model(tier, session), None, "{session:?}/{tier:?}");
+            }
+        }
+    }
+
+    #[cfg(feature = "anthropic")]
+    mod anthropic_family {
+        use super::*;
+        use crate::backends::anthropic::{
+            DEFAULT_MODEL as HAIKU, OPUS_MODEL as OPUS, SONNET_MODEL as SONNET,
+        };
+
+        /// An Opus session (the top ceiling) downgrades routine turns: Light→
+        /// Haiku, Standard→Sonnet, Heavy→no change (stays Opus).
+        #[test]
+        fn opus_session_downgrades_routine_turns() {
+            assert_eq!(route_model(TurnTier::Light, OPUS).as_deref(), Some(HAIKU));
+            assert_eq!(route_model(TurnTier::Standard, OPUS).as_deref(), Some(SONNET));
+            assert_eq!(route_model(TurnTier::Heavy, OPUS), None);
+        }
+
+        /// A Sonnet session: Light→Haiku, Standard→no change (Sonnet IS the
+        /// ceiling), Heavy→no change. Standard never UPGRADES to Opus.
+        #[test]
+        fn sonnet_session_clamps_standard_to_ceiling() {
+            assert_eq!(route_model(TurnTier::Light, SONNET).as_deref(), Some(HAIKU));
+            assert_eq!(route_model(TurnTier::Standard, SONNET), None);
+            assert_eq!(route_model(TurnTier::Heavy, SONNET), None);
+        }
+
+        /// A Haiku session (the floor): every tier is already at/below Haiku, so
+        /// there is never anything cheaper to route to → always `None`. This is
+        /// the no-override default for the cheapest-model session.
+        #[test]
+        fn haiku_session_never_overrides() {
+            for tier in [TurnTier::Light, TurnTier::Standard, TurnTier::Heavy] {
+                assert_eq!(route_model(tier, HAIKU), None, "{tier:?}");
+            }
+        }
+
+        /// The CEILING invariant for the whole ladder: for any Claude session
+        /// model and any tier, the resolved model is NEVER more capable than the
+        /// session model (only ever equal — `None` — or cheaper).
+        #[test]
+        fn never_exceeds_ceiling_for_every_claude_session() {
+            fn rank(m: &str) -> u8 {
+                if m.contains("opus") {
+                    2
+                } else if m.contains("sonnet") {
+                    1
+                } else {
+                    0
+                }
+            }
+            for session in [HAIKU, SONNET, OPUS] {
+                let ceiling = rank(session);
+                for tier in [TurnTier::Light, TurnTier::Standard, TurnTier::Heavy] {
+                    let resolved = route_model(tier, session);
+                    let applied = resolved.as_deref().unwrap_or(session);
+                    assert!(
+                        rank(applied) <= ceiling,
+                        "session {session} tier {tier:?} routed to {applied} (rank {} > ceiling {ceiling})",
+                        rank(applied)
+                    );
+                    // SAME-BACKEND: any override stays a `claude-*` id.
+                    if let Some(id) = &resolved {
+                        assert!(id.starts_with("claude-"), "crossed backend: {id}");
+                    }
+                }
+            }
+        }
+
+        /// An override, when present, is ALWAYS different from the session model
+        /// — we never hand back the session model dressed up as an "override"
+        /// (so the wiring only ever calls `set_model_override(Some)` on a real
+        /// change, keeping the no-op default exact).
+        #[test]
+        fn override_when_present_is_a_real_change() {
+            for session in [HAIKU, SONNET, OPUS] {
+                for tier in [TurnTier::Light, TurnTier::Standard, TurnTier::Heavy] {
+                    if let Some(id) = route_model(tier, session) {
+                        assert_ne!(id, session, "{session}/{tier:?} returned the session model");
+                    }
+                }
             }
         }
     }

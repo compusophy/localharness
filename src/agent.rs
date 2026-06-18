@@ -1184,10 +1184,8 @@ impl Agent {
     /// default) restores the configured level. Cheap — does NOT rebuild the
     /// connection or touch history.
     ///
-    /// This overrides only the thinking BUDGET, not the model. Per-turn MODEL
-    /// switching would require rebuilding the connection (the model id + HTTP
-    /// client are baked into the backend `LoopConfig` at connect time) and is
-    /// intentionally deferred — see the `app::chat` router wiring.
+    /// This overrides only the thinking BUDGET; per-turn MODEL selection is the
+    /// separate [`set_model_override`](Self::set_model_override) seam.
     pub fn set_thinking_override(&self, level: Option<crate::types::ThinkingLevel>) {
         if let Some(gc) = self.gemini_connection.as_ref() {
             gc.set_thinking_override(level);
@@ -1195,6 +1193,32 @@ impl Agent {
         #[cfg(feature = "anthropic")]
         if let Some(ac) = self.anthropic_connection.as_ref() {
             ac.set_thinking_override(level);
+        }
+    }
+
+    /// Set (or clear, with `None`) a PER-TURN MODEL override for the NEXT turn —
+    /// the difficulty-router model seam (#7), parallel to
+    /// [`set_thinking_override`](Self::set_thinking_override). The in-tab router
+    /// classifies each turn and may route a routine turn to a cheaper SAME-
+    /// BACKEND model (e.g. a Light turn on a Claude-Opus session → Haiku),
+    /// clamped so it never exceeds the user's selected model. Applies to the
+    /// Gemini and (with the `anthropic` feature) Anthropic backends; a no-op for
+    /// the mock / local backends. `None` (the default) restores the configured
+    /// model. Cheap — does NOT rebuild the connection or touch history; it works
+    /// because the credit proxy routes every model to the SAME endpoint (the
+    /// model is just a request field).
+    ///
+    /// SAFETY: the caller MUST pass a model id in the SAME provider family as
+    /// the session's model (a Gemini session must not get a `claude-*` id and
+    /// vice-versa) — cross-backend switching would corrupt the wire history.
+    /// [`crate::difficulty::route_model`] enforces this.
+    pub fn set_model_override(&self, model: Option<String>) {
+        if let Some(gc) = self.gemini_connection.as_ref() {
+            gc.set_model_override(model.clone());
+        }
+        #[cfg(feature = "anthropic")]
+        if let Some(ac) = self.anthropic_connection.as_ref() {
+            ac.set_model_override(model);
         }
     }
 

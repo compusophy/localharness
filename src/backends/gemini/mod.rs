@@ -317,6 +317,7 @@ impl ConnectionStrategy for GeminiConnectionStrategy {
             state,
             conversation_id: conv_id.into(),
             thinking_override: parking_lot::Mutex::new(None),
+            model_override: parking_lot::Mutex::new(None),
         });
         if let Some(slot) = &self.typed_capture {
             *slot.lock() = Some(typed.clone());
@@ -369,6 +370,17 @@ pub struct GeminiConnection {
     /// thinking per turn WITHOUT rebuilding the connection. `None` by default →
     /// behavior is identical to before for every caller that never sets it.
     thinking_override: parking_lot::Mutex<Option<ThinkingLevel>>,
+    /// Optional PER-TURN model override (difficulty router, #7). When `Some`,
+    /// the NEXT [`Connection::send`] uses this model id instead of the
+    /// configured one FOR THAT TURN ONLY. Safe because the credits/proxy path
+    /// sends every model to the SAME endpoint (the model is just a request
+    /// field), so a same-backend swap needs no connection rebuild. The wiring
+    /// guarantees a same-family id no more capable than the user's pick. On
+    /// Gemini there is a single in-tab flash model, so the router returns no
+    /// Gemini override and this stays `None` in practice; the seam exists for
+    /// parity with the Anthropic backend. `None` by default → byte-identical
+    /// no-op for every caller that never sets it.
+    model_override: parking_lot::Mutex<Option<String>>,
 }
 
 impl GeminiConnection {
@@ -388,6 +400,20 @@ impl GeminiConnection {
     /// rebuild the connection or touch history.
     pub fn set_thinking_override(&self, level: Option<ThinkingLevel>) {
         *self.thinking_override.lock() = level;
+    }
+
+    /// Set (or clear, with `None`) the PER-TURN model override — the
+    /// difficulty-router model seam (#7), parallel to
+    /// [`set_thinking_override`](Self::set_thinking_override). Applies to the
+    /// NEXT turn only; the configured model is restored after. `None` (the
+    /// default) is a no-op. The caller MUST pass a same-backend id no more
+    /// capable than the session's selected model — switching backends is unsafe
+    /// (different wire format + history shape) and must never be done here.
+    /// Cheap: does NOT rebuild the connection or touch history; the proxy routes
+    /// every model to the same endpoint, so only the request's model field
+    /// changes.
+    pub fn set_model_override(&self, model: Option<String>) {
+        *self.model_override.lock() = model;
     }
 
     /// Replace the entire conversation history with one previously
@@ -572,6 +598,14 @@ impl Connection for GeminiConnection {
         // override falls back to the configured level. `None` is a no-op.
         if let Some(level) = *self.thinking_override.lock() {
             deps.config.thinking = Some(level);
+        }
+        // Per-turn MODEL override (difficulty router, #7) — same discipline:
+        // overrides the cloned per-turn model for THIS turn only; the template
+        // keeps the session model. Safe because the proxy routes every model to
+        // the same endpoint (model is a request field), and the wiring only
+        // ever passes a same-backend, ceiling-clamped id. `None` is a no-op.
+        if let Some(model) = self.model_override.lock().clone() {
+            deps.config.model = model;
         }
         crate::runtime::spawn(async move {
             if let Err(e) = run_turn(deps, user, content).await {

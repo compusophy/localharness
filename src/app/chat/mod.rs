@@ -433,16 +433,31 @@ pub(crate) fn is_internal_nudge(text: &str) -> bool {
 /// truncation activity, so it routes `Heavy` (full budget) — the router never
 /// starves a turn that's mid-task.
 ///
-/// The override is applied via [`crate::Agent::set_thinking_override`], which is
-/// a no-op on backends without thinking control (local Gemma). If the session
-/// has no ceiling recorded, the override is cleared (the agent falls back to its
-/// configured level) — so the routing is purely additive and safe.
+/// The thinking override is applied via [`crate::Agent::set_thinking_override`],
+/// the MODEL override via [`crate::Agent::set_model_override`] (#7) — both no-ops
+/// on backends without the respective control. If the session has no ceiling
+/// recorded (e.g. local Gemma), BOTH overrides are cleared and the agent falls
+/// back to its configured level + model — so the routing is purely additive and
+/// safe (the no-override default is byte-identical).
+///
+/// MODEL selection is the per-turn #7 follow-up to the #2 thinking budget: the
+/// SAME tier drives both. [`crate::difficulty::route_model`] returns a cheaper
+/// SAME-BACKEND model for a routine turn (clamped to the session model as the
+/// ceiling) or `None` to keep the session model. It is structurally incapable of
+/// crossing backends or upgrading past the session model, so a `claude-*`
+/// session never gets a `gemini-*` id and `Heavy` always stays at the user's
+/// pick. Gemini sessions always get `None` (single in-tab flash model).
 fn apply_difficulty_route(agent: &Agent, input: &TurnInput) {
-    let ceiling = APP.with(|cell| cell.borrow().session_thinking_ceiling);
+    let (ceiling, session_model) =
+        APP.with(|cell| {
+            let app = cell.borrow();
+            (app.session_thinking_ceiling, app.session_model.clone())
+        });
     let Some(ceiling) = ceiling else {
         // No thinking control for this backend (e.g. local) — make sure no
-        // stale override lingers, then leave it to the configured level.
+        // stale overrides linger, then leave it to the configured level + model.
         agent.set_thinking_override(None);
+        agent.set_model_override(None);
         return;
     };
     let (prompt, last_turn_used_tools) = match input {
@@ -451,9 +466,18 @@ fn apply_difficulty_route(agent: &Agent, input: &TurnInput) {
         // answer — treat it as mid-task so it keeps the high budget.
         TurnInput::AutoContinue | TurnInput::ResumeTruncated => ("", true),
     };
-    let desired = crate::difficulty::route(prompt, last_turn_used_tools).thinking;
+    // ONE classification drives both the thinking budget and the model.
+    let tier = crate::difficulty::classify_turn(prompt, last_turn_used_tools);
+    let desired = crate::difficulty::route_tier(tier).thinking;
     let applied = crate::difficulty::clamp_thinking(desired, ceiling);
     agent.set_thinking_override(Some(applied));
+    // Per-turn MODEL selection: cheaper same-backend model for routine turns,
+    // clamped to the session model. `None` (no same-family cheaper rung, or the
+    // session model already chosen) leaves the model unchanged — byte-identical.
+    let model = session_model
+        .as_deref()
+        .and_then(|m| crate::difficulty::route_model(tier, m));
+    agent.set_model_override(model);
 }
 
 /// What a single streamed turn carries in.

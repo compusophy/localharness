@@ -108,6 +108,13 @@ pub(crate) struct App {
     /// session starts (or for backends without thinking control). See
     /// [`crate::difficulty`] + `chat::session::start_session`.
     pub(crate) session_thinking_ceiling: Option<crate::types::ThinkingLevel>,
+    /// The model id the current `agent`'s session was built with (the user's
+    /// selection). The difficulty router's per-turn MODEL selection
+    /// ([`crate::difficulty::route_model`]) reads this to pick a cheaper
+    /// SAME-BACKEND model for routine turns, clamped to it as the ceiling. The
+    /// override is never cross-backend. `None` until a session starts. See
+    /// `chat::session::start_session`.
+    pub(crate) session_model: Option<String>,
     /// Monotonic id used for unique DOM ids on turns, segments, tool
     /// blocks. Never reused across resets so stale event targets are
     /// safe to drop.
@@ -192,6 +199,7 @@ impl App {
             session_key: None,
             turn_count: 0,
             session_thinking_ceiling: None,
+            session_model: None,
             next_id: 0,
             opfs_cwd: Vec::new(),
             opfs: None,

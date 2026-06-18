@@ -518,6 +518,10 @@ pub(crate) async fn start_session(
         // the level THIS session was actually built with (never raises past the
         // user's model choice).
         app.session_thinking_ceiling = session_ceiling;
+        // Record the session model so the per-turn MODEL router
+        // (`difficulty::route_model`) can pick a cheaper SAME-BACKEND model for
+        // routine turns, clamped to this as the ceiling (#7).
+        app.session_model = Some(model.clone());
     });
     // If the admin card is already on screen, refresh its tools line live.
     if crate::app::dom::by_id("tools-count").is_some() {
