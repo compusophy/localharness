@@ -22,6 +22,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use async_trait::async_trait;
+use futures_util::future::{select, Either};
 use js_sys::{Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -40,6 +41,18 @@ use crate::error::{Error, Result};
 /// this a walk over a huge tree would exhaust memory. Mirrors
 /// `NativeFilesystem::MAX_WALK_ENTRIES`; 200k is far beyond any real workspace.
 const MAX_WALK_ENTRIES: usize = 200_000;
+
+/// Hard ceiling on a single OPFS write. **iOS Safari's
+/// `FileSystemFileHandle.createWritable()` / `.close()` can HANG FOREVER on the
+/// main thread** (it only shipped in Safari 18 and still stalls), and the future
+/// never resolving WEDGES the single-threaded wasm executor — every other task
+/// (paint, timeouts) dies with it, surfacing as a permanent "stuck" UI. Racing
+/// each write against this timer turns a stall into a recoverable `Err` instead
+/// of an infinite hang; callers degrade (the seed has a localStorage fallback in
+/// `wallet_store`; history/device-key writes regenerate). 8s is far beyond a
+/// healthy write. A dropped write leaves the original file intact (atomic swap
+/// only commits on `close()`).
+const WRITE_TIMEOUT_MS: u32 = 8_000;
 
 /// Filesystem backed by the browser's Origin Private File System.
 ///
@@ -113,6 +126,33 @@ impl OpfsFilesystem {
         }
         Ok(dir)
     }
+
+    /// The actual OPFS write: createWritable → write → close (atomic swap on
+    /// close). Wrapped by the trait method in a [`WRITE_TIMEOUT_MS`] race so a
+    /// hung iOS write can't wedge the executor.
+    async fn write_atomic_inner(&self, path: &str, bytes: &[u8]) -> Result<()> {
+        let (parent, name) = self.resolve_parent(path, true).await?;
+        let name =
+            name.ok_or_else(|| Error::other(format!("write_atomic({path}): path is empty")))?;
+        let file_handle = get_file(&parent, &name, true).await?;
+        let writable_val = JsFuture::from(file_handle.create_writable())
+            .await
+            .map_err(|e| Error::other(format!("createWritable({path}): {}", js_err(&e))))?;
+        let writable: FileSystemWritableFileStream = writable_val
+            .dyn_into()
+            .map_err(|_| Error::other("createWritable: not a writable stream"))?;
+        let array = Uint8Array::from(bytes);
+        let write_promise = writable
+            .write_with_buffer_source(&array)
+            .map_err(|e| Error::other(format!("write({path}): {}", js_err(&e))))?;
+        JsFuture::from(write_promise)
+            .await
+            .map_err(|e| Error::other(format!("write({path}): {}", js_err(&e))))?;
+        JsFuture::from(writable.close())
+            .await
+            .map_err(|e| Error::other(format!("close({path}): {}", js_err(&e))))?;
+        Ok(())
+    }
 }
 
 #[async_trait(?Send)]
@@ -135,27 +175,19 @@ impl Filesystem for OpfsFilesystem {
     }
 
     async fn write_atomic(&self, path: &str, bytes: &[u8]) -> Result<()> {
-        let (parent, name) = self.resolve_parent(path, true).await?;
-        let name =
-            name.ok_or_else(|| Error::other(format!("write_atomic({path}): path is empty")))?;
-        let file_handle = get_file(&parent, &name, true).await?;
-        let writable_val = JsFuture::from(file_handle.create_writable())
-            .await
-            .map_err(|e| Error::other(format!("createWritable({path}): {}", js_err(&e))))?;
-        let writable: FileSystemWritableFileStream = writable_val
-            .dyn_into()
-            .map_err(|_| Error::other("createWritable: not a writable stream"))?;
-        let array = Uint8Array::from(bytes);
-        let write_promise = writable
-            .write_with_buffer_source(&array)
-            .map_err(|e| Error::other(format!("write({path}): {}", js_err(&e))))?;
-        JsFuture::from(write_promise)
-            .await
-            .map_err(|e| Error::other(format!("write({path}): {}", js_err(&e))))?;
-        JsFuture::from(writable.close())
-            .await
-            .map_err(|e| Error::other(format!("close({path}): {}", js_err(&e))))?;
-        Ok(())
+        // Race the write against WRITE_TIMEOUT_MS: iOS Safari's createWritable/
+        // close can hang forever, and a never-resolving write future wedges the
+        // single-thread executor (the "stuck on opening secure checkout…" hang).
+        // A timeout turns that into a recoverable Err; the loser future drops
+        // (the atomic swap only commits on close(), so a dropped write is a no-op).
+        let work = std::pin::pin!(self.write_atomic_inner(path, bytes));
+        let timer = std::pin::pin!(crate::runtime::sleep_ms(WRITE_TIMEOUT_MS));
+        match select(work, timer).await {
+            Either::Left((r, _)) => r,
+            Either::Right(((), _)) => Err(Error::other(format!(
+                "write_atomic({path}): timed out after {WRITE_TIMEOUT_MS}ms (OPFS write stalled — iOS Safari)"
+            ))),
+        }
     }
 
     async fn metadata(&self, path: &str) -> Result<Option<Metadata>> {
