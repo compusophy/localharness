@@ -326,7 +326,7 @@ pub(crate) fn set_lessons_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// define (or UPSERT) a NAMED, reusable instruction fragment the agent can
 /// invoke later by name. Merges via [`crate::skills::upsert`] (name normalize +
 /// dedup/replace, instruction trim/collapse/cap, last-[`crate::skills::MAX_SKILLS`]
-/// + byte cap), saves the OPFS working copy (`.lh_skills.json`), and publishes
+/// and a byte cap), saves the OPFS working copy (`.lh_skills.json`), and publishes
 /// the blob on-chain under `keccak256("localharness.skills")` so it survives
 /// sessions and devices. Every surface (browser session, headless CLI `call`,
 /// scheduler worker) folds the blob into the system prompt via `compose_section`.

@@ -62,7 +62,8 @@ src/                  library crate
 ├── builtins/         backend-NEUTRAL builtin tools (8 fs, ask_question, finish,
 │                     start_subagent, generate_image, call_agent, ...) + the two
 │                     schema-lint guard tests; shim left at backends/gemini/tools
-├── filesystem/       Filesystem trait + Native/OPFS impls + at-rest Encrypted wrapper
+├── filesystem/       Filesystem trait + Native/OPFS impls + Encrypted (at-rest) +
+│                     Rooted (confine to a sub-tree — the bashlite CLI sandbox)
 ├── types.rs          wire-adjacent enums + Step constructors (no hand literals)
 ├── error.rs          Error + Result · error_codes.rs stable LHxxxx registry
 ├── wallet.rs         secp256k1 + BIP-39 + RLP (feature "wallet"; all targets)
@@ -71,7 +72,9 @@ src/                  library crate
 │                     party reputation validation guild voting feedback
 │                     signaling) + abi/rpc/tx + multichain (READ-ONLY EVM:
 │                     per-chain eth_call/getBalance, ENS namehash+resolve, curated
-│                     CORS RPC table — the evm_* tools)
+│                     CORS RPC table — the evm_* tools) + sponsor_relay(mainnet
+│                     fee_payer relay client; submit chokepoints route here when
+│                     is_mainnet()) + abi/rpc/tx
 │                     plumbing (read_view, sponsored_diamond_call skeletons);
 │                     mod.rs re-exports keep the flat registry:: surface
 ├── x402_hook.rs      app-injected x402 signer + proxy-route hooks for
@@ -90,6 +93,12 @@ src/                  library crate
 │                     of rustlite, ~5KLOC): lexer / ast / parser / codegen / asm
 │                     (bytecode assembler) / mod(compile pipeline). PURE, no deps,
 │                     native+wasm. E2E proofs in `examples/soliditylite_*`.
+├── bashlite/        tiny sandboxed shell (lexer/parser/eval over a BashHost):
+│                     fs builtins + `run`/`source` script COMPOSITION (fractal,
+│                     fuel-bounded) + `&&`/`||` + for-`$( )` field-split + lh-*
+│                     platform reads/writes (platform.rs, feature wallet) behind
+│                     the dry-run-manifest confirm gate. CLI `sh`, browser
+│                     `execute_script`. design/bashlite.md
 ├── app/              browser-resident IDE (browser-app + wasm32) — see below
 └── backends/
     ├── (shared)      sse.rs(frame decoder, CRLF-safe) dispatch.rs(hook-gated
@@ -129,7 +138,7 @@ src/app/ (browser IDE):
   seed_pull.rs(local-seed-per-origin — mobile fix) agent_rpc.rs(?rpc=1)
   encryption.rs(AES-256-GCM + ECIES) shared_fs.rs/webrtc.rs/sharedfs_sync.rs/
     teams_sync.rs(P2P teams layer, SignalingFacet) system_prompt.rs self_docs.rs
-  tool_allowlist.rs sponsor.rs(embedded fee_payer key, testnet) verify.rs(owner
+  tool_allowlist.rs sponsor.rs(testnet fee_payer key; mainnet→relay, no embed) verify.rs(owner
     verify + iframe signer client, all LOCAL-FIRST off APP.wallet)
 
 src/bin/localharness/  — agent-onboarding CLI (feature wallet+native). main.rs
@@ -511,7 +520,13 @@ User-facing writes use Tempo's **native** AA tx type (`0x76`) so users hold ZERO
 anything. `src/app/sponsor.rs` signs as `fee_payer` and pays fees in AlphaUSD.
 Every user-facing write goes through `events::run_sponsored_tempo_call`: tenant
 computes sender_hash, apex wallet signs it via the iframe's `lh-sign-digest`
-message, the embedded sponsor signs `fee_payer`.
+message, the embedded sponsor signs `fee_payer`. **On MAINNET no build embeds a
+fee_payer key** — the `fee_payer` half is signed SERVER-SIDE by the rate-capped
+relay (`registry::sponsor_relay` → `proxy/api/sponsor.ts`: selector allowlist +
+onboarding-only gate + rate window + float breaker), authed by the caller's
+personal-sign token. `registry::is_mainnet()` routes the submit chokepoints + the
+browser's `run_sponsored_tempo_call` to it. Mainnet sponsor `0x066E748367df…0168f`
+(rotated from bundle-exposed `0xE70f4B…`), proxy-env only. `design/cli-mainnet-relay.md`.
 
 ### Wire format (live-verified — `examples/tempo_tx_live.rs`)
 
