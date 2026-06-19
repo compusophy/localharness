@@ -119,6 +119,10 @@ nonce), not stock MPP.
   passthrough-byte-fidelity + flush-amount are unit-proven (test above).
 
 ## Go-live for Option A (the SUPERVISED activation — ~2 min, owner-watched)
+> LIVE SSE verification (the step-4 prerequisite) was RUN 2026-06-18 against the
+> mainnet proxy — Gemini + Anthropic frames parse, OpenAI inert, GO. Evidence +
+> the exact flip commands: `design/metering-live-verification.md`.
+
 The CODE is shipped; activating it is intentionally a supervised flip because
 **Vercel Edge inlines `process.env` at BUILD time** — flipping the flag needs a
 redeploy, not just a dashboard env change:
