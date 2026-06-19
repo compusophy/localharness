@@ -260,12 +260,13 @@ IDENTITY & PROFILE
 
 CARTRIDGES & PUBLISHING
   localharness compile <src.rl>          compile-check a cartridge locally (no write)
-  localharness sh <script.bl> [--as <name>]
+  localharness sh <script.bl> [--as <name>] [--confirm]
                                          run a bashlite script: fs commands over the
-                                         script's directory + read-only lh-* platform
-                                         commands (lh-whoami/lh-balance/lh-resolve/
-                                         lh-price) + `run other.bl` composition — one
-                                         local pass, no agent loop
+                                         script's directory + lh-* platform commands
+                                         (lh-whoami/lh-balance/lh-resolve/lh-price reads;
+                                         lh-send moves $LH) + `run other.bl` composition
+                                         — one local pass, no agent loop. Value moves
+                                         run DRY first (a plan); --confirm executes
   localharness publish <name> [src.rl|page.html]
                                          publish <name>'s public face on-chain:
                                          .rl compiles as a rustlite app, .html
@@ -540,16 +541,20 @@ async fn run(args: &[String]) -> i32 {
             }
         },
         Some("sh") => {
-            // `sh <script.bl> [--as <name>]` — pick the positional file and the
-            // optional identity.
+            // `sh <script.bl> [--as <name>] [--confirm]` — positional file, the
+            // optional identity, and the value-move authorization flag.
             let rest = &args[1..];
             let mut as_name: Option<String> = None;
+            let mut confirm = false;
             let mut file: Option<String> = None;
             let mut i = 0;
             while i < rest.len() {
                 if rest[i] == "--as" && i + 1 < rest.len() {
                     as_name = Some(rest[i + 1].clone());
                     i += 2;
+                } else if rest[i] == "--confirm" {
+                    confirm = true;
+                    i += 1;
                 } else if file.is_none() {
                     file = Some(rest[i].clone());
                     i += 1;
@@ -558,9 +563,9 @@ async fn run(args: &[String]) -> i32 {
                 }
             }
             match file {
-                Some(f) => sh::cmd_sh(&f, as_name.as_deref()).await,
+                Some(f) => sh::cmd_sh(&f, as_name.as_deref(), confirm).await,
                 None => {
-                    eprintln!("usage: localharness sh <script.bl> [--as <name>]");
+                    eprintln!("usage: localharness sh <script.bl> [--as <name>] [--confirm]");
                     2
                 }
             }

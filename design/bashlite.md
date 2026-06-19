@@ -11,11 +11,16 @@ fuel, bounded recursion) so a script is a composition of scripts; `for f in $(�
 field-splitting (fan-out); the dead `BashHost::run_builtin` extension seam is now
 WIRED, and READ-ONLY `lh-*` platform commands ship in `src/bashlite/platform.rs`
 (`lh-whoami`/`lh-balance`/`lh-resolve`/`lh-price` — localharnesslite). End-to-end:
-`localharness sh <script.bl> [--as <name>]` runs a script on the native fs
-(`src/filesystem/rooted.rs` confines the sandbox to the script's dir) with the
-`lh-*` reads — proven live (`examples/bashlite/fractal.bl` composes 3 levels of
-scripts + resolves a mainnet agent). **Remaining:** value-MOVING `lh-*` behind the
-dry-run-manifest confirm gate; scheduler runs `.bl` (zero-LLM cron); `lh-http`.
+`localharness sh <script.bl> [--as <name>] [--confirm]` runs a script on the
+native fs (`src/filesystem/rooted.rs` confines the sandbox to the script's dir)
+with the `lh-*` commands — proven live (`examples/bashlite/fractal.bl` composes 3
+levels of scripts + resolves a mainnet agent). **Value-MOVING `lh-send` ships
+behind the dry-run-manifest gate** (`platform::dispatch_write`): the script runs
+DRY first (each move emits a one-line plan, nothing sent), the host collects the
+manifest, and `--confirm` re-runs LIVE — proven live with
+`examples/bashlite/treasury.bl` (read balance → plan a send → refuse without
+--confirm). **Remaining:** more value-moving `lh-*` (`lh-create`, `lh-publish`);
+scheduler runs `.bl` (zero-LLM cron); `lh-http` over `/api/fetch`.
 
 ## Why (the cost unlock)
 

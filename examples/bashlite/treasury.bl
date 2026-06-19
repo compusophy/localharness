@@ -1,0 +1,9 @@
+# treasury.bl — a script that READS the chain then MOVES value. Run it WITHOUT
+# --confirm to see the plan (nothing is sent); add --confirm to execute:
+#   localharness sh examples/bashlite/treasury.bl --as claude            (dry-run)
+#   localharness sh examples/bashlite/treasury.bl --as claude --confirm  (live)
+echo "my balance:"
+lh-balance
+
+echo "fund a teammate (gated):"
+lh-send claude 0.5

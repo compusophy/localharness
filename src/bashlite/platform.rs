@@ -90,6 +90,89 @@ async fn lh_price(args: &[String]) -> Output {
     }
 }
 
+// --- value-MOVING lh-* (writes) + the dry-run manifest ----------------------
+//
+// Writes are NOT dispatched by the read [`dispatch`] above — they need a signer,
+// a fee_payer, and the dry-run-manifest confirm flow (`design/bashlite.md`). A
+// host that holds an identity calls [`dispatch_write`]: in DRY-RUN the command
+// records a one-line plan and moves nothing; the host collects every plan into a
+// manifest, confirms the WHOLE manifest once, then re-runs LIVE. Same total
+// contract — bad args / RPC errors are a nonzero [`Output`], never a panic.
+
+use k256::ecdsa::SigningKey;
+
+/// What a value-moving command needs from its host: the caller's identity key,
+/// the `fee_payer` sponsor, and the chain fee token.
+pub struct WriteEnv<'a> {
+    pub signer: &'a SigningKey,
+    pub sponsor: &'a SigningKey,
+    pub fee_token: &'a str,
+}
+
+/// Dispatch a VALUE-MOVING `lh-*` command. Returns `None` when `cmd` is not a
+/// value-moving command this core owns. `Some((output, plan))`: `plan` is a
+/// one-line manifest description when the command WOULD move value (empty when
+/// it failed before committing to a move, e.g. bad args). In `dry_run` the
+/// `output` is the plan and NOTHING is sent; live, the `output` carries the
+/// result (tx hash).
+pub async fn dispatch_write(
+    cmd: &str,
+    args: &[String],
+    env: &WriteEnv<'_>,
+    dry_run: bool,
+) -> Option<(Output, String)> {
+    match cmd {
+        "lh-send" => Some(lh_send(args, env, dry_run).await),
+        _ => None,
+    }
+}
+
+/// Whether `cmd` is a value-MOVING command (handled by [`dispatch_write`], gated
+/// by the dry-run-manifest confirm flow) — so a host can require an identity +
+/// route it through the gate before the read/fs fallbacks.
+pub fn is_write_command(cmd: &str) -> bool {
+    matches!(cmd, "lh-send")
+}
+
+/// `lh-send <name|0xaddr> <amount>` — transfer `$LH` to an address or a name's
+/// owner (sponsored; the caller pays no gas).
+async fn lh_send(args: &[String], env: &WriteEnv<'_>, dry_run: bool) -> (Output, String) {
+    use crate::encoding::{classify_recipient, parse_token_amount, Recipient};
+    let none = String::new();
+    let (Some(recipient), Some(amount)) = (args.first(), args.get(1)) else {
+        return (Output::err("lh-send: usage: lh-send <name|0xaddr> <amount>", 2), none);
+    };
+    let to_hex = match classify_recipient(recipient) {
+        Ok(Recipient::Address(a)) => a,
+        Ok(Recipient::Name(n)) => match crate::registry::owner_of_name(&n).await {
+            Ok(Some(o)) => o,
+            Ok(None) => return (Output::err(format!("lh-send: {n}: not registered"), 1), none),
+            Err(e) => return (Output::err(format!("lh-send: {e}"), 1), none),
+        },
+        Err(e) => return (Output::err(format!("lh-send: {e}"), 2), none),
+    };
+    let amount_wei = match parse_token_amount(amount) {
+        Some(w) if w > 0 => w,
+        _ => return (Output::err(format!("lh-send: invalid amount '{amount}'"), 2), none),
+    };
+    let plan = format!("send {amount} $LH -> {recipient} ({to_hex})");
+    if dry_run {
+        return (Output::ok(format!("[plan] {plan}\n")), plan);
+    }
+    match crate::registry::transfer_lh_sponsored(
+        env.signer,
+        env.sponsor,
+        &to_hex,
+        amount_wei,
+        env.fee_token,
+    )
+    .await
+    {
+        Ok(tx) => (Output::ok(format!("sent {amount} $LH -> {to_hex}  tx {tx}\n")), plan),
+        Err(e) => (Output::err(format!("lh-send: {e}"), 1), plan),
+    }
+}
+
 /// Format `$LH` wei (18-dec) as a trimmed decimal string: `1500000000000000000`
 /// → `1.5`, `2000000000000000000` → `2`, `0` → `0`.
 fn fmt_lh(wei: u128) -> String {
@@ -146,5 +229,35 @@ mod tests {
         assert_eq!(fmt_lh(2_000_000_000_000_000_000), "2");
         assert_eq!(fmt_lh(1_500_000_000_000_000_000), "1.5");
         assert_eq!(fmt_lh(10_000_000_000_000_000), "0.01");
+    }
+
+    #[tokio::test]
+    async fn dispatch_write_dry_run_plans_without_sending() {
+        let k = crate::wallet::generate();
+        let env = WriteEnv {
+            signer: &k.signer,
+            sponsor: &k.signer,
+            fee_token: "0x20c0000000000000000000000000000000000001",
+        };
+        // Non-value-moving commands are not ours.
+        assert!(dispatch_write("echo", &[], &env, true).await.is_none());
+        assert!(dispatch_write("lh-resolve", &["x".into()], &env, true).await.is_none());
+
+        // lh-send to a 0x ADDRESS (no network) in dry-run → a plan, NOTHING sent.
+        let addr = "0x00000000000000000000000000000000000000aa".to_string();
+        let (out, plan) =
+            dispatch_write("lh-send", &[addr.clone(), "2.5".into()], &env, true).await.unwrap();
+        assert_eq!(out.code, 0);
+        assert!(out.stdout.contains("[plan] send 2.5 $LH"), "{:?}", out.stdout);
+        assert!(plan.contains("send 2.5 $LH"));
+
+        // Bad args / amount → nonzero with an EMPTY plan (no value move recorded).
+        let (out, plan) = dispatch_write("lh-send", &[], &env, true).await.unwrap();
+        assert_eq!(out.code, 2);
+        assert!(plan.is_empty());
+        let (out, plan) =
+            dispatch_write("lh-send", &[addr, "-5".into()], &env, true).await.unwrap();
+        assert_eq!(out.code, 2);
+        assert!(plan.is_empty());
     }
 }
