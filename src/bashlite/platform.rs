@@ -2,8 +2,8 @@
 //!
 //! These let a bashlite script READ the platform (identity, wallet + meter $LH
 //! balances, name resolution, advertised price, owned agents) as plain commands
-//! — `lh-whoami`, `lh-balance`, `lh-meter`, `lh-resolve`, `lh-price`, `lh-list`,
-//! `lh-discover`, `lh-bounties`, `lh-help` — so an agent's intent is a
+//! — `lh-whoami`, `lh-balance`, `lh-meter`, `lh-resolve`, `lh-tba`, `lh-price`,
+//! `lh-list`, `lh-discover`, `lh-bounties`, `lh-help` — so an agent's intent is a
 //! PROGRAM over the platform — not a stutter of tool round-trips, and not an
 //! agent loop at all. A surface (CLI / browser) wires [`dispatch`] into its
 //! `BashHost::run_builtin` override, falling back to the fs builtins for
@@ -35,6 +35,7 @@ pub async fn dispatch(cmd: &str, args: &[String], identity: Option<&str>) -> Opt
         "lh-balance" => Some(lh_balance(args, identity).await),
         "lh-meter" => Some(lh_meter(args, identity).await),
         "lh-resolve" => Some(lh_resolve(args).await),
+        "lh-tba" => Some(lh_tba(args).await),
         "lh-price" => Some(lh_price(args).await),
         "lh-list" => Some(lh_list(args, identity).await),
         "lh-discover" => Some(lh_discover(args).await),
@@ -58,6 +59,7 @@ fn lh_help() -> Output {
          \x20 lh-balance [name|0xaddr]  wallet $LH balance (default: self)\n\
          \x20 lh-meter   [name|0xaddr]  metered $LH balance (default: self)\n\
          \x20 lh-resolve <name>         name -> owner address\n\
+         \x20 lh-tba     <name>         name -> token-bound account (payment target)\n\
          \x20 lh-price   <name>         agent's advertised per-call $LH price\n\
          \x20 lh-list    [name|0xaddr]  agents owned (default: self)\n\
          \x20 lh-discover <query...>    find agents by relevance\n\
@@ -196,6 +198,28 @@ async fn lh_resolve(args: &[String]) -> Output {
     Output::ok(format!("token_id {id}\nowner {owner}\ntba {tba}\n"))
 }
 
+/// `lh-tba <name>` — JUST the agent's token-bound account address, one line, no
+/// label, so it COMPOSES: `lh-send $(lh-tba alice) 5` funds alice's treasury
+/// (x402 / bounty payments settle to the TBA, not the owner). `lh-resolve` prints
+/// the same TBA among other fields for humans; this is the pipeable form, like
+/// `lh-whoami` for an identity. Errors distinguish unregistered from
+/// not-yet-deployed.
+async fn lh_tba(args: &[String]) -> Output {
+    let Some(name) = args.first() else {
+        return Output::err("lh-tba: usage: lh-tba <name>", 2);
+    };
+    match crate::registry::id_of_name(name).await {
+        Ok(0) => return Output::err(format!("lh-tba: {name}: not registered"), 1),
+        Ok(_) => {}
+        Err(e) => return Output::err(format!("lh-tba: {e}"), 1),
+    }
+    match crate::registry::tba_of_name(name).await {
+        Ok(Some(tba)) => Output::ok(format!("{tba}\n")),
+        Ok(None) => Output::err(format!("lh-tba: {name}: no token-bound account deployed yet"), 1),
+        Err(e) => Output::err(format!("lh-tba: {e}"), 1),
+    }
+}
+
 /// `lh-price <name>` — the agent's advertised per-call `$LH` price.
 async fn lh_price(args: &[String]) -> Output {
     let Some(name) = args.first() else {
@@ -329,8 +353,8 @@ mod tests {
         let r = dispatch("lh-help", &[], None).await.unwrap();
         assert_eq!(r.code, 0);
         for cmd in [
-            "lh-whoami", "lh-balance", "lh-meter", "lh-resolve", "lh-price", "lh-list",
-            "lh-discover", "lh-bounties", "lh-help", "lh-send",
+            "lh-whoami", "lh-balance", "lh-meter", "lh-resolve", "lh-tba", "lh-price",
+            "lh-list", "lh-discover", "lh-bounties", "lh-help", "lh-send",
         ] {
             assert!(r.stdout.contains(cmd), "lh-help is missing `{cmd}`");
         }
@@ -357,6 +381,8 @@ mod tests {
     async fn resolve_and_price_require_a_name() {
         assert_eq!(dispatch("lh-resolve", &[], None).await.unwrap().code, 2);
         assert_eq!(dispatch("lh-price", &[], None).await.unwrap().code, 2);
+        // lh-tba is dispatched and also a name-required usage error before any RPC.
+        assert_eq!(dispatch("lh-tba", &[], None).await.unwrap().code, 2);
     }
 
     #[tokio::test]

@@ -266,7 +266,7 @@ CARTRIDGES & PUBLISHING
                                          fs commands over the
                                          script's directory + lh-* platform commands
                                          (lh-whoami/lh-balance/lh-meter/lh-resolve/
-                                         lh-price/lh-list/lh-discover/lh-bounties/
+                                         lh-tba/lh-price/lh-list/lh-discover/lh-bounties/
                                          lh-help reads; lh-send moves $LH) + `run other.bl`
                                          composition
                                          — one local pass, no agent loop. Value moves
@@ -1014,8 +1014,8 @@ mod tests {
         // same way `lh-help` itself is guarded — every command must appear, or an
         // agent reading `localharness help` won't discover it.
         for cmd in [
-            "lh-whoami", "lh-balance", "lh-meter", "lh-resolve", "lh-price", "lh-list",
-            "lh-discover", "lh-bounties", "lh-help", "lh-send",
+            "lh-whoami", "lh-balance", "lh-meter", "lh-resolve", "lh-tba", "lh-price",
+            "lh-list", "lh-discover", "lh-bounties", "lh-help", "lh-send",
         ] {
             assert!(USAGE.contains(cmd), "`{cmd}` is missing from the `sh` help blurb in USAGE");
         }
