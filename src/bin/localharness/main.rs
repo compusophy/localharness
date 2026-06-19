@@ -266,8 +266,9 @@ CARTRIDGES & PUBLISHING
                                          fs commands over the
                                          script's directory + lh-* platform commands
                                          (lh-whoami/lh-balance/lh-meter/lh-resolve/
-                                         lh-price/lh-list/lh-discover reads; lh-send
-                                         moves $LH) + `run other.bl` composition
+                                         lh-price/lh-list/lh-discover/lh-bounties
+                                         reads; lh-send moves $LH) + `run other.bl`
+                                         composition
                                          — one local pass, no agent loop. Value moves
                                          run DRY first (a plan); --confirm executes
   localharness publish <name> [src.rl|page.html]

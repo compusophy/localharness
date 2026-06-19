@@ -3,7 +3,7 @@
 //! These let a bashlite script READ the platform (identity, wallet + meter $LH
 //! balances, name resolution, advertised price, owned agents) as plain commands
 //! — `lh-whoami`, `lh-balance`, `lh-meter`, `lh-resolve`, `lh-price`, `lh-list`,
-//! `lh-discover` — so an agent's intent is a
+//! `lh-discover`, `lh-bounties` — so an agent's intent is a
 //! PROGRAM over the platform — not a stutter of tool round-trips, and not an
 //! agent loop at all. A surface (CLI / browser) wires [`dispatch`] into its
 //! `BashHost::run_builtin` override, falling back to the fs builtins for
@@ -38,8 +38,30 @@ pub async fn dispatch(cmd: &str, args: &[String], identity: Option<&str>) -> Opt
         "lh-price" => Some(lh_price(args).await),
         "lh-list" => Some(lh_list(args, identity).await),
         "lh-discover" => Some(lh_discover(args).await),
+        "lh-bounties" => Some(lh_bounties(args).await),
         // Not an lh-* command we own — let the host fall back to fs builtins.
         _ => None,
+    }
+}
+
+/// `lh-bounties [query…]` — open bounties (paid work) one per line:
+/// `#<id> <reward> $LH: <task>`. No query lists ALL open bounties; a query ranks
+/// by task relevance. The counterpart to `lh-discover` (find agents) — find WORK;
+/// claim it with the CLI `bounty claim`.
+async fn lh_bounties(args: &[String]) -> Output {
+    const SCAN: u64 = 100;
+    let query = args.join(" "); // empty = all open bounties (newest-first)
+    match crate::registry::discover_bounties(&query, SCAN).await {
+        Ok(bounties) => {
+            let mut out = String::new();
+            for (id, task, reward) in bounties {
+                // One bounty = one line (so `wc -l` counts them); flatten the task.
+                let task = task.replace(['\n', '\r'], " ");
+                out.push_str(&format!("#{id} {} $LH: {}\n", fmt_lh(reward), task.trim()));
+            }
+            Output::ok(out)
+        }
+        Err(e) => Output::err(format!("lh-bounties: {e}"), 1),
     }
 }
 
