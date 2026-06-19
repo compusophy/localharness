@@ -2,8 +2,8 @@
 //!
 //! These let a bashlite script READ the platform (identity, wallet + meter $LH
 //! balances, name resolution, advertised price, owned agents) as plain commands
-//! — `lh-whoami`, `lh-balance`, `lh-meter`, `lh-resolve`, `lh-price`, `lh-list` —
-//! so an agent's intent is a
+//! — `lh-whoami`, `lh-balance`, `lh-meter`, `lh-resolve`, `lh-price`, `lh-list`,
+//! `lh-discover` — so an agent's intent is a
 //! PROGRAM over the platform — not a stutter of tool round-trips, and not an
 //! agent loop at all. A surface (CLI / browser) wires [`dispatch`] into its
 //! `BashHost::run_builtin` override, falling back to the fs builtins for
@@ -37,8 +37,32 @@ pub async fn dispatch(cmd: &str, args: &[String], identity: Option<&str>) -> Opt
         "lh-resolve" => Some(lh_resolve(args).await),
         "lh-price" => Some(lh_price(args).await),
         "lh-list" => Some(lh_list(args, identity).await),
+        "lh-discover" => Some(lh_discover(args).await),
         // Not an lh-* command we own — let the host fall back to fs builtins.
         _ => None,
+    }
+}
+
+/// `lh-discover <query…>` — find agents by capability (the Agent Yellow Pages),
+/// ONE name per line so `for a in $(lh-discover coding); do …; done` fans out
+/// over them. The query may be several words (ORed). Empty output = no matches.
+async fn lh_discover(args: &[String]) -> Output {
+    if args.is_empty() {
+        return Output::err("lh-discover: usage: lh-discover <query…>", 2);
+    }
+    // Scan the most recent agents; matches the CLI `discover` default.
+    const SCAN: u64 = 100;
+    let query = args.join(" ");
+    match crate::registry::discover_agents(&query, SCAN).await {
+        Ok(matches) => {
+            let mut out = String::new();
+            for (name, _persona) in matches {
+                out.push_str(&name);
+                out.push('\n');
+            }
+            Output::ok(out)
+        }
+        Err(e) => Output::err(format!("lh-discover: {e}"), 1),
     }
 }
 
@@ -272,6 +296,14 @@ mod tests {
     async fn resolve_and_price_require_a_name() {
         assert_eq!(dispatch("lh-resolve", &[], None).await.unwrap().code, 2);
         assert_eq!(dispatch("lh-price", &[], None).await.unwrap().code, 2);
+    }
+
+    #[tokio::test]
+    async fn discover_is_dispatched_and_requires_a_query() {
+        // Owned by the dispatcher; no query → usage error (exit 2) before any RPC.
+        let r = dispatch("lh-discover", &[], None).await;
+        assert!(r.is_some());
+        assert_eq!(r.unwrap().code, 2);
     }
 
     #[tokio::test]
