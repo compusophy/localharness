@@ -104,6 +104,31 @@ function bodyFor(intent, calldataHex, toAddr) {
   };
 }
 
+/** Derive a request body from ANY intent (gas, nonce, etc.), with a matching
+ * sender signature — lets a test vary fields the fixed `bodyFor` hardcodes. */
+function bodyFromIntent(intent) {
+  const senderSig = signHash65(sponsoredSenderHash(intent), senderPriv);
+  const optStr = (v) => (v === null || v === undefined ? null : v.toString());
+  return {
+    chainId: intent.chainId.toString(),
+    maxPriorityFeePerGas: intent.maxPriorityFeePerGas.toString(),
+    maxFeePerGas: intent.maxFeePerGas.toString(),
+    gasLimit: intent.gasLimit.toString(),
+    calls: intent.calls.map((c) => ({
+      to: '0x' + bytesToHex(c.to),
+      value: c.value.toString(),
+      input: '0x' + bytesToHex(c.input),
+    })),
+    nonceKey: intent.nonceKey.toString(),
+    nonce: intent.nonce.toString(),
+    validBefore: optStr(intent.validBefore),
+    validAfter: optStr(intent.validAfter),
+    feeToken: '0x' + bytesToHex(intent.feeToken),
+    senderAddress: senderAddr,
+    senderSignature: '0x' + bytesToHex(senderSig),
+  };
+}
+
 function makeReq(body, token) {
   return new Request('http://localhost/api/sponsor', {
     method: 'POST',
@@ -217,6 +242,36 @@ const token = authToken(senderPriv, senderAddr, ts);
   const res = await handler(makeReq(body, token));
   const j = await res.json();
   ok('chain mismatch refused 400 LH_RELAY_CHAIN', res.status === 400 && j.code === 'LH_RELAY_CHAIN', `status=${res.status} code=${j.code}`);
+}
+
+// --- gas re-clamp: a hostile RPC can't inflate gas to drain the float -------
+// The clamp runs BEFORE the balance read, so the stub value is irrelevant; the
+// sender sig is over the SAME (high-gas) intent so no-blind-signing still holds.
+{
+  stubBalance('0');
+  const cd = registerCalldata('relaytest');
+  // maxFeePerGas just over the 1000-gwei ceiling (MAX_GAS_PRICE_WEI = 1e12).
+  const intent = { ...makeIntent(DIAMOND, cd), maxFeePerGas: 1_000_000_000_001n };
+  const res = await handler(makeReq(bodyFromIntent(intent), token));
+  const j = await res.json();
+  ok('over-ceiling gas price refused 400 LH_RELAY_GAS', res.status === 400 && j.code === 'LH_RELAY_GAS', `status=${res.status} code=${j.code}`);
+}
+{
+  stubBalance('0');
+  const cd = registerCalldata('relaytest');
+  const intent = { ...makeIntent(DIAMOND, cd), gasLimit: 0n };
+  const res = await handler(makeReq(bodyFromIntent(intent), token));
+  const j = await res.json();
+  ok('zero gas limit refused 400 LH_RELAY_GAS', res.status === 400 && j.code === 'LH_RELAY_GAS', `status=${res.status} code=${j.code}`);
+}
+{
+  stubBalance('0');
+  const cd = registerCalldata('relaytest');
+  // gasLimit over the 50M ceiling (MAX_GAS_LIMIT).
+  const intent = { ...makeIntent(DIAMOND, cd), gasLimit: 50_000_001n };
+  const res = await handler(makeReq(bodyFromIntent(intent), token));
+  const j = await res.json();
+  ok('over-ceiling gas limit refused 400 LH_RELAY_GAS', res.status === 400 && j.code === 'LH_RELAY_GAS', `status=${res.status} code=${j.code}`);
 }
 
 // --- float circuit-breaker: near-empty sponsor refuses cleanly --------------
