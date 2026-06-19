@@ -181,3 +181,80 @@ fn extract_data_payload(frame: &[u8]) -> Vec<u8> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::{stream, StreamExt};
+
+    fn byte_stream(parts: &[&[u8]]) -> ByteStream {
+        let owned: Vec<Bytes> = parts.iter().map(|b| Bytes::copy_from_slice(b)).collect();
+        Box::pin(stream::iter(owned.into_iter().map(Ok)))
+    }
+
+    /// Drive the decoder to completion, returning each yielded payload as a
+    /// String (every test payload here is valid UTF-8).
+    async fn frames(parts: &[&[u8]], sentinel: Option<&'static [u8]>) -> Vec<String> {
+        let mut s = SseFrameStream::new(byte_stream(parts), sentinel, "test");
+        let mut out = Vec::new();
+        while let Some(item) = s.next().await {
+            out.push(String::from_utf8(item.unwrap()).unwrap());
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn lf_and_crlf_boundaries_both_split() {
+        // The load-bearing CRLF gotcha (wasm fetch): a frame ends at `\n\n` OR
+        // `\r\n\r\n`. Mixed in one stream, both must split.
+        assert_eq!(frames(&[b"data: a\n\n", b"data: b\r\n\r\n"], None).await, vec!["a", "b"]);
+    }
+
+    #[tokio::test]
+    async fn multiple_data_lines_in_one_frame_concat_with_newline() {
+        // WHATWG: multiple `data:` lines in a frame join with `\n`.
+        assert_eq!(frames(&[b"data: line1\ndata: line2\n\n"], None).await, vec!["line1\nline2"]);
+    }
+
+    #[tokio::test]
+    async fn non_data_fields_and_comments_ignored() {
+        let parts: &[&[u8]] = &[b"event: msg\ndata: x\nid: 7\n: a comment\nretry: 100\n\n"];
+        assert_eq!(frames(parts, None).await, vec!["x"]);
+    }
+
+    #[tokio::test]
+    async fn only_one_leading_space_stripped() {
+        // `data:  x` (two spaces) keeps the second; `data:x` (no space) is exact.
+        assert_eq!(frames(&[b"data:  x\n\n", b"data:y\n\n"], None).await, vec![" x", "y"]);
+    }
+
+    #[tokio::test]
+    async fn heartbeat_and_empty_frames_are_skipped() {
+        // A comment-only frame and a blank frame yield nothing; a real one does.
+        assert_eq!(frames(&[b": ping\n\n", b"\n\n", b"data: real\n\n"], None).await, vec!["real"]);
+    }
+
+    #[tokio::test]
+    async fn eof_flushes_an_unterminated_final_frame() {
+        // The last event need not end in a blank line — at EOF the remainder is
+        // one final frame (for both backends it carries the stop/finish data).
+        assert_eq!(frames(&[b"data: a\n\n", b"data: last"], None).await, vec!["a", "last"]);
+    }
+
+    #[tokio::test]
+    async fn sentinel_terminates_and_drops_anything_after_it() {
+        // `[DONE]` is authoritative: stop, and DON'T leak post-sentinel frames
+        // (incl. via the EOF flush).
+        let parts: &[&[u8]] = &[b"data: a\n\n", b"data: [DONE]\n\ndata: leaked\n\n"];
+        assert_eq!(frames(parts, Some(b"[DONE]")).await, vec!["a"]);
+    }
+
+    #[tokio::test]
+    async fn frame_split_across_chunks_is_buffered_until_complete() {
+        // A frame whose bytes arrive across two upstream chunks decodes once the
+        // boundary lands — not before, not duplicated.
+        assert_eq!(frames(&[b"data: hel", b"lo\n\n"], None).await, vec!["hello"]);
+        // The CRLF boundary split mid-sequence too (`\r\n` then `\r\n`).
+        assert_eq!(frames(&[b"data: z\r\n", b"\r\n"], None).await, vec!["z"]);
+    }
+}
