@@ -206,11 +206,11 @@ mod tests {
     }
 
     /// The fiat-issuer signature must recover to the issuer over the SAME digest
-    /// the facet recomputes — cross-checks the Rust EIP-712 encoding. The domain
-    /// binds the diamond, so this runs only on the default (non-mainnet) build
-    /// where the diamond address is non-empty.
+    /// the facet recomputes — cross-checks the Rust EIP-712 encoding. Chain-
+    /// agnostic: the domain binds the ACTIVE chain's diamond (non-empty on every
+    /// preset), and the sign→recover round-trip is self-consistent regardless of
+    /// which chain is active, so no `mainnet`-feature gate is needed.
     #[test]
-    #[cfg(not(feature = "mainnet"))]
     fn fiat_mint_sign_recovers_issuer() {
         let w = crate::wallet::generate();
         let to = [0x22u8; 20];

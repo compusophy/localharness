@@ -148,9 +148,10 @@ pub(crate) fn load_signer(caller: Option<&str>) -> Result<k256::ecdsa::SigningKe
     })
 }
 
-/// Load the active-chain sponsor key (exit 1 on a missing/bad key). Testnet uses
-/// the committed const; mainnet reads `LH_MAINNET_SPONSOR_KEY` at runtime
-/// ([`sponsor_key`]) — a clear error, never a silent unfunded-sponsor write.
+/// Load the sponsor `fee_payer` key (exit 1 on a bad key). Always the committed
+/// testnet const ([`sponsor_key`]): on testnet it pays fees; on mainnet it's an
+/// unused placeholder because the server relay signs the fee_payer half
+/// (`registry::sponsor_relay`) — the binary embeds no mainnet money key.
 pub(crate) fn load_sponsor() -> Result<k256::ecdsa::SigningKey, i32> {
     let key = sponsor_key().map_err(|e| {
         eprintln!("sponsor key error: {e}");

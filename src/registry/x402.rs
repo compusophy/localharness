@@ -342,24 +342,25 @@ mod x402_tests {
     use super::*;
 
     #[test]
-    #[cfg(not(feature = "mainnet"))]
     fn x402_domain_matches_live_facet() {
         // Pinned to the deployed Moderato X402Facet's `x402DomainSeparator()` —
         // cross-checks the Rust EIP-712 encoding against the live contract. The
-        // domain binds chainId + diamond, so the MAINNET preset has a DIFFERENT
-        // separator (and an as-yet-empty diamond), hence this guard runs only on
-        // the default build; the mainnet hash gets pinned at deploy
-        // (stripe-mainnet.md step 14).
+        // domain binds chainId + diamond. On NATIVE, `chain::active()` resolves
+        // off `LH_CHAIN` (default Moderato) and ignores the `mainnet` cargo
+        // feature, so `cargo test` (env unset) always computes the Moderato
+        // separator and this pin holds. The mainnet X402Facet is not yet cut
+        // (mainnet is the on-ramp slice only), so there is no live mainnet
+        // separator to pin against until the economy ladder deploys there.
         let expected =
             "54530933a67f96286ac528dbff39d00c0ea49f4c6bd0f034343a0c78927f0b7a";
         let got = x402_domain_separator().unwrap();
         assert_eq!(bytes_to_hex(&got), expected);
     }
 
-    // Builds the EIP-712 digest off the domain separator (→ diamond address), so
-    // it needs a non-empty diamond — the MAINNET preset's is empty until deploy.
+    // Chain-agnostic: signs and recovers over a self-consistent EIP-712 digest
+    // built off the ACTIVE chain's domain separator — needs only a non-empty
+    // diamond, which every preset now has. (No live facet required.)
     #[test]
-    #[cfg(not(feature = "mainnet"))]
     fn x402_sign_recovers_payer() {
         let w = crate::wallet::generate();
         let from = w.address;

@@ -193,10 +193,37 @@ pub async fn submit_tempo_self_paid(
     Err(last_err)
 }
 
+/// `true` when the active chain is mainnet — the published crate holds NO
+/// fee_payer key there, so the sponsored fee_payer signature comes from the
+/// server relay ([`super::sponsor_relay`]) instead of a local key.
+fn is_mainnet() -> bool {
+    super::chain::active().chain_id == super::chain::MAINNET.chain_id
+}
+
+/// Produce the fee_payer signature over `tx`'s fee_payer hash. Testnet/dev: sign
+/// locally with the committed `local_key`. Mainnet: ask the server relay (the
+/// crate embeds no mainnet money key) — fail-CLOSED if the relay refuses or is
+/// down, never silently self-pay. `sender_sig` is the caller's already-computed
+/// sender-half signature (the relay verifies it authorizes this exact intent).
+async fn fee_payer_sig_for(
+    sender: &SigningKey,
+    tx: &crate::tempo_tx::TempoTx,
+    sender_addr: &[u8; 20],
+    local_key: &SigningKey,
+    sender_sig: &[u8; 65],
+) -> Result<[u8; 65], String> {
+    if is_mainnet() {
+        super::sponsor_relay::request_fee_payer_signature(sender, tx, sender_addr, sender_sig).await
+    } else {
+        Ok(wallet::sign_hash(local_key, &tx.fee_payer_hash(sender_addr)))
+    }
+}
+
 /// Sign and submit a SPONSORED Tempo tx. `sender` signs the intent
-/// (and needs no balance); `fee_payer` signs as the gas payer (needs
-/// `fee_token` balance). The chain debits `fee_payer`'s `fee_token`
-/// balance for the cost; `sender` pays nothing.
+/// (and needs no balance); the gas payer signs as `fee_payer` (needs
+/// `fee_token` balance) on testnet, or the server RELAY signs it on mainnet
+/// (the crate ships no mainnet key — `fee_payer` is unused there). The chain
+/// debits the fee_payer's `fee_token` for the cost; `sender` pays nothing.
 pub async fn submit_tempo_sponsored(
     sender: &SigningKey,
     fee_payer: &SigningKey,
@@ -204,7 +231,7 @@ pub async fn submit_tempo_sponsored(
     fee_token: &str,
     gas_limit: u128,
 ) -> Result<String, String> {
-    use crate::tempo_tx::{sign_sponsored, TempoTxBuilder};
+    use crate::tempo_tx::TempoTxBuilder;
     let sender_addr = wallet::address(sender);
     let sender_hex = address_to_hex(&sender_addr);
     let fee_token_addr = parse_eth_address(fee_token)?;
@@ -228,7 +255,9 @@ pub async fn submit_tempo_sponsored(
             .fee_token(fee_token_addr)
             .sponsored()
             .build();
-        let raw = sign_sponsored(tx, sender, fee_payer);
+        let sender_sig = wallet::sign_hash(sender, &tx.sender_hash());
+        let fp_sig = fee_payer_sig_for(sender, &tx, &sender_addr, fee_payer, &sender_sig).await?;
+        let raw = tx.serialize_signed(&sender_sig, Some(&fp_sig));
         let raw_hex = format!("0x{}", bytes_to_hex(&raw));
         match eth_send_raw_transaction(&raw_hex).await {
             Ok(tx_hash) => {
@@ -259,7 +288,7 @@ pub async fn create_sponsored(
     fee_token: &str,
     gas_limit: u128,
 ) -> Result<String, String> {
-    use crate::tempo_tx::{sign_sponsored, TempoCall, TempoTxBuilder};
+    use crate::tempo_tx::{TempoCall, TempoTxBuilder};
     let sender_addr = wallet::address(sender);
     let sender_hex = address_to_hex(&sender_addr);
     let fee_token_addr = parse_eth_address(fee_token)?;
@@ -277,7 +306,9 @@ pub async fn create_sponsored(
             .sponsored()
             .create()
             .build();
-        let raw = sign_sponsored(tx, sender, fee_payer);
+        let sender_sig = wallet::sign_hash(sender, &tx.sender_hash());
+        let fp_sig = fee_payer_sig_for(sender, &tx, &sender_addr, fee_payer, &sender_sig).await?;
+        let raw = tx.serialize_signed(&sender_sig, Some(&fp_sig));
         let raw_hex = format!("0x{}", bytes_to_hex(&raw));
         match eth_send_raw_transaction(&raw_hex).await {
             Ok(tx_hash) => {

@@ -1,9 +1,23 @@
 # CLI ↔ mainnet — runtime chain selection + rate-capped sponsor relay
 
-> STATUS: proposal. Money-sensitive + cross-cutting. No code shipped yet.
+> STATUS: phases 1-4 SHIPPED (CLI). Money-sensitive + cross-cutting.
 > Supersedes the "owner's call" framing in `design/chain-coherence.md` (option C
 > + the relay half of option A) and fleshes out `design/stripe-mainnet.md` §6.3
 > (the "rate-capped relay") and step 13.
+>
+> **Shipped:** §2.1 runtime `chain::active()` (0.48.0, commit 297b262). §2.2 the
+> relay endpoint `proxy/api/sponsor.ts` + the TS wire-port `proxy/api/_tempo.ts`
+> (pinned to the Rust golden vectors, `proxy/test/`). §2.2 CLI client
+> `registry::sponsor_relay` — `registry::tx`'s sponsored-submit chokepoints route
+> the fee_payer half through the relay when `chain::active()` is mainnet; the CLI
+> `LH_MAINNET_SPONSOR_KEY` env arm is gone (no CLI build carries a mainnet key).
+> §3-L the x402/mint-gate domain tests are chain-agnostic.
+>
+> **Remaining (gated):** the BROWSER `src/app/sponsor.rs` still `env!`s a mainnet
+> key under `cfg(mainnet)` (the live web bundle) — its single fee_payer chokepoint
+> (`run_sponsored_tempo_call`) must move to the relay via an iframe-built auth
+> token (+ web redeploy). A real ON-CHAIN E2E + setting/funding the mainnet
+> sponsor key (phases 5-6) stay behind the §4 security checklist + user sign-off.
 
 The published `localharness` CLI cannot transact against the live **mainnet**
 platform, and the document an external agent reads (`web/skill.md`) tells it to
@@ -385,25 +399,27 @@ bundle:
 
 Ordered so each phase is independently shippable and the money path is gated last.
 
-1. **[SAFE NOW] Runtime `chain::active()` accessor + Tier-1/Tier-2 rename.**
+1. **[✅ DONE — 0.48.0] Runtime `chain::active()` accessor + Tier-1/Tier-2 rename.**
    Add the `OnceLock`-backed `active()` (§2.1); convert the five `mod.rs`/`tx.rs`
    consts to accessor `fn`s (keep deprecated const shims during the rename);
    convert `multichain::CHAINS` to a function. Default env-unset = byte-for-byte
    Moderato. Verify: full registry suite + wasm32 (SDK+wallet) + the existing
    "active is moderato by default" test, plus a new "`LH_CHAIN=mainnet` selects
    4217" test. **No money path touched** — testnet still default, no relay yet.
-2. **[SAFE NOW] Tier-3 test/cfg cleanup.** Make the x402 domain test READ the live
+2. **[✅ DONE] Tier-3 test/cfg cleanup.** Make the x402 domain test READ the live
    `x402DomainSeparator()` (stripe-mainnet §7-L) so it's chain-agnostic; make the
    `llms_txt` + sponsor-address tests runtime-aware off `chain::active()`. Retire
    the `mainnet` cargo feature from the *CLI* (wasm bundle keeps it until phase 6).
-3. **[SAFE NOW] Relay endpoint skeleton (`proxy/api/sponsor.ts`), TEST chain.**
+3. **[✅ BUILT + offline-verified; live deploy + on-chain E2E pending] Relay
+   endpoint (`proxy/api/sponsor.ts`), TEST chain.**
    Implement auth (reuse `recoverAddress` + freshness), the selector allowlist,
    the `_ratelimit.ts` window, the fee-payer-hash re-derivation, and the
    onboarding-only spend gate — pointed at **Moderato** with the *testnet* sponsor
    key. Prove end-to-end against testnet: CLI gets a fee-payer sig from the relay
    instead of the embedded key, assembles + submits a sponsored `create`. This
    exercises the entire money path with play-money before any mainnet key exists.
-4. **[SAFE NOW] CLI relay client + remove the embedded mainnet `env!`.** Add the
+4. **[✅ DONE (CLI); browser `sponsor.rs` deferred] CLI relay client + remove the
+   embedded mainnet `env!`.** Add the
    `<proxy>/api/sponsor` client to the crate; route sponsored writes through it when
    the active chain is mainnet (testnet keeps the committed local sponsor const for
    the dev sandbox, OR also routes the relay — decide in review). Delete the

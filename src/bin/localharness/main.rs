@@ -163,24 +163,16 @@ pub(crate) use vote::*;
 /// pays AlphaUSD fees. Committed, low-budget; the testnet/dev-sandbox `fee_payer`.
 const TESTNET_SPONSOR_KEY: &str = "0x046a830b5203d1d2c0a205a1432746e4381d0874711b2de7f575a973644b9d43";
 
-/// The `fee_payer` key for sponsored CLI ops on the ACTIVE chain. Testnet (the
-/// default): the committed [`TESTNET_SPONSOR_KEY`]. Mainnet (`LH_CHAIN=mainnet`):
-/// read at RUNTIME from `LH_MAINNET_SPONSOR_KEY` — NEVER embedded (`env!`) in the
-/// published binary, so no download carries a money-moving mainnet key. Unset on
-/// a mainnet run → a clear error, not a silent unfunded-sponsor failure. (The
-/// durable mainnet path is the server-side relay — `design/cli-mainnet-relay.md`
-/// §2.2; this env hook is the operator's local-mainnet dogfood bridge until then.)
+/// The `fee_payer` key for sponsored CLI ops. The published binary ships NO
+/// money-moving mainnet key at all: on MAINNET the fee_payer half is signed by
+/// the server-side relay (`design/cli-mainnet-relay.md` §2.2 — the submit path
+/// in `registry::tx` routes through `registry::sponsor_relay` when the active
+/// chain is mainnet, ignoring this key). On TESTNET the committed low-budget
+/// [`TESTNET_SPONSOR_KEY`] pays AlphaUSD fees directly. So this only ever
+/// returns the public testnet key — harmless on mainnet (unused; the relay
+/// signs) and self-contained on testnet.
 pub(crate) fn sponsor_key() -> Result<String, String> {
-    if registry::CHAIN_ID() == registry::chain::MAINNET.chain_id {
-        std::env::var("LH_MAINNET_SPONSOR_KEY").map_err(|_| {
-            "LH_CHAIN=mainnet but LH_MAINNET_SPONSOR_KEY is unset — the published \
-             binary embeds no mainnet sponsor key. Export a funded mainnet fee_payer \
-             key, or run against testnet (unset LH_CHAIN)."
-                .to_string()
-        })
-    } else {
-        Ok(TESTNET_SPONSOR_KEY.to_string())
-    }
+    Ok(TESTNET_SPONSOR_KEY.to_string())
 }
 
 /// The credit proxy debits ~this much `$LH` per DEFAULT-model request (mirrors
@@ -970,9 +962,9 @@ mod tests {
         // on testnet (create/publish/persona). If it's stale or mistyped, all
         // onboarding silently fails. Guard that it parses and derives the
         // documented sponsor address (the dedicated low-budget key, rotated
-        // 2026-05-25). The MAINNET fee_payer is NOT embedded — it's read from
-        // `LH_MAINNET_SPONSOR_KEY` at runtime (no env in this test → no assertion
-        // against the mainnet address; the published binary carries no money key).
+        // 2026-05-25). The MAINNET fee_payer is NOT embedded at all — on mainnet
+        // the server relay signs the fee_payer half (`registry::sponsor_relay`),
+        // so the published binary carries no money-moving key.
         let signer =
             wallet::from_private_key_hex(TESTNET_SPONSOR_KEY).expect("TESTNET_SPONSOR_KEY must parse");
         let addr = bytes_to_hex_str(&wallet::address(&signer));
