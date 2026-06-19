@@ -387,7 +387,9 @@ fn drop_oldest_fallback<A: CompactionModel>(
 /// count. `threshold` of `None` disables compaction entirely.
 pub fn should_compact(total_tokens: Option<i32>, threshold: Option<u32>) -> bool {
     match (total_tokens, threshold) {
-        (Some(t), Some(th)) => t as u32 > th,
+        // `t >= 0` guards the cast: a negative count (a backend glitch) would
+        // otherwise wrap to a huge `u32` and spuriously force a compaction.
+        (Some(t), Some(th)) => t >= 0 && (t as u32) > th,
         _ => false,
     }
 }
@@ -458,6 +460,105 @@ mod tests {
             "kept head at split={split} must not be an orphaned tool result"
         );
         assert_eq!(h[split].role, Role::Assistant, "walks back to the issuing assistant turn");
+    }
+
+    /// Build a TAGGED prior-summary user head (what an incremental fold emits).
+    fn tagged(summary: &str) -> MockMsg {
+        MockModel::user_text(format!("{COMPACTION_TAG}\n{summary}"))
+    }
+    /// Alternating User/Assistant turns (no tool runs), for a clean split.
+    fn alt(n: usize) -> Vec<MockMsg> {
+        (0..n).map(|i| m(if i % 2 == 0 { Role::User } else { Role::Assistant })).collect()
+    }
+
+    #[test]
+    fn should_compact_trigger_boundary_and_negative_guard() {
+        // `None` on either side disables compaction.
+        assert!(!should_compact(None, Some(100)));
+        assert!(!should_compact(Some(9999), None));
+        assert!(!should_compact(None, None));
+        // STRICTLY greater than the threshold (not `>=`).
+        assert!(!should_compact(Some(100), Some(100)), "exactly at threshold must NOT compact");
+        assert!(should_compact(Some(101), Some(100)));
+        assert!(!should_compact(Some(99), Some(100)));
+        // A negative count must NOT wrap-around into a spurious compaction.
+        assert!(!should_compact(Some(-1), Some(100)));
+        assert!(!should_compact(Some(i32::MIN), Some(0)));
+    }
+
+    #[test]
+    fn extract_prior_summary_recognizes_only_the_tagged_user_head() {
+        // A tagged user head yields the summary WITHOUT the tag line.
+        assert_eq!(
+            extract_prior_summary::<MockModel>(Some(&tagged("rolling summary"))).as_deref(),
+            Some("rolling summary")
+        );
+        // None head → None.
+        assert_eq!(extract_prior_summary::<MockModel>(None), None);
+        // A non-user head (even if tag-prefixed) is never a prior summary.
+        let asst = MockMsg { role: Role::Assistant, text: format!("{COMPACTION_TAG}\nx") };
+        assert_eq!(extract_prior_summary::<MockModel>(Some(&asst)), None);
+        // A user head WITHOUT the tag is a normal turn, not a summary.
+        let plain = MockModel::user_text("just a normal message".to_string());
+        assert_eq!(extract_prior_summary::<MockModel>(Some(&plain)), None);
+        // Tagged but WHITESPACE-only body → None (the silent-loss guard: it must
+        // fold verbatim into the delta, not be treated as a usable summary).
+        assert_eq!(extract_prior_summary::<MockModel>(Some(&tagged("   \n  "))), None);
+    }
+
+    #[test]
+    fn plan_fold_none_when_nothing_has_aged_out() {
+        // len <= keep_entries (KEEP_RECENT_TURNS*2 = 12) → split 0 → no fold.
+        assert!(plan_fold::<MockModel>(&alt(6)).is_none());
+        assert!(plan_fold::<MockModel>(&alt(12)).is_none());
+    }
+
+    #[test]
+    fn plan_fold_first_compaction_folds_the_whole_prefix() {
+        // 14 turns, plain head → first fold: prior_summary None, delta_start 0.
+        let plan = plan_fold::<MockModel>(&alt(14)).expect("should fold");
+        assert_eq!(plan.split, 2); // 14 - 12
+        assert!(plan.prior_summary.is_none());
+        assert_eq!(plan.delta_start, 0);
+    }
+
+    #[test]
+    fn plan_fold_incremental_excludes_the_prior_summary_from_the_delta() {
+        // Head IS a prior summary → delta starts AFTER it, so the fold only
+        // summarizes NEW turns — never re-summarizing the summary (boundedness).
+        let mut h = vec![tagged("prior")];
+        h.extend(alt(13)); // len 14
+        let plan = plan_fold::<MockModel>(&h).expect("should fold");
+        assert_eq!(plan.split, 2);
+        assert_eq!(plan.prior_summary.as_deref(), Some("prior"));
+        assert_eq!(plan.delta_start, 1);
+    }
+
+    #[test]
+    fn plan_fold_skips_a_head_only_delta() {
+        // 13 turns with a tagged head → split 1, delta_start 1 → empty delta →
+        // None (re-folding would just re-summarize the summary).
+        let mut h = vec![tagged("prior")];
+        h.extend(alt(12)); // len 13
+        assert!(plan_fold::<MockModel>(&h).is_none());
+    }
+
+    #[test]
+    fn push_truncated_verbatim_then_char_boundary_safe() {
+        let mut s = String::new();
+        push_truncated(&mut s, "small");
+        assert_eq!(s, "small");
+        // Long ASCII body → truncated with the marker.
+        let mut s = String::new();
+        let body = "a".repeat(600);
+        push_truncated(&mut s, &body);
+        assert!(s.ends_with("…[truncated]") && s.len() < body.len());
+        // A multibyte char straddling byte 512 must truncate at a CHAR boundary,
+        // NOT panic (the bug the `is_char_boundary` walk-back fixes).
+        let mut s = String::new();
+        let body = "a".repeat(510) + &"é".repeat(20); // 510 + 40 bytes
+        push_truncated(&mut s, &body); // must not panic
+        assert!(s.ends_with("…[truncated]"));
     }
 
     #[test]
