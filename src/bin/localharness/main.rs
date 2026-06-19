@@ -263,8 +263,9 @@ CARTRIDGES & PUBLISHING
   localharness sh <script.bl> [--as <name>] [--confirm]
                                          run a bashlite script: fs commands over the
                                          script's directory + lh-* platform commands
-                                         (lh-whoami/lh-balance/lh-resolve/lh-price reads;
-                                         lh-send moves $LH) + `run other.bl` composition
+                                         (lh-whoami/lh-balance/lh-meter/lh-resolve/
+                                         lh-price/lh-list reads; lh-send moves $LH) +
+                                         `run other.bl` composition
                                          — one local pass, no agent loop. Value moves
                                          run DRY first (a plan); --confirm executes
   localharness publish <name> [src.rl|page.html]

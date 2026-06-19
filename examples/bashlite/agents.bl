@@ -1,0 +1,8 @@
+# agents.bl — localharnesslite reads: who am I, my meter balance, and the agents
+# I own. `lh-list` emits one name per line, so it fans out in a `for` loop.
+#   localharness sh examples/bashlite/agents.bl --as claude
+echo "I am $(lh-whoami) (meter $(lh-meter) \$LH)"
+echo "my agents:"
+for a in $(lh-list); do
+  echo "  - $a"
+done

@@ -1,7 +1,9 @@
 //! localharnesslite — read-only `lh-*` platform commands for bashlite.
 //!
-//! These let a bashlite script READ the platform (identity, $LH balances, name
-//! resolution, advertised price) as plain commands, so an agent's intent is a
+//! These let a bashlite script READ the platform (identity, wallet + meter $LH
+//! balances, name resolution, advertised price, owned agents) as plain commands
+//! — `lh-whoami`, `lh-balance`, `lh-meter`, `lh-resolve`, `lh-price`, `lh-list` —
+//! so an agent's intent is a
 //! PROGRAM over the platform — not a stutter of tool round-trips, and not an
 //! agent loop at all. A surface (CLI / browser) wires [`dispatch`] into its
 //! `BashHost::run_builtin` override, falling back to the fs builtins for
@@ -31,31 +33,80 @@ pub async fn dispatch(cmd: &str, args: &[String], identity: Option<&str>) -> Opt
             None => Output::err("lh-whoami: no identity on this host", 1),
         }),
         "lh-balance" => Some(lh_balance(args, identity).await),
+        "lh-meter" => Some(lh_meter(args, identity).await),
         "lh-resolve" => Some(lh_resolve(args).await),
         "lh-price" => Some(lh_price(args).await),
+        "lh-list" => Some(lh_list(args, identity).await),
         // Not an lh-* command we own — let the host fall back to fs builtins.
         _ => None,
     }
 }
 
-/// `lh-balance [name|0xaddr]` — the `$LH` balance of an address, a name's OWNER,
-/// or (no arg) the caller's own identity.
-async fn lh_balance(args: &[String], identity: Option<&str>) -> Output {
-    let target = match args.first() {
-        Some(a) if a.starts_with("0x") => a.clone(),
+/// Resolve the SUBJECT address of a read command: a `0x…` address verbatim, a
+/// name's OWNER, or (no arg) the caller's identity. `Err(output)` is a ready
+/// nonzero result. Shared by the address-keyed reads (balance/meter/list).
+async fn subject_address(
+    args: &[String],
+    identity: Option<&str>,
+    cmd: &str,
+) -> Result<String, Output> {
+    match args.first() {
+        Some(a) if a.starts_with("0x") => Ok(a.clone()),
         Some(name) => match crate::registry::owner_of_name(name).await {
-            Ok(Some(owner)) => owner,
-            Ok(None) => return Output::err(format!("lh-balance: {name}: not registered"), 1),
-            Err(e) => return Output::err(format!("lh-balance: {e}"), 1),
+            Ok(Some(owner)) => Ok(owner),
+            Ok(None) => Err(Output::err(format!("{cmd}: {name}: not registered"), 1)),
+            Err(e) => Err(Output::err(format!("{cmd}: {e}"), 1)),
         },
         None => match identity {
-            Some(a) => a.to_string(),
-            None => return Output::err("lh-balance: no identity — pass a name or 0x address", 2),
+            Some(a) => Ok(a.to_string()),
+            None => Err(Output::err(format!("{cmd}: no identity — pass a name or 0x address"), 2)),
         },
+    }
+}
+
+/// `lh-balance [name|0xaddr]` — the WALLET `$LH` balance of an address, a name's
+/// OWNER, or (no arg) the caller's own identity.
+async fn lh_balance(args: &[String], identity: Option<&str>) -> Output {
+    let target = match subject_address(args, identity, "lh-balance").await {
+        Ok(a) => a,
+        Err(out) => return out,
     };
     match crate::registry::token_balance_of(&target).await {
         Ok(wei) => Output::ok(format!("{}\n", fmt_lh(wei))),
         Err(e) => Output::err(format!("lh-balance: {e}"), 1),
+    }
+}
+
+/// `lh-meter [name|0xaddr]` — the per-call METER `$LH` balance (what the proxy
+/// debits per request), distinct from the spendable wallet balance.
+async fn lh_meter(args: &[String], identity: Option<&str>) -> Output {
+    let target = match subject_address(args, identity, "lh-meter").await {
+        Ok(a) => a,
+        Err(out) => return out,
+    };
+    match crate::registry::credit_balance_of(&target).await {
+        Ok(wei) => Output::ok(format!("{}\n", fmt_lh(wei))),
+        Err(e) => Output::err(format!("lh-meter: {e}"), 1),
+    }
+}
+
+/// `lh-list [name|0xaddr]` — the agent names an identity owns, ONE per line (so
+/// `for a in $(lh-list); do …; done` fans out over them). Empty output = none.
+async fn lh_list(args: &[String], identity: Option<&str>) -> Output {
+    let target = match subject_address(args, identity, "lh-list").await {
+        Ok(a) => a,
+        Err(out) => return out,
+    };
+    match crate::registry::list_owned_tokens(&target).await {
+        Ok(tokens) => {
+            let mut out = String::new();
+            for t in tokens {
+                out.push_str(&t.name);
+                out.push('\n');
+            }
+            Output::ok(out)
+        }
+        Err(e) => Output::err(format!("lh-list: {e}"), 1),
     }
 }
 
@@ -221,6 +272,19 @@ mod tests {
     async fn resolve_and_price_require_a_name() {
         assert_eq!(dispatch("lh-resolve", &[], None).await.unwrap().code, 2);
         assert_eq!(dispatch("lh-price", &[], None).await.unwrap().code, 2);
+    }
+
+    #[tokio::test]
+    async fn meter_and_list_are_dispatched_and_subject_gated() {
+        // The new reads are owned by the dispatcher (Some), and with no arg + no
+        // identity they fail cleanly (usage exit 2) BEFORE any RPC call.
+        for cmd in ["lh-meter", "lh-list"] {
+            let r = dispatch(cmd, &[], None).await;
+            assert!(r.is_some(), "{cmd} should be dispatched");
+            let r = r.unwrap();
+            assert_eq!(r.code, 2, "{cmd} no-arg+no-identity should be a usage error");
+            assert!(r.stderr.contains("identity"), "{cmd}: {:?}", r.stderr);
+        }
     }
 
     #[test]
