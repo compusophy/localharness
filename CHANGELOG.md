@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **localharnesslite `lh-tba` and `lh-help` commands.** `lh-tba <name>` prints an
+  agent's token-bound account address — the x402 / bounty payment target — on one
+  line (no label), so a bashlite script composes `lh-send $(lh-tba alice) 5`.
+  `lh-help` lists the whole `lh-*` surface so an agent can discover it without
+  leaving the shell. Both run in the CLI `sh` and the browser `execute_script`
+  from the shared `platform::dispatch`; errors distinguish unregistered from
+  not-yet-deployed.
+
+### Internal
+
+- Direct unit tests for the real `backends::dispatch::dispatch_tool_call` (the
+  per-tool-call gate every backend shares), pinning the `Ok({"error": …})` →
+  `ToolResult.error` lift convention the integration test only covered via a copy.
+- Drift-guard tests assert every `lh-*` command appears in both `lh-help` and the
+  CLI `USAGE` help, so the agent-facing front door can't fall behind the command
+  set. Clippy now clean across the `wallet` / `anthropic` / `openai` / `browser-app`
+  feature matrices (default `cargo clippy` exercises none of them).
+
 ## [0.49.0] - 2026-06-19
 
 ### Added
