@@ -266,8 +266,8 @@ CARTRIDGES & PUBLISHING
                                          fs commands over the
                                          script's directory + lh-* platform commands
                                          (lh-whoami/lh-balance/lh-meter/lh-resolve/
-                                         lh-price/lh-list/lh-discover/lh-bounties
-                                         reads; lh-send moves $LH) + `run other.bl`
+                                         lh-price/lh-list/lh-discover/lh-bounties/
+                                         lh-help reads; lh-send moves $LH) + `run other.bl`
                                          composition
                                          — one local pass, no agent loop. Value moves
                                          run DRY first (a plan); --confirm executes
@@ -1004,6 +1004,20 @@ mod tests {
                 USAGE.contains(cmd),
                 "`{cmd}` is dispatchable but missing from the help/USAGE text"
             );
+        }
+    }
+
+    #[test]
+    fn usage_lists_every_localharnesslite_command() {
+        // The `sh` help blurb enumerates the lh-* surface an agent gets in a
+        // bashlite shell. It's hand-written prose, so guard it against drift the
+        // same way `lh-help` itself is guarded — every command must appear, or an
+        // agent reading `localharness help` won't discover it.
+        for cmd in [
+            "lh-whoami", "lh-balance", "lh-meter", "lh-resolve", "lh-price", "lh-list",
+            "lh-discover", "lh-bounties", "lh-help", "lh-send",
+        ] {
+            assert!(USAGE.contains(cmd), "`{cmd}` is missing from the `sh` help blurb in USAGE");
         }
     }
 
