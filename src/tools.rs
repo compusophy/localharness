@@ -403,4 +403,69 @@ mod tests {
         // framework cloned a SHARED handle per call, not an independent copy.
         assert_eq!(counter.load(Ordering::SeqCst), 3);
     }
+
+    fn echo_tool(name: &'static str, marker: &'static str) -> Arc<ClosureTool> {
+        ClosureTool::new(name, "", json!({ "type": "object" }), move |_a, _c| async move {
+            Ok(json!({ "who": marker }))
+        })
+    }
+
+    /// `register` is documented to OVERWRITE a same-name tool — assert the later
+    /// registration replaces the earlier one (one entry under the name, the new
+    /// impl serves calls), not duplicates or errors.
+    #[tokio::test]
+    async fn register_overwrites_a_same_name_tool() {
+        let runner = ToolRunner::new();
+        runner.register(echo_tool("t", "first"));
+        runner.register(echo_tool("t", "second"));
+        assert_eq!(runner.names(), vec!["t".to_string()]);
+        let r = runner.execute("t", json!({})).await.unwrap();
+        assert_eq!(r["who"], "second");
+    }
+
+    /// Executing an unregistered name is the typed `Error::ToolNotFound` (carrying
+    /// the requested name), not a panic or a generic error — the dispatch layer
+    /// and `process_tool_calls` both rely on this exact variant.
+    #[tokio::test]
+    async fn execute_unknown_tool_is_tool_not_found() {
+        let runner = ToolRunner::new();
+        let err = runner.execute("ghost", json!({})).await.unwrap_err();
+        assert!(matches!(&err, Error::ToolNotFound { name } if name == "ghost"));
+    }
+
+    /// `process_tool_calls` is the batch API SDK consumers call: each Ok becomes a
+    /// `ToolResult` with no error, each Err becomes one carrying the message — and
+    /// the call `id` is preserved on BOTH (backends correlate results by id).
+    #[tokio::test]
+    async fn process_tool_calls_maps_ok_and_err_preserving_ids() {
+        let runner = ToolRunner::new();
+        runner.register(echo_tool("ok", "v"));
+        let calls = vec![
+            ToolCall { name: "ok".into(), args: json!({}), id: Some("a".into()), canonical_path: None },
+            ToolCall { name: "missing".into(), args: json!({}), id: Some("b".into()), canonical_path: None },
+        ];
+        let results = runner.process_tool_calls(calls).await;
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].name, "ok");
+        assert_eq!(results[0].id.as_deref(), Some("a"));
+        assert!(results[0].error.is_none(), "ok call must have no error");
+        assert_eq!(results[1].id.as_deref(), Some("b"));
+        assert!(
+            results[1].error.as_deref().unwrap().contains("missing"),
+            "err result must name the missing tool"
+        );
+    }
+
+    /// `names` / `iter_tools` reflect exactly what's registered.
+    #[tokio::test]
+    async fn names_and_iter_tools_reflect_registrations() {
+        let runner = ToolRunner::new();
+        assert!(runner.names().is_empty());
+        runner.register(echo_tool("a", "x"));
+        runner.register(echo_tool("b", "y"));
+        let mut names = runner.names();
+        names.sort();
+        assert_eq!(names, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(runner.iter_tools().len(), 2);
+    }
 }
