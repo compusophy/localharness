@@ -166,9 +166,13 @@ export function extractUsage(provider: Provider, sse: string): Usage | null {
     for (const f of frames) if (f.usageMetadata && typeof f.usageMetadata === 'object') last = f;
     if (!last) return null;
     const u = last.usageMetadata as Record<string, unknown>;
+    // Gemini 3.x bills reasoning tokens at the OUTPUT rate but reports them in a
+    // SEPARATE `thoughtsTokenCount` (totalTokenCount = prompt + candidates +
+    // thoughts). Counting only candidatesTokenCount under-bills output by exactly
+    // the thoughts (66% on thinking-heavy calls — design/metering-live-verification.md).
     return {
       inputTokens: num(u.promptTokenCount),
-      outputTokens: num(u.candidatesTokenCount),
+      outputTokens: num(u.candidatesTokenCount) + num(u.thoughtsTokenCount),
       cachedInputTokens: num(u.cachedContentTokenCount),
     };
   }

@@ -52,7 +52,7 @@ function extractUsage(provider, sse) {
     for (const f of frames) if (f.usageMetadata && typeof f.usageMetadata === 'object') last = f;
     if (!last) return null;
     const u = last.usageMetadata;
-    return { inputTokens: num(u.promptTokenCount), outputTokens: num(u.candidatesTokenCount), cachedInputTokens: num(u.cachedContentTokenCount) };
+    return { inputTokens: num(u.promptTokenCount), outputTokens: num(u.candidatesTokenCount) + num(u.thoughtsTokenCount), cachedInputTokens: num(u.cachedContentTokenCount) };
   }
   if (provider === 'anthropic') {
     let input = 0, cached = 0, output = 0, sawUsage = false;
@@ -129,6 +129,10 @@ eq('cost opus cached-discount x1.3', usageCostWei('anthropic', 'claude-opus-4-8'
 // extractUsage — gemini (last cumulative chunk wins)
 const GEM = 'data: {"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":200,"totalTokenCount":1200}}\n\ndata: {"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":500,"cachedContentTokenCount":300,"totalTokenCount":1500}}\n';
 eq('extract gemini', extractUsage('gemini', GEM), { inputTokens: 1000, outputTokens: 500, cachedInputTokens: 300 });
+// Gemini 3.x reasoning tokens (thoughtsTokenCount) bill at the OUTPUT rate — must
+// fold into outputTokens (live case: 35/2224/1481 → 3705 out). Was a 66% under-count.
+const GEM_THOUGHTS = 'data: {"usageMetadata":{"promptTokenCount":35,"candidatesTokenCount":2224,"thoughtsTokenCount":1481,"totalTokenCount":3740}}\n';
+eq('extract gemini counts thoughts as output', extractUsage('gemini', GEM_THOUGHTS), { inputTokens: 35, outputTokens: 3705, cachedInputTokens: 0 });
 // anthropic — input from message_start, cumulative output from last message_delta
 const ANT = 'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":1200,"cache_read_input_tokens":200}}}\n\nevent: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":50}}\n\nevent: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":420}}\n';
 eq('extract anthropic', extractUsage('anthropic', ANT), { inputTokens: 1200, outputTokens: 420, cachedInputTokens: 200 });
