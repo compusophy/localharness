@@ -316,8 +316,8 @@ function checkAllowlist(calls: TempoCallIntent[]): string | null {
   return null;
 }
 
-/** balanceOf(addr) on the $LH token via raw JSON-RPC eth_call. */
-async function lhBalanceOf(addr: string): Promise<bigint> {
+/** balanceOf(addr) on an arbitrary TIP-20/ERC-20 token via raw JSON-RPC eth_call. */
+async function erc20BalanceOf(token: string, addr: string): Promise<bigint> {
   const data = '0x' + selector('balanceOf(address)') + stripHex(addr).toLowerCase().padStart(64, '0');
   const res = await fetch(TEMPO_RPC, {
     method: 'POST',
@@ -326,7 +326,7 @@ async function lhBalanceOf(addr: string): Promise<bigint> {
       jsonrpc: '2.0',
       id: 1,
       method: 'eth_call',
-      params: [{ to: LH_TOKEN, data }, 'latest'],
+      params: [{ to: token, data }, 'latest'],
     }),
   });
   if (!res.ok) throw new Error(`RPC ${res.status}`);
@@ -334,6 +334,38 @@ async function lhBalanceOf(addr: string): Promise<bigint> {
   if (j.error) throw new Error(`eth_call: ${j.error?.message ?? 'error'}`);
   const hex = stripHex(j.result ?? '0x');
   return hex ? BigInt('0x' + hex) : 0n;
+}
+
+/** balanceOf(addr) on the $LH token (the onboarding-gate read). */
+function lhBalanceOf(addr: string): Promise<bigint> {
+  return erc20BalanceOf(LH_TOKEN, addr);
+}
+
+// --- sponsor float circuit-breaker -----------------------------------------
+// Refuse to sign once the sponsor's fee_token float drops below MIN_FLOAT, so a
+// near-empty sponsor returns a clean LH_RELAY_FLOAT_LOW instead of letting the
+// CLI assemble a tx that reverts on-chain (the sponsor can't pay). The float is
+// the hard spend ceiling; this is the clean-error + alarm at the edge of it.
+// Floor in fee_token base units (USDC.e is 6-dec) — default 0.05 USDC.e; env
+// LH_RELAY_MIN_FLOAT_WEI tunes it (0 disables). The balance is cached per-isolate
+// for a short TTL so we don't eth_call on every request.
+const MIN_FLOAT_WEI = BigInt(process.env.LH_RELAY_MIN_FLOAT_WEI ?? '50000');
+const FLOAT_CACHE_MS = 30_000;
+let floatCache: { token: string; wei: bigint; at: number } | null = null;
+
+/** The sponsor's fee_token float (cached). `nowMs` is injectable for tests. */
+async function sponsorFloat(feeToken: string, nowMs: number): Promise<bigint> {
+  if (floatCache && floatCache.token === feeToken && nowMs - floatCache.at < FLOAT_CACHE_MS) {
+    return floatCache.wei;
+  }
+  const wei = await erc20BalanceOf(feeToken, SPONSOR_ADDRESS);
+  floatCache = { token: feeToken, wei, at: nowMs };
+  return wei;
+}
+
+/** Test-only: clear the in-isolate float cache between cases. */
+export function __resetFloatCache(): void {
+  floatCache = null;
 }
 
 // --- handler ---------------------------------------------------------------
@@ -412,6 +444,23 @@ export default async function handler(req: Request): Promise<Response> {
   } catch (e) {
     // Fail CLOSED — if we can't prove the caller is unfunded, don't sponsor.
     return json({ error: 'balance check failed: ' + (e as Error).message, code: 'LH_RELAY_BALANCE' }, 502, origin);
+  }
+
+  // 8. Float circuit-breaker: refuse cleanly when the sponsor can't cover fees
+  //    (fail-CLOSED — never sign a tx the sponsor will revert on-chain).
+  if (MIN_FLOAT_WEI > 0n) {
+    try {
+      const float = await sponsorFloat('0x' + bytesToHex(intent.feeToken), Date.now());
+      if (float < MIN_FLOAT_WEI) {
+        return json(
+          { error: 'sponsor float exhausted — top up the fee_token; sponsorship paused', code: 'LH_RELAY_FLOAT_LOW' },
+          503,
+          origin,
+        );
+      }
+    } catch (e) {
+      return json({ error: 'sponsor float check failed: ' + (e as Error).message, code: 'LH_RELAY_FLOAT' }, 502, origin);
+    }
   }
 
   // All caps passed — sign the fee_payer half.

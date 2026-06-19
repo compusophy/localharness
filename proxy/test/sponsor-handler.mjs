@@ -11,6 +11,7 @@ import { keccak_256 } from '@noble/hashes/sha3';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import sponsorMod from '../.ttest/sponsor.js';
 const handler = sponsorMod.default ?? sponsorMod;
+const resetFloat = sponsorMod.__resetFloatCache ?? (() => {});
 import {
   feePayerHash,
   sponsoredSenderHash,
@@ -111,13 +112,21 @@ function makeReq(body, token) {
   });
 }
 
-// Stub fetch → eth_call balanceOf returns `balanceHex`.
-function stubBalance(balanceHex) {
-  globalThis.fetch = async () =>
-    new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + balanceHex.padStart(64, '0') }), {
+// Stub fetch → eth_call balanceOf. The onboarding gate reads the CALLER's $LH
+// balance (on the $LH token); the float breaker reads the SPONSOR's fee_token
+// balance — branch on the call's `to` so the two reads are independent.
+// `lhHex` = caller $LH balance; `floatHex` = sponsor fee_token float (default
+// 1.0 USDC.e, comfortably above the breaker floor).
+function stubBalance(lhHex, floatHex = 'f4240') {
+  resetFloat();
+  globalThis.fetch = async (_url, opts) => {
+    const to = JSON.parse(opts.body).params[0].to.toLowerCase();
+    const val = to === TOKEN.toLowerCase() ? lhHex : floatHex;
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + val.padStart(64, '0') }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     });
+  };
 }
 
 const ts = Math.floor(Date.now() / 1000);
@@ -208,6 +217,16 @@ const token = authToken(senderPriv, senderAddr, ts);
   const res = await handler(makeReq(body, token));
   const j = await res.json();
   ok('chain mismatch refused 400 LH_RELAY_CHAIN', res.status === 400 && j.code === 'LH_RELAY_CHAIN', `status=${res.status} code=${j.code}`);
+}
+
+// --- float circuit-breaker: near-empty sponsor refuses cleanly --------------
+{
+  stubBalance('0', '2710'); // caller $LH 0 (unfunded), sponsor float 0.01 USDC.e < 0.05 floor
+  const cd = registerCalldata('relaytest');
+  const intent = makeIntent(DIAMOND, cd);
+  const res = await handler(makeReq(bodyFor(intent, cd, DIAMOND), token));
+  const j = await res.json();
+  ok('low float refused 503 LH_RELAY_FLOAT_LOW', res.status === 503 && j.code === 'LH_RELAY_FLOAT_LOW', `status=${res.status} code=${j.code}`);
 }
 
 if (failed) {
