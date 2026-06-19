@@ -7,8 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-06-18
+
 ### Added
 
+- **In-browser Gemma backend reachable from the app** via a new
+  `browser-app-local` composite feature. The in-tab local Gemma 3 270M path
+  (model selector entry, OPFS download, `start_local` session wiring, the
+  `Connection`/`ConnectionStrategy` impl with a `tool_code`-fence tool loop) was
+  already built behind the `local` feature but never enabled in any bundle;
+  `browser-app-local = ["browser-app","local"]` is the opt-in heavy bundle that
+  turns it on. The default web bundle stays lean (Gemma OFF) and no longer
+  advertises a dead "Local (Gemma)" selector entry that errored on select. Build
+  with `--features browser-app-local`. Forward-pass validation + a live WebGPU run
+  remain before it generates coherent text in a tab.
+- **CLI runtime chain selection via `LH_CHAIN`** (CLI-mainnet relay phase 1) — one
+  published `localharness` binary targets testnet OR mainnet at runtime
+  (`LH_CHAIN=mainnet` → chain 4217, else Moderato testnet), resolved once via a
+  `OnceLock`, replacing the compile-time `--features mainnet` requirement. The
+  binary embeds NO mainnet money key: `main.rs::sponsor_key()` reads
+  `LH_MAINNET_SPONSOR_KEY` from the env at runtime only when the active chain is
+  mainnet (fail-loud if unset). wasm stays compile-time `cfg`. Verified live
+  (default build: `claude` resolves tokenId 8 on testnet, tokenId 2 on mainnet).
 - **Multi-chain EVM READ tools** so an agent checks balances / reads contracts /
   resolves ENS on OTHER EVM chains natively instead of `web_fetch`-ing
   third-party explorer APIs. New `registry::multichain` module: a curated,
@@ -35,6 +55,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Linux container (which would need iframes + multi-MB blobs, against this
   project's design). Committed example `examples/cli/hello.wasm` (+ `.wat`
   source); `scripts/verify-wasi-cli.mjs` runs it through the host in node.
+
+### Changed
+
+- **BREAKING (`registry` surface): canonical chain handles are now functions, not
+  consts.** `REGISTRY_ADDRESS`, `CHAIN_ID`, `RPC_URL`, `LOCALHARNESS_TOKEN_ADDRESS`,
+  `ALPHA_USD_ADDRESS` and `multichain::CHAINS` became `REGISTRY_ADDRESS()` …
+  `chains()` so they can resolve the active chain at runtime (see `LH_CHAIN`
+  above). Downstream `default-features = false, features = ["wallet"]` consumers
+  must add `()` at the call site.
+- **Token-usage metering flipped LIVE on the credit proxy.** The live debit is now
+  `max(flat_floor, usageCostWei × 1.3×)` (per-provider input/output/cached token
+  rates) instead of the flat per-request floor, gated on `LH_TOKEN_METERING=1`
+  (now set in prod). Floor-clamped, so it only bills above the floor on outlier
+  mega-requests; rollback is removing the env + redeploy. `LH_MARGIN_BPS` (1.3×)
+  and `LH_MAX_OUTPUT_TOKENS` (8192) keep safe defaults. Verified live against both
+  the Gemini and Anthropic paths.
+
+### Fixed
+
+- **Metering under-counted Gemini output by up to ~66% on thinking-heavy calls.**
+  Gemini 3.x bills reasoning tokens at the output rate but reports them in a
+  separate `thoughtsTokenCount`; `proxy/api/_usage.ts::extractUsage` counted only
+  `candidatesTokenCount`. Folded `thoughtsTokenCount` into `outputTokens` (mirrored
+  in `scripts/test-metering-usage.mjs` with the live-verified 35/2224/1481 case).
+  Masked by the 1 `$LH` floor at today's prices; matters when floors drop.
 
 ## [0.47.0] - 2026-06-18
 
