@@ -261,7 +261,9 @@ IDENTITY & PROFILE
 CARTRIDGES & PUBLISHING
   localharness compile <src.rl>          compile-check a cartridge locally (no write)
   localharness sh <script.bl> [--as <name>] [--confirm]
-                                         run a bashlite script: fs commands over the
+  localharness sh -c '<inline script>' [--as <name>] [--confirm]
+                                         run a bashlite script (file or -c inline):
+                                         fs commands over the
                                          script's directory + lh-* platform commands
                                          (lh-whoami/lh-balance/lh-meter/lh-resolve/
                                          lh-price/lh-list reads; lh-send moves $LH) +
@@ -542,16 +544,21 @@ async fn run(args: &[String]) -> i32 {
             }
         },
         Some("sh") => {
-            // `sh <script.bl> [--as <name>] [--confirm]` — positional file, the
-            // optional identity, and the value-move authorization flag.
+            // `sh <script.bl> [--as <name>] [--confirm]` or `sh -c '<source>' …` —
+            // a positional file OR an inline `-c` script, plus the optional
+            // identity and the value-move authorization flag.
             let rest = &args[1..];
             let mut as_name: Option<String> = None;
             let mut confirm = false;
             let mut file: Option<String> = None;
+            let mut inline: Option<String> = None;
             let mut i = 0;
             while i < rest.len() {
                 if rest[i] == "--as" && i + 1 < rest.len() {
                     as_name = Some(rest[i + 1].clone());
+                    i += 2;
+                } else if rest[i] == "-c" && i + 1 < rest.len() {
+                    inline = Some(rest[i + 1].clone());
                     i += 2;
                 } else if rest[i] == "--confirm" {
                     confirm = true;
@@ -563,10 +570,14 @@ async fn run(args: &[String]) -> i32 {
                     i += 1;
                 }
             }
-            match file {
-                Some(f) => sh::cmd_sh(&f, as_name.as_deref(), confirm).await,
-                None => {
-                    eprintln!("usage: localharness sh <script.bl> [--as <name>] [--confirm]");
+            match (inline, file) {
+                (Some(src), _) => sh::cmd_sh_inline(&src, as_name.as_deref(), confirm).await,
+                (None, Some(f)) => sh::cmd_sh(&f, as_name.as_deref(), confirm).await,
+                (None, None) => {
+                    eprintln!(
+                        "usage: localharness sh <script.bl> [--as <name>] [--confirm]\n   \
+                         or: localharness sh -c '<inline script>' [--as <name>] [--confirm]"
+                    );
                     2
                 }
             }

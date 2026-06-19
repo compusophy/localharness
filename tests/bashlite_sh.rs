@@ -48,3 +48,21 @@ fn sh_composes_scripts_over_the_rooted_fs() {
     assert!(stdout.contains("done"), "&& chaining missing:\n{stdout}");
     assert!(stdout.contains("recovered"), "|| fallback missing:\n{stdout}");
 }
+
+#[test]
+fn sh_dash_c_runs_an_inline_one_liner() {
+    // `sh -c '<source>'` runs without a file — a read/compose one-liner with no
+    // value moves runs straight through (no --confirm needed).
+    let out = Command::new(env!("CARGO_BIN_EXE_localharness"))
+        .args(["sh", "-c", "echo hi && echo there || echo nope"])
+        .output()
+        .expect("run `localharness sh -c`");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "non-zero exit {:?}\nstdout:\n{stdout}\nstderr:\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(stdout, "hi\nthere\n", "inline && / || output wrong:\n{stdout}");
+}

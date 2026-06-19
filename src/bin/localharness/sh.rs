@@ -92,8 +92,9 @@ async fn run_pass(
     Ok((res, host.manifest))
 }
 
-/// Run `path` (a `.bl` script) and return the process exit code. `as_name` sets
-/// the identity; `confirm` authorizes value moves (see the dry-run-manifest gate).
+/// Run a `.bl` script FILE and return the process exit code. `as_name` sets the
+/// identity; `confirm` authorizes value moves (see the dry-run-manifest gate).
+/// The fs sandbox roots at the script's directory.
 pub(crate) async fn cmd_sh(path: &str, as_name: Option<&str>, confirm: bool) -> i32 {
     let p = std::path::Path::new(path);
     let src = match std::fs::read_to_string(p) {
@@ -108,7 +109,20 @@ pub(crate) async fn cmd_sh(path: &str, as_name: Option<&str>, confirm: bool) -> 
         .filter(|d| !d.as_os_str().is_empty())
         .map(|d| d.to_string_lossy().to_string())
         .unwrap_or_else(|| ".".to_string());
+    run_source(&src, &base, as_name, confirm).await
+}
 
+/// Run an INLINE script (`sh -c '<source>'`) — the same shell without a file,
+/// sandboxed at the current working directory. Handy for one-liners
+/// (`localharness sh -c 'lh-balance' --as me`).
+pub(crate) async fn cmd_sh_inline(src: &str, as_name: Option<&str>, confirm: bool) -> i32 {
+    run_source(src, ".", as_name, confirm).await
+}
+
+/// The shared run pipeline: load identity/sponsor, run the DRY pass to collect
+/// the value-move manifest, then print (read/compose scripts) or gate on
+/// `--confirm` (value-moving scripts). `base` roots the fs sandbox.
+async fn run_source(src: &str, base: &str, as_name: Option<&str>, confirm: bool) -> i32 {
     let signer = as_name.and_then(|n| load_signer(Some(n)).ok());
     // `bytes_to_hex_str` already prefixes `0x`.
     let identity = signer.as_ref().map(|s| bytes_to_hex_str(&wallet::address(s)));
@@ -120,8 +134,8 @@ pub(crate) async fn cmd_sh(path: &str, as_name: Option<&str>, confirm: bool) -> 
 
     // Pass 1 — DRY-RUN: collect the value-move manifest; send nothing.
     let (dry, manifest) = match run_pass(
-        &src,
-        &base,
+        src,
+        base,
         identity.clone(),
         signer.clone(),
         sponsor.clone(),
@@ -162,7 +176,7 @@ pub(crate) async fn cmd_sh(path: &str, as_name: Option<&str>, confirm: bool) -> 
 
     // Pass 2 — LIVE: re-run for real (reads are idempotent; writes execute).
     eprintln!("--confirm given — executing…");
-    match run_pass(&src, &base, identity, signer, sponsor, fee_token, false).await {
+    match run_pass(src, base, identity, signer, sponsor, fee_token, false).await {
         Ok((live, _)) => {
             print!("{}", live.stdout);
             if !live.stderr.is_empty() {
