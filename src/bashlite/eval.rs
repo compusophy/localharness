@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use super::ast::{Command, Stmt, Word, WordPart};
+use super::ast::{ChainOp, Command, Stmt, Word, WordPart};
 use super::builtins;
 use super::host::{BashHost, Output};
 use super::BashError;
@@ -128,6 +128,35 @@ impl<'h, H: BashHost + ?Sized> Evaluator<'h, H> {
                         self.stderr.push_str(&out.stderr);
                     }
                     self.last_status = out.code;
+                }
+                Stmt::AndOr { pipelines, ops } => {
+                    // Run the first pipeline, then chain: `&&` runs the next only
+                    // on success, `||` only on failure. A skipped pipeline leaves
+                    // the running code unchanged and we CONTINUE to the next op
+                    // (so `a && b || c` runs `c` when `a` failed — not a `break`).
+                    let first = self.run_pipeline(&pipelines[0]).await?;
+                    self.push_stdout(&first.stdout)?;
+                    if !first.stderr.is_empty() {
+                        self.stderr.push_str(&first.stderr);
+                    }
+                    let mut code = first.code;
+                    for (op, pipe) in ops.iter().zip(&pipelines[1..]) {
+                        let run_next = match op {
+                            ChainOp::And => code == 0,
+                            ChainOp::Or => code != 0,
+                        };
+                        if !run_next {
+                            continue;
+                        }
+                        self.burn()?;
+                        let out = self.run_pipeline(pipe).await?;
+                        self.push_stdout(&out.stdout)?;
+                        if !out.stderr.is_empty() {
+                            self.stderr.push_str(&out.stderr);
+                        }
+                        code = out.code;
+                    }
+                    self.last_status = code;
                 }
                 Stmt::If { arms, otherwise } => {
                     let mut ran = false;

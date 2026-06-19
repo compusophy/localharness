@@ -6,7 +6,7 @@
 //! in command-NAME position; quoted (`"if"`) or mid-word it stays a normal arg,
 //! exactly like the shell.
 
-use super::ast::{Command, Stmt, Word};
+use super::ast::{ChainOp, Command, Stmt, Word};
 use super::token::{Token, WordPart};
 use super::BashError;
 
@@ -122,16 +122,40 @@ impl<'a> Parser<'a> {
                 return Ok(Stmt::Assign { name, value });
             }
         }
-        self.pipeline()
+        self.and_or()
     }
 
-    fn pipeline(&mut self) -> Result<Stmt, BashError> {
+    /// One or more pipelines joined by `&&` / `||`. A lone pipeline (no chain
+    /// operator) stays a [`Stmt::Pipeline`] so the common case is unchanged;
+    /// a chain becomes a short-circuiting [`Stmt::AndOr`].
+    fn and_or(&mut self) -> Result<Stmt, BashError> {
+        let mut pipelines = vec![self.pipeline_cmds()?];
+        let mut ops = Vec::new();
+        loop {
+            let op = match self.peek() {
+                Token::AndAnd => ChainOp::And,
+                Token::OrOr => ChainOp::Or,
+                _ => break,
+            };
+            self.pos += 1;
+            ops.push(op);
+            pipelines.push(self.pipeline_cmds()?);
+        }
+        if ops.is_empty() {
+            Ok(Stmt::Pipeline(pipelines.pop().expect("one pipeline")))
+        } else {
+            Ok(Stmt::AndOr { pipelines, ops })
+        }
+    }
+
+    /// One pipeline: simple commands joined by `|`.
+    fn pipeline_cmds(&mut self) -> Result<Vec<Command>, BashError> {
         let mut cmds = vec![self.command()?];
         while matches!(self.peek(), Token::Pipe) {
             self.pos += 1;
             cmds.push(self.command()?);
         }
-        Ok(Stmt::Pipeline(cmds))
+        Ok(cmds)
     }
 
     /// Parse one simple command: a name word followed by argument words, until a

@@ -38,7 +38,24 @@ impl Lexer<'_> {
                 }
                 b'|' => {
                     self.pos += 1;
-                    out.push(Token::Pipe);
+                    if self.peek() == Some(b'|') {
+                        self.pos += 1;
+                        out.push(Token::OrOr);
+                    } else {
+                        out.push(Token::Pipe);
+                    }
+                }
+                b'&' => {
+                    self.pos += 1;
+                    if self.peek() == Some(b'&') {
+                        self.pos += 1;
+                        out.push(Token::AndAnd);
+                    } else {
+                        // Lone `&` (background / file-descriptor dup) is unsupported.
+                        return Err(BashError::parse(
+                            "lone '&' is not supported (no background jobs); use '&&' to chain",
+                        ));
+                    }
                 }
                 _ => out.push(self.word()?),
             }
@@ -91,7 +108,7 @@ impl Lexer<'_> {
         while let Some(b) = self.peek() {
             match b {
                 // Word terminators (unquoted).
-                b' ' | b'\t' | b'\r' | b'\n' | b';' | b'|' => break,
+                b' ' | b'\t' | b'\r' | b'\n' | b';' | b'|' | b'&' => break,
                 b'\'' => {
                     self.pos += 1;
                     while let Some(c) = self.peek() {

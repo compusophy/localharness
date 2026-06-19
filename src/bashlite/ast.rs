@@ -19,6 +19,14 @@ pub enum Stmt {
     /// is a one-element pipeline. The whole pipeline yields the LAST command's
     /// exit code (`$?`).
     Pipeline(Vec<Command>),
+    /// Pipelines chained by `&&` / `||` with SHORT-CIRCUIT semantics: `a && b`
+    /// runs `b` only if `a` exited 0; `a || b` runs `b` only if `a` exited
+    /// nonzero. `pipelines.len() == ops.len() + 1`. The statement's exit code is
+    /// the LAST pipeline actually run.
+    AndOr {
+        pipelines: Vec<Vec<Command>>,
+        ops: Vec<ChainOp>,
+    },
     /// `if COND; then BODY; [elif COND; then BODY;]* [else BODY;] fi`
     If {
         /// `(condition_pipeline, body)` pairs — the first whose condition exits
@@ -38,6 +46,15 @@ pub enum Stmt {
         cond: Vec<Stmt>,
         body: Vec<Stmt>,
     },
+}
+
+/// The operator joining two pipelines in an [`Stmt::AndOr`] chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChainOp {
+    /// `&&` — run the next pipeline only on the previous's success (exit 0).
+    And,
+    /// `||` — run the next pipeline only on the previous's failure (nonzero).
+    Or,
 }
 
 /// A simple command: a command name plus argument words. `[ ... ]` tests parse

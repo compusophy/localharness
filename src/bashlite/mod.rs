@@ -14,6 +14,8 @@
 //!
 //! - Variables: `x=value`, `x=$(cmd)`; `$x` / `${x}` interpolation; `$?` exit.
 //! - Pipes: `a | b | c` (stdout → stdin).
+//! - Short-circuit chains: `a && b` (run `b` iff `a` exited 0), `a || b` (iff
+//!   nonzero); mixed `cond && a || b` is the ternary (skip, not break).
 //! - Control flow: `if/elif/else/fi`, `for NAME in …; do … done`,
 //!   `while …; do … done`.
 //! - Tests: `[ … ]` / `test …` (string `=`/`!=`/`-z`/`-n`, int `-eq`/`-lt`/…).
@@ -35,7 +37,7 @@
 //!
 //! - Value-MOVING `lh-*` commands (`lh-send`, `lh-create`, …) + the
 //!   dry-run-manifest confirm flow. (Read-only `lh-*` ship in [`platform`].)
-//! - `break` / `continue` / `return`, functions, `&&` / `||` between commands,
+//! - `break` / `continue` / `return`, functions,
 //!   here-docs, redirection (`>`/`>>`/`<`), real regex grep, file-arg `wc`,
 //!   field splitting of unquoted expansions OUTSIDE `for` items, globbing,
 //!   arithmetic `$(( ))`.
@@ -720,6 +722,63 @@ mod tests {
             }
             crate::bashlite::builtins::dispatch_in(&self.fs, cwd, cmd, args, stdin).await
         }
+    }
+
+    // -------- `&&` / `||` short-circuit chaining --------
+
+    #[tokio::test]
+    async fn and_or_short_circuit_basics() {
+        // && runs the next only on success; || only on failure.
+        assert_eq!(run_ok(&[], "true && echo yes").await.stdout, "yes\n");
+        assert_eq!(run_ok(&[], "false && echo no").await.stdout, ""); // skipped
+        assert_eq!(run_ok(&[], "false || echo fallback").await.stdout, "fallback\n");
+        assert_eq!(run_ok(&[], "true || echo skip").await.stdout, ""); // skipped
+    }
+
+    #[tokio::test]
+    async fn and_or_mixed_chain_is_not_a_break() {
+        // `cond && a || b` — the classic ternary. A FAILED `&&` must still let the
+        // trailing `||` run (skip, not break).
+        assert_eq!(
+            run_ok(&[], "[ 1 -eq 1 ] && echo a || echo b").await.stdout,
+            "a\n"
+        );
+        assert_eq!(
+            run_ok(&[], "[ 1 -eq 2 ] && echo a || echo b").await.stdout,
+            "b\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn and_or_chains_real_commands_and_pipes() {
+        let mut host = TestHost::new(&[]);
+        // write succeeds → cat runs; pipes compose inside a chain.
+        let r = run(&mut host, "write f.txt hi && cat f.txt | wc -c").await.unwrap();
+        assert_eq!(r.stdout, "2\n");
+        // $? reflects the LAST pipeline actually run.
+        let r = run_ok(&[], "true && false\necho $?").await;
+        assert_eq!(r.stdout, "1\n");
+        let r = run_ok(&[], "false || true\necho $?").await;
+        assert_eq!(r.stdout, "0\n");
+    }
+
+    #[test]
+    fn parses_and_or_and_lexer_rejects_lone_amp() {
+        // The chain parses to an AndOr with the right op count.
+        match &parser::parse(&lexer::lex("a && b || c").unwrap()).unwrap()[0] {
+            ast::Stmt::AndOr { pipelines, ops } => {
+                assert_eq!(pipelines.len(), 3);
+                assert_eq!(ops, &vec![ast::ChainOp::And, ast::ChainOp::Or]);
+            }
+            _ => panic!("expected AndOr"),
+        }
+        // A lone `&` (background) is a clear syntax error, not a silent word.
+        assert_eq!(lexer::lex("sleep 1 &").unwrap_err().kind, BashErrorKind::Parse);
+        // A bare pipeline (no chain op) is still a plain Pipeline.
+        assert!(matches!(
+            parser::parse(&lexer::lex("echo hi").unwrap()).unwrap()[0],
+            ast::Stmt::Pipeline(_)
+        ));
     }
 
     #[tokio::test]

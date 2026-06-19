@@ -11,6 +11,10 @@ pub enum Token {
     Word(Vec<WordPart>),
     /// `|` — pipe stdout of the left command into stdin of the right.
     Pipe,
+    /// `&&` — run the next pipeline only if the previous exited 0 (short-circuit).
+    AndAnd,
+    /// `||` — run the next pipeline only if the previous exited nonzero.
+    OrOr,
     /// `;` or a newline — command separator.
     Semi,
     /// `(` — paren grouping (only used by the parser for `[ ... ]`-free test
