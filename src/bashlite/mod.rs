@@ -18,19 +18,27 @@
 //!   `while …; do … done`.
 //! - Tests: `[ … ]` / `test …` (string `=`/`!=`/`-z`/`-n`, int `-eq`/`-lt`/…).
 //! - Command substitution: `$(…)` (nested, subshell vars, shared fuel).
-//! - Builtins (fs-only): `echo`, `cd`, `pwd`, `ls`, `cat`, `grep`, `find`,
+//! - Builtins (fs): `echo`, `cd`, `pwd`, `ls`, `cat`, `grep`, `find`,
 //!   `wc`, `mkdir`, `write`/`create` (CREATE-only), `true`/`false`.
+//! - **Composition (`run`/`source`/`.`)**: execute another `.bl` script in a
+//!   nested evaluator (shared fs + fuel) — a script is a composition of scripts.
+//!   FRACTAL: the sub-script can itself `run` more, bounded by the shared fuel.
+//! - **Host extension**: a [`BashHost`] adds commands by overriding `run_builtin`
+//!   (e.g. the `lh-*` platform reads in [`platform`]) — the evaluator routes every
+//!   non-control command through it, so "localharnesslite" is just more commands.
+//! - `for NAME in $(…)` FIELD-SPLITS on whitespace (the fan-out pattern).
 //! - Quoting: `'single'` literal, `"double"` interpolating, `\` escape.
 //! - BOUNDED: a fuel budget caps total commands + loop iterations so a
-//!   `while true` can't hang; output is byte-capped.
+//!   `while true` (or `run`-recursion) can't hang; output is byte-capped.
 //!
 //! ## Deferred to v2 (intentionally NOT in v1 — see `design/bashlite.md`)
 //!
-//! - Value-moving / `lh-*` platform host commands + the dry-run-manifest
-//!   confirm flow.
+//! - Value-MOVING `lh-*` commands (`lh-send`, `lh-create`, …) + the
+//!   dry-run-manifest confirm flow. (Read-only `lh-*` ship in [`platform`].)
 //! - `break` / `continue` / `return`, functions, `&&` / `||` between commands,
 //!   here-docs, redirection (`>`/`>>`/`<`), real regex grep, file-arg `wc`,
-//!   field splitting / globbing of unquoted expansions, arithmetic `$(( ))`.
+//!   field splitting of unquoted expansions OUTSIDE `for` items, globbing,
+//!   arithmetic `$(( ))`.
 
 /// Token kinds.
 pub mod token;
@@ -44,6 +52,9 @@ pub mod parser;
 pub mod host;
 /// FS-only builtin commands over [`crate::filesystem::Filesystem`].
 pub mod builtins;
+/// Read-only `lh-*` platform commands (localharnesslite). Needs `wallet`.
+#[cfg(feature = "wallet")]
+pub mod platform;
 /// Bounded, total evaluator.
 pub mod eval;
 
@@ -287,7 +298,7 @@ mod tests {
             Self { fs: MemFs::with(files) }
         }
     }
-    #[async_trait::async_trait]
+    #[async_trait::async_trait(?Send)]
     impl BashHost for TestHost {
         fn fs(&self) -> &dyn Filesystem {
             &self.fs
@@ -627,5 +638,96 @@ mod tests {
     async fn unknown_command_is_127_not_a_basherror() {
         let r = run_ok(&[], "frobnicate\necho $?").await;
         assert_eq!(r.stdout, "127\n");
+    }
+
+    // -------- fractal composition: the `run` builtin --------
+
+    #[tokio::test]
+    async fn run_composes_a_subscript() {
+        // A parent script runs a child .bl whose stdout it captures + combines —
+        // composition, not inlining: the child's vars don't leak to the parent.
+        let files = &[("/step.bl", "x=child\necho from $x")];
+        let r = run_ok(files, "out=$(run step.bl)\necho [$out] x=$x").await;
+        // child printed "from child"; parent's $x is unset (subshell isolation).
+        assert_eq!(r.stdout, "[from child] x=\n");
+    }
+
+    #[tokio::test]
+    async fn run_nests_script_within_script() {
+        // a.bl runs b.bl runs (echoes) — fractal nesting, each level a real script.
+        let files = &[
+            ("/a.bl", "echo a-start\nrun b.bl\necho a-end"),
+            ("/b.bl", "echo b-inner"),
+        ];
+        let r = run_ok(files, "run a.bl").await;
+        assert_eq!(r.stdout, "a-start\nb-inner\na-end\n");
+    }
+
+    #[tokio::test]
+    async fn run_fanout_over_discovered_scripts() {
+        // The shape the vision wants: discover .bl files, run each, combine — a
+        // pipeline of scripts. `find` yields paths; `run` executes each.
+        let files = &[
+            ("/jobs/one.bl", "echo one"),
+            ("/jobs/two.bl", "echo two"),
+        ];
+        let r = run_ok(files, "for f in $(find jobs -name '*.bl'); do run $f; done").await;
+        // find sorts; v1 has no field-splitting so $(find) is one word, but here
+        // there's exactly one match per iteration path is fine — assert both ran.
+        assert!(r.stdout.contains("one") && r.stdout.contains("two"), "{:?}", r.stdout);
+    }
+
+    #[tokio::test]
+    async fn run_missing_file_is_nonzero_not_fatal() {
+        let r = run_ok(&[], "run nope.bl\necho after=$?").await;
+        assert!(r.stderr.contains("nope.bl"));
+        assert!(r.stdout.contains("after=1"));
+    }
+
+    #[tokio::test]
+    async fn run_broken_subscript_is_nonzero_not_fatal() {
+        // A syntactically broken child must not kill the parent — exit 2, continue.
+        let files = &[("/bad.bl", "if [ 1 -eq 1 ]; then echo a")]; // missing `fi`
+        let r = run_ok(files, "run bad.bl\necho after=$?").await;
+        assert!(r.stdout.contains("after=2"), "{:?}", r.stdout);
+    }
+
+    #[tokio::test]
+    async fn run_self_recursion_is_bounded_by_fuel() {
+        // self.bl runs self.bl … — fractal but FINITE: shared fuel stops it with a
+        // clean Fuel error, never a hang or a stack blow-up.
+        let mut host = TestHost::new(&[("/self.bl", "run self.bl")]);
+        let err = run_with_fuel(&mut host, "run self.bl", 200).await.unwrap_err();
+        assert_eq!(err.kind, BashErrorKind::Fuel);
+    }
+
+    // -------- host extension seam: run_builtin override --------
+
+    /// A host that adds a custom `greet` command on top of the fs builtins — the
+    /// same mechanism the CLI/browser hosts use to add `lh-*` platform commands.
+    struct ExtHost {
+        fs: MemFs,
+    }
+    #[async_trait::async_trait(?Send)]
+    impl BashHost for ExtHost {
+        fn fs(&self) -> &dyn Filesystem {
+            &self.fs
+        }
+        async fn run_builtin(&mut self, cwd: &str, cmd: &str, args: &[String], stdin: &str) -> Output {
+            if cmd == "greet" {
+                let who = args.first().map(String::as_str).unwrap_or("world");
+                return Output::ok(format!("hello {who}\n"));
+            }
+            crate::bashlite::builtins::dispatch_in(&self.fs, cwd, cmd, args, stdin).await
+        }
+    }
+
+    #[tokio::test]
+    async fn host_run_builtin_override_adds_a_command() {
+        let mut host = ExtHost { fs: MemFs::with(&[("/a.txt", "x\n")]) };
+        // The custom command works, pipes compose with it, and fs builtins
+        // (ls/cat) still fall through to the default dispatch.
+        let r = run(&mut host, "greet bashlite | wc -w\nls\ncat a.txt").await.unwrap();
+        assert_eq!(r.stdout, "2\na.txt\nx\n"); // "hello bashlite" = 2 words; ls; cat
     }
 }

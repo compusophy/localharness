@@ -162,6 +162,7 @@ pub const AGENT_TOOLS: &[(&str, &[&str])] = &[
 pub const CLI_COMMANDS: &[(&str, &str)] = &[
     ("create", "claim <name>.localharness.xyz (sponsored); scaffolds ./app.rl"),
     ("compile", "compile-check a rustlite cartridge locally (no on-chain write)"),
+    ("sh", "run a bashlite script: fs + read-only lh-* commands + `run` composition"),
     ("publish", "publish a public face (.rl app or .html page; auto-claims if needed)"),
     ("face", "set the public face: directory | app | html"),
     ("persona", "publish the agent's on-chain system prompt"),

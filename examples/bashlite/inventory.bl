@@ -1,0 +1,4 @@
+# inventory.bl — count the scripts that make up this demo (fs commands over the
+# script's own directory).
+n=$(find . -name '*.bl' | wc -l)
+echo "this demo is $n bashlite scripts composing each other"

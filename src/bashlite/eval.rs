@@ -147,10 +147,17 @@ impl<'h, H: BashHost + ?Sized> Evaluator<'h, H> {
                     }
                 }
                 Stmt::For { var, items, body } => {
-                    // Expand all item words first (each may interpolate / substitute).
+                    // Expand all item words first (each may interpolate / substitute),
+                    // then FIELD-SPLIT each on whitespace so `for f in $(find …)` /
+                    // `for f in $(ls)` iterates one value per line — the fan-out
+                    // pattern that lets a loop `run` each discovered script. (Splitting
+                    // is for-items only; command args / assignments stay one-word. A
+                    // quoted multi-word literal like `for x in "a b"` therefore still
+                    // splits — a known v1 simplification, rare in practice.)
                     let mut values = Vec::new();
                     for w in items {
-                        values.push(self.expand_word(w).await?);
+                        let expanded = self.expand_word(w).await?;
+                        values.extend(expanded.split_whitespace().map(String::from));
                     }
                     for v in values {
                         self.burn()?;
@@ -237,8 +244,53 @@ impl<'h, H: BashHost + ?Sized> Evaluator<'h, H> {
         if name == "pwd" {
             return Ok(Output::ok(format!("{}\n", self.cwd)));
         }
+        // `run <file.bl>` — FRACTAL composition: execute another bashlite script
+        // in a nested evaluator (shared fs + fuel, isolated vars/cwd), its stdout
+        // becoming this command's stdout. Bounded by the SHARED fuel budget, so
+        // script-runs-script recursion (a.bl runs b.bl runs a.bl) can't hang —
+        // it exhausts fuel and stops. This is the primitive that makes a script a
+        // composition of scripts, the same way host::compose nests cartridges.
+        if name == "run" || name == "." || name == "source" {
+            let Some(path_arg) = args.first() else {
+                return Ok(Output::err(format!("{name}: missing script path"), 2));
+            };
+            let path = builtins::resolve(&self.cwd, path_arg);
+            let src = match self.host.fs().read(&path).await {
+                Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+                Err(e) => return Ok(Output::err(format!("{name}: {path_arg}: {e}"), 1)),
+            };
+            return self.run_nested(&src, path_arg).await;
+        }
         let cwd = self.cwd.clone();
-        Ok(builtins::dispatch_in(self.host.fs(), &cwd, &name, &args, stdin).await)
+        Ok(self.host.run_builtin(&cwd, &name, &args, stdin).await)
+    }
+
+    /// Execute a sub-script `src` in a NESTED evaluator that shares this one's
+    /// host + fuel but starts with fresh vars (subshell isolation) at the current
+    /// cwd. Returns its captured stdout/stderr/exit as one [`Output`]. A
+    /// lex/parse failure in the sub-script is a NONZERO exit (the parent script
+    /// continues), NOT a fatal `BashError`; fuel/output-cap errors DO propagate
+    /// (they're global limits). Backs the `run`/`source` fractal builtin.
+    async fn run_nested(&mut self, src: &str, label: &str) -> Result<Output, BashError> {
+        let body = match super::lexer::lex(src).and_then(|t| super::parser::parse(&t)) {
+            Ok(b) => b,
+            Err(e) => return Ok(Output::err(format!("run: {label}: {e}"), 2)),
+        };
+        let mut sub = Evaluator {
+            host: self.host,
+            vars: HashMap::new(),
+            cwd: self.cwd.clone(),
+            last_status: 0,
+            fuel: self.fuel,
+            stdout: String::new(),
+            stderr: String::new(),
+        };
+        let flow = sub.exec_block(&body).await;
+        // Reclaim the fuel the sub-script spent BEFORE propagating any fatal
+        // limit error, so the global budget stays accurate across compositions.
+        self.fuel = sub.fuel;
+        flow?;
+        Ok(Output { stdout: sub.stdout, stderr: sub.stderr, code: sub.last_status })
     }
 
     /// Expand a word into its final string: concatenate literal/variable/

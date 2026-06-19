@@ -131,6 +131,7 @@ mod validation;
 mod reputation;
 mod schedule;
 mod session;
+mod sh;
 mod status;
 mod tba;
 mod util;
@@ -259,6 +260,12 @@ IDENTITY & PROFILE
 
 CARTRIDGES & PUBLISHING
   localharness compile <src.rl>          compile-check a cartridge locally (no write)
+  localharness sh <script.bl> [--as <name>]
+                                         run a bashlite script: fs commands over the
+                                         script's directory + read-only lh-* platform
+                                         commands (lh-whoami/lh-balance/lh-resolve/
+                                         lh-price) + `run other.bl` composition — one
+                                         local pass, no agent loop
   localharness publish <name> [src.rl|page.html]
                                          publish <name>'s public face on-chain:
                                          .rl compiles as a rustlite app, .html
@@ -532,6 +539,32 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
         },
+        Some("sh") => {
+            // `sh <script.bl> [--as <name>]` — pick the positional file and the
+            // optional identity.
+            let rest = &args[1..];
+            let mut as_name: Option<String> = None;
+            let mut file: Option<String> = None;
+            let mut i = 0;
+            while i < rest.len() {
+                if rest[i] == "--as" && i + 1 < rest.len() {
+                    as_name = Some(rest[i + 1].clone());
+                    i += 2;
+                } else if file.is_none() {
+                    file = Some(rest[i].clone());
+                    i += 1;
+                } else {
+                    i += 1;
+                }
+            }
+            match file {
+                Some(f) => sh::cmd_sh(&f, as_name.as_deref()).await,
+                None => {
+                    eprintln!("usage: localharness sh <script.bl> [--as <name>]");
+                    2
+                }
+            }
+        }
         Some("publish") if args.len() >= 3 => publish(&args[1], &args[2]).await,
         // One-command deploy (nova-qa feedback): `publish <name>` with no source
         // claims the name if needed, scaffolds ./app.rl if absent, and publishes
@@ -947,7 +980,7 @@ mod tests {
             "create", "compile", "publish", "face", "persona", "call", "list", "buy",
             "feedback", "probe", "triage", "threads", "forget", "whoami", "status",
             "invite", "bounty", "colony", "reputation", "guild", "party", "validation", "vote", "tba",
-            "room", "schedule", "goal", "jobs", "unschedule", "notify", "models",
+            "room", "schedule", "goal", "jobs", "unschedule", "notify", "models", "sh",
         ] {
             assert!(
                 USAGE.contains(cmd),

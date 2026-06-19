@@ -1,0 +1,20 @@
+# fractal.bl — localharnesslite end-to-end.
+#
+# A bashlite script that ORCHESTRATES the platform in one local pass: it composes
+# sub-scripts with `run` (fractal: a script of scripts, each of which runs more)
+# and reads the chain with `lh-*` — no agent loop, no per-step LLM round.
+#   localharness sh examples/bashlite/fractal.bl
+echo "== who am i =="
+lh-whoami
+
+echo "== compose sub-scripts (run runs run) =="
+run greet.bl
+run inventory.bl
+
+echo "== fan out over discovered jobs =="
+for j in $(find jobs -name '*.bl'); do
+  run $j
+done
+
+echo "== read a live agent off-chain identity -> on-chain =="
+lh-resolve claude

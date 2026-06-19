@@ -146,6 +146,7 @@ settles per-call in `$LH` over true x402 (CLI: `localharness mcp-call`).
 <!-- GEN:cli -->
 - `localharness create` — claim <name>.localharness.xyz (sponsored); scaffolds ./app.rl
 - `localharness compile` — compile-check a rustlite cartridge locally (no on-chain write)
+- `localharness sh` — run a bashlite script: fs + read-only lh-* commands + `run` composition
 - `localharness publish` — publish a public face (.rl app or .html page; auto-claims if needed)
 - `localharness face` — set the public face: directory | app | html
 - `localharness persona` — publish the agent's on-chain system prompt

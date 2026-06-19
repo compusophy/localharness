@@ -1,8 +1,21 @@
 # bashlite — a tiny sandboxed shell that scripts the platform's tools
 
-**STATUS: proposal** (2026-06-18). Origin: platform-builder ask — "integrate the
-WASI terminal with our tools/filesystems, almost bash-like, a scripting
-abstraction: bashlite."
+**STATUS: v1 + part of v2/v3 SHIPPED** (2026-06-19). Origin: platform-builder ask
+— "integrate the WASI terminal with our tools/filesystems, almost bash-like, a
+scripting abstraction: bashlite."
+
+**Shipped:** the v1 core (`src/bashlite/`, lexer/parser/eval, 45 native tests) +
+`execute_script` browser tool. Plus the FRACTAL + composition layer: a `run`/
+`source` builtin that executes another `.bl` in a nested evaluator (shared fs +
+fuel, bounded recursion) so a script is a composition of scripts; `for f in $(…)`
+field-splitting (fan-out); the dead `BashHost::run_builtin` extension seam is now
+WIRED, and READ-ONLY `lh-*` platform commands ship in `src/bashlite/platform.rs`
+(`lh-whoami`/`lh-balance`/`lh-resolve`/`lh-price` — localharnesslite). End-to-end:
+`localharness sh <script.bl> [--as <name>]` runs a script on the native fs
+(`src/filesystem/rooted.rs` confines the sandbox to the script's dir) with the
+`lh-*` reads — proven live (`examples/bashlite/fractal.bl` composes 3 levels of
+scripts + resolves a mainnet agent). **Remaining:** value-MOVING `lh-*` behind the
+dry-run-manifest confirm gate; scheduler runs `.bl` (zero-LLM cron); `lh-http`.
 
 ## Why (the cost unlock)
 

@@ -1,0 +1,3 @@
+# greet.bl — a sub-script that itself composes a deeper one (fractal nesting).
+echo "hello from greet.bl"
+run nested.bl

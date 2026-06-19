@@ -69,6 +69,11 @@ pub mod encrypted;
 
 pub use encrypted::EncryptedFilesystem;
 
+/// Confine any [`Filesystem`] to a sub-tree (the bashlite CLI sandbox root).
+pub mod rooted;
+
+pub use rooted::RootedFilesystem;
+
 #[cfg(feature = "native")]
 pub mod native;
 
