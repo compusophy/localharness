@@ -1293,15 +1293,18 @@ pub(crate) fn admin_model_section() -> Markup {
             }
             div #model-msg .admin-msg-slot {}
             // Opt-in download for the in-browser local model (~570 MB, fetched
-            // once from the HF CDN into OPFS). Always rendered; the handler
-            // is only meaningful once the local model is selected, and reports
-            // progress into `#local-model-msg`.
-            div.public-face-preview {
-                button type="button" data-action="download-local-model" .ghost {
-                    "download local model"
+            // once from the HF CDN into OPFS). Gated on `local`: only shown when
+            // this bundle actually compiles the Burn-wgpu backend that loads the
+            // weights, so the default bundle never offers a download it can't
+            // use. Progress reports into `#local-model-msg`.
+            @if cfg!(feature = "local") {
+                div.public-face-preview {
+                    button type="button" data-action="download-local-model" .ghost {
+                        "download local model"
+                    }
                 }
+                div #local-model-msg .admin-msg-slot {}
             }
-            div #local-model-msg .admin-msg-slot {}
         }
     }
 }

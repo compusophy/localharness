@@ -193,9 +193,15 @@ wasm-opt rejects post-MVP features modern rustc emits).
   backends. ADDITIVE — no new deps. BYOK or platform `$LH` via the proxy. OpenAI
   gotcha: streamed `tool_calls` are index-keyed fragments to concat (`openai/loop.rs`).
 - **`local`** (off): in-browser Gemma 3 270M via Burn wgpu/WebGPU (no proxy/key).
-  HEAVY (~570MB); NOT in browser-app. Gotchas: getrandom-0.4 needs `.cargo/
-  config.toml getrandom_backend="wasm_js"` + renamed `getrandom_v04`; burn-store
-  DIRECT (memmap2 wasm-broken); GPU read-back MUST `into_data_async().await`.
+  HEAVY (~570MB); off the DEFAULT browser bundle. The full in-tab path
+  (model selector entry, OPFS download button, `start_local` session wiring) is
+  ALREADY in `browser-app`, feature-gated on `local`; the **`browser-app-local`**
+  composite (`= ["browser-app","local"]`) turns it on — build the local bundle
+  with `--no-default-features --features browser-app-local`. `build-web.sh` ships
+  the lean `browser-app,mainnet` bundle (no `local`). Gotchas: getrandom-0.4 needs
+  `.cargo/config.toml getrandom_backend="wasm_js"` + renamed `getrandom_v04`;
+  burn-store DIRECT (memmap2 wasm-broken); GPU read-back MUST
+  `into_data_async().await`.
 - wasm targets auto-drop walkdir/tempfile, add wasm-bindgen-futures, uuid/js,
   getrandom/js via target-cfg.
 

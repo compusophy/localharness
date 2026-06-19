@@ -95,6 +95,14 @@ openai = []
 # for the in-tab inference path. The wgpu backend targets WebGPU on wasm32 and
 # Vulkan/Metal/DX12 on native (so the model can be validated on native first).
 local = ["dep:burn", "dep:burn-store", "dep:tokenizers", "dep:getrandom_v04"]
+# `browser-app-local` ships the browser IDE WITH the in-tab Gemma backend
+# enabled — the opt-in heavy bundle. Kept SEPARATE from `browser-app` so the
+# default web build doesn't pay the ~570 MB Burn compile / fatter wasm: the
+# whole local path (selector entry, OPFS download button, `start_local`
+# session wiring) is already in `browser-app`, feature-gated on `local`; this
+# composite just turns it on. Build the local bundle with
+# `--no-default-features --features browser-app-local`.
+browser-app-local = ["browser-app", "local"]
 
 [dependencies]
 # Burn: Rust-native deep-learning framework backing the `local` feature. The

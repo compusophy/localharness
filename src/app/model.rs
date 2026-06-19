@@ -27,9 +27,24 @@ pub(crate) const DEFAULT_MODEL: &str = crate::types::DEFAULT_MODEL;
 /// literals — a rename in `types`/`anthropic::wire` auto-propagates here, so
 /// the selector can never advertise a dead id (the model-id-flip drift trap;
 /// browser-app always pulls the `anthropic` feature, so the consts resolve).
-/// `gemma-3-270m` stays a literal (the `local` feature/backend isn't always
-/// present to const-reference); `gpt-*` is intentionally absent until the
-/// OpenAI selector path is wired (proxy `OPENAI_API_KEY`).
+/// `gpt-*` is intentionally absent until the OpenAI selector path is wired
+/// (proxy `OPENAI_API_KEY`).
+///
+/// The "Local (Gemma)" entry is **feature-gated on `local`**: it's appended
+/// ONLY when the heavy in-browser Burn-wgpu backend is actually compiled into
+/// this bundle (the `browser-app-local` feature). The default browser bundle
+/// omits it, so the selector can never advertise a model `start_session` can't
+/// route (selecting it would hit the "compiled without `local`" error path).
+/// `gemma-3-270m` stays a literal (the `local` backend isn't always present to
+/// const-reference).
+#[cfg(not(feature = "local"))]
+pub(crate) const MODELS: &[(&str, &str)] = &[
+    (crate::types::DEFAULT_MODEL, "Gemini"),
+    (crate::backends::anthropic::DEFAULT_MODEL, "Claude Haiku"),
+    (crate::backends::anthropic::SONNET_MODEL, "Claude Sonnet"),
+    (crate::backends::anthropic::OPUS_MODEL, "Claude Opus"),
+];
+#[cfg(feature = "local")]
 pub(crate) const MODELS: &[(&str, &str)] = &[
     (crate::types::DEFAULT_MODEL, "Gemini"),
     (crate::backends::anthropic::DEFAULT_MODEL, "Claude Haiku"),
