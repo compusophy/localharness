@@ -33,7 +33,7 @@ pub async fn dispatch_in(
         "echo" => echo(args),
         "true" => Output::ok(""),
         "false" => Output { stdout: String::new(), stderr: String::new(), code: 1 },
-        "[" | "test" => test_cmd(cmd, args),
+        "[" | "test" => test_cmd(fs, cwd, cmd, args).await,
         "ls" => ls(fs, cwd, args).await,
         "cat" => cat(fs, cwd, args).await,
         "wc" => Output::ok(wc(args, stdin)),
@@ -291,9 +291,12 @@ async fn write_create(fs: &dyn Filesystem, cwd: &str, args: &[String]) -> Output
 }
 
 /// `[ EXPR ]` / `test EXPR` — the POSIX test builtin (subset). Supported:
-/// string `=`/`!=`, `-z`/`-n`, integer `-eq -ne -lt -le -gt -ge`, and a single
-/// non-empty operand (true iff non-empty). Exit 0 = true, 1 = false, 2 = error.
-fn test_cmd(cmd: &str, args: &[String]) -> Output {
+/// string `=`/`!=`, `-z`/`-n`, integer `-eq -ne -lt -le -gt -ge`, FILE tests
+/// `-e`/`-f`/`-d PATH` (exists / is a regular file / is a directory, over the
+/// sandbox fs), and a single non-empty operand. Exit 0 = true, 1 = false, 2 =
+/// error. The file tests make the create-only `write` safe to guard
+/// (`[ -f x ] || write x …`).
+async fn test_cmd(fs: &dyn Filesystem, cwd: &str, cmd: &str, args: &[String]) -> Output {
     // `[` requires a trailing `]`; strip it. `test` must not have one.
     let operands: Vec<&str> = if cmd == "[" {
         match args.last() {
@@ -303,8 +306,22 @@ fn test_cmd(cmd: &str, args: &[String]) -> Output {
     } else {
         args.iter().map(String::as_str).collect()
     };
-    let result = eval_test(&operands);
-    match result {
+    // File tests need the fs (existence + kind); everything else is pure.
+    if operands.len() == 2 && matches!(operands[0], "-e" | "-f" | "-d") {
+        let resolved = resolve(cwd, operands[1]);
+        let truthy = match fs.metadata(&resolved).await {
+            Ok(Some(m)) => match operands[0] {
+                "-e" => true,
+                "-f" => m.kind == EntryKind::File,
+                "-d" => m.kind == EntryKind::Directory,
+                _ => false,
+            },
+            // Missing or unreadable → false (the file isn't there / usable).
+            _ => false,
+        };
+        return Output { stdout: String::new(), stderr: String::new(), code: i32::from(!truthy) };
+    }
+    match eval_test(&operands) {
         Ok(true) => Output { stdout: String::new(), stderr: String::new(), code: 0 },
         Ok(false) => Output { stdout: String::new(), stderr: String::new(), code: 1 },
         Err(msg) => Output::err(format!("{cmd}: {msg}"), 2),

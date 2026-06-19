@@ -18,7 +18,8 @@
 //!   nonzero); mixed `cond && a || b` is the ternary (skip, not break).
 //! - Control flow: `if/elif/else/fi`, `for NAME in …; do … done`,
 //!   `while …; do … done`.
-//! - Tests: `[ … ]` / `test …` (string `=`/`!=`/`-z`/`-n`, int `-eq`/`-lt`/…).
+//! - Tests: `[ … ]` / `test …` (string `=`/`!=`/`-z`/`-n`, int `-eq`/`-lt`/…,
+//!   file `-e`/`-f`/`-d PATH`).
 //! - Command substitution: `$(…)` (nested, subshell vars, shared fuel).
 //! - Builtins (fs): `echo`, `cd`, `pwd`, `ls`, `cat`, `grep`, `find`,
 //!   `wc`, `mkdir`, `write`/`create` (CREATE-only), `true`/`false`.
@@ -557,6 +558,43 @@ mod tests {
         // A false branch falls through to else.
         let r = run_ok(&[], "if [ x = y ]; then echo a; else echo b; fi").await;
         assert_eq!(r.stdout, "b\n");
+    }
+
+    #[tokio::test]
+    async fn test_file_existence_predicates() {
+        let files = &[("/a.txt", "hi"), ("/sub/b.txt", "x")];
+        // -e: exists (file OR dir).
+        assert_eq!(run_ok(files, "if [ -e a.txt ]; then echo yes; fi").await.stdout, "yes\n");
+        assert_eq!(
+            run_ok(files, "if [ -e nope ]; then echo y; else echo no; fi").await.stdout,
+            "no\n"
+        );
+        // -f: a regular file (a directory is NOT -f).
+        assert_eq!(run_ok(files, "if [ -f a.txt ]; then echo file; fi").await.stdout, "file\n");
+        assert_eq!(
+            run_ok(files, "if [ -f sub ]; then echo y; else echo notfile; fi").await.stdout,
+            "notfile\n"
+        );
+        // -d: a directory (a file is NOT -d).
+        assert_eq!(run_ok(files, "if [ -d sub ]; then echo dir; fi").await.stdout, "dir\n");
+        assert_eq!(
+            run_ok(files, "if [ -d a.txt ]; then echo y; else echo notdir; fi").await.stdout,
+            "notdir\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_f_guards_create_only_write() {
+        // The idiom file tests + `||` unlock: "create only if missing" — safe with
+        // the create-only `write` (which otherwise errors on an existing file).
+        let mut host = TestHost::new(&[]);
+        let r = run(&mut host, "[ -f out.txt ] || write out.txt first\ncat out.txt").await.unwrap();
+        assert_eq!(r.stdout, "first");
+        // Re-run: out.txt now exists → the guard is true → write is SKIPPED (no
+        // "already exists" error), content unchanged.
+        let r = run(&mut host, "[ -f out.txt ] || write out.txt second\ncat out.txt").await.unwrap();
+        assert_eq!(r.stdout, "first");
+        assert!(r.stderr.is_empty(), "guarded write must not error: {:?}", r.stderr);
     }
 
     #[tokio::test]

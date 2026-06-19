@@ -1435,7 +1435,8 @@ pub(crate) fn execute_script_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                     interpolation, pipes (a | b | c), && / || short-circuit \
                     chaining, if/elif/else/fi, for NAME in WORDS; do …; done \
                     (`for f in $(…)` splits on whitespace), while …; do …; done, \
-                    [ … ] tests (string =/!=/-z/-n, int -eq/-ne/-lt/-le/-gt/-ge), \
+                    [ … ] tests (string =/!=/-z/-n, int -eq/-ne/-lt/-le/-gt/-ge, \
+                    file -e/-f/-d PATH), \
                     command substitution $(…), and `run FILE.bl` / `source FILE.bl` \
                     to compose another script. Builtins (filesystem): \
                     echo, cd, pwd, ls, cat, grep PATTERN (literal substring; \
