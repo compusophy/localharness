@@ -145,7 +145,7 @@ pub(crate) async fn guild_create(caller: Option<&str>, name: &str) -> i32 {
         Err(code) => return code,
     };
     println!("creating guild '{name}' …");
-    match registry::create_guild_sponsored(&signer, &sponsor, name, registry::ALPHA_USD_ADDRESS).await
+    match registry::create_guild_sponsored(&signer, &sponsor, name, registry::ALPHA_USD_ADDRESS()).await
     {
         Ok(tx) => {
             // The new guildId is the last entry in the creator's guildsOf index.
@@ -201,7 +201,7 @@ pub(crate) async fn guild_invite(caller: Option<&str>, id_arg: &str, member: &st
         &sponsor,
         guild_id,
         &member_hex,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -248,7 +248,7 @@ pub(crate) async fn guild_accept(caller: Option<&str>, id_arg: &str, tba: Option
         &signer,
         &sponsor,
         guild_id,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -277,7 +277,7 @@ pub(crate) async fn guild_leave(caller: Option<&str>, id_arg: &str) -> i32 {
         Err(code) => return code,
     };
     println!("leaving guild #{guild_id} …");
-    match registry::leave_guild_sponsored(&signer, &sponsor, guild_id, registry::ALPHA_USD_ADDRESS).await
+    match registry::leave_guild_sponsored(&signer, &sponsor, guild_id, registry::ALPHA_USD_ADDRESS()).await
     {
         Ok(tx) => {
             println!("✓ left guild #{guild_id}  tx: {tx}");
@@ -325,7 +325,7 @@ pub(crate) async fn guild_role(caller: Option<&str>, id_arg: &str, member: &str,
         guild_id,
         &member_hex,
         role.as_u8(),
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -374,7 +374,7 @@ pub(crate) async fn guild_fund(caller: Option<&str>, id_arg: &str, amount: &str)
         &sponsor,
         guild_id,
         amount_wei,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -513,7 +513,7 @@ pub(crate) async fn tithe_manual(caller: Option<&str>, id_arg: &str, amount: &st
         token_id,
         &tba_addr,
         &targets,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
         2_000_000,
     )
     .await
@@ -615,7 +615,7 @@ pub(crate) async fn tithe_auto(caller: Option<&str>, id_arg: &str, bps_arg: &str
         token_id,
         &tba_addr,
         &targets,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
         2_000_000,
     )
     .await
@@ -675,7 +675,7 @@ pub(crate) async fn tithe_collect(caller: Option<&str>, agent: &str) -> i32 {
         &signer,
         &sponsor,
         &tba_addr,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -726,7 +726,7 @@ pub(crate) async fn guild_spend(caller: Option<&str>, id_arg: &str, to: &str, am
         &to_hex,
         amount_wei,
         memo.as_bytes(),
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {

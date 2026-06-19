@@ -159,19 +159,29 @@ pub(crate) use tba::*;
 pub(crate) use util::*;
 pub(crate) use vote::*;
 
-// Embedded sponsor key (mirrors src/app/sponsor.rs) — signs as `fee_payer` on
-// every sponsored CLI op so a new identity needs no balance. Chain-gated like
-// the browser: the TESTNET key is the committed const (derives
-// 0x0aff88…a922c, AlphaUSD fees); on a `mainnet`-feature build the FUNDED
-// mainnet sponsor (0xE70f4B…065E, USDC.e fees) is read from the
-// `LH_MAINNET_SPONSOR_KEY` env at COMPILE time (`env!`, so a mainnet build
-// without it fails closed). Before this was hardcoded testnet-only, so the
-// mainnet CLI signed with an unfunded fee_payer → every sponsored write died
-// with "insufficient funds for gas" (found dogfooding the mainnet claim).
-#[cfg(feature = "mainnet")]
-const SPONSOR_KEY: &str = env!("LH_MAINNET_SPONSOR_KEY");
-#[cfg(not(feature = "mainnet"))]
-const SPONSOR_KEY: &str = "0x046a830b5203d1d2c0a205a1432746e4381d0874711b2de7f575a973644b9d43";
+/// Testnet sponsor key (mirrors `src/app/sponsor.rs`) — derives 0x0aff88…a922c,
+/// pays AlphaUSD fees. Committed, low-budget; the testnet/dev-sandbox `fee_payer`.
+const TESTNET_SPONSOR_KEY: &str = "0x046a830b5203d1d2c0a205a1432746e4381d0874711b2de7f575a973644b9d43";
+
+/// The `fee_payer` key for sponsored CLI ops on the ACTIVE chain. Testnet (the
+/// default): the committed [`TESTNET_SPONSOR_KEY`]. Mainnet (`LH_CHAIN=mainnet`):
+/// read at RUNTIME from `LH_MAINNET_SPONSOR_KEY` — NEVER embedded (`env!`) in the
+/// published binary, so no download carries a money-moving mainnet key. Unset on
+/// a mainnet run → a clear error, not a silent unfunded-sponsor failure. (The
+/// durable mainnet path is the server-side relay — `design/cli-mainnet-relay.md`
+/// §2.2; this env hook is the operator's local-mainnet dogfood bridge until then.)
+pub(crate) fn sponsor_key() -> Result<String, String> {
+    if registry::CHAIN_ID() == registry::chain::MAINNET.chain_id {
+        std::env::var("LH_MAINNET_SPONSOR_KEY").map_err(|_| {
+            "LH_CHAIN=mainnet but LH_MAINNET_SPONSOR_KEY is unset — the published \
+             binary embeds no mainnet sponsor key. Export a funded mainnet fee_payer \
+             key, or run against testnet (unset LH_CHAIN)."
+                .to_string()
+        })
+    } else {
+        Ok(TESTNET_SPONSOR_KEY.to_string())
+    }
+}
 
 /// The credit proxy debits ~this much `$LH` per DEFAULT-model request (mirrors
 /// the proxy's `COST_PER_REQUEST_WEI` = 1e18 = 1 `$LH`; premium models cost more).
@@ -956,22 +966,20 @@ mod tests {
 
     #[test]
     fn sponsor_key_is_valid_and_derives_documented_address() {
-        // The embedded SPONSOR_KEY pays fees for EVERY sponsored CLI op
-        // (create/publish/persona). If it's stale or mistyped, all onboarding
-        // silently fails. Guard that it parses and derives the documented
-        // sponsor address (the dedicated low-budget key, rotated 2026-05-25) —
-        // so a future rotation that forgets the bin won't ship broken.
-        let signer = wallet::from_private_key_hex(SPONSOR_KEY).expect("SPONSOR_KEY must parse");
+        // The committed TESTNET_SPONSOR_KEY pays fees for EVERY sponsored CLI op
+        // on testnet (create/publish/persona). If it's stale or mistyped, all
+        // onboarding silently fails. Guard that it parses and derives the
+        // documented sponsor address (the dedicated low-budget key, rotated
+        // 2026-05-25). The MAINNET fee_payer is NOT embedded — it's read from
+        // `LH_MAINNET_SPONSOR_KEY` at runtime (no env in this test → no assertion
+        // against the mainnet address; the published binary carries no money key).
+        let signer =
+            wallet::from_private_key_hex(TESTNET_SPONSOR_KEY).expect("TESTNET_SPONSOR_KEY must parse");
         let addr = bytes_to_hex_str(&wallet::address(&signer));
-        // Per-chain documented sponsor address (mirrors src/app/sponsor.rs).
-        #[cfg(not(feature = "mainnet"))]
-        let expected = "0x0aff88ad13ef24cac5befd0f9dc3a05df79a922c";
-        #[cfg(feature = "mainnet")]
-        let expected = "0xe70f4b23322a954a1881b8dc3db5781f9d22065e";
         assert_eq!(
             addr.to_ascii_lowercase(),
-            expected,
-            "SPONSOR_KEY no longer derives the documented sponsor address"
+            "0x0aff88ad13ef24cac5befd0f9dc3a05df79a922c",
+            "TESTNET_SPONSOR_KEY no longer derives the documented sponsor address"
         );
     }
 
@@ -979,32 +987,32 @@ mod tests {
     fn llms_txt_publishes_canonical_onchain_constants() {
         // The agent-facing spec is read by agents to orient on-chain. It must
         // not drift from the code's source of truth — stale addresses would
-        // send an agent to the wrong chain/contract. These constants are
-        // `chain::ACTIVE`-derived, so this validates the ACTIVE chain: a default
-        // build checks the Moderato values, a `--features mainnet` build checks
+        // send an agent to the wrong chain/contract. These handles are
+        // `chain::active()`-derived, so this validates the ACTIVE chain: a default
+        // run checks the Moderato values, a `--features mainnet` build checks
         // the mainnet values appear in the SERVED doc (the web bundle builds
         // `--features mainnet`, so this is what visitors' agents actually read).
         // Automates the manual "audit llms.txt vs registry.rs" pass.
         let spec = include_str!("../../../web/llms.txt");
         assert!(
-            spec.contains(registry::REGISTRY_ADDRESS),
+            spec.contains(registry::REGISTRY_ADDRESS()),
             "llms.txt missing canonical diamond address {}",
-            registry::REGISTRY_ADDRESS
+            registry::REGISTRY_ADDRESS()
         );
         assert!(
-            spec.contains(registry::LOCALHARNESS_TOKEN_ADDRESS),
+            spec.contains(registry::LOCALHARNESS_TOKEN_ADDRESS()),
             "llms.txt missing the $LH token address {}",
-            registry::LOCALHARNESS_TOKEN_ADDRESS
+            registry::LOCALHARNESS_TOKEN_ADDRESS()
         );
         assert!(
-            spec.contains(registry::RPC_URL),
+            spec.contains(registry::RPC_URL()),
             "llms.txt missing the RPC URL {}",
-            registry::RPC_URL
+            registry::RPC_URL()
         );
         assert!(
-            spec.contains(&registry::CHAIN_ID.to_string()),
+            spec.contains(&registry::CHAIN_ID().to_string()),
             "llms.txt missing chain id {}",
-            registry::CHAIN_ID
+            registry::CHAIN_ID()
         );
     }
 

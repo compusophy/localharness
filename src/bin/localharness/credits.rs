@@ -66,7 +66,7 @@ pub(crate) async fn redeem(caller_name: Option<&str>, code: &str) -> i32 {
         eprintln!("claim one first (`localharness create <name>` — costs 1 $LH; fund via `localharness buy 2` or an invite), then redeem to top it up.");
         return 2;
     }
-    match registry::redeem_sponsored(&signer, &sponsor, code, registry::ALPHA_USD_ADDRESS).await {
+    match registry::redeem_sponsored(&signer, &sponsor, code, registry::ALPHA_USD_ADDRESS()).await {
         Ok(tx) => {
             println!("redeemed — $LH minted to your wallet  tx: {tx}");
             0
@@ -118,7 +118,7 @@ pub(crate) async fn send_lh(caller_name: Option<&str>, recipient: &str, amount: 
         &sponsor,
         &to_hex,
         amount_wei,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -142,7 +142,7 @@ pub(crate) async fn open_session(caller_name: Option<&str>) -> i32 {
         Ok(pair) => pair,
         Err(code) => return code,
     };
-    match registry::open_session_sponsored(&signer, &sponsor, registry::ALPHA_USD_ADDRESS).await {
+    match registry::open_session_sponsored(&signer, &sponsor, registry::ALPHA_USD_ADDRESS()).await {
         Ok(tx) => {
             println!("session opened  tx: {tx}");
             0
@@ -231,7 +231,7 @@ pub(crate) async fn topup(caller_name: Option<&str>, parsed: TopupArgs) -> i32 {
     //    DISABLED on-chain (dailyAllowance=0 — a sybil risk), so this is a
     //    no-op in practice; the dormant path stays in case it's re-enabled.
     if registry::can_claim_credits(&addr).await.unwrap_or(false) {
-        match registry::claim_daily_sponsored(&signer, &sponsor, registry::ALPHA_USD_ADDRESS).await {
+        match registry::claim_daily_sponsored(&signer, &sponsor, registry::ALPHA_USD_ADDRESS()).await {
             Ok(tx) => println!("claimed daily $LH  tx: {tx}"),
             Err(e) => eprintln!("claim failed (continuing to deposit): {e}"),
         }
@@ -269,7 +269,7 @@ pub(crate) async fn topup(caller_name: Option<&str>, parsed: TopupArgs) -> i32 {
         &signer,
         &sponsor,
         deposit_wei,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {

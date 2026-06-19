@@ -221,7 +221,7 @@ pub(crate) async fn ensure_diamond_allowance(
     value_wei: u128,
 ) -> Result<(), i32> {
     ensure_wallet_covers(signer, from_hex, value_wei).await?;
-    match registry::lh_allowance(from_hex, registry::REGISTRY_ADDRESS).await {
+    match registry::lh_allowance(from_hex, registry::REGISTRY_ADDRESS()).await {
         Ok(allowance) if allowance >= value_wei => Ok(()),
         Ok(_) => {
             println!("approving the diamond to spend $LH (one-time) …");
@@ -229,9 +229,9 @@ pub(crate) async fn ensure_diamond_allowance(
             match registry::approve_lh_sponsored(
                 signer,
                 &sponsor,
-                registry::REGISTRY_ADDRESS,
+                registry::REGISTRY_ADDRESS(),
                 u128::MAX,
-                registry::ALPHA_USD_ADDRESS,
+                registry::ALPHA_USD_ADDRESS(),
             )
             .await
             {
@@ -244,8 +244,8 @@ pub(crate) async fn ensure_diamond_allowance(
                     eprintln!(
                         "  fix it once, then retry: approve {} to spend $LH \
                          (token {}) for {from_hex}.",
-                        registry::REGISTRY_ADDRESS,
-                        registry::LOCALHARNESS_TOKEN_ADDRESS
+                        registry::REGISTRY_ADDRESS(),
+                        registry::LOCALHARNESS_TOKEN_ADDRESS()
                     );
                     Err(1)
                 }

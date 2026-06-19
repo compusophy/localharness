@@ -309,7 +309,7 @@ pub(crate) async fn enable_device_push() -> Result<String, String> {
         return Ok("already registered".to_string());
     };
     let sponsor = crate::app::sponsor::signer().map_err(|e| format!("sponsor: {e}"))?;
-    let token = crate::registry::ALPHA_USD_ADDRESS;
+    let token = crate::registry::ALPHA_USD_ADDRESS();
     crate::registry::set_push_sub_sponsored(&signer, &sponsor, merged.as_bytes(), token).await
 }
 
@@ -335,7 +335,7 @@ pub(crate) async fn enable_and_publish() -> Result<String, String> {
         return Ok("already registered".to_string());
     };
 
-    let registry_addr = crate::encoding::parse_address(crate::registry::REGISTRY_ADDRESS)?;
+    let registry_addr = crate::encoding::parse_address(crate::registry::REGISTRY_ADDRESS())?;
     let call = crate::tempo_tx::TempoCall {
         to: registry_addr,
         value_wei: 0,
@@ -380,7 +380,7 @@ pub(crate) async fn refresh_subscription_if_stale() {
         return;
     };
     let publish = async {
-        let registry_addr = crate::encoding::parse_address(crate::registry::REGISTRY_ADDRESS)?;
+        let registry_addr = crate::encoding::parse_address(crate::registry::REGISTRY_ADDRESS())?;
         let call = crate::tempo_tx::TempoCall {
             to: registry_addr,
             value_wei: 0,
@@ -437,7 +437,7 @@ pub(crate) async fn auto_register_device_push() {
     let Ok(sponsor) = crate::app::sponsor::signer() else {
         return;
     };
-    let token = crate::registry::ALPHA_USD_ADDRESS;
+    let token = crate::registry::ALPHA_USD_ADDRESS();
     match crate::registry::set_push_sub_sponsored(&signer, &sponsor, merged.as_bytes(), token).await
     {
         Ok(_) => web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(

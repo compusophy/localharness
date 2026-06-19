@@ -105,7 +105,7 @@ pub async fn tba_execute_batch_sponsored(
     fee_token: &str,
     gas_limit: u128,
 ) -> Result<String, String> {
-    let diamond = parse_eth_address(REGISTRY_ADDRESS)?;
+    let diamond = parse_eth_address(REGISTRY_ADDRESS())?;
     let tba = parse_eth_address(tba_hex)?;
     let mut calls = Vec::with_capacity(targets.len() + 1);
     calls.push(crate::tempo_tx::TempoCall {
@@ -166,7 +166,7 @@ pub async fn consolidate_into_main_sponsored(
     if token_ids.is_empty() {
         return Err("no subdomains to consolidate".into());
     }
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
+    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS())?;
     let to = parse_eth_address(main_tba_hex)?;
     let from = wallet::address(owner);
     let calls: Vec<_> = token_ids
@@ -215,8 +215,8 @@ pub fn register_calldata(name: &str) -> Vec<u8> {
 /// register's `transferFrom` decrements it), so `cost × names` covers the
 /// whole batch. Without it a paid batch register reverts on the pull.
 pub fn approve_credits_call(amount_wei: u128) -> Result<crate::tempo_tx::TempoCall, String> {
-    let diamond = parse_eth_address(REGISTRY_ADDRESS)?;
-    let token = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
+    let diamond = parse_eth_address(REGISTRY_ADDRESS())?;
+    let token = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS())?;
     Ok(crate::tempo_tx::TempoCall {
         to: token,
         value_wei: 0,
@@ -228,7 +228,7 @@ pub fn approve_credits_call(amount_wei: u128) -> Result<crate::tempo_tx::TempoCa
 /// Pair with [`approve_credits_call`] in a TBA batch so an agent's token-bound
 /// account can TITHE its own earnings up to a guild treasury (revenue→treasury).
 pub fn fund_guild_call(guild_id: u64, amount_wei: u128) -> Result<crate::tempo_tx::TempoCall, String> {
-    let diamond = parse_eth_address(REGISTRY_ADDRESS)?;
+    let diamond = parse_eth_address(REGISTRY_ADDRESS())?;
     Ok(crate::tempo_tx::TempoCall {
         to: diamond,
         value_wei: 0,
@@ -271,7 +271,7 @@ pub async fn release_names_sponsored(
     if token_ids.is_empty() {
         return Err("no subdomains to release".into());
     }
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
+    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS())?;
     let calls: Vec<_> = token_ids
         .iter()
         .map(|&tid| crate::tempo_tx::TempoCall {
@@ -299,7 +299,7 @@ pub async fn remove_signer_sponsored(
 ) -> Result<String, String> {
     let signer_addr = parse_eth_address(signer_hex)?;
     let tba_addr = parse_eth_address(tba_address)?;
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
+    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS())?;
     let remove_call = crate::tempo_tx::TempoCall {
         to: tba_addr,
         value_wei: 0,
@@ -393,7 +393,7 @@ pub async fn tba_execute_sponsored(
     gas_limit: u128,
 ) -> Result<String, String> {
     let tba_addr = parse_eth_address(tba_address)?;
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
+    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS())?;
     let target = parse_eth_address(target_hex)?;
 
     let create_call = crate::tempo_tx::TempoCall {
@@ -435,10 +435,10 @@ pub fn tba_send_lh_calls(
     if amount_wei == 0 {
         return Err("amount must be greater than 0".into());
     }
-    let diamond = parse_eth_address(REGISTRY_ADDRESS)?;
+    let diamond = parse_eth_address(REGISTRY_ADDRESS())?;
     let tba = parse_eth_address(tba_hex)?;
     let recipient = parse_eth_address(recipient_hex)?;
-    let token = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
+    let token = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS())?;
     let transfer_data = encode_erc20_transfer(&recipient, amount_wei);
     Ok(vec![
         crate::tempo_tx::TempoCall {
@@ -577,7 +577,7 @@ pub async fn tba_send_lh_sponsored(
         owner_signer,
         fee_payer,
         tba_addr,
-        LOCALHARNESS_TOKEN_ADDRESS,
+        LOCALHARNESS_TOKEN_ADDRESS(),
         0,
         &transfer_data,
         fee_token,
@@ -857,7 +857,7 @@ mod tests {
         assert_eq!(inner.len(), 4 + 32 + 32); // selector + 2 words
 
         // Wrapped as a TBA execute to the $LH token, value 0.
-        let token = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS).unwrap();
+        let token = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS()).unwrap();
         let cd = encode_tba_execute(&token, 0, &inner);
         assert_eq!(&cd[0..4], &selector("execute(address,uint256,bytes,uint8)"));
         assert_eq!(&cd[16..36], &token); // execute target = $LH token
@@ -886,7 +886,7 @@ mod tests {
         assert_eq!(calls.len(), 2);
 
         // Call 0: diamond.createTokenBoundAccount(42), value 0.
-        let diamond = parse_eth_address(REGISTRY_ADDRESS).unwrap();
+        let diamond = parse_eth_address(REGISTRY_ADDRESS()).unwrap();
         assert_eq!(calls[0].to, diamond);
         assert_eq!(calls[0].value_wei, 0);
         assert_eq!(calls[0].input, encode_create_tba(42));
@@ -898,7 +898,7 @@ mod tests {
         // Call 1: tba.execute($LH, 0, transfer(recipient, amount), 0), value 0.
         assert_eq!(calls[1].to, [0xAAu8; 20]);
         assert_eq!(calls[1].value_wei, 0);
-        let token = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS).unwrap();
+        let token = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS()).unwrap();
         let inner = encode_erc20_transfer(&[0xCDu8; 20], amount);
         assert_eq!(calls[1].input, encode_tba_execute(&token, 0, &inner));
         // The execute target is the $LH token (word 0 of the head)…

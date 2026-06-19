@@ -163,7 +163,7 @@ pub async fn room_id_created_by(creator_hex: &str) -> Result<Option<u64>, String
         serde_json::Value::Null,
         serde_json::json!(topic2),
     ];
-    let logs = eth_get_logs(REGISTRY_ADDRESS, topics, &from_hex).await?;
+    let logs = eth_get_logs(REGISTRY_ADDRESS(), topics, &from_hex).await?;
 
     // Return the CANONICAL (lowest = first-created) room for this creator, NOT
     // the most recent. An owner's shared volume must be STABLE: if a later

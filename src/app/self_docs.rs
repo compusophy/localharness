@@ -129,14 +129,16 @@ capabilities accurately, or give grounded feedback about the platform.";
 /// self-knowledge stays correct. On the default (Moderato) build every rewrite is
 /// an identity swap, so the output equals the const verbatim.
 pub(crate) fn runtime_summary() -> String {
-    use crate::registry::{chain, CHAIN_ID, LOCALHARNESS_TOKEN_ADDRESS, REGISTRY_ADDRESS, RPC_URL};
+    use crate::registry::{
+        chain, CHAIN_ID, LOCALHARNESS_TOKEN_ADDRESS, REGISTRY_ADDRESS, RPC_URL,
+    };
     RUNTIME_SUMMARY
         .replace(
             "Tempo Moderato (chain 42431, RPC https://rpc.moderato.tempo.xyz)",
-            &format!("{} (chain {CHAIN_ID}, RPC {RPC_URL})", chain::ACTIVE.name),
+            &format!("{} (chain {}, RPC {})", chain::active().name, CHAIN_ID(), RPC_URL()),
         )
-        .replace("0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c", REGISTRY_ADDRESS)
-        .replace("0x90B84c7234Aae89BadA7f69160B9901B9bc37B17", LOCALHARNESS_TOKEN_ADDRESS)
+        .replace("0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c", REGISTRY_ADDRESS())
+        .replace("0x90B84c7234Aae89BadA7f69160B9901B9bc37B17", LOCALHARNESS_TOKEN_ADDRESS())
 }
 
 /// A trimmed slice of [`RUNTIME_SUMMARY`] for the system prompt. We inject

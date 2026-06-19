@@ -622,7 +622,7 @@ async fn do_feed_subscribe(worker: web_sys::Worker, subscribe: bool) {
     let Some(feed_id) = feed_token_id().await else { return };
     let Some((signer, _)) = crate::app::chat::credit_signer().await else { return };
     let Ok(sponsor) = crate::app::sponsor::signer() else { return };
-    let token = crate::app::registry::ALPHA_USD_ADDRESS;
+    let token = crate::app::registry::ALPHA_USD_ADDRESS();
     let res = if subscribe {
         crate::app::registry::subscribe_sponsored(&signer, &sponsor, feed_id, token).await
     } else {
@@ -657,7 +657,7 @@ async fn publish_viewer_push_sub() {
     let Ok(sub_json) = crate::app::notifications::subscribe_push().await else { return };
     let Some((signer, _)) = crate::app::chat::credit_signer().await else { return };
     let Ok(sponsor) = crate::app::sponsor::signer() else { return };
-    let token = crate::app::registry::ALPHA_USD_ADDRESS;
+    let token = crate::app::registry::ALPHA_USD_ADDRESS();
     if let Err(e) = crate::registry::set_push_sub_sponsored(
         &signer,
         &sponsor,

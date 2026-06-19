@@ -65,7 +65,7 @@ pub(crate) async fn collect_payment_if_required() -> Result<Option<String>, Stri
     calldata.extend_from_slice(&tba_padded);
     calldata.extend_from_slice(&amount_bytes);
 
-    let token_addr = parse_address(crate::registry::LOCALHARNESS_TOKEN_ADDRESS)?;
+    let token_addr = parse_address(crate::registry::LOCALHARNESS_TOKEN_ADDRESS())?;
     let call = crate::tempo_tx::TempoCall {
         to: token_addr,
         value_wei: 0,
@@ -210,7 +210,7 @@ pub(crate) async fn ensure_credit_meter() {
         &signer,
         &fee_payer,
         wallet,
-        crate::app::registry::ALPHA_USD_ADDRESS,
+        crate::app::registry::ALPHA_USD_ADDRESS(),
     )
     .await;
 }
@@ -357,7 +357,7 @@ pub(crate) async fn build_actor_setup(
     prefund_lh: Option<&str>,
 ) -> Result<ActorSetup, crate::error::Error> {
     let registry_addr =
-        parse_address(crate::app::registry::REGISTRY_ADDRESS).map_err(crate::error::Error::other)?;
+        parse_address(crate::app::registry::REGISTRY_ADDRESS()).map_err(crate::error::Error::other)?;
     let mut calls: Vec<crate::tempo_tx::TempoCall> = Vec::new();
     let mut extra_gas: u128 = 0;
     let mut persona_set = false;
@@ -418,7 +418,7 @@ pub(crate) async fn build_actor_setup(
                     })?;
                 let tba_bytes = parse_address(&tba).map_err(crate::error::Error::other)?;
                 let token_addr =
-                    parse_address(crate::registry::LOCALHARNESS_TOKEN_ADDRESS)
+                    parse_address(crate::registry::LOCALHARNESS_TOKEN_ADDRESS())
                         .map_err(crate::error::Error::other)?;
                 // 1) deploy the TBA (on the registry diamond)
                 calls.push(crate::tempo_tx::TempoCall {

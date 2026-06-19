@@ -277,7 +277,7 @@ pub(super) fn unlink_confirm_pressed(device_hex: String) {
                 main_id,
                 &main_tba,
                 &device_hex,
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
             )
             .await
         }

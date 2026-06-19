@@ -40,7 +40,7 @@ pub(super) async fn run_set_public_face(choice: &str) {
         }
     };
 
-    let registry_addr = match parse_address(crate::app::registry::REGISTRY_ADDRESS) {
+    let registry_addr = match parse_address(crate::app::registry::REGISTRY_ADDRESS()) {
         Ok(a) => a,
         Err(e) => {
             set_err(&e);
@@ -169,7 +169,7 @@ pub(super) async fn run_set_public_face(choice: &str) {
             token_id,
             &on_chain_owner,
             &targets,
-            crate::app::registry::ALPHA_USD_ADDRESS,
+            crate::app::registry::ALPHA_USD_ADDRESS(),
             gas + 800_000,
         )
         .await

@@ -178,7 +178,7 @@ pub(crate) async fn bounty_post(caller: Option<&str>, rest: &[String]) -> i32 {
         task.as_bytes(),
         reward_wei,
         ttl_secs,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -399,7 +399,7 @@ pub(crate) async fn bounty_claim(caller: Option<&str>, id_arg: &str) -> i32 {
         &sponsor,
         bounty_id,
         claimant_token_id,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -443,7 +443,7 @@ pub(crate) async fn bounty_submit(caller: Option<&str>, id_arg: &str, result: &s
         &sponsor,
         bounty_id,
         result.as_bytes(),
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -477,7 +477,7 @@ pub(crate) async fn bounty_accept(caller: Option<&str>, id_arg: &str) -> i32 {
         Err(code) => return code,
     };
     println!("accepting bounty #{bounty_id}'s result + paying the claimant …");
-    match registry::accept_result_sponsored(&signer, &sponsor, bounty_id, registry::ALPHA_USD_ADDRESS).await {
+    match registry::accept_result_sponsored(&signer, &sponsor, bounty_id, registry::ALPHA_USD_ADDRESS()).await {
         Ok(tx) => {
             println!("✓ bounty #{bounty_id} accepted — the escrowed $LH is paid to the claimant  tx: {tx}");
             0
@@ -504,7 +504,7 @@ pub(crate) async fn bounty_cancel(caller: Option<&str>, id_arg: &str) -> i32 {
         Err(code) => return code,
     };
     println!("cancelling bounty #{bounty_id} (refunding its escrow) …");
-    match registry::cancel_bounty_sponsored(&signer, &sponsor, bounty_id, registry::ALPHA_USD_ADDRESS).await {
+    match registry::cancel_bounty_sponsored(&signer, &sponsor, bounty_id, registry::ALPHA_USD_ADDRESS()).await {
         Ok(tx) => {
             println!("✓ bounty #{bounty_id} cancelled — the escrowed $LH is refunded to you  tx: {tx}");
             0
@@ -534,7 +534,7 @@ pub(crate) async fn bounty_reclaim(caller: Option<&str>, id_arg: &str) -> i32 {
         Err(code) => return code,
     };
     println!("reclaiming expired bounty #{bounty_id} (refunding its escrow to the poster) …");
-    match registry::reclaim_expired_sponsored(&signer, &sponsor, bounty_id, registry::ALPHA_USD_ADDRESS).await {
+    match registry::reclaim_expired_sponsored(&signer, &sponsor, bounty_id, registry::ALPHA_USD_ADDRESS()).await {
         Ok(tx) => {
             println!("✓ bounty #{bounty_id} reclaimed — the escrowed $LH is refunded to its poster  tx: {tx}");
             0

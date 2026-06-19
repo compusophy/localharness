@@ -247,7 +247,7 @@ async fn settle_incoming(price: u128, p: &PaymentParts, my_name: &str) -> Result
         p.valid_before,
         &nonce,
         &sig,
-        super::registry::ALPHA_USD_ADDRESS,
+        super::registry::ALPHA_USD_ADDRESS(),
     )
     .await?;
     // H2: confirm the settlement actually consumed the nonce on-chain

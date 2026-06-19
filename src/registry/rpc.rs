@@ -23,7 +23,7 @@ pub(crate) struct RpcResponse {
 
 impl RpcResponse {
     /// The `result` field (private so the Tempo-pinned helpers stay the only
-    /// `RPC_URL` consumers); read it by reference for the per-chain
+    /// `RPC_URL()` consumers); read it by reference for the per-chain
     /// [`super::multichain`] reader, which races its own explicit URL.
     pub(crate) fn result(&self) -> Option<&serde_json::Value> {
         self.result.as_ref()
@@ -105,7 +105,7 @@ pub(crate) async fn rpc_value(method: &str, params: serde_json::Value) -> Result
     // connects then stalls mid-body can't hang either step (the wasm case).
     let parsed: RpcResponse = timeout_send(method, async {
         let resp = client
-            .post(RPC_URL)
+            .post(RPC_URL())
             .json(&body)
             .send()
             .await
@@ -147,7 +147,7 @@ pub(crate) async fn eth_call(to: &str, data_hex: &str) -> Result<String, String>
 /// decoder. Views with dynamic args (string) or non-diamond targets keep
 /// using [`eth_call`] with their dedicated encoders.
 pub(crate) async fn read_view(sel: [u8; 4], words: &[[u8; 32]]) -> Result<String, String> {
-    eth_call(REGISTRY_ADDRESS, &encode_call_hex(sel, words)).await
+    eth_call(REGISTRY_ADDRESS(), &encode_call_hex(sel, words)).await
 }
 
 /// `true` if `address` has deployed bytecode (i.e. is a contract, not a
@@ -239,7 +239,7 @@ pub(crate) async fn eth_call_batch(calls: &[(&str, String)]) -> Result<Vec<Resul
     // Same deadline as the single-call path — race send + body-read together.
     let parsed: Vec<serde_json::Value> = timeout_send("eth_call batch", async {
         let resp = client
-            .post(RPC_URL)
+            .post(RPC_URL())
             .json(&serde_json::Value::Array(batch))
             .send()
             .await
@@ -537,7 +537,7 @@ pub(crate) async fn fetch_revert_reason(tx_hash: &str) -> Option<String> {
         params: serde_json::json!([{ "from": from, "to": to, "data": input }, block]),
     };
     let client = reqwest::Client::new();
-    let resp = client.post(RPC_URL).json(&body).send().await.ok()?;
+    let resp = client.post(RPC_URL()).json(&body).send().await.ok()?;
     let json: serde_json::Value = resp.json().await.ok()?;
 
     // The revert payload can live in error.data (string or {message,data}).
@@ -591,7 +591,7 @@ pub(crate) async fn wait_for_receipt(tx_hash: &str) -> Result<(), String> {
         };
         let client = reqwest::Client::new();
         let resp = client
-            .post(RPC_URL)
+            .post(RPC_URL())
             .json(&body)
             .send()
             .await
@@ -639,7 +639,7 @@ pub(crate) async fn receipt_contract_address(tx_hash: &str) -> Result<String, St
     };
     let client = reqwest::Client::new();
     let json: serde_json::Value = client
-        .post(RPC_URL)
+        .post(RPC_URL())
         .json(&body)
         .send()
         .await

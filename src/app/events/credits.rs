@@ -241,7 +241,7 @@ fn redeem_from(input_id: &'static str, msg_id: &'static str) {
                 &signer,
                 &fee_payer,
                 &code,
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
             )
             .await
         }
@@ -332,7 +332,7 @@ pub(super) fn redeem_invite_onboard_pressed() {
                         &signer,
                         &fee_payer,
                         &code,
-                        crate::app::registry::ALPHA_USD_ADDRESS,
+                        crate::app::registry::ALPHA_USD_ADDRESS(),
                     )
                     .await
                 } else {
@@ -340,7 +340,7 @@ pub(super) fn redeem_invite_onboard_pressed() {
                         &signer,
                         &fee_payer,
                         &code,
-                        crate::app::registry::ALPHA_USD_ADDRESS,
+                        crate::app::registry::ALPHA_USD_ADDRESS(),
                     )
                     .await
                 }
@@ -800,7 +800,7 @@ pub(crate) async fn try_redeem_pending_invite(allow_generate: bool) {
                 &signer,
                 &fee_payer,
                 &code,
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
             )
             .await
         } else {
@@ -808,7 +808,7 @@ pub(crate) async fn try_redeem_pending_invite(allow_generate: bool) {
                 &signer,
                 &fee_payer,
                 &code,
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
             )
             .await
         }
@@ -924,7 +924,7 @@ pub(super) fn create_invite_pressed() {
                 code_hash,
                 amount_wei,
                 INVITE_DEFAULT_TTL_SECS,
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
                 bridge_wei,
             )
             .await

@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Deploy.
     let nonce = registry::next_nonce(&format!("0x{me_hex}")).await?;
     let gp = registry::current_gas_price().await?;
-    let tx = TempoTxBuilder::new(registry::CHAIN_ID)
+    let tx = TempoTxBuilder::new(registry::CHAIN_ID())
         .max_priority_fee_per_gas(gp).max_fee_per_gas(gp)
         .gas_limit(3_000_000).nonce(nonce).fee_token(parse_addr(ALPHA_USD)?)
         .call(TempoCall { to: [0u8; 20], value_wei: 0, input: art.init_code })
@@ -104,7 +104,7 @@ async fn poll_receipt(tx_hash: &str) -> Result<serde_json::Value, Box<dyn std::e
 }
 async fn rpc_raw(method: &str, params: serde_json::Value) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
-    Ok(client.post(registry::RPC_URL).json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":method,"params":params})).send().await?.json().await?)
+    Ok(client.post(registry::RPC_URL()).json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":method,"params":params})).send().await?.json().await?)
 }
 async fn rpc_str(method: &str, params: serde_json::Value) -> Result<String, Box<dyn std::error::Error>> {
     let resp = rpc_raw(method, params).await?;

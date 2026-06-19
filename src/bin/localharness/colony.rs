@@ -660,7 +660,7 @@ async fn colony_step_post(
         task.as_bytes(),
         reward_wei,
         ttl_secs,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -785,7 +785,7 @@ async fn colony_step_claim(
             sponsor,
             bounty_id,
             worker.token_id,
-            registry::ALPHA_USD_ADDRESS,
+            registry::ALPHA_USD_ADDRESS(),
         )
     })
     .await
@@ -874,7 +874,7 @@ async fn colony_step_submit(
             sponsor,
             bounty_id,
             result_text.as_bytes(),
-            registry::ALPHA_USD_ADDRESS,
+            registry::ALPHA_USD_ADDRESS(),
         )
     })
     .await
@@ -1055,7 +1055,7 @@ async fn colony_step_settle(
                 caller_signer,
                 sponsor,
                 bounty_id,
-                registry::ALPHA_USD_ADDRESS,
+                registry::ALPHA_USD_ADDRESS(),
             )
         })
         .await
@@ -1111,7 +1111,7 @@ async fn colony_step_attest(
         worker_token_id,
         judged_rating,
         work_ref,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {

@@ -95,7 +95,7 @@ pub(crate) async fn ask_via_proxy(target: &str, message: &str) -> Result<String,
                     &signer,
                     &sponsor,
                     shortfall,
-                    registry::ALPHA_USD_ADDRESS,
+                    registry::ALPHA_USD_ADDRESS(),
                 )
                 .await
                 .map_err(|e| format!("credit withdraw (meter -> wallet): {e}"))?;
@@ -115,16 +115,16 @@ pub(crate) async fn ask_via_proxy(target: &str, message: &str) -> Result<String,
     // `settle` pulls the $LH from the payer via `transferFrom`, so the payer
     // must have approved the diamond once. Sponsored, so a fresh identity
     // with zero gas can still approve.
-    match registry::lh_allowance(&from_hex, registry::REGISTRY_ADDRESS).await {
+    match registry::lh_allowance(&from_hex, registry::REGISTRY_ADDRESS()).await {
         Ok(allowance) if allowance >= pay_wei => {}
         Ok(_) => {
             let sponsor = super::sponsor::signer()?;
             registry::approve_lh_sponsored(
                 &signer,
                 &sponsor,
-                registry::REGISTRY_ADDRESS,
+                registry::REGISTRY_ADDRESS(),
                 u128::MAX,
-                registry::ALPHA_USD_ADDRESS,
+                registry::ALPHA_USD_ADDRESS(),
             )
             .await
             .map_err(|e| format!("$LH approve: {e}"))?;

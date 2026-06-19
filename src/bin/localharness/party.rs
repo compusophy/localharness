@@ -213,7 +213,7 @@ pub(crate) async fn party_form(caller: Option<&str>, rest: &[String]) -> i32 {
         &member_ids,
         &shares,
         ttl_secs,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -257,7 +257,7 @@ pub(crate) async fn party_join(caller: Option<&str>, id_arg: &str) -> i32 {
         Err(code) => return code,
     };
     println!("consenting to party #{party_id} …");
-    match registry::join_party_sponsored(&signer, &sponsor, party_id, registry::ALPHA_USD_ADDRESS)
+    match registry::join_party_sponsored(&signer, &sponsor, party_id, registry::ALPHA_USD_ADDRESS())
         .await
     {
         Ok(tx) => {
@@ -316,7 +316,7 @@ pub(crate) async fn party_fund(caller: Option<&str>, id_arg: &str, amount: &str)
         &sponsor,
         party_id,
         amount_wei,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -355,7 +355,7 @@ pub(crate) async fn party_complete(caller: Option<&str>, id_arg: &str) -> i32 {
         Err(code) => return code,
     };
     println!("completing party #{party_id} (splitting the pot to member TBAs) …");
-    match registry::complete_party_sponsored(&signer, &sponsor, party_id, registry::ALPHA_USD_ADDRESS)
+    match registry::complete_party_sponsored(&signer, &sponsor, party_id, registry::ALPHA_USD_ADDRESS())
         .await
     {
         Ok(tx) => {
@@ -391,7 +391,7 @@ pub(crate) async fn party_disband(caller: Option<&str>, id_arg: &str) -> i32 {
         Err(code) => return code,
     };
     println!("disbanding party #{party_id} (refunding its funders) …");
-    match registry::disband_party_sponsored(&signer, &sponsor, party_id, registry::ALPHA_USD_ADDRESS)
+    match registry::disband_party_sponsored(&signer, &sponsor, party_id, registry::ALPHA_USD_ADDRESS())
         .await
     {
         Ok(tx) => {

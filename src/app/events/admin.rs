@@ -66,7 +66,7 @@ async fn publish_persona_onchain(text: &str) -> Result<bool, String> {
         Err(e) => return Err(format!("id_of_name: {e}")),
     };
     let (_, owner) = crate::app::tenant::current_tenant_owner().await?;
-    let registry_addr = crate::encoding::parse_address(crate::app::registry::REGISTRY_ADDRESS)?;
+    let registry_addr = crate::encoding::parse_address(crate::app::registry::REGISTRY_ADDRESS())?;
     let call = crate::tempo_tx::TempoCall {
         to: registry_addr,
         value_wei: 0,
@@ -282,7 +282,7 @@ async fn publish_x402_price_onchain(wei: u128) -> Result<bool, String> {
         Err(e) => return Err(format!("id_of_name: {e}")),
     };
     let (_, owner) = crate::app::tenant::current_tenant_owner().await?;
-    let registry_addr = crate::encoding::parse_address(crate::app::registry::REGISTRY_ADDRESS)?;
+    let registry_addr = crate::encoding::parse_address(crate::app::registry::REGISTRY_ADDRESS())?;
     let call = crate::tempo_tx::TempoCall {
         to: registry_addr,
         value_wei: 0,

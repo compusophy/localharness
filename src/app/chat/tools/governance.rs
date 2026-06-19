@@ -108,7 +108,7 @@ pub(crate) fn propose_measure_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 amount_wei,
                 memo.as_bytes(),
                 period_secs,
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
             )
             .await
             .map_err(|e| crate::error::Error::other(format!("propose_measure failed: {e}")))?;
@@ -172,7 +172,7 @@ pub(crate) fn cast_vote_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 &fee_payer,
                 proposal_id,
                 support,
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
             )
             .await
             .map_err(|e| crate::error::Error::other(format!("cast_vote failed: {e}")))?;
@@ -217,7 +217,7 @@ pub(crate) fn execute_proposal_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
                 &signer,
                 &fee_payer,
                 proposal_id,
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
             )
             .await
             .map_err(|e| crate::error::Error::other(format!("execute_proposal failed: {e}")))?;

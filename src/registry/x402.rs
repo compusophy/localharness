@@ -27,16 +27,16 @@ pub(crate) fn addr_word(a: &[u8; 20]) -> [u8; 32] {
 }
 
 /// EIP-712 domain separator for the x402 facet (name "localharness-x402",
-/// version "1", `CHAIN_ID`, diamond). Matches `x402DomainSeparator()`.
+/// version "1", `CHAIN_ID()`, diamond). Matches `x402DomainSeparator()`.
 pub fn x402_domain_separator() -> Result<[u8; 32], String> {
-    let diamond = parse_eth_address(REGISTRY_ADDRESS)?;
+    let diamond = parse_eth_address(REGISTRY_ADDRESS())?;
     let mut dom = Vec::with_capacity(160);
     dom.extend_from_slice(&keccak32(
         b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
     ));
     dom.extend_from_slice(&keccak32(b"localharness-x402"));
     dom.extend_from_slice(&keccak32(b"1"));
-    dom.extend_from_slice(&u256_be(CHAIN_ID as u128));
+    dom.extend_from_slice(&u256_be(CHAIN_ID() as u128));
     dom.extend_from_slice(&addr_word(&diamond));
     Ok(keccak32(&dom))
 }

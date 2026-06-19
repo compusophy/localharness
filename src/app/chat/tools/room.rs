@@ -63,7 +63,7 @@ async fn ensure_room(owner_hex: &str) -> Result<u64, crate::error::Error> {
         return Ok(id);
     }
     // None yet → create one. The owner is the creator + first member.
-    let diamond = parse_address(crate::app::registry::REGISTRY_ADDRESS)
+    let diamond = parse_address(crate::app::registry::REGISTRY_ADDRESS())
         .map_err(crate::error::Error::other)?;
     let call = crate::tempo_tx::TempoCall {
         to: diamond,
@@ -179,7 +179,7 @@ pub(crate) fn shared_state_set_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
 
             // Append via the SAME sponsored Tempo path as create_subdomain.
             // Length-scaled gas, matching registry::append_op_sponsored.
-            let diamond = parse_address(crate::app::registry::REGISTRY_ADDRESS)
+            let diamond = parse_address(crate::app::registry::REGISTRY_ADDRESS())
                 .map_err(crate::error::Error::other)?;
             let call = crate::tempo_tx::TempoCall {
                 to: diamond,

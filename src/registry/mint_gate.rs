@@ -12,16 +12,16 @@ use super::*;
 // tests the same surface the TS proxy implements (`proxy/api/_stripe.ts`).
 
 /// EIP-712 domain separator for the mint gate (name "localharness-mintgate",
-/// version "1", `CHAIN_ID`, diamond). Matches `fiatMintDomainSeparator()`.
+/// version "1", `CHAIN_ID()`, diamond). Matches `fiatMintDomainSeparator()`.
 pub fn fiat_mint_domain_separator() -> Result<[u8; 32], String> {
-    let diamond = parse_eth_address(REGISTRY_ADDRESS)?;
+    let diamond = parse_eth_address(REGISTRY_ADDRESS())?;
     let mut dom = Vec::with_capacity(160);
     dom.extend_from_slice(&keccak32(
         b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
     ));
     dom.extend_from_slice(&keccak32(b"localharness-mintgate"));
     dom.extend_from_slice(&keccak32(b"1"));
-    dom.extend_from_slice(&u256_be(CHAIN_ID as u128));
+    dom.extend_from_slice(&u256_be(CHAIN_ID() as u128));
     dom.extend_from_slice(&addr_word(&diamond));
     Ok(keccak32(&dom))
 }
@@ -155,10 +155,10 @@ pub async fn fiat_mint_window() -> Result<(u128, u64, u64, u128), String> {
 /// (capWei, windowSecs, windowStart, mintedInWindow). Reads the token directly,
 /// not the diamond. `0` cap = uncapped.
 pub async fn token_mint_window() -> Result<(u128, u64, u64, u128), String> {
-    let cap = eth_call(LOCALHARNESS_TOKEN_ADDRESS, &encode_call_hex(selector("mintWindowCapWei()"), &[])).await?;
-    let secs = eth_call(LOCALHARNESS_TOKEN_ADDRESS, &encode_call_hex(selector("mintWindowSecs()"), &[])).await?;
-    let start = eth_call(LOCALHARNESS_TOKEN_ADDRESS, &encode_call_hex(selector("mintWindowStart()"), &[])).await?;
-    let minted = eth_call(LOCALHARNESS_TOKEN_ADDRESS, &encode_call_hex(selector("mintedInWindow()"), &[])).await?;
+    let cap = eth_call(LOCALHARNESS_TOKEN_ADDRESS(), &encode_call_hex(selector("mintWindowCapWei()"), &[])).await?;
+    let secs = eth_call(LOCALHARNESS_TOKEN_ADDRESS(), &encode_call_hex(selector("mintWindowSecs()"), &[])).await?;
+    let start = eth_call(LOCALHARNESS_TOKEN_ADDRESS(), &encode_call_hex(selector("mintWindowStart()"), &[])).await?;
+    let minted = eth_call(LOCALHARNESS_TOKEN_ADDRESS(), &encode_call_hex(selector("mintedInWindow()"), &[])).await?;
     Ok((
         decode_u256_as_u128(&cap)?,
         decode_u256_as_u64(&secs)?,

@@ -70,7 +70,7 @@ async fn session_create(caller: Option<&str>) -> i32 {
         return 0;
     }
     println!("creating session room …");
-    match registry::create_room_sponsored(&signer, &sponsor, registry::ALPHA_USD_ADDRESS).await {
+    match registry::create_room_sponsored(&signer, &sponsor, registry::ALPHA_USD_ADDRESS()).await {
         Ok(_tx) => {
             match registry::room_id_created_by(&creator).await {
                 Ok(Some(id)) => {
@@ -128,7 +128,7 @@ async fn session_set(caller: Option<&str>, args: &[String]) -> i32 {
         eprintln!("session set: failed to seal op");
         return 1;
     };
-    match registry::append_op_sponsored(&signer, &sponsor, room_id, &blob, registry::ALPHA_USD_ADDRESS).await {
+    match registry::append_op_sponsored(&signer, &sponsor, room_id, &blob, registry::ALPHA_USD_ADDRESS()).await {
         Ok(_tx) => {
             println!("✓ set {key} in room #{room_id}");
             0
@@ -220,7 +220,7 @@ async fn session_clear(caller: Option<&str>, args: &[String]) -> i32 {
         Ok(pair) => pair,
         Err(code) => return code,
     };
-    match registry::clear_room_sponsored(&signer, &sponsor, room_id, registry::ALPHA_USD_ADDRESS).await {
+    match registry::clear_room_sponsored(&signer, &sponsor, room_id, registry::ALPHA_USD_ADDRESS()).await {
         Ok(_tx) => {
             println!("✓ room #{room_id} cleared");
             0

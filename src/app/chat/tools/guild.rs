@@ -44,7 +44,7 @@ pub(crate) fn create_guild_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 &signer,
                 &fee_payer,
                 name,
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
             )
             .await
             .map_err(|e| crate::error::Error::other(format!("create_guild failed: {e}")))?;
@@ -120,7 +120,7 @@ pub(crate) fn invite_to_guild_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 &fee_payer,
                 guild_id,
                 &member_hex,
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
             )
             .await
             .map_err(|e| crate::error::Error::other(format!("invite_to_guild failed: {e}")))?;
@@ -194,7 +194,7 @@ pub(crate) fn fund_guild_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 &fee_payer,
                 guild_id,
                 amount_wei,
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
                 bridge_wei,
             )
             .await
@@ -289,7 +289,7 @@ pub(crate) fn spend_treasury_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 &to_hex,
                 amount_wei,
                 memo.as_bytes(),
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
             )
             .await
             .map_err(|e| crate::error::Error::other(format!("spend_treasury failed: {e}")))?;

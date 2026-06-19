@@ -216,11 +216,11 @@ pub(crate) fn encode_withdraw_credits(amount_wei: u128) -> Vec<u8> {
     out
 }
 
-/// `eth_call allowance(owner, spender)` on [`LOCALHARNESS_TOKEN_ADDRESS`] —
+/// `eth_call allowance(owner, spender)` on [`LOCALHARNESS_TOKEN_ADDRESS()`] —
 /// how much `$LH` (18-decimal wei) `owner` has approved `spender` to pull
 /// via `transferFrom`. The x402 `settle` pulls `$LH` from the payer through
 /// the diamond's `transferFrom`, so the payer must have approved the diamond
-/// (`REGISTRY_ADDRESS`) for at least the payment value; this lets the client
+/// (`REGISTRY_ADDRESS()`) for at least the payment value; this lets the client
 /// check before paying and approve if short.
 pub async fn lh_allowance(owner_hex: &str, spender_hex: &str) -> Result<u128, String> {
     let owner = parse_eth_address(owner_hex)?;
@@ -229,14 +229,14 @@ pub async fn lh_allowance(owner_hex: &str, spender_hex: &str) -> Result<u128, St
         selector("allowance(address,address)"),
         &[addr_word(&owner), addr_word(&spender)],
     );
-    let result = eth_call(LOCALHARNESS_TOKEN_ADDRESS, &calldata_hex).await?;
+    let result = eth_call(LOCALHARNESS_TOKEN_ADDRESS(), &calldata_hex).await?;
     decode_u256_as_u128(&result)
 }
 
 /// Approve `spender` to pull up to `amount_wei` `$LH` from `sender` via a
 /// sponsored Tempo tx (sender holds zero gas; `fee_payer` pays AlphaUSD).
 /// The x402 prerequisite: before paying an agent over `/mcp`, the payer
-/// approves the diamond (`REGISTRY_ADDRESS`) so `settle`'s `transferFrom`
+/// approves the diamond (`REGISTRY_ADDRESS()`) so `settle`'s `transferFrom`
 /// succeeds. Pass a large/`u128::MAX` amount to approve once and reuse.
 pub async fn approve_lh_sponsored(
     sender: &SigningKey,
@@ -251,7 +251,7 @@ pub async fn approve_lh_sponsored(
     sponsored_call_to(
         sender,
         fee_payer,
-        LOCALHARNESS_TOKEN_ADDRESS,
+        LOCALHARNESS_TOKEN_ADDRESS(),
         encode_approve(&spender, amount_wei),
         fee_token,
         300_000,
@@ -274,7 +274,7 @@ pub async fn transfer_lh_sponsored(
     sponsored_call_to(
         sender,
         fee_payer,
-        LOCALHARNESS_TOKEN_ADDRESS,
+        LOCALHARNESS_TOKEN_ADDRESS(),
         encode_transfer(&to, amount_wei),
         fee_token,
         300_000,

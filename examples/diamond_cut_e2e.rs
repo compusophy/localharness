@@ -88,7 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn eth_call(to: &str, data: &str) -> Result<String, Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":to,"data":data},"latest"]});
-    let resp: serde_json::Value = client.post(registry::RPC_URL).json(&body).send().await?.json().await?;
+    let resp: serde_json::Value = client.post(registry::RPC_URL()).json(&body).send().await?.json().await?;
     if let Some(e) = resp.get("error") {
         return Err(format!("{e}").into());
     }

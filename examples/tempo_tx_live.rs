@@ -6,7 +6,7 @@
 //! 1. **Self-paid native** — `fee_token = None`. Deployer wallet
 //!    pays its own fees in native. Verifies the basic 0x76 envelope
 //!    + sender signature.
-//! 2. **Self-paid $LH** — `fee_token = LOCALHARNESS_TOKEN_ADDRESS`.
+//! 2. **Self-paid $LH** — `fee_token = LOCALHARNESS_TOKEN_ADDRESS()`.
 //!    Deployer pays its own fees in $LH. Verifies the fee_token slot.
 //! 3. **Sponsored $LH** — fresh sender with zero balance; deployer
 //!    signs as fee_payer; fees paid in $LH from the deployer's
@@ -92,7 +92,7 @@ async fn step_sponsored_lh(
         input: calldata,
     };
 
-    let tx = TempoTxBuilder::new(registry::CHAIN_ID)
+    let tx = TempoTxBuilder::new(registry::CHAIN_ID())
         .max_priority_fee_per_gas(gas_price)
         .max_fee_per_gas(gas_price)
         // Sponsored txs cost more — fee_payer signature recovery +
@@ -161,7 +161,7 @@ async fn step_self_paid_native(
         input: calldata,
     };
 
-    let tx = TempoTxBuilder::new(registry::CHAIN_ID)
+    let tx = TempoTxBuilder::new(registry::CHAIN_ID())
         .max_priority_fee_per_gas(gas_price)
         .max_fee_per_gas(gas_price)
         .gas_limit(100_000)
@@ -194,7 +194,7 @@ async fn step_self_paid_lh(
         input: calldata,
     };
 
-    let tx = TempoTxBuilder::new(registry::CHAIN_ID)
+    let tx = TempoTxBuilder::new(registry::CHAIN_ID())
         .max_priority_fee_per_gas(gas_price)
         .max_fee_per_gas(gas_price)
         .gas_limit(100_000)
@@ -227,7 +227,7 @@ async fn submit(raw_hex: &str) -> Result<String, Box<dyn std::error::Error>> {
         "params": [raw_hex],
     });
     let resp: serde_json::Value = client
-        .post(registry::RPC_URL)
+        .post(registry::RPC_URL())
         .json(&body)
         .send()
         .await?

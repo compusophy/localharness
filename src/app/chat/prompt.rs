@@ -40,10 +40,11 @@ pub(crate) fn base_system_prompt(
         ""
     };
 
-    // The active network name is compile-time-selected (Moderato testnet vs
-    // Tempo mainnet) — never hardcode it, or the prompt drifts from the live
-    // deployment (on-chain feedback: said "Moderato" while running on mainnet).
-    let active_network = crate::registry::chain::ACTIVE.name;
+    // The active network name is runtime-selected (Moderato testnet vs Tempo
+    // mainnet via `LH_CHAIN`/feature) — never hardcode it, or the prompt drifts
+    // from the live deployment (on-chain feedback: said "Moderato" while running
+    // on mainnet).
+    let active_network = crate::registry::chain::active().name;
     format!(
         "You are {agent_name}, a browser-resident assistant running inside \
          the localharness platform — a Rust SDK that compiles to wasm and runs \

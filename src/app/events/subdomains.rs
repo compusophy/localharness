@@ -16,7 +16,7 @@ pub(crate) async fn run_release_subdomain(name: &str) -> Result<String, String> 
         .await
         .map_err(|e| format!("owner: {e}"))?
         .ok_or_else(|| "no on-chain owner".to_string())?;
-    let diamond = parse_address(crate::app::registry::REGISTRY_ADDRESS)?;
+    let diamond = parse_address(crate::app::registry::REGISTRY_ADDRESS())?;
     let call = crate::tempo_tx::TempoCall {
         to: diamond,
         value_wei: 0,
@@ -48,7 +48,7 @@ pub(crate) async fn run_bulk_release(
         .await
         .map_err(|e| format!("mainOf: {e}"))?;
 
-    let diamond = parse_address(crate::app::registry::REGISTRY_ADDRESS)?;
+    let diamond = parse_address(crate::app::registry::REGISTRY_ADDRESS())?;
     let mut released: Vec<String> = Vec::with_capacity(names.len());
     let mut calls: Vec<crate::tempo_tx::TempoCall> = Vec::with_capacity(names.len());
     for raw in names {
@@ -109,7 +109,7 @@ pub(crate) async fn run_batch_create_subdomains(
     // sender address against this, so it must be the master wallet's address.
     let (_, owner) = crate::app::tenant::current_tenant_owner().await?;
 
-    let diamond = parse_address(crate::app::registry::REGISTRY_ADDRESS)?;
+    let diamond = parse_address(crate::app::registry::REGISTRY_ADDRESS())?;
     let mut registered: Vec<String> = Vec::with_capacity(names.len());
     let mut calls: Vec<crate::tempo_tx::TempoCall> = Vec::with_capacity(names.len());
     for raw in names {

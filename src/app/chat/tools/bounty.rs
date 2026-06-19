@@ -105,7 +105,7 @@ pub(crate) fn post_bounty_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 task.as_bytes(),
                 reward_wei,
                 ttl_secs,
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
                 bridge_wei,
             )
             .await
@@ -173,7 +173,7 @@ pub(crate) fn claim_bounty_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 &fee_payer,
                 bounty_id,
                 claimant_token_id,
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
             )
             .await
             .map_err(|e| crate::error::Error::other(format!("claim_bounty failed: {e}")))?;
@@ -234,7 +234,7 @@ pub(crate) fn submit_result_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 &fee_payer,
                 bounty_id,
                 result_text.as_bytes(),
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
             )
             .await
             .map_err(|e| crate::error::Error::other(format!("submit_result failed: {e}")))?;
@@ -283,7 +283,7 @@ pub(crate) fn accept_result_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 &signer,
                 &fee_payer,
                 bounty_id,
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
             )
             .await
             .map_err(|e| crate::error::Error::other(format!("accept_result failed: {e}")))?;

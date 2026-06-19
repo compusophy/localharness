@@ -304,7 +304,7 @@ pub(crate) async fn invite_create(caller: Option<&str>, rest: &[String]) -> i32 
         code_hash,
         amount_wei,
         ttl_secs,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -392,7 +392,7 @@ pub(crate) async fn invite_accept(caller: Option<&str>, code: &str) -> i32 {
         Ok(pair) => pair,
         Err(code) => return code,
     };
-    match registry::accept_invite_sponsored(&signer, &sponsor, code, registry::ALPHA_USD_ADDRESS).await {
+    match registry::accept_invite_sponsored(&signer, &sponsor, code, registry::ALPHA_USD_ADDRESS()).await {
         Ok(tx) => {
             println!("✓ invite accepted — the escrowed $LH is now in your wallet  tx: {tx}");
             0
@@ -418,7 +418,7 @@ pub(crate) async fn invite_reclaim(caller: Option<&str>, code: &str) -> i32 {
         Err(code) => return code,
     };
     let code_hash = registry::invite_code_hash(code);
-    match registry::reclaim_invite_sponsored(&signer, &sponsor, code_hash, registry::ALPHA_USD_ADDRESS).await {
+    match registry::reclaim_invite_sponsored(&signer, &sponsor, code_hash, registry::ALPHA_USD_ADDRESS()).await {
         Ok(tx) => {
             println!("✓ invite reclaimed — the escrowed $LH is refunded to its funder  tx: {tx}");
             0

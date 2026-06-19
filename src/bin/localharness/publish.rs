@@ -216,7 +216,7 @@ pub(crate) async fn create_publish(name: &str, persona: Option<&str>, do_publish
         &agent.signer,
         &sponsor,
         name,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -312,7 +312,7 @@ pub(crate) async fn set_face(name: &str, choice: &str) -> i32 {
             return 1;
         }
     }
-    let diamond = match parse_address(registry::REGISTRY_ADDRESS) {
+    let diamond = match parse_address(registry::REGISTRY_ADDRESS()) {
         Ok(a) => a,
         Err(_) => {
             eprintln!("internal: bad registry address constant");
@@ -332,7 +332,7 @@ pub(crate) async fn set_face(name: &str, choice: &str) -> i32 {
         &signer,
         &sponsor,
         calls,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
         1_200_000,
     )
     .await
@@ -592,7 +592,7 @@ pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
             return 1;
         }
     };
-    let diamond = match parse_address(registry::REGISTRY_ADDRESS) {
+    let diamond = match parse_address(registry::REGISTRY_ADDRESS()) {
         Ok(a) => a,
         Err(_) => {
             eprintln!("internal: bad registry address constant");
@@ -682,7 +682,7 @@ pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
         &signer,
         &sponsor,
         calls,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
         gas,
     )
     .await
@@ -778,7 +778,7 @@ pub(crate) async fn set_persona(name: &str, text_or_path: &str) -> i32 {
             return 1;
         }
     };
-    let diamond = match parse_address(registry::REGISTRY_ADDRESS) {
+    let diamond = match parse_address(registry::REGISTRY_ADDRESS()) {
         Ok(a) => a,
         Err(_) => {
             eprintln!("internal: bad registry address constant");
@@ -801,7 +801,7 @@ pub(crate) async fn set_persona(name: &str, text_or_path: &str) -> i32 {
         &signer,
         &sponsor,
         calls,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
         gas,
     )
     .await
@@ -861,7 +861,7 @@ pub(crate) async fn set_price(name: &str, amount: &str) -> i32 {
             return 1;
         }
     };
-    let diamond = match parse_address(registry::REGISTRY_ADDRESS) {
+    let diamond = match parse_address(registry::REGISTRY_ADDRESS()) {
         Ok(a) => a,
         Err(_) => {
             eprintln!("internal: bad registry address constant");
@@ -887,7 +887,7 @@ pub(crate) async fn set_price(name: &str, amount: &str) -> i32 {
         &signer,
         &sponsor,
         calls,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
         1_200_000,
     )
     .await
@@ -961,7 +961,7 @@ pub(crate) async fn release(caller: Option<&str>, name: &str, confirm: Option<&s
         return 2;
     }
     println!("releasing {name}.localharness.xyz (token #{token_id}) …");
-    match registry::release_name_sponsored(&signer, &sponsor, token_id, registry::ALPHA_USD_ADDRESS)
+    match registry::release_name_sponsored(&signer, &sponsor, token_id, registry::ALPHA_USD_ADDRESS())
         .await
     {
         Ok(tx) => {

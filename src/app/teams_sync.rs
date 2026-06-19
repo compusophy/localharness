@@ -136,7 +136,7 @@ async fn sync_topic(
         topic,
         &eph_addr,
         &crate::wallet::pubkey_compressed(&eph.signer), // seal target for our peers
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await?;
 
@@ -209,7 +209,7 @@ async fn connect_and_sync(
             fee_payer,
             peer_addr,
             &crate::signaling_seal::seal_envelope(eph_signer, peer_addr, &sealed),
-            registry::ALPHA_USD_ADDRESS,
+            registry::ALPHA_USD_ADDRESS(),
         )
         .await?;
         let answer = poll_inbox_from(eph_signer, eph_addr, peer_addr)
@@ -231,7 +231,7 @@ async fn connect_and_sync(
             fee_payer,
             peer_addr,
             &crate::signaling_seal::seal_envelope(eph_signer, peer_addr, &sealed),
-            registry::ALPHA_USD_ADDRESS,
+            registry::ALPHA_USD_ADDRESS(),
         )
         .await?;
         s

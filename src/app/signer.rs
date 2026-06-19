@@ -71,7 +71,7 @@
 //!
 //! Tx fields are hex-encoded (`0x...`) except `nonce` / `gas` which can
 //! be either a hex string or a JS number. `chainId` must match
-//! [`crate::registry::CHAIN_ID`] (42431); otherwise the signer rejects
+//! [`crate::registry::CHAIN_ID()`] (42431); otherwise the signer rejects
 //! to avoid a replay-on-a-different-chain footgun. `purpose` is the
 //! human-readable description shown in the consent dialog.
 
@@ -434,7 +434,7 @@ async fn run_claim_name(name: &str) -> Result<(String, String), String> {
         &signer,
         &fee_payer,
         name,
-        crate::registry::ALPHA_USD_ADDRESS,
+        crate::registry::ALPHA_USD_ADDRESS(),
     )
     .await?;
     Ok((address_hex, tx_hash))
@@ -496,8 +496,8 @@ async fn build_sponsored_tx_response(
         .and_then(|v| v.as_f64())
         .map(|f| f as u64)
         .ok_or_else(|| "tx.chainId missing".to_string())?;
-    if chain_id != crate::registry::CHAIN_ID {
-        return Err(format!("chainId {chain_id} != {}", crate::registry::CHAIN_ID));
+    if chain_id != crate::registry::CHAIN_ID() {
+        return Err(format!("chainId {chain_id} != {}", crate::registry::CHAIN_ID()));
     }
 
     let fee_priority =
@@ -512,8 +512,8 @@ async fn build_sponsored_tx_response(
     let sponsored = get("sponsored").and_then(|v| v.as_bool()).unwrap_or(false);
 
     // Call-target allowlist — the heart of the fix.
-    let registry_addr = parse_addr20(crate::registry::REGISTRY_ADDRESS)?;
-    let token_addr = parse_addr20(crate::registry::LOCALHARNESS_TOKEN_ADDRESS)?;
+    let registry_addr = parse_addr20(crate::registry::REGISTRY_ADDRESS())?;
+    let token_addr = parse_addr20(crate::registry::LOCALHARNESS_TOKEN_ADDRESS())?;
 
     let calls_val = get("calls").ok_or_else(|| "tx.calls missing".to_string())?;
     let calls_arr: js_sys::Array = calls_val

@@ -264,7 +264,7 @@ async fn submit_job(caller_name: Option<&str>, parsed: ParsedSchedule, goal_mode
         interval_secs,
         budget_wei,
         max_runs,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -399,7 +399,7 @@ pub(crate) async fn unschedule(caller_name: Option<&str>, job_id_arg: &str) -> i
         Ok(pair) => pair,
         Err(code) => return code,
     };
-    match registry::cancel_job_sponsored(&signer, &sponsor, job_id, registry::ALPHA_USD_ADDRESS).await
+    match registry::cancel_job_sponsored(&signer, &sponsor, job_id, registry::ALPHA_USD_ADDRESS()).await
     {
         Ok(tx) => {
             println!("✓ cancelled job #{job_id} — remaining budget refunded to your wallet");

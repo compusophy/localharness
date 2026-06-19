@@ -7,7 +7,7 @@
 //! already have `reqwest` in the bundle. Avoiding alloy also sidesteps
 //! the `serde::__private` compat snag we hit during the M6 spike.
 //!
-//! `REGISTRY_ADDRESS` is a baked-in non-zero constant; the historical
+//! `REGISTRY_ADDRESS()` is a baked-in non-zero constant; the historical
 //! per-view "registry pending deploy" zero-address guards (which could
 //! never fire) are gone — every read view goes straight to the chain
 //! via the crate-internal `read_view` (`selector ++ words`) helper.
@@ -65,26 +65,35 @@ pub use voting::*;
 pub use weighted_voting::*;
 pub use x402::*;
 
-/// Active-chain RPC endpoint (default Moderato testnet; `mainnet` feature →
-/// Tempo mainnet). Sourced from [`chain::ACTIVE`].
-pub const RPC_URL: &str = chain::ACTIVE.rpc_url;
+/// Active-chain RPC endpoint (default Moderato testnet; native `LH_CHAIN=mainnet`
+/// or the wasm `mainnet` feature → Tempo mainnet). Sourced from [`chain::active`].
+#[allow(non_snake_case)]
+pub fn RPC_URL() -> &'static str {
+    chain::active().rpc_url
+}
 
 /// `LocalharnessRegistry` Diamond address on the active chain (default the
-/// Moderato deployment; `mainnet` feature → the mainnet diamond). Sourced from
-/// [`chain::ACTIVE`].
+/// Moderato deployment; mainnet via `LH_CHAIN`/feature). Sourced from
+/// [`chain::active`].
 ///
 /// The diamond proxy holds the storage; `register / ownerOfName / idOfName / …`
 /// selectors dispatch to per-facet addresses. Owner (deployer/admin):
 /// `0x313b1659F5037080aA0C113D386C5954F348EF1e`.
-pub const REGISTRY_ADDRESS: &str = chain::ACTIVE.diamond;
+#[allow(non_snake_case)]
+pub fn REGISTRY_ADDRESS() -> &'static str {
+    chain::active().diamond
+}
 
-/// Active-chain id — used in EIP-155 v computation. Sourced from [`chain::ACTIVE`].
-pub const CHAIN_ID: u64 = chain::ACTIVE.chain_id;
+/// Active-chain id — used in EIP-155 v computation. Sourced from [`chain::active`].
+#[allow(non_snake_case)]
+pub fn CHAIN_ID() -> u64 {
+    chain::active().chain_id
+}
 
 // `BOOTSTRAP_FAUCET_ADDRESS` (the dormant BootstrapFaucet.sol breadcrumb —
 // unusable on Tempo Moderato, which refuses EOA↔contract native value
 // transfers) was removed as dead code; all distribution flows through
-// [`LOCALHARNESS_TOKEN_ADDRESS`].
+// [`LOCALHARNESS_TOKEN_ADDRESS()`].
 
 /// `LocalharnessCredits` — TIP-20-shaped credit token (currency =
 /// "credits", explicitly NOT USD so it's NOT fee-token-eligible).
@@ -98,8 +107,11 @@ pub const CHAIN_ID: u64 = chain::ACTIVE.chain_id;
 /// tune the per-day allowance via `setDailyAllowance` on the diamond.
 ///
 /// name: "localharness credits", symbol: "LH", decimals: 18. Address sourced
-/// from [`chain::ACTIVE`] (default Moderato; `mainnet` feature → mainnet $LH).
-pub const LOCALHARNESS_TOKEN_ADDRESS: &str = chain::ACTIVE.lh_token;
+/// from [`chain::active`] (default Moderato; mainnet via `LH_CHAIN`/feature).
+#[allow(non_snake_case)]
+pub fn LOCALHARNESS_TOKEN_ADDRESS() -> &'static str {
+    chain::active().lh_token
+}
 
 // Shared test helpers re-exported for the facet submodules' own test mods. The
 // `use` precedes the module so `test_support` stays the file's LAST item (Rust

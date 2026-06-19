@@ -229,7 +229,7 @@ pub mod wallet;
 // sponsored writes sign with a `k256` key (needs the wallet feature)
 // and use `tokio::time::sleep` on native / `setTimeout` on wasm to
 // poll the receipt. The diamond's address is baked in as
-// `registry::REGISTRY_ADDRESS`; the RPC URL is `registry::RPC_URL`.
+// `registry::REGISTRY_ADDRESS()`; the RPC URL is `registry::RPC_URL()`.
 /// JSON-RPC client for the on-chain registry diamond.
 #[cfg(feature = "wallet")]
 pub mod registry;

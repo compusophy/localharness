@@ -65,7 +65,7 @@ pub(crate) async fn submit_schedule_job(
         interval_secs,
         budget_wei,
         max_runs,
-        crate::app::registry::ALPHA_USD_ADDRESS,
+        crate::app::registry::ALPHA_USD_ADDRESS(),
         bridge_wei,
     )
     .await?;

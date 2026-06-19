@@ -441,7 +441,7 @@ async fn settle_call_payment(key_hex: &str, target: &str, value_wei: u128) -> i3
         valid_before,
         &nonce,
         &signature,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -472,7 +472,10 @@ async fn settle_call_payment(key_hex: &str, target: &str, value_wei: u128) -> i3
 /// later as an unexplained 402 (seen live: colony judges quietly dropping
 /// out of the panel). Still best-effort: an unfunded wallet stays unfunded.
 pub(crate) async fn ensure_meter_funded(caller: &k256::ecdsa::SigningKey) {
-    let Ok(sponsor) = wallet::from_private_key_hex(SPONSOR_KEY) else {
+    let Ok(key) = sponsor_key() else {
+        return;
+    };
+    let Ok(sponsor) = wallet::from_private_key_hex(&key) else {
         return;
     };
     let addr = bytes_to_hex_str(&wallet::address(caller));
@@ -484,7 +487,7 @@ pub(crate) async fn ensure_meter_funded(caller: &k256::ecdsa::SigningKey) {
             caller,
             &sponsor,
             CALL_METER_TOPUP_WEI,
-            registry::ALPHA_USD_ADDRESS,
+            registry::ALPHA_USD_ADDRESS(),
         )
     };
     match deposit().await {

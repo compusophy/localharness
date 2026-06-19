@@ -686,7 +686,7 @@ pub(crate) async fn feedback_submit(caller_name: Option<&str>, text: &str) -> i3
         Err(code) => return code,
     };
     println!("submitting {}-byte feedback on-chain …", text.len());
-    match registry::submit_feedback_sponsored(&signer, &sponsor, text, registry::ALPHA_USD_ADDRESS)
+    match registry::submit_feedback_sponsored(&signer, &sponsor, text, registry::ALPHA_USD_ADDRESS())
         .await
     {
         Ok(tx) => {

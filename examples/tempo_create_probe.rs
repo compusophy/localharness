@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let tx = TempoTxBuilder::new(registry::CHAIN_ID)
+    let tx = TempoTxBuilder::new(registry::CHAIN_ID())
         .max_priority_fee_per_gas(gas_price)
         .max_fee_per_gas(gas_price)
         .gas_limit(1_500_000)
@@ -128,7 +128,7 @@ async fn rpc_raw(
     let client = reqwest::Client::new();
     let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":method,"params":params});
     let resp: serde_json::Value =
-        client.post(registry::RPC_URL).json(&body).send().await?.json().await?;
+        client.post(registry::RPC_URL()).json(&body).send().await?.json().await?;
     Ok(resp)
 }
 

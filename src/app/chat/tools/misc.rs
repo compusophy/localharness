@@ -64,7 +64,7 @@ pub(crate) fn set_persona_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             // 1) Publish on-chain via setMetadata(persona) — gas scales with length
             //    (~8.5k/byte; see CLAUDE.md). Same path as create_subdomain's actor
             //    persona + the admin publish flow.
-            let registry_addr = parse_address(crate::app::registry::REGISTRY_ADDRESS)
+            let registry_addr = parse_address(crate::app::registry::REGISTRY_ADDRESS())
                 .map_err(crate::error::Error::other)?;
             let call = crate::tempo_tx::TempoCall {
                 to: registry_addr,
@@ -152,7 +152,7 @@ pub(crate) fn record_lesson_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let (_, owner) = crate::app::tenant::current_tenant_owner()
                 .await
                 .map_err(crate::error::Error::other)?;
-            let registry_addr = parse_address(crate::app::registry::REGISTRY_ADDRESS)
+            let registry_addr = parse_address(crate::app::registry::REGISTRY_ADDRESS())
                 .map_err(crate::error::Error::other)?;
             let call = crate::tempo_tx::TempoCall {
                 to: registry_addr,
@@ -297,7 +297,7 @@ pub(crate) fn set_lessons_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let (_, owner) = crate::app::tenant::current_tenant_owner()
                 .await
                 .map_err(crate::error::Error::other)?;
-            let registry_addr = parse_address(crate::app::registry::REGISTRY_ADDRESS)
+            let registry_addr = parse_address(crate::app::registry::REGISTRY_ADDRESS())
                 .map_err(crate::error::Error::other)?;
             let call = crate::tempo_tx::TempoCall {
                 to: registry_addr,
@@ -396,7 +396,7 @@ pub(crate) fn create_skill_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let (_, owner) = crate::app::tenant::current_tenant_owner()
                 .await
                 .map_err(crate::error::Error::other)?;
-            let registry_addr = parse_address(crate::app::registry::REGISTRY_ADDRESS)
+            let registry_addr = parse_address(crate::app::registry::REGISTRY_ADDRESS())
                 .map_err(crate::error::Error::other)?;
             let call = crate::tempo_tx::TempoCall {
                 to: registry_addr,
@@ -489,7 +489,7 @@ pub(crate) fn delete_skill_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let (_, owner) = crate::app::tenant::current_tenant_owner()
                 .await
                 .map_err(crate::error::Error::other)?;
-            let registry_addr = parse_address(crate::app::registry::REGISTRY_ADDRESS)
+            let registry_addr = parse_address(crate::app::registry::REGISTRY_ADDRESS())
                 .map_err(crate::error::Error::other)?;
             let call = crate::tempo_tx::TempoCall {
                 to: registry_addr,

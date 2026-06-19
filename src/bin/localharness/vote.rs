@@ -275,7 +275,7 @@ pub(crate) async fn vote_propose(caller: Option<&str>, rest: &[String]) -> i32 {
         amount_wei,
         memo.as_bytes(),
         period_secs,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -343,7 +343,7 @@ pub(crate) async fn vote_cast(caller: Option<&str>, id_arg: &str, ballot: &str, 
     };
     let side = if support { "for" } else { "against" };
     println!("casting a '{side}' vote on proposal #{proposal_id} …");
-    match registry::vote_sponsored(&signer, &sponsor, proposal_id, support, registry::ALPHA_USD_ADDRESS)
+    match registry::vote_sponsored(&signer, &sponsor, proposal_id, support, registry::ALPHA_USD_ADDRESS())
         .await
     {
         Ok(tx) => {
@@ -377,7 +377,7 @@ pub(crate) async fn vote_execute(caller: Option<&str>, id_arg: &str) -> i32 {
         &signer,
         &sponsor,
         proposal_id,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -568,7 +568,7 @@ pub(crate) async fn vote_shares_set(caller: Option<&str>, guild_arg: &str, membe
         Err(code) => return code,
     };
     println!("setting {member_hex} to {shares} share(s) in guild #{guild_id} …");
-    match registry::set_shares_sponsored(&signer, &sponsor, guild_id, &member_hex, shares, registry::ALPHA_USD_ADDRESS).await {
+    match registry::set_shares_sponsored(&signer, &sponsor, guild_id, &member_hex, shares, registry::ALPHA_USD_ADDRESS()).await {
         Ok(tx) => {
             let total = registry::total_shares_of(guild_id).await.unwrap_or(0);
             println!("✓ {member_hex} now holds {shares} of {total} share(s) in guild #{guild_id}  tx: {tx}");
@@ -654,7 +654,7 @@ pub(crate) async fn vote_weighted_propose(caller: Option<&str>, rest: &[String])
         amount_wei,
         period_secs,
         memo.as_bytes(),
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -718,7 +718,7 @@ pub(crate) async fn vote_weighted_cast(caller: Option<&str>, id_arg: &str, ballo
     };
     let side = if support { "for" } else { "against" };
     println!("casting a share-weighted '{side}' vote on proposal #{proposal_id} …");
-    match registry::vote_weighted_sponsored(&signer, &sponsor, proposal_id, support, registry::ALPHA_USD_ADDRESS).await {
+    match registry::vote_weighted_sponsored(&signer, &sponsor, proposal_id, support, registry::ALPHA_USD_ADDRESS()).await {
         Ok(tx) => {
             println!("✓ voted {side} (weighted) on proposal #{proposal_id}  tx: {tx}");
             0
@@ -745,7 +745,7 @@ pub(crate) async fn vote_weighted_execute(caller: Option<&str>, id_arg: &str) ->
         Err(code) => return code,
     };
     println!("executing weighted proposal #{proposal_id} …");
-    match registry::execute_weighted_proposal_sponsored(&signer, &sponsor, proposal_id, registry::ALPHA_USD_ADDRESS).await {
+    match registry::execute_weighted_proposal_sponsored(&signer, &sponsor, proposal_id, registry::ALPHA_USD_ADDRESS()).await {
         Ok(tx) => {
             let outcome = match registry::get_weighted_proposal(proposal_id).await {
                 Ok(p) => match p.status {

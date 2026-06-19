@@ -148,10 +148,15 @@ pub(crate) fn load_signer(caller: Option<&str>) -> Result<k256::ecdsa::SigningKe
     })
 }
 
-/// Load the embedded sponsor key (exit 1 on a parse failure — never happens in
-/// practice; the const is guarded by a unit test).
+/// Load the active-chain sponsor key (exit 1 on a missing/bad key). Testnet uses
+/// the committed const; mainnet reads `LH_MAINNET_SPONSOR_KEY` at runtime
+/// ([`sponsor_key`]) — a clear error, never a silent unfunded-sponsor write.
 pub(crate) fn load_sponsor() -> Result<k256::ecdsa::SigningKey, i32> {
-    wallet::from_private_key_hex(SPONSOR_KEY).map_err(|e| {
+    let key = sponsor_key().map_err(|e| {
+        eprintln!("sponsor key error: {e}");
+        1
+    })?;
+    wallet::from_private_key_hex(&key).map_err(|e| {
         eprintln!("sponsor key error: {e}");
         1
     })
@@ -228,7 +233,7 @@ pub(crate) async fn ensure_wallet_covers(
         signer,
         &sponsor,
         shortfall,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -568,7 +573,7 @@ mod tests {
         // The CLI parses addresses via the crate-root `encoding::parse_address`
         // (the old local `parse_addr20` duplicate is gone); pin the behavior the
         // call sites rely on against the canonical registry address.
-        let a = parse_address(registry::REGISTRY_ADDRESS).expect("valid registry addr");
+        let a = parse_address(registry::REGISTRY_ADDRESS()).expect("valid registry addr");
         assert_eq!(a.len(), 20);
         // Case-insensitive, 0x-optional.
         assert!(parse_address("0x00").is_err()); // wrong length

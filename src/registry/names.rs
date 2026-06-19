@@ -41,7 +41,7 @@ pub async fn list_owned_tokens(owner_hex: &str) -> Result<Vec<OwnedToken>, Strin
 
     // ONE batched POST: ownerOfId(1..total). nextId is one-past the highest id.
     let owner_calls: Vec<(&str, String)> = (1..total)
-        .map(|id| (REGISTRY_ADDRESS, call_uint("ownerOfId(uint256)", id)))
+        .map(|id| (REGISTRY_ADDRESS(), call_uint("ownerOfId(uint256)", id)))
         .collect();
     let owners = eth_call_batch(&owner_calls).await?;
     let my_ids: Vec<u64> = owners
@@ -59,11 +59,11 @@ pub async fn list_owned_tokens(owner_hex: &str) -> Result<Vec<OwnedToken>, Strin
     // Two more batched POSTs: name + TBA of just the owned ids.
     let name_calls: Vec<(&str, String)> = my_ids
         .iter()
-        .map(|&id| (REGISTRY_ADDRESS, call_uint("nameOfId(uint256)", id)))
+        .map(|&id| (REGISTRY_ADDRESS(), call_uint("nameOfId(uint256)", id)))
         .collect();
     let tba_calls: Vec<(&str, String)> = my_ids
         .iter()
-        .map(|&id| (REGISTRY_ADDRESS, call_uint("tokenBoundAccount(uint256)", id)))
+        .map(|&id| (REGISTRY_ADDRESS(), call_uint("tokenBoundAccount(uint256)", id)))
         .collect();
     let names = eth_call_batch(&name_calls).await?;
     let tbas = eth_call_batch(&tba_calls).await?;
@@ -155,7 +155,7 @@ pub async fn tba_of_token_id(token_id: u64) -> Result<Option<String>, String> {
 /// hasn't been deployed yet.
 pub async fn tba_of_name(name: &str) -> Result<Option<String>, String> {
     let calldata = encode_string_call("tokenBoundAccountByName(string)", name);
-    let result_hex = match eth_call(REGISTRY_ADDRESS, &calldata).await {
+    let result_hex = match eth_call(REGISTRY_ADDRESS(), &calldata).await {
         Ok(h) => h,
         Err(err) => {
             // The contract reverts with "TBA: name unregistered" when
@@ -183,7 +183,7 @@ pub async fn tba_of_name(name: &str) -> Result<Option<String>, String> {
 /// on-chain owner (returns the zero address).
 pub async fn owner_of_name(name: &str) -> Result<Option<String>, String> {
     let calldata = encode_owner_of_name(name);
-    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result_hex = eth_call(REGISTRY_ADDRESS(), &calldata).await?;
     // Address is the last 20 bytes of a 32-byte uint256 return.
     let trimmed = result_hex.trim().trim_start_matches("0x");
     if trimmed.len() < 64 {
@@ -226,7 +226,7 @@ pub(crate) fn encode_string_call(signature: &str, value: &str) -> String {
 /// `eth_call idOfName(name)` and classify the result. Single round trip.
 pub async fn check_name(name: &str) -> Result<Status, String> {
     let calldata = encode_id_of_name(name);
-    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result_hex = eth_call(REGISTRY_ADDRESS(), &calldata).await?;
     let id = decode_u256_as_u64(&result_hex)?;
     Ok(if id == 0 {
         Status::Available
@@ -238,7 +238,7 @@ pub async fn check_name(name: &str) -> Result<Status, String> {
 /// `eth_call idOfName(name)` → the token id (0 if unregistered).
 pub async fn id_of_name(name: &str) -> Result<u64, String> {
     let calldata = encode_id_of_name(name);
-    let result_hex = eth_call(REGISTRY_ADDRESS, &calldata).await?;
+    let result_hex = eth_call(REGISTRY_ADDRESS(), &calldata).await?;
     decode_u256_as_u64(&result_hex)
 }
 
@@ -263,7 +263,7 @@ pub async fn list_recent_agents(limit: u64) -> Result<Vec<(u64, String)>, String
     let sel = selector("nameOfId(uint256)");
     let calls: Vec<(&str, String)> = ids
         .iter()
-        .map(|&id| (REGISTRY_ADDRESS, encode_call_hex(sel, &[u256_be(id as u128)])))
+        .map(|&id| (REGISTRY_ADDRESS(), encode_call_hex(sel, &[u256_be(id as u128)])))
         .collect();
     let results = eth_call_batch(&calls).await?;
     let out = ids
@@ -653,7 +653,7 @@ pub async fn personas_of(token_ids: &[u64]) -> Vec<Option<String>> {
     let key = keccak_key(PERSONA_LABEL);
     let calls: Vec<(&str, String)> = token_ids
         .iter()
-        .map(|&id| (REGISTRY_ADDRESS, call_metadata(id, key)))
+        .map(|&id| (REGISTRY_ADDRESS(), call_metadata(id, key)))
         .collect();
     match eth_call_batch(&calls).await {
         Ok(results) => results

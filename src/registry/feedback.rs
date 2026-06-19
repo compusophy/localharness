@@ -61,7 +61,7 @@ pub async fn list_feedback() -> Result<Vec<FeedbackEntry>, String> {
     let from = latest.saturating_sub(99_000);
     let from_hex = format!("0x{from:x}");
 
-    let logs = eth_get_logs(REGISTRY_ADDRESS, vec![serde_json::json!(topic0)], &from_hex).await?;
+    let logs = eth_get_logs(REGISTRY_ADDRESS(), vec![serde_json::json!(topic0)], &from_hex).await?;
 
     let mut out = Vec::new();
     for log in &logs {

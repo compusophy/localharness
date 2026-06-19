@@ -204,7 +204,7 @@ pub(crate) async fn reputation_attest(caller: Option<&str>, rest: &[String]) -> 
         token_id,
         rating,
         work_ref,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {

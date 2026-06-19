@@ -55,7 +55,7 @@ pub(crate) fn encode_collect_tithe(account: &[u8; 20]) -> Vec<u8> {
 /// agent's token-bound account opts in (approve + setTithe) in ONE sponsored
 /// tx — the `tithe auto` flow.
 pub fn set_tithe_call(guild_id: u64, bps: u64) -> Result<crate::tempo_tx::TempoCall, String> {
-    let diamond = parse_eth_address(REGISTRY_ADDRESS)?;
+    let diamond = parse_eth_address(REGISTRY_ADDRESS())?;
     Ok(crate::tempo_tx::TempoCall {
         to: diamond,
         value_wei: 0,
@@ -157,7 +157,7 @@ mod tithe_tests {
     #[test]
     fn set_tithe_call_targets_diamond() {
         let call = set_tithe_call(9, 1000).unwrap();
-        assert_eq!(call.to, parse_eth_address(REGISTRY_ADDRESS).unwrap());
+        assert_eq!(call.to, parse_eth_address(REGISTRY_ADDRESS()).unwrap());
         assert_eq!(call.value_wei, 0);
         assert_eq!(call.input, encode_set_tithe(9, 1000));
     }

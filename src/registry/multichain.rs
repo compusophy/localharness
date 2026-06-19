@@ -7,7 +7,7 @@
 //! Reuses the crate's canonical codecs (`crate::encoding` for hex/address,
 //! `super::abi` for `selector`/`u256_be`/`encode_call_hex`) and mirrors the
 //! `eth_call`/`rpc_value` pattern in `rpc.rs`, but keyed on a per-chain RPC URL
-//! rather than the hardcoded Tempo `RPC_URL`. All returned data is UNTRUSTED.
+//! rather than the hardcoded Tempo `RPC_URL()`. All returned data is UNTRUSTED.
 
 use super::abi::{encode_call_hex, selector, u256_be};
 use super::rpc::{read_client, timeout_send, RpcResponse};
@@ -18,6 +18,7 @@ use sha3::{Digest, Keccak256};
 /// are public + CORS-enabled (`Access-Control-Allow-Origin: *`, verified
 /// 2026-06-18) so a browser `fetch` reaches them directly; an agent calls them
 /// by `name`. `tempo` is the active localharness chain (testnet or mainnet).
+#[derive(Clone, Copy)]
 pub struct EvmChain {
     /// Lower-case lookup key the agent passes (e.g. `"base"`).
     pub name: &'static str,
@@ -31,18 +32,16 @@ pub struct EvmChain {
 /// deploy ENS). `resolver(bytes32)` → the per-name resolver contract.
 pub const ENS_REGISTRY: &str = "0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e";
 
-/// Curated chain table. Public CORS RPCs chosen so the browser can reach them
-/// without the credit proxy (all verified `Access-Control-Allow-Origin: *` +
-/// full-method 2026-06-18):
-///   - ethereum: ethereum-rpc.publicnode.com (cloudflare-eth.com was degraded —
-///     "Internal error" on eth_call/eth_getBalance — so publicnode, which is
-///     open + CORS-clean + full-method, is the durable choice)
-///   - base: mainnet.base.org   - optimism: mainnet.optimism.io
-///   - arbitrum: arb1.arbitrum.io/rpc
-///   - polygon: polygon-bor-rpc.publicnode.com (polygon-rpc.com is API-gated)
-///   - tempo: the ACTIVE localharness chain (testnet/mainnet via the `mainnet`
-///     feature), so the agent can read its OWN chain through the same surface.
-pub const CHAINS: &[EvmChain] = &[
+/// The foreign (non-Tempo) curated chains — pure constants. Public CORS RPCs
+/// chosen so the browser reaches them without the proxy (all verified
+/// `Access-Control-Allow-Origin: *` + full-method 2026-06-18):
+/// ethereum = ethereum-rpc.publicnode.com (cloudflare-eth.com was degraded);
+/// base = mainnet.base.org; optimism = mainnet.optimism.io;
+/// arbitrum = arb1.arbitrum.io/rpc; polygon = polygon-bor-rpc.publicnode.com
+/// (polygon-rpc.com is API-gated). The ACTIVE localharness `tempo` row is
+/// appended at call time by [`chains`] off [`super::chain::active`] — its rpc/id
+/// are runtime now, so they can't live in a `const` slice.
+const FOREIGN_CHAINS: &[EvmChain] = &[
     EvmChain { name: "ethereum", rpc_url: "https://ethereum-rpc.publicnode.com", chain_id: 1 },
     EvmChain { name: "base", rpc_url: "https://mainnet.base.org", chain_id: 8453 },
     EvmChain { name: "optimism", rpc_url: "https://mainnet.optimism.io", chain_id: 10 },
@@ -52,17 +51,25 @@ pub const CHAINS: &[EvmChain] = &[
         rpc_url: "https://polygon-bor-rpc.publicnode.com",
         chain_id: 137,
     },
-    EvmChain {
-        name: "tempo",
-        rpc_url: super::chain::ACTIVE.rpc_url,
-        chain_id: super::chain::ACTIVE.chain_id,
-    },
 ];
+
+/// The curated chain table: the foreign chains plus the ACTIVE localharness
+/// `tempo` row (testnet/mainnet, resolved at call time). A `Vec` because the
+/// `tempo` row's rpc/id are now runtime.
+pub fn chains() -> Vec<EvmChain> {
+    let mut v: Vec<EvmChain> = FOREIGN_CHAINS
+        .iter()
+        .map(|c| EvmChain { name: c.name, rpc_url: c.rpc_url, chain_id: c.chain_id })
+        .collect();
+    let active = super::chain::active();
+    v.push(EvmChain { name: "tempo", rpc_url: active.rpc_url, chain_id: active.chain_id });
+    v
+}
 
 /// Look up a curated chain by (case-insensitive, trimmed) name. `eth`/`mainnet`
 /// alias Ethereum; `op` aliases Optimism; `arb` aliases Arbitrum; `matic`/`pol`
 /// alias Polygon — the names agents reach for.
-pub fn chain_by_name(name: &str) -> Option<&'static EvmChain> {
+pub fn chain_by_name(name: &str) -> Option<EvmChain> {
     let n = name.trim().to_lowercase();
     let canon = match n.as_str() {
         "eth" | "mainnet" | "l1" => "ethereum",
@@ -71,11 +78,11 @@ pub fn chain_by_name(name: &str) -> Option<&'static EvmChain> {
         "matic" | "pol" => "polygon",
         other => other,
     };
-    CHAINS.iter().find(|c| c.name == canon)
+    chains().into_iter().find(|c| c.name == canon)
 }
 
 /// One JSON-RPC call against an EXPLICIT `rpc_url` (the multi-chain twin of
-/// `rpc::rpc_value`, which is pinned to the Tempo `RPC_URL`). Races send +
+/// `rpc::rpc_value`, which is pinned to the Tempo `RPC_URL()`). Races send +
 /// body-read against the shared deadline so a stalled node can't hang the turn.
 async fn rpc_value_at(
     rpc_url: &str,
@@ -386,7 +393,7 @@ mod tests {
         assert_eq!(chain_by_name("matic").unwrap().chain_id, 137);
         assert!(chain_by_name("dogechain").is_none());
         // tempo tracks the active localharness chain.
-        assert_eq!(chain_by_name("tempo").unwrap().chain_id, super::super::chain::ACTIVE.chain_id);
+        assert_eq!(chain_by_name("tempo").unwrap().chain_id, super::super::chain::active().chain_id);
     }
 
     #[test]

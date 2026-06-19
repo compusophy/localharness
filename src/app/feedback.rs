@@ -110,7 +110,7 @@ pub(crate) fn feedback_submit() {
 /// by the sponsor (Tempo allows contract calls).
 pub(crate) async fn submit_feedback_onchain(from_hex: &str, text: &str) -> Result<String, String> {
     let calldata = encode_submit_feedback_calldata(text);
-    let registry_addr = parse_address(super::registry::REGISTRY_ADDRESS)?;
+    let registry_addr = parse_address(super::registry::REGISTRY_ADDRESS())?;
     let call = crate::tempo_tx::TempoCall {
         to: registry_addr,
         value_wei: 0,

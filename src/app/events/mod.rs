@@ -1355,7 +1355,7 @@ pub(crate) async fn warn_if_sponsor_low() {
     let addr = crate::wallet::address(&signer);
     let addr_hex = bytes_to_hex_str(&addr);
     if let Ok(bal) =
-        super::registry::erc20_balance_of(super::registry::ALPHA_USD_ADDRESS, &addr_hex).await
+        super::registry::erc20_balance_of(super::registry::ALPHA_USD_ADDRESS(), &addr_hex).await
     {
         if bal < LOW_THRESHOLD {
             let whole = bal / ALPHA_USD_UNIT;
@@ -1383,13 +1383,13 @@ pub(crate) async fn run_sponsored_tempo_call(
 ) -> Result<String, String> {
     sponsor_rate_guard()?;
     let sender_address = parse_address(from_hex)?;
-    let fee_token_addr = parse_address(super::registry::ALPHA_USD_ADDRESS)?;
+    let fee_token_addr = parse_address(super::registry::ALPHA_USD_ADDRESS())?;
     let nonce = super::registry::next_nonce(from_hex).await
         .map_err(|e| format!("nonce: {e}"))?;
     let gas_price = super::registry::current_gas_price().await
         .map_err(|e| format!("gas price: {e}"))?;
 
-    let tx = crate::tempo_tx::TempoTxBuilder::new(super::registry::CHAIN_ID)
+    let tx = crate::tempo_tx::TempoTxBuilder::new(super::registry::CHAIN_ID())
         .max_priority_fee_per_gas(gas_price)
         .max_fee_per_gas(gas_price)
         .gas_limit(gas_limit)

@@ -153,7 +153,7 @@ pub(crate) async fn tba_deploy(caller: Option<&str>, name: Option<&str>) -> i32 
         &signer,
         &sponsor,
         token_id,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -346,7 +346,7 @@ pub(crate) async fn tba_exec(caller: Option<&str>, rest: &[String]) -> i32 {
                     &signer,
                     &sponsor,
                     token_id,
-                    registry::ALPHA_USD_ADDRESS,
+                    registry::ALPHA_USD_ADDRESS(),
                 )
                 .await
                 {
@@ -380,7 +380,7 @@ pub(crate) async fn tba_exec(caller: Option<&str>, rest: &[String]) -> i32 {
                 &to_hex,
                 amount_wei,
                 bytes,
-                registry::ALPHA_USD_ADDRESS,
+                registry::ALPHA_USD_ADDRESS(),
             )
             .await
         }
@@ -393,7 +393,7 @@ pub(crate) async fn tba_exec(caller: Option<&str>, rest: &[String]) -> i32 {
                 &tba_addr,
                 &to_hex,
                 amount_wei,
-                registry::ALPHA_USD_ADDRESS,
+                registry::ALPHA_USD_ADDRESS(),
             )
             .await
         }
@@ -418,7 +418,7 @@ pub(crate) async fn tba_exec(caller: Option<&str>, rest: &[String]) -> i32 {
 /// caller doesn't own the name, deploys the counterfactual TBA if needed, then
 /// routes ONE sponsored `execute(diamond, 0, calldata)` through the SAME
 /// `tba_execute_call_sponsored` path `tba exec` uses (the NFT holder = the local
-/// key signs; the sponsor pays gas). The diamond (`REGISTRY_ADDRESS`) is always
+/// key signs; the sponsor pays gas). The diamond (`REGISTRY_ADDRESS()`) is always
 /// the inner `to`; value is always 0 (these calls move no native token).
 /// `action` labels progress lines. Returns a process exit code.
 pub(crate) async fn tba_execute_diamond_call(
@@ -468,7 +468,7 @@ pub(crate) async fn tba_execute_diamond_call(
             &signer,
             &sponsor,
             token_id,
-            registry::ALPHA_USD_ADDRESS,
+            registry::ALPHA_USD_ADDRESS(),
         )
         .await
         {
@@ -482,10 +482,10 @@ pub(crate) async fn tba_execute_diamond_call(
         &signer,
         &sponsor,
         &tba_addr,
-        registry::REGISTRY_ADDRESS, // inner `to` = the diamond
+        registry::REGISTRY_ADDRESS(), // inner `to` = the diamond
         0,                          // no native value
         &calldata,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {

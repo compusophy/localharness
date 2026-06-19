@@ -61,7 +61,7 @@ async fn facet_deploy(caller: Option<&str>, rest: &[String]) -> i32 {
         Ok(p) => p,
         Err(c) => return c,
     };
-    match registry::create_sponsored(&signer, &sponsor, art.init_code, registry::ALPHA_USD_ADDRESS, gas).await {
+    match registry::create_sponsored(&signer, &sponsor, art.init_code, registry::ALPHA_USD_ADDRESS(), gas).await {
         Ok(addr) => {
             println!("✓ deployed '{name}' facet at {addr}");
             for s in &art.selectors {
@@ -105,7 +105,7 @@ async fn facet_diamond(caller: Option<&str>) -> i32 {
     ];
     init.extend_from_slice(&registry::encode_diamond_constructor_args(&owner, &gcuts));
     println!("genesis-ing a child diamond owned by you (0x{}), guarded cut facet, via sponsored CREATE …", hex(&owner));
-    match registry::create_sponsored(&signer, &sponsor, init, registry::ALPHA_USD_ADDRESS, 25_000_000).await {
+    match registry::create_sponsored(&signer, &sponsor, init, registry::ALPHA_USD_ADDRESS(), 25_000_000).await {
         Ok(addr) => {
             println!("✓ your diamond: {addr}");
             println!("  cut facets into it:  localharness facet cut {addr} <facet-addr> <src.sol>");
@@ -159,7 +159,7 @@ async fn facet_cut(caller: Option<&str>, rest: &[String]) -> i32 {
         &signer,
         &sponsor,
         vec![TempoCall { to: addr20(diamond), value_wei: 0, input: calldata }],
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
         12_000_000,
     )
     .await

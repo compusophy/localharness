@@ -18,11 +18,12 @@ pub(crate) fn evm_chains_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
          no cost. Use it when unsure which chain name to pass.",
         serde_json::json!({ "type": "object", "properties": {} }),
         |_args: serde_json::Value, _ctx| async move {
-            let chains: Vec<serde_json::Value> = multichain::CHAINS
+            let table = multichain::chains();
+            let chains: Vec<serde_json::Value> = table
                 .iter()
                 .map(|c| serde_json::json!({ "name": c.name, "chain_id": c.chain_id }))
                 .collect();
-            Ok(serde_json::json!({ "chains": chains, "count": multichain::CHAINS.len() }))
+            Ok(serde_json::json!({ "chains": chains, "count": table.len() }))
         },
     )
 }
@@ -79,11 +80,11 @@ pub(crate) fn evm_balance_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 .filter(|s| !s.is_empty());
             match token {
                 Some(token) => {
-                    let raw = multichain::erc20_balance(chain, token, address)
+                    let raw = multichain::erc20_balance(&chain, token, address)
                         .await
                         .map_err(crate::error::Error::other)?;
-                    let decimals = multichain::erc20_decimals(chain, token).await;
-                    let symbol = multichain::erc20_symbol(chain, token).await;
+                    let decimals = multichain::erc20_decimals(&chain, token).await;
+                    let symbol = multichain::erc20_symbol(&chain, token).await;
                     let balance = match decimals {
                         Some(d) => multichain::format_units(raw, d),
                         None => raw.to_string(),
@@ -100,7 +101,7 @@ pub(crate) fn evm_balance_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                     }))
                 }
                 None => {
-                    let wei = multichain::native_balance(chain, address)
+                    let wei = multichain::native_balance(&chain, address)
                         .await
                         .map_err(crate::error::Error::other)?;
                     Ok(serde_json::json!({

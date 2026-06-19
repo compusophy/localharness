@@ -52,7 +52,7 @@ pub(super) async fn auto_sync_gemini_key(name: String, key: String) {
         Err(_) => return,
     };
     let Ok(ct) = hex_to_bytes(&ct_hex) else { return };
-    let Ok(registry_addr) = parse_address(crate::app::registry::REGISTRY_ADDRESS) else { return };
+    let Ok(registry_addr) = parse_address(crate::app::registry::REGISTRY_ADDRESS()) else { return };
     let call = crate::tempo_tx::TempoCall {
         to: registry_addr,
         value_wei: 0,

@@ -39,7 +39,7 @@ fn lh_transfer_call(
     calldata.extend_from_slice(&transfer_selector());
     calldata.extend_from_slice(&to_padded);
     calldata.extend_from_slice(&u256_be(amount_wei));
-    let token_addr = parse_address(crate::registry::LOCALHARNESS_TOKEN_ADDRESS)
+    let token_addr = parse_address(crate::registry::LOCALHARNESS_TOKEN_ADDRESS())
         .map_err(crate::error::Error::other)?;
     Ok(crate::tempo_tx::TempoCall {
         to: token_addr,
@@ -69,7 +69,7 @@ async fn meter_bridge_call(
     let mut calldata = Vec::with_capacity(4 + 32);
     calldata.extend_from_slice(&withdraw_credits_selector());
     calldata.extend_from_slice(&u256_be(shortfall));
-    let diamond = parse_address(crate::registry::REGISTRY_ADDRESS)
+    let diamond = parse_address(crate::registry::REGISTRY_ADDRESS())
         .map_err(crate::error::Error::other)?;
     Ok(Some(crate::tempo_tx::TempoCall {
         to: diamond,
@@ -302,7 +302,7 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
             // Tempo tx (two setMetadata calls), exactly like the admin
             // publish-app flow. Owner signs the sender_hash via the apex
             // iframe; the sponsor pays gas.
-            let registry_addr = parse_address(crate::app::registry::REGISTRY_ADDRESS)
+            let registry_addr = parse_address(crate::app::registry::REGISTRY_ADDRESS())
                 .map_err(crate::error::Error::other)?;
             let mk = |input: Vec<u8>| crate::tempo_tx::TempoCall {
                 to: registry_addr,

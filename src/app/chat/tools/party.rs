@@ -160,7 +160,7 @@ pub(crate) fn form_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 &member_ids,
                 &shares,
                 ttl_secs,
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
             )
             .await
             .map_err(|e| crate::error::Error::other(format!("form_party failed: {e}")))?;
@@ -216,7 +216,7 @@ pub(crate) fn join_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 &signer,
                 &fee_payer,
                 party_id,
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
             )
             .await
             .map_err(|e| crate::error::Error::other(format!("join_party failed: {e}")))?;
@@ -291,7 +291,7 @@ pub(crate) fn fund_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 &fee_payer,
                 party_id,
                 amount_wei,
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
                 bridge_wei,
             )
             .await
@@ -338,7 +338,7 @@ pub(crate) fn complete_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 &signer,
                 &fee_payer,
                 party_id,
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
             )
             .await
             .map_err(|e| crate::error::Error::other(format!("complete_party failed: {e}")))?;
@@ -383,7 +383,7 @@ pub(crate) fn disband_party_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 &signer,
                 &fee_payer,
                 party_id,
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
             )
             .await
             .map_err(|e| crate::error::Error::other(format!("disband_party failed: {e}")))?;

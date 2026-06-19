@@ -178,7 +178,7 @@ async fn submit_claim(name: &str, create_if_missing: bool) -> Result<String, Str
         &signer,
         &fee_payer,
         name,
-        crate::app::registry::ALPHA_USD_ADDRESS,
+        crate::app::registry::ALPHA_USD_ADDRESS(),
     )
     .await
     .map_err(|e| format!("claim_name: {e}"))

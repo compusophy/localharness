@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. Deploy via sponsored CREATE.
     let nonce = registry::next_nonce(&format!("0x{}", hex(&sender_addr))).await?;
     let gas_price = registry::current_gas_price().await?;
-    let tx = TempoTxBuilder::new(registry::CHAIN_ID)
+    let tx = TempoTxBuilder::new(registry::CHAIN_ID())
         .max_priority_fee_per_gas(gas_price)
         .max_fee_per_gas(gas_price)
         .gas_limit(2_000_000)
@@ -99,7 +99,7 @@ async fn poll_receipt(tx_hash: &str) -> Result<serde_json::Value, Box<dyn std::e
 async fn rpc_raw(method: &str, params: serde_json::Value) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":method,"params":params});
-    Ok(client.post(registry::RPC_URL).json(&body).send().await?.json().await?)
+    Ok(client.post(registry::RPC_URL()).json(&body).send().await?.json().await?)
 }
 async fn rpc_str(method: &str, params: serde_json::Value) -> Result<String, Box<dyn std::error::Error>> {
     let resp = rpc_raw(method, params).await?;

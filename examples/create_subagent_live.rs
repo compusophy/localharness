@@ -30,7 +30,7 @@ async fn main() {
         .unwrap_or_else(|| format!("claude{}", &addr[2..8]));
 
     println!("== create-subagent E2E (live Moderato) ==");
-    println!("registry : {}", registry::REGISTRY_ADDRESS);
+    println!("registry : {}", registry::REGISTRY_ADDRESS());
     println!("identity : {addr}  (freshly generated, holds nothing)");
     println!("name     : {name}.localharness.xyz");
 
@@ -68,7 +68,7 @@ async fn main() {
         &agent.signer,
         &sponsor,
         &name,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {

@@ -181,7 +181,7 @@ pub(crate) async fn validation_stake(
         subject_id,
         valid,
         amount_wei,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -247,7 +247,7 @@ pub(crate) async fn validation_challenge(caller: Option<&str>, id_arg: &str) -> 
         &sponsor,
         id,
         v.stake_wei,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -293,7 +293,7 @@ pub(crate) async fn validation_resolve(caller: Option<&str>, id_arg: &str, side:
         &sponsor,
         id,
         validator_wins,
-        registry::ALPHA_USD_ADDRESS,
+        registry::ALPHA_USD_ADDRESS(),
     )
     .await
     {
@@ -326,9 +326,9 @@ pub(crate) async fn validation_reclaim(caller: Option<&str>, id_arg: &str, unres
     let what = if unresolved { "draw (refund both sides of)" } else { "reclaim the unchallenged stake on" };
     println!("attempting to {what} validation #{id} …");
     let res = if unresolved {
-        registry::reclaim_unresolved_sponsored(&signer, &sponsor, id, registry::ALPHA_USD_ADDRESS).await
+        registry::reclaim_unresolved_sponsored(&signer, &sponsor, id, registry::ALPHA_USD_ADDRESS()).await
     } else {
-        registry::reclaim_stake_sponsored(&signer, &sponsor, id, registry::ALPHA_USD_ADDRESS).await
+        registry::reclaim_stake_sponsored(&signer, &sponsor, id, registry::ALPHA_USD_ADDRESS()).await
     };
     match res {
         Ok(tx) => {

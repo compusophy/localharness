@@ -80,11 +80,11 @@ pub async fn submit_and_wait_receipt(raw_hex: &str) -> Result<String, String> {
 
 // --- $localharness ERC-20 helpers ------------------------------------
 
-/// `balanceOf(holder)` on [`LOCALHARNESS_TOKEN_ADDRESS`]. Returns the
+/// `balanceOf(holder)` on [`LOCALHARNESS_TOKEN_ADDRESS()`]. Returns the
 /// holder's $localharness balance in 18-decimal token wei. Useful for
 /// confirming the faucet/transfer flows actually landed funds.
 pub async fn token_balance_of(holder_hex: &str) -> Result<u128, String> {
-    erc20_balance_of(LOCALHARNESS_TOKEN_ADDRESS, holder_hex).await
+    erc20_balance_of(LOCALHARNESS_TOKEN_ADDRESS(), holder_hex).await
 }
 
 /// `balanceOf(holder)` on the DIAMOND — the ERC-721 NAME count (how many
@@ -93,7 +93,7 @@ pub async fn token_balance_of(holder_hex: &str) -> Result<u128, String> {
 /// reads (`balanceOf == 0` ⇒ not a registered identity). Same `balanceOf(address)`
 /// selector as the ERC-20 read, pointed at the diamond instead of the token.
 pub async fn name_balance_of(holder_hex: &str) -> Result<u128, String> {
-    erc20_balance_of(REGISTRY_ADDRESS, holder_hex).await
+    erc20_balance_of(REGISTRY_ADDRESS(), holder_hex).await
 }
 
 /// `balanceOf(holder)` on an arbitrary ERC-20/TIP-20 token. Used by the
@@ -144,8 +144,11 @@ pub(crate) fn decode_u256_as_u128(hex: &str) -> Result<u128, String> {
 
 /// Default USD-currency TIP-20 used as the sponsor `fee_token` (our $LH is NOT
 /// eligible — its TIP-20 `currency()` is "credits", not "USD"). Sourced from
-/// the active chain ([`super::chain::ACTIVE`]); on Moderato this is AlphaUSD.
-pub const ALPHA_USD_ADDRESS: &str = super::chain::ACTIVE.fee_token;
+/// the active chain ([`super::chain::active`]); on Moderato this is AlphaUSD.
+#[allow(non_snake_case)]
+pub fn ALPHA_USD_ADDRESS() -> &'static str {
+    super::chain::active().fee_token
+}
 
 /// Sign and submit a SELF-PAID Tempo tx. Sender pays fees in
 /// `fee_token` (`None` = native). Returns the tx hash once mined.
@@ -164,7 +167,7 @@ pub async fn submit_tempo_self_paid(
     let mut last_err = String::new();
     for attempt in 0..2 {
         let nonce = eth_get_transaction_count(&sender_hex).await?;
-        let mut builder = TempoTxBuilder::new(CHAIN_ID)
+        let mut builder = TempoTxBuilder::new(CHAIN_ID())
             .max_priority_fee_per_gas(gas_price)
             .max_fee_per_gas(gas_price)
             .gas_limit(gas_limit)
@@ -216,7 +219,7 @@ pub async fn submit_tempo_sponsored(
     let mut last_err = String::new();
     for attempt in 0..2 {
         let nonce = eth_get_transaction_count(&sender_hex).await?;
-        let tx = TempoTxBuilder::new(CHAIN_ID)
+        let tx = TempoTxBuilder::new(CHAIN_ID())
             .max_priority_fee_per_gas(gas_price)
             .max_fee_per_gas(gas_price)
             .gas_limit(gas_limit)
@@ -264,7 +267,7 @@ pub async fn create_sponsored(
     let mut last_err = String::new();
     for attempt in 0..2 {
         let nonce = eth_get_transaction_count(&sender_hex).await?;
-        let tx = TempoTxBuilder::new(CHAIN_ID)
+        let tx = TempoTxBuilder::new(CHAIN_ID())
             .max_priority_fee_per_gas(gas_price)
             .max_fee_per_gas(gas_price)
             .gas_limit(gas_limit)
@@ -336,7 +339,7 @@ pub(crate) async fn sponsored_diamond_call(
     fee_token: &str,
     gas_limit: u128,
 ) -> Result<String, String> {
-    sponsored_call_to(sender, fee_payer, REGISTRY_ADDRESS, input, fee_token, gas_limit).await
+    sponsored_call_to(sender, fee_payer, REGISTRY_ADDRESS(), input, fee_token, gas_limit).await
 }
 
 /// `$LH.approve(diamond, amount)` + a diamond call batched in ONE sponsored
@@ -386,8 +389,8 @@ pub(crate) fn escrow_call_batch(
     input: Vec<u8>,
     bridge_wei: u128,
 ) -> Result<Vec<crate::tempo_tx::TempoCall>, String> {
-    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS)?;
-    let token_addr = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS)?;
+    let diamond_addr = parse_eth_address(REGISTRY_ADDRESS())?;
+    let token_addr = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS())?;
     let mut calls = Vec::with_capacity(3);
     if bridge_wei > 0 {
         calls.push(crate::tempo_tx::TempoCall {
@@ -423,8 +426,8 @@ mod tests {
         let escrow_input = vec![0xAA, 0xBB, 0xCC, 0xDD];
         let calls = escrow_call_batch(700, escrow_input.clone(), 250).unwrap();
         assert_eq!(calls.len(), 3);
-        let diamond = parse_eth_address(REGISTRY_ADDRESS).unwrap();
-        let token = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS).unwrap();
+        let diamond = parse_eth_address(REGISTRY_ADDRESS()).unwrap();
+        let token = parse_eth_address(LOCALHARNESS_TOKEN_ADDRESS()).unwrap();
         // 1. withdrawCredits(bridge_wei) on the diamond.
         assert_eq!(calls[0].to, diamond);
         assert_eq!(calls[0].input, encode_withdraw_credits(250));

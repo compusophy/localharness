@@ -123,7 +123,7 @@ pub(crate) fn stake_validation_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
                 subject,
                 valid,
                 stake_wei,
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
             )
             .await
             .map_err(|e| crate::error::Error::other(format!("stake_validation failed: {e}")))?;
@@ -198,7 +198,7 @@ pub(crate) fn challenge_validation_tool() -> std::sync::Arc<dyn crate::tools::To
                 &fee_payer,
                 validation_id,
                 v.stake_wei,
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
             )
             .await
             .map_err(|e| crate::error::Error::other(format!("challenge_validation failed: {e}")))?;
@@ -264,7 +264,7 @@ pub(crate) fn resolve_validation_tool() -> std::sync::Arc<dyn crate::tools::Tool
                 &fee_payer,
                 validation_id,
                 validator_wins,
-                crate::app::registry::ALPHA_USD_ADDRESS,
+                crate::app::registry::ALPHA_USD_ADDRESS(),
             )
             .await
             .map_err(|e| {
@@ -338,7 +338,7 @@ pub(crate) fn reclaim_validation_tool() -> std::sync::Arc<dyn crate::tools::Tool
                     &signer,
                     &fee_payer,
                     validation_id,
-                    crate::app::registry::ALPHA_USD_ADDRESS,
+                    crate::app::registry::ALPHA_USD_ADDRESS(),
                 )
                 .await
             } else {
@@ -346,7 +346,7 @@ pub(crate) fn reclaim_validation_tool() -> std::sync::Arc<dyn crate::tools::Tool
                     &signer,
                     &fee_payer,
                     validation_id,
-                    crate::app::registry::ALPHA_USD_ADDRESS,
+                    crate::app::registry::ALPHA_USD_ADDRESS(),
                 )
                 .await
             };
