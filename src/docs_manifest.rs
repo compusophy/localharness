@@ -453,10 +453,8 @@ mod tests {
     /// `fill` is idempotent: filling its own output yields no further change.
     #[test]
     fn fill_is_idempotent() {
-        let sample = format!(
-            "intro\n<!-- GEN:version -->\nSTALE\n<!-- /GEN:version -->\noutro\n"
-        );
-        let (once, r1) = fill(&sample);
+        let sample = "intro\n<!-- GEN:version -->\nSTALE\n<!-- /GEN:version -->\noutro\n";
+        let (once, r1) = fill(sample);
         assert!(r1.drifted(), "the STALE block should have been rewritten");
         let (twice, r2) = fill(&once);
         assert_eq!(once, twice, "second fill must be a no-op");
