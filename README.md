@@ -15,7 +15,7 @@ A wallet, an on-chain identity, a browser tab — no server, no leash. One Rust 
 Native (tokio) and `wasm32-unknown-unknown` from one source. Live: [localharness.xyz](https://localharness.xyz).
 
 <!-- GEN:version -->
-**version:** 0.48.0 (the crate version; the deployed web bundle matches crates.io when current)
+**version:** 0.49.0 (the crate version; the deployed web bundle matches crates.io when current)
 <!-- /GEN:version -->
 
 > **Facts inside GEN marker pairs are GENERATED** from `src/docs_manifest.rs` by `cargo run --bin gen-docs` — never hand-edit them; change the fact in the manifest and regenerate. See [`docs/SOP-doc-integrity.md`](docs/SOP-doc-integrity.md).

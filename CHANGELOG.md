@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-06-19
+
+### Added
+
+- **Rate-capped sponsor relay — the published crate ships NO mainnet money key.**
+  On mainnet, sponsored Tempo `0x76` writes now have their `fee_payer` half signed
+  SERVER-SIDE by the credit proxy (`registry::sponsor_relay`) instead of an
+  embedded key. The submit chokepoints in `registry::tx` — and the browser's
+  self-assembled `run_sponsored_tempo_call` — route through it when
+  `chain::active()` is mainnet, authed by the caller's existing personal-sign
+  proxy token and re-verified locally (the relay's returned fee_payer hash must
+  match the one the client recomputes; the signature must recover to the
+  advertised sponsor). The relay endpoint (`proxy/api/sponsor.ts`) enforces a
+  default-deny selector allowlist, a per-address rate window, an onboarding-only
+  spend gate, and a low-float circuit-breaker before signing; its TS wire-port
+  (`proxy/api/_tempo.ts`) is pinned to the Rust 0x76/0x78 golden vectors.
+  `registry::is_mainnet()` is now public so both submit paths branch the same way.
+
+### Changed
+
+- **No build embeds a mainnet sponsor key.** `main.rs::sponsor_key()` dropped its
+  `LH_MAINNET_SPONSOR_KEY` env arm and `src/app/sponsor.rs` dropped the
+  `env!("LH_MAINNET_SPONSOR_KEY")` compile-time embed — both now return the
+  committed testnet key as an UNUSED placeholder on mainnet (the relay signs the
+  `fee_payer` half), so no crate build or web bundle carries a money-moving
+  mainnet key. `build-web.sh` no longer requires the key.
+- The x402 + mint-gate EIP-712 domain tests are chain-agnostic (no longer gated on
+  the `mainnet` feature; both chain presets have a non-empty diamond).
+
 ## [0.48.0] - 2026-06-18
 
 ### Added
