@@ -193,10 +193,12 @@ pub async fn submit_tempo_self_paid(
     Err(last_err)
 }
 
-/// `true` when the active chain is mainnet — the published crate holds NO
-/// fee_payer key there, so the sponsored fee_payer signature comes from the
-/// server relay ([`super::sponsor_relay`]) instead of a local key.
-fn is_mainnet() -> bool {
+/// `true` when the active chain is mainnet — the published crate / web bundle
+/// holds NO fee_payer key there, so the sponsored fee_payer signature comes from
+/// the server relay ([`super::sponsor_relay`]) instead of a local key. Public so
+/// the browser's self-assembled sponsored path (`run_sponsored_tempo_call`) can
+/// branch the same way the submit chokepoints do.
+pub fn is_mainnet() -> bool {
     super::chain::active().chain_id == super::chain::MAINNET.chain_id
 }
 

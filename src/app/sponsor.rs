@@ -4,17 +4,16 @@
 //!
 //! ## Trust model
 //!
-//! This module holds a **private key in the wasm bundle**. Anyone
-//! running localharness.xyz can extract it. That's accepted on
-//! testnet (Tempo Moderato — funds are play-money and the sponsor
-//! is refillable via `tempo_fundAddress`), and **must change before
-//! mainnet**.
-//!
-//! Replacement paths once we go mainnet:
-//! - Tempo access keys with scoped fee_payer permission (if Tempo
-//!   supports access keys for fee_payer signing — TBD by live test).
-//! - WebAuthn passkeys per user (each user is their own sponsor).
-//! - A 4337 paymaster with policy enforcement at the EntryPoint.
+//! On **testnet** this module holds a committed **private key in the wasm
+//! bundle** — anyone running localharness.xyz can extract it, which is accepted
+//! because the funds are play-money and the sponsor is refillable via
+//! `tempo_fundAddress`. On **mainnet** the bundle embeds NO key: [`signer`]
+//! returns the committed testnet key as an unused PLACEHOLDER, and the actual
+//! `fee_payer` half is signed SERVER-SIDE by the rate-capped relay
+//! (`registry::sponsor_relay`, design/cli-mainnet-relay.md §2.2) — the submit
+//! chokepoints (`registry::tx`) and the self-assembled `run_sponsored_tempo_call`
+//! both route through it when `registry::is_mainnet()`. So a mainnet bundle
+//! carries no money-moving key to extract.
 //!
 //! ## Refilling
 //!
@@ -48,21 +47,21 @@ use k256::ecdsa::SigningKey;
 /// `0x313b1659F5037080aA0C113D386C5954F348EF1e`. Funds remain there
 /// untouched; they can be reclaimed by the deployer key.
 ///
-/// The testnet key lives here so the default build is self-contained. The
-/// MAINNET key is NEVER committed: on a `mainnet`-feature build it is read from
-/// the `LH_MAINNET_SPONSOR_KEY` env at COMPILE time (`env!`, so a mainnet build
-/// without it fails closed). It still lands in the wasm (extractable → loss
-/// capped at the sponsor's small balance, same trust model as testnet); the
-/// proper fix is the rate-capped relay (stripe-mainnet §6.3). Mainnet sponsor:
-/// `0xE70f4B23322A954A1881B8DC3Db5781f9D22065E` (fee token USDC.e).
-#[cfg(feature = "mainnet")]
-const SPONSOR_PRIVATE_KEY_HEX: &str = env!("LH_MAINNET_SPONSOR_KEY");
-#[cfg(not(feature = "mainnet"))]
+/// Committed TESTNET sponsor key — the ONLY key in the bundle, on every build.
+/// On testnet it pays AlphaUSD fees directly. On mainnet it is a harmless,
+/// UNUSED placeholder: every sponsored path checks `registry::is_mainnet()` and
+/// routes the `fee_payer` half to the server relay instead, so this key is never
+/// used to sign a mainnet tx (and the mainnet sponsor `0xE70f4B…065E` is never
+/// embedded). `env!("LH_MAINNET_SPONSOR_KEY")` is GONE — no build embeds a
+/// mainnet money key.
 const SPONSOR_PRIVATE_KEY_HEX: &str =
     "0x046a830b5203d1d2c0a205a1432746e4381d0874711b2de7f575a973644b9d43";
 
-/// Return the sponsor's `SigningKey` for `fee_payer` signing on
-/// Tempo txs. Cheap to call repeatedly — k256 keys clone cheaply.
+/// Return the sponsor's `SigningKey` for `fee_payer` signing on Tempo txs.
+/// Cheap to call repeatedly — k256 keys clone cheaply. On mainnet the returned
+/// key is an UNUSED placeholder (the relay signs `fee_payer`); callers keep
+/// calling this so they flow into the submit chokepoints, where the mainnet
+/// branch ignores it.
 pub(crate) fn signer() -> Result<SigningKey, String> {
     crate::wallet::from_private_key_hex(SPONSOR_PRIVATE_KEY_HEX)
         .map_err(|e| format!("sponsor key invalid: {e}"))

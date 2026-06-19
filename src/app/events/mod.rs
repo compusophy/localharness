@@ -1345,6 +1345,11 @@ fn sponsor_rate_guard() -> Result<(), String> {
 /// when the shared sponsor wallet runs low so the operator can refill.
 /// Cheap single eth_call; never blocks.
 pub(crate) async fn warn_if_sponsor_low() {
+    // Mainnet has no embedded sponsor (the relay signs `fee_payer` + runs its own
+    // float circuit-breaker), so there's no local key whose balance to warn on.
+    if super::registry::is_mainnet() {
+        return;
+    }
     // AlphaUSD is a 6-DECIMAL TIP-20 (`decimals()` == 6), not 18 — the old
     // 5e18 threshold made every real balance read as "~0" on every load.
     const ALPHA_USD_UNIT: u128 = 1_000_000;
@@ -1418,9 +1423,25 @@ pub(crate) async fn run_sponsored_tempo_call(
         ));
     }
 
-    let fee_payer = super::sponsor::signer()?;
-    let fp_hash = tx.fee_payer_hash(&sender_address);
-    let fp_sig = crate::wallet::sign_hash(&fee_payer, &fp_hash);
+    // fee_payer half. Mainnet: the bundle holds no money key — the server relay
+    // signs it (authed by THIS identity's local signer, which must match the
+    // sender). Testnet: the embedded sponsor signs locally. This is the
+    // self-assembled twin of the `registry::tx` submit chokepoints.
+    let fp_sig = if super::registry::is_mainnet() {
+        let signer = super::APP
+            .with(|c| c.borrow().wallet.as_ref().map(|w| w.signer.clone()))
+            .ok_or_else(|| {
+                "mainnet sponsorship needs your identity on this device".to_string()
+            })?;
+        if crate::wallet::address(&signer) != sender_address {
+            return Err("local signer does not match the tx sender".to_string());
+        }
+        super::registry::request_fee_payer_signature(&signer, &tx, &sender_address, &sender_sig)
+            .await?
+    } else {
+        let fee_payer = super::sponsor::signer()?;
+        crate::wallet::sign_hash(&fee_payer, &tx.fee_payer_hash(&sender_address))
+    };
     let raw = tx.serialize_signed(&sender_sig, Some(&fp_sig));
     let raw_hex = bytes_to_hex_str(&raw);
     super::registry::submit_and_wait_receipt(&raw_hex).await

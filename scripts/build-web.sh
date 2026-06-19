@@ -19,14 +19,11 @@ if ! command -v wasm-pack >/dev/null 2>&1; then
     exit 1
 fi
 
-# The platform runs on Tempo MAINNET (chain 4217) — the bundle is built with the
-# `mainnet` feature, which reads the embedded sponsor key from this env at
-# compile time (never committed). Fail closed if it's missing.
-if [ -z "${LH_MAINNET_SPONSOR_KEY:-}" ]; then
-    echo "LH_MAINNET_SPONSOR_KEY not set — the mainnet build embeds the sponsor key from it." >&2
-    echo "  export LH_MAINNET_SPONSOR_KEY=\$(cat ~/.lh_sponsor_mainnet.key)" >&2
-    exit 1
-fi
+# The platform runs on Tempo MAINNET (chain 4217) — built with the `mainnet`
+# feature. The bundle embeds NO sponsor key: on mainnet the `fee_payer` half is
+# signed server-side by the rate-capped relay (`registry::sponsor_relay`,
+# design/cli-mainnet-relay.md §2.2), so there is no LH_MAINNET_SPONSOR_KEY to set
+# and no money-moving key to extract from the wasm.
 
 # Regenerate the managed docs (web/skill.md, web/llms.txt, README.md) from the
 # single source of truth (src/docs_manifest.rs) BEFORE the wasm build, so every
