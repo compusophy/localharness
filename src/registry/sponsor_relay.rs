@@ -120,6 +120,21 @@ pub async fn request_fee_payer_signature(
         return Err(format!("sponsor relay refused ({code}): {msg}"));
     }
 
+    let local_hash = tx.fee_payer_hash(sender_address);
+    verify_relay_reply(&json, &local_hash)
+}
+
+/// Verify a SUCCESS reply against the locally-recomputed fee_payer hash and
+/// return the 65-byte signature. Defense against a buggy or hostile relay:
+/// `feePayerHash` MUST equal the hash WE'D sign, and `feePayerSignature` MUST
+/// recover to the advertised `feePayer`. All three fields are REQUIRED — a reply
+/// that OMITS one is rejected, so the checks can't be silently bypassed by
+/// leaving a field out (the prior `if let Some` form skipped the check when the
+/// field was absent). Pure (no I/O) so the money-path verification is unit-tested.
+fn verify_relay_reply(
+    json: &serde_json::Value,
+    local_hash: &[u8; 32],
+) -> Result<[u8; 65], String> {
     let sig_hex = json
         .get("feePayerSignature")
         .and_then(|s| s.as_str())
@@ -127,31 +142,33 @@ pub async fn request_fee_payer_signature(
     let fp_sig = parse_sig_65(sig_hex)?;
 
     // No blind trust: the relay must have signed the SAME fee_payer hash we'd
-    // sign locally — recompute it and compare to the returned hash.
-    let local_hash = tx.fee_payer_hash(sender_address);
-    if let Some(returned) = json.get("feePayerHash").and_then(|h| h.as_str()) {
-        let want = format!("0x{}", bytes_to_hex(&local_hash));
-        if !returned.eq_ignore_ascii_case(&want) {
-            return Err(format!(
-                "relay feePayerHash {returned} != locally-derived {want} — refusing to submit"
-            ));
-        }
+    // sign locally.
+    let returned = json
+        .get("feePayerHash")
+        .and_then(|h| h.as_str())
+        .ok_or_else(|| "relay reply missing feePayerHash".to_string())?;
+    let want = format!("0x{}", bytes_to_hex(local_hash));
+    if !returned.eq_ignore_ascii_case(&want) {
+        return Err(format!(
+            "relay feePayerHash {returned} != locally-derived {want} — refusing to submit"
+        ));
     }
 
-    // The returned signature must recover to the fee_payer address the relay
-    // advertises (a malformed/foreign sig would otherwise mine to a phantom
-    // payer and waste the user's submit).
-    let recovered = crate::wallet::recover_address(&fp_sig, &local_hash)
+    // The signature must recover to the fee_payer address the relay advertises
+    // (a malformed/foreign sig would otherwise mine to a phantom payer and waste
+    // the user's submit).
+    let recovered = crate::wallet::recover_address(&fp_sig, local_hash)
         .map_err(|e| format!("relay fee_payer sig invalid: {e}"))?;
-    if let Some(advertised) = json.get("feePayer").and_then(|f| f.as_str()) {
-        let got = format!("0x{}", bytes_to_hex(&recovered));
-        if !advertised.eq_ignore_ascii_case(&got) {
-            return Err(format!(
-                "relay fee_payer sig recovers {got} but advertised {advertised}"
-            ));
-        }
+    let advertised = json
+        .get("feePayer")
+        .and_then(|f| f.as_str())
+        .ok_or_else(|| "relay reply missing feePayer".to_string())?;
+    let got = format!("0x{}", bytes_to_hex(&recovered));
+    if !advertised.eq_ignore_ascii_case(&got) {
+        return Err(format!(
+            "relay fee_payer sig recovers {got} but advertised {advertised}"
+        ));
     }
-
     Ok(fp_sig)
 }
 
@@ -196,5 +213,45 @@ mod tests {
         let url = relay_url();
         assert!(url.ends_with("/api/sponsor"));
         assert!(!url.contains("//api"), "base already has a trailing slash");
+    }
+
+    #[test]
+    fn verify_relay_reply_accepts_valid_and_rejects_tampering() {
+        let k = crate::wallet::generate();
+        let local_hash = [0x42u8; 32];
+        let fp_sig = crate::wallet::sign_hash(&k.signer, &local_hash);
+        let good = serde_json::json!({
+            "feePayerSignature": format!("0x{}", bytes_to_hex(&fp_sig)),
+            "feePayerHash": format!("0x{}", bytes_to_hex(&local_hash)),
+            "feePayer": format!("0x{}", bytes_to_hex(&k.address)),
+        });
+        // A well-formed reply over the EXPECTED hash returns the signature.
+        assert_eq!(verify_relay_reply(&good, &local_hash).unwrap(), fp_sig);
+
+        // OMITTING any required field is rejected — the hardening: previously an
+        // absent feePayerHash/feePayer SKIPPED its check (silent bypass).
+        for field in ["feePayerSignature", "feePayerHash", "feePayer"] {
+            let mut j = good.clone();
+            j.as_object_mut().unwrap().remove(field);
+            assert!(
+                verify_relay_reply(&j, &local_hash).unwrap_err().contains("missing"),
+                "omitting {field} must be rejected"
+            );
+        }
+
+        // A returned hash that isn't the one we'd sign → refuse (even with a sig
+        // valid over the REAL local hash).
+        let mut wrong_hash = good.clone();
+        wrong_hash["feePayerHash"] = serde_json::json!(format!("0x{}", bytes_to_hex(&[0x99u8; 32])));
+        assert!(verify_relay_reply(&wrong_hash, &local_hash)
+            .unwrap_err()
+            .contains("!= locally-derived"));
+
+        // An advertised feePayer that isn't the sig's actual signer → refuse.
+        let mut wrong_payer = good.clone();
+        wrong_payer["feePayer"] = serde_json::json!("0x00000000000000000000000000000000000000ff");
+        assert!(verify_relay_reply(&wrong_payer, &local_hash)
+            .unwrap_err()
+            .contains("advertised"));
     }
 }
