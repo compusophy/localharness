@@ -430,6 +430,14 @@ name = "localharness"
 # OFF under the wasm/browser-app build, where a native CLI can't compile.
 required-features = ["wallet", "native"]
 
+# gen-docs: the DOC-INTEGRITY generator. Fills every `<!-- GEN:key -->` block in
+# the managed docs (web/skill.md, web/llms.txt, README.md) from the single
+# source of truth (`docs_manifest`). `--check` is the release pre-flight drift
+# gate. Needs `wallet` because the manifest reads `registry::chain`.
+[[bin]]
+name = "gen-docs"
+required-features = ["wallet"]
+
 [profile.release]
 opt-level = 3
 lto = "thin"

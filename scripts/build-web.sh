@@ -28,15 +28,14 @@ if [ -z "${LH_MAINNET_SPONSOR_KEY:-}" ]; then
     exit 1
 fi
 
-# Stamp the crate version into web/llms.txt so the deployed bundle
-# advertises its freshness (curl llms.txt | head). Keeps it from drifting
-# from Cargo.toml without a manual bump step.
-VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
-if [ -n "$VERSION" ]; then
-    sed -i.bak -E "s/^\*\*version:\*\* .*/\*\*version:\*\* ${VERSION} (stamped from Cargo.toml by build-web; matches crates.io when the deployed bundle is current)/" web/llms.txt
-    rm -f web/llms.txt.bak
-    echo "→ stamped llms.txt version: ${VERSION}"
-fi
+# Regenerate the managed docs (web/skill.md, web/llms.txt, README.md) from the
+# single source of truth (src/docs_manifest.rs) BEFORE the wasm build, so every
+# deploy ships fresh chain/pricing/version/tool/CLI facts. This replaces the old
+# manual llms.txt version stamp — the generator owns every `<!-- GEN:key -->`
+# block, including the version line. Needs the `wallet` feature (the manifest
+# reads registry::chain). See docs/SOP-doc-integrity.md.
+echo "→ gen-docs (regenerate managed docs from src/docs_manifest.rs)..."
+cargo run --quiet --bin gen-docs --features wallet
 
 # PRIVACY: rustc embeds the BUILD MACHINE's absolute source paths into panic
 # metadata inside the wasm (e.g. C:\Users\<name>\.cargo\registry\...) — the

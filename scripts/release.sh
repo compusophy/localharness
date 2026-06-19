@@ -78,6 +78,15 @@ step "pre-flight: CHANGELOG.md entry"
 grep -qE "^## \[$VERSION\]" CHANGELOG.md || \
     fail "CHANGELOG.md is missing a '## [$VERSION]' section (add it before releasing)"
 
+step "pre-flight: doc-integrity drift gate (gen-docs --check)"
+# A VERSION BUMP CANNOT SHIP WITH STALE DOCS. Every `<!-- GEN:key -->` block in
+# web/skill.md / web/llms.txt / README.md must match the single source of truth
+# (src/docs_manifest.rs). If a chain address / pricing / tool list / version
+# block drifted and wasn't regenerated, this aborts the release. Fix:
+#   cargo run --bin gen-docs   (then commit). See docs/SOP-doc-integrity.md.
+cargo run --quiet --bin gen-docs --features wallet -- --check || \
+    fail "doc drift: managed docs are stale — run 'cargo run --bin gen-docs', commit, retry"
+
 # ---------------------------------------------------------------------------
 # Bump
 # ---------------------------------------------------------------------------
@@ -91,11 +100,13 @@ step "promote CHANGELOG.md heading date -> $TODAY"
 perl -i -pe "s|^## \[$VERSION\][^\n]*|## [$VERSION] - $TODAY|" CHANGELOG.md
 grep -q "^## \[$VERSION\] - $TODAY" CHANGELOG.md || fail "CHANGELOG promote did not stick"
 
-step "stamp web/llms.txt version -> $VERSION"
-# Keep the public llms.txt freshness line in lock-step with the release
-# (same line as scripts/build-web.sh).
-perl -i -pe "s|^\*\*version:\*\* .*|**version:** $VERSION (stamped from Cargo.toml by build-web; matches crates.io when the deployed bundle is current)|" web/llms.txt
-grep -q "^\*\*version:\*\* $VERSION " web/llms.txt || fail "llms.txt version stamp did not stick"
+step "regenerate managed docs (gen-docs) -> $VERSION"
+# The generator OWNS the version line (and every other GEN block) in
+# web/skill.md / web/llms.txt / README.md. Run it AFTER the Cargo.toml bump so
+# every `<!-- GEN:version -->` block picks up the new crate version; this
+# replaces the old per-file manual sed stamps.
+cargo run --quiet --bin gen-docs --features wallet
+grep -q "version:\*\* $VERSION " web/llms.txt || fail "gen-docs did not stamp llms.txt version $VERSION"
 
 # ---------------------------------------------------------------------------
 # Verify
@@ -125,7 +136,9 @@ cargo publish --dry-run --allow-dirty 2>&1 | tail -3
 # ---------------------------------------------------------------------------
 
 step "git commit"
-git add Cargo.toml Cargo.lock CHANGELOG.md web/llms.txt
+# web/skill.md + README.md join llms.txt: gen-docs stamps the new version into
+# each one's GEN:version block, so all three are part of the release commit.
+git add Cargo.toml Cargo.lock CHANGELOG.md web/llms.txt web/skill.md README.md
 git commit -m "release $TAG" >/dev/null
 
 step "git tag $TAG"

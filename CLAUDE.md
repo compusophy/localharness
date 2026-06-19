@@ -582,14 +582,28 @@ model artifacts.
 
 ## Documentation SOP
 
-Five surfaces — keep in sync on every change: **docs.rs** (`///` in source, every
-`pub` item gets a one-liner) · **README.md** (quick start, features, architecture)
-· **CLAUDE.md** (internal map + gotchas, this file, under 40K) · **llms.txt**
-(`web/llms.txt`: caps, RPC, registry) · **CHANGELOG.md**
-(per-version, Keep-a-Changelog).
+**Drift-prone FACTS are GENERATED, not hand-copied** (`docs/SOP-doc-integrity.md`).
+Chain addresses, the crate version, `$LH` pricing, the agent-tool list, and the
+CLI list live in ONE place — `src/docs_manifest.rs` (chain facts DERIVED from
+`registry::chain::{MAINNET,MODERATO}`, version from `CARGO_PKG_VERSION`). They
+fill `<!-- GEN:key -->`…`<!-- /GEN:key -->` blocks in **web/skill.md**,
+**web/llms.txt**, **README.md** via `cargo run --bin gen-docs` (`--check` =
+drift-only). NEVER hand-edit a GEN block; change the fact in the manifest +
+regenerate. Gates enforce it: a `cargo test` drift-test
+(`docs_manifest::tests::no_doc_drift`, runs under `--features wallet`),
+`build-web.sh` regenerates pre-build, and `release.{sh,ps1}` run
+`gen-docs -- --check` in PRE-FLIGHT — **a version bump cannot ship stale docs.**
 
-**When to update what:** new pub API → `///` (+README if surface changes); new
-module → CLAUDE.md tree; new agent tool → `llms.txt` + session prompt; new facet →
-CLAUDE.md on-chain + `contracts/README.md` + `llms.txt`; release → CHANGELOG.
+The other surfaces stay hand-written: **docs.rs** (`///`, every `pub` item gets a
+one-liner) · **CLAUDE.md** (this map, under 40K) · **CHANGELOG.md** (Keep-a-
+Changelog) · the PROSE in skill.md/llms.txt/README (only the facts in GEN blocks
+are generated).
 
-**Verify before release:** `cargo doc --no-deps 2>&1 | grep "warning.*missing"`.
+**When to update what:** drift-prone fact (chain/version/pricing/tool/CLI) →
+`docs_manifest.rs` + `gen-docs`; new pub API → `///` (+README prose if surface
+changes); new module → CLAUDE.md tree; new agent tool → `AGENT_TOOLS` in the
+manifest + `llms.txt` prose + session prompt; new facet → CLAUDE.md on-chain +
+`contracts/README.md` + `llms.txt`; release → CHANGELOG.
+
+**Verify before release:** `cargo run --bin gen-docs -- --check` (the release
+pre-flight does this) + `cargo doc --no-deps 2>&1 | grep "warning.*missing"`.

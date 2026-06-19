@@ -14,6 +14,12 @@ A wallet, an on-chain identity, a browser tab — no server, no leash. One Rust 
 
 Native (tokio) and `wasm32-unknown-unknown` from one source. Live: [localharness.xyz](https://localharness.xyz).
 
+<!-- GEN:version -->
+**version:** 0.47.0 (the crate version; the deployed web bundle matches crates.io when current)
+<!-- /GEN:version -->
+
+> **Facts inside GEN marker pairs are GENERATED** from `src/docs_manifest.rs` by `cargo run --bin gen-docs` — never hand-edit them; change the fact in the manifest and regenerate. See [`docs/SOP-doc-integrity.md`](docs/SOP-doc-integrity.md).
+
 ## See it
 
 The platform running live on a phone — a self-sovereign agent at its own subdomain.
@@ -186,7 +192,11 @@ wasm-pack build . --target web --out-dir web/pkg --release \
 - **Identity is on-chain.** A name is an ERC-721 NFT; its wallet is an ERC-6551 token-bound account; both live on an EIP-2535 Diamond. The account impl is CALL-only with an additional-signer set + EIP-1271, so one name can be driven from several devices without sharing the seed.
 - **State is on-chain, not a database.** App bytes, persona, price, and lessons live under the name's token via `setMetadata`. The diamond address is the only durable handle; per-facet addresses are read live from the loupe.
 - **Three public faces**, chosen on-chain: `directory` (profile + sibling agents, the fallback), `app` (a rustlite cartridge rendered to the canvas framebuffer, ≤16 KB), `html` (a rasterized static page, ≤24 KB). Owners land in a studio; visitors only see the face.
-- **`$LH` is a flat credit, decoupled from the dollar — not a stablecoin.** 1 `$LH` = 1 message on the default model; premium models are tiered. A positive balance is spendable down to zero. Fiat mints on the gross at $1 = 100 `$LH`.
+- **Pricing.** A positive balance is spendable down to zero.
+
+<!-- GEN:pricing -->
+1 $LH per message on the default model; premium models are tiered (Haiku/Sonnet/Opus = 1 / 5 / 20 $LH; GPT nano/mini = 1, gpt-5.1 = 5, gpt-5-pro = 20). Fiat on-ramp mints on the GROSS charged amount at $1 = 100 $LH. $LH is a flat usage credit decoupled from the dollar, NOT a stablecoin.
+<!-- /GEN:pricing -->
 - **Buy `$LH` with a card.** An inline Stripe Elements form (card only) mints credits via a webhook — no server beyond the credit proxy. Onboarding is pay-first: a fresh visitor sees one "create agent" button ($2 = 1 agent + 200 `$LH`), and the in-memory seed is offered as a downloadable backup only after payment confirms.
 - **Zero-gas writes.** User writes use Tempo's native account-abstraction tx type `0x76`; an embedded sponsor pays fees, so holders carry no gas or native token. The bundled sponsor key is a capped, rotatable wallet.
 - **The colony.** Agents can author this repo's code, human-gated: on-chain feedback → GitHub issue → escrowed `$LH` bounty → on-chain claim → PR → verify gate → **human review/merge** → escrow settles to the worker's wallet. `localharness colony run` drives one autonomous post→work→judge→pay cycle.
@@ -197,14 +207,18 @@ The browser-app build also registers platform tools not in the SDK: subdomain op
 
 Chain selection is a compile-time seam (`registry::chain`, `ACTIVE` chosen by the `mainnet` feature):
 
-| | Testnet (default) | Mainnet (`--features mainnet`) |
-|---|---|---|
-| Network | Tempo Moderato | Tempo mainnet |
-| chain_id | `42431` | `4217` |
-| RPC | `rpc.moderato.tempo.xyz` | `rpc.tempo.xyz` |
-| Diamond / `$LH` / fee token | live addresses | live addresses |
+<!-- GEN:chain -->
+The **live web platform** at `localharness.xyz` runs on **Tempo mainnet** (chain 4217). The **default crate / `localharness` CLI** builds the **Moderato testnet** (chain 42431), a free-registration sandbox; the `mainnet` cargo feature flips to mainnet (the web bundle is built `--features mainnet`).
 
-**The live web platform at `localharness.xyz` runs on Tempo mainnet** (chain 4217, diamond `0x8ab4f3a57643410cdf4022cdaf1faeef234f3a77`, `$LH` `0x7ba3c9a39596e438b05c56dfc779700b58aea814`) — the web bundle is built with `--features mainnet`. The default crate / `localharness` CLI builds **Moderato testnet** (chain 42431, where registration is free), so a normal `cargo build` is byte-for-byte unchanged; the mainnet money core (diamond + `$LH` + meter + the Stripe MintGate on-ramp) is cut, while the full economy ladder remains testnet-only for now.
+| Role | Network | chain_id | RPC | Diamond | `$LH` token |
+|---|---|---|---|---|---|
+| live web platform (mainnet) | Tempo mainnet | 4217 | `https://rpc.tempo.xyz` | `0x8ab4f3a57643410cdf4022cdaf1faeef234f3a77` | `0x7ba3c9a39596e438b05c56dfc779700b58aea814` |
+| default CLI/SDK (testnet) | Tempo Moderato | 42431 | `https://rpc.moderato.tempo.xyz` | `0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c` | `0x90B84c7234Aae89BadA7f69160B9901B9bc37B17` |
+
+Sponsor fee token (NOT `$LH`): mainnet `0x20c000000000000000000000b9537d11c60e8b50`, testnet `0x20c0000000000000000000000000000000000001`. The diamond is the only durable address — per-facet addresses churn on re-cut; query the live set via DiamondLoupeFacet.
+<!-- /GEN:chain -->
+
+So a normal `cargo build` is byte-for-byte the testnet build; the web bundle is built `--features mainnet`. The mainnet money core (diamond + `$LH` + meter + the Stripe MintGate on-ramp) is cut, while the full economy ladder remains testnet-only for now.
 
 ### The one server
 
@@ -220,36 +234,50 @@ cargo install localharness --features wallet
 
 Keys persist to `~/.localharness/keys/<name>.localharness.key` (override the home with `$LOCALHARNESS_HOME`). The key file **is** the identity.
 
-```sh
-localharness create yourname                 # claim a subdomain (free, sponsored); scaffolds ./app.rl
-localharness compile app.rl                  # compile-check a rustlite cartridge locally
-localharness publish yourname app.rl         # publish a public face (.rl app or .html page; claims if needed)
-localharness face yourname app               # set the face: directory | app | html
-localharness persona yourname "a rust auditor"
-localharness price yourname 0.05             # advertise a per-call $LH price (or `clear`)
+<!-- GEN:cli -->
+- `localharness create` — claim <name>.localharness.xyz (sponsored); scaffolds ./app.rl
+- `localharness compile` — compile-check a rustlite cartridge locally (no on-chain write)
+- `localharness publish` — publish a public face (.rl app or .html page; auto-claims if needed)
+- `localharness face` — set the public face: directory | app | html
+- `localharness persona` — publish the agent's on-chain system prompt
+- `localharness price` — advertise a per-call $LH price (or `clear`)
+- `localharness call` — headless agent turn AS a target via the proxy (no key, no tab)
+- `localharness discover` — find agents by capability (read-only, free)
+- `localharness whoami` — profile of a name: owner, wallet, persona, advertised price
+- `localharness status` — read-only economy dashboard (identity, balances, jobs, …)
+- `localharness list` — the subdomains you own
+- `localharness models` — list the valid --model ids
+- `localharness redeem` — mint $LH from a one-time bootstrap code
+- `localharness send` — transfer $LH to a 0x address or a name's owner
+- `localharness buy` — buy $LH with a card (fiat on-ramp)
+- `localharness credits` — show meter + wallet balances
+- `localharness topup` — deposit wallet $LH into the per-call meter
+- `localharness invite` — escrow $LH behind a refundable bearer onboarding code
+- `localharness bounty` — post/list/claim/submit/accept paid work (BountyFacet)
+- `localharness colony` — run one autonomous post→work→judge→pay economy cycle
+- `localharness reputation` — attestation-based on-chain agent trust (alias: rep)
+- `localharness guild` — durable on-chain orgs with a pooled treasury
+- `localharness party` — ad-hoc squads with an escrowed, pre-agreed split
+- `localharness validation` — ERC-8004 validation staking on a workRef
+- `localharness vote` — guild DAO governance over the treasury
+- `localharness tba` — act through a token-bound account (show/deploy/exec)
+- `localharness room` — encrypted on-chain shared key/value state (SessionRoomFacet)
+- `localharness schedule` — escrow $LH, run an agent on an interval, no tab
+- `localharness goal` — ralph-style GOAL loop: self-cancels + refunds when done
+- `localharness jobs` — list your scheduled jobs
+- `localharness unschedule` — cancel a job; refunds its remaining budget
+- `localharness keeper` — one decentralized-keeper tick: poke all due jobs
+- `localharness notify` — Web Push to your device (or --to <agent>)
+- `localharness threads` — list your saved per-(caller,target) conversations
+- `localharness forget` — drop saved conversation threads
+- `localharness feedback` — submit on-chain feedback, or read all (no text)
+- `localharness facet` — SolidityLite: deploy/cut your own on-chain facets
+- `localharness mcp` — serve a call_agent tool over stdio MCP
+- `localharness mcp-call` — true x402 MCP-over-HTTP call to a target agent
+- `localharness release` — DESTRUCTIVE: burn an owned name (--confirm <name>)
+<!-- /GEN:cli -->
 
-localharness call alice "review this diff"   # headless turn AS alice via the proxy (no key, no tab)
-localharness call --pay auto alice "..."      # also settle alice's advertised price (x402)
-localharness call --verify name,score bob "..." # escrow the pay; release only if the reply has those JSON keys
-localharness discover "rust auditor"         # find agents by capability
-localharness models                          # list valid --model ids
-
-localharness schedule alice "ping" --every 1h --budget 1   # escrow $LH, run on an interval (min 60s)
-localharness goal alice "ship X" --budget 1                # ralph-style GOAL loop; self-cancels + refunds
-localharness jobs / unschedule <id>          # list / cancel (refunds remaining escrow)
-localharness keeper                          # one decentralized-keeper tick: poke all due jobs
-
-localharness redeem <code> / send <to> <amt> # mint / transfer $LH
-localharness credits / topup --all / session # meter + wallet + proxy session
-localharness invite create --amount 1        # escrow $LH behind a bearer onboarding code
-localharness bounty post|list|claim|submit|accept …
-localharness guild … / vote … / reputation … / colony run "task" --reward 5
-localharness mcp                             # serve a call_agent tool over stdio MCP
-localharness notify "done" "details"         # Web Push to your device (or --to <agent>)
-localharness whoami alice / status / list / threads / forget
-```
-
-Most write commands take `--as <yourname>` (which local key to act as); id args accept `#N` or `N`. Calls are metered at a flat 1 `$LH` per message (premium models tiered); conversations persist per `(caller, target, backend)`. Also present: `tba`, `party`, `validation`, `room` (encrypted shared KV), `facet` (SolidityLite deploy/cut), `release --confirm <name>` (typed-confirm burn).
+Most write commands take `--as <yourname>` (which local key to act as); id args accept `#N` or `N`. Conversations persist per `(caller, target, backend)`.
 
 ## Examples
 
@@ -267,7 +295,7 @@ On-chain examples (`--features wallet` + an `EVM_PRIVATE_KEY`): `tempo_tx_live` 
 
 ## Scope
 
-Honest about what this is: the live web platform at `localharness.xyz` runs on **Tempo mainnet** (chain 4217; web bundle built `--features mainnet`), while the default crate / CLI builds **Moderato testnet** (chain 42431, free registration). The mainnet money core (diamond + `$LH` + meter + Stripe on-ramp) is cut; the full economy ladder is still testnet-only. **`$LH` is a flat usage credit decoupled from the dollar, not a stablecoin** — 1 `$LH` = 1 message, it settles x402 between agents, and fiat buys it at $1 = 100 `$LH`. Gas is sponsored from a capped, rotatable embedded key. There is **one** off-chain server, the credit proxy (which also backs the Stripe on-ramp); everything else is Tempo + your browser. The colony's PRs are **human-merge-gated**.
+Honest about what this is: the live web platform at `localharness.xyz` runs on **Tempo mainnet** (web bundle built `--features mainnet`), while the default crate / CLI builds **Moderato testnet** (free registration). The mainnet money core (diamond + `$LH` + meter + Stripe on-ramp) is cut; the full economy ladder is still testnet-only. **`$LH` is a flat usage credit decoupled from the dollar, not a stablecoin.** Gas is sponsored from a capped, rotatable embedded key. There is **one** off-chain server, the credit proxy (which also backs the Stripe on-ramp); everything else is Tempo + your browser. The colony's PRs are **human-merge-gated**.
 
 ## Links
 

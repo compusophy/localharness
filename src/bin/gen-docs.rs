@@ -1,0 +1,97 @@
+//! `gen-docs` — the doc-integrity generator.
+//!
+//! Fills every `<!-- GEN:<key> -->...<!-- /GEN:<key> -->` block in the managed
+//! docs (`web/skill.md`, `web/llms.txt`, `README.md`) with the freshly-rendered
+//! block from [`localharness::docs_manifest`] — the single source of truth for
+//! the drift-prone facts (chain addresses, version, pricing, tool list, CLI
+//! list).
+//!
+//! Modes:
+//!   `cargo run --bin gen-docs`            — REWRITE the docs in place (default).
+//!   `cargo run --bin gen-docs -- --check` — render in-memory, diff vs the
+//!                                            files, print any drift, exit 1 if
+//!                                            ANY block is stale (else exit 0).
+//!
+//! IDEMPOTENT: running it twice is a no-op. The `--check` mode is the gate the
+//! release scripts run in pre-flight, so a version bump cannot ship stale docs.
+//!
+//! Requires `--features wallet` (the manifest reads `registry::chain`).
+
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use localharness::docs_manifest;
+
+/// The managed docs, relative to the crate root.
+const MANAGED_DOCS: &[&str] = &["web/skill.md", "web/llms.txt", "README.md"];
+
+fn crate_root() -> PathBuf {
+    // CARGO_MANIFEST_DIR points at the crate root both for `cargo run` and for
+    // a `cargo install`ed binary's build — the same anchor the lib tests use.
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn main() -> ExitCode {
+    let check = std::env::args().any(|a| a == "--check");
+    let root = crate_root();
+
+    let mut any_drift = false;
+    let mut any_error = false;
+
+    for rel in MANAGED_DOCS {
+        let path = root.join(rel);
+        let doc = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("gen-docs: cannot read {}: {e}", path.display());
+                any_error = true;
+                continue;
+            }
+        };
+
+        let (filled, report) = docs_manifest::fill(&doc);
+
+        if check {
+            if report.drifted() {
+                any_drift = true;
+                for key in &report.changed {
+                    println!("DRIFT  {rel}: GEN:{key} is stale");
+                }
+            } else {
+                println!("ok     {rel} ({} block(s) fresh)", report.fresh.len());
+            }
+        } else if report.drifted() {
+            if let Err(e) = write_doc(&path, &filled) {
+                eprintln!("gen-docs: cannot write {}: {e}", path.display());
+                any_error = true;
+                continue;
+            }
+            println!(
+                "updated {rel}: {}",
+                report
+                    .changed
+                    .iter()
+                    .map(|k| format!("GEN:{k}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        } else {
+            println!("ok      {rel} ({} block(s) already fresh)", report.fresh.len());
+        }
+    }
+
+    if any_error {
+        return ExitCode::FAILURE;
+    }
+    if check && any_drift {
+        eprintln!("\ndoc drift detected — run `cargo run --bin gen-docs` to regenerate.");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+/// Write the doc back, preserving its line endings sanely (we write with `\n`;
+/// the docs are LF in the repo).
+fn write_doc(path: &Path, content: &str) -> std::io::Result<()> {
+    std::fs::write(path, content)
+}

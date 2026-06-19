@@ -186,6 +186,16 @@ pub mod skills;
 /// on-chain `LocalharnessRegistryFacet._isValidName` rule. See `src/subdomain.rs`.
 pub mod subdomain;
 
+/// THE single source of truth for the drift-prone FACTS mirrored across the
+/// three managed docs (`web/skill.md`, `web/llms.txt`, `README.md`): chain
+/// addresses (from `registry::chain`), the crate version, `$LH` pricing, the
+/// agent tool list, and the CLI command list. `cargo run --bin gen-docs` fills
+/// each doc's `<!-- GEN:key -->` block from here; a `cargo test` drift gate +
+/// the release pre-flight enforce sync. Gated on `wallet` (it reads
+/// `registry::chain`). See `docs/SOP-doc-integrity.md`. (native-testable)
+#[cfg(feature = "wallet")]
+pub mod docs_manifest;
+
 // Inline SVG QR-code generation for the app's share surfaces (device
 // pairing, publish share, `?invite=` links). Feature-gated like `app`
 // but NOT wasm-gated, so its unit test runs under a native

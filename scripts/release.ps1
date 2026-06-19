@@ -97,6 +97,16 @@ if (-not (Select-String -Path CHANGELOG.md -Pattern "^## \[$([regex]::Escape($Ve
     Fail "CHANGELOG.md is missing a '## [$Version]' section (add it before releasing)"
 }
 
+Step "pre-flight: doc-integrity drift gate (gen-docs --check)"
+# A VERSION BUMP CANNOT SHIP WITH STALE DOCS. Every `<!-- GEN:key -->` block in
+# web/skill.md / web/llms.txt / README.md must match the single source of truth
+# (src/docs_manifest.rs). If a chain address / pricing / tool list / version
+# block drifted and wasn't regenerated, this aborts the release. Fix:
+#   cargo run --bin gen-docs   (then commit). See docs/SOP-doc-integrity.md.
+# Invoke-Native scopes the PS5.1 stderr-as-terminating-error trap (cargo prints
+# progress to stderr) and checks $LASTEXITCODE — a non-zero gen-docs exit fails.
+Invoke-Native "gen-docs --check" { cargo run --quiet --bin gen-docs --features wallet -- --check }
+
 # ---------------------------------------------------------------------------
 # Bump
 # ---------------------------------------------------------------------------
@@ -123,14 +133,15 @@ if (-not (Select-String -Path CHANGELOG.md -Pattern "^## \[$([regex]::Escape($Ve
     Fail "CHANGELOG promote did not stick"
 }
 
-Step "stamp web/llms.txt version -> $Version"
-# Keep the public llms.txt freshness line in lock-step with the release.
-# Same method as scripts/build-web.ps1 so the two never fight over format.
-$llmsLine = '**version:** ' + $Version + ' (stamped from Cargo.toml by build-web; matches crates.io when the deployed bundle is current)'
-(Get-Content web/llms.txt -Raw) -replace '(?m)^\*\*version:\*\* .*$', $llmsLine |
-    Set-Content web/llms.txt -Encoding utf8 -NoNewline
-if (-not (Select-String -Path web/llms.txt -Pattern "^\*\*version:\*\* $([regex]::Escape($Version)) " -Quiet)) {
-    Fail "llms.txt version stamp did not stick"
+Step "regenerate managed docs (gen-docs) -> $Version"
+# The generator OWNS the version line (and every GEN block) in web/skill.md /
+# web/llms.txt / README.md. Run it AFTER the Cargo.toml bump so every
+# `<!-- GEN:version -->` block picks up the new crate version. This replaces the
+# old per-file manual llms.txt version stamp. (The README crates.io BADGE +
+# install snippet below are NOT GEN blocks — they stay hand-stamped.)
+Invoke-Native "gen-docs" { cargo run --quiet --bin gen-docs --features wallet }
+if (-not (Select-String -Path web/llms.txt -Pattern "version:\*\* $([regex]::Escape($Version)) " -Quiet)) {
+    Fail "gen-docs did not stamp llms.txt version $Version"
 }
 
 Step "stamp README.md crate version -> $Version"
@@ -178,7 +189,7 @@ Invoke-Native "cargo publish --dry-run" { cargo publish --dry-run --allow-dirty 
 # ---------------------------------------------------------------------------
 
 Step "git commit"
-Invoke-Native "git add"    { git add Cargo.toml Cargo.lock CHANGELOG.md web/llms.txt README.md }
+Invoke-Native "git add"    { git add Cargo.toml Cargo.lock CHANGELOG.md web/llms.txt web/skill.md README.md }
 Invoke-Native "git commit" { git commit -m "release $Tag" }
 
 Step "git tag $Tag"
