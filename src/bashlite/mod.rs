@@ -22,7 +22,8 @@
 //!   file `-e`/`-f`/`-d PATH`).
 //! - Command substitution: `$(…)` (nested, subshell vars, shared fuel).
 //! - Builtins (fs): `echo`, `cd`, `pwd`, `ls`, `cat`, `grep`, `find`,
-//!   `wc`, `mkdir`, `write`/`create` (CREATE-only), `true`/`false`.
+//!   `wc`, `head`/`tail` (first/last N stdin lines), `mkdir`,
+//!   `write`/`create` (CREATE-only), `true`/`false`.
 //! - **Composition (`run`/`source`/`.`)**: execute another `.bl` script in a
 //!   nested evaluator (shared fs + fuel) — a script is a composition of scripts.
 //!   FRACTAL: the sub-script can itself `run` more, bounded by the shared fuel.
@@ -518,6 +519,21 @@ mod tests {
         let r = run_ok(files, "find src -name '*.rl' -type f").await;
         // sorted: src/a.rl, src/sub/c.rl
         assert_eq!(r.stdout, "src/a.rl\nsrc/sub/c.rl\n");
+    }
+
+    #[tokio::test]
+    async fn head_and_tail_limit_lines() {
+        // `ls` emits one name per line (sorted a,b,c,d) — real newlines to slice.
+        let files = &[("/a", ""), ("/b", ""), ("/c", ""), ("/d", "")];
+        assert_eq!(run_ok(files, "ls | head -2").await.stdout, "a\nb\n");
+        assert_eq!(run_ok(files, "ls | head -n 3").await.stdout, "a\nb\nc\n");
+        assert_eq!(run_ok(files, "ls | tail -2").await.stdout, "c\nd\n");
+        assert_eq!(run_ok(files, "ls | tail -n 1").await.stdout, "d\n");
+        // Default 10, and n > available, both pass everything through.
+        assert_eq!(run_ok(files, "ls | head").await.stdout, "a\nb\nc\nd\n");
+        assert_eq!(run_ok(files, "ls | head -9").await.stdout, "a\nb\nc\nd\n");
+        // A bad count is a usage error (exit 2), not a panic.
+        assert_eq!(run_ok(files, "ls | head -x\necho $?").await.stdout, "2\n");
     }
 
     #[tokio::test]

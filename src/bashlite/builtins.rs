@@ -38,6 +38,8 @@ pub async fn dispatch_in(
         "cat" => cat(fs, cwd, args).await,
         "wc" => Output::ok(wc(args, stdin)),
         "grep" => grep(args, stdin),
+        "head" => head_tail(args, stdin, true),
+        "tail" => head_tail(args, stdin, false),
         "find" => find(fs, cwd, args).await,
         "mkdir" => mkdir(fs, cwd, args).await,
         "write" | "create" => write_create(fs, cwd, args).await,
@@ -265,6 +267,41 @@ async fn mkdir(fs: &dyn Filesystem, cwd: &str, args: &[String]) -> Output {
         }
     }
     Output::ok("")
+}
+
+/// `head [-n N | -N]` / `tail [-n N | -N]` — the first / last N lines of stdin
+/// (default 10). A pure stdin processor like `grep`/`wc`, so `lh-discover coding
+/// | head -3` takes the top matches. Bad args → exit 2, never a panic.
+fn head_tail(args: &[String], stdin: &str, from_head: bool) -> Output {
+    let n = match parse_line_count(args) {
+        Ok(n) => n,
+        Err(msg) => return Output::err(msg, 2),
+    };
+    let lines: Vec<&str> = stdin.lines().collect();
+    let selected: &[&str] = if from_head {
+        &lines[..lines.len().min(n)]
+    } else {
+        &lines[lines.len().saturating_sub(n)..]
+    };
+    let mut out = selected.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    Output::ok(out)
+}
+
+/// Parse a `head`/`tail` line count: no args → 10; `-n N` (two args); `-nN` or
+/// `-N` (one arg). Anything else is a usage error.
+fn parse_line_count(args: &[String]) -> Result<usize, String> {
+    let count = |s: &str| s.parse::<usize>().map_err(|_| format!("head/tail: invalid line count: {s}"));
+    match args {
+        [] => Ok(10),
+        [a, b] if a == "-n" => count(b),
+        [a] if a == "-n" => Err("head/tail: option requires an argument: -n".to_string()),
+        [a] if a.starts_with("-n") => count(&a[2..]),
+        [a] if a.starts_with('-') && a.len() > 1 => count(&a[1..]),
+        _ => Err("head/tail: usage: head|tail [-n N] (reads stdin)".to_string()),
+    }
 }
 
 /// `write PATH CONTENT...` / `create PATH CONTENT...` — create a NEW file with

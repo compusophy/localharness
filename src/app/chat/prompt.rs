@@ -383,7 +383,7 @@ pub(crate) fn base_system_prompt(
              if/for/while (`for f in $(…)` splits on whitespace), [ … ] tests, \
              $(…) substitution, $VAR / $?, `run FILE.bl` to compose another \
              script, and the fs builtins \
-             echo/cd/pwd/ls/cat/grep/find/wc/mkdir/write. READ/CREATE/SEARCH \
+             echo/cd/pwd/ls/cat/grep/find/wc/head/tail/mkdir/write. READ/CREATE/SEARCH \
              only: NO moving $LH or any value, NO lh-* platform commands, \
              NO networking, NO deleting/overwriting (write is create-only). A \
              nonzero exit is NORMAL (branch on $?); only a malformed script or a \
