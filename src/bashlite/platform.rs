@@ -3,7 +3,7 @@
 //! These let a bashlite script READ the platform (identity, wallet + meter $LH
 //! balances, name resolution, advertised price, owned agents) as plain commands
 //! — `lh-whoami`, `lh-balance`, `lh-meter`, `lh-resolve`, `lh-price`, `lh-list`,
-//! `lh-discover`, `lh-bounties` — so an agent's intent is a
+//! `lh-discover`, `lh-bounties`, `lh-help` — so an agent's intent is a
 //! PROGRAM over the platform — not a stutter of tool round-trips, and not an
 //! agent loop at all. A surface (CLI / browser) wires [`dispatch`] into its
 //! `BashHost::run_builtin` override, falling back to the fs builtins for
@@ -39,9 +39,34 @@ pub async fn dispatch(cmd: &str, args: &[String], identity: Option<&str>) -> Opt
         "lh-list" => Some(lh_list(args, identity).await),
         "lh-discover" => Some(lh_discover(args).await),
         "lh-bounties" => Some(lh_bounties(args).await),
+        "lh-help" => Some(lh_help()),
         // Not an lh-* command we own — let the host fall back to fs builtins.
         _ => None,
     }
+}
+
+/// `lh-help` — list every localharnesslite command, one per line, so an agent
+/// dropped into a bashlite shell can DISCOVER the platform surface without
+/// leaving it. Pure, static, read-only; the text doubles as the spec. Keep it in
+/// sync as `lh-*` commands are added.
+fn lh_help() -> Output {
+    Output::ok(
+        "localharnesslite — platform commands for bashlite\n\
+         \n\
+         reads (no signer, no gas):\n\
+         \x20 lh-whoami                 this host's identity address\n\
+         \x20 lh-balance [name|0xaddr]  wallet $LH balance (default: self)\n\
+         \x20 lh-meter   [name|0xaddr]  metered $LH balance (default: self)\n\
+         \x20 lh-resolve <name>         name -> owner address\n\
+         \x20 lh-price   <name>         agent's advertised per-call $LH price\n\
+         \x20 lh-list    [name|0xaddr]  agents owned (default: self)\n\
+         \x20 lh-discover <query...>    find agents by relevance\n\
+         \x20 lh-bounties [query...]    open paid work\n\
+         \x20 lh-help                   this list\n\
+         \n\
+         writes (confirm-gated):\n\
+         \x20 lh-send <name|0xaddr> <amount>   transfer $LH\n",
+    )
 }
 
 /// `lh-bounties [query…]` — open bounties (paid work) one per line:
@@ -295,6 +320,20 @@ mod tests {
         // Anything not `lh-*` → None, so the host falls back to fs builtins.
         assert!(dispatch("echo", &["hi".into()], None).await.is_none());
         assert!(dispatch("ls", &[], Some("0xabc")).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn help_lists_every_command_offline() {
+        // Pure, no RPC, exit 0 — and it must mention EVERY lh-* command so the
+        // listing can't silently drift as commands are added/renamed.
+        let r = dispatch("lh-help", &[], None).await.unwrap();
+        assert_eq!(r.code, 0);
+        for cmd in [
+            "lh-whoami", "lh-balance", "lh-meter", "lh-resolve", "lh-price", "lh-list",
+            "lh-discover", "lh-bounties", "lh-help", "lh-send",
+        ] {
+            assert!(r.stdout.contains(cmd), "lh-help is missing `{cmd}`");
+        }
     }
 
     #[tokio::test]
