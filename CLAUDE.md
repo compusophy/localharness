@@ -573,13 +573,21 @@ must come from the root key, which is why a sponsor key must be embedded in wasm
 Shipped: SDK runtime, browser IDE, platform layer, Tempo native AA, Anthropic +
 OpenAI backends, scheduling + recursion, Mock backend, economy rungs 1–4 +
 Reputation + colony, x402, host::compose, SessionRoom KV (#22), at-rest OPFS enc,
-**Stripe fiat on-ramp** (MintGateFacet, webhook-minted, inline card). Still open:
+Stripe fiat on-ramp (MintGateFacet), in-browser Gemma (`browser-app-local`), CLI
+runtime chain selection (`LH_CHAIN`), the **rate-capped sponsor RELAY** (mainnet
+keyless fee_payer signed server-side — NO build embeds a mainnet money key;
+`registry::sponsor_relay` + `proxy/api/sponsor.ts`, LIVE), and **bashlite /
+localharnesslite** (CLI `sh` + browser `execute_script`; design/bashlite.md). Open:
 
-- **SessionRoom phase 2** — multi-identity rooms: ECIES-grant `K_room` via
-  `roomAddMember` (facet/driver ready; off-chain grant + KV tools remain). v1
-  single-identity shipped live.
-- **More backends** — local-WebGPU (`design/model-agnostic.md`).
+- **Browser relay E2E + web redeploy** — the keyless bundle routes onboarding
+  through the relay (committed); needs an in-browser onboarding test, then a
+  deliberate `build-web.sh` + deploy.
+- **Relay funded-agent self-pay** — the onboarding-only gate refuses WALLET-funded
+  callers (fiat $LH lands in the meter, not the wallet, so onboarding is fine); a
+  graduated wallet-funded agent has no CLI self-pay path on mainnet yet.
+- **SessionRoom phase 2** — multi-identity rooms: ECIES-grant `K_room` (v1 live).
 - **P2P teams** — 2-device E2E, mutable shared-FS, team UI.
+- **Local Gemma** — shipped behind `browser-app-local`; a live WebGPU run pending.
 
 ## Filesystem trait
 
