@@ -85,3 +85,45 @@ where
         futures_util::future::Either::Right((_elapsed, _next)) => NextChunk::IdleTimeout,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::stream;
+
+    /// A chunk available NOW wins over the idle timer — `select` polls the chunk
+    /// future first, so a steadily-streaming response is never falsely stalled.
+    #[tokio::test]
+    async fn ready_item_beats_the_timer_then_end() {
+        let mut s = stream::iter(vec![42i32]);
+        match next_with_idle_timeout(&mut s, 60_000).await {
+            NextChunk::Item(v) => assert_eq!(v, 42),
+            _ => panic!("a ready chunk must win over a 60s timer"),
+        }
+        // Drained → upstream EOF → End (NOT a timeout).
+        assert!(matches!(next_with_idle_timeout(&mut s, 60_000).await, NextChunk::End));
+    }
+
+    /// An already-finished stream is `End`, never an `IdleTimeout`.
+    #[tokio::test]
+    async fn empty_stream_is_end_not_timeout() {
+        let mut s = stream::iter(Vec::<i32>::new());
+        assert!(matches!(next_with_idle_timeout(&mut s, 60_000).await, NextChunk::End));
+    }
+
+    /// A black-holed stream (never produces a chunk) trips the idle timeout
+    /// instead of hanging forever — the whole reason this wrapper exists.
+    #[tokio::test]
+    async fn a_silent_stream_trips_the_idle_timeout() {
+        let mut s = stream::pending::<i32>();
+        assert!(matches!(next_with_idle_timeout(&mut s, 5).await, NextChunk::IdleTimeout));
+    }
+
+    /// The idle window is a generous TOTAL-silence detector (2 min), not a cap on
+    /// response length — a guard so it can't be trimmed into a length cap by
+    /// accident.
+    #[test]
+    fn idle_window_is_two_minutes() {
+        assert_eq!(STREAM_IDLE_TIMEOUT_MS, 120_000);
+    }
+}
