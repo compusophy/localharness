@@ -114,3 +114,65 @@ pub(crate) async fn dispatch_tool_call(
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::ClosureTool;
+    use crate::types::ToolCall;
+
+    fn tool(name: &'static str, body: serde_json::Value) -> Arc<ClosureTool> {
+        ClosureTool::new(name, "", json!({ "type": "object" }), move |_a, _c| {
+            let body = body.clone();
+            async move { Ok(body) }
+        })
+    }
+    fn call(name: &str) -> ToolCall {
+        ToolCall { name: name.to_string(), args: json!({}), id: None, canonical_path: None }
+    }
+
+    #[tokio::test]
+    async fn success_result_carries_value_and_no_error() {
+        let runner = Arc::new(ToolRunner::new());
+        runner.register(tool("ok", json!({ "answer": 42 })));
+        let r = dispatch_tool_call(Some(&runner), None, &TurnContext::new(), &call("ok")).await;
+        assert_eq!(r.error, None);
+        assert_eq!(r.result.unwrap()["answer"], 42);
+        assert_eq!(r.name, "ok");
+    }
+
+    #[tokio::test]
+    async fn ok_value_with_error_key_is_lifted_to_the_typed_error() {
+        // THE convention: builtins encode a soft failure as `Ok({"error": ...})`;
+        // dispatch lifts it into `ToolResult.error` so the UI/hooks branch cleanly
+        // while the model still sees the value in-conversation.
+        let runner = Arc::new(ToolRunner::new());
+        runner.register(tool("soft_fail", json!({ "error": "boom" })));
+        let r = dispatch_tool_call(Some(&runner), None, &TurnContext::new(), &call("soft_fail")).await;
+        assert_eq!(r.error.as_deref(), Some("boom"));
+        assert_eq!(r.result.unwrap()["error"], "boom");
+    }
+
+    #[tokio::test]
+    async fn execute_err_becomes_an_error_result_not_a_panic() {
+        let runner = Arc::new(ToolRunner::new());
+        runner.register(ClosureTool::new("hard_fail", "", json!({ "type": "object" }), |_a, _c| async {
+            Err(crate::error::Error::other("kaboom"))
+        }));
+        let r = dispatch_tool_call(Some(&runner), None, &TurnContext::new(), &call("hard_fail")).await;
+        assert!(r.error.as_deref().unwrap().contains("kaboom"));
+        // The wire side always gets a JSON value, even on error.
+        assert!(r.result.unwrap()["error"].as_str().unwrap().contains("kaboom"));
+    }
+
+    #[tokio::test]
+    async fn missing_runner_and_unknown_tool_both_surface_as_errors() {
+        // No runner registered at all → a clear error result (not a panic).
+        let r = dispatch_tool_call(None, None, &TurnContext::new(), &call("x")).await;
+        assert!(r.error.as_deref().unwrap().contains("no tool runner"));
+        // Runner present but the tool isn't → execute Err → error result.
+        let runner = Arc::new(ToolRunner::new());
+        let r = dispatch_tool_call(Some(&runner), None, &TurnContext::new(), &call("ghost")).await;
+        assert!(r.error.is_some());
+    }
+}
