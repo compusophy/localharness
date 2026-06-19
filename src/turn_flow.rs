@@ -59,7 +59,10 @@ pub enum EmptyKind {
 /// Pure → unit-testable without a browser.
 ///
 /// - A MAX_TOKENS finish-reason → `Truncated` (ran out of room mid-answer).
-/// - A safety/blocklist/prohibited finish-reason → `Blocked`.
+/// - A CONTENT-block finish-reason → `Blocked`: safety / blocklist / prohibited
+///   / refusal (Anthropic) / content filter (OpenAI) / RECITATION (Gemini stops
+///   to avoid reproducing training data). These are terminal — retrying won't
+///   help — and the remedy is to rephrase, NOT "check your balance".
 /// - No note but the model DID reason (`saw_thinking`) → `Truncated`: it spent
 ///   the whole window thinking and never emitted a final text part (the exact
 ///   "(empty response) on hard tasks" bug; some paths drop the finish-reason).
@@ -72,7 +75,12 @@ pub fn classify_empty(finish_note: Option<&str>, saw_thinking: bool) -> EmptyKin
         || note.contains("blocklist")
         || note.contains("prohibited")
         || note.contains("refusal")
+        || note.contains("recitation")
+        || note.contains("content filter")
     {
+        // A content block is terminal even if the model reasoned first — checked
+        // BEFORE `saw_thinking` so a recitation/filter stop isn't mis-retried as
+        // `Truncated`.
         EmptyKind::Blocked
     } else if saw_thinking {
         // Reasoned but produced no answer: budget-starved mid-thought.
@@ -321,6 +329,28 @@ mod tests {
         );
         assert_eq!(
             classify_empty(Some("stopped by refusal"), false),
+            EmptyKind::Blocked
+        );
+    }
+
+    /// REGRESSION: Gemini RECITATION (`"stopped to avoid recitation"`) and OpenAI
+    /// `"stopped by content filter"` are CONTENT blocks — they were falling
+    /// through to `Blank`/`Truncated`, so the user saw "(check your balance)" or
+    /// the turn was uselessly retried. They must be `Blocked` (terminal,
+    /// rephrase), even when the model reasoned first.
+    #[test]
+    fn classify_empty_recitation_and_content_filter_are_blocked() {
+        assert_eq!(
+            classify_empty(Some("stopped to avoid recitation"), false),
+            EmptyKind::Blocked
+        );
+        // Even with prior reasoning — a content block is NOT retryable.
+        assert_eq!(
+            classify_empty(Some("stopped to avoid recitation"), true),
+            EmptyKind::Blocked
+        );
+        assert_eq!(
+            classify_empty(Some("stopped by content filter"), false),
             EmptyKind::Blocked
         );
     }
