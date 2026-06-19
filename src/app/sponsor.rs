@@ -13,7 +13,10 @@
 //! (`registry::sponsor_relay`, design/cli-mainnet-relay.md §2.2) — the submit
 //! chokepoints (`registry::tx`) and the self-assembled `run_sponsored_tempo_call`
 //! both route through it when `registry::is_mainnet()`. So a mainnet bundle
-//! carries no money-moving key to extract.
+//! carries no money-moving key to extract. (The live mainnet sponsor —
+//! `0x066E748367df1c2bfEdA9C445fBaAa093e10168f` — lives ONLY in the proxy env,
+//! never here; it replaced `0xE70f4B…065E`, which was rotated out after being
+//! exposed in earlier bundles.)
 //!
 //! ## Refilling
 //!
@@ -51,9 +54,9 @@ use k256::ecdsa::SigningKey;
 /// On testnet it pays AlphaUSD fees directly. On mainnet it is a harmless,
 /// UNUSED placeholder: every sponsored path checks `registry::is_mainnet()` and
 /// routes the `fee_payer` half to the server relay instead, so this key is never
-/// used to sign a mainnet tx (and the mainnet sponsor `0xE70f4B…065E` is never
-/// embedded). `env!("LH_MAINNET_SPONSOR_KEY")` is GONE — no build embeds a
-/// mainnet money key.
+/// used to sign a mainnet tx (and the mainnet sponsor `0x066E…0168f`, server-side
+/// only, is never embedded). `env!("LH_MAINNET_SPONSOR_KEY")` is GONE — no build
+/// embeds a mainnet money key.
 const SPONSOR_PRIVATE_KEY_HEX: &str =
     "0x046a830b5203d1d2c0a205a1432746e4381d0874711b2de7f575a973644b9d43";
 

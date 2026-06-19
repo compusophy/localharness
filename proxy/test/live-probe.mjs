@@ -21,7 +21,7 @@ const URL = 'https://proxy-tau-ten-15.vercel.app/api/sponsor';
 const CHAIN_ID = 4217n;
 const DIAMOND = '0x8ab4f3a57643410cdf4022cdaf1faeef234f3a77'; // mainnet REGISTRY
 const FEE_TOKEN = '20c000000000000000000000b9537d11c60e8b50'; // USDC.e
-const EXPECT_SPONSOR = '0xe70f4b23322a954a1881b8dc3db5781f9d22065e';
+const EXPECT_SPONSOR = '0x066e748367df1c2bfeda9c445fbaaa093e10168f'; // rotated key
 
 const senderPriv = '0x' + '7f'.repeat(32); // fresh — zero mainnet $LH balance
 const senderAddr = addressFromPrivKey(senderPriv);
@@ -87,7 +87,7 @@ let ok = true;
 function check(name, cond) { console.log(`${cond ? 'ok  ' : 'FAIL'} ${name}`); if (!cond) ok = false; }
 check('status 200', res.status === 200);
 if (res.status === 200) {
-  check('feePayer == funded sponsor 0xE70f4B…065E', (j.feePayer || '').toLowerCase() === EXPECT_SPONSOR);
+  check('feePayer == funded sponsor 0x066E…0168f', (j.feePayer || '').toLowerCase() === EXPECT_SPONSOR);
   const localHash = '0x' + bytesToHex(feePayerHash(intent, hexToBytes(senderAddr.slice(2))));
   check('feePayerHash matches local recompute', (j.feePayerHash || '').toLowerCase() === localHash);
   const rec = recoverAddressFromDigest(hexToBytes(j.feePayerSignature.slice(2)), feePayerHash(intent, hexToBytes(senderAddr.slice(2))));

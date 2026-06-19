@@ -287,7 +287,7 @@ assemble + submit. Shape:
 ```jsonc
 // response (success)
 {
-  "feePayer": "0xE70f4B23322A954A1881B8DC3Db5781f9D22065E",
+  "feePayer": "0x066E748367df1c2bfEdA9C445fBaAa093e10168f",
   "feeToken": "0x20c0…",           // USDC.e on mainnet
   "feePayerSignature": "0x…",      // rlp([v,r,s]) per the wire format
   "feePayerHash": "0x…"            // what was signed, so the CLI can verify locally
@@ -447,11 +447,13 @@ Ordered so each phase is independently shippable and the money path is gated las
 - [ ] **Onboarding-only spend gate.** Sponsorship gated on a zero/near-zero mainnet
       balance for the caller; funded agents self-pay. Documented as the durable
       ceiling given per-isolate rate-limit limits.
-- [ ] **Sponsor key custody.** Mainnet sponsor key is a dedicated low-budget EOA
-      (NOT deployer/owner/issuer/meter keys — assert distinctness at boot), ideally
-      in a KMS/secret store, rotated before launch (sponsor.rs:57 names
-      `0xE70f4B…065E`; confirm + rotate). A proxy RCE leaks a *cap-bounded signing
-      oracle*, not an uncapped key.
+- [x] **Sponsor key custody.** Mainnet sponsor is a dedicated low-budget EOA
+      `0x066E748367df1c2bfEdA9C445fBaAa093e10168f`, distinct from
+      deployer/owner/issuer/meter (verified). Lives ONLY in the proxy env
+      (`LH_SPONSOR_KEY`), never in the bundle. ROTATED from `0xE70f4B…065E` (which
+      had been exposed in earlier bundles — funds rescued, ~0.007 USDC.e dust left
+      on the dead key). A proxy RCE leaks a *cap-bounded signing oracle*, not an
+      uncapped key. (KMS/secret-store custody is a future hardening.)
 - [ ] **Float monitor + circuit breaker.** Alarm when fee_token balance is low;
       a tripped breaker refuses new sponsorships with a clear code (never silently
       self-pays).
