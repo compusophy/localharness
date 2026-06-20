@@ -106,6 +106,11 @@ const DIAMOND_WRITE_SIGS = [
   'claimBounty(uint256,uint256)',
   'submitResult(uint256,bytes)',
   'acceptResult(uint256)',
+  // x402 self-pay: a payee/facilitator settles a payer-signed $LH payment.
+  // EXEMPT from the onboarding-only gate below (see GATE_EXEMPT_SELECTORS) —
+  // on mainnet no agent holds the AlphaUSD fee token, so even a funded agent
+  // can't self-pay gas; it can only move its own $LH.
+  'settle(address,address,uint256,uint256,uint256,bytes32,bytes)',
   'cancelBounty(uint256)',
   'reclaimExpired(uint256)',
   'attest(uint256,uint8,bytes32)',
@@ -146,6 +151,18 @@ function selector(sig: string): string {
 
 const APPROVE_SELECTOR = selector('approve(address,uint256)');
 const DIAMOND_SELECTORS = new Set(DIAMOND_WRITE_SIGS.map(selector));
+
+// The SELF-PAY surface — selectors a FUNDED caller may still relay. On mainnet
+// agents only ever hold $LH (never the AlphaUSD fee token), so an agent that has
+// graduated past onboarding STILL cannot self-pay gas; it can only spend its own
+// $LH. These two move/authorize the caller's OWN $LH (x402: approve the diamond
+// once, then settle), so we sponsor their gas regardless of $LH balance — the
+// rate caps + sponsor-float breaker remain the abuse bound. (Deliberate policy:
+// no chargebacks, no 90-day lock — meter/wallet $LH is the agent's to spend.)
+const SELF_PAY_SELECTORS = new Set([
+  selector('settle(address,address,uint256,uint256,uint256,bytes32,bytes)'),
+  APPROVE_SELECTOR,
+]);
 
 // --- CORS / json -----------------------------------------------------------
 
@@ -428,22 +445,28 @@ export default async function handler(req: Request): Promise<Response> {
   const allowErr = checkAllowlist(intent.calls);
   if (allowErr) return json({ error: allowErr, code: 'LH_RELAY_SELECTOR' }, 403, origin);
 
-  // 7. Onboarding-only spend gate: sponsor only zero/near-zero-$LH callers.
-  try {
-    const bal = await lhBalanceOf(caller);
-    if (bal > BALANCE_CEILING_WEI) {
-      return json(
-        {
-          error: 'caller is funded — sponsorship is onboarding-only; self-pay your fees',
-          code: 'LH_RELAY_FUNDED',
-        },
-        403,
-        origin,
-      );
+  // 7. Onboarding-only spend gate: sponsor only zero/near-zero-$LH callers —
+  //    UNLESS every call is on the self-pay surface (approve + settle), which a
+  //    funded agent legitimately needs (it can't hold the fee token to pay its
+  //    own gas). A mix with any other (onboarding/economy) write still gates.
+  const selfPayOnly = intent.calls.every((c) => SELF_PAY_SELECTORS.has(bytesToHex(c.input.slice(0, 4))));
+  if (!selfPayOnly) {
+    try {
+      const bal = await lhBalanceOf(caller);
+      if (bal > BALANCE_CEILING_WEI) {
+        return json(
+          {
+            error: 'caller is funded — sponsorship is onboarding-only; self-pay your fees',
+            code: 'LH_RELAY_FUNDED',
+          },
+          403,
+          origin,
+        );
+      }
+    } catch (e) {
+      // Fail CLOSED — if we can't prove the caller is unfunded, don't sponsor.
+      return json({ error: 'balance check failed: ' + (e as Error).message, code: 'LH_RELAY_BALANCE' }, 502, origin);
     }
-  } catch (e) {
-    // Fail CLOSED — if we can't prove the caller is unfunded, don't sponsor.
-    return json({ error: 'balance check failed: ' + (e as Error).message, code: 'LH_RELAY_BALANCE' }, 502, origin);
   }
 
   // 8. Float circuit-breaker: refuse cleanly when the sponsor can't cover fees

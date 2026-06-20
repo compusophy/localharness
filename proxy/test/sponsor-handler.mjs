@@ -57,6 +57,12 @@ function registerCalldata(name) {
   const padded = bytesToHex(nameBytes).padEnd(Math.ceil(nameBytes.length / 32) * 64, '0');
   return '0x' + sel('register(string)') + word('20') + word(nameBytes.length.toString(16)) + padded;
 }
+/** settle(...) calldata — only the 4-byte selector matters to the allowlist +
+ * the self-pay gate exemption (diamond calls aren't arg-validated); pad with
+ * zero head words. */
+function settleCalldata() {
+  return '0x' + sel('settle(address,address,uint256,uint256,uint256,bytes32,bytes)') + word('0').repeat(7);
+}
 /** Personal-sign token over `localharness-proxy:<addr>:<ts>`. */
 function authToken(priv, addr, ts) {
   const message = `localharness-proxy:${addr.toLowerCase()}:${ts}`;
@@ -182,6 +188,22 @@ const token = authToken(senderPriv, senderAddr, ts);
   const res = await handler(makeReq(bodyFor(intent, cd, DIAMOND), token));
   const j = await res.json();
   ok('funded caller refused 403 LH_RELAY_FUNDED', res.status === 403 && j.code === 'LH_RELAY_FUNDED', `status=${res.status} code=${j.code}`);
+}
+
+// --- funded caller, settle-ONLY intent, IS sponsored (self-pay exemption) ----
+// On mainnet a graduated agent holds only $LH (never the fee token), so it must
+// be able to relay its own-$LH x402 settlement even though it's "funded".
+{
+  stubBalance('1bc16d674ec80000'); // 2 $LH > ceiling — funded
+  const cd = settleCalldata();
+  const intent = makeIntent(DIAMOND, cd);
+  const res = await handler(makeReq(bodyFor(intent, cd, DIAMOND), token));
+  const j = await res.json();
+  ok(
+    'funded caller settle-only is sponsored (self-pay exempt)',
+    res.status === 200,
+    `status=${res.status} code=${j.code} body=${JSON.stringify(j)}`,
+  );
 }
 
 // --- non-allowlisted selector (transfer on the token) is refused ------------
