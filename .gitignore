@@ -48,3 +48,7 @@ claude-persona.txt
 /app.rl
 qr-*.png
 fleet-run-output.txt
+
+# node tooling (scripts/shots.mjs etc.)
+node_modules/
+package-lock.json

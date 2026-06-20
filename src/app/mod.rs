@@ -339,6 +339,36 @@ fn inject_token_styles(doc: &web_sys::Document) {
     }
 }
 
+/// Apply the render-mode classes to `<html>` from URL params
+/// (`?theme=light`, `?preview=mobile`) or the persisted prefs in
+/// `localStorage`. The URL param WINS, so a screenshot suite or a shared
+/// link can force a mode regardless of what's saved. The styling lives in
+/// `style.rs` (`html.theme-light`) + `styles.css` (`html.preview-mobile`);
+/// the admin toggle writes the prefs (`events::layout`).
+fn apply_render_modes(doc: &web_sys::Document) {
+    let Some(html) = doc.document_element() else {
+        return;
+    };
+    let search = web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .unwrap_or_default();
+    let pref = |key: &str| -> Option<String> {
+        web_sys::window()
+            .and_then(|w| w.local_storage().ok().flatten())
+            .and_then(|s| s.get_item(key).ok().flatten())
+    };
+    let light = search.contains("theme=light")
+        || (!search.contains("theme=dark") && pref("lh-theme").as_deref() == Some("light"));
+    if light {
+        let _ = html.class_list().add_1("theme-light");
+    }
+    let mobile = search.contains("preview=mobile")
+        || (!search.contains("preview=desktop") && pref("lh-preview").as_deref() == Some("mobile"));
+    if mobile {
+        let _ = html.class_list().add_1("preview-mobile");
+    }
+}
+
 fn mount() -> Result<(), JsValue> {
     debuglog::log("mount (page load / reload)");
     let doc = dom::document()?;
@@ -353,6 +383,7 @@ fn mount() -> Result<(), JsValue> {
     // circuit return below so the signer / rpc / embed chromes get tokens
     // too. Best-effort: a missing <head> never blocks the mount.
     inject_token_styles(&doc);
+    apply_render_modes(&doc);
 
     // Resolve which tenant we're being served as. On apex, we paint a
     // marketing chrome with a single "claim a subdomain" CTA. On a

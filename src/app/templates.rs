@@ -183,18 +183,30 @@ pub(crate) fn rendered_markdown(raw: &str) -> Markup {
     html! { (PreEscaped(out)) }
 }
 
-/// Sticky header — brand (left) + notification bell + settings gear (right).
-/// The settings button (`crate::landing::settings_glyph`, the same stroke
-/// style as the bell) opens the admin dropdown; both are square icon buttons
-/// that opt out of the `.header-button` 96px text min-width via `.admin-button`
-/// / `.notif-bell-btn`.
+/// The brand "lh" — the REAL IBM Plex Mono SemiBold letterforms (the same
+/// outline that backs the favicon/app icon), as a tight `currentColor` glyph
+/// so it reads as a monochrome icon button matching the bell + gear. Tight
+/// viewBox (glyph bbox, y-flipped from the font's y-up).
+fn lh_glyph() -> Markup {
+    html! {
+        (maud::PreEscaped(
+            "<svg viewBox=\"0 0 1058 740\" width=\"22\" height=\"15\" fill=\"currentColor\" \
+             aria-hidden=\"true\"><path d=\"M0 639L164 639L164 101L0 101L0 0L292 0L292 639L457 639L457 740L0 740ZM603 0L731 0L731 315L736 315L737.4 311.5L739 308.1L740.5 304.7L742.2 301.3L743.9 298L745.7 294.7L747.5 291.5L749.4 288.3L751.4 285.1L753.4 282L755.5 278.9L757.6 275.9L759.8 272.9L762.1 269.9L764.5 267L766.9 264.1L769.4 261.3L771.9 258.5L774.5 255.7L777.2 253L779.9 250.3L782.7 247.7L785.6 245.1L788.5 242.5L791.5 240L794.6 237.6L797.8 235.4L801.1 233.2L804.5 231.1L808 229.2L811.5 227.3L815.2 225.6L819 223.9L822.9 222.4L826.8 220.9L830.9 219.6L835 218.4L839.3 217.3L843.6 216.3L848.1 215.4L852.6 214.6L857.2 213.9L861.9 213.3L866.8 212.8L871.7 212.5L876.7 212.2L881.8 212.1L887 212L893.3 212.1L899.5 212.4L905.6 212.8L911.5 213.4L917.4 214.2L923.2 215.2L928.9 216.3L934.5 217.6L940 219.1L945.4 220.8L950.7 222.6L955.9 224.6L961 226.8L966 229.2L970.9 231.7L975.7 234.4L980.4 237.3L985 240.4L989.5 243.7L993.9 247.1L998.2 250.7L1002.4 254.4L1006.5 258.4L1010.5 262.5L1014.4 266.8L1018.1 271.2L1021.6 275.8L1025 280.5L1028.2 285.4L1031.3 290.5L1034.2 295.7L1036.9 301L1039.4 306.5L1041.8 312.1L1044.1 317.9L1046.1 323.9L1048 330L1049.8 336.2L1051.3 342.6L1052.7 349.2L1054 355.9L1055 362.7L1055.9 369.7L1056.7 376.9L1057.3 384.2L1057.7 391.6L1057.9 399.2L1058 407L1058 740L930 740L930 425L929.8 415.9L929.3 407.1L928.5 398.8L927.3 390.8L925.8 383.2L923.9 376L921.7 369.2L919.2 362.8L916.4 356.8L913.2 351.1L909.6 345.9L905.8 341L901.5 336.5L897 332.4L892.1 328.8L886.9 325.4L881.3 322.5L875.4 320L869.2 317.9L862.6 316.1L855.7 314.8L848.5 313.8L840.9 313.2L833 313L831.3 313L829.7 313L828 313.1L826.4 313.1L824.8 313.2L823.1 313.3L821.5 313.4L819.9 313.6L818.3 313.7L816.7 313.9L815.1 314.1L813.5 314.2L811.9 314.5L810.3 314.7L808.8 315L807.2 315.2L805.7 315.5L804.1 315.8L802.6 316.1L801.1 316.5L799.5 316.8L798 317.2L796.5 317.6L795 318L793.5 318.4L792 318.9L790.6 319.3L789.1 319.8L787.7 320.3L786.2 320.8L784.8 321.4L783.4 321.9L782 322.5L780.6 323.1L779.2 323.7L777.9 324.4L776.5 325L775.2 325.7L773.9 326.4L772.6 327.1L771.3 327.8L770 328.6L768.7 329.4L767.4 330.2L766.2 331L764.9 331.8L763.7 332.6L762.5 333.5L761.3 334.4L760.1 335.3L759 336.2L757.8 337.1L756.7 338.1L755.6 339L754.6 340L753.5 341L752.5 342L751.5 343L750.5 344.1L749.5 345.1L748.6 346.2L747.6 347.3L746.7 348.4L745.8 349.5L745 350.6L744.1 351.8L743.3 352.9L742.5 354.1L741.7 355.3L741 356.5L740.2 357.8L739.5 359L738.8 360.3L738.1 361.5L737.5 362.8L736.9 364.2L736.3 365.5L735.8 366.9L735.3 368.3L734.8 369.7L734.3 371.1L733.9 372.5L733.5 374L733.1 375.5L732.8 377L732.5 378.5L732.2 380.1L731.9 381.7L731.7 383.3L731.5 384.9L731.4 386.5L731.2 388.2L731.1 389.8L731.1 391.5L731 393.3L731 395L731 740L603 740Z\"/></svg>",
+        ))
+    }
+}
+
+/// Header — brand "lh" icon button (left) + notification bell + settings gear
+/// (right), three square monochrome icon buttons. In the chat view the header
+/// floats transparent over the transcript (CSS `:has(+ main.layout)`); the
+/// brand button opens the same `<details>` Home/Repo/Crate menu.
 pub(crate) fn site_header(_host: &Host) -> Markup {
     html! {
         header.site-header {
             div.header-inner {
                 h1.header-brand {
                     details.brand-menu {
-                        summary.brand-summary { "localharness" }
+                        summary.brand-summary aria-label="localharness menu" title="localharness" { (lh_glyph()) }
                         nav.brand-menu-items {
                             // Absolute apex URL, NOT "/": a relative home on a
                             // subdomain (esp. an installed PWA scoped to that
@@ -1239,6 +1251,7 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                     // Notifications: permission + Web Push subscription,
                     // published on-chain for the tab-closed scheduler pushes.
                     (admin_notify_section())
+                    (admin_display_section())
                     (admin_security_collapsed())
                 }
                 div.admin-footer {
@@ -1582,6 +1595,38 @@ pub(crate) fn admin_notify_section() -> Markup {
             div #notify-msg .admin-msg-slot {}
         }
     }
+}
+
+/// Display modes — live toggles for the light theme + the mobile-preview frame
+/// (`style.rs` / `styles.css`). Persisted in `localStorage` (`events::layout`)
+/// and re-applied at mount (`apply_render_modes`); the `?theme=`/`?preview=`
+/// URL params override the saved pref so a screenshot suite can force a mode.
+pub(crate) fn admin_display_section() -> Markup {
+    let light = render_pref_is("lh-theme", "light");
+    let mobile = render_pref_is("lh-preview", "mobile");
+    html! {
+        div.admin-section #display-section {
+            div.admin-section-title { "display" }
+            div.pair-slot {
+                button type="button" data-action="toggle-theme" .ghost .active[light] {
+                    "light mode"
+                }
+                button type="button" data-action="toggle-preview" .ghost .active[mobile] {
+                    "mobile preview"
+                }
+            }
+        }
+    }
+}
+
+/// True iff the `localStorage` render pref `key` currently equals `val` — used
+/// to mark the display toggles `.active` at render time.
+fn render_pref_is(key: &str, val: &str) -> bool {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|s| s.get_item(key).ok().flatten())
+        .as_deref()
+        == Some(val)
 }
 
 pub(crate) fn admin_devices_section() -> Markup {

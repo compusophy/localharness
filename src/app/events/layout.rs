@@ -1,8 +1,44 @@
-//! Reset + pricing — the typed-confirmation reset and pricing save.
+//! Reset + pricing + display-mode toggles — the typed-confirmation reset,
+//! pricing save, and the live light-theme / mobile-preview switches.
 //! (The old panel-collapse class toggles died with the tabbed layout —
 //! the unified stream has no side panels to collapse.)
 
 use crate::app::{dom, templates};
+
+/// Flip the light theme live (`html.theme-light`) and persist the choice.
+pub(super) fn toggle_theme() {
+    set_render_mode("theme-light", "lh-theme", "light", "dark");
+}
+
+/// Flip the mobile-preview frame live (`html.preview-mobile`) and persist it.
+pub(super) fn toggle_preview() {
+    set_render_mode("preview-mobile", "lh-preview", "mobile", "desktop");
+}
+
+/// Flip a render-mode class on `<html>`, persist the pref in `localStorage`,
+/// then re-render `#display-section` so the toggles reflect the new state. No
+/// reload — the token block (`style.rs`) + `styles.css` react to the class
+/// instantly. Mirrored at mount by `mod::apply_render_modes`.
+fn set_render_mode(class: &str, key: &str, on_val: &str, off_val: &str) {
+    let Some(win) = web_sys::window() else { return };
+    let Some(html) = win.document().and_then(|d| d.document_element()) else {
+        return;
+    };
+    let list = html.class_list();
+    let next_on = !list.contains(class);
+    if next_on {
+        let _ = list.add_1(class);
+    } else {
+        let _ = list.remove_1(class);
+    }
+    if let Ok(Some(storage)) = win.local_storage() {
+        let _ = storage.set_item(key, if next_on { on_val } else { off_val });
+    }
+    dom::swap_outer(
+        "display-section",
+        &templates::admin_display_section().into_string(),
+    );
+}
 
 /// Inline-confirmed reset: FULL wipe of OPFS root (seed included), then reload
 /// back to the fresh "create agent" stage. Destroys the identity — gated by the

@@ -152,7 +152,6 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
   min-height: 40px;
   display: flex;
   align-items: center;
-  border-bottom: 1px solid var(--border);
   /* Override the base `header { margin-bottom: 4px }` (an old in-flow
      header rule for unrelated templates). Without this, that 4px leaks
      in as a phantom gap between the sticky header border and the chat
@@ -160,6 +159,25 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
      rule could reach. */
   margin: 0;
 }
+/* Chat view only: float the header transparently over the transcript so the
+   conversation flows to the very top (no bar, no divider). The header is taken
+   OUT of flow (absolute) — the transcript reclaims the full height and scrolls
+   UNDER the three icon buttons; `main.layout .transcript`'s padding-top keeps
+   the oldest message clear of them at rest. Scoped via :has(+ main.layout) so
+   the apex/explore solid header is untouched. The bar is pointer-transparent
+   in its dead zones so clicks land on the chat beneath; the brand + admin
+   clusters re-enable pointer events for themselves. */
+#root { position: relative; }
+.site-header:has(+ main.layout) {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  background: transparent;
+  pointer-events: none;
+}
+.site-header:has(+ main.layout) .header-brand,
+.site-header:has(+ main.layout) .header-admin { pointer-events: auto; }
 .header-inner {
   width: 100%;
   padding: var(--chrome-pad);
@@ -186,11 +204,27 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
    so the summary reads as plain brand text; the panel overlays below
    so it never reflows the header. */
 .brand-menu { position: relative; }
+/* The brand is the "lh" glyph as a square icon button — same footprint as the
+   bell + gear (38px = 10px padding + 16px glyph + 1px border, the box those
+   two resolve to). <summary> isn't a <button>, so it doesn't inherit the base
+   button border/colour; replicate them here. The lh glyph is wider than tall,
+   so the box is fixed-square and the glyph is centred (not stretched). */
 .brand-summary {
   cursor: pointer;
   list-style: none;
   user-select: none;
+  width: 38px;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  transition: color 90ms ease, border-color 90ms ease;
 }
+.brand-summary:hover { color: var(--fg); border-color: var(--fg); }
+.brand-summary svg { display: block; height: 15px; width: auto; }
 .brand-summary::-webkit-details-marker { display: none; }
 .brand-summary::marker { content: ""; }
 .brand-menu-items {
@@ -308,11 +342,13 @@ main.layout .transcript {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  /* Side gutters + the bottom gap against the footer border are the
-     uniform chrome margin. NO top gap — the first message sits directly
-     under the header border (the generic `.transcript` margin-top:24px
-     does NOT apply in this scope). Requested many times. */
-  padding: 0 var(--chrome-pad) var(--chrome-pad);
+  /* Side gutters + bottom gap = the uniform chrome margin. The top padding
+     clears the now-FLOATING transparent header: it gives the oldest message
+     breathing room from the icon buttons when scrolled to the top, yet scrolls
+     away so content flows UNDER the buttons mid-scroll (chat flows to the very
+     top). 56px = the buttons' bottom edge (16px header pad + ~38px button) +
+     a small gap; + the iOS safe-area inset. */
+  padding: calc(env(safe-area-inset-top) + 56px) var(--chrome-pad) var(--chrome-pad);
   margin-top: 0;
   display: flex;
   flex-direction: column;
@@ -529,6 +565,10 @@ main.layout .transcript > *:empty { display: none; }
      a 15px glyph jammed in the left corner. Square it up. */
   min-width: 0;
   padding: 10px;
+  /* Solid fill so transcript content scrolling UNDER the floating chat header
+     doesn't bleed through the button (on the apex's solid header this is a
+     no-op — same colour). */
+  background: var(--bg);
 }
 /* 16px (1:1 with the 0 0 16 16 viewBox — crisp) so the bell's box height
    matches the settings gear on the same row instead of sitting 1.5px
@@ -1298,6 +1338,29 @@ input, textarea {
     font-size: 18px;
   }
 }
+
+/* === RENDER MODES ====================================================== */
+/* Mobile-preview (the setting / `?preview=mobile`): render the phone layout in
+   ANY viewport. Frames the whole app as a 390px column and FORCES the <=600px
+   mobile rules above — so a desktop browser, or a screenshot tool that can't
+   resize the window (a maximized Chrome), still shows the true mobile UI.
+   At a real 390px viewport the column simply fills it. Theme tokens come from
+   `style.rs` (`html.theme-light`), so light/dark composes with this for free. */
+html.preview-mobile #root {
+  width: 390px;
+  max-width: 100%;
+  margin: 0 auto;
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+html.preview-mobile input,
+html.preview-mobile textarea,
+html.preview-mobile select { font-size: 16px !important; }
+html.preview-mobile .terminal-send {
+  min-width: 44px; min-height: 44px; padding: 0;
+  display: flex; align-items: center; justify-content: center; font-size: 18px;
+}
+
 .key-row { display: flex; gap: 6px; }
 .key-row input { flex: 1; min-width: 0; }
 .add-device-form { display: flex; gap: 6px; }
@@ -1888,6 +1951,8 @@ footer a:hover { text-decoration: underline; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  /* Solid fill — see .notif-bell-btn (legible over the floating chat header). */
+  background: var(--bg);
 }
 .admin-button svg { display: block; width: 16px; height: 16px; }
 .header-admin-panel {

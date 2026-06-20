@@ -155,6 +155,10 @@ enum Action {
     CancelImport,
     HeaderAdminToggle,
     HeaderAdminClose,
+    /// Flip the light theme (`html.theme-light`) — live + persisted.
+    ToggleTheme,
+    /// Flip the mobile-preview frame (`html.preview-mobile`) — live + persisted.
+    TogglePreview,
     ShowAdminTab(String),
     RevealSecurity,
     HideSecurity,
@@ -282,6 +286,8 @@ impl Action {
             "cancel-import" => Action::CancelImport,
             "header-admin-toggle" => Action::HeaderAdminToggle,
             "header-admin-close" => Action::HeaderAdminClose,
+            "toggle-theme" => Action::ToggleTheme,
+            "toggle-preview" => Action::TogglePreview,
             "show-admin-tab" => Action::ShowAdminTab(arg.unwrap_or_default()),
             "reveal-security" => Action::RevealSecurity,
             "hide-security" => Action::HideSecurity,
@@ -1201,6 +1207,8 @@ fn dispatch(action: Action) {
         }
         Action::HeaderAdminToggle => admin::header_admin_toggle(),
         Action::HeaderAdminClose => admin::header_admin_close(),
+        Action::ToggleTheme => layout::toggle_theme(),
+        Action::TogglePreview => layout::toggle_preview(),
         Action::ShowAdminTab(name) => admin::show_admin_tab(&name),
         Action::RevealSecurity => {
             dom::swap_outer(

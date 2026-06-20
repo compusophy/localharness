@@ -124,10 +124,23 @@ function renderFractal(bytes) {
 mkdirSync(join(ROOT, 'web', 'screenshots'), { recursive: true });
 const readyupBytes = compile('examples/cartridges/readyup.rl');
 const fractalBytes = compile('examples/cartridges/fractal.rl');
+const tetrisBytes = compile('examples/cartridges/tetris.rl');
+
+// tetris self-plays; render a frame a few seconds in so the well has settled
+// blocks + a falling piece (the same renderOnce path as readyup, later `t`).
+function renderTetris(bytes) {
+  worker.composeReset();
+  // A single stateless frame (the well doesn't accumulate across renderOnce
+  // calls); `t` picks the active piece. Genuine cartridge pixels, phone-framed.
+  const fb = worker.renderOnce(bytes, 22000);
+  const [w, h] = worker.liveDims();
+  return { rgba: Buffer.from(fb.buffer, fb.byteOffset, fb.byteLength), w, h };
+}
 
 const shots = [
   { name: 'readyup', url: 'readyup.localharness.xyz', ...renderReadyup(readyupBytes) },
   { name: 'fractal', url: 'fractal.localharness.xyz', ...renderFractal(fractalBytes) },
+  { name: 'tetris', url: 'tetris.localharness.xyz', ...renderTetris(tetrisBytes) },
 ];
 for (const s of shots) {
   const p = phone(s.rgba, s.w, s.h, s.url);

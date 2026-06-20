@@ -40,6 +40,20 @@ pub const USER: &str = "#777";
 /// Error / danger tone.
 pub const ERROR: &str = "#a05050";
 
+// ---- Light theme (inverted monochrome) ---------------------------------
+// The SAME brutalist language, flipped: near-white surfaces, near-black ink,
+// black accent. Applied under `html.theme-light` (the toggle / `?theme=light`);
+// only the palette + color-scheme flip — type, spacing, z-layers are shared.
+pub const LIGHT_BG: &str = "#f6f6f6";
+pub const LIGHT_PANEL: &str = "#ededed";
+pub const LIGHT_PANEL_2: &str = "#e3e3e3";
+pub const LIGHT_BORDER: &str = "#d6d6d6";
+pub const LIGHT_FG: &str = "#1a1a1a";
+pub const LIGHT_MUTED: &str = "#8a8a8a";
+pub const LIGHT_ACCENT: &str = "#000";
+pub const LIGHT_USER: &str = "#666";
+pub const LIGHT_ERROR: &str = "#8a3a3a";
+
 // ---- Typography --------------------------------------------------------
 /// The one font stack — IBM Plex Mono with monospace fallbacks. Referenced
 /// by `--font-mono`; the historical hardcoded copies in `styles.css` now
@@ -108,6 +122,18 @@ pub(crate) fn root_tokens_css() -> String {
          \x20\x20--z-menu: {Z_MENU};\n\
          \x20\x20--z-display: {Z_DISPLAY};\n\
          \x20\x20--z-api-key: {Z_API_KEY};\n\
+         }}\n\
+         html.theme-light {{\n\
+         \x20\x20color-scheme: light;\n\
+         \x20\x20--bg: {LIGHT_BG};\n\
+         \x20\x20--panel: {LIGHT_PANEL};\n\
+         \x20\x20--panel-2: {LIGHT_PANEL_2};\n\
+         \x20\x20--border: {LIGHT_BORDER};\n\
+         \x20\x20--fg: {LIGHT_FG};\n\
+         \x20\x20--muted: {LIGHT_MUTED};\n\
+         \x20\x20--accent: {LIGHT_ACCENT};\n\
+         \x20\x20--user: {LIGHT_USER};\n\
+         \x20\x20--error: {LIGHT_ERROR};\n\
          }}\n"
     )
 }
@@ -133,5 +159,14 @@ mod tests {
         ] {
             assert!(css.contains(needle), "missing token: {needle}");
         }
+    }
+
+    #[test]
+    fn root_tokens_css_includes_a_light_theme_override() {
+        let css = root_tokens_css();
+        assert!(css.contains("html.theme-light {"));
+        assert!(css.contains("color-scheme: light"));
+        assert!(css.contains(&format!("--bg: {LIGHT_BG}")));
+        assert!(css.contains(&format!("--accent: {LIGHT_ACCENT}")));
     }
 }
