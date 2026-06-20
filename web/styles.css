@@ -329,13 +329,29 @@ main.layout .col-chat {
   flex-direction: column;
   overflow: hidden;
 }
+/* Footer chrome gets the SAME treatment as the header (see
+   `.site-header:has(+ main.layout)`): taken OUT of flow and floated
+   TRANSPARENTLY over the transcript so the conversation flows to the very
+   BOTTOM and scrolls UNDER the input box + send button — no bar, no divider,
+   one continuous surface. The containing block is the position:relative #root
+   (col-chat / main.layout are static), so main.layout's overflow:hidden never
+   clips it — exactly how the absolute header escapes the clip. pointer-events
+   are off in the transparent dead zones so clicks land on the chat beneath;
+   only the input row + send button (+ the funding CTA when shown) re-enable
+   their own, the same way the header re-enables only its brand + admin
+   clusters. The input row / send button keep their --bg fill so transcript
+   scrolling under them stays legible. */
 main.layout .terminal-panel {
-  flex-shrink: 0;
-  margin-top: auto;        /* always pin to bottom of col-chat */
-  /* No border-top: the footer divider was dropped (#34) to match the
-     header-divider removal already shipped — the chrome reads as one
-     continuous surface. */
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: transparent;
+  pointer-events: none;
 }
+main.layout .terminal-panel .terminal-row,
+main.layout .terminal-panel .terminal-action-btn,
+main.layout .terminal-panel .fund-banner { pointer-events: auto; }
 
 /* Transcript fills available vertical space; scrolls internally.
    Content top-aligns; newest is kept in view by scroll_to_bottom()
@@ -347,13 +363,13 @@ main.layout .transcript {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  /* Side gutters + bottom gap = the uniform chrome margin. The top padding
-     clears the now-FLOATING transparent header: it gives the oldest message
-     breathing room from the icon buttons when scrolled to the top, yet scrolls
-     away so content flows UNDER the buttons mid-scroll (chat flows to the very
-     top). 56px = the buttons' bottom edge (16px header pad + ~38px button) +
-     a small gap; + the iOS safe-area inset. */
-  padding: calc(env(safe-area-inset-top) + 56px) var(--chrome-pad) var(--chrome-pad);
+  /* Top + bottom padding clear the two now-FLOATING transparent chrome bars
+     (header above, footer below): the oldest/newest message gets breathing
+     room at rest, yet content scrolls UNDER both so the chat flows edge to
+     edge. 56px top = header pad (16) + ~38px button + gap. 76px bottom =
+     footer pad (16) + input row (~40) + pad (16) + gap; + the iOS safe-area
+     insets on each end. Side gutters stay the uniform chrome margin. */
+  padding: calc(env(safe-area-inset-top) + 56px) var(--chrome-pad) calc(env(safe-area-inset-bottom) + 76px);
   margin-top: 0;
   display: flex;
   flex-direction: column;
@@ -1391,19 +1407,11 @@ input, textarea {
      "inputs zoom in" iPhone report). Zoom prevention must win over every
      per-input font declaration. */
   input, textarea, select { font-size: 16px !important; }
-  /* The chat send button is a 38px box on desktop (#34) — below the ~44px
-     touch-target minimum (WCAG 2.5.5 / Apple HIG) for what is the PRIMARY
-     mobile action. Grow it to a real touch target; min-* expands the 38px box.
-     Desktop (>600px) keeps the compact 38px box untouched. */
-  .terminal-send {
-    min-width: 44px;
-    min-height: 44px;
-    padding: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 18px;
-  }
+  /* The send button is deliberately NOT grown on phones: it stays the SAME
+     38px box as the header bell/cog (.terminal-action-btn) so it matches the
+     header buttons and the input field on every viewport. (It used to grow to
+     44px for the WCAG touch target, but that made it bigger than the 38px
+     header chrome + input box — the mismatch this fixes.) */
 }
 
 /* === RENDER MODES ====================================================== */
@@ -1423,10 +1431,9 @@ html.preview-mobile #root {
 html.preview-mobile input,
 html.preview-mobile textarea,
 html.preview-mobile select { font-size: 16px !important; }
-html.preview-mobile .terminal-send {
-  min-width: 44px; min-height: 44px; padding: 0;
-  display: flex; align-items: center; justify-content: center; font-size: 18px;
-}
+/* (No send-button growth here either — it stays the 38px header-button box so
+   it matches the header chrome + input field. See the @media (max-width:600px)
+   note above.) */
 
 .key-row { display: flex; gap: 6px; }
 .key-row input { flex: 1; min-width: 0; }
