@@ -705,9 +705,23 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
     // and suppresses the empty-response bubble on a pure-tool / bare-finish turn.
     if response.finished() {
         saw_finish = true;
-        // A pure `finish` turn (no text, no other tool cards) has nothing to
-        // show — the shell we pre-painted would render as an empty bordered
-        // bubble. Drop it entirely so a silent completion leaves no artifact.
+        // The model can pass a closing `summary` to `finish` — its final
+        // conversational reply. Backends intercept `finish` and never stream
+        // its args, so without this the user saw only the pre-tool note and no
+        // closing message (#28). Render it as the FINAL assistant text segment
+        // (markdown) so a tool-only turn ends with a real reply.
+        if let Some(summary) = response.finish_summary().filter(|s| !s.is_empty()) {
+            dom::append_html(
+                &assistant_body_id,
+                &templates::rendered_markdown(&summary).into_string(),
+            );
+            dom::scroll_to_bottom("transcript");
+            any_visible = true;
+        }
+        // A pure `finish` turn (no text, no summary, no other tool cards) has
+        // nothing to show — the shell we pre-painted would render as an empty
+        // bordered bubble. Drop it entirely so a silent completion leaves no
+        // artifact.
         if !any_visible {
             dom::remove(&format!("turn-{assistant_turn_id}"));
         }

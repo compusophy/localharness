@@ -621,6 +621,13 @@ pub struct Step {
     /// Structured JSON output from the `finish` tool.
     #[serde(default)]
     pub structured_output: Option<serde_json::Value>,
+    /// The `finish` tool's optional `summary` arg — a short closing message the
+    /// model passes so a turn that only showed tool activity still ends with a
+    /// final reply. Set ONLY on a terminal `Finish` step; surfaced via
+    /// [`crate::conversation::ChatResponse::finish_summary`] so the UI can paint
+    /// it as the last assistant segment. Omitted from the wire when empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_summary: Option<String>,
     /// Token usage for this step.
     #[serde(default)]
     pub usage_metadata: Option<UsageMetadata>,
@@ -664,6 +671,7 @@ impl Step {
             error: String::new(),
             is_complete_response: None,
             structured_output: None,
+            finish_summary: None,
             usage_metadata: None,
         }
     }
@@ -773,6 +781,19 @@ impl Step {
         s.structured_output = structured_output;
         s.usage_metadata = usage_metadata;
         s
+    }
+
+    /// Attach a `finish`-tool `summary` to a terminal step (builder-style), so
+    /// backends can thread the model's closing message through WITHOUT widening
+    /// the already-broad [`Self::turn_complete`] signature. A no-op for an empty
+    /// summary or a non-`Finish` terminal (a summary only ever rides a real
+    /// completion). Surfaced to the UI via
+    /// [`crate::conversation::ChatResponse::finish_summary`].
+    pub fn with_finish_summary(mut self, summary: Option<String>) -> Self {
+        if self.kind == StepType::Finish {
+            self.finish_summary = summary.filter(|sm| !sm.is_empty());
+        }
+        self
     }
 
     /// A System-sourced turn-failure step (terminal, status `Error`) carrying

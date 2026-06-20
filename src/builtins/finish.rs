@@ -30,15 +30,19 @@ impl Tool for Finish {
     }
 
     fn description(&self) -> &str {
-        "Signal that the turn is complete. Pass `output` when the agent is configured \
-         with a response schema; it will be returned to the caller as the structured \
-         output of this turn."
+        "Signal that the turn is complete. Pass `summary` with a short final message \
+         to the user (one or two sentences) when your prior turns only showed tool \
+         activity — it is rendered as your closing reply so the user isn't left with \
+         a silent completion. Pass `output` when the agent is configured with a \
+         response schema; it will be returned to the caller as the structured output \
+         of this turn."
     }
 
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
+                "summary": { "type": "string", "description": "Optional short closing message to show the user when the turn would otherwise end silently after tool calls." },
                 "output": { "description": "Optional structured output. Must conform to the agent's response_schema when one is set." }
             }
         })

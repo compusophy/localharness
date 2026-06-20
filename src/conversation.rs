@@ -214,6 +214,13 @@ struct ChatBuf {
     /// break it down) apart from a genuinely blank or safety-blocked one. Empty
     /// when the turn ended cleanly.
     finish_note: Option<String>,
+    /// The `finish` tool's optional `summary` arg, captured from the terminal
+    /// `Finish` step. Backends intercept `finish` and only surface its closing
+    /// message here (never as a Text/ToolCall chunk), so the UI reads this after
+    /// the stream ends to paint a final assistant reply on a turn that otherwise
+    /// showed only tool activity. `None` unless the model passed a non-empty
+    /// `summary`.
+    finish_summary: Option<String>,
 }
 
 impl ChatResponse {
@@ -228,6 +235,7 @@ impl ChatResponse {
                 error: None,
                 finished: false,
                 finish_note: None,
+                finish_summary: None,
             }),
             notify: Notify::new(),
         });
@@ -266,14 +274,35 @@ impl ChatResponse {
                             // text reply (backends don't emit `finish` as a
                             // ToolCall chunk).
                             if step.kind == crate::types::StepType::Finish {
-                                inner_clone.state.lock().finished = true;
+                                let mut buf = inner_clone.state.lock();
+                                buf.finished = true;
+                                // The model's closing `summary` (if any) rides
+                                // the terminal Finish step — surface it so the
+                                // UI can paint a final reply on a tool-only turn.
+                                if let Some(summary) = &step.finish_summary {
+                                    if !summary.is_empty() {
+                                        buf.finish_summary = Some(summary.clone());
+                                    }
+                                }
                             }
                             let mut s = conv_state.lock();
-                            let final_text = if !step.content.is_empty() {
+                            let mut final_text = if !step.content.is_empty() {
                                 step.content.clone()
                             } else {
                                 emitted_text.clone()
                             };
+                            // A `finish` summary IS the model's closing reply on
+                            // a turn that produced no other text — commit it as
+                            // the last response (for persistence / replay) so a
+                            // silent tool-only completion isn't recorded blank.
+                            // It's NOT streamed as a Text chunk (it lives on a
+                            // dedicated step field, not `content`), so the UI's
+                            // single render of `finish_summary()` can't duplicate.
+                            if final_text.is_empty() {
+                                if let Some(summary) = &step.finish_summary {
+                                    final_text = summary.clone();
+                                }
+                            }
                             // Don't commit a failed turn's text (empty OR a
                             // half-streamed fragment) as the last response.
                             if !final_text.is_empty() && step.error.is_empty() {
@@ -324,6 +353,16 @@ impl ChatResponse {
     /// terminal step arrives.
     pub fn finished(&self) -> bool {
         self.inner.state.lock().finished
+    }
+
+    /// The model's closing `summary` from the `finish` tool, if it passed one.
+    /// Backends intercept `finish` and never surface its args as chunks, so a
+    /// consumer draining the chunk stream can't see this message any other way —
+    /// read it after the stream ends to paint a final assistant reply on a turn
+    /// that otherwise produced only tool activity (the silent-completion fix).
+    /// `None` until the terminal step arrives, or if no `summary` was given.
+    pub fn finish_summary(&self) -> Option<String> {
+        self.inner.state.lock().finish_summary.clone()
     }
 
     /// A fresh cursor that replays every chunk from the start. Multiple

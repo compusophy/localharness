@@ -220,6 +220,10 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content, prompt: Conten
     // `StepType::Finish` so the in-tab loop stops auto-continuing (and
     // doesn't paint an empty-response bubble on a pure-finish turn).
     let mut finished_turn = false;
+    // The `finish` tool's optional `summary` arg — the model's closing message,
+    // threaded onto the terminal step so the UI can paint a final reply on a
+    // turn that otherwise showed only tool activity (the silent-completion fix).
+    let mut finish_summary: Option<String> = None;
     let trajectory_id = Uuid::new_v4().to_string();
 
     loop {
@@ -411,6 +415,14 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content, prompt: Conten
                 if let Some(out) = call.args.get("output").cloned() {
                     *deps.state.last_structured_output.lock() = Some(out);
                 }
+                // Capture the closing `summary` (the full finish args were
+                // discarded before — only `output` was kept), so a tool-only
+                // turn can still end with a final reply.
+                if let Some(sm) = call.args.get("summary").and_then(|v| v.as_str()) {
+                    if !sm.is_empty() {
+                        finish_summary = Some(sm.to_string());
+                    }
+                }
                 saw_finish = true;
                 response_parts.push(Part::FunctionResponse {
                     function_response: FunctionResponse {
@@ -501,7 +513,8 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: wire::Content, prompt: Conten
         finished_turn,
         structured,
         usage_opt,
-    );
+    )
+    .with_finish_summary(finish_summary);
     deps.state.emit(terminal);
 
     // Post-turn hooks observe the completed turn's final text — fired after

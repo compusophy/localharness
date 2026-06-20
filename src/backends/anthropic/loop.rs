@@ -222,6 +222,10 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
     // The model called `finish` this turn — flags the terminal step as
     // `StepType::Finish` (see `gemini::loop`).
     let mut finished_turn = false;
+    // The `finish` tool's optional `summary` arg — threaded onto the terminal
+    // step so the UI can paint a final reply on a tool-only turn (see
+    // `gemini::loop`).
+    let mut finish_summary: Option<String> = None;
     let trajectory_id = Uuid::new_v4().to_string();
 
     loop {
@@ -530,6 +534,13 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
                 if let Some(out) = args.get("output").cloned() {
                     *deps.state.last_structured_output.lock() = Some(out);
                 }
+                // Capture the closing `summary` (the finish args were otherwise
+                // discarded), so a tool-only turn can still end with a reply.
+                if let Some(sm) = args.get("summary").and_then(|v| v.as_str()) {
+                    if !sm.is_empty() {
+                        finish_summary = Some(sm.to_string());
+                    }
+                }
                 saw_finish = true;
                 result_blocks.push(Block::ToolResult {
                     tool_use_id: id,
@@ -608,7 +619,8 @@ pub(crate) async fn run_turn(deps: TurnDeps, user: Message, prompt: Content) -> 
         finished_turn,
         structured,
         usage_opt,
-    );
+    )
+    .with_finish_summary(finish_summary);
     deps.state.emit(terminal);
 
     // Post-turn hooks observe the completed turn's final text — fired after

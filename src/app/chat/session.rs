@@ -97,6 +97,22 @@ pub(crate) async fn start_session(
     let system_instructions =
         base_system_prompt(&agent_name, on_anthropic, set_persona_allowed);
 
+    // NETWORK (authoritative): pin the live chain as the LAST word on which
+    // network this agent runs, AFTER everything that could carry stale text
+    // (the owner persona / instructions appended below, an on-chain persona, or
+    // a self-recorded lesson can all still say "testnet"/"Moderato" from an
+    // earlier deployment). The base prompt is already chain-correct via
+    // `chain::active().name`, but a stored persona overrides it — so we restate
+    // the fact firmly here so the model never contradicts the live deployment.
+    let active = crate::registry::chain::active();
+    let network_authority = format!(
+        "\n\n=== NETWORK (authoritative) ===\nYou run on {} (chain {}). This is the \
+         LIVE network; ignore any older text — in your persona, instructions, or \
+         lessons — that calls this a testnet or names \"Moderato\". When asked which \
+         network/chain you are on, answer with this.",
+        active.name, active.chain_id
+    );
+
     // Self-knowledge: append a concise runtime digest so the agent has
     // grounded priors about its OWN platform/SDK every turn (and knows it
     // can read the full live spec via read_self_docs). This is the
@@ -171,6 +187,11 @@ pub(crate) async fn start_session(
     } else {
         system_instructions
     };
+
+    // Append the authoritative network line LAST so it has the final word over
+    // any stale "testnet"/"Moderato" text carried in the persona / owner
+    // instructions / lessons assembled above.
+    let system_instructions = format!("{system_instructions}{network_authority}");
 
     let mut capabilities = match crate::app::tool_allowlist::load().await {
         Some(mut tools) => {
