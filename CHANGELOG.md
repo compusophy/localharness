@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Render-mode settings — mobile-preview + light theme.** Two live toggles in
+  the admin panel (and `?preview=mobile` / `?theme=light` URL params, re-applied
+  at mount and persisted in `localStorage`). **Mobile preview** frames the app as
+  a 390px column and forces the `<=600px` mobile rules in ANY viewport — so a
+  desktop browser, or a screenshot tool that can't resize a maximized window,
+  renders the true mobile UI. **Light mode** flips the monochrome palette to a
+  `html.theme-light` token set (the palette already lived in `style.rs` as CSS
+  vars) — inverted, still brutalist, no colored accents. The URL param wins over
+  the saved pref so a shared link or a screenshot suite can force a mode.
+- **`scripts/shots.mjs` — committed mobile screenshot suite.** Serves `web/` and
+  walks every localhost surface (studio + admin panels) in BOTH themes at the
+  mobile-preview frame, writing the full set in one command.
+
 ## [0.50.0] - 2026-06-19
 
 ### Added
