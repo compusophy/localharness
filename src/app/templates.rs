@@ -1503,14 +1503,16 @@ fn admin_identity_section(
 /// future direction is continuous streaming + a subscription, not a manual
 /// daily claim).
 pub(crate) fn admin_credits_section() -> Markup {
-    // Platform credits is the ONLY path surfaced for now. The BYOK toggle,
-    // time-boxed sessions, and per-request metering are intentionally HIDDEN —
-    // their handlers + the `lh_model_access` logic stay (default = credits), so
-    // the balance always loads with zero clutter. `redeem` stays — it's how you
-    // get `$LH`. (Session + metering: shelved, not deleted — for later.)
+    // ONE unified `$LH` balance — wallet + per-request meter summed in
+    // `refresh_credits_pill` (they're auto-bridged both ways, so they're one
+    // spendable pot in practice; the meter is just the no-approval billing
+    // buffer). Titled "$LH" rather than "model credits" so it reads as your
+    // whole balance, not a separate meter (the agent's TBA stays its own
+    // section). The BYOK toggle + time-boxed sessions stay hidden (handlers +
+    // `lh_model_access` default=credits remain). `redeem` is how you fund it.
     html! {
         div #credits-section .admin-section {
-            div.admin-section-title { "model credits" }
+            div.admin-section-title { "$LH" }
             // A label:value row like every other stat — the bare centered
             // number read as orphaned from its section title.
             div.admin-identity-row {
@@ -1958,15 +1960,17 @@ pub(crate) fn financial_card(
                 }
             }
             div.financial-line {
-                span.financial-label { "wallet" }
+                span.financial-label { "agent wallet" }
                 a.financial-tba href=(tba_url) target="_blank" rel="noopener"
                     title=(tba_hex) {
                     (short_addr(tba_hex))
                 }
             }
             div.financial-line {
-                // The agent TBA's own $LH (x402 earnings) — labelled to
-                // distinguish it from the owner's model credits below.
+                // The agent TBA's own $LH (x402 earnings) — labelled "agent" to
+                // distinguish it from the owner's unified `$LH` balance: this is
+                // the agent's OWN economy wallet (it earns/spends with peers),
+                // separate from what the owner spends on inference.
                 span.financial-label { "agent $LH" }
                 span.financial-value.financial-balance { (balance_display) }
             }
