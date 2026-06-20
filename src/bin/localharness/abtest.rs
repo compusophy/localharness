@@ -109,7 +109,7 @@ pub(crate) fn parse_abtest_args(rest: &[String]) -> Result<ParsedAbtest, String>
             "--models" => {
                 let v = rest.get(i + 1).ok_or(ABTEST_USAGE)?;
                 for m in parse_csv_dedup(v) {
-                    if !models.iter().any(|e| *e == m) {
+                    if !models.contains(&m) {
                         models.push(m);
                     }
                 }
@@ -124,7 +124,7 @@ pub(crate) fn parse_abtest_args(rest: &[String]) -> Result<ParsedAbtest, String>
                 // A single --model is the persona-axis model AND folds into the
                 // model set (so `--model a --model b` is a valid model A/B).
                 single_model = Some(m.clone());
-                if !models.iter().any(|e| *e == m) {
+                if !models.contains(&m) {
                     models.push(m);
                 }
                 i += 2;
@@ -132,7 +132,7 @@ pub(crate) fn parse_abtest_args(rest: &[String]) -> Result<ParsedAbtest, String>
             "--personas" => {
                 let v = rest.get(i + 1).ok_or(ABTEST_USAGE)?;
                 for p in parse_csv_dedup(v) {
-                    if !personas.iter().any(|e| *e == p) {
+                    if !personas.contains(&p) {
                         personas.push(p);
                     }
                 }
@@ -144,7 +144,7 @@ pub(crate) fn parse_abtest_args(rest: &[String]) -> Result<ParsedAbtest, String>
                 if p.is_empty() {
                     return Err(ABTEST_USAGE.to_string());
                 }
-                if !personas.iter().any(|e| *e == p) {
+                if !personas.contains(&p) {
                     personas.push(p);
                 }
                 i += 2;
@@ -229,7 +229,7 @@ pub(crate) fn format_abtest_report(prompt: &str, results: &[(String, Result<Stri
     let mut out = String::new();
     out.push_str(&format!("A/B run · {} variant(s)\nprompt: {}\n", results.len(), prompt.trim()));
     for (label, result) in results {
-        out.push_str("\n");
+        out.push('\n');
         out.push_str(&format!("──── {label} ────\n"));
         match result {
             Ok(text) => {
