@@ -49,6 +49,6 @@ claude-persona.txt
 qr-*.png
 fleet-run-output.txt
 
-# node tooling (scripts/shots.mjs etc.)
+# node tooling (proxy deps + any local npm)
 node_modules/
 package-lock.json
