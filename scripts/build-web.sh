@@ -86,5 +86,21 @@ else
     echo "WARNING: could not hash wasm; bundle cache-buster NOT stamped" >&2
 fi
 
+# Cache-bust the PWA / app-icon URLs (manifest icons + apple-touch + favicon
+# links) with a CONTENT HASH of the icon set. Installed PWAs cache their icon at
+# install time, so a regenerated icon never reaches the home screen without a
+# versioned url — and Android only re-mints the installed WebAPK icon when the
+# MANIFEST changes. A new hash = new url in BOTH manifest.webmanifest + index.html
+# = a fresh fetch + a WebAPK re-mint. Independent of the wasm hash so the icon
+# url only churns when the icons actually change (no needless re-mint per deploy).
+ICON_HASH="$( cat web/icons/icon-192.png web/icons/icon-512.png web/icons/icon-512-maskable.png web/icons/favicon.svg web/icons/favicon-32.png | (sha256sum 2>/dev/null || shasum -a 256) | cut -c1-12 )"
+if [ -n "$ICON_HASH" ]; then
+    sed -i.bak -E "s|(icons/[A-Za-z0-9._-]+\?v=)[A-Za-z0-9]*|\1${ICON_HASH}|g" web/manifest.webmanifest && rm -f web/manifest.webmanifest.bak
+    sed -i.bak -E "s|(icons/[A-Za-z0-9._-]+\?v=)[A-Za-z0-9]*|\1${ICON_HASH}|g" web/index.html && rm -f web/index.html.bak
+    echo "→ stamped icon cache-buster: ${ICON_HASH}"
+else
+    echo "WARNING: could not hash icons; icon cache-buster NOT stamped" >&2
+fi
+
 echo "→ web/pkg/ updated. Commit the changes and push for Vercel to pick up."
 ls -lh web/pkg
