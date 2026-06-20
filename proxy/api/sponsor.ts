@@ -13,8 +13,9 @@
 //   1. Selector allowlist (default-deny): each call's `to` must be the diamond
 //      or the $LH token, and its 4-byte selector must be a sponsorable
 //      onboarding/participation write (mirrors the browser's
-//      run_sponsored_tempo_call surface). No raw value sends; no $LH transfer;
-//      $LH approve only with the diamond as spender.
+//      run_sponsored_tempo_call surface). No raw value sends. On the $LH token,
+//      transfer (send_lh / meter→wallet bridge moves the caller's OWN $LH) and
+//      approve-to-the-diamond only — never approve to an arbitrary spender.
 //   2. Per-address rate window (post-auth — a fee signature is valuable).
 //   3. Onboarding-only spend gate: sponsor only zero/near-zero-$LH callers; a
 //      funded agent self-pays (it already earns $LH). This is the durable
@@ -150,6 +151,7 @@ function selector(sig: string): string {
 }
 
 const APPROVE_SELECTOR = selector('approve(address,uint256)');
+const TRANSFER_SELECTOR = selector('transfer(address,uint256)');
 const DIAMOND_SELECTORS = new Set(DIAMOND_WRITE_SIGS.map(selector));
 
 // The SELF-PAY surface — selectors a FUNDED caller may still relay. On mainnet
@@ -162,6 +164,12 @@ const DIAMOND_SELECTORS = new Set(DIAMOND_WRITE_SIGS.map(selector));
 const SELF_PAY_SELECTORS = new Set([
   selector('settle(address,address,uint256,uint256,uint256,bytes32,bytes)'),
   APPROVE_SELECTOR,
+  // send_lh's direct $LH transfer is the same shape as settle: it moves the
+  // caller's OWN $LH and can't touch the sponsor's fee-token float, so a
+  // GRADUATED (wallet-funded) agent — which still can't self-pay gas on mainnet
+  // — may relay it too. (A meter-funded sender with a 0 wallet passes the
+  // onboarding gate regardless; this line is what lets a funded agent send.)
+  TRANSFER_SELECTOR,
 ]);
 
 // --- CORS / json -----------------------------------------------------------
@@ -321,11 +329,21 @@ function checkAllowlist(calls: TempoCallIntent[]): string | null {
     if (to === DIAMOND) {
       if (!DIAMOND_SELECTORS.has(sel)) return `calls[${i}]: selector 0x${sel} not in the diamond sponsor allowlist`;
     } else if (to === TOKEN) {
-      // $LH token: ONLY approve(diamond, amount) — never transfer, never approve
-      // an arbitrary spender (that would let the sponsor underwrite a drain).
-      if (sel !== APPROVE_SELECTOR) return `calls[${i}]: only approve() is sponsorable on the $LH token`;
-      const spender = '0x' + bytesToHex(c.input.slice(16, 36)); // first arg, right-aligned
-      if (spender !== DIAMOND) return `calls[${i}]: approve spender must be the diamond`;
+      // $LH token: transfer(to, amount) — send_lh / the meter→wallet bridge
+      // moving the caller's OWN $LH (any recipient; the whole point is paying
+      // another address) — and approve(diamond, amount) for meter top-ups. A
+      // transfer can't touch the sponsor's fee-token float, so the only cost is
+      // gas, bounded by the rate caps + float breaker (same profile as the
+      // settle self-pay path and the diamond economy writes). An approve to an
+      // ARBITRARY spender stays refused — that WOULD underwrite a drain.
+      if (sel === TRANSFER_SELECTOR) {
+        // recipient unrestricted by design — send_lh pays an external address
+      } else if (sel === APPROVE_SELECTOR) {
+        const spender = '0x' + bytesToHex(c.input.slice(16, 36)); // first arg, right-aligned
+        if (spender !== DIAMOND) return `calls[${i}]: approve spender must be the diamond`;
+      } else {
+        return `calls[${i}]: only transfer() or approve(diamond) is sponsorable on the $LH token`;
+      }
     } else {
       return `calls[${i}]: to ${to} is not the diamond or $LH token`;
     }

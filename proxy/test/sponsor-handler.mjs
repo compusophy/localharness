@@ -206,14 +206,24 @@ const token = authToken(senderPriv, senderAddr, ts);
   );
 }
 
-// --- non-allowlisted selector (transfer on the token) is refused ------------
+// --- transfer on the token IS sponsorable (send_lh moves the caller's $LH) ---
 {
   stubBalance('0');
-  const cd = '0x' + sel('transfer(address,uint256)') + word('00'.repeat(20)) + word('1');
+  const cd = '0x' + sel('transfer(address,uint256)') + word('ab'.repeat(20)) + word('1');
   const intent = makeIntent(TOKEN, cd);
   const res = await handler(makeReq(bodyFor(intent, cd, TOKEN), token));
-  const j = await res.json();
-  ok('token transfer refused 403 LH_RELAY_SELECTOR', res.status === 403 && j.code === 'LH_RELAY_SELECTOR', `status=${res.status} code=${j.code}`);
+  ok('token transfer (unfunded) allowed 200', res.status === 200, `status=${res.status}`);
+}
+
+// --- funded caller, transfer-ONLY intent, IS sponsored (self-pay exemption) --
+// A graduated agent can't hold the fee token to self-pay gas, so it must still
+// relay a send of its OWN $LH — same exemption as settle.
+{
+  stubBalance('1bc16d674ec80000'); // 2 $LH > ceiling — funded
+  const cd = '0x' + sel('transfer(address,uint256)') + word('ab'.repeat(20)) + word('1');
+  const intent = makeIntent(TOKEN, cd);
+  const res = await handler(makeReq(bodyFor(intent, cd, TOKEN), token));
+  ok('funded caller transfer-only is sponsored (self-pay exempt)', res.status === 200, `status=${res.status}`);
 }
 
 // --- approve to a non-diamond spender is refused ----------------------------
