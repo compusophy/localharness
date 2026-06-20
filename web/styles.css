@@ -224,10 +224,7 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
   transition: color 90ms ease, border-color 90ms ease;
 }
 .brand-summary:hover { color: var(--fg); border-color: var(--fg); }
-/* 17px (not 15) because the glyph's viewBox is now padded by the half
-   stroke-width for the outlined stroke — the bump keeps the visible letterforms
-   ~15px tall, the same as before, so the outlined lh matches the header icons. */
-.brand-summary svg { display: block; height: 17px; width: auto; }
+.brand-summary svg { display: block; height: 15px; width: auto; }
 .brand-summary::-webkit-details-marker { display: none; }
 .brand-summary::marker { content: ""; }
 .brand-menu-items {
