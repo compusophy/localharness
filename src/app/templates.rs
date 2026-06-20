@@ -220,11 +220,13 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
                         }
                     }
                 }
-                // Header carries ONLY brand + admin (feedback #71: the
-                // files + bug buttons cluttered the chrome). Files opens
-                // from the admin panel; feedback stays an admin tab.
+                // Header: bell · feedback (bug) · settings (cog) — three square
+                // icon buttons. The feedback bug button (#36) sits BETWEEN the
+                // bell and the cog and opens the on-chain feedback widget as its
+                // own dropdown (no longer an admin tab). Files opens from admin.
                 div #header-admin .header-admin {
                     (notif_bell())
+                    (feedback_bug())
                     button type="button"
                         data-action="header-admin-toggle"
                         aria-label="settings" title="settings"
@@ -236,14 +238,46 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
     }
 }
 
+/// The header feedback (bug) button + its dropdown (#36). A square icon button
+/// — same `.header-button` treatment as the bell/cog — that toggles the
+/// on-chain feedback widget as a dropdown anchored under it (the feedback admin
+/// TAB was retired). Wrapped in `.feedback-bug-wrap` (position:relative) so the
+/// panel anchors to the button like the notif bell.
+pub(crate) fn feedback_bug() -> Markup {
+    html! {
+        div.feedback-bug-wrap {
+            button #feedback-bug type="button" data-action="toggle-feedback"
+                title="feedback" aria-label="feedback"
+                .header-button.feedback-bug-btn { (crate::landing::bug_glyph()) }
+            (feedback_panel(true))
+        }
+    }
+}
+
+/// The feedback-bug dropdown panel — the on-chain feedback widget (textarea +
+/// submit + msg slot) in a bordered box anchored under the bug button, mirroring
+/// the notif panel. `hidden` controls visibility; `toggle-feedback` re-renders
+/// it open/closed. Reuses the exact `#feedback-text`/`#feedback-msg` ids
+/// `feedback::feedback_submit` drives, so the submit/rate-limit/sign path is
+/// unchanged from the old admin tab.
+pub(crate) fn feedback_panel(hidden: bool) -> Markup {
+    html! {
+        div #feedback-panel .feedback-panel hidden[hidden] {
+            (admin_feedback_section())
+        }
+    }
+}
+
 /// Version string, used in the admin dropdown bottom. Auto-tracks the
 /// crate version (`Cargo.toml`) at compile time so the footer can't drift
 /// from the published release — no separate manual bump step.
 pub(crate) const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Terminal input — just `>` prompt + textarea + → send. Status line
-/// stays in the DOM (id="status") for dispatcher messages but renders
-/// empty by default so it doesn't add visual noise.
+/// Terminal input — `>` prompt + textarea in their own bordered row, with the
+/// send/stop control lifted OUT of that row into its OWN square bordered icon
+/// button to the RIGHT (#34), matching the header bell/cog square buttons. The
+/// two sit in a `.terminal-footer` flex row. Status line stays in the DOM
+/// (id="status") for dispatcher messages but renders empty by default.
 pub(crate) fn terminal_input() -> Markup {
     html! {
         div.terminal-body {
@@ -256,47 +290,49 @@ pub(crate) fn terminal_input() -> Markup {
             // role=status announces the "no $LH — redeem" CTA when it appears, so a
             // screen-reader user isn't left to hit a silent rejection on first send.
             div #fund-banner .fund-banner role="status" aria-live="polite" {}
-            div.terminal-row {
-                // Decorative prompt glyph — hidden from the a11y tree so it
-                // isn't announced as stray content before the input.
-                span.terminal-prompt aria-hidden="true" { ">" }
-                // No visible label, so give the textarea an accessible name.
-                textarea #prompt rows="1" aria-label="message the agent" {}
+            // [the textarea row][the square action button] — the send/stop box is
+            // a sibling of the input row, not a child, so it reads as its own
+            // square button like the header chrome.
+            div.terminal-footer {
+                div.terminal-row {
+                    // Decorative prompt glyph — hidden from the a11y tree so it
+                    // isn't announced as stray content before the input.
+                    span.terminal-prompt aria-hidden="true" { ">" }
+                    // No visible label, so give the textarea an accessible name.
+                    textarea #prompt rows="1" aria-label="message the agent" {}
+                }
                 (send_button())
             }
         }
     }
 }
 
-/// The terminal send button (`→`). Swapped out for [`stop_button`]
-/// while a turn is streaming so the same slot becomes the kill switch.
+/// The terminal send button (`→`) — its OWN square bordered icon button to the
+/// right of the input row (#34), matching the header bell/cog. Swapped out for
+/// [`stop_button`] while a turn is streaming so the same slot becomes the kill
+/// switch (the swap keys on the `#terminal-send` / `#terminal-stop` id).
 pub(crate) fn send_button() -> Markup {
     // Inline SVG triangle, NOT the "▶" text glyph — IBM Plex Mono has no
-    // geometric shapes, so the fallback font drew a misshapen blob. Same
-    // square-icon-button treatment as the header bell; centered by CSS.
+    // geometric shapes, so the fallback font drew a misshapen blob. Centered by
+    // `.terminal-action-btn` (the same square box as the header buttons).
     let play = maud::PreEscaped(
         "<svg viewBox=\"0 0 16 16\" width=\"12\" height=\"12\" fill=\"currentColor\" \
          aria-hidden=\"true\"><path d=\"M4.5 2.5v11l9-5.5z\"/></svg>",
     );
     html! {
-        button #terminal-send .terminal-send data-action="send" title="send" aria-label="send" { (play) }
+        button #terminal-send .terminal-action-btn.terminal-send data-action="send" title="send" aria-label="send" { (play) }
     }
 }
 
-/// The stop slot shown in place of the send button while a turn is in
-/// flight: the stop button (`■`, cooperative cancel) plus — on a tenant,
-/// where the run can be promoted to an on-chain goal job — a small
-/// [⇪ background] button that continues the work HEADLESS via the
-/// scheduler worker even after the tab closes. The group carries the
-/// `terminal-stop` id so the existing swap lifecycle (`chat::run_send` /
-/// `TurnGuard` restoring [`send_button`] by id) removes BOTH buttons in
-/// one `swap_outer` when the run ends.
+/// The stop button shown in place of the send button while a turn is in flight
+/// (`■`, cooperative cancel) — the same square `.terminal-action-btn` box as
+/// [`send_button`]. It carries the `terminal-stop` id so the existing swap
+/// lifecycle (`chat::run_send` / `TurnGuard` restoring [`send_button`] by id)
+/// removes it in one `swap_outer` when the run ends.
 pub(crate) fn stop_button() -> Markup {
     html! {
-        span #terminal-stop style="display:flex;align-items:center;flex-shrink:0" {
-            button .terminal-send.terminal-stop data-action="stop-turn" title="stop" aria-label="stop generating" {
-                (maud::PreEscaped("<svg viewBox=\"0 0 16 16\" width=\"11\" height=\"11\" fill=\"currentColor\" aria-hidden=\"true\"><rect x=\"3\" y=\"3\" width=\"10\" height=\"10\"/></svg>"))
-            }
+        button #terminal-stop .terminal-action-btn.terminal-send.terminal-stop data-action="stop-turn" title="stop" aria-label="stop generating" {
+            (maud::PreEscaped("<svg viewBox=\"0 0 16 16\" width=\"11\" height=\"11\" fill=\"currentColor\" aria-hidden=\"true\"><rect x=\"3\" y=\"3\" width=\"10\" height=\"10\"/></svg>"))
         }
     }
 }
@@ -646,13 +682,12 @@ fn terminal_surface(argv: &str, run: &crate::app::cli::CliRun) -> Markup {
 // `display: none` shim. If a footer ever comes back, reintroduce
 // here with a meaningful purpose.
 
-/// Feedback admin-tab panel. Lives inline in the admin modal's
-/// `panel-feedback` (no overlay, no `×`) — the `[feedback]` header button
-/// was retired in favour of this tab. On-chain write-only: the textarea +
-/// submit reuse the exact ids `feedback::feedback_submit` drives
-/// (`#feedback-text` / `#feedback-msg`), so the submit / rate-limit /
-/// sign path is unchanged. Submit also mirrors to `.lh_feedback.txt` in
-/// OPFS as a local copy.
+/// The on-chain feedback widget — textarea + submit + msg slot. Lives in the
+/// header feedback-bug dropdown ([`feedback_panel`], #36); the admin feedback
+/// TAB was retired in its favour. On-chain write-only: the textarea + submit
+/// reuse the exact ids `feedback::feedback_submit` drives (`#feedback-text` /
+/// `#feedback-msg`), so the submit / rate-limit / sign path is unchanged. Submit
+/// also mirrors to `.lh_feedback.txt` in OPFS as a local copy.
 pub(crate) fn admin_feedback_section() -> Markup {
     html! {
         div.admin-section {
@@ -1174,14 +1209,8 @@ pub(crate) fn admin_dropdown_apex() -> Markup {
                     button #admin-tab-btn-usage type="button"
                         data-action="show-admin-tab" data-arg="usage"
                         .admin-tab-button { "economy" }
-                    button #admin-tab-btn-feedback type="button"
-                        data-action="show-admin-tab" data-arg="feedback"
-                        .admin-tab-button { "feedback" }
                     span.admin-tabs-spacer {}
                     button type="button" data-action="header-admin-close" .modal-close aria-label="close admin" { "×" }
-                }
-                div.admin-tab-panel.panel-feedback {
-                    (admin_feedback_section())
                 }
                 div.admin-tab-panel.panel-account {
                     (admin_identity_section(None, owner_hex.as_deref(), None, has_wallet))
@@ -1221,14 +1250,8 @@ pub(crate) fn admin_dropdown_tenant() -> Markup {
                     button #admin-tab-btn-account type="button"
                         data-action="show-admin-tab" data-arg="account"
                         .admin-tab-button.active { "account" }
-                    button #admin-tab-btn-feedback type="button"
-                        data-action="show-admin-tab" data-arg="feedback"
-                        .admin-tab-button { "feedback" }
                     span.admin-tabs-spacer {}
                     button type="button" data-action="header-admin-close" .modal-close aria-label="close admin" { "×" }
-                }
-                div.admin-tab-panel.panel-feedback {
-                    (admin_feedback_section())
                 }
                 div.admin-tab-panel.panel-agent {
                     (admin_model_section())

@@ -332,7 +332,9 @@ main.layout .col-chat {
 main.layout .terminal-panel {
   flex-shrink: 0;
   margin-top: auto;        /* always pin to bottom of col-chat */
-  border-top: 1px solid var(--border);
+  /* No border-top: the footer divider was dropped (#34) to match the
+     header-divider removal already shipped — the chrome reads as one
+     continuous surface. */
 }
 
 /* Transcript fills available vertical space; scrolls internally.
@@ -625,6 +627,50 @@ main.layout .transcript > *:empty { display: none; }
   padding: 6px 12px;
   border-bottom: 1px solid var(--border);
 }
+/* Header feedback-bug button + its dropdown (#36) — same square icon-button
+   treatment as the bell/cog, with the panel anchored under it like the notif
+   panel. */
+.feedback-bug-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.feedback-bug-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* Icon-only: opt OUT of the .header-button 96px text min-width and square up. */
+  min-width: 0;
+  padding: 10px;
+  /* Solid fill so transcript scrolling under the floating chat header doesn't
+     bleed through (see .notif-bell-btn). */
+  background: var(--bg);
+}
+.feedback-bug-btn svg { display: block; width: 16px; height: 16px; }
+.feedback-panel {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  /* Uniform chrome gap below the button — matches the bell / brand menu. */
+  margin-top: var(--chrome-pad);
+  width: 280px;
+  max-width: 90vw;
+  max-height: 60vh;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  z-index: var(--z-menu);
+  padding: 12px;
+}
+.feedback-panel[hidden] { display: none; }
+/* The widget lives bare in the dropdown — drop the admin-section divider it
+   inherited from the old tab so it reads as a self-contained popover. */
+.feedback-panel .admin-section {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
 .notif-clear-prompt { font-size: 11px; color: var(--muted); margin-right: auto; }
 .notif-clear-btn {
   background: none;
@@ -885,11 +931,21 @@ main.layout .transcript > *:empty { display: none; }
 }
 .terminal-status:empty { display: none; }
 .terminal-status.err { color: var(--error); }
+/* The footer row: [the textarea row][the square action button] (#34). The send
+   /stop control is lifted OUT of the input box into its own square bordered
+   button to the RIGHT, matching the header bell/cog. */
+.terminal-footer {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
 .terminal-row {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
-  /* UNIFORM interior spacing — ONE 8px step everywhere: edge→prompt,
-     prompt→textarea, textarea→send, send→edge. */
+  /* UNIFORM interior spacing — ONE 8px step: edge→prompt, prompt→textarea,
+     textarea→edge. The send button is no longer inside this row (#34). */
   gap: 8px;
   padding: 8px;
   background: var(--bg);
@@ -917,31 +973,34 @@ main.layout .transcript > *:empty { display: none; }
   caret-color: var(--accent);   /* terminal-style accent cursor */
   font: inherit;
   padding: 0;
-  min-height: 20px;
+  min-height: 16px;
   /* Auto-grows with content (events::autogrow_textarea sets the inline
      height to scrollHeight on every `input`); this caps the growth and
      scrolls past it so a long paste can't push the row off-screen. */
-  max-height: 150px;
+  max-height: 120px;
   overflow-y: auto;
   line-height: 1.4;
 }
-.terminal-send {
-  /* A SQUARE icon button (same treatment as the header bell): SVG glyph
-     centered in a fixed 20px box that fits the row's content height
-     without stretching it. Spacing around it is the row's uniform 8px. */
-  width: 20px;
-  height: 20px;
+/* The send/stop control as its OWN square bordered icon button to the right of
+   the input (#34) — the SAME 38px box, 1px border, --bg fill, centered SVG as
+   the header bell/cog (.brand-summary / .admin-button). Sits at the bottom of
+   the footer row (align-items:flex-end) so it stays put as the input grows. */
+.terminal-action-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0;
+  border: 1px solid var(--border);
+  width: 38px;
+  height: 38px;
+  background: var(--bg);
   flex-shrink: 0;
-  background: transparent;
+}
+.terminal-send {
+  padding: 0;
   color: var(--muted);
-  border: 0;
   cursor: pointer;
 }
-.terminal-send:hover { color: var(--accent); }
+.terminal-send:hover { color: var(--accent); border-color: var(--fg); }
 /* Stop button (square SVG) occupies the play slot while a turn streams. */
 .terminal-stop { color: var(--error); }
 .terminal-stop:hover { color: var(--error); }
@@ -1327,11 +1386,10 @@ input, textarea {
      "inputs zoom in" iPhone report). Zoom prevention must win over every
      per-input font declaration. */
   input, textarea, select { font-size: 16px !important; }
-  /* The chat send button (▶) is a 20x13 hit area on desktop — far below the
-     ~44px touch-target minimum (WCAG 2.5.5 / Apple HIG) for what is the
-     PRIMARY mobile action. Give it a real touch target; the input row grows
-     to fit (a taller input bar is normal + correct on a phone). Desktop
-     (>600px) keeps the compact glyph untouched. */
+  /* The chat send button is a 38px box on desktop (#34) — below the ~44px
+     touch-target minimum (WCAG 2.5.5 / Apple HIG) for what is the PRIMARY
+     mobile action. Grow it to a real touch target; min-* expands the 38px box.
+     Desktop (>600px) keeps the compact 38px box untouched. */
   .terminal-send {
     min-width: 44px;
     min-height: 44px;
@@ -1959,31 +2017,33 @@ footer a:hover { text-decoration: underline; }
   background: var(--bg);
 }
 .admin-button svg { display: block; width: 16px; height: 16px; }
+/* The admin (cog) panel is a DROPDOWN (#36), anchored under the cog like the
+   notif bell / brand menu — NOT a fullscreen centered modal. `.header-admin`
+   is position:relative, so this absolute panel hangs off it; the uniform
+   --chrome-pad gap matches the other header dropdowns. */
 .header-admin-panel {
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-modal);
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: var(--chrome-pad);
+  z-index: var(--z-menu);
 }
 .admin-dialog {
-  width: 100%;
-  max-width: 560px;
+  width: 360px;
+  max-width: 90vw;
   max-height: 80vh;
   overflow-y: auto;
   background: var(--panel);
   border: 1px solid var(--border);
   padding: 20px;
 }
-/* Tabbed admin — fuller, page-like panel under the header. The tab bar
+/* Tabbed admin — fuller, page-like panel inside the dropdown. The tab bar
    stays pinned at the top while the panel body scrolls. */
 .admin-dialog.admin-tabbed {
-  max-width: 640px;
-  height: 85vh;
-  max-height: 85vh;
+  width: 420px;
+  max-width: 90vw;
+  height: 70vh;
+  max-height: 70vh;
   display: flex;
   flex-direction: column;
   padding: 0;
@@ -2018,8 +2078,7 @@ footer a:hover { text-decoration: underline; }
 }
 .admin-dialog.tab-agent     .panel-agent,
 .admin-dialog.tab-account   .panel-account,
-.admin-dialog.tab-usage      .panel-usage,
-.admin-dialog.tab-feedback   .panel-feedback { display: block; }
+.admin-dialog.tab-usage      .panel-usage { display: block; }
 .admin-tabbed .admin-footer { flex-shrink: 0; padding: 8px 20px; }
 .admin-section { margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
 .admin-section:last-of-type { border-bottom: 0; padding-bottom: 0; margin-bottom: 8px; }

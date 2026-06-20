@@ -169,6 +169,9 @@ enum Action {
     /// Open/close the OPFS file-browser modal (header [files] button +
     /// the modal's own ×).
     ToggleFiles,
+    /// Open/close the header feedback-bug dropdown (#36) — the on-chain feedback
+    /// widget, anchored under the bug button (between the bell and the cog).
+    ToggleFeedback,
     FeedbackSubmit,
     /// Dismiss the QR seed-adoption panel back to the "add a device" button.
     PairCancel,
@@ -296,6 +299,7 @@ impl Action {
             "reset-cancel" => Action::ResetCancel,
             "pricing-save" => Action::PricingSave,
             "toggle-files" => Action::ToggleFiles,
+            "toggle-feedback" => Action::ToggleFeedback,
             "feedback-submit" => Action::FeedbackSubmit,
             "add-device" => Action::AddDevice,
             "sync-devices" => Action::SyncDevices,
@@ -351,6 +355,13 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
             admin::close_notif_panel();
         }
 
+        // Same dismissal for the header feedback-bug dropdown (#36): any click
+        // outside its wrap closes it (a click on the bug/panel IS inside the
+        // wrap, so toggling + the textarea still work untouched).
+        if admin::feedback_panel_open() && node.closest(".feedback-bug-wrap").ok().flatten().is_none() {
+            admin::close_feedback_panel();
+        }
+
         // Same treatment for the top-left `localharness` brand menu: a native
         // <details> won't dismiss on its own, so any click outside .brand-menu
         // closes it. A click on the summary/items IS inside .brand-menu, so the
@@ -359,17 +370,25 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
             admin::close_brand_menu();
         }
 
+        // The admin (cog) panel is now a DROPDOWN (#36) anchored under the cog,
+        // inside `.header-admin` — not a fullscreen backdrop. So dismiss it the
+        // same way as the other header dropdowns: any click outside `.header-admin`
+        // closes it. A click on the cog/panel IS inside `.header-admin`, so the
+        // toggle + the panel's own controls still run untouched.
+        if dom::by_id("header-admin-panel")
+            .map(|e| !e.has_attribute("hidden"))
+            .unwrap_or(false)
+            && node.closest(".header-admin").ok().flatten().is_none()
+        {
+            dispatch(Action::HeaderAdminClose);
+        }
+
         // Backdrop-click dismissal: a click whose RAW target IS the overlay
         // backdrop itself (the dark area, never a child inside the dialog —
-        // those bubble up with a different target) closes the modal. Standard
-        // modal behaviour, paired with ESC. Admin + files only; the display
-        // overlay is a fullscreen interactive surface (its × / ESC close it).
+        // those bubble up with a different target) closes the modal. Files modal
+        // only; the display overlay is a fullscreen interactive surface (its × /
+        // ESC close it), and admin is now a dropdown (handled above).
         match node.id().as_str() {
-            "header-admin-panel" => {
-                event.prevent_default();
-                dispatch(Action::HeaderAdminClose);
-                return;
-            }
             "files-modal" => {
                 event.prevent_default();
                 dispatch(Action::ToggleFiles);
@@ -463,6 +482,11 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
             if admin::notif_panel_open() {
                 event.prevent_default();
                 admin::close_notif_panel();
+            } else if admin::feedback_panel_open() {
+                // The feedback-bug dropdown sits in the same chrome layer as the
+                // bell; ESC dismisses it like the other dropdowns.
+                event.prevent_default();
+                admin::close_feedback_panel();
             } else if admin::brand_menu_open() {
                 // The brand menu sits in the same chrome layer as the bell;
                 // ESC dismisses it like the other dropdowns.
@@ -1247,6 +1271,7 @@ fn dispatch(action: Action) {
                 super::opfs::toggle_files_modal().await;
             });
         }
+        Action::ToggleFeedback => admin::toggle_feedback_panel(),
         Action::FeedbackSubmit => super::feedback::feedback_submit(),
         Action::AddDevice => devices::add_device_pressed(),
         Action::SyncDevices => devices::run_sync_devices(),

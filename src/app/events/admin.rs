@@ -320,6 +320,30 @@ pub(super) fn close_notif_panel() {
     );
 }
 
+/// Whether the header feedback-bug dropdown (#36) is currently showing.
+pub(super) fn feedback_panel_open() -> bool {
+    dom::by_id("feedback-panel")
+        .map(|e| !e.has_attribute("hidden"))
+        .unwrap_or(false)
+}
+
+/// Close the feedback dropdown (second bug tap, ESC, or any outside click) —
+/// re-render it hidden. Mirrors `close_notif_panel`.
+pub(super) fn close_feedback_panel() {
+    dom::swap_outer("feedback-panel", &templates::feedback_panel(true).into_string());
+}
+
+/// Toggle the feedback dropdown: open it (and pull focus to the textarea) or, if
+/// already open, close it. Same toggle archetype as the notif bell.
+pub(super) fn toggle_feedback_panel() {
+    if feedback_panel_open() {
+        close_feedback_panel();
+        return;
+    }
+    dom::swap_outer("feedback-panel", &templates::feedback_panel(false).into_string());
+    dom::focus_first_in("feedback-panel");
+}
+
 /// Whether the top-left `localharness` brand menu is open. It is a native
 /// `<details class="brand-menu">` disclosure, so its open state IS the `open`
 /// attribute the browser toggles on summary-click.
@@ -666,7 +690,7 @@ pub(super) fn show_admin_tab(name: &str) {
     cls.push(format!("tab-{name}"));
     dialog.set_class_name(&cls.join(" "));
 
-    for tab in ["agent", "account", "usage", "feedback"] {
+    for tab in ["agent", "account", "usage"] {
         let Some(el) = dom::by_id(&format!("admin-tab-btn-{tab}")) else { continue };
         let c = el.class_name();
         let mut classes: Vec<&str> = c.split_whitespace().filter(|x| *x != "active").collect();
