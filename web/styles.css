@@ -1611,6 +1611,12 @@ button.ready:hover {
    the <pre> is already styled. */
 .turn .body code { background: var(--panel); border: 1px solid var(--border); padding: 1px 4px; }
 .turn .body pre code { background: none; border: 0; padding: 0; }
+/* A markdown code block (<pre>, default white-space:pre) expands to its
+   widest line and dragged the WHOLE transcript into a horizontal scroll on
+   narrow / mobile viewports (a long JSON line = sideways-scrolling the page).
+   Contain the overflow to the block itself: the code keeps its formatting and
+   scrolls internally, the transcript/page stays put. */
+.turn .body pre { max-width: 100%; overflow-x: auto; }
 .turn.user .body { white-space: pre-wrap; color: var(--muted); }
 /* `pre-wrap` is ONLY correct while the turn STREAMS — the segment then
    holds raw model text whose newlines must show. The instant streaming
