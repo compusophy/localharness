@@ -364,12 +364,13 @@ main.layout .transcript {
   min-height: 0;
   overflow-y: auto;
   /* Top + bottom padding clear the two now-FLOATING transparent chrome bars
-     (header above, footer below): the oldest/newest message gets breathing
-     room at rest, yet content scrolls UNDER both so the chat flows edge to
-     edge. 56px top = header pad (16) + ~38px button + gap. 76px bottom =
-     footer pad (16) + input row (~40) + pad (16) + gap; + the iOS safe-area
-     insets on each end. Side gutters stay the uniform chrome margin. */
-  padding: calc(env(safe-area-inset-top) + 56px) var(--chrome-pad) calc(env(safe-area-inset-bottom) + 76px);
+     (header above, footer below): the first/last message clears the chrome by
+     one --chrome-pad and then scrolls UNDER it, so the chat flows edge to edge.
+     70px top = header pad (16) + 38px button + 16px uniform-margin gap (the
+     first message used to crowd the header at +56). 76px bottom = footer pad
+     (16) + input row (38) + pad (16) + gap; + the iOS safe-area insets on each
+     end. Side gutters stay the uniform chrome margin. */
+  padding: calc(env(safe-area-inset-top) + 70px) var(--chrome-pad) calc(env(safe-area-inset-bottom) + 76px);
   margin-top: 0;
   display: flex;
   flex-direction: column;
@@ -960,17 +961,21 @@ main.layout .transcript > *:empty { display: none; }
   min-width: 0;
   display: flex;
   align-items: center;
-  /* UNIFORM interior spacing — ONE 8px step: edge→prompt, prompt→textarea,
-     textarea→edge. The send button is no longer inside this row (#34). */
+  /* ONE 8px step between the prompt glyph and the textarea. The send button is
+     no longer inside this row (#34). */
   gap: 8px;
-  padding: 8px;
+  /* HORIZONTAL padding only. The vertical size is the fixed min-height below,
+     NOT padding — so the resting row is EXACTLY 38px regardless of the textarea
+     font size. (An 8px-padded row grew to 40px on the 16px mobile-zoom font,
+     taller than the 38px send button + header chrome it must line up with — the
+     misalignment this fixes.) The 1-line textarea is vertically centred in the
+     38px box; multi-line content grows the row upward via the textarea autogrow. */
+  padding: 0 8px;
   background: var(--bg);
   border: 1px solid var(--border);
-  /* Outer height pinned to the header admin button's outer height
-     (11px font × 1.5 line-height + 10px×2 padding + 1px×2 border) so
-     header and footer bars are pixel-identical: same content-row
-     height + the same --chrome-pad above and below. */
-  min-height: calc(11px * 1.5 + 20px + 2px);
+  /* EXACTLY the 38px header bell/cog + send button box (border-box), so the
+     input field, the send button, and the header buttons are pixel-identical. */
+  min-height: 38px;
 }
 .terminal-row:focus-within { border-color: var(--accent); }
 .terminal-prompt {
@@ -1016,6 +1021,10 @@ main.layout .transcript > *:empty { display: none; }
   background: var(--bg);
   flex-shrink: 0;
 }
+/* 16px icon — the SAME size as the header bell/bug/cog SVGs, so the play/stop
+   control reads as one of the header's line-art icon buttons (not a smaller,
+   odd glyph). */
+.terminal-action-btn svg { display: block; width: 16px; height: 16px; }
 .terminal-send {
   padding: 0;
   color: var(--muted);

@@ -312,12 +312,15 @@ pub(crate) fn terminal_input() -> Markup {
 /// [`stop_button`] while a turn is streaming so the same slot becomes the kill
 /// switch (the swap keys on the `#terminal-send` / `#terminal-stop` id).
 pub(crate) fn send_button() -> Markup {
-    // Inline SVG triangle, NOT the "▶" text glyph — IBM Plex Mono has no
-    // geometric shapes, so the fallback font drew a misshapen blob. Centered by
-    // `.terminal-action-btn` (the same square box as the header buttons).
+    // OUTLINE play triangle — line-art to match the header's stroked icons
+    // (bell/bug/cog): same 24x24 viewBox, stroke-width 2, round caps/joins,
+    // fill:none. A filled triangle read as too bland next to that line-art;
+    // sized to 16px + centred by `.terminal-action-btn` (the same square box and
+    // icon size as the header buttons).
     let play = maud::PreEscaped(
-        "<svg viewBox=\"0 0 16 16\" width=\"12\" height=\"12\" fill=\"currentColor\" \
-         aria-hidden=\"true\"><path d=\"M4.5 2.5v11l9-5.5z\"/></svg>",
+        "<svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" \
+         stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" \
+         stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M8 5l12 7-12 7z\"/></svg>",
     );
     html! {
         button #terminal-send .terminal-action-btn.terminal-send data-action="send" title="send" aria-label="send" { (play) }
@@ -330,9 +333,12 @@ pub(crate) fn send_button() -> Markup {
 /// lifecycle (`chat::run_send` / `TurnGuard` restoring [`send_button`] by id)
 /// removes it in one `swap_outer` when the run ends.
 pub(crate) fn stop_button() -> Markup {
+    // OUTLINE (unfilled) square — line-art matching the play glyph + the header
+    // icons (24x24 viewBox, stroke-width 2, round joins, fill:none). The red
+    // tint comes from `.terminal-stop`.
     html! {
         button #terminal-stop .terminal-action-btn.terminal-send.terminal-stop data-action="stop-turn" title="stop" aria-label="stop generating" {
-            (maud::PreEscaped("<svg viewBox=\"0 0 16 16\" width=\"11\" height=\"11\" fill=\"currentColor\" aria-hidden=\"true\"><rect x=\"3\" y=\"3\" width=\"10\" height=\"10\"/></svg>"))
+            (maud::PreEscaped("<svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M7 7h10v10H7z\"/></svg>"))
         }
     }
 }
