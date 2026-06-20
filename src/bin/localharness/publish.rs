@@ -457,6 +457,21 @@ pub(crate) fn cartridge_has_entry(wasm: &[u8]) -> bool {
     false
 }
 
+/// Compile rustlite on a generously-sized worker thread. The compiler is deeply
+/// recursive (parser / typecheck / codegen), and a non-trivial cartridge
+/// overflows the ~1MB Windows MAIN-thread stack that `#[tokio::main]` runs on
+/// (RUST_MIN_STACK only sizes spawned threads, not main). A 64 MB std::thread
+/// has the headroom; `CompileError` is Send, so the result crosses back.
+pub(crate) fn compile_big_stack(src: &str) -> Result<Vec<u8>, localharness::rustlite::CompileError> {
+    let owned = src.to_string();
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || localharness::rustlite::compile(&owned))
+        .expect("spawn rustlite compile thread")
+        .join()
+        .expect("rustlite compile thread panicked")
+}
+
 /// Compile-check a rustlite cartridge locally and report its size — NO on-chain
 /// write. Lets an author iterate before spending a sponsored publish. With
 /// `out_path`, also writes the compiled `.wasm` (handy for local validation).
@@ -468,7 +483,7 @@ pub(crate) fn compile_check(source_path: &str, out_path: Option<&str>) -> i32 {
             return 1;
         }
     };
-    match localharness::rustlite::compile(&src) {
+    match compile_big_stack(&src) {
         Ok(wasm) => {
             println!("✓ compiled {source_path} → {} bytes of wasm", wasm.len());
             if let Some(out) = out_path {
@@ -630,7 +645,7 @@ pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
             "html",
         )
     } else {
-        let wasm = match localharness::rustlite::compile(&src) {
+        let wasm = match compile_big_stack(&src) {
             Ok(w) => w,
             Err(e) => {
                 // Full rendering: LH code + line/col + caret snippet.
