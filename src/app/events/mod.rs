@@ -391,13 +391,10 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
         // those bubble up with a different target) closes the modal. Files modal
         // only; the display overlay is a fullscreen interactive surface (its × /
         // ESC close it), and admin is now a dropdown (handled above).
-        match node.id().as_str() {
-            "files-modal" => {
-                event.prevent_default();
-                dispatch(Action::ToggleFiles);
-                return;
-            }
-            _ => {}
+        if node.id().as_str() == "files-modal" {
+            event.prevent_default();
+            dispatch(Action::ToggleFiles);
+            return;
         }
 
         // Walk up from the event target looking for [data-action].

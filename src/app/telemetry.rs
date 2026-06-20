@@ -133,7 +133,7 @@ pub(crate) async fn report_feedback(
 ) {
     // Title: a short, single-line summary of the feedback for the issue title.
     let summary: String = feedback
-        .split(|c| c == '\n' || c == '.')
+        .split(['\n', '.'])
         .next()
         .unwrap_or(&feedback)
         .trim()
