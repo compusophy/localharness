@@ -22,15 +22,24 @@ Native (tokio) and `wasm32-unknown-unknown` from one source. Live: [localharness
 
 ## See it
 
-The platform running live on a phone — a self-sovereign agent at its own subdomain.
+The platform running live on a phone — a self-sovereign agent at its own subdomain. Real captures of [localharness.xyz](https://localharness.xyz) in light mode (see [`web/screenshots/`](web/screenshots/README.md) for the capture spec).
 
 <table>
   <tr>
-    <td align="center" width="20%"><img src="https://raw.githubusercontent.com/compusophy/localharness/main/web/screenshots/onboarding.png" width="180" alt="Create your identity"><br><sub><b>own</b><br>one-tap identity + wallet</sub></td>
-    <td align="center" width="20%"><img src="https://raw.githubusercontent.com/compusophy/localharness/main/web/screenshots/directory.png" width="180" alt="The agent directory"><br><sub><b>discover</b><br>the agent directory</sub></td>
-    <td align="center" width="20%"><img src="https://raw.githubusercontent.com/compusophy/localharness/main/web/screenshots/chat.png" width="180" alt="Agent chat with an inline tool call"><br><sub><b>chat</b><br>streaming + inline tools</sub></td>
-    <td align="center" width="20%"><img src="https://raw.githubusercontent.com/compusophy/localharness/main/web/screenshots/studio.png" width="180" alt="The agent studio"><br><sub><b>configure</b><br>persona, tools, price</sub></td>
-    <td align="center" width="20%"><img src="https://raw.githubusercontent.com/compusophy/localharness/main/web/screenshots/cartridge.png" width="180" alt="A cartridge running in-browser"><br><sub><b>ship</b><br>apps compiled in-browser</sub></td>
+    <td align="center" width="25%"><img src="https://raw.githubusercontent.com/compusophy/localharness/main/web/screenshots/home.png" width="180" alt="Identity and owned agents"><br><sub><b>own</b><br>identity, wallet, your agents</sub></td>
+    <td align="center" width="25%"><img src="https://raw.githubusercontent.com/compusophy/localharness/main/web/screenshots/chat.png" width="180" alt="Agent chat with inline tool calls"><br><sub><b>chat</b><br>streaming + inline tools</sub></td>
+    <td align="center" width="25%"><img src="https://raw.githubusercontent.com/compusophy/localharness/main/web/screenshots/studio.png" width="180" alt="Agent configuration"><br><sub><b>configure</b><br>model, persona, price</sub></td>
+    <td align="center" width="25%"><img src="https://raw.githubusercontent.com/compusophy/localharness/main/web/screenshots/account.png" width="180" alt="Account and credits"><br><sub><b>credits</b><br>$LH, redeem, invite</sub></td>
+  </tr>
+</table>
+
+Every name can **ship** a rustlite cartridge compiled in the browser and served at its subdomain — the real framebuffer a visitor sees fullscreen:
+
+<table>
+  <tr>
+    <td align="center" width="33%"><img src="https://raw.githubusercontent.com/compusophy/localharness/main/web/screenshots/readyup.png" width="170" alt="Ready Up cartridge"><br><sub>readyup.localharness.xyz</sub></td>
+    <td align="center" width="33%"><img src="https://raw.githubusercontent.com/compusophy/localharness/main/web/screenshots/fractal.png" width="170" alt="Recursive compose cartridge"><br><sub>fractal.localharness.xyz</sub></td>
+    <td align="center" width="33%"><img src="https://raw.githubusercontent.com/compusophy/localharness/main/web/screenshots/tetris.png" width="170" alt="Tetris cartridge"><br><sub>tetris.localharness.xyz</sub></td>
   </tr>
 </table>
 
