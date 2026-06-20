@@ -144,7 +144,7 @@ src/app/ (browser IDE):
 src/bin/localharness/  — agent-onboarding CLI (feature wallet+native). main.rs
   dispatcher + one module per command family (identity publish call mcp status
   credits schedule invite bounty reputation colony tba guild vote probe room) +
-  util.rs (load_signer*/take_value_flag/parse_id shared helpers). ~30 commands
+  util.rs (load_signer*/take_value_flag/parse_id shared helpers). ~40 commands
   (create/compile/publish/face/persona/price/call/status/list/redeem/mcp-call/
   schedule/jobs/unschedule/notify/invite*/bounty*/party*/release(typed-confirm)/
   threads/forget/whoami/version). Harness-agnostic, server-free; what skill.md tells
