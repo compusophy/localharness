@@ -511,6 +511,16 @@ mod tests {
         // -c counts.
         let r = run_ok(&[], "echo -n 'x\nxy\nz' | grep -c x").await;
         assert_eq!(r.stdout, "2\n");
+        // -c preserves grep's match-based exit: a zero count is STILL exit 1
+        // (POSIX — -c changes the output, not the exit status), so
+        // `grep -c x && …` doesn't fire on no matches.
+        let r = run_ok(&[], "echo -n 'a\nb' | grep -c z").await;
+        assert_eq!(r.stdout, "0\n");
+        assert_eq!(r.exit_code, 1);
+        // A non-zero count is exit 0.
+        let r = run_ok(&[], "echo -n 'a\nb' | grep -c a").await;
+        assert_eq!(r.stdout, "1\n");
+        assert_eq!(r.exit_code, 0);
     }
 
     #[tokio::test]

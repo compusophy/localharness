@@ -181,11 +181,13 @@ fn grep(args: &[String], stdin: &str) -> Output {
             matched.push(line);
         }
     }
-    if count {
-        return Output::ok(format!("{}\n", matched.len()));
-    }
-    // grep's exit is 1 when nothing matched (lets scripts branch on it).
+    // grep's exit is 1 when nothing matched (lets scripts branch on it) —
+    // independent of -c, which only changes the OUTPUT (a count), NOT the exit
+    // status. POSIX: exit 0 iff one or more lines were selected.
     let code = if matched.is_empty() { 1 } else { 0 };
+    if count {
+        return Output { stdout: format!("{}\n", matched.len()), stderr: String::new(), code };
+    }
     let mut out = matched.join("\n");
     if !out.is_empty() {
         out.push('\n');
