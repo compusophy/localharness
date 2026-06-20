@@ -216,9 +216,10 @@ pub const TX_PANIC: u16 = 2023;
 /// spent on inference, not transferred/bridged to the wallet) or simply short.
 pub const TX_INSUFFICIENT_CREDITS: u16 = 2024;
 
-/// The full registry — the SINGLE source of truth. `docs/error-codes.md` is
-/// generated/checked against this (the `index_doc_lists_every_code` test pins
-/// the count), and `self_docs` injects a compact slice into the system prompt.
+/// The full registry — the SINGLE source of truth. `docs/error-codes.md` is a
+/// hand-maintained index checked against this table (the
+/// `index_doc_lists_every_code` test asserts the doc lists every code's label),
+/// and `self_docs` injects a compact slice into the system prompt.
 pub const REGISTRY: &[ErrorCode] = &[
     // LH0xxx compile — lexer
     ec(UNEXPECTED_BYTE, Family::Compile, "unexpected byte in source",
