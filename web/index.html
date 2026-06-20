@@ -39,6 +39,10 @@
        bundle, so each origin installs as its own app). Monochrome theme. -->
   <link rel="manifest" href="./manifest.webmanifest" />
   <meta name="theme-color" content="#000000" />
+  <!-- Browser tab: crisp vector first, 32px PNG fallback for SVG-favicon
+       holdouts. Glyph = real IBM Plex Mono SemiBold "lh" (brand wordmark). -->
+  <link rel="icon" type="image/svg+xml" href="./icons/favicon.svg" />
+  <link rel="icon" type="image/png" sizes="32x32" href="./icons/favicon-32.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
   <!-- iOS Add-to-Home-Screen: standalone (no Safari chrome) + the icon. The
        per-AGENT name (apple-mobile-web-app-title / page title) is set in boot.js
