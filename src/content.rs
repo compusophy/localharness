@@ -294,3 +294,95 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Media::new` validates the MIME against the declared kind: a matching MIME
+    /// is accepted, a mismatched one (audio MIME under `Image`) is rejected with a
+    /// message naming the offending type.
+    #[test]
+    fn media_new_validates_mime_against_kind() {
+        assert!(Media::new(MediaKind::Image, "image/png", Vec::<u8>::new()).is_ok());
+        let err = Media::new(MediaKind::Image, "audio/wav", Vec::<u8>::new()).unwrap_err();
+        assert!(err.to_string().contains("audio/wav"), "{err}");
+    }
+
+    /// `from_mime` maps a representative MIME of each category to its kind, and an
+    /// unknown MIME to `None`.
+    #[test]
+    fn from_mime_classifies_each_category() {
+        assert_eq!(MediaKind::from_mime("image/png"), Some(MediaKind::Image));
+        assert_eq!(MediaKind::from_mime("application/pdf"), Some(MediaKind::Document));
+        assert_eq!(MediaKind::from_mime("audio/opus"), Some(MediaKind::Audio));
+        assert_eq!(MediaKind::from_mime("video/mp4"), Some(MediaKind::Video));
+        assert_eq!(MediaKind::from_mime("application/zip"), None);
+    }
+
+    /// THE `from_path` consistency invariant: every extension the guesser knows
+    /// must resolve to a MIME that BOTH `from_mime` classifies AND `Media::new`
+    /// accepts. Otherwise `Media::from_path` would guess a MIME it then rejects —
+    /// a file it claims to support would fail to load. Guards the two tables
+    /// (extension→MIME and the SUPPORTED_* lists) against drifting apart.
+    #[test]
+    fn every_guessable_extension_maps_to_an_accepted_mime() {
+        const EXTS: &[&str] = &[
+            "bmp", "jpg", "jpeg", "png", "webp", // images
+            "pdf", "json", "css", "csv", "html", "htm", "js", "mjs", "txt", "md", "log",
+            "rtf", "xml", // documents
+            "wav", "mp3", "aac", "ogg", "flac", "opus", "m4a", // audio
+            "3gp", "avi", "mp4", "mpeg", "mpg", "mov", "webm", "wmv", "flv", // video
+        ];
+        for ext in EXTS {
+            let path = PathBuf::from(format!("file.{ext}"));
+            let mime = guess_mime_from_extension(&path)
+                .unwrap_or_else(|| panic!("no MIME guessed for .{ext}"));
+            let kind = MediaKind::from_mime(&mime)
+                .unwrap_or_else(|| panic!(".{ext} guessed unclassified MIME {mime}"));
+            assert!(
+                Media::new(kind, mime.clone(), Vec::<u8>::new()).is_ok(),
+                ".{ext} guessed MIME {mime} that Media::new rejects",
+            );
+        }
+        // An unknown extension yields no guess (not a wrong one).
+        assert_eq!(guess_mime_from_extension(&PathBuf::from("file.xyz")), None);
+        assert_eq!(guess_mime_from_extension(&PathBuf::from("noext")), None);
+    }
+
+    /// Case-insensitive extension matching (a `.PNG` upload is still an image).
+    #[test]
+    fn extension_guess_is_case_insensitive() {
+        assert_eq!(
+            guess_mime_from_extension(&PathBuf::from("PHOTO.PNG")).as_deref(),
+            Some("image/png")
+        );
+    }
+
+    /// `Content` text helpers: a text-only payload concatenates via `as_text`; a
+    /// payload carrying media is not text-only and `as_text` returns `None`.
+    #[test]
+    fn content_text_helpers() {
+        let mut c = Content::text("hello ");
+        c.push("world");
+        assert!(c.is_text_only());
+        assert_eq!(c.as_text().as_deref(), Some("hello world"));
+
+        let media = Media::new(MediaKind::Image, "image/png", Vec::<u8>::new()).unwrap();
+        c.push(media);
+        assert!(!c.is_text_only());
+        assert_eq!(c.as_text(), None);
+
+        assert!(Content::empty().is_text_only()); // vacuously text-only
+    }
+
+    /// The ergonomic `From` impls callers rely on (`agent.chat("hi")`,
+    /// `agent.chat(vec![...])`).
+    #[test]
+    fn content_from_impls_build_expected_parts() {
+        assert_eq!(Content::from("hi").parts.len(), 1);
+        let mixed: Content = vec![Part::from("a"), Part::from("b")].into();
+        assert_eq!(mixed.parts.len(), 2);
+        assert!(mixed.is_text_only());
+    }
+}
