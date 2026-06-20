@@ -53,15 +53,34 @@
 #            tools + trailing history; usage tracks cache_read_input_tokens
 32  6435e84  owner public-face preview ALREADY shipped — ?view=public (header link +
 #            studio escape); no incognito needed
-29  6a53a20  browser system prompt + self_docs ALREADY chain-aware (active().name =
-#            "Tempo mainnet"); residual is a peer's STORED on-chain persona (data,
-#            self-correctable via set_persona) — not a code bug
 21  6a53a20  (1) brand menu click-outside + ESC dismissal already shipped
 #            (admin.rs/mod.rs); (2) in-situ model routing = consult_model +
 #            call_agent; (3) hybrid local/cloud = the browser-app-local Gemma
 #            backend. Mechanisms exist; a seamless auto-router would be a NEW item.
 #
-# STILL OPEN (2026-06-20): 22 (a/b persona testing), 23 (gemini-key scaling /
-# reseller model — a question to answer), 28 (finish shows no final message),
-# 30 (call_agent owner-notify + history), 34 (footer buttons), 35 (inbox without
-# web push), 36 (feedback header button + admin dropdown).
+# --- 2026-06-20 clear-open-tasks parallel pass ------------------------------
+29  62f73c4  authoritative NETWORK line pinned LAST in the system prompt (after
+#            persona/owner/lessons) so a stored "testnet"/"Moderato" persona can't
+#            override the live chain::active() fact. (A peer that already SAVED a
+#            testnet persona still needs a one-time set_persona refresh — data.)
+28  62f73c4  finish now surfaces a real final message: optional `summary` arg
+#            threaded Step->ChatResponse, captured in both backend loops, rendered
+#            as the last assistant segment (no abrupt empty finish)
+34  28727a7  footer divider removed; send/stop lifted into its own square
+#            .terminal-action-btn (like the header bell/cog); shorter input
+#            (+ textarea min-width:0 narrow-viewport fix)
+36  28727a7  feedback moved out of the admin tabs to a header bug-icon button
+#            (between bell + cog) opening its own dropdown; admin panel converted
+#            from a fullscreen modal to a dropdown under the cog
+30  f34e4c5  incoming call_agent now push_to_bell-notifies the owner + logs the
+#            exchange to .lh_inter_agent_calls.json for context (agent_rpc.rs)
+23  659b59d  proxy Gemini API key POOL (GEMINI_API_KEYS round-robin) for quota
+#            scaling; "credit resellers" = the $LH economy itself (docs answer)
+22  8f31d7e  `localharness abtest` CLI — run one prompt across N personas/models +
+#            design/ab-testing.md (first version; richer harness can follow)
+#
+# STILL OPEN (2026-06-20): 35 — inbox WITHOUT web push is only PARTIAL. The
+# browser-local stash shipped (notifications.rs), but the cross-device no-push
+# path was reverted: it recorded via MessageFacet.sendMessage, which is in source
+# but was never cut to the mainnet diamond (and nothing reads it back). Full fix
+# = cut MessageFacet + proxy record + browser poll-on-mount (see cleanup-backlog).
