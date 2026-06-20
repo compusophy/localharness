@@ -1001,6 +1001,33 @@ pub(crate) fn compact_context_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     )
 }
 
+/// Cheaply project the live agent's last few turns into a short text block for
+/// the off-chain feedback attachment. Reads the in-tab agent's transcript
+/// (synchronous, already in memory — no OPFS / network), keeps the most recent
+/// turns, and caps each turn so a long build session can't balloon the report.
+/// Returns "" when there's no agent (e.g. a visitor) — the caller notes that
+/// fuller context is a follow-up.
+fn recent_conversation_snippet() -> String {
+    const MAX_TURNS: usize = 8;
+    const MAX_CHARS_PER_TURN: usize = 400;
+    let entries = crate::app::APP
+        .with(|cell| cell.borrow().agent.as_ref().map(|a| a.transcript()))
+        .unwrap_or_default();
+    let start = entries.len().saturating_sub(MAX_TURNS);
+    entries[start..]
+        .iter()
+        .filter(|e| !e.text.trim().is_empty())
+        .map(|e| {
+            let mut t: String = e.text.trim().chars().take(MAX_CHARS_PER_TURN).collect();
+            if e.text.trim().chars().count() > MAX_CHARS_PER_TURN {
+                t.push('…');
+            }
+            format!("{}: {}", e.role.as_str(), t)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// `submit_feedback(text)` — submit feedback on-chain via the FeedbackFacet.
 pub(crate) fn submit_feedback_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     let schema = serde_json::json!({
@@ -1045,10 +1072,29 @@ pub(crate) fn submit_feedback_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 crate::error::Error::other("no identity — claim a subdomain first")
             })?;
             match crate::app::feedback::submit_feedback_onchain(&from_hex, text).await {
-                Ok(tx_hash) => Ok(serde_json::json!({
-                    "status": "submitted",
-                    "tx_hash": tx_hash,
-                })),
+                Ok(tx_hash) => {
+                    // Phase-2 rich feedback: the SHORT note went on-chain (the
+                    // public source-of-truth task list); ALSO fire the FULL
+                    // context off-chain to the telemetry repo, linked by tx
+                    // hash. Fire-and-forget (spawn_local) so it can NEVER block
+                    // or fail the on-chain submit or this tool's success return.
+                    let agent = crate::app::tenant::current_name()
+                        .unwrap_or_else(|| "apex".to_string());
+                    let feedback = text.to_string();
+                    let tx = tx_hash.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let model = crate::app::model::load().await;
+                        let context = recent_conversation_snippet();
+                        crate::app::telemetry::report_feedback(
+                            agent, model, tx, feedback, context,
+                        )
+                        .await;
+                    });
+                    Ok(serde_json::json!({
+                        "status": "submitted",
+                        "tx_hash": tx_hash,
+                    }))
+                }
                 Err(e) => Err(crate::error::Error::other(format!("feedback failed: {e}"))),
             }
         },

@@ -112,3 +112,51 @@ pub(crate) fn signature_for(agent: &str, model: &str, err: &str) -> String {
         .collect();
     format!("{agent}-{model}-{fp}")
 }
+
+/// Phase-2 rich feedback (design/telemetry-and-global-lessons.md): the SHORT
+/// note stays on-chain (the public source-of-truth task list); this fires the
+/// FULL context off-chain to the telemetry repo, linked back to the on-chain
+/// record by tx hash so the chain stays authoritative.
+///
+/// `feedback` = the on-chain text; `agent`/`model` stamp who/what; `tx_hash` is
+/// the on-chain record this body links to; `context` is whatever recent
+/// conversation we could cheaply reach (may be empty). The title is a short
+/// summary (first line/clause of the feedback) and the signature is a stable
+/// id (agent + a fingerprint of the text) so re-submits of the same note
+/// collapse. Body redaction + dedup + signing happen in [`report`].
+pub(crate) async fn report_feedback(
+    agent: String,
+    model: String,
+    tx_hash: String,
+    feedback: String,
+    context: String,
+) {
+    // Title: a short, single-line summary of the feedback for the issue title.
+    let summary: String = feedback
+        .split(|c| c == '\n' || c == '.')
+        .next()
+        .unwrap_or(&feedback)
+        .trim()
+        .chars()
+        .take(100)
+        .collect();
+    let title = format!("feedback ({agent}): {summary}");
+    // Signature: agent + a fingerprint of the text so the same note dedups.
+    let fp: String = feedback
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(48)
+        .collect();
+    let signature = format!("feedback-{agent}-{fp}");
+    let mut body = format!(
+        "agent: {agent}\nmodel: {model}\non-chain tx: {tx_hash}\n\nfeedback:\n{feedback}\n"
+    );
+    if context.trim().is_empty() {
+        body.push_str("\n(recent conversation context unavailable — follow up off the on-chain record above.)\n");
+    } else {
+        body.push_str("\nrecent conversation:\n");
+        body.push_str(&context);
+        body.push('\n');
+    }
+    report("feedback".to_string(), title, signature, body).await;
+}
