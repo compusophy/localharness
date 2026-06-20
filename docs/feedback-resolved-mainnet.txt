@@ -41,4 +41,27 @@
 19  e4675e2  host::http + HTML->text in rustlite cartridges (poll-model like host_net,
 #            fetch routed through the existing /api/fetch proxy to dodge CORS)
 #
-# INBOX CLEAN: every mainnet feedback item addressed as of 2026-06-18.
+# --- 2026-06-20 sweep -------------------------------------------------------
+25  c0e2ffe  header: "lh" icon button + transparent floating header, chat scrolls
+#            to the top, header divider removed (this session)
+26  97dde3b  model picker pruned to Gemini Flash + Claude Opus; "gemini"->"gemini flash"
+27  97dde3b  publish_public_face agent tool — publish own directory/app/html from chat
+31  97dde3b  list_notifications + clear_notifications agent tools
+33  b0c8c51  send_lh works from a 0-wallet/meter-funded sender: relay now sponsors
+#            transfer() on $LH (the meter->wallet bridge code was always fine)
+24  97dde3b  prompt caching ALREADY shipped — Anthropic cache_control on system +
+#            tools + trailing history; usage tracks cache_read_input_tokens
+32  6435e84  owner public-face preview ALREADY shipped — ?view=public (header link +
+#            studio escape); no incognito needed
+29  6a53a20  browser system prompt + self_docs ALREADY chain-aware (active().name =
+#            "Tempo mainnet"); residual is a peer's STORED on-chain persona (data,
+#            self-correctable via set_persona) — not a code bug
+21  6a53a20  (1) brand menu click-outside + ESC dismissal already shipped
+#            (admin.rs/mod.rs); (2) in-situ model routing = consult_model +
+#            call_agent; (3) hybrid local/cloud = the browser-app-local Gemma
+#            backend. Mechanisms exist; a seamless auto-router would be a NEW item.
+#
+# STILL OPEN (2026-06-20): 22 (a/b persona testing), 23 (gemini-key scaling /
+# reseller model — a question to answer), 28 (finish shows no final message),
+# 30 (call_agent owner-notify + history), 34 (footer buttons), 35 (inbox without
+# web push), 36 (feedback header button + admin dropdown).
