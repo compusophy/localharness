@@ -9,23 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **localharnesslite `lh-tba` and `lh-help` commands.** `lh-tba <name>` prints an
-  agent's token-bound account address — the x402 / bounty payment target — on one
-  line (no label), so a bashlite script composes `lh-send $(lh-tba alice) 5`.
-  `lh-help` lists the whole `lh-*` surface so an agent can discover it without
-  leaving the shell. Both run in the CLI `sh` and the browser `execute_script`
-  from the shared `platform::dispatch`; errors distinguish unregistered from
-  not-yet-deployed.
+- **bashlite + localharnesslite — a tiny sandboxed shell for scripting the
+  platform.** `execute_script(source)` (browser) and `localharness sh
+  <script.bl>` / `sh -c '<inline>'` (CLI) run a deterministic, fuel-bounded shell
+  (lexer → parser → eval over a `BashHost`; `src/bashlite/`, `design/bashlite.md`):
+  variables + `$VAR`/`$?` interpolation, pipes, `&&`/`||` short-circuit, `if`/
+  `while`/`for` (with `$( )` field-split), `[ … ]` tests incl. `-e`/`-f`/`-d` file
+  tests, `head`/`tail`, and `run`/`source FILE.bl` for fractal (fuel-bounded)
+  script composition. The fs builtins (`echo ls cat wc grep find mkdir
+  write`) are create-only over the sandbox `Filesystem`. The CLI additionally
+  wires **localharnesslite** `lh-*` reads — `lh-whoami`, `lh-balance`,
+  `lh-meter`, `lh-resolve`, `lh-tba` (an agent's token-bound account / payment
+  target), `lh-price`, `lh-list`, `lh-discover` (find agents), `lh-bounties`
+  (find paid work), `lh-help` — plus the value-moving `lh-send` behind a
+  dry-run-manifest confirm gate (the script runs DRY first, prints every `$LH`
+  move, and only `--confirm` executes).
+
+### Fixed
+
+- `grep -c` now preserves grep's match-based exit status (a zero count exits 1,
+  not 0), so `grep -c x && …` no longer fires on no matches.
+- Compaction's `should_compact` no longer mis-fires on a negative token delta (an
+  `i32`→`u32` wrap); a negative delta is treated as below-threshold.
+- Gemini `RECITATION` and OpenAI `content_filter` empty turns are classified as
+  `Blocked` (a clear "blocked" message) rather than a generic empty-turn error.
+- `execute_script`'s tool docs no longer claim `&&`/`||`/`run`/field-split are
+  unsupported — they ship.
+- The CLI relay verifier requires the proxy to return `feePayerHash`/`feePayer`,
+  closing a silent-bypass path in `registry::sponsor_relay`.
 
 ### Internal
 
-- Direct unit tests for the real `backends::dispatch::dispatch_tool_call` (the
-  per-tool-call gate every backend shares), pinning the `Ok({"error": …})` →
-  `ToolResult.error` lift convention the integration test only covered via a copy.
-- Drift-guard tests assert every `lh-*` command appears in both `lh-help` and the
-  CLI `USAGE` help, so the agent-facing front door can't fall behind the command
-  set. Clippy now clean across the `wallet` / `anthropic` / `openai` / `browser-app`
-  feature matrices (default `cargo clippy` exercises none of them).
+- Public-contract + critical-plumbing test coverage: `ToolRunner`
+  (overwrite / not-found / batch id-mapping), `Content`/`Media` (MIME validation
+  + the `from_path` extension↔MIME table-consistency invariant), the shared
+  `dispatch_tool_call` error-lift, the SSE frame decoder, and the stream
+  idle-timeout wrapper. Drift guards assert every `lh-*` command appears in both
+  `lh-help` and the CLI `USAGE`. Clippy clean across the `wallet` / `anthropic` /
+  `openai` / `browser-app` feature matrices (default `cargo clippy` exercises
+  none of them).
 
 ## [0.49.0] - 2026-06-19
 
