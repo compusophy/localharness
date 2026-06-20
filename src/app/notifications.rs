@@ -68,6 +68,30 @@ pub(crate) fn push_arrived(title: &str, body: &str) {
     push_to_bell(title, body);
 }
 
+/// MERGE-SAFE inbox delivery for contexts where the in-memory [`BELL`] is NOT
+/// the live header bell — e.g. the headless `?rpc=1` endpoint, which never runs
+/// [`load_inbox`], so `BELL` is empty and a [`push_to_bell`] would CLOBBER the
+/// persisted inbox down to this one entry. Instead head-insert into the SAME
+/// `PENDING_FILE` the service worker stashes closed-tab pushes into; the next
+/// full-app mount's [`load_inbox`] folds it into the bell (newest, flagged
+/// unread) WITHOUT losing prior entries. Best-effort; logs, never surfaces.
+///
+/// This is the push-INDEPENDENT delivery path (#35): a notification lands in the
+/// recipient's in-app inbox even with Web Push disabled.
+pub(crate) async fn stash_to_inbox(title: &str, body: &str) {
+    let fs = crate::app::shared_opfs();
+    let mut items: Vec<(String, String)> = match fs.read(PENDING_FILE).await {
+        Ok(b) => serde_json::from_slice(&b).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    items.insert(0, (title.to_string(), body.to_string()));
+    items.truncate(30);
+    let Ok(bytes) = serde_json::to_vec(&items) else { return };
+    if let Err(e) = fs.write_atomic(PENDING_FILE, &bytes).await {
+        web_sys::console::warn_1(&JsValue::from_str(&format!("notif stash: {e}")));
+    }
+}
+
 /// Persist the bell log to OPFS (best-effort; logs, never surfaces).
 async fn persist_inbox() {
     let items = bell_items();

@@ -273,6 +273,7 @@ async fn handle_agent_call(
 
     // x402 gate: if this agent charges, require a settled $LH payment.
     let price = x402_price().await;
+    let mut paid_wei: u128 = 0;
     if price > 0 {
         // Charging needs a registered identity to bill to.
         let Some(my_name) = super::tenant::current_name() else {
@@ -287,11 +288,86 @@ async fn handle_agent_call(
                 if let Err(e) = settle_incoming(price, &p, &my_name).await {
                     return build_response(id, Err(format!("payment: {e}")));
                 }
+                paid_wei = price;
             }
         }
     }
 
-    build_response(id, process_message(message).await)
+    // #30: process the turn, then ALWAYS surface it to the owner — a system
+    // bell notification ("call from <caller>") plus an appended exchange log
+    // (.lh_inter_agent_calls.json) so an incoming inter-agent call leaves
+    // both a ping and durable context behind. Records BOTH outcomes (Ok and
+    // Err) — a failed call is still worth knowing about. Best-effort; never
+    // alters the response returned to the caller.
+    let result = process_message(message).await;
+    record_inter_agent_call(from, message, &result, paid_wei).await;
+    build_response(id, result)
+}
+
+/// The persisted inter-agent call log (newest first, capped). Read back to give
+/// the owner / agent context on who has been calling and what was exchanged.
+const CALL_LOG_FILE: &str = ".lh_inter_agent_calls.json";
+/// Cap on retained call-log entries (head-insert, oldest dropped).
+const CALL_LOG_CAP: usize = 100;
+
+/// Surface an incoming inter-agent call to the OWNER (#30): a system bell
+/// notification + a head-inserted, capped entry in [`CALL_LOG_FILE`]. The
+/// `result` is the processed turn's outcome (text on `Ok`, error on `Err`);
+/// `paid_wei` is the settled x402 amount (0 = free call). Best-effort — every
+/// failure is swallowed (a logging step must never break call handling).
+async fn record_inter_agent_call(
+    from: &str,
+    message: &str,
+    result: &Result<String, String>,
+    paid_wei: u128,
+) {
+    // In-app bell ping for the owner — independent of Web Push, so the owner
+    // sees the call landed even with notifications disabled. Uses the MERGE-SAFE
+    // stash (not push_to_bell): the `?rpc=1` endpoint never runs `load_inbox`,
+    // so its in-memory bell is empty and a direct write would clobber the
+    // persisted inbox. The next full-app open folds this in as a fresh, unread
+    // entry without losing prior notifications.
+    let body = match result {
+        Ok(text) => preview(text),
+        Err(e) => format!("error: {e}"),
+    };
+    super::notifications::stash_to_inbox(&format!("call from {from}"), &body).await;
+
+    // Append to the durable call log (head-insert + truncate to the cap).
+    let entry = serde_json::json!({
+        "from": from,
+        "ts": (js_sys::Date::now() / 1000.0) as u64,
+        "message": message,
+        "response": result.as_ref().ok(),
+        "error": result.as_ref().err(),
+        "paid": paid_wei.to_string(),
+    });
+    let fs = super::shared_opfs();
+    let mut log: Vec<serde_json::Value> = match fs.read(CALL_LOG_FILE).await {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    log.insert(0, entry);
+    log.truncate(CALL_LOG_CAP);
+    if let Ok(bytes) = serde_json::to_vec(&log) {
+        if let Err(e) = fs.write_atomic(CALL_LOG_FILE, &bytes).await {
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "inter-agent call log save: {e}"
+            )));
+        }
+    }
+}
+
+/// A short single-line preview of a call response for the bell body.
+fn preview(text: &str) -> String {
+    let one_line = text.replace('\n', " ");
+    let trimmed = one_line.trim();
+    if trimmed.chars().count() > 120 {
+        let cut: String = trimmed.chars().take(117).collect();
+        format!("{cut}…")
+    } else {
+        trimmed.to_string()
+    }
 }
 
 async fn process_message(message: &str) -> Result<String, String> {
