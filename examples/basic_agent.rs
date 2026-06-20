@@ -17,8 +17,15 @@ use serde_json::json;
 
 #[tokio::main]
 async fn main() -> localharness::Result<()> {
-    let api_key = std::env::var("GEMINI_API_KEY")
-        .expect("set GEMINI_API_KEY (https://aistudio.google.com/app/apikey)");
+    // Missing key is a normal "you haven't set it up yet" state, not an SDK
+    // failure — exit cleanly with instructions instead of a panic + backtrace
+    // (this example IS getting-started documentation; a crash reads as a bug).
+    let Ok(api_key) = std::env::var("GEMINI_API_KEY") else {
+        eprintln!("This example needs a Gemini API key. Set it and re-run:");
+        eprintln!("  GEMINI_API_KEY=your-key cargo run --example basic_agent");
+        eprintln!("Get a key at https://aistudio.google.com/app/apikey");
+        return Ok(());
+    };
 
     // A custom tool is any name + description + JSON-schema + async closure.
     // `ClosureTool::new` returns an `Arc<ClosureTool>` ready for `with_tool`.
