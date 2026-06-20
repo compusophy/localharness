@@ -37,18 +37,20 @@ pub(crate) const DEFAULT_MODEL: &str = crate::types::DEFAULT_MODEL;
 /// route (selecting it would hit the "compiled without `local`" error path).
 /// `gemma-3-270m` stays a literal (the `local` backend isn't always present to
 /// const-reference).
+// Selectable set is deliberately just Gemini Flash + Claude Opus (on-chain
+// feedback #26: drop Sonnet + Haiku from the picker, label the Gemini entry
+// "Gemini Flash"). The anthropic::{DEFAULT_MODEL,SONNET_MODEL} (Haiku/Sonnet)
+// consts stay DEFINED in the backend — the difficulty router still uses them
+// to downgrade routine turns behind the scenes — they're just no longer
+// user-selectable here.
 #[cfg(not(feature = "local"))]
 pub(crate) const MODELS: &[(&str, &str)] = &[
-    (crate::types::DEFAULT_MODEL, "Gemini"),
-    (crate::backends::anthropic::DEFAULT_MODEL, "Claude Haiku"),
-    (crate::backends::anthropic::SONNET_MODEL, "Claude Sonnet"),
+    (crate::types::DEFAULT_MODEL, "Gemini Flash"),
     (crate::backends::anthropic::OPUS_MODEL, "Claude Opus"),
 ];
 #[cfg(feature = "local")]
 pub(crate) const MODELS: &[(&str, &str)] = &[
-    (crate::types::DEFAULT_MODEL, "Gemini"),
-    (crate::backends::anthropic::DEFAULT_MODEL, "Claude Haiku"),
-    (crate::backends::anthropic::SONNET_MODEL, "Claude Sonnet"),
+    (crate::types::DEFAULT_MODEL, "Gemini Flash"),
     (crate::backends::anthropic::OPUS_MODEL, "Claude Opus"),
     ("gemma-3-270m", "Local (Gemma)"),
 ];

@@ -424,6 +424,148 @@ pub(crate) fn embed_app_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     )
 }
 
+/// `publish_public_face(choice)` — publish THIS agent's OWN public face
+/// on-chain from chat (the agent-tool mirror of admin → public face, on-chain
+/// feature request #27). `choice` is "directory" | "app" | "html": "app"
+/// compiles + publishes this device's local `app.rl` cartridge, "html"
+/// publishes local `index.html`, "directory" sets the profile-landing face —
+/// each writes the choice under `keccak256("localharness.public_face")` (which
+/// every visitor honours) plus the bytes, in ONE sponsored Tempo tx. Owner-only,
+/// own subdomain only. Mirrors `events::public_face::run_set_public_face` minus
+/// the DOM; submits through the same `run_sponsored_tempo_call` path as
+/// `create_and_publish_app` (so it covers the common EOA-owner case; the admin
+/// UI still owns the TBA-consolidation path). Reversible — republish anytime.
+pub(crate) fn publish_public_face_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "choice": {
+                "type": "string",
+                "description": "Which face to publish: \"app\" (compile + publish \
+                    this device's local app.rl as a fullscreen cartridge), \
+                    \"html\" (publish local index.html), or \"directory\" (a \
+                    profile landing listing your sibling agents)."
+            }
+        },
+        "required": ["choice"]
+    });
+    ClosureTool::new(
+        "publish_public_face",
+        "Publish YOUR OWN public face on-chain — what a visitor to \
+         https://<you>.localharness.xyz/ sees — the chat equivalent of admin → \
+         public face. `choice`: \"app\" compiles + publishes this device's local \
+         app.rl as a fullscreen cartridge; \"html\" publishes local index.html; \
+         \"directory\" sets a profile landing. Publishes the bytes AND sets the \
+         on-chain face choice in ONE sponsored (free, zero-click) tx. Works only \
+         on your own subdomain. After it succeeds, give the user the returned \
+         `url`. Returns { choice, url, tx_hash }.",
+        schema,
+        |args: serde_json::Value, _ctx| async move {
+            let choice = args
+                .get("choice")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_lowercase();
+            if !matches!(choice.as_str(), "directory" | "app" | "html") {
+                return Err(crate::error::Error::other(
+                    "choice must be \"directory\", \"app\", or \"html\"",
+                ));
+            }
+            let Some(name) = crate::app::tenant::current_name() else {
+                return Err(crate::error::Error::other(
+                    "publish_public_face only works on your own subdomain",
+                ));
+            };
+            let token_id = match crate::app::registry::id_of_name(&name).await {
+                Ok(id) if id != 0 => id,
+                _ => return Err(crate::error::Error::other("name isn't registered on-chain")),
+            };
+            let owner = match crate::app::registry::owner_of_name(&name).await {
+                Ok(Some(o)) => o,
+                _ => return Err(crate::error::Error::other("name isn't registered on-chain")),
+            };
+            let registry_addr = parse_address(crate::app::registry::REGISTRY_ADDRESS())
+                .map_err(crate::error::Error::other)?;
+            let mk = |input: Vec<u8>| crate::tempo_tx::TempoCall {
+                to: registry_addr,
+                value_wei: 0,
+                input,
+            };
+            // Build the call batch + gas for the chosen face — the same shapes
+            // as the admin flow (storing bytes is ~7.6k gas/BYTE on top of the
+            // ~275k Tempo sponsorship; `set_metadata_gas` length-scales it).
+            let (calls, gas): (Vec<crate::tempo_tx::TempoCall>, u128) = match choice.as_str() {
+                "directory" => (
+                    vec![mk(crate::app::registry::encode_set_public_face(token_id, "directory"))],
+                    500_000,
+                ),
+                "app" => {
+                    let fs = crate::app::shared_opfs();
+                    let src = match fs.read("app.rl").await {
+                        Ok(b) if !b.is_empty() => String::from_utf8_lossy(&b).into_owned(),
+                        _ => {
+                            return Err(crate::error::Error::other(
+                                "no app.rl on this device — build one first (run_cartridge), \
+                                 then publish",
+                            ))
+                        }
+                    };
+                    let wasm = crate::rustlite::compile(&src).map_err(|e| {
+                        let loc = e.location(&src).map(|l| format!(" ({l})")).unwrap_or_default();
+                        crate::error::Error::other(format!("app.rl compile error: {e}{loc}"))
+                    })?;
+                    if wasm.len() > 16_384 {
+                        return Err(crate::error::Error::other(
+                            "app wasm too large to publish (max 16 KB)",
+                        ));
+                    }
+                    (
+                        vec![
+                            mk(crate::app::registry::encode_set_app_wasm(token_id, &wasm)),
+                            mk(crate::app::registry::encode_set_public_face(token_id, "app")),
+                        ],
+                        crate::app::gas::set_metadata_gas(wasm.len()),
+                    )
+                }
+                "html" => {
+                    let fs = crate::app::shared_opfs();
+                    let html = match fs.read("index.html").await {
+                        Ok(b) if !b.is_empty() => b,
+                        _ => {
+                            return Err(crate::error::Error::other(
+                                "no index.html on this device — create one first, then publish",
+                            ))
+                        }
+                    };
+                    if html.len() > 24_576 {
+                        return Err(crate::error::Error::other(
+                            "index.html too large to publish (max 24 KB)",
+                        ));
+                    }
+                    (
+                        vec![
+                            mk(crate::app::registry::encode_set_public_html(token_id, &html)),
+                            mk(crate::app::registry::encode_set_public_face(token_id, "html")),
+                        ],
+                        crate::app::gas::set_metadata_gas(html.len()),
+                    )
+                }
+                _ => unreachable!(),
+            };
+            let tx_hash =
+                crate::app::events::run_sponsored_tempo_call(&owner, calls, gas, "publish public face")
+                    .await
+                    .map_err(|e| crate::error::Error::other(format!("publish failed: {e}")))?;
+            Ok(serde_json::json!({
+                "choice": choice,
+                "url": format!("https://{name}.localharness.xyz/"),
+                "tx_hash": tx_hash,
+            }))
+        },
+    )
+}
+
 /// `release_subdomain(name, confirmation)` — DESTRUCTIVE: burn the NFT +
 /// free the name. Gated by the dispatch-layer typed-confirmation challenge
 /// (`chat::confirm_guard`): the first call is denied with a single-use code

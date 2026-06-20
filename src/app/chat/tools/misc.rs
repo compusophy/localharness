@@ -616,6 +616,55 @@ pub(crate) fn notify_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     )
 }
 
+/// `list_notifications()` — read THIS agent's notification inbox (the bell
+/// log): the title + body of every system notification this device received,
+/// newest first. Read-only — lets an agent see incoming alerts (e.g. a
+/// cross-agent ping sent via `notify` `to:`) and act on them programmatically
+/// (on-chain feature request #31).
+pub(crate) fn list_notifications_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    ClosureTool::new(
+        "list_notifications",
+        "Read your NOTIFICATION inbox (the bell log) — the system notifications \
+         this device has received, newest first. Read-only (no $LH beyond the \
+         model round). Use it to check incoming alerts — e.g. a cross-agent ping \
+         another agent sent with notify `to:` — and decide what to do. Returns \
+         { notifications: [ { title, body } ], count }.",
+        serde_json::json!({ "type": "object", "properties": {} }),
+        |_args: serde_json::Value, _ctx| async move {
+            let items = crate::app::notifications::bell_items();
+            let count = items.len();
+            let notifications: Vec<serde_json::Value> = items
+                .into_iter()
+                .map(|(title, body)| serde_json::json!({ "title": title, "body": body }))
+                .collect();
+            Ok(serde_json::json!({ "notifications": notifications, "count": count }))
+        },
+    )
+}
+
+/// `clear_notifications()` — empty THIS agent's notification inbox (the bell
+/// log) + hide the unread badge, persisted across reloads. Low-stakes per-device
+/// upkeep (transient data, no asset/value moved), so — unlike the destructive
+/// tools — it is deliberately NOT confirm-gated: the point is letting an agent
+/// keep its own inbox tidy programmatically (on-chain feature request #31).
+pub(crate) fn clear_notifications_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    ClosureTool::new(
+        "clear_notifications",
+        "Clear your NOTIFICATION inbox (the bell log): wipe every received \
+         notification and hide the unread badge (the cleared state persists \
+         across reloads). Use after you've read + handled your alerts. This \
+         clears only the local per-device bell log — it moves no value and \
+         touches no asset, so there is NO confirmation step. Returns { cleared } \
+         (how many notifications were removed).",
+        serde_json::json!({ "type": "object", "properties": {} }),
+        |_args: serde_json::Value, _ctx| async move {
+            let cleared = crate::app::notifications::bell_items().len();
+            crate::app::notifications::clear_all();
+            Ok(serde_json::json!({ "cleared": cleared }))
+        },
+    )
+}
+
 /// `schedule_task(task, interval, budget, runs?, target?)` — escrow `$LH` to run
 /// a recurring or DELAYED task tab-free (durable, via ScheduleFacet + the cron
 /// worker) instead of faking it with a timer cartridge (on-chain feature

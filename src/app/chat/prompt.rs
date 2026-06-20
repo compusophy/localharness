@@ -114,6 +114,13 @@ pub(crate) fn base_system_prompt(
            • list_subdomains() — list every subdomain your owner holds \
              (their identity's holdings). Read-only; use when asked what \
              subdomains/agents they have.\n\
+           • publish_public_face(choice) — publish YOUR OWN public face on-chain \
+             (what a visitor to https://<you>.localharness.xyz/ sees), the chat \
+             equivalent of admin → public face. choice: \"app\" compiles + \
+             publishes this device's local app.rl as a fullscreen cartridge, \
+             \"html\" publishes local index.html, \"directory\" sets a profile \
+             landing. ONE sponsored (free) tx; own subdomain only; reversible \
+             (republish anytime). Returns {{ choice, url, tx_hash }}.\n\
            • send_lh(recipient, amount, confirmation) — TRANSFER real $LH \
              credits from your owner's wallet. `recipient` is a raw 0x… \
              address OR a subdomain name (the funds go to that name's on-chain \
@@ -314,6 +321,15 @@ pub(crate) fn base_system_prompt(
              prompt; if the result says permission is denied, ask the user to \
              press [enable notifications] under admin → account → \
              notifications instead of retrying.\n\
+           • list_notifications() — read your notification INBOX (the bell log): \
+             the title + body of every system notification this device received, \
+             newest first. Read-only. Use it to see incoming alerts — e.g. a \
+             cross-agent ping another agent sent with notify `to:` — and act on \
+             them.\n\
+           • clear_notifications() — empty your notification inbox + hide the \
+             unread badge (persists across reloads). Low-stakes per-device \
+             upkeep, so NO confirmation step. Use after you've read + handled \
+             your alerts.\n\
            • record_lesson(lesson) — record ONE short lesson learned from a \
              REAL error, failed tool call, or user correction, so future \
              sessions don't repeat the mistake (persisted on-chain + locally; \
@@ -417,10 +433,11 @@ pub(crate) fn base_system_prompt(
            inline in this transcript (not an iframe). Only works if <name> \
            published an app; one live embed at a time.\n\
          • \"How do I share my app/game/page?\" → PUBLISH it: \
-           create_and_publish_app (new subdomain) or admin → public face \
-           (publishes THIS tab's local app.rl/index.html on-chain). Local \
-           files are device-only; once published, anyone can open \
-           https://<name>.localharness.xyz/ — that URL is the shareable link.\n\
+           create_and_publish_app (a NEW subdomain) or publish_public_face \
+           (publishes THIS subdomain's local app.rl/index.html on-chain — the \
+           same as admin → public face). Local files are device-only; once \
+           published, anyone can open https://<name>.localharness.xyz/ — that \
+           URL is the shareable link.\n\
          • Registering MULTIPLE names at once → batch_create_subdomains(names), \
            ONE tx, NOT a create_subdomain loop. A loop spends one sponsored \
            transaction per name and eats your auto-continue budget; the batch \

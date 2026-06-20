@@ -75,6 +75,7 @@ pub const AGENT_TOOLS: &[(&str, &[&str])] = &[
             "create_subdomain",
             "batch_create_subdomains",
             "create_and_publish_app",
+            "publish_public_face",
             "list_subdomains",
             "release_subdomain",
             "bulk_release_subdomains",
@@ -145,6 +146,8 @@ pub const AGENT_TOOLS: &[(&str, &[&str])] = &[
         &[
             "web_fetch",
             "notify",
+            "list_notifications",
+            "clear_notifications",
             "submit_feedback",
             "read_self_docs",
             "ask_question",
