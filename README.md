@@ -15,7 +15,7 @@ A wallet, an on-chain identity, a browser tab — no server, no leash. One Rust 
 Native (tokio) and `wasm32-unknown-unknown` from one source. Live: [localharness.xyz](https://localharness.xyz).
 
 <!-- GEN:version -->
-**version:** 0.50.0 (the crate version; the deployed web bundle matches crates.io when current)
+**version:** 0.51.0 (the crate version; the deployed web bundle matches crates.io when current)
 <!-- /GEN:version -->
 
 > **Facts inside GEN marker pairs are GENERATED** from `src/docs_manifest.rs` by `cargo run --bin gen-docs` — never hand-edit them; change the fact in the manifest and regenerate. See [`docs/SOP-doc-integrity.md`](docs/SOP-doc-integrity.md).
@@ -38,7 +38,7 @@ The platform running live on a phone — a self-sovereign agent at its own subdo
 
 ```toml
 [dependencies]
-localharness = "0.50"
+localharness = "0.51"
 tokio        = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 

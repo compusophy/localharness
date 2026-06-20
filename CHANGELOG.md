@@ -5,10 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.51.0] - 2026-06-20
 
 ### Added
 
+- **Off-chain telemetry, rich feedback & global lessons.** Real turn failures are
+  now auto-reported off-chain (redacted ON-DEVICE, filed to a private telemetry
+  repo via the proxy); `submit_feedback` keeps the short on-chain note (the public
+  SSOT) but ALSO files the full context off-chain, linked by the on-chain record;
+  and a global-lessons sweep (`scripts/colony/lesson-digest.mjs` →
+  `web/global-lessons.txt`) folds a curated cross-agent lesson set into every
+  agent's default prompt. Admin → telemetry toggle (on by default, redacted).
+  See `design/telemetry-and-global-lessons.md`.
+- **New agent tools** — `publish_public_face(choice)` (publish your own
+  directory / app.rl / index.html face on-chain from chat), plus
+  `list_notifications` / `clear_notifications` (read + tidy the bell inbox).
+- **Header is a brand icon button.** The top-left "lh" is now the real IBM Plex
+  Mono SemiBold glyph (the same outline as the favicon/app icons) as a square
+  bordered button matching the bell + cog; the header floats transparent over the
+  transcript so chat fills to the top; app-icon URLs are content-versioned so an
+  installed PWA picks up the new logo.
 - **Render-mode settings — mobile-preview + light theme.** Two live toggles in
   the admin panel (and `?preview=mobile` / `?theme=light` URL params, re-applied
   at mount and persisted in `localStorage`). **Mobile preview** frames the app as
@@ -21,6 +37,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`scripts/shots.mjs` — committed mobile screenshot suite.** Serves `web/` and
   walks every localhost surface (studio + admin panels) in BOTH themes at the
   mobile-preview frame, writing the full set in one command.
+
+### Fixed
+
+- **Relay funded-agent self-pay.** The rate-capped sponsor relay now sponsors the
+  x402 `settle` and `$LH` `transfer` selectors for FUNDED agents (on mainnet an
+  agent holds only `$LH`, never the AlphaUSD fee token, so it can't self-pay gas)
+  — unblocking `send_lh` from a meter-funded / zero-wallet sender. Gas-only
+  sponsor exposure, bounded by the unchanged rate caps + float breaker.
+- **Model picker** pruned to Gemini Flash + Claude Opus (Sonnet/Haiku dropped from
+  the selector); the in-tab prompt pins the live network as authoritative;
+  notifications reach the in-app inbox even without Web Push; incoming
+  `call_agent` notifies the owner + logs the exchange; `finish` surfaces a final
+  message instead of ending abruptly.
+- **Balance UI** shows wallet + meter as ONE `$LH` balance; the agent's TBA is
+  labelled "agent wallet" to disambiguate the owner's wallet from the agent's.
+- **Doc integrity** now owns Cargo dependency pins — a stale `localharness =
+  "0.47"` could ship past every gate before — and guards the default system
+  prompt against a hardcoded crate version.
 
 ## [0.50.0] - 2026-06-19
 
