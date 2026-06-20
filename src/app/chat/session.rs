@@ -147,6 +147,19 @@ pub(crate) async fn start_session(
         None => system_instructions,
     };
 
+    // Global lessons (learned ACROSS the platform): fold in the curated
+    // `/global-lessons.txt` digest — the read half of the global-lessons loop
+    // (`scripts/colony/lesson-digest.mjs` is the SWEEP: it harvests every
+    // agent's on-chain lessons, dedups, curates the bounded set, and writes the
+    // static file the web bundle serves). Appended AFTER the agent's OWN lessons
+    // so personal, self-recorded lessons take precedence over the shared platform
+    // set. Best-effort: a fetch failure (offline / not yet deployed) just skips
+    // the section — it NEVER blocks session start (mirrors `read_self_docs`).
+    let system_instructions = match fetch_global_lessons_section().await {
+        Some(section) => format!("{system_instructions}\n\n{section}"),
+        None => system_instructions,
+    };
+
     // Self-defined skills: fold in the bounded skills blob (OPFS working copy,
     // else the on-chain slot) so a skill the agent taught itself once stays
     // available — the read half of the skills loop (`create_skill` is the
@@ -559,4 +572,54 @@ pub(crate) async fn start_session(
         crate::app::dom::swap_outer("tools-count", &crate::app::templates::tools_count_span(tool_count));
     }
     Ok(())
+}
+
+/// Static curated global-lessons digest, served by the web bundle alongside
+/// `llms.txt`. Written by the SWEEP (`scripts/colony/lesson-digest.mjs`), which
+/// harvests every agent's on-chain lessons, dedups, and caps the set.
+const GLOBAL_LESSONS_URL: &str = "https://localharness.xyz/global-lessons.txt";
+
+/// Header of the global-lessons prompt section. Distinct from the per-agent
+/// `=== Lessons (self-recorded) ===` header so the model can tell platform-wide
+/// lessons apart from its own.
+const GLOBAL_LESSONS_HEADER: &str = "=== GLOBAL LESSONS (learned across the platform) ===";
+
+/// Max lines folded from the curated digest, and max chars per line — a second,
+/// independent bound on top of the sweep's own cap so a runaway file can never
+/// bloat the prompt.
+const GLOBAL_LESSONS_MAX_LINES: usize = 40;
+const GLOBAL_LESSONS_MAX_LINE_CHARS: usize = 240;
+
+/// Fetch + render the curated `/global-lessons.txt` as a labelled system-prompt
+/// section, or `None` on any failure (network/HTTP/empty). Timeout-capped via
+/// `net::read` (browser fetch has no default timeout) so a hung request can't
+/// stall session start. One lesson per line; blank lines drop, each line is
+/// trimmed + length-clamped, and at most [`GLOBAL_LESSONS_MAX_LINES`] survive.
+async fn fetch_global_lessons_section() -> Option<String> {
+    let body = crate::app::net::read(async {
+        let resp = reqwest::Client::new()
+            .get(GLOBAL_LESSONS_URL)
+            .send()
+            .await
+            .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        resp.text().await.ok()
+    })
+    .await
+    .ok()
+    .flatten()?;
+
+    let lines: Vec<String> = body
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .take(GLOBAL_LESSONS_MAX_LINES)
+        .map(|l| l.chars().take(GLOBAL_LESSONS_MAX_LINE_CHARS).collect())
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!("{GLOBAL_LESSONS_HEADER}\n{}", lines.join("\n")))
 }

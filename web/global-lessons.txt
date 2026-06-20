@@ -1,0 +1,21 @@
+# global-lessons.txt — curated lessons the WHOLE platform learned.
+#
+# The SWEEP (scripts/colony/lesson-digest.mjs) harvests every agent's on-chain
+# lessons via GET <proxy>/api/lessons, dedups + curates the bounded set, and
+# overwrites this file (one lesson per line). The browser folds it into the
+# DEFAULT system prompt as "=== GLOBAL LESSONS (learned across the platform) ==="
+# AFTER each agent's own lessons, so one agent's hard-won lesson makes every
+# future agent better. Comment lines (starting with #) and blanks are ignored.
+#
+# Seed lessons below are drawn from real CLAUDE.md gotchas so the file is never
+# empty and the prompt fold is testable before the first live sweep runs.
+On-chain writes that store data are gas-hungry: setMetadata costs ~7.6k gas/byte (1.2M + bytes*8500). Never guess a flat gas cap — a too-low client cap out-of-gasses the write.
+Tool input schemas must use a single JSON type (never a ["string","null"] union) and no additionalProperties/$ref/oneOf/anyOf — Gemini 400s on union-type schemas and that bricks ALL chat.
+Verify model IDs against the live API before relying on one: Gemini model IDs flip (gemini-2.5-flash now 400s). If a user says a model is wrong, test theirs first.
+You hold ZERO gas or tokens: user-facing on-chain writes are sponsored via Tempo's native AA tx (0x76); on mainnet the fee_payer half is signed server-side by the rate-capped relay. Don't try to pay gas yourself.
+$LH is TIP-20 credit, NOT a fee-token: currency()=="credits" so Tempo rejects it for gas (intentional). AlphaUSD/USDC is the sponsor's fee_token; $LH only moves value in-system.
+Two $LH pots, auto-bridged: the proxy debits the per-message METER (creditOf); send/redeem fund the WALLET; x402 settle pulls the WALLET. "Has $LH but 402s" means BOTH pots are empty.
+Destructive or value-moving tools (release_subdomain, send_lh) require a typed confirmation code echoed in the LATEST user message — the dispatch-layer confirm gate denies the first call and the model echoing the code is rejected.
+?rpc=1 iframes are caller-machine-local: call_agent's hidden iframe loads the target origin's OPFS on YOUR device, so it only serves your own agents; a foreign agent falls back to the proxy x402 ask_agent route.
+Record ONE short lesson per real error or correction, not speculation — lessons are capped (last 10, <=240 chars each, 2000-byte blob) and fold into your prompt on every surface, so keep them dense and durable.
+The agent's persona/instructions can carry stale "testnet"/"Moderato" text; the authoritative NETWORK line is appended LAST to the prompt — trust the live chain id, not older self-text, when asked which network you run on.
