@@ -663,6 +663,11 @@ async fn paint_workshop(host: &tenant::Host) {
     };
     history::load_into_pending().await;
     notifications::load_inbox().await;
+    // Fold any on-chain MessageFacet inbox notes we haven't seen into the bell
+    // (#35) — fire-and-forget so the RPC reads don't delay the mount; load_inbox
+    // is already awaited, so BELL is populated before this appends. No-op on the
+    // apex (no tenant identity).
+    wasm_bindgen_futures::spawn_local(notifications::import_onchain_messages());
     opfs::refresh().await;
     // No onboarding key prompt: new accounts default to platform credits
     // (no Gemini key needed). BYOK is opt-in via admin → account.
@@ -831,6 +836,11 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
     };
     history::load_into_pending().await;
     notifications::load_inbox().await;
+    // Fold any on-chain MessageFacet inbox notes we haven't seen into the bell
+    // (#35) — fire-and-forget so the RPC reads don't delay the mount; load_inbox
+    // is already awaited, so BELL is populated before this appends. No-op on the
+    // apex (no tenant identity).
+    wasm_bindgen_futures::spawn_local(notifications::import_onchain_messages());
     opfs::refresh().await;
 
     if !has_key {

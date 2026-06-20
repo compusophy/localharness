@@ -35,6 +35,10 @@ const INBOX_FILE: &str = ".lh_notif_inbox.json";
 /// Pushes that arrived with NO page open, stashed by `web/sw.js` directly in
 /// OPFS; merged + deleted by [`load_inbox`] at the next boot.
 const PENDING_FILE: &str = ".lh_notif_pending.json";
+/// High-water mark (a decimal count) for [`import_onchain_messages`] — the
+/// number of on-chain inbox messages already folded into the bell, so a reload
+/// only surfaces NEW ones.
+const MSG_CURSOR_FILE: &str = ".lh_msg_cursor";
 
 /// Append a notification to the in-app header bell (newest first, cap 30),
 /// bump the unread badge, and persist the inbox. The panel re-render keeps
@@ -137,6 +141,50 @@ pub(crate) async fn load_inbox() {
         "notif-bell-panel",
         &crate::app::templates::notif_list_panel(&bell_items(), None, true, false).into_string(),
     );
+}
+
+/// Poll THIS identity's on-chain MessageFacet inbox and fold any NOT-yet-seen
+/// messages into the bell (#35) — so a cross-agent `notify` that couldn't reach
+/// this device via Web Push (no subscription) still surfaces in-app next time
+/// the tab opens. Run AFTER [`load_inbox`] so `push_to_bell` appends to the
+/// loaded log rather than clobbering it. Cursor (`.lh_msg_cursor`) lives in OPFS
+/// so each load only shows what's new. Best-effort: any RPC/decode error (or no
+/// tenant identity) is swallowed — the inbox is a nicety, never a blocker.
+pub(crate) async fn import_onchain_messages() {
+    let Some(name) = crate::app::tenant::current_name() else {
+        return;
+    };
+    let token_id = match crate::registry::id_of_name(&name).await {
+        Ok(id) if id != 0 => id,
+        _ => return,
+    };
+    let count = match crate::registry::inbox_count(token_id).await {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let fs = crate::app::shared_opfs();
+    let cursor: u64 = fs
+        .read(MSG_CURSOR_FILE)
+        .await
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    if count <= cursor {
+        return;
+    }
+    for i in cursor..count {
+        if let Ok((from, _ts, body)) = crate::registry::message_at(token_id, i).await {
+            if body.trim().is_empty() {
+                continue;
+            }
+            let short = from.get(..8).unwrap_or(&from);
+            push_to_bell(&format!("message · {short}…"), body.trim());
+        }
+    }
+    // Advance the cursor even if some decodes failed — a permanently-undecodable
+    // message must not wedge the poll on every load.
+    let _ = fs.write_atomic(MSG_CURSOR_FILE, count.to_string().as_bytes()).await;
 }
 
 /// Snapshot of the in-app bell log (newest first).
