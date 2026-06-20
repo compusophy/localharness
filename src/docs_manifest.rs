@@ -331,10 +331,50 @@ impl FillReport {
     }
 }
 
+/// Major.minor of the crate version — the form a Cargo dependency pin uses
+/// (`localharness = "0.50"`, which resolves to the latest 0.50.x).
+fn major_minor() -> String {
+    let v = version();
+    let mut it = v.split('.');
+    match (it.next(), it.next()) {
+        (Some(a), Some(b)) => format!("{a}.{b}"),
+        _ => v.to_string(),
+    }
+}
+
+/// Rewrite every `localharness = "X.Y…"` dependency pin in `doc` to the current
+/// crate major.minor. These pins live inside ```toml fences, where the
+/// HTML-comment GEN markers can't reach — yet a stale pin is the most
+/// investor-visible drift there is (it tells people to depend on an OLD
+/// version). So [`fill`] owns them too: `gen-docs` rewrites them and
+/// `gen-docs --check` (the release pre-flight gate) catches the drift, exactly
+/// like a GEN block.
+fn rewrite_dep_pins(doc: &str) -> String {
+    let target = major_minor();
+    const NEEDLE: &str = "localharness = \"";
+    let mut out = String::with_capacity(doc.len());
+    let mut rest = doc;
+    while let Some(i) = rest.find(NEEDLE) {
+        out.push_str(&rest[..i + NEEDLE.len()]);
+        let after = &rest[i + NEEDLE.len()..];
+        match after.find('"') {
+            Some(end) => {
+                out.push_str(&target);
+                rest = &after[end..]; // resume at the closing quote
+            }
+            None => rest = after,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Replace the INNER content of every `<!-- GEN:key -->...<!-- /GEN:key -->`
-/// block in `doc` with the freshly-rendered block from the manifest. Returns
-/// the rewritten document plus a report of which blocks changed. IDEMPOTENT:
-/// running it on its own output yields no further change.
+/// block in `doc` with the freshly-rendered block from the manifest, AND rewrite
+/// any `localharness = "X.Y"` dependency pin to the current version. Returns the
+/// rewritten document plus a report of which blocks changed (a rewritten pin is
+/// reported as the synthetic key `dep-version`). IDEMPOTENT: running it on its
+/// own output yields no further change.
 ///
 /// An unknown key inside a marker pair is left untouched (and not reported) so
 /// a doc can carry markers this version doesn't know about without data loss.
@@ -402,7 +442,14 @@ pub fn fill(doc: &str) -> (String, FillReport) {
         rest = &rest[block_end..];
     }
 
-    (out, report)
+    // Own the Cargo dependency pin(s) too — outside any GEN block (they sit in
+    // ```toml fences). A rewritten pin is reported as `dep-version` so the drift
+    // gate flags it just like a stale GEN block.
+    let pinned = rewrite_dep_pins(&out);
+    if pinned != out {
+        report.changed.push("dep-version".to_string());
+    }
+    (pinned, report)
 }
 
 #[cfg(test)]
@@ -438,6 +485,42 @@ mod tests {
             "doc drift: the following GEN blocks are stale —\n{}\n\nrun `cargo run --bin gen-docs` to regenerate.",
             stale.join("\n")
         );
+    }
+
+    /// No managed doc may carry a STALE dependency pin (`localharness = "X.Y"`)
+    /// — `fill` owns those now, so a drifted pin shows up as `dep-version` in the
+    /// change report. This is the exact class that shipped a stale `0.47` past
+    /// every other gate.
+    #[test]
+    fn no_stale_dep_pin() {
+        let mm = major_minor();
+        for rel in MANAGED_DOCS {
+            let doc = read_doc(rel);
+            for line in doc.lines().filter(|l| l.contains("localharness = \"")) {
+                assert!(
+                    line.contains(&format!("localharness = \"{mm}\"")),
+                    "{rel}: stale dependency pin (`{}`) — should be `localharness = \"{mm}\"`; run gen-docs.",
+                    line.trim()
+                );
+            }
+        }
+    }
+
+    /// The AGENT-FACING default prompt must never HARDCODE the crate version —
+    /// it derives facts from `env!`/self-docs (GEN-managed). A baked-in literal
+    /// would go stale on the next bump and feed every agent a wrong fact. (The
+    /// doc-integrity umbrella covers the system instructions too, not just the
+    /// markdown docs.)
+    #[test]
+    fn system_prompt_has_no_hardcoded_version() {
+        let v = version();
+        for rel in ["src/app/chat/prompt.rs", "src/app/self_docs.rs"] {
+            let src = read_doc(rel);
+            assert!(
+                !src.contains(v),
+                "{rel} hardcodes the crate version {v:?} — derive it (env!/self_docs) so the agent's prompt can't go stale.",
+            );
+        }
     }
 
     /// Every managed doc must actually CONTAIN at least one GEN block (else the

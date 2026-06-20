@@ -38,7 +38,7 @@ The platform running live on a phone — a self-sovereign agent at its own subdo
 
 ```toml
 [dependencies]
-localharness = "0.47"
+localharness = "0.50"
 tokio        = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
