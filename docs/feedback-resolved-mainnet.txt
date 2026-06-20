@@ -79,8 +79,11 @@
 22  8f31d7e  `localharness abtest` CLI — run one prompt across N personas/models +
 #            design/ab-testing.md (first version; richer harness can follow)
 #
-# STILL OPEN (2026-06-20): 35 — inbox WITHOUT web push is only PARTIAL. The
-# browser-local stash shipped (notifications.rs), but the cross-device no-push
-# path was reverted: it recorded via MessageFacet.sendMessage, which is in source
-# but was never cut to the mainnet diamond (and nothing reads it back). Full fix
-# = cut MessageFacet + proxy record + browser poll-on-mount (see cleanup-backlog).
+35  596201a  inbox WITHOUT web push, now FULL cross-device: MessageFacet is
+#            already on the mainnet diamond (0x91EC…5124 — my earlier "not cut"
+#            was a wrong-selector check, bytes vs string). Proxy records a no-push
+#            cross-agent note via sendMessage; the browser polls its on-chain inbox
+#            on mount (registry::message + notifications::import_onchain_messages,
+#            OPFS cursor) and folds new notes into the bell.
+#
+# INBOX CLEAN: every mainnet feedback item (0-36) addressed as of 2026-06-20.
