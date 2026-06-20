@@ -425,6 +425,17 @@ pub(super) fn notif_bell_pressed() {
     });
 }
 
+/// Flip off-chain telemetry (auto error reports) on/off for this device and
+/// reflect it in the button label. Reports are redacted on-device; default on.
+pub(super) fn toggle_telemetry_pressed() {
+    let now_on = !crate::app::telemetry::enabled();
+    crate::app::telemetry::set_enabled(now_on);
+    dom::swap_inner(
+        "telemetry-toggle",
+        if now_on { "telemetry: on" } else { "telemetry: off" },
+    );
+}
+
 pub(super) fn enable_notifications_pressed() {
     wasm_bindgen_futures::spawn_local(async move {
         let msg = "notify-msg";

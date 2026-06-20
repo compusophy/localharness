@@ -247,6 +247,8 @@ enum Action {
     /// subscribe Web Push, and publish the subscription on-chain so the
     /// scheduler worker can notify the owner with the tab closed.
     EnableNotifications,
+    /// Toggle off-chain telemetry (auto error reports) on/off for this device.
+    ToggleTelemetry,
     /// Header notification bell: enable Web Push for THIS device (address-keyed,
     /// direct gesture) and open the in-app panel. The path a visitor uses to let
     /// their phone be pinged — the cartridge tap can't prompt for permission.
@@ -332,6 +334,7 @@ impl Action {
             "unlink-confirm" => Action::UnlinkConfirm(arg.unwrap_or_default()),
             "unlink-cancel" => Action::UnlinkCancel,
             "enable-notifications" => Action::EnableNotifications,
+            "toggle-telemetry" => Action::ToggleTelemetry,
             "notif-bell" => Action::NotifBell,
             "notif-clear-all" => Action::NotifClearAll,
             "notif-clear-confirm" => Action::NotifClearConfirm,
@@ -1295,6 +1298,7 @@ fn dispatch(action: Action) {
         Action::UnlinkConfirm(addr) => devices::unlink_confirm_pressed(addr),
         Action::UnlinkCancel => devices::unlink_cancel_pressed(),
         Action::EnableNotifications => admin::enable_notifications_pressed(),
+        Action::ToggleTelemetry => admin::toggle_telemetry_pressed(),
         Action::NotifBell => admin::notif_bell_pressed(),
         Action::NotifClearAll => admin::notif_clear_all_pressed(),
         Action::NotifClearConfirm => admin::notif_clear_confirmed(),

@@ -49,6 +49,7 @@ mod pricing;
 mod remote_call;
 mod seed_pull;
 mod skills;
+mod telemetry;
 // Cross-subdomain secure folder — apex-side encrypted store + data types
 // (scaffold). Items are unused until the deferred round-trip wiring lands,
 // so silence dead-code until then. See `shared_fs` module doc.

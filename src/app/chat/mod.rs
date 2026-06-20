@@ -824,6 +824,30 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
     // clock off by more than the proxy's 5-minute window. Don't pop the
     // Gemini key modal at a platform-credits user for it.
     let stale_token = lower.contains("stale or future timestamp");
+    // Off-chain auto error reporting — redacted, deduped, fire-and-forget,
+    // no-op when disabled. SKIP expected non-bug states: a 402 (out-of-credits
+    // is normal), a stale device clock, and user cancels.
+    if !stale_token
+        && !lower.contains("402")
+        && !lower.contains("no $lh")
+        && !lower.contains("no credit")
+        && !lower.contains("cancel")
+    {
+        let agent = crate::app::tenant::current_name().unwrap_or_else(|| "apex".to_string());
+        let first = err.lines().next().unwrap_or(err);
+        let title = format!(
+            "turn error ({context}): {}",
+            first.chars().take(120).collect::<String>()
+        );
+        let signature = crate::app::telemetry::signature_for(&agent, context, err);
+        let body = format!("agent: {agent}\ncontext: {context}\n\nerror:\n{err}");
+        wasm_bindgen_futures::spawn_local(crate::app::telemetry::report(
+            "error".to_string(),
+            title,
+            signature,
+            body,
+        ));
+    }
     let looks_like_auth = !stale_token
         && (lower.contains("api key")
         || lower.contains("api_key")

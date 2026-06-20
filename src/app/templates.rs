@@ -1618,6 +1618,15 @@ pub(crate) fn admin_notify_section() -> Markup {
                 }
             }
             div #notify-msg .admin-msg-slot {}
+            // Off-chain telemetry: auto error reports (redacted on-device) help
+            // improve the platform. On by default; toggle off here.
+            div.admin-section-title { "telemetry" }
+            div.pair-slot {
+                button #telemetry-toggle type="button" data-action="toggle-telemetry" .ghost {
+                    (if crate::app::telemetry::enabled() { "telemetry: on" } else { "telemetry: off" })
+                }
+            }
+            div #telemetry-msg .admin-msg-slot { "auto error reports — redacted on-device, off-chain" }
         }
     }
 }
