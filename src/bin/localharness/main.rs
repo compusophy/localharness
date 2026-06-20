@@ -111,6 +111,7 @@ use localharness::registry;
 use localharness::tempo_tx;
 use localharness::wallet;
 
+mod abtest;
 mod bounty;
 mod buy;
 mod call;
@@ -137,6 +138,7 @@ mod tba;
 mod util;
 mod vote;
 
+pub(crate) use abtest::*;
 pub(crate) use bounty::*;
 pub(crate) use buy::*;
 pub(crate) use call::*;
@@ -301,6 +303,15 @@ CALLING & MCP
                                          top-level JSON keys) escrows the --pay:
                                          it is sent ONLY if the reply is a JSON
                                          object with every key, else withheld
+  localharness abtest [--as <me>] <prompt> (--models <a,b,c> | --personas <x,y> [--model <id>])
+                                         A/B test: fan ONE prompt across N variants
+                                         and print the answers side-by-side. Vary the
+                                         MODEL (--models, same persona on each model)
+                                         or the PERSONA (--personas, each agent's
+                                         on-chain persona on one model). Each variant
+                                         is one metered turn billed to you; a failed
+                                         variant is reported in place (the rest still
+                                         produce a comparison)
   localharness models                    list the valid --model ids for call /
                                          mcp-call (gemini default + claude-* +
                                          gpt-* ids; claude/gpt need the
@@ -613,6 +624,7 @@ async fn run(args: &[String]) -> i32 {
             2
         }
         Some("call") => call(&args[1..]).await,
+        Some("abtest") => abtest(&args[1..]).await,
         Some("mcp-call") => mcp_call(&args[1..]).await,
         Some("mcp") => mcp_serve(&args[1..]).await,
         Some("models") => models(),
@@ -995,7 +1007,7 @@ mod tests {
         // Every dispatchable subcommand must appear in the help text, so a new
         // command can't ship undocumented for beta testers reading `help`.
         for cmd in [
-            "create", "compile", "publish", "face", "persona", "call", "list", "buy",
+            "create", "compile", "publish", "face", "persona", "call", "abtest", "list", "buy",
             "feedback", "probe", "triage", "threads", "forget", "whoami", "status",
             "invite", "bounty", "colony", "reputation", "guild", "party", "validation", "vote", "tba",
             "room", "schedule", "goal", "jobs", "unschedule", "notify", "models", "sh",
