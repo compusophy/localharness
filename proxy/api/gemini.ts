@@ -73,6 +73,21 @@ function isHexAddress(s: string): boolean {
 }
 
 /**
+ * Pick the upstream Gemini key for THIS request from a POOL. `GEMINI_API_KEYS`
+ * (comma-separated) round-robins across N keys to spread Google's per-key quota
+ * (#23, key-pool scaling); when it is UNSET this falls back to the single
+ * `GEMINI_API_KEY` and the behaviour is byte-identical to before the pool.
+ */
+function geminiUpstreamKey(): string | undefined {
+  const pool = (process.env.GEMINI_API_KEYS ?? '')
+    .split(',')
+    .map((k) => k.trim())
+    .filter((k) => k.length > 0);
+  if (pool.length === 0) return process.env.GEMINI_API_KEY;
+  return pool[Math.floor(Math.random() * pool.length)]; // round-robin across the pool
+}
+
+/**
  * Reject an EMPTY/malformed request payload BEFORE the on-chain gate so a no-op
  * never reaches the meter. Returns an error string (caller maps to a 400, NO
  * charge) or `null` if the payload carries real work.
@@ -739,7 +754,7 @@ export default async function handler(req: Request): Promise<Response> {
     // unauthenticated probe can't learn the proxy's key configuration.)
     const upstreamKey =
       provider === 'gemini'
-        ? process.env.GEMINI_API_KEY
+        ? geminiUpstreamKey()
         : provider === 'anthropic'
           ? process.env.ANTHROPIC_API_KEY
           : process.env.OPENAI_API_KEY;
