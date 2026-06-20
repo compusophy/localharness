@@ -231,7 +231,10 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
   position: absolute;
   top: 100%;
   left: 0;
-  margin-top: 8px;
+  /* Drop the menu the uniform chrome gap below the button (same --chrome-pad
+     that spaces the header buttons from the chrome edges) — matches the bell
+     panel so all header dropdowns share one rhythm. */
+  margin-top: var(--chrome-pad);
   min-width: 140px;
   z-index: var(--z-menu);
   display: flex;
@@ -590,7 +593,8 @@ main.layout .transcript > *:empty { display: none; }
   position: absolute;
   top: 100%;
   right: 0;
-  margin-top: 4px;
+  /* Uniform chrome gap below the bell — matches the brand menu. */
+  margin-top: var(--chrome-pad);
   min-width: 240px;
   max-width: 320px;
   max-height: 60vh;
