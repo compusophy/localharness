@@ -134,26 +134,6 @@ const METER_ABI = [
   },
 ] as const;
 
-// MessageFacet.sendMessage — the permissionless async agent INBOX. When a
-// cross-agent `to:` target has NO Web Push subscription, the note still gets
-// RECORDED here (keyed by the recipient's tokenId) so it surfaces in their
-// in-app inbox the next time they open the tab, regardless of push state (#35).
-const MESSAGE_ABI = [
-  {
-    name: 'sendMessage',
-    type: 'function',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'toId', type: 'uint256' },
-      { name: 'body', type: 'string' },
-    ],
-    outputs: [],
-  },
-] as const;
-
-// MessageFacet body cap (matches the on-chain `MessageTooLong` guard at 1024).
-const MAX_MESSAGE_BODY_BYTES = 1024;
-
 /** Whether `s` is a well-formed 0x-prefixed 20-byte hex address. */
 function isHexAddress(s: string): boolean {
   return /^0x[0-9a-fA-F]{40}$/.test(s);
@@ -365,13 +345,9 @@ class NoSuchAgentError extends Error {}
 /**
  * A NAMED agent's device subscriptions (cross-agent notify): name → tokenId →
  * owner → the slot union. Throws NoSuchAgentError for an unregistered name;
- * `subs` is [] when the agent exists but no device ever enrolled. `toId` is the
- * recipient's tokenId — kept so a no-subscription delivery can still RECORD the
- * note on-chain (MessageFacet inbox) for the recipient to read at boot (#35).
+ * returns [] when the agent exists but no device ever enrolled.
  */
-async function pushSubsOfName(
-  name: string,
-): Promise<{ subs: PushSubscriptionJson[]; toId: bigint }> {
+async function pushSubsOfName(name: string): Promise<PushSubscriptionJson[]> {
   const id = BigInt(
     await ethCall('0x' + selector('idOfName(string)') + encodeStringArg(name)),
   );
@@ -380,7 +356,7 @@ async function pushSubsOfName(
     '0x' + selector('ownerOf(uint256)') + id.toString(16).padStart(64, '0'),
   );
   const owner = '0x' + stripHex(ownerWord).slice(-40);
-  return { subs: await resolveSubsForOwner(owner, id), toId: id };
+  return resolveSubsForOwner(owner, id);
 }
 
 /**
@@ -444,60 +420,6 @@ async function meterDebit(user: string, amount: bigint): Promise<void> {
   }
   if (status === 'reverted') {
     throw new InsufficientCreditError('on-chain debit reverted (insufficient $LH)');
-  }
-}
-
-/**
- * RECORD a cross-agent note in the recipient's on-chain inbox
- * (`MessageFacet.sendMessage`) when no Web Push subscription can carry it (#35).
- * Permissionless (the proxy's meter key is the sender of record); the body is
- * the already-attributed `@<from>: <title> — <body>` text, capped to the on-
- * chain `MessageTooLong` limit. Awaits the receipt; throws on a definitive
- * revert (so the caller can avoid charging for a note that wasn't stored),
- * returns on an ambiguous wait failure (the tx likely landed). Best-effort by
- * design — the caller treats any failure as "could not record".
- */
-async function recordOnChainMessage(toId: bigint, body: string): Promise<void> {
-  const pk = process.env.PROXY_METER_KEY;
-  if (!pk) throw new Error('missing PROXY_METER_KEY');
-  // Trim to the on-chain byte cap (utf-8); sendMessage reverts past 1024 bytes.
-  let bytes = new TextEncoder().encode(body);
-  if (bytes.length > MAX_MESSAGE_BODY_BYTES) {
-    bytes = bytes.slice(0, MAX_MESSAGE_BODY_BYTES);
-    body = new TextDecoder().decode(bytes); // may drop a trailing partial char
-  }
-  if (!body) throw new Error('empty message body');
-  const account = privateKeyToAccount(
-    (pk.startsWith('0x') ? pk : `0x${pk}`) as `0x${string}`,
-  );
-  const wallet = createWalletClient({
-    account,
-    chain: TEMPO_CHAIN,
-    transport: http(TEMPO_RPC),
-  });
-  const data = encodeFunctionData({
-    abi: MESSAGE_ABI,
-    functionName: 'sendMessage',
-    args: [toId, body],
-  });
-  const hash = await wallet.sendTransaction({
-    to: REGISTRY as `0x${string}`,
-    data,
-    value: 0n,
-  });
-  const pub = createPublicClient({ chain: TEMPO_CHAIN, transport: http(TEMPO_RPC) });
-  let status: 'success' | 'reverted';
-  try {
-    ({ status } = await pub.waitForTransactionReceipt({
-      hash,
-      timeout: 12_000,
-      pollingInterval: 500,
-    }));
-  } catch {
-    return; // ambiguous (RPC/timeout) — assume stored; don't fail the note
-  }
-  if (status === 'reverted') {
-    throw new Error('on-chain message store reverted');
   }
 }
 
@@ -622,35 +544,44 @@ export default async function handler(req: Request): Promise<Response> {
       return json({ error: 'signature does not match address' }, 401, origin);
     }
 
-    // ---- subscription lookup (BEFORE the debit — an undeliverable note must
-    // not be charged). Cross-agent (`to`) also stamps WHO it's from, and keeps
-    // the recipient's tokenId so a no-push note can still be RECORDED on-chain.
+    // ---- subscription lookup (BEFORE the debit — an undeliverable push must
+    // not be charged). Cross-agent (`to`) also stamps WHO it's from. ------------
     let subs: PushSubscriptionJson[];
-    let recipientId = 0n; // recipient tokenId (cross-agent only); 0 = self/none
     try {
-      if (to) {
-        const r = await pushSubsOfName(to);
-        subs = r.subs;
-        recipientId = r.toId;
-      } else {
-        subs = await pushSubsOfCaller(address);
-      }
+      subs = to ? await pushSubsOfName(to) : await pushSubsOfCaller(address);
     } catch (e) {
       if (e instanceof NoSuchAgentError) {
         return json({ error: e.message }, 404, origin);
       }
       return json({ error: 'subscription lookup failed: ' + (e as Error).message }, 502, origin);
     }
-    // CROSS-AGENT with no push sub: the note can still be RECORDED on-chain
-    // (MessageFacet inbox, keyed by the recipient tokenId) so it surfaces in
-    // their in-app inbox next time they open the tab — Web Push is NOT required
-    // for cross-agent delivery (#35). Falls through to auth+debit+record below;
-    // the sender pays the same flat cost for a durably-recorded note.
-    const recordOnly = to !== '' && subs.length === 0;
-    if (subs.length === 0 && !recordOnly) {
-      // SELF with no subscription: there's nothing the proxy can record on the
-      // CALLER's behalf (a self-note's only channel is the caller's own push),
-      // so the 404 + "enable notifications" hint is the right answer.
+    if (subs.length === 0) {
+      // TOOL-LEVEL ENROLLMENT CHECK (on-chain feedback): the target has NOT
+      // enrolled ANY device for Web Push. The in-app notification inbox (the
+      // header bell) is fed ONLY by a delivered push (web/sw.js relay/stash),
+      // so with no subscription there is no channel to reach them at all.
+      // CROSS-AGENT: this is NOT the sender's fault and must not look like a
+      // failure they should retry — return a clear, structured `enrolled:
+      // false` signal the client/CLI relays verbatim, with NO debit (there is
+      // nothing to deliver to charge for). SELF: the 404 + app hint is right.
+      if (to) {
+        return json(
+          {
+            sent: false,
+            delivered: false,
+            enrolled: false,
+            to,
+            message:
+              `"${to}" has not enrolled any device for Web Push, so this note will ` +
+              `NOT reach them — no phone or desktop push will arrive, and their ` +
+              `in-app notification inbox is fed by push too. Their owner must tap ` +
+              `the notification bell (or admin → account → notifications) on a ` +
+              `device once to enable it. You were not charged.`,
+          },
+          200,
+          origin,
+        );
+      }
       return json(
         { error: 'no push subscription on-chain — enable notifications in the app first' },
         404,
@@ -704,39 +635,7 @@ export default async function handler(req: Request): Promise<Response> {
       }
     }
 
-    // ---- delivery — the one failure a debited caller pays for ------------------
-    if (recordOnly) {
-      // NO Web Push subscription on the cross-agent target: RECORD the note in
-      // their on-chain inbox (MessageFacet) so it surfaces in their in-app
-      // inbox at next open, no push needed (#35). `title` already carries the
-      // `@<from>:` attribution; join with the body for a self-contained note.
-      const noteBody = body ? `${title} — ${body}` : title;
-      try {
-        await recordOnChainMessage(recipientId, noteBody);
-      } catch (e) {
-        return json(
-          { error: 'could not record note on-chain: ' + (e as Error).message },
-          502,
-          origin,
-        );
-      }
-      return json(
-        {
-          sent: true,
-          delivered: false,
-          recorded: true,
-          enrolled: false,
-          to,
-          message:
-            `"${to}" has no Web Push device enrolled, so this note was RECORDED in ` +
-            `their on-chain inbox instead — it will appear when they next open ` +
-            `their tab. No phone/desktop banner will buzz now.`,
-        },
-        200,
-        origin,
-      );
-    }
-
+    // ---- the push itself — the one failure a debited caller pays for -----------
     // Same { title, body } JSON the scheduler worker sends; the service worker
     // (web/sw.js) renders it. FAN-OUT to every enrolled device (phone AND
     // desktop); success = at least one push service accepted.
