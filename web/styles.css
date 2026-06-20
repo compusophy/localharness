@@ -965,6 +965,11 @@ main.layout .transcript > *:empty { display: none; }
 }
 .terminal-row textarea {
   flex: 1;
+  /* A flex child won't shrink below its intrinsic (cols-based) width without
+     this — without it the textarea forced .terminal-row past the viewport on
+     narrow screens, pushing the new square send button + the header's right
+     cluster off-screen (#34 regression, mobile-only). */
+  min-width: 0;
   background: transparent;
   border: 0;
   outline: none;
