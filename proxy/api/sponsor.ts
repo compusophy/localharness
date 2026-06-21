@@ -43,6 +43,7 @@ import {
 import { TEMPO_RPC, REGISTRY, CHAIN_ID, LH_TOKEN } from './_chain';
 import { SlidingWindow } from './_ratelimit';
 import { welcomeNewAgent } from './_welcome';
+import { waitUntil } from '@vercel/functions';
 
 export const config = { runtime: 'edge' };
 
@@ -560,15 +561,16 @@ export default async function handler(req: Request): Promise<Response> {
   const fpSig = signHash65(fpHash, SPONSOR_KEY);
 
   // WELCOME-ON-CREATION: a sponsored `register(string)` is a brand-new agent
-  // being minted. Fire-and-forget a warm welcome from the platform's
-  // `localharness` agent into the new name's on-chain inbox (it lands in the
-  // agent's bell on first open — push-free, durable). FIRE-AND-FORGET: never
-  // awaited, never throws — a welcome is a nicety and must not delay or fail
-  // the relay response. The helper itself waits for the register tx (which the
-  // caller assembles + submits right AFTER this returns) to land on-chain.
+  // being minted. Send a warm welcome from the platform's `localharness` agent
+  // into the new name's on-chain inbox (it lands in the agent's bell on first
+  // open — push-free, durable). `waitUntil` keeps the Edge function alive to
+  // finish this AFTER the response returns — a plain fire-and-forget is KILLED
+  // on response, before the helper's name-resolve poll completes (the caller
+  // assembles + submits the register tx right AFTER this returns, so the name
+  // doesn't exist yet). Never throws; never delays the relay response.
   const newName = intent.calls.map(registeredName).find((n) => n !== null);
   if (newName) {
-    void welcomeNewAgent(newName);
+    waitUntil(welcomeNewAgent(newName));
   }
 
   return json(
