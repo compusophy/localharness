@@ -1,5 +1,4 @@
-#[allow(unused_imports)]
-use crate::*;
+use crate::{bytes_to_hex_str, registry, resolve_caller_key, resolve_key_read_path, sponsor_key, wallet};
 
 /// Extract a single `<flag> <value>` pair from ANYWHERE in the arg list and
 /// return `(value, remaining_args_without_the_pair)`. The remainder is owned so
@@ -398,6 +397,7 @@ pub(crate) fn name_is_valid(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{args, parse_address};
 
     #[test]
     fn fmt_lh_never_shows_a_false_zero() {

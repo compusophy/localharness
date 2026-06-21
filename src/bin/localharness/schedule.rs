@@ -1,5 +1,4 @@
-#[allow(unused_imports)]
-use crate::*;
+use crate::{bytes_to_hex_str, collect_flags, ensure_wallet_covers, fmt_lh, load_signer, load_signer_and_sponsor, registry, truncate_words, wallet, SCHEDULE_DEFAULT_RUNS, SCHEDULE_MIN_INTERVAL_SECS};
 
 // ---- schedule / jobs / unschedule (ScheduleFacet) ------------------------
 //
@@ -416,6 +415,7 @@ pub(crate) async fn unschedule(caller_name: Option<&str>, job_id_arg: &str) -> i
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::args;
 
     #[test]
     fn task_is_blank_catches_empty_and_bare_goal_marker() {

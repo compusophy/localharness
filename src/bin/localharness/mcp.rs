@@ -1,5 +1,4 @@
-#[allow(unused_imports)]
-use crate::*;
+use crate::{bytes_to_hex_str, ensure_wallet_covers, fmt_lh, load_sponsor, non_blank, parse_address, registry, report_call_error, resolve_caller_key, run_agent_turn, take_as_flag, wallet};
 
 // ---- MCP server ----------------------------------------------------------
 //
@@ -443,6 +442,7 @@ pub(crate) async fn mcp_call(rest: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::args;
 
     #[test]
     fn parse_mcp_call_defaults_and_flags() {
