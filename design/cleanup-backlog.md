@@ -30,6 +30,14 @@ lands. Append as cruft is found; clear lines as removed.
 - [x] **BootstrapFaucet** — `BootstrapFaucet.sol` + `DeployBootstrapFaucet.s.sol`
   archived 2026-06-21 → `contracts/archive/`. Dormant since Tempo sponsorship.
 
+## Done — restore the warning signal (report Phase 1)
+
+- [x] **CLI `#[allow(unused_imports)] use crate::*`** — DONE 2026-06-21. All 27
+  `src/bin/localharness/*.rs` modules converted to explicit `use crate::{…}`
+  (test-only helpers imported inside the test modules). Zero glob imports / zero
+  `allow(unused_imports)` left in the CLI; un-reasoned `allow()` in `src/` fell
+  53 → 26. `scripts/audit-tech-debt.sh` tracks the residual count.
+
 ## Needs a product decision (flagged, NOT auto-resolved)
 
 - [ ] **Pricing default drift (possible billing bug).** `proxy/api/_prices.ts`

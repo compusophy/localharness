@@ -1,5 +1,4 @@
-#[allow(unused_imports)]
-use crate::*;
+use crate::{bytes_to_hex_str, ensure_wallet_covers, fmt_lh, load_signer, load_signer_and_sponsor, parse_guild_id, registry, take_tba_flag, tba_execute_diamond_call, wallet};
 
 // ---- guild (GuildFacet: on-chain orgs — members, roles, pooled treasury) -----
 //

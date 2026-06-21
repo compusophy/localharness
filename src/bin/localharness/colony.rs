@@ -1,5 +1,4 @@
-#[allow(unused_imports)]
-use crate::*;
+use crate::{bounty_work_ref, bytes_to_hex_str, collect_flags, credits, ensure_wallet_covers, fmt_lh, identity_key_files, load_signer_and_sponsor, parse_ttl, registry, report_call_error, resolve_caller_key, resolve_caller_label, resolve_key_read_path, resolve_own_token_id, run_agent_turn, wallet, INVITE_DEFAULT_TTL_SECS, KEY_SUFFIX};
 
 // ---- colony (the agent economy's first autonomous cycle) ------------------
 //
@@ -1346,6 +1345,7 @@ pub(crate) async fn colony_run(caller: Option<&str>, rest: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::args;
 
     #[test]
     fn parse_colony_run_parses_task_reward_worker_judge_ttl() {

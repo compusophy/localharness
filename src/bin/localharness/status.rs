@@ -1,5 +1,4 @@
-#[allow(unused_imports)]
-use crate::*;
+use crate::{bytes_to_hex_str, fmt_interval, fmt_lh, job_is_terminal, load_signer, load_signer_and_sponsor, registry, resolve_caller_label, truncate_words, wallet};
 
 /// The on-chain facts `whoami` resolves for a name.
 pub(crate) struct WhoamiInfo {
@@ -703,6 +702,7 @@ pub(crate) async fn feedback_submit(caller_name: Option<&str>, text: &str) -> i3
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::args;
 
     #[test]
     fn discover_reputation_inline_formats_like_reputation_show() {

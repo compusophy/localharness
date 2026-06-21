@@ -1,5 +1,4 @@
-#[allow(unused_imports)]
-use crate::*;
+use crate::{bytes_to_hex_str, default_persona, ensure_diamond_allowance, fmt_duration, fmt_lh, load_sponsor, non_blank, parse_address, registry, resolve_caller_key, resolve_caller_label, sponsor_key, take_as_flag, wallet, CALL_COST_WEI, CALL_METER_TOPUP_WEI};
 
 /// Prompt another agent and print its reply — HEADLESS, via the credit proxy.
 ///
@@ -891,6 +890,7 @@ pub(crate) fn forget(caller_name: Option<&str>, target: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::args;
 
     #[test]
     fn parse_call_plain_target_and_message() {

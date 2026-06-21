@@ -1,5 +1,4 @@
-#[allow(unused_imports)]
-use crate::*;
+use crate::{bytes_to_hex_str, collect_flags, ensure_wallet_covers, fmt_duration, fmt_lh, load_signer, load_signer_and_sponsor, parse_bounty_id, parse_id, parse_ttl, registry, resolve_address_label, resolve_own_token_id, truncate_words, wallet, INVITE_DEFAULT_TTL_SECS};
 
 // ---- bounty post/list/claim/submit/accept/cancel/mine (BountyFacet) ------
 //
@@ -591,6 +590,7 @@ pub(crate) async fn bounty_mine(caller: Option<&str>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::args;
 
     #[test]
     fn parse_bounty_post_args_full_and_defaults() {

@@ -1,5 +1,4 @@
-#[allow(unused_imports)]
-use crate::*;
+use crate::{bytes_to_hex_str, ensure_wallet_covers, fmt_duration, fmt_lh, key_home_dir, load_signer, load_signer_and_sponsor, registry, wallet, INVITE_DEFAULT_AMOUNT_WEI, INVITE_DEFAULT_TTL_SECS, INVITE_MAX_AMOUNT_WEI, INVITE_MAX_TTL_SECS, INVITE_MIN_AMOUNT_WEI, INVITE_MIN_TTL_SECS};
 
 pub(crate) const INVITE_USAGE: &str = "\
 usage: localharness invite <create|accept|reclaim|list> ...
@@ -492,6 +491,7 @@ pub(crate) async fn invite_list(caller: Option<&str>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::args;
 
     #[test]
     fn parse_ttl_units_and_bounds() {

@@ -1,5 +1,4 @@
-#[allow(unused_imports)]
-use crate::*;
+use crate::{bytes_to_hex_str, fmt_lh, key_write_path, load_name_signer, load_signer_and_sponsor, load_sponsor, name_is_valid, parse_address, registry, resolve_key_read_path, secure_key_file, tempo_tx, wallet};
 
 /// Parsed `create` arguments: the name, an optional persona, and whether
 /// `--publish` was given (publish the scaffolded `app.rl` in the same flow so a
@@ -994,6 +993,7 @@ pub(crate) async fn release(caller: Option<&str>, name: &str, confirm: Option<&s
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::args;
 
     #[test]
     fn release_confirmation_must_match_exactly() {
