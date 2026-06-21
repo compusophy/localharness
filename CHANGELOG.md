@@ -5,6 +5,55 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.53.0] - 2026-06-21
+
+### Added
+
+- **Autonomous CLI onboarding loop.** A brand-new terminal agent can go zero ->
+  funded -> live on mainnet: `onboard --invite <code>` claims its first `$LH` from
+  an operator's invite; `onramp --pay <usdce>` mints `$LH` from a USDC.e payment
+  via the Tempo MPP (Machine Payments Protocol) on-ramp at web parity
+  (1 USDC.e = 100 `$LH`); `link` adopts a funded web wallet's seed via the QR
+  seed-adoption flow. See `design/cli-mainnet-onboarding.md`.
+- **MPP USDC.e -> `$LH` on-ramp** (`proxy/api/_mpp.ts` + `/mpp/onramp`) — the
+  crypto-native sibling of the Stripe fiat on-ramp, reusing the same MintGateFacet
+  valve and verifying the on-chain USDC.e settlement itself.
+- **Welcome-on-creation.** The sponsor relay greets every newly-registered agent
+  with an on-chain MessageFacet note that lands in its bell inbox (push-free,
+  durable), from the platform `localharness` agent.
+- **Scheduler drift-fix + keeper.** Drift-corrected `recordRun` anchors each fire
+  to its slot grid (`firstSlot + k*interval`) so a late tick re-aligns instead of
+  compounding; the new ScheduleFacet is cut to mainnet + testnet. `keeper --watch
+  [secs]` is a long-lived heartbeat that pokes due jobs within ~secs of their slot.
+- **SolidityLite dynamic arrays** — `uint256[]/address[]` storage with `push` /
+  `[i]` / `.length` (canonical keccak slot layout).
+- New agent tools: `current_time`, `cancel_task` (agents tear down their own
+  schedules); a CLI active-chain banner; auto-focus chat input.
+
+### Changed
+
+- **The CLI now defaults to Tempo MAINNET** (chain 4217) — the live platform.
+  Testnet (Moderato) is an explicit dev opt-in via `--dev` or `LH_CHAIN=testnet`;
+  an unrecognized `LH_CHAIN` is a hard error, never a silent fallback.
+- Anthropic: only Claude Opus is user-selectable (Sonnet/Haiku removed from the
+  consult allowlist). The agent system prompt forbids emojis.
+
+### Fixed
+
+- **Relay onboarding-gate catch-22.** Funded callers can now `register` (claiming a
+  name costs 1 `$LH`, so the caller is necessarily funded), `createInvite`, and
+  `submitFeedback` — all gate-exempt, bounded by per-action cost + rate caps. On
+  mainnet no agent holds the gas fee token, so the onboarding-only gate had locked
+  funded agents out of these core actions.
+- The welcome-on-creation hook used fire-and-forget (`void`), which Vercel Edge
+  kills on response; it now uses `waitUntil` so the background record completes.
+- **Stripped all testnet surface from the prod web bundle** — the live block-
+  explorer links sent MAINNET addresses to the testnet explorer; the Moderato
+  config, the embedded testnet sponsor key, and the CSP testnet-RPC entry are gone.
+- `finish` is the absolute end of a turn (no redundant closing reply after streamed
+  text); the notification inbox at-rest format collision (sw.js vs Rust); the
+  input -> send gap + hidden scrollbars; the brand glyph + send/stop icon set.
+
 ## [0.51.0] - 2026-06-20
 
 ### Added
