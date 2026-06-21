@@ -220,6 +220,13 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
                         }
                     }
                 }
+                // Turn-status slot — sits immediately to the RIGHT of the brand
+                // (the brand no longer carries margin-right:auto; .header-admin's
+                // margin-left:auto pushes the right cluster instead). `chat::stage`
+                // paints ONE pulsing glyph here for the active phase (brain /
+                // waves / wrench) and empties it otherwise — `:empty` collapses
+                // the slot so it's GONE when no turn is in flight.
+                (stage_status_slot())
                 // Header: bell · feedback (bug) · settings (cog) — three square
                 // icon buttons. The feedback bug button (#36) sits BETWEEN the
                 // bell and the cog and opens the on-chain feedback widget as its
@@ -730,41 +737,38 @@ pub(crate) fn turn(turn_id: u32, role: &str, body: Markup, streaming: bool) -> M
     }
 }
 
-/// Per-turn swap target for the turn-stage micro-pipeline (GitHub #19).
-/// Rendered as the FIRST child of a pending assistant body; `chat::stage`
-/// swaps [`stage_line`] fragments into it while the turn streams and
-/// empties it when the turn completes (`.stage-line:empty` hides it).
-pub(crate) fn stage_container(turn_id: u32) -> Markup {
-    let id_str = format!("stage-{turn_id}");
-    // `role=status` + aria-live=polite so a screen-reader user hears the turn
-    // lifecycle (paying → thinking → streaming) instead of silence while the
-    // agent works (GitHub #61/#65). polite (not assertive) so the frequent
-    // stage swaps queue behind, rather than interrupt, the transcript output.
+/// The fixed header turn-status slot (`#turn-status`, right of the brand —
+/// see [`site_header`]). Empty at rest; `chat::stage` swaps a single pulsing
+/// phase glyph in via [`stage_status_button`] while a turn streams and empties
+/// it when the turn completes. `.turn-status-slot:empty` collapses the slot so
+/// the button is GONE — not a static square — when nothing is in flight.
+/// `role=status` + aria-live=polite narrates the phase to a screen reader
+/// (the GitHub #61/#65 a11y the in-stream line used to carry); polite so the
+/// frequent phase swaps queue behind, not interrupt, the transcript output.
+pub(crate) fn stage_status_slot() -> Markup {
     html! {
-        div id=(id_str) .stage-line role="status" aria-live="polite" {}
+        div #turn-status .turn-status-slot role="status" aria-live="polite" {}
     }
 }
 
-/// The stage pipeline line itself: a SINGLE persistent monochrome indicator
-/// (`.st-dot`, the one animated cue for every stage — no per-stage spinner)
-/// followed by the lowercase stage words joined by `→`, the CURRENT one
-/// emphasized (`st-now`, static weight/color), crossed ones muted (`st-past`),
-/// re-walked ones dim (`st-dim`). Rendered even with no slots yet (the dot
-/// alone) so the line occupies a stable height the moment the turn begins and
-/// every state change is an in-place text/class swap — never an appear/vanish
-/// reflow of the transcript below. Monochrome, terse, no prose.
-pub(crate) fn stage_line(slots: &[(crate::turn_stage::Stage, crate::turn_stage::Slot)]) -> Markup {
-    use crate::turn_stage::Slot;
+/// The active-phase header button painted into [`stage_status_slot`]: ONE
+/// pulsing lucide glyph for the stage the turn is in — brain (thinking) /
+/// waves (streaming) / wrench (tools). `Paying`/`Starting` carry no glyph
+/// (returns empty → the painter leaves the slot collapsed), per the spec that
+/// only thinking/streaming/tools surface. `tabindex=-1` + no `data-action`:
+/// it's a decorative status, not a control. The aria-label gives the slot's
+/// live region a name to announce.
+pub(crate) fn stage_status_button(stage: crate::turn_stage::Stage) -> Markup {
+    use crate::turn_stage::Stage;
+    let (glyph, label) = match stage {
+        Stage::Thinking => (crate::landing::brain_glyph(), "thinking"),
+        Stage::Streaming => (crate::landing::wave_glyph(), "streaming"),
+        Stage::Tools => (crate::landing::wrench_glyph(), "using tools"),
+        Stage::Paying | Stage::Starting => return html! {},
+    };
     html! {
-        span.st-dot aria-hidden="true" {}
-        @for (i, (stage, slot)) in slots.iter().enumerate() {
-            @if i > 0 { span.st-sep { " → " } }
-            span class=(match slot {
-                Slot::Past => "st-past",
-                Slot::Current => "st-now",
-                Slot::Idle => "st-dim",
-            }) { (stage.word()) }
-        }
+        button type="button" tabindex="-1" .turn-status-btn
+            aria-label=(label) title=(label) { (glyph) }
     }
 }
 

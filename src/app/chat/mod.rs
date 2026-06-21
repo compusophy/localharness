@@ -177,15 +177,20 @@ pub(crate) async fn run_send() {
             assistant_turn_id,
             "assistant",
             html! {
-                (templates::stage_container(assistant_turn_id))
                 (templates::text_segment(first_seg_id, ""))
             },
             true,
         )
         .into_string(),
     );
-    dom::scroll_to_bottom("transcript");
-    stage::begin(assistant_turn_id);
+    // Anchor the new exchange at the TOP: scroll the user's message just under
+    // the header so the reply streams in BELOW it, then stop auto-following.
+    // The pending assistant turn reserves a viewport of height (CSS
+    // `.turn.assistant.streaming` min-height) so this top position is reachable
+    // even for the first message. The user reads the answer from its first line
+    // instead of being yanked to the newest character.
+    dom::scroll_turn_to_top(&format!("turn-{user_turn_id}"));
+    stage::begin();
 
     // Clear the prompt, keep focus — the value is already captured above.
     prompt_area.set_value("");
@@ -526,15 +531,17 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
                     assistant_turn_id,
                     "assistant",
                     html! {
-                        (templates::stage_container(assistant_turn_id))
                         (templates::text_segment(seg_id, ""))
                     },
                     true,
                 )
                 .into_string(),
             );
-            dom::scroll_to_bottom("transcript");
-            stage::begin(assistant_turn_id);
+            // Auto-continuation (no user bubble): do NOT scroll — the user is
+            // reading the ongoing response in place; a fresh turn appends below
+            // and they read downward into it. (Pinning to the bottom here was
+            // the yank.)
+            stage::begin();
             (assistant_turn_id, seg_id)
         }
     };
@@ -583,7 +590,8 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
                     cur_text.push_str(&text);
                     let inner = html! { (cur_text) }.into_string();
                     dom::swap_inner(&format!("seg-{cur_id}"), &inner);
-                    dom::scroll_to_bottom("transcript");
+                    // No auto-scroll: the turn is anchored at its top (run_send),
+                    // so text grows downward without yanking the viewport.
                 }
             }
             Ok(StreamChunk::ToolCall(call)) => {
@@ -615,7 +623,8 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
                     &assistant_body_id,
                     &templates::text_segment(seg_id, "").into_string(),
                 );
-                dom::scroll_to_bottom("transcript");
+                // No auto-scroll — tool cards appear in-flow below the anchored
+                // top; pinning to the bottom here re-introduced the yank.
             }
             Ok(StreamChunk::ToolResult(result)) => {
                 if let Some((tool_seg_id, call)) = pending_tools.pop_front() {
@@ -659,7 +668,8 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
                             .await;
                         }
                     }
-                    dom::scroll_to_bottom("transcript");
+                    // No auto-scroll — the result card lands in-flow below the
+                    // anchored top (see the ToolCall arm).
                 } else {
                     // No pending tool block to attach this result to — the
                     // backend emitted a ToolResult without a preceding

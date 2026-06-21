@@ -189,7 +189,10 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
   align-items: center;
   gap: 12px;
 }
-.header-brand { margin-right: auto; }   /* pushes utility buttons right */
+/* The right cluster is pushed right by `.header-admin { margin-left: auto }`
+   (below), NOT by a margin on the brand — that way the turn-status slot can sit
+   immediately to the RIGHT of the brand (between it and the auto gap), and a
+   header WITHOUT the slot still splits brand-left / admin-right correctly. */
 /* Bell + ADMIN live here. Must be a flex row, NOT the default block — as
    block, the inline-flex bell and inline-block admin button aligned by text
    BASELINE (bell sat 3px higher) and had zero gap (touching). Center them on
@@ -197,7 +200,37 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
 /* gap == --chrome-pad so the space between the bell and ADMIN equals the
    space from ADMIN to the header's right edge (both 16px) — ADMIN is evenly
    spaced on both sides. */
-.header-admin { position: relative; display: inline-flex; align-items: center; gap: var(--chrome-pad); }
+.header-admin { position: relative; display: inline-flex; align-items: center; gap: var(--chrome-pad); margin-left: auto; }
+/* Turn-status slot — the active-phase glyph (brain/waves/wrench) painted by
+   chat::stage, sitting immediately right of the brand. Empty at rest:
+   `:empty` collapses it to nothing so the button is GONE (not a static
+   square) when no turn is in flight. The button itself is fully specified
+   (it's NOT a `.header-button`, so it stays pointer-transparent in the
+   floating chat header — it's a status, not a control) and pulses while
+   shown. 38px box (10px pad + 16px glyph + 1px border) = pixel-match to the
+   bell/cog/brand on the same row. */
+.turn-status-slot { display: inline-flex; align-items: center; }
+.turn-status-slot:empty { display: none; }
+.turn-status-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  /* Rests at full --fg (brighter than the idle --muted bell/cog) so the
+     "working" state reads as active, then breathes via the opacity pulse. */
+  color: var(--fg);
+  animation: turn-status-pulse 1.2s ease-in-out infinite;
+}
+.turn-status-btn svg { display: block; width: 16px; height: 16px; }
+/* The working "breathe" — the same opacity cadence the old in-stream stage
+   dot used (1↔0.3), relocated to the header. Monochrome only. */
+@keyframes turn-status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
 
 /* Brand dropdown — the top-left "localharness" title is a native
    <details> menu (no JS) exposing Home / Repo / Crate. Marker hidden
@@ -367,10 +400,12 @@ main.layout .transcript {
      (header above, footer below): the first/last message clears the chrome by
      one --chrome-pad and then scrolls UNDER it, so the chat flows edge to edge.
      70px top = header pad (16) + 38px button + 16px uniform-margin gap (the
-     first message used to crowd the header at +56). 76px bottom = footer pad
-     (16) + input row (38) + pad (16) + gap; + the iOS safe-area insets on each
-     end. Side gutters stay the uniform chrome margin. */
-  padding: calc(env(safe-area-inset-top) + 70px) var(--chrome-pad) calc(env(safe-area-inset-bottom) + 76px);
+     first message used to crowd the header at +56). Bottom = the input chrome
+     (pad 16 + row 38 + pad 16 = 70) + one --chrome-pad uniform margin, so the
+     last line clears the floating input by the SAME 16px the top clears the
+     header (it used to crowd the input at +76 ≈ 6px). + the iOS safe-area
+     insets on each end. Side gutters stay the uniform chrome margin. */
+  padding: calc(env(safe-area-inset-top) + 70px) var(--chrome-pad) calc(env(safe-area-inset-bottom) + 70px + var(--chrome-pad));
   margin-top: 0;
   display: flex;
   flex-direction: column;
@@ -380,6 +415,14 @@ main.layout .transcript {
   scrollbar-width: none;
 }
 main.layout .transcript::-webkit-scrollbar { display: none; }
+/* Scroll-to-top reservation: while a turn is streaming, pad the BOTTOM by a
+   full viewport so the just-sent user message can be scrolled to the TOP
+   (dom::scroll_turn_to_top) with the reply flowing below it — without scroll
+   room beneath the newest turn the view falls straight back to the bottom.
+   Padding (not a min-height on the turn) so it adds no visible box / border.
+   `:has` drops the moment `mark_turn_done` removes `.streaming`, so the extra
+   space (always below the fold) collapses when the turn finishes. */
+main.layout .transcript:has(.turn.assistant.streaming) { padding-bottom: 100dvh; }
 /* The FIRST item in the transcript sits FLUSH against the header border —
    no residual top gap. `.turn` carries `padding: 1px 0` for between-turn
    rhythm, but the first turn must not push the conversation down from the
@@ -1864,52 +1907,12 @@ button.ready:hover {
   color: var(--muted);
   animation: lh-spin 800ms steps(1) infinite;
 }
-/* Turn-stage micro-pipeline (GitHub #19, layout-shift fix): one terse line at
-   the top of a PENDING assistant turn — a SINGLE persistent indicator (.st-dot,
-   the one animated cue) then lowercase stage words joined by →, the current one
-   emphasized (static), crossed ones muted, re-walked ones dim. The line is
-   painted from the click and holds a FIXED height for the whole streaming turn
-   (min-height below), so swapping paying → thinking → streaming is an in-place
-   text/class change that never reflows the transcript below. Emptied the moment
-   the turn completes; the height reservation is scoped to .streaming so a
-   finished turn leaves no gap. Monochrome only. */
-.stage-line {
-  display: flex;
-  align-items: center;
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  margin: 1px 0 4px;
-  user-select: none;
-}
-/* Reserve a stable single-line height ONLY while the turn streams: the box is
-   always present (begin paints the dot immediately), so no stage transition
-   adds or removes vertical space. Once .streaming is dropped at turn-done the
-   emptied line collapses, leaving the completed transcript flush. */
-.turn.assistant.streaming .stage-line { min-height: 16px; }
-.stage-line:empty { display: none; }
-.stage-line .st-past { color: var(--muted); }
-.stage-line .st-dim { color: var(--border); }
-.stage-line .st-sep { color: var(--border); }
-.stage-line .st-now {
-  color: var(--fg);
-  font-weight: 600;
-}
-/* The ONE unified indicator across every stage — a small monochrome dot that
-   pulses in place. Same indicator from paying to streaming (no per-stage
-   spinner swap), so the cue never changes shape or jumps. */
-.stage-line .st-dot {
-  width: 6px;
-  height: 6px;
-  margin-right: 7px;
-  border-radius: 50%;
-  background: var(--fg);
-  flex: none;
-  animation: lh-stage-pulse 1.1s ease-in-out infinite;
-}
-@keyframes lh-stage-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.25; }
-}
+/* The turn-status cue now lives in the HEADER (see .turn-status-btn); the old
+   in-stream stage line is gone. The scroll-to-top reservation that lets the
+   newest exchange reach the top lives on the transcript via :has (see
+   `main.layout .transcript:has(.turn.assistant.streaming)`) — NOT a min-height
+   on the turn, which would stretch the .turn.assistant 2px accent border down
+   an empty viewport. */
 /* The stage line IS the working cue for the whole streaming turn (its container
    is always painted), so drop the trailing braille spinner — exactly one
    indicator, no flip between the dot and the spinner as stages come and go. */

@@ -243,6 +243,34 @@ pub(crate) fn scroll_to_bottom(id: &str) {
     }
 }
 
+/// Scroll the `#transcript` so the TOP of turn `#{turn_id}` sits just under
+/// the floating header, then leave it there (the stream no longer pins to the
+/// bottom). Called ONCE when a new exchange begins so the user reads the reply
+/// from its first line instead of being yanked to the newest character.
+///
+/// The chat header is `position:absolute` floating OVER the transcript; its
+/// clearance is exactly the transcript's own `padding-top` (header pad +
+/// button + the uniform margin, incl. the iOS safe-area inset), so we read
+/// that computed value and leave that much space above the turn — landing it
+/// flush under the header, never behind it. Falls back to 70px if the computed
+/// value can't be read. Pure read/write (no DOM construction), like
+/// [`scroll_to_bottom`].
+pub(crate) fn scroll_turn_to_top(turn_id: &str) {
+    let (Some(container), Some(turn)) = (by_id("transcript"), by_id(turn_id)) else {
+        return;
+    };
+    let clearance = window()
+        .ok()
+        .and_then(|w| w.get_computed_style(&container).ok().flatten())
+        .and_then(|s| s.get_property_value("padding-top").ok())
+        .and_then(|v| v.trim().trim_end_matches("px").trim().parse::<f64>().ok())
+        .unwrap_or(70.0);
+    let delta = turn.get_bounding_client_rect().top() - container.get_bounding_client_rect().top()
+        - clearance;
+    let new_top = (f64::from(container.scroll_top()) + delta).max(0.0);
+    container.set_scroll_top(new_top as i32);
+}
+
 /// Scroll to the bottom now AND again shortly after, so content that
 /// grows post-append still ends pinned to the latest entry. On first
 /// load the transcript is restored before layout/font swap settles, so
