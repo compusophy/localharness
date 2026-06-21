@@ -220,16 +220,20 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
   border: 1px solid var(--border);
   background: var(--bg);
   /* Rests at full --fg (brighter than the idle --muted bell/cog) so the
-     "working" state reads as active, then breathes via the opacity pulse. */
+     "working" state reads as active, then breathes via a COLOR swell — the
+     SAME mechanism as the notif bell, so the chip's bg + border stay solid.
+     (Animating element opacity faded the whole chip incl. its background —
+     "background going transparent with the blinking", feedback #51.) */
   color: var(--fg);
-  animation: turn-status-pulse 1.2s ease-in-out infinite;
+  animation: turn-status-pulse 1.4s ease-in-out infinite;
 }
 .turn-status-btn svg { display: block; width: 16px; height: 16px; }
-/* The working "breathe" — the same opacity cadence the old in-stream stage
-   dot used (1↔0.3), relocated to the header. Monochrome only. */
+/* The working "breathe" — a --fg→white color swell with a soft halo at the
+   peak, mirroring notif-bell-pulse. Animating COLOR (not opacity) keeps the
+   chip's bg + border solid; the glyph strokes currentColor so only it pulses. */
 @keyframes turn-status-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
+  0%, 100% { color: var(--fg); filter: drop-shadow(0 0 0 transparent); }
+  50%      { color: #fff; filter: drop-shadow(0 0 5px rgba(255, 255, 255, 0.55)); }
 }
 
 /* Brand dropdown — the top-left "localharness" title is a native

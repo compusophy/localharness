@@ -124,3 +124,10 @@
 #            `--dev` opt-in; unrecognized LH_CHAIN is a hard error) + a stderr
 #            "· localharness on <chain>" banner so the active chain is never
 #            silent. CLI and browser now agree by default.
+#
+# --- 2026-06-21 feedback #51 (interstitial blink transparency) --------------
+51  (web)    turn-status-pulse now swells the glyph COLOR (--fg->white + halo,
+#            mirroring the notif-bell-pulse the user likes) instead of animating
+#            the element's OPACITY, which faded the whole chip incl. its bg/border
+#            ("background going transparent with the blinking"). CSS-only,
+#            deployed to web prod.
