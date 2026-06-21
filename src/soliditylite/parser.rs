@@ -199,7 +199,15 @@ impl Parser<'_> {
 
     fn parse_state_var(&mut self) -> Result<StateVar, CompileError> {
         let span = self.span();
-        let kind = StateVarKind::Scalar(self.parse_ty()?);
+        let elem = self.parse_ty()?;
+        // `<elem>[] <name>;` — a dynamic array; otherwise a scalar `<ty> <name>;`.
+        let kind = if matches!(self.peek(), SolKind::LBracket) {
+            self.advance(); // `[`
+            self.expect(&SolKind::RBracket, "`]` (dynamic array; fixed-size `[N]` is unsupported in v1)")?;
+            StateVarKind::Array { elem }
+        } else {
+            StateVarKind::Scalar(elem)
+        };
         let name = self.expect_ident()?;
         self.expect(&SolKind::Semi, "`;`")?;
         Ok(StateVar { kind, name, span })
@@ -413,6 +421,14 @@ impl Parser<'_> {
         {
             return self.parse_emit_stmt();
         }
+        // `<arr>.push(<expr>);` — a dynamic-array append: `<ident> . push (`.
+        if matches!(self.peek(), SolKind::Ident(_))
+            && matches!(self.peek_at(1), SolKind::Dot)
+            && matches!(self.peek_at(2), SolKind::Ident(m) if m == "push")
+            && matches!(self.peek_at(3), SolKind::LParen)
+        {
+            return self.parse_push_stmt();
+        }
         self.parse_assign_stmt()
     }
 
@@ -439,6 +455,22 @@ impl Parser<'_> {
         self.expect(&SolKind::RParen, "`)`")?;
         self.expect(&SolKind::Semi, "`;`")?;
         Ok(Stmt::Emit { name, args, span })
+    }
+
+    /// Parse `<arr> . push ( <expr> ) ;` — a dynamic-array append. The leading
+    /// `<ident> . push (` is already confirmed by the caller's lookahead; the array
+    /// name is resolved against the facet's state vars (it must be an array) at
+    /// codegen.
+    fn parse_push_stmt(&mut self) -> Result<Stmt, CompileError> {
+        let span = self.span();
+        let base = self.expect_ident()?; // the array name
+        self.advance(); // `.`
+        self.advance(); // `push`
+        self.expect(&SolKind::LParen, "`(`")?;
+        let value = self.parse_expr()?;
+        self.expect(&SolKind::RParen, "`)`")?;
+        self.expect(&SolKind::Semi, "`;`")?;
+        Ok(Stmt::Push { base, value, span })
     }
 
     /// Parse `require ( <cond> , <strlit> ) ;`. The condition can be any expression
@@ -651,12 +683,26 @@ impl Parser<'_> {
                         )),
                     };
                 }
-                // `<mapping>[<key>]` index read.
+                // `<mapping>[<key>]` / `<arr>[<i>]` index read.
                 if matches!(self.peek(), SolKind::LBracket) {
                     self.advance(); // `[`
                     let key = self.parse_expr()?;
                     self.expect(&SolKind::RBracket, "`]`")?;
                     return Ok(Expr::Index { base: name, key: Box::new(key), span });
+                }
+                // `<arr>.length` — a dynamic array's length (the only `.member` on a
+                // bare state var in v1). Anything else after `.` is a clean error.
+                if matches!(self.peek(), SolKind::Dot) {
+                    self.advance(); // `.`
+                    let member = self.expect_ident()?;
+                    if member != "length" {
+                        return Err(CompileError::at_code(
+                            codes::UNSUPPORTED_FEATURE,
+                            format!("only `<array>.length` is supported, got `{name}.{member}`"),
+                            span,
+                        ));
+                    }
+                    return Ok(Expr::ArrayLen { base: name, span });
                 }
                 Ok(Expr::StateVar { name, span })
             }
@@ -802,6 +848,42 @@ mod tests {
             Stmt::Return(Expr::StateVar { name, .. }) => assert_eq!(name, "total"),
             other => panic!("unexpected body {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_a_dynamic_array_var_with_length_index_and_push() {
+        let f = parse_src(
+            "facet C { uint256[] xs; \
+             function add(uint256 v) external { xs.push(v); } \
+             function set(uint256 i, uint256 v) external { xs[i] = v; } \
+             function at(uint256 i) external view returns (uint256) { return xs[i]; } \
+             function len() external view returns (uint256) { return xs.length; } }",
+        )
+        .unwrap();
+        // The state var parses as an `Array { elem: uint256 }`.
+        assert_eq!(f.state_vars.len(), 1);
+        assert_eq!(f.state_vars[0].name, "xs");
+        assert_eq!(f.state_vars[0].kind, StateVarKind::Array { elem: Ty::Uint256 });
+        // add(): `xs.push(v);` → a Push statement.
+        match &f.functions[0].body {
+            Stmt::Block(stmts) => match &stmts[0] {
+                Stmt::Push { base, value, .. } => {
+                    assert_eq!(base, "xs");
+                    assert!(matches!(value, Expr::StateVar { name, .. } if name == "v"));
+                }
+                other => panic!("expected a Push, got {other:?}"),
+            },
+            other => panic!("unexpected body {other:?}"),
+        }
+        // set(): `xs[i] = v;` → an IndexAssign (array vs mapping is a codegen concern).
+        match &f.functions[1].body {
+            Stmt::Block(stmts) => assert!(matches!(&stmts[0], Stmt::IndexAssign { base, .. } if base == "xs")),
+            other => panic!("unexpected body {other:?}"),
+        }
+        // at(): `return xs[i];` → an Index read.
+        assert!(matches!(&f.functions[2].body, Stmt::Return(Expr::Index { base, .. }) if base == "xs"));
+        // len(): `return xs.length;` → an ArrayLen read.
+        assert!(matches!(&f.functions[3].body, Stmt::Return(Expr::ArrayLen { base, .. }) if base == "xs"));
     }
 
     #[test]

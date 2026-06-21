@@ -122,6 +122,12 @@ enum LoweredExpr {
     /// A mapping-entry read: derive the entry slot
     /// `keccak256(pad32(key) ++ pad32(baseSlot))`, then `SLOAD`.
     MapLoad { base_slot: [u8; 32], key: Box<LoweredExpr> },
+    /// A dynamic-array length read: `PUSH32 <slot> SLOAD` (the length lives at the
+    /// array's base slot).
+    ArrayLen { slot: [u8; 32] },
+    /// A dynamic-array element read: derive the element slot
+    /// `keccak256(pad32(slot)) + index`, then `SLOAD`.
+    ArrayLoad { slot: [u8; 32], index: Box<LoweredExpr> },
     /// `<lhs> <rhs> ADD` — a binary addition (left operand pushed first).
     Add(Box<LoweredExpr>, Box<LoweredExpr>),
     /// `lhs - rhs` — `SUB` (`lhs` pushed on TOP so `SUB` = top − next = `lhs − rhs`).
@@ -160,6 +166,29 @@ fn emit_map_slot(a: &mut Asm, base_slot: &[u8; 32], key: &LoweredExpr) {
     a.push_u64(0x40).push_u64(0x00).emit(op::KECCAK256);
 }
 
+/// Emit the dynamic-array ELEMENT-SLOT derivation `keccak256(pad32(slot)) + index`,
+/// leaving the 32-byte element slot on top of the stack (the canonical Solidity
+/// dynamic-array layout: the length lives at `slot`, element `i` at
+/// `keccak256(slot) + i`). The `index` sub-expression is evaluated and ADDed last,
+/// so anything already on the stack BELOW is preserved (lets a write push its value
+/// first). `mem[0x00..0x20]` is reused as keccak scratch (below [`LOG_DATA_BASE`]).
+///
+/// ```text
+/// PUSH32 <slot> PUSH1 0x00 MSTORE   ; mem[0x00..0x20] = slot   (the preimage word)
+/// PUSH1 0x20 PUSH1 0x00 KECCAK256   ; base = keccak256(mem[0x00..0x20])
+/// <index>  ADD                      ; elem slot = base + index
+/// ```
+#[cfg(feature = "wallet")]
+fn emit_array_slot(a: &mut Asm, slot: &[u8; 32], index: &LoweredExpr) {
+    // mem[0x00] = slot (the single keccak preimage word).
+    a.push32(slot).push_u64(0x00).emit(op::MSTORE);
+    // base = keccak256(mem[0x00..0x20]).
+    a.push_u64(0x20).push_u64(0x00).emit(op::KECCAK256);
+    // elem slot = base + index.
+    index.emit(a);
+    a.emit(op::ADD);
+}
+
 #[cfg(feature = "wallet")]
 impl LoweredExpr {
     /// Emit this expression so it leaves exactly one 32-byte word on the stack.
@@ -186,6 +215,13 @@ impl LoweredExpr {
             }
             LoweredExpr::MapLoad { base_slot, key } => {
                 emit_map_slot(a, base_slot, key);
+                a.emit(op::SLOAD);
+            }
+            LoweredExpr::ArrayLen { slot } => {
+                a.push32(slot).emit(op::SLOAD); // length lives at the base slot
+            }
+            LoweredExpr::ArrayLoad { slot, index } => {
+                emit_array_slot(a, slot, index);
                 a.emit(op::SLOAD);
             }
             LoweredExpr::Add(lhs, rhs) => {
@@ -259,6 +295,12 @@ enum LoweredAssign {
     Scalar { slot: [u8; 32], value: LoweredExpr },
     /// `SSTORE(keccak256(pad32(key) ++ pad32(base)), value)` — a mapping-entry write.
     MapEntry { base_slot: [u8; 32], key: LoweredExpr, value: LoweredExpr },
+    /// `SSTORE(keccak256(pad32(slot)) + index, value)` — a dynamic-array element write.
+    ArrayElem { slot: [u8; 32], index: LoweredExpr, value: LoweredExpr },
+    /// `<arr>.push(value)` — append: store `value` at `keccak256(pad32(slot)) + len`,
+    /// then bump the length slot to `len + 1` (the length is re-`SLOAD`ed rather than
+    /// duplicated, avoiding a `DUP2`/`SWAP` the v1 assembler doesn't expose).
+    ArrayPush { slot: [u8; 32], value: LoweredExpr },
 }
 
 #[cfg(feature = "wallet")]
@@ -276,6 +318,25 @@ impl LoweredAssign {
                 value.emit(a);
                 emit_map_slot(a, base_slot, key);
                 a.emit(op::SSTORE);
+            }
+            LoweredAssign::ArrayElem { slot, index, value } => {
+                // value first (stays below), then derive keccak256(slot)+index, store.
+                value.emit(a);
+                emit_array_slot(a, slot, index);
+                a.emit(op::SSTORE);
+            }
+            LoweredAssign::ArrayPush { slot, value } => {
+                // 1. element write: SSTORE(keccak256(slot) + len, value). The index
+                //    is the CURRENT length (SLOAD of the base slot).
+                value.emit(a); // value first (stays below)
+                emit_array_slot(a, slot, &LoweredExpr::ArrayLen { slot: *slot });
+                a.emit(op::SSTORE);
+                // 2. length bump: SSTORE(slot, len + 1). Re-SLOAD the length (warm)
+                //    rather than DUP it past the consumed value (no DUP2 in v1).
+                let mut one = [0u8; 32];
+                one[31] = 1;
+                a.push32(slot).emit(op::SLOAD).push(&one).emit(op::ADD);
+                a.push32(slot).emit(op::SSTORE);
             }
         }
     }
@@ -679,12 +740,22 @@ impl Resolver<'_> {
                 span,
             )
         })?;
-        if let StateVarKind::Mapping { .. } = self.facet.state_vars[idx].kind {
-            return Err(CompileError::at_code(
-                codes::TYPE_MISMATCH,
-                format!("`{name}` is a mapping; it must be indexed (`{name}[key]`)"),
-                span,
-            ));
+        match self.facet.state_vars[idx].kind {
+            StateVarKind::Mapping { .. } => {
+                return Err(CompileError::at_code(
+                    codes::TYPE_MISMATCH,
+                    format!("`{name}` is a mapping; it must be indexed (`{name}[key]`)"),
+                    span,
+                ))
+            }
+            StateVarKind::Array { .. } => {
+                return Err(CompileError::at_code(
+                    codes::TYPE_MISMATCH,
+                    format!("`{name}` is an array; index it (`{name}[i]`) or read `{name}.length`"),
+                    span,
+                ))
+            }
+            StateVarKind::Scalar(_) => {}
         }
         Ok(slot_at(self.base, idx as u64))
     }
@@ -707,7 +778,42 @@ impl Resolver<'_> {
                 format!("`{name}` is not a mapping; it cannot be indexed"),
                 span,
             )),
+            StateVarKind::Array { .. } => Err(CompileError::at_code(
+                codes::TYPE_MISMATCH,
+                format!("`{name}` is an array, not a mapping (indexing is array-shaped, handled separately)"),
+                span,
+            )),
         }
+    }
+
+    /// Resolve a DYNAMIC-ARRAY name to its base slot (`BASE + index`, where the length
+    /// lives; elements at `keccak256(slot) + i`). Errors if the name is unknown OR
+    /// names a non-array (a scalar/mapping isn't a dynamic array).
+    fn array_base_slot(&self, name: &str, span: crate::rustlite::Span) -> Result<[u8; 32], CompileError> {
+        use crate::error_codes as codes;
+        let idx = self.state_var_index(name).ok_or_else(|| {
+            CompileError::at_code(
+                codes::UNDEFINED_VARIABLE,
+                format!("unknown state variable `{name}`"),
+                span,
+            )
+        })?;
+        match self.facet.state_vars[idx].kind {
+            StateVarKind::Array { .. } => Ok(slot_at(self.base, idx as u64)),
+            _ => Err(CompileError::at_code(
+                codes::TYPE_MISMATCH,
+                format!("`{name}` is not a dynamic array"),
+                span,
+            )),
+        }
+    }
+
+    /// `true` if `name` is a declared dynamic-array state var (used to route an
+    /// `<name>[<i>]` index to the array layout vs. the mapping layout).
+    fn is_array(&self, name: &str) -> bool {
+        self.state_var_index(name)
+            .map(|idx| matches!(self.facet.state_vars[idx].kind, StateVarKind::Array { .. }))
+            .unwrap_or(false)
     }
 
     /// Lower an [`Expr`] to a [`LoweredExpr`], resolving names to slots / params.
@@ -733,9 +839,18 @@ impl Resolver<'_> {
             Expr::MsgSender { .. } => Ok(LoweredExpr::Caller),
             Expr::BlockTimestamp { .. } => Ok(LoweredExpr::Timestamp),
             Expr::BlockNumber { .. } => Ok(LoweredExpr::Number),
+            // `<name>[<i>]`: a dynamic-array element (keccak256(slot)+i) when `name`
+            // is an array, else a mapping entry (keccak256(key ++ base)).
+            Expr::Index { base, key, span } if self.is_array(base) => Ok(LoweredExpr::ArrayLoad {
+                slot: self.array_base_slot(base, *span)?,
+                index: Box::new(self.lower_expr(key)?),
+            }),
             Expr::Index { base, key, span } => Ok(LoweredExpr::MapLoad {
                 base_slot: self.mapping_base_slot(base, *span)?,
                 key: Box::new(self.lower_expr(key)?),
+            }),
+            Expr::ArrayLen { base, span } => Ok(LoweredExpr::ArrayLen {
+                slot: self.array_base_slot(base, *span)?,
             }),
             Expr::Add { lhs, rhs, .. } => Ok(LoweredExpr::Add(
                 Box::new(self.lower_expr(lhs)?),
@@ -888,9 +1003,22 @@ fn lower_stmt(facet: &Facet, r: &Resolver, stmt: &Stmt) -> Result<LoweredStmt, C
             slot: r.scalar_slot(name, *span)?,
             value: r.lower_expr(value)?,
         }),
+        // `<name>[<i>] = <e>;` — a dynamic-array element write when `name` is an
+        // array, else a mapping-entry write.
+        Stmt::IndexAssign { base: idx_name, key, value, span } if r.is_array(idx_name) => {
+            LoweredStmt::Assign(LoweredAssign::ArrayElem {
+                slot: r.array_base_slot(idx_name, *span)?,
+                index: r.lower_expr(key)?,
+                value: r.lower_expr(value)?,
+            })
+        }
         Stmt::IndexAssign { base: map_name, key, value, span } => LoweredStmt::Assign(LoweredAssign::MapEntry {
             base_slot: r.mapping_base_slot(map_name, *span)?,
             key: r.lower_expr(key)?,
+            value: r.lower_expr(value)?,
+        }),
+        Stmt::Push { base, value, span } => LoweredStmt::Assign(LoweredAssign::ArrayPush {
+            slot: r.array_base_slot(base, *span)?,
             value: r.lower_expr(value)?,
         }),
         Stmt::Emit { name: ev_name, args, span } => LoweredStmt::Emit(lower_emit(facet, r, ev_name, args, *span)?),
@@ -1323,6 +1451,213 @@ mod tests {
         )
         .expect_err("an unknown name must fail cleanly");
         assert_eq!(err.code, Some(crate::error_codes::UNDEFINED_VARIABLE));
+    }
+
+    // ── DYNAMIC ARRAYS (uint256[] storage: length / [i] / push) ──────────────
+
+    /// The off-chain truth for a dynamic-array element slot: `keccak256(pad32(slot))
+    /// + index` — the canonical Solidity layout the emitted MSTORE/KECCAK256/ADD must
+    /// reproduce on-chain. Returned as the 32-byte big-endian slot.
+    #[cfg(feature = "wallet")]
+    fn array_elem_slot(slot: &[u8; 32], index: u64) -> [u8; 32] {
+        use sha3::{Digest, Keccak256};
+        let base: [u8; 32] = Keccak256::digest(slot).into();
+        super::slot_at(base, index)
+    }
+
+    /// `xs.length` reads the array's BASE slot directly: `PUSH32 <slot> SLOAD`. The
+    /// length is NOT keccak-derived (only the elements are).
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn array_length_reads_the_base_slot() {
+        use super::super::asm::op;
+        const SRC: &str = "facet C { uint256[] xs; \
+             function len() external view returns (uint256) { return xs.length; } }";
+        let rt = &super::super::compile(SRC).unwrap().runtime;
+        let slot = super::slot_at(super::storage_base("C"), 0);
+        let mut want = vec![op::PUSH1 + 31];
+        want.extend_from_slice(&slot);
+        want.push(op::SLOAD);
+        assert!(
+            rt.windows(want.len()).any(|w| w == want.as_slice()),
+            "xs.length must be PUSH32 <baseSlot> SLOAD; runtime = {}",
+            to_hex(rt)
+        );
+    }
+
+    /// `xs[i]` (read) derives the element slot `keccak256(pad32(slot)) + i` then
+    /// SLOADs — the exact MSTORE/KECCAK256/<index>/ADD sequence, with the keccak
+    /// preimage being the BASE slot (not key++base like a mapping).
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn array_index_read_derives_keccak_slot_plus_index() {
+        use super::super::asm::op;
+        const SRC: &str = "facet C { uint256[] xs; \
+             function at(uint256 i) external view returns (uint256) { return xs[i]; } }";
+        let rt = &super::super::compile(SRC).unwrap().runtime;
+        let slot = super::slot_at(super::storage_base("C"), 0);
+
+        // PUSH32 <slot> PUSH1 0x00 MSTORE  ; mem[0..0x20] = slot
+        // PUSH1 0x20 PUSH1 0x00 KECCAK256  ; base = keccak256(slot)
+        // PUSH1 0x04 CALLDATALOAD          ; i (param 0)
+        // ADD                              ; elem slot = base + i
+        // SLOAD
+        let mut want = vec![op::PUSH1 + 31];
+        want.extend_from_slice(&slot);
+        want.extend_from_slice(&[
+            op::PUSH1, 0x00, op::MSTORE, op::PUSH1, 0x20, op::PUSH1, 0x00, op::KECCAK256,
+            op::PUSH1, 0x04, op::CALLDATALOAD, op::ADD, op::SLOAD,
+        ]);
+        assert!(
+            rt.windows(want.len()).any(|w| w == want.as_slice()),
+            "xs[i] must derive keccak256(slot)+i then SLOAD; runtime = {}",
+            to_hex(rt)
+        );
+        // The selector includes the param type.
+        let sel = crate::registry::selector("at(uint256)");
+        let push4: Vec<u8> = std::iter::once(op::PUSH1 + 3).chain(sel).collect();
+        assert!(rt.windows(5).any(|w| w == push4.as_slice()), "at(uint256) dispatched");
+    }
+
+    /// `xs[i] = v` (write) stores `v` at the keccak-derived element slot. The store
+    /// pushes the VALUE first (stays below), derives the slot on top, then SSTOREs.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn array_index_write_sstores_to_keccak_slot() {
+        use super::super::asm::op;
+        const SRC: &str = "facet C { uint256[] xs; \
+             function set(uint256 i, uint256 v) external { xs[i] = v; } }";
+        let rt = &super::super::compile(SRC).unwrap().runtime;
+        let slot = super::slot_at(super::storage_base("C"), 0);
+
+        // value v (param 1 → CALLDATALOAD(0x24)) pushed first, then the slot
+        // derivation from i (param 0 → CALLDATALOAD(0x04)), then SSTORE.
+        let mut want = vec![op::PUSH1, 0x24, op::CALLDATALOAD, op::PUSH1 + 31];
+        want.extend_from_slice(&slot);
+        want.extend_from_slice(&[
+            op::PUSH1, 0x00, op::MSTORE, op::PUSH1, 0x20, op::PUSH1, 0x00, op::KECCAK256,
+            op::PUSH1, 0x04, op::CALLDATALOAD, op::ADD, op::SSTORE,
+        ]);
+        assert!(
+            rt.windows(want.len()).any(|w| w == want.as_slice()),
+            "xs[i] = v must push v, derive keccak256(slot)+i, SSTORE; runtime = {}",
+            to_hex(rt)
+        );
+    }
+
+    /// `xs.push(v)` (1) stores `v` at `keccak256(slot) + length` and (2) bumps the
+    /// length slot to `length + 1`. The element index is the CURRENT length (an
+    /// `SLOAD` of the base slot), and the length is re-`SLOAD`ed for the bump (no
+    /// `DUP2` in the v1 assembler).
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn array_push_stores_element_then_bumps_length() {
+        use super::super::asm::op;
+        const SRC: &str = "facet C { uint256[] xs; \
+             function add(uint256 v) external { xs.push(v); } }";
+        let rt = &super::super::compile(SRC).unwrap().runtime;
+        let slot = super::slot_at(super::storage_base("C"), 0);
+
+        // 1. element write: v (param 0 → CALLDATALOAD(0x04)), then
+        //    keccak256(slot) + length (length = PUSH32 <slot> SLOAD), SSTORE.
+        let mut elem = vec![op::PUSH1, 0x04, op::CALLDATALOAD, op::PUSH1 + 31];
+        elem.extend_from_slice(&slot);
+        elem.extend_from_slice(&[op::PUSH1, 0x00, op::MSTORE, op::PUSH1, 0x20, op::PUSH1, 0x00, op::KECCAK256]);
+        // index = length = PUSH32 <slot> SLOAD ; ADD ; SSTORE
+        elem.push(op::PUSH1 + 31);
+        elem.extend_from_slice(&slot);
+        elem.extend_from_slice(&[op::SLOAD, op::ADD, op::SSTORE]);
+        assert!(
+            rt.windows(elem.len()).any(|w| w == elem.as_slice()),
+            "push must store v at keccak256(slot)+length; runtime = {}",
+            to_hex(rt)
+        );
+
+        // 2. length bump: PUSH32 <slot> SLOAD PUSH1 0x01 ADD PUSH32 <slot> SSTORE.
+        let mut bump = vec![op::PUSH1 + 31];
+        bump.extend_from_slice(&slot);
+        bump.extend_from_slice(&[op::SLOAD, op::PUSH1, 0x01, op::ADD, op::PUSH1 + 31]);
+        bump.extend_from_slice(&slot);
+        bump.push(op::SSTORE);
+        assert!(
+            rt.windows(bump.len()).any(|w| w == bump.as_slice()),
+            "push must bump the length slot to length + 1; runtime = {}",
+            to_hex(rt)
+        );
+    }
+
+    /// The off-chain element-slot helper equals an independent `keccak256(slot) + i`
+    /// — the value the on-chain MSTORE/KECCAK256/ADD reproduces (the load-bearing
+    /// layout invariant for cross-checking reads against deployed state).
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn array_elem_slot_matches_independent_keccak() {
+        use sha3::{Digest, Keccak256};
+        let slot = super::slot_at(super::storage_base("C"), 0);
+        let base: [u8; 32] = Keccak256::digest(slot).into();
+        // element 0 is keccak256(slot) itself; element 3 is +3.
+        assert_eq!(array_elem_slot(&slot, 0), base);
+        assert_eq!(array_elem_slot(&slot, 3), super::slot_at(base, 3));
+    }
+
+    /// THE ARRAY TARGET: a `uint256[]` Stack facet (push / pop-via-length / indexed
+    /// read / length) compiles end-to-end with the canonical selectors, and the
+    /// array slot is laid out AFTER any preceding scalar (declaration-index slots).
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn array_target_facet_compiles_with_canonical_layout() {
+        use super::super::asm::op;
+        // `total` is slot 0, `xs` is slot 1 — the array length lives at slot 1, its
+        // elements at keccak256(slot 1) + i. Proves arrays index AFTER scalars.
+        const SRC: &str = "facet Stack { uint256 total; uint256[] xs; \
+             function push(uint256 v) external { xs.push(v); total = total + 1; } \
+             function set(uint256 i, uint256 v) external { xs[i] = v; } \
+             function get(uint256 i) external view returns (uint256) { return xs[i]; } \
+             function size() external view returns (uint256) { return xs.length; } }";
+        let art = super::super::compile(SRC).expect("the array Stack TARGET must compile");
+        let rt = &art.runtime;
+
+        // xs is the SECOND state var → base slot = BASE + 1.
+        let xs_slot = super::slot_at(super::storage_base("Stack"), 1);
+
+        // size() returns the base slot directly (the length).
+        let mut len_read = vec![op::PUSH1 + 31];
+        len_read.extend_from_slice(&xs_slot);
+        len_read.push(op::SLOAD);
+        assert!(rt.windows(len_read.len()).any(|w| w == len_read.as_slice()), "size() reads slot 1");
+
+        // All four selectors dispatch.
+        for sig in ["push(uint256)", "set(uint256,uint256)", "get(uint256)", "size()"] {
+            let sel = crate::registry::selector(sig);
+            let push4: Vec<u8> = std::iter::once(op::PUSH1 + 3).chain(sel).collect();
+            assert!(rt.windows(5).any(|w| w == push4.as_slice()), "{sig} dispatched");
+        }
+        assert_eq!(art.init_code, super::super::asm::init_wrapper(rt));
+    }
+
+    /// `<scalar>.length` / `<mapping>.length` / `.push` on a non-array are clean
+    /// `TYPE_MISMATCH` errors, never a panic or a silent miscompile.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn array_ops_on_non_arrays_are_clean_errors() {
+        // `.length` on a scalar.
+        let err = super::super::compile(
+            "facet C { uint256 n; function f() external view returns (uint256) { return n.length; } }",
+        )
+        .expect_err("n.length on a scalar must fail cleanly");
+        assert_eq!(err.code, Some(crate::error_codes::TYPE_MISMATCH));
+        // `.push` on a scalar.
+        let err = super::super::compile(
+            "facet C { uint256 n; function f() external { n.push(1); } }",
+        )
+        .expect_err("n.push on a scalar must fail cleanly");
+        assert_eq!(err.code, Some(crate::error_codes::TYPE_MISMATCH));
+        // A bare array reference (not indexed / no `.length`) is a clean error.
+        let err = super::super::compile(
+            "facet C { uint256[] xs; function f() external view returns (uint256) { return xs; } }",
+        )
+        .expect_err("a bare array reference must fail cleanly");
+        assert_eq!(err.code, Some(crate::error_codes::TYPE_MISMATCH));
     }
 
     // ── COMPARISONS + require/revert (Installment 1 CounterFacet) ─────────────

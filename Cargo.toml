@@ -385,6 +385,12 @@ required-features = ["wallet"]
 name = "soliditylite_mapping_e2e"
 required-features = ["wallet"]
 
+# SolidityLite dynamic arrays: compile a Stack facet (uint256[] storage: push /
+# xs[i] / xs.length) FROM SOURCE, deploy, push()/set()/get()/size() on-chain.
+[[example]]
+name = "soliditylite_array_e2e"
+required-features = ["wallet"]
+
 # SolidityLite Installment 1: compile the CounterFacet-core (mappings + require +
 # comparison) FROM SOURCE, deploy, and prove incrementBy(101) reverts on-chain.
 [[example]]

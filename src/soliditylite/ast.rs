@@ -95,6 +95,13 @@ pub enum StateVarKind {
         /// The stored value type (v1: a single 32-byte word).
         value: Ty,
     },
+    /// A dynamic array: `<elem>[] <name>;` (the dynamic-type stretch). `BASE + index`
+    /// holds the LENGTH; element `i` lives at `keccak256(pad32(BASE + index)) + i`
+    /// (the canonical Solidity dynamic-array layout). Elements are a single word.
+    Array {
+        /// The element type (v1: a single 32-byte word, e.g. `uint256`/`address`).
+        elem: Ty,
+    },
 }
 
 /// A facet state variable: `<ty> <name>;` or `mapping(K => V) <name>;` (design §5).
@@ -233,8 +240,14 @@ pub enum Stmt {
     Assign { name: String, value: Expr, span: Span },
     /// `<mapping>[<key>] = <expr>;` — `SSTORE` `<expr>` to the mapping entry slot
     /// `keccak256(pad32(key) ++ pad32(baseSlot))` (the mapping-write stretch).
-    /// `base` is the mapping name; `key` is the index expression.
+    /// `base` is the mapping name; `key` is the index expression. Also covers a
+    /// dynamic-array element write `<arr>[<i>] = <expr>;` (the array slot derivation
+    /// `keccak256(pad32(slot)) + i` is selected at codegen by the var's kind).
     IndexAssign { base: String, key: Expr, value: Expr, span: Span },
+    /// `<arr>.push(<expr>);` — append to a dynamic array (the dynamic-type stretch):
+    /// store `<expr>` at `keccak256(pad32(slot)) + length`, then bump the length slot.
+    /// `base` is the array name; `span` is the array identifier's span.
+    Push { base: String, value: Expr, span: Span },
     /// `emit <Name>(<expr>, …);` — append an EVM log (`LOGn`). `topic0` is
     /// `keccak256("<Name>(<types>)")`; each `indexed` event arg becomes an extra
     /// topic and each non-`indexed` arg is ABI-encoded into the log data region
@@ -276,8 +289,13 @@ pub enum Expr {
     BlockNumber { span: Span },
     /// `<mapping>[<key>]` — a mapping-entry read: derive the entry slot
     /// `keccak256(pad32(key) ++ pad32(baseSlot))`, then `SLOAD`. `base` is the
-    /// mapping name; `key` is the index expression.
+    /// mapping name; `key` is the index expression. Also covers a dynamic-array
+    /// element read `<arr>[<i>]` (slot `keccak256(pad32(slot)) + i`, selected at
+    /// codegen by the var's kind).
     Index { base: String, key: Box<Expr>, span: Span },
+    /// `<arr>.length` — a dynamic array's length, read directly from its base slot
+    /// (`SLOAD(BASE + index)`). `base` is the array name.
+    ArrayLen { base: String, span: Span },
     /// A binary `lhs + rhs` — both operands are evaluated onto the stack, then
     /// `ADD` (the arithmetic stretch; left-associative, e.g. `n = n + 1`).
     Add { lhs: Box<Expr>, rhs: Box<Expr>, span: Span },
@@ -315,6 +333,7 @@ impl Expr {
             Expr::BlockTimestamp { span, .. } => *span,
             Expr::BlockNumber { span, .. } => *span,
             Expr::Index { span, .. } => *span,
+            Expr::ArrayLen { span, .. } => *span,
             Expr::Add { span, .. } => *span,
             Expr::Sub { span, .. } => *span,
             Expr::Mul { span, .. } => *span,

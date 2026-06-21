@@ -89,14 +89,18 @@ pub fn emit_constant_getter(selector: [u8; 4], value_be32: [u8; 32]) -> Compiled
 ///
 /// Pipeline (mirroring [`crate::rustlite::compile`]): `lex → parse → codegen`. The
 /// v1 subset is `facet <Ident> { <stateVar>* <fn>+ }`:
-/// - state vars: scalar `uint256 <name>;` (slot `BASE+i`) or
+/// - state vars: scalar `uint256 <name>;` (slot `BASE+i`),
 ///   `mapping(<key> => <value>) <name>;` (entry slot
-///   `keccak256(pad32(key) ++ pad32(BASE+i))`);
+///   `keccak256(pad32(key) ++ pad32(BASE+i))`), or a dynamic array
+///   `<elem>[] <name>;` (length at `BASE+i`, element `j` at
+///   `keccak256(pad32(BASE+i)) + j`);
 /// - functions: `function <name>(<params>) external [view] [returns (<ty>)] { … }`,
-///   bodies of `return <expr>;` or `{ (<var>|<map>[<key>]) = <expr>; }*`;
+///   bodies of `return <expr>;` or `{ (<var>|<map>[<key>]|<arr>[<i>]) = <expr>;
+///   | <arr>.push(<expr>); }*`;
 /// - expressions: int literals, scalar reads (`SLOAD`), parameter reads
 ///   (`CALLDATALOAD(4+32*i)`), `msg.sender` (`CALLER`), `<map>[<key>]`
-///   (keccak-slot read/write), and left-associative `+`.
+///   (keccak-slot read/write), `<arr>[<i>]` (array-element read/write),
+///   `<arr>.length`, and left-associative `+`.
 ///
 /// Selectors are `keccak256("<name>(<types>)")[..4]` (the full ABI signature).
 /// Errors are the shared [`crate::rustlite::CompileError`] (`LH0xxx` codes), each
