@@ -131,3 +131,12 @@
 #            the element's OPACITY, which faded the whole chip incl. its bg/border
 #            ("background going transparent with the blinking"). CSS-only,
 #            deployed to web prod.
+#
+# --- 2026-06-21 feedback #53 (public-face header layout + SSOT) --------------
+53  (web)    part 2 (header buttons piled top-left): public_face_header now wraps
+#            the bell + studio link in a `.header-admin` (the SAME margin-left:auto
+#            right-cluster as site_header) so brand sits left, controls right.
+#            part 1 (SSOT): the directory face (public_landing) now renders the
+#            SAME public_face_header as the cartridge/HTML app face — both public
+#            surfaces share one header. .public-face min-height:100vh->0 so it
+#            fills below the header (mirrors .app-fullscreen). Deployed to web prod.

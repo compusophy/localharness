@@ -2442,10 +2442,11 @@ pub(crate) fn public_landing(
     owner_overlay: bool,
 ) -> Markup {
     html! {
+        // SSOT: the directory face shares the SAME platform header as the
+        // cartridge/HTML app face (feedback #53 — the directory was "missing the
+        // header and normal systems"). The studio escape now lives in that header.
+        (public_face_header(owner_overlay))
         div.public-face {
-            @if owner_overlay {
-                a.app-edit href="?edit=1" title="back to your studio" { "studio" }
-            }
             header.public-hero {
                 h1.public-title { (name) }
                 p.public-tagline {
@@ -2545,9 +2546,14 @@ pub(crate) fn public_face_header(owner_overlay: bool) -> Markup {
                         }
                     }
                 }
-                (notif_bell())
-                @if owner_overlay {
-                    a.app-edit href="?edit=1" title="back to your studio" { "studio" }
+                // Right cluster — SAME `.header-admin { margin-left:auto }` pattern
+                // as `site_header`, so brand sits left and bell/studio sit right
+                // instead of all piling into the top-left corner (feedback #53).
+                div.header-admin {
+                    (notif_bell())
+                    @if owner_overlay {
+                        a.app-edit href="?edit=1" title="back to your studio" { "studio" }
+                    }
                 }
             }
         }

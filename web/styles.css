@@ -765,8 +765,13 @@ main.layout .transcript > *:empty { display: none; }
 /* --- Default public face (no cartridge published) --- */
 .public-face {
   position: relative;
+  /* Fills #root (100dvh flex column) BELOW the shared public-face header —
+     mirrors .app-fullscreen. `min-height:100vh` here overflowed by the header's
+     height once the header was added (feedback #53); flex:1 + min-height:0 is the
+     correct fill. Overflow stays visible (not auto) so justify-center never traps
+     tall content above an unscrollable top edge. */
   flex: 1;
-  min-height: 100vh;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
