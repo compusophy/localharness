@@ -190,12 +190,36 @@ contract ScheduleFacetTest is Test {
         assertEq(j.budgetWei, BUDGET - COST, "budget debited by cost");
         assertEq(j.runsLeft, MAX_RUNS - 1, "runsLeft decremented");
         assertEq(uint8(j.status), uint8(LibScheduleStorage.Status.Active));
-        // Skip-don't-pile-up: next fire is now + interval, NOT old + interval.
-        assertEq(newNext, uint64(block.timestamp) + INTERVAL);
+        // DRIFT-CORRECTED: even though this run fired 10s LATE (warped to
+        // due+10), the next fire anchors to the SCHEDULE GRID (due + interval),
+        // NOT to now (which would be due+10+interval). A late tick no longer
+        // shifts the schedule — jitter can't accumulate.
+        assertEq(newNext, due + INTERVAL, "next fire anchored to the grid, not to now");
+        assertTrue(newNext < uint64(block.timestamp) + INTERVAL, "late run did NOT drift the schedule forward");
         assertEq(j.nextRun, newNext);
         // The spent $LH stays in the diamond (becomes treasury); escrow
         // total unchanged (debit is internal accounting, not a transfer).
         assertEq(lh.balanceOf(address(sched)), BUDGET, "spent $LH stays in diamond as treasury");
+    }
+
+    /// Drift never ACCUMULATES: fire the job 5 times, each 7s late, and the
+    /// k-th fire's nextRun stays exactly firstSlot + k*interval. The old
+    /// `now + interval` advance would have compounded the 7s skew every run
+    /// (the "fires later and later" bug); the grid anchor corrects it each cycle.
+    function test_recordRun_no_drift_accumulation_across_late_runs() public {
+        uint256 id = _schedule();
+        uint64 firstSlot = sched.getJob(id).nextRun;
+        for (uint64 k = 1; k <= 5; k++) {
+            uint64 due = sched.getJob(id).nextRun;
+            vm.warp(due + 7); // always 7s late
+            vm.prank(worker);
+            sched.recordRun(id, due, COST);
+            assertEq(
+                sched.getJob(id).nextRun,
+                firstSlot + k * INTERVAL,
+                "slot stays grid-aligned, no accumulated drift"
+            );
+        }
     }
 
     function test_recordRun_reverts_not_due() public {

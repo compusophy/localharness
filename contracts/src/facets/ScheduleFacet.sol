@@ -286,8 +286,25 @@ contract ScheduleFacet {
             emit JobExhausted(id, remaining);
             if (remaining > 0) _refund(j.owner, remaining);
         } else {
-            // Skip-don't-pile-up: schedule forward from NOW.
-            newNextRun = uint64(block.timestamp) + j.interval;
+            // DRIFT-CORRECTED advance: anchor the next fire to the SCHEDULE
+            // GRID (the slot we just fired, `j.nextRun`), not to `now`. The old
+            // `now + interval` folded each run's keeper/mine latency into the
+            // schedule permanently, so an alarm crept later every cycle ("fires
+            // 3 minutes late, then drifts further"). Now every fire re-anchors
+            // to `firstSlot + k*interval`, so jitter never accumulates: a :00
+            // alarm stays at :00 forever. Still "skip, don't pile up" — one fire
+            // after a gap, then straight back on-grid (no burst-drain of missed
+            // slots). For a punctual job `j.nextRun ≈ now`, so this is identical
+            // to the old behavior; only a LATE fire is corrected.
+            uint64 next = j.nextRun + j.interval;
+            if (next <= block.timestamp) {
+                // We were late enough that the next grid slot already passed —
+                // jump to the FIRST slot strictly after now (interval > 0 by the
+                // MIN_INTERVAL guard, so no division-by-zero).
+                uint64 missed = (uint64(block.timestamp) - j.nextRun) / j.interval;
+                next = j.nextRun + (missed + 1) * j.interval;
+            }
+            newNextRun = next;
             j.nextRun = newNextRun;
             emit JobRan(id, runsLeft, spentWei, newNextRun, uint8(LibScheduleStorage.Status.Active));
         }
