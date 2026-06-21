@@ -129,8 +129,7 @@ fn permute_proj_rows(data: &[f32], out: usize, in_dim: usize, head_dim: usize, p
     let mut result = vec![0f32; data.len()];
     let num_heads = out / head_dim;
     for h in 0..num_heads {
-        for burn_ch in 0..head_dim {
-            let hf_ch = perm[burn_ch];
+        for (burn_ch, &hf_ch) in perm.iter().enumerate() {
             let dst_row = h * head_dim + burn_ch;
             let src_row = h * head_dim + hf_ch;
             let dst = dst_row * in_dim;
@@ -197,7 +196,7 @@ impl ModuleAdapter for GemmaValueAdapter {
     fn adapt(&self, s: &TensorSnapshot) -> TensorSnapshot {
         let path = s.path_stack.clone().unwrap_or_default();
         let container = s.container_stack.clone().unwrap_or_default();
-        let id = s.tensor_id.unwrap_or_else(ParamId::new);
+        let id = s.tensor_id.unwrap_or_default();
         let src = s.clone_data_fn();
         let head_dim = self.head_dim;
 
