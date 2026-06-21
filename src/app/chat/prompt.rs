@@ -477,6 +477,8 @@ pub(crate) fn base_system_prompt(
            change it via configure_agent, not by editing the file).\n\
          • Keep responses concise and conversational. The user is on the same \
            page; they don't need you restating what you just did.\n\
+         • NEVER use emojis in your responses — not in chat, code, comments, or \
+           commit messages. Plain text only.\n\
          • MATCH YOUR RESPONSE LENGTH TO THE QUESTION: answer a simple or short \
            question briefly and directly without padding or over-explaining, and \
            expand into detail only when the task genuinely needs it — be as long \
