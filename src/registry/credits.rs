@@ -282,6 +282,33 @@ pub async fn transfer_lh_sponsored(
     .await
 }
 
+/// Transfer `amount_units` of an arbitrary TIP-20 `token_hex` from `sender` to
+/// `to_hex` as a SELF-PAID Tempo tx — the sender pays the gas itself in
+/// `token_hex` (the token IS the Tempo fee token, e.g. USDC.e), so there is NO
+/// relay / sponsor. The MPP on-ramp settlement leg: a brand-new agent pays its
+/// quoted USDC.e to the on-ramp treasury, and the proxy mints `$LH` at parity.
+/// USDC.e (and any USD TIP-20 fee token) is NOT the diamond/$LH surface, so the
+/// keyless relay deliberately does not sponsor it — the caller must hold enough
+/// USDC.e to cover the payment plus its own gas. Returns the mined tx hash.
+pub async fn transfer_token_self_paid(
+    sender: &SigningKey,
+    token_hex: &str,
+    to_hex: &str,
+    amount_units: u128,
+    gas_limit: u128,
+) -> Result<String, String> {
+    let token = parse_eth_address(token_hex)?;
+    let to = parse_eth_address(to_hex)?;
+    let call = crate::tempo_tx::TempoCall {
+        to: token,
+        value_wei: 0,
+        input: encode_transfer(&to, amount_units),
+    };
+    // fee_token == the token being transferred (USDC.e), so the sender pays gas
+    // in the same stablecoin it is settling with — no native gas, no sponsor.
+    submit_tempo_self_paid(sender, vec![call], Some(token_hex), gas_limit).await
+}
+
 
 #[cfg(test)]
 mod tests {

@@ -43,6 +43,11 @@
 //!                            (`<proxy>/mcp`): sign an x402 $LH payment to the
 //!                            target agent's TBA, POST a `tools/call`, print the
 //!                            reply. The networked sibling of the stdio `mcp`.
+//!   onramp --pay <usdce> [--as <me>]
+//!                            crypto-native first-$LH: pay USDC.e on Tempo (MPP
+//!                            402<->200) and the proxy mints $LH into your meter
+//!                            at parity (1 USDC.e = 100 $LH). SELF-PAID — USDC.e
+//!                            is the gas token, so the relay doesn't sponsor it
 //!   credits [--as <me>]      show your $LH wallet + per-call meter + session
 //!   redeem [--as <me>] <code>  redeem a code for $LH into your wallet (funding)
 //!   send [--as <me>] <to> <amt>  send $LH to an address / a name's owner (fund an agent)
@@ -125,6 +130,7 @@ mod mcp;
 mod models;
 mod notify;
 mod onboard;
+mod onramp;
 mod party;
 mod probe;
 mod facet;
@@ -154,6 +160,7 @@ pub(crate) use mcp::*;
 pub(crate) use models::*;
 pub(crate) use notify::*;
 pub(crate) use onboard::*;
+pub(crate) use onramp::*;
 pub(crate) use party::*;
 pub(crate) use probe::*;
 pub(crate) use publish::*;
@@ -349,6 +356,13 @@ WALLET, FUNDING & TBA
                                          onboarding amount); pay in any browser and
                                          the $LH is minted to your wallet on-chain.
                                          `join` is an alias for the $1 entry buy
+  localharness onramp --pay <usdce> [--as <me>]
+                                         crypto-native first-$LH: pay USDC.e on Tempo
+                                         and the proxy mints $LH into your meter at
+                                         parity (1 USDC.e = 100 $LH). No human, no
+                                         card. SELF-PAID (USDC.e is the gas token, so
+                                         the relay doesn't sponsor it) — hold enough
+                                         USDC.e for the payment plus its gas
   localharness credits [--as <me>]       show your $LH wallet + per-call meter + session
   localharness redeem [--as <me>] <code> redeem a code for $LH into your wallet
   localharness send [--as <me>] <to> <amt>  send $LH to an address / a name's owner
@@ -662,6 +676,7 @@ async fn run(args: &[String]) -> i32 {
         Some("mcp") => mcp_serve(&args[1..]).await,
         Some("models") => models(),
         Some("onboard") => onboard(&args[1..]).await,
+        Some("onramp") => onramp(&args[1..]).await,
         Some("link") => link(&args[1..]).await,
         Some("list") | Some("mine") => match parse_list_flags(&args[1..]) {
             Ok((caller, json)) => list_mine(caller.as_deref(), json).await,
@@ -1046,7 +1061,7 @@ mod tests {
             "feedback", "probe", "triage", "threads", "forget", "whoami", "status",
             "invite", "bounty", "colony", "reputation", "guild", "party", "validation", "vote", "tba",
             "room", "schedule", "goal", "jobs", "unschedule", "notify", "models", "sh",
-            "onboard", "link",
+            "onboard", "onramp", "link",
         ] {
             assert!(
                 USAGE.contains(cmd),

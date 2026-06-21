@@ -28,6 +28,19 @@ pub fn is_address_hex(s: &str) -> bool {
 /// wei. Returns None on garbage input. Accepts up to 18 fractional digits;
 /// truncates anything finer.
 pub fn parse_token_amount(raw: &str) -> Option<u128> {
+    parse_token_amount_decimals(raw, 18)
+}
+
+/// Parse a human-typed decimal amount (`1.5` / `0.000001`) into base units at
+/// `decimals` precision — the generalization behind [`parse_token_amount`] (18
+/// decimals). USDC.e is 6-decimal, so the MPP on-ramp parses `--pay 2.5` with
+/// `decimals = 6`. Returns None on garbage / overflow; truncates fractional
+/// digits finer than `decimals` (never rounds). `decimals > 38` is rejected
+/// (`10^39` overflows u128).
+pub fn parse_token_amount_decimals(raw: &str, decimals: u32) -> Option<u128> {
+    if decimals > 38 {
+        return None;
+    }
     let raw = raw.trim();
     if raw.is_empty() {
         return None;
@@ -51,15 +64,16 @@ pub fn parse_token_amount(raw: &str) -> Option<u128> {
     if frac_s.bytes().any(|b| !b.is_ascii_digit()) {
         return None;
     }
+    let unit_scale = 10u128.checked_pow(decimals)?;
     let mut frac: u128 = 0;
-    let mut scale: u128 = 1_000_000_000_000_000_000;
-    for ch in frac_s.chars().take(18) {
+    let mut scale: u128 = unit_scale;
+    for ch in frac_s.chars().take(decimals as usize) {
         let d = ch.to_digit(10)? as u128;
         scale /= 10;
         frac = frac.checked_add(d.checked_mul(scale)?)?;
     }
-    let whole_wei = whole.checked_mul(1_000_000_000_000_000_000)?;
-    whole_wei.checked_add(frac)
+    let whole_units = whole.checked_mul(unit_scale)?;
+    whole_units.checked_add(frac)
 }
 
 /// How a user-supplied transfer recipient should be resolved: a raw 20-byte
@@ -226,6 +240,27 @@ mod tests {
         assert_eq!(parse_token_amount(""), None);
         assert_eq!(parse_token_amount("abc"), None);
         assert_eq!(parse_token_amount("1.2x"), None);
+    }
+
+    #[test]
+    fn parse_token_amount_decimals_scales_to_arbitrary_precision() {
+        // 6-decimal USDC.e (the MPP on-ramp `--pay` token): whole + fractional.
+        assert_eq!(parse_token_amount_decimals("1", 6), Some(1_000_000));
+        assert_eq!(parse_token_amount_decimals("2.5", 6), Some(2_500_000));
+        assert_eq!(parse_token_amount_decimals("0.000001", 6), Some(1)); // one base unit
+        // Fractional digits finer than `decimals` are TRUNCATED, never rounded.
+        assert_eq!(parse_token_amount_decimals("0.0000009", 6), Some(0));
+        assert_eq!(parse_token_amount_decimals("1.2345678", 6), Some(1_234_567));
+        // 18-decimal delegation matches the canonical helper.
+        assert_eq!(parse_token_amount_decimals("1.5", 18), parse_token_amount("1.5"));
+        // 0 decimals = integer units only; the fractional part truncates away.
+        assert_eq!(parse_token_amount_decimals("7", 0), Some(7));
+        assert_eq!(parse_token_amount_decimals("7.9", 0), Some(7));
+        // Garbage / overflow / absurd precision → None, never a wrapped value.
+        assert_eq!(parse_token_amount_decimals("abc", 6), None);
+        assert_eq!(parse_token_amount_decimals("", 6), None);
+        assert_eq!(parse_token_amount_decimals("1", 39), None); // 10^39 > u128::MAX
+        assert_eq!(parse_token_amount_decimals(&"9".repeat(40), 6), None); // whole overflow
     }
 
     /// Hostile / boundary inputs to the decimal→wei parser. A WRONG wei here
