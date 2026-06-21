@@ -170,6 +170,12 @@ const SELF_PAY_SELECTORS = new Set([
   // — may relay it too. (A meter-funded sender with a 0 wallet passes the
   // onboarding gate regardless; this line is what lets a funded agent send.)
   TRANSFER_SELECTOR,
+  // createInvite escrows the funder's OWN $LH behind a code (supply-neutral,
+  // refundable) — same shape as settle/transfer: moves the caller's own $LH, can't
+  // touch the sponsor's fee-token float. An operator funding a new agent via an
+  // invite IS funded by definition, so the onboarding-only gate must not block it
+  // (it did — LH_RELAY_FUNDED on `invite create`, breaking the documented flow).
+  selector('createInvite(bytes32,uint256,uint64)'),
 ]);
 
 // ALWAYS-FREE writes — sponsored regardless of the caller's $LH balance because
@@ -178,7 +184,16 @@ const SELF_PAY_SELECTORS = new Set([
 // encouraged, so a graduated/funded agent (which on mainnet holds $LH, not the
 // AlphaUSD fee token, and so STILL can't self-pay gas) must not be locked out of
 // it with LH_RELAY_FUNDED. Abuse stays bounded by the rate caps + float breaker.
-const ALWAYS_FREE_SELECTORS = new Set([selector('submitFeedback(string)')]);
+// `register(string)` joins it: claiming a name is the fundamental onboarding +
+// actor-model action, and it is necessarily done by a "funded" caller — the name
+// claim costs 1 $LH (pulled on-chain), and that caller can't self-pay gas on
+// mainnet (no fee token), so the onboarding-only gate was a hard CATCH-22 (you
+// need 1 $LH to register, but holding it triggers LH_RELAY_FUNDED). Abuse stays
+// bounded by the per-name 1-$LH cost + the rate caps + the float breaker.
+const ALWAYS_FREE_SELECTORS = new Set([
+  selector('submitFeedback(string)'),
+  selector('register(string)'),
+]);
 
 // Everything exempt from the onboarding-only gate below: self-pay (move the
 // caller's OWN $LH) + always-free (feedback). A call batch made up entirely of
