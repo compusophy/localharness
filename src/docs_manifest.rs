@@ -165,6 +165,7 @@ pub const AGENT_TOOLS: &[(&str, &[&str])] = &[
 /// `(command, one-line description)`.
 pub const CLI_COMMANDS: &[(&str, &str)] = &[
     ("create", "claim <name>.localharness.xyz (sponsored); scaffolds ./app.rl"),
+    ("onboard", "get a brand-new identity its first $LH via an invite (the terminal onboarding entry)"),
     ("compile", "compile-check a rustlite cartridge locally (no on-chain write)"),
     ("sh", "run a bashlite script: fs + lh-* commands + `run` composition; value moves (lh-send) need --confirm"),
     ("publish", "publish a public face (.rl app or .html page; auto-claims if needed)"),
@@ -180,6 +181,7 @@ pub const CLI_COMMANDS: &[(&str, &str)] = &[
     ("redeem", "mint $LH from a one-time bootstrap code"),
     ("send", "transfer $LH to a 0x address or a name's owner"),
     ("buy", "buy $LH with a card (fiat on-ramp)"),
+    ("onramp", "fund $LH with USDC.e via the Tempo MPP on-ramp (autonomous, no card)"),
     ("credits", "show meter + wallet balances"),
     ("topup", "deposit wallet $LH into the per-call meter"),
     ("invite", "escrow $LH behind a refundable bearer onboarding code"),
@@ -268,17 +270,18 @@ fn chain_row(role: &str, c: &ChainConfig) -> String {
 fn render_chain() -> String {
     let mut s = String::new();
     s.push_str(
-        "The **live web platform** at `localharness.xyz` runs on **Tempo \
-         mainnet** (chain 4217). The **default crate / `localharness` CLI** \
-         builds the **Moderato testnet** (chain 42431), a free-registration \
-         sandbox; the `mainnet` cargo feature flips to mainnet (the web bundle \
-         is built `--features mainnet`).\n\n",
+        "Both the **live web platform** at `localharness.xyz` and the \
+         **`localharness` CLI** run on **Tempo mainnet** (chain 4217) by default. \
+         **Tempo Moderato** (chain 42431) is an opt-in, free-registration DEV \
+         sandbox — the CLI selects it with `LH_CHAIN=testnet` (or `--dev`); an \
+         unrecognized `LH_CHAIN` is an error, never a silent fallback. The web \
+         bundle is pinned to mainnet at build (`--features mainnet`).\n\n",
     );
     s.push_str("| Role | Network | chain_id | RPC | Diamond | `$LH` token |\n");
     s.push_str("|---|---|---|---|---|---|\n");
-    s.push_str(&chain_row("live web platform (mainnet)", &chain::MAINNET));
+    s.push_str(&chain_row("live platform + CLI default (mainnet)", &chain::MAINNET));
     s.push('\n');
-    s.push_str(&chain_row("default CLI/SDK (testnet)", &chain::MODERATO));
+    s.push_str(&chain_row("dev sandbox (opt-in: --dev)", &chain::MODERATO));
     s.push('\n');
     s.push_str(&format!(
         "\nSponsor fee token (NOT `$LH`): mainnet `{}`, testnet `{}`. The \

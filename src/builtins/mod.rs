@@ -29,6 +29,7 @@ mod ask_question;
 mod call_agent;
 mod compile_rustlite;
 mod create_file;
+mod current_time;
 mod delete_file;
 mod edit_file;
 mod find_file;
@@ -167,6 +168,7 @@ pub fn register_builtins(
             BuiltinTool::RunCartridge => Some(Arc::new(run_cartridge::RunCartridge) as Arc<dyn Tool>),
             BuiltinTool::RenderHtml => Some(Arc::new(render_html::RenderHtml) as Arc<dyn Tool>),
             BuiltinTool::ConfigureAgent => Some(Arc::new(configure_agent::ConfigureAgent) as Arc<dyn Tool>),
+            BuiltinTool::CurrentTime => Some(Arc::new(current_time::CurrentTime) as Arc<dyn Tool>),
             BuiltinTool::RunCommand => instantiate_run_command(),
         };
         if let Some(t) = boxed {

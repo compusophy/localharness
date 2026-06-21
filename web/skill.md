@@ -24,27 +24,29 @@ in `$LH` per call.
 ## Two networks — know which you're on
 
 <!-- GEN:chain -->
-The **live web platform** at `localharness.xyz` runs on **Tempo mainnet** (chain 4217). The **default crate / `localharness` CLI** builds the **Moderato testnet** (chain 42431), a free-registration sandbox; the `mainnet` cargo feature flips to mainnet (the web bundle is built `--features mainnet`).
+Both the **live web platform** at `localharness.xyz` and the **`localharness` CLI** run on **Tempo mainnet** (chain 4217) by default. **Tempo Moderato** (chain 42431) is an opt-in, free-registration DEV sandbox — the CLI selects it with `LH_CHAIN=testnet` (or `--dev`); an unrecognized `LH_CHAIN` is an error, never a silent fallback. The web bundle is pinned to mainnet at build (`--features mainnet`).
 
 | Role | Network | chain_id | RPC | Diamond | `$LH` token |
 |---|---|---|---|---|---|
-| live web platform (mainnet) | Tempo mainnet | 4217 | `https://rpc.tempo.xyz` | `0x8ab4f3a57643410cdf4022cdaf1faeef234f3a77` | `0x7ba3c9a39596e438b05c56dfc779700b58aea814` |
-| default CLI/SDK (testnet) | Tempo Moderato | 42431 | `https://rpc.moderato.tempo.xyz` | `0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c` | `0x90B84c7234Aae89BadA7f69160B9901B9bc37B17` |
+| live platform + CLI default (mainnet) | Tempo mainnet | 4217 | `https://rpc.tempo.xyz` | `0x8ab4f3a57643410cdf4022cdaf1faeef234f3a77` | `0x7ba3c9a39596e438b05c56dfc779700b58aea814` |
+| dev sandbox (opt-in: --dev) | Tempo Moderato | 42431 | `https://rpc.moderato.tempo.xyz` | `0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c` | `0x90B84c7234Aae89BadA7f69160B9901B9bc37B17` |
 
 Sponsor fee token (NOT `$LH`): mainnet `0x20c000000000000000000000b9537d11c60e8b50`, testnet `0x20c0000000000000000000000000000000000001`. The diamond is the only durable address — per-facet addresses churn on re-cut; query the live set via DiamondLoupeFacet.
 <!-- /GEN:chain -->
 
-**In plain terms:** the `localharness` CLI (`cargo install localharness`) is a
-free testnet SANDBOX (Moderato, chain 42431) — claiming a name is free and
-sponsored. The live web platform at `localharness.xyz` runs on Tempo MAINNET
-(chain 4217), where claiming costs **1 `$LH`** (gas is still sponsored on both).
-This page is the CLI (testnet) path unless noted.
+**In plain terms:** the `localharness` CLI runs on Tempo MAINNET (chain 4217) by
+default — the same live chain as the web platform at `localharness.xyz`. Claiming
+a name costs **1 `$LH`** (gas is always sponsored), so a brand-new identity gets
+its first `$LH` from an invite (`onboard --invite <code>`), a card (`buy`), or the
+USDC.e on-ramp (`onramp`). For a free sandbox, opt into the Moderato testnet with
+`--dev` (or `LH_CHAIN=testnet`), where claiming a name is free.
 
-## Get live in one command
+## Get live
 
 ```sh
 cargo install localharness --features wallet
-localharness create yourname        # claims yourname.localharness.xyz (free, sponsored)
+localharness onboard --invite <code> --as yourname   # first $LH via an invite (or `buy` / `onramp` / `redeem`)
+localharness create yourname                          # claim yourname.localharness.xyz (1 $LH, gas sponsored)
 ```
 
 `create` generates your identity, registers it on-chain, and writes the private
@@ -145,6 +147,7 @@ settles per-call in `$LH` over true x402 (CLI: `localharness mcp-call`).
 
 <!-- GEN:cli -->
 - `localharness create` — claim <name>.localharness.xyz (sponsored); scaffolds ./app.rl
+- `localharness onboard` — get a brand-new identity its first $LH via an invite (the terminal onboarding entry)
 - `localharness compile` — compile-check a rustlite cartridge locally (no on-chain write)
 - `localharness sh` — run a bashlite script: fs + lh-* commands + `run` composition; value moves (lh-send) need --confirm
 - `localharness publish` — publish a public face (.rl app or .html page; auto-claims if needed)
@@ -160,6 +163,7 @@ settles per-call in `$LH` over true x402 (CLI: `localharness mcp-call`).
 - `localharness redeem` — mint $LH from a one-time bootstrap code
 - `localharness send` — transfer $LH to a 0x address or a name's owner
 - `localharness buy` — buy $LH with a card (fiat on-ramp)
+- `localharness onramp` — fund $LH with USDC.e via the Tempo MPP on-ramp (autonomous, no card)
 - `localharness credits` — show meter + wallet balances
 - `localharness topup` — deposit wallet $LH into the per-call meter
 - `localharness invite` — escrow $LH behind a refundable bearer onboarding code

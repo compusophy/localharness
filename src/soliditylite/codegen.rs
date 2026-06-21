@@ -1455,9 +1455,9 @@ mod tests {
 
     // ── DYNAMIC ARRAYS (uint256[] storage: length / [i] / push) ──────────────
 
-    /// The off-chain truth for a dynamic-array element slot: `keccak256(pad32(slot))
-    /// + index` — the canonical Solidity layout the emitted MSTORE/KECCAK256/ADD must
-    /// reproduce on-chain. Returned as the 32-byte big-endian slot.
+    /// The off-chain truth for a dynamic-array element slot:
+    /// `keccak256(pad32(slot)) + index` — the canonical Solidity layout the emitted
+    /// MSTORE/KECCAK256/ADD must reproduce on-chain. Returns the 32-byte BE slot.
     #[cfg(feature = "wallet")]
     fn array_elem_slot(slot: &[u8; 32], index: u64) -> [u8; 32] {
         use sha3::{Digest, Keccak256};
