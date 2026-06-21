@@ -366,6 +366,7 @@ mod schema_lint_tests {
         let tools: Vec<Arc<dyn Tool>> = vec![
             Arc::new(Finish),
             Arc::new(AskQuestion),
+            Arc::new(current_time::CurrentTime),
             Arc::new(configure_agent::ConfigureAgent),
             Arc::new(call_agent::CallAgent),
             Arc::new(compile_rustlite::CompileRustlite),

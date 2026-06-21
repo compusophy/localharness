@@ -592,6 +592,20 @@ async fn run(args: &[String]) -> i32 {
         eprintln!("error: {e}");
         return 2;
     }
+    // Make the active chain VISIBLE — a silent chain selection was the footgun
+    // behind on-chain feedback #43 (`discover` returned 39 agents on the CLI's
+    // testnet vs 7 on the browser's mainnet, with no way to tell which chain you
+    // were on). Print to STDERR so it never corrupts machine-readable stdout
+    // (`--json` output feeds tooling); skip for pure-UX / scripted commands.
+    let quiet = matches!(
+        args.first().map(String::as_str),
+        Some("version") | Some("--version") | Some("-V") | Some("help") | Some("-h")
+            | Some("--help") | None
+    ) || args.iter().any(|a| a == "--json");
+    if !quiet {
+        let c = registry::chain::active();
+        eprintln!("· localharness on {} (chain {})", c.name, c.chain_id);
+    }
     match args.first().map(String::as_str) {
         Some("create") => match parse_create_args(&args[1..]) {
             Ok(ParsedCreate { name, persona, publish }) => {

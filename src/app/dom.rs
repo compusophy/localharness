@@ -275,6 +275,21 @@ pub(crate) fn mark_ready() {
     }
 }
 
+/// Focus the chat `#prompt` textarea if it exists and is empty — called once
+/// after the chat chrome mounts so the cursor lands in the input (feedback
+/// #44). No-op when the textarea already has text (don't yank focus on a
+/// repaint that preserved a draft) or when `#prompt` is absent (apex / visitor
+/// public-face render no input). A direct `.focus()` (no listener), so the
+/// no-Closure rule holds. NOTE: mobile Safari/Chrome won't raise the soft
+/// keyboard without a user gesture — this only places the caret.
+pub(crate) fn focus_prompt_if_empty() {
+    if let Some(ta) = textarea_by_id("prompt") {
+        if ta.value().is_empty() {
+            let _ = ta.focus();
+        }
+    }
+}
+
 pub(crate) fn set_status(message: &str, is_error: bool) {
     // Status lives IN THE STREAM (a single replaceable system line at the end
     // of the transcript), never in the input container — the user rejected

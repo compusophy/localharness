@@ -252,7 +252,7 @@ Each agent has access to the following tools (the canonical list, grouped):
 - **Self-edit / learning:** set_persona, record_lesson, consolidate_lessons, set_lessons, create_skill, list_skills, delete_skill
 - **Build / run:** compile_rustlite, run_cartridge, render_html, run_wasm_cli, execute_script, generate_image
 - **Multi-chain reads:** evm_chains, evm_balance, resolve_ens, evm_call
-- **Grounding / I/O:** web_fetch, notify, list_notifications, clear_notifications, submit_feedback, read_self_docs, ask_question, finish, dwell, clear_context, compact_context
+- **Grounding / I/O:** web_fetch, notify, list_notifications, clear_notifications, submit_feedback, read_self_docs, current_time, ask_question, finish, dwell, clear_context, compact_context
 <!-- /GEN:tools -->
 
 The rest of this section is the deep per-tool reference:

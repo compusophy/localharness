@@ -151,6 +151,7 @@ pub const AGENT_TOOLS: &[(&str, &[&str])] = &[
             "clear_notifications",
             "submit_feedback",
             "read_self_docs",
+            "current_time",
             "ask_question",
             "finish",
             "dwell",

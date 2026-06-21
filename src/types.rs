@@ -145,6 +145,8 @@ pub enum BuiltinTool {
     /// Read/update this agent's own config manifest (system prompt + tool
     /// allowlist), or reset it to defaults.
     ConfigureAgent,
+    /// Get the current host wall-clock time (UNIX + ISO-8601 UTC).
+    CurrentTime,
     /// Signal that the agent's turn is complete.
     Finish,
 }
@@ -169,6 +171,7 @@ impl BuiltinTool {
         Self::RunCartridge,
         Self::RenderHtml,
         Self::ConfigureAgent,
+        Self::CurrentTime,
         Self::Finish,
     ];
 
@@ -178,6 +181,7 @@ impl BuiltinTool {
         Self::SearchDirectory,
         Self::FindFile,
         Self::ViewFile,
+        Self::CurrentTime,
         Self::Finish,
     ];
 
@@ -210,6 +214,7 @@ impl BuiltinTool {
             Self::RunCartridge => "run_cartridge",
             Self::RenderHtml => "render_html",
             Self::ConfigureAgent => "configure_agent",
+            Self::CurrentTime => "current_time",
             Self::Finish => "finish",
         }
     }

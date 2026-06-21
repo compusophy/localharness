@@ -646,6 +646,9 @@ async fn paint_workshop(host: &tenant::Host) {
     let Some(root) = doc.get_element_by_id("root") else { return };
     root.set_inner_html(&templates::chrome(host).into_string());
     dom::mark_ready();
+    // Land the cursor in the chat input on first open (feedback #44; no-op if a
+    // draft is already there or on a surface without #prompt).
+    dom::focus_prompt_if_empty();
 
     // Auto-redeem a pending `?invite=CODE` into the local credit identity.
     wasm_bindgen_futures::spawn_local(events::try_redeem_pending_invite(true));
@@ -818,6 +821,9 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
     // preview fell through with nothing published).
     root.set_inner_html(&templates::chrome(&host).into_string());
     dom::mark_ready();
+    // Land the cursor in the chat input on first open (feedback #44; no-op if a
+    // draft is already there or on a surface without #prompt).
+    dom::focus_prompt_if_empty();
 
     // No-funds onboarding: surface the inline redeem CTA above the prompt
     // when this credit identity holds zero `$LH` (gated access means an
