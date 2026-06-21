@@ -123,6 +123,7 @@ mod invite;
 mod mcp;
 mod models;
 mod notify;
+mod onboard;
 mod party;
 mod probe;
 mod facet;
@@ -150,6 +151,7 @@ pub(crate) use invite::*;
 pub(crate) use mcp::*;
 pub(crate) use models::*;
 pub(crate) use notify::*;
+pub(crate) use onboard::*;
 pub(crate) use party::*;
 pub(crate) use probe::*;
 pub(crate) use publish::*;
@@ -235,6 +237,12 @@ IDENTITY & PROFILE
                                          exists immediately (one extra sponsored tx);
                                          idempotent: reuses an existing local key and
                                          no-ops if the name is already yours
+  localharness onboard --invite <code> [--as <name>]
+                                         get a brand-new identity its FIRST $LH —
+                                         the terminal mirror of web onboarding:
+                                         creates a local key + accepts the invite
+                                         (an operator runs `invite create` once);
+                                         then `create <name>` claims a name
   localharness persona <name> <text>     publish <name>'s public system prompt so
                                          `call` answers as that agent (text or file)
   localharness price <name> <amount|clear>
@@ -644,6 +652,7 @@ async fn run(args: &[String]) -> i32 {
         Some("mcp-call") => mcp_call(&args[1..]).await,
         Some("mcp") => mcp_serve(&args[1..]).await,
         Some("models") => models(),
+        Some("onboard") => onboard(&args[1..]).await,
         Some("list") | Some("mine") => match parse_list_flags(&args[1..]) {
             Ok((caller, json)) => list_mine(caller.as_deref(), json).await,
             Err(e) => {
