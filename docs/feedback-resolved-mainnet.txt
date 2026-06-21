@@ -111,3 +111,14 @@
 #            messaging flow (no scroll-to-top "snap"); frank #48
 49  d0ffa91  dropped the 100dvh streaming reservation (the "double spacing under
 #            the last message") + reverted the input bottom gap to 76px; frank #49
+#
+# --- 2026-06-21 feedback #44-#45 (feedback+lessons sweep) -------------------
+44  a749c50  auto-focus the #prompt textarea once the chat chrome mounts
+#            (dom::focus_prompt_if_empty); mobile keyboard still needs a gesture
+45  a749c50  current_time builtin tool — host wall clock (unix + ISO-8601 UTC),
+#            native+wasm, read-only; agents no longer web_fetch an external clock
+#
+# #43 PARTIAL — source already defaults MAINNET (368d304); added a stderr
+#     "· localharness on <chain>" banner so the active chain is never silent
+#     (a749c50). The published crates.io binary still defaults testnet until a
+#     RELEASE ships these commits — that release is the load-bearing fix.
