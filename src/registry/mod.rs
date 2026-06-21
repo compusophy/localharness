@@ -94,6 +94,13 @@ pub fn CHAIN_ID() -> u64 {
     chain::active().chain_id
 }
 
+/// Block-explorer URL for `addr` on the ACTIVE chain (e.g.
+/// `https://explore.tempo.xyz/address/0x…` on mainnet, `moderato.tempo.xyz` on
+/// testnet). Chain-derived so the UI never hardcodes a per-network explorer host.
+pub fn explorer_address_url(addr: impl core::fmt::Display) -> String {
+    format!("{}/address/{addr}", chain::active().explorer_url)
+}
+
 // `BOOTSTRAP_FAUCET_ADDRESS` (the dormant BootstrapFaucet.sol breadcrumb —
 // unusable on Tempo Moderato, which refuses EOA↔contract native value
 // transfers) was removed as dead code; all distribution flows through

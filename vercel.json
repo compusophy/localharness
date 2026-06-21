@@ -75,7 +75,7 @@
         { "key": "X-Content-Type-Options", "value": "nosniff" },
         {
           "key": "Content-Security-Policy-Report-Only",
-          "value": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://js.stripe.com https://checkout.stripe.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://generativelanguage.googleapis.com https://api.anthropic.com https://rpc.moderato.tempo.xyz https://rpc.tempo.xyz https://proxy-tau-ten-15.vercel.app https://api.stripe.com https://*.stripe.com wss:; frame-src 'self' https://localharness.xyz https://*.localharness.xyz https://js.stripe.com https://checkout.stripe.com https://hooks.stripe.com; frame-ancestors 'self' https://localharness.xyz https://*.localharness.xyz; base-uri 'self'; form-action 'self'; object-src 'none'; worker-src 'self' blob:"
+          "value": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://js.stripe.com https://checkout.stripe.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://generativelanguage.googleapis.com https://api.anthropic.com https://rpc.tempo.xyz https://proxy-tau-ten-15.vercel.app https://api.stripe.com https://*.stripe.com wss:; frame-src 'self' https://localharness.xyz https://*.localharness.xyz https://js.stripe.com https://checkout.stripe.com https://hooks.stripe.com; frame-ancestors 'self' https://localharness.xyz https://*.localharness.xyz; base-uri 'self'; form-action 'self'; object-src 'none'; worker-src 'self' blob:"
         }
       ]
     }

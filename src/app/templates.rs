@@ -1442,7 +1442,7 @@ fn admin_identity_section(
                 div.admin-identity-row {
                     span.admin-identity-label { "owner" }
                     a.admin-identity-value
-                        href=(format!("https://moderato.tempo.xyz/address/{addr}"))
+                        href=(crate::registry::explorer_address_url(addr))
                         target="_blank" rel="noopener"
                         title=(addr) {
                         (short_addr(addr))
@@ -1487,7 +1487,7 @@ fn admin_identity_section(
                 div.admin-identity-row {
                     span.admin-identity-label { "wallet" }
                     a.admin-identity-value
-                        href=(format!("https://moderato.tempo.xyz/address/{addr}"))
+                        href=(crate::registry::explorer_address_url(addr))
                         target="_blank" rel="noopener"
                         title=(addr) {
                         (short_addr(addr))
@@ -1948,8 +1948,8 @@ pub(crate) fn financial_card(
     _price_wei: u128,
     _is_owner: bool,
 ) -> Markup {
-    let tba_url = format!("https://moderato.tempo.xyz/address/{tba_hex}");
-    let owner_url = format!("https://moderato.tempo.xyz/address/{owner_hex}");
+    let tba_url = crate::registry::explorer_address_url(tba_hex);
+    let owner_url = crate::registry::explorer_address_url(owner_hex);
     let balance_display = super::format_wei_as_test_eth(lh_balance_wei);
     // The agent's REAL tool count once a session has started (builtins + chat
     // tools), falling back to the builtin-only count before first send. The old
@@ -2459,7 +2459,7 @@ pub(crate) fn public_landing(
                                 title=(addr) { (m) }
                         } @else {
                             a.public-meta-value
-                                href=(format!("https://moderato.tempo.xyz/address/{addr}"))
+                                href=(crate::registry::explorer_address_url(addr))
                                 target="_blank" rel="noopener" title=(addr) { (short_addr(addr)) }
                         }
                     }
@@ -2468,7 +2468,7 @@ pub(crate) fn public_landing(
                     div.public-meta-row {
                         span.public-meta-label { "wallet" }
                         a.public-meta-value
-                            href=(format!("https://moderato.tempo.xyz/address/{t}"))
+                            href=(crate::registry::explorer_address_url(t))
                             target="_blank" rel="noopener" title=(t) { (short_addr(t)) }
                     }
                 }

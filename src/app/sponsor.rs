@@ -50,15 +50,20 @@ use k256::ecdsa::SigningKey;
 /// `0x313b1659F5037080aA0C113D386C5954F348EF1e`. Funds remain there
 /// untouched; they can be reclaimed by the deployer key.
 ///
-/// Committed TESTNET sponsor key — the ONLY key in the bundle, on every build.
-/// On testnet it pays AlphaUSD fees directly. On mainnet it is a harmless,
-/// UNUSED placeholder: every sponsored path checks `registry::is_mainnet()` and
-/// routes the `fee_payer` half to the server relay instead, so this key is never
-/// used to sign a mainnet tx (and the mainnet sponsor `0x066E…0168f`, server-side
-/// only, is never embedded). `env!("LH_MAINNET_SPONSOR_KEY")` is GONE — no build
-/// embeds a mainnet money key.
+/// Committed TESTNET sponsor key. On testnet it pays AlphaUSD fees directly. On
+/// mainnet it is UNUSED: every sponsored path checks `registry::is_mainnet()` and
+/// routes the `fee_payer` half to the server relay instead, so this key never signs
+/// a mainnet tx (the mainnet sponsor `0x066E…0168f` is server-side only, never
+/// embedded). `env!("LH_MAINNET_SPONSOR_KEY")` is GONE — no build embeds a mainnet
+/// money key. The real key is embedded on native (CLI testnet) + wasm-no-mainnet
+/// (testnet preview); the PROD wasm+mainnet bundle ships a DUMMY instead so no real
+/// key is extractable from it (`signer()` still returns Ok — the value is unused there).
+#[cfg(not(all(target_arch = "wasm32", feature = "mainnet")))]
 const SPONSOR_PRIVATE_KEY_HEX: &str =
     "0x046a830b5203d1d2c0a205a1432746e4381d0874711b2de7f575a973644b9d43";
+#[cfg(all(target_arch = "wasm32", feature = "mainnet"))]
+const SPONSOR_PRIVATE_KEY_HEX: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000001";
 
 /// Return the sponsor's `SigningKey` for `fee_payer` signing on Tempo txs.
 /// Cheap to call repeatedly — k256 keys clone cheaply. On mainnet the returned

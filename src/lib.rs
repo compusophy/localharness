@@ -192,8 +192,11 @@ pub mod subdomain;
 /// agent tool list, and the CLI command list. `cargo run --bin gen-docs` fills
 /// each doc's `<!-- GEN:key -->` block from here; a `cargo test` drift gate +
 /// the release pre-flight enforce sync. Gated on `wallet` (it reads
-/// `registry::chain`). See `docs/SOP-doc-integrity.md`. (native-testable)
-#[cfg(feature = "wallet")]
+/// `registry::chain`) AND `not(wasm32)`: it only feeds the native gen-docs bin +
+/// the native drift test, so excluding it from the wasm build keeps the testnet
+/// `MODERATO` strings (which `render_chains` documents) out of the prod bundle —
+/// the last non-test wasm referencer of `MODERATO`. See `docs/SOP-doc-integrity.md`.
+#[cfg(all(feature = "wallet", not(target_arch = "wasm32")))]
 pub mod docs_manifest;
 
 // Inline SVG QR-code generation for the app's share surfaces (device

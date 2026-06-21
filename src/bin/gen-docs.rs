@@ -17,22 +17,35 @@
 //!
 //! Requires `--features wallet` (the manifest reads `registry::chain`).
 
-use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+// gen-docs is a NATIVE-only dev tool: it writes the managed docs into the repo via
+// std::fs and is never part of the wasm bundle. `cargo check --target wasm32` still
+// builds every bin, and `docs_manifest` is wasm-excluded (it carries the testnet
+// MODERATO strings stripped from the prod bundle), so provide a wasm no-op main and
+// gate the real tool to native.
+#[cfg(target_arch = "wasm32")]
+fn main() {}
 
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::process::ExitCode;
+#[cfg(not(target_arch = "wasm32"))]
 use localharness::docs_manifest;
 
 /// The managed docs, relative to the crate root. The top-level `README.md` is
 /// deliberately NOT here — it is hand-written and minimal (a README is not the
 /// generated docs); `web/llms.txt` is the full generated agent spec.
+#[cfg(not(target_arch = "wasm32"))]
 const MANAGED_DOCS: &[&str] = &["web/skill.md", "web/llms.txt"];
 
+#[cfg(not(target_arch = "wasm32"))]
 fn crate_root() -> PathBuf {
     // CARGO_MANIFEST_DIR points at the crate root both for `cargo run` and for
     // a `cargo install`ed binary's build — the same anchor the lib tests use.
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> ExitCode {
     let check = std::env::args().any(|a| a == "--check");
     let root = crate_root();
@@ -94,6 +107,7 @@ fn main() -> ExitCode {
 
 /// Write the doc back, preserving its line endings sanely (we write with `\n`;
 /// the docs are LF in the repo).
+#[cfg(not(target_arch = "wasm32"))]
 fn write_doc(path: &Path, content: &str) -> std::io::Result<()> {
     std::fs::write(path, content)
 }

@@ -56,14 +56,13 @@ default, or export `dims()` for a custom size/aspect up to 1024; HTML is \
 rasterized), NOT DOM/iframe.\n\
 \n\
 Identity & on-chain:\n\
-- Each agent is an ERC-721 NFT at `<name>.localharness.xyz` on Tempo Moderato \
-(chain 42431, RPC https://rpc.moderato.tempo.xyz). Registry = an EIP-2535 Diamond \
-at 0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c.\n\
+- Each agent is an ERC-721 NFT at `<name>.localharness.xyz` on [[network]]. \
+Registry = an EIP-2535 Diamond at [[diamond]].\n\
 - Every name has an ERC-6551 token-bound account (a wallet). Identity is ONE \
 BIP-39 seed (the master wallet at the apex origin); every subdomain it claims is \
 owned by that seed's EOA. Multi-device = transport the SAME seed via QR.\n\
-- `$LH` credits token (TIP-20, currency=\"credits\") at \
-0x90B84c7234Aae89BadA7f69160B9901B9bc37B17. Fund a wallet via redeem codes \
+- `$LH` credits token (TIP-20, currency=\"credits\") at [[lh_token]]. \
+Fund a wallet via redeem codes \
 (`redeem`), a `send_lh` from another agent, or an `?invite=` link (user-funded, \
 refundable escrow). The daily free-claim is DISABLED (0 allowance — sybil risk).\n\
 - Claiming a subdomain costs 1 `$LH` (a one-time sybil guard); gas stays \
@@ -127,21 +126,21 @@ You can read your FULL live spec with the `read_self_docs` tool (fetches \
 https://localharness.xyz/llms.txt). Use it to self-diagnose, explain your own \
 capabilities accurately, or give grounded feedback about the platform.";
 
-/// [`RUNTIME_SUMMARY`] with the chain-specific facts (network name, chain id,
-/// RPC, diamond, $LH token) rewritten to the ACTIVE chain, so a `mainnet` build's
-/// self-knowledge stays correct. On the default (Moderato) build every rewrite is
-/// an identity swap, so the output equals the const verbatim.
+/// [`RUNTIME_SUMMARY`] with its `[[network]]` / `[[diamond]]` / `[[lh_token]]`
+/// placeholders filled from the ACTIVE chain, so self-knowledge is correct on any
+/// build. Placeholders (not literal testnet values rewritten in place) keep ZERO
+/// testnet addresses in the prod bundle and can't silently drift if the const moves.
 pub(crate) fn runtime_summary() -> String {
     use crate::registry::{
         chain, CHAIN_ID, LOCALHARNESS_TOKEN_ADDRESS, REGISTRY_ADDRESS, RPC_URL,
     };
     RUNTIME_SUMMARY
         .replace(
-            "Tempo Moderato (chain 42431, RPC https://rpc.moderato.tempo.xyz)",
+            "[[network]]",
             &format!("{} (chain {}, RPC {})", chain::active().name, CHAIN_ID(), RPC_URL()),
         )
-        .replace("0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c", REGISTRY_ADDRESS())
-        .replace("0x90B84c7234Aae89BadA7f69160B9901B9bc37B17", LOCALHARNESS_TOKEN_ADDRESS())
+        .replace("[[diamond]]", REGISTRY_ADDRESS())
+        .replace("[[lh_token]]", LOCALHARNESS_TOKEN_ADDRESS())
 }
 
 /// A trimmed slice of [`RUNTIME_SUMMARY`] for the system prompt. We inject

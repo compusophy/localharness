@@ -27,9 +27,18 @@ pub struct ChainConfig {
     pub lh_token: &'static str,
     /// Default USD-currency TIP-20 used as the sponsor `fee_token` (NOT $LH).
     pub fee_token: &'static str,
+    /// Block-explorer base URL (e.g. `https://explore.tempo.xyz`). The UI builds
+    /// `{explorer_url}/address/{addr}` links from this so it never hardcodes a
+    /// per-chain explorer host (which used to point mainnet links at the testnet).
+    pub explorer_url: &'static str,
 }
 
-/// Tempo Moderato testnet — the live deployment today.
+/// Tempo Moderato testnet — the native CLI/SDK default + the wasm-no-mainnet
+/// preview build. cfg-gated OUT of the prod wasm+mainnet bundle so NO testnet
+/// config (rpc / chain id / diamond / token / explorer) is even compiled into
+/// the shipped browser binary; `active()` there is pinned to [`MAINNET`] and
+/// never names this const, native (`resolve_chain`) + wasm-no-mainnet keep it.
+#[cfg(any(not(target_arch = "wasm32"), not(feature = "mainnet")))]
 pub const MODERATO: ChainConfig = ChainConfig {
     name: "Tempo Moderato",
     rpc_url: "https://rpc.moderato.tempo.xyz",
@@ -37,6 +46,7 @@ pub const MODERATO: ChainConfig = ChainConfig {
     diamond: "0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c",
     lh_token: "0x90B84c7234Aae89BadA7f69160B9901B9bc37B17",
     fee_token: "0x20c0000000000000000000000000000000000001", // AlphaUSD
+    explorer_url: "https://moderato.tempo.xyz",
 };
 
 /// Tempo mainnet (chain 4217, live since 2026-03-18). rpc/chain are confirmed;
@@ -56,6 +66,8 @@ pub const MAINNET: ChainConfig = ChainConfig {
     // USDC.e (Stargate-bridged USDC) — a USD-currency TIP-20 the chain accepts as
     // a gas/fee token (Tempo has no native coin); confirmed on the mainnet token list.
     fee_token: "0x20c000000000000000000000b9537d11c60e8b50",
+    // Tempo mainnet block explorer (Blockscout-style /address/{0x…}), chain 4217.
+    explorer_url: "https://explore.tempo.xyz",
 };
 
 /// The active chain, resolved ONCE on first read. Native: from `LH_CHAIN`
