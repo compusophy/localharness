@@ -106,7 +106,7 @@ src/                  library crate
     │                 engine; per-backend compaction.rs are thin adapters)
     │                 stream_timeout.rs — fix backend plumbing HERE, not per-backend
     ├── gemini/       api.rs(client) wire.rs loop.rs compaction.rs mod.rs
-    ├── anthropic/    Codex Messages API backend (feature "anthropic")
+    ├── anthropic/    Claude Messages API backend (feature "anthropic")
     ├── openai/       OpenAI Chat Completions backend (feature)
     ├── mock/         deterministic offline backend (Agent::start_mock; wasm-clean)
     ├── mcp/          stdio MCP client (native-only)
@@ -163,7 +163,7 @@ web/          Vercel static site: index.html + boot.js + cartridge-worker.js
               (off-main-thread cartridge runtime, the brick fix) + pkg/(wasm-pack
               output, gitignored) + llms.txt(full agent spec) + skill.md(onboarding)
 proxy/        $LH credit proxy — SEPARATE Vercel project. The ONE off-chain
-              component. api/gemini.ts(multi-LLM: Gemini/Codex/GPT) +
+              component. api/gemini.ts(multi-LLM: Gemini/Claude/GPT) +
               api/mcp.ts(x402-gated MCP-over-HTTP) + api/scheduler.ts(Vercel-Cron
               no-tab job worker) + api/notify.ts(web-push, self or cross-agent
               `to`, sender-stamped; CLI `notify --to`)
@@ -198,7 +198,7 @@ wasm-opt rejects post-MVP features modern rustc emits).
   k256+sha3+rand_core+bip39. All targets.
 - **`browser-app`** (off): `src/app/` as wasm cdylib. Pulls maud, pulldown-cmark,
   +wallet, +anthropic, +openai transitively. No native effect.
-- **`anthropic`** / **`openai`** (off): Codex Messages / OpenAI Chat Completions
+- **`anthropic`** / **`openai`** (off): Claude Messages / OpenAI Chat Completions
   backends. ADDITIVE — no new deps. BYOK or platform `$LH` via the proxy. OpenAI
   gotcha: streamed `tool_calls` are index-keyed fragments to concat (`openai/loop.rs`).
 - **`local`** (off): in-browser Gemma 3 270M via Burn wgpu/WebGPU (no proxy/key).
@@ -457,7 +457,7 @@ fetches + decrypts via the apex iframe BEFORE the api-key modal. Saving best-eff
 
 Proxy (separate Vercel project "proxy") is the ONE off-chain component. Platform
 `$LH` is the **primary** path; **BYOK** is the fallback (skips the proxy).
-`api/gemini.ts` = multi-provider passthrough (Gemini/Codex/OpenAI); auth =
+`api/gemini.ts` = multi-provider passthrough (Gemini/Claude/OpenAI); auth =
 Ethereum personal-sign `address:timestamp:signature` in `x-goog-api-key`; proxy
 gates on a session OR `creditOf`, debits the meter before streaming charging
 `min(cost,balance)` (a positive balance spends to zero). **0.47.0: `$LH` decoupled

@@ -62,6 +62,13 @@ lands. Append as cruft is found; clear lines as removed.
   `Action::parse` (no dead buttons). `src/app` is wasm32-only so it can't unit-test
   parse directly; the text cross-check runs in every `cargo test`. Reverse
   direction (every parsed Action has a dispatch arm) is a possible follow-up.
+- [x] **AGENTS.md / CLAUDE.md sync guard (report §4)** — DONE 2026-06-21. The two
+  563-line maps had drifted: a blanket Claude→Codex replace turned the factual
+  "Claude Messages API" into a nonexistent "Codex Messages API" (×4) in AGENTS.md.
+  Fixed those, then added `tests/agents_claude_in_sync.rs`: AGENTS.md with its
+  intentional agent-name substitutions undone must equal CLAUDE.md byte-for-byte,
+  so they can't drift again. (Full generation per the report would be a larger
+  follow-up; the guard captures the value cheaply.)
 
 ## Needs a product decision (flagged, NOT auto-resolved)
 
