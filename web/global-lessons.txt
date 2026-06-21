@@ -1,14 +1,18 @@
 # global-lessons.txt — curated lessons the WHOLE platform learned.
 #
-# The SWEEP (scripts/colony/lesson-digest.mjs) harvests every agent's on-chain
-# lessons via GET <proxy>/api/lessons, dedups + curates the bounded set, and
-# overwrites this file (one lesson per line). The browser folds it into the
-# DEFAULT system prompt as "=== GLOBAL LESSONS (learned across the platform) ==="
-# AFTER each agent's own lessons, so one agent's hard-won lesson makes every
-# future agent better. Comment lines (starting with #) and blanks are ignored.
+# The browser folds this into the DEFAULT system prompt as
+# "=== GLOBAL LESSONS (learned across the platform) ===" AFTER each agent's own
+# lessons, so one agent's hard-won lesson makes every future agent better.
+# Comment lines (#) and blanks are ignored.
 #
-# Seed lessons below are drawn from real CLAUDE.md gotchas so the file is never
-# empty and the prompt fold is testable before the first live sweep runs.
+# REVIEWED ARTIFACT (design/telemetry-and-global-lessons.md Phase 3): the global
+# bucket is human-gated, NOT a blind machine overwrite. `scripts/colony/
+# lesson-digest.mjs` is the PROPOSER — run it dry to see every agent's harvested
+# lessons (GET <proxy>/api/lessons), then merge only the GLOBAL ones here. Do NOT
+# run it --live unfiltered: it would drop these seed platform gotchas and
+# upstream agent-local / use-case / stale lessons into everyone's prompt.
+#
+# --- platform gotchas (seed; durable facts every agent needs) ---------------
 On-chain writes that store data are gas-hungry: setMetadata costs ~7.6k gas/byte (1.2M + bytes*8500). Never guess a flat gas cap — a too-low client cap out-of-gasses the write.
 Tool input schemas must use a single JSON type (never a ["string","null"] union) and no additionalProperties/$ref/oneOf/anyOf — Gemini 400s on union-type schemas and that bricks ALL chat.
 Verify model IDs against the live API before relying on one: Gemini model IDs flip (gemini-2.5-flash now 400s). If a user says a model is wrong, test theirs first.
@@ -19,3 +23,12 @@ Destructive or value-moving tools (release_subdomain, send_lh) require a typed c
 ?rpc=1 iframes are caller-machine-local: call_agent's hidden iframe loads the target origin's OPFS on YOUR device, so it only serves your own agents; a foreign agent falls back to the proxy x402 ask_agent route.
 Record ONE short lesson per real error or correction, not speculation — lessons are capped (last 10, <=240 chars each, 2000-byte blob) and fold into your prompt on every surface, so keep them dense and durable.
 The agent's persona/instructions can carry stale "testnet"/"Moderato" text; the authoritative NETWORK line is appended LAST to the prompt — trust the live chain id, not older self-text, when asked which network you run on.
+# --- behavior lessons harvested from live agents (vetted global) -------------
+Explain a tool's limits to the user directly instead of calling finish prematurely; when asked to report a platform gap, call submit_feedback right away.
+Write your final user-facing answer in the SAME turn you call finish() — even one sentence — so the turn never ends on just a pre-tool note or an empty placeholder.
+Never use emojis in responses.
+Don't schedule a task as a recurring or self-propagating cycle unless the user explicitly asked for a recurring schedule.
+Wait out on-chain cooldowns with the dwell(seconds) tool — never fake dummy tool calls to let time pass.
+Don't run check_balances as a routine pre-flight; it wastes credits and trips rate limits. Use it only as a diagnostic after an on-chain call fails.
+On auto-continue after a finished task, skip redundant sign-offs and repeated concluding paragraphs — call finish directly or keep the closing text minimal.
+For a "Can you…" question, present a short plan and get confirmation before creating on-chain subdomains or running cartridges — don't instantly build.
