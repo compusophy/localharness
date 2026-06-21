@@ -776,6 +776,48 @@ pub(crate) fn schedule_task_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     )
 }
 
+/// `cancel_task(job_id)` — cancel a scheduled job this agent owns and REFUND its
+/// remaining `$LH` escrow (on-chain feedback #47: agents could `schedule_task`
+/// but had no way to tear one down without the admin UI). The in-chat twin of
+/// the CLI `unschedule`; `cancelJob` is owner-gated on-chain, so it only ever
+/// cancels the caller's own jobs. NOT confirm-gated — it returns funds (no value
+/// loss) and the whole point is autonomous teardown of an agent's own loops.
+pub(crate) fn cancel_task_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "job_id": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "The id of the scheduled job to cancel — from \
+                    schedule_task's returned job_id, or the admin → account → \
+                    schedule list."
+            }
+        },
+        "required": ["job_id"]
+    });
+    ClosureTool::new(
+        "cancel_task",
+        "Cancel a scheduled job YOU own and refund its remaining `$LH` escrow (via \
+         ScheduleFacet cancelJob) — the teardown counterpart to schedule_task, e.g. to \
+         stop a recurring task or goal-loop you started. Owner-gated on-chain: \
+         cancelling a job you don't own (or an unknown id) fails. Returns \
+         { cancelled, job_id, tx }.",
+        schema,
+        |args: serde_json::Value, _ctx| async move {
+            let job_id = args.get("job_id").and_then(|v| v.as_u64()).ok_or_else(|| {
+                crate::error::Error::other(
+                    "cancel_task: job_id must be a non-negative integer (from schedule_task)",
+                )
+            })?;
+            let tx = crate::app::events::schedule::cancel_schedule_job(job_id)
+                .await
+                .map_err(crate::error::Error::other)?;
+            Ok(serde_json::json!({ "cancelled": true, "job_id": job_id, "tx": tx }))
+        },
+    )
+}
+
 /// Cross-agent notify: POST `{title, body, to}` to the proxy's `/api/notify`
 /// with a fresh credit-signed auth token. The proxy resolves the target's
 /// enrolled push subscription on-chain, stamps the sender's chain-verified

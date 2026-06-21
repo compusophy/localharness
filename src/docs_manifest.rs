@@ -91,6 +91,7 @@ pub const AGENT_TOOLS: &[(&str, &[&str])] = &[
             "start_subagent",
             "spawn_recursive_subagent",
             "schedule_task",
+            "cancel_task",
         ],
     ),
     (

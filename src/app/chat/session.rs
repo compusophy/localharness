@@ -36,7 +36,8 @@ use super::tools::misc::{
     clear_notifications_tool, consult_model_tool, create_skill_tool, delete_skill_tool, dwell_tool,
     execute_script_tool, clear_context_tool, compact_context_tool, consolidate_lessons_tool,
     list_notifications_tool, list_skills_tool, notify_tool, record_lesson_tool, run_wasm_cli_tool,
-    schedule_task_tool, set_lessons_tool, set_persona_tool, spawn_recursive_subagent_tool,
+    cancel_task_tool, schedule_task_tool, set_lessons_tool, set_persona_tool,
+    spawn_recursive_subagent_tool,
     submit_feedback_tool, web_fetch_tool,
 };
 use super::tools::platform::{
@@ -380,6 +381,7 @@ pub(crate) async fn start_session(
             .with_tool(list_notifications_tool())
             .with_tool(clear_notifications_tool())
             .with_tool(schedule_task_tool())
+            .with_tool(cancel_task_tool())
             .with_tool(record_lesson_tool())
             .with_tool(consolidate_lessons_tool())
             .with_tool(set_lessons_tool())
@@ -506,6 +508,7 @@ pub(crate) async fn start_session(
             .with_tool(list_notifications_tool())
             .with_tool(clear_notifications_tool())
             .with_tool(schedule_task_tool())
+            .with_tool(cancel_task_tool())
             .with_tool(record_lesson_tool())
             .with_tool(consolidate_lessons_tool())
             .with_tool(set_lessons_tool())

@@ -83,3 +83,28 @@ pub(crate) async fn submit_schedule_job(
     };
     Ok(new_id)
 }
+
+/// Cancel a scheduled job by id — sponsored `cancelJob`, which REFUNDS the
+/// job's remaining escrow to the owner's WALLET. The in-chat twin of the CLI
+/// `unschedule`, reused by the `cancel_task` chat tool: mirrors
+/// [`submit_schedule_job`]'s sponsor-guard → credit-signer → embedded
+/// fee-payer → sponsored tx → pill-refresh shape. `cancelJob` is owner-gated
+/// on-chain, so cancelling a job this identity doesn't own (or an unknown id)
+/// reverts — no client-side ownership pre-check needed. Returns the tx hash.
+pub(crate) async fn cancel_schedule_job(job_id: u64) -> Result<String, String> {
+    super::sponsor_rate_guard()?;
+    let (signer, _addr) = crate::app::chat::credit_signer()
+        .await
+        .ok_or_else(|| "no identity".to_string())?;
+    let fee_payer = crate::app::sponsor::signer()?;
+    let tx = crate::app::registry::cancel_job_sponsored(
+        &signer,
+        &fee_payer,
+        job_id,
+        crate::app::registry::ALPHA_USD_ADDRESS(),
+    )
+    .await?;
+    // The refund landed back in the wallet pot — reflect it in the credits pill.
+    super::refresh_credits_pill().await;
+    Ok(tx)
+}
