@@ -103,4 +103,46 @@ mod tests {
         assert!(ids.contains(&localharness::backends::openai::MINI_MODEL));
         assert!(ids.contains(&localharness::backends::openai::PRO_MODEL));
     }
+
+    /// SSOT drift guard (tech-debt report §2): the proxy per-model price table
+    /// (`proxy/api/_prices.ts`) must price EXACTLY the non-Gemini model ids the
+    /// CLI advertises in `MODELS`. A model renamed in the backend/CLI but not in
+    /// the proxy table would silently fall to the proxy's UNKNOWN-model default
+    /// tier (a mis-billing); a stale id priced there would advertise a dead model.
+    /// `MODELS` itself is already pinned to the backend wire constants above, so
+    /// this closes the loop to the off-chain price table. Reads the TS at test
+    /// time; skips if the proxy tree isn't present (packaged crate).
+    #[test]
+    fn proxy_price_table_matches_cli_models() {
+        use std::collections::BTreeSet;
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("proxy/api/_prices.ts");
+        let Ok(src) = std::fs::read_to_string(&path) else {
+            eprintln!("skip: {} not present (packaged crate?)", path.display());
+            return;
+        };
+        // The CLI's non-Gemini ids (Gemini is flat-priced, no per-model row).
+        let cli: BTreeSet<&str> = MODELS
+            .iter()
+            .map(|(id, _, _)| *id)
+            .filter(|id| id.starts_with("claude-") || id.starts_with("gpt-"))
+            .collect();
+        // Proxy-priced ids = single-quoted record keys (`'<id>':`) that start
+        // with claude-/gpt-. Those quotes only appear as PRICE_* record keys.
+        let mut proxy: BTreeSet<String> = BTreeSet::new();
+        for line in src.lines() {
+            let Some(rest) = line.trim_start().strip_prefix('\'') else { continue };
+            let Some(end) = rest.find('\'') else { continue };
+            let id = &rest[..end];
+            let is_key = rest[end + 1..].trim_start().starts_with(':');
+            if is_key && (id.starts_with("claude-") || id.starts_with("gpt-")) {
+                proxy.insert(id.to_string());
+            }
+        }
+        let proxy_refs: BTreeSet<&str> = proxy.iter().map(String::as_str).collect();
+        assert_eq!(
+            cli, proxy_refs,
+            "proxy _prices.ts model ids drifted from CLI MODELS.\n  CLI:   {cli:?}\n  proxy: {proxy_refs:?}"
+        );
+    }
 }

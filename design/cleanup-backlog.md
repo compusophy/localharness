@@ -42,6 +42,13 @@ lands. Append as cruft is found; clear lines as removed.
   testnet fallbacks must mirror Rust `MODERATO`, caught on every `cargo test`
   (gates releases via verify.sh). Residual 26 allows are mostly legit (cfg-gated,
   wire structs, test helpers) — a future tick can reason-annotate or remove them.
+- [x] **Model-catalog drift guard (report §2)** — DONE 2026-06-21. Added the
+  `proxy_price_table_matches_cli_models` cargo test: the proxy `_prices.ts`
+  per-model price table must price EXACTLY the non-Gemini ids in CLI `MODELS`
+  (itself pinned to the backend wire constants), so a renamed model can't silently
+  fall to the proxy's unknown-model default tier. Remaining §2 surfaces (browser
+  selector, `_usage.ts` token rates, docs) still drift-by-hand — a fuller catalog
+  is a larger follow-up.
 
 ## Needs a product decision (flagged, NOT auto-resolved)
 
