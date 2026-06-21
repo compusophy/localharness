@@ -791,7 +791,7 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
         },
-        Some("keeper") => keeper_plan().await,
+        Some("keeper") => keeper_plan(&args[1..]).await,
         Some("unschedule") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) if !rest.is_empty() => unschedule(caller.as_deref(), &rest[0]).await,
             Ok(_) => {
@@ -1000,10 +1000,34 @@ async fn run(args: &[String]) -> i32 {
 }
 
 /// `keeper` — one decentralized-keeper tick (krafto #1.5): read the cross-owner
-/// due set (`registry::all_due_job_ids`), pick via `keeper::jobs_to_fire` (solo),
-/// and POKE the proxy (`?poke`) to run each. Trust-free — the proxy re-validates
-/// due-ness + CAS, so any keeper is a heartbeat when the Vercel cron stalls.
-async fn keeper_plan() -> i32 {
+/// `keeper` dispatch: one-shot by default, or `--watch [secs]` to run a
+/// long-lived sub-minute heartbeat (the "serverless server, async tick").
+/// Watch mode ticks every `secs` (default 15s, min 1s) and never exits on a
+/// transient scan error — it just logs and keeps beating. A watching keeper
+/// pokes a due job within ~`secs` of its slot instead of waiting up to the
+/// 1/min Vercel cron; multiple keepers are safe (the on-chain recordRun CAS
+/// dedupes overlapping pokes to one paid run).
+async fn keeper_plan(args: &[String]) -> i32 {
+    let watch_secs: Option<u64> = args.iter().position(|a| a == "--watch").map(|i| {
+        args.get(i + 1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(15).max(1)
+    });
+    match watch_secs {
+        None => keeper_tick().await,
+        Some(secs) => {
+            println!("keeper: watch mode — ticking every {secs}s (Ctrl-C to stop)");
+            loop {
+                keeper_tick().await; // logs its own result; errors never break the beat
+                tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+            }
+        }
+    }
+}
+
+/// ONE keeper pass: scan the on-chain due set (`registry::all_due_job_ids`),
+/// pick via `keeper::jobs_to_fire` (solo), and POKE the proxy (`?poke`) to run
+/// each. Trust-free — the proxy re-validates due-ness + CAS, so any keeper is a
+/// heartbeat when the Vercel cron stalls.
+async fn keeper_tick() -> i32 {
     use std::time::{SystemTime, UNIX_EPOCH};
     println!("keeper: scanning on-chain for due jobs across all owners …");
     let due = match registry::all_due_job_ids().await {
