@@ -605,17 +605,19 @@ main.layout .transcript > *:empty { display: none; }
    survives only as the unread FLAG: present & not [hidden] ⇒ unread. It
    never renders, so the button stays square. */
 .notif-badge { display: none; }
-/* Unread → a soft 2s sine swell of the bell glyph from --fg to white and
-   back (the icon strokes currentColor). ease-in-out over a symmetric
-   keyframe reads as a sine pulse; it stops the instant the badge gains
-   [hidden] (panel opened / cleared). 0%/100% == the resting --fg so there's
-   no jump when the animation is removed. */
+/* Unread → a 1.4s sine swell of the bell glyph that DIPS to --muted and
+   peaks at pure white (the icon strokes currentColor), with a soft white
+   halo blooming at the peak. The wide --muted→white range is what makes it
+   read as a pulse — a --fg→white sweep was both too bright at rest and too
+   narrow to perceive (it "just stayed bright"). ease-in-out keeps it a
+   smooth swell, not a strobe. Stops the instant the badge gains [hidden]
+   (panel opened / cleared); the bell then snaps back to its resting --fg. */
 .notif-bell-btn:has(.notif-badge:not([hidden])) {
-  animation: notif-bell-pulse 2s ease-in-out infinite;
+  animation: notif-bell-pulse 1.4s ease-in-out infinite;
 }
 @keyframes notif-bell-pulse {
-  0%, 100% { color: var(--fg); }
-  50%      { color: var(--accent); }
+  0%, 100% { color: var(--muted); filter: drop-shadow(0 0 0 transparent); }
+  50%      { color: #fff; filter: drop-shadow(0 0 5px rgba(255, 255, 255, 0.55)); }
 }
 .notif-panel {
   position: absolute;
