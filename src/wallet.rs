@@ -292,6 +292,24 @@ pub fn at_rest_key_from_entropy(entropy: &[u8]) -> [u8; 32] {
     out
 }
 
+/// Derive the 32-byte AES key sealing the seed in the QR seed-adoption
+/// flow (`?adopt=1#s=<ct>`), from a one-time pairing CODE (tag
+/// `localharness/v0/adopt`, code uppercased + trimmed). Deterministic on
+/// every device, so the desktop browser can `seal` the mnemonic under it
+/// and a second device — a paired phone OR the `localharness link` CLI —
+/// derives the SAME key from the typed code and decrypts. The SINGLE
+/// source of truth shared by the browser (`app::events::devices`) and the
+/// CLI (`bin/localharness::link`); they MUST agree byte-for-byte, hence one
+/// impl here next to the sibling key derivations where a native test pins it.
+pub fn adopt_code_key(code: &str) -> [u8; 32] {
+    let mut hasher = Keccak256::new();
+    hasher.update(b"localharness/v0/adopt");
+    hasher.update(code.trim().to_uppercase().as_bytes());
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&hasher.finalize());
+    out
+}
+
 fn finalize(signer: SigningKey) -> GeneratedWallet {
     let address = address(&signer);
     let private_key_hex = format!("0x{}", hex_encode(&signer.to_bytes()));
@@ -613,6 +631,27 @@ mod tests {
         );
         assert_ne!(at_rest, keysync_key_from_entropy(&entropy));
         assert_ne!(at_rest, sharedfs_key_from_entropy(&entropy));
+    }
+
+    /// PINNED adopt-code key derivation (tag `localharness/v0/adopt`) — the
+    /// QR seed-adoption transport key the browser seals the seed under and the
+    /// `localharness link` CLI re-derives to open it. The two MUST agree, and
+    /// a changed output silently breaks every in-flight adopt link, so pin it.
+    /// Also pins the code is normalized (uppercased + trimmed) before hashing,
+    /// so a phone typing `abc123` and the CLI passing ` ABC123 ` agree.
+    #[test]
+    fn adopt_code_key_pinned_and_case_insensitive() {
+        // Generated ONCE from the live implementation (2026-06-21).
+        assert_eq!(
+            hex_encode(&adopt_code_key("ABC234")),
+            "76375069e23267cc461bdc0d247401b56d022d8b33a0155ddbb46784d81ebd77",
+            "adopt-code key derivation changed — in-flight adopt links break"
+        );
+        // Case + surrounding whitespace are normalized away (same key).
+        assert_eq!(adopt_code_key("abc234"), adopt_code_key("ABC234"));
+        assert_eq!(adopt_code_key("  abc234 \n"), adopt_code_key("ABC234"));
+        // A different code derives a different key (no collision).
+        assert_ne!(adopt_code_key("ABC234"), adopt_code_key("ABC235"));
     }
 
     #[test]

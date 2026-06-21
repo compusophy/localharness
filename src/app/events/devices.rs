@@ -69,17 +69,13 @@ pub(super) fn pair_cancel_pressed() {
     dom::swap_inner("pair-msg", "");
 }
 
-/// Derive a 32-byte transport key from a one-time pairing code. Keccak256
-/// of the uppercased code — deterministic on both devices, so the desktop
-/// can `seal_with_raw_key` and the phone can `open_with_raw_key`.
+/// Derive a 32-byte transport key from a one-time pairing code — the
+/// canonical [`crate::wallet::adopt_code_key`] (tag `localharness/v0/adopt`),
+/// shared with the `localharness link` CLI so a seed sealed here decrypts
+/// there byte-for-byte. The desktop `seal_with_raw_key`s under it; the phone
+/// (or the CLI) `open_with_raw_key`s with the same key from the typed code.
 fn code_key(code: &str) -> [u8; 32] {
-    use sha3::{Digest, Keccak256};
-    let mut h = Keccak256::new();
-    h.update(b"localharness/v0/adopt");
-    h.update(code.trim().to_uppercase().as_bytes());
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&h.finalize());
-    out
+    crate::wallet::adopt_code_key(code)
 }
 
 /// Thin wrapper over [`crate::encoding::hex_to_bytes`]: the adopt-link

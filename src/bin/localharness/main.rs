@@ -120,6 +120,7 @@ mod credits;
 mod guild;
 mod identity;
 mod invite;
+mod link;
 mod mcp;
 mod models;
 mod notify;
@@ -148,6 +149,7 @@ pub(crate) use credits::*;
 pub(crate) use guild::*;
 pub(crate) use identity::*;
 pub(crate) use invite::*;
+pub(crate) use link::*;
 pub(crate) use mcp::*;
 pub(crate) use models::*;
 pub(crate) use notify::*;
@@ -243,6 +245,13 @@ IDENTITY & PROFILE
                                          creates a local key + accepts the invite
                                          (an operator runs `invite create` once);
                                          then `create <name>` claims a name
+  localharness link --as <name> '<?adopt=1#s=… link>' [--code <CODE>]
+                                         adopt a FUNDED web wallet's seed into this
+                                         terminal identity so the CLI inherits its
+                                         $LH (no separate funding). In the browser:
+                                         admin -> add a device gives a one-time
+                                         CODE + an ?adopt=1#s=<ct> link/QR; paste
+                                         that link + CODE here to write <name>'s key
   localharness persona <name> <text>     publish <name>'s public system prompt so
                                          `call` answers as that agent (text or file)
   localharness price <name> <amount|clear>
@@ -653,6 +662,7 @@ async fn run(args: &[String]) -> i32 {
         Some("mcp") => mcp_serve(&args[1..]).await,
         Some("models") => models(),
         Some("onboard") => onboard(&args[1..]).await,
+        Some("link") => link(&args[1..]).await,
         Some("list") | Some("mine") => match parse_list_flags(&args[1..]) {
             Ok((caller, json)) => list_mine(caller.as_deref(), json).await,
             Err(e) => {
@@ -1036,6 +1046,7 @@ mod tests {
             "feedback", "probe", "triage", "threads", "forget", "whoami", "status",
             "invite", "bounty", "colony", "reputation", "guild", "party", "validation", "vote", "tba",
             "room", "schedule", "goal", "jobs", "unschedule", "notify", "models", "sh",
+            "onboard", "link",
         ] {
             assert!(
                 USAGE.contains(cmd),

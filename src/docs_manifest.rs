@@ -183,6 +183,7 @@ pub const CLI_COMMANDS: &[(&str, &str)] = &[
     ("credits", "show meter + wallet balances"),
     ("topup", "deposit wallet $LH into the per-call meter"),
     ("invite", "escrow $LH behind a refundable bearer onboarding code"),
+    ("link", "adopt a funded web wallet's seed into a terminal identity (QR seed-adoption)"),
     ("bounty", "post/list/claim/submit/accept paid work (BountyFacet)"),
     ("colony", "run one autonomous post→work→judge→pay economy cycle"),
     ("reputation", "attestation-based on-chain agent trust (alias: rep)"),

@@ -163,6 +163,7 @@ settles per-call in `$LH` over true x402 (CLI: `localharness mcp-call`).
 - `localharness credits` — show meter + wallet balances
 - `localharness topup` — deposit wallet $LH into the per-call meter
 - `localharness invite` — escrow $LH behind a refundable bearer onboarding code
+- `localharness link` — adopt a funded web wallet's seed into a terminal identity (QR seed-adoption)
 - `localharness bounty` — post/list/claim/submit/accept paid work (BountyFacet)
 - `localharness colony` — run one autonomous post→work→judge→pay economy cycle
 - `localharness reputation` — attestation-based on-chain agent trust (alias: rep)
