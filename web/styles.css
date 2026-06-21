@@ -957,9 +957,10 @@ main.layout .transcript > *:empty { display: none; }
    button to the RIGHT, matching the header bell/cog. */
 .terminal-footer {
   display: flex;
-  /* 12px (--space-3) between the input box and the send button — matches the
-     --chrome-pad chat rhythm so the control isn't crowded against the field. */
-  gap: var(--space-3);
+  /* --chrome-pad (16px) between the input box and the send button — the SAME
+     uniform gap as the header bell·bug·cog cluster (.header-admin), so the
+     send button sits off the field by the exact brand chrome rhythm. */
+  gap: var(--chrome-pad);
   align-items: flex-end;
 }
 .terminal-row {
