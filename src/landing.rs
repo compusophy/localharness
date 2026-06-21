@@ -336,4 +336,16 @@ mod tests {
         std::fs::write(&path, page.into_string()).expect("write authed-preview.html");
         println!("wrote {}", path.display());
     }
+
+    /// Smoke the turn-status glyphs + the iOS notice. These render only on the
+    /// wasm/browser-app surface (`templates::*`), so the native build can't see
+    /// the call sites and would otherwise flag them "never used" — cover them
+    /// here so the warning signal stays meaningful AND the markup is guarded.
+    #[test]
+    fn status_glyphs_and_ios_notice_render() {
+        for svg in [brain_glyph(), wave_glyph(), wrench_glyph()] {
+            assert!(svg.into_string().contains("<svg"));
+        }
+        assert!(ios_unavailable().into_string().contains("not available on iOS"));
+    }
 }

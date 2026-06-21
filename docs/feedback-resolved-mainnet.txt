@@ -118,7 +118,9 @@
 45  a749c50  current_time builtin tool — host wall clock (unix + ISO-8601 UTC),
 #            native+wasm, read-only; agents no longer web_fetch an external clock
 #
-# #43 PARTIAL — source already defaults MAINNET (368d304); added a stderr
-#     "· localharness on <chain>" banner so the active chain is never silent
-#     (a749c50). The published crates.io binary still defaults testnet until a
-#     RELEASE ships these commits — that release is the load-bearing fix.
+# --- 2026-06-21 feedback #43 (CLI chain-default footgun) --------------------
+43  7d4f891  RESOLVED by the 0.53.0 release (the load-bearing fix): the published
+#            crates.io binary now defaults to MAINNET (testnet is the explicit
+#            `--dev` opt-in; unrecognized LH_CHAIN is a hard error) + a stderr
+#            "· localharness on <chain>" banner so the active chain is never
+#            silent. CLI and browser now agree by default.

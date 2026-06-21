@@ -23,9 +23,30 @@ lands. Append as cruft is found; clear lines as removed.
 
 - [ ] **OpenAI backend** — shipped but PARKED (no plan; key/selector never wired).
   Keep or delete? (`src/backends/openai/`, `gpt-*` ids in CLI models list.)
-- [ ] **PairingFacet** — already removed on-chain (QR seed-adoption superseded it);
-  scrub any dormant references.
-- [ ] (add as found during the pass)
+- [x] **PairingFacet** — archived 2026-06-21 → `contracts/archive/` (source +
+  Add/AddV2/Remove scripts). On-chain already removed; QR seed-adoption superseded it.
+- [x] **Flat registry + legacy deploy** — `LocalharnessRegistry.sol` + `Deploy.s.sol`
+  archived 2026-06-21 → `contracts/archive/`. Pre-diamond, abandoned after the reset.
+- [x] **BootstrapFaucet** — `BootstrapFaucet.sol` + `DeployBootstrapFaucet.s.sol`
+  archived 2026-06-21 → `contracts/archive/`. Dormant since Tempo sponsorship.
+
+## Needs a product decision (flagged, NOT auto-resolved)
+
+- [ ] **Pricing default drift (possible billing bug).** `proxy/api/_prices.ts`
+  defaults `COST_PER_REQUEST_WEI` to **1 $LH** but `fetch.ts`, `notify.ts`, and
+  `scheduler.ts` each default to **0.01 $LH** — and `main.rs`/`proxy/README.md`
+  disagree too. In prod these are likely all env-overridden, but the code defaults
+  are inconsistent. Fix = one shared `_metering.ts` table, but the *value* (are
+  fetch/notify 1 or 0.01?) is a billing call — needs the user, not a 4am guess.
+  Full analysis: `design/tech-debt-unused-code-report-2026-06-21.md` §1.
+
+## Reference
+
+The full audit (SSOT drift, model-catalog fragmentation, chain-config split,
+AGENTS/CLAUDE near-dup, proxy auth/meter copy-paste, registry ABI boilerplate,
+large-file hotspots, tooling gaps) lives in
+`design/tech-debt-unused-code-report-2026-06-21.md`. This file is the *actionable
+queue*; the report is the *analysis*.
 
 ## Notes
 
