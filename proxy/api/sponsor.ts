@@ -42,6 +42,7 @@ import {
 } from './_tempo';
 import { TEMPO_RPC, REGISTRY, CHAIN_ID, LH_TOKEN } from './_chain';
 import { SlidingWindow } from './_ratelimit';
+import { welcomeNewAgent } from './_welcome';
 
 export const config = { runtime: 'edge' };
 
@@ -152,7 +153,28 @@ function selector(sig: string): string {
 
 const APPROVE_SELECTOR = selector('approve(address,uint256)');
 const TRANSFER_SELECTOR = selector('transfer(address,uint256)');
+const REGISTER_SELECTOR = selector('register(string)');
 const DIAMOND_SELECTORS = new Set(DIAMOND_WRITE_SIGS.map(selector));
+
+/**
+ * The name in a sponsored `register(string)` call's calldata, or null if this
+ * call isn't a diamond register. The arg is a single dynamic string: word0 =
+ * offset (0x20), word1 = byte length, then the utf-8 bytes. Defensive — any
+ * malformed encoding returns null (the welcome is best-effort either way).
+ */
+function registeredName(c: TempoCallIntent): string | null {
+  if ('0x' + bytesToHex(c.to) !== DIAMOND) return null;
+  if (c.input.length < 4 || bytesToHex(c.input.slice(0, 4)) !== REGISTER_SELECTOR) return null;
+  const args = c.input.slice(4);
+  if (args.length < 64) return null;
+  const len = Number(BigInt('0x' + bytesToHex(args.slice(32, 64))));
+  if (len === 0 || len > 63 || args.length < 64 + len) return null;
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(args.slice(64, 64 + len));
+  } catch {
+    return null;
+  }
+}
 
 // The SELF-PAY surface — selectors a FUNDED caller may still relay. On mainnet
 // agents only ever hold $LH (never the AlphaUSD fee token), so an agent that has
@@ -536,6 +558,19 @@ export default async function handler(req: Request): Promise<Response> {
   // All caps passed — sign the fee_payer half.
   const fpHash = feePayerHash(intent, senderAddress);
   const fpSig = signHash65(fpHash, SPONSOR_KEY);
+
+  // WELCOME-ON-CREATION: a sponsored `register(string)` is a brand-new agent
+  // being minted. Fire-and-forget a warm welcome from the platform's
+  // `localharness` agent into the new name's on-chain inbox (it lands in the
+  // agent's bell on first open — push-free, durable). FIRE-AND-FORGET: never
+  // awaited, never throws — a welcome is a nicety and must not delay or fail
+  // the relay response. The helper itself waits for the register tx (which the
+  // caller assembles + submits right AFTER this returns) to land on-chain.
+  const newName = intent.calls.map(registeredName).find((n) => n !== null);
+  if (newName) {
+    void welcomeNewAgent(newName);
+  }
+
   return json(
     {
       feePayer: SPONSOR_ADDRESS,

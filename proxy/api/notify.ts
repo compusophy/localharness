@@ -67,6 +67,7 @@ import {
   sendWebPushAll,
   type PushSubscriptionJson,
 } from './_webpush';
+import { recordOnChainMessage } from './_message';
 import { SlidingWindow, claimedAddress } from './_ratelimit';
 
 export const config = { runtime: 'edge' };
@@ -134,25 +135,9 @@ const METER_ABI = [
   },
 ] as const;
 
-// MessageFacet.sendMessage — the permissionless async agent INBOX. When a
-// cross-agent `to:` target has NO Web Push subscription, the note still gets
-// RECORDED here (keyed by the recipient's tokenId) so it surfaces in their
-// in-app inbox the next time they open the tab, regardless of push state (#35).
-const MESSAGE_ABI = [
-  {
-    name: 'sendMessage',
-    type: 'function',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'toId', type: 'uint256' },
-      { name: 'body', type: 'string' },
-    ],
-    outputs: [],
-  },
-] as const;
-
-// MessageFacet body cap (matches the on-chain `MessageTooLong` guard at 1024).
-const MAX_MESSAGE_BODY_BYTES = 1024;
+// The MessageFacet inbox writer (sendMessage) + its 1024-byte body cap live in
+// the shared `_message.ts` — both this route (cross-agent no-push fallback) and
+// api/sponsor.ts (welcome-on-creation) record notes through it.
 
 /** Whether `s` is a well-formed 0x-prefixed 20-byte hex address. */
 function isHexAddress(s: string): boolean {
@@ -447,59 +432,7 @@ async function meterDebit(user: string, amount: bigint): Promise<void> {
   }
 }
 
-/**
- * RECORD a cross-agent note in the recipient's on-chain inbox
- * (`MessageFacet.sendMessage`) when no Web Push subscription can carry it (#35).
- * Permissionless (the proxy's meter key is the sender of record); the body is
- * the already-attributed `@<from>: <title> — <body>` text, capped to the on-
- * chain `MessageTooLong` limit. Awaits the receipt; throws on a definitive
- * revert (so the caller can avoid charging for a note that wasn't stored),
- * returns on an ambiguous wait failure (the tx likely landed). Best-effort by
- * design — the caller treats any failure as "could not record".
- */
-async function recordOnChainMessage(toId: bigint, body: string): Promise<void> {
-  const pk = process.env.PROXY_METER_KEY;
-  if (!pk) throw new Error('missing PROXY_METER_KEY');
-  // Trim to the on-chain byte cap (utf-8); sendMessage reverts past 1024 bytes.
-  let bytes = new TextEncoder().encode(body);
-  if (bytes.length > MAX_MESSAGE_BODY_BYTES) {
-    bytes = bytes.slice(0, MAX_MESSAGE_BODY_BYTES);
-    body = new TextDecoder().decode(bytes); // may drop a trailing partial char
-  }
-  if (!body) throw new Error('empty message body');
-  const account = privateKeyToAccount(
-    (pk.startsWith('0x') ? pk : `0x${pk}`) as `0x${string}`,
-  );
-  const wallet = createWalletClient({
-    account,
-    chain: TEMPO_CHAIN,
-    transport: http(TEMPO_RPC),
-  });
-  const data = encodeFunctionData({
-    abi: MESSAGE_ABI,
-    functionName: 'sendMessage',
-    args: [toId, body],
-  });
-  const hash = await wallet.sendTransaction({
-    to: REGISTRY as `0x${string}`,
-    data,
-    value: 0n,
-  });
-  const pub = createPublicClient({ chain: TEMPO_CHAIN, transport: http(TEMPO_RPC) });
-  let status: 'success' | 'reverted';
-  try {
-    ({ status } = await pub.waitForTransactionReceipt({
-      hash,
-      timeout: 12_000,
-      pollingInterval: 500,
-    }));
-  } catch {
-    return; // ambiguous (RPC/timeout) — assume stored; don't fail the note
-  }
-  if (status === 'reverted') {
-    throw new Error('on-chain message store reverted');
-  }
-}
+// recordOnChainMessage moved to the shared `_message.ts` (see import above).
 
 // ---- handler ------------------------------------------------------------------
 
