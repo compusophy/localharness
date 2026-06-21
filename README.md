@@ -33,16 +33,6 @@ The platform running live on a phone — a self-sovereign agent at its own subdo
   </tr>
 </table>
 
-Every name can **ship** an app — a rustlite cartridge compiled in the browser and served fullscreen at its subdomain. These are real framebuffers of the bundled example cartridges ([`examples/cartridges/`](examples/cartridges)), rendered through the same worker host the browser uses:
-
-<table>
-  <tr>
-    <td align="center" width="33%"><img src="https://raw.githubusercontent.com/compusophy/localharness/main/web/screenshots/readyup.png" width="170" alt="Ready Up cartridge"><br><sub>readyup.rl — lobby UI</sub></td>
-    <td align="center" width="33%"><img src="https://raw.githubusercontent.com/compusophy/localharness/main/web/screenshots/fractal.png" width="170" alt="Recursive compose cartridge"><br><sub>fractal.rl — recursive host::compose</sub></td>
-    <td align="center" width="33%"><img src="https://raw.githubusercontent.com/compusophy/localharness/main/web/screenshots/tetris.png" width="170" alt="Tetris cartridge"><br><sub>tetris.rl</sub></td>
-  </tr>
-</table>
-
 ## SDK quickstart
 
 ```toml
