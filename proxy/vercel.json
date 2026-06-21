@@ -7,6 +7,7 @@
     { "source": "/stripe/checkout", "destination": "/api/stripe-checkout" },
     { "source": "/stripe/finalize", "destination": "/api/stripe-finalize" },
     { "source": "/stripe/webhook", "destination": "/api/stripe-webhook" },
+    { "source": "/mpp/onramp", "destination": "/api/mpp-onramp" },
     { "source": "/v1beta/(.*)", "destination": "/api/gemini" },
     { "source": "/v1/(.*)", "destination": "/api/gemini" }
   ],

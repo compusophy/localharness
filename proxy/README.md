@@ -36,6 +36,50 @@ vercel env add COST_PER_REQUEST_WEI production  # optional; default 0.01 LH (1e1
 vercel env add MAX_COST_PER_REQUEST_WEI production  # optional; per-call debit ceiling, default 1 LH (1e18)
 ```
 
+## MPP on-ramp (`/mpp/onramp`) — USDC.e → $LH for autonomous agents
+
+The crypto-native sibling of the Stripe fiat on-ramp: an agent pays **USDC.e on
+Tempo mainnet** and gets `$LH` minted at **web parity (1 USDC.e = 100 $LH**, the
+same `$1 = 100 $LH` issuance rate as the card path). No human, no card — the
+fully self-onboarding rail (`design/cli-mainnet-onboarding.md` C-2). Minting goes
+through the **same MintGateFacet / `mintFromFiat` / `ISSUER_ROLE`** valve as the
+Stripe webhook (`api/_stripe.ts` helpers); the only new surface is the on-chain
+USDC.e settlement verify in `api/_mpp.ts`.
+
+The flow is the MPP **charge intent** (`docs.stripe.com/payments/machine/mpp`,
+equivalent to x402 "exact"):
+
+1. The agent `POST /mpp/onramp` (auth token in `x-goog-api-key`, identical to the
+   other routes) **without** a payment credential → **402** + a
+   `WWW-Authenticate: Payment` challenge (`method="tempo"`, `intent="charge"`, a
+   base64url `request` payload quoting the USDC.e price + the treasury recipient).
+2. The agent pays the quoted USDC.e to the treasury on Tempo, then **retries**
+   with `Authorization: Payment payload="<base64url {settlementTx, payTo}>"`.
+3. The proxy **verifies the on-chain USDC.e transfer itself** (recipient == the
+   treasury, amount, confirmed; replay-protected by a MintGateFacet one-shot
+   receipt keyed on the settlement tx hash — never on client input) and
+   GROSS-mints `$LH` into `payTo`'s meter → **200** + a `Payment-Receipt` header.
+
+> ROBUSTNESS: we deliberately do **not** depend on Stripe's preview `mppx` verify
+> library. We emit the MPP-shaped 402 (so the endpoint is MPP-compatible) and
+> verify settlement ourselves (hardened like the x402 settle verify), so the full
+> `mppx` facilitator verify can be swapped in later behind the same interface.
+
+Env (mainnet, in addition to the on-ramp's shared `ONRAMP_*` / `FIAT_ISSUER_KEY`
+from the Stripe section):
+
+```sh
+vercel env add ONRAMP_TREASURY production   # REQUIRED — the USDC.e recipient address; NO default (unset → endpoint closed)
+vercel env add ONRAMP_USDCE production       # optional; default 0x20c0…b9537d11c60e8b50 (Tempo mainnet USDC.e)
+vercel env add ONRAMP_MIN_CONFIRMATIONS production  # optional; default 1
+vercel env add MPP_MIN_LH production         # optional; default 100 (whole $LH per charge floor)
+vercel env add MPP_MAX_LH production         # optional; default 50000 (whole $LH per charge ceiling)
+```
+
+`FIAT_ISSUER_KEY` (signs the EIP-712 `FiatMint`) and `ONRAMP_SUBMITTER_KEY` (pays
+gas, falls back to `PROXY_METER_KEY`) are shared with the Stripe path. Tests:
+`./test/run.sh` (peg parity, the 402 challenge, settlement verify, idempotent mint).
+
 For **per-request mode**, the `PROXY_METER_KEY` EOA must (1) be funded with
 native Tempo gas and (2) be registered as the diamond's meter:
 `cast send $DIAMOND "setMeter(address)" 0x<meterAddr> ...`. Time-session mode
