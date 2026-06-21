@@ -1,5 +1,4 @@
-#[allow(unused_imports)]
-use crate::*;
+use crate::{hex_to_bytes_padded, load_signer_and_sponsor, registry};
 
 // ---- reputation (attestation-based on-chain agent reputation) -------------
 //

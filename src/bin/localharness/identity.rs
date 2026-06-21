@@ -1,5 +1,3 @@
-#[allow(unused_imports)]
-use crate::*;
 
 pub(crate) const KEY_SUFFIX: &str = ".localharness.key";
 

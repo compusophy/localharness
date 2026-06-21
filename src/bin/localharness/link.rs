@@ -21,11 +21,11 @@
 //! verifiable half). The reverse — the CLI presenting a code/QR a browser
 //! adopts — is deferred (the browser always generates its own code today).
 
+use crate::{bytes_to_hex_str, fmt_lh, key_write_path, name_is_valid, registry, resolve_key_read_path, secure_key_file, wallet};
+
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 
-#[allow(unused_imports)]
-use crate::*;
 
 pub(crate) const LINK_USAGE: &str = "\
 usage: localharness link --as <name> <adopt-url-or-ciphertext> [--code <CODE>]

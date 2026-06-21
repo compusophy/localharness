@@ -1,5 +1,4 @@
-#[allow(unused_imports)]
-use crate::*;
+use crate::{bytes_to_hex_str, fmt_lh, load_signer, load_signer_and_sponsor, registry, wallet};
 
 /// `localharness credits [--as <me>]` — show the caller's billing state: wallet
 /// `$LH`, the per-request meter (`creditOf`, what per-call billing debits), and
@@ -287,6 +286,7 @@ pub(crate) async fn topup(caller_name: Option<&str>, parsed: TopupArgs) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::args;
 
     #[test]
     fn parse_topup_args_amount_all_and_inspect() {

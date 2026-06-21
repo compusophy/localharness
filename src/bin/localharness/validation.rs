@@ -1,5 +1,4 @@
-#[allow(unused_imports)]
-use crate::*;
+use crate::{bytes_to_hex_str, ensure_wallet_covers, fmt_lh, load_signer_and_sponsor, parse_id, registry, wallet};
 
 // ---- validation (ValidationFacet: ERC-8004-style validation STAKING) --------
 //
