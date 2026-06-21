@@ -87,3 +87,21 @@
 #            OPFS cursor) and folds new notes into the bell.
 #
 # INBOX CLEAN: every mainnet feedback item (0-36) addressed as of 2026-06-20.
+#
+# --- 2026-06-21 batch (feedback #37-#42), parallel-workflow sweep ---
+38  6047f01  Anthropic: only Opus selectable (removed Sonnet/Haiku from the
+#            consult_model allowlist; the model.rs picker was already Opus-only)
+39  4e56e56  forbid emojis in agent responses across all 3 system-prompt sources
+#            (prompt.rs base, self_docs RUNTIME_SUMMARY, publish.rs default_persona)
+40  f90288c  UI: widen input->send gap (8->12px) + hide input/transcript scrollbars
+41  612903e  finish is the absolute end: drop the redundant summary render when the
+#            turn already streamed text (summary now only shown for silent tool-only turns)
+42  9fe6810  notif inbox fix: keep inbox files PLAINTEXT (EXEMPT_FILES) so sw.js
+#            (plaintext) + Rust (was sealing them) share ONE at-rest format; sealed
+#            files were clobbered to empty on the sw.js push path
+#
+# #37 PARTIAL — LEFT OPEN: part 1 (rustlite `arr[i]=v`) was already fully
+#     implemented + verified, no change needed. part 2 (soliditylite dynamic types)
+#     shipped a verified SUBSET — dynamic uint256[]/address[] storage with push /
+#     [i] / .length (commit 27d2e19); DEFERRED: string/bytes storage, dynamic
+#     function params, dynamic storage returns, nested/struct element types, pop/delete.
