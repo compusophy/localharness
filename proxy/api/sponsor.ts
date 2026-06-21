@@ -172,6 +172,19 @@ const SELF_PAY_SELECTORS = new Set([
   TRANSFER_SELECTOR,
 ]);
 
+// ALWAYS-FREE writes — sponsored regardless of the caller's $LH balance because
+// the platform wants them UNCONDITIONALLY available, not just during onboarding.
+// `submitFeedback` is the canonical case: feedback must always be free and
+// encouraged, so a graduated/funded agent (which on mainnet holds $LH, not the
+// AlphaUSD fee token, and so STILL can't self-pay gas) must not be locked out of
+// it with LH_RELAY_FUNDED. Abuse stays bounded by the rate caps + float breaker.
+const ALWAYS_FREE_SELECTORS = new Set([selector('submitFeedback(string)')]);
+
+// Everything exempt from the onboarding-only gate below: self-pay (move the
+// caller's OWN $LH) + always-free (feedback). A call batch made up entirely of
+// these is sponsored even for a funded caller.
+const GATE_EXEMPT_SELECTORS = new Set([...SELF_PAY_SELECTORS, ...ALWAYS_FREE_SELECTORS]);
+
 // --- CORS / json -----------------------------------------------------------
 
 const ALLOWED_ORIGIN_SUFFIX = '.localharness.xyz';
@@ -464,11 +477,12 @@ export default async function handler(req: Request): Promise<Response> {
   if (allowErr) return json({ error: allowErr, code: 'LH_RELAY_SELECTOR' }, 403, origin);
 
   // 7. Onboarding-only spend gate: sponsor only zero/near-zero-$LH callers —
-  //    UNLESS every call is on the self-pay surface (approve + settle), which a
-  //    funded agent legitimately needs (it can't hold the fee token to pay its
-  //    own gas). A mix with any other (onboarding/economy) write still gates.
-  const selfPayOnly = intent.calls.every((c) => SELF_PAY_SELECTORS.has(bytesToHex(c.input.slice(0, 4))));
-  if (!selfPayOnly) {
+  //    UNLESS every call is on the gate-exempt surface: self-pay (approve +
+  //    settle + $LH transfer — a funded agent can't hold the fee token to pay its
+  //    own gas) OR always-free (submitFeedback — feedback must never be locked
+  //    behind funding). A mix with any other (onboarding/economy) write still gates.
+  const gateExempt = intent.calls.every((c) => GATE_EXEMPT_SELECTORS.has(bytesToHex(c.input.slice(0, 4))));
+  if (!gateExempt) {
     try {
       const bal = await lhBalanceOf(caller);
       if (bal > BALANCE_CEILING_WEI) {
