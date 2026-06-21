@@ -183,11 +183,25 @@ const token = authToken(senderPriv, senderAddr, ts);
 // --- funded caller is refused (onboarding-only) -----------------------------
 {
   stubBalance('1bc16d674ec80000'); // 2 $LH > 1 $LH ceiling
-  const cd = registerCalldata('relaytest');
+  // openSession is allowlisted but NOT gate-exempt — register / createInvite /
+  // settle / transfer / submitFeedback are now exempt, so use a still-gated
+  // selector to exercise the onboarding-only funded gate.
+  const cd = '0x' + sel('openSession()');
   const intent = makeIntent(DIAMOND, cd);
   const res = await handler(makeReq(bodyFor(intent, cd, DIAMOND), token));
   const j = await res.json();
   ok('funded caller refused 403 LH_RELAY_FUNDED', res.status === 403 && j.code === 'LH_RELAY_FUNDED', `status=${res.status} code=${j.code}`);
+}
+
+// --- funded caller, register IS sponsored (always-free onboarding) -----------
+// Claiming a name costs 1 $LH (so the caller is necessarily funded) and can't
+// self-pay gas on mainnet — register is gate-exempt like submitFeedback.
+{
+  stubBalance('1bc16d674ec80000'); // 2 $LH > ceiling — funded
+  const cd = registerCalldata('relaytest');
+  const intent = makeIntent(DIAMOND, cd);
+  const res = await handler(makeReq(bodyFor(intent, cd, DIAMOND), token));
+  ok('funded caller register-only is sponsored (always-free onboarding)', res.status === 200, `status=${res.status}`);
 }
 
 // --- funded caller, settle-ONLY intent, IS sponsored (self-pay exemption) ----
