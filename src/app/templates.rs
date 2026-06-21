@@ -2552,8 +2552,9 @@ pub(crate) fn public_face_header(owner_overlay: bool) -> Markup {
 
 /// The header notification bell — a DIRECT-tap affordance (real user gesture,
 /// unlike the cartridge subscribe tap) that enables Web Push for this device
-/// AND opens the in-app notification panel. `#notif-bell-badge` carries the
-/// unread count; `#notif-bell-panel` is the dropdown list (filled by
+/// AND opens the in-app notification panel. `#notif-bell-badge` is the unread
+/// FLAG (present & not [hidden] ⇒ a gentle bell pulse, no count);
+/// `#notif-bell-panel` is the dropdown list (filled by
 /// `events::notifications`). One bell, every surface (public face + app header).
 pub(crate) fn notif_bell() -> Markup {
     // A bell ICON (monochrome SVG, currentColor) — this is the notification LOG,

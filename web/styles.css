@@ -600,18 +600,23 @@ main.layout .transcript > *:empty { display: none; }
    matches the settings gear on the same row instead of sitting 1.5px
    shorter. */
 .notif-bell-btn svg { display: block; width: 16px; height: 16px; }
-.notif-badge {
-  display: inline-block;
-  min-width: 16px;
-  margin-left: 4px;
-  padding: 0 4px;
-  font-size: 10px;
-  line-height: 16px;
-  text-align: center;
-  color: var(--bg);
-  background: var(--fg);
+/* Unread is signalled by a gentle PULSE of the bell itself (below), NOT a
+   count pill — a number widened the square icon button. The badge span
+   survives only as the unread FLAG: present & not [hidden] ⇒ unread. It
+   never renders, so the button stays square. */
+.notif-badge { display: none; }
+/* Unread → a soft 2s sine swell of the bell glyph from --fg to white and
+   back (the icon strokes currentColor). ease-in-out over a symmetric
+   keyframe reads as a sine pulse; it stops the instant the badge gains
+   [hidden] (panel opened / cleared). 0%/100% == the resting --fg so there's
+   no jump when the animation is removed. */
+.notif-bell-btn:has(.notif-badge:not([hidden])) {
+  animation: notif-bell-pulse 2s ease-in-out infinite;
 }
-.notif-badge[hidden] { display: none; }
+@keyframes notif-bell-pulse {
+  0%, 100% { color: var(--fg); }
+  50%      { color: var(--accent); }
+}
 .notif-panel {
   position: absolute;
   top: 100%;

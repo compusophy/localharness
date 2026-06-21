@@ -46,7 +46,8 @@ const PENDING_FILE: &str = ".lh_notif_pending.json";
 const MSG_CURSOR_FILE: &str = ".lh_msg_cursor";
 
 /// Append a notification to the in-app header bell (newest first, cap 30),
-/// bump the unread badge, and persist the inbox. The panel re-render keeps
+/// flag the bell unread (a gentle pulse — no count), and persist the inbox.
+/// The panel re-render keeps
 /// its CURRENT visibility — a push landing mid-read must not yank the
 /// dropdown shut (or open it uninvited).
 pub(crate) fn push_to_bell(title: &str, body: &str) {
@@ -55,10 +56,11 @@ pub(crate) fn push_to_bell(title: &str, body: &str) {
         v.insert(0, (title.to_string(), body.to_string()));
         v.truncate(30);
     });
-    let n = BELL.with(|b| b.borrow().len());
+    // Present & not [hidden] ⇒ unread; CSS turns that flag into the bell PULSE
+    // (no number — a count widened the square icon button).
     crate::app::dom::swap_outer(
         "notif-bell-badge",
-        &format!("<span id=\"notif-bell-badge\" class=\"notif-badge\">{n}</span>"),
+        "<span id=\"notif-bell-badge\" class=\"notif-badge\"></span>",
     );
     let hidden = crate::app::dom::by_id("notif-bell-panel")
         .map(|e| e.has_attribute("hidden"))
@@ -113,7 +115,7 @@ async fn persist_inbox() {
 
 /// Restore the bell inbox at mount: closed-tab pushes stashed by the service
 /// worker (newest, still unread) first, then the persisted log from the last
-/// session. The unread badge counts ONLY the stashed arrivals — a reload must
+/// session. ONLY the stashed arrivals flag the bell unread — a reload must
 /// not re-flag entries the user already saw.
 pub(crate) async fn load_inbox() {
     let fs = crate::app::shared_opfs();
@@ -136,9 +138,10 @@ pub(crate) async fn load_inbox() {
     items.truncate(30);
     BELL.with(|b| *b.borrow_mut() = items);
     if fresh > 0 {
+        // Flag the bell unread (CSS pulse); the count itself isn't shown.
         crate::app::dom::swap_outer(
             "notif-bell-badge",
-            &format!("<span id=\"notif-bell-badge\" class=\"notif-badge\">{fresh}</span>"),
+            "<span id=\"notif-bell-badge\" class=\"notif-badge\"></span>",
         );
         persist_inbox().await; // fold the drained pending file into the log
     }
