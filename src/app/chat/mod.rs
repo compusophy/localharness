@@ -705,18 +705,23 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
     // and suppresses the empty-response bubble on a pure-tool / bare-finish turn.
     if response.finished() {
         saw_finish = true;
-        // The model can pass a closing `summary` to `finish` — its final
-        // conversational reply. Backends intercept `finish` and never stream
-        // its args, so without this the user saw only the pre-tool note and no
-        // closing message (#28). Render it as the FINAL assistant text segment
-        // (markdown) so a tool-only turn ends with a real reply.
-        if let Some(summary) = response.finish_summary().filter(|s| !s.is_empty()) {
-            dom::append_html(
-                &assistant_body_id,
-                &templates::rendered_markdown(&summary).into_string(),
-            );
-            dom::scroll_to_bottom("transcript");
-            any_visible = true;
+        // `finish` is the ABSOLUTE END of the turn — it must never require or
+        // re-solicit a closing conversational reply (feedback #41). The model's
+        // own text this turn (a pre-tool note / answer) IS that reply, so a
+        // separate `finish` summary on top of it reads as redundant and
+        // out-of-order (it lands AFTER the tool cards). Only fall back to the
+        // `summary` when the turn was otherwise SILENT (a pure tool-only turn
+        // with no text at all) — the genuinely-silent-completion case #28 added
+        // it for. When anything visible already streamed, the summary is dropped.
+        if !any_visible {
+            if let Some(summary) = response.finish_summary().filter(|s| !s.is_empty()) {
+                dom::append_html(
+                    &assistant_body_id,
+                    &templates::rendered_markdown(&summary).into_string(),
+                );
+                dom::scroll_to_bottom("transcript");
+                any_visible = true;
+            }
         }
         // A pure `finish` turn (no text, no summary, no other tool cards) has
         // nothing to show — the shell we pre-painted would render as an empty

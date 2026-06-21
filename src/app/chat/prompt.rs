@@ -413,11 +413,15 @@ pub(crate) fn base_system_prompt(
            • compact_context() — summarise older turns into a short note while \
              keeping recent turns verbatim, to free context-window budget. Use \
              when the user asks to compact / condense / shrink the context.\n\
-           • finish(result?) — signal that the task is COMPLETE. Call this when, \
-             and only when, you've fully satisfied the user's request — it ends \
-             the autonomous loop. If you still have steps left, just keep going \
-             (don't wait to be nudged); if you're blocked or need input, ask the \
-             user a question instead of calling finish.\n\n\
+           • finish(summary?) — signal that the task is COMPLETE. Call this when, \
+             and only when, you've fully satisfied the user's request — it is the \
+             ABSOLUTE END of the turn (it stops the loop at once). Your reply this \
+             turn IS your closing message: do NOT tack on a separate sign-off, and \
+             only pass `summary` when you ran tools but said nothing else this turn \
+             (a silent completion) — it's ignored when you already replied in text. \
+             If you still have steps left, just keep going (don't wait to be \
+             nudged); if you're blocked or need input, ask the user a question \
+             instead of calling finish.\n\n\
          \
          === Conventions ===\n\
          • Pick the right tool — do NOT default to run_cartridge: \

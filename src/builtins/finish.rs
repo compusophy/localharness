@@ -30,19 +30,21 @@ impl Tool for Finish {
     }
 
     fn description(&self) -> &str {
-        "Signal that the turn is complete. Pass `summary` with a short final message \
-         to the user (one or two sentences) when your prior turns only showed tool \
-         activity — it is rendered as your closing reply so the user isn't left with \
-         a silent completion. Pass `output` when the agent is configured with a \
-         response schema; it will be returned to the caller as the structured output \
-         of this turn."
+        "Signal that the turn is complete. This is the ABSOLUTE END of the turn — \
+         calling it stops the loop immediately; do NOT add a separate closing reply, \
+         and do NOT call it just to say a final sentence. Only pass `summary` (one or \
+         two sentences) when the turn would otherwise end SILENTLY — i.e. you ran \
+         tools but said nothing this turn; it is shown as the closing reply ONLY in \
+         that case and is ignored if you already replied in text. Pass `output` when \
+         the agent is configured with a response schema; it will be returned to the \
+         caller as the structured output of this turn."
     }
 
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "summary": { "type": "string", "description": "Optional short closing message to show the user when the turn would otherwise end silently after tool calls." },
+                "summary": { "type": "string", "description": "Optional short closing message, shown ONLY when the turn would otherwise end silently after tool calls (ignored if you already replied in text this turn)." },
                 "output": { "description": "Optional structured output. Must conform to the agent's response_schema when one is set." }
             }
         })
