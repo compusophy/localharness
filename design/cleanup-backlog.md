@@ -49,6 +49,12 @@ lands. Append as cruft is found; clear lines as removed.
   fall to the proxy's unknown-model default tier. Remaining §2 surfaces (browser
   selector, `_usage.ts` token rates, docs) still drift-by-hand — a fuller catalog
   is a larger follow-up.
+- [x] **data-action → Action::parse guard (report §8)** — DONE 2026-06-21. Added
+  `tests/data_action_dispatch.rs`: a native source-level cross-check that every
+  `data-action="…"` literal under `src/app` has a `=> Action::…` arm in
+  `Action::parse` (no dead buttons). `src/app` is wasm32-only so it can't unit-test
+  parse directly; the text cross-check runs in every `cargo test`. Reverse
+  direction (every parsed Action has a dispatch arm) is a possible follow-up.
 
 ## Needs a product decision (flagged, NOT auto-resolved)
 
