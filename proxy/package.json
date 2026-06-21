@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Gemini credit proxy for the localharness platform — signature + on-chain session gated, server-held API key.",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
   "dependencies": {
     "@noble/curves": "^1.6.0",
     "@noble/hashes": "^1.5.0",
