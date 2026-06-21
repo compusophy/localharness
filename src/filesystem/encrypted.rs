@@ -66,7 +66,7 @@ const TAG_LEN: usize = 16;
 const MIN_SEALED_LEN: usize = MAGIC.len() + NONCE_LEN + TAG_LEN;
 
 /// File names that are NEVER encrypted (matched on the final path
-/// component). Two classes:
+/// component). Three classes:
 ///
 /// - **Identity / pre-wallet boot files** — `.lh_wallet` is the seed the
 ///   key derives FROM (encrypting it bricks the identity); `.lh_owner`,
@@ -75,6 +75,15 @@ const MIN_SEALED_LEN: usize = MAGIC.len() + NONCE_LEN + TAG_LEN;
 /// - **Public local-model artifacts** — `.lh_local_model.safetensors` /
 ///   `.lh_local_tokenizer.json` are ~550 MB of public Gemma weights from
 ///   the HF CDN: nothing secret, too large for in-memory AEAD round-trips.
+/// - **Notification inbox files** — `.lh_notif_pending.json` is written by
+///   BOTH `web/sw.js` (a plain SERVICE WORKER with no seed, so no cipher)
+///   and the Rust app via [`crate::app::shared_opfs`]; sealing the Rust
+///   writes makes sw.js's `JSON.parse` of the `LHE1…` bytes throw, which
+///   silently clobbers the stash down to one entry — closed-tab pushes then
+///   never reach the in-app bell (#35 inbox-not-displaying bug). Keep this
+///   file family plaintext so the two writers share ONE on-disk format;
+///   `.lh_notif_inbox.json` is the merged log of that same plaintext-origin
+///   data (kept format-uniform to avoid the inverse hazard).
 ///
 /// Pinned by `exempt_list_is_pinned` — removing `.lh_wallet` from this
 /// list is an identity-bricking change.
@@ -85,6 +94,8 @@ pub const EXEMPT_FILES: &[&str] = &[
     ".lh_device_key",
     ".lh_local_model.safetensors",
     ".lh_local_tokenizer.json",
+    ".lh_notif_pending.json",
+    ".lh_notif_inbox.json",
 ];
 
 /// At-rest encryption wrapper implementing [`Filesystem`] around an inner
@@ -342,6 +353,8 @@ mod tests {
                 ".lh_device_key",
                 ".lh_local_model.safetensors",
                 ".lh_local_tokenizer.json",
+                ".lh_notif_pending.json",
+                ".lh_notif_inbox.json",
             ],
             "exemption list changed — verify the boot path + seed safety before re-pinning"
         );

@@ -34,6 +34,11 @@ thread_local! {
 const INBOX_FILE: &str = ".lh_notif_inbox.json";
 /// Pushes that arrived with NO page open, stashed by `web/sw.js` directly in
 /// OPFS; merged + deleted by [`load_inbox`] at the next boot.
+//
+// NOTE: both notif files are in `filesystem::EXEMPT_FILES`, so `shared_opfs()`
+// writes them PLAINTEXT. `web/sw.js` is a seedless service worker that reads
+// `PENDING_FILE` with `JSON.parse` — if the Rust side sealed it (`LHE1…`),
+// sw.js's parse would throw and clobber closed-tab pushes (the #35 inbox bug).
 const PENDING_FILE: &str = ".lh_notif_pending.json";
 /// High-water mark (a decimal count) for [`import_onchain_messages`] — the
 /// number of on-chain inbox messages already folded into the bell, so a reload
