@@ -1,13 +1,14 @@
 //! Per-chain config seam: the registry handles read from ONE [`ChainConfig`]
-//! so mainnet becomes a RUNTIME flip, not a fork. Default ([`MODERATO`]) holds
-//! today's exact testnet values, so a normal build is byte-for-byte unchanged.
+//! so mainnet vs testnet is a RUNTIME flip, not a fork.
 //!
-//! Native: [`active`] resolves the preset ONCE from the `LH_CHAIN` env var
-//! (`mainnet` → [`MAINNET`], anything else → [`MODERATO`]), so ONE published
-//! binary targets either chain with no recompile and no money-key embedded
-//! (the mainnet sponsor lives server-side — `design/cli-mainnet-relay.md`).
-//! wasm: no env, so the preset stays compile-time (`#[cfg(feature="mainnet")]`,
-//! fixed at build by `build-web.sh`).
+//! Native: [`active`] resolves the preset ONCE from the `LH_CHAIN` env var.
+//! Default ([`MAINNET`]) is the LIVE chain — the CLI exists for agents using the
+//! real platform; testnet is an explicit DEV opt-in (`LH_CHAIN=testnet`/`moderato`/
+//! `dev`, or the `--dev` flag). An UNRECOGNIZED `LH_CHAIN` is a HARD ERROR, never a
+//! silent fallback (a typo must not quietly sign on a chain you didn't mean). No
+//! money key is embedded — the mainnet sponsor lives server-side
+//! (`design/cli-mainnet-relay.md`). wasm: no env, so the preset stays compile-time
+//! (`#[cfg(feature="mainnet")]`, fixed at build by `build-web.sh`).
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::OnceLock;
@@ -71,9 +72,11 @@ pub const MAINNET: ChainConfig = ChainConfig {
 };
 
 /// The active chain, resolved ONCE on first read. Native: from `LH_CHAIN`
-/// (`"mainnet"` → [`MAINNET`]; unset/anything else → [`MODERATO`]). wasm:
-/// compile-time (`mainnet` feature). Resolve-once means the chain can't flip
-/// mid-process — a tx signed for one chain is never submitted to another.
+/// (unset/`"mainnet"` → [`MAINNET`]; `"testnet"`/`"moderato"`/`"dev"` →
+/// [`MODERATO`]; anything else PANICS — call [`validate_chain_env`] first so the
+/// CLI reports the typo cleanly). wasm: compile-time (`mainnet` feature).
+/// Resolve-once means the chain can't flip mid-process — a tx signed for one
+/// chain is never submitted to another.
 ///
 /// Tests exercising both presets must use [`MODERATO`]/[`MAINNET`] directly,
 /// never `active()` (the `OnceLock` caches the first read for the process).
@@ -92,54 +95,72 @@ pub fn active() -> &'static ChainConfig {
     #[cfg(not(target_arch = "wasm32"))]
     {
         static ACTIVE_CHAIN: OnceLock<&'static ChainConfig> = OnceLock::new();
-        ACTIVE_CHAIN.get_or_init(|| resolve_chain(std::env::var("LH_CHAIN").ok().as_deref()))
+        ACTIVE_CHAIN.get_or_init(|| {
+            resolve_chain(std::env::var("LH_CHAIN").ok().as_deref()).unwrap_or_else(|e| panic!("{e}"))
+        })
     }
 }
 
-/// Pure preset resolver from an `LH_CHAIN` value: `Some("mainnet")` →
-/// [`MAINNET`]; anything else (unset, empty, "moderato", "testnet", junk) →
-/// [`MODERATO`]. Default-to-testnet so the money path is opt-in. Split out so
+/// Pure preset resolver from an `LH_CHAIN` value. Unset or `"mainnet"` → the LIVE
+/// [`MAINNET`] (the DEFAULT — the CLI is for agents on the real platform);
+/// `"testnet"`/`"moderato"`/`"dev"` → [`MODERATO`] (the explicit dev opt-in);
+/// ANYTHING ELSE → `Err` (a typo must never silently sign on a chain you didn't
+/// mean — especially not default-to-mainnet-money on a junk value). Split out so
 /// the selection is unit-tested without touching the process-wide `OnceLock`.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn resolve_chain(lh_chain: Option<&str>) -> &'static ChainConfig {
+pub(crate) fn resolve_chain(lh_chain: Option<&str>) -> Result<&'static ChainConfig, String> {
     match lh_chain {
-        Some("mainnet") => &MAINNET,
-        _ => &MODERATO,
+        None | Some("mainnet") => Ok(&MAINNET),
+        Some("testnet") | Some("moderato") | Some("dev") => Ok(&MODERATO),
+        Some(other) => Err(format!(
+            "unrecognized LH_CHAIN '{other}' — use 'mainnet' (default) or \
+             'testnet'/'moderato'/'dev' for the dev chain"
+        )),
     }
+}
+
+/// Validate the `LH_CHAIN` env var for the CLI: `Ok(())` if unset or a recognized
+/// value, `Err(msg)` for a typo. Lets `main.rs` fail fast with a clean message
+/// BEFORE any [`active`] read (which would otherwise panic on a junk value).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn validate_chain_env() -> Result<(), String> {
+    resolve_chain(std::env::var("LH_CHAIN").ok().as_deref()).map(|_| ())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Default (env-unset) native build is testnet, byte-for-byte: the seam must
-    /// not have moved any value off Moderato. Reads `active()` (the live path),
-    /// which on an unset `LH_CHAIN` resolves to MODERATO. (CI must not set
-    /// `LH_CHAIN`; the test harness doesn't.)
+    /// Default (env-unset) native resolves to MAINNET — the CLI targets the live
+    /// platform; testnet is an explicit opt-in. Reads the pure resolver (not
+    /// `active()`, whose `OnceLock` caches and whose env read CI must not perturb).
     #[test]
-    #[cfg(all(not(feature = "mainnet"), not(target_arch = "wasm32")))]
-    fn active_is_moderato_by_default() {
-        let a = active();
-        assert_eq!(a.chain_id, 42431);
-        assert_eq!(a.rpc_url, "https://rpc.moderato.tempo.xyz");
-        assert_eq!(a.diamond, "0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c");
-        assert_eq!(a.lh_token, "0x90B84c7234Aae89BadA7f69160B9901B9bc37B17");
-        assert_eq!(a.fee_token, "0x20c0000000000000000000000000000000000001");
+    #[cfg(not(target_arch = "wasm32"))]
+    fn resolve_chain_defaults_to_mainnet() {
+        let a = resolve_chain(None).expect("unset LH_CHAIN is valid");
+        assert_eq!(a.chain_id, 4217);
+        assert_eq!(a.rpc_url, "https://rpc.tempo.xyz");
+        assert_eq!(a.diamond, "0x8ab4f3a57643410cdf4022cdaf1faeef234f3a77");
     }
 
-    /// Runtime chain selection (CLI #4): `LH_CHAIN=mainnet` picks chain 4217;
-    /// everything else (unset, empty, "moderato", "testnet", junk) stays on
-    /// testnet — the money path is opt-in, never the default. Tests the pure
-    /// resolver so it doesn't touch the process-wide `active()` `OnceLock`.
+    /// Runtime chain selection: unset/`mainnet` → 4217 (the default LIVE chain);
+    /// `testnet`/`moderato`/`dev` → 42431 (the explicit dev opt-in); an
+    /// UNRECOGNIZED value is a HARD ERROR, never a silent fallback (a typo must
+    /// not quietly sign on the wrong chain). Exact-match only ("MAINNET" errors).
+    /// Tests the pure resolver so it doesn't touch the process-wide `OnceLock`.
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn lh_chain_env_selects_chain() {
-        assert_eq!(resolve_chain(Some("mainnet")).chain_id, 4217);
-        assert_eq!(resolve_chain(None).chain_id, 42431);
-        assert_eq!(resolve_chain(Some("")).chain_id, 42431);
-        assert_eq!(resolve_chain(Some("moderato")).chain_id, 42431);
-        assert_eq!(resolve_chain(Some("testnet")).chain_id, 42431);
-        assert_eq!(resolve_chain(Some("MAINNET")).chain_id, 42431); // exact match only
+        assert_eq!(resolve_chain(None).unwrap().chain_id, 4217);
+        assert_eq!(resolve_chain(Some("mainnet")).unwrap().chain_id, 4217);
+        assert_eq!(resolve_chain(Some("testnet")).unwrap().chain_id, 42431);
+        assert_eq!(resolve_chain(Some("moderato")).unwrap().chain_id, 42431);
+        assert_eq!(resolve_chain(Some("dev")).unwrap().chain_id, 42431);
+        // Unrecognized values ERROR — no silent default-to-mainnet-money footgun.
+        assert!(resolve_chain(Some("")).is_err());
+        assert!(resolve_chain(Some("MAINNET")).is_err()); // exact match only
+        assert!(resolve_chain(Some("prod")).is_err());
+        assert!(resolve_chain(Some("xyz")).is_err());
     }
 
     /// Mainnet on-ramp deployed 2026-06-16: diamond + $LH token + fee token all

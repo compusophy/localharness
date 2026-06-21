@@ -545,6 +545,22 @@ async fn main() {
 }
 
 async fn run(args: &[String]) -> i32 {
+    // `--dev` selects the testnet/dev chain. The CLI now defaults to MAINNET (the
+    // live platform agents actually use); testnet is the explicit dev opt-in. Set
+    // LH_CHAIN BEFORE any `active()` read (the chain resolves once + caches); safe
+    // here — startup, single-threaded, before any registry/env read.
+    let mut args = args.to_vec();
+    if let Some(pos) = args.iter().position(|a| a == "--dev") {
+        unsafe { std::env::set_var("LH_CHAIN", "testnet") }
+        args.remove(pos);
+    }
+    // Fail fast + CLEAN on a typo'd LH_CHAIN instead of letting `active()` panic
+    // deep inside a command (unrecognized values are a hard error, never a silent
+    // fallback that could quietly sign on the wrong chain).
+    if let Err(e) = registry::chain::validate_chain_env() {
+        eprintln!("error: {e}");
+        return 2;
+    }
     match args.first().map(String::as_str) {
         Some("create") => match parse_create_args(&args[1..]) {
             Ok(ParsedCreate { name, persona, publish }) => {

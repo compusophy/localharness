@@ -29,14 +29,21 @@ pub(crate) fn addr_word(a: &[u8; 20]) -> [u8; 32] {
 /// EIP-712 domain separator for the x402 facet (name "localharness-x402",
 /// version "1", `CHAIN_ID()`, diamond). Matches `x402DomainSeparator()`.
 pub fn x402_domain_separator() -> Result<[u8; 32], String> {
-    let diamond = parse_eth_address(REGISTRY_ADDRESS())?;
+    domain_separator_for(CHAIN_ID(), REGISTRY_ADDRESS())
+}
+
+/// The pure core of [`x402_domain_separator`] for an EXPLICIT (chain_id, diamond)
+/// — so a test can pin one chain's separator without depending on which chain
+/// `active()` happens to resolve to (the CLI default is mainnet; testnet is opt-in).
+fn domain_separator_for(chain_id: u64, diamond_hex: &str) -> Result<[u8; 32], String> {
+    let diamond = parse_eth_address(diamond_hex)?;
     let mut dom = Vec::with_capacity(160);
     dom.extend_from_slice(&keccak32(
         b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
     ));
     dom.extend_from_slice(&keccak32(b"localharness-x402"));
     dom.extend_from_slice(&keccak32(b"1"));
-    dom.extend_from_slice(&u256_be(CHAIN_ID() as u128));
+    dom.extend_from_slice(&u256_be(chain_id as u128));
     dom.extend_from_slice(&addr_word(&diamond));
     Ok(keccak32(&dom))
 }
@@ -345,15 +352,16 @@ mod x402_tests {
     fn x402_domain_matches_live_facet() {
         // Pinned to the deployed Moderato X402Facet's `x402DomainSeparator()` —
         // cross-checks the Rust EIP-712 encoding against the live contract. The
-        // domain binds chainId + diamond. On NATIVE, `chain::active()` resolves
-        // off `LH_CHAIN` (default Moderato) and ignores the `mainnet` cargo
-        // feature, so `cargo test` (env unset) always computes the Moderato
-        // separator and this pin holds. The mainnet X402Facet is not yet cut
+        // domain binds chainId + diamond. We compute it for the MODERATO preset
+        // EXPLICITLY (not via `active()`, whose CLI default is now mainnet) so the
+        // pin holds regardless of `LH_CHAIN`. The mainnet X402Facet is not yet cut
         // (mainnet is the on-ramp slice only), so there is no live mainnet
         // separator to pin against until the economy ladder deploys there.
         let expected =
             "54530933a67f96286ac528dbff39d00c0ea49f4c6bd0f034343a0c78927f0b7a";
-        let got = x402_domain_separator().unwrap();
+        let got =
+            domain_separator_for(crate::registry::chain::MODERATO.chain_id, crate::registry::chain::MODERATO.diamond)
+                .unwrap();
         assert_eq!(bytes_to_hex(&got), expected);
     }
 
