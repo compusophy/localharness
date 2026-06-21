@@ -140,3 +140,12 @@
 #            SAME public_face_header as the cartridge/HTML app face — both public
 #            surfaces share one header. .public-face min-height:100vh->0 so it
 #            fills below the header (mirrors .app-fullscreen). Deployed to web prod.
+#
+# --- 2026-06-21 feedback #47 (agent cancel-task tool) -----------------------
+47  45366c7  RESOLVED + LIVE: the `cancel_task(job_id)` agent tool exists, is
+#            registered in chat/session.rs (both surfaces), documented in llms.txt
+#            + the AGENT_TOOLS manifest, and shipped in the 0.53.0 web bundle. It
+#            cancels a scheduled job the agent owns and refunds the remaining $LH
+#            escrow (cancelJob is owner-gated on-chain). The request — "a cancel_task
+#            tool so agents can tear down schedules without the admin UI" — is met
+#            exactly. (Was done in code but never marked resolved here.)
