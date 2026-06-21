@@ -1,5 +1,6 @@
 //! Single source of truth for the drift-prone FACTS that are mirrored across
-//! the three managed docs (`web/skill.md`, `web/llms.txt`, `README.md`).
+//! the managed docs (`web/skill.md`, `web/llms.txt`). The top-level `README.md`
+//! is hand-written and minimal — deliberately not generated.
 //!
 //! These facts — chain addresses, the crate version, `$LH` pricing, the agent
 //! tool list, the CLI command list — used to be hand-copied into each doc and
@@ -457,8 +458,9 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    /// The three managed docs, relative to the crate root.
-    const MANAGED_DOCS: &[&str] = &["web/skill.md", "web/llms.txt", "README.md"];
+    /// The managed (generated) docs, relative to the crate root. The top-level
+    /// `README.md` is intentionally excluded — it is hand-written and minimal.
+    const MANAGED_DOCS: &[&str] = &["web/skill.md", "web/llms.txt"];
 
     fn read_doc(rel: &str) -> String {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);

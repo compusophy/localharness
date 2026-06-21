@@ -1,10 +1,14 @@
 # SOP — doc integrity (single source of truth + drift gate)
 
-The drift-prone FACTS that used to be hand-copied across `web/skill.md`,
-`web/llms.txt`, and `README.md` — chain addresses, the crate version, `$LH`
-pricing, the agent tool list, the CLI command list — now live in ONE place and
-are GENERATED into the docs. A `cargo test` gate and the release pre-flight
-make stale docs impossible to ship.
+The drift-prone FACTS that used to be hand-copied across `web/skill.md` and
+`web/llms.txt` — chain addresses, the crate version, `$LH` pricing, the agent
+tool list, the CLI command list — now live in ONE place and are GENERATED into
+the docs. A `cargo test` gate and the release pre-flight make stale docs
+impossible to ship.
+
+The top-level **`README.md` is deliberately NOT managed** — it is hand-written
+and minimal (a README is not the docs). Do not add GEN blocks to it; the full
+generated agent spec is `web/llms.txt`.
 
 ## The pipeline
 
@@ -12,7 +16,7 @@ make stale docs impossible to ship.
 src/docs_manifest.rs          ← THE single source of truth (the facts)
         │  cargo run --bin gen-docs
         ▼
-web/skill.md · web/llms.txt · README.md   ← facts live inside GEN marker pairs
+web/skill.md · web/llms.txt   ← facts live inside GEN marker pairs
         │  cargo test --lib --features wallet   (drift gate)
         │  scripts/release.{sh,ps1}             (pre-flight gen-docs --check)
         ▼
@@ -23,8 +27,8 @@ a version bump CANNOT ship with stale docs
    `registry::chain::{MAINNET, MODERATO}`; the version from
    `env!("CARGO_PKG_VERSION")`; pricing, the tool list, and the CLI list are the
    one canonical copy held there.
-2. **`gen-docs` fills the GEN blocks** in the three managed docs from the
-   manifest's `render(key)`.
+2. **`gen-docs` fills the GEN blocks** in the managed docs from the manifest's
+   `render(key)`.
 3. **Never hand-edit text inside a GEN block** — the generator owns it and the
    drift gate rejects the edit. Change the FACT in `docs_manifest.rs`, then
    regenerate.
@@ -40,9 +44,9 @@ Each generated fact lives between an HTML-comment marker pair:
 <!-- /GEN:<key> -->
 ```
 
-HTML comments are inert in markdown (`skill.md`, `README.md`) and read as clear,
-non-rendering delimiters in the plain-text `llms.txt`, so ONE marker style
-covers all three docs. An unknown key inside a marker pair is left UNTOUCHED
+HTML comments are inert in markdown (`skill.md`) and read as clear, non-rendering
+delimiters in the plain-text `llms.txt`, so ONE marker style covers both managed
+docs. An unknown key inside a marker pair is left UNTOUCHED
 (forward-compat). Do NOT write the literal opening token `<!-- GEN:` inside
 prose/backticks — the generator would try to parse it; refer to "GEN marker
 pairs" in prose instead.

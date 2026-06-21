@@ -1,7 +1,7 @@
 //! `gen-docs` — the doc-integrity generator.
 //!
 //! Fills every `<!-- GEN:<key> -->...<!-- /GEN:<key> -->` block in the managed
-//! docs (`web/skill.md`, `web/llms.txt`, `README.md`) with the freshly-rendered
+//! docs (`web/skill.md`, `web/llms.txt`) with the freshly-rendered
 //! block from [`localharness::docs_manifest`] — the single source of truth for
 //! the drift-prone facts (chain addresses, version, pricing, tool list, CLI
 //! list).
@@ -22,8 +22,10 @@ use std::process::ExitCode;
 
 use localharness::docs_manifest;
 
-/// The managed docs, relative to the crate root.
-const MANAGED_DOCS: &[&str] = &["web/skill.md", "web/llms.txt", "README.md"];
+/// The managed docs, relative to the crate root. The top-level `README.md` is
+/// deliberately NOT here — it is hand-written and minimal (a README is not the
+/// generated docs); `web/llms.txt` is the full generated agent spec.
+const MANAGED_DOCS: &[&str] = &["web/skill.md", "web/llms.txt"];
 
 fn crate_root() -> PathBuf {
     // CARGO_MANIFEST_DIR points at the crate root both for `cargo run` and for
