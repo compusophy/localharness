@@ -105,3 +105,9 @@
 #     shipped a verified SUBSET — dynamic uint256[]/address[] storage with push /
 #     [i] / .length (commit 27d2e19); DEFERRED: string/bytes storage, dynamic
 #     function params, dynamic storage returns, nested/struct element types, pop/delete.
+#
+# --- 2026-06-21 feedback #48-#49 (chat-UX session) --------------------------
+48  d0ffa91  reverted the read-from-top scroll back to standard bottom-following
+#            messaging flow (no scroll-to-top "snap"); frank #48
+49  d0ffa91  dropped the 100dvh streaming reservation (the "double spacing under
+#            the last message") + reverted the input bottom gap to 76px; frank #49
