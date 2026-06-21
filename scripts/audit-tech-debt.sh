@@ -31,11 +31,27 @@ else
     printf "  ${R}skipped${N} — run 'cd proxy && npm install' first.\n"
 fi
 
-step "5/5 un-reasoned broad allow() suppressions (informational)"
-# A bare allow(dead_code|unused_imports|deprecated) with no trailing reason hides
-# the warning signal. Not a hard gate yet — surfaced so the count trends down.
-n=$(grep -rnE 'allow\((dead_code|unused_imports|deprecated)\)' src/ \
-      | grep -vE '//.*(PARKED|reason|wasm|legacy|gated)' | wc -l | tr -d ' ')
-echo "  $n bare allow(dead_code|unused_imports|deprecated) without a reason in src/"
+step "5/5 un-justified broad allow() suppressions (HARD GATE)"
+# Every allow(dead_code|unused_imports|deprecated) must carry a justification: an
+# inline `//` comment, an explanatory comment on the line ABOVE, or a cfg_attr
+# conditional (self-documenting). A bare one re-hides the warning signal the way
+# the old CLI `use crate::*` did — fail so it can't creep back in. (String
+# literals and `#[cfg_attr(... allow ...)]` are excluded: the matcher only fires
+# on a line that, trimmed, STARTS with `#[allow(...)]` / `#![allow(...)]`.)
+bare=$(awk '
+  FNR==1 { prev="" }
+  {
+    t=$0; sub(/^[ \t]+/,"",t)
+    if (t ~ /^#!?\[allow\((dead_code|unused_imports|deprecated)\)\]/) {
+      if (($0 !~ /\/\//) && (prev !~ /\/\//)) print FILENAME":"FNR
+    }
+    prev=$0
+  }
+' $(grep -rl "allow(" src --include=*.rs) 2>/dev/null)
+if [[ -n "$bare" ]]; then
+  echo "$bare"
+  fail "un-justified allow() — add a one-line reason, cfg-gate it, or remove the dead code"
+fi
+echo "  none — every broad allow() carries a justification."
 
 printf "\n${G}TECH-DEBT AUDIT OK${N}\n"

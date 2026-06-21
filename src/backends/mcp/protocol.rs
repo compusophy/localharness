@@ -53,7 +53,7 @@ impl<'a> Notification<'a> {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Response {
-    #[allow(dead_code)]
+    #[allow(dead_code)] // wire field: deserialized for completeness, never read
     pub jsonrpc: String,
     pub id: Option<u64>,
     #[serde(default)]
@@ -66,7 +66,7 @@ pub struct Response {
 pub struct RpcError {
     pub code: i32,
     pub message: String,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // wire field: structured error payload, not surfaced yet
     #[serde(default)]
     pub data: Option<Value>,
 }
@@ -107,7 +107,7 @@ pub struct InitializeResult {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerInfo {
     pub name: String,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // wire field: server version, diagnostics-only, not read
     #[serde(default)]
     pub version: Option<String>,
 }

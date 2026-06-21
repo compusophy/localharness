@@ -49,6 +49,13 @@ lands. Append as cruft is found; clear lines as removed.
   fall to the proxy's unknown-model default tier. Remaining §2 surfaces (browser
   selector, `_usage.ts` token rates, docs) still drift-by-hand — a fuller catalog
   is a larger follow-up.
+- [x] **allow() suppressions are now a HARD GATE** — DONE 2026-06-21. The original
+  "26 un-reasoned" count was a crude single-line grep; the TRUE bare count was 4
+  (the rest carry `///`/`//` reasons on the line above, or are cfg_attr-conditional).
+  Annotated those 4 (MCP/RPC wire-completeness fields) and rewrote
+  `audit-tech-debt.sh` stage 5 to recognize a reason on the same OR preceding line
+  (and skip cfg_attr / string literals), then flipped it to FAIL on any bare
+  allow(dead_code|unused_imports|deprecated). The trash can't creep back.
 - [x] **data-action → Action::parse guard (report §8)** — DONE 2026-06-21. Added
   `tests/data_action_dispatch.rs`: a native source-level cross-check that every
   `data-action="…"` literal under `src/app` has a `=> Action::…` arm in

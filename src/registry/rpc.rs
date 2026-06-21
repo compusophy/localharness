@@ -32,7 +32,7 @@ impl RpcResponse {
 
 #[derive(Deserialize)]
 pub(crate) struct RpcError {
-    #[allow(dead_code)]
+    #[allow(dead_code)] // wire field: JSON-RPC error code, parsed but only message is read
     code: i64,
     pub(crate) message: String,
 }
