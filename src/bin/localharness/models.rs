@@ -1,5 +1,3 @@
-#[allow(unused_imports)]
-use crate::*;
 
 // ---- models (the `--model` discovery command) ----------------------------
 //

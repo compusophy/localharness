@@ -1,5 +1,4 @@
-#[allow(unused_imports)]
-use crate::*;
+use crate::{cartridge_has_entry, feedback_submit, load_signer, registry};
 
 /// Deterministic, network-free QA checks the `probe` runs against the platform.
 /// Each pushes a failure description on an UNEXPECTED result (a real bug); an

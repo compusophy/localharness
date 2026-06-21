@@ -10,8 +10,6 @@
 // Typical flow: `facet diamond` → your diamond addr; `facet deploy x x.sol` →
 // facet addr; `facet cut <diamond> <facet> x.sol` → it's live behind the diamond.
 
-#[allow(unused_imports)]
-use crate::*;
 use crate::util::load_signer_and_sponsor;
 use localharness::cut_guard;
 use localharness::registry::{self, FacetCut};

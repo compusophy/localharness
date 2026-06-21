@@ -13,8 +13,8 @@
 //! long_job && localharness notify "job done" "the overnight build is green"
 //! ```
 
-#[allow(unused_imports)]
-use crate::*;
+use crate::{load_signer, registry};
+
 
 /// `localharness notify [--as <me>] [--to <agent>] <title> [body...]` —
 /// Web-Push a note to the caller's OWN registered device, or with `--to` to
@@ -122,6 +122,7 @@ pub(crate) async fn notify(caller: Option<&str>, rest: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::args;
 
     #[tokio::test]
     async fn notify_requires_a_title() {

@@ -10,8 +10,8 @@
 //! `buy` with no amount (and the `join` alias) buys the $1 minimum — the
 //! onboarding / sybil-guard entry amount.
 
-#[allow(unused_imports)]
-use crate::*;
+use crate::{bytes_to_hex_str, fmt_lh, load_signer, registry, wallet};
+
 
 /// Parse a USD amount ("5", "$5", "5.50") into integer cents. `None` on
 /// empty / invalid / non-positive. Mirrors `app::events::credits::parse_usd_cents`.
@@ -148,6 +148,7 @@ pub(crate) async fn buy(caller_name: Option<&str>, rest: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::args;
 
     #[test]
     fn parse_usd_cents_accepts_dollars_and_rejects_junk() {

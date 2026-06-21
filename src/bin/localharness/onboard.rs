@@ -1,5 +1,4 @@
-#[allow(unused_imports)]
-use crate::*;
+use crate::{bytes_to_hex_str, fmt_lh, invite_accept, key_write_path, load_signer, name_is_valid, registry, resolve_key_read_path, secure_key_file, wallet};
 
 pub(crate) const ONBOARD_USAGE: &str = "\
 usage: localharness onboard --invite <code> [--as <name>]
