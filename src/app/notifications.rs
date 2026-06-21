@@ -152,12 +152,14 @@ pub(crate) async fn load_inbox() {
 }
 
 /// Poll THIS identity's on-chain MessageFacet inbox and fold any NOT-yet-seen
-/// messages into the bell (#35) — so a cross-agent `notify` that couldn't reach
-/// this device via Web Push (no subscription) still surfaces in-app next time
-/// the tab opens. Run AFTER [`load_inbox`] so `push_to_bell` appends to the
-/// loaded log rather than clobbering it. Cursor (`.lh_msg_cursor`) lives in OPFS
-/// so each load only shows what's new. Best-effort: any RPC/decode error (or no
-/// tenant identity) is swallowed — the inbox is a nicety, never a blocker.
+/// messages into the bell (#35). This is the DURABLE channel for cross-agent
+/// `notify`: the proxy records every cross-agent note here (in addition to any
+/// Web Push), so it surfaces in-app at next open even when a push to a
+/// closed/backgrounded PWA tab never reached the live bell. Run AFTER
+/// [`load_inbox`] so it appends to (and dedups against) the loaded log rather
+/// than clobbering it. Cursor (`.lh_msg_cursor`) lives in OPFS so each load only
+/// processes new indices. Best-effort: any RPC/decode error (or no tenant
+/// identity) is swallowed — the inbox is a nicety, never a blocker.
 pub(crate) async fn import_onchain_messages() {
     let Some(name) = crate::app::tenant::current_name() else {
         return;
@@ -181,18 +183,53 @@ pub(crate) async fn import_onchain_messages() {
     if count <= cursor {
         return;
     }
+    // Snapshot the bell BEFORE folding so a recorded note can be deduped against
+    // an already-shown live/stashed push of the SAME (title, body): the proxy
+    // now records cross-agent notes on-chain AND pushes them with the identical
+    // {title,body} payload, so without this the note would appear twice.
+    let existing = bell_items();
     for i in cursor..count {
-        if let Ok((from, _ts, body)) = crate::registry::message_at(token_id, i).await {
-            if body.trim().is_empty() {
+        if let Ok((from, _ts, raw)) = crate::registry::message_at(token_id, i).await {
+            let (title, body) = parse_note(raw.trim(), &from);
+            if title.is_empty() && body.is_empty() {
                 continue;
             }
-            let short = from.get(..8).unwrap_or(&from);
-            push_to_bell(&format!("message · {short}…"), body.trim());
+            if existing.iter().any(|(t, b)| *t == title && *b == body) {
+                continue; // already shown via the live/stashed push of this note
+            }
+            push_to_bell(&title, &body);
         }
     }
     // Advance the cursor even if some decodes failed — a permanently-undecodable
     // message must not wedge the poll on every load.
     let _ = fs.write_atomic(MSG_CURSOR_FILE, count.to_string().as_bytes()).await;
+}
+
+/// Decode an on-chain inbox message into a `(title, body)` bell entry. Notes the
+/// proxy records carry the SAME `{title,body}` JSON a Web Push does — so a
+/// folded entry is byte-identical to a live/stashed push and dedups against it.
+/// Any non-JSON / legacy string is shown verbatim as the body under a generic
+/// `message · <from>` title. Returns `("", "")` only when there is nothing to
+/// show (caller skips).
+fn parse_note(raw: &str, from: &str) -> (String, String) {
+    if raw.is_empty() {
+        return (String::new(), String::new());
+    }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
+        let t = v.get("title").and_then(|x| x.as_str()).unwrap_or("");
+        let b = v.get("body").and_then(|x| x.as_str()).unwrap_or("");
+        if !t.is_empty() || !b.is_empty() {
+            let short = from.get(..8).unwrap_or(from);
+            let title = if t.is_empty() {
+                format!("message · {short}…")
+            } else {
+                t.to_string()
+            };
+            return (title, b.to_string());
+        }
+    }
+    let short = from.get(..8).unwrap_or(from);
+    (format!("message · {short}…"), raw.to_string())
 }
 
 /// Snapshot of the in-app bell log (newest first).

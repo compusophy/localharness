@@ -574,16 +574,13 @@ export default async function handler(req: Request): Promise<Response> {
       }
       return json({ error: 'subscription lookup failed: ' + (e as Error).message }, 502, origin);
     }
-    // CROSS-AGENT with no push sub: the note can still be RECORDED on-chain
-    // (MessageFacet inbox, keyed by the recipient tokenId) so it surfaces in
-    // their in-app inbox next time they open the tab — Web Push is NOT required
-    // for cross-agent delivery (#35). Falls through to auth+debit+record below;
-    // the sender pays the same flat cost for a durably-recorded note.
-    const recordOnly = to !== '' && subs.length === 0;
-    if (subs.length === 0 && !recordOnly) {
-      // SELF with no subscription: there's nothing the proxy can record on the
-      // CALLER's behalf (a self-note's only channel is the caller's own push),
-      // so the 404 + "enable notifications" hint is the right answer.
+    // SELF with no subscription: there's nothing the proxy can record on the
+    // CALLER's behalf (a self-note's only channel is the caller's own push), so
+    // the 404 + "enable notifications" hint is the right answer. A CROSS-AGENT
+    // note ALWAYS proceeds — even with no push sub it is durably RECORDED in the
+    // recipient's on-chain inbox below (#35), so it surfaces in their bell at
+    // next open whether or not they have a Web Push device.
+    if (to === '' && subs.length === 0) {
       return json(
         { error: 'no push subscription on-chain — enable notifications in the app first' },
         404,
@@ -638,54 +635,65 @@ export default async function handler(req: Request): Promise<Response> {
     }
 
     // ---- delivery — the one failure a debited caller pays for ------------------
-    if (recordOnly) {
-      // NO Web Push subscription on the cross-agent target: RECORD the note in
-      // their on-chain inbox (MessageFacet) so it surfaces in their in-app
-      // inbox at next open, no push needed (#35). `title` already carries the
-      // `@<from>:` attribution; join with the body for a self-contained note.
-      const noteBody = body ? `${title} — ${body}` : title;
-      try {
-        await recordOnChainMessage(recipientId, noteBody);
-      } catch (e) {
+    // The { title, body } JSON the service worker (web/sw.js) renders for a push
+    // AND the exact payload recorded on-chain — so the recipient's on-chain
+    // import folds a bell entry byte-identical to a live/stashed push and dedups
+    // the two (src/app/notifications.rs::import_onchain_messages). `title`
+    // already carries the `@<from>:` attribution for a cross-agent note.
+    const payload = JSON.stringify({ title, body });
+
+    if (to) {
+      // CROSS-AGENT: ALWAYS record a durable copy in the recipient's on-chain
+      // MessageFacet inbox, regardless of push. A Web Push to a closed/
+      // backgrounded PWA tab is best-effort and frequently never reaches the
+      // in-app log (mobile SW-OPFS write failures, no re-mount) — the on-chain
+      // record is the RELIABLE channel: it surfaces in their bell via
+      // import_onchain_messages at next open. Web Push, when the recipient is
+      // enrolled, is layered on top as the realtime banner. Run both in
+      // parallel and succeed if EITHER lands (the on-chain copy alone is enough
+      // for the in-app log; the push alone is enough for the live banner).
+      let recorded = false;
+      let sent = 0;
+      await Promise.all([
+        recordOnChainMessage(recipientId, payload)
+          .then(() => {
+            recorded = true;
+          })
+          .catch((e) => {
+            console.warn(
+              'notify: on-chain record failed (push may still fire):',
+              (e as Error).message,
+            );
+          }),
+        subs.length > 0
+          ? sendWebPushAll(subs, payload, { publicKey, privateKey, subject })
+              .then((n) => {
+                sent = n;
+              })
+              .catch(() => {})
+          : Promise.resolve(),
+      ]);
+      if (!recorded && sent === 0) {
         return json(
-          { error: 'could not record note on-chain: ' + (e as Error).message },
+          { error: 'could not deliver: on-chain record and push both failed' },
           502,
           origin,
         );
       }
       return json(
-        {
-          sent: true,
-          delivered: false,
-          recorded: true,
-          enrolled: false,
-          to,
-          message:
-            `"${to}" has no Web Push device enrolled, so this note was RECORDED in ` +
-            `their on-chain inbox instead — it will appear when they next open ` +
-            `their tab. No phone/desktop banner will buzz now.`,
-        },
+        { sent: true, recorded, delivered: sent > 0, devices: sent, enrolled: subs.length > 0, to },
         200,
         origin,
       );
     }
 
-    // Same { title, body } JSON the scheduler worker sends; the service worker
-    // (web/sw.js) renders it. FAN-OUT to every enrolled device (phone AND
-    // desktop); success = at least one push service accepted.
-    const sent = await sendWebPushAll(subs, JSON.stringify({ title, body }), {
-      publicKey,
-      privateKey,
-      subject,
-    });
+    // SELF-notify: the caller's own devices — push only. FAN-OUT to every
+    // enrolled device; success = at least one push service accepted.
+    const sent = await sendWebPushAll(subs, payload, { publicKey, privateKey, subject });
     if (sent === 0) {
       return json({ error: 'push send failed (service rejected or timed out)' }, 502, origin);
     }
-    return json(
-      to ? { sent: true, devices: sent, to } : { sent: true, devices: sent },
-      200,
-      origin,
-    );
+    return json({ sent: true, devices: sent }, 200, origin);
   } catch (e) {
     return json({ error: (e as Error).message }, 500, origin);
   }
