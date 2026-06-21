@@ -293,19 +293,22 @@ pub enum ConsultBackend {
     Anthropic,
 }
 
-/// The model ids `consult_model` accepts, as `(id, label)` — the Claude tiers
-/// plus the Gemini default. The single allowlist behind both the tool's enum
-/// schema and [`select_consult_backend`], so the schema can never advertise an
-/// id the router rejects. References the canonical backend consts (no re-typed
-/// literal to drift); `anthropic`-gated so the Claude ids resolve, with a
-/// Gemini-only fallback when the feature is off (the tool itself only exists in
+/// The model ids `consult_model` accepts, as `(id, label)` — Claude Opus plus
+/// the Gemini default. The single allowlist behind both the tool's enum schema
+/// and [`select_consult_backend`], so the schema can never advertise an id the
+/// router rejects. References the canonical backend consts (no re-typed literal
+/// to drift); `anthropic`-gated so the Claude ids resolve, with a Gemini-only
+/// fallback when the feature is off (the tool itself only exists in
 /// `browser-app`, which always pulls `anthropic`).
+///
+/// Sonnet/Haiku are deliberately NOT selectable (on-chain feedback: leave only
+/// Opus as the selectable Anthropic model). The `SONNET_MODEL`/`DEFAULT_MODEL`
+/// (Haiku) consts stay defined in the backend — the behind-the-scenes
+/// difficulty router still downgrades routine turns to them — just not here.
 #[cfg(feature = "anthropic")]
 pub const CONSULT_MODELS: &[(&str, &str)] = &[
     (crate::types::DEFAULT_MODEL, "Gemini (default)"),
     (crate::backends::anthropic::OPUS_MODEL, "Claude Opus"),
-    (crate::backends::anthropic::SONNET_MODEL, "Claude Sonnet"),
-    (crate::backends::anthropic::DEFAULT_MODEL, "Claude Haiku"),
 ];
 
 /// Gemini-only fallback allowlist when the `anthropic` backend is absent.
@@ -642,30 +645,29 @@ mod tests {
             DEFAULT_MODEL as HAIKU, OPUS_MODEL as OPUS, SONNET_MODEL as SONNET,
         };
 
-        /// Each Claude tier routes to the Anthropic backend; the Gemini default
-        /// routes to Gemini. Every advertised id must classify (no allowlisted id
-        /// is silently rejected).
+        /// Opus routes to the Anthropic backend; the Gemini default routes to
+        /// Gemini. Every advertised id must classify (no allowlisted id is
+        /// silently rejected).
         #[test]
         fn known_models_pick_the_right_backend() {
             assert_eq!(
                 select_consult_backend(crate::types::DEFAULT_MODEL).unwrap(),
                 ConsultBackend::Gemini
             );
-            for claude in [HAIKU, SONNET, OPUS] {
-                assert_eq!(
-                    select_consult_backend(claude).unwrap(),
-                    ConsultBackend::Anthropic,
-                    "{claude}"
-                );
-            }
+            assert_eq!(
+                select_consult_backend(OPUS).unwrap(),
+                ConsultBackend::Anthropic,
+                "{OPUS}"
+            );
             // Every id in the allowlist must resolve (none rejected).
             for (id, _) in CONSULT_MODELS {
                 assert!(select_consult_backend(id).is_ok(), "{id}");
             }
         }
 
-        /// An unknown id, or a known-but-unroutable model (local Gemma, a GPT id,
-        /// junk, empty), is REJECTED — never silently routed.
+        /// An unknown id, a known-but-unroutable model (local Gemma, a GPT id,
+        /// junk, empty), OR a de-listed Claude tier (Sonnet/Haiku — only Opus is
+        /// selectable now) is REJECTED — never silently routed.
         #[test]
         fn unknown_or_unsupported_models_are_rejected() {
             for bad in [
@@ -673,6 +675,8 @@ mod tests {
                 "gpt-5-nano",          // OpenAI — no consult path
                 "claude-imaginary-9",  // claude-shaped but not a real tier
                 "gemini-2.5-flash",    // a dead/non-default Gemini id
+                SONNET,                // de-listed — Opus is the only Claude tier
+                HAIKU,                 // de-listed — Opus is the only Claude tier
                 "",                    // empty
                 "garbage",
             ] {
