@@ -37,6 +37,11 @@ lands. Append as cruft is found; clear lines as removed.
   (test-only helpers imported inside the test modules). Zero glob imports / zero
   `allow(unused_imports)` left in the CLI; un-reasoned `allow()` in `src/` fell
   53 → 26. `scripts/audit-tech-debt.sh` tracks the residual count.
+- [x] **Chain-config drift guard (report §3)** — DONE 2026-06-21. Added the
+  `proxy_chain_ts_defaults_match_moderato` cargo test: the proxy `_chain.ts`
+  testnet fallbacks must mirror Rust `MODERATO`, caught on every `cargo test`
+  (gates releases via verify.sh). Residual 26 allows are mostly legit (cfg-gated,
+  wire structs, test helpers) — a future tick can reason-annotate or remove them.
 
 ## Needs a product decision (flagged, NOT auto-resolved)
 

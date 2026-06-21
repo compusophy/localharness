@@ -173,4 +173,39 @@ mod tests {
         assert_eq!(MAINNET.lh_token, "0x7ba3c9a39596e438b05c56dfc779700b58aea814");
         assert_eq!(MAINNET.fee_token, "0x20c000000000000000000000b9537d11c60e8b50");
     }
+
+    /// SSOT drift guard (tech-debt report §3): `proxy/api/_chain.ts` falls back to
+    /// the testnet defaults with env unset, and those fallbacks MUST mirror this
+    /// crate's [`MODERATO`] preset. The proxy and the SDK both talk to the same
+    /// diamond; if the testnet addresses move here (e.g. a reset) and the proxy
+    /// defaults don't, the off-chain proxy silently targets a stale deployment.
+    /// Reads the TS at test time; skips if the proxy tree isn't present (a packaged
+    /// crate), so it only enforces inside the repo where both live.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn proxy_chain_ts_defaults_match_moderato() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("proxy/api/_chain.ts");
+        let Ok(src) = std::fs::read_to_string(&path) else {
+            eprintln!("skip: {} not present (packaged crate?)", path.display());
+            return;
+        };
+        let chain_id = MODERATO.chain_id.to_string();
+        let want = [
+            ("TEMPO_RPC", MODERATO.rpc_url),
+            ("REGISTRY", MODERATO.diamond),
+            ("CHAIN_ID", chain_id.as_str()),
+            ("LH_TOKEN", MODERATO.lh_token),
+        ];
+        for (key, expect) in want {
+            let line = src
+                .lines()
+                .find(|l| l.contains(&format!("export const {key} ")))
+                .unwrap_or_else(|| panic!("_chain.ts missing `export const {key}`"));
+            assert!(
+                line.contains(expect),
+                "_chain.ts default for {key} drifted from Rust MODERATO (expected `{expect}`).\n  \
+                 line: {line}\n  Update proxy/api/_chain.ts (or MODERATO) so they match."
+            );
+        }
+    }
 }
