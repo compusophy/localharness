@@ -400,12 +400,10 @@ main.layout .transcript {
      (header above, footer below): the first/last message clears the chrome by
      one --chrome-pad and then scrolls UNDER it, so the chat flows edge to edge.
      70px top = header pad (16) + 38px button + 16px uniform-margin gap (the
-     first message used to crowd the header at +56). Bottom = the input chrome
-     (pad 16 + row 38 + pad 16 = 70) + one --chrome-pad uniform margin, so the
-     last line clears the floating input by the SAME 16px the top clears the
-     header (it used to crowd the input at +76 ≈ 6px). + the iOS safe-area
-     insets on each end. Side gutters stay the uniform chrome margin. */
-  padding: calc(env(safe-area-inset-top) + 70px) var(--chrome-pad) calc(env(safe-area-inset-bottom) + 70px + var(--chrome-pad));
+     first message used to crowd the header at +56). 76px bottom = footer pad
+     (16) + input row (38) + pad (16) + gap; + the iOS safe-area insets on each
+     end. Side gutters stay the uniform chrome margin. */
+  padding: calc(env(safe-area-inset-top) + 70px) var(--chrome-pad) calc(env(safe-area-inset-bottom) + 76px);
   margin-top: 0;
   display: flex;
   flex-direction: column;
@@ -415,14 +413,6 @@ main.layout .transcript {
   scrollbar-width: none;
 }
 main.layout .transcript::-webkit-scrollbar { display: none; }
-/* Scroll-to-top reservation: while a turn is streaming, pad the BOTTOM by a
-   full viewport so the just-sent user message can be scrolled to the TOP
-   (dom::scroll_turn_to_top) with the reply flowing below it — without scroll
-   room beneath the newest turn the view falls straight back to the bottom.
-   Padding (not a min-height on the turn) so it adds no visible box / border.
-   `:has` drops the moment `mark_turn_done` removes `.streaming`, so the extra
-   space (always below the fold) collapses when the turn finishes. */
-main.layout .transcript:has(.turn.assistant.streaming) { padding-bottom: 100dvh; }
 /* The FIRST item in the transcript sits FLUSH against the header border —
    no residual top gap. `.turn` carries `padding: 1px 0` for between-turn
    rhythm, but the first turn must not push the conversation down from the
@@ -1908,11 +1898,9 @@ button.ready:hover {
   animation: lh-spin 800ms steps(1) infinite;
 }
 /* The turn-status cue now lives in the HEADER (see .turn-status-btn); the old
-   in-stream stage line is gone. The scroll-to-top reservation that lets the
-   newest exchange reach the top lives on the transcript via :has (see
-   `main.layout .transcript:has(.turn.assistant.streaming)`) — NOT a min-height
-   on the turn, which would stretch the .turn.assistant 2px accent border down
-   an empty viewport. */
+   in-stream stage line is gone. The chat follows the bottom as it streams
+   (scroll_to_bottom on append/chunk) — standard messaging flow, no scroll-to-top
+   snap and no reserved gap (on-chain feedback #48/#49). */
 /* The stage line IS the working cue for the whole streaming turn (its container
    is always painted), so drop the trailing braille spinner — exactly one
    indicator, no flip between the dot and the spinner as stages come and go. */
