@@ -913,10 +913,15 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
     let stale_token = code == Some(BACKEND_STALE_AUTH);
     // Off-chain auto error reporting — code-stamped, redacted, deduped, fire-and-
     // forget, no-op when disabled. SKIP expected non-bug states: out-of-credits
-    // (402), a stale device clock, and user cancels. A provider 429 is a REAL
-    // signal (the platform's quota, LH3001) and IS reported.
+    // (402), a stale device clock, and user cancels. A transient provider 429
+    // (rate-limit/overload) is a REAL signal (the platform's quota, LH3001) and IS
+    // reported — but an EXTERNAL billing spend-cap is the owner's Google-console
+    // problem, not a code bug, and refiles every session as pure noise (it filed 4
+    // dupe telemetry issues), so it is suppressed here.
+    let spend_cap = lower.contains("spending cap") || lower.contains("spend cap");
     if crate::app::telemetry::enabled()
         && !stale_token
+        && !spend_cap
         && code != Some(BACKEND_CREDITS)
         && !lower.contains("cancel")
     {

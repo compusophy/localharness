@@ -341,11 +341,18 @@ fn inject_token_styles(doc: &web_sys::Document) {
 }
 
 /// Apply the render-mode classes to `<html>` from URL params
-/// (`?theme=light`, `?preview=mobile`) or the persisted prefs in
+/// (`?theme=light`, `?preview=desktop`) or the persisted prefs in
 /// `localStorage`. The URL param WINS, so a screenshot suite or a shared
 /// link can force a mode regardless of what's saved. The styling lives in
 /// `style.rs` (`html.theme-light`) + `styles.css` (`html.preview-mobile`);
 /// the admin toggle writes the prefs (`events::layout`).
+///
+/// MOBILE-FIRST default (rawfeedback): a DESKTOP browser now renders the 9:16
+/// phone frame BY DEFAULT (the product is mobile-first) — escape to a full-width
+/// desktop view via the admin toggle / `?preview=desktop`. A real phone (narrow
+/// viewport) is NEVER framed — it already gets the native layout via the <=600px
+/// media queries + safe-area insets, so its experience is unchanged. The
+/// headless signer / rpc chromes are never framed either.
 fn apply_render_modes(doc: &web_sys::Document) {
     let Some(html) = doc.document_element() else {
         return;
@@ -363,9 +370,21 @@ fn apply_render_modes(doc: &web_sys::Document) {
     if light {
         let _ = html.class_list().add_1("theme-light");
     }
-    let mobile = search.contains("preview=mobile")
-        || (!search.contains("preview=desktop") && pref("lh-preview").as_deref() == Some("mobile"));
-    if mobile {
+    // A real phone gets the native layout, not the desktop "phone frame".
+    let is_real_mobile = web_sys::window()
+        .and_then(|w| w.inner_width().ok())
+        .and_then(|v| v.as_f64())
+        .map(|w| w <= 600.0)
+        .unwrap_or(false);
+    // The embedded/headless chromes (signer iframe, rpc endpoint) are never framed.
+    let embedded = search.contains("signer=1") || search.contains("rpc=1");
+    // Desktop-view is opt-OUT of the new mobile-first default: an explicit param
+    // or a saved "desktop" pref. Otherwise a desktop browser is framed.
+    let desktop_view =
+        search.contains("preview=desktop") || pref("lh-preview").as_deref() == Some("desktop");
+    let mobile_frame =
+        !is_real_mobile && !embedded && (search.contains("preview=mobile") || !desktop_view);
+    if mobile_frame {
         let _ = html.class_list().add_1("preview-mobile");
     }
 }

@@ -10,7 +10,10 @@ pub(super) fn toggle_theme() {
     set_render_mode("theme-light", "lh-theme", "light", "dark");
 }
 
-/// Flip the mobile-preview frame live (`html.preview-mobile`) and persist it.
+/// Toggle the desktop view on/off live. The app is mobile-first — framed as a
+/// 9:16 phone column by default on desktop (`apply_render_modes`) — so this
+/// REMOVES the `preview-mobile` frame (persisting `lh-preview=desktop`) and adds
+/// it back (persisting `mobile`). Real phones are never framed regardless.
 pub(super) fn toggle_preview() {
     set_render_mode("preview-mobile", "lh-preview", "mobile", "desktop");
 }

@@ -1691,13 +1691,15 @@ pub(crate) fn admin_notify_section() -> Markup {
     }
 }
 
-/// Display modes — live toggles for the light theme + the mobile-preview frame
-/// (`style.rs` / `styles.css`). Persisted in `localStorage` (`events::layout`)
-/// and re-applied at mount (`apply_render_modes`); the `?theme=`/`?preview=`
-/// URL params override the saved pref so a screenshot suite can force a mode.
+/// Display modes — live toggles for the light theme + the desktop-view escape
+/// from the mobile-first phone frame (`style.rs` / `styles.css`). Persisted in
+/// `localStorage` (`events::layout`) and re-applied at mount (`apply_render_modes`);
+/// the `?theme=`/`?preview=` URL params override the saved pref. The app defaults
+/// to the 9:16 phone frame on desktop, so the toggle reads "desktop view" and is
+/// `.active` once that wider view is chosen.
 pub(crate) fn admin_display_section() -> Markup {
     let light = render_pref_is("lh-theme", "light");
-    let mobile = render_pref_is("lh-preview", "mobile");
+    let desktop = render_pref_is("lh-preview", "desktop");
     html! {
         div.admin-section #display-section {
             div.admin-section-title { "display" }
@@ -1705,8 +1707,8 @@ pub(crate) fn admin_display_section() -> Markup {
                 button type="button" data-action="toggle-theme" .ghost .active[light] {
                     "light mode"
                 }
-                button type="button" data-action="toggle-preview" .ghost .active[mobile] {
-                    "mobile preview"
+                button type="button" data-action="toggle-preview" .ghost .active[desktop] {
+                    "desktop view"
                 }
             }
         }

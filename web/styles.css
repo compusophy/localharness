@@ -354,7 +354,10 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
 .feedback-textarea {
   width: 100%;
   min-height: 120px;
-  background: var(--panel-2);
+  /* Transparent (not a --panel-2 fill) so it reads as ONE box with the panel's
+     border — a lighter inset fill looked like a second box-in-a-box (#64). Same
+     flush treatment as the chat input (.terminal-row textarea). */
+  background: transparent;
   color: var(--fg);
   border: none;
   padding: 10px 12px;
@@ -765,9 +768,10 @@ main.layout .transcript > *:empty { display: none; }
   max-height: 60vh;
   overflow-y: auto;
   background: var(--bg);
-  /* No outer frame — the textarea carries the only border, so the popover is a
-     single clean box, not a box-in-a-box (feedback). The panel still reads as a
-     surface via its solid fill + the textarea/submit outlines inside it. */
+  /* The PANEL carries the only frame (#64): one clean box, with the textarea a
+     flush --panel-2 inset inside it (its own border removed above) — never a
+     box-in-a-box. The :focus-within rule below colors THIS border on focus. */
+  border: 1px solid var(--border);
   z-index: var(--z-menu);
   padding: 12px;
 }
@@ -1555,18 +1559,17 @@ input, textarea {
 }
 
 /* === RENDER MODES ====================================================== */
-/* Mobile-preview (the setting / `?preview=mobile`): render the phone layout in
-   ANY viewport. Frames the whole app as a 390px column and FORCES the <=600px
-   mobile rules above — so a desktop browser, or a screenshot tool that can't
-   resize the window (a maximized Chrome), still shows the true mobile UI.
-   At a real 390px viewport the column simply fills it. Theme tokens come from
-   `style.rs` (`html.theme-light`), so light/dark composes with this for free. */
+/* The 9:16 phone frame. MOBILE-FIRST default: a desktop browser is framed by
+   default (mod.rs apply_render_modes adds .preview-mobile unless ?preview=desktop
+   / a saved "desktop" pref); a real <=600px phone is never framed (native layout)
+   and the desktop view opts out. Frames the app as a 390px column and forces the
+   <=600px mobile rules above. NO side border rules — the bare column on the page
+   background reads as the phone (rawfeedback: the left/right vertical lines were
+   "horrendous"). Theme tokens come from `style.rs`, so light/dark composes free. */
 html.preview-mobile #root {
   width: 390px;
   max-width: 100%;
   margin: 0 auto;
-  border-left: 1px solid var(--border);
-  border-right: 1px solid var(--border);
 }
 html.preview-mobile input,
 html.preview-mobile textarea,

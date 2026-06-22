@@ -43,6 +43,13 @@ pub(crate) fn begin(body_id: &str) {
     BODY_ID.with(|b| *b.borrow_mut() = body_id.to_string());
     ARMED.with(|a| a.set(true));
     dom::swap_inner(SLOT, "");
+    // Paint an immediate "starting" word on the pending bubble so it is NEVER a
+    // blank bubble before the first real stage (#58/T25: on mobile the gap to the
+    // first token left an empty bubble for 100ms+, across the payment/session
+    // awaits below). This sets ONLY the display attribute, not the pipeline, so
+    // the canonical paying→starting→thinking→streaming ordering that the first
+    // real `enter` records is unaffected (it overwrites this placeholder word).
+    dom::set_attr(body_id, "data-stage", Stage::Starting.word());
 }
 
 /// Record that `stage` is happening NOW and repaint the header glyph iff the
