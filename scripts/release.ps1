@@ -135,31 +135,17 @@ if (-not (Select-String -Path CHANGELOG.md -Pattern "^## \[$([regex]::Escape($Ve
 
 Step "regenerate managed docs (gen-docs) -> $Version"
 # The generator OWNS the version line (and every GEN block) in web/skill.md /
-# web/llms.txt / README.md. Run it AFTER the Cargo.toml bump so every
-# `<!-- GEN:version -->` block picks up the new crate version. This replaces the
-# old per-file manual llms.txt version stamp. (The README crates.io BADGE +
-# install snippet below are NOT GEN blocks — they stay hand-stamped.)
+# web/llms.txt, and writes the filled web/skill.md verbatim to README.md (the
+# README is a DERIVED COPY of skill.md — feedback #56). Run it AFTER the
+# Cargo.toml bump so every `<!-- GEN:version -->` block picks up the new crate
+# version. This replaces the old per-file manual llms.txt version stamp AND the
+# old hand-stamped README badge — README has no hand-maintained content now.
 Invoke-Native "gen-docs" { cargo run --quiet --bin gen-docs --features wallet }
 if (-not (Select-String -Path web/llms.txt -Pattern "version:\*\* $([regex]::Escape($Version)) " -Quiet)) {
     Fail "gen-docs did not stamp llms.txt version $Version"
 }
-
-Step "stamp README.md crate version -> $Version"
-# README badges/quickstart aren't auto-derived. Keep the crates.io version badge
-# (STATIC on purpose - shields.io's live crates source is flaky and renders
-# "invalid" for days at a time) and the install snippet in lock-step with the
-# release so the published README is never stale. BOM-safe write (PS5.1
-# Set-Content -Encoding utf8 prepends a BOM that breaks the README H1).
-$minor = ($Version -split '\.')[0..1] -join '.'
-# -Encoding utf8 is REQUIRED: README.md is UTF-8 with no BOM, and PS5.1's
-# Get-Content defaults to the ANSI code page for BOM-less files, which mangles
-# every em-dash/arrow into mojibake before WriteAllText persists it.
-$readme = Get-Content README.md -Raw -Encoding utf8
-$readme = $readme -replace '(?m)^\[!\[crates\.io\]\(.*?\)\]\(https://crates\.io/crates/localharness\)$', "[![crates.io](https://img.shields.io/badge/crates.io-v$Version-blue.svg)](https://crates.io/crates/localharness)"
-$readme = $readme -replace '(?m)^localharness = "[0-9]+\.[0-9]+(\.[0-9]+)?"$', "localharness = `"$minor`""
-[System.IO.File]::WriteAllText((Resolve-Path README.md), $readme, (New-Object System.Text.UTF8Encoding $false))
-if (-not (Select-String -Path README.md -Pattern "crates\.io-v$([regex]::Escape($Version))-blue" -Quiet)) {
-    Fail "README crate version badge stamp did not stick"
+if (-not (Select-String -Path README.md -Pattern "version:\*\* $([regex]::Escape($Version)) " -Quiet)) {
+    Fail "gen-docs did not sync README.md to skill.md version $Version"
 }
 
 # ---------------------------------------------------------------------------

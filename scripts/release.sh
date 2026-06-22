@@ -102,11 +102,13 @@ grep -q "^## \[$VERSION\] - $TODAY" CHANGELOG.md || fail "CHANGELOG promote did 
 
 step "regenerate managed docs (gen-docs) -> $VERSION"
 # The generator OWNS the version line (and every other GEN block) in
-# web/skill.md / web/llms.txt / README.md. Run it AFTER the Cargo.toml bump so
-# every `<!-- GEN:version -->` block picks up the new crate version; this
-# replaces the old per-file manual sed stamps.
+# web/skill.md / web/llms.txt, and writes the filled web/skill.md verbatim to
+# README.md (the README is a DERIVED COPY of skill.md — feedback #56). Run it
+# AFTER the Cargo.toml bump so every `<!-- GEN:version -->` block picks up the
+# new crate version; this replaces the old per-file manual sed stamps.
 cargo run --quiet --bin gen-docs --features wallet
 grep -q "version:\*\* $VERSION " web/llms.txt || fail "gen-docs did not stamp llms.txt version $VERSION"
+grep -q "version:\*\* $VERSION " README.md || fail "gen-docs did not sync README.md version $VERSION"
 
 # ---------------------------------------------------------------------------
 # Verify

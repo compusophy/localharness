@@ -623,10 +623,10 @@ regenerate. Gates enforce it: a `cargo test` drift-test
 `build-web.sh` regenerates pre-build, and `release.{sh,ps1}` run
 `gen-docs -- --check` in PRE-FLIGHT — **a version bump cannot ship stale docs.**
 
-The other surfaces stay hand-written: **docs.rs** (`///`, every `pub` item gets a
-one-liner) · **AGENTS.md** (this map, under 40K) · **CHANGELOG.md** (Keep-a-
-Changelog) · **README.md** (minimal, NOT generated — no GEN blocks) · the PROSE
-in skill.md/llms.txt (only the facts in GEN blocks are generated).
+**README.md = a DERIVED COPY of web/skill.md** (#56: ONE doc; gen-docs writes
+filled skill.md → README; edit skill.md only; guard `readme_skill_in_sync`).
+Hand-written: **docs.rs** (`///`) · **AGENTS.md** (under 40K) · **CHANGELOG.md**
+· skill.md/llms.txt PROSE (only GEN-block facts generated).
 
 **When to update what:** drift-prone fact (chain/version/pricing/tool/CLI) →
 `docs_manifest.rs` + `gen-docs`; new pub API → `///`; new module → AGENTS.md tree; new agent tool → `AGENT_TOOLS` in the

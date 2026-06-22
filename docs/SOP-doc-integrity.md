@@ -6,9 +6,12 @@ tool list, the CLI command list — now live in ONE place and are GENERATED into
 the docs. A `cargo test` gate and the release pre-flight make stale docs
 impossible to ship.
 
-The top-level **`README.md` is deliberately NOT managed** — it is hand-written
-and minimal (a README is not the docs). Do not add GEN blocks to it; the full
-generated agent spec is `web/llms.txt`.
+The top-level **`README.md` is a DERIVED COPY of `web/skill.md`** (maintainer
+feedback #56: the README and skill.md are ONE document). `gen-docs` fills
+skill.md's GEN blocks and writes the result verbatim to `README.md`, so you edit
+exactly ONE file (`web/skill.md`) and they cannot drift. This REVERSES the prior
+"README is minimal + hand-written + unmanaged" rule. The full generated agent
+spec remains `web/llms.txt`.
 
 ## The pipeline
 
@@ -17,8 +20,11 @@ src/docs_manifest.rs          ← THE single source of truth (the facts)
         │  cargo run --bin gen-docs
         ▼
 web/skill.md · web/llms.txt   ← facts live inside GEN marker pairs
-        │  cargo test --lib --features wallet   (drift gate)
-        │  scripts/release.{sh,ps1}             (pre-flight gen-docs --check)
+        │  (gen-docs ALSO writes filled skill.md → README.md, a derived copy)
+        ▼
+README.md                     ← byte-identical to filled web/skill.md
+        │  cargo test --features wallet   (drift gate + README↔skill identity)
+        │  scripts/release.{sh,ps1}        (pre-flight gen-docs --check)
         ▼
 a version bump CANNOT ship with stale docs
 ```
@@ -78,6 +84,10 @@ cargo test --lib --features wallet docs_manifest::tests::no_doc_drift
   Fails with `doc drift: run \`cargo run --bin gen-docs\``. Runs under
   `cargo test --lib --features wallet` (the manifest is wallet-gated because it
   reads `registry::chain`).
+- **README↔skill identity test** (`tests/readme_skill_in_sync.rs`): asserts
+  `README.md` is byte-identical to the FILLED `web/skill.md`, so a hand-edit to
+  either — or forgetting to rerun `gen-docs` — fails `cargo test --features
+  wallet`. `gen-docs -- --check` also reports this as drift.
 - **`scripts/build-web.sh`**: runs `cargo run --bin gen-docs` (REGENERATE)
   BEFORE the wasm-pack build, so every deploy ships fresh docs.
 - **`scripts/release.sh` + `scripts/release.ps1`**: a pre-flight step runs
@@ -93,6 +103,12 @@ cargo test --lib --features wallet docs_manifest::tests::no_doc_drift
    tables).
 2. Run `cargo run --bin gen-docs --features wallet`.
 3. `git diff` to review the regenerated blocks; commit them.
+
+## To change the README / skill.md prose
+
+Edit `web/skill.md` ONLY (never `README.md` directly — it is overwritten), then
+`cargo run --bin gen-docs --features wallet` resyncs `README.md`. Never hand-edit
+text inside a GEN block; change the fact in `docs_manifest.rs` instead.
 
 ## Notes
 

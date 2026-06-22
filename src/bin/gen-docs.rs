@@ -6,6 +6,12 @@
 //! the drift-prone facts (chain addresses, version, pricing, tool list, CLI
 //! list).
 //!
+//! It ALSO keeps the top-level `README.md` byte-identical to the filled
+//! `web/skill.md`: per maintainer feedback #56 the README and skill.md are ONE
+//! document. `web/skill.md` is the SOURCE you edit; `README.md` is a pure
+//! DERIVED copy of its filled output, so there is exactly one place to edit and
+//! they cannot drift (a guard test in `tests/` asserts the invariant too).
+//!
 //! Modes:
 //!   `cargo run --bin gen-docs`            — REWRITE the docs in place (default).
 //!   `cargo run --bin gen-docs -- --check` — render in-memory, diff vs the
@@ -32,11 +38,19 @@ use std::process::ExitCode;
 #[cfg(not(target_arch = "wasm32"))]
 use localharness::docs_manifest;
 
-/// The managed docs, relative to the crate root. The top-level `README.md` is
-/// deliberately NOT here — it is hand-written and minimal (a README is not the
-/// generated docs); `web/llms.txt` is the full generated agent spec.
+/// The GEN-managed docs, relative to the crate root — the files whose
+/// `<!-- GEN:key -->` blocks `fill` rewrites in place. `web/skill.md` is the
+/// onboarding doc (and the SOURCE the README mirrors); `web/llms.txt` is the
+/// full agent spec.
 #[cfg(not(target_arch = "wasm32"))]
 const MANAGED_DOCS: &[&str] = &["web/skill.md", "web/llms.txt"];
+
+/// The doc that is a pure DERIVED COPY of `(source, copy)` — `README.md` is
+/// kept byte-identical to the FILLED `web/skill.md` (feedback #56: README and
+/// skill.md are ONE document). The source is filled first, then the copy is
+/// written verbatim from that filled text; no independent GEN pass on the copy.
+#[cfg(not(target_arch = "wasm32"))]
+const DERIVED_COPY: (&str, &str) = ("web/skill.md", "README.md");
 
 #[cfg(not(target_arch = "wasm32"))]
 fn crate_root() -> PathBuf {
@@ -92,6 +106,38 @@ fn main() -> ExitCode {
             );
         } else {
             println!("ok      {rel} ({} block(s) already fresh)", report.fresh.len());
+        }
+    }
+
+    // README.md is a pure derived copy of the FILLED source (skill.md). Fill the
+    // source in-memory and require/write the copy to match it byte-for-byte.
+    let (src_rel, copy_rel) = DERIVED_COPY;
+    match std::fs::read_to_string(root.join(src_rel)) {
+        Ok(src_doc) => {
+            let (filled_src, _) = docs_manifest::fill(&src_doc);
+            let copy_path = root.join(copy_rel);
+            let current_copy = std::fs::read_to_string(&copy_path).unwrap_or_default();
+            if check {
+                if current_copy != filled_src {
+                    any_drift = true;
+                    println!("DRIFT  {copy_rel}: not identical to filled {src_rel}");
+                } else {
+                    println!("ok     {copy_rel} (identical to {src_rel})");
+                }
+            } else if current_copy != filled_src {
+                if let Err(e) = write_doc(&copy_path, &filled_src) {
+                    eprintln!("gen-docs: cannot write {}: {e}", copy_path.display());
+                    any_error = true;
+                } else {
+                    println!("updated {copy_rel}: synced to filled {src_rel}");
+                }
+            } else {
+                println!("ok      {copy_rel} (already identical to {src_rel})");
+            }
+        }
+        Err(e) => {
+            eprintln!("gen-docs: cannot read {}: {e}", root.join(src_rel).display());
+            any_error = true;
         }
     }
 
