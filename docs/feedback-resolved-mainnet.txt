@@ -231,3 +231,7 @@
 46  prior    1-MINUTE resolution delivered (Vercel cron '* * * * *' + 60s floor,
 #            events/schedule.rs). Sub-minute (<60s) is deferred infra — cannot ride
 #            Vercel Cron's 1-min granularity; on-chain facet enforces a 60s minimum.
+62  ae9521c  DEPLOYED: relay now sponsors releaseName(uint256) (selector 0x48e69e68
+#            in ALWAYS_FREE; proxy redeployed) — bulk subdomain release works again.
+63  ae9521c  DEPLOYED: rustlite draw_string host macro (parser desugar → one draw_char
+#            per glyph; no new host import). No more verbose char arrays.
