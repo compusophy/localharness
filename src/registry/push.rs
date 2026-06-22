@@ -15,16 +15,28 @@ use super::*;
 /// by evicting the OLDEST entries past this size.
 const SLOT_BYTE_BUDGET: usize = 4000;
 
+/// Read a non-empty `dev` (stable per-device id, src/app/notifications.rs) from a
+/// subscription object, if present.
+fn dev_of(v: &serde_json::Value) -> Option<&str> {
+    v.get("dev").and_then(|d| d.as_str()).filter(|s| !s.is_empty())
+}
+
 /// Merge THIS device's subscription JSON into a push-sub slot value, upserting
-/// by `endpoint`. Slots are MULTI-DEVICE: a JSON array of subscription objects,
-/// newest first (legacy single-object values are promoted to a one-element
-/// array — the fix for "my phone stopped buzzing": a single-sub slot meant the
-/// last device to register silently overwrote every other device's
-/// subscription). Returns `None` when the slot already contains exactly this
-/// subscription (no write needed), else the new slot JSON to publish.
+/// by the stable `dev` device id when present (else by `endpoint` for legacy
+/// subs). Slots are MULTI-DEVICE: a JSON array of subscription objects, newest
+/// first (legacy single-object values are promoted to a one-element array — the
+/// fix for "my phone stopped buzzing": a single-sub slot meant the last device
+/// to register silently overwrote every other device's subscription). The
+/// `dev`-keyed upsert is the fix for "one phone buzzes twice" (R5): the SAME
+/// physical device registered under two subdomain origins held two DIFFERENT
+/// endpoints, so endpoint-keyed dedup couldn't collapse them — replacing by
+/// `dev` keeps exactly one entry per device. Returns `None` when the slot
+/// already contains exactly this subscription (no write needed), else the new
+/// slot JSON to publish.
 pub fn merge_push_sub(slot: Option<&str>, current: &str) -> Option<String> {
     let cur: serde_json::Value = serde_json::from_str(current).ok()?;
     let cur_ep = cur.get("endpoint")?.as_str()?.to_string();
+    let cur_dev = dev_of(&cur).map(str::to_string);
     let mut entries: Vec<serde_json::Value> = match slot.map(str::trim).filter(|s| !s.is_empty()) {
         None => Vec::new(),
         Some(s) => match serde_json::from_str::<serde_json::Value>(s) {
@@ -37,7 +49,14 @@ pub fn merge_push_sub(slot: Option<&str>, current: &str) -> Option<String> {
     if entries.contains(&cur) {
         return None; // this exact subscription is already published
     }
-    entries.retain(|e| e.get("endpoint").and_then(|v| v.as_str()) != Some(cur_ep.as_str()));
+    // Drop the prior entry for THIS device: by `dev` when we have one (collapses
+    // the same device's churned/cross-origin endpoints), always also by the
+    // matching endpoint (legacy subs without `dev`).
+    entries.retain(|e| {
+        let same_dev = cur_dev.as_deref().is_some() && dev_of(e) == cur_dev.as_deref();
+        let same_ep = e.get("endpoint").and_then(|v| v.as_str()) == Some(cur_ep.as_str());
+        !(same_dev || same_ep)
+    });
     entries.insert(0, cur);
     // Evict oldest while over budget (never the just-added entry).
     loop {
@@ -111,6 +130,50 @@ mod tests {
 
     fn sub(ep: &str, key: &str) -> String {
         format!(r#"{{"endpoint":"https://push.example/{ep}","keys":{{"p256dh":"{key}","auth":"a"}}}}"#)
+    }
+
+    fn sub_dev(ep: &str, key: &str, dev: &str) -> String {
+        format!(r#"{{"endpoint":"https://push.example/{ep}","keys":{{"p256dh":"{key}","auth":"a"}},"dev":"{dev}"}}"#)
+    }
+
+    #[test]
+    fn merge_collapses_same_dev_different_endpoint() {
+        // R5: the SAME device under two origins has two DIFFERENT endpoints but
+        // ONE stable `dev` — the second registration must REPLACE the first, not
+        // append a second entry (which made the proxy buzz the phone twice).
+        let first = sub_dev("origin-a", "k1", "device-1");
+        let second = sub_dev("origin-b", "k2", "device-1");
+        let slot = merge_push_sub(None, &first).unwrap();
+        let merged = merge_push_sub(Some(&slot), &second).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 1, "same dev must collapse to one entry");
+        assert_eq!(arr[0]["endpoint"], "https://push.example/origin-b"); // newest
+    }
+
+    #[test]
+    fn merge_keeps_distinct_devs() {
+        // Two genuinely different devices (distinct `dev`) coexist.
+        let phone = sub_dev("phone", "k1", "dev-phone");
+        let desktop = sub_dev("desktop", "k2", "dev-desktop");
+        let slot = merge_push_sub(None, &phone).unwrap();
+        let merged = merge_push_sub(Some(&slot), &desktop).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn merge_dev_sub_replaces_legacy_endpoint_match() {
+        // A legacy (no-dev) entry for the same endpoint is still replaced when a
+        // dev-tagged sub with that endpoint arrives.
+        let legacy = sub("phone", "OLD");
+        let tagged = sub_dev("phone", "NEW", "dev-phone");
+        let slot = merge_push_sub(None, &legacy).unwrap();
+        let merged = merge_push_sub(Some(&slot), &tagged).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["keys"]["p256dh"], "NEW");
     }
 
     #[test]

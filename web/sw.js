@@ -73,14 +73,16 @@ self.addEventListener('push', (event) => {
         // double notifications on Android).
         tag: 'lh-' + title + '-' + body,
       });
-      // Relay into any OPEN page so the header-bell inbox updates live;
-      // with no page open, stash for the next boot instead.
+      // ALWAYS persist the note (T5): the live postMessage relay below only
+      // reaches a SAME-ORIGIN open page, so a push received while no matching
+      // page is open (or only a cross-origin page is) never landed in the bell.
+      // Stash unconditionally so load_inbox folds it on the next open; the
+      // existing import_onchain_messages / load_inbox dedup + truncate keep a
+      // live-relayed note from double-counting.
+      await stashPending(title, body);
+      // Relay into any OPEN page too so the header-bell inbox updates live.
       const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-      if (wins.length > 0) {
-        for (const client of wins) client.postMessage({ type: 'lh-push', title, body });
-      } else {
-        await stashPending(title, body);
-      }
+      for (const client of wins) client.postMessage({ type: 'lh-push', title, body });
     })(),
   );
 });

@@ -19,6 +19,12 @@
 export interface PushSubscriptionJson {
   endpoint: string;
   keys: { p256dh: string; auth: string };
+  // Stable per-device id (src/app/notifications.rs stamps it). Optional: legacy
+  // subs predate it. When present, dedupeSubs collapses entries sharing one
+  // `dev` to a single delivery — the SAME physical device under two subdomain
+  // origins has two DIFFERENT endpoints, so endpoint dedup alone double-buzzed
+  // it (R5).
+  dev?: string;
 }
 
 /**
@@ -46,18 +52,33 @@ export function parsePushSubs(text: string): PushSubscriptionJson[] {
       typeof s.keys?.p256dh === 'string' &&
       typeof s.keys?.auth === 'string'
     ) {
-      out.push(s);
+      // Preserve the stable `dev` device id when present (used by dedupeSubs to
+      // collapse one device's multiple endpoints); drop anything else.
+      const dev = typeof s.dev === 'string' && s.dev ? s.dev : undefined;
+      out.push(dev ? { endpoint: s.endpoint, keys: s.keys, dev } : { endpoint: s.endpoint, keys: s.keys });
     }
   }
   return out;
 }
 
-/** Drop duplicate subscriptions (same endpoint), preserving order. */
+/**
+ * Drop duplicate subscriptions, preserving order (first occurrence wins, which
+ * is the MOST RECENT since slots are stored newest-first). Collapses by the
+ * stable `dev` device id when present — the SAME physical device enrolled under
+ * two subdomain origins holds two DIFFERENT endpoints in one address-keyed slot,
+ * so endpoint dedup alone delivered to it twice (R5). Entries with no `dev`
+ * (legacy) fall back to endpoint-keyed dedup.
+ */
 export function dedupeSubs(subs: PushSubscriptionJson[]): PushSubscriptionJson[] {
-  const seen = new Set<string>();
+  const seenEndpoint = new Set<string>();
+  const seenDev = new Set<string>();
   return subs.filter((s) => {
-    if (seen.has(s.endpoint)) return false;
-    seen.add(s.endpoint);
+    if (s.dev) {
+      if (seenDev.has(s.dev)) return false;
+      seenDev.add(s.dev);
+    }
+    if (seenEndpoint.has(s.endpoint)) return false;
+    seenEndpoint.add(s.endpoint);
     return true;
   });
 }

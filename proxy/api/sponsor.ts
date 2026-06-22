@@ -226,6 +226,13 @@ const ALWAYS_FREE_SELECTORS = new Set([
   // not be locked out by the onboarding-only gate (#62: bulk_release_subdomains).
   // Bounded by the rate caps + float breaker.
   selector('releaseName(uint256)'),
+  // setPushSub registers THIS device's Web Push subscription (address-keyed).
+  // The header bell auto-enrolls on tap (notif_bell_pressed → enable_device_push);
+  // a FUNDED user must still be able to turn notifications on. It's gas-only —
+  // stores a subscription blob, moves no value, can't touch the sponsor's
+  // fee-token float — so the onboarding-only gate must not lock it out (R4:
+  // tapping the bell on a funded account returned LH_RELAY_FUNDED).
+  selector('setPushSub(bytes)'),
 ]);
 
 // Everything exempt from the onboarding-only gate below: self-pay (move the

@@ -204,6 +204,23 @@ const token = authToken(senderPriv, senderAddr, ts);
   ok('funded caller register-only is sponsored (always-free onboarding)', res.status === 200, `status=${res.status}`);
 }
 
+// --- funded caller, setPushSub-ONLY intent, IS sponsored (always-free) -------
+// Enabling notifications (the header bell auto-enroll) is gas-only and must work
+// on a FUNDED account too — R4: it returned LH_RELAY_FUNDED before the exemption.
+{
+  stubBalance('1bc16d674ec80000'); // 2 $LH > ceiling — funded
+  // setPushSub(bytes) with a tiny blob: selector + offset(0x20) + len(1) + 1 padded byte
+  const cd = '0x' + sel('setPushSub(bytes)') + word('20') + word('1') + word('00');
+  const intent = makeIntent(DIAMOND, cd);
+  const res = await handler(makeReq(bodyFor(intent, cd, DIAMOND), token));
+  const j = await res.json();
+  ok(
+    'funded caller setPushSub-only is sponsored (NOT 403 LH_RELAY_FUNDED)',
+    res.status === 200,
+    `status=${res.status} code=${j.code} body=${JSON.stringify(j)}`,
+  );
+}
+
 // --- funded caller, settle-ONLY intent, IS sponsored (self-pay exemption) ----
 // On mainnet a graduated agent holds only $LH (never the fee token), so it must
 // be able to relay its own-$LH x402 settlement even though it's "funded".

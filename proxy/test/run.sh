@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 
 rm -rf .ttest
 ./node_modules/.bin/tsc api/sponsor.ts api/_tempo.ts api/_chain.ts api/_ratelimit.ts \
-  api/mpp-onramp.ts api/_mpp.ts api/_stripe.ts api/_auth.ts \
+  api/mpp-onramp.ts api/_mpp.ts api/_stripe.ts api/_auth.ts api/_webpush.ts \
   --ignoreConfig --outDir .ttest --target es2022 --module commonjs \
   --moduleResolution node --skipLibCheck --types node --ignoreDeprecations 6.0 \
   --esModuleInterop
@@ -20,4 +20,5 @@ node test/tempo-feepayer.mjs
 node test/sponsor-handler.mjs
 node test/mpp-onramp.mjs
 node test/auth-parity.mjs
+node test/webpush-dedupe.mjs
 echo "proxy tests passed"

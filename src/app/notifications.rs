@@ -44,6 +44,52 @@ const PENDING_FILE: &str = ".lh_notif_pending.json";
 /// number of on-chain inbox messages already folded into the bell, so a reload
 /// only surfaces NEW ones.
 const MSG_CURSOR_FILE: &str = ".lh_msg_cursor";
+/// Stable per-device id, persisted in OPFS, stamped into every push
+/// subscription as the `dev` field so the proxy can collapse the SAME physical
+/// device's multiple push endpoints to ONE delivery (R5: a phone registered
+/// under two subdomain origins held two different endpoints in the same
+/// address-keyed slot → double-buzz). Survives reloads; one per origin.
+const DEV_ID_FILE: &str = ".lh_dev_id";
+/// High-water mark for [`notify_received_lh`] — the $LH balance (decimal wei)
+/// this device last surfaced a "received" note for, so only an INCREASE since
+/// the last open fires a fresh note (mirrors the [`MSG_CURSOR_FILE`] pattern).
+// `allow(dead_code)`: consumed only by `notify_received_lh`, whose mount wiring
+// lives in `src/app/mod.rs` (owned by integration). Drop the allow once wired.
+#[allow(dead_code)]
+const LH_BALANCE_MARK_FILE: &str = ".lh_balance_mark";
+
+/// Load (or generate + persist) this device's stable id. Best-effort: a fresh
+/// random uuid on first use; persisted plaintext in OPFS (it identifies a device
+/// for dedup, not a secret). Falls back to a fresh ephemeral id if OPFS is
+/// unavailable — worst case dedup degrades to endpoint-keyed for this load.
+pub(crate) async fn device_id() -> String {
+    let fs = crate::app::shared_opfs();
+    if let Ok(b) = fs.read(DEV_ID_FILE).await {
+        if let Ok(s) = String::from_utf8(b) {
+            let t = s.trim();
+            if !t.is_empty() {
+                return t.to_string();
+            }
+        }
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let _ = fs.write_atomic(DEV_ID_FILE, id.as_bytes()).await;
+    id
+}
+
+/// Stamp this device's stable `dev` id into a push-subscription JSON object so
+/// the proxy can dedupe by device (see [`device_id`]). Returns the input
+/// unchanged if it isn't a JSON object (defensive — never lose a subscription).
+async fn tag_sub_with_dev(sub_json: &str) -> String {
+    let dev = device_id().await;
+    match serde_json::from_str::<serde_json::Value>(sub_json) {
+        Ok(serde_json::Value::Object(mut map)) => {
+            map.insert("dev".to_string(), serde_json::Value::String(dev));
+            serde_json::Value::Object(map).to_string()
+        }
+        _ => sub_json.to_string(),
+    }
+}
 
 /// Append a notification to the in-app header bell (newest first, cap 30),
 /// flag the bell unread (a gentle pulse — no count), and persist the inbox.
@@ -258,6 +304,15 @@ pub(crate) async fn load_inbox() {
     if items.is_empty() {
         return;
     }
+    // De-dup identical (title, body), keeping the FIRST (newest — pending is
+    // prepended): T5 now ALWAYS stashes a push even when a live page also got
+    // it via postMessage (relay → push_to_bell → persist_inbox writes it to
+    // INBOX_FILE), so the same note can sit in both PENDING and INBOX. Collapse
+    // it here so the always-stash hardening can't double-count.
+    {
+        let mut seen = std::collections::HashSet::new();
+        items.retain(|e| seen.insert(e.clone()));
+    }
     items.truncate(30);
     BELL.with(|b| *b.borrow_mut() = items);
     if fresh > 0 {
@@ -326,6 +381,72 @@ pub(crate) async fn import_onchain_messages() {
     // Advance the cursor even if some decodes failed — a permanently-undecodable
     // message must not wedge the poll on every load.
     let _ = fs.write_atomic(MSG_CURSOR_FILE, count.to_string().as_bytes()).await;
+}
+
+/// T13: auto-notify the bell when this identity RECEIVES $LH. Today only the
+/// SENDER side piggybacks a notify (platform.rs::notify_recipient_of_incoming_lh);
+/// transfers from the CLI / an external wallet / x402 / bounty payouts never
+/// reach the receiver. This is a recipient-side, BALANCE-DELTA watcher (NOT
+/// event-log scraping — Tempo caps the block range): read the identity's total
+/// $LH (owner wallet + this name's TBA, where earnings land), compare against a
+/// persisted high-water mark in OPFS (mirrors the MSG_CURSOR pattern), and on an
+/// INCREASE push a bundled "received N $LH" note. Best-effort: any RPC error or
+/// missing identity is swallowed. Call at a mount/poll point AFTER
+/// [`import_onchain_messages`] so it dedups against an already-shown sender-side
+/// note via the existing title/body check. wasm32-clean.
+// `allow(dead_code)`: the mount-time call lives in `src/app/mod.rs` (owned by
+// integration); drop the allow once wired in.
+#[allow(dead_code)]
+pub(crate) async fn notify_received_lh() {
+    let Some(name) = crate::app::tenant::current_name() else {
+        return;
+    };
+    let Ok((_, owner)) = crate::app::tenant::current_tenant_owner().await else {
+        return;
+    };
+    // Total spendable-in $LH: the owner WALLET (send_lh / direct transfers land
+    // here) + this name's TBA (x402 earnings + bounty payouts). Either pot rising
+    // means funds arrived. Read-only.
+    let wallet = crate::registry::token_balance_of(&owner).await.unwrap_or(0);
+    let tba = match crate::registry::tba_of_name(&name).await.ok().flatten() {
+        Some(addr) => crate::registry::token_balance_of(&addr).await.unwrap_or(0),
+        None => 0,
+    };
+    let total = wallet.saturating_add(tba);
+
+    let fs = crate::app::shared_opfs();
+    let mark: u128 = fs
+        .read(LH_BALANCE_MARK_FILE)
+        .await
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+
+    // FIRST run (no mark yet): seed the baseline SILENTLY so we don't announce a
+    // pre-existing balance as "just received" — mirrors the version/resolution
+    // baselines. Only an increase AFTER this point fires a note.
+    let first_run = fs.read(LH_BALANCE_MARK_FILE).await.is_err();
+    if total != mark || first_run {
+        let _ = fs
+            .write_atomic(LH_BALANCE_MARK_FILE, total.to_string().as_bytes())
+            .await;
+    }
+    if first_run || total <= mark {
+        return;
+    }
+    let delta = total - mark;
+    let amount = crate::app::format_wei_as_test_eth(delta);
+    let title = format!("+{amount} $LH received");
+    let body = "incoming $LH transfer — check your wallet".to_string();
+    // Dedup against a sender-side note already folded into the bell this load
+    // (it may carry an `@<from>:` prefix, so match on the body OR an exact title).
+    let already = bell_items()
+        .iter()
+        .any(|(t, b)| (*t == title || t.ends_with(&title)) && *b == body);
+    if !already {
+        push_to_bell(&title, &body);
+    }
 }
 
 /// Decode an on-chain inbox message into a `(title, body)` bell entry. Notes the
@@ -536,13 +657,14 @@ pub(crate) async fn enable_device_push() -> Result<String, String> {
     if !ensure_permission().await? {
         return Err("notification permission is blocked — allow notifications for this site in your browser settings, then tap again".to_string());
     }
-    let sub_json = subscribe_push().await?;
+    let sub_json = tag_sub_with_dev(&subscribe_push().await?).await;
     let (signer, addr) = crate::app::chat::credit_signer()
         .await
         .ok_or_else(|| "no identity on this device yet".to_string())?;
-    // MULTI-DEVICE: merge into the existing slot (array, upsert by endpoint)
-    // instead of overwriting — a phone and a desktop share this address (same
-    // seed), and a bare replace silently de-registered the other device.
+    // MULTI-DEVICE: merge into the existing slot (array, upsert by `dev` device
+    // id when present, else endpoint) instead of overwriting — a phone and a
+    // desktop share this address (same seed), and a bare replace silently
+    // de-registered the other device.
     let addr_hex = crate::encoding::bytes_to_hex_str(&addr);
     let slot = crate::registry::addr_push_sub_of(&addr_hex).await.ok().flatten();
     let Some(merged) = crate::registry::merge_push_sub(slot.as_deref(), &sub_json) else {
@@ -557,7 +679,7 @@ pub(crate) async fn enable_and_publish() -> Result<String, String> {
     if !ensure_permission().await? {
         return Err("notification permission denied — allow notifications for this site in the browser settings".to_string());
     }
-    let sub_json = subscribe_push().await?;
+    let sub_json = tag_sub_with_dev(&subscribe_push().await?).await;
 
     let (name, owner) = crate::app::tenant::current_tenant_owner().await?;
     let token_id = match crate::registry::main_of(&owner).await {
@@ -603,6 +725,7 @@ pub(crate) async fn refresh_subscription_if_stale() {
     let Ok(current) = subscribe_push().await else {
         return;
     };
+    let current = tag_sub_with_dev(&current).await;
     let Ok((name, owner)) = crate::app::tenant::current_tenant_owner().await else {
         return;
     };
@@ -668,6 +791,7 @@ pub(crate) async fn auto_register_device_push() {
     let Ok(current) = subscribe_push().await else {
         return;
     };
+    let current = tag_sub_with_dev(&current).await;
     let addr_hex = crate::encoding::bytes_to_hex_str(&addr);
     let slot = crate::registry::addr_push_sub_of(&addr_hex).await.ok().flatten();
     // MULTI-DEVICE merge: None = this device is already in the slot array.
