@@ -57,6 +57,23 @@ thread_local! {
     /// Set by the `compact_context` tool; drained post-turn like
     /// `PENDING_CLEAR`.
     static PENDING_COMPACT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// `Date::now()` at the start of the user's send — the origin for the phase
+    /// benchmark (see `run_send` / `stream_turn`). Lets `stream_turn` report
+    /// time-to-first-output without threading a timestamp through every call.
+    static TURN_T0: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+    /// One-shot guard so the TTFT line logs once per turn (the stream loop runs
+    /// many iterations).
+    static TTFT_LOGGED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Emit a phase-benchmark line to BOTH the console (desktop devtools) and the
+/// `?debug=1` breadcrumb overlay (mobile, which has no console) — so the
+/// "why is `starting` slow" question gets real per-phase numbers. Cheap
+/// (one `Date::now()` + a format) and always on; the line is prefixed `perf:`.
+fn perf_log(msg: &str) {
+    let line = format!("perf: {msg}");
+    web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&line));
+    crate::app::debuglog::log(&line);
 }
 
 /// Schedule a full context clear for when the in-flight turn ends — set by
@@ -130,6 +147,12 @@ pub(crate) async fn run_send() {
         return;
     }
 
+    // ── phase benchmark (perf:) ── t0 is the origin for every phase delta; the
+    // TTFT line in `stream_turn` reads it back. Resets the one-shot TTFT guard.
+    let t0 = js_sys::Date::now();
+    TURN_T0.with(|c| c.set(t0));
+    TTFT_LOGGED.with(|c| c.set(false));
+
     let access = match resolve_credit_access().await {
         Some(a) => a,
         None => {
@@ -137,10 +160,17 @@ pub(crate) async fn run_send() {
             return;
         }
     };
-    // Credits mode (base_url set): top up the per-request meter so the proxy
-    // bills real `$LH` per call (NOT a free session). Silent best-effort.
+    let t_credit = js_sys::Date::now();
+    // Credits mode (base_url set): top up the per-request meter from any WALLET
+    // $LH — but in the BACKGROUND. This was `.await`ed on every turn, adding a
+    // `token_balance_of` RPC round-trip to the "starting" phase for nothing: the
+    // common case is a meter-funded user whose wallet is 0, so the read just
+    // returns. The bridge itself only fires a TX when the wallet actually holds
+    // $LH, and ONE deposit drains it to 0 — so it is at most once per funding
+    // event, NEVER per turn (and redeem/buy already bridge synchronously on their
+    // own paths). Fire-and-forget so the turn doesn't wait on the read.
     if access.base_url.is_some() {
-        ensure_credit_meter().await;
+        wasm_bindgen_futures::spawn_local(ensure_credit_meter());
     }
     let key = access.cfg_auth;
 
@@ -248,12 +278,21 @@ pub(crate) async fn run_send() {
     });
     if session_needs_start {
         stage::enter(crate::turn_stage::Stage::Starting);
+        let t_boot = js_sys::Date::now();
         if let Err(err) = start_session(&key, access.base_url.clone(), &access.identity).await {
             fail_pending_turn(assistant_turn_id, &format!("session start failed: {err:?}"));
             dom::set_status("session start failed — see the message above", true);
             return;
         }
+        perf_log(&format!("session boot {} ms (once per session)", (js_sys::Date::now() - t_boot) as u64));
     }
+    // Pre-model client work done; the rest of the wait is the proxy + model.
+    perf_log(&format!(
+        "pre-model {} ms (credit-access {} ms; session {})",
+        (js_sys::Date::now() - t0) as u64,
+        (t_credit - t0) as u64,
+        if session_needs_start { "booted (see above)" } else { "reused" },
+    ));
 
     let Some(agent) = APP.with(|cell| cell.borrow().agent.clone()) else {
         fail_pending_turn(assistant_turn_id, "internal: agent not set after start_session");
@@ -580,6 +619,15 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
     let mut cursor = response.chunks();
 
     while let Some(item) = cursor.next().await {
+        // First output of the turn → log time-to-first-output (the user-perceived
+        // "starting" duration: pre-model client work + proxy gate + model TTFT).
+        // One-shot per send (the guard is reset in `run_send`).
+        if !TTFT_LOGGED.with(|c| c.replace(true)) {
+            let t0 = TURN_T0.with(|c| c.get());
+            if t0 > 0.0 {
+                perf_log(&format!("ttft {} ms (send to first output)", (js_sys::Date::now() - t0) as u64));
+            }
+        }
         // Honor a stop request (checked per chunk — cooperative).
         if TURN_CANCEL.with(|c| c.get()) {
             break;

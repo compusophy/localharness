@@ -71,7 +71,7 @@ window.addEventListener("appinstalled", () => {
 // cannot 404. Bust the shim AND the wasm (the shim drops the query when it
 // resolves the wasm relative to import.meta.url, so the wasm url is passed
 // explicitly to init).
-const LH_BUILD = "ce0576641b5a";
+const LH_BUILD = "d58917698fd9";
 try {
   const mod = await import("./pkg/localharness.js?v=" + LH_BUILD);
   // Object form (not a bare string) — the bare-path arg is deprecated in this
