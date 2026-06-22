@@ -1046,62 +1046,38 @@ pub(crate) fn compact_context_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     )
 }
 
-/// Cheaply project the live agent's last few turns into a short text block for
-/// the off-chain feedback attachment. Reads the in-tab agent's transcript
-/// (synchronous, already in memory — no OPFS / network), keeps the most recent
-/// turns, and caps each turn so a long build session can't balloon the report.
-/// Returns "" when there's no agent (e.g. a visitor) — the caller notes that
-/// fuller context is a follow-up.
-fn recent_conversation_snippet() -> String {
-    const MAX_TURNS: usize = 8;
-    const MAX_CHARS_PER_TURN: usize = 400;
-    let entries = crate::app::APP
-        .with(|cell| cell.borrow().agent.as_ref().map(|a| a.transcript()))
-        .unwrap_or_default();
-    let start = entries.len().saturating_sub(MAX_TURNS);
-    entries[start..]
-        .iter()
-        .filter(|e| !e.text.trim().is_empty())
-        .map(|e| {
-            let mut t: String = e.text.trim().chars().take(MAX_CHARS_PER_TURN).collect();
-            if e.text.trim().chars().count() > MAX_CHARS_PER_TURN {
-                t.push('…');
-            }
-            format!("{}: {}", e.role.as_str(), t)
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// `submit_feedback(text)` — submit feedback on-chain via the FeedbackFacet.
+/// `submit_feedback(text)` — file user feedback OFF-CHAIN (rich context) by
+/// default; mirror it on-chain only when the owner opted in.
 pub(crate) fn submit_feedback_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     let schema = serde_json::json!({
         "type": "object",
         "properties": {
             "text": {
                 "type": "string",
-                "description": "Feedback text to submit on-chain. Keep it short — a \
-                    few sentences, under ~2000 bytes. Summarize rather than pasting a \
-                    long multi-paragraph report. Hard cap is 2048 bytes; longer text \
-                    is rejected before the on-chain tx."
+                "description": "The feedback text. Filed off-chain with full \
+                    conversation + device/settings context. (If the owner enabled \
+                    on-chain mirroring, the SHORT note is also written on-chain, where \
+                    a 2048-byte cap applies — summarize rather than pasting a long report.)"
             }
         },
         "required": ["text"]
     });
     ClosureTool::new(
         "submit_feedback",
-        "Submit feedback on-chain via the FeedbackFacet on the localharness registry. \
-         Emits a FeedbackSubmitted event. Use this when the user asks to leave feedback \
-         or when you want to report an issue about another agent.",
+        "Submit user feedback. Filed off-chain to the private telemetry repo with full \
+         context (conversation, device, settings); ALSO mirrored on-chain via the \
+         FeedbackFacet only if the owner enabled on-chain feedback. Use this when the \
+         user asks to leave feedback or to report an issue about another agent.",
         schema,
         |args: serde_json::Value, _ctx| async move {
             let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("").trim();
             if text.is_empty() {
                 return Err(crate::error::Error::other("feedback text cannot be empty"));
             }
-            if text.len() > 2048 {
+            let onchain = crate::app::feedback::feedback_onchain_enabled();
+            if onchain && text.len() > 2048 {
                 return Err(crate::error::Error::other(format!(
-                    "feedback too long: {} bytes (max 2048) — please shorten",
+                    "feedback too long for the on-chain mirror: {} bytes (max 2048) — please shorten",
                     text.len()
                 )));
             }
@@ -1116,32 +1092,31 @@ pub(crate) fn submit_feedback_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             let from_hex = from_hex.ok_or_else(|| {
                 crate::error::Error::other("no identity — claim a subdomain first")
             })?;
-            match crate::app::feedback::submit_feedback_onchain(&from_hex, text).await {
-                Ok(tx_hash) => {
-                    // Phase-2 rich feedback: the SHORT note went on-chain (the
-                    // public source-of-truth task list); ALSO fire the FULL
-                    // context off-chain to the telemetry repo, linked by tx
-                    // hash. Fire-and-forget (spawn_local) so it can NEVER block
-                    // or fail the on-chain submit or this tool's success return.
-                    let agent = crate::app::tenant::current_name()
-                        .unwrap_or_else(|| "apex".to_string());
-                    let feedback = text.to_string();
-                    let tx = tx_hash.clone();
-                    wasm_bindgen_futures::spawn_local(async move {
-                        let model = crate::app::model::load().await;
-                        let context = recent_conversation_snippet();
-                        crate::app::telemetry::report_feedback(
-                            agent, model, tx, feedback, context,
-                        )
-                        .await;
-                    });
-                    Ok(serde_json::json!({
-                        "status": "submitted",
-                        "tx_hash": tx_hash,
-                    }))
+            let agent =
+                crate::app::tenant::current_name().unwrap_or_else(|| "apex".to_string());
+            // On-chain ONLY when opted in (default off — off-chain is the cheap,
+            // rich primary path). A failed on-chain leg doesn't abort the report.
+            let tx = if onchain {
+                match crate::app::feedback::submit_feedback_onchain(&from_hex, text).await {
+                    Ok(h) => Some(h),
+                    Err(e) => {
+                        return Err(crate::error::Error::other(format!(
+                            "feedback on-chain submit failed: {e}"
+                        )))
+                    }
                 }
-                Err(e) => Err(crate::error::Error::other(format!("feedback failed: {e}"))),
-            }
+            } else {
+                None
+            };
+            // The rich off-chain report is the primary record (full context,
+            // linked to the tx when present). Await so the tool returns only once
+            // filed (deliberate action — independent of the auto-telemetry toggle).
+            crate::app::telemetry::report_feedback(agent, tx.clone(), text.to_string()).await;
+            Ok(serde_json::json!({
+                "status": "submitted",
+                "onchain": onchain,
+                "tx_hash": tx,
+            }))
         },
     )
 }

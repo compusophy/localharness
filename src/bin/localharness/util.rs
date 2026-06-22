@@ -1,5 +1,17 @@
 use crate::{bytes_to_hex_str, registry, resolve_caller_key, resolve_key_read_path, sponsor_key, wallet};
 
+/// Print a CLI error to stderr stamped with its stable `LHxxxx` code when the
+/// message matches a known backend/transport pattern (`error_codes::classify`).
+/// Tx reverts already carry their `LH2xxx:` prefix inline (from the registry
+/// revert decoder), so they print as-is. e.g. `error LH3003: no $LH`.
+pub(crate) fn print_err(e: impl std::fmt::Display) {
+    let s = e.to_string();
+    match localharness::error_codes::classify(&s) {
+        Some(code) => eprintln!("error {}: {s}", localharness::error_codes::fmt_label(code)),
+        None => eprintln!("error: {s}"),
+    }
+}
+
 /// Extract a single `<flag> <value>` pair from ANYWHERE in the arg list and
 /// return `(value, remaining_args_without_the_pair)`. The remainder is owned so
 /// the pair can be removed from the middle — position-fragile parsing was a real

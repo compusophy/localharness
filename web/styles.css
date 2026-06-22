@@ -765,7 +765,9 @@ main.layout .transcript > *:empty { display: none; }
   max-height: 60vh;
   overflow-y: auto;
   background: var(--bg);
-  border: 1px solid var(--border);
+  /* No outer frame — the textarea carries the only border, so the popover is a
+     single clean box, not a box-in-a-box (feedback). The panel still reads as a
+     surface via its solid fill + the textarea/submit outlines inside it. */
   z-index: var(--z-menu);
   padding: 12px;
 }

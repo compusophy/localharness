@@ -411,6 +411,9 @@ each, gotchas only.
 - **MainIdentityFacet** — `mainOf`/`mainNameOf`/`isMain`; auto-set on first-claim.
 - **FeedbackFacet** — `submitFeedback(string)` (2048-byte cap, 1.3–17M gas; gas =
   spam filter). Owner `clearFeedback()` = TRANSIENT inbox; event log survives.
+  **OPT-IN now** (gas-costly): feedback + auto error/cartridge reports default to
+  the OFF-CHAIN telemetry repo (`src/app/telemetry.rs` → `proxy/api/telemetry.ts`
+  → GitHub Issues = the task list); on-chain is the `lh_feedback_onchain` toggle.
 - **CreditsFacet** — `LocalharnessCredits` TIP-20; diamond holds `ISSUER_ROLE`.
   `dailyAllowance` 0 (DISABLED — sybil hole). Funding = redeem + `send_lh`.
 - **RedeemFacet** — owner `addRedeemCodes`, holder `redeem(code)` (mint + burn).

@@ -61,19 +61,26 @@ pub(crate) fn redact(s: &str) -> String {
         .collect()
 }
 
-/// Submit a redacted report. `kind` groups it (e.g. "error"); `title` is the
-/// one-line summary; `signature` dedups (same signature → filed once per
-/// session); `body` is the rich context (redacted here). Best-effort + fire-and-
-/// forget — call via `spawn_local`. No-op when disabled, already-sent, or no
-/// identity.
-pub(crate) async fn report(kind: String, title: String, signature: String, body: String) {
-    if !enabled() {
-        return;
+/// Hard cap on the report body (mirrors `proxy/api/telemetry.ts` MAX_BODY_BYTES
+/// so we never ship bytes the proxy would only truncate). Cut on a char boundary.
+const MAX_BODY_BYTES: usize = 24_576;
+
+fn clamp(mut s: String) -> String {
+    if s.len() > MAX_BODY_BYTES {
+        let mut cut = MAX_BODY_BYTES;
+        while cut > 0 && !s.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        s.truncate(cut);
+        s.push_str("\n…(truncated)");
     }
-    let fresh = SENT.with(|s| s.borrow_mut().insert(signature.clone()));
-    if !fresh {
-        return; // already reported this signature this session
-    }
+    s
+}
+
+/// POST a fully-assembled report to the proxy. Best-effort, fire-and-forget,
+/// 8s timeout; no-op without an identity to sign with. Does NOT redact or dedup
+/// — the public entry points own that.
+async fn post(kind: String, title: String, signature: String, body: String) {
     let Some((signer, _addr)) = crate::app::chat::credit_signer().await else {
         return; // no identity to authenticate the report
     };
@@ -85,9 +92,9 @@ pub(crate) async fn report(kind: String, title: String, signature: String, body:
     );
     let payload = serde_json::json!({
         "kind": kind,
-        "title": redact(&title),
+        "title": title,
         "signature": signature,
-        "body": redact(&body),
+        "body": body,
     });
     let _ = crate::app::net::with_timeout(8000, async {
         let _ = reqwest::Client::new()
@@ -102,36 +109,67 @@ pub(crate) async fn report(kind: String, title: String, signature: String, body:
     .await;
 }
 
-/// Convenience for a turn-level failure: a stable signature from the agent +
-/// model + a short error fingerprint so the same break dedups.
-pub(crate) fn signature_for(agent: &str, model: &str, err: &str) -> String {
+/// The rich, context-stamped report — the one entry point for errors, cartridge
+/// failures, and feedback. `freeform` (the error/feedback text) and the recent
+/// conversation are REDACTED; the structured `raw_trailer` (e.g. an on-chain tx
+/// line) and the [`context_block`] are built by us and appended RAW so tx hashes
+/// and addresses survive (the 64-hex private-key filter used to nuke the tx
+/// link). `code`, when present, is stamped into the title + signature so the same
+/// failure GROUPS into one issue instead of one-per-fingerprint. Best-effort +
+/// fire-and-forget; no-op when disabled, already-sent, or no identity.
+/// Note on gating: this does NOT check [`enabled`]. The `lh_telemetry` toggle
+/// governs *automatic* reports (errors, cartridge failures) — those callers
+/// check `enabled()` themselves. DELIBERATE feedback always sends (the user
+/// clicked submit), so it calls here directly.
+pub(crate) async fn report_event(
+    kind: String,
+    code: Option<u16>,
+    title: String,
+    signature: String,
+    freeform: String,
+    raw_trailer: String,
+) {
+    let (title, signature) = match code {
+        Some(c) => {
+            let label = crate::error_codes::fmt_label(c);
+            (format!("{label} {title}"), format!("{label}-{signature}"))
+        }
+        None => (title, signature),
+    };
+    if !SENT.with(|s| s.borrow_mut().insert(signature.clone())) {
+        return; // already reported this signature this session
+    }
+    let mut body = redact(&freeform);
+    let convo = recent_conversation();
+    if !convo.trim().is_empty() {
+        body.push_str("\n\nrecent conversation:\n");
+        body.push_str(&redact(&convo));
+    }
+    if !raw_trailer.trim().is_empty() {
+        body.push_str("\n\n");
+        body.push_str(&raw_trailer);
+    }
+    body.push_str("\n\n");
+    body.push_str(&context_block().await);
+    post(kind, redact(&title), signature, clamp(body)).await;
+}
+
+/// A stable signature for a turn-level failure: agent + context + a short error
+/// fingerprint so the same break dedups. (The `code` is prepended by
+/// [`report_event`].)
+pub(crate) fn signature_for(agent: &str, context: &str, err: &str) -> String {
     let fp: String = err
         .chars()
         .filter(|c| c.is_ascii_alphanumeric())
         .take(40)
         .collect();
-    format!("{agent}-{model}-{fp}")
+    format!("{agent}-{context}-{fp}")
 }
 
-/// Phase-2 rich feedback (design/telemetry-and-global-lessons.md): the SHORT
-/// note stays on-chain (the public source-of-truth task list); this fires the
-/// FULL context off-chain to the telemetry repo, linked back to the on-chain
-/// record by tx hash so the chain stays authoritative.
-///
-/// `feedback` = the on-chain text; `agent`/`model` stamp who/what; `tx_hash` is
-/// the on-chain record this body links to; `context` is whatever recent
-/// conversation we could cheaply reach (may be empty). The title is a short
-/// summary (first line/clause of the feedback) and the signature is a stable
-/// id (agent + a fingerprint of the text) so re-submits of the same note
-/// collapse. Body redaction + dedup + signing happen in [`report`].
-pub(crate) async fn report_feedback(
-    agent: String,
-    model: String,
-    tx_hash: String,
-    feedback: String,
-    context: String,
-) {
-    // Title: a short, single-line summary of the feedback for the issue title.
+/// Rich off-chain feedback (design/telemetry-and-global-lessons.md). Off-chain is
+/// now the PRIMARY path (cheap, rich); `tx_hash` is `Some` only when the owner
+/// opted to ALSO mirror the short note on-chain, and is linked here RAW.
+pub(crate) async fn report_feedback(agent: String, tx_hash: Option<String>, feedback: String) {
     let summary: String = feedback
         .split(['\n', '.'])
         .next()
@@ -141,22 +179,102 @@ pub(crate) async fn report_feedback(
         .take(100)
         .collect();
     let title = format!("feedback ({agent}): {summary}");
-    // Signature: agent + a fingerprint of the text so the same note dedups.
     let fp: String = feedback
         .chars()
         .filter(|c| c.is_ascii_alphanumeric())
         .take(48)
         .collect();
     let signature = format!("feedback-{agent}-{fp}");
-    let mut body = format!(
-        "agent: {agent}\nmodel: {model}\non-chain tx: {tx_hash}\n\nfeedback:\n{feedback}\n"
-    );
-    if context.trim().is_empty() {
-        body.push_str("\n(recent conversation context unavailable — follow up off the on-chain record above.)\n");
-    } else {
-        body.push_str("\nrecent conversation:\n");
-        body.push_str(&context);
-        body.push('\n');
-    }
-    report("feedback".to_string(), title, signature, body).await;
+    let raw_trailer = match tx_hash {
+        Some(tx) if !tx.trim().is_empty() => format!("on-chain tx: {tx}"),
+        _ => String::new(),
+    };
+    report_event("feedback".to_string(), None, title, signature, feedback, raw_trailer).await;
+}
+
+/// Project the live agent's last few turns into a short text block for a report
+/// (synchronous, already in memory — no OPFS/network). Caps turns + per-turn
+/// length so a long build session can't balloon the body. "" when there's no
+/// agent (e.g. a visitor).
+pub(crate) fn recent_conversation() -> String {
+    const MAX_TURNS: usize = 12;
+    const MAX_CHARS_PER_TURN: usize = 400;
+    let entries = crate::app::APP
+        .with(|cell| cell.borrow().agent.as_ref().map(|a| a.transcript()))
+        .unwrap_or_default();
+    let start = entries.len().saturating_sub(MAX_TURNS);
+    entries[start..]
+        .iter()
+        .filter(|e| !e.text.trim().is_empty())
+        .map(|e| {
+            let mut t: String = e.text.trim().chars().take(MAX_CHARS_PER_TURN).collect();
+            if e.text.trim().chars().count() > MAX_CHARS_PER_TURN {
+                t.push('…');
+            }
+            format!("{}: {}", e.role.as_str(), t)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The SAFE, non-secret context trailer stamped onto every report: who (agent +
+/// identity address), what (model, chain, app version), where (device UA +
+/// viewport + URL query), and the redacted-by-construction settings snapshot.
+/// Built entirely from non-secret, in-memory/localStorage values (the API key is
+/// NEVER read), so the whole block is appended to a report RAW.
+pub(crate) async fn context_block() -> String {
+    let model = crate::app::model::load().await;
+    let agent = crate::app::tenant::current_name().unwrap_or_else(|| "apex".to_string());
+    let address = crate::app::APP
+        .with(|cell| {
+            use crate::app::VerifyState;
+            match &cell.borrow().verify_state {
+                VerifyState::Verified { address } => Some(address.clone()),
+                VerifyState::Visitor { visitor_address, .. } => Some(visitor_address.clone()),
+                _ => cell.borrow().wallet.as_ref().map(|w| w.address_hex()),
+            }
+        })
+        .unwrap_or_else(|| "—".to_string());
+    let chain = if crate::registry::is_mainnet() { "mainnet" } else { "testnet" };
+
+    let win = web_sys::window();
+    let nav = win.as_ref().map(|w| w.navigator());
+    let ua = nav
+        .as_ref()
+        .and_then(|n| n.user_agent().ok())
+        .unwrap_or_default();
+    let lang = nav.as_ref().and_then(|n| n.language()).unwrap_or_default();
+    let vw = win
+        .as_ref()
+        .and_then(|w| w.inner_width().ok())
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as i32;
+    let vh = win
+        .as_ref()
+        .and_then(|w| w.inner_height().ok())
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as i32;
+    let url_q = win
+        .as_ref()
+        .and_then(|w| w.location().search().ok())
+        .unwrap_or_default();
+    let lower_ua = ua.to_lowercase();
+    let mobile = lower_ua.contains("mobi") || lower_ua.contains("android") || lower_ua.contains("iphone");
+    let form = if mobile { "mobile" } else { "desktop" };
+
+    let ls = win.as_ref().and_then(|w| w.local_storage().ok().flatten());
+    let get = |k: &str| ls.as_ref().and_then(|s| s.get_item(k).ok().flatten());
+    let byok = get("lh_model_access").map(|v| v == "byok").unwrap_or(false);
+    let key_present = get("gemini_api_key").is_some();
+    let theme = get("lh-theme").unwrap_or_else(|| "dark".to_string());
+
+    format!(
+        "---\ncontext:\n  agent: {agent}\n  identity: {address}\n  model: {model}\n  \
+         chain: {chain}\n  app: v{ver}\n  device: {form} · {ua}\n  viewport: {vw}x{vh}\n  \
+         lang: {lang}\n  url: {url_q}\n  settings: byok={byok} key_present={key_present} \
+         theme={theme} telemetry={tele} feedback_onchain={fonchain}",
+        ver = env!("CARGO_PKG_VERSION"),
+        tele = enabled(),
+        fonchain = crate::app::feedback::feedback_onchain_enabled(),
+    )
 }

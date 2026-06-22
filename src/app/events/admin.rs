@@ -446,6 +446,18 @@ pub(super) fn toggle_telemetry_pressed() {
     );
 }
 
+/// Flip whether feedback ALSO mirrors on-chain. Off by default — off-chain (the
+/// rich telemetry issue) is the cheap primary path; the on-chain write costs
+/// sponsor gas, so it's opt-in.
+pub(super) fn toggle_feedback_onchain_pressed() {
+    let now_on = !crate::app::feedback::feedback_onchain_enabled();
+    crate::app::feedback::set_feedback_onchain(now_on);
+    dom::swap_inner(
+        "feedback-onchain-toggle",
+        if now_on { "feedback on-chain: on" } else { "feedback on-chain: off" },
+    );
+}
+
 pub(super) fn enable_notifications_pressed() {
     wasm_bindgen_futures::spawn_local(async move {
         let msg = "notify-msg";

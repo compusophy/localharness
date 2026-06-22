@@ -589,7 +589,7 @@ async fn run(args: &[String]) -> i32 {
     // deep inside a command (unrecognized values are a hard error, never a silent
     // fallback that could quietly sign on the wrong chain).
     if let Err(e) = registry::chain::validate_chain_env() {
-        eprintln!("error: {e}");
+        util::print_err(&e);
         return 2;
     }
     // Make the active chain VISIBLE — a silent chain selection was the footgun
@@ -612,7 +612,7 @@ async fn run(args: &[String]) -> i32 {
                 create_publish(&name, persona.as_deref(), publish).await
             }
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
@@ -695,7 +695,7 @@ async fn run(args: &[String]) -> i32 {
         Some("list") | Some("mine") => match parse_list_flags(&args[1..]) {
             Ok((caller, json)) => list_mine(caller.as_deref(), json).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
@@ -710,7 +710,7 @@ async fn run(args: &[String]) -> i32 {
             }
             Ok((caller, rest)) => feedback_submit(caller.as_deref(), &rest.join(" ")).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
@@ -719,7 +719,7 @@ async fn run(args: &[String]) -> i32 {
         {
             Ok((caller, parsed)) => topup(caller.as_deref(), parsed).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
@@ -728,7 +728,7 @@ async fn run(args: &[String]) -> i32 {
         Some("buy") | Some("join") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => buy(caller.as_deref(), &rest).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
@@ -739,7 +739,7 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
@@ -752,42 +752,42 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
         Some("tithe") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => tithe(caller.as_deref(), &rest).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
         Some("session") => match take_as_flag(&args[1..]) {
             Ok((caller, _)) => open_session(caller.as_deref()).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
         Some("schedule") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => schedule(caller.as_deref(), &rest).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
         Some("goal") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => goal(caller.as_deref(), &rest).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
         Some("jobs") => match take_as_flag(&args[1..]) {
             Ok((caller, _)) => list_jobs(caller.as_deref()).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
@@ -799,91 +799,91 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
         Some("invite") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => invite(caller.as_deref(), &rest).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
         Some("bounty") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => bounty(caller.as_deref(), &rest).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
         Some("colony") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => colony(caller.as_deref(), &rest).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
         Some("reputation") | Some("rep") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => reputation(caller.as_deref(), &rest).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
         Some("guild") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => guild(caller.as_deref(), &rest).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
         Some("party") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => party(caller.as_deref(), &rest).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
         Some("validation") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => validation(caller.as_deref(), &rest).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
         Some("room") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => room(caller.as_deref(), &rest).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
         Some("facet") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => facet::facet(caller.as_deref(), &rest).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
         Some("tba") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => tba(caller.as_deref(), &rest).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
         Some("vote") | Some("gov") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => vote(caller.as_deref(), &rest).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
         Some("credits") => match take_as_flag(&args[1..]) {
             Ok((caller, _)) => credits_show(caller.as_deref()).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
@@ -893,7 +893,7 @@ async fn run(args: &[String]) -> i32 {
             }
             Ok((caller, _)) => probe(caller.as_deref()).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
@@ -901,14 +901,14 @@ async fn run(args: &[String]) -> i32 {
         Some("notify") => match take_as_flag(&args[1..]) {
             Ok((caller, rest)) => notify(caller.as_deref(), &rest).await,
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
         Some("threads") => match take_as_flag(&args[1..]) {
             Ok((caller, _)) => threads(caller.as_deref()),
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
@@ -926,7 +926,7 @@ async fn run(args: &[String]) -> i32 {
                     }
                 },
                 Err(e) => {
-                    eprintln!("{e}");
+                    util::print_err(&e);
                     2
                 }
             }
@@ -940,7 +940,7 @@ async fn run(args: &[String]) -> i32 {
                 }
             },
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },
@@ -971,7 +971,7 @@ async fn run(args: &[String]) -> i32 {
                 }
             }
             Err(e) => {
-                eprintln!("{e}");
+                util::print_err(&e);
                 2
             }
         },

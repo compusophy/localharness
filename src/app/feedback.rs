@@ -10,6 +10,25 @@ use wasm_bindgen::prelude::*;
 use crate::encoding::{parse_address, tx_short_hash};
 use super::dom;
 
+/// Whether to ALSO mirror the short feedback note on-chain (FeedbackFacet).
+/// Off-chain (the rich telemetry issue) is the PRIMARY, default path — cheap and
+/// context-rich; the on-chain write costs sponsor gas (~7.6k/byte) and is now
+/// opt-in via `localStorage["lh_feedback_onchain"] == "on"` (admin toggle).
+pub(crate) fn feedback_onchain_enabled() -> bool {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|s| s.get_item("lh_feedback_onchain").ok().flatten())
+        .map(|v| v == "on")
+        .unwrap_or(false)
+}
+
+/// Toggle + persist the on-chain-feedback setting (admin row).
+pub(crate) fn set_feedback_onchain(on: bool) {
+    if let Some(s) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = s.set_item("lh_feedback_onchain", if on { "on" } else { "off" });
+    }
+}
+
 /// Validate + rate-limit the feedback textarea, mirror it to OPFS, and submit it
 /// on-chain (signed by the apex iframe wallet, sponsor-paid).
 pub(crate) fn feedback_submit() {
@@ -65,41 +84,46 @@ pub(crate) fn feedback_submit() {
         return;
     };
 
+    let onchain = feedback_onchain_enabled();
     dom::swap_inner(
         "feedback-msg",
-        "<span style=\"color:var(--muted)\">signing…</span>",
+        &dom::msg_span(dom::Msg::Muted, if onchain { "submitting…" } else { "sending…" }),
     );
     wasm_bindgen_futures::spawn_local(async move {
-        // Mirror to local OPFS first so the user always has a copy
-        // even if the on-chain leg fails. Best-effort — log and
-        // continue on error.
+        // Mirror to local OPFS first so the user always has a copy even if the
+        // network leg fails. Best-effort — log and continue on error.
         if let Err(err) = append_feedback_local(&text).await {
-            web_sys::console::warn_1(&JsValue::from_str(&format!(
-                "feedback local copy: {err}"
-            )));
+            web_sys::console::warn_1(&JsValue::from_str(&format!("feedback local copy: {err}")));
         }
-        match submit_feedback_onchain(&from_hex, &text).await {
-            Ok(tx_hash) => {
-                let short = tx_short_hash(&tx_hash);
-                dom::swap_inner(
-                    "feedback-msg",
-                    &dom::msg_span(dom::Msg::Accent, &format!("✓ on-chain (tx {short})")),
-                );
-                // Clear the textarea — leaving the sent text in place made a
-                // second SUBMIT click double-file the same note on-chain.
-                if let Some(textarea) = dom::textarea_by_id("feedback-text") {
-                    textarea.set_value("");
+        let agent = super::tenant::current_name().unwrap_or_else(|| "apex".to_string());
+        // On-chain ONLY when the owner opted in (default off). Off-chain is the
+        // primary path; the on-chain write costs sponsor gas.
+        let tx = if onchain {
+            match submit_feedback_onchain(&from_hex, &text).await {
+                Ok(h) => Some(h),
+                Err(err) => {
+                    web_sys::console::warn_1(&JsValue::from_str(&format!("feedback on-chain: {err}")));
+                    None
                 }
             }
-            Err(err) => {
-                web_sys::console::warn_1(&JsValue::from_str(&format!(
-                    "feedback on-chain: {err}"
-                )));
-                dom::swap_inner(
-                    "feedback-msg",
-                    "<span style=\"color:var(--error)\">on-chain submit failed (saved locally)</span>",
-                );
-            }
+        } else {
+            None
+        };
+        // The rich off-chain report is the PRIMARY record — full device/settings/
+        // conversation context, linked to the on-chain tx when present. This is a
+        // deliberate user action, so it always sends (independent of the auto-
+        // telemetry toggle).
+        super::telemetry::report_feedback(agent, tx.clone(), text.clone()).await;
+        let receipt = match (onchain, &tx) {
+            (true, Some(h)) => format!("✓ sent (on-chain tx {})", tx_short_hash(h)),
+            (true, None) => "✓ sent (on-chain leg failed; saved off-chain + locally)".to_string(),
+            _ => "✓ sent".to_string(),
+        };
+        dom::swap_inner("feedback-msg", &dom::msg_span(dom::Msg::Accent, &receipt));
+        // Clear the textarea — leaving the sent text in place made a second
+        // SUBMIT click double-file the same note.
+        if let Some(textarea) = dom::textarea_by_id("feedback-text") {
+            textarea.set_value("");
         }
     });
 }

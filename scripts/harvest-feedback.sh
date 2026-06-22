@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# NOTE: feedback is now OFF-CHAIN by default — the primary task list is GitHub
+# Issues in the private telemetry repo (`gh issue list -R
+# compusophy/localharness-telemetry`). This script only reads the OPT-IN on-chain
+# mirror (`lh_feedback_onchain`), which most agents no longer write.
+#
 # Read every feedback submission from CONTRACT STATE on the registry
 # diamond and print one row per submission: <index>  <unix-ts>  <sender>
 # <text>. Reads via view functions (no event-log scraping, so the Tempo
