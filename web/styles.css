@@ -1878,12 +1878,20 @@ button.ready:hover {
 .turn .body > *,
 .turn .body .text-segment,
 .turn .body .text-segment > * { margin: 0; }
-/* USER: accent rule on the RIGHT edge, a hair-darker shade, muted text. */
-.turn.user {
-  border-right: 2px solid var(--fg);
+/* USER: a right-hugging bubble that GROWS FROM THE RIGHT (text-message style) —
+   a short message is only as wide as its words; long ones expand leftward to a
+   cap, then wrap. The accent rule + shade live on the BUBBLE (the body), not the
+   full-width row, so the inter-turn separator stays full width while the bubble
+   floats right. (Agent replies stay full-width, left-bordered blocks.) */
+.turn.user .body {
+  white-space: pre-wrap;
+  color: var(--muted);
+  width: fit-content;
+  max-width: 80%;
+  margin-left: auto;
   background: var(--panel);
+  border-right: 2px solid var(--fg);
 }
-.turn.user .body { white-space: pre-wrap; color: var(--muted); }
 /* AGENT: accent rule on the LEFT edge, the bare-bg shade. The left rule PULSES
    while the turn is in flight (#57). */
 .turn.assistant {
