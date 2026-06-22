@@ -742,17 +742,29 @@ fn on_key_input() {
     }
 }
 
-/// Auto-grow the prompt textarea to its content: collapse to `auto` so the
-/// scroll height reflects the real text height (not the last grown height),
-/// then pin the element to that scroll height. CSS caps it (`max-height`) and
-/// scrolls past the cap. Routed through the ONE delegated `input` listener — no
-/// per-element closure (the app's no-imperative-DOM rule). No-op off a real
-/// `HtmlElement`.
+/// One control-box height (px) — the input row, send button, and header
+/// bell/cog all resolve to this square (CSS `--ctrl-box`, 38px). The prompt
+/// field grows in WHOLE multiples of it (#C) so the input container always
+/// snaps to the button-height grid instead of stopping mid-step.
+const CTRL_BOX_PX: i32 = 38;
+
+/// Auto-grow the prompt textarea to its content, SNAPPED to the --ctrl-box grid
+/// (#C): collapse to `auto` so the scroll height reflects the real text height
+/// (not the last grown height), then pin the element to the next whole-row-step
+/// multiple of `CTRL_BOX_PX` so the input container grows in clean button-height
+/// steps. CSS caps it (`max-height: 3×--ctrl-box`) and scrolls past the cap.
+/// Routed through the ONE delegated `input` listener — no per-element closure
+/// (the app's no-imperative-DOM rule). No-op off a real `HtmlElement`.
 fn autogrow_textarea(el: &Element) {
     let Some(ta) = el.dyn_ref::<HtmlElement>() else { return };
     let style = ta.style();
     let _ = style.set_property("height", "auto");
-    let _ = style.set_property("height", &format!("{}px", ta.scroll_height()));
+    // Round the content height UP to the next whole control-box so the row lands
+    // on a 38px multiple; floored at one box so a single line still fills a row.
+    // (u32::div_ceil is stable; i32::div_ceil is not — heights are non-negative.)
+    let content = ta.scroll_height().max(CTRL_BOX_PX) as u32;
+    let snapped = content.div_ceil(CTRL_BOX_PX as u32) * CTRL_BOX_PX as u32;
+    let _ = style.set_property("height", &format!("{snapped}px"));
 }
 
 /// Recompute the "(N chars)" hint next to the key input. Called from

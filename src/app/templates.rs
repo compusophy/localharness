@@ -698,17 +698,19 @@ fn terminal_surface(argv: &str, run: &crate::app::cli::CliRun) -> Markup {
 /// `#feedback-msg`), so the submit / rate-limit / sign path is unchanged. Submit
 /// also mirrors to `.lh_feedback.txt` in OPFS as a local copy.
 pub(crate) fn admin_feedback_section() -> Markup {
+    // No section TITLE (the bug-button + placeholder already say what this is) —
+    // a clean column: textarea → full-width submit → receipt slot, each on the
+    // SAME uniform gap as the rest of the chrome (.feedback-form, styles.css §2).
+    // `aria-label` carries the accessible name the dropped title used to give.
     html! {
-        div.admin-section {
-            div.admin-section-title { "feedback" }
+        div.feedback-form {
             textarea #feedback-text
                 .feedback-textarea
                 aria-label="feedback message"
+                placeholder="feedback"
                 rows="6" {}
-            div.prompt-actions {
-                button type="button" data-action="feedback-submit" .ghost { "submit" }
-            }
-            div #feedback-msg .feedback-msg .admin-msg-slot {}
+            button type="button" data-action="feedback-submit" .ghost.feedback-submit { "submit" }
+            div #feedback-msg .feedback-msg {}
         }
     }
 }

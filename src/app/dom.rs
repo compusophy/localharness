@@ -290,6 +290,16 @@ pub(crate) fn focus_prompt_if_empty() {
     }
 }
 
+/// Blur the prompt textarea (on-chain #55): dropping focus collapses the mobile
+/// soft keyboard the instant a turn is sent — whether sent via the send button
+/// or the Enter key. A no-op on desktop beyond losing the caret. Direct
+/// `.blur()` (no listener) so the no-Closure rule holds.
+pub(crate) fn blur_prompt() {
+    if let Some(ta) = textarea_by_id("prompt") {
+        let _ = ta.blur();
+    }
+}
+
 pub(crate) fn set_status(message: &str, is_error: bool) {
     // Status lives IN THE STREAM (a single replaceable system line at the end
     // of the transcript), never in the input container — the user rejected

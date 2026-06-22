@@ -186,12 +186,16 @@ pub(crate) async fn run_send() {
     dom::scroll_to_bottom("transcript");
     stage::begin();
 
-    // Clear the prompt, keep focus — the value is already captured above.
+    // Clear the prompt; the value is already captured above.
     prompt_area.set_value("");
     // Collapse the auto-grown height back to one row (the `input` listener only
     // fires on typing, so an empty value would otherwise keep the grown height).
     let _ = prompt_area.style().set_property("height", "auto");
-    let _ = prompt_area.focus();
+    // Close the keyboard on send (on-chain #55): blur the input so the mobile
+    // soft keyboard collapses — covers BOTH send paths (button + Enter), both of
+    // which dispatch Action::Send → run_send. (Was `.focus()`, which kept the
+    // keyboard up over the streaming reply on mobile.)
+    dom::blur_prompt();
 
     // Swap the send arrow for the stop button for the whole (possibly
     // multi-turn) run; the guard / loop-end restores it.

@@ -18,6 +18,14 @@
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 20px;
+  /* Chat vertical rhythm — SSOT (styles.css §3). --turn-gap is the ONE unit of
+     space between turns; --line-tight is the line-height WITHIN a paragraph;
+     --para-gap is the (larger) space BETWEEN paragraphs in one reply. The square
+     header/input/send box is --ctrl-box; the input snaps to multiples of it. */
+  --line-tight: 1.45;
+  --para-gap: 12px;
+  --turn-gap: 14px;
+  --ctrl-box: 38px;
   --z-header: 30;
   --z-modal: 100;
   --z-menu: 120;
@@ -411,7 +419,10 @@ main.layout .transcript {
   margin-top: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  /* No flex `gap` — the SSOT inter-turn rhythm is carried by `.turn`'s own top
+     margin + the hairline separator (see §3 turns), so a single turn's spacing
+     is one declared unit (--turn-gap), not gap + margin stacked. */
+  gap: 0;
   /* Hide the chat scrollbar but KEEP scrolling — the bar over the edge-to-edge
      transcript reads as chrome on the otherwise bare surface. */
   scrollbar-width: none;
@@ -728,13 +739,19 @@ main.layout .transcript > *:empty { display: none; }
   padding: 12px;
 }
 .feedback-panel[hidden] { display: none; }
-/* The widget lives bare in the dropdown — drop the admin-section divider it
-   inherited from the old tab so it reads as a self-contained popover. */
-.feedback-panel .admin-section {
-  margin-bottom: 0;
-  padding-bottom: 0;
-  border-bottom: 0;
+/* Feedback widget (#D) — a self-contained popover: NO title, a clean vertical
+   column with ONE uniform gap between the textarea, the full-width submit, and
+   the receipt slot. The full-width submit kills the old flex-end offset (it sat
+   pushed to the right with odd slack); the receipt slot (#feedback-msg) sits on
+   the SAME gap below it, no special margin, and collapses when empty so the
+   panel doesn't reserve dead space before a submit. */
+.feedback-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
+.feedback-form .feedback-submit { width: 100%; margin: 0; }
+.feedback-panel .feedback-msg { margin: 0; }
 
 .notif-clear-prompt { font-size: 11px; color: var(--muted); margin-right: auto; }
 .notif-clear-btn {
@@ -1017,21 +1034,26 @@ main.layout .transcript > *:empty { display: none; }
   min-width: 0;
   display: flex;
   align-items: center;
-  /* ONE 8px step between the prompt glyph and the textarea. The send button is
-     no longer inside this row (#34). */
-  gap: 8px;
-  /* HORIZONTAL padding only. The vertical size is the fixed min-height below,
-     NOT padding — so the resting row is EXACTLY 38px regardless of the textarea
-     font size. (An 8px-padded row grew to 40px on the 16px mobile-zoom font,
-     taller than the 38px send button + header chrome it must line up with — the
-     misalignment this fixes.) The 1-line textarea is vertically centred in the
-     38px box; multi-line content grows the row upward via the textarea autogrow. */
-  padding: 0 8px;
+  /* ONE --space-2 (8px) step between the prompt glyph and the textarea, EQUAL to
+     the row's own horizontal inset below — so the text sits the same 8px off the
+     glyph as the glyph sits off the field edge (the reconciled text margin, #C).
+     The send button is no longer inside this row (#34). */
+  gap: var(--space-2);
+  /* HORIZONTAL inset only (--space-2, matching the glyph→text gap so the inner
+     margin is uniform on both sides of the text). The vertical size is the fixed
+     min-height below, NOT padding — so the resting row is EXACTLY one --ctrl-box
+     (38px) regardless of the textarea font size. (An 8px-padded row grew to 40px
+     on the 16px mobile-zoom font, taller than the send button + header chrome it
+     must line up with.) The 1-line textarea is vertically centred in the box;
+     multi-line content grows the row upward via the textarea autogrow, which
+     snaps to --ctrl-box multiples (events::autogrow_textarea). */
+  padding: 0 var(--space-2);
   background: var(--bg);
   border: 1px solid var(--border);
-  /* EXACTLY the 38px header bell/cog + send button box (border-box), so the
-     input field, the send button, and the header buttons are pixel-identical. */
-  min-height: 38px;
+  /* EXACTLY one --ctrl-box (the 38px header bell/cog + send button box,
+     border-box) so the input field, the send button, and the header buttons are
+     pixel-identical. The input GROWS in whole --ctrl-box steps from here. */
+  min-height: var(--ctrl-box);
 }
 .terminal-row:focus-within { border-color: var(--accent); }
 .terminal-prompt {
@@ -1056,10 +1078,12 @@ main.layout .transcript > *:empty { display: none; }
   font: inherit;
   padding: 0;
   min-height: 16px;
-  /* Auto-grows with content (events::autogrow_textarea sets the inline
-     height to scrollHeight on every `input`); this caps the growth and
-     scrolls past it so a long paste can't push the row off-screen. */
-  max-height: 120px;
+  /* Auto-grows with content (events::autogrow_textarea snaps the inline height to
+     a whole-row-step multiple on every `input`); this caps the growth at THREE
+     --ctrl-box rows (the row reaches exactly 3×38px) and scrolls past it so a
+     long paste can't push the field off-screen. Cap is a clean grid multiple so
+     the field never stops mid-step. */
+  max-height: calc(var(--ctrl-box) * 3);
   overflow-y: auto;
   /* Hide the scrollbar but KEEP scrollability (a long paste still scrolls past
      the 120px cap) — a visible bar in the bare prompt row reads as chrome. */
@@ -1789,26 +1813,55 @@ button.ready:hover {
   margin-top: 24px;
   display: flex; flex-direction: column; gap: 4px;
 }
-/* AI turns carry the left border; user inputs stand bare (on-chain
-   feedback #56 — both bordered read as one undifferentiated stream). */
+/* SMS-rhythm turns (#A): the agent reads from the LEFT (accent rule on the
+   RIGHT edge), the user reads from the RIGHT (accent rule on the LEFT edge), so
+   the transcript alternates like a text thread. Role is differentiated by a
+   subtle BACKGROUND-SHADE step (monochrome — never color, never a rounded
+   bubble) plus which edge carries the 2px --fg rule. A hairline separator
+   (`.turn + .turn`) and ONE uniform top gap (--turn-gap) carry the inter-turn
+   rhythm — the SSOT, no flex `gap` stacked on top (transcript gap is 0). */
 .turn {
   background: transparent;
   border: 0;
-  /* The transcript's `gap: 12px` is the SINGLE source of inter-turn
-     spacing (on-chain feedback #99 — per-turn vertical padding stacked
-     ON TOP of the gap, reading as redundant blank space after every
-     reply). Keep only a hair of vertical room so the assistant border
-     isn't clipped; the horizontal indent for the border stays. */
-  padding: 1px 0 1px 12px;
+  /* The body's own padding (below) holds the text off the accent edge; the
+     vertical inset is one declared line of breathing room so the rule isn't
+     clipped. Inter-turn space is the top margin on the SECOND-and-later turns. */
+  padding: 0;
+  line-height: var(--line-tight);
 }
-.turn.user { padding-left: 0; }
-.turn.assistant {
+/* ONE uniform unit of space + a hairline rule between consecutive turns — the
+   SSOT inter-turn rhythm. The first turn carries neither (it sits flush under
+   the floating header — see `main.layout .transcript > :first-child`). */
+.turn + .turn {
+  margin-top: var(--turn-gap);
+  padding-top: var(--turn-gap);
+  border-top: 1px solid var(--border);
+}
+/* USER reads from the RIGHT: accent rule on the LEFT edge, a hair-darker shade. */
+.turn.user {
   border-left: 2px solid var(--fg);
+  background: var(--panel);
 }
+.turn.user .body { padding: 8px 12px; }
+/* AGENT reads from the LEFT: accent rule on the RIGHT edge, the bare-bg shade.
+   The right rule PULSES while the turn is in flight (#57). */
+.turn.assistant {
+  border-right: 2px solid var(--fg);
+  background: var(--panel-2);
+}
+.turn.assistant .body { padding: 8px 12px; }
 .turn .role { display: none; }
 .turn .body {
   word-break: break-word;
+  /* Tight line-height WITHIN a paragraph (the SSOT --line-tight). */
+  line-height: var(--line-tight);
 }
+/* A slightly LARGER gap BETWEEN paragraphs of one reply (--para-gap) — the
+   second half of the SSOT rhythm. Markdown emits <p>/<ul>/<pre>/<blockquote>
+   blocks; give each a uniform top gap, then drop the first/last (handled below)
+   so a reply never carries leading/trailing dead space. */
+.turn .body > * + *,
+.turn .body .text-segment > * + * { margin-top: var(--para-gap); }
 /* Inline `code` in rendered markdown had no visual distinction — in a
    monochrome UI backtick text was indistinguishable from prose, so
    identifiers/paths/literals didn't read as code. A panel background +
@@ -1881,40 +1934,43 @@ button.ready:hover {
   color: var(--fg);
   font-weight: 600;
 }
-/* Braille spinner cycled via keyframed `content` — the streaming-turn
-   working indicator. */
-@keyframes lh-spin {
-  0% { content: "⠋"; }
-  10% { content: "⠙"; }
-  20% { content: "⠹"; }
-  30% { content: "⠸"; }
-  40% { content: "⠼"; }
-  50% { content: "⠴"; }
-  60% { content: "⠦"; }
-  70% { content: "⠧"; }
-  80% { content: "⠇"; }
-  90% { content: "⠏"; }
-  100% { content: "⠋"; }
-}
-/* Streaming assistant turn shows a trailing spinner while in flight.
-   (The role line is hidden, so this is the only "working" cue.) */
-.turn.assistant.streaming .body::after {
-  content: "⠋";
+/* #54 STARTING INDICATOR — right after the user submits, the assistant turn's
+   body is empty (one empty text-segment, hidden by the :empty rule). Paint a
+   blinking "starting" line UNDER the user message (= in the assistant body) so
+   the spin-up reads as "working", not as a blank gap, until the FIRST real
+   output lands. It vanishes the instant the body gains a non-empty text segment
+   or a tool-call — `:has()` checks for any visible content. This is the in-
+   stream working cue (the cycling header glyph stays — BOTH, not either/or). */
+.turn.assistant.streaming
+  .body:not(:has(.text-segment:not(:empty))):not(:has(.tool-call))::before {
+  content: "starting";
   display: inline-block;
-  margin-left: 6px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  /* Blink via a COLOR swell (--muted→--fg), never opacity — same principle as
+     the header glyph / notif bell (opacity faded whole chips, #51). */
   color: var(--muted);
-  animation: lh-spin 800ms steps(1) infinite;
+  animation: turn-starting-blink 1.2s ease-in-out infinite;
 }
-/* The turn-status cue now lives in the HEADER (see .turn-status-btn); the old
-   in-stream stage line is gone. The chat follows the bottom as it streams
-   (scroll_to_bottom on append/chunk) — standard messaging flow, no scroll-to-top
-   snap and no reserved gap (on-chain feedback #48/#49). */
-/* The stage line IS the working cue for the whole streaming turn (its container
-   is always painted), so drop the trailing braille spinner — exactly one
-   indicator, no flip between the dot and the spinner as stages come and go. */
-.turn.assistant.streaming .body::after {
-  display: none;
+@keyframes turn-starting-blink {
+  0%, 100% { color: var(--muted); }
+  50%      { color: var(--fg); }
 }
+/* #57 PULSING ACCENT — the agent turn's RIGHT rule (set above) swells in colour
+   while the turn is in flight: from the moment the user sends, through the
+   cycling header glyph, until the turn finishes (the `streaming` class is
+   removed by `mark_turn_done`). COLOR swell only (border-right-color), NOT
+   opacity — the SAME technique as turn-status-pulse / notif-bell-pulse so the
+   bg + content stay solid (animating opacity faded whole chips, #51). */
+.turn.assistant.streaming {
+  animation: turn-border-pulse 1.4s ease-in-out infinite;
+}
+@keyframes turn-border-pulse {
+  0%, 100% { border-right-color: var(--muted); }
+  50%      { border-right-color: #fff; }
+}
+/* (The braille trailing `::after` spinner is retired — the #54 starting line,
+   the #57 pulsing border, and the cycling header glyph are the working cues.) */
 .tool-call .tc-body {
   padding: 8px 10px 10px;
   border-top: 1px solid var(--border);
