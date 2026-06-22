@@ -137,9 +137,7 @@ pub(crate) fn encode_unlink_device(main_id: u64, device: &[u8; 20]) -> Vec<u8> {
     let mut out = Vec::with_capacity(4 + 64);
     out.extend_from_slice(&selector("unlinkDevice(uint256,address)"));
     out.extend_from_slice(&u256_be(main_id as u128));
-    let mut padded = [0u8; 32];
-    padded[12..].copy_from_slice(device);
-    out.extend_from_slice(&padded);
+    out.extend_from_slice(&addr_word(device));
     out
 }
 
@@ -343,28 +341,23 @@ pub async fn registration_cost() -> Result<u128, String> {
 
 /// Encode `approve(spender, amount)` calldata for an ERC-20 token.
 pub(crate) fn encode_approve(spender: &[u8; 20], amount_wei: u128) -> Vec<u8> {
-    let sel = selector("approve(address,uint256)");
-    let mut spender_padded = [0u8; 32];
-    spender_padded[12..].copy_from_slice(spender);
-    let amount_padded = u256_be(amount_wei);
-    let mut out = Vec::with_capacity(4 + 32 + 32);
-    out.extend_from_slice(&sel);
-    out.extend_from_slice(&spender_padded);
-    out.extend_from_slice(&amount_padded);
-    out
+    encode_addr_amount("approve(address,uint256)", spender, amount_wei)
 }
 
 /// ERC-20 `transfer(to, amount)` calldata — same shape as `encode_approve`
 /// with the `transfer` selector.
 pub(crate) fn encode_transfer(to: &[u8; 20], amount_wei: u128) -> Vec<u8> {
-    let sel = selector("transfer(address,uint256)");
-    let mut to_padded = [0u8; 32];
-    to_padded[12..].copy_from_slice(to);
-    let amount_padded = u256_be(amount_wei);
-    let mut out = Vec::with_capacity(4 + 32 + 32);
-    out.extend_from_slice(&sel);
-    out.extend_from_slice(&to_padded);
-    out.extend_from_slice(&amount_padded);
+    encode_addr_amount("transfer(address,uint256)", to, amount_wei)
+}
+
+/// `fn(address,uint256)` calldata — `selector | addr(32) | amount(32)`. THE
+/// shared shape behind every approve/transfer-class encoder (`approve` /
+/// `transfer`), keyed only on the selector.
+pub(crate) fn encode_addr_amount(signature: &str, addr: &[u8; 20], amount_wei: u128) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + 64);
+    out.extend_from_slice(&selector(signature));
+    out.extend_from_slice(&addr_word(addr));
+    out.extend_from_slice(&u256_be(amount_wei));
     out
 }
 
@@ -588,13 +581,7 @@ pub async fn tba_send_lh_sponsored(
 /// ABI-encode an ERC-20 `transfer(address,uint256)` calldata. The inner
 /// payload for a `$LH`-transfer-via-TBA (`execute($LH, 0, transfer(to, amt))`).
 pub(crate) fn encode_erc20_transfer(recipient: &[u8; 20], amount_wei: u128) -> Vec<u8> {
-    let mut out = Vec::with_capacity(4 + 32 + 32);
-    out.extend_from_slice(&selector("transfer(address,uint256)"));
-    let mut padded = [0u8; 32];
-    padded[12..].copy_from_slice(recipient);
-    out.extend_from_slice(&padded);
-    out.extend_from_slice(&u256_be(amount_wei));
-    out
+    encode_addr_amount("transfer(address,uint256)", recipient, amount_wei)
 }
 
 pub(crate) fn encode_tba_execute(target: &[u8; 20], value_wei: u128, data: &[u8]) -> Vec<u8> {
@@ -629,12 +616,9 @@ pub(crate) fn encode_create_tba(token_id: u64) -> Vec<u8> {
 }
 
 pub(crate) fn encode_remove_signer(addr: &[u8; 20]) -> Vec<u8> {
-    let sel = selector("removeSigner(address)");
-    let mut padded = [0u8; 32];
-    padded[12..].copy_from_slice(addr);
     let mut out = Vec::with_capacity(4 + 32);
-    out.extend_from_slice(&sel);
-    out.extend_from_slice(&padded);
+    out.extend_from_slice(&selector("removeSigner(address)"));
+    out.extend_from_slice(&addr_word(addr));
     out
 }
 

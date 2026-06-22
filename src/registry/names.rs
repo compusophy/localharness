@@ -105,19 +105,9 @@ pub async fn subdomain_count() -> Result<u64, String> {
 }
 
 pub async fn name_of_id(id: u64) -> Result<String, String> {
-    let result_hex = read_view(selector("nameOfId(uint256)"), &[u256_be(id as u128)]).await?;
-    // ABI-encoded string: offset (32 bytes, value 0x20) + length (32 bytes) + bytes
-    let raw = hex_to_bytes(&result_hex)?;
-    if raw.len() < 64 {
-        return Err(format!("nameOfId: short response {} bytes", raw.len()));
-    }
-    let len = u64::from_be_bytes(raw[56..64].try_into().map_err(|e: std::array::TryFromSliceError| e.to_string())?) as usize;
-    // `len` is attacker-controlled — `64 + len` could overflow, so add checked.
-    let end = len
-        .checked_add(64)
-        .filter(|&end| end <= raw.len())
-        .ok_or_else(|| format!("nameOfId: truncated body (len {}, have {})", len, raw.len()))?;
-    String::from_utf8(raw[64..end].to_vec()).map_err(|e| e.to_string())
+    // ABI string return (offset + length + bytes) — same length-checked,
+    // Err-on-short decode as the bounty `bytes`-as-UTF-8 reads.
+    decode_bytes_string_call("nameOfId(uint256)", id, "nameOfId").await
 }
 
 /// `eth_call tokenBoundAccount(tokenId)` and return the ERC-6551
@@ -138,15 +128,7 @@ pub async fn tba_of_token_id(token_id: u64) -> Result<Option<String>, String> {
             return Err(err);
         }
     };
-    let trimmed = result_hex.trim().trim_start_matches("0x");
-    if trimmed.len() < 64 {
-        return Err(format!("tokenBoundAccount: short response {trimmed}"));
-    }
-    let addr_hex = &trimmed[trimmed.len() - 40..];
-    if addr_hex.chars().all(|c| c == '0') {
-        return Ok(None);
-    }
-    Ok(Some(format!("0x{}", addr_hex.to_lowercase())))
+    Ok(decode_address(&result_hex))
 }
 
 /// `eth_call tokenBoundAccountByName(name)` and return the ERC-6551
@@ -167,15 +149,7 @@ pub async fn tba_of_name(name: &str) -> Result<Option<String>, String> {
             return Err(err);
         }
     };
-    let trimmed = result_hex.trim().trim_start_matches("0x");
-    if trimmed.len() < 64 {
-        return Err(format!("tokenBoundAccountByName: short response {trimmed}"));
-    }
-    let addr_hex = &trimmed[trimmed.len() - 40..];
-    if addr_hex.chars().all(|c| c == '0') {
-        return Ok(None);
-    }
-    Ok(Some(format!("0x{}", addr_hex.to_lowercase())))
+    Ok(decode_address(&result_hex))
 }
 
 /// `eth_call ownerOfName(name)` and return the address as a
@@ -185,42 +159,17 @@ pub async fn owner_of_name(name: &str) -> Result<Option<String>, String> {
     let calldata = encode_owner_of_name(name);
     let result_hex = eth_call(REGISTRY_ADDRESS(), &calldata).await?;
     // Address is the last 20 bytes of a 32-byte uint256 return.
-    let trimmed = result_hex.trim().trim_start_matches("0x");
-    if trimmed.len() < 64 {
-        return Err(format!("ownerOfName: short response {trimmed}"));
-    }
-    let addr_hex = &trimmed[trimmed.len() - 40..];
-    if addr_hex.chars().all(|c| c == '0') {
-        return Ok(None);
-    }
-    Ok(Some(format!("0x{}", addr_hex.to_lowercase())))
+    Ok(decode_address(&result_hex))
 }
 
 pub(crate) fn encode_owner_of_name(name: &str) -> String {
     encode_string_call("ownerOfName(string)", name)
 }
 
-/// Generic `fn(string)` calldata encoder. ABI: selector + 0x20 offset
-/// + length + UTF-8 bytes padded to a 32-byte multiple.
+/// Generic `fn(string)` calldata encoder — the UTF-8-string flavor of the
+/// shared [`encode_dynamic_call_hex`].
 pub(crate) fn encode_string_call(signature: &str, value: &str) -> String {
-    let sel = selector(signature);
-    let bytes = value.as_bytes();
-    let len = bytes.len();
-    let padded_len = len.div_ceil(32) * 32;
-
-    let mut buf = Vec::with_capacity(4 + 32 + 32 + padded_len);
-    buf.extend_from_slice(&sel);
-    buf.extend_from_slice(&u256_be(0x20));
-    buf.extend_from_slice(&u256_be(len as u128));
-    buf.extend_from_slice(bytes);
-    buf.resize(4 + 32 + 32 + padded_len, 0);
-
-    let mut out = String::with_capacity(2 + buf.len() * 2);
-    out.push_str("0x");
-    for b in &buf {
-        out.push_str(&format!("{b:02x}"));
-    }
-    out
+    encode_dynamic_call_hex(signature, value.as_bytes())
 }
 
 /// `eth_call idOfName(name)` and classify the result. Single round trip.
@@ -367,47 +316,13 @@ pub(crate) fn app_metadata_key() -> [u8; 32] {
 
 /// Read a subdomain's published app wasm from on-chain metadata, if any.
 pub async fn app_wasm_of(token_id: u64) -> Result<Option<Vec<u8>>, String> {
-    let key = app_metadata_key();
-    let result_hex = read_view(
-        selector("metadata(uint256,bytes32)"),
-        &[u256_be(token_id as u128), key],
-    )
-    .await?;
-    let bytes = hex_to_bytes(&result_hex)?;
-    // ABI-encoded `bytes`: [offset(32)][length(32)][payload...].
-    if bytes.len() < 64 {
-        return Ok(None);
-    }
-    let mut len_buf = [0u8; 8];
-    len_buf.copy_from_slice(&bytes[56..64]);
-    let len = u64::from_be_bytes(len_buf) as usize;
-    if len == 0 {
-        return Ok(None);
-    }
-    // `len` is attacker-controlled (up to u64::MAX) — `64 + len` could overflow
-    // (panic in debug / wrap in release), so add it checked before slicing.
-    let payload = len
-        .checked_add(64)
-        .and_then(|end| bytes.get(64..end))
-        .ok_or_else(|| "app wasm truncated".to_string())?;
-    Ok(Some(payload.to_vec()))
+    metadata_bytes_of(token_id, app_metadata_key()).await
 }
 
 /// Encode `setMetadata(tokenId, appKey, wasm)` calldata for a sponsored
 /// publish tx.
 pub fn encode_set_app_wasm(token_id: u64, wasm: &[u8]) -> Vec<u8> {
-    let key = app_metadata_key();
-    let len = wasm.len();
-    let padded = len.div_ceil(32) * 32;
-    let mut buf = Vec::with_capacity(4 + 96 + 32 + padded);
-    buf.extend_from_slice(&selector("setMetadata(uint256,bytes32,bytes)"));
-    buf.extend_from_slice(&u256_be(token_id as u128)); // agentId
-    buf.extend_from_slice(&key); // bytes32 key (static, inline)
-    buf.extend_from_slice(&u256_be(0x60)); // offset to the bytes arg
-    buf.extend_from_slice(&u256_be(len as u128)); // bytes length
-    buf.extend_from_slice(wasm);
-    buf.resize(4 + 96 + 32 + padded, 0); // zero-pad payload to 32
-    buf
+    encode_set_metadata_bytes(token_id, app_metadata_key(), wasm)
 }
 
 /// Storage key for the seed-encrypted Gemini API key:
@@ -423,43 +338,13 @@ pub(crate) fn gemini_key_metadata_key() -> [u8; 32] {
 /// Read a subdomain's on-chain seed-encrypted Gemini key ciphertext, if
 /// any. Same ABI-`bytes` decode as `app_wasm_of`.
 pub async fn gemini_key_of(token_id: u64) -> Result<Option<Vec<u8>>, String> {
-    let result_hex = read_view(
-        selector("metadata(uint256,bytes32)"),
-        &[u256_be(token_id as u128), gemini_key_metadata_key()],
-    )
-    .await?;
-    let bytes = hex_to_bytes(&result_hex)?;
-    if bytes.len() < 64 {
-        return Ok(None);
-    }
-    let mut len_buf = [0u8; 8];
-    len_buf.copy_from_slice(&bytes[56..64]);
-    let len = u64::from_be_bytes(len_buf) as usize;
-    if len == 0 {
-        return Ok(None);
-    }
-    let payload = len
-        .checked_add(64)
-        .and_then(|end| bytes.get(64..end))
-        .ok_or_else(|| "gemini key ciphertext truncated".to_string())?;
-    Ok(Some(payload.to_vec()))
+    metadata_bytes_of(token_id, gemini_key_metadata_key()).await
 }
 
 /// Encode `setMetadata(tokenId, geminiKeyKey, ciphertext)` calldata for a
 /// sponsored on-chain key-sync tx.
 pub fn encode_set_gemini_key(token_id: u64, ciphertext: &[u8]) -> Vec<u8> {
-    let key = gemini_key_metadata_key();
-    let len = ciphertext.len();
-    let padded = len.div_ceil(32) * 32;
-    let mut buf = Vec::with_capacity(4 + 96 + 32 + padded);
-    buf.extend_from_slice(&selector("setMetadata(uint256,bytes32,bytes)"));
-    buf.extend_from_slice(&u256_be(token_id as u128));
-    buf.extend_from_slice(&key);
-    buf.extend_from_slice(&u256_be(0x60));
-    buf.extend_from_slice(&u256_be(len as u128));
-    buf.extend_from_slice(ciphertext);
-    buf.resize(4 + 96 + 32 + padded, 0);
-    buf
+    encode_set_metadata_bytes(token_id, gemini_key_metadata_key(), ciphertext)
 }
 
 // --- Public-face selection (on-chain, visitor-readable) --------------
@@ -488,36 +373,12 @@ pub(crate) async fn metadata_bytes_of(token_id: u64, key: [u8; 32]) -> Result<Op
         &[u256_be(token_id as u128), key],
     )
     .await?;
-    let bytes = hex_to_bytes(&result_hex)?;
-    if bytes.len() < 64 {
-        return Ok(None);
-    }
-    let mut len_buf = [0u8; 8];
-    len_buf.copy_from_slice(&bytes[56..64]);
-    let len = u64::from_be_bytes(len_buf) as usize;
-    if len == 0 {
-        return Ok(None);
-    }
-    let payload = len
-        .checked_add(64)
-        .and_then(|end| bytes.get(64..end))
-        .ok_or_else(|| "metadata truncated".to_string())?;
-    Ok(Some(payload.to_vec()))
+    Ok(decode_abi_bytes(&result_hex))
 }
 
 /// Encode `setMetadata(tokenId, key, payload)` calldata for a sponsored tx.
 pub(crate) fn encode_set_metadata_bytes(token_id: u64, key: [u8; 32], payload: &[u8]) -> Vec<u8> {
-    let len = payload.len();
-    let padded = len.div_ceil(32) * 32;
-    let mut buf = Vec::with_capacity(4 + 96 + 32 + padded);
-    buf.extend_from_slice(&selector("setMetadata(uint256,bytes32,bytes)"));
-    buf.extend_from_slice(&u256_be(token_id as u128));
-    buf.extend_from_slice(&key);
-    buf.extend_from_slice(&u256_be(0x60));
-    buf.extend_from_slice(&u256_be(len as u128));
-    buf.extend_from_slice(payload);
-    buf.resize(4 + 96 + 32 + padded, 0);
-    buf
+    encode_set_metadata(token_id, key, payload)
 }
 
 pub(crate) const PUBLIC_FACE_LABEL: &[u8] = b"localharness.public_face";
@@ -681,21 +542,10 @@ pub(crate) fn call_metadata(token_id: u64, key: [u8; 32]) -> String {
 }
 
 /// Decode an ABI `bytes` return (offset + length + payload). `None` when
-/// short / empty / truncated. Shared by the batched metadata reads.
+/// short / empty / truncated. Thin alias over the shared [`decode_abi_bytes`]
+/// (kept for the batched-metadata call sites that name it).
 pub(crate) fn decode_metadata_bytes(result_hex: &str) -> Option<Vec<u8>> {
-    let bytes = hex_to_bytes(result_hex).ok()?;
-    if bytes.len() < 64 {
-        return None;
-    }
-    let mut len_buf = [0u8; 8];
-    len_buf.copy_from_slice(&bytes[56..64]);
-    let len = u64::from_be_bytes(len_buf) as usize;
-    if len == 0 {
-        return None;
-    }
-    len.checked_add(64)
-        .and_then(|end| bytes.get(64..end))
-        .map(|s| s.to_vec())
+    decode_abi_bytes(result_hex)
 }
 
 pub(crate) const CAPABILITY_LABEL: &[u8] = b"localharness.capability";

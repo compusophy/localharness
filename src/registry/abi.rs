@@ -12,52 +12,52 @@ pub(crate) fn selector(signature: &str) -> [u8; 4] {
     out
 }
 
-/// Encode `idOfName(string)` calldata. ABI layout:
-///   [0..4]     selector
-///   [4..36]    offset to string head (always 0x20 for one dynamic arg)
-///   [36..68]   string length (uint256, big-endian)
-///   [68..]     string bytes, right-padded to 32-byte multiple
-pub(crate) fn encode_id_of_name(name: &str) -> String {
-    let sel = selector("idOfName(string)");
-    let bytes = name.as_bytes();
-    let len = bytes.len();
-    let padded_len = len.div_ceil(32) * 32;
+/// Left-pad a 20-byte address into its 32-byte ABI word (top 12 bytes zero).
+/// THE canonical address-word packer — every `fn(address, …)` encoder packs
+/// the address exactly this way (the per-site `let mut p=[0u8;32];
+/// p[12..].copy_from_slice(a)` boilerplate collapsed here).
+pub(crate) fn addr_word(a: &[u8; 20]) -> [u8; 32] {
+    let mut w = [0u8; 32];
+    w[12..].copy_from_slice(a);
+    w
+}
 
-    let mut buf = Vec::with_capacity(4 + 32 + 32 + padded_len);
-    buf.extend_from_slice(&sel);
-    buf.extend_from_slice(&u256_be(0x20));
+/// Append `bytes` to `buf` as an ABI dynamic tail: a uint256 length word then
+/// the bytes right-padded to a 32-byte multiple. The caller has already written
+/// the selector + static head (including the offset word that points HERE), so
+/// this is just the `[length][payload‖pad]` part shared by every dynamic-tail
+/// encoder (`fn(string)`, `setMetadata(uint256,bytes32,bytes)`, …).
+pub(crate) fn push_dynamic_bytes(buf: &mut Vec<u8>, bytes: &[u8]) {
+    let len = bytes.len();
     buf.extend_from_slice(&u256_be(len as u128));
     buf.extend_from_slice(bytes);
-    buf.resize(4 + 32 + 32 + padded_len, 0);
+    buf.resize(buf.len() + (len.div_ceil(32) * 32 - len), 0);
+}
 
-    let mut out = String::with_capacity(2 + buf.len() * 2);
-    out.push_str("0x");
-    for b in &buf {
-        out.push_str(&format!("{b:02x}"));
-    }
-    out
+/// `0x`-hex calldata for `fn(<dynamic>)` — a SINGLE dynamic (string/bytes)
+/// argument. ABI layout:
+///   [0..4]     selector
+///   [4..36]    offset to the dynamic head (always 0x20 for one dynamic arg)
+///   [36..68]   length (uint256, big-endian)
+///   [68..]     bytes, right-padded to a 32-byte multiple
+/// Backs `fn(string)` encoders (`idOfName` / `register` / `ownerOfName` / …);
+/// the per-site length+pad+hex boilerplate collapsed here.
+pub(crate) fn encode_dynamic_call_hex(signature: &str, value: &[u8]) -> String {
+    let mut buf = Vec::with_capacity(4 + 64 + value.len().div_ceil(32) * 32);
+    buf.extend_from_slice(&selector(signature));
+    buf.extend_from_slice(&u256_be(0x20));
+    push_dynamic_bytes(&mut buf, value);
+    format!("0x{}", bytes_to_hex(&buf))
+}
+
+/// Encode `idOfName(string)` calldata.
+pub(crate) fn encode_id_of_name(name: &str) -> String {
+    encode_dynamic_call_hex("idOfName(string)", name.as_bytes())
 }
 
 /// Encode `register(string)` calldata. Same shape as `idOfName`.
 pub(crate) fn encode_register(name: &str) -> String {
-    let sel = selector("register(string)");
-    let bytes = name.as_bytes();
-    let len = bytes.len();
-    let padded_len = len.div_ceil(32) * 32;
-
-    let mut buf = Vec::with_capacity(4 + 32 + 32 + padded_len);
-    buf.extend_from_slice(&sel);
-    buf.extend_from_slice(&u256_be(0x20));
-    buf.extend_from_slice(&u256_be(len as u128));
-    buf.extend_from_slice(bytes);
-    buf.resize(4 + 32 + 32 + padded_len, 0);
-
-    let mut out = String::with_capacity(2 + buf.len() * 2);
-    out.push_str("0x");
-    for b in &buf {
-        out.push_str(&format!("{b:02x}"));
-    }
-    out
+    encode_dynamic_call_hex("register(string)", name.as_bytes())
 }
 
 pub(crate) fn u256_be(value: u128) -> [u8; 32] {
@@ -79,6 +79,41 @@ pub(crate) fn encode_call_hex(sel: [u8; 4], words: &[[u8; 32]]) -> String {
         data.extend_from_slice(w);
     }
     format!("0x{}", bytes_to_hex(&data))
+}
+
+/// Encode `setMetadata(uint256,bytes32,bytes)` calldata. ABI layout:
+///   selector(4) | tokenId(32) | key(32) | dataOffset(32, =0x60) |
+///   dataLength(32) | data‖pad. THE one home for every metadata-write
+///   encoder (`app.wasm` / persona / lessons / skills / public_face / …) —
+///   they differ only in the `key` and the payload.
+pub(crate) fn encode_set_metadata(token_id: u64, key: [u8; 32], payload: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(4 + 96 + 32 + payload.len().div_ceil(32) * 32);
+    buf.extend_from_slice(&selector("setMetadata(uint256,bytes32,bytes)"));
+    buf.extend_from_slice(&u256_be(token_id as u128));
+    buf.extend_from_slice(&key);
+    buf.extend_from_slice(&u256_be(0x60)); // offset to the bytes arg
+    push_dynamic_bytes(&mut buf, payload);
+    buf
+}
+
+/// Decode an ABI dynamic `bytes`/`string` return — `[offset(32)][len(32)]
+/// [payload‖pad]` — into the raw payload bytes. `None` on a short / empty /
+/// truncated body. `len` is attacker-controlled (low 8 bytes, up to u64::MAX),
+/// so the `64 + len` slice is checked. Shared by every metadata read.
+pub(crate) fn decode_abi_bytes(result_hex: &str) -> Option<Vec<u8>> {
+    let bytes = hex_to_bytes(result_hex).ok()?;
+    if bytes.len() < 64 {
+        return None;
+    }
+    let mut len_buf = [0u8; 8];
+    len_buf.copy_from_slice(&bytes[56..64]); // low 8 bytes of the length word
+    let len = u64::from_be_bytes(len_buf) as usize;
+    if len == 0 {
+        return None;
+    }
+    len.checked_add(64)
+        .and_then(|end| bytes.get(64..end))
+        .map(|s| s.to_vec())
 }
 
 pub(crate) fn decode_u256_as_u64(hex: &str) -> Result<u64, String> {

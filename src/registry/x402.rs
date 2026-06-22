@@ -20,12 +20,6 @@ pub(crate) fn keccak32(data: &[u8]) -> [u8; 32] {
     o
 }
 
-pub(crate) fn addr_word(a: &[u8; 20]) -> [u8; 32] {
-    let mut w = [0u8; 32];
-    w[12..].copy_from_slice(a);
-    w
-}
-
 /// EIP-712 domain separator for the x402 facet (name "localharness-x402",
 /// version "1", `CHAIN_ID()`, diamond). Matches `x402DomainSeparator()`.
 pub fn x402_domain_separator() -> Result<[u8; 32], String> {
