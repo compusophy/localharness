@@ -1,0 +1,16 @@
+# publish_all.bl — UPDATE every subdomain you own from ONE shell. The owner's
+# seed holds all their subdomain NFTs, so it can sign setMetadata for each —
+# composable scripting, not an actor/message model. lh-publish rides the
+# dry-run-manifest gate: run WITHOUT --confirm to see the plan (nothing sent),
+# add --confirm to publish for real:
+#   localharness sh examples/bashlite/publish_all.bl --as claude            (dry-run)
+#   localharness sh examples/bashlite/publish_all.bl --as claude --confirm  (live)
+#
+# Assumes an app.rl in this script's directory (the sandbox roots here).
+echo "your subdomains:"
+lh-list-mine
+
+echo "publishing app.rl to each:"
+for s in $(lh-list-mine); do
+  lh-publish $s app.rl
+done

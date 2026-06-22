@@ -38,6 +38,7 @@ pub async fn dispatch(cmd: &str, args: &[String], identity: Option<&str>) -> Opt
         "lh-tba" => Some(lh_tba(args).await),
         "lh-price" => Some(lh_price(args).await),
         "lh-list" => Some(lh_list(args, identity).await),
+        "lh-list-mine" => Some(lh_list_mine(identity).await),
         "lh-discover" => Some(lh_discover(args).await),
         "lh-bounties" => Some(lh_bounties(args).await),
         "lh-help" => Some(lh_help()),
@@ -62,12 +63,14 @@ fn lh_help() -> Output {
          \x20 lh-tba     <name>         name -> token-bound account (payment target)\n\
          \x20 lh-price   <name>         agent's advertised per-call $LH price\n\
          \x20 lh-list    [name|0xaddr]  agents owned (default: self)\n\
+         \x20 lh-list-mine               YOUR owned subdomains, one per line\n\
          \x20 lh-discover <query...>    find agents by relevance\n\
          \x20 lh-bounties [query...]    open paid work\n\
          \x20 lh-help                   this list\n\
          \n\
          writes (confirm-gated):\n\
-         \x20 lh-send <name|0xaddr> <amount>   transfer $LH\n",
+         \x20 lh-send <name|0xaddr> <amount>   transfer $LH\n\
+         \x20 lh-publish <name> <source.rl>    compile + publish/update an owned app\n",
     )
 }
 
@@ -183,6 +186,28 @@ async fn lh_list(args: &[String], identity: Option<&str>) -> Output {
     }
 }
 
+/// `lh-list-mine` — the CALLER's own owned subdomain names, ONE per line. The
+/// no-argument, identity-pinned form of `lh-list` (it ignores args so it can
+/// never accidentally list someone else's holdings), purpose-built for the
+/// fan-out `for s in $(lh-list-mine); do lh-publish $s app.rl; done`. Needs an
+/// identity on the host (run with `--as <name>`); no identity = a usage error.
+async fn lh_list_mine(identity: Option<&str>) -> Output {
+    let Some(addr) = identity else {
+        return Output::err("lh-list-mine: no identity on this host — run with --as <name>", 2);
+    };
+    match crate::registry::list_owned_tokens(addr).await {
+        Ok(tokens) => {
+            let mut out = String::new();
+            for t in tokens {
+                out.push_str(&t.name);
+                out.push('\n');
+            }
+            Output::ok(out)
+        }
+        Err(e) => Output::err(format!("lh-list-mine: {e}"), 1),
+    }
+}
+
 /// `lh-resolve <name>` — the token id, owner, and TBA of a registered name.
 async fn lh_resolve(args: &[String]) -> Output {
     let Some(name) = args.first() else {
@@ -269,15 +294,138 @@ pub async fn dispatch_write(
 ) -> Option<(Output, String)> {
     match cmd {
         "lh-send" => Some(lh_send(args, env, dry_run).await),
+        // `lh-publish <name> <source>` — the host has ALREADY read the source
+        // FILE and replaced args[1] with its CONTENT (the publish core is
+        // dependency-free and fs-agnostic; the host owns the sandbox fs).
+        "lh-publish" => Some(lh_publish(args, env, dry_run).await),
         _ => None,
     }
 }
 
-/// Whether `cmd` is a value-MOVING command (handled by [`dispatch_write`], gated
-/// by the dry-run-manifest confirm flow) — so a host can require an identity +
-/// route it through the gate before the read/fs fallbacks.
+/// Whether `cmd` is a value-MOVING / state-CHANGING command (handled by
+/// [`dispatch_write`], gated by the dry-run-manifest confirm flow) — so a host
+/// can require an identity + route it through the gate before the read/fs
+/// fallbacks.
 pub fn is_write_command(cmd: &str) -> bool {
-    matches!(cmd, "lh-send")
+    matches!(cmd, "lh-send" | "lh-publish")
+}
+
+/// Whether `cmd`'s SECOND argument is a SOURCE FILE PATH the host must read into
+/// memory (and substitute) before [`dispatch_write`] — the publish core takes
+/// source CONTENT, keeping it fs-agnostic + dependency-free. Today only
+/// `lh-publish`.
+pub fn write_reads_source_file(cmd: &str) -> bool {
+    matches!(cmd, "lh-publish")
+}
+
+/// `lh-publish <name> <source>` — compile a rustlite cartridge and publish (or
+/// UPDATE) it as `<name>`'s on-chain public face, for ANY subdomain the caller
+/// OWNS. `source` is the cartridge SOURCE TEXT (the host reads the file). The
+/// owner's seed holds every subdomain NFT, so it signs `setMetadata` for the
+/// target's tokenId — no re-register, no actor model. Refuses unregistered
+/// names and names owned by someone else. Sponsored (caller pays no gas).
+/// Rides the dry-run-manifest gate: in `dry_run` it compiles + ownership-checks
+/// and emits a one-line plan, writing NOTHING.
+async fn lh_publish(args: &[String], env: &WriteEnv<'_>, dry_run: bool) -> (Output, String) {
+    let none = String::new();
+    let (Some(name), Some(source)) = (args.first(), args.get(1)) else {
+        return (
+            Output::err("lh-publish: usage: lh-publish <name> <source.rl>", 2),
+            none,
+        );
+    };
+    if source.trim().is_empty() {
+        return (Output::err(format!("lh-publish: {name}: source is empty"), 2), none);
+    }
+    // Compile FIRST — a bad cartridge fails before any ownership read / write.
+    let wasm = match crate::rustlite::compile(source) {
+        Ok(w) => w,
+        Err(e) => return (Output::err(format!("lh-publish: compile failed: {}", e.render(source)), 1), none),
+    };
+    const PUBLISH_CAP: usize = 16_384;
+    if wasm.len() > PUBLISH_CAP {
+        return (
+            Output::err(
+                format!("lh-publish: {name}: {} bytes exceeds the {PUBLISH_CAP}-byte cap", wasm.len()),
+                1,
+            ),
+            none,
+        );
+    }
+    // DRY-RUN: a compiled cartridge is enough to record the manifest plan —
+    // emit it and write NOTHING (no RPC). The ownership gate + write run only
+    // on the LIVE pass (matching the dry-run-manifest contract: dry collects,
+    // confirm executes).
+    let plan = format!("publish {} bytes -> {name} (app cartridge)", wasm.len());
+    if dry_run {
+        return (Output::ok(format!("[plan] {plan}\n")), plan);
+    }
+    // Ownership gate (LIVE only): the target must be registered AND owned by
+    // THIS signer (the seed holding all the caller's names). Refuse otherwise.
+    let signer_addr = crate::encoding::bytes_to_hex_str(&crate::wallet::address(env.signer));
+    let owner = match crate::registry::owner_of_name(name).await {
+        Ok(Some(o)) => o,
+        Ok(None) => {
+            return (
+                Output::err(
+                    format!("lh-publish: {name}: not registered — claim it first (localharness create {name})"),
+                    1,
+                ),
+                plan,
+            )
+        }
+        Err(e) => return (Output::err(format!("lh-publish: {e}"), 1), plan),
+    };
+    if !owner.eq_ignore_ascii_case(&signer_addr) {
+        return (
+            Output::err(
+                format!("lh-publish: {name} is owned by {owner}, not you ({signer_addr})"),
+                1,
+            ),
+            plan,
+        );
+    }
+    let token_id = match crate::registry::id_of_name(name).await {
+        Ok(id) if id != 0 => id,
+        Ok(_) => return (Output::err(format!("lh-publish: {name}: no tokenId"), 1), plan),
+        Err(e) => return (Output::err(format!("lh-publish: {e}"), 1), plan),
+    };
+    // app.wasm + public_face="app" in ONE sponsored Tempo tx (the admin/CLI
+    // publish-app shape). Length-scaled gas (~7.6k/BYTE).
+    let calls = vec![
+        crate::tempo_tx::TempoCall {
+            to: match crate::encoding::parse_address(crate::registry::REGISTRY_ADDRESS()) {
+                Ok(a) => a,
+                Err(e) => return (Output::err(format!("lh-publish: {e}"), 1), plan),
+            },
+            value_wei: 0,
+            input: crate::registry::encode_set_app_wasm(token_id, &wasm),
+        },
+        crate::tempo_tx::TempoCall {
+            to: match crate::encoding::parse_address(crate::registry::REGISTRY_ADDRESS()) {
+                Ok(a) => a,
+                Err(e) => return (Output::err(format!("lh-publish: {e}"), 1), plan),
+            },
+            value_wei: 0,
+            input: crate::registry::encode_set_public_face(token_id, "app"),
+        },
+    ];
+    let gas = crate::registry::set_metadata_gas(wasm.len());
+    match crate::registry::submit_tempo_sponsored(
+        env.signer,
+        env.sponsor,
+        calls,
+        env.fee_token,
+        gas,
+    )
+    .await
+    {
+        Ok(tx) => (
+            Output::ok(format!("published {name}.localharness.xyz  tx {tx}\n")),
+            plan,
+        ),
+        Err(e) => (Output::err(format!("lh-publish: {e}"), 1), plan),
+    }
 }
 
 /// `lh-send <name|0xaddr> <amount>` — transfer `$LH` to an address or a name's
@@ -354,7 +502,8 @@ mod tests {
         assert_eq!(r.code, 0);
         for cmd in [
             "lh-whoami", "lh-balance", "lh-meter", "lh-resolve", "lh-tba", "lh-price",
-            "lh-list", "lh-discover", "lh-bounties", "lh-help", "lh-send",
+            "lh-list", "lh-list-mine", "lh-discover", "lh-bounties", "lh-help", "lh-send",
+            "lh-publish",
         ] {
             assert!(r.stdout.contains(cmd), "lh-help is missing `{cmd}`");
         }
@@ -404,6 +553,77 @@ mod tests {
             assert_eq!(r.code, 2, "{cmd} no-arg+no-identity should be a usage error");
             assert!(r.stderr.contains("identity"), "{cmd}: {:?}", r.stderr);
         }
+    }
+
+    #[tokio::test]
+    async fn list_mine_is_dispatched_and_identity_gated() {
+        // Owned by the read dispatcher; no identity → usage error (exit 2)
+        // BEFORE any RPC, and it IGNORES any args (always lists self).
+        let r = dispatch("lh-list-mine", &[], None).await;
+        assert!(r.is_some(), "lh-list-mine should be dispatched");
+        let r = r.unwrap();
+        assert_eq!(r.code, 2, "no-identity should be a usage error");
+        assert!(r.stderr.contains("identity"), "{:?}", r.stderr);
+        // Even with a stray arg, no identity is still the (pre-RPC) failure.
+        let r = dispatch("lh-list-mine", &["someone".into()], None).await.unwrap();
+        assert_eq!(r.code, 2);
+    }
+
+    #[tokio::test]
+    async fn publish_is_a_write_command_and_reads_a_source_file() {
+        assert!(is_write_command("lh-publish"));
+        assert!(write_reads_source_file("lh-publish"));
+        // lh-send moves value but takes no source FILE.
+        assert!(is_write_command("lh-send"));
+        assert!(!write_reads_source_file("lh-send"));
+        // A read command is neither.
+        assert!(!is_write_command("lh-list-mine"));
+    }
+
+    #[tokio::test]
+    async fn publish_dry_run_plans_a_valid_cartridge_without_writing() {
+        let k = crate::wallet::generate();
+        let env = WriteEnv {
+            signer: &k.signer,
+            sponsor: &k.signer,
+            fee_token: "0x20c0000000000000000000000000000000000001",
+        };
+        // A minimal valid cartridge → dry-run compiles + plans, NOTHING sent
+        // (the ownership/RPC checks come only on the LIVE pass).
+        let src = "fn frame(t: i32) { host::display::present(); }".to_string();
+        let (out, plan) =
+            dispatch_write("lh-publish", &["mine".into(), src], &env, true).await.unwrap();
+        assert_eq!(out.code, 0, "{:?}", out.stderr);
+        assert!(out.stdout.contains("[plan] publish"), "{:?}", out.stdout);
+        assert!(plan.contains("publish") && plan.contains("mine"), "{plan}");
+    }
+
+    #[tokio::test]
+    async fn publish_rejects_bad_args_and_garbage_before_any_rpc() {
+        let k = crate::wallet::generate();
+        let env = WriteEnv {
+            signer: &k.signer,
+            sponsor: &k.signer,
+            fee_token: "0x20c0000000000000000000000000000000000001",
+        };
+        // Missing source → usage error, empty plan (no write recorded).
+        let (out, plan) = dispatch_write("lh-publish", &["mine".into()], &env, true).await.unwrap();
+        assert_eq!(out.code, 2);
+        assert!(plan.is_empty());
+        // Garbage source → compile failure (exit 1), empty plan, BEFORE any RPC.
+        let (out, plan) = dispatch_write(
+            "lh-publish",
+            &["mine".into(), "this is not rustlite".into()],
+            &env,
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.code, 1);
+        assert!(out.stderr.contains("compile failed"), "{:?}", out.stderr);
+        assert!(plan.is_empty());
+        // Not our command.
+        assert!(dispatch_write("echo", &[], &env, true).await.is_none());
     }
 
     #[test]

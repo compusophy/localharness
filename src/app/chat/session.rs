@@ -43,8 +43,8 @@ use super::tools::misc::{
 use super::tools::platform::{
     batch_create_subdomains_tool, bulk_release_subdomains_tool, create_and_publish_app_tool,
     create_subdomain_tool, discover_agents_tool, embed_app_tool, list_subdomains_tool,
-    publish_public_face_tool, query_balance_tool, release_subdomain_tool, batch_send_lh_tool,
-    check_balances_tool, send_lh_tool,
+    publish_app_to_tool, publish_public_face_tool, query_balance_tool, release_subdomain_tool,
+    batch_send_lh_tool, check_balances_tool, send_lh_tool,
 };
 use super::tools::room::{
     shared_state_get_tool, shared_state_list_tool, shared_state_set_tool,
@@ -332,6 +332,7 @@ pub(crate) async fn start_session(
             .with_temperature(0.2)
             .with_tool(create_subdomain_tool())
             .with_tool(create_and_publish_app_tool())
+            .with_tool(publish_app_to_tool())
             .with_tool(batch_create_subdomains_tool())
             .with_tool(release_subdomain_tool())
             .with_tool(bulk_release_subdomains_tool())
@@ -459,6 +460,7 @@ pub(crate) async fn start_session(
             .with_temperature(0.2)
             .with_tool(create_subdomain_tool())
             .with_tool(create_and_publish_app_tool())
+            .with_tool(publish_app_to_tool())
             .with_tool(batch_create_subdomains_tool())
             .with_tool(release_subdomain_tool())
             .with_tool(bulk_release_subdomains_tool())

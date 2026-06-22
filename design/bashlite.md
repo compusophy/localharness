@@ -19,8 +19,15 @@ behind the dry-run-manifest gate** (`platform::dispatch_write`): the script runs
 DRY first (each move emits a one-line plan, nothing sent), the host collects the
 manifest, and `--confirm` re-runs LIVE — proven live with
 `examples/bashlite/treasury.bl` (read balance → plan a send → refuse without
---confirm). **Remaining:** more value-moving `lh-*` (`lh-create`, `lh-publish`);
-scheduler runs `.bl` (zero-LLM cron); `lh-http` over `/api/fetch`.
+--confirm). **`lh-publish <name> <source.rl>` SHIPPED** (behind the same
+dry-run-manifest gate): compile a rustlite cartridge + publish/UPDATE it as an
+OWNED subdomain's public face (sponsored setMetadata; refuses unregistered /
+foreign names), plus the read-only `lh-list-mine` (the caller's owned names, one
+per line) — so `for s in $(lh-list-mine); do lh-publish $s app.rl; done` updates
+many apps from one shell. The owner's seed signs for every owned NFT, so this is
+composable scripting, NOT an actor/message model. **Remaining:** more
+value-moving `lh-*` (`lh-create`); scheduler runs `.bl` (zero-LLM cron);
+`lh-http` over `/api/fetch`.
 
 ## Why (the cost unlock)
 

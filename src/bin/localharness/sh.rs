@@ -47,14 +47,32 @@ impl BashHost for CliBashHost {
         if let Some(out) = bashlite::platform::dispatch(cmd, args, self.identity.as_deref()).await {
             return out;
         }
-        // 2. value-moving lh-* — needs an identity, rides the dry-run gate.
+        // 2. value-moving / state-changing lh-* — needs an identity, rides the
+        //    dry-run gate.
         if bashlite::platform::is_write_command(cmd) {
             let Some(signer) = self.signer.as_ref() else {
                 return Output::err(format!("{cmd}: needs an identity — run with --as <name>"), 2);
             };
+            // Some writes (lh-publish) take a SOURCE FILE PATH as their 2nd arg;
+            // read it via the sandbox fs HERE (the host owns it) and substitute
+            // the CONTENT so the publish core stays fs-agnostic.
+            let mut effective: Vec<String> = args.to_vec();
+            if bashlite::platform::write_reads_source_file(cmd) {
+                if let Some(path) = args.get(1) {
+                    let resolved = bashlite::resolve_path(cwd, path);
+                    match self.fs.read(&resolved).await {
+                        Ok(bytes) => {
+                            effective[1] = String::from_utf8_lossy(&bytes).into_owned();
+                        }
+                        Err(e) => {
+                            return Output::err(format!("{cmd}: {path}: {e}"), 1);
+                        }
+                    }
+                }
+            }
             let env = WriteEnv { signer, sponsor: &self.sponsor, fee_token: &self.fee_token };
             if let Some((out, plan)) =
-                bashlite::platform::dispatch_write(cmd, args, &env, self.dry_run).await
+                bashlite::platform::dispatch_write(cmd, &effective, &env, self.dry_run).await
             {
                 if !plan.is_empty() {
                     self.manifest.push(plan);

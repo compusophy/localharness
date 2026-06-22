@@ -65,6 +65,14 @@ pub mod eval;
 pub use eval::{Evaluator, ScriptResult, DEFAULT_FUEL, MAX_OUTPUT_BYTES};
 pub use host::{BashHost, Output};
 
+/// Resolve `path` against `cwd` into a normalized sandbox path the way the fs
+/// builtins do — so a host that reads a file ITSELF (e.g. `lh-publish`'s source
+/// arg, before [`platform::dispatch_write`]) resolves it identically. Absolute
+/// `path` ignores `cwd`; `.`/`..` collapse; `..` clamps to root (no escape).
+pub fn resolve_path(cwd: &str, path: &str) -> String {
+    builtins::resolve(cwd, path)
+}
+
 /// A boxed future alias for the evaluator's async recursion. `?Send` on wasm to
 /// match the rest of the crate's single-threaded executor.
 #[cfg(not(target_arch = "wasm32"))]

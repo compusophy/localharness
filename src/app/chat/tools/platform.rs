@@ -238,15 +238,93 @@ pub(crate) fn create_subdomain_tool() -> std::sync::Arc<dyn crate::tools::Tool> 
     )
 }
 
-/// `create_and_publish_app(name, source)` — one-shot: register
-/// `<name>.localharness.xyz` AND publish a compiled rustlite cartridge as
-/// its public face, so "make me a clock subdomain" works in a single tool
-/// call. Compiles `source` first (so a bad cartridge fails before the
-/// on-chain register), claims the name via the iframe (master wallet ends
-/// up holding the new tokenId), resolves the tokenId, then publishes via a
-/// SPONSORED setMetadata batch (app.wasm bytes + public_face="app") in ONE
-/// Tempo tx — exactly like the admin publish-app flow. Returns
-/// `{ name, url, tx_hash }`.
+/// Max bytes a compiled cartridge may be to publish on-chain (mirrors the
+/// admin studio + CLI `PUBLISH_CAP`).
+const APP_PUBLISH_CAP: usize = 16_384;
+
+/// Compile + bounds-check a rustlite cartridge into the publish call batch
+/// (`setMetadata(app.wasm)` then `setMetadata(public_face="app")`) plus
+/// length-scaled gas — the ONE publish-app shape shared by
+/// `create_and_publish_app` (fresh + update) and `publish_app_to`
+/// (cross-subdomain). Mirrors the admin publish-app flow.
+fn build_publish_app_calls(
+    token_id: u64,
+    source: &str,
+) -> Result<(Vec<crate::tempo_tx::TempoCall>, u128), crate::error::Error> {
+    if source.trim().is_empty() {
+        return Err(crate::error::Error::other("source cannot be empty"));
+    }
+    // Compile FIRST — a bad cartridge fails before any on-chain write. Surface
+    // the FULL rendering (LH code + line/col + caret) so the agent fixes it.
+    let wasm = crate::rustlite::compile(source).map_err(|e| {
+        crate::error::Error::other(format!("compile failed: {}", e.render(source)))
+    })?;
+    if wasm.len() > APP_PUBLISH_CAP {
+        return Err(crate::error::Error::other(format!(
+            "app wasm too large to publish: {} bytes (max {APP_PUBLISH_CAP})",
+            wasm.len()
+        )));
+    }
+    let registry_addr = parse_address(crate::app::registry::REGISTRY_ADDRESS())
+        .map_err(crate::error::Error::other)?;
+    let mk = |input: Vec<u8>| crate::tempo_tx::TempoCall {
+        to: registry_addr,
+        value_wei: 0,
+        input,
+    };
+    let calls = vec![
+        mk(crate::app::registry::encode_set_app_wasm(token_id, &wasm)),
+        mk(crate::app::registry::encode_set_public_face(token_id, "app")),
+    ];
+    // Length-scaled (~7.6k gas/BYTE); a flat cap silently OOG-reverts any
+    // non-trivial publish (see `gas::set_metadata_gas`).
+    let gas = crate::app::gas::set_metadata_gas(wasm.len());
+    Ok((calls, gas))
+}
+
+/// Resolve a registered name's `(token_id, owner)` for an OWNER-AUTHORIZED
+/// write, asserting the master wallet that signs (`signer_owner`) holds it.
+/// `None` = unregistered (caller decides whether to register). `Err` = the
+/// name is owned by someone ELSE (refuse) or an RPC failure.
+async fn owned_token_for_publish(
+    name: &str,
+    signer_owner: &str,
+) -> Result<Option<(u64, String)>, crate::error::Error> {
+    let owner = match crate::app::registry::owner_of_name(name).await {
+        Ok(Some(o)) => o,
+        Ok(None) => return Ok(None),
+        Err(e) => return Err(crate::error::Error::other(format!("owner_of_name: {e}"))),
+    };
+    if !owner.eq_ignore_ascii_case(signer_owner) {
+        return Err(crate::error::Error::other(format!(
+            "\"{name}\" is owned by {owner}, not you ({signer_owner}) — you can only \
+             publish to subdomains you own"
+        )));
+    }
+    let token_id = match crate::app::registry::id_of_name(name).await {
+        Ok(id) if id != 0 => id,
+        Ok(_) => {
+            return Err(crate::error::Error::other(format!(
+                "\"{name}\" has an owner but no tokenId yet — retry shortly"
+            )))
+        }
+        Err(e) => return Err(crate::error::Error::other(format!("id_of_name: {e}"))),
+    };
+    Ok(Some((token_id, owner)))
+}
+
+/// `create_and_publish_app(name, source)` — OWNERSHIP-AWARE one-shot publish:
+/// - `name` UNREGISTERED → register `<name>.localharness.xyz` + publish the
+///   compiled cartridge as its public face (a fresh subdomain for the app).
+/// - `name` already owned by THE CALLER → UPDATE in place: re-publish app.wasm
+///   + public_face via setMetadata, NO re-register, no duplicate.
+/// - `name` owned by SOMEONE ELSE → refuse with a clear error.
+///
+/// Compiles `source` first (so a bad cartridge fails before any on-chain
+/// write), then publishes via a SPONSORED setMetadata batch (app.wasm bytes +
+/// public_face="app") in ONE Tempo tx — exactly like the admin publish-app
+/// flow. A brand-new app never silently overwrites the owner's MAIN. Returns
+/// `{ name, url, tx_hash, updated }`.
 pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     let schema = serde_json::json!({
         "type": "object",
@@ -283,14 +361,16 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
     });
     ClosureTool::new(
         "create_and_publish_app",
-        "One-shot: register a new <name>.localharness.xyz AND publish a compiled \
-         rustlite cartridge as its fullscreen public face, in a single call (compile \
-         + on-chain register + sponsored setMetadata publish). Use this for \"make me \
-         a clock/<app> subdomain\". The ACTOR MODEL: optionally also set the new \
-         agent's `persona` (on-chain system instruction) and `prefund_lh` it with $LH \
-         (into its token-bound account), all in the SAME sponsored tx. create_subdomain \
-         remains for registering a name-only subdomain. Returns { name, url, tx_hash, \
-         persona_set?, prefunded_lh?, tba? }.",
+        "Publish a compiled rustlite cartridge as <name>.localharness.xyz's fullscreen \
+         public face (compile + sponsored setMetadata publish). OWNERSHIP-AWARE: if \
+         `name` is UNREGISTERED it registers a NEW subdomain first; if YOU already own \
+         `name` it UPDATES that app in place (no re-register, no duplicate); if someone \
+         ELSE owns `name` it refuses. Use this for \"make me a clock subdomain\" AND \
+         \"update my <name> app\". The ACTOR MODEL (fresh names only): optionally also \
+         set the new agent's `persona` (on-chain system instruction) and `prefund_lh` it \
+         with $LH (into its token-bound account), all in the SAME sponsored tx. \
+         create_subdomain remains for registering a name-only subdomain. Returns \
+         { name, url, tx_hash, updated, persona_set?, prefunded_lh?, tba? }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
             let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
@@ -299,23 +379,63 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
             let prefund_lh = args.get("prefund_lh").and_then(|v| v.as_str());
             let cleaned = crate::subdomain::validate(name)
                 .map_err(|why| crate::error::Error::other(format!("invalid subdomain name: {why}")))?;
+            // Compile FIRST (also bounds-checks size) so a bad cartridge fails
+            // before any register/setMetadata write. This is the SAME shape the
+            // update path uses; resolve the tokenId after we know it compiles.
+            // (token_id is patched in once known — encode below.)
             if source.trim().is_empty() {
                 return Err(crate::error::Error::other("source cannot be empty"));
             }
-            // Compile FIRST so a bad cartridge fails before we register the
-            // name on-chain. Surface the FULL rendering (LH code + line/col
-            // locator + caret snippet) so the agent fixes the exact spot.
-            let wasm = crate::rustlite::compile(source).map_err(|e| {
-                crate::error::Error::other(format!("compile failed: {}", e.render(source)))
-            })?;
-            if wasm.len() > 16_384 {
-                return Err(crate::error::Error::other(format!(
-                    "app wasm too large to publish: {} bytes (max 16384)",
-                    wasm.len()
-                )));
+            // Who would sign? The owner of the current host subdomain — the
+            // master wallet that holds ALL this identity's names. Used to decide
+            // OWN vs SOMEONE-ELSE for an already-registered target.
+            let signer_owner = crate::app::tenant::current_tenant_owner()
+                .await
+                .map(|(_, o)| o)
+                .ok();
+
+            // Branch on the target's on-chain ownership.
+            let existing = match &signer_owner {
+                Some(o) => owned_token_for_publish(&cleaned, o).await?,
+                // Off a tenant host (preview/localhost) we can't prove the
+                // signer's identity; fall back to "register if free", and a
+                // taken name will be refused by the claim path.
+                None => match crate::app::registry::owner_of_name(&cleaned).await {
+                    Ok(Some(_)) => {
+                        return Err(crate::error::Error::other(format!(
+                            "\"{cleaned}\" is already registered — run this on your own \
+                             subdomain so ownership can be verified before updating it"
+                        )))
+                    }
+                    Ok(None) => None,
+                    Err(e) => return Err(crate::error::Error::other(format!("owner_of_name: {e}"))),
+                },
+            };
+
+            // UPDATE path: the caller already owns `name` → re-publish in place,
+            // NO re-register (which would fail), NO persona/prefund (those are
+            // spawn-time actor setup). One sponsored setMetadata batch.
+            if let Some((token_id, owner)) = existing {
+                let (calls, gas) = build_publish_app_calls(token_id, source)?;
+                let tx_hash = crate::app::events::run_sponsored_tempo_call(
+                    &owner,
+                    calls,
+                    gas,
+                    "update published app",
+                )
+                .await
+                .map_err(|e| crate::error::Error::other(format!("update failed: {e}")))?;
+                return Ok(serde_json::json!({
+                    "name": cleaned,
+                    "url": format!("https://{cleaned}.localharness.xyz/"),
+                    "tx_hash": tx_hash,
+                    "updated": true,
+                }));
             }
-            // Register the name. The owner's master wallet ends up holding
-            // the new tokenId, so it's authorized to setMetadata below.
+
+            // FRESH path: register the name, then publish. The owner's master
+            // wallet ends up holding the new tokenId, so it's authorized to
+            // setMetadata below.
             let (owner, _claim_tx) = crate::app::verify::claim_name_via_iframe(&cleaned)
                 .await
                 .map_err(|e| crate::error::Error::other(format!("claim failed: {e}")))?;
@@ -340,21 +460,7 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
             // Tempo tx (two setMetadata calls), exactly like the admin
             // publish-app flow. Owner signs the sender_hash via the apex
             // iframe; the sponsor pays gas.
-            let registry_addr = parse_address(crate::app::registry::REGISTRY_ADDRESS())
-                .map_err(crate::error::Error::other)?;
-            let mk = |input: Vec<u8>| crate::tempo_tx::TempoCall {
-                to: registry_addr,
-                value_wei: 0,
-                input,
-            };
-            let mut calls = vec![
-                mk(crate::app::registry::encode_set_app_wasm(token_id, &wasm)),
-                mk(crate::app::registry::encode_set_public_face(token_id, "app")),
-            ];
-            // Length-scaled: the old `1.3M + words*40k` here was ~6x below
-            // the measured ~7.6k gas/BYTE and silently OOG-reverted any
-            // non-trivial publish (see `gas::set_metadata_gas`).
-            let mut gas = crate::app::gas::set_metadata_gas(wasm.len());
+            let (mut calls, mut gas) = build_publish_app_calls(token_id, source)?;
             // ACTOR MODEL: fold optional persona + prefund into the SAME tx.
             let setup =
                 build_actor_setup(&owner, token_id, &cleaned, persona, prefund_lh).await?;
@@ -372,6 +478,7 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
                 "name": cleaned,
                 "url": format!("https://{cleaned}.localharness.xyz/"),
                 "tx_hash": tx_hash,
+                "updated": false,
             });
             if setup.persona_set {
                 result["persona_set"] = serde_json::json!(true);
@@ -383,6 +490,113 @@ pub(crate) fn create_and_publish_app_tool() -> std::sync::Arc<dyn crate::tools::
                 result["tba"] = serde_json::json!(tba);
             }
             Ok(result)
+        },
+    )
+}
+
+/// `publish_app_to(name, source, confirmation)` — UPDATE-FROM-MAIN: publish a
+/// compiled cartridge to ANY subdomain the caller OWNS, even one DIFFERENT from
+/// the current host. The owner's master wallet (the one that signs the current
+/// host's sponsored writes) holds all their subdomain NFTs, so it can sign a
+/// `setMetadata` for any owned tokenId — no new ownership/actor model needed,
+/// just targeting a chosen owned name. From a MAIN session this updates any
+/// alt's app. The target MUST already be registered AND owned by the caller
+/// (refuses unregistered names — use `create_and_publish_app` to mint a fresh
+/// one — and names owned by someone else). MOVES on-chain state, so it rides
+/// the typed-confirmation gate (`chat::confirm_guard`). NOT granted to
+/// subagents. Returns `{ name, url, tx_hash, updated: true }`.
+pub(crate) fn publish_app_to_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "The subdomain to publish to — MUST be one you already \
+                    own (e.g. \"clock\" → clock.localharness.xyz). Can be different from \
+                    the subdomain you are currently on. To create a NEW subdomain, use \
+                    create_and_publish_app instead."
+            },
+            "source": {
+                "type": "string",
+                "description": "rustlite cartridge source — the SAME dialect as \
+                    run_cartridge / create_and_publish_app. Exports `fn frame(t: i32)` \
+                    (animated) or `fn render()` and draws via `use host::display;`. \
+                    Becomes the target subdomain's fullscreen public face."
+            },
+            "confirmation": {
+                "type": "string",
+                "description": "Single-use confirmation code. OMIT (or pass \"\") on the \
+                    first call — it returns a challenge code shown to the owner. State \
+                    which subdomain you will update, ask the owner to TYPE the code in \
+                    chat, then retry with it. Never invent it; only the platform issues it."
+            }
+        },
+        "required": ["name", "source"]
+    });
+    ClosureTool::new(
+        "publish_app_to",
+        "Publish (UPDATE) a rustlite cartridge to ANOTHER subdomain you OWN — the \
+         update-from-MAIN path. The owner's master wallet holds all their subdomain \
+         NFTs, so from one session you can re-publish any of your alts' apps. The \
+         target must ALREADY exist and be owned by you (to mint a NEW subdomain use \
+         create_and_publish_app; that tool also updates the CURRENT name in place). \
+         CHANGES on-chain state — the first call does NOT execute: it returns a \
+         single-use confirmation code (also shown to the owner in the UI). Say which \
+         subdomain you'll update, ask the owner to TYPE the code, then retry with \
+         `confirmation` set to it. Returns { name, url, tx_hash, updated: true }.",
+        schema,
+        |args: serde_json::Value, _ctx| async move {
+            let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let source = args.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            // Belt-and-suspenders: the confirm_guard hook denies any unconfirmed
+            // call before this body runs; this guards a registration path that
+            // forgot the hook (same posture as send_lh / release_subdomain).
+            let confirmed = args
+                .get("confirmation")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if !confirmed {
+                return Err(crate::error::Error::other(
+                    "publish_app_to requires the platform-issued confirmation code",
+                ));
+            }
+            let cleaned = crate::subdomain::validate(name)
+                .map_err(|why| crate::error::Error::other(format!("invalid subdomain name: {why}")))?;
+            if source.trim().is_empty() {
+                return Err(crate::error::Error::other("source cannot be empty"));
+            }
+            // The signer = the current host's owner (the master wallet holding
+            // ALL this identity's names). Required so we can prove ownership of a
+            // DIFFERENT target name before writing to it.
+            let (_, signer_owner) = crate::app::tenant::current_tenant_owner()
+                .await
+                .map_err(crate::error::Error::other)?;
+            // Resolve + ownership-gate the target. None = unregistered (refuse —
+            // this tool only UPDATES owned names); Err = owned-by-other / RPC.
+            let (token_id, owner) = owned_token_for_publish(&cleaned, &signer_owner)
+                .await?
+                .ok_or_else(|| {
+                    crate::error::Error::other(format!(
+                        "\"{cleaned}\" is not registered — use create_and_publish_app to \
+                         mint and publish a new subdomain"
+                    ))
+                })?;
+            let (calls, gas) = build_publish_app_calls(token_id, source)?;
+            let tx_hash = crate::app::events::run_sponsored_tempo_call(
+                &owner,
+                calls,
+                gas,
+                "publish app to owned subdomain",
+            )
+            .await
+            .map_err(|e| crate::error::Error::other(format!("publish failed: {e}")))?;
+            Ok(serde_json::json!({
+                "name": cleaned,
+                "url": format!("https://{cleaned}.localharness.xyz/"),
+                "tx_hash": tx_hash,
+                "updated": true,
+            }))
         },
     )
 }
