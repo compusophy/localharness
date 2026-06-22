@@ -824,7 +824,10 @@ pub(crate) fn cancel_task_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
 /// name into the title, debits the caller's meter, and delivers the push —
 /// it lands in the target's notification inbox (header bell) and buzzes any
 /// phone they enrolled.
-async fn notify_cross_agent(
+///
+/// `pub(crate)` so other tools can piggyback a notification — e.g. `send_lh`
+/// pings the recipient about incoming $LH (#50).
+pub(crate) async fn notify_cross_agent(
     to: &str,
     title: &str,
     body: &str,

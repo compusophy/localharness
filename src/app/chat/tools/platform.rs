@@ -27,6 +27,44 @@ async fn resolve_lh_recipient(recipient_arg: &str) -> Result<String, crate::erro
     }
 }
 
+/// Resolve a $LH recipient to a NOTIFIABLE subdomain name (#50): the name
+/// directly if `recipient_arg` was a name, else the owner address's MAIN name
+/// (reverse `main_of` → `name_of_id`). `None` when the recipient has no
+/// registered identity to notify (a bare address). The proxy `/api/notify`
+/// only routes to a name, so this is how a raw-address transfer still pings.
+async fn notifiable_recipient_name(recipient_arg: &str, to_hex: &str) -> Option<String> {
+    use crate::encoding::Recipient;
+    if let Ok(Recipient::Name(name)) = crate::encoding::classify_recipient(recipient_arg) {
+        return Some(name);
+    }
+    // Raw address: reverse-resolve to its MAIN identity's name, if any.
+    let main_id = crate::app::registry::main_of(to_hex).await.ok()?;
+    if main_id == 0 {
+        return None;
+    }
+    crate::app::registry::name_of_id(main_id).await.ok().filter(|n| !n.is_empty())
+}
+
+/// Fire-and-forget a cross-agent notification to the $LH recipient that funds
+/// arrived (#50): piggybacks the existing cross-agent notify (`notify_cross_agent`
+/// → proxy `/api/notify`, which lands in the recipient's bell + buzzes any
+/// enrolled phone). Best-effort — it must NEVER fail or block the transfer that
+/// already settled on-chain; an unregistered/un-enrolled recipient is silently
+/// skipped. NOT a transfer-watch system — it just rides the send.
+fn notify_recipient_of_incoming_lh(recipient_arg: String, to_hex: String, amount: String) {
+    wasm_bindgen_futures::spawn_local(async move {
+        let Some(name) = notifiable_recipient_name(&recipient_arg, &to_hex).await else {
+            return;
+        };
+        let title = format!("+{amount} $LH received");
+        let body = "incoming $LH transfer — check your wallet".to_string();
+        // The proxy stamps the SENDER's chain-verified identity into the title,
+        // so the recipient sees who paid them. Swallow any error (no identity /
+        // not enrolled / metered-out): the money already moved.
+        let _ = crate::app::chat::tools::misc::notify_cross_agent(&name, &title, &body).await;
+    });
+}
+
 /// ERC-20 `transfer(to, amount)` TempoCall against the $LH token.
 fn lh_transfer_call(
     to_hex: &str,
@@ -1030,6 +1068,15 @@ pub(crate) fn send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                     .await
                     .map_err(|e| crate::error::Error::other(format!("send_lh failed: {e}")))?;
 
+            // #50: ping the recipient that funds arrived (best-effort, rides the
+            // send — never a transfer-watch system). Fire-and-forget so it can't
+            // fail or delay the tool result for a settled transfer.
+            notify_recipient_of_incoming_lh(
+                recipient_arg.clone(),
+                to_hex.clone(),
+                amount_display.clone(),
+            );
+
             Ok(serde_json::json!({
                 "amount": amount_display,
                 "recipient": recipient_arg,
@@ -1181,6 +1228,16 @@ pub(crate) fn batch_send_lh_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                     .map_err(|e| {
                         crate::error::Error::other(format!("batch_send_lh failed: {e}"))
                     })?;
+
+            // #50: ping each recipient that funds arrived (best-effort, rides
+            // the batch). One fire-and-forget notify per transfer.
+            for (recipient, to_hex, _, amount_str) in &resolved {
+                notify_recipient_of_incoming_lh(
+                    recipient.clone(),
+                    to_hex.clone(),
+                    amount_str.clone(),
+                );
+            }
 
             let transfers: Vec<serde_json::Value> = resolved
                 .iter()

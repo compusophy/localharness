@@ -644,13 +644,16 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
                             &format!("tool-{tool_seg_id}-card"),
                             &card.into_string(),
                         );
-                        // embed_app paints a canvas card and stashed the
-                        // fetched cartridge bytes; now that the canvas is in
-                        // the DOM, launch the cartridge into THIS card's
-                        // canvas (scoped — older/replayed embed cards have
-                        // their own canvases). No-op for every other tool /
-                        // on replay (no stash).
-                        if call.name == "embed_app" && result.error.is_none() {
+                        // embed_app AND run_cartridge (#52a) paint a canvas
+                        // card and stashed cartridge bytes; now that the canvas
+                        // is in the DOM, launch the cartridge into THIS card's
+                        // canvas (scoped — older/replayed cards have their own
+                        // canvases). No-op for every other tool / on replay (no
+                        // stash). run_cartridge renders INLINE by default now,
+                        // with a [fullscreen] button on the card.
+                        if matches!(call.name.as_str(), "embed_app" | "run_cartridge")
+                            && result.error.is_none()
+                        {
                             super::display::launch_pending_embed(&format!(
                                 "tool-{tool_seg_id}-card"
                             ))

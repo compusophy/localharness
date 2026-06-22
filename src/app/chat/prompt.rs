@@ -285,12 +285,16 @@ pub(crate) fn base_system_prompt(
              create_subdomain. \
              Each run is auto-saved to `cartridge.rl` (visible in files, \
              survives reload). This is what 'build/run/show me an app' (on \
-             this tab) means — run_cartridge launches it live on the DISPLAY, \
-             in a dismissable overlay, no reload. ONLY when the user EXPLICITLY asks to make this \
+             this tab) means — run_cartridge renders it live INLINE in the \
+             chat transcript as a playable card (the user prefers inline; the \
+             card has a [fullscreen] button to open the overlay), no reload, \
+             no takeover. ONLY when the user EXPLICITLY asks to make a \
              subdomain PERMANENTLY BECOME the app (fullscreen on every load, \
-             no IDE chrome) should you ALSO save the same source to `app.rl` \
-             via create_file. Never write `app.rl` for an ordinary app \
-             request — it forces a fullscreen takeover the user didn't ask \
+             no IDE chrome) should you publish it — and prefer a SEPARATE \
+             subdomain for that via create_and_publish_app, keeping THIS \
+             (main) subdomain as the owner's homepage/profile. Never write \
+             `app.rl` here for an ordinary app request — it forces a \
+             fullscreen takeover of your main page that the user didn't ask \
              for and doesn't even run until the next reload.\n\
            • render_html(source) — render an HTML document onto the VISUAL \
              DISPLAY. The display CAN show HTML: this lays out block-level \
@@ -436,12 +440,17 @@ pub(crate) fn base_system_prompt(
            fetches another subdomain's PUBLISHED cartridge and runs it live, \
            inline in this transcript (not an iframe). Only works if <name> \
            published an app; one live embed at a time.\n\
-         • \"How do I share my app/game/page?\" → PUBLISH it: \
-           create_and_publish_app (a NEW subdomain) or publish_public_face \
-           (publishes THIS subdomain's local app.rl/index.html on-chain — the \
-           same as admin → public face). Local files are device-only; once \
-           published, anyone can open https://<name>.localharness.xyz/ — that \
-           URL is the shareable link.\n\
+         • \"How do I share my app/game/page?\" → PUBLISH it. DEFAULT to a \
+           SEPARATE subdomain via create_and_publish_app(name, source): \
+           subdomains are cheap to spin up (one sponsored, free tx), so each \
+           custom app/game/cartridge gets its OWN <name>.localharness.xyz \
+           rather than overwriting this one. RESERVE this (main) subdomain as \
+           the owner's customizable homepage/profile — only publish an app \
+           ONTO it via publish_public_face when the owner EXPLICITLY asks to \
+           make THIS page become the app (and prefer the \"directory\" profile \
+           face for a homepage). Local files are device-only; once published, \
+           anyone can open https://<name>.localharness.xyz/ — that URL is the \
+           shareable link.\n\
          • Registering MULTIPLE names at once → batch_create_subdomains(names), \
            ONE tx, NOT a create_subdomain loop. A loop spends one sponsored \
            transaction per name and eats your auto-continue budget; the batch \
@@ -530,9 +539,11 @@ pub(crate) fn base_system_prompt(
             interaction, then polish, compiling between each. Each compile is \
             cheap and you auto-continue, so iterating is free.\n\
          3. ONLY render/publish after a CLEAN compile. Once compile_rustlite \
-            returns no `error`, THEN run_cartridge (to show it live on this tab's \
-            display) or create_and_publish_app (to ship it to a new subdomain). \
-            Do not run_cartridge or publish source you haven't compiled clean.\n\
+            returns no `error`, THEN run_cartridge (to show it live INLINE in \
+            the chat as a playable card) or, to SHIP it, create_and_publish_app \
+            (its OWN new subdomain — the default home for a custom app, keeping \
+            your main subdomain free as the owner's homepage). Do not \
+            run_cartridge or publish source you haven't compiled clean.\n\
          4. If a compile error is unclear, re-read the rustlite subset below — \
             most failures are using a feature rustlite lacks (heap types, \
             traits, generics, references, string ops) or a host fn name/arity \

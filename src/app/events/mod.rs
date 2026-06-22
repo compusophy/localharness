@@ -190,6 +190,9 @@ enum Action {
     ResetToolAllowlist,
     SaveApiKey,
     ToggleDisplay,
+    /// The inline `run_cartridge` card's [fullscreen] button (#52a): relaunch
+    /// the most-recently-run inline cartridge into the fullscreen overlay.
+    RunInDisplay,
     /// Open/close the CLI-sandbox terminal overlay (feedback #6): the terminal
     /// card's [show] re-opens the last `run_wasm_cli` run; the overlay `×`
     /// closes it. Mirrors `ToggleDisplay`.
@@ -313,6 +316,7 @@ impl Action {
             "reset-tool-allowlist" => Action::ResetToolAllowlist,
             "save-api-key" => Action::SaveApiKey,
             "toggle-display" => Action::ToggleDisplay,
+            "run-in-display" => Action::RunInDisplay,
             "toggle-terminal" => Action::ToggleTerminal,
             "stop-turn" => Action::StopTurn,
             "broadcast-send" => Action::BroadcastSend(arg.unwrap_or_default()),
@@ -772,6 +776,13 @@ fn dispatch(action: Action) {
         }
         Action::OpfsCloseViewer => super::opfs::close_viewer(),
         Action::ToggleDisplay => super::opfs::toggle_display(),
+        Action::RunInDisplay => {
+            // Relaunching into the overlay is async (spawns the worker); defer
+            // so the click handler returns immediately.
+            wasm_bindgen_futures::spawn_local(async move {
+                super::display::relaunch_last_in_fullscreen().await;
+            });
+        }
         Action::ToggleTerminal => super::cli::toggle_terminal(),
         Action::BroadcastSend(title) => super::display::broadcast_send(title),
         Action::BroadcastCancel => super::display::close_broadcast_composer(),

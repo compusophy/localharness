@@ -126,6 +126,52 @@ pub(crate) struct RunFailure {
 /// wrapper's vaguer timeout.
 const FIRST_SIGNAL_MS: u32 = 2600;
 
+/// Run `wasm_bytes` as a cartridge INLINE in the chat transcript (issue #52a)
+/// rather than auto-opening the fullscreen overlay: the user strongly prefers
+/// inline-by-default, fullscreen opt-in. This stashes the bytes for the
+/// `run_cartridge` inline card (`launch_pending_embed`, the SAME path
+/// `embed_app` uses) AND remembers them so the card's [fullscreen] button can
+/// relaunch the SAME cartridge into the overlay. It does NOT mount the overlay.
+///
+/// `run_cartridge`'s "report the first frame" contract (issue #7) can't be
+/// honoured before the card paints (the canvas doesn't exist yet), so this
+/// returns `Ok(())` once the bytes are stashed; the inline launch surfaces a
+/// dead/blank canvas if the cartridge fails, the same way an `embed_app` card
+/// does. Fire-and-forget overlay callers (public-face boot, opening a file)
+/// keep using `run_wasm` / `run_wasm_reporting`.
+pub(crate) fn run_wasm_inline(wasm_bytes: &[u8]) {
+    remember_last_cartridge(wasm_bytes);
+    stash_pending_embed(wasm_bytes.to_vec());
+}
+
+/// Stash the most-recently-run cartridge so the inline card's [fullscreen]
+/// button can relaunch the SAME bytes into the overlay (issue #52a).
+fn remember_last_cartridge(wasm: &[u8]) {
+    LAST_CARTRIDGE.with(|c| *c.borrow_mut() = Some(wasm.to_vec()));
+}
+
+thread_local! {
+    /// The bytes of the most-recently-launched inline cartridge, kept so the
+    /// inline card's [fullscreen] button (`Action::RunInDisplay`) can relaunch
+    /// the SAME cartridge into the fullscreen overlay. Session-lived; cleared
+    /// on nothing (a new run overwrites it).
+    static LAST_CARTRIDGE: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+}
+
+/// The inline card's [fullscreen] button: mount the display overlay and
+/// relaunch the most-recently-run inline cartridge into it. No-op (just opens
+/// an idle overlay) when nothing has run yet. Wired from `Action::RunInDisplay`.
+pub(crate) async fn relaunch_last_in_fullscreen() {
+    let Some(wasm) = LAST_CARTRIDGE.with(|c| c.borrow().clone()) else {
+        // Nothing to relaunch — open an idle framebuffer surface instead.
+        crate::app::opfs::toggle_display();
+        return;
+    };
+    if let Err(e) = run_wasm(&wasm).await {
+        embed_trace(&format!("fullscreen relaunch failed: {e:?}"));
+    }
+}
+
 /// [`run_wasm`], but AWAIT the cartridge's first lifecycle signal and report
 /// it (issue #7): `Ok(())` once the first frame (or a one-shot `done`)
 /// lands, `Err(RunFailure)` when the worker posts a coded fatal error
@@ -138,6 +184,25 @@ const FIRST_SIGNAL_MS: u32 = 2600;
 /// [`FIRST_SIGNAL_MS`]). Fire-and-forget callers (public-face boot, opening
 /// a file) keep using `run_wasm` — the overlay is their reporting surface.
 pub(crate) async fn run_wasm_reporting(wasm_bytes: &[u8]) -> Result<(), RunFailure> {
+    // issue #52a: `run_cartridge` now renders INLINE in the chat transcript by
+    // default (the user strongly prefers inline-by-default), with fullscreen as
+    // an opt-in [fullscreen] button on the inline card. So instead of mounting
+    // the fullscreen overlay + awaiting the first frame here, stash the bytes
+    // for the inline card to launch (the SAME `launch_pending_embed` path
+    // `embed_app` uses) and remember them for the [fullscreen] relaunch. The
+    // inline canvas surfaces a blank/dead frame on failure exactly like an
+    // `embed_app` card, so the first-frame report (issue #7) is no longer the
+    // success signal — the card IS the surface.
+    run_wasm_inline(wasm_bytes);
+    Ok(())
+}
+
+/// Mount the overlay + await the cartridge's first lifecycle signal — the
+/// OVERLAY reporting path (issue #7), retained for callers that still want a
+/// fullscreen run with a hard pass/fail (none ship today; kept so the
+/// first-frame watchdog plumbing has a home and isn't dead code).
+#[allow(dead_code)]
+pub(crate) async fn run_wasm_reporting_fullscreen(wasm_bytes: &[u8]) -> Result<(), RunFailure> {
     run_wasm(wasm_bytes).await.map_err(|e| RunFailure {
         code: None,
         detail: format!("worker spawn failed: {e:?}"),

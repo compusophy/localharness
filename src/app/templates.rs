@@ -909,10 +909,22 @@ pub(crate) fn inline_result_card(
             let path = value.get("path").and_then(|v| v.as_str()).unwrap_or("");
             Some(dir_card(path, entries))
         }
-        "run_cartridge" | "render_html" => {
-            // These return Ok-with-`error` on compile/run failure and a
-            // `status` field only on the browser success shape — gate on
-            // both so a failed run never gets a "rendered" marker.
+        "run_cartridge" => {
+            // issue #52a: a run_cartridge now renders INLINE by default — a
+            // live canvas card (the cartridge's own framebuffer) right here in
+            // the transcript, with a [fullscreen] button to opt into the
+            // overlay. `chat::stream_turn` launches the stashed cartridge into
+            // THIS card's canvas after it swaps in (the SAME path embed_app
+            // uses). Replay paints the same canvas, which stays black.
+            // Gate on the browser success shape so a failed run gets no card.
+            if value.get("error").is_some() || value.get("status").is_none() {
+                return None;
+            }
+            Some(cartridge_card())
+        }
+        "render_html" => {
+            // render_html paints the framebuffer synchronously, so it gets a
+            // cheap thumbnail snapshot + a [show] into the overlay.
             if value.get("error").is_some() || value.get("status").is_none() {
                 return None;
             }
@@ -996,6 +1008,28 @@ fn embed_app_card(name: &str) -> Markup {
                 span.ic-title { "▶ " (name) }
                 a.ghost href=(format!("https://{name}.localharness.xyz/"))
                     target="_blank" rel="noopener" { "open" }
+            }
+            div.embed-app-stage {
+                canvas id=(crate::app::display::next_embed_canvas_id()) .embed-app-canvas {}
+            }
+        }
+    }
+}
+
+/// Live inline card for a `run_cartridge` run (issue #52a): the just-compiled
+/// cartridge runs in a canvas INLINE in the transcript (no fullscreen takeover)
+/// with a [fullscreen] button that relaunches the SAME cartridge into the
+/// overlay (`Action::RunInDisplay` → `display::relaunch_last_in_fullscreen`).
+/// Reuses the `.embed-app-canvas` class so `display::launch_pending_embed`
+/// resolves + sizes it identically to an `embed_app` card; the launch happens
+/// in `chat::stream_turn` right after this swaps in. Replay paints the same
+/// canvas (it stays black — no stashed bytes).
+fn cartridge_card() -> Markup {
+    html! {
+        div.inline-card.embed-app-card {
+            div.ic-head {
+                span.ic-title { "▶ cartridge" }
+                button.ghost type="button" data-action="run-in-display" { "fullscreen" }
             }
             div.embed-app-stage {
                 canvas id=(crate::app::display::next_embed_canvas_id()) .embed-app-canvas {}
