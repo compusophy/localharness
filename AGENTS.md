@@ -47,7 +47,8 @@ is the only durable handle.
 > modals / no-DOM / one-box-input), `src/registry` (on-chain gas/tx/relay),
 > `src/backends` (provider wire quirks), `src/bin/localharness` (CLI), `src/rustlite`
 > (cartridge compiler), `src/filesystem` (FS impls + at-rest encryption /
-> EXEMPT_FILES). The root stays a whole-repo MAP; detail lives in the specs.
+> EXEMPT_FILES), `src/builtins` (tool schema-lint rule). The root stays a
+> whole-repo MAP; detail lives in the specs.
 
 ```
 src/                  library crate
@@ -67,8 +68,8 @@ src/                  library crate
 ├── turn_stage.rs     pure stage state machine for the pending-turn "paying →
 │                     thinking → streaming" line (painted by app/chat/stage.rs)
 ├── builtins/         backend-NEUTRAL builtin tools (8 fs, ask_question, finish,
-│                     start_subagent, generate_image, call_agent, ...) + the two
-│                     schema-lint guard tests; shim left at backends/gemini/tools
+│                     start_subagent, generate_image, call_agent, ...) + the
+│                     schema-lint guards (see src/builtins/AGENTS.md)
 ├── filesystem/       Filesystem trait + Native/OPFS impls + Encrypted (at-rest) +
 │                     Rooted (confine to a sub-tree — the bashlite CLI sandbox)
 ├── types.rs          wire-adjacent enums + Step constructors (no hand literals)
