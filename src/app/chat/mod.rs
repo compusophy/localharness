@@ -901,7 +901,10 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
     let body_id = format!("turn-body-{assistant_turn_id}");
     if looks_like_credits {
         web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(err));
-        dom::append_html(&body_id, &super::templates::out_of_credits_card().into_string());
+        dom::append_html(
+            &body_id,
+            &super::templates::out_of_credits_card(!crate::app::is_visitor()).into_string(),
+        );
     } else {
         let bubble = if stale_token {
             format!(

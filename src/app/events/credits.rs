@@ -51,6 +51,12 @@ pub(crate) async fn refresh_fund_banner() {
 
 /// Flip platform-credits vs BYOK, persist it, and repaint the section.
 pub(super) fn run_set_model_access(mode: String) {
+    // BYOK is owner/admin-only (on-chain #60.2): a public visitor can't switch
+    // someone else's agent onto their own key. (The button is also hidden from
+    // visitors; this is the matching dispatch-layer guard.)
+    if mode == "byok" && crate::app::is_visitor() {
+        return;
+    }
     if let Some(storage) =
         web_sys::window().and_then(|w| w.local_storage().ok().flatten())
     {

@@ -155,6 +155,16 @@ pub(super) fn reset_tool_allowlist_pressed() {
 
 /// Save the API key from the centered modal, then dismiss the modal.
 pub(super) fn save_api_key_pressed() {
+    // BYOK is owner/admin-only (on-chain #60.2): refuse a key from a public
+    // visitor on someone else's agent. (The modal is also withheld from
+    // visitors; this is the matching dispatch-layer guard.)
+    if crate::app::is_visitor() {
+        dom::swap_inner(
+            "api-key-msg",
+            "<span style=\"color:var(--error)\">only the owner can set a key</span>",
+        );
+        return;
+    }
     let Some(input) = dom::input_by_id("api-key-input") else { return };
     let value = input.value().trim().to_string();
     if value.is_empty() {

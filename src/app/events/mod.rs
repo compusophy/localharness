@@ -669,6 +669,12 @@ pub(crate) fn install_delegated_listeners(doc: &Document) -> Result<(), JsValue>
     Ok(())
 }
 
+thread_local! {
+    /// Last visual-viewport height seen by the keyboard fix, so a SHRINK
+    /// (the keyboard opening) can be told from a grow/scroll. 0 = unseen.
+    static PREV_VV_HEIGHT: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+}
+
 /// Mobile soft-keyboard fix (FB#9). When the on-screen keyboard opens,
 /// `dvh`/`vh` do NOT shrink (they track browser chrome, not the IME), so
 /// the full-height `#root` grows taller than the visible area and the
@@ -715,6 +721,19 @@ fn install_keyboard_viewport_fix() {
             let _ = html.class_list().remove_1("lh-kb");
             let _ = style.remove_property("--lh-vh");
             let _ = style.remove_property("--lh-vv-top");
+        }
+
+        // Keyboard JUST opened (visible viewport shrank meaningfully since the
+        // last reading) → re-anchor the transcript to its bottom so the latest
+        // message rides up ABOVE the keyboard instead of being covered by it
+        // (on-chain #58). visualViewport.height shrinks on BOTH iOS and Android
+        // when the IME appears, so this is platform-neutral and does not depend
+        // on the iOS-only `occluded` heuristic above. Gated on a real shrink so
+        // scrolling up to read history while the keyboard is open is never yanked
+        // back to the bottom.
+        let prev = PREV_VV_HEIGHT.with(|c| c.replace(visible_h));
+        if prev > 0.0 && prev - visible_h > 120.0 {
+            dom::scroll_to_bottom("transcript");
         }
     };
 

@@ -207,16 +207,23 @@ pub(crate) fn site_header(_host: &Host) -> Markup {
                 h1.header-brand {
                     details.brand-menu {
                         summary.brand-summary aria-label="localharness menu" title="localharness" { (lh_glyph()) }
+                        // A vertical list of three SQUARE icon buttons (home /
+                        // github / crab), each one --ctrl-box tall like the rest
+                        // of the chrome (on-chain #59). Tapping the lh summary
+                        // toggles it open/closed (native <details>).
                         nav.brand-menu-items {
                             // Absolute apex URL, NOT "/": a relative home on a
                             // subdomain (esp. an installed PWA scoped to that
                             // subdomain) trapped the user there. Home is the
                             // apex — the user's subdomain list + create (krafto #220).
-                            a href="https://localharness.xyz/" { "home" }
-                            a href="https://github.com/compusophy/localharness"
-                                target="_blank" rel="noopener" { "repo" }
-                            a href="https://crates.io/crates/localharness"
-                                target="_blank" rel="noopener" { "crate" }
+                            a.brand-icon-btn href="https://localharness.xyz/"
+                                title="home" aria-label="home" { (crate::landing::home_glyph()) }
+                            a.brand-icon-btn href="https://github.com/compusophy/localharness"
+                                target="_blank" rel="noopener"
+                                title="github" aria-label="github repo" { (crate::landing::github_glyph()) }
+                            a.brand-icon-btn href="https://crates.io/crates/localharness"
+                                target="_blank" rel="noopener"
+                                title="crates.io" aria-label="rust crate" { (crate::landing::crab_glyph()) }
                         }
                     }
                 }
@@ -375,7 +382,10 @@ pub(crate) fn fund_banner_body() -> Markup {
 /// styled, monochrome, reusing already-wired data-actions: buy `$LH`, open the
 /// account panel (redeem a code / open a session), or switch to your own key.
 /// No raw error text, no rule prose.
-pub(crate) fn out_of_credits_card() -> Markup {
+///
+/// `allow_byok` hides the "use my own key" button from public visitors — BYOK is
+/// owner/admin-only (on-chain #60.2); the verified owner still sees it.
+pub(crate) fn out_of_credits_card(allow_byok: bool) -> Markup {
     html! {
         div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;\
                     padding:8px 10px;\
@@ -383,8 +393,10 @@ pub(crate) fn out_of_credits_card() -> Markup {
                     font-size:12px;color:var(--muted)" {
             span style="flex-basis:100%" { "out of $LH for this origin — top up to keep chatting" }
             button type="button" data-action="buy-lh" .ghost { "buy $LH" }
-            button type="button" data-action="header-admin-toggle" .ghost { "redeem / open session" }
-            button type="button" data-action="set-model-access" data-arg="byok" .ghost { "use my own key" }
+            button type="button" data-action="header-admin-toggle" .ghost { "redeem" }
+            @if allow_byok {
+                button type="button" data-action="set-model-access" data-arg="byok" .ghost { "use my own key" }
+            }
         }
     }
 }
@@ -806,7 +818,10 @@ pub(crate) fn tool_call_block(seg_id: u32, call: &ToolCall) -> Markup {
                 div id=(result_id) {}
             }
         }
-        div id=(card_id) {}
+        // Card slot — empty for most tools. `.tc-card-slot:empty { display:none }`
+        // keeps an empty slot OUT of the body's flex flow so it can't inject a
+        // phantom inter-block gap UNDER the folded tool pill (on-chain #60.1).
+        div id=(card_id) .tc-card-slot {}
     }
 }
 

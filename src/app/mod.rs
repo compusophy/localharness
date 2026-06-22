@@ -1151,8 +1151,22 @@ pub(crate) async fn paint_signer() {
     }
 }
 
+/// True when this device is browsing an agent it does NOT own — a public
+/// visitor (the on-chain owner exists but our signer recovered to a different
+/// address). BYOK / key entry is owner-and-admin-only (on-chain #60.2): a
+/// visitor must never point someone else's agent at their own key. The owner
+/// (`Verified`), local dev (`Host::Other` → `Pending`), and fresh onboarding are
+/// all non-visitors, so this gate leaves them untouched.
+pub(crate) fn is_visitor() -> bool {
+    APP.with(|cell| matches!(cell.borrow().verify_state, VerifyState::Visitor { .. }))
+}
+
 /// Show the API key modal if it isn't already in the DOM.
 pub(crate) fn show_api_key_modal() {
+    // BYOK is not offered to public visitors (on-chain #60.2).
+    if is_visitor() {
+        return;
+    }
     let Ok(doc) = dom::document() else { return };
     if doc.get_element_by_id("api-key-modal").is_some() {
         return;

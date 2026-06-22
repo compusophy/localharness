@@ -138,6 +138,56 @@ pub(crate) fn wrench_glyph() -> Markup {
     }
 }
 
+/// Brand-menu glyph — HOME. A lucide "house" in the same monochrome stroke
+/// envelope as the bug/settings glyphs. Backs the first square in the brand
+/// dropdown (links to the apex). ONE source so any native replica matches.
+pub(crate) fn home_glyph() -> Markup {
+    html! {
+        (maud::PreEscaped(
+            "<svg viewBox=\"0 0 24 24\" width=\"15\" height=\"15\" fill=\"none\" \
+             stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" \
+             stroke-linejoin=\"round\" aria-hidden=\"true\">\
+             <path d=\"m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z\"/>\
+             <path d=\"M9 22V12h6v10\"/></svg>",
+        ))
+    }
+}
+
+/// Brand-menu glyph — GITHUB. The octocat mark as a single stroke path, same
+/// envelope as the other brand glyphs. Backs the repo square.
+pub(crate) fn github_glyph() -> Markup {
+    html! {
+        (maud::PreEscaped(
+            "<svg viewBox=\"0 0 24 24\" width=\"15\" height=\"15\" fill=\"none\" \
+             stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" \
+             stroke-linejoin=\"round\" aria-hidden=\"true\">\
+             <path d=\"M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 \
+             6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 \
+             2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 \
+             5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22\"/></svg>",
+        ))
+    }
+}
+
+/// Brand-menu glyph — RUST CRAB (Ferris). A compact stroke crab — domed shell,
+/// two eye-stalks, two side claws, four legs — matching the line-art envelope of
+/// the other glyphs. Backs the crates.io square (the Rust mascot).
+pub(crate) fn crab_glyph() -> Markup {
+    html! {
+        (maud::PreEscaped(
+            "<svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" \
+             stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" \
+             stroke-linejoin=\"round\" aria-hidden=\"true\">\
+             <path d=\"M7 14a5 3 0 0 0 10 0 5 3 0 0 0-10 0Z\"/>\
+             <path d=\"M10 11.3V9.7\"/><path d=\"M14 11.3V9.7\"/>\
+             <path d=\"M6.5 13C5 13 4 12 3.4 11\"/><path d=\"M3.4 8.6 3 11l2.3.4\"/>\
+             <path d=\"M17.5 13C19 13 20 12 20.6 11\"/><path d=\"M20.6 8.6 21 11l-2.3.4\"/>\
+             <path d=\"M8.5 16 7 18.5\"/><path d=\"M11 16.6 10 19.2\"/>\
+             <path d=\"M13 16.6 14 19.2\"/><path d=\"M15.5 16 17 18.5\"/></svg>",
+        ))
+    }
+}
+
 /// The name-claim form — the SAME control on the fresh front door and the
 /// authed apex (one component, no per-page divergence). `#apex-input` (live
 /// availability check, wired in the delegated input handler) and `#create-btn`
@@ -356,7 +406,15 @@ mod tests {
     /// here so the warning signal stays meaningful AND the markup is guarded.
     #[test]
     fn status_glyphs_and_ios_notice_render() {
-        for svg in [play_glyph(), brain_glyph(), wave_glyph(), wrench_glyph()] {
+        for svg in [
+            play_glyph(),
+            brain_glyph(),
+            wave_glyph(),
+            wrench_glyph(),
+            home_glyph(),
+            github_glyph(),
+            crab_glyph(),
+        ] {
             assert!(svg.into_string().contains("<svg"));
         }
         assert!(ios_unavailable().into_string().contains("not available on iOS"));

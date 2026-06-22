@@ -283,6 +283,11 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
 .feedback-bug-btn,
 .admin-button,
 .terminal-action-btn { color: var(--accent); }
+/* The brand dropdown is now a VERTICAL stack of three SQUARE icon buttons
+   (home / github / crab), each one --ctrl-box tall — the SAME footprint as the
+   lh summary above and the bell/cog to the right (on-chain #59). The squares
+   carry their own borders (like the header buttons), so the menu itself is a
+   bare transparent column spaced on the uniform chrome rhythm. */
 .brand-menu-items {
   position: absolute;
   top: 100%;
@@ -291,22 +296,30 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
      that spaces the header buttons from the chrome edges) — matches the bell
      panel so all header dropdowns share one rhythm. */
   margin-top: var(--chrome-pad);
-  min-width: 140px;
   z-index: var(--z-menu);
   display: flex;
   flex-direction: column;
+  /* Uniform brand spacing between the squares — the same chrome unit that
+     separates the header's own icon buttons (.header-admin gap). */
+  gap: var(--chrome-pad);
+  background: transparent;
+  border: 0;
+}
+/* Each menu entry is a square icon button matching .brand-summary / the header
+   chrome buttons: --ctrl-box box, centred glyph, own border, accent line-art. */
+.brand-menu-items .brand-icon-btn {
+  width: var(--ctrl-box);
+  height: var(--ctrl-box);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
   background: var(--bg);
   border: 1px solid var(--border);
+  transition: color 90ms ease, border-color 90ms ease;
 }
-.brand-menu-items a {
-  padding: 8px 12px;
-  font-size: 0.8rem;
-  letter-spacing: 0.08em;
-  text-transform: lowercase;
-  border-bottom: 1px solid var(--border);
-}
-.brand-menu-items a:last-child { border-bottom: none; }
-.brand-menu-items a:hover { background: var(--border); }
+.brand-menu-items .brand-icon-btn:hover { border-color: var(--fg); }
+.brand-menu-items .brand-icon-btn svg { display: block; }
 
 /* Header utility buttons — feedback (insect glyph) + admin sit side
    by side at the right of the header. Fixed min-width so the text
@@ -1914,6 +1927,16 @@ button.ready:hover {
 /* Empty segments (opened after a tool call but never written to) reserve no
    space — flex `gap` does NOT count a display:none child. */
 .turn.assistant .body .text-segment:empty { display: none; }
+/* Same trick for the tool-call CARD slot: most tools emit no inline card, so the
+   slot div stays empty — but an empty flex item STILL gets a `gap` on each side,
+   doubling the space under the folded pill ("too much space under tool cards",
+   on-chain #60.1). Drop the empty slot from flow; when a card fills it, it
+   becomes non-empty and the single flex `gap` spaces it like any other block. */
+.turn .body > .tc-card-slot:empty { display: none; }
+/* A PRESENT card already gets the body's flex `gap` above + below (the slot is a
+   flex item) — so the inline card itself must not ALSO carry a margin, or the two
+   stack and double again. The flex gap is the SSOT. */
+.turn .body .tc-card-slot .inline-card { margin: 0; }
 
 /* Inline tool-call blocks inside an assistant turn. */
 .tool-call {
