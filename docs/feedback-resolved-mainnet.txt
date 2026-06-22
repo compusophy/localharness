@@ -181,3 +181,21 @@
 #            as SYSTEM-PROMPT GUIDANCE only — no hard enforcement (publish can still
 #            target MAIN; no auto-subdomain allocation). Enforcement = a follow-up.
 #            Pending the user's in-browser confirmation.
+#
+# --- 2026-06-22 wave 2 (commits 5fac48b + 83b661b, web bundle c51e3a182003) --
+52b 83b661b  PART 2 BEHAVIOR (user-directed): create_and_publish_app is now
+#            OWNERSHIP-AWARE — new name -> register+publish (fresh subdomain), a name
+#            you OWN -> UPDATE in place (no re-register/dup), someone else's -> refuse;
+#            a new app can't silently overwrite MAIN (result gains `updated`). New
+#            `publish_app_to(name, source, confirmation)` tool updates ANY owned
+#            subdomain from your MAIN session (typed-confirm gated, main-agent only).
+#            bashlite (CLI `sh`): `lh-list-mine` + `lh-publish <name> <src>` behind the
+#            dry-run gate, so `for s in $(lh-list-mine); do lh-publish $s app.rl; done`
+#            updates all your subdomains from MAIN. Chose composable bashlite over an
+#            actor model (you own the NFTs, sign directly). Deployed; pending visual check.
+37  5fac48b  string/bytes DYNAMIC TYPES now shipped (the headline): storage (canonical
+#            short/long Solidity layout) + params (calldata decode) + returns (ABI
+#            encode), all gated by the minimal-EVM-interpreter diff-harness (which
+#            caught 2 real codegen bugs). STILL DEFERRED: string[]/bytes[], runtime
+#            (non-literal) dynamic storage writes, mappings-to-dynamic, dynamic event
+#            args — all error cleanly (TYPE_MISMATCH/UNSUPPORTED) rather than miscompile.

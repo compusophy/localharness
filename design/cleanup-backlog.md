@@ -111,9 +111,13 @@ Five worktree-isolated agents on disjoint trees; cherry-picked + re-verified on 
   return Ok(None) not Err on a malformed <64-byte RPC response — untested edge, benign.)
 - [x] **§7 backend shared code** — `src/backends/state.rs` (`LoopState<M>` + history
   codecs + cross-provider transcript-projection tests). Behavior-preserving.
-- [x] **#37 soliditylite** — minimal EVM-subset interpreter (no revm) + `.pop()`/`delete arr[i]`.
-- [x] **#50 / #52** — notify-on-send_lh + inline-default cartridge embed; web deployed,
-  PENDING the user's in-browser visual confirmation (see feedback-resolved-mainnet.txt).
+- [x] **#37 soliditylite** — minimal EVM-subset interpreter (no revm) + `.pop()`/`delete arr[i]`,
+  then (wave 2) dynamic **string/bytes** storage+params+returns (harness caught 2 codegen bugs).
+  Deferred: string[]/bytes[], runtime dynamic writes, mappings-to-dynamic (all error cleanly).
+- [x] **#50 / #52** — notify-on-send_lh + inline-default cartridge embed (wave 1); then (wave 2)
+  ownership-aware `create_and_publish_app` (update-in-place for owned), `publish_app_to` +
+  bashlite `lh-list-mine`/`lh-publish` for update-from-MAIN (composable, not actor-model).
+  Web deployed (bundle c51e3a182003), PENDING the user's in-browser visual confirmation.
 
 KNOWN PRE-EXISTING (not introduced): `cargo test --no-default-features --features openai`
 fails to compile (openai test modules + `start_subagent.rs` reference native-only
