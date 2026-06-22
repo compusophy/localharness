@@ -96,15 +96,28 @@ lands. Append as cruft is found; clear lines as removed.
   (`.ghost` is heavily used + the real `.ghost.active` rule stays). Rides the next
   web deploy (no functional change).
 
-## Needs a product decision (flagged, NOT auto-resolved)
+## Done — structural refactors + features (parallel workflow, 2026-06-22)
 
-- [ ] **Pricing default drift (possible billing bug).** `proxy/api/_prices.ts`
-  defaults `COST_PER_REQUEST_WEI` to **1 $LH** but `fetch.ts`, `notify.ts`, and
-  `scheduler.ts` each default to **0.01 $LH** — and `main.rs`/`proxy/README.md`
-  disagree too. In prod these are likely all env-overridden, but the code defaults
-  are inconsistent. Fix = one shared `_metering.ts` table, but the *value* (are
-  fetch/notify 1 or 0.01?) is a billing call — needs the user, not a 4am guess.
-  Full analysis: `design/tech-debt-unused-code-report-2026-06-21.md` §1.
+Five worktree-isolated agents on disjoint trees; cherry-picked + re-verified on main
+(full `audit-tech-debt.sh` 7/7 + `verify.sh` 10/10 green), then deployed.
+- [x] **§1 pricing (DECIDED: 1 $LH floor)** — `fetch.ts`/`notify.ts`/`scheduler.ts`
+  now import `COST_PER_REQUEST_WEI` from `_prices.ts` (default 1 $LH), not an inline
+  0.01 default. One source; env override still wins. Proxy deployed.
+- [x] **§5 proxy auth/meter dedup** — extracted `proxy/api/_auth.ts` (CORS, personal-
+  sign recovery + freshness, ethCall, creditOf, meterDebit); routes import it. −683 LOC.
+  Behavior-parity tests added (21 cases). Proxy deployed. Recommend a live credit-path smoke.
+- [x] **§6 registry ABI dedup** — shared encode/decode helpers in `abi.rs`; −137 LOC,
+  all calldata-layout tests green. (Minor: owner_of_name/tba_of_name/tba_of_token_id now
+  return Ok(None) not Err on a malformed <64-byte RPC response — untested edge, benign.)
+- [x] **§7 backend shared code** — `src/backends/state.rs` (`LoopState<M>` + history
+  codecs + cross-provider transcript-projection tests). Behavior-preserving.
+- [x] **#37 soliditylite** — minimal EVM-subset interpreter (no revm) + `.pop()`/`delete arr[i]`.
+- [x] **#50 / #52** — notify-on-send_lh + inline-default cartridge embed; web deployed,
+  PENDING the user's in-browser visual confirmation (see feedback-resolved-mainnet.txt).
+
+KNOWN PRE-EXISTING (not introduced): `cargo test --no-default-features --features openai`
+fails to compile (openai test modules + `start_subagent.rs` reference native-only
+`NativeFilesystem`). Niche config; `--all-features` (which has native) is clean.
 
 ## Reference
 

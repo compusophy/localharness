@@ -112,6 +112,15 @@
 #     ~dozen opcodes soliditylite emits) would gate codegen in `cargo test`. That's
 #     a focused next project + a dev-dependency choice — flagged for the user, not
 #     done blind in a cron tick (a miscompile = a faulty on-chain facet).
+#     UPDATE 2026-06-22 (commit b0b82e2): user chose the MINIMAL INTERPRETER (no
+#     revm). Built src/soliditylite/interp.rs — a pure dependency-free EVM-subset
+#     interpreter, bootstrap-verified against EVERY shipped feature (const getter,
+#     mapping, require, arithmetic, array push/[i]/.length, emit->LOG). Then shipped
+#     two deferred ops: `.pop()` + `delete arr[i]` for dynamic uint256[]/address[]
+#     storage, with diff-harness tests. STILL DEFERRED: string/bytes storage,
+#     dynamic params, dynamic storage returns, nested/struct element types (each now
+#     safely buildable on the new harness). MUL/DIV/MOD interp is low-128-bit
+#     (bounded test values) — full 256-bit if a feature ever needs it.
 #
 # --- 2026-06-21 feedback #48-#49 (chat-UX session) --------------------------
 48  d0ffa91  reverted the read-from-top scroll back to standard bottom-following
@@ -156,3 +165,19 @@
 #            escrow (cancelJob is owner-gated on-chain). The request — "a cancel_task
 #            tool so agents can tear down schedules without the admin UI" — is met
 #            exactly. (Was done in code but never marked resolved here.)
+#
+# --- 2026-06-22 parallel workflow (commit e24a2ee, web bundle d69aa57e42db) --
+50  e24a2ee  RESOLVED + DEPLOYED: send_lh (and batch_send_lh) now fire a best-effort
+#            notify to the RECIPIENT on a settled transfer ("+<amt> $LH received",
+#            sender-stamped) via notify_cross_agent — no new transfer-watch system,
+#            just bundled into the send as the user asked. CAVEAT: the proxy /notify
+#            routes to a NAME, so a raw-0x recipient is notified only if it has a
+#            MAIN identity. Pending the user's in-browser confirmation.
+52  e24a2ee  PART 1 RESOLVED + DEPLOYED: cartridges/apps now render INLINE in the
+#            chat transcript by default (live canvas card) with a [fullscreen] button
+#            to relaunch into the overlay — no longer auto-fullscreen (run_wasm_reporting
+#            renders inline; Action::RunInDisplay relaunches). PART 2 (MAIN as
+#            customizable homepage + new apps default to separate subdomains) shipped
+#            as SYSTEM-PROMPT GUIDANCE only — no hard enforcement (publish can still
+#            target MAIN; no auto-subdomain allocation). Enforcement = a follow-up.
+#            Pending the user's in-browser confirmation.
