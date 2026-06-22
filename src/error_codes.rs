@@ -526,6 +526,8 @@ pub fn classify(s: &str) -> Option<u16> {
         || l.contains("spending cap")
         || l.contains("spend cap")
         || l.contains("too many requests")
+        || l.contains("quota")
+        || l.contains("overloaded")
     {
         return Some(BACKEND_RATE_LIMIT);
     }
@@ -656,6 +658,8 @@ mod tests {
     fn classify_maps_common_backend_errors() {
         assert_eq!(classify("gemini HTTP 429 Too Many Requests"), Some(BACKEND_RATE_LIMIT));
         assert_eq!(classify("status: RESOURCE_EXHAUSTED, spending cap"), Some(BACKEND_RATE_LIMIT));
+        assert_eq!(classify("exceeded your quota"), Some(BACKEND_RATE_LIMIT));
+        assert_eq!(classify("the model is overloaded"), Some(BACKEND_RATE_LIMIT));
         assert_eq!(classify("HTTP 401 Unauthorized: bad API key"), Some(BACKEND_AUTH));
         assert_eq!(classify("PERMISSION_DENIED"), Some(BACKEND_AUTH));
         assert_eq!(classify("402 Payment Required: no $LH"), Some(BACKEND_CREDITS));

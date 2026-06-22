@@ -2674,9 +2674,25 @@ pub(crate) fn notif_list_panel(
                 @for (title, body) in items {
                     div.notif-item {
                         div.notif-item-title { (title) }
-                        div.notif-item-body { (body) }
+                        div.notif-item-body { (notif_body(body)) }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Render a bell-notification body, turning any `http(s)://…` token into a
+/// clickable link (bodies are otherwise plain escaped text). Keeps version-bump /
+/// feedback-resolved notes' changelog URLs tappable instead of dead text.
+fn notif_body(body: &str) -> Markup {
+    html! {
+        @for (i, tok) in body.split(' ').enumerate() {
+            @if i > 0 { " " }
+            @if tok.starts_with("https://") || tok.starts_with("http://") {
+                a href=(tok) target="_blank" rel="noopener" { (tok) }
+            } @else {
+                (tok)
             }
         }
     }

@@ -57,6 +57,23 @@ thread_local! {
     /// Set by the `compact_context` tool; drained post-turn like
     /// `PENDING_CLEAR`.
     static PENDING_COMPACT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// `Date::now()` at the start of the user's send — the origin for the phase
+    /// benchmark (see `run_send` / `stream_turn`). Lets `stream_turn` report
+    /// time-to-first-output without threading a timestamp through every call.
+    static TURN_T0: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+    /// One-shot guard so the TTFT line logs once per turn (the stream loop runs
+    /// many iterations).
+    static TTFT_LOGGED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Emit a phase-benchmark line to BOTH the console (desktop devtools) and the
+/// `?debug=1` breadcrumb overlay (mobile, which has no console) — so the
+/// "why is `starting` slow" question gets real per-phase numbers. Cheap
+/// (one `Date::now()` + a format) and always on; the line is prefixed `perf:`.
+fn perf_log(msg: &str) {
+    let line = format!("perf: {msg}");
+    web_sys::console::log_1(&wasm_bindgen::JsValue::from_str(&line));
+    crate::app::debuglog::log(&line);
 }
 
 /// Schedule a full context clear for when the in-flight turn ends — set by
@@ -130,6 +147,12 @@ pub(crate) async fn run_send() {
         return;
     }
 
+    // ── phase benchmark (perf:) ── t0 is the origin for every phase delta; the
+    // TTFT line in `stream_turn` reads it back. Resets the one-shot TTFT guard.
+    let t0 = js_sys::Date::now();
+    TURN_T0.with(|c| c.set(t0));
+    TTFT_LOGGED.with(|c| c.set(false));
+
     let access = match resolve_credit_access().await {
         Some(a) => a,
         None => {
@@ -137,10 +160,17 @@ pub(crate) async fn run_send() {
             return;
         }
     };
-    // Credits mode (base_url set): top up the per-request meter so the proxy
-    // bills real `$LH` per call (NOT a free session). Silent best-effort.
+    let t_credit = js_sys::Date::now();
+    // Credits mode (base_url set): top up the per-request meter from any WALLET
+    // $LH — but in the BACKGROUND. This was `.await`ed on every turn, adding a
+    // `token_balance_of` RPC round-trip to the "starting" phase for nothing: the
+    // common case is a meter-funded user whose wallet is 0, so the read just
+    // returns. The bridge itself only fires a TX when the wallet actually holds
+    // $LH, and ONE deposit drains it to 0 — so it is at most once per funding
+    // event, NEVER per turn (and redeem/buy already bridge synchronously on their
+    // own paths). Fire-and-forget so the turn doesn't wait on the read.
     if access.base_url.is_some() {
-        ensure_credit_meter().await;
+        wasm_bindgen_futures::spawn_local(ensure_credit_meter());
     }
     let key = access.cfg_auth;
 
@@ -248,12 +278,21 @@ pub(crate) async fn run_send() {
     });
     if session_needs_start {
         stage::enter(crate::turn_stage::Stage::Starting);
+        let t_boot = js_sys::Date::now();
         if let Err(err) = start_session(&key, access.base_url.clone(), &access.identity).await {
             fail_pending_turn(assistant_turn_id, &format!("session start failed: {err:?}"));
             dom::set_status("session start failed — see the message above", true);
             return;
         }
+        perf_log(&format!("session boot {} ms (once per session)", (js_sys::Date::now() - t_boot) as u64));
     }
+    // Pre-model client work done; the rest of the wait is the proxy + model.
+    perf_log(&format!(
+        "pre-model {} ms (credit-access {} ms; session {})",
+        (js_sys::Date::now() - t0) as u64,
+        (t_credit - t0) as u64,
+        if session_needs_start { "booted (see above)" } else { "reused" },
+    ));
 
     let Some(agent) = APP.with(|cell| cell.borrow().agent.clone()) else {
         fail_pending_turn(assistant_turn_id, "internal: agent not set after start_session");
@@ -570,6 +609,14 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
     let mut saw_question = false; // the model called `ask_question` (blocking)?
     let mut saw_thinking = false; // any reasoning deltas streamed this turn?
 
+    // STATUS: the instant the request goes to the model, show THINKING — it fills
+    // the formerly-BLANK gap between send (or `starting`) and the first chunk (the
+    // model is connecting + reasoning, no output yet). Previously `Thinking` was
+    // entered ONLY when a reasoning delta arrived, so that whole network+TTFT wait
+    // had no stage and the cue/glyph went blank (user feedback: the blank step
+    // should read as thinking). A real reasoning delta below re-enters Thinking (a
+    // no-op) and sets `saw_thinking`; a text-first reply just moves on to Streaming.
+    stage::enter(crate::turn_stage::Stage::Thinking);
     let response = match agent.chat(prompt).await {
         Ok(r) => r,
         Err(err) => {
@@ -580,6 +627,15 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
     let mut cursor = response.chunks();
 
     while let Some(item) = cursor.next().await {
+        // First output of the turn → log time-to-first-output (the user-perceived
+        // "starting" duration: pre-model client work + proxy gate + model TTFT).
+        // One-shot per send (the guard is reset in `run_send`).
+        if !TTFT_LOGGED.with(|c| c.replace(true)) {
+            let t0 = TURN_T0.with(|c| c.get());
+            if t0 > 0.0 {
+                perf_log(&format!("ttft {} ms (send to first output)", (js_sys::Date::now() - t0) as u64));
+            }
+        }
         // Honor a stop request (checked per chunk — cooperative).
         if TURN_CANCEL.with(|c| c.get()) {
             break;
@@ -882,9 +938,13 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
         ));
     }
     let looks_like_auth = code == Some(BACKEND_AUTH);
-    // The credit proxy 402s when there's no active session / no $LH for the
-    // signing address (LH3003). A provider 429/quota is LH3001, NOT this — so a
-    // throttled provider no longer mis-renders the out-of-credits card.
+    // A provider 429 / quota / spend-cap is the MODEL BACKEND rate-limiting us
+    // (LH3001) — NOT the user being out of $LH. classify() separates it from
+    // credits so a throttled provider no longer mis-renders the out-of-$LH card
+    // (real incident: 183 $LH, "can't send"). The visible branch below says so.
+    let looks_like_rate_limit = code == Some(crate::error_codes::BACKEND_RATE_LIMIT);
+    // The credit proxy 402s when there's genuinely no active session / no $LH for
+    // the signing address (LH3003) — the REAL out-of-$LH case only.
     let looks_like_credits = code == Some(BACKEND_CREDITS);
 
     // SELF-HEAL for "I have $LH but can't send": a VERIFIED OWNER whose master
@@ -923,7 +983,17 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
     // user) — the raw error is logged to the console for debugging only. Every
     // other failure keeps the escaped error bubble (its raw text is dev-facing).
     let body_id = format!("turn-body-{assistant_turn_id}");
-    if looks_like_credits {
+    if looks_like_rate_limit {
+        // The MODEL backend is over its quota / rate-limited — say so plainly so a
+        // funded user doesn't think their $LH vanished. A plain in-stream line (no
+        // card), with the next step. Raw error to the console for debugging.
+        web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(err));
+        dom::append_html(
+            &body_id,
+            "<div style=\"color:var(--muted)\">the model backend is over its quota right now — \
+             this is the shared model, not your $LH. retry in a moment, or switch model in settings.</div>",
+        );
+    } else if looks_like_credits {
         web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(err));
         dom::append_html(&body_id, &super::templates::out_of_credits_card().into_string());
     } else {
@@ -968,6 +1038,10 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
     } else if looks_like_auth {
         dom::set_status("API key rejected — check your Gemini key.", true);
         super::show_api_key_modal();
+    } else if looks_like_rate_limit {
+        // The in-stream line already explains it; clear the status line (no
+        // duplicate, and definitely not an out-of-$LH message).
+        dom::set_status("", false);
     } else if looks_like_credits {
         // The out-of-$LH CARD in the transcript already says it cleanly; a second
         // red status line under it was redundant noise (user feedback). Clear any
