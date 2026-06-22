@@ -1836,103 +1836,76 @@ button.ready:hover {
   margin-top: 24px;
   display: flex; flex-direction: column; gap: 4px;
 }
-/* SMS-rhythm turns (#A): the agent reads from the LEFT (accent rule on the
-   RIGHT edge), the user reads from the RIGHT (accent rule on the LEFT edge), so
-   the transcript alternates like a text thread. Role is differentiated by a
-   subtle BACKGROUND-SHADE step (monochrome — never color, never a rounded
-   bubble) plus which edge carries the 2px --fg rule. A hairline separator
-   (`.turn + .turn`) and ONE uniform top gap (--turn-gap) carry the inter-turn
-   rhythm — the SSOT, no flex `gap` stacked on top (transcript gap is 0). */
+/* === TURN SPACING — ONE SSOT SYSTEM (ground-up rewrite) ===================
+   Every turn body is a SQUARE box: equal padding on all four sides (one var,
+   --space-3 ≈ 12px). User and agent are PIXEL-IDENTICAL in spacing; the ONLY
+   per-role differences are which edge carries the 2px --fg rule, the bg-shade,
+   and the user's muted text colour.
+
+   Inter-block spacing inside a reply is the flex-column `gap` (a DELIBERATE
+   space), never a stray margin on a markdown element. `.body > * { margin: 0 }`
+   strips the browser-default <p>/<ul>/<h*> margins at the root, so no element
+   ever pushes the content down — the box stays square and the content reads as
+   vertically centred. No `> * + *` margin chains, no `:first-child` /
+   `:last-child` zeroing patches, no `:has()` collapse hacks. */
 .turn {
   background: transparent;
   border: 0;
-  /* The body's own padding (below) holds the text off the accent edge; the
-     vertical inset is one declared line of breathing room so the rule isn't
-     clipped. Inter-turn space is the top margin on the SECOND-and-later turns. */
   padding: 0;
   line-height: var(--line-tight);
 }
-/* ONE uniform unit of space + a hairline rule between consecutive turns — the
-   SSOT inter-turn rhythm. The first turn carries neither (it sits flush under
-   the floating header — see `main.layout .transcript > :first-child`). */
+/* ONE uniform unit of space + a hairline rule between consecutive turns. The
+   first turn carries neither (it sits flush under the floating header — see
+   `main.layout .transcript > :first-child`). */
 .turn + .turn {
   margin-top: var(--turn-gap);
   padding-top: var(--turn-gap);
   border-top: 1px solid var(--border);
 }
-/* USER reads from the RIGHT: accent rule on the LEFT edge, a hair-darker shade. */
-.turn.user {
-  border-left: 2px solid var(--fg);
-  background: var(--panel);
-}
-.turn.user .body { padding: 8px 12px; }
-/* AGENT reads from the LEFT: accent rule on the RIGHT edge, the bare-bg shade.
-   The right rule PULSES while the turn is in flight (#57). */
-.turn.assistant {
-  border-right: 2px solid var(--fg);
-  background: var(--panel-2);
-}
-.turn.assistant .body { padding: 8px 12px; }
 .turn .role { display: none; }
+/* SQUARE body: top = bottom = left = right, ONE value, role-INDEPENDENT. The
+   flex column turns inter-block spacing into a single `gap`; resetting every
+   child's margin (and nested text-segment children) is what makes that the
+   ONLY source of vertical rhythm. */
 .turn .body {
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--para-gap);
   word-break: break-word;
-  /* Tight line-height WITHIN a paragraph (the SSOT --line-tight). */
   line-height: var(--line-tight);
 }
-/* A slightly LARGER gap BETWEEN paragraphs of one reply (--para-gap) — the
-   second half of the SSOT rhythm. Markdown emits <p>/<ul>/<pre>/<blockquote>
-   blocks; give each a uniform top gap, then drop the first/last (handled below)
-   so a reply never carries leading/trailing dead space. */
-.turn .body > * + *,
-.turn .body .text-segment > * + * { margin-top: var(--para-gap); }
-/* Inline `code` in rendered markdown had no visual distinction — in a
-   monochrome UI backtick text was indistinguishable from prose, so
-   identifiers/paths/literals didn't read as code. A panel background +
-   1px border boxes it without color. Block code (`pre code`) opts out —
-   the <pre> is already styled. */
+.turn .body > *,
+.turn .body .text-segment,
+.turn .body .text-segment > * { margin: 0; }
+/* USER: accent rule on the RIGHT edge, a hair-darker shade, muted text. */
+.turn.user {
+  border-right: 2px solid var(--fg);
+  background: var(--panel);
+}
+.turn.user .body { white-space: pre-wrap; color: var(--muted); }
+/* AGENT: accent rule on the LEFT edge, the bare-bg shade. The left rule PULSES
+   while the turn is in flight (#57). */
+.turn.assistant {
+  border-left: 2px solid var(--fg);
+  background: var(--panel-2);
+}
+/* Inline `code` in rendered markdown gets a panel bg + 1px border so
+   identifiers/paths read as code in a monochrome UI. Block code opts out. */
 .turn .body code { background: var(--panel); border: 1px solid var(--border); padding: 1px 4px; }
 .turn .body pre code { background: none; border: 0; padding: 0; }
-/* A markdown code block (<pre>, default white-space:pre) expands to its
-   widest line and dragged the WHOLE transcript into a horizontal scroll on
-   narrow / mobile viewports (a long JSON line = sideways-scrolling the page).
-   Contain the overflow to the block itself: the code keeps its formatting and
-   scrolls internally, the transcript/page stays put. */
+/* A markdown code block (<pre>) expands to its widest line; contain the
+   overflow to the block so a long line scrolls internally, page stays put. */
 .turn .body pre { max-width: 100%; overflow-x: auto; }
-.turn.user .body { white-space: pre-wrap; color: var(--muted); }
-/* `pre-wrap` is ONLY correct while the turn STREAMS — the segment then
-   holds raw model text whose newlines must show. The instant streaming
-   ends the segment is replaced by block-level markdown HTML (and restored
-   history is markdown from the start), where pulldown-cmark's trailing /
-   inter-block "\n" text nodes would render as PHANTOM BLANK LINES under
-   pre-wrap (one full line-height of dead space below every reply, and
-   extra gaps between paragraphs — the long-standing "space under the
-   agent response"). Scope pre-wrap to `.streaming` so the final, rendered
-   turn uses normal whitespace and those literal newlines collapse. */
+/* `pre-wrap` is ONLY correct while the turn STREAMS — the segment then holds
+   raw model text whose newlines must show. The instant streaming ends the
+   segment becomes rendered markdown, where pulldown-cmark's trailing "\n" text
+   nodes would render as phantom blank lines under pre-wrap. Scope it to
+   `.streaming` so the final turn collapses those literal newlines. */
 .turn.assistant.streaming .body .text-segment { white-space: pre-wrap; }
-/* Empty segments (opened after a tool call but never written to)
-   must not reserve vertical space. */
+/* Empty segments (opened after a tool call but never written to) reserve no
+   space — flex `gap` does NOT count a display:none child. */
 .turn.assistant .body .text-segment:empty { display: none; }
-/* Markdown wraps short replies in <p>; drop the outer margins so a
-   one-line answer doesn't carry a blank line above/below it. */
-.turn .body > p:first-child, .turn .body .text-segment > p:first-child { margin-top: 0; }
-.turn .body > p:last-child, .turn .body .text-segment > p:last-child { margin-bottom: 0; }
-/* The `> p:first-child` rule above missed the case where the first rendered
-   element is a `.text-segment` (assistant turns wrap markdown in one) or any
-   non-<p> block (a list/pre/heading) — its top margin opened a dead gap inside
-   every bubble (the bottom was already flat). Zero the top margin of the ACTUAL
-   first rendered element so the body's top padding is symmetric with its
-   bottom. */
-.turn .body > *:first-child,
-.turn .body .text-segment:first-child > *:first-child { margin-top: 0; }
-/* A turn that ends on a tool call leaves that block as the last VISIBLE
-   element — the empty text-segment opened after it is hidden by the
-   :empty rule above. Its 8px bottom margin stacked onto the transcript
-   gap as extra trailing space (feedback #99). Collapse it ONLY when no
-   non-empty text-segment follows (so a tool-then-text turn keeps its
-   separation): `:has` checks for a later segment that actually has
-   content. Mirror for the leading edge. */
-.turn .body > .tool-call:first-child { margin-top: 0; }
-.turn .body > .tool-call:not(:has(~ .text-segment:not(:empty))) { margin-bottom: 0; }
 
 /* Inline tool-call blocks inside an assistant turn. */
 .tool-call {
@@ -1993,18 +1966,18 @@ button.ready:hover {
   0%, 100% { color: var(--muted); }
   50%      { color: var(--fg); }
 }
-/* #57 PULSING ACCENT — the agent turn's RIGHT rule (set above) swells in colour
+/* #57 PULSING ACCENT — the agent turn's LEFT rule (set above) swells in colour
    while the turn is in flight: from the moment the user sends, through the
    cycling header glyph, until the turn finishes (the `streaming` class is
-   removed by `mark_turn_done`). COLOR swell only (border-right-color), NOT
+   removed by `mark_turn_done`). COLOR swell only (border-left-color), NOT
    opacity — the SAME technique as turn-status-pulse / notif-bell-pulse so the
    bg + content stay solid (animating opacity faded whole chips, #51). */
 .turn.assistant.streaming {
   animation: turn-border-pulse 1.4s ease-in-out infinite;
 }
 @keyframes turn-border-pulse {
-  0%, 100% { border-right-color: var(--muted); }
-  50%      { border-right-color: #fff; }
+  0%, 100% { border-left-color: var(--muted); }
+  50%      { border-left-color: #fff; }
 }
 /* (The braille trailing `::after` spinner is retired — the #54 starting line,
    the #57 pulsing border, and the cycling header glyph are the working cues.) */
