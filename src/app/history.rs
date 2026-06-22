@@ -128,75 +128,108 @@ pub(crate) fn take_pending() -> Option<Vec<u8>> {
     APP.with(|cell| cell.borrow_mut().pending_history.take())
 }
 
-/// Paint a sequence of transcript entries into `#transcript` — tool calls
-/// first, then the text turn, per entry (matching live turn order). Does
-/// NOT clear `#transcript` first; the caller wipes it when replacing.
-/// Shared by [`load_into_pending`] (session restore) and the compact
-/// repaint in [`super::chat::run_send`] (collapse the visible scrollback
-/// into the post-compaction summary).
+/// Paint a sequence of transcript entries into `#transcript`. Each entry
+/// becomes EXACTLY ONE `.turn` whose body holds its tool-call blocks (with
+/// results and inline cards spliced in) followed by its text — the IDENTICAL
+/// structure to the live path, where `chat::mod` appends tool blocks and the
+/// text segment INTO the assistant turn body. Keeping the transcript's direct
+/// children all `.turn`s is what makes the inter-turn rhythm (the
+/// `.turn + .turn` margin and separator) match live; the earlier per-tool-call
+/// top-level `details` siblings broke that adjacency, so reloaded turns lost
+/// their spacing (#8). Does NOT clear `#transcript` first; the caller wipes it
+/// when replacing. Shared by `load_into_pending` (session restore) and the
+/// compact repaint in `chat::run_send`.
 pub(crate) fn paint_entries(entries: &[crate::types::TranscriptEntry]) {
     for entry in entries {
-        // Render tool calls before the assistant text (they happened
-        // during the turn, so showing them first matches the live order).
+        // Tool blocks for this turn, concatenated as the body's leading HTML —
+        // they happened during the turn, so they precede the text (live order).
+        let mut body_html = String::new();
         for tc in &entry.tool_calls {
-            let seg_id = APP.with(|cell| cell.borrow_mut().alloc_id());
-            let call = crate::types::ToolCall {
-                name: tc.name.clone(),
-                id: None,
-                args: tc.args.clone(),
-                canonical_path: None,
-            };
-            let mut block = templates::tool_call_block(seg_id, &call).into_string();
-            if tc.result.is_some() || tc.error.is_some() {
-                // Inject the recorded result inline. The live path targets the
-                // empty `#tool-{id}-result` div by id with `swap_inner`, but on
-                // replay the whole block is appended at once (the div isn't in
-                // the DOM yet), so we splice the result HTML into the rendered
-                // string by matching the unique empty result slot. Both the
-                // block and the result HTML are maud-escaped, so this is a
-                // string splice of two already-safe fragments — no XSS surface.
-                let result = crate::types::ToolResult {
-                    name: tc.name.clone(),
-                    id: None,
-                    result: tc.result.clone(),
-                    error: tc.error.clone(),
-                };
-                let result_html = templates::tool_call_result(&result).into_string();
-                block = inject_result(&block, seg_id, &result_html);
-                // Inline result card (file / directory / display outputs) —
-                // the SAME renderer the live path uses, so a replayed
-                // transcript looks like the live one. No framebuffer
-                // thumbnail on replay (the pixels are gone): the display
-                // card replays as the marker + [show].
-                if let Some(card) =
-                    templates::inline_result_card(&tc.name, &tc.args, &result, None)
-                {
-                    block = inject_card(&block, seg_id, &card.into_string());
-                }
+            // `finish` is an internal completion control — its receipt card is a
+            // pure artifact the live path never paints (chat/mod.rs). Skip it on
+            // replay too, or a reloaded transcript sprouts a phantom "finish"
+            // card the live session never showed.
+            if tc.name == "finish" {
+                continue;
             }
-            // A tool with neither result nor error was in-flight when the
-            // session ended; it replays with an empty result slot, matching the
-            // live "no result yet" state — nothing to inject.
-            dom::append_html("transcript", &block);
+            body_html.push_str(&render_tool_block(tc));
         }
 
-        // Render the text turn (skip empty text-only entries that were
-        // tool-call-only turns, and the internal nudges (auto-continue /
-        // truncated-retry) — they never paint as bubbles live, so replay
-        // must not either).
+        // The text segment. Skip the internal nudges (auto-continue /
+        // truncated-retry) — they never paint as bubbles live, so replay must
+        // not either. The live assistant body wraps its final markdown in a
+        // `.text-segment`; mirror that so the `:first-child` / `:empty` rules
+        // behave identically. User text is the raw value (escaped by maud).
         let is_nudge = matches!(entry.role, TranscriptRole::User)
             && super::chat::is_internal_nudge(&entry.text);
-        if !entry.text.is_empty() && !is_nudge {
-            let turn_id = APP.with(|cell| cell.borrow_mut().alloc_id());
-            let role = entry.role.as_str();
-            let body = match entry.role {
-                TranscriptRole::User => html! { (entry.text) },
-                TranscriptRole::Assistant => templates::rendered_markdown(&entry.text),
-            };
-            let html_str = templates::turn(turn_id, role, body, false).into_string();
-            dom::append_html("transcript", &html_str);
+        let has_text = !entry.text.is_empty() && !is_nudge;
+        if has_text {
+            match entry.role {
+                TranscriptRole::User => {
+                    body_html.push_str(&html! { (entry.text) }.into_string())
+                }
+                TranscriptRole::Assistant => body_html.push_str(
+                    &html! { div.text-segment { (templates::rendered_markdown(&entry.text)) } }
+                        .into_string(),
+                ),
+            }
+        }
+
+        // A turn with neither tool blocks nor text (a pure tool-only entry whose
+        // only tool was `finish`, or an empty entry) has nothing to show — the
+        // live path removes such bubbles, so replay must not paint one either.
+        if body_html.is_empty() {
+            continue;
+        }
+
+        let turn_id = APP.with(|cell| cell.borrow_mut().alloc_id());
+        let html_str = templates::turn(
+            turn_id,
+            entry.role.as_str(),
+            maud::PreEscaped(body_html),
+            false,
+        )
+        .into_string();
+        dom::append_html("transcript", &html_str);
+    }
+}
+
+/// Render ONE replayed tool-call block (pill + spliced result + optional inline
+/// card) as an HTML string. The live path targets the empty `#tool-{id}-result`
+/// / `#tool-{id}-card` divs by id with `swap_inner`, but on replay the whole
+/// block is built at once (the divs aren't in the DOM yet), so the recorded
+/// result/card HTML is spliced into the unique empty slots. Every fragment is
+/// maud-escaped, so this is a string splice of already-safe HTML — no XSS.
+fn render_tool_block(tc: &crate::types::TranscriptToolCall) -> String {
+    let seg_id = APP.with(|cell| cell.borrow_mut().alloc_id());
+    let call = crate::types::ToolCall {
+        name: tc.name.clone(),
+        id: None,
+        args: tc.args.clone(),
+        canonical_path: None,
+    };
+    let mut block = templates::tool_call_block(seg_id, &call).into_string();
+    if tc.result.is_some() || tc.error.is_some() {
+        let result = crate::types::ToolResult {
+            name: tc.name.clone(),
+            id: None,
+            result: tc.result.clone(),
+            error: tc.error.clone(),
+        };
+        let result_html = templates::tool_call_result(&result).into_string();
+        block = inject_result(&block, seg_id, &result_html);
+        // Inline result card (file / directory / display outputs) — the SAME
+        // renderer the live path uses, so a replayed transcript looks like the
+        // live one. No framebuffer thumbnail on replay (the pixels are gone):
+        // the display card replays as the marker + [show].
+        if let Some(card) = templates::inline_result_card(&tc.name, &tc.args, &result, None) {
+            block = inject_card(&block, seg_id, &card.into_string());
         }
     }
+    // A tool with neither result nor error was in-flight when the session
+    // ended; it replays with an empty result slot, matching the live "no result
+    // yet" state — nothing to inject.
+    block
 }
 
 /// Splice `result_html` into the empty `#tool-{seg_id}-result` slot of a

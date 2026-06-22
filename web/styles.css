@@ -24,7 +24,10 @@
      header/input/send box is --ctrl-box; the input snaps to multiples of it. */
   --line-tight: 1.45;
   --para-gap: 12px;
-  --turn-gap: 14px;
+  /* The inter-turn gap is the SAME single unit as the header bell·bug·cog gap
+     (--chrome-pad) — one rhythm between chat bubbles, between the last message
+     and the input, and between the header icons. Don't fork it back to 14px. */
+  --turn-gap: var(--chrome-pad);
   --ctrl-box: 38px;
   --z-header: 30;
   --z-modal: 100;
@@ -420,10 +423,13 @@ main.layout .transcript {
      (header above, footer below): the first/last message clears the chrome by
      one --chrome-pad and then scrolls UNDER it, so the chat flows edge to edge.
      70px top = header pad (16) + 38px button + 16px uniform-margin gap (the
-     first message used to crowd the header at +56). 76px bottom = footer pad
-     (16) + input row (38) + pad (16) + gap; + the iOS safe-area insets on each
-     end. Side gutters stay the uniform chrome margin. */
-  padding: calc(env(safe-area-inset-top) + 70px) var(--chrome-pad) calc(env(safe-area-inset-bottom) + 76px);
+     first message used to crowd the header at +56). 70px bottom MIRRORS it:
+     footer pad (16) + input row (38) + 16px uniform gap — so the last message
+     clears the floating input by the SAME single --chrome-pad unit as the first
+     clears the header (was 76px → a 22px gap, too large + asymmetric). Plus the
+     iOS safe-area insets on each end. Side gutters stay the uniform chrome
+     margin. */
+  padding: calc(env(safe-area-inset-top) + 70px) var(--chrome-pad) calc(env(safe-area-inset-bottom) + 70px);
   margin-top: 0;
   display: flex;
   flex-direction: column;
@@ -1060,8 +1066,14 @@ main.layout .transcript > *:empty { display: none; }
   border: 1px solid var(--border);
   /* EXACTLY one --ctrl-box (the 38px header bell/cog + send button box,
      border-box) so the input field, the send button, and the header buttons are
-     pixel-identical. The input GROWS in whole --ctrl-box steps from here. */
+     pixel-identical. events::autogrow_textarea sets the inline height to the
+     next whole --ctrl-box step as content grows (the field that snaps to the
+     grid now), CAPPED at 3 boxes — past which the textarea scrolls (below). The
+     textarea inside is sized to its CONTENT and stays vertically CENTRED here
+     (align-items:center), so a single line's text/cursor sit in the middle of
+     the box instead of pinned to the top. */
   min-height: var(--ctrl-box);
+  max-height: calc(var(--ctrl-box) * 3);
 }
 .terminal-row:focus-within { border-color: var(--accent); }
 .terminal-prompt {
@@ -1086,15 +1098,16 @@ main.layout .transcript > *:empty { display: none; }
   font: inherit;
   padding: 0;
   min-height: 16px;
-  /* Auto-grows with content (events::autogrow_textarea snaps the inline height to
-     a whole-row-step multiple on every `input`); this caps the growth at THREE
-     --ctrl-box rows (the row reaches exactly 3×38px) and scrolls past it so a
-     long paste can't push the field off-screen. Cap is a clean grid multiple so
-     the field never stops mid-step. */
+  /* Sized to CONTENT by events::autogrow_textarea (inline height = scrollHeight)
+     and vertically centred by the row, so one line's text/cursor sit in the
+     MIDDLE of the box, not at the top. The parent `.terminal-row` is what snaps
+     to the 38px grid + caps at 3 boxes; this textarea max-height matches the cap
+     so the content scrolls within it once the row stops growing. A long paste
+     can't push the field off-screen. */
   max-height: calc(var(--ctrl-box) * 3);
   overflow-y: auto;
   /* Hide the scrollbar but KEEP scrollability (a long paste still scrolls past
-     the 120px cap) — a visible bar in the bare prompt row reads as chrome. */
+     the 3-box cap) — a visible bar in the bare prompt row reads as chrome. */
   scrollbar-width: none;
   line-height: 1.4;
 }
@@ -1119,7 +1132,9 @@ main.layout .transcript > *:empty { display: none; }
 .terminal-action-btn svg { display: block; width: 16px; height: 16px; }
 .terminal-send {
   padding: 0;
-  color: var(--muted);
+  /* Pure white, matching the (now-white) header icon buttons — the send/play
+     glyph is a live control, not muted chrome. */
+  color: var(--accent);
   cursor: pointer;
 }
 .terminal-send:hover { color: var(--accent); border-color: var(--fg); }
@@ -1901,6 +1916,14 @@ button.ready:hover {
    one-line answer doesn't carry a blank line above/below it. */
 .turn .body > p:first-child, .turn .body .text-segment > p:first-child { margin-top: 0; }
 .turn .body > p:last-child, .turn .body .text-segment > p:last-child { margin-bottom: 0; }
+/* The `> p:first-child` rule above missed the case where the first rendered
+   element is a `.text-segment` (assistant turns wrap markdown in one) or any
+   non-<p> block (a list/pre/heading) — its top margin opened a dead gap inside
+   every bubble (the bottom was already flat). Zero the top margin of the ACTUAL
+   first rendered element so the body's top padding is symmetric with its
+   bottom. */
+.turn .body > *:first-child,
+.turn .body .text-segment:first-child > *:first-child { margin-top: 0; }
 /* A turn that ends on a tool call leaves that block as the last VISIBLE
    element — the empty text-segment opened after it is hidden by the
    :empty rule above. Its 8px bottom margin stacked onto the transcript
@@ -1915,14 +1938,18 @@ button.ready:hover {
 .tool-call {
   margin: 8px 0;
   border: 1px solid var(--border);
-  border-radius: 6px;
   background: var(--bg);
   font-size: 12.5px;
   overflow: hidden;
 }
+/* The FOLDED tool card is one of the 38px control boxes — its summary row is
+   EXACTLY one --ctrl-box tall (border-box), content vertically centred, the
+   same horizontal inset as the input row's glyph→edge step, so it reads as a
+   header/input/send button. The body only appears when [open]. */
 .tool-call > summary {
   cursor: pointer;
-  padding: 6px 10px;
+  min-height: var(--ctrl-box);
+  padding: 0 var(--space-3);
   color: var(--muted);
   list-style: none;
   display: flex;
@@ -1996,7 +2023,6 @@ button.ready:hover {
   padding: 6px 8px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 4px;
   overflow-x: auto;
   font-size: 12px;
   white-space: pre-wrap;

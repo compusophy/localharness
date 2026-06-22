@@ -748,23 +748,42 @@ fn on_key_input() {
 /// snaps to the button-height grid instead of stopping mid-step.
 const CTRL_BOX_PX: i32 = 38;
 
-/// Auto-grow the prompt textarea to its content, SNAPPED to the --ctrl-box grid
-/// (#C): collapse to `auto` so the scroll height reflects the real text height
-/// (not the last grown height), then pin the element to the next whole-row-step
-/// multiple of `CTRL_BOX_PX` so the input container grows in clean button-height
-/// steps. CSS caps it (`max-height: 3×--ctrl-box`) and scrolls past the cap.
+/// The input row caps at THREE control-boxes; past it the textarea scrolls
+/// (CSS `max-height` + `overflow-y:auto`) so a long paste can't push the field
+/// off-screen. Mirror of the `.terminal-row` CSS cap.
+const MAX_ROW_BOXES: u32 = 3;
+
+/// Auto-grow the prompt input, SNAPPED to the --ctrl-box grid (#C). The
+/// TEXTAREA is sized to its CONTENT height (`scrollHeight`) — a textarea
+/// top-aligns its text, so a content-height element + the row's
+/// `align-items:center` keeps the cursor and typed text VERTICALLY CENTRED for
+/// one line AND for multi-line (the earlier bug: pinning the *textarea* to the
+/// 38px box made one line of text sit at the top). The 38px-step growth the
+/// user loves lives on the parent `.terminal-row` instead: its height snaps to
+/// the next whole `CTRL_BOX_PX` multiple (capped at 3 rows; the textarea's CSS
+/// `max-height` + `overflow-y:auto` scroll past the cap).
 /// Routed through the ONE delegated `input` listener — no per-element closure
 /// (the app's no-imperative-DOM rule). No-op off a real `HtmlElement`.
 fn autogrow_textarea(el: &Element) {
     let Some(ta) = el.dyn_ref::<HtmlElement>() else { return };
     let style = ta.style();
+    // Collapse first so `scroll_height` reflects the real text height (not the
+    // last grown height), then pin the textarea to its own content height — it
+    // stays centred in the row by `.terminal-row { align-items:center }`.
     let _ = style.set_property("height", "auto");
-    // Round the content height UP to the next whole control-box so the row lands
-    // on a 38px multiple; floored at one box so a single line still fills a row.
-    // (u32::div_ceil is stable; i32::div_ceil is not — heights are non-negative.)
-    let content = ta.scroll_height().max(CTRL_BOX_PX) as u32;
-    let snapped = content.div_ceil(CTRL_BOX_PX as u32) * CTRL_BOX_PX as u32;
-    let _ = style.set_property("height", &format!("{snapped}px"));
+    let content = ta.scroll_height();
+    let _ = style.set_property("height", &format!("{content}px"));
+    // Snap the ROW to the next whole control-box so the input container grows in
+    // clean 38px button-height steps; floored at one box so a single line still
+    // fills exactly one row. CSS caps the row at 3 boxes (the textarea scrolls
+    // past). (u32::div_ceil is stable; i32::div_ceil is not — heights are >= 0.)
+    if let Some(row) = ta.parent_element().and_then(|p| p.dyn_into::<HtmlElement>().ok()) {
+        let boxes = (content.max(CTRL_BOX_PX) as u32)
+            .div_ceil(CTRL_BOX_PX as u32)
+            .min(MAX_ROW_BOXES);
+        let h = boxes * CTRL_BOX_PX as u32;
+        let _ = row.style().set_property("height", &format!("{h}px"));
+    }
 }
 
 /// Recompute the "(N chars)" hint next to the key input. Called from

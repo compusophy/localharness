@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 
 use futures_util::StreamExt;
 use maud::html;
+use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 
 use crate::turn_flow::{
@@ -190,7 +191,16 @@ pub(crate) async fn run_send() {
     prompt_area.set_value("");
     // Collapse the auto-grown height back to one row (the `input` listener only
     // fires on typing, so an empty value would otherwise keep the grown height).
+    // The textarea is content-sized and the parent `.terminal-row` carries the
+    // 38px-snapped height (events::autogrow_textarea) — reset BOTH so a cleared
+    // multi-line input snaps back to a single resting box.
     let _ = prompt_area.style().set_property("height", "auto");
+    if let Some(row) = prompt_area
+        .parent_element()
+        .and_then(|p| p.dyn_into::<web_sys::HtmlElement>().ok())
+    {
+        let _ = row.style().remove_property("height");
+    }
     // Close the keyboard on send (on-chain #55): blur the input so the mobile
     // soft keyboard collapses — covers BOTH send paths (button + Enter), both of
     // which dispatch Action::Send → run_send. (Was `.focus()`, which kept the
@@ -589,15 +599,23 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
                 }
             }
             Ok(StreamChunk::ToolCall(call)) => {
-                any_visible = true;
-                stage::enter(crate::turn_stage::Stage::Tools);
-                // `finish` and `ask_question` are completion / blocking
-                // signals, NOT goal steps — they end the autonomous loop
-                // (finish = done, ask_question = waiting on the user). Only a
-                // real goal-step tool marks the turn as mid-goal / continuable.
+                // `finish` is an internal completion CONTROL, not a goal step:
+                // it ends the autonomous loop and its receipt card is a pure
+                // artifact (the user never wants to read a "finish" pill). Mark
+                // the turn done and skip rendering ANY card/result for it —
+                // here and on history replay (history.rs). It contributes no
+                // visible content, so `any_visible` / the stage are left as-is
+                // (a bare-finish turn stays eligible for empty-turn removal).
                 if call.name == "finish" {
                     saw_finish = true;
-                } else if call.name == "ask_question" {
+                    continue;
+                }
+                any_visible = true;
+                stage::enter(crate::turn_stage::Stage::Tools);
+                // `ask_question` is a blocking signal (waiting on the user), NOT
+                // a goal step. Only a real goal-step tool marks the turn as
+                // mid-goal / continuable.
+                if call.name == "ask_question" {
                     saw_question = true;
                 } else {
                     saw_tool_call = true;
