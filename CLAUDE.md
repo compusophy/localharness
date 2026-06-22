@@ -42,6 +42,12 @@ is the only durable handle.
 
 ## Repo layout
 
+> Subsystems own NESTED `CLAUDE.md` specs (auto-loaded when an agent works in that
+> dir; update the matching one when you change a subsystem): `src/app` (UI / overlay
+> modals / no-DOM / one-box-input), `src/registry` (on-chain gas/tx/relay),
+> `src/backends` (provider wire quirks), `src/bin/localharness` (CLI), `src/rustlite`
+> (cartridge compiler). The root stays a whole-repo MAP; detail lives in the specs.
+
 ```
 src/                  library crate
 ├── lib.rs            re-exports + module roots
