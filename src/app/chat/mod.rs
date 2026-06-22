@@ -894,6 +894,37 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
         || lower.contains("quota")
         || lower.contains("429");
 
+    // SELF-HEAL for "I have $LH but can't send": a VERIFIED OWNER whose master
+    // seed isn't loaded on THIS subdomain chats as a per-origin device key with
+    // an EMPTY meter, so the proxy 402s even though the owner's master EOA holds
+    // the $LH (the account tab reads that EOA, so it correctly shows the balance —
+    // the chat just signs the wrong identity). Pull the master seed via the apex
+    // round-trip (the same self-heal mount runs) so credits resolve to the funded
+    // EOA and the next send goes through. One-shot per tab (`lh_seed_repull_402`)
+    // so a device that genuinely lacks the seed (apex bounces `seed_import=none`)
+    // can't loop — after one attempt it just falls through to the card. We DON'T
+    // early-return: the card still renders as the fallback; if the pull navigates,
+    // the page unloads and the card is moot.
+    if looks_like_credits {
+        let owner_without_seed = crate::app::APP.with(|c| {
+            let app = c.borrow();
+            matches!(app.verify_state, crate::app::VerifyState::Verified { .. })
+                && app.wallet.is_none()
+        });
+        if owner_without_seed {
+            if let Some(st) = web_sys::window().and_then(|w| w.session_storage().ok().flatten()) {
+                if st.get_item("lh_seed_repull_402").ok().flatten().is_none() {
+                    let _ = st.set_item("lh_seed_repull_402", "1");
+                    if let Some(name) = crate::app::tenant::current_name() {
+                        wasm_bindgen_futures::spawn_local(async move {
+                            crate::app::seed_pull::kick_export(&name).await;
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     // Visible message in the transcript. The credits/402 case renders a clean,
     // actionable CARD (on-chain feedback: never dump the raw JSON 402 at the
     // user) — the raw error is logged to the console for debugging only. Every
@@ -901,10 +932,7 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
     let body_id = format!("turn-body-{assistant_turn_id}");
     if looks_like_credits {
         web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(err));
-        dom::append_html(
-            &body_id,
-            &super::templates::out_of_credits_card(!crate::app::is_visitor()).into_string(),
-        );
+        dom::append_html(&body_id, &super::templates::out_of_credits_card().into_string());
     } else {
         let bubble = if stale_token {
             format!(
@@ -932,7 +960,10 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
         dom::set_status("API key rejected — check your Gemini key.", true);
         super::show_api_key_modal();
     } else if looks_like_credits {
-        dom::set_status("no credits / session for this origin — see the account tab.", true);
+        // The out-of-$LH CARD in the transcript already says it cleanly; a second
+        // red status line under it was redundant noise (user feedback). Clear any
+        // lingering status instead of restating it.
+        dom::set_status("", false);
     } else {
         // The bubble above already carries the full raw error — repeating it
         // here painted the same wall of JSON twice (once in the transcript,

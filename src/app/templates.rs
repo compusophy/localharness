@@ -383,20 +383,16 @@ pub(crate) fn fund_banner_body() -> Markup {
 /// account panel (redeem a code / open a session), or switch to your own key.
 /// No raw error text, no rule prose.
 ///
-/// `allow_byok` hides the "use my own key" button from public visitors — BYOK is
-/// owner/admin-only (on-chain #60.2); the verified owner still sees it.
-pub(crate) fn out_of_credits_card(allow_byok: bool) -> Markup {
+/// Renders as a plain in-stream response (no bordered/backgrounded container — the
+/// turn body already IS the bubble), just a short line + the two funding actions.
+/// BYOK is NOT offered here — it's an owner/admin control that lives in the admin
+/// panel, not a public chat affordance (on-chain #60.2).
+pub(crate) fn out_of_credits_card() -> Markup {
     html! {
-        div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;\
-                    padding:8px 10px;\
-                    border:1px solid var(--border);background:var(--panel);\
-                    font-size:12px;color:var(--muted)" {
-            span style="flex-basis:100%" { "out of $LH for this origin — top up to keep chatting" }
+        div style="display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-2)" {
+            span style="flex-basis:100%;color:var(--muted)" { "out of $LH" }
             button type="button" data-action="buy-lh" .ghost { "buy $LH" }
             button type="button" data-action="header-admin-toggle" .ghost { "redeem" }
-            @if allow_byok {
-                button type="button" data-action="set-model-access" data-arg="byok" .ghost { "use my own key" }
-            }
         }
     }
 }
