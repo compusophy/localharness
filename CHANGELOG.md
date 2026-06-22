@@ -5,6 +5,33 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.54.0] - 2026-06-22
+
+Chat-UX pass clearing the open on-chain feedback (#58 / #59 / #60).
+
+### Added
+
+- **Brand menu as icon buttons.** Tapping the `lh` mark drops a vertical stack of
+  three square buttons — home / GitHub / crates.io (a Rust-crab glyph) — each on
+  the uniform chrome grid, replacing the old text links.
+
+### Changed
+
+- **BYOK is owner/admin-only.** "Use your own key" (the api-key modal, the
+  set-model-access switch, and the key-save path) is now hidden and refused for
+  public visitors; the verified owner, local dev, and fresh onboarding are
+  unaffected.
+- The out-of-credits button reads **`redeem`** (was `redeem / open session`).
+
+### Fixed
+
+- **Mobile keyboard no longer covers the chat.** Opening the soft keyboard
+  re-anchors the transcript to its latest message (visual-viewport aware, iOS +
+  Android) instead of leaving it hidden behind the keyboard.
+- **Doubled blank space under tool cards** removed — an empty result-card slot was
+  injecting a phantom inter-block gap; the folded tool pill now keeps a single
+  rhythm unit beneath it.
+
 ## [0.53.0] - 2026-06-21
 
 ### Added
