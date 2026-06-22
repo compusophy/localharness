@@ -41,6 +41,11 @@ pub mod op {
     pub const CALLDATASIZE: u8 = 0x36;
     /// Load a 32-byte word from calldata at `off` (`CALLDATALOAD(off)`).
     pub const CALLDATALOAD: u8 = 0x35;
+    /// Copy `len` calldata bytes into memory (`CALLDATACOPY(destOff, srcOff, len)`),
+    /// zero-extending past the end of calldata (mirrors the EVM). Used to bulk-copy a
+    /// dynamic `string`/`bytes` argument's `[length ‖ data]` tail into memory for an
+    /// ABI re-encode (the param-echo path, no per-word loop).
+    pub const CALLDATACOPY: u8 = 0x37;
     /// Unsigned less-than (`a < b`).
     pub const LT: u8 = 0x10;
     /// Unsigned greater-than (`a > b`).
@@ -53,6 +58,10 @@ pub mod op {
     pub const ISZERO: u8 = 0x15;
     /// Logical right shift (`SHR(shift, value)`).
     pub const SHR: u8 = 0x1C;
+    /// Bitwise AND (`a & b`). Used to test a dynamic-string slot's low bit
+    /// (`slot & 1` → short/long discriminator) and to isolate the SHORT-layout
+    /// length byte (`slot & 0xff`).
+    pub const AND: u8 = 0x16;
     /// Addition.
     pub const ADD: u8 = 0x01;
     /// Subtraction — `SUB` computes `μs[0] - μs[1]` (top minus next), wrapping mod
@@ -76,6 +85,16 @@ pub mod op {
     pub const NUMBER: u8 = 0x43;
     /// Duplicate the top stack item (`DUP1`).
     pub const DUP1: u8 = 0x80;
+    /// Duplicate the 2nd-from-top stack item (`DUP2`). Reaches a loop induction
+    /// variable / frame slot sitting under the top — the dynamic-string copy loop
+    /// keeps a `[dataSlot0, count, i]` frame and reads beneath `i`.
+    pub const DUP2: u8 = 0x81;
+    /// Duplicate the 3rd-from-top stack item (`DUP3`). Reaches `count`/`dataSlot0`
+    /// in the copy loop's 3-deep frame each iteration.
+    pub const DUP3: u8 = 0x82;
+    /// Swap the top two stack items (`SWAP1`). Reorders operands (e.g. `slot - 1`
+    /// for the LONG length decode) without re-deriving from storage.
+    pub const SWAP1: u8 = 0x90;
     /// Pop the top stack item (`POP`).
     pub const POP: u8 = 0x50;
     /// Unconditional absolute jump (`JUMP(dest)`).

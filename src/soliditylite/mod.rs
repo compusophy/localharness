@@ -425,31 +425,71 @@ mod tests {
         );
     }
 
-    /// `string` is accepted ONLY as a return type and a string literal ONLY as a
-    /// whole `return` — every other position is a clean error, never a silent
-    /// single-word miscompile (the dynamic-type safety boundary).
+    /// The dynamic-type SAFETY BOUNDARY (#37): `string`/`bytes` are now first-class
+    /// in storage/param/return positions, but a dynamic value is NOT a single word —
+    /// every single-word position still rejects it cleanly (never a silent miscompile).
     #[cfg(feature = "wallet")]
     #[test]
-    fn string_is_return_only() {
-        // `string` as a parameter type → parse error (parse_ty never yields String).
-        assert!(
-            super::compile("facet B { function f(string s) external view returns (uint256) { return 1; } }").is_err(),
-            "a `string` parameter must be rejected"
-        );
-        // a string literal in an assignment → codegen error.
+    fn string_is_dynamic_only_in_valid_positions() {
+        // a string literal assigned to a NON-dynamic (single-word) var → codegen error.
         assert!(
             super::compile("facet B { bytes32 v; function f() external { v = \"x\"; } }").is_err(),
-            "a string literal in an assignment must be rejected"
+            "a string literal assigned to a single-word var must be rejected"
         );
-        // `returns (string)` with a non-literal body → type error.
+        // `returns (string)` with a non-literal, non-(string var/param) body → error.
         assert!(
             super::compile("facet B { function f() external pure returns (string) { return 1; } }").is_err(),
-            "`returns (string)` with a non-literal body must be rejected"
+            "`returns (string)` returning a single word must be rejected"
         );
-        // a string literal returned without `returns (string)` → type error.
+        // a string literal returned WITHOUT a dynamic return type → type error.
         assert!(
             super::compile("facet B { function f() external pure returns (uint256) { return \"x\"; } }").is_err(),
-            "a string literal without `returns (string)` must be rejected"
+            "a string literal without a `string`/`bytes` return type must be rejected"
+        );
+        // a dynamic param used INSIDE an expression (not a whole `return`) → error.
+        assert!(
+            super::compile(
+                "facet B { function f(string s) external pure returns (uint256) { return s + 1; } }"
+            )
+            .is_err(),
+            "a dynamic param used as a single word must be rejected"
+        );
+        // a `string[]` / `bytes[]` array state var is deferred → clean error.
+        assert!(
+            super::compile("facet B { string[] xs; function f() external view returns (uint256) { return 1; } }").is_err(),
+            "arrays of `string`/`bytes` are unsupported in v1"
+        );
+    }
+
+    /// `string`/`bytes` are now ACCEPTED as parameter + return + state-var types
+    /// (#37) — the positions the old `string_is_return_only` boundary rejected.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn string_and_bytes_are_accepted_in_dynamic_positions() {
+        // a `string` parameter compiles (it was previously a hard parse error).
+        assert!(
+            super::compile(
+                "facet B { function echo(string s) external pure returns (string) { return s; } }"
+            )
+            .is_ok(),
+            "a `string` parameter + echo must compile"
+        );
+        // a `bytes` parameter likewise.
+        assert!(
+            super::compile(
+                "facet B { function echo(bytes b) external pure returns (bytes) { return b; } }"
+            )
+            .is_ok(),
+            "a `bytes` parameter + echo must compile"
+        );
+        // a `string` state var with a literal write + a getter compiles.
+        assert!(
+            super::compile(
+                "facet B { string s; function set() external { s = \"hi\"; } \
+                 function get() external view returns (string) { return s; } }"
+            )
+            .is_ok(),
+            "a `string` state var (write + read) must compile"
         );
     }
 

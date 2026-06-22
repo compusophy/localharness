@@ -18,7 +18,7 @@ use crate::soliditylite::CompiledArtifact;
 // `Expr`/`Facet`/`Stmt` + the `CompileError` diagnostics are only used by the
 // source-compile path, which is wallet-gated (selector + slot keccak live there).
 #[cfg(feature = "wallet")]
-use crate::soliditylite::ast::{CmpOp, Expr, Facet, StateVarKind, Stmt, Ty};
+use crate::soliditylite::ast::{CmpOp, Expr, Facet, StateVarKind, Stmt};
 #[cfg(feature = "wallet")]
 use crate::rustlite::CompileError;
 
@@ -64,6 +64,18 @@ enum Body {
     /// `head offset 0x20 ‖ length ‖ right-padded data` — and `RETURN`s the exact
     /// dynamic size. The bytes are the decoded UTF-8 literal.
     ConstString(Vec<u8>),
+    /// A `returns (string|bytes)` getter returning a dynamic `string`/`bytes` STATE
+    /// VARIABLE (#37 slice 1, the READ side). Reads the canonical Solidity header at
+    /// `slot`, branches on its low bit (even = short/inline, odd = long/spilled),
+    /// decodes the length, copies the data into the ABI return region
+    /// (`offset 0x20 ‖ length ‖ data`), and `RETURN`s it. Uses a runtime copy loop
+    /// for the LONG case.
+    DynamicStorageReturn { slot: [u8; 32] },
+    /// A `returns (string|bytes)` getter that ECHOES a dynamic PARAMETER (#37
+    /// slices 2+3): `return s;` where `s` is a `string`/`bytes` param. ABI-decodes
+    /// the dynamic arg from calldata and ABI-re-encodes it as the return — a verbatim
+    /// `[length ‖ data]` copy via `CALLDATACOPY`, prefixed with the `0x20` offset word.
+    EchoParam { param_index: u64 },
 }
 
 /// One statement inside a mutating body: a `require` guard, an assignment, or an
@@ -311,6 +323,12 @@ enum LoweredAssign {
     /// `keccak256(pad32(slot)) + index`. The length is UNCHANGED (matching
     /// Solidity's `delete arr[i]`); this is exactly an element write of `0`.
     ArrayDelete { slot: [u8; 32], index: LoweredExpr },
+    /// `<dynBytesVar> = "<literal>";` (#37 slice 1, the WRITE side). Stores a
+    /// COMPILE-TIME-KNOWN `string`/`bytes` literal at `base_slot` in canonical
+    /// Solidity layout — fully unrolled (SHORT = one packed-word `SSTORE`; LONG =
+    /// a header `SSTORE` plus one `SSTORE` per 32-byte data chunk at precomputed
+    /// `keccak256(pad32(slot)) + i` slots). No runtime loop (the bytes are known).
+    ConstDynamicBytes { base_slot: [u8; 32], bytes: Vec<u8> },
 }
 
 #[cfg(feature = "wallet")]
@@ -369,8 +387,57 @@ impl LoweredAssign {
                 emit_array_slot(a, slot, index);
                 a.emit(op::SSTORE);
             }
+            LoweredAssign::ConstDynamicBytes { base_slot, bytes } => {
+                emit_const_dynamic_bytes_store(a, base_slot, bytes);
+            }
         }
     }
+}
+
+/// Emit the canonical Solidity `string`/`bytes` storage WRITE for a COMPILE-TIME
+/// literal at `base_slot` (#37 slice 1). Fully unrolled — no runtime loop, because
+/// every byte (and therefore the short/long choice and each data slot) is known:
+///
+/// - **SHORT** (len ≤ 31): one `SSTORE(base_slot, word)` where `word` packs the data
+///   left-aligned in the high bytes with `len*2` in the lowest byte.
+/// - **LONG** (len ≥ 32): `SSTORE(base_slot, len*2 + 1)` then, for each 32-byte data
+///   chunk `i`, `SSTORE(keccak256(pad32(base_slot)) + i, chunk_i)`. The data start
+///   slot is computed in Rust (it is constant for a fixed slot), so no on-chain
+///   `KECCAK256` is needed.
+#[cfg(feature = "wallet")]
+fn emit_const_dynamic_bytes_store(a: &mut Asm, base_slot: &[u8; 32], bytes: &[u8]) {
+    let len = bytes.len();
+    if len <= 31 {
+        // SHORT: data left-aligned, low byte = len*2 (even ⇒ short).
+        let mut word = [0u8; 32];
+        word[..len].copy_from_slice(bytes);
+        word[31] = (len as u8) * 2;
+        a.push32(&word).push32(base_slot).emit(op::SSTORE);
+    } else {
+        // LONG: header = len*2 + 1 (odd ⇒ long).
+        let mut header = [0u8; 32];
+        // len fits in u64 for any realistic literal; encode big-endian into the word.
+        let marker = (len as u128) * 2 + 1;
+        header[16..].copy_from_slice(&marker.to_be_bytes());
+        a.push32(&header).push32(base_slot).emit(op::SSTORE);
+        // Data slots from keccak256(pad32(base_slot)), one SSTORE per 32-byte chunk.
+        let data_slot0 = dynamic_data_slot0(base_slot);
+        for (i, chunk) in bytes.chunks(32).enumerate() {
+            let mut word = [0u8; 32];
+            word[..chunk.len()].copy_from_slice(chunk); // left-aligned, right-padded
+            let slot = slot_at(data_slot0, i as u64);
+            a.push32(&word).push32(&slot).emit(op::SSTORE);
+        }
+    }
+}
+
+/// The first data slot of a dynamic `string`/`bytes` (or array) at `slot`:
+/// `keccak256(pad32(slot))`. Computed in Rust (the slot is constant), matching the
+/// on-chain `MSTORE(0,slot); KECCAK256(0,0x20)` derivation [`emit_array_slot`] runs.
+#[cfg(feature = "wallet")]
+fn dynamic_data_slot0(slot: &[u8; 32]) -> [u8; 32] {
+    use sha3::{Digest, Keccak256};
+    Keccak256::digest(slot).into()
 }
 
 /// The 32-byte word for the constant `1` (used by `len - 1` in array pop).
@@ -562,6 +629,14 @@ fn emit_full_body(a: &mut Asm, body: Label, b: &Body) {
             let padded = bytes.len().div_ceil(32) * 32;
             a.push_u64(0x40 + padded as u64).push_u64(0x00).emit(op::RETURN);
         }
+        Body::DynamicStorageReturn { slot } => {
+            a.jumpdest(body);
+            emit_dynamic_storage_return(a, slot);
+        }
+        Body::EchoParam { param_index } => {
+            a.jumpdest(body);
+            emit_echo_param(a, *param_index);
+        }
         Body::Mutating(stmts) => {
             a.jumpdest(body);
             // Allocate ONE shared revert label for this function's `require`s (incl.
@@ -581,6 +656,157 @@ fn emit_full_body(a: &mut Asm, body: Label, b: &Body) {
             }
         }
     }
+}
+
+/// Push the absolute calldata offset of a dynamic arg's `[length ‖ data]` TAIL
+/// onto the stack: `tailAbs = CALLDATALOAD(4 + 32*param_index) + 4`. The head word
+/// at `4 + 32*i` is the arg's offset RELATIVE to the start of the args (byte 4), so
+/// adding 4 gives the absolute calldata offset of the length word.
+#[cfg(feature = "wallet")]
+fn emit_param_tail_abs(a: &mut Asm, param_index: u64) {
+    a.push_u64(4 + 32 * param_index)
+        .emit(op::CALLDATALOAD) // head (offset relative to byte 4)
+        .push_u64(0x04)
+        .emit(op::ADD); // tailAbs = head + 4
+}
+
+/// Given a dynamic value's byte length on top of the stack, replace it with the
+/// number of bytes to copy for an ABI `[length ‖ data]` tail:
+/// `copyLen = 32 + ceil(len/32)*32`. (`ceil(len/32)` via `(len + 31) >> 5`;
+/// `* 32` via `MUL 0x20` so no `SHL` is needed.)
+#[cfg(feature = "wallet")]
+fn emit_len_to_tail_copy_len(a: &mut Asm) {
+    // stack: [len]
+    a.push_u64(0x1f).emit(op::ADD); // len + 31
+    a.push_u64(0x05).emit(op::SHR); // (len + 31) >> 5  = ceil(len/32) words
+    a.push_u64(0x20).emit(op::MUL); // words * 32        = padded data bytes
+    a.push_u64(0x20).emit(op::ADD); // + 32 (the length word) = copyLen
+}
+
+/// Emit the ECHO of a dynamic `string`/`bytes` PARAMETER (#37 slices 2+3):
+/// ABI-decode the dynamic arg from calldata and ABI-re-encode it as the return.
+///
+/// The input tail `[length ‖ data‖pad]` and the output tail have IDENTICAL layout,
+/// so the whole tail is copied verbatim (`CALLDATACOPY`) into `mem[0x20..]` and the
+/// `0x20` ABI offset word is prepended at `mem[0x00]`:
+/// ```text
+/// mem[0x00] = 0x20                              ; ABI offset to the tail
+/// CALLDATACOPY(0x20, tailAbs, copyLen)         ; mem[0x20..] = [length ‖ data]
+/// RETURN(0x00, 0x20 + copyLen)
+/// ```
+/// `tailAbs`/`copyLen` derive purely from calldata, so they are recomputed where
+/// needed rather than juggled on the stack (no `DUP`/`SWAP`).
+#[cfg(feature = "wallet")]
+fn emit_echo_param(a: &mut Asm, param_index: u64) {
+    // mem[0x00] = 0x20 (the ABI offset to the dynamic tail).
+    a.push_u64(0x20).push_u64(0x00).emit(op::MSTORE);
+    // CALLDATACOPY(dest=0x20, src=tailAbs, len=copyLen). Operand order: dest popped
+    // first, so push len (deepest), then src, then dest.
+    emit_param_tail_abs(a, param_index); // [tailAbs]
+    a.emit(op::CALLDATALOAD); // [len] (length word lives at tailAbs)
+    emit_len_to_tail_copy_len(a); // [copyLen]
+    emit_param_tail_abs(a, param_index); // [copyLen, tailAbs]  (src)
+    a.push_u64(0x20); // [copyLen, tailAbs, 0x20]  (dest)
+    a.emit(op::CALLDATACOPY); // pops 0x20, tailAbs, copyLen → []
+    // RETURN(0x00, 0x20 + copyLen). Recompute copyLen, add the 0x20 offset word.
+    emit_param_tail_abs(a, param_index);
+    a.emit(op::CALLDATALOAD); // [len]
+    emit_len_to_tail_copy_len(a); // [copyLen]
+    a.push_u64(0x20).emit(op::ADD); // retLen = 0x20 + copyLen
+    a.push_u64(0x00).emit(op::RETURN); // RETURN(0, retLen)
+}
+
+/// Emit the dynamic `string`/`bytes` STORAGE READ getter (#37 slice 1, READ side):
+/// load the canonical header at `slot`, branch on its low bit, decode the length,
+/// copy the data into the ABI return region, and `RETURN` it.
+///
+/// ABI return memory layout (as [`Body::ConstString`]):
+/// `mem[0x00]=0x20` (offset) · `mem[0x20]=len` · `mem[0x40+32*i]=data word i`.
+///
+/// ```text
+/// h = SLOAD(slot)
+/// if (h & 1) == 0 -> SHORT: data is inline in h's high bytes; len = (h & 0xff) / 2
+///                          mem[0x40] = h ; RETURN(0, 0x60)
+/// else            -> LONG:  len = (h - 1) / 2 ; data at keccak256(slot)+i
+///                          copy ceil(len/32) words into mem[0x40+32*i]
+///                          RETURN(0, 0x40 + count*32)
+/// ```
+/// The LONG case runs a runtime copy loop keeping a `[dataSlot0, count, i]` frame
+/// (read via `DUP2`/`DUP3`).
+#[cfg(feature = "wallet")]
+fn emit_dynamic_storage_return(a: &mut Asm, slot: &[u8; 32]) {
+    // NOTE: the LONG branch uses mem[0x00..0x20] as keccak scratch, which collides
+    // with the ABI offset word, so `mem[0x00] = 0x20` is written PER BRANCH (after
+    // the keccak in the LONG case) rather than once up front.
+
+    // h = SLOAD(slot); test the low bit (h & 1).
+    let long_lbl = a.new_label();
+    a.push32(slot).emit(op::SLOAD); // [h]
+    a.emit(op::DUP1).push_u64(0x01).emit(op::AND); // [h, h&1]
+    a.push_label(long_lbl).emit(op::JUMPI); // if odd → LONG ; [h]
+
+    // ── SHORT branch ──  stack: [h]
+    // mem[0x00] = 0x20 (ABI offset; SHORT never uses the keccak scratch).
+    a.push_u64(0x20).push_u64(0x00).emit(op::MSTORE); // [h]
+    // len = (h & 0xff) >> 1
+    a.emit(op::DUP1).push_u64(0xff).emit(op::AND); // [h, lenByte]
+    a.push_u64(0x01).emit(op::SHR); // [h, len]
+    // mem[0x20] = len.
+    a.push_u64(0x20).emit(op::MSTORE); // [h]
+    // mem[0x40] = h (the data word — its high bytes ARE the inline data; the low
+    // marker byte sits beyond `len` and is never read by a correct consumer).
+    a.push_u64(0x40).emit(op::MSTORE); // []
+    // RETURN(0x00, 0x60) — short is always exactly one data word.
+    a.push_u64(0x60).push_u64(0x00).emit(op::RETURN);
+
+    // ── LONG branch ──  stack: [h]
+    a.jumpdest(long_lbl);
+    // len = (h - 1) >> 1.  SUB = top - next; push 1 then SWAP1 so h is on top.
+    a.push_u64(0x01).emit(op::SWAP1).emit(op::SUB); // [h-1]
+    a.push_u64(0x01).emit(op::SHR); // [len]
+    // mem[0x20] = len  (keep one copy on the stack to derive count).
+    a.emit(op::DUP1).push_u64(0x20).emit(op::MSTORE); // [len]
+    // count = ceil(len/32) = (len + 31) >> 5.
+    a.push_u64(0x1f).emit(op::ADD).push_u64(0x05).emit(op::SHR); // [count]
+    // dataSlot0 = keccak256(pad32(slot)). This CLOBBERS mem[0x00..0x20].
+    a.push32(slot).push_u64(0x00).emit(op::MSTORE); // mem[0..0x20] = slot
+    a.push_u64(0x20).push_u64(0x00).emit(op::KECCAK256); // [count, dataSlot0]
+    // Restore the ABI offset word now that the keccak scratch is done with mem[0x00].
+    a.push_u64(0x20).push_u64(0x00).emit(op::MSTORE); // [count, dataSlot0]
+    // Arrange the loop frame [dataSlot0, count, i].
+    a.emit(op::SWAP1); // [dataSlot0, count]
+    a.push_u64(0x00); // [dataSlot0, count, i=0]
+
+    let loop_head = a.new_label();
+    let loop_end = a.new_label();
+    // loop_head: stack = [dataSlot0, count, i]
+    a.jumpdest(loop_head);
+    // Test `i < count`. The interpreter's GT pops a (top) then b (next) and computes
+    // `a > b`, so with `count` on top and `i` beneath, `GT` = `count > i` = `i < count`.
+    a.emit(op::DUP1); // [dataSlot0, count, i, i]
+    a.emit(op::DUP3); // [..., i, count]   (count on top, i beneath)
+    a.emit(op::GT).emit(op::ISZERO); // [..., (i >= count)]   ; GT = count > i = i < count
+    a.push_label(loop_end).emit(op::JUMPI); // exit when i >= count ; [dataSlot0, count, i]
+    // body: word = SLOAD(dataSlot0 + i); mem[0x40 + 32*i] = word.
+    a.emit(op::DUP3); // [..., i, dataSlot0]
+    a.emit(op::DUP2); // [..., i, dataSlot0, i]
+    a.emit(op::ADD).emit(op::SLOAD); // [..., i, word]   word = SLOAD(dataSlot0 + i)
+    a.emit(op::DUP2); // [..., i, word, i]
+    a.push_u64(0x20).emit(op::MUL); // [..., i, word, 32*i]
+    a.push_u64(0x40).emit(op::ADD); // [..., i, word, dest]
+    a.emit(op::MSTORE); // mem[dest] = word ; [dataSlot0, count, i]
+    // i = i + 1.
+    a.push_u64(0x01).emit(op::ADD); // [dataSlot0, count, i+1]
+    a.push_label(loop_head).emit(op::JUMP);
+
+    // loop_end: stack = [dataSlot0, count, i]
+    a.jumpdest(loop_end);
+    a.emit(op::POP); // [dataSlot0, count]
+    // retLen = 0x40 + count*32.
+    a.push_u64(0x20).emit(op::MUL); // [dataSlot0, count*32]
+    a.push_u64(0x40).emit(op::ADD); // [dataSlot0, retLen]
+    a.push_u64(0x00); // [dataSlot0, retLen, 0]
+    a.emit(op::RETURN); // RETURN(0, retLen) — leftover dataSlot0 is harmless (halt)
 }
 
 /// `true` if `s` (or any statement nested inside its `if` branches) is a
@@ -794,6 +1020,13 @@ impl Resolver<'_> {
                     span,
                 ))
             }
+            StateVarKind::DynamicBytes { .. } => {
+                return Err(CompileError::at_code(
+                    codes::TYPE_MISMATCH,
+                    format!("`{name}` is a dynamic `string`/`bytes`; it is not a single-word scalar"),
+                    span,
+                ))
+            }
             StateVarKind::Scalar(_) => {}
         }
         Ok(slot_at(self.base, idx as u64))
@@ -820,6 +1053,11 @@ impl Resolver<'_> {
             StateVarKind::Array { .. } => Err(CompileError::at_code(
                 codes::TYPE_MISMATCH,
                 format!("`{name}` is an array, not a mapping (indexing is array-shaped, handled separately)"),
+                span,
+            )),
+            StateVarKind::DynamicBytes { .. } => Err(CompileError::at_code(
+                codes::TYPE_MISMATCH,
+                format!("`{name}` is a dynamic `string`/`bytes`, not a mapping"),
                 span,
             )),
         }
@@ -855,6 +1093,41 @@ impl Resolver<'_> {
             .unwrap_or(false)
     }
 
+    /// `true` if `name` is a declared dynamic `string`/`bytes` state var (#37).
+    fn is_dynamic_bytes_var(&self, name: &str) -> bool {
+        self.state_var_index(name)
+            .map(|idx| matches!(self.facet.state_vars[idx].kind, StateVarKind::DynamicBytes { .. }))
+            .unwrap_or(false)
+    }
+
+    /// Resolve a dynamic `string`/`bytes` state var to its base slot (`BASE + index`,
+    /// the canonical-layout header slot). Errors if the name is unknown OR not a
+    /// dynamic-bytes var.
+    fn dynamic_bytes_slot(&self, name: &str, span: crate::rustlite::Span) -> Result<[u8; 32], CompileError> {
+        use crate::error_codes as codes;
+        let idx = self.state_var_index(name).ok_or_else(|| {
+            CompileError::at_code(codes::UNDEFINED_VARIABLE, format!("unknown state variable `{name}`"), span)
+        })?;
+        match self.facet.state_vars[idx].kind {
+            StateVarKind::DynamicBytes { .. } => Ok(slot_at(self.base, idx as u64)),
+            _ => Err(CompileError::at_code(
+                codes::TYPE_MISMATCH,
+                format!("`{name}` is not a `string`/`bytes` state variable"),
+                span,
+            )),
+        }
+    }
+
+    /// If `name` is a declared dynamic `string`/`bytes` PARAMETER, return its index;
+    /// else `None` (used to route `return <param>;` to the echo lowering).
+    fn dynamic_param_index(&self, name: &str) -> Option<u64> {
+        self.func
+            .params
+            .iter()
+            .position(|p| p.name == name && p.ty.is_dynamic())
+            .map(|i| i as u64)
+    }
+
     /// Lower an [`Expr`] to a [`LoweredExpr`], resolving names to slots / params.
     fn lower_expr(&self, expr: &Expr) -> Result<LoweredExpr, CompileError> {
         use crate::error_codes as codes;
@@ -864,8 +1137,22 @@ impl Resolver<'_> {
             // (CALLDATALOAD), preferring a state var on a name clash.
             Expr::StateVar { name, span } => {
                 if self.state_var_index(name).is_some() {
+                    // `scalar_slot` rejects mapping/array/dynamic-bytes vars cleanly.
                     Ok(LoweredExpr::Load(self.scalar_slot(name, *span)?))
                 } else if let Some(p) = self.param_index(name) {
+                    // A dynamic `string`/`bytes` param is NOT a single word — it is
+                    // only valid as a whole `return <param>;` (the echo path, handled
+                    // in the body match), never inside an expression.
+                    if self.func.params[p].ty.is_dynamic() {
+                        return Err(CompileError::at_code(
+                            codes::TYPE_MISMATCH,
+                            format!(
+                                "`{name}` is a dynamic `string`/`bytes` parameter; it is only \
+                                 supported as a whole `return {name};`, not inside an expression"
+                            ),
+                            *span,
+                        ));
+                    }
                     Ok(LoweredExpr::Param(p as u64))
                 } else {
                     Err(CompileError::at_code(
@@ -1038,6 +1325,25 @@ fn lower_stmt(facet: &Facet, r: &Resolver, stmt: &Stmt) -> Result<LoweredStmt, C
     use crate::error_codes as codes;
     Ok(match stmt {
         Stmt::Require { cond, .. } => LoweredStmt::Require(r.lower_expr(cond)?),
+        // `<dynBytesVar> = "<literal>";` (#37 slice 1, WRITE): a dynamic `string`/
+        // `bytes` state var is written from a COMPILE-TIME literal only in v1 (a
+        // runtime dynamic value would need a copy loop). A non-literal RHS to a
+        // dynamic var, or a string literal to a non-dynamic var, is a clean error.
+        Stmt::Assign { name, value: Expr::StrLit { value: bytes, .. }, span }
+            if r.is_dynamic_bytes_var(name) =>
+        {
+            LoweredStmt::Assign(LoweredAssign::ConstDynamicBytes {
+                base_slot: r.dynamic_bytes_slot(name, *span)?,
+                bytes: bytes.clone(),
+            })
+        }
+        Stmt::Assign { name, span, .. } if r.is_dynamic_bytes_var(name) => {
+            return Err(CompileError::at_code(
+                codes::UNSUPPORTED_FEATURE,
+                format!("`{name}` is a dynamic `string`/`bytes`; v1 only supports assigning a string literal to it"),
+                *span,
+            ))
+        }
         Stmt::Assign { name, value, span } => LoweredStmt::Assign(LoweredAssign::Scalar {
             slot: r.scalar_slot(name, *span)?,
             value: r.lower_expr(value)?,
@@ -1122,27 +1428,45 @@ pub fn compile(facet: &Facet) -> Result<CompiledArtifact, CompileError> {
         seen_selectors.push(selector);
 
         let r = Resolver { facet, base, func };
+        let returns_dynamic = func.returns.map(|t| t.is_dynamic()).unwrap_or(false);
         let body = match &func.body {
-            // `return "<lit>";` from a `returns (string)` function → a constant
-            // string ABI return (the dynamic-type stretch, slice 1: no storage).
-            // A string literal returned WITHOUT `returns (string)` is a type error.
+            // `return "<lit>";` from a `returns (string|bytes)` function → a constant
+            // dynamic ABI return (#37 slice 1: a literal, no storage/calldata).
+            // A string literal returned WITHOUT a dynamic return type is a type error.
             Stmt::Return(Expr::StrLit { value, span }) => {
-                if func.returns != Some(Ty::String) {
+                if !returns_dynamic {
                     return Err(CompileError::at_code(
                         codes::TYPE_MISMATCH,
-                        "a string literal can only be returned from a `returns (string)` function".to_string(),
+                        "a string literal can only be returned from a `returns (string)`/`returns (bytes)` function"
+                            .to_string(),
                         *span,
                     ));
                 }
                 Body::ConstString(value.clone())
             }
-            // Conversely a `returns (string)` function MUST return a string literal
-            // in v1 (no dynamic storage/calldata strings yet) — catch a non-literal
+            // `return <dynBytesStateVar>;` from a dynamic-return function → ABI-encode
+            // the stored value (#37 slice 1, READ side).
+            Stmt::Return(Expr::StateVar { name, span })
+                if returns_dynamic && r.is_dynamic_bytes_var(name) =>
+            {
+                Body::DynamicStorageReturn { slot: r.dynamic_bytes_slot(name, *span)? }
+            }
+            // `return <dynParam>;` from a dynamic-return function → echo the dynamic
+            // parameter (#37 slices 2+3).
+            Stmt::Return(Expr::StateVar { name, .. })
+                if returns_dynamic && r.dynamic_param_index(name).is_some() =>
+            {
+                Body::EchoParam { param_index: r.dynamic_param_index(name).unwrap() }
+            }
+            // A `returns (string|bytes)` function MUST be one of the dynamic shapes
+            // above (literal / state-var read / param echo) in v1 — catch any other
             // body before it falls into the single-word return paths below.
-            _ if func.returns == Some(Ty::String) => {
+            _ if returns_dynamic => {
                 return Err(CompileError::at_code(
                     codes::TYPE_MISMATCH,
-                    "a `returns (string)` function must return a string literal in v1".to_string(),
+                    "a `returns (string)`/`returns (bytes)` function must return a string literal, a \
+                     `string`/`bytes` state variable, or a `string`/`bytes` parameter in v1"
+                        .to_string(),
                     func.span,
                 ))
             }
@@ -1799,6 +2123,160 @@ mod tests {
         )
         .expect_err("a bare array reference must fail cleanly");
         assert_eq!(err.code, Some(crate::error_codes::TYPE_MISMATCH));
+    }
+
+    // ── #37 DYNAMIC string/bytes (codegen-shape; behavior proven in interp) ───
+
+    /// A SHORT `string` literal store emits exactly `PUSH32 <packedWord> PUSH32 <slot>
+    /// SSTORE`, where the packed word holds the data left-aligned and `len*2` in its
+    /// lowest byte (canonical short layout). ONE SSTORE (no spill).
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn const_short_string_store_emits_one_packed_sstore() {
+        use super::super::asm::op;
+        const SRC: &str = "facet Note { string s; function set() external { s = \"hi\"; } }";
+        let rt = &super::super::compile(SRC).unwrap().runtime;
+        let slot = super::slot_at(super::storage_base("Note"), 0);
+        // Packed short word: "hi" left-aligned, low byte = 2*2 = 4.
+        let mut packed = [0u8; 32];
+        packed[..2].copy_from_slice(b"hi");
+        packed[31] = 4;
+        let mut want = vec![op::PUSH1 + 31];
+        want.extend_from_slice(&packed);
+        want.push(op::PUSH1 + 31);
+        want.extend_from_slice(&slot);
+        want.push(op::SSTORE);
+        assert!(
+            rt.windows(want.len()).any(|w| w == want.as_slice()),
+            "short store must be PUSH32 packed / PUSH32 slot / SSTORE; runtime = {}",
+            to_hex(rt)
+        );
+        // Exactly ONE SSTORE in this single-statement function (no length spill).
+        assert_eq!(count_op(rt, op::SSTORE), 1, "short store is a single SSTORE");
+    }
+
+    /// A LONG `string` literal store emits the header `SSTORE(slot, len*2+1)` plus one
+    /// `SSTORE` per 32-byte data chunk at the precomputed `keccak256(slot) + i` slots
+    /// (no runtime KECCAK256 — the bytes/slots are compile-time constants).
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn const_long_string_store_unrolls_header_plus_data_sstores() {
+        use super::super::asm::op;
+        // 40 bytes → header + 2 data chunks (32 + 8) = 3 SSTOREs, no KECCAK256.
+        const S: &str = "this string is forty bytes long, yes sir";
+        let src = format!("facet Note {{ string s; function set() external {{ s = \"{S}\"; }} }}");
+        let rt = &super::super::compile(&src).unwrap().runtime;
+        let slot = super::slot_at(super::storage_base("Note"), 0);
+
+        // Header word = len*2 + 1 = 81, SSTORE'd to the base slot.
+        let mut header = [0u8; 32];
+        header[31] = 81;
+        let mut want_header = vec![op::PUSH1 + 31];
+        want_header.extend_from_slice(&header);
+        want_header.push(op::PUSH1 + 31);
+        want_header.extend_from_slice(&slot);
+        want_header.push(op::SSTORE);
+        assert!(
+            rt.windows(want_header.len()).any(|w| w == want_header.as_slice()),
+            "long store must SSTORE the len*2+1 header to the base slot; runtime = {}",
+            to_hex(rt)
+        );
+        // Three SSTOREs total (header + two data chunks); NO on-chain KECCAK256.
+        assert_eq!(count_op(rt, op::SSTORE), 3, "header + 2 data chunks = 3 SSTOREs");
+        assert_eq!(count_op(rt, op::KECCAK256), 0, "data slots are precomputed (no runtime KECCAK256)");
+
+        // The data slots are keccak256(slot) + i, computed off-chain to cross-check.
+        use sha3::{Digest, Keccak256};
+        let data0: [u8; 32] = Keccak256::digest(slot).into();
+        for slot_i in [data0, super::slot_at(data0, 1)] {
+            let mut push_slot = vec![op::PUSH1 + 31];
+            push_slot.extend_from_slice(&slot_i);
+            assert!(
+                rt.windows(33).any(|w| w == push_slot.as_slice()),
+                "each data chunk SSTOREs to its precomputed keccak256(slot)+i slot"
+            );
+        }
+    }
+
+    /// The dynamic STORAGE-READ getter branches on the low bit (`AND 1`) and, for the
+    /// LONG case, runs a copy loop using the new `DUP2`/`DUP3`/`SWAP1`/`AND` opcodes
+    /// and a runtime `KECCAK256` for the data-slot base.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn dynamic_storage_getter_emits_branch_and_copy_loop_opcodes() {
+        use super::super::asm::op;
+        const SRC: &str = "facet Note { string s; \
+             function get() external view returns (string) { return s; } }";
+        let rt = &super::super::compile(SRC).unwrap().runtime;
+        // The short/long discriminator masks the low bit: a `PUSH1 0x01 AND`.
+        assert!(
+            rt.windows(3).any(|w| w == [op::PUSH1, 0x01, op::AND]),
+            "the getter must test the slot's low bit via AND 1; runtime = {}",
+            to_hex(rt)
+        );
+        // The LONG copy loop uses the new stack opcodes + a runtime KECCAK256 (data
+        // base) + a per-iteration SLOAD/MSTORE.
+        for o in [op::DUP2, op::DUP3, op::SWAP1, op::AND, op::KECCAK256] {
+            assert!(rt.contains(&o), "the getter must emit {o:#x}");
+        }
+    }
+
+    /// The dynamic PARAM echo uses `CALLDATACOPY` (the bulk tail copy) and prepends
+    /// the `0x20` ABI offset — and emits NO copy loop (it is loop-free).
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn dynamic_param_echo_emits_calldatacopy() {
+        use super::super::asm::op;
+        const SRC: &str =
+            "facet E { function echo(string s) external pure returns (string) { return s; } }";
+        let rt = &super::super::compile(SRC).unwrap().runtime;
+        assert!(rt.contains(&op::CALLDATACOPY), "the echo must bulk-copy via CALLDATACOPY");
+        // The ABI offset word 0x20 is MSTORE'd at mem[0x00]: `PUSH1 0x20 PUSH1 0x00 MSTORE`.
+        assert!(
+            rt.windows(5).any(|w| w == [op::PUSH1, 0x20, op::PUSH1, 0x00, op::MSTORE]),
+            "the echo must write the 0x20 ABI offset at mem[0]; runtime = {}",
+            to_hex(rt)
+        );
+    }
+
+    /// `bytes` (not `string`) flows through the same dynamic lowering; its SELECTOR
+    /// uses the `bytes` ABI type name (proving `abi_name` distinguishes them).
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn bytes_param_uses_the_bytes_abi_selector() {
+        use super::super::asm::op;
+        const SRC: &str =
+            "facet E { function echo(bytes b) external pure returns (bytes) { return b; } }";
+        let rt = &super::super::compile(SRC).unwrap().runtime;
+        let sel = crate::registry::selector("echo(bytes)");
+        let push4: Vec<u8> = std::iter::once(op::PUSH1 + 3).chain(sel).collect();
+        assert!(rt.windows(5).any(|w| w == push4.as_slice()), "echo(bytes) selector dispatched");
+        assert!(rt.contains(&op::CALLDATACOPY), "bytes echo uses the same CALLDATACOPY path");
+    }
+
+    /// A dynamic `string`/`bytes` used where a single word is required is a clean
+    /// `TYPE_MISMATCH`, never a silent single-word miscompile.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn dynamic_value_in_word_context_is_a_clean_error() {
+        // a string state var read as a scalar.
+        let err = super::super::compile(
+            "facet C { string s; function f() external view returns (uint256) { return s; } }",
+        )
+        .expect_err("a string state var is not a single word");
+        assert_eq!(err.code, Some(crate::error_codes::TYPE_MISMATCH));
+        // a dynamic param in arithmetic.
+        let err = super::super::compile(
+            "facet C { function f(bytes b) external pure returns (uint256) { return b + 1; } }",
+        )
+        .expect_err("a bytes param is not a single word");
+        assert_eq!(err.code, Some(crate::error_codes::TYPE_MISMATCH));
+        // a non-literal assigned to a dynamic state var (only a literal is supported).
+        let err = super::super::compile(
+            "facet C { string s; uint256 n; function f() external { s = n; } }",
+        )
+        .expect_err("a dynamic state var only accepts a string literal in v1");
+        assert_eq!(err.code, Some(crate::error_codes::UNSUPPORTED_FEATURE));
     }
 
     // ── COMPARISONS + require/revert (Installment 1 CounterFacet) ─────────────

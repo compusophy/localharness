@@ -45,7 +45,7 @@ pub enum SolKind {
     Mapping,
     /// `delete` (the `delete <arr>[<i>];` element-clear statement keyword).
     Delete,
-    /// A type keyword (`uint256`/`address`/`bool`/`bytes32`).
+    /// A type keyword (`uint256`/`address`/`bool`/`bytes32`/`string`/`bytes`).
     TypeName(String),
     /// An identifier (function/facet/variable name).
     Ident(String),
@@ -317,7 +317,11 @@ fn keyword(word: &str) -> Option<SolKind> {
         "return" => SolKind::Return,
         "mapping" => SolKind::Mapping,
         "delete" => SolKind::Delete,
-        "uint256" | "address" | "bool" | "bytes32" => SolKind::TypeName(word.to_string()),
+        // The dynamic types `string`/`bytes` lex as type keywords too (the parser
+        // routes them to the dynamic-value paths; a non-dynamic position rejects them).
+        "uint256" | "address" | "bool" | "bytes32" | "string" | "bytes" => {
+            SolKind::TypeName(word.to_string())
+        }
         _ => return None,
     })
 }

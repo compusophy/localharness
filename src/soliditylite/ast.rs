@@ -52,12 +52,25 @@ pub enum Ty {
     Bool,
     /// `bytes32` — the word as-is.
     Bytes32,
-    /// `string` — a dynamic type, v1-supported ONLY as a function's RETURN type
-    /// (`returns (string)`) with a constant string-literal body. Produced solely
-    /// by the return-clause parser, never `parse_ty`, so `string` in a parameter,
-    /// state var, or event arg stays a clean "expected type" error (NOT a silent
-    /// single-word miscompile). See [`super::codegen`]'s `Body::ConstString`.
+    /// `string` — a dynamic UTF-8 byte sequence. Supported as a RETURN type
+    /// (`returns (string)`, constant-literal or echo body), a `string` STATE VAR
+    /// (canonical Solidity storage layout — short ≤31 inline, long ≥32 spilled to
+    /// `keccak256(slot)+i`), and a function PARAMETER (ABI-decoded from calldata).
+    /// Still rejected as an EVENT arg or in arithmetic/comparison (a dynamic value
+    /// is not a single word). See [`super::codegen`]'s dynamic-bytes lowering.
     String,
+    /// `bytes` — a dynamic raw byte sequence. Identical storage/ABI layout to
+    /// [`Ty::String`] (the two differ only in the ABI type NAME used in a selector
+    /// signature); same supported positions.
+    Bytes,
+}
+
+impl Ty {
+    /// `true` for the dynamic-length types (`string`/`bytes`) — values that do NOT
+    /// fit in a single 32-byte word and use the dynamic storage/ABI layout.
+    pub fn is_dynamic(self) -> bool {
+        matches!(self, Ty::String | Ty::Bytes)
+    }
 }
 
 impl Ty {
@@ -73,6 +86,7 @@ impl Ty {
             Ty::Bool => "bool",
             Ty::Bytes32 => "bytes32",
             Ty::String => "string",
+            Ty::Bytes => "bytes",
         }
     }
 }
@@ -101,6 +115,16 @@ pub enum StateVarKind {
     Array {
         /// The element type (v1: a single 32-byte word, e.g. `uint256`/`address`).
         elem: Ty,
+    },
+    /// A dynamic `string` / `bytes` state var (#37). `BASE + index` holds the
+    /// canonical Solidity dynamic-bytes header: SHORT (len ≤ 31) packs the data
+    /// left-aligned with `len*2` in the lowest byte; LONG (len ≥ 32) stores
+    /// `len*2 + 1` and spills the data to consecutive slots from
+    /// `keccak256(pad32(BASE + index))`. `is_string` only affects the ABI type name
+    /// (`string` vs `bytes`); the storage layout is identical.
+    DynamicBytes {
+        /// `true` for `string`, `false` for `bytes` (layout-identical; name differs).
+        is_string: bool,
     },
 }
 

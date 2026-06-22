@@ -298,6 +298,27 @@ impl Vm<'_> {
                     self.stack.push(top);
                     self.pc += 1;
                 }
+                op::DUP2 => {
+                    // Duplicate the 2nd-from-top item onto the stack.
+                    let v = *self.stack.iter().rev().nth(1).ok_or(ExecError::StackUnderflow)?;
+                    self.stack.push(v);
+                    self.pc += 1;
+                }
+                op::DUP3 => {
+                    // Duplicate the 3rd-from-top item onto the stack.
+                    let v = *self.stack.iter().rev().nth(2).ok_or(ExecError::StackUnderflow)?;
+                    self.stack.push(v);
+                    self.pc += 1;
+                }
+                op::SWAP1 => {
+                    // Swap the top two stack items.
+                    let n = self.stack.len();
+                    if n < 2 {
+                        return Err(ExecError::StackUnderflow);
+                    }
+                    self.stack.swap(n - 1, n - 2);
+                    self.pc += 1;
+                }
                 op::ADD => {
                     let a = self.pop()?;
                     let b = self.pop()?;
@@ -357,6 +378,17 @@ impl Vm<'_> {
                     let shift = word_to_u128(&self.pop()?);
                     let value = self.pop()?;
                     self.stack.push(shr256(&value, shift));
+                    self.pc += 1;
+                }
+                op::AND => {
+                    // Bitwise AND, byte-by-byte over the two 32-byte words.
+                    let a = self.pop()?;
+                    let b = self.pop()?;
+                    let mut out = [0u8; 32];
+                    for i in 0..32 {
+                        out[i] = a[i] & b[i];
+                    }
+                    self.stack.push(out);
                     self.pc += 1;
                 }
                 op::KECCAK256 => {
@@ -429,6 +461,19 @@ impl Vm<'_> {
                     self.ensure_mem(dest, len);
                     for i in 0..len {
                         let b = self.code.get(src + i).copied().unwrap_or(0);
+                        self.memory[dest + i] = b;
+                    }
+                    self.pc += 1;
+                }
+                op::CALLDATACOPY => {
+                    // CALLDATACOPY(destOff, srcOff, len): copy calldata into memory,
+                    // zero-extending past the end of calldata (the EVM rule).
+                    let dest = word_to_usize(&self.pop()?);
+                    let src = word_to_usize(&self.pop()?);
+                    let len = word_to_usize(&self.pop()?);
+                    self.ensure_mem(dest, len);
+                    for i in 0..len {
+                        let b = self.calldata.get(src.wrapping_add(i)).copied().unwrap_or(0);
                         self.memory[dest + i] = b;
                     }
                     self.pc += 1;
@@ -912,5 +957,228 @@ mod tests {
         let len = word_to_u64(&ret[32..64].try_into().unwrap()) as usize;
         assert_eq!(len, 6);
         assert_eq!(&ret[64..64 + len], b"claude");
+    }
+
+    // ── #37 DYNAMIC string/bytes (diff-harness proven) ───────────────────────
+
+    /// Decode an ABI-encoded dynamic `string`/`bytes` RETURN blob (`offset 0x20 ‖
+    /// length ‖ data‖pad`) back to its bytes. Asserts the canonical shape. Test helper.
+    fn decode_abi_dynamic(ret: &[u8]) -> Vec<u8> {
+        assert!(ret.len() >= 64, "a dynamic return is at least offset+length words");
+        assert_eq!(word_to_u64(&ret[0..32].try_into().unwrap()), 0x20, "ABI offset word must be 0x20");
+        let len = word_to_u64(&ret[32..64].try_into().unwrap()) as usize;
+        assert!(ret.len() >= 64 + len, "the return holds the full {len}-byte payload");
+        ret[64..64 + len].to_vec()
+    }
+
+    /// Build calldata for a single dynamic `string`/`bytes` argument:
+    /// `selector ‖ head(0x20) ‖ length ‖ data‖pad`. Test helper.
+    fn calldata_dynamic_arg(selector: [u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&selector);
+        out.extend_from_slice(&word(0x20)); // head: offset to the tail (relative to arg start)
+        out.extend_from_slice(&word(data.len() as u64)); // length
+        out.extend_from_slice(data); // data
+        let pad = (32 - data.len() % 32) % 32; // right-pad to a 32-byte multiple
+        out.extend(std::iter::repeat_n(0u8, pad));
+        out
+    }
+
+    /// SLICE 1 (STORAGE, SHORT ≤ 31 bytes): write a short string literal to a storage
+    /// var, read it back via a `returns (string)` getter, and cross-check the raw slot
+    /// against the canonical short layout (data high, `len*2` in the low byte).
+    #[test]
+    fn dynamic_storage_short_string_round_trips() {
+        const SRC: &str = "facet Note { string s; \
+             function set() external { s = \"claude\"; } \
+             function get() external view returns (string) { return s; } }";
+        let mut c = deploy_src(SRC);
+        let env = CallEnv::default();
+        // Before set(): the getter returns an empty string (slot 0 → short, len 0).
+        let ret = c.call(&calldata(sel("get()"), &[]), &env).unwrap();
+        assert_eq!(decode_abi_dynamic(&ret), b"", "unset string reads empty");
+
+        c.call(&calldata(sel("set()"), &[]), &env).unwrap();
+        // Raw slot: short layout = data left-aligned, low byte = len*2 = 12.
+        let slot = storage_base("note"); // `s` is the FIRST state var → BASE + 0
+        let raw = c.sload(&slot);
+        assert_eq!(&raw[..6], b"claude", "short data is left-aligned in the slot");
+        assert_eq!(raw[31], 12, "low byte = len*2 (6*2)");
+        // Getter decodes back to the literal.
+        let ret = c.call(&calldata(sel("get()"), &[]), &env).unwrap();
+        assert_eq!(decode_abi_dynamic(&ret), b"claude");
+    }
+
+    /// SLICE 1 (STORAGE, exactly 31 bytes — the SHORT/LONG boundary): the largest
+    /// short string still round-trips, and the slot's low byte is `31*2 = 62` (even).
+    #[test]
+    fn dynamic_storage_31_byte_string_is_short() {
+        const S: &str = "0123456789012345678901234567890"; // 31 bytes
+        assert_eq!(S.len(), 31);
+        let src = format!(
+            "facet Note {{ string s; function set() external {{ s = \"{S}\"; }} \
+             function get() external view returns (string) {{ return s; }} }}"
+        );
+        let mut c = deploy_src(&src);
+        let env = CallEnv::default();
+        c.call(&calldata(sel("set()"), &[]), &env).unwrap();
+        let raw = c.sload(&storage_base("note"));
+        assert_eq!(raw[31], 62, "31-byte string is SHORT (low byte = 31*2 = 62, even)");
+        let ret = c.call(&calldata(sel("get()"), &[]), &env).unwrap();
+        assert_eq!(decode_abi_dynamic(&ret), S.as_bytes());
+    }
+
+    /// SLICE 1 (STORAGE, LONG ≥ 32 bytes): write a 40-byte string literal, read it
+    /// back, and cross-check the raw header (`len*2 + 1`, odd) + the spilled data
+    /// slots at `keccak256(slot) + i`.
+    #[test]
+    fn dynamic_storage_long_string_round_trips() {
+        // 40 bytes (spills into two data slots: 32 + 8).
+        const S: &str = "this string is forty bytes long, yes sir";
+        assert_eq!(S.len(), 40);
+        let src = format!(
+            "facet Note {{ string s; function set() external {{ s = \"{S}\"; }} \
+             function get() external view returns (string) {{ return s; }} }}"
+        );
+        let mut c = deploy_src(&src);
+        let env = CallEnv::default();
+        c.call(&calldata(sel("set()"), &[]), &env).unwrap();
+        // Raw header: len*2 + 1 = 81 (odd ⇒ long).
+        let slot = storage_base("note");
+        assert_eq!(word_to_u64(&c.sload(&slot)), 40 * 2 + 1, "long header = len*2 + 1");
+        // Data slots at keccak256(slot) + 0 and + 1.
+        let d0 = array_elem_slot(&slot, 0);
+        let d1 = array_elem_slot(&slot, 1);
+        assert_eq!(&c.sload(&d0)[..], &S.as_bytes()[..32], "first 32 data bytes");
+        assert_eq!(&c.sload(&d1)[..8], &S.as_bytes()[32..], "trailing 8 data bytes");
+        // Getter decodes back to the literal (the runtime short/long branch + copy loop).
+        let ret = c.call(&calldata(sel("get()"), &[]), &env).unwrap();
+        assert_eq!(decode_abi_dynamic(&ret), S.as_bytes());
+    }
+
+    /// SLICE 1 (STORAGE, exactly 32 bytes — the first LONG length): one full data
+    /// slot, no trailing partial. Header = 65 (odd).
+    #[test]
+    fn dynamic_storage_32_byte_string_is_long() {
+        const S: &str = "01234567890123456789012345678901"; // 32 bytes
+        assert_eq!(S.len(), 32);
+        let src = format!(
+            "facet Note {{ string s; function set() external {{ s = \"{S}\"; }} \
+             function get() external view returns (string) {{ return s; }} }}"
+        );
+        let mut c = deploy_src(&src);
+        let env = CallEnv::default();
+        c.call(&calldata(sel("set()"), &[]), &env).unwrap();
+        assert_eq!(word_to_u64(&c.sload(&storage_base("note"))), 32 * 2 + 1, "32-byte → LONG header 65");
+        let ret = c.call(&calldata(sel("get()"), &[]), &env).unwrap();
+        assert_eq!(decode_abi_dynamic(&ret), S.as_bytes());
+    }
+
+    /// SLICE 1 (STORAGE) with `bytes` (not `string`): identical layout, different ABI
+    /// type name. A short `bytes` literal round-trips through write + getter.
+    #[test]
+    fn dynamic_storage_bytes_round_trips() {
+        const SRC: &str = "facet Blob { bytes b; \
+             function set() external { b = \"raw\"; } \
+             function get() external view returns (bytes) { return b; } }";
+        let mut c = deploy_src(SRC);
+        let env = CallEnv::default();
+        c.call(&calldata(sel("set()"), &[]), &env).unwrap();
+        let ret = c.call(&calldata(sel("get()"), &[]), &env).unwrap();
+        assert_eq!(decode_abi_dynamic(&ret), b"raw");
+    }
+
+    /// SLICES 2+3 (PARAM decode + RETURN encode), SHORT: a `string` parameter is
+    /// ABI-decoded from calldata and echoed back as an ABI `string` return.
+    #[test]
+    fn dynamic_param_echo_short_string() {
+        const SRC: &str =
+            "facet E { function echo(string s) external pure returns (string) { return s; } }";
+        let mut c = deploy_src(SRC);
+        let env = CallEnv::default();
+        let s = b"hello world";
+        let cd = calldata_dynamic_arg(sel("echo(string)"), s);
+        let ret = c.call(&cd, &env).unwrap();
+        assert_eq!(decode_abi_dynamic(&ret), s, "the echoed string matches the input");
+    }
+
+    /// SLICES 2+3 (PARAM echo), LONG (> 32 bytes, multiple data words): the
+    /// CALLDATACOPY-based echo handles a >32-byte argument.
+    #[test]
+    fn dynamic_param_echo_long_string() {
+        const SRC: &str =
+            "facet E { function echo(string s) external pure returns (string) { return s; } }";
+        let mut c = deploy_src(SRC);
+        let env = CallEnv::default();
+        let s = b"this is a string longer than thirty-two bytes for sure!!";
+        assert!(s.len() > 32);
+        let cd = calldata_dynamic_arg(sel("echo(string)"), s);
+        let ret = c.call(&cd, &env).unwrap();
+        assert_eq!(decode_abi_dynamic(&ret), s);
+    }
+
+    /// SLICES 2+3 (PARAM echo), EMPTY string (len 0): the boundary where the copy
+    /// region is just the length word and the data is empty.
+    #[test]
+    fn dynamic_param_echo_empty_string() {
+        const SRC: &str =
+            "facet E { function echo(string s) external pure returns (string) { return s; } }";
+        let mut c = deploy_src(SRC);
+        let cd = calldata_dynamic_arg(sel("echo(string)"), b"");
+        let ret = c.call(&cd, &CallEnv::default()).unwrap();
+        assert_eq!(decode_abi_dynamic(&ret), b"", "an empty string echoes empty");
+    }
+
+    /// SLICES 2+3 (PARAM echo) with `bytes`: the selector uses the `bytes` ABI name
+    /// and the same decode/encode path round-trips raw bytes (incl. an embedded NUL).
+    #[test]
+    fn dynamic_param_echo_bytes() {
+        const SRC: &str =
+            "facet E { function echo(bytes b) external pure returns (bytes) { return b; } }";
+        let mut c = deploy_src(SRC);
+        let payload = [0x00u8, 0xde, 0xad, 0x00, 0xbe, 0xef];
+        let cd = calldata_dynamic_arg(sel("echo(bytes)"), &payload);
+        let ret = c.call(&cd, &CallEnv::default()).unwrap();
+        assert_eq!(decode_abi_dynamic(&ret), payload, "raw bytes (with NULs) echo verbatim");
+    }
+
+    /// A dynamic param echo with a SECOND, leading static param: the `string` is the
+    /// second arg, so its head sits at calldata 0x24 and its offset is relative to the
+    /// args start (byte 4) — proving the head-offset decode is not hard-coded to 0x20.
+    #[test]
+    fn dynamic_param_echo_after_a_static_arg() {
+        const SRC: &str = "facet E { \
+             function echo(uint256 n, string s) external pure returns (string) { return s; } }";
+        let mut c = deploy_src(SRC);
+        let s = b"second-arg string";
+        // calldata: selector ‖ n ‖ head(0x40) ‖ length ‖ data. The string's tail
+        // begins after the two head words, so head = 0x40 (relative to byte 4).
+        let mut cd = Vec::new();
+        cd.extend_from_slice(&sel("echo(uint256,string)"));
+        cd.extend_from_slice(&word(7)); // n = 7 (arg 0)
+        cd.extend_from_slice(&word(0x40)); // head for s (arg 1): offset 0x40 from args start
+        cd.extend_from_slice(&word(s.len() as u64));
+        cd.extend_from_slice(s);
+        let pad = (32 - s.len() % 32) % 32;
+        cd.extend(std::iter::repeat_n(0u8, pad));
+        let ret = c.call(&cd, &CallEnv::default()).unwrap();
+        assert_eq!(decode_abi_dynamic(&ret), s);
+    }
+
+    /// END-TO-END across slices: store a string in slot, ALSO echo a param, in the
+    /// same facet — the two dynamic paths coexist and both decode correctly.
+    #[test]
+    fn dynamic_storage_and_param_echo_coexist() {
+        const SRC: &str = "facet Mix { string s; \
+             function set() external { s = \"stored-value-that-is-long-enough-to-spill\"; } \
+             function get() external view returns (string) { return s; } \
+             function echo(string x) external pure returns (string) { return x; } }";
+        let mut c = deploy_src(SRC);
+        let env = CallEnv::default();
+        c.call(&calldata(sel("set()"), &[]), &env).unwrap();
+        let stored = c.call(&calldata(sel("get()"), &[]), &env).unwrap();
+        assert_eq!(decode_abi_dynamic(&stored), b"stored-value-that-is-long-enough-to-spill");
+        let echoed = c.call(&calldata_dynamic_arg(sel("echo(string)"), b"echoed"), &env).unwrap();
+        assert_eq!(decode_abi_dynamic(&echoed), b"echoed");
     }
 }

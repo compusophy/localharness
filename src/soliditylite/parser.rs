@@ -181,11 +181,14 @@ impl Parser<'_> {
                 self.advance();
                 match name.as_str() {
                     "uint256" => Ok(Ty::Uint256),
-                    // The non-uint256 value types parse but are not yet codegen-
-                    // supported in the floor grammar; surface a precise error.
                     "address" => Ok(Ty::Address),
                     "bool" => Ok(Ty::Bool),
                     "bytes32" => Ok(Ty::Bytes32),
+                    // The dynamic types (#37): valid as a state var, a parameter, and
+                    // a return type. `parse_state_var` routes a dynamic type to a
+                    // `DynamicBytes` kind; other positions handle the single Ty.
+                    "string" => Ok(Ty::String),
+                    "bytes" => Ok(Ty::Bytes),
                     _ => Err(CompileError::at_code(codes::UNKNOWN_TYPE, format!("unknown type `{name}`"), span)),
                 }
             }
@@ -200,11 +203,22 @@ impl Parser<'_> {
     fn parse_state_var(&mut self) -> Result<StateVar, CompileError> {
         let span = self.span();
         let elem = self.parse_ty()?;
-        // `<elem>[] <name>;` — a dynamic array; otherwise a scalar `<ty> <name>;`.
+        // `<elem>[] <name>;` — a dynamic array; otherwise a scalar `<ty> <name>;` or,
+        // for the dynamic types, a `string`/`bytes` state var (#37).
         let kind = if matches!(self.peek(), SolKind::LBracket) {
             self.advance(); // `[`
             self.expect(&SolKind::RBracket, "`]` (dynamic array; fixed-size `[N]` is unsupported in v1)")?;
+            // A dynamic-element array (`string[]`/`bytes[]`) is deferred in v1.
+            if elem.is_dynamic() {
+                return Err(CompileError::at_code(
+                    codes::UNSUPPORTED_FEATURE,
+                    "arrays of `string`/`bytes` are unsupported in v1".to_string(),
+                    span,
+                ));
+            }
             StateVarKind::Array { elem }
+        } else if elem.is_dynamic() {
+            StateVarKind::DynamicBytes { is_string: elem == Ty::String }
         } else {
             StateVarKind::Scalar(elem)
         };
@@ -314,15 +328,10 @@ impl Parser<'_> {
             // `returns ( <ty> )` — the getter always returns one word.
             self.advance(); // `returns`
             self.expect(&SolKind::LParen, "`(`")?;
-            // `string` is recognized ONLY in the return position (it lexes as a
-            // plain identifier — never `parse_ty`, so it can't appear in a param,
-            // state var, or event arg). v1 supports a constant string-literal body.
-            let returns = if matches!(self.peek(), SolKind::Ident(name) if name == "string") {
-                self.advance();
-                Ty::String
-            } else {
-                self.parse_ty()?
-            };
+            // Any value type, including the dynamic `string`/`bytes` (#37): a
+            // `returns (string|bytes)` body is a constant literal OR an echo of a
+            // dynamic parameter (handled at codegen).
+            let returns = self.parse_ty()?;
             self.expect(&SolKind::RParen, "`)`")?;
             // Body: `{ return <expr> ; }`.
             self.expect(&SolKind::LBrace, "`{`")?;
@@ -925,6 +934,45 @@ mod tests {
         assert!(matches!(&f.functions[2].body, Stmt::Return(Expr::Index { base, .. }) if base == "xs"));
         // len(): `return xs.length;` → an ArrayLen read.
         assert!(matches!(&f.functions[3].body, Stmt::Return(Expr::ArrayLen { base, .. }) if base == "xs"));
+    }
+
+    #[test]
+    fn parses_dynamic_string_and_bytes_state_vars_and_params() {
+        // `string`/`bytes` state vars parse to a `DynamicBytes` kind (#37).
+        let f = parse_src(
+            "facet D { string s; bytes b; \
+             function get() external view returns (string) { return s; } }",
+        )
+        .unwrap();
+        assert_eq!(f.state_vars.len(), 2);
+        assert_eq!(f.state_vars[0].kind, StateVarKind::DynamicBytes { is_string: true });
+        assert_eq!(f.state_vars[1].kind, StateVarKind::DynamicBytes { is_string: false });
+        // A `string` parameter + a dynamic return type parse (previously a hard error).
+        let f = parse_src(
+            "facet E { function echo(string s) external pure returns (string) { return s; } }",
+        )
+        .unwrap();
+        let p = &f.functions[0].params[0];
+        assert_eq!(p.name, "s");
+        assert_eq!(p.ty, Ty::String);
+        assert_eq!(f.functions[0].returns, Some(Ty::String));
+        // A `bytes` parameter likewise.
+        let f = parse_src(
+            "facet E { function echo(bytes b) external pure returns (bytes) { return b; } }",
+        )
+        .unwrap();
+        assert_eq!(f.functions[0].params[0].ty, Ty::Bytes);
+        assert_eq!(f.functions[0].returns, Some(Ty::Bytes));
+    }
+
+    #[test]
+    fn dynamic_element_array_is_a_clean_error() {
+        // `string[]` / `bytes[]` are deferred in v1 → a clean UNSUPPORTED_FEATURE.
+        let e = parse_src(
+            "facet C { string[] xs; function f() external view returns (uint256) { return 1; } }",
+        )
+        .unwrap_err();
+        assert_eq!(e.code, Some(codes::UNSUPPORTED_FEATURE));
     }
 
     #[test]
