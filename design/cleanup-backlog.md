@@ -46,9 +46,11 @@ lands. Append as cruft is found; clear lines as removed.
   `proxy_price_table_matches_cli_models` cargo test: the proxy `_prices.ts`
   per-model price table must price EXACTLY the non-Gemini ids in CLI `MODELS`
   (itself pinned to the backend wire constants), so a renamed model can't silently
-  fall to the proxy's unknown-model default tier. Remaining §2 surfaces (browser
-  selector, `_usage.ts` token rates, docs) still drift-by-hand — a fuller catalog
-  is a larger follow-up.
+  fall to the proxy's unknown-model default tier. Extended 2026-06-21 with
+  `proxy_usage_table_matches_cli_models` covering the `_usage.ts` token-rate table
+  (the usage-based metering path, flag-gated off — catches drift before it's ever
+  flipped on). Remaining §2 surfaces (browser selector, docs) still drift-by-hand;
+  a fully generated catalog is a larger follow-up.
 - [x] **allow() suppressions are now a HARD GATE** — DONE 2026-06-21. The original
   "26 un-reasoned" count was a crude single-line grep; the TRUE bare count was 4
   (the rest carry `///`/`//` reasons on the line above, or are cfg_attr-conditional).

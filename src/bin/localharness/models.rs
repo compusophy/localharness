@@ -104,45 +104,73 @@ mod tests {
         assert!(ids.contains(&localharness::backends::openai::PRO_MODEL));
     }
 
-    /// SSOT drift guard (tech-debt report §2): the proxy per-model price table
-    /// (`proxy/api/_prices.ts`) must price EXACTLY the non-Gemini model ids the
-    /// CLI advertises in `MODELS`. A model renamed in the backend/CLI but not in
-    /// the proxy table would silently fall to the proxy's UNKNOWN-model default
-    /// tier (a mis-billing); a stale id priced there would advertise a dead model.
-    /// `MODELS` itself is already pinned to the backend wire constants above, so
-    /// this closes the loop to the off-chain price table. Reads the TS at test
-    /// time; skips if the proxy tree isn't present (packaged crate).
-    #[test]
-    fn proxy_price_table_matches_cli_models() {
-        use std::collections::BTreeSet;
-        let path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("proxy/api/_prices.ts");
-        let Ok(src) = std::fs::read_to_string(&path) else {
-            eprintln!("skip: {} not present (packaged crate?)", path.display());
-            return;
-        };
-        // The CLI's non-Gemini ids (Gemini is flat-priced, no per-model row).
-        let cli: BTreeSet<&str> = MODELS
+    /// The CLI's non-Gemini advertised ids (Gemini is flat-priced / per-token, so
+    /// the proxy tables carry no claude-/gpt-style row for it).
+    fn cli_non_gemini_ids() -> std::collections::BTreeSet<&'static str> {
+        MODELS
             .iter()
             .map(|(id, _, _)| *id)
             .filter(|id| id.starts_with("claude-") || id.starts_with("gpt-"))
-            .collect();
-        // Proxy-priced ids = single-quoted record keys (`'<id>':`) that start
-        // with claude-/gpt-. Those quotes only appear as PRICE_* record keys.
-        let mut proxy: BTreeSet<String> = BTreeSet::new();
+            .collect()
+    }
+
+    /// claude-/gpt- single-quoted record keys (`'<id>':`) in a proxy TS table.
+    /// Those quotes only appear as PRICE_*/RATE_USD record keys; `None` if the
+    /// proxy tree isn't present (a packaged crate).
+    fn proxy_claude_gpt_keys(rel: &str) -> Option<std::collections::BTreeSet<String>> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+        let src = std::fs::read_to_string(&path).ok()?;
+        let mut out = std::collections::BTreeSet::new();
         for line in src.lines() {
             let Some(rest) = line.trim_start().strip_prefix('\'') else { continue };
             let Some(end) = rest.find('\'') else { continue };
             let id = &rest[..end];
-            let is_key = rest[end + 1..].trim_start().starts_with(':');
-            if is_key && (id.starts_with("claude-") || id.starts_with("gpt-")) {
-                proxy.insert(id.to_string());
+            if rest[end + 1..].trim_start().starts_with(':')
+                && (id.starts_with("claude-") || id.starts_with("gpt-"))
+            {
+                out.insert(id.to_string());
             }
         }
-        let proxy_refs: BTreeSet<&str> = proxy.iter().map(String::as_str).collect();
+        Some(out)
+    }
+
+    /// SSOT drift guard (tech-debt report §2): the proxy per-model PRICE table
+    /// (`proxy/api/_prices.ts`) must price EXACTLY the non-Gemini ids the CLI
+    /// advertises in `MODELS`. A model renamed in the backend/CLI but not here
+    /// would silently fall to the proxy's UNKNOWN-model default tier (a
+    /// mis-billing); a stale id priced here would advertise a dead model.
+    /// `MODELS` is already pinned to the backend wire constants above, closing the
+    /// loop to the off-chain table. Skips if the proxy tree isn't present.
+    #[test]
+    fn proxy_price_table_matches_cli_models() {
+        let Some(proxy) = proxy_claude_gpt_keys("proxy/api/_prices.ts") else {
+            eprintln!("skip: proxy/api/_prices.ts not present (packaged crate?)");
+            return;
+        };
+        let proxy_refs: std::collections::BTreeSet<&str> = proxy.iter().map(String::as_str).collect();
         assert_eq!(
-            cli, proxy_refs,
-            "proxy _prices.ts model ids drifted from CLI MODELS.\n  CLI:   {cli:?}\n  proxy: {proxy_refs:?}"
+            cli_non_gemini_ids(),
+            proxy_refs,
+            "proxy _prices.ts model ids drifted from CLI MODELS: {proxy_refs:?}"
+        );
+    }
+
+    /// Same guard for the token-RATE table (`proxy/api/_usage.ts`, the usage-based
+    /// metering path). It's flag-gated OFF in prod, so drift there is LATENT — this
+    /// catches a renamed claude/gpt model before metering is ever flipped on.
+    /// (Gemini has per-model rate rows there that `MODELS` doesn't enumerate, so
+    /// only the claude-/gpt- subset is checked.)
+    #[test]
+    fn proxy_usage_table_matches_cli_models() {
+        let Some(proxy) = proxy_claude_gpt_keys("proxy/api/_usage.ts") else {
+            eprintln!("skip: proxy/api/_usage.ts not present (packaged crate?)");
+            return;
+        };
+        let proxy_refs: std::collections::BTreeSet<&str> = proxy.iter().map(String::as_str).collect();
+        assert_eq!(
+            cli_non_gemini_ids(),
+            proxy_refs,
+            "proxy _usage.ts rate-table ids drifted from CLI MODELS: {proxy_refs:?}"
         );
     }
 }
