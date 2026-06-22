@@ -473,3 +473,11 @@ wasm-opt = false
 # documentable API on docs.rs's native builder, so neither is enabled.
 [package.metadata.docs.rs]
 features = ["wallet", "anthropic", "openai"]
+
+# `cargo machete` flags deps with no source `use`. getrandom_v04 has none ON
+# PURPOSE: it's the renamed getrandom-0.4 pulled (optional, `local` feature only)
+# so Burn gets the `wasm_js` backend the `.cargo/config.toml getrandom_backend`
+# cfg selects — a build/link-level dep, never referenced in source. Ignore it so
+# the unused-dep check stays a meaningful gate (see scripts/audit-tech-debt.sh).
+[package.metadata.cargo-machete]
+ignored = ["getrandom_v04"]

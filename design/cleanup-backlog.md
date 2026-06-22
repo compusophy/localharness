@@ -62,6 +62,13 @@ lands. Append as cruft is found; clear lines as removed.
   `Action::parse` (no dead buttons). `src/app` is wasm32-only so it can't unit-test
   parse directly; the text cross-check runs in every `cargo test`. Reverse
   direction (every parsed Action has a dispatch arm) is a possible follow-up.
+- [x] **Unused-dependency gate (report tooling gap: cargo machete)** — DONE
+  2026-06-21. Ran `cargo machete`: the dep tree is clean — its one hit,
+  `getrandom_v04`, is a build/link-level dep (renamed getrandom-0.4 for Burn's
+  wasm_js backend, `local` feature only, no source `use`), now ignore-listed in
+  Cargo.toml `[package.metadata.cargo-machete]` with the reason. Added machete as
+  stage 5/6 of `audit-tech-debt.sh` (gated on availability), so unused deps can't
+  creep in. `cargo udeps` (nightly) left as optional.
 - [x] **AGENTS.md / CLAUDE.md sync guard (report §4)** — DONE 2026-06-21. The two
   563-line maps had drifted: a blanket Claude→Codex replace turned the factual
   "Claude Messages API" into a nonexistent "Codex Messages API" (×4) in AGENTS.md.

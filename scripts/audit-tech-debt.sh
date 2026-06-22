@@ -12,26 +12,36 @@ if [[ -t 1 ]]; then B='\033[1m'; G='\033[1;32m'; R='\033[1;31m'; N='\033[0m'; el
 step() { printf "\n${B}== %s ==${N}\n" "$1"; }
 fail() { printf "${R}FAIL:${N} %s\n" "$1"; exit 1; }
 
-step "1/5 cargo check --all-targets --all-features (feature-gated code hides debt)"
+step "1/6 cargo check --all-targets --all-features (feature-gated code hides debt)"
 out=$(cargo check --all-targets --all-features --message-format=short 2>&1) || { echo "$out"; fail "check errored"; }
 if echo "$out" | grep -q "warning:"; then echo "$out" | grep "warning:"; fail "warnings in all-targets/all-features build"; fi
 echo "  clean."
 
-step "2/5 cargo clippy --all-targets --all-features -D warnings"
+step "2/6 cargo clippy --all-targets --all-features -D warnings"
 cargo clippy --all-targets --all-features -- -D warnings 2>&1 | tail -5 || fail "clippy found lints"
 
-step "3/5 doc-integrity drift (gen-docs --check)"
+step "3/6 doc-integrity drift (gen-docs --check)"
 cargo run --quiet --bin gen-docs --features wallet -- --check \
     || fail "doc drift: run 'cargo run --bin gen-docs --features wallet', commit, retry"
 
-step "4/5 proxy typecheck (tsc --noEmit)"
+step "4/6 proxy typecheck (tsc --noEmit)"
 if [[ -x proxy/node_modules/.bin/tsc ]]; then
     ( cd proxy && npm run --silent typecheck ) || fail "proxy typecheck failed"
 else
     printf "  ${R}skipped${N} — run 'cd proxy && npm install' first.\n"
 fi
 
-step "5/5 un-justified broad allow() suppressions (HARD GATE)"
+step "5/6 unused dependencies (cargo machete)"
+# Unused crate deps are real trash (slower builds, bigger supply-chain surface).
+# Build/link-level deps with no source `use` (e.g. getrandom_v04 for Burn's wasm
+# backend) are ignore-listed in Cargo.toml [package.metadata.cargo-machete].
+if command -v cargo-machete >/dev/null 2>&1; then
+    cargo machete 2>&1 | tail -3 || fail "cargo machete found unused dependencies"
+else
+    printf "  ${R}skipped${N} — 'cargo install cargo-machete' to enable.\n"
+fi
+
+step "6/6 un-justified broad allow() suppressions (HARD GATE)"
 # Every allow(dead_code|unused_imports|deprecated) must carry a justification: an
 # inline `//` comment, an explanatory comment on the line ABOVE, or a cfg_attr
 # conditional (self-documenting). A bare one re-hides the warning signal the way
