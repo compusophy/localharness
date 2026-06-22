@@ -105,6 +105,13 @@
 #     shipped a verified SUBSET — dynamic uint256[]/address[] storage with push /
 #     [i] / .length (commit 27d2e19); DEFERRED: string/bytes storage, dynamic
 #     function params, dynamic storage returns, nested/struct element types, pop/delete.
+#     UNBLOCK (2026-06-21 loop finding): extending the EVM codegen safely needs an
+#     EXECUTION diff-harness — current verification is bytecode/slot-layout asserts
+#     (don't prove EVM semantics) + opt-in LIVE-testnet E2E (gas + keys). A pure
+#     native harness (a `revm` dev-dep, or a minimal EVM-subset interpreter for the
+#     ~dozen opcodes soliditylite emits) would gate codegen in `cargo test`. That's
+#     a focused next project + a dev-dependency choice — flagged for the user, not
+#     done blind in a cron tick (a miscompile = a faulty on-chain facet).
 #
 # --- 2026-06-21 feedback #48-#49 (chat-UX session) --------------------------
 48  d0ffa91  reverted the read-from-top scroll back to standard bottom-following
