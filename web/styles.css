@@ -1761,7 +1761,6 @@ summary:focus-visible,
 .explore-card, .agent-card, .agent-row-line {
   transition: color 90ms ease, border-color 90ms ease, background 90ms ease;
 }
-button.ghost { /* legacy alias — same as base now */ }
 /* Selected chip in a picker row (model selector). The dispatcher sets
    `ghost active` on the persisted choice — without this rule the active
    model is visually indistinguishable from the rest. Inverted, like the

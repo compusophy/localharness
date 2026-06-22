@@ -77,6 +77,18 @@ lands. Append as cruft is found; clear lines as removed.
   so they can't drift again. (Full generation per the report would be a larger
   follow-up; the guard captures the value cheaply.)
 
+- [x] **Compatibility ledger (report §10)** — DONE 2026-06-21.
+  `design/compatibility-ledger.md` records every legacy on-disk file
+  (`.lh_*`, `*.localharness.key`), intentionally-dormant code (pricing card, P2P
+  layers), and the shelved `SessionFacet`, each with its reader/writer, status,
+  and an explicit **Delete when** condition — so "trash or load-bearing?" stops
+  being re-investigated. Repeated cleanup passes kept landing on "intentionally
+  kept"; this captures that intent.
+- [x] **Dead CSS alias (report §9)** — DONE 2026-06-21. Removed the empty
+  `button.ghost { /* legacy alias */ }` no-op rule from `web/styles.css`
+  (`.ghost` is heavily used + the real `.ghost.active` rule stays). Rides the next
+  web deploy (no functional change).
+
 ## Needs a product decision (flagged, NOT auto-resolved)
 
 - [ ] **Pricing default drift (possible billing bug).** `proxy/api/_prices.ts`
