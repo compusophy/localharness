@@ -1482,6 +1482,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn draw_string_lowers_to_draw_char_calls() {
+        // `draw_string` is a compile-time macro: it lowers to per-glyph
+        // `draw_char` calls, emitting ONLY the existing integer-ABI host import
+        // (no new string-passing import). The module compiles to valid wasm and
+        // references the `draw_char` host field, never a `draw_string` one.
+        let wasm = compile_to_wasm(
+            r#"
+            use host::display;
+            fn frame(t: i32) {
+                display::draw_string(4, 8, "Hi!", 16777215, 2);
+            }
+        "#,
+        );
+        assert_eq!(&wasm[0..4], WASM_MAGIC);
+        assert!(section_ids(&wasm).contains(&SEC_IMPORT), "expected an import section");
+        assert!(
+            wasm.windows(b"draw_char".len()).any(|w| w == b"draw_char"),
+            "draw_string must lower to draw_char host calls",
+        );
+        assert!(
+            !wasm.windows(b"draw_string".len()).any(|w| w == b"draw_string"),
+            "no draw_string host import — it's a compile-time macro",
+        );
+    }
+
     /// Parse the wasm EXPORT section (id 7) and return the names of all
     /// FUNCTION exports (export kind 0x00). The section format is:
     /// `count` then `count` × (`name_len` name `kind` `index`). Used to PROVE a

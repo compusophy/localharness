@@ -724,7 +724,16 @@ impl<'a> Parser<'a> {
                     let args = self.parse_arg_list()?;
                     self.expect(&TokenKind::RParen)?;
                     let span = Span { start: expr.span.start, end: self.tokens[self.pos - 1].span.end };
-                    expr = Expr { kind: ExprKind::Call { func: Box::new(expr), args }, span };
+                    // `host::display::draw_string(x, y, "LIT", color, scale)` is a
+                    // COMPILE-TIME MACRO, not a host import: desugar it to a block
+                    // of per-glyph `draw_char` calls so the host ABI stays
+                    // integer-only (no string-passing import). Any other call is
+                    // a normal `Call`.
+                    expr = if is_draw_string_path(&expr) {
+                        self.desugar_draw_string(args, span)?
+                    } else {
+                        Expr { kind: ExprKind::Call { func: Box::new(expr), args }, span }
+                    };
                 }
                 TokenKind::LBracket => {
                     self.advance();
@@ -1259,6 +1268,108 @@ impl<'a> Parser<'a> {
         }
         Ok(fields)
     }
+
+    /// Desugar `draw_string(x, y, "LIT", color, scale)` to a block of one
+    /// `draw_char` per glyph. The literal is validated at compile time (exactly
+    /// 5 args, 3rd a printable-ASCII string literal, bounded length); each char
+    /// advances `x` by `6 * scale` (the glyph stride `raster::draw_number` uses).
+    /// `x`/`y`/`color`/`scale` are bound to temp locals so a side-effecting arg
+    /// runs once; the host boundary still sees only `draw_char` (integer ABI).
+    fn desugar_draw_string(&self, args: Vec<Expr>, span: Span) -> Result<Expr, CompileError> {
+        if args.len() != 5 {
+            return Err(CompileError::at_code(
+                codes::ARITY_MISMATCH,
+                format!("draw_string expects 5 args (x, y, \"literal\", color, scale), got {}", args.len()),
+                span,
+            ));
+        }
+        let mut it = args.into_iter();
+        let x = it.next().unwrap();
+        let y = it.next().unwrap();
+        let text_expr = it.next().unwrap();
+        let color = it.next().unwrap();
+        let scale = it.next().unwrap();
+        let text = match &text_expr.kind {
+            ExprKind::StringLit(s) => s.clone(),
+            _ => return Err(CompileError::at_code(
+                codes::EXPECTED_EXPRESSION,
+                "draw_string's 3rd arg must be a string literal (it is lowered to draw_char calls at compile time)",
+                text_expr.span,
+            )),
+        };
+        // Bound the length: 256 glyphs is far beyond any framebuffer line and
+        // keeps the unrolled block small.
+        if text.len() > 256 {
+            return Err(CompileError::at_code(
+                codes::OVERSIZE,
+                format!("draw_string literal is {} bytes; cap is 256", text.len()),
+                text_expr.span,
+            ));
+        }
+        if let Some(b) = text.bytes().find(|b| !(0x20..=0x7E).contains(b)) {
+            return Err(CompileError::at_code(
+                codes::UNEXPECTED_BYTE,
+                format!("draw_string literal must be printable ASCII (0x20..0x7E); found byte 0x{b:02X}"),
+                text_expr.span,
+            ));
+        }
+
+        let int = |n| Expr { kind: ExprKind::IntLit(n), span };
+        let var = |n: &str| Expr { kind: ExprKind::Var(n.to_string()), span };
+        let bin = |op, l, r| Expr {
+            kind: ExprKind::BinOp { op, lhs: Box::new(l), rhs: Box::new(r) },
+            span,
+        };
+        // Unique temp names (span-keyed) so nested draw_string calls don't clash.
+        let xn = format!("__ds_x_{}", span.start);
+        let yn = format!("__ds_y_{}", span.start);
+        let cn = format!("__ds_c_{}", span.start);
+        let sn = format!("__ds_s_{}", span.start);
+        let mklet = |name: String, init: Expr| Stmt::Let { name, mutable: false, ty: None, init, span };
+
+        let mut stmts = vec![
+            mklet(xn.clone(), x),
+            mklet(yn.clone(), y),
+            mklet(cn.clone(), color),
+            mklet(sn.clone(), scale),
+        ];
+        // draw_char(__ds_x + (i*6) * __ds_s, __ds_y, code, __ds_c, __ds_s)
+        let func = Expr {
+            kind: ExprKind::Path(vec!["host".into(), "display".into(), "draw_char".into()]),
+            span,
+        };
+        for (i, b) in text.bytes().enumerate() {
+            let dx = bin(BinOp::Mul, int((i as i64) * 6), var(&sn));
+            let call = Expr {
+                kind: ExprKind::Call {
+                    func: Box::new(func.clone()),
+                    args: vec![
+                        bin(BinOp::Add, var(&xn), dx),
+                        var(&yn),
+                        int(b as i64),
+                        var(&cn),
+                        var(&sn),
+                    ],
+                },
+                span,
+            };
+            stmts.push(Stmt::Expr { expr: call, span });
+        }
+        Ok(Expr {
+            kind: ExprKind::Block(Block { stmts, tail: None, span }),
+            span,
+        })
+    }
+}
+
+/// Whether `expr` names the `draw_string` compile-time macro in any spelling:
+/// bare `draw_string`, `display::draw_string`, or `host::display::draw_string`.
+fn is_draw_string_path(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Var(name) => name == "draw_string",
+        ExprKind::Path(segs) => segs.last().map(|s| s == "draw_string").unwrap_or(false),
+        _ => false,
+    }
 }
 
 fn is_block_expr(expr: &Expr) -> bool {
@@ -1369,6 +1480,50 @@ mod tests {
         };
         check(&f.body.stmts[1], true, 5);
         check(&f.body.stmts[2], false, 2);
+    }
+
+    fn parse_err(s: &str) -> CompileError {
+        let tokens = lexer::lex(s).unwrap();
+        parse(&tokens).expect_err("expected a parse error")
+    }
+
+    #[test]
+    fn draw_string_desugars_to_a_draw_char_per_glyph() {
+        // `draw_string(x, y, "ab", c, s)` lowers to a block of 4 temp `let`s +
+        // one `draw_char` Call per character (here 2). No `draw_string` survives.
+        let m = parse_str(r#"fn frame(t: i32) { host::display::draw_string(0, 0, "ab", 255, 1); }"#);
+        let Item::Fn(f) = &m.items[0] else { panic!("expected fn") };
+        let Stmt::Expr { expr, .. } = &f.body.stmts[0] else { panic!("expected stmt") };
+        let ExprKind::Block(b) = &expr.kind else { panic!("draw_string should desugar to a block") };
+        // 4 temp lets (x, y, color, scale) + 2 draw_char calls.
+        assert_eq!(b.stmts.len(), 6);
+        let calls = b.stmts.iter().filter(|s| matches!(
+            s, Stmt::Expr { expr, .. } if matches!(&expr.kind, ExprKind::Call { func, .. }
+                if matches!(&func.kind, ExprKind::Path(p) if p.last().unwrap() == "draw_char"))
+        )).count();
+        assert_eq!(calls, 2, "one draw_char per glyph");
+    }
+
+    #[test]
+    fn draw_string_rejects_non_literal_third_arg() {
+        // The 3rd arg MUST be a string literal (it is lowered at compile time).
+        let err = parse_err("fn frame(t: i32) { host::display::draw_string(0, 0, t, 255, 1); }");
+        assert_eq!(err.code, Some(codes::EXPECTED_EXPRESSION));
+    }
+
+    #[test]
+    fn draw_string_rejects_non_ascii_and_bad_arity() {
+        // Non-printable bytes in the literal are rejected (here a `\t` escape →
+        // byte 0x09, below the printable-ASCII floor 0x20).
+        assert_eq!(
+            parse_err(r#"fn frame(t: i32) { host::display::draw_string(0, 0, "\t", 255, 1); }"#).code,
+            Some(codes::UNEXPECTED_BYTE),
+        );
+        // Wrong arg count is a clean arity error, not a panic.
+        assert_eq!(
+            parse_err("fn frame(t: i32) { host::display::draw_string(0, 0, \"x\"); }").code,
+            Some(codes::ARITY_MISMATCH),
+        );
     }
 
     #[test]
