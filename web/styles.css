@@ -263,15 +263,23 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--muted);
+  color: var(--accent);
   background: var(--bg);
   border: 1px solid var(--border);
   transition: color 90ms ease, border-color 90ms ease;
 }
-.brand-summary:hover { color: var(--fg); border-color: var(--fg); }
+.brand-summary:hover { color: var(--accent); border-color: var(--fg); }
 .brand-summary svg { display: block; height: 15px; width: auto; }
 .brand-summary::-webkit-details-marker { display: none; }
 .brand-summary::marker { content: ""; }
+/* Header icon buttons (bell/feedback/settings) + the play/send control render at
+   full white (--accent), BRIGHTER than the --fg body text — the thin line-art
+   icons read dimmer than solid text at the same colour, so they need the bump to
+   not look muted-grey ("icons too grey, hard to see, more white"). */
+.notif-bell-btn,
+.feedback-bug-btn,
+.admin-button,
+.terminal-action-btn { color: var(--accent); }
 .brand-menu-items {
   position: absolute;
   top: 100%;
