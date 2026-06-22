@@ -433,20 +433,20 @@ main.layout .transcript {
   margin-top: 0;
   display: flex;
   flex-direction: column;
-  /* No flex `gap` — the SSOT inter-turn rhythm is carried by `.turn`'s own top
-     margin + the hairline separator (see §3 turns), so a single turn's spacing
-     is one declared unit (--turn-gap), not gap + margin stacked. */
-  gap: 0;
+  /* The inter-turn rhythm IS this flex `gap` — EXTERNAL space between the turn
+     containers, the SSOT. Turns carry no margin/padding of their own (see §3),
+     so the only space inside a bubble is the body's square padding; turns float
+     apart on this one declared unit (--turn-gap == the uniform --chrome-pad). */
+  gap: var(--turn-gap);
   /* Hide the chat scrollbar but KEEP scrolling — the bar over the edge-to-edge
      transcript reads as chrome on the otherwise bare surface. */
   scrollbar-width: none;
 }
 main.layout .transcript::-webkit-scrollbar { display: none; }
-/* The FIRST item in the transcript sits FLUSH against the header border —
-   no residual top gap. `.turn` carries `padding: 1px 0` for between-turn
-   rhythm, but the first turn must not push the conversation down from the
-   header (the "1px gap under the header" / "padding above the transcript"
-   — one gap, reported from both sides). */
+/* Flex `gap` only applies BETWEEN children, so the first turn already sits flush
+   under the floating header with no leading gap — no per-turn margin to cancel
+   anymore. This zeroing stays as a belt-and-braces guard for any non-`.turn`
+   first child (e.g. a leading system-status line). */
 main.layout .transcript > :first-child {
   margin-top: 0;
   padding-top: 0;
@@ -1854,14 +1854,14 @@ button.ready:hover {
   padding: 0;
   line-height: var(--line-tight);
 }
-/* ONE uniform unit of space + a hairline rule between consecutive turns. The
-   first turn carries neither (it sits flush under the floating header — see
-   `main.layout .transcript > :first-child`). */
-.turn + .turn {
-  margin-top: var(--turn-gap);
-  padding-top: var(--turn-gap);
-  border-top: 1px solid var(--border);
-}
+/* Inter-turn space is the TRANSCRIPT's flex `gap` (EXTERNAL — between the turn
+   containers), NOT margin/padding on `.turn`. A `.turn + .turn` padding-top lands
+   INSIDE the bg'd bubble (a gap-sized empty band atop the agent's content, on top
+   of the body's own padding), and pairing it with a margin doubled the gap. So a
+   turn carries NO margin/padding of its own; its only internal space is the body's
+   square padding, and turns float apart on the transcript gap. (No separator line:
+   the bg-shade + alignment + accent rule already distinguish turns — a border on a
+   shrink-to-fit user bubble would also be ragged.) */
 .turn .role { display: none; }
 /* SQUARE body: top = bottom = left = right, ONE value, role-INDEPENDENT. The
    flex column turns inter-block spacing into a single `gap`; resetting every
@@ -1880,9 +1880,9 @@ button.ready:hover {
 .turn .body .text-segment > * { margin: 0; }
 /* USER: a right-hugging bubble that GROWS FROM THE RIGHT (text-message style) —
    a short message is only as wide as its words; long ones expand leftward to a
-   cap, then wrap. The accent rule + shade live on the BUBBLE (the body), not the
-   full-width row, so the inter-turn separator stays full width while the bubble
-   floats right. (Agent replies stay full-width, left-bordered blocks.) */
+   cap, then wrap. The accent rule + shade live on the BUBBLE (the body), so the
+   bubble floats right against the transparent row. (Agent replies stay
+   full-width, left-bordered blocks.) */
 .turn.user .body {
   white-space: pre-wrap;
   color: var(--muted);
