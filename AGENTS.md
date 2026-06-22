@@ -46,7 +46,8 @@ is the only durable handle.
 > dir; update the matching one when you change a subsystem): `src/app` (UI / overlay
 > modals / no-DOM / one-box-input), `src/registry` (on-chain gas/tx/relay),
 > `src/backends` (provider wire quirks), `src/bin/localharness` (CLI), `src/rustlite`
-> (cartridge compiler). The root stays a whole-repo MAP; detail lives in the specs.
+> (cartridge compiler), `src/filesystem` (FS impls + at-rest encryption /
+> EXEMPT_FILES). The root stays a whole-repo MAP; detail lives in the specs.
 
 ```
 src/                  library crate
@@ -571,23 +572,13 @@ localharnesslite** (CLI `sh` + browser `execute_script`; design/bashlite.md). Op
 
 ## Filesystem trait
 
-The 8 fs builtins call `crate::filesystem::Filesystem`, not `tokio::fs`. Surface:
-`read, write_atomic, metadata, read_dir, walk, delete, rename`. Impls:
-**`NativeFilesystem`** (`feature=native`: tokio::fs + walkdir + tempfile; atomic via
-tempfile+rename) and **`OpfsFilesystem`** (wasm32: OPFS via web-sys; atomic via
-`FileSystemWritableFileStream.close()` swap). `GeminiConnectionStrategy::connect`
-honors a caller-supplied `Filesystem` via `with_filesystem`, else auto-installs
-`NativeFilesystem` on native (None on wasm — caller supplies OPFS).
-`SharedFilesystem = Arc<dyn Filesystem>`.
-
-**`EncryptedFilesystem`** (all targets) = seed-keyed AES-256-GCM at rest over any
-impl: `LHE1‖nonce‖ct`; read sniffs the magic → decrypt (tamper = clear error),
-else legacy plaintext passes through FOREVER. Key tag `localharness/v0/opfs-at-rest`
-(pinned); `wallet_store::{load,create_and_persist,import}` install it over OPFS;
-seedless origins stay plaintext. NEVER encrypts pinned `EXEMPT_FILES` —
-`.lh_wallet` (the seed IS the key root; sealing it bricks identity), the
-pre-wallet boot files (`.lh_owner`/`.lh_linked_owner`/`.lh_device_key`), the 2
-model artifacts.
+The 8 fs builtins call `crate::filesystem::Filesystem` (not `tokio::fs`), so they
+run on wasm/OPFS too. Impls: Native / OPFS / Encrypted (AES-256-GCM at rest) /
+Rooted (bashlite sandbox). **⛔ EncryptedFilesystem must NEVER seal the
+`EXEMPT_FILES`: `.lh_wallet` (the seed IS the key root → sealing bricks identity),
+the pre-wallet boot files (`.lh_owner`/`.lh_linked_owner`/`.lh_device_key`), and the
+model artifacts.** Trait surface, the `LHE1‖nonce‖ct` at-rest format, and the full
+EXEMPT list → `src/filesystem/AGENTS.md`.
 
 ## Documentation SOP
 
