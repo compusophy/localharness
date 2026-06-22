@@ -847,18 +847,21 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
 fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
     mark_turn_done(assistant_turn_id);
     let lower = err.to_lowercase();
-    // The proxy's token-freshness rejection is NOT an API-key problem —
-    // with per-request token minting the only remaining cause is a device
-    // clock off by more than the proxy's 5-minute window. Don't pop the
-    // Gemini key modal at a platform-credits user for it.
-    let stale_token = lower.contains("stale or future timestamp");
-    // Off-chain auto error reporting — redacted, deduped, fire-and-forget,
-    // no-op when disabled. SKIP expected non-bug states: a 402 (out-of-credits
-    // is normal), a stale device clock, and user cancels.
-    if !stale_token
-        && !lower.contains("402")
-        && !lower.contains("no $lh")
-        && !lower.contains("no credit")
+    // Classify the raw error into a stable LHxxxx code — the single source of
+    // truth shared by telemetry + this chat surface (src/error_codes.rs).
+    use crate::error_codes::{BACKEND_AUTH, BACKEND_CREDITS, BACKEND_STALE_AUTH};
+    let code = crate::error_codes::classify(err);
+    // The proxy's token-freshness rejection is NOT an API-key problem — the only
+    // remaining cause is a device clock off by more than the proxy's 5-minute
+    // window. Don't pop the Gemini key modal at a platform-credits user for it.
+    let stale_token = code == Some(BACKEND_STALE_AUTH);
+    // Off-chain auto error reporting — code-stamped, redacted, deduped, fire-and-
+    // forget, no-op when disabled. SKIP expected non-bug states: out-of-credits
+    // (402), a stale device clock, and user cancels. A provider 429 is a REAL
+    // signal (the platform's quota, LH3001) and IS reported.
+    if crate::app::telemetry::enabled()
+        && !stale_token
+        && code != Some(BACKEND_CREDITS)
         && !lower.contains("cancel")
     {
         let agent = crate::app::tenant::current_name().unwrap_or_else(|| "apex".to_string());
@@ -868,31 +871,21 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
             first.chars().take(120).collect::<String>()
         );
         let signature = crate::app::telemetry::signature_for(&agent, context, err);
-        let body = format!("agent: {agent}\ncontext: {context}\n\nerror:\n{err}");
-        wasm_bindgen_futures::spawn_local(crate::app::telemetry::report(
+        let freeform = format!("context: {context}\n\nerror:\n{err}");
+        wasm_bindgen_futures::spawn_local(crate::app::telemetry::report_event(
             "error".to_string(),
+            code,
             title,
             signature,
-            body,
+            freeform,
+            String::new(),
         ));
     }
-    let looks_like_auth = !stale_token
-        && (lower.contains("api key")
-        || lower.contains("api_key")
-        || lower.contains("401")
-        || lower.contains("403")
-        || lower.contains("permission_denied")
-        || lower.contains("unauthenticated"));
+    let looks_like_auth = code == Some(BACKEND_AUTH);
     // The credit proxy 402s when there's no active session / no $LH for the
-    // signing address. On a subdomain that address is this origin's local
-    // credit key — distinct from the apex wallet — so "I redeemed credits"
-    // and "this origin has credits" are not the same thing.
-    let looks_like_credits = lower.contains("402")
-        || lower.contains("payment required")
-        || lower.contains("insufficient")
-        || lower.contains("no active session")
-        || lower.contains("quota")
-        || lower.contains("429");
+    // signing address (LH3003). A provider 429/quota is LH3001, NOT this — so a
+    // throttled provider no longer mis-renders the out-of-credits card.
+    let looks_like_credits = code == Some(BACKEND_CREDITS);
 
     // SELF-HEAL for "I have $LH but can't send": a VERIFIED OWNER whose master
     // seed isn't loaded on THIS subdomain chats as a per-origin device key with
@@ -934,16 +927,32 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
         web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(err));
         dom::append_html(&body_id, &super::templates::out_of_credits_card().into_string());
     } else {
-        let bubble = if stale_token {
+        // Prefix the human copy with the stable LHxxxx code + meaning so the
+        // user (and we, in telemetry) can name the failure — rustlite-style
+        // discipline. The raw error stays appended for devs.
+        let headline = if stale_token {
             format!(
-                "request auth went stale — your device clock looks off by more \
-                 than 5 minutes; sync it and retry. Raw error: {err}"
+                "{} · request auth went stale — your device clock looks off by more \
+                 than 5 minutes; sync it and retry",
+                crate::error_codes::fmt_label(BACKEND_STALE_AUTH)
             )
         } else if looks_like_auth {
-            format!("model rejected the API key — check your Gemini key. Raw error: {err}")
+            format!(
+                "{} · model rejected the API key — check your Gemini key",
+                crate::error_codes::fmt_label(BACKEND_AUTH)
+            )
+        } else if let Some(c) = code {
+            let e = crate::error_codes::lookup(c);
+            format!(
+                "{} · {} — {}",
+                crate::error_codes::fmt_label(c),
+                e.map(|x| x.meaning).unwrap_or("error"),
+                e.map(|x| x.hint).unwrap_or("")
+            )
         } else {
-            format!("{context} failed: {err}")
+            format!("{context} failed")
         };
+        let bubble = format!("{headline} (raw: {err})");
         dom::append_html(
             &body_id,
             &format!(

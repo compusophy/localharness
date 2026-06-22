@@ -712,7 +712,6 @@ pub(crate) fn admin_feedback_section() -> Markup {
             textarea #feedback-text
                 .feedback-textarea
                 aria-label="feedback message"
-                placeholder="feedback"
                 rows="6" {}
             button type="button" data-action="feedback-submit" .ghost.feedback-submit { "submit" }
             div #feedback-msg .feedback-msg {}
@@ -1677,6 +1676,15 @@ pub(crate) fn admin_notify_section() -> Markup {
                 }
             }
             div #telemetry-msg .admin-msg-slot { "auto error reports — redacted on-device, off-chain" }
+            // Feedback destination: off-chain (rich GitHub-issue) is the default,
+            // cheap path; the on-chain mirror costs sponsor gas and is opt-in.
+            div.admin-section-title { "feedback" }
+            div.pair-slot {
+                button #feedback-onchain-toggle type="button" data-action="toggle-feedback-onchain" .ghost {
+                    (if crate::app::feedback::feedback_onchain_enabled() { "feedback on-chain: on" } else { "feedback on-chain: off" })
+                }
+            }
+            div #feedback-onchain-msg .admin-msg-slot { "feedback files off-chain with full context; enable to ALSO mirror the short note on-chain (gas)" }
         }
     }
 }

@@ -12,6 +12,13 @@
 //!     selectors). [`crate::registry`]'s revert decoder maps a 4-byte selector
 //!     to its code so a revert surfaces `LH2xxx: <name> — <meaning>` instead of
 //!     a bare hash.
+//!   * `LH3xxx` — **BACKEND / agent-runtime** failures (the chat-facing ones):
+//!     a model provider rate-limit / quota, a rejected API key, out-of-credits,
+//!     a request timeout, an empty/truncated response, a transport failure. The
+//!     `.turn-error` chat line shows the code; [`classify`] maps a raw error
+//!     string to one of these.
+//!   * `LH4xxx` — **SDK CORE** errors — one per [`crate::Error`] variant, so
+//!     `Error::code()` always resolves to a stable code (the CLI prints it).
 //!
 //! Numbering scheme (stable — codes are NEVER renumbered, only appended):
 //!
@@ -23,6 +30,8 @@
 //! | `LH0300`–`LH0399` | compile: codegen | lowering / unsupported emit    |
 //! | `LH1000`–`LH1099` | runtime          | cartridge worker failures      |
 //! | `LH2000`–`LH2099` | tx revert        | facet custom-error selectors   |
+//! | `LH3000`–`LH3099` | backend          | provider/transport/agent runtime |
+//! | `LH4000`–`LH4099` | core             | one per `Error` enum variant   |
 //!
 //! A code is a small stable integer + a static category + a one-line meaning +
 //! a fix hint. The full human/agent index is `docs/error-codes.md`; a compact
@@ -30,7 +39,7 @@
 //! codes it will see. This module is pure data — no feature gates, no deps — so
 //! it compiles on every target and is unit-testable headlessly.
 
-/// The three families a code belongs to.
+/// The families a code belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Family {
     /// `LH0xxx` — a rustlite compile error.
@@ -39,7 +48,20 @@ pub enum Family {
     Runtime,
     /// `LH2xxx` — an on-chain transaction revert.
     TxRevert,
+    /// `LH3xxx` — a backend / agent-runtime failure (provider/transport/chat).
+    Backend,
+    /// `LH4xxx` — an SDK core error (one per [`crate::Error`] variant).
+    Core,
 }
+
+/// The order families are listed in the compact agent-facing index.
+pub const FAMILIES: [Family; 5] = [
+    Family::Compile,
+    Family::Runtime,
+    Family::TxRevert,
+    Family::Backend,
+    Family::Core,
+];
 
 impl Family {
     /// The family of a numeric code by its thousands digit.
@@ -48,6 +70,8 @@ impl Family {
             1..=999 => Some(Family::Compile),
             1000..=1999 => Some(Family::Runtime),
             2000..=2999 => Some(Family::TxRevert),
+            3000..=3999 => Some(Family::Backend),
+            4000..=4999 => Some(Family::Core),
             _ => None,
         }
     }
@@ -58,6 +82,8 @@ impl Family {
             Family::Compile => "compile",
             Family::Runtime => "runtime",
             Family::TxRevert => "tx-revert",
+            Family::Backend => "backend",
+            Family::Core => "core",
         }
     }
 }
@@ -216,6 +242,55 @@ pub const TX_PANIC: u16 = 2023;
 /// spent on inference, not transferred/bridged to the wallet) or simply short.
 pub const TX_INSUFFICIENT_CREDITS: u16 = 2024;
 
+// ── LH3xxx — BACKEND / agent-runtime codes ──────────────────────────────────
+// The chat-facing failures. [`classify`] maps a raw error string to one of
+// these; the `.turn-error` line and the telemetry signature carry the label.
+/// `LH3001` — the model provider rate-limited the request or the project quota
+/// / spending cap is exhausted (HTTP 429 / `RESOURCE_EXHAUSTED`).
+pub const BACKEND_RATE_LIMIT: u16 = 3001;
+/// `LH3002` — the model rejected the API key / the request was unauthorized
+/// (HTTP 401/403, `PERMISSION_DENIED`, `UNAUTHENTICATED`).
+pub const BACKEND_AUTH: u16 = 3002;
+/// `LH3003` — out of platform credits: the proxy 402'd (no $LH / no session).
+pub const BACKEND_CREDITS: u16 = 3003;
+/// `LH3004` — the model request timed out / produced no response in time.
+pub const BACKEND_TIMEOUT: u16 = 3004;
+/// `LH3005` — the model returned an empty or truncated response.
+pub const BACKEND_EMPTY: u16 = 3005;
+/// `LH3006` — the model backend errored (HTTP 5xx / internal server error).
+pub const BACKEND_SERVER: u16 = 3006;
+/// `LH3007` — a network / transport failure reaching the backend or proxy.
+pub const BACKEND_NETWORK: u16 = 3007;
+/// `LH3008` — request auth went stale: the device clock is off by more than the
+/// proxy's freshness window (a `stale or future timestamp` rejection).
+pub const BACKEND_STALE_AUTH: u16 = 3008;
+
+// ── LH4xxx — SDK CORE codes (one per `Error` variant) ───────────────────────
+/// `LH4001` — `Error::Io`: an OS-level I/O error.
+pub const CORE_IO: u16 = 4001;
+/// `LH4002` — `Error::Json`: a (de)serialization error.
+pub const CORE_JSON: u16 = 4002;
+/// `LH4003` — `Error::Http`: an HTTP transport error not matched by [`classify`].
+pub const CORE_HTTP: u16 = 4003;
+/// `LH4004` — `Error::Closed`: the connection closed unexpectedly.
+pub const CORE_CLOSED: u16 = 4004;
+/// `LH4005` — `Error::NotStarted`: the operation needs a started agent.
+pub const CORE_NOT_STARTED: u16 = 4005;
+/// `LH4006` — `Error::AlreadyStarted`: `start()` was called more than once.
+pub const CORE_ALREADY_STARTED: u16 = 4006;
+/// `LH4007` — `Error::Config`: invalid configuration.
+pub const CORE_CONFIG: u16 = 4007;
+/// `LH4008` — `Error::ToolNotFound`: no tool registered under that name.
+pub const CORE_TOOL_NOT_FOUND: u16 = 4008;
+/// `LH4009` — `Error::ToolFailed`: a tool errored during execution.
+pub const CORE_TOOL_FAILED: u16 = 4009;
+/// `LH4010` — `Error::PolicyDenied`: a policy blocked the operation.
+pub const CORE_POLICY_DENIED: u16 = 4010;
+/// `LH4011` — `Error::Timeout`: an operation exceeded its deadline.
+pub const CORE_TIMEOUT: u16 = 4011;
+/// `LH4012` — `Error::Other`: a catch-all not matched by [`classify`].
+pub const CORE_OTHER: u16 = 4012;
+
 /// The full registry — the SINGLE source of truth. `docs/error-codes.md` is a
 /// hand-maintained index checked against this table (the
 /// `index_doc_lists_every_code` test asserts the doc lists every code's label),
@@ -337,6 +412,48 @@ pub const REGISTRY: &[ErrorCode] = &[
        "a platform bug, not your input; please `localharness feedback` it"),
     ec(TX_INSUFFICIENT_CREDITS, Family::TxRevert, "InsufficientCredits — chat-meter credits locked or short",
        "fiat-minted $LH is locked for spending on inference, not withdraw/transfer; check_balances shows the withdrawable amount + unlock time"),
+    // LH3xxx backend / agent runtime
+    ec(BACKEND_RATE_LIMIT, Family::Backend, "model provider rate-limited / over quota",
+       "the platform's model provider is throttled or over its spend cap — wait a moment and retry; not a problem with your account"),
+    ec(BACKEND_AUTH, Family::Backend, "model API key rejected",
+       "check the Gemini/model API key (BYOK); on the platform path this is a server-side key issue to report"),
+    ec(BACKEND_CREDITS, Family::Backend, "out of platform credits ($LH)",
+       "redeem a code or top up — this signing address has no active session / no $LH"),
+    ec(BACKEND_TIMEOUT, Family::Backend, "the model request timed out",
+       "the backend didn't respond in time — retry; if it persists the provider may be degraded"),
+    ec(BACKEND_EMPTY, Family::Backend, "empty or truncated model response",
+       "the model returned nothing usable — retry; shortening the input can help"),
+    ec(BACKEND_SERVER, Family::Backend, "model backend error (5xx)",
+       "the provider returned a server error — transient; retry shortly"),
+    ec(BACKEND_NETWORK, Family::Backend, "network / transport failure",
+       "couldn't reach the backend or proxy — check connectivity and retry"),
+    ec(BACKEND_STALE_AUTH, Family::Backend, "request auth went stale (device clock skew)",
+       "your device clock is off by more than ~5 minutes — sync it and retry"),
+    // LH4xxx SDK core
+    ec(CORE_IO, Family::Core, "I/O error",
+       "an OS-level read/write failed — check paths and permissions"),
+    ec(CORE_JSON, Family::Core, "JSON (de)serialization error",
+       "malformed or unexpected JSON — verify the payload shape"),
+    ec(CORE_HTTP, Family::Core, "HTTP transport error",
+       "the request failed at the transport layer — retry; check the endpoint"),
+    ec(CORE_CLOSED, Family::Core, "connection closed unexpectedly",
+       "the stream/connection dropped — restart the operation"),
+    ec(CORE_NOT_STARTED, Family::Core, "agent not started",
+       "call start() before using the agent"),
+    ec(CORE_ALREADY_STARTED, Family::Core, "agent already started",
+       "start() was called more than once — reuse the running agent"),
+    ec(CORE_CONFIG, Family::Core, "invalid configuration",
+       "fix the configuration value named in the message"),
+    ec(CORE_TOOL_NOT_FOUND, Family::Core, "tool not found",
+       "no tool is registered under that name — register it or fix the name"),
+    ec(CORE_TOOL_FAILED, Family::Core, "tool execution failed",
+       "the tool returned an error — see the inline message for the cause"),
+    ec(CORE_POLICY_DENIED, Family::Core, "policy denied the operation",
+       "a policy blocked this action — adjust the request or the policy"),
+    ec(CORE_TIMEOUT, Family::Core, "operation timed out",
+       "the operation exceeded its deadline — raise the timeout or retry"),
+    ec(CORE_OTHER, Family::Core, "unspecified error",
+       "a catch-all error — see the inline message for details"),
 ];
 
 /// `const`-friendly constructor for a [`ErrorCode`] table entry.
@@ -374,7 +491,7 @@ pub fn describe(code: u16) -> String {
 /// the codes once. Newline-separated, no trailing newline.
 pub fn compact_index() -> String {
     let mut out = String::new();
-    for fam in [Family::Compile, Family::Runtime, Family::TxRevert] {
+    for fam in FAMILIES {
         out.push_str(fam.label());
         out.push_str(":\n");
         for e in REGISTRY.iter().filter(|e| e.family == fam) {
@@ -382,6 +499,77 @@ pub fn compact_index() -> String {
         }
     }
     out.trim_end().to_string()
+}
+
+/// Map a raw error string to a stable `LH3xxx` backend/runtime code — the SINGLE
+/// source of truth for turning an opaque provider/proxy/transport message into a
+/// code. Used by both the chat `.turn-error` surface and [`crate::Error::code`]
+/// (for the string-wrapping `Http`/`Other`/`ToolFailed` variants). Returns
+/// `None` when nothing matches, so the caller can fall back to a core code.
+///
+/// Order matters — most specific first. Pure + case-insensitive; no deps, so it
+/// is unit-tested headlessly.
+pub fn classify(s: &str) -> Option<u16> {
+    let l = s.to_lowercase();
+    // Stale device clock first — the proxy phrases it distinctively and it must
+    // NOT be mistaken for an auth-key problem.
+    if l.contains("stale or future timestamp") || l.contains("clock") {
+        return Some(BACKEND_STALE_AUTH);
+    }
+    // Rate-limit / quota before credits: a provider 429 / spend-cap is NOT the
+    // user being out of $LH (the historic conflation that showed a "redeem" card
+    // for a provider quota error).
+    if l.contains("429")
+        || l.contains("rate limit")
+        || l.contains("rate-limit")
+        || l.contains("resource_exhausted")
+        || l.contains("spending cap")
+        || l.contains("spend cap")
+        || l.contains("too many requests")
+    {
+        return Some(BACKEND_RATE_LIMIT);
+    }
+    if l.contains("401")
+        || l.contains("403")
+        || l.contains("api key")
+        || l.contains("api_key")
+        || l.contains("permission_denied")
+        || l.contains("unauthenticated")
+        || l.contains("unauthorized")
+    {
+        return Some(BACKEND_AUTH);
+    }
+    if l.contains("402")
+        || l.contains("payment required")
+        || l.contains("no $lh")
+        || l.contains("no credit")
+        || l.contains("insufficient")
+        || l.contains("no active session")
+    {
+        return Some(BACKEND_CREDITS);
+    }
+    if l.contains("timed out") || l.contains("timeout") || l.contains("deadline") {
+        return Some(BACKEND_TIMEOUT);
+    }
+    if l.contains("empty response") || l.contains("truncated") || l.contains("no response") {
+        return Some(BACKEND_EMPTY);
+    }
+    if l.contains("500")
+        || l.contains("502")
+        || l.contains("503")
+        || l.contains("504")
+        || l.contains("internal server")
+    {
+        return Some(BACKEND_SERVER);
+    }
+    if l.contains("network")
+        || l.contains("connection")
+        || l.contains("failed to fetch")
+        || l.contains("dns")
+    {
+        return Some(BACKEND_NETWORK);
+    }
+    None
 }
 
 #[cfg(test)]
@@ -452,13 +640,40 @@ mod tests {
     }
 
     #[test]
-    fn compact_index_covers_all_three_families() {
+    fn compact_index_covers_all_families() {
         let idx = compact_index();
-        assert!(idx.contains("compile:"));
-        assert!(idx.contains("runtime:"));
-        assert!(idx.contains("tx-revert:"));
+        for fam in FAMILIES {
+            assert!(idx.contains(&format!("{}:", fam.label())), "missing family {}", fam.label());
+        }
         assert!(idx.contains("LH0204"));
         assert!(idx.contains("LH1001"));
         assert!(idx.contains("LH2003"));
+        assert!(idx.contains("LH3001"));
+        assert!(idx.contains("LH4001"));
+    }
+
+    #[test]
+    fn classify_maps_common_backend_errors() {
+        assert_eq!(classify("gemini HTTP 429 Too Many Requests"), Some(BACKEND_RATE_LIMIT));
+        assert_eq!(classify("status: RESOURCE_EXHAUSTED, spending cap"), Some(BACKEND_RATE_LIMIT));
+        assert_eq!(classify("HTTP 401 Unauthorized: bad API key"), Some(BACKEND_AUTH));
+        assert_eq!(classify("PERMISSION_DENIED"), Some(BACKEND_AUTH));
+        assert_eq!(classify("402 Payment Required: no $LH"), Some(BACKEND_CREDITS));
+        assert_eq!(classify("the request timed out"), Some(BACKEND_TIMEOUT));
+        assert_eq!(classify("empty response from model"), Some(BACKEND_EMPTY));
+        assert_eq!(classify("HTTP 503 internal server error"), Some(BACKEND_SERVER));
+        assert_eq!(classify("failed to fetch: network down"), Some(BACKEND_NETWORK));
+        assert_eq!(classify("stale or future timestamp"), Some(BACKEND_STALE_AUTH));
+        assert_eq!(classify("a perfectly ordinary message"), None);
+    }
+
+    #[test]
+    fn classify_prefers_rate_limit_over_credits() {
+        // A provider 429 / spend-cap must NOT be classified as out-of-credits
+        // (the historic conflation that showed a "redeem" card for a quota error).
+        assert_eq!(
+            classify("429 RESOURCE_EXHAUSTED: project exceeded its monthly spending cap"),
+            Some(BACKEND_RATE_LIMIT)
+        );
     }
 }

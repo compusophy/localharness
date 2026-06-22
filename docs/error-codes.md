@@ -20,12 +20,18 @@ compact slice is injected into the agent's system prompt via `self_docs`.
 | `LH0300`–`LH0399` | compile: **codegen** | lowering / unsupported emit            |
 | `LH1000`–`LH1099` | **runtime**          | cartridge Web-Worker failures          |
 | `LH2000`–`LH2099` | **tx revert**        | facet custom-error selectors           |
+| `LH3000`–`LH3099` | **backend**          | model provider / transport / agent runtime |
+| `LH4000`–`LH4099` | **core**             | one per SDK `Error` enum variant       |
 
 The thousands digit is the family. `LH0xxx` = a rustlite **compile** error (carried
 on `CompileError`, surfaced by the `compile_rustlite` tool). `LH1xxx` = a cartridge
 **runtime** error (reported by the Web-Worker engine; shown in the "CARTRIDGE
 STOPPED" overlay). `LH2xxx` = an on-chain **transaction revert** (mapped from a
-known facet custom-error selector by the registry's revert decoder).
+known facet custom-error selector by the registry's revert decoder). `LH3xxx` = a
+**backend / agent-runtime** failure (a model provider rate-limit, a rejected key,
+out-of-credits, a timeout — shown on the `.turn-error` chat line). `LH4xxx` = an
+**SDK core** error, one per `Error` enum variant, so `Error::code()` always
+resolves and the CLI can print a code.
 
 ---
 
@@ -144,6 +150,50 @@ remaining budget …`, instead of a bare 4-byte selector.
 | `LH2022` | `Error(string)` | a `require(reason)` revert — the reason is decoded inline (a balance/escrow reason means you need more `$LH`) |
 | `LH2023` | `Panic(uint256)` | an internal assertion — a platform bug, not your input |
 | `LH2024` | `InsufficientCredits()` | chat-meter credits being withdrawn/bridged are locked (fiat-minted `$LH` is spend-only) or short — `check_balances` shows the withdrawable amount |
+
+---
+
+## `LH3xxx` — backend / agent-runtime errors
+
+The chat-facing failures. `error_codes::classify()` maps a raw provider/proxy/transport
+error string to one of these; the `.turn-error` chat line shows `LH3xxx · <meaning> —
+<hint>`, and the telemetry report groups by the code. A provider **429 / spend-cap is
+`LH3001`, not `LH3003`** — a quota error is the platform's, not the user being out of `$LH`.
+
+| Code | Meaning | Common cause | Fix |
+|------|---------|--------------|-----|
+| `LH3001` | model provider rate-limited / over quota | HTTP 429 / `RESOURCE_EXHAUSTED` / spend cap | wait and retry; not an account problem |
+| `LH3002` | model API key rejected | HTTP 401/403, `PERMISSION_DENIED` | check the BYOK key; on the platform path, a server-side key issue |
+| `LH3003` | out of platform credits (`$LH`) | the proxy 402'd (no $LH / no session) | redeem or top up |
+| `LH3004` | the model request timed out | no response in time | retry; the provider may be degraded |
+| `LH3005` | empty or truncated model response | the model returned nothing usable | retry; shorten the input |
+| `LH3006` | model backend error (5xx) | a provider server error | transient — retry shortly |
+| `LH3007` | network / transport failure | couldn't reach the backend/proxy | check connectivity and retry |
+| `LH3008` | request auth went stale (device clock skew) | clock off by > ~5 min | sync the device clock and retry |
+
+---
+
+## `LH4xxx` — SDK core errors
+
+One code per [`Error`](https://docs.rs/localharness) enum variant, so `Error::code()`
+always resolves to a stable code (the `src/bin/localharness/` CLI prints it on failure).
+The string-wrapping variants (`Http`/`ToolFailed`/`Other`) first defer to `classify()`,
+so they surface a `LH3xxx` backend code when the message matches one.
+
+| Code | `Error` variant | Meaning |
+|------|-----------------|---------|
+| `LH4001` | `Io` | an OS-level I/O error |
+| `LH4002` | `Json` | a JSON (de)serialization error |
+| `LH4003` | `Http` | an HTTP transport error not matched by `classify()` |
+| `LH4004` | `Closed` | the connection closed unexpectedly |
+| `LH4005` | `NotStarted` | the operation needs a started agent |
+| `LH4006` | `AlreadyStarted` | `start()` was called more than once |
+| `LH4007` | `Config` | invalid configuration |
+| `LH4008` | `ToolNotFound` | no tool registered under that name |
+| `LH4009` | `ToolFailed` | a tool errored during execution |
+| `LH4010` | `PolicyDenied` | a policy blocked the operation |
+| `LH4011` | `Timeout` | an operation exceeded its deadline |
+| `LH4012` | `Other` | a catch-all not matched by `classify()` |
 
 ---
 

@@ -1071,6 +1071,35 @@ mod worker {
         RUN_OUTCOME.with(|o| {
             let mut o = o.borrow_mut();
             if matches!(*o, RunOutcome::Pending) {
+                // Auto-report a cartridge FAILURE off-chain (the LH1xxx code +
+                // detail + the usual rich context), once per run, gated by the
+                // telemetry toggle. Worker traps (LH1002–1004) and the watchdog
+                // kill (LH1001) both funnel through here, so this is the one hook
+                // — and the Pending guard makes it fire at most once per run.
+                if let RunOutcome::Failed { code, detail } = &outcome {
+                    if crate::app::telemetry::enabled() {
+                        let code = *code;
+                        let detail = detail.clone();
+                        let fp: String = detail
+                            .chars()
+                            .filter(|c| c.is_ascii_alphanumeric())
+                            .take(40)
+                            .collect();
+                        let signature = format!("cartridge-{fp}");
+                        let title = format!(
+                            "cartridge failed: {}",
+                            detail.chars().take(100).collect::<String>()
+                        );
+                        wasm_bindgen_futures::spawn_local(crate::app::telemetry::report_event(
+                            "cartridge".to_string(),
+                            code,
+                            title,
+                            signature,
+                            detail,
+                            String::new(),
+                        ));
+                    }
+                }
                 *o = outcome;
             }
         });

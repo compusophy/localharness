@@ -252,6 +252,8 @@ enum Action {
     EnableNotifications,
     /// Toggle off-chain telemetry (auto error reports) on/off for this device.
     ToggleTelemetry,
+    /// Toggle whether feedback ALSO mirrors on-chain (default off — off-chain primary).
+    ToggleFeedbackOnchain,
     /// Header notification bell: enable Web Push for THIS device (address-keyed,
     /// direct gesture) and open the in-app panel. The path a visitor uses to let
     /// their phone be pinged — the cartridge tap can't prompt for permission.
@@ -339,6 +341,7 @@ impl Action {
             "unlink-cancel" => Action::UnlinkCancel,
             "enable-notifications" => Action::EnableNotifications,
             "toggle-telemetry" => Action::ToggleTelemetry,
+            "toggle-feedback-onchain" => Action::ToggleFeedbackOnchain,
             "notif-bell" => Action::NotifBell,
             "notif-clear-all" => Action::NotifClearAll,
             "notif-clear-confirm" => Action::NotifClearConfirm,
@@ -1357,6 +1360,7 @@ fn dispatch(action: Action) {
         Action::UnlinkCancel => devices::unlink_cancel_pressed(),
         Action::EnableNotifications => admin::enable_notifications_pressed(),
         Action::ToggleTelemetry => admin::toggle_telemetry_pressed(),
+        Action::ToggleFeedbackOnchain => admin::toggle_feedback_onchain_pressed(),
         Action::NotifBell => admin::notif_bell_pressed(),
         Action::NotifClearAll => admin::notif_clear_all_pressed(),
         Action::NotifClearConfirm => admin::notif_clear_confirmed(),
