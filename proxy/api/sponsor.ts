@@ -93,6 +93,10 @@ const TOKEN = LH_TOKEN.toLowerCase();
 const DIAMOND_WRITE_SIGS = [
   'register(string)',
   'registerMain(uint256)',
+  // releaseName burns a name the CALLER owns (on-chain holder-gated, refuses MAIN);
+  // bulk_release_subdomains fires one per name. Was missing → LH_RELAY_SELECTOR
+  // 0x48e69e68 (on-chain feedback #62). Gas-only, no value/float touch.
+  'releaseName(uint256)',
   'createTokenBoundAccount(uint256)',
   'setMetadata(uint256,bytes32,bytes)',
   'withdrawCredits(uint256)',
@@ -216,6 +220,12 @@ const SELF_PAY_SELECTORS = new Set([
 const ALWAYS_FREE_SELECTORS = new Set([
   selector('submitFeedback(string)'),
   selector('register(string)'),
+  // releaseName is register's lifecycle INVERSE — a user managing their own names
+  // (claim ↔ release). It's destructive to the caller's OWN asset, moves no value,
+  // and can't touch the sponsor's fee-token float (gas-only), so a funded owner must
+  // not be locked out by the onboarding-only gate (#62: bulk_release_subdomains).
+  // Bounded by the rate caps + float breaker.
+  selector('releaseName(uint256)'),
 ]);
 
 // Everything exempt from the onboarding-only gate below: self-pay (move the

@@ -807,6 +807,8 @@ pub(crate) fn tool_call_block(seg_id: u32, call: &ToolCall) -> Markup {
         details id=(block_id) .tool-call {
             summary {
                 span.tc-name { (call.name) }
+                // Right-aligned disclosure chevron (#61) — rotates down on open.
+                span.tc-chev { (crate::landing::chevron_glyph()) }
             }
             div.tc-body {
                 div.tc-section-label { "args" }

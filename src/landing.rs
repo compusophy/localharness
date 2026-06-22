@@ -188,6 +188,19 @@ pub(crate) fn crab_glyph() -> Markup {
     }
 }
 
+/// Tool-card disclosure CHEVRON (#61) — a lucide chevron-right in the same
+/// monochrome stroke envelope as the header glyphs. Sits at the RIGHT of a
+/// folded tool-call summary and rotates 90° down when the JSON detail opens.
+pub(crate) fn chevron_glyph() -> Markup {
+    html! {
+        (maud::PreEscaped(
+            "<svg viewBox=\"0 0 24 24\" width=\"15\" height=\"15\" fill=\"none\" \
+             stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" \
+             stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m9 18 6-6-6-6\"/></svg>",
+        ))
+    }
+}
+
 /// The name-claim form — the SAME control on the fresh front door and the
 /// authed apex (one component, no per-page divergence). `#apex-input` (live
 /// availability check, wired in the delegated input handler) and `#create-btn`
@@ -414,6 +427,7 @@ mod tests {
             home_glyph(),
             github_glyph(),
             crab_glyph(),
+            chevron_glyph(),
         ] {
             assert!(svg.into_string().contains("<svg"));
         }

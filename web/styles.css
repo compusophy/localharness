@@ -347,18 +347,22 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
   padding: 2px 6px;
 }
 .modal-close:hover { color: var(--fg); }
+/* #64: the textarea no longer carries its OWN border — that nested inside the
+   panel's border for a doubled box. It's now a flush inset field (a slightly
+   lighter --panel-2 surface) INSIDE the panel's single box; the panel takes the
+   focus ring so there's still ONE box, never two. */
 .feedback-textarea {
   width: 100%;
   min-height: 120px;
-  background: var(--bg);
+  background: var(--panel-2);
   color: var(--fg);
-  border: 1px solid var(--border);
+  border: none;
   padding: 10px 12px;
   font: inherit;
   outline: none;
   resize: vertical;
 }
-.feedback-textarea:focus { border-color: var(--accent); }
+.feedback-panel:focus-within { border-color: var(--fg); }
 /* Inline result message — only takes space when populated, so the bottom
    of the admin feedback section stays flush most of the time. */
 .feedback-msg { font-size: 11px; }
@@ -775,7 +779,9 @@ main.layout .transcript > *:empty { display: none; }
 .feedback-form {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  /* ONE uniform unit of space between the textarea, the submit button, and the
+     receipt slot (rawfeedback: "uniform space above the submit button"). */
+  gap: var(--space-3);
 }
 .feedback-form .feedback-submit { width: 100%; margin: 0; }
 .feedback-panel .feedback-msg { margin: 0; }
@@ -1151,9 +1157,12 @@ main.layout .transcript > *:empty { display: none; }
   cursor: pointer;
 }
 .terminal-send:hover { color: var(--accent); border-color: var(--fg); }
-/* Stop button (square SVG) occupies the play slot while a turn streams. */
-.terminal-stop { color: var(--error); }
-.terminal-stop:hover { color: var(--error); }
+/* Stop button (square SVG) occupies the play slot while a turn streams. A clean,
+   strong RED — the one intentional colour, for the live destructive control —
+   not the muted grey-red --error used for error text (rawfeedback: "just red,
+   not grey-red", same spirit as making the icons full-white). */
+.terminal-stop { color: #d83a3a; }
+.terminal-stop:hover { color: #ff5252; border-color: var(--fg); }
 
 /* === 6. ECONOMY + IDENTITY ============================================== */
 /* Financial column visuals */
@@ -1962,14 +1971,19 @@ button.ready:hover {
   user-select: none;
 }
 .tool-call > summary::-webkit-details-marker { display: none; }
-.tool-call > summary::before {
-  content: "▸";
+/* Toggle marker (#61): a crisp SVG CHEVRON on the RIGHT (after the name),
+   header-icon sized — not the small left triangle that read as the play glyph.
+   The name's flex:1 pushes it to the right edge; it rotates 90° down when the
+   JSON detail opens (collapsed by default — no `open` attr on the <details>). */
+.tool-call > summary .tc-chev {
+  display: inline-flex;
   color: var(--muted);
-  font-size: 10px;
   transition: transform 80ms ease;
 }
-.tool-call[open] > summary::before { transform: rotate(90deg); }
+.tool-call[open] > summary .tc-chev { transform: rotate(90deg); }
 .tool-call .tc-name {
+  flex: 1;
+  text-align: left;
   color: var(--fg);
   font-weight: 600;
 }
