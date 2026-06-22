@@ -111,6 +111,9 @@ impl Error {
     }
 }
 
+/// Convenience alias for `std::result::Result<T, localharness::Error>`.
+pub type Result<T, E = Error> = std::result::Result<T, E>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +154,3 @@ mod tests {
         assert_eq!(Error::other("plain").code(), ec::CORE_OTHER);
     }
 }
-
-/// Convenience alias for `std::result::Result<T, localharness::Error>`.
-pub type Result<T, E = Error> = std::result::Result<T, E>;
