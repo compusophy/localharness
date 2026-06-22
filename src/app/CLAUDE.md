@@ -1,0 +1,74 @@
+# src/app — browser IDE subsystem spec
+
+> Module-owned context (auto-loaded when an agent works in `src/app/`). The root
+> `CLAUDE.md` is a whole-repo map; THIS file is the source of truth for the
+> browser UI so no one has to re-derive it from the CSS again. Keep it tight;
+> when you change a UI subsystem, update the matching section HERE in the same
+> commit. `feature=browser-app` + wasm32 only.
+
+## Hard rules (non-negotiable — the user enforces these)
+- **No imperative DOM.** All HTML from `maud` templates (`templates.rs`); the only
+  DOM ops are `dom::{swap_inner,swap_outer,append_html,set_attr}` at fixed ids
+  (HTMX-style fragment swaps). ONE delegated `click/keydown/submit/input` listener
+  set in `events/mod.rs` dispatches by `data-action`/`data-arg`. Zero `Closure::wrap`
+  outside those listeners + the few platform shims (visualViewport, etc.).
+- **Monochrome brutalist.** Tokens only (`--fg --bg --muted --border --accent --panel
+  --panel-2`), IBM Plex Mono, NO rounded-by-default, NO colored accents, NO shadows
+  as chrome, NO emojis. The ONE intentional color is the stop button red (#d83a3a).
+- **No iframes** for in-app rendering. **No JS alert/confirm/prompt** — use a
+  template-swapped panel with inline [confirm]/[cancel].
+- **DISPLAY is a framebuffer** (canvas pixel buffer + worker), not DOM/iframe.
+
+## THE ONE-BOX INPUT RULE (this has caused repeated rage — obey it)
+Every input/field must read as **exactly ONE box**, and on focus **the FIELD
+highlights, never its container**. Concretely:
+- The text field carries the border; it highlights via `input:focus,textarea:focus
+  { border-color: var(--accent) }` (styles.css). Set `outline:none` on the field so
+  the border is the only ring.
+- Inputs/textareas are DELIBERATELY EXCLUDED from the global `:focus-visible`
+  outline rule (styles.css) — that outline drew a SECOND box *inside* the lit field.
+  Do NOT re-add `input`/`textarea` to it.
+- A container that holds a field (a modal/popover) must NOT also light up on focus
+  (no `:focus-within { border-color }` competing with the field). Its border is
+  STATIC. (#64/rawfeedback: "highlighted container inside a highlighted container".)
+
+## Overlay / modal system (notif bell · feedback · admin cog)
+Three header overlays, now UNIFIED (do not re-fork them into separate behaviors):
+- **Markup** (`templates.rs`): each is a panel inside its header wrap
+  (`.notif-bell-wrap` / `.feedback-bug-wrap` / `.header-admin`). Admin's visible box
+  is `.admin-dialog` inside `#header-admin-panel`.
+- **Positioning** (`styles.css`, the "UNIFIED HEADER MODALS" rule): all three are
+  `position:fixed`, CENTERED (`top/left:50% + translate(-50%,-50%)`), clamped
+  (`width:min(360px,100vw-2pad)`, `max-height:100dvh-6pad`), one z-layer
+  (`--z-menu`). They are NOT anchored under their trigger button (that offset ran
+  the notif panel off-screen-left). They stay DOM children of their wrap so the
+  click-outside check still works; `fixed` only relocates them visually.
+- **Mutual exclusion + toggle** (`events/admin.rs`): exactly one open at a time.
+  Each open path calls `close_all_header_overlays()` first (closes notif + feedback
+  + admin + brand menu — all idempotent hidden-swaps). Each is a real toggle
+  (second tap closes). `header_admin_open()` = `#admin-dialog` present.
+- **Dismiss**: outside-click + ESC in `events/mod.rs` use `.closest(".*-wrap")`.
+  Brand menu is a native `<details>`; we clear its `open` attr ourselves.
+- If you add a 4th overlay: give it a `*-wrap`, add it to `close_all_header_overlays`,
+  reuse the unified CSS rule + `--z-menu`, make it a real toggle.
+
+## Turn-status / stage painter (`chat/stage.rs` + `turn_stage.rs`)
+Pending-turn cue: ONE pulsing glyph in `#turn-status` (header) + a `data-stage` word
+on the pending bubble (`::before{content:attr(data-stage)}`). `begin()` paints an
+immediate "starting" so the bubble is never blank before the first real stage
+(mobile flicker, #58/T25); `enter()` repaints only on stage change; `end()` clears.
+The pure state machine is `crate::turn_stage` (native-tested).
+
+## Mount routing (`mod.rs::mount`) — brief (full detail in root CLAUDE.md)
+`?signer=1`/`?rpc=1` → headless chromes (early return; NOT framed). Else classify via
+`tenant::current()` → Apex (identity-gated) / Tenant (owner-verify) / Other.
+`apply_render_modes` runs first: theme + the MOBILE-FIRST frame (desktop defaults to
+the 9:16 `preview-mobile` column; real <=600px phones + signer/rpc excluded).
+Keyboard occlusion on mobile is handled by `install_keyboard_viewport_fix`
+(visualViewport → `--lh-vh`/`--lh-vv-top`/`.lh-kb`).
+
+## Files (orientation)
+`mod.rs` mount/routing · `templates.rs` ALL maud HTML · `dom.rs` swap shims ·
+`events/` the delegated listeners + `Action` enum + per-domain handlers
+(`admin.rs` owns the overlays) · `chat/` the turn loop + stage painter ·
+`notifications.rs` bell + push (per-device `dev` dedup) · `display.rs` framebuffer.

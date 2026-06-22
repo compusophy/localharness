@@ -350,6 +350,7 @@ pub(super) fn toggle_feedback_panel() {
         close_feedback_panel();
         return;
     }
+    close_all_header_overlays(); // mutually exclusive — close notif/admin/brand first
     dom::swap_outer("feedback-panel", &templates::feedback_panel(false).into_string());
     dom::focus_first_in("feedback-panel");
 }
@@ -374,6 +375,24 @@ pub(super) fn close_brand_menu() {
     {
         let _ = el.remove_attribute("open");
     }
+}
+
+/// Whether the header admin (cog) panel is currently open — true iff its dialog
+/// is in the DOM (`header_admin_toggle` swaps it in, `header_admin_close` out).
+pub(super) fn header_admin_open() -> bool {
+    dom::by_id("admin-dialog").is_some()
+}
+
+/// The header overlays (notif bell · feedback · admin cog · brand menu) are
+/// MUTUALLY EXCLUSIVE — exactly one open at a time. Each open path calls this
+/// first so a bell tap never opens BEHIND an already-open admin panel and two
+/// panels never stack. Every close is an idempotent hidden-swap, so closing an
+/// already-closed panel is a harmless no-op.
+fn close_all_header_overlays() {
+    close_notif_panel();
+    close_feedback_panel();
+    header_admin_close();
+    close_brand_menu();
 }
 
 /// [clear all] tapped: re-render the OPEN panel with the inline yes/cancel
@@ -408,6 +427,7 @@ pub(super) fn notif_bell_pressed() {
         close_notif_panel();
         return;
     }
+    close_all_header_overlays(); // mutually exclusive — close feedback/admin/brand first
     // The bell is the notification LOG. Tap = open the log + clear the badge.
     let items = crate::app::notifications::bell_items();
     dom::swap_outer(
@@ -553,6 +573,12 @@ pub(super) fn install_app_pressed() {
 /// sessionStorage / OPFS so the user sees their existing key
 /// (admin opens and closes constantly; the input is fresh DOM each time).
 pub(super) fn header_admin_toggle() {
+    // Real toggle: a second cog tap closes it (matches the bell/feedback).
+    if header_admin_open() {
+        header_admin_close();
+        return;
+    }
+    close_all_header_overlays(); // mutually exclusive — close notif/feedback/brand first
     let body = match crate::app::tenant::current() {
         crate::app::tenant::Host::Apex => templates::admin_dropdown_apex().into_string(),
         crate::app::tenant::Host::Tenant(_) | crate::app::tenant::Host::Other(_) => {

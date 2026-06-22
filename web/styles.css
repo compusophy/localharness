@@ -354,18 +354,21 @@ button, input, textarea, select, .tag, code, .pricing-card, .financial-card, .he
 .feedback-textarea {
   width: 100%;
   min-height: 120px;
-  /* Transparent (not a --panel-2 fill) so it reads as ONE box with the panel's
-     border — a lighter inset fill looked like a second box-in-a-box (#64). Same
-     flush treatment as the chat input (.terminal-row textarea). */
+  /* The FIELD box inside the feedback modal — THIS is the element that highlights
+     on focus (textarea:focus → accent border), NOT the modal container
+     (#64/rawfeedback: "the input field inside the modal should highlight, not the
+     whole modal"). outline:none so the border is the only ring (no UA double-ring). */
   background: transparent;
   color: var(--fg);
-  border: none;
+  border: 1px solid var(--border);
   padding: 10px 12px;
   font: inherit;
   outline: none;
   resize: vertical;
 }
-.feedback-panel:focus-within { border-color: var(--fg); }
+/* The modal container border is STATIC — the FIELD inside highlights on focus,
+   not the whole modal (#64). (Was .feedback-panel:focus-within → --fg, which lit
+   the entire container.) */
 /* Inline result message — only takes space when populated, so the bottom
    of the admin feedback section stays flush most of the time. */
 .feedback-msg { font-size: 11px; }
@@ -2186,6 +2189,33 @@ footer a:hover { text-decoration: underline; }
   background: var(--panel);
   border: 1px solid var(--border);
   padding: 20px;
+}
+
+/* === UNIFIED HEADER MODALS (notif · feedback · admin) ======================
+   ONE treatment for all three header overlays (they were three separate
+   ad-hoc dropdowns — different z-layers, anchored under their own top-right
+   trigger so the notif panel ran off-screen-left, and able to stack on top of
+   each other). Now: CENTERED on the viewport (not offset by the button that
+   opened it), one z-layer above the header, clamped so it never overflows.
+   Mutual exclusion (only one open at a time) is enforced in events::admin —
+   each open path closes the others first. They stay DOM children of their
+   header wraps so the existing click-outside check still works; position:fixed
+   only relocates them visually. Placed AFTER the per-panel blocks so it wins by
+   source order at equal specificity. */
+.notif-panel,
+.feedback-panel,
+.admin-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  right: auto;
+  transform: translate(-50%, -50%);
+  margin: 0;
+  width: min(360px, calc(100vw - 2 * var(--chrome-pad)));
+  max-width: none;
+  max-height: calc(100dvh - 6 * var(--chrome-pad));
+  overflow-y: auto;
+  z-index: var(--z-menu);
 }
 /* Tabbed admin — fuller, page-like panel inside the dropdown. The tab bar
    stays pinned at the top while the panel body scrolls. */
