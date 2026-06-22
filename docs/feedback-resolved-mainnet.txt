@@ -199,3 +199,21 @@
 #            caught 2 real codegen bugs). STILL DEFERRED: string[]/bytes[], runtime
 #            (non-literal) dynamic storage writes, mappings-to-dynamic, dynamic event
 #            args — all error cleanly (TYPE_MISMATCH/UNSUPPORTED) rather than miscompile.
+#
+# --- 2026-06-22 wave 3 (chat-UI + docs, commits cbfba6f + 05d60da, bundle d801bb748a3a) --
+54  cbfba6f  DEPLOYED: a blinking "starting" line paints UNDER the user message while the
+#            turn spins up (header status glyphs KEPT — both); vanishes on the first
+#            output. Pending the user's in-browser confirmation.
+55  cbfba6f  DEPLOYED (= rawfeedback dup): send (button or Enter) now blurs the prompt so
+#            the mobile keyboard collapses. Pending in-browser confirmation.
+57  cbfba6f  DEPLOYED: the agent turn's accent border (now on the RIGHT, text-message
+#            style) PULSES while .streaming — a color swell matching turn-status/notif
+#            (never opacity). + rawfeedback A/B/C/D: role-flipped borders, horizontal
+#            turn separators, monochrome bg-shade differentiation (no rounded), spacing/
+#            line-height SSOT, input snaps to the 38px button grid, feedback-modal cleanup.
+#            Pending the user's in-browser AESTHETIC verification (iterate from there).
+56  05d60da  DEPLOYED: README.md and web/skill.md are now ONE doc (gen-docs writes filled
+#            skill.md verbatim to README; `readme_skill_in_sync` test + gen-docs --check
+#            enforce identity). skill.md rewritten/deduped (the repeated chain/funding
+#            sections collapsed). NOTE: this REVERSES the prior "README minimal" directive
+#            — done per the maintainer's explicit #56. Easy to revert if not wanted.
