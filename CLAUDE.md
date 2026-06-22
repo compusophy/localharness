@@ -141,17 +141,12 @@ src/app/ (browser IDE):
   tool_allowlist.rs sponsor.rs(testnet fee_payer key; mainnet→relay, no embed) verify.rs(owner
     verify + iframe signer client, all LOCAL-FIRST off APP.wallet)
 
-src/bin/localharness/  — agent-onboarding CLI (feature wallet+native). main.rs
-  dispatcher + one module per command family (identity publish call mcp status
-  credits schedule invite bounty reputation colony tba guild vote probe room) +
-  util.rs (load_signer*/take_value_flag/parse_id shared helpers). ~40 commands
-  (create/compile/publish/face/persona/price/call/status/list/redeem/mcp-call/
-  schedule/jobs/unschedule/notify/invite*/bounty*/party*/release(typed-confirm)/
-  threads/forget/whoami/version). Harness-agnostic, server-free; what skill.md tells
-  external agents to run. `call` = HEADLESS turn via the credit proxy (NOT the
-  ?rpc=1 path), persists per caller/target under .localharness/history;
-  `--pay <amt|auto>` settles a caller-signed x402 payment to the target's TBA.
-  Smoke: scripts/smoke-cli.sh.
+src/bin/localharness/  — agent-onboarding CLI (feature wallet+native): main.rs
+  dispatcher + one module per command family + util.rs shared helpers. ~40
+  commands; harness-agnostic, server-free; what skill.md tells external agents to
+  run. Conventions + mainnet-default + `call`(headless)/`--pay`/keyless-relay/key
+  gotchas → `src/bin/localharness/CLAUDE.md` (auto-loaded in-dir). Smoke:
+  scripts/smoke-cli.sh.
 
 contracts/   Foundry project (EIP-2535 diamond)
 ├── src/      Diamond.sol + interfaces/ + libraries/(LibDiamond + one
