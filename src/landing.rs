@@ -74,6 +74,19 @@ pub(crate) fn settings_glyph() -> Markup {
     }
 }
 
+/// Turn-status glyph — STARTING. The SAME filled-play triangle as the send
+/// button (`templates::send_button`) — a session is booting, mirroring the
+/// "play" the user just pressed. ONE source for the play SVG so the header
+/// glyph and the send button never diverge.
+pub(crate) fn play_glyph() -> Markup {
+    html! {
+        (maud::PreEscaped(
+            "<svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"currentColor\" \
+             aria-hidden=\"true\"><path d=\"M8 5l12 7-12 7z\"/></svg>",
+        ))
+    }
+}
+
 /// Turn-status glyph — THINKING. A lucide "brain" in the same monochrome
 /// stroke style as the bell/bug/gear. Painted into the header `#turn-status`
 /// slot by `chat::stage` while the model is reasoning. ONE source so any
@@ -343,7 +356,7 @@ mod tests {
     /// here so the warning signal stays meaningful AND the markup is guarded.
     #[test]
     fn status_glyphs_and_ios_notice_render() {
-        for svg in [brain_glyph(), wave_glyph(), wrench_glyph()] {
+        for svg in [play_glyph(), brain_glyph(), wave_glyph(), wrench_glyph()] {
             assert!(svg.into_string().contains("<svg"));
         }
         assert!(ios_unavailable().into_string().contains("not available on iOS"));

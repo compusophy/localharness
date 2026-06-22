@@ -321,13 +321,10 @@ pub(crate) fn terminal_input() -> Markup {
 pub(crate) fn send_button() -> Markup {
     // FILLED play triangle — solid `currentColor`, sized to 16px and centred by
     // `.terminal-action-btn` (the same square box + icon size as the header
-    // buttons), just bigger/bolder than the original 12px glyph.
-    let play = maud::PreEscaped(
-        "<svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"currentColor\" \
-         aria-hidden=\"true\"><path d=\"M8 5l12 7-12 7z\"/></svg>",
-    );
+    // buttons). ONE source for the play SVG: `landing::play_glyph` (also the
+    // STARTING header glyph — pressing play maps to the starting phase).
     html! {
-        button #terminal-send .terminal-action-btn.terminal-send data-action="send" title="send" aria-label="send" { (play) }
+        button #terminal-send .terminal-action-btn.terminal-send data-action="send" title="send" aria-label="send" { (crate::landing::play_glyph()) }
     }
 }
 
@@ -754,19 +751,19 @@ pub(crate) fn stage_status_slot() -> Markup {
 }
 
 /// The active-phase header button painted into [`stage_status_slot`]: ONE
-/// pulsing lucide glyph for the stage the turn is in — brain (thinking) /
-/// waves (streaming) / wrench (tools). `Paying`/`Starting` carry no glyph
-/// (returns empty → the painter leaves the slot collapsed), per the spec that
-/// only thinking/streaming/tools surface. `tabindex=-1` + no `data-action`:
-/// it's a decorative status, not a control. The aria-label gives the slot's
-/// live region a name to announce.
+/// pulsing glyph for the stage the turn is in — play (starting) / brain
+/// (thinking) / waves (streaming) / wrench (tools). Only `Paying` carries no
+/// glyph (returns empty → the painter leaves the slot collapsed). It carries
+/// `tabindex=-1` and no `data-action` (a decorative status, not a control); the
+/// aria-label names the slot's live region so a screen reader can announce it.
 pub(crate) fn stage_status_button(stage: crate::turn_stage::Stage) -> Markup {
     use crate::turn_stage::Stage;
     let (glyph, label) = match stage {
+        Stage::Starting => (crate::landing::play_glyph(), "starting"),
         Stage::Thinking => (crate::landing::brain_glyph(), "thinking"),
         Stage::Streaming => (crate::landing::wave_glyph(), "streaming"),
         Stage::Tools => (crate::landing::wrench_glyph(), "using tools"),
-        Stage::Paying | Stage::Starting => return html! {},
+        Stage::Paying => return html! {},
     };
     html! {
         button type="button" tabindex="-1" .turn-status-btn

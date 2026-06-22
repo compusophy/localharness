@@ -185,7 +185,7 @@ pub(crate) async fn run_send() {
         .into_string(),
     );
     dom::scroll_to_bottom("transcript");
-    stage::begin();
+    stage::begin(&format!("turn-body-{assistant_turn_id}"));
 
     // Clear the prompt; the value is already captured above.
     prompt_area.set_value("");
@@ -546,7 +546,7 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
                 .into_string(),
             );
             dom::scroll_to_bottom("transcript");
-            stage::begin();
+            stage::begin(&format!("turn-body-{assistant_turn_id}"));
             (assistant_turn_id, seg_id)
         }
     };

@@ -83,6 +83,17 @@ pub(crate) fn swap_outer(id: &str, html: &str) {
     }
 }
 
+/// HTMX-style "set one attribute on `#id`". Wraps `Element::set_attribute`;
+/// no-op if the element doesn't exist. A targeted attribute swap (like
+/// [`swap_inner`]), NOT DOM-tree building — used to drive purely-CSS state off
+/// a data attribute (e.g. `data-stage` on the pending assistant body, which the
+/// `::before` cue reads via `attr(data-stage)`).
+pub(crate) fn set_attr(id: &str, name: &str, value: &str) {
+    if let Some(el) = by_id(id) {
+        let _ = el.set_attribute(name, value);
+    }
+}
+
 thread_local! {
     /// The elements focused when modals/overlays opened, so closing each returns
     /// focus where it was when THAT modal opened (a11y #58) instead of stranding

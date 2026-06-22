@@ -1969,16 +1969,18 @@ button.ready:hover {
   color: var(--fg);
   font-weight: 600;
 }
-/* #54 STARTING INDICATOR — right after the user submits, the assistant turn's
-   body is empty (one empty text-segment, hidden by the :empty rule). Paint a
-   blinking "starting" line UNDER the user message (= in the assistant body) so
-   the spin-up reads as "working", not as a blank gap, until the FIRST real
-   output lands. It vanishes the instant the body gains a non-empty text segment
-   or a tool-call — `:has()` checks for any visible content. This is the in-
-   stream working cue (the cycling header glyph stays — BOTH, not either/or). */
+/* #54 PHASE CUE — right after the user submits, the assistant turn's body is
+   empty (one empty text-segment, hidden by the :empty rule). Paint a blinking
+   phase word UNDER the user message (= in the assistant body) so the spin-up
+   reads as "working", not as a blank gap, until the FIRST real output lands.
+   The word is `data-stage` (set by `chat::stage::enter`), so it tracks the
+   phase: starting → thinking → streaming → tools, synced with the header glyph.
+   It vanishes the instant the body gains a non-empty text segment or a tool-call
+   — `:has()` checks for any visible content (the cycling header glyph stays —
+   BOTH, not either/or). */
 .turn.assistant.streaming
   .body:not(:has(.text-segment:not(:empty))):not(:has(.tool-call))::before {
-  content: "starting";
+  content: attr(data-stage);
   display: inline-block;
   font-size: 12px;
   letter-spacing: 0.04em;

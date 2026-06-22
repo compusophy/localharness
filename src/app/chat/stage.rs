@@ -25,22 +25,32 @@ thread_local! {
     /// True between [`begin`] and [`end`] — [`enter`] is a no-op otherwise, so
     /// a stray stage event between turns never paints the header.
     static ARMED: Cell<bool> = const { Cell::new(false) };
+    /// The pending assistant turn's BODY id (`turn-body-{id}`), so [`enter`] can
+    /// mirror the current phase word onto its `data-stage` attribute — the
+    /// in-stream "starting → thinking → …" cue (`::before { content: attr(...) }`,
+    /// styles.css) tracks the phase, not a static word. Set by [`begin`], cleared
+    /// by [`end`].
+    static BODY_ID: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
 /// Arm the painter for a fresh turn: empty pipeline, empty slot. Nothing is
 /// painted yet (no phase has happened), so the header button stays GONE until
-/// the first thinking/streaming/tools event.
-pub(crate) fn begin() {
+/// the first starting/thinking/streaming/tools event. `body_id` is the pending
+/// assistant turn's body (`turn-body-{id}`); [`enter`] writes the phase word to
+/// its `data-stage` so the under-message cue tracks the phase.
+pub(crate) fn begin(body_id: &str) {
     PIPELINE.with(|p| *p.borrow_mut() = StagePipeline::new());
+    BODY_ID.with(|b| *b.borrow_mut() = body_id.to_string());
     ARMED.with(|a| a.set(true));
     dom::swap_inner(SLOT, "");
 }
 
 /// Record that `stage` is happening NOW and repaint the header glyph iff the
 /// pipeline's current stage changed. After `enter`, `stage` IS the current
-/// phase, so it maps straight to a glyph — `Paying`/`Starting` resolve to an
-/// empty fragment ([`templates::stage_status_button`]), which collapses the
-/// slot (button gone). No-op when no turn is armed.
+/// phase, so it maps straight to a glyph — `Paying` resolves to an empty
+/// fragment ([`templates::stage_status_button`]), which collapses the slot
+/// (button gone). Also mirrors the phase word onto the pending body's
+/// `data-stage` so the in-stream cue tracks it. No-op when no turn is armed.
 pub(crate) fn enter(stage: Stage) {
     if !ARMED.with(Cell::get) {
         return;
@@ -48,14 +58,20 @@ pub(crate) fn enter(stage: Stage) {
     let changed = PIPELINE.with(|p| p.borrow_mut().enter(stage));
     if changed {
         dom::swap_inner(SLOT, &templates::stage_status_button(stage).into_string());
+        BODY_ID.with(|b| dom::set_attr(&b.borrow(), "data-stage", stage.word()));
     }
 }
 
 /// The turn completed (done, errored, or cancelled): empty the slot (button
-/// gone) and disarm. Idempotent; called from `mark_turn_done` and
-/// (belt-and-braces) the run's `TurnGuard`.
+/// gone), clear the body's `data-stage`, and disarm. Idempotent; called from
+/// `mark_turn_done` and (belt-and-braces) the run's `TurnGuard`.
 pub(crate) fn end() {
     ARMED.with(|a| a.set(false));
     PIPELINE.with(|p| *p.borrow_mut() = StagePipeline::new());
+    BODY_ID.with(|b| {
+        let mut b = b.borrow_mut();
+        dom::set_attr(&b, "data-stage", "");
+        b.clear();
+    });
     dom::swap_inner(SLOT, "");
 }
