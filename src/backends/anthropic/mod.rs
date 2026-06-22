@@ -366,8 +366,7 @@ impl AnthropicConnection {
     /// Round-trips through `set_history_bytes`. The on-disk format (a JSON
     /// array of Anthropic `Message`s) is not part of the public API.
     pub fn history_bytes(&self) -> Result<Vec<u8>> {
-        let snapshot = self.state.history.lock().clone();
-        serde_json::to_vec(&snapshot).map_err(|e| Error::other(format!("history_bytes: {e}")))
+        crate::backends::state::history::encode(&self.state.history.lock())
     }
 
     /// Set (or clear, with `None`) the PER-TURN thinking override — the
@@ -402,8 +401,7 @@ impl AnthropicConnection {
         if bytes.is_empty() {
             return Ok(());
         }
-        let restored: Vec<wire::Message> = serde_json::from_slice(bytes)
-            .map_err(|e| Error::other(format!("set_history_bytes: {e}")))?;
+        let restored: Vec<wire::Message> = crate::backends::state::history::decode(bytes)?;
         *self.state.history.lock() = restored;
         Ok(())
     }
@@ -446,18 +444,7 @@ impl AnthropicConnection {
 /// Decode opaque bytes from [`AnthropicConnection::history_bytes`] into a
 /// flat transcript without a live connection.
 pub fn decode_transcript_bytes(bytes: &[u8]) -> Result<Vec<crate::types::TranscriptEntry>> {
-    if bytes.is_empty() {
-        return Ok(Vec::new());
-    }
-    // Per-entry lenient (mirrors the Gemini decoder): a single malformed/older
-    // entry must not blank the WHOLE restored transcript. Parse the array
-    // generically, decode each message independently, skip the failures.
-    let raw: Vec<serde_json::Value> = serde_json::from_slice(bytes)
-        .map_err(|e| Error::other(format!("decode_transcript_bytes: {e}")))?;
-    let history: Vec<wire::Message> = raw
-        .into_iter()
-        .filter_map(|v| serde_json::from_value(v).ok())
-        .collect();
+    let history: Vec<wire::Message> = crate::backends::state::history::decode_lenient(bytes)?;
     Ok(project_history(&history))
 }
 
@@ -748,17 +735,45 @@ mod tests {
             Message::assistant_text("Done."),
         ];
         let entries = project_history(&history);
-        // user, assistant(with tool call), assistant(done)
-        let asst = entries
-            .iter()
-            .find(|e| !e.tool_calls.is_empty())
-            .expect("assistant entry with a tool call");
-        assert_eq!(asst.tool_calls.len(), 1);
-        assert_eq!(asst.tool_calls[0].name, "view_file");
-        assert_eq!(
-            asst.tool_calls[0].result.as_ref().unwrap()["contents"],
-            "fn main() {}"
+        // Shared cross-provider contract: one assistant entry, one correlated
+        // result, no error. By-id correlation is the Anthropic specific.
+        let result = crate::backends::state::transcript_contract::assert_single_call_result(
+            &entries,
+            "view_file",
         );
+        assert_eq!(result["contents"], "fn main() {}");
+    }
+
+    /// Cross-provider contract (error half): an Anthropic `tool_result` with
+    /// `is_error: true` must surface as the typed `error`, not a `result` —
+    /// the same invariant the Gemini/OpenAI error tests assert.
+    #[test]
+    fn transcript_lifts_is_error_into_error_field() {
+        use wire::{Block, Message, Role};
+        let history = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![Block::ToolUse {
+                    id: "toolu_1".into(),
+                    name: "view_file".into(),
+                    input: serde_json::json!({"path": "missing"}),
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![Block::ToolResult {
+                    tool_use_id: "toolu_1".into(),
+                    content: serde_json::json!("no such file"),
+                    is_error: Some(true),
+                }],
+            },
+        ];
+        let entries = project_history(&history);
+        let err = crate::backends::state::transcript_contract::assert_single_call_error(
+            &entries,
+            "view_file",
+        );
+        assert_eq!(err, "\"no such file\"");
     }
 
     /// Build a bare `AnthropicConnection` whose loop state we can poke

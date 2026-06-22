@@ -15,12 +15,10 @@
 //! 6. Loop back to step 1.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
 
 use base64::Engine as _;
-use parking_lot::Mutex;
 use serde_json::{json, Value};
-use tokio::sync::{broadcast, Notify};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -111,42 +109,9 @@ impl LoopConfig {
     }
 }
 
-/// Per-connection mutable state.
-pub(crate) struct LoopState {
-    pub history: Mutex<Vec<wire::Content>>,
-    pub idle: Arc<AtomicBool>,
-    pub idle_notify: Arc<Notify>,
-    /// Set by `cancel_turn` (the UI stop button). `run_turn` checks it at
-    /// every loop boundary and ends the turn cleanly. Reset at turn start.
-    pub cancel: Arc<AtomicBool>,
-    pub steps: broadcast::Sender<Step>,
-    pub next_step_index: AtomicU32,
-    pub last_turn_usage: Mutex<Option<UsageMetadata>>,
-    pub last_structured_output: Mutex<Option<Value>>,
-}
-
-impl LoopState {
-    pub fn new(steps: broadcast::Sender<Step>) -> Self {
-        Self {
-            history: Mutex::new(Vec::new()),
-            idle: Arc::new(AtomicBool::new(true)),
-            idle_notify: Arc::new(Notify::new()),
-            cancel: Arc::new(AtomicBool::new(false)),
-            steps,
-            next_step_index: AtomicU32::new(0),
-            last_turn_usage: Mutex::new(None),
-            last_structured_output: Mutex::new(None),
-        }
-    }
-
-    fn alloc_step_index(&self) -> u32 {
-        self.next_step_index.fetch_add(1, Ordering::Relaxed)
-    }
-
-    fn emit(&self, step: Step) {
-        let _ = self.steps.send(step);
-    }
-}
+/// Per-connection mutable state — the shared generic container specialised to
+/// Gemini's wire-history shape (`Vec<wire::Content>`).
+pub(crate) type LoopState = crate::backends::state::LoopState<wire::Content>;
 
 /// Convert SDK `Content` into Gemini's user-turn `Content`.
 pub(crate) fn to_wire_user_content(content: Content) -> Result<wire::Content> {
@@ -622,32 +587,6 @@ fn emit_error(state: &LoopState, message: String) {
     state.emit(Step::turn_error(state.alloc_step_index(), message));
 }
 
-impl LoopState {
-    fn emit_chunk_step(&self, chunk: StreamChunk) {
-        // Wrap a StreamChunk as a Step so it flows through the same
-        // broadcast. ToolCall AND ToolResult both surface — dropping results
-        // here (the pre-0.34 behavior, despite the call-site comment claiming
-        // otherwise) left every live tool block "running" with an EMPTY
-        // result panel until a reload replayed it from history.
-        match chunk {
-            // DONE, not Active. This tool was ALREADY dispatched inline (above),
-            // and the Agent's `spawn_tool_dispatcher` RE-EXECUTES any non-Done
-            // registered tool-call step it sees on the broadcast — so emitting
-            // Active here double-fires every tool (and re-fires it on history
-            // replay). Done = "observability only, already handled", exactly the
-            // contract the mock backend documents.
-            StreamChunk::ToolCall(tc) => self.emit(Step::tool_call(
-                self.alloc_step_index(),
-                tc,
-                StepStatus::Done,
-            )),
-            StreamChunk::ToolResult(tr) => {
-                self.emit(Step::tool_result(self.alloc_step_index(), tr))
-            }
-            _ => {}
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -655,6 +594,7 @@ mod tests {
     use crate::backends::gemini::api::GeminiClient;
     use crate::hooks::TurnContext;
     use crate::types::{HookResult, StepSource};
+    use tokio::sync::broadcast;
 
     struct DenyAllTurns;
 

@@ -21,12 +21,10 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
 
 use base64::Engine as _;
-use parking_lot::Mutex;
 use serde_json::{json, Value};
-use tokio::sync::{broadcast, Notify};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -91,41 +89,9 @@ impl LoopConfig {
 // renderer (also used by the Anthropic + local backends).
 pub(crate) use crate::backends::render_system;
 
-/// Per-connection mutable state. History is `Vec<Message>` (OpenAI's shape) —
-/// analogous to Anthropic's `Vec<wire::Message>`.
-pub(crate) struct LoopState {
-    pub history: Mutex<Vec<Message>>,
-    pub idle: Arc<AtomicBool>,
-    pub idle_notify: Arc<Notify>,
-    pub cancel: Arc<AtomicBool>,
-    pub steps: broadcast::Sender<Step>,
-    pub next_step_index: AtomicU32,
-    pub last_turn_usage: Mutex<Option<UsageMetadata>>,
-    pub last_structured_output: Mutex<Option<Value>>,
-}
-
-impl LoopState {
-    pub fn new(steps: broadcast::Sender<Step>) -> Self {
-        Self {
-            history: Mutex::new(Vec::new()),
-            idle: Arc::new(AtomicBool::new(true)),
-            idle_notify: Arc::new(Notify::new()),
-            cancel: Arc::new(AtomicBool::new(false)),
-            steps,
-            next_step_index: AtomicU32::new(0),
-            last_turn_usage: Mutex::new(None),
-            last_structured_output: Mutex::new(None),
-        }
-    }
-
-    fn alloc_step_index(&self) -> u32 {
-        self.next_step_index.fetch_add(1, Ordering::Relaxed)
-    }
-
-    fn emit(&self, step: Step) {
-        let _ = self.steps.send(step);
-    }
-}
+/// Per-connection mutable state — the shared generic container specialised to
+/// OpenAI's wire-history shape (`Vec<Message>`), analogous to Anthropic's.
+pub(crate) type LoopState = crate::backends::state::LoopState<Message>;
 
 /// Convert SDK `Content` into an OpenAI user-turn `Message`. OpenAI's text
 /// message takes a plain string; media parts are flattened to a data-URL note
@@ -622,32 +588,11 @@ fn emit_error(state: &LoopState, message: String) {
     state.emit(Step::turn_error(state.alloc_step_index(), message));
 }
 
-impl LoopState {
-    fn emit_chunk_step(&self, chunk: StreamChunk) {
-        // ToolCall AND ToolResult both surface as steps (mirrors the Gemini /
-        // Anthropic loops) — dropping results left live tool blocks "running"
-        // with an empty result panel until a reload replayed them from history.
-        match chunk {
-            // DONE, not Active — the tool was already dispatched inline; an
-            // Active step makes the Agent's spawn_tool_dispatcher re-execute it
-            // (double-fire, + re-fire on replay). See the gemini loop / mock.
-            StreamChunk::ToolCall(tc) => self.emit(Step::tool_call(
-                self.alloc_step_index(),
-                tc,
-                StepStatus::Done,
-            )),
-            StreamChunk::ToolResult(tr) => {
-                self.emit(Step::tool_result(self.alloc_step_index(), tr))
-            }
-            _ => {}
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::{CustomSystemInstructions, SystemInstructions};
+    use tokio::sync::broadcast;
 
     #[test]
     fn render_system_custom() {

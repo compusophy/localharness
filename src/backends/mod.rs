@@ -28,6 +28,11 @@ pub(crate) mod sse;
 mod runners;
 pub use runners::BackendRunners;
 
+/// The generic per-connection `LoopState<M>` container + opaque-history JSON
+/// codecs shared by the streaming backends (Gemini/Anthropic/OpenAI). Each
+/// backend's `LoopState` is a thin type alias over `state::LoopState<wire msg>`.
+pub(crate) mod state;
+
 /// Per-request API-key provider shared by the streaming clients. When set,
 /// a client calls it for EVERY HTTP request instead of using its static
 /// key — required for credential schemes with a freshness window (the `$LH`
