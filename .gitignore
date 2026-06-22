@@ -49,6 +49,9 @@ claude-persona.txt
 qr-*.png
 fleet-run-output.txt
 
+# Maintainer's raw feedback dump zone (triaged into the task system, never committed)
+rawfeedback.txt
+
 # node tooling (proxy deps + any local npm)
 node_modules/
 package-lock.json
