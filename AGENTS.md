@@ -47,8 +47,8 @@ is the only durable handle.
 > modals / no-DOM / one-box-input), `src/registry` (on-chain gas/tx/relay),
 > `src/backends` (provider wire quirks), `src/bin/localharness` (CLI), `src/rustlite`
 > (cartridge compiler), `src/filesystem` (FS impls + at-rest encryption /
-> EXEMPT_FILES), `src/builtins` (tool schema-lint rule). The root stays a
-> whole-repo MAP; detail lives in the specs.
+> EXEMPT_FILES), `src/builtins` (tool schema-lint rule), `src/soliditylite`
+> (EVM-subset compiler). The root stays a whole-repo MAP; detail lives in the specs.
 
 ```
 src/                  library crate
