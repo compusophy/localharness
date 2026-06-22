@@ -248,6 +248,14 @@ pub enum Stmt {
     /// store `<expr>` at `keccak256(pad32(slot)) + length`, then bump the length slot.
     /// `base` is the array name; `span` is the array identifier's span.
     Push { base: String, value: Expr, span: Span },
+    /// `<arr>.pop();` — remove the last element of a dynamic array: zero the element
+    /// at `keccak256(pad32(slot)) + (length - 1)`, then decrement the length slot.
+    /// `base` is the array name; `span` is the array identifier's span.
+    Pop { base: String, span: Span },
+    /// `delete <arr>[<i>];` — zero the dynamic-array element at
+    /// `keccak256(pad32(slot)) + i` (the length is UNCHANGED, matching Solidity's
+    /// `delete arr[i]`). `base` is the array name; `key` is the index expression.
+    DeleteIndex { base: String, key: Expr, span: Span },
     /// `emit <Name>(<expr>, …);` — append an EVM log (`LOGn`). `topic0` is
     /// `keccak256("<Name>(<types>)")`; each `indexed` event arg becomes an extra
     /// topic and each non-`indexed` arg is ABI-encoded into the log data region

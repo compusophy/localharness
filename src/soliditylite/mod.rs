@@ -35,6 +35,11 @@ pub mod asm;
 pub mod ast;
 /// EVM codegen — a typed facet → runtime bytecode + the shared dispatch/body emit.
 pub mod codegen;
+/// Minimal EVM-subset interpreter — the dependency-free execution DIFF-HARNESS for
+/// [`codegen`] (issue #37). Deploys + calls a compiled facet in-process and asserts
+/// its results against the known-good shipped features. `wallet`-gated (keccak).
+#[cfg(feature = "wallet")]
+pub mod interp;
 /// Byte-level lexer for the v1 Solidity-subset surface.
 pub mod lexer;
 /// Recursive-descent parser (with the rustlite recursion guard).

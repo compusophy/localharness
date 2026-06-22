@@ -421,6 +421,10 @@ impl Parser<'_> {
         {
             return self.parse_emit_stmt();
         }
+        // `delete <arr>[<i>];` — a dynamic-array element clear.
+        if matches!(self.peek(), SolKind::Delete) {
+            return self.parse_delete_stmt();
+        }
         // `<arr>.push(<expr>);` — a dynamic-array append: `<ident> . push (`.
         if matches!(self.peek(), SolKind::Ident(_))
             && matches!(self.peek_at(1), SolKind::Dot)
@@ -428,6 +432,14 @@ impl Parser<'_> {
             && matches!(self.peek_at(3), SolKind::LParen)
         {
             return self.parse_push_stmt();
+        }
+        // `<arr>.pop();` — a dynamic-array remove-last: `<ident> . pop ( )`.
+        if matches!(self.peek(), SolKind::Ident(_))
+            && matches!(self.peek_at(1), SolKind::Dot)
+            && matches!(self.peek_at(2), SolKind::Ident(m) if m == "pop")
+            && matches!(self.peek_at(3), SolKind::LParen)
+        {
+            return self.parse_pop_stmt();
         }
         self.parse_assign_stmt()
     }
@@ -471,6 +483,35 @@ impl Parser<'_> {
         self.expect(&SolKind::RParen, "`)`")?;
         self.expect(&SolKind::Semi, "`;`")?;
         Ok(Stmt::Push { base, value, span })
+    }
+
+    /// Parse `<arr> . pop ( ) ;` — a dynamic-array remove-last. The leading
+    /// `<ident> . pop (` is already confirmed by the caller's lookahead; `pop` takes
+    /// no arguments. The array name is resolved against the facet's state vars (it
+    /// must be an array) at codegen.
+    fn parse_pop_stmt(&mut self) -> Result<Stmt, CompileError> {
+        let span = self.span();
+        let base = self.expect_ident()?; // the array name
+        self.advance(); // `.`
+        self.advance(); // `pop`
+        self.expect(&SolKind::LParen, "`(`")?;
+        self.expect(&SolKind::RParen, "`)` (pop takes no arguments)")?;
+        self.expect(&SolKind::Semi, "`;`")?;
+        Ok(Stmt::Pop { base, span })
+    }
+
+    /// Parse `delete <arr> [ <i> ] ;` — a dynamic-array element clear (zeroes the
+    /// element, leaving the length unchanged). The `delete` keyword is already
+    /// consumed-on-confirm by the caller; the target must be an indexed array.
+    fn parse_delete_stmt(&mut self) -> Result<Stmt, CompileError> {
+        let span = self.span();
+        self.advance(); // `delete`
+        let base = self.expect_ident()?; // the array name
+        self.expect(&SolKind::LBracket, "`[` (only `delete <array>[<i>];` is supported in v1)")?;
+        let key = self.parse_expr()?;
+        self.expect(&SolKind::RBracket, "`]`")?;
+        self.expect(&SolKind::Semi, "`;`")?;
+        Ok(Stmt::DeleteIndex { base, key, span })
     }
 
     /// Parse `require ( <cond> , <strlit> ) ;`. The condition can be any expression
@@ -884,6 +925,62 @@ mod tests {
         assert!(matches!(&f.functions[2].body, Stmt::Return(Expr::Index { base, .. }) if base == "xs"));
         // len(): `return xs.length;` → an ArrayLen read.
         assert!(matches!(&f.functions[3].body, Stmt::Return(Expr::ArrayLen { base, .. }) if base == "xs"));
+    }
+
+    #[test]
+    fn parses_array_pop_and_delete() {
+        // `.pop()` → a Pop statement; `delete xs[i];` → a DeleteIndex statement.
+        let f = parse_src(
+            "facet C { uint256[] xs; \
+             function pop() external { xs.pop(); } \
+             function clear(uint256 i) external { delete xs[i]; } }",
+        )
+        .unwrap();
+        // pop(): `xs.pop();`
+        match &f.functions[0].body {
+            Stmt::Block(stmts) => match &stmts[0] {
+                Stmt::Pop { base, .. } => assert_eq!(base, "xs"),
+                other => panic!("expected a Pop, got {other:?}"),
+            },
+            other => panic!("unexpected body {other:?}"),
+        }
+        // clear(): `delete xs[i];`
+        match &f.functions[1].body {
+            Stmt::Block(stmts) => match &stmts[0] {
+                Stmt::DeleteIndex { base, key, .. } => {
+                    assert_eq!(base, "xs");
+                    assert!(matches!(key, Expr::StateVar { name, .. } if name == "i"));
+                }
+                other => panic!("expected a DeleteIndex, got {other:?}"),
+            },
+            other => panic!("unexpected body {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pop_with_an_argument_is_a_clean_error() {
+        // `xs.pop(1)` — pop takes no arguments.
+        let e = parse_src("facet C { uint256[] xs; function f() external { xs.pop(1); } }")
+            .unwrap_err();
+        assert_eq!(e.code, Some(codes::UNEXPECTED_TOKEN));
+    }
+
+    #[test]
+    fn delete_without_an_index_is_a_clean_error() {
+        // `delete xs;` — v1 only supports `delete <array>[<i>];`.
+        let e = parse_src("facet C { uint256[] xs; function f() external { delete xs; } }")
+            .unwrap_err();
+        assert_eq!(e.code, Some(codes::UNEXPECTED_TOKEN));
+    }
+
+    #[test]
+    fn pop_is_usable_as_an_identifier() {
+        // A bare `pop` (not `<arr>.pop(`) is a normal name (function name here).
+        let f = parse_src(
+            "facet C { uint256 pop; function get() external view returns (uint256) { return pop; } }",
+        )
+        .unwrap();
+        assert_eq!(f.state_vars[0].name, "pop");
     }
 
     #[test]

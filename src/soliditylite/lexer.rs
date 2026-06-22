@@ -43,6 +43,8 @@ pub enum SolKind {
     Return,
     /// `mapping` (the `mapping(K => V)` state-var keyword).
     Mapping,
+    /// `delete` (the `delete <arr>[<i>];` element-clear statement keyword).
+    Delete,
     /// A type keyword (`uint256`/`address`/`bool`/`bytes32`).
     TypeName(String),
     /// An identifier (function/facet/variable name).
@@ -314,6 +316,7 @@ fn keyword(word: &str) -> Option<SolKind> {
         "returns" => SolKind::Returns,
         "return" => SolKind::Return,
         "mapping" => SolKind::Mapping,
+        "delete" => SolKind::Delete,
         "uint256" | "address" | "bool" | "bytes32" => SolKind::TypeName(word.to_string()),
         _ => return None,
     })

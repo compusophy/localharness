@@ -301,6 +301,16 @@ enum LoweredAssign {
     /// then bump the length slot to `len + 1` (the length is re-`SLOAD`ed rather than
     /// duplicated, avoiding a `DUP2`/`SWAP` the v1 assembler doesn't expose).
     ArrayPush { slot: [u8; 32], value: LoweredExpr },
+    /// `<arr>.pop()` — remove the last element: zero the element at
+    /// `keccak256(pad32(slot)) + (len - 1)`, then store the decremented length
+    /// `len - 1` back at the base slot. The length is re-`SLOAD`ed for each use
+    /// (no `DUP2` in v1), and `len - 1` wraps on an empty array (no 0.8-style
+    /// revert in v1 — guard with `require(<arr>.length > 0, …)` where it matters).
+    ArrayPop { slot: [u8; 32] },
+    /// `delete <arr>[index]` — zero the dynamic-array element at
+    /// `keccak256(pad32(slot)) + index`. The length is UNCHANGED (matching
+    /// Solidity's `delete arr[i]`); this is exactly an element write of `0`.
+    ArrayDelete { slot: [u8; 32], index: LoweredExpr },
 }
 
 #[cfg(feature = "wallet")]
@@ -338,8 +348,37 @@ impl LoweredAssign {
                 a.push32(slot).emit(op::SLOAD).push(&one).emit(op::ADD);
                 a.push32(slot).emit(op::SSTORE);
             }
+            LoweredAssign::ArrayPop { slot } => {
+                // The new length = len - 1 (re-derived from the live length slot).
+                let new_len =
+                    LoweredExpr::Sub(Box::new(LoweredExpr::ArrayLen { slot: *slot }), Box::new(one_word()));
+                // 1. element clear: SSTORE(keccak256(slot) + (len - 1), 0). Push the
+                //    zero value first (stays below), then derive the element slot.
+                LoweredExpr::Const([0u8; 32]).emit(a); // value 0
+                emit_array_slot(a, slot, &new_len);
+                a.emit(op::SSTORE);
+                // 2. length decrement: SSTORE(slot, len - 1). Re-`SLOAD` the length
+                //    (no DUP2 in v1) and subtract one.
+                new_len.emit(a);
+                a.push32(slot).emit(op::SSTORE);
+            }
+            LoweredAssign::ArrayDelete { slot, index } => {
+                // `delete arr[i]` is an element write of 0 at keccak256(slot)+i; the
+                // length is left untouched. Push 0 first (stays below), then derive.
+                LoweredExpr::Const([0u8; 32]).emit(a); // value 0
+                emit_array_slot(a, slot, index);
+                a.emit(op::SSTORE);
+            }
         }
     }
+}
+
+/// The 32-byte word for the constant `1` (used by `len - 1` in array pop).
+#[cfg(feature = "wallet")]
+fn one_word() -> LoweredExpr {
+    let mut one = [0u8; 32];
+    one[31] = 1;
+    LoweredExpr::Const(one)
 }
 
 /// The memory offset where a log's DATA region is staged, ABOVE the keccak scratch
@@ -1021,6 +1060,15 @@ fn lower_stmt(facet: &Facet, r: &Resolver, stmt: &Stmt) -> Result<LoweredStmt, C
             slot: r.array_base_slot(base, *span)?,
             value: r.lower_expr(value)?,
         }),
+        Stmt::Pop { base, span } => LoweredStmt::Assign(LoweredAssign::ArrayPop {
+            slot: r.array_base_slot(base, *span)?,
+        }),
+        // `delete <arr>[<i>];` — only a dynamic-array element delete is supported in
+        // v1 (`array_base_slot` rejects a non-array, e.g. a mapping/scalar, cleanly).
+        Stmt::DeleteIndex { base, key, span } => LoweredStmt::Assign(LoweredAssign::ArrayDelete {
+            slot: r.array_base_slot(base, *span)?,
+            index: r.lower_expr(key)?,
+        }),
         Stmt::Emit { name: ev_name, args, span } => LoweredStmt::Emit(lower_emit(facet, r, ev_name, args, *span)?),
         Stmt::If { cond, then_body, else_body, .. } => LoweredStmt::If {
             cond: r.lower_expr(cond)?,
@@ -1584,6 +1632,99 @@ mod tests {
             "push must bump the length slot to length + 1; runtime = {}",
             to_hex(rt)
         );
+    }
+
+    /// `xs.pop()` (#37): (1) zeroes the element at `keccak256(slot) + (len - 1)` and
+    /// (2) stores the decremented length `len - 1` back at the base slot. The shapes:
+    /// a `PUSH1 0x00` value, the keccak element-slot derivation with index `len - 1`,
+    /// `SSTORE`, then `PUSH32 <slot> SLOAD` (len) `... SUB` and `SSTORE` of the new len.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn array_pop_zeroes_last_element_and_decrements_length() {
+        use super::super::asm::op;
+        const SRC: &str = "facet C { uint256[] xs; \
+             function pop() external { xs.pop(); } }";
+        let rt = &super::super::compile(SRC).unwrap().runtime;
+        let slot = super::slot_at(super::storage_base("C"), 0);
+
+        // The element clear: value 0 first, then keccak256(slot) derivation.
+        //   PUSH1 0x00                       ; value 0 (stays below)
+        //   PUSH32 <slot> PUSH1 0x00 MSTORE  ; mem[0..0x20] = slot
+        //   PUSH1 0x20 PUSH1 0x00 KECCAK256  ; base = keccak256(slot)
+        //   <len - 1> ADD SSTORE             ; clear elem at base + (len - 1)
+        let mut clear = vec![op::PUSH1, 0x00, op::PUSH1 + 31];
+        clear.extend_from_slice(&slot);
+        clear.extend_from_slice(&[op::PUSH1, 0x00, op::MSTORE, op::PUSH1, 0x20, op::PUSH1, 0x00, op::KECCAK256]);
+        assert!(
+            rt.windows(clear.len()).any(|w| w == clear.as_slice()),
+            "pop must clear the element with value 0 at keccak256(slot)+(len-1); runtime = {}",
+            to_hex(rt)
+        );
+        // `len - 1` lowers to `PUSH32 <slot> SLOAD` (len) with `1` pushed on top, SUB.
+        // (SUB pushes rhs deeper then lhs on top: rhs=1, lhs=len → SUB = len - 1.)
+        let mut len_minus_one = vec![op::PUSH1, 0x01, op::PUSH1 + 31];
+        len_minus_one.extend_from_slice(&slot);
+        len_minus_one.extend_from_slice(&[op::SLOAD, op::SUB]);
+        assert!(
+            rt.windows(len_minus_one.len()).any(|w| w == len_minus_one.as_slice()),
+            "pop must compute len - 1 (PUSH1 1, PUSH32 slot SLOAD, SUB); runtime = {}",
+            to_hex(rt)
+        );
+        // The new length is SSTORE'd back to the base slot (PUSH32 <slot> SSTORE).
+        let mut store_len = vec![op::PUSH1 + 31];
+        store_len.extend_from_slice(&slot);
+        store_len.push(op::SSTORE);
+        assert!(
+            rt.windows(store_len.len()).any(|w| w == store_len.as_slice()),
+            "pop must SSTORE the decremented length to the base slot"
+        );
+    }
+
+    /// `delete xs[i]` (#37) is exactly an element write of `0` at `keccak256(slot)+i`,
+    /// leaving the length slot untouched: `PUSH1 0x00` (value), keccak slot derivation
+    /// from `i`, `ADD`, `SSTORE` — and NO write to the base/length slot.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn delete_index_zeroes_element_and_leaves_length() {
+        use super::super::asm::op;
+        const SRC: &str = "facet C { uint256[] xs; \
+             function clear(uint256 i) external { delete xs[i]; } }";
+        let rt = &super::super::compile(SRC).unwrap().runtime;
+        let slot = super::slot_at(super::storage_base("C"), 0);
+
+        // value 0, then keccak256(slot) + i (i = param 0 → CALLDATALOAD(0x04)), SSTORE.
+        let mut want = vec![op::PUSH1, 0x00, op::PUSH1 + 31];
+        want.extend_from_slice(&slot);
+        want.extend_from_slice(&[
+            op::PUSH1, 0x00, op::MSTORE, op::PUSH1, 0x20, op::PUSH1, 0x00, op::KECCAK256,
+            op::PUSH1, 0x04, op::CALLDATALOAD, op::ADD, op::SSTORE,
+        ]);
+        assert!(
+            rt.windows(want.len()).any(|w| w == want.as_slice()),
+            "delete xs[i] must push 0, derive keccak256(slot)+i, SSTORE; runtime = {}",
+            to_hex(rt)
+        );
+        // Exactly ONE SSTORE (the element clear) — delete never touches the length.
+        let sstores = count_op(rt, op::SSTORE);
+        assert_eq!(sstores, 1, "delete xs[i] performs a single SSTORE (no length write)");
+    }
+
+    /// `delete` / `.pop()` on a NON-array are clean `TYPE_MISMATCH` errors.
+    #[cfg(feature = "wallet")]
+    #[test]
+    fn pop_and_delete_on_non_arrays_are_clean_errors() {
+        // `.pop()` on a scalar.
+        let err = super::super::compile(
+            "facet C { uint256 n; function f() external { n.pop(); } }",
+        )
+        .expect_err("n.pop() on a scalar must fail cleanly");
+        assert_eq!(err.code, Some(crate::error_codes::TYPE_MISMATCH));
+        // `delete` on a mapping index (delete is array-element-only in v1).
+        let err = super::super::compile(
+            "facet C { mapping(address => uint256) m; function f() external { delete m[msg.sender]; } }",
+        )
+        .expect_err("delete on a mapping must fail cleanly");
+        assert_eq!(err.code, Some(crate::error_codes::TYPE_MISMATCH));
     }
 
     /// The off-chain element-slot helper equals an independent `keccak256(slot) + i`
