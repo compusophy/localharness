@@ -238,26 +238,18 @@ modules don't trip a default `cargo check`).
 
 ## Common gotchas
 
+> Module-local gotchas moved to NESTED specs (auto-loaded when you work in that
+> dir): on-chain gas/selectors + Tempo-tx wire + the two-$LH-pots bridge →
+> `src/registry/CLAUDE.md`; Gemini wire quirks (model-IDs flip, union-schema-400,
+> 3.x thought-parts/thoughtSignature echo, SSE CRLF) → `src/backends/CLAUDE.md`;
+> the no-DOM / one-box-input / centered-modal-overlay rules → `src/app/CLAUDE.md`.
+> The cross-cutting ones remain below.
+
 - **Signer iframe is DEAD on mobile (cross-origin storage partitioning).** Mobile
   partitions cross-origin iframe storage → embedded `apex/?signer=1` sees an EMPTY
   OPFS → seed-derived ops fail. Fix: `seed_pull.rs` copies the seed into the
   subdomain's own OPFS via a top-level apex round-trip; `verify.rs` runs ops
   LOCAL-FIRST off `APP.wallet`. Don't reintroduce an iframe-only seed path.
-- **On-chain writes that store data are gas-HUNGRY — `cast estimate`, never guess.**
-  `submitFeedback` ~1.3M (short) to ~17M gas (near the 2048-byte cap, cold
-  SSTOREs); a flat 800k cap out-of-gassed EVERY feedback. `setMetadata` ≈ **7.6k
-  gas/BYTE** → `1.2M + bytes*8500`. Block limit 500M, so big writes fit — the bug
-  is always an under-set CLIENT cap; sponsored gas is now length-scaled. **Trust
-  `debug_traceTransaction` (real exec) over `cast run` (replay).**
-- **Gemini model IDs flip — verify against the live API, never trust memory.**
-  `DEFAULT_MODEL` = `gemini-3.5-flash` (2026-05-29); `gemini-2.5-flash` now 400s.
-  `curl` the live `:generateContent` before changing/defending a constant. If the
-  user says a model is wrong, TEST THEIRS FIRST.
-- **Gemini rejects union-type tool schemas with a 400 — bricks ALL chat.**
-  `input_schema` must use a single `type` (NOT `["string","null"]`) and no
-  `additionalProperties`/`$schema`/`$ref`/`oneOf`/`anyOf`/`allOf`. Guard:
-  `cargo test builtin_tool_schemas_have_no_union_types`. nested objects/arrays +
-  `minimum`/`maximum` are fine.
 - **`?rpc=1` iframes are CALLER-machine-local.** `call_agent`'s hidden iframe
   loads the target ORIGIN's OPFS on the CALLER's device — a foreign agent has
   no key/persona/price there, so the local path only serves YOUR OWN agents.
@@ -268,22 +260,6 @@ modules don't trip a default `cargo check`).
   `Invoke-Native` (PS5 turns cargo stderr into a terminating error) — don't call
   `cargo`/`git`/`gh` directly there. ALSO a `"` inside a here-string commit
   message shreds PS5 native-arg quoting into pathspecs — keep `"` out of messages.
-- **Wallet vs meter — two $LH pots, AUTO-BRIDGED both ways.** Proxy debits the
-  per-request METER (`creditOf`); `send`/`redeem` fund the WALLET; x402 `settle`
-  pulls the WALLET. Bridges: wallet→meter lazy deposit
-  (`call.rs::ensure_meter_funded`, 0.2/call) + meter→wallet `withdrawCredits`
-  (paid calls auto-pull the shortfall). "has $LH but 402s" = BOTH pots empty.
-  Colony judges pre-fund from the caller.
-- **Gemini 3.x `thought` parts + `thoughtSignature` echo.** Untagged wire
-  `Part`; `Part::Thought` is BEFORE `Part::Text`, and 3.x stamps every part with
-  `thought`, so normal text deserializes into `Part::Thought{thought:false,
-  text:..}` — handle explicitly. ALSO 3.x stamps each `functionCall` with
-  `thoughtSignature` and 400s replayed history missing it (bricked multi-round
-  tool turns until 0.31.x) — capture + echo verbatim (`wire.rs`/`loop.rs`); proof
-  `examples/thought_signature_live.rs`.
-- **SSE on wasm uses CRLF.** Browser fetch surfaces Gemini SSE with `\r\n\r\n`.
-  `GeminiSseStream::take_frame` matches both `\n\n` and `\r\n\r\n`. Don't regress
-  to LF-only.
 - **`/pkg/*` needs a per-build CACHE-BUSTER, not just headers.** `max-age=0,
   must-revalidate` was NOT enough — Chrome's WASM code cache served a stale
   module for the unchanged wasm url (redeploys invisible until a hard reload).
