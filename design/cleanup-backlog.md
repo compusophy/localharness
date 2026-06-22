@@ -64,6 +64,11 @@ lands. Append as cruft is found; clear lines as removed.
   `Action::parse` (no dead buttons). `src/app` is wasm32-only so it can't unit-test
   parse directly; the text cross-check runs in every `cargo test`. Reverse
   direction (every parsed Action has a dispatch arm) is a possible follow-up.
+- [x] **.env.example currency gate (the original complaint)** — DONE 2026-06-21.
+  `.env.example` going stale was the user's first report this session. Added
+  stage 7/7 to `audit-tech-debt.sh`: every real `process.env.<NAME>` in `proxy/api/`
+  must be documented in `proxy/.env.example` (2+-char regex skips comment
+  placeholders like `process.env.X`). So it can't silently rot again.
 - [x] **Unused-dependency gate (report tooling gap: cargo machete)** — DONE
   2026-06-21. Ran `cargo machete`: the dep tree is clean — its one hit,
   `getrandom_v04`, is a build/link-level dep (renamed getrandom-0.4 for Burn's
