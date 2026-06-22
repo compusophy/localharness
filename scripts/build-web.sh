@@ -34,6 +34,13 @@ fi
 echo "→ gen-docs (regenerate managed docs from src/docs_manifest.rs)..."
 cargo run --quiet --bin gen-docs --features wallet
 
+# Refresh the feedback-resolutions feed the browser reads on mount to bell-notify
+# submitters their on-chain feedback was resolved (joins docs/feedback-resolved-
+# mainnet.txt with the on-chain FeedbackFacet senders). Best-effort — a network
+# failure keeps the committed file, so it never blocks a deploy.
+echo "→ gen-feedback-resolutions (web/feedback-resolutions.json)..."
+node scripts/gen-feedback-resolutions.mjs || echo "  (skipped — kept existing file)"
+
 # PRIVACY: rustc embeds the BUILD MACHINE's absolute source paths into panic
 # metadata inside the wasm (e.g. C:\Users\<name>\.cargo\registry\...) — the
 # published binary leaked the builder's username (surfaced by the on-screen

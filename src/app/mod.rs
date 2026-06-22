@@ -672,6 +672,12 @@ async fn paint_workshop(host: &tenant::Host) {
     // is already awaited, so BELL is populated before this appends. No-op on the
     // apex (no tenant identity).
     wasm_bindgen_futures::spawn_local(notifications::import_onchain_messages());
+    // Decentralized, client-side bell notes (no server push / user roster):
+    //   • self-notify ONCE when the loaded bundle's crate version changed;
+    //   • tell a feedback submitter their item was resolved (matches the
+    //     apex-hosted resolutions feed against this user's address).
+    notifications::notify_version_change();
+    wasm_bindgen_futures::spawn_local(notifications::notify_resolved_feedback());
     opfs::refresh().await;
     // No onboarding key prompt: new accounts default to platform credits
     // (no Gemini key needed). BYOK is opt-in via admin → account.
@@ -848,6 +854,12 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
     // is already awaited, so BELL is populated before this appends. No-op on the
     // apex (no tenant identity).
     wasm_bindgen_futures::spawn_local(notifications::import_onchain_messages());
+    // Decentralized, client-side bell notes (no server push / user roster):
+    //   • self-notify ONCE when the loaded bundle's crate version changed;
+    //   • tell a feedback submitter their item was resolved (matches the
+    //     apex-hosted resolutions feed against this user's address).
+    notifications::notify_version_change();
+    wasm_bindgen_futures::spawn_local(notifications::notify_resolved_feedback());
     opfs::refresh().await;
 
     if !has_key {

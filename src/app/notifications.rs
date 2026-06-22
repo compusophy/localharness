@@ -103,6 +103,129 @@ pub(crate) async fn stash_to_inbox(title: &str, body: &str) {
     }
 }
 
+/// GitHub releases — every release's notes (the public changelog) land here.
+const RELEASES_URL: &str = "https://github.com/compusophy/localharness/releases";
+/// Canonical resolutions feed, apex-hosted like `global-lessons.txt`: a JSON list
+/// of resolved on-chain feedback `[{index, sender, version, preview}]`, refreshed
+/// at each deploy by `scripts/gen-feedback-resolutions.mjs`.
+const FEEDBACK_RESOLUTIONS_URL: &str = "https://localharness.xyz/feedback-resolutions.json";
+
+fn local_storage() -> Option<web_sys::Storage> {
+    web_sys::window().and_then(|w| w.local_storage().ok().flatten())
+}
+
+/// On mount: if the running bundle's CRATE version (`APP_VERSION` — bumped ONLY on
+/// a real release, never a plain web redeploy) differs from the one this device
+/// last recorded, drop a one-time bell note linking the changelog. Decentralized —
+/// no server push, no user roster: every client self-notifies on the version it
+/// loaded. A first-ever visit just records the version (a brand-new device gets no
+/// spurious "updated" note).
+pub(crate) fn notify_version_change() {
+    let Some(storage) = local_storage() else { return };
+    let current = crate::app::templates::APP_VERSION;
+    let seen = storage.get_item("lh_seen_version").ok().flatten();
+    if seen.as_deref() == Some(current) {
+        return;
+    }
+    let _ = storage.set_item("lh_seen_version", current);
+    if seen.is_some() {
+        push_to_bell(
+            &format!("localharness v{current} is live"),
+            &format!("A new version shipped — see what changed: {RELEASES_URL}/tag/v{current}"),
+        );
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct Resolution {
+    index: u32,
+    sender: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    preview: String,
+}
+
+/// On mount (background): fetch the apex-hosted resolutions feed and, for any
+/// resolved feedback whose `sender` is one of THIS user's addresses and that this
+/// device hasn't been shown yet, drop a "your feedback was resolved" bell note.
+/// Fully client-side (a static fetch + a localStorage seen-set) — the decentralized
+/// stand-in for a server push to the submitter. No-op without an identity.
+pub(crate) async fn notify_resolved_feedback() {
+    // The feedback `sender` is the wallet that signed `submitFeedback` — this
+    // user's verified owner / master address.
+    let mut mine: Vec<String> = Vec::new();
+    crate::app::APP.with(|c| {
+        let app = c.borrow();
+        if let crate::app::VerifyState::Verified { address } = &app.verify_state {
+            mine.push(address.to_lowercase());
+        }
+        if let Some(w) = &app.wallet {
+            mine.push(w.address_hex().to_lowercase());
+        }
+    });
+    if mine.is_empty() {
+        return;
+    }
+    let fetched = crate::app::net::read(async {
+        let resp = reqwest::Client::new()
+            .get(FEEDBACK_RESOLUTIONS_URL)
+            .send()
+            .await
+            .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        resp.text().await.ok()
+    })
+    .await
+    .ok()
+    .flatten();
+    let Some(text) = fetched else { return };
+    let Ok(items) = serde_json::from_str::<Vec<Resolution>>(&text) else { return };
+    let Some(storage) = local_storage() else { return };
+    // ABSENT key ⇒ first run on this device: seed the baseline of already-resolved
+    // items SILENTLY so we don't dump the whole backlog at once — only items
+    // resolved AFTER this point fire a note. (Mirrors the version-change baseline.)
+    let seen_existing = storage.get_item("lh_seen_resolutions").ok().flatten();
+    let first_run = seen_existing.is_none();
+    let mut seen: std::collections::HashSet<u32> = seen_existing
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+    let mut changed = false;
+    for r in &items {
+        if !mine.contains(&r.sender.to_lowercase()) {
+            continue;
+        }
+        if !seen.insert(r.index) {
+            continue; // already shown on this device
+        }
+        changed = true;
+        if first_run {
+            continue; // baseline seed — record it, but don't notify the backlog
+        }
+        let preview = if r.preview.is_empty() {
+            String::new()
+        } else {
+            format!("\u{201c}{}\u{201d} — ", r.preview)
+        };
+        let ver = if r.version.is_empty() { "a recent update" } else { &r.version };
+        push_to_bell(
+            "Your feedback was resolved",
+            &format!("{preview}addressed in {ver}. Changelog: {RELEASES_URL}"),
+        );
+    }
+    // Persist on first run too (even with no matches yet) so the key EXISTS —
+    // otherwise a later first-ever resolution would be silently seeded instead of
+    // notified. Subsequent runs (key present) notify only genuinely-new items.
+    if changed || first_run {
+        let joined: Vec<String> = seen.iter().map(u32::to_string).collect();
+        let _ = storage.set_item("lh_seen_resolutions", &joined.join(","));
+    }
+}
+
 /// Persist the bell log to OPFS (best-effort; logs, never surfaces).
 async fn persist_inbox() {
     let items = bell_items();
