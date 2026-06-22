@@ -53,9 +53,6 @@ const DEV_ID_FILE: &str = ".lh_dev_id";
 /// High-water mark for [`notify_received_lh`] — the $LH balance (decimal wei)
 /// this device last surfaced a "received" note for, so only an INCREASE since
 /// the last open fires a fresh note (mirrors the [`MSG_CURSOR_FILE`] pattern).
-// `allow(dead_code)`: consumed only by `notify_received_lh`, whose mount wiring
-// lives in `src/app/mod.rs` (owned by integration). Drop the allow once wired.
-#[allow(dead_code)]
 const LH_BALANCE_MARK_FILE: &str = ".lh_balance_mark";
 
 /// Load (or generate + persist) this device's stable id. Best-effort: a fresh
@@ -393,10 +390,8 @@ pub(crate) async fn import_onchain_messages() {
 /// INCREASE push a bundled "received N $LH" note. Best-effort: any RPC error or
 /// missing identity is swallowed. Call at a mount/poll point AFTER
 /// [`import_onchain_messages`] so it dedups against an already-shown sender-side
-/// note via the existing title/body check. wasm32-clean.
-// `allow(dead_code)`: the mount-time call lives in `src/app/mod.rs` (owned by
-// integration); drop the allow once wired in.
-#[allow(dead_code)]
+/// note via the existing title/body check. wasm32-clean. Wired at mount in
+/// `src/app/mod.rs`, chained after [`import_onchain_messages`].
 pub(crate) async fn notify_received_lh() {
     let Some(name) = crate::app::tenant::current_name() else {
         return;

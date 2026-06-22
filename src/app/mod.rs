@@ -690,7 +690,13 @@ async fn paint_workshop(host: &tenant::Host) {
     // (#35) — fire-and-forget so the RPC reads don't delay the mount; load_inbox
     // is already awaited, so BELL is populated before this appends. No-op on the
     // apex (no tenant identity).
-    wasm_bindgen_futures::spawn_local(notifications::import_onchain_messages());
+    wasm_bindgen_futures::spawn_local(async {
+        // Fold any durable on-chain notes first, THEN check for an unannounced
+        // incoming $LH transfer — the receiver-side notify dedups against a
+        // sender-side note that import may have just folded (T13/feedback #13).
+        notifications::import_onchain_messages().await;
+        notifications::notify_received_lh().await;
+    });
     // Decentralized, client-side bell notes (no server push / user roster):
     //   • self-notify ONCE when the loaded bundle's crate version changed;
     //   • tell a feedback submitter their item was resolved (matches the
@@ -872,7 +878,13 @@ pub(crate) async fn paint_tenant(host: tenant::Host, name: String) {
     // (#35) — fire-and-forget so the RPC reads don't delay the mount; load_inbox
     // is already awaited, so BELL is populated before this appends. No-op on the
     // apex (no tenant identity).
-    wasm_bindgen_futures::spawn_local(notifications::import_onchain_messages());
+    wasm_bindgen_futures::spawn_local(async {
+        // Fold any durable on-chain notes first, THEN check for an unannounced
+        // incoming $LH transfer — the receiver-side notify dedups against a
+        // sender-side note that import may have just folded (T13/feedback #13).
+        notifications::import_onchain_messages().await;
+        notifications::notify_received_lh().await;
+    });
     // Decentralized, client-side bell notes (no server push / user roster):
     //   • self-notify ONCE when the loaded bundle's crate version changed;
     //   • tell a feedback submitter their item was resolved (matches the
