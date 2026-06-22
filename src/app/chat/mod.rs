@@ -883,16 +883,27 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
         || lower.contains("403")
         || lower.contains("permission_denied")
         || lower.contains("unauthenticated"));
-    // The credit proxy 402s when there's no active session / no $LH for the
-    // signing address. On a subdomain that address is this origin's local
-    // credit key — distinct from the apex wallet — so "I redeemed credits"
-    // and "this origin has credits" are not the same thing.
-    let looks_like_credits = lower.contains("402")
-        || lower.contains("payment required")
-        || lower.contains("insufficient")
-        || lower.contains("no active session")
+    // A 429 / quota / spend-cap is the MODEL BACKEND rate-limiting us (e.g. the
+    // shared Gemini key's Google project hit its monthly spend cap, or Anthropic
+    // is overloaded) — NOT the user being out of $LH. Lumping it under
+    // `looks_like_credits` painted the "out of $LH" card at funded users and sent
+    // them chasing a phantom balance bug (real incident: 183 $LH, "can't send").
+    // Classify it on its own so the message tells the truth.
+    let looks_like_rate_limit = lower.contains("429")
         || lower.contains("quota")
-        || lower.contains("429");
+        || lower.contains("resource_exhausted")
+        || lower.contains("spending cap")
+        || lower.contains("too many requests")
+        || lower.contains("overloaded");
+    // The credit proxy 402s when there's genuinely no active session / no $LH for
+    // the signing address. Keep this for the REAL out-of-$LH case only — a
+    // rate-limit above is explicitly excluded so it can't masquerade as one.
+    let looks_like_credits = !looks_like_rate_limit
+        && (lower.contains("402")
+            || lower.contains("payment required")
+            || lower.contains("insufficient")
+            || lower.contains("no active session")
+            || lower.contains("no $lh"));
 
     // SELF-HEAL for "I have $LH but can't send": a VERIFIED OWNER whose master
     // seed isn't loaded on THIS subdomain chats as a per-origin device key with
@@ -930,7 +941,17 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
     // user) — the raw error is logged to the console for debugging only. Every
     // other failure keeps the escaped error bubble (its raw text is dev-facing).
     let body_id = format!("turn-body-{assistant_turn_id}");
-    if looks_like_credits {
+    if looks_like_rate_limit {
+        // The MODEL backend is over its quota / rate-limited — say so plainly so a
+        // funded user doesn't think their $LH vanished. A plain in-stream line (no
+        // card), with the next step. Raw error to the console for debugging.
+        web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(err));
+        dom::append_html(
+            &body_id,
+            "<div style=\"color:var(--muted)\">the model backend is over its quota right now — \
+             this is the shared model, not your $LH. retry in a moment, or switch model in settings.</div>",
+        );
+    } else if looks_like_credits {
         web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(err));
         dom::append_html(&body_id, &super::templates::out_of_credits_card().into_string());
     } else {
@@ -959,6 +980,10 @@ fn report_turn_error(context: &str, err: &str, assistant_turn_id: u32) {
     } else if looks_like_auth {
         dom::set_status("API key rejected — check your Gemini key.", true);
         super::show_api_key_modal();
+    } else if looks_like_rate_limit {
+        // The in-stream line already explains it; clear the status line (no
+        // duplicate, and definitely not an out-of-$LH message).
+        dom::set_status("", false);
     } else if looks_like_credits {
         // The out-of-$LH CARD in the transcript already says it cleanly; a second
         // red status line under it was redundant noise (user feedback). Clear any
