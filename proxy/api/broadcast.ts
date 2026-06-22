@@ -40,9 +40,8 @@
 // the per-FEED cooldown below. With broadcasts free, these rate limits + the
 // identity gate ARE the spam story.
 
-import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3';
-import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
+import { bytesToHex } from '@noble/hashes/utils';
 import {
   parsePushSubs,
   dedupeSubs,
@@ -55,11 +54,17 @@ export const config = { runtime: 'edge' };
 
 // ---- constants (mirror api/notify.ts) ---------------------------------------
 
-import { TEMPO_RPC, REGISTRY } from './_chain';
-
-const FRESHNESS_WINDOW_SECS = 300; // same tight replay window as notify.ts
-const ALLOWED_ORIGIN_SUFFIX = '.localharness.xyz';
-const ALLOWED_ORIGIN_EXACT = 'https://localharness.xyz';
+// Auth primitives (CORS allow-check, personal-sign recovery + freshness, the
+// generic eth_call + selector/encode helpers) are SHARED in `_auth.ts` (§5
+// dedup) — byte-for-byte the logic that used to be inlined here.
+import {
+  isAllowedOrigin,
+  verifyAuthToken,
+  selector,
+  encodeAddressWord,
+  stripHex,
+  ethCall,
+} from './_auth';
 
 // Payload bounds — same as notify.ts; pushes are glanceable banners, trimmed
 // then truncated, never rejected for length.
@@ -105,12 +110,7 @@ const PUSH_SUB_KEY = bytesToHex(
   keccak_256(new TextEncoder().encode('localharness.push_sub')),
 );
 
-/** Whether `s` is a well-formed 0x-prefixed 20-byte hex address. */
-function isHexAddress(s: string): boolean {
-  return /^0x[0-9a-fA-F]{40}$/.test(s);
-}
-
-// ---- CORS (same policy as notify.ts) ----------------------------------------
+// ---- CORS (same policy as notify.ts; isAllowedOrigin shared via _auth.ts) -----
 
 function corsHeaders(origin: string | null): Record<string, string> {
   const h: Record<string, string> = {
@@ -124,23 +124,6 @@ function corsHeaders(origin: string | null): Record<string, string> {
   return h;
 }
 
-/** Whether `origin` may receive CORS headers (apex + subdomains + localhost
- * dev — hostname-parsed, not prefix-matched; see notify.ts). */
-function isAllowedOrigin(origin: string): boolean {
-  if (origin === ALLOWED_ORIGIN_EXACT || origin.endsWith(ALLOWED_ORIGIN_SUFFIX)) {
-    return true;
-  }
-  try {
-    const u = new URL(origin);
-    return (
-      u.protocol === 'http:' &&
-      (u.hostname === 'localhost' || u.hostname === '127.0.0.1')
-    );
-  } catch {
-    return false;
-  }
-}
-
 function json(body: unknown, status: number, origin: string | null): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -148,82 +131,8 @@ function json(body: unknown, status: number, origin: string | null): Response {
   });
 }
 
-// ---- crypto helpers (mirror notify.ts) --------------------------------------
-
-function keccak(data: Uint8Array): Uint8Array {
-  return keccak_256(data);
-}
-
-function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a, 0);
-  out.set(b, a.length);
-  return out;
-}
-
-function stripHex(h: string): string {
-  return h.startsWith('0x') ? h.slice(2) : h;
-}
-
-/** Lowercase 0x address from a 64-byte uncompressed pubkey (no 0x04 prefix). */
-function toAddress(pubKeyXY: Uint8Array): string {
-  return '0x' + bytesToHex(keccak(pubKeyXY).slice(12));
-}
-
-/**
- * Recover the signer's address from an Ethereum personal_sign signature.
- * Same preimage + recovery as notify.ts/gemini.ts — the token scheme is shared.
- */
-function recoverAddress(message: string, sigHex: string): string {
-  const msgBytes = new TextEncoder().encode(message);
-  const prefix = new TextEncoder().encode(
-    `\x19Ethereum Signed Message:\n${msgBytes.length}`,
-  );
-  const digest = keccak(concat(prefix, msgBytes));
-
-  const sig = hexToBytes(stripHex(sigHex));
-  if (sig.length !== 65) throw new Error('signature must be 65 bytes');
-  const r = sig.slice(0, 32);
-  const s = sig.slice(32, 64);
-  let v = sig[64];
-  if (v >= 27) v -= 27;
-
-  const signature = secp256k1.Signature.fromCompact(
-    bytesToHex(concat(r, s)),
-  ).addRecoveryBit(v);
-  const point = signature.recoverPublicKey(digest);
-  return toAddress(point.toRawBytes(false).slice(1));
-}
-
-function encodeAddressWord(address: string): string {
-  return stripHex(address).toLowerCase().padStart(64, '0');
-}
-
 function encodeUint256Word(value: bigint): string {
   return value.toString(16).padStart(64, '0');
-}
-
-function selector(sig: string): string {
-  return bytesToHex(keccak(new TextEncoder().encode(sig)).slice(0, 4));
-}
-
-/** One `eth_call` against the diamond; returns the raw result hex or throws. */
-async function ethCall(data: string): Promise<string> {
-  const res = await fetch(TEMPO_RPC, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'eth_call',
-      params: [{ to: REGISTRY, data }, 'latest'],
-    }),
-  });
-  const body = (await res.json()) as { result?: string; error?: unknown };
-  if (!body.result) {
-    throw new Error('eth_call failed: ' + JSON.stringify(body.error ?? {}));
-  }
-  return body.result;
 }
 
 /**
@@ -393,35 +302,13 @@ export default async function handler(req: Request): Promise<Response> {
       }
     }
 
-    // ---- AUTH — same token scheme + headers as notify.ts ----------------------
-    const parts = token.split(':');
-    if (parts.length !== 3) {
-      return json({ error: 'missing or malformed auth token' }, 401, origin);
-    }
-    const [address, tsStr, signature] = parts;
-    const timestamp = Number(tsStr);
-    if (!address || !signature || !Number.isFinite(timestamp)) {
-      return json({ error: 'malformed auth token' }, 401, origin);
-    }
-    if (!isHexAddress(address)) {
-      return json({ error: 'malformed auth token: address' }, 401, origin);
-    }
-    if (!Number.isInteger(timestamp) || timestamp < 0) {
-      return json({ error: 'malformed auth token: timestamp' }, 401, origin);
-    }
-    const now = Math.floor(Date.now() / 1000);
-    if (Math.abs(now - timestamp) > FRESHNESS_WINDOW_SECS) {
-      return json({ error: 'stale or future timestamp' }, 401, origin);
-    }
-    const message = `localharness-proxy:${address.toLowerCase()}:${timestamp}`;
-    let recovered: string;
-    try {
-      recovered = recoverAddress(message, signature);
-    } catch (e) {
-      return json({ error: 'bad signature: ' + (e as Error).message }, 401, origin);
-    }
-    if (recovered.toLowerCase() !== address.toLowerCase()) {
-      return json({ error: 'signature does not match address' }, 401, origin);
+    // ---- AUTH — same token scheme + headers as notify.ts (verifyAuthToken in
+    // _auth.ts is byte-for-byte the prior inlined parse/freshness/recovery). The
+    // recovered identity is only GATED here (broadcast pushes to the feed's
+    // subscribers, not the caller), so we don't bind the address further. -------
+    const auth = verifyAuthToken(token, Math.floor(Date.now() / 1000));
+    if (!auth.ok) {
+      return json({ error: auth.error }, auth.status, origin);
     }
 
     // ---- per-feed RATE LIMIT. Identity-gated broadcast is not owner-gated, so

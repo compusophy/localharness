@@ -33,8 +33,6 @@
 // authorization, which the proxy can't over-debit, is the trustless path).
 
 import { secp256k1 } from '@noble/curves/secp256k1';
-import { keccak_256 } from '@noble/hashes/sha3';
-import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import {
   createPublicClient,
   createWalletClient,
@@ -50,6 +48,18 @@ export const config = { runtime: 'edge' };
 
 import { TEMPO_RPC, REGISTRY, CHAIN_ID } from './_chain';
 import { priceOf, type Provider } from './_prices';
+// Auth + metering primitives (CORS allow-check, personal-sign recovery +
+// freshness, the creditOf/sessionExpiryOf reads, the InsufficientCreditError
+// thrown by the meter debit) are SHARED in `_auth.ts` (§5 dedup) — byte-for-byte
+// the logic that used to be inlined here. `meterDebit` stays LOCAL (gemini's has
+// the streaming `confirm` + burst-reservation path no other route has).
+import {
+  isAllowedOrigin,
+  verifyAuthToken,
+  sessionExpiryOf,
+  creditOf,
+  InsufficientCreditError,
+} from './_auth';
 import { verifyX402Payment, settleX402NoWait, settleUptoNoWait, type X402Auth } from './_x402';
 import { meteredAmountWei } from './_usage';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
@@ -67,10 +77,7 @@ const OPENAI_BASE = 'https://api.openai.com';
 // UNSET → x402 metering is off and the session/creditOf path is unchanged.
 const METER_PAYEE = (process.env.LH_METER_PAYEE ?? '').toLowerCase();
 
-/** Whether `s` is a well-formed 0x-prefixed 20-byte hex address. */
-function isHexAddress(s: string): boolean {
-  return /^0x[0-9a-fA-F]{40}$/.test(s);
-}
+// isHexAddress moved to the shared `_auth.ts` (used there by verifyAuthToken).
 
 /**
  * Pick the upstream Gemini key for THIS request from a POOL. `GEMINI_API_KEYS`
@@ -184,9 +191,8 @@ const METER_ABI = [
     outputs: [],
   },
 ] as const;
-// Generous: the on-chain credit session is the real gate, so the token only
-// needs to prove the caller signed *recently enough* (re-signed per session).
-const FRESHNESS_WINDOW_SECS = 300; // 5 min — tight replay window (clients sign per request)
+// FRESHNESS_WINDOW_SECS (5 min replay window) moved to the shared `_auth.ts`,
+// applied by verifyAuthToken.
 // Reject absurdly large request bodies up front (declared Content-Length) so one
 // caller can't make the proxy buffer a multi-GB body. Real LLM requests (long
 // context + tools) are a few MB; 16 MB is comfortably above legitimate use.
@@ -239,9 +245,8 @@ const MARGIN_BPS = (() => {
   return Number.isFinite(n) && n > 0 ? BigInt(n) : 13000n; // never zero/neg → never free
 })();
 // Only browser origins under our own domain may invoke the proxy (H2). A
-// server-side caller sends no Origin header and is allowed through.
-const ALLOWED_ORIGIN_SUFFIX = '.localharness.xyz';
-const ALLOWED_ORIGIN_EXACT = 'https://localharness.xyz';
+// server-side caller sends no Origin header and is allowed through. The origin
+// allow-check (ALLOWED_ORIGIN_* + isAllowedOrigin) is SHARED in `_auth.ts`.
 // model path segment: letters, digits, dot, dash only (H3 — no path/query
 // injection into the upstream URL).
 const MODEL_RE = /^[a-zA-Z0-9.\-]+$/;
@@ -261,25 +266,6 @@ function corsHeaders(origin: string | null): Record<string, string> {
   return h;
 }
 
-/** Whether `origin` may receive CORS headers. The localhost branch parses the
- * URL and checks the HOSTNAME — a bare `startsWith('http://localhost')` also
- * matched `http://localhost.evil.com`, letting an attacker origin read proxy
- * responses cross-origin. */
-function isAllowedOrigin(origin: string): boolean {
-  if (origin === ALLOWED_ORIGIN_EXACT || origin.endsWith(ALLOWED_ORIGIN_SUFFIX)) {
-    return true;
-  }
-  try {
-    const u = new URL(origin);
-    return (
-      u.protocol === 'http:' &&
-      (u.hostname === 'localhost' || u.hostname === '127.0.0.1')
-    );
-  } catch {
-    return false;
-  }
-}
-
 function json(body: unknown, status: number, origin: string | null): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -287,110 +273,17 @@ function json(body: unknown, status: number, origin: string | null): Response {
   });
 }
 
-// ---- crypto helpers --------------------------------------------------------
+// ---- crypto + on-chain reads ------------------------------------------------
+//
+// The personal-sign recovery / address helpers and the creditOf /
+// sessionExpiryOf reads are SHARED in `_auth.ts` (§5 dedup) — imported above,
+// byte-for-byte the logic that used to be inlined here. `meterDebit` stays LOCAL
+// (below): it carries gemini-specific streaming (`confirm=false`) + the
+// in-isolate burst-reservation system, which no other route has.
 
-function keccak(data: Uint8Array): Uint8Array {
-  return keccak_256(data);
-}
-
-function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a, 0);
-  out.set(b, a.length);
-  return out;
-}
-
-function stripHex(h: string): string {
-  return h.startsWith('0x') ? h.slice(2) : h;
-}
-
-/** Lowercase 0x address from a 64-byte uncompressed pubkey (no 0x04 prefix). */
-function toAddress(pubKeyXY: Uint8Array): string {
-  return '0x' + bytesToHex(keccak(pubKeyXY).slice(12));
-}
-
-/**
- * Recover the signer's address from an Ethereum personal_sign signature.
- * `message` is wrapped with "\x19Ethereum Signed Message:\n<len>", keccak'd,
- * then ecrecover'd. `sigHex` is 65 bytes (r||s||v), v ∈ {27,28} or {0,1}.
- */
-function recoverAddress(message: string, sigHex: string): string {
-  const msgBytes = new TextEncoder().encode(message);
-  const prefix = new TextEncoder().encode(
-    `\x19Ethereum Signed Message:\n${msgBytes.length}`,
-  );
-  const digest = keccak(concat(prefix, msgBytes));
-
-  const sig = hexToBytes(stripHex(sigHex));
-  if (sig.length !== 65) throw new Error('signature must be 65 bytes');
-  const r = sig.slice(0, 32);
-  const s = sig.slice(32, 64);
-  let v = sig[64];
-  if (v >= 27) v -= 27;
-
-  const signature = secp256k1.Signature.fromCompact(
-    bytesToHex(concat(r, s)),
-  ).addRecoveryBit(v);
-  const point = signature.recoverPublicKey(digest);
-  return toAddress(point.toRawBytes(false).slice(1));
-}
-
-function encodeAddressWord(address: string): string {
-  return stripHex(address).toLowerCase().padStart(64, '0');
-}
-
-function selector(sig: string): string {
-  return bytesToHex(keccak(new TextEncoder().encode(sig)).slice(0, 4));
-}
-
-/** `sessionExpiryOf(address) -> uint256`, decoded as BigInt unix seconds. */
-async function sessionExpiryOf(address: string): Promise<bigint> {
-  const data =
-    '0x' + selector('sessionExpiryOf(address)') + encodeAddressWord(address);
-  const res = await fetch(TEMPO_RPC, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'eth_call',
-      params: [{ to: REGISTRY, data }, 'latest'],
-    }),
-  });
-  const body = (await res.json()) as { result?: string; error?: unknown };
-  if (!body.result) {
-    throw new Error('eth_call failed: ' + JSON.stringify(body.error ?? {}));
-  }
-  // Compare as BigInt (M1) — never lossily coerce a uint256 word to Number.
-  return BigInt(body.result);
-}
-
-/** `creditOf(address) -> uint256` — the user's prepaid per-request balance. */
-async function creditOf(address: string): Promise<bigint> {
-  const data =
-    '0x' + selector('creditOf(address)') + encodeAddressWord(address);
-  const res = await fetch(TEMPO_RPC, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'eth_call',
-      params: [{ to: REGISTRY, data }, 'latest'],
-    }),
-  });
-  const body = (await res.json()) as { result?: string; error?: unknown };
-  if (!body.result) {
-    throw new Error('eth_call failed: ' + JSON.stringify(body.error ?? {}));
-  }
-  return BigInt(body.result);
-}
-
-/** Thrown when the on-chain debit REVERTED — the caller is actually out of
- * `$LH` for this request (`CreditMeterFacet.meter` reverts `InsufficientCredits`
- * rather than ever letting a balance go negative). The handler maps this to 402,
- * distinct from an ambiguous RPC failure (502). */
-class InsufficientCreditError extends Error {}
+// `InsufficientCreditError` (thrown when the on-chain debit REVERTED — the
+// caller is out of `$LH`) is shared in `_auth.ts` and imported above; the
+// handler maps it to 402, distinct from an ambiguous RPC failure (502).
 
 // In-isolate per-address in-flight RESERVATION. `creditOf` is a lock-free RPC
 // read, and `meter()` has NO on-chain CAS — so N concurrent requests from one
@@ -702,48 +595,16 @@ export default async function handler(req: Request): Promise<Response> {
     const bearer = (req.headers.get('authorization') ?? '').replace(/^Bearer\s+/i, '');
     const token =
       req.headers.get('x-goog-api-key') ?? req.headers.get('x-api-key') ?? bearer;
-    const parts = token.split(':');
-    if (parts.length !== 3) {
-      return json({ error: 'missing or malformed auth token' }, 401, origin);
-    }
-    const [address, tsStr, signature] = parts;
-    const timestamp = Number(tsStr);
-    if (!address || !signature || !Number.isFinite(timestamp)) {
-      return json({ error: 'malformed auth token' }, 401, origin);
-    }
-    // Validate the address shape up front. The recovered-address match below
-    // already forces a well-formed 0x-address (recovery always yields one), but
-    // checking explicitly — like mcp.ts's `isHexAddress` — keeps `address` from
-    // ever flowing UNvalidated into `encodeAddressWord` / the on-chain
-    // `meter(user,...)` debit, and rejects garbage with a clean 401 instead of
-    // relying on the later equality as an implicit validator.
-    if (!isHexAddress(address)) {
-      return json({ error: 'malformed auth token: address' }, 401, origin);
-    }
-    // The signed timestamp must be a non-negative INTEGER (unix seconds). The
-    // client signs the decimal it embeds; reject fractional/odd numerics so a
-    // token whose `tsStr` re-stringifies differently than what was signed fails
-    // here rather than later at the signature-mismatch (clearer error, and no
-    // chance of an exotic numeric slipping the freshness math).
-    if (!Number.isInteger(timestamp) || timestamp < 0) {
-      return json({ error: 'malformed auth token: timestamp' }, 401, origin);
-    }
-
+    // verifyAuthToken (in _auth.ts) is byte-for-byte the prior inlined token
+    // parse + address/timestamp shape checks + freshness window + ecrecover
+    // identity match — same error strings + 401s. Same `now` clock read is then
+    // reused for the session-expiry comparison below.
     const now = Math.floor(Date.now() / 1000);
-    if (Math.abs(now - timestamp) > FRESHNESS_WINDOW_SECS) {
-      return json({ error: 'stale or future timestamp' }, 401, origin);
+    const auth = verifyAuthToken(token, now);
+    if (!auth.ok) {
+      return json({ error: auth.error }, auth.status, origin);
     }
-
-    const message = `localharness-proxy:${address.toLowerCase()}:${timestamp}`;
-    let recovered: string;
-    try {
-      recovered = recoverAddress(message, signature);
-    } catch (e) {
-      return json({ error: 'bad signature: ' + (e as Error).message }, 401, origin);
-    }
-    if (recovered.toLowerCase() !== address.toLowerCase()) {
-      return json({ error: 'signature does not match address' }, 401, origin);
-    }
+    const address = auth.address;
 
     // PROVIDER-KEY presence — checked BEFORE the metering section. A missing
     // server key is a proxy misconfiguration and must surface as a 500 WITHOUT

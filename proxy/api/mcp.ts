@@ -50,6 +50,11 @@ export const config = { runtime: 'edge' };
 // ---- constants (shared with gemini.ts) -------------------------------------
 
 import { TEMPO_RPC, REGISTRY, LH_TOKEN, CHAIN_ID } from './_chain';
+// The CORS origin allow-check is SHARED in `_auth.ts` (§5 dedup) — byte-for-
+// byte the logic that used to be inlined here. mcp.ts keeps its OWN crypto / ABI
+// helpers (variadic concatBytes, 0X-tolerant stripHex, the x402 settle plumbing)
+// — those are deliberately distinct from the personal-sign auth helpers.
+import { isAllowedOrigin } from './_auth';
 // $LH token (LocalharnessCredits, TIP-20). `X402Facet.settle` moves $LH
 // payer->payee via `transferFrom`, so the payer needs BOTH a balance and an
 // allowance to the diamond. Under settle-on-success the model runs before the
@@ -66,8 +71,6 @@ const MCP_SERVER_NAME = 'localharness';
 const MCP_SERVER_VERSION = '0.1.0';
 
 const MAX_BODY_BYTES = 16_000_000;
-const ALLOWED_ORIGIN_SUFFIX = '.localharness.xyz';
-const ALLOWED_ORIGIN_EXACT = 'https://localharness.xyz';
 
 const TEMPO_CHAIN = defineChain({
   id: CHAIN_ID,
@@ -151,21 +154,6 @@ function corsHeaders(origin: string | null): Record<string, string> {
     h['Access-Control-Allow-Origin'] = origin;
   }
   return h;
-}
-
-function isAllowedOrigin(origin: string): boolean {
-  if (origin === ALLOWED_ORIGIN_EXACT || origin.endsWith(ALLOWED_ORIGIN_SUFFIX)) {
-    return true;
-  }
-  try {
-    const u = new URL(origin);
-    return (
-      u.protocol === 'http:' &&
-      (u.hostname === 'localhost' || u.hostname === '127.0.0.1')
-    );
-  } catch {
-    return false;
-  }
 }
 
 // ---- crypto / ABI helpers (mirror gemini.ts + registry.rs) -----------------

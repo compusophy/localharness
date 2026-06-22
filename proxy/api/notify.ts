@@ -50,17 +50,8 @@
 // Checked pre-auth on the claimed address: worst case a spoofer burns a
 // window (nuisance), never funds — debits only happen after real auth.
 
-import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3';
-import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
-import {
-  createPublicClient,
-  createWalletClient,
-  defineChain,
-  encodeFunctionData,
-  http,
-} from 'viem';
-import { privateKeyToAccount } from 'viem/accounts';
+import { bytesToHex } from '@noble/hashes/utils';
 import {
   parsePushSubs,
   dedupeSubs,
@@ -74,22 +65,28 @@ export const config = { runtime: 'edge' };
 
 // ---- constants (mirror api/fetch.ts) ----------------------------------------
 
-import { TEMPO_RPC, REGISTRY, CHAIN_ID } from './_chain';
+// Auth + metering primitives (CORS allow-check, personal-sign recovery +
+// freshness, the creditOf/sessionExpiryOf reads, the generic eth_call, the
+// meter debit) are SHARED in `_auth.ts` (§5 dedup) — byte-for-byte the logic
+// that used to be inlined here.
+import {
+  isAllowedOrigin,
+  verifyAuthToken,
+  selector,
+  encodeAddressWord,
+  stripHex,
+  ethCall,
+  sessionExpiryOf,
+  creditOf,
+  meterDebit,
+  InsufficientCreditError,
+} from './_auth';
 
-// SAME per-request price as a model call — same env knob, same default
-// 0.01 $LH. A self-push is a paid capability like a model turn (the meter IS
-// the spam filter — see the header).
-const COST_PER_REQUEST_WEI = ((): bigint => {
-  try {
-    return BigInt(process.env.COST_PER_REQUEST_WEI ?? '10000000000000000');
-  } catch {
-    return 10_000_000_000_000_000n;
-  }
-})();
-
-const FRESHNESS_WINDOW_SECS = 300; // same tight replay window as gemini.ts
-const ALLOWED_ORIGIN_SUFFIX = '.localharness.xyz';
-const ALLOWED_ORIGIN_EXACT = 'https://localharness.xyz';
+// SAME per-request price as a model call — the platform FLOOR price for any paid
+// capability. Single source of truth: `_prices.ts` (default 1 $LH,
+// env-overridable via COST_PER_REQUEST_WEI). A self-push is a paid capability
+// like a model turn (the meter IS the spam filter — see the header).
+import { COST_PER_REQUEST_WEI } from './_prices';
 
 // Payload bounds. Pushes are glanceable phone banners, not documents —
 // overlong inputs are TRIMMED (whitespace) then TRUNCATED, never rejected.
@@ -101,8 +98,9 @@ const MAX_REQUEST_BODY_BYTES = 16_384; // { title, body } is tiny
 // Sender: 10/min is generous for legit "notify me when done" agent loops but
 // kills a tight buzz loop. Recipient: 10/min to one target name across ALL
 // senders in this isolate — a phone gets at most ~one banner every 6s from
-// here even if many funded senders pile on. The meter (0.01 $LH/push) stays
-// the global hard backstop an isolate-spread attacker still pays.
+// here even if many funded senders pile on. The meter (1 $LH/push, the
+// platform floor) stays the global hard backstop an isolate-spread attacker
+// still pays.
 const NOTIFY_SENDER_PER_MIN = 10;
 const NOTIFY_RECIPIENT_PER_MIN = 10;
 const senderWindow = new SlidingWindow(NOTIFY_SENDER_PER_MIN, 60_000);
@@ -115,36 +113,12 @@ const PUSH_SUB_KEY = bytesToHex(
   keccak_256(new TextEncoder().encode('localharness.push_sub')),
 );
 
-const TEMPO_CHAIN = defineChain({
-  id: CHAIN_ID,
-  name: 'Tempo Moderato',
-  nativeCurrency: { name: 'Tempo', symbol: 'TEMPO', decimals: 18 },
-  rpcUrls: { default: { http: [TEMPO_RPC] } },
-});
-
-const METER_ABI = [
-  {
-    name: 'meter',
-    type: 'function',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'user', type: 'address' },
-      { name: 'amount', type: 'uint256' },
-    ],
-    outputs: [],
-  },
-] as const;
-
 // The MessageFacet inbox writer (sendMessage) + its 1024-byte body cap live in
 // the shared `_message.ts` — both this route (cross-agent no-push fallback) and
 // api/sponsor.ts (welcome-on-creation) record notes through it.
 
-/** Whether `s` is a well-formed 0x-prefixed 20-byte hex address. */
-function isHexAddress(s: string): boolean {
-  return /^0x[0-9a-fA-F]{40}$/.test(s);
-}
-
-// ---- CORS (same policy as fetch.ts/gemini.ts) --------------------------------
+// ---- CORS (same policy as fetch.ts/gemini.ts; isAllowedOrigin shared via
+// _auth.ts) --------------------------------------------------------------------
 
 function corsHeaders(origin: string | null): Record<string, string> {
   const h: Record<string, string> = {
@@ -158,116 +132,11 @@ function corsHeaders(origin: string | null): Record<string, string> {
   return h;
 }
 
-/** Whether `origin` may receive CORS headers (apex + subdomains + localhost
- * dev — hostname-parsed, not prefix-matched; see gemini.ts). */
-function isAllowedOrigin(origin: string): boolean {
-  if (origin === ALLOWED_ORIGIN_EXACT || origin.endsWith(ALLOWED_ORIGIN_SUFFIX)) {
-    return true;
-  }
-  try {
-    const u = new URL(origin);
-    return (
-      u.protocol === 'http:' &&
-      (u.hostname === 'localhost' || u.hostname === '127.0.0.1')
-    );
-  } catch {
-    return false;
-  }
-}
-
 function json(body: unknown, status: number, origin: string | null): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { 'content-type': 'application/json', ...corsHeaders(origin) },
   });
-}
-
-// ---- crypto helpers (mirror fetch.ts/gemini.ts) -------------------------------
-
-function keccak(data: Uint8Array): Uint8Array {
-  return keccak_256(data);
-}
-
-function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a, 0);
-  out.set(b, a.length);
-  return out;
-}
-
-function stripHex(h: string): string {
-  return h.startsWith('0x') ? h.slice(2) : h;
-}
-
-/** Lowercase 0x address from a 64-byte uncompressed pubkey (no 0x04 prefix). */
-function toAddress(pubKeyXY: Uint8Array): string {
-  return '0x' + bytesToHex(keccak(pubKeyXY).slice(12));
-}
-
-/**
- * Recover the signer's address from an Ethereum personal_sign signature.
- * Same preimage + recovery as gemini.ts — the token scheme is shared.
- */
-function recoverAddress(message: string, sigHex: string): string {
-  const msgBytes = new TextEncoder().encode(message);
-  const prefix = new TextEncoder().encode(
-    `\x19Ethereum Signed Message:\n${msgBytes.length}`,
-  );
-  const digest = keccak(concat(prefix, msgBytes));
-
-  const sig = hexToBytes(stripHex(sigHex));
-  if (sig.length !== 65) throw new Error('signature must be 65 bytes');
-  const r = sig.slice(0, 32);
-  const s = sig.slice(32, 64);
-  let v = sig[64];
-  if (v >= 27) v -= 27;
-
-  const signature = secp256k1.Signature.fromCompact(
-    bytesToHex(concat(r, s)),
-  ).addRecoveryBit(v);
-  const point = signature.recoverPublicKey(digest);
-  return toAddress(point.toRawBytes(false).slice(1));
-}
-
-function encodeAddressWord(address: string): string {
-  return stripHex(address).toLowerCase().padStart(64, '0');
-}
-
-function selector(sig: string): string {
-  return bytesToHex(keccak(new TextEncoder().encode(sig)).slice(0, 4));
-}
-
-/** One `eth_call` against the diamond; returns the raw result hex or throws. */
-async function ethCall(data: string): Promise<string> {
-  const res = await fetch(TEMPO_RPC, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'eth_call',
-      params: [{ to: REGISTRY, data }, 'latest'],
-    }),
-  });
-  const body = (await res.json()) as { result?: string; error?: unknown };
-  if (!body.result) {
-    throw new Error('eth_call failed: ' + JSON.stringify(body.error ?? {}));
-  }
-  return body.result;
-}
-
-/** `sessionExpiryOf(address) -> uint256`, decoded as BigInt unix seconds. */
-async function sessionExpiryOf(address: string): Promise<bigint> {
-  return BigInt(
-    await ethCall('0x' + selector('sessionExpiryOf(address)') + encodeAddressWord(address)),
-  );
-}
-
-/** `creditOf(address) -> uint256` — the user's prepaid per-request balance. */
-async function creditOf(address: string): Promise<bigint> {
-  return BigInt(
-    await ethCall('0x' + selector('creditOf(address)') + encodeAddressWord(address)),
-  );
 }
 
 /** Decode an ABI-encoded dynamic `bytes` return into UTF-8 text ('' if empty). */
@@ -385,53 +254,7 @@ async function callerDisplayName(address: string): Promise<string> {
   return address.slice(0, 6) + '…' + address.slice(-4);
 }
 
-/** Thrown when the on-chain debit REVERTED (caller is genuinely out of $LH). */
-class InsufficientCreditError extends Error {}
-
-/**
- * Debit `amount` $LH from `user` via `CreditMeterFacet.meter` — identical
- * semantics to fetch.ts/gemini.ts::meterDebit: await the receipt
- * (authoritative), throw on a definitive revert, return normally on an
- * ambiguous wait failure (never risk a double-charge on retry).
- */
-async function meterDebit(user: string, amount: bigint): Promise<void> {
-  const pk = process.env.PROXY_METER_KEY;
-  if (!pk) throw new Error('missing PROXY_METER_KEY');
-  const account = privateKeyToAccount(
-    (pk.startsWith('0x') ? pk : `0x${pk}`) as `0x${string}`,
-  );
-  const wallet = createWalletClient({
-    account,
-    chain: TEMPO_CHAIN,
-    transport: http(TEMPO_RPC),
-  });
-  const data = encodeFunctionData({
-    abi: METER_ABI,
-    functionName: 'meter',
-    args: [user as `0x${string}`, amount],
-  });
-  const hash = await wallet.sendTransaction({
-    to: REGISTRY as `0x${string}`,
-    data,
-    value: 0n,
-  });
-
-  const pub = createPublicClient({ chain: TEMPO_CHAIN, transport: http(TEMPO_RPC) });
-  let status: 'success' | 'reverted';
-  try {
-    ({ status } = await pub.waitForTransactionReceipt({
-      hash,
-      timeout: 12_000,
-      pollingInterval: 500,
-    }));
-  } catch {
-    return; // ambiguous (RPC/timeout) — serve; do NOT double-charge on retry
-  }
-  if (status === 'reverted') {
-    throw new InsufficientCreditError('on-chain debit reverted (insufficient $LH)');
-  }
-}
-
+// InsufficientCreditError + meterDebit moved to the shared `_auth.ts`.
 // recordOnChainMessage moved to the shared `_message.ts` (see import above).
 
 // ---- handler ------------------------------------------------------------------
@@ -524,36 +347,14 @@ export default async function handler(req: Request): Promise<Response> {
       }
     }
 
-    // ---- AUTH — same token scheme + headers as api/gemini.ts -------------------
-    const parts = token.split(':');
-    if (parts.length !== 3) {
-      return json({ error: 'missing or malformed auth token' }, 401, origin);
-    }
-    const [address, tsStr, signature] = parts;
-    const timestamp = Number(tsStr);
-    if (!address || !signature || !Number.isFinite(timestamp)) {
-      return json({ error: 'malformed auth token' }, 401, origin);
-    }
-    if (!isHexAddress(address)) {
-      return json({ error: 'malformed auth token: address' }, 401, origin);
-    }
-    if (!Number.isInteger(timestamp) || timestamp < 0) {
-      return json({ error: 'malformed auth token: timestamp' }, 401, origin);
-    }
+    // ---- AUTH — same token scheme + headers as api/gemini.ts (verifyAuthToken
+    // in _auth.ts is byte-for-byte the prior inlined parse/freshness/recovery) --
     const now = Math.floor(Date.now() / 1000);
-    if (Math.abs(now - timestamp) > FRESHNESS_WINDOW_SECS) {
-      return json({ error: 'stale or future timestamp' }, 401, origin);
+    const auth = verifyAuthToken(token, now);
+    if (!auth.ok) {
+      return json({ error: auth.error }, auth.status, origin);
     }
-    const message = `localharness-proxy:${address.toLowerCase()}:${timestamp}`;
-    let recovered: string;
-    try {
-      recovered = recoverAddress(message, signature);
-    } catch (e) {
-      return json({ error: 'bad signature: ' + (e as Error).message }, 401, origin);
-    }
-    if (recovered.toLowerCase() !== address.toLowerCase()) {
-      return json({ error: 'signature does not match address' }, 401, origin);
-    }
+    const address = auth.address;
 
     // ---- subscription lookup (BEFORE the debit — an undeliverable note must
     // not be charged). Cross-agent (`to`) also stamps WHO it's from, and keeps

@@ -108,7 +108,9 @@ const GEMINI_BASE = 'https://generativelanguage.googleapis.com';
 const RUN_MODEL = process.env.MCP_ASK_MODEL ?? 'gemini-3.5-flash';
 
 // $LH (18-decimal wei) debited per scheduled run, matching the proxy's
-// COST_PER_REQUEST_WEI (gemini.ts) — 0.01 $LH default. Env-overridable.
+// COST_PER_REQUEST_WEI (gemini.ts / _prices.ts) — the platform FLOOR price,
+// 1 $LH default, env-overridable via COST_PER_REQUEST_WEI. Single source of
+// truth: `_prices.ts`.
 //
 // ⚠️ MAINNET REQUIREMENT — PRICING. `COST_WEI` is the $LH the worker debits PER
 // generateContent (one agent turn OR one sub-agent turn). It is what the owner
@@ -117,8 +119,7 @@ const RUN_MODEL = process.env.MCP_ASK_MODEL ?? 'gemini-3.5-flash';
 // `$LH-priced(model API call) >= platform's USD cost for that call` — or the
 // platform subsidizes every scheduled run out of pocket (bill-shock on the
 // PLATFORM side; the per-tick caps below bound it but a too-low COST_WEI still
-// means each call is sold below cost). The testnet default (0.01 $LH) is a
-// placeholder, NOT a costed price.
+// means each call is sold below cost).
 //
 // ⚠️ FOLLOW-ON — PER-PROVIDER PRICING. COST_WEI is currently UNIFORM per call:
 // every generateContent (the agent's own turns AND every sub-agent turn) costs
@@ -130,13 +131,8 @@ const RUN_MODEL = process.env.MCP_ASK_MODEL ?? 'gemini-3.5-flash';
 // switch to PER-PROVIDER / per-model pricing (charge each generateContent by the
 // model it actually used) before enabling cross-model sub-agents. Tracked as a
 // follow-on; not needed while sub-agents stay on the Gemini model.
-const COST_WEI = ((): bigint => {
-  try {
-    return BigInt(process.env.COST_PER_REQUEST_WEI ?? '10000000000000000');
-  } catch {
-    return 10_000_000_000_000_000n;
-  }
-})();
+import { COST_PER_REQUEST_WEI } from './_prices';
+const COST_WEI = COST_PER_REQUEST_WEI;
 
 // ---- per-TICK spend caps (#1 — the strongest bill-shock fix) ----------------
 //
