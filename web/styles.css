@@ -1812,24 +1812,21 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
    keyboard/screen-reader user had NO visible focus indicator (only
    .inline-card .ic-row had one). A monochrome 1px --fg outline on
    :focus-visible (keyboard only — never on mouse click) makes focus order
-   followable without touching the brutalist look. */
+   followable without touching the brutalist look.
+   TEXT INPUTS ARE DELIBERATELY EXCLUDED (#64/rawfeedback "highlighted container
+   inside a highlighted container"): every input/textarea ALREADY shows focus via
+   a border-color change — `input:focus` (below) or the .terminal-row /
+   .feedback-panel / .create-input :focus(-within) white/accent border. Adding
+   this outline on top drew a SECOND highlighted box INSIDE the already-lit field
+   on EVERY input (chat, feedback, apex claim). One active border per field. */
 button:focus-visible,
 a:focus-visible,
-input:focus-visible,
-textarea:focus-visible,
 summary:focus-visible,
 .explore-card:focus-visible,
 .agent-card:focus-visible,
 .agent-row-line:focus-visible {
   outline: 1px solid var(--fg);
   outline-offset: 2px;
-}
-/* The terminal textarea is the ONE exception: its ROW carries the active
-   border (:focus-within accent above). Text inputs match :focus-visible even
-   on mouse focus, so the global ring drew a SECOND box inside the already-lit
-   row — one active border only, the row's. */
-.terminal-row textarea:focus-visible {
-  outline: none;
 }
 /* Hover/focus motion on the navigable cards + rows (same 90ms language). */
 .explore-card, .agent-card, .agent-row-line {
