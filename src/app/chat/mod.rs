@@ -609,6 +609,14 @@ async fn stream_turn(agent: &Agent, input: TurnInput, pre: Option<(u32, u32)>) -
     let mut saw_question = false; // the model called `ask_question` (blocking)?
     let mut saw_thinking = false; // any reasoning deltas streamed this turn?
 
+    // STATUS: the instant the request goes to the model, show THINKING — it fills
+    // the formerly-BLANK gap between send (or `starting`) and the first chunk (the
+    // model is connecting + reasoning, no output yet). Previously `Thinking` was
+    // entered ONLY when a reasoning delta arrived, so that whole network+TTFT wait
+    // had no stage and the cue/glyph went blank (user feedback: the blank step
+    // should read as thinking). A real reasoning delta below re-enters Thinking (a
+    // no-op) and sets `saw_thinking`; a text-first reply just moves on to Streaming.
+    stage::enter(crate::turn_stage::Stage::Thinking);
     let response = match agent.chat(prompt).await {
         Ok(r) => r,
         Err(err) => {
