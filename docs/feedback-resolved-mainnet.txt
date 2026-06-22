@@ -217,3 +217,17 @@
 #            enforce identity). skill.md rewritten/deduped (the repeated chain/funding
 #            sections collapsed). NOTE: this REVERSES the prior "README minimal" directive
 #            — done per the maintainer's explicit #56. Easy to revert if not wanted.
+#
+# --- 2026-06-22 wave 4 (feedback ingest: triage + close, bundle e34314bf7346) ---------
+59  e34314b  DEPLOYED: LH brand dropdown = native <details> with 3 uniform square brand
+#            buttons (home/GitHub/crab), toggles on the LH tap, closes on click-outside +
+#            ESC (templates.rs:208-228, events/mod.rs:375-381). Code-verified fixed.
+60  e34314b  DEPLOYED: (1) phantom gap under folded tool cards removed (.tc-card-slot:empty
+#            collapse); (2) BYOK denied to visitors at 3 layers + dropped from the
+#            out-of-credits card; (3) button reads 'redeem'. Code-verified fixed.
+61  e34314b  DEPLOYED: tool cards = <details> collapsed by default; name left-aligned,
+#            header-sized chevron (not the play glyph) right-aligned, rotates on open
+#            (commit 502b702 #61). Code-verified fixed.
+46  prior    1-MINUTE resolution delivered (Vercel cron '* * * * *' + 60s floor,
+#            events/schedule.rs). Sub-minute (<60s) is deferred infra — cannot ride
+#            Vercel Cron's 1-min granularity; on-chain facet enforces a 60s minimum.
