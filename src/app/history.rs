@@ -17,6 +17,8 @@
 //! per-origin device-key layer that [`load_into_pending`] still peels for
 //! backward-read.)
 
+use std::cell::RefCell;
+
 use maud::html;
 
 use crate::backends::gemini::decode_transcript_bytes;
@@ -55,11 +57,15 @@ pub(crate) async fn load_into_pending() {
     // Claude-agent transcript restored BLANK.
     let entries = decode_history_any(&bytes);
     if !entries.is_empty() {
+        REPLAY_RESUME.with(|c| *c.borrow_mut() = None); // fresh paint
         paint_entries(&entries);
         // Scroll so the user sees the most recent turn, not the top of a long
         // prior conversation. Deferred because the restore happens before first
         // layout/font-swap settles.
         dom::scroll_to_bottom_soon("transcript");
+        // Resume the most-recent cartridge so reopening the app doesn't leave a
+        // dead "CARTRIDGE STOPPED" canvas (the worker was killed on unload).
+        resume_last_cartridge();
     } else if !bytes.is_empty() {
         // Bytes existed but neither decoder produced visible turns — log so a
         // genuinely-unreadable history is diagnosable (it still stashes below for
@@ -194,6 +200,58 @@ pub(crate) fn paint_entries(entries: &[crate::types::TranscriptEntry]) {
     }
 }
 
+/// How to RELAUNCH a replayed cartridge: which card slot, and how to re-derive
+/// its wasm. The transcript already holds the durable input (run_cartridge's
+/// SOURCE, embed_app's NAME), so the bytes are reconstructable on reopen — no
+/// separate byte persistence needed.
+enum ReplayResumeKind {
+    /// rustlite source (run_cartridge) — recompiled on resume.
+    Cartridge(String),
+    /// subdomain name (embed_app) — re-fetched from the off-chain app store.
+    Embed(String),
+}
+
+struct ReplayResume {
+    card_id: String,
+    kind: ReplayResumeKind,
+}
+
+thread_local! {
+    /// The MOST-RECENT resumable cartridge seen while painting a replay (last
+    /// write wins). On reopen, replay paints the card with a DEAD canvas — the
+    /// Web Worker was killed on unload and the bytes are gone — so after painting
+    /// we re-derive + relaunch this one (the cartridge resumability bug: "open a
+    /// cartridge → close the app → reopen → it's dead / CARTRIDGE STOPPED").
+    /// Only the latest is auto-resumed (one worker per tab).
+    static REPLAY_RESUME: RefCell<Option<ReplayResume>> = const { RefCell::new(None) };
+}
+
+/// Relaunch the most-recent replayed cartridge (recorded during `paint_entries`)
+/// so reopening the app RESUMES it instead of leaving a dead canvas. Re-derives
+/// the wasm from the transcript input — recompile run_cartridge's source, or
+/// re-fetch embed_app's name from the off-chain app store — then launches it into
+/// its card via the same live embed path. One worker per tab, so only the latest
+/// cartridge is resumed (earlier cards stay as-is). Best-effort + fire-and-forget.
+fn resume_last_cartridge() {
+    let Some(resume) = REPLAY_RESUME.with(|c| c.borrow_mut().take()) else {
+        return;
+    };
+    wasm_bindgen_futures::spawn_local(async move {
+        let wasm: Option<Vec<u8>> = match resume.kind {
+            ReplayResumeKind::Cartridge(src) => crate::rustlite::compile(&src).ok(),
+            ReplayResumeKind::Embed(name) => {
+                crate::registry::app_wasm_from_store(&name).await.ok().flatten()
+            }
+        };
+        if let Some(wasm) = wasm {
+            if !wasm.is_empty() {
+                super::display::stash_pending_embed(wasm);
+                super::display::launch_pending_embed(&resume.card_id).await;
+            }
+        }
+    });
+}
+
 /// Render ONE replayed tool-call block (pill + spliced result + optional inline
 /// card) as an HTML string. The live path targets the empty `#tool-{id}-result`
 /// / `#tool-{id}-card` divs by id with `swap_inner`, but on replay the whole
@@ -226,6 +284,36 @@ fn render_tool_block(tc: &crate::types::TranscriptToolCall) -> String {
             block = inject_card(&block, seg_id, &card.into_string());
         }
     }
+    // Record a successfully-run cartridge as the resume candidate (last wins).
+    // Replay paints its card with a dead canvas; `resume_last_cartridge` (after
+    // paint) re-derives the wasm from the transcript input and relaunches it.
+    if tc.error.is_none() && tc.result.is_some() {
+        let card_id = format!("tool-{seg_id}-card");
+        if tc.name == "run_cartridge" {
+            if let Some(src) = tc.args.get("source").and_then(|v| v.as_str()) {
+                if !src.trim().is_empty() {
+                    REPLAY_RESUME.with(|c| {
+                        *c.borrow_mut() = Some(ReplayResume {
+                            card_id,
+                            kind: ReplayResumeKind::Cartridge(src.to_string()),
+                        })
+                    });
+                }
+            }
+        } else if tc.name == "embed_app" {
+            if let Some(name) = tc.args.get("name").and_then(|v| v.as_str()) {
+                if !name.trim().is_empty() {
+                    REPLAY_RESUME.with(|c| {
+                        *c.borrow_mut() = Some(ReplayResume {
+                            card_id,
+                            kind: ReplayResumeKind::Embed(name.to_string()),
+                        })
+                    });
+                }
+            }
+        }
+    }
+
     // A tool with neither result nor error was in-flight when the session
     // ended; it replays with an empty result slot, matching the live "no result
     // yet" state — nothing to inject.
