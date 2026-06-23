@@ -584,11 +584,11 @@ main.layout .transcript > *:empty { display: none; }
   display: block;
   /* VARIABLE RESOLUTION: no hard-coded aspect. The canvas keeps the
      intrinsic aspect of its backing store (the cartridge's dims() — the
-     worker sets width/height to e.g. 256x144 OR 270x480 portrait), and
+     worker sets width/height to e.g. 320x240 OR 270x480 portrait), and
      max-width/height scale it DOWN proportionally to fit the stage
-     (replaced-element aspect preservation). A hard-coded 16/9 here squashed
-     portrait/square cartridges. 256x144 is already 16:9, so defaults are
-     unchanged. */
+     (replaced-element aspect preservation). A hard-coded aspect here squashed
+     portrait/square cartridges; the canvas just keeps its own (the 320x240
+     default is 4:3). */
   max-width: 100%;
   max-height: 100%;
   background: #000;
@@ -2123,13 +2123,14 @@ button.ready:hover {
   border: 1px solid var(--border);
 }
 
-/* Live inline cartridge embed (`embed_app` tool). The stage is a 16:9 box;
-   the canvas fills it and is CSS-scaled from the fixed 256x144 framebuffer
-   with crisp (pixelated) sampling, like the fullscreen display. v1: one live
-   embed at a time (single worker). */
+/* Live inline cartridge embed (`embed_app` tool). The stage is a 4:3 box
+   (matching the 320x240 default framebuffer); the canvas fills it and is
+   CSS-scaled with crisp (pixelated) sampling, like the fullscreen display.
+   A non-4:3 cartridge (its own dims()) letterboxes via object-fit. v1: one
+   live embed at a time (single worker). */
 .embed-app-card { overflow: visible; }
 .embed-app-stage {
-  aspect-ratio: 16 / 9;
+  aspect-ratio: 4 / 3;
   width: 100%;
   background: #000;
   /* Center + letterbox the canvas instead of stretching it: a non-16:9

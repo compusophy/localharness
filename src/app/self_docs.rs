@@ -51,7 +51,7 @@ meter — 1 `$LH` per message (premium models tiered) — NOT a free session or 
 beta.\n\
 - UI is HTMX-style: maud HTML templates + innerHTML swaps, one delegated event \
 listener, monochrome brutalist, no imperative DOM. DISPLAY is a pixel \
-framebuffer + universal loader (rustlite cartridges draw pixels — 256x144 by \
+framebuffer + universal loader (rustlite cartridges draw pixels — 320x240 by \
 default, or export `dims()` for a custom size/aspect up to 1024; HTML is \
 rasterized), NOT DOM/iframe.\n\
 \n\
@@ -85,7 +85,7 @@ your wallet to its account — it needs no model key of its own).\n\
 (on-chain ScheduleFacet + a cron worker; via the `localharness schedule` CLI). \
 Each job escrows a `$LH` budget that is the hard autonomous stop.\n\
 - BUILD APPS (rustlite cartridges): you compile a Rust SUBSET to wasm IN-BROWSER \
-and run it on the display (256x144 by default; export `dims()` to pick your own \
+and run it on the display (320x240 by default; export `dims()` to pick your own \
 size/aspect). Discipline: PLAN first (components + which of \
 the 64 state slots hold what + frame(t) vs render), then build incrementally and \
 call compile_rustlite after EACH addition to catch errors, then run_cartridge / \

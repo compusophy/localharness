@@ -59,8 +59,9 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageData};
 use super::dom;
 use super::templates;
 
-/// DEFAULT logical framebuffer resolution. 16:9. A cartridge that does NOT
-/// export `dims()` renders at this size (backward compatible). The canvas
+/// DEFAULT logical framebuffer resolution. 320×240 (4:3, N64-era) — bumped from
+/// 256×144 for more expressive apps. A cartridge that does NOT export `dims()`
+/// renders at this size (backward compatible). The canvas
 /// backing store is sized to this initially; CSS scales it up with
 /// `image-rendering: pixelated` so individual pixels stay crisp.
 ///
@@ -75,8 +76,8 @@ use super::templates;
 /// clamped to `[16, 1024]` in the worker; out of range falls back to the
 /// default. These consts remain the default + the composition/HTML-render path
 /// (single fixed surface).
-const FB_W: u32 = 256;
-const FB_H: u32 = 144;
+const FB_W: u32 = 320;
+const FB_H: u32 = 240;
 const FB_BYTES: usize = (FB_W * FB_H * 4) as usize;
 
 thread_local! {
@@ -258,12 +259,12 @@ pub(crate) async fn run_in_root_canvas(wasm_bytes: &[u8]) -> Result<(), JsValue>
 /// concurrent embeds need a per-canvas worker registry, tracked as follow-up.
 ///
 /// ## Variable framebuffer resolution
-/// The canvas BACKING STORE is sized to the DEFAULT [`FB_W`]×[`FB_H`] (256×144)
+/// The canvas BACKING STORE is sized to the DEFAULT [`FB_W`]×[`FB_H`] (320×240)
 /// here as an initial size, but it is RESIZED to the cartridge's actual dims
 /// the moment its first `frame` message arrives ([`worker::blit_frame`] reads
 /// the `w`/`h` the worker stamped on each frame and resizes the canvas + builds
 /// the `ImageData` at `w`×`h`). A cartridge declares its size by exporting
-/// `dims() -> i32` (packed `(w<<16)|h`); with no such export it stays 256×144
+/// `dims() -> i32` (packed `(w<<16)|h`); with no such export it stays 320×240
 /// (backward compatible). CSS scales the canvas ELEMENT to the card box with
 /// `image-rendering: pixelated`; aspect-preserving letterboxing comes from the
 /// stylesheet's `max-width/height:100%` + `object-fit` on the canvas element.
@@ -579,7 +580,7 @@ fn mount_canvas() -> Result<CanvasRenderingContext2d, JsValue> {
 /// Snapshot the live `#display-canvas` as a PNG data URL — used by the
 /// inline display card in the transcript. `None` when no canvas is mounted
 /// or the encode fails. Cheap: the backing store is the cartridge's logical
-/// framebuffer (256x144 default, up to 1024² for a `dims()`-declared
+/// framebuffer (320x240 default, up to 1024² for a `dims()`-declared
 /// cartridge), so the PNG is at most a few hundred KB.
 pub(crate) fn snapshot_data_url() -> Option<String> {
     let canvas = dom::by_id("display-canvas")?
@@ -1527,7 +1528,7 @@ mod worker {
     /// (0xAABBGGRR little-endian == ImageData byte order R,G,B,A).
     ///
     /// VARIABLE RESOLUTION: the worker stamps every frame with the cartridge's
-    /// actual `w`/`h` (its `dims()` export, or the 256×144 default). We size the
+    /// actual `w`/`h` (its `dims()` export, or the 320×240 default). We size the
     /// canvas backing store to those dims (idempotent: a no-op once it matches,
     /// so steady-state frames don't thrash) and build the `ImageData` at `w`×`h`
     /// — the canvas adapts to the cartridge's chosen size on the FIRST frame.

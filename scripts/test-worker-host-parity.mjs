@@ -41,8 +41,8 @@ const require = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
 
-const FB_W = 256;
-const FB_H = 144;
+const FB_W = 320;
+const FB_H = 240;
 
 let failures = 0;
 function check(cond, msg) {

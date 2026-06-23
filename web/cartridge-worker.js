@@ -63,7 +63,7 @@ function postError(code, detail) {
   self.postMessage({ type: 'error', code, detail });
 }
 
-// Logical framebuffer resolution. The DEFAULT (256x144, 16:9) MUST match the
+// Logical framebuffer resolution. The DEFAULT (320x240, 4:3) MUST match the
 // FB_W/FB_H defaults in src/app/display.rs. A cartridge MAY override these per
 // load by exporting `dims() -> i32` returning a PACKED (width << 16) | height
 // (width in the high 16 bits, height in the low 16). The worker calls it ONCE
@@ -73,8 +73,8 @@ function postError(code, detail) {
 // These are mutable (`let`): `applyDims()` rewrites them at load time. The
 // Node test surface still exports the DEFAULTS (FB_W_DEFAULT/FB_H_DEFAULT) and
 // the live values, and `renderOnce` honors a cartridge's `dims()` too.
-const FB_W_DEFAULT = 256;
-const FB_H_DEFAULT = 144;
+const FB_W_DEFAULT = 320;
+const FB_H_DEFAULT = 240;
 // Clamp range for a cartridge-declared dimension. The lower bound keeps a
 // cartridge from declaring a degenerate (0/negative) surface; the upper bound
 // caps the per-frame postMessage transfer cost (a frame is w*h*4 bytes, so
@@ -515,7 +515,7 @@ function reclaimSubtree(child) {
 }
 
 // Read a child's dims() the same way applyDims does for the parent: packed
-// (w<<16)|h, clamped to [FB_MIN, FB_MAX]; default 256x144 when absent/invalid.
+// (w<<16)|h, clamped to [FB_MIN, FB_MAX]; default 320x240 when absent/invalid.
 function childDims(exports) {
   if (exports && typeof exports.dims === 'function') {
     let packed;
@@ -901,7 +901,7 @@ function composeLoad(slots) {
   state.fill(0);
   ptr.x = -1; ptr.y = -1; ptr.down = 0; // no pointer until the viewer moves it
   memory = null;
-  // The composition uses the default 256x144 surface (the grid viewports the
+  // The composition uses the default 320x240 surface (the grid viewports the
   // main thread sent are computed against it). A child still declares its OWN
   // dims() and is scaled into its cell by blitChild.
   FB_W = FB_W_DEFAULT;
@@ -1443,7 +1443,7 @@ async function load(wasmBuf) {
   memory = exp.memory || null;
   rootNode.memory = memory; // a root spawn_module on the first frame reads names from here
   // A cartridge MAY declare its own framebuffer dims via `dims() -> i32`
-  // (packed (w<<16)|h). No export => the 256x144 default. Reallocates the FB.
+  // (packed (w<<16)|h). No export => the 320x240 default. Reallocates the FB.
   // Guarded: a throwing dims()/alloc must surface a CODED error, not an unhandled
   // rejection that leaves the worker silent (→ a false watchdog "hung" LH1001).
   try {
@@ -1554,7 +1554,7 @@ if (IS_WORKER) {
 // Node-only test surface (the host-parity harness). NOT used by the worker.
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    // The DEFAULT dims (256x144). The live FB_W/FB_H are `let`-mutable and a
+    // The DEFAULT dims (320x240). The live FB_W/FB_H are `let`-mutable and a
     // cartridge's dims() can change them at load; expose both so a test can
     // assert the default AND read the live size after renderOnce.
     FB_W: FB_W_DEFAULT,
@@ -1661,7 +1661,7 @@ if (typeof module !== 'undefined' && module.exports) {
       const inst = new WebAssembly.Instance(mod, importObj);
       memory = inst.exports.memory || null;
       rootNode.memory = memory; // mirror load(): a root spawn reads names from here
-      // Honor a cartridge's dims() (no-op when absent — keeps the 256x144
+      // Honor a cartridge's dims() (no-op when absent — keeps the 320x240
       // default and the existing parity snapshots byte-identical).
       applyDims(inst.exports);
       const fn = inst.exports.frame || inst.exports.render;
