@@ -7,19 +7,17 @@ shipped log; `rawfeedback.txt` (gitignored) is the raw inbox awaiting triage.
 
 ## Next up (do WITH the user — browser-verify needed, same code area)
 
-### Cartridge auto-error-reporting  (greenlit)
-The app already auto-reports TURN errors (`src/app/telemetry.rs` `report()` /
-`signature_for()`, panic hook in `debuglog.rs`, admin toggle). Cartridge errors do
-NOT report — they only paint the "CARTRIDGE STOPPED" overlay (watchdog/brick fix).
-- **Hook point:** since #52a moved cartridges INLINE, a failure surfaces as
-  `worker::RunOutcome::Failed { code, detail }` observed by the inline card's
-  worker + the watchdog (`display.rs` ~1285 `paint_stopped_overlay_coded`), NOT in
-  `run_wasm_reporting` (which now just stashes bytes). Wire the telemetry call at
-  the inline-card Failed observation (one spot; dedup by `LH1xxx` code so a
-  crashing cartridge doesn't spam), gated by `telemetry::enabled()`, fired via
-  `spawn_local(report("cartridge-error", title, sig, body))`.
-- **Verify (browser):** crash a cartridge → overlay still paints AND one telemetry
-  report fires (check the telemetry repo / network), not N per frame.
+### Cartridge auto-error-reporting  ✅ DONE
+Already wired: `display.rs` `worker::record_outcome` is the single hook both worker
+traps (LH1002–1004) and the watchdog kill (LH1001) funnel through — on
+`RunOutcome::Failed` it fires `telemetry::report_event("cartridge", code, …)`, gated
+by `telemetry::enabled()`, once per run (the `Pending` guard), deduped across runs
+by `report_event`'s `SENT` set. ENRICHED (commit fbaa93d): the report now names WHAT
+crashed — `display::set_cartridge_ref` records the run_cartridge SOURCE / embed_app
+NAME / resumed cartridge at each launch site, folded into the report's (redacted)
+freeform, so cartridge crashes arrive reproducible, not just an opaque LH code.
+- **Verify (browser):** crash a cartridge → overlay paints AND ONE telemetry issue
+  files (labelled `cartridge`) carrying the source/name, not N per frame.
 
 ### Cartridge resumability bug  (user-reported)  ✅ FIXED (commit 7045a10) — NEEDS BROWSER-VERIFY
 "Open a cartridge → close the app → reopen → it's dead / CARTRIDGE STOPPED."
