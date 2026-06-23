@@ -49,8 +49,9 @@ is the only durable handle.
 > (cartridge compiler), `src/filesystem` (FS impls + at-rest encryption /
 > EXEMPT_FILES), `src/builtins` (tool schema-lint rule), `src/soliditylite`
 > (EVM-subset compiler), `src/bashlite` (sandboxed shell — fuel + confirm-gate),
-> `src/connections` (L3 transport seam — wasm cfg-gating). Every module dir now
-> owns its spec; the root stays a whole-repo MAP and detail lives in the specs.
+> `src/connections` (L3 transport seam — wasm cfg-gating), and `proxy/` (the
+> separate-deploy credit proxy / relay / metering). Every `src/` module dir + the
+> proxy own a spec; the root stays a whole-repo MAP and detail lives in the specs.
 
 ```
 src/                  library crate
@@ -439,16 +440,14 @@ fetches + decrypts via the apex iframe BEFORE the api-key modal. Saving best-eff
 
 ## Credit proxy + $LH sessions/metering (LIVE)
 
-Proxy (separate Vercel project "proxy") is the ONE off-chain component. Platform
-`$LH` is the **primary** path; **BYOK** is the fallback (skips the proxy).
-`api/gemini.ts` = multi-provider passthrough (Gemini/Claude/OpenAI); auth =
-Ethereum personal-sign `address:timestamp:signature` in `x-goog-api-key`; proxy
-gates on a session OR `creditOf`, debits the meter before streaming charging
-`min(cost,balance)` (a positive balance spends to zero). **0.47.0: `$LH` decoupled
-from $ — 1 `$LH`/message (premium tiered); fiat GROSS-mints at $1 = 100 `$LH`.**
-
-Bundle helpers (`registry.rs`): `*_sponsored` writes + `*_of` reads + x402 signing
-(`x402_digest`/`sign_x402`/…) — the flat `registry::` surface; see source.
+The proxy (SEPARATE Vercel project "proxy") is the ONE off-chain component —
+platform `$LH` is the PRIMARY path, BYOK the fallback. Auth = Ethereum personal-sign
+in `x-goog-api-key`; the meter debits `min(cost,balance)` before streaming (1
+`$LH`/message; fiat $1 = 100 `$LH`). **It deploys SEPARATELY (`cd proxy && vercel
+--prod`) — NOT by the web/release deploys.** Endpoints, the keyless relay,
+scheduler, web-push, telemetry, and the Stripe on-ramp → `proxy/AGENTS.md`. Bundle
+helpers in `registry.rs` (`*_sponsored`/`*_of`/x402 signing) — the flat `registry::`
+surface.
 
 ## Agent tools + destructive-action convention
 
