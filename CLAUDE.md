@@ -50,10 +50,10 @@ is the only durable handle.
 > EXEMPT_FILES), `src/builtins` (tool schema-lint rule), `src/soliditylite`
 > (EVM-subset compiler), `src/bashlite` (sandboxed shell — fuel + confirm-gate),
 > `src/connections` (L3 transport seam — wasm cfg-gating), `proxy/` (the
-> separate-deploy credit proxy / relay / metering), and `contracts/` (Diamond
-> cut/storage/deploy gotchas; facet semantics in contracts/README.md). Every
-> `src/` module dir + proxy + contracts own a spec; the root stays a whole-repo MAP
-> and detail lives in the specs.
+> separate-deploy credit proxy / relay / metering), `contracts/` (Diamond
+> cut/storage/deploy gotchas; facet semantics in contracts/README.md), and `web/`
+> (cache-buster + cartridge-worker↔Rust parity). Every `src/` module dir + proxy +
+> contracts + web own a spec; the root stays a whole-repo MAP and detail lives there.
 
 ```
 src/                  library crate
