@@ -42,9 +42,9 @@ pub fn version() -> &'static str {
 //
 // SoT mirror: proxy/api/_prices.ts — keep in sync.
 pub const PRICING_SUMMARY: &str =
-    "1 $LH per message on the default model; premium models are tiered \
-     (Haiku/Sonnet/Opus = 1 / 5 / 20 $LH; GPT nano/mini = 1, gpt-5.1 = 5, \
-     gpt-5-pro = 20). Fiat on-ramp mints on the GROSS charged amount at \
+    "1 $LH per message on the default model (Gemini Flash); Claude Opus is the \
+     premium tier at 20 $LH. (These two are the user-selectable models — \
+     `src/app/model.rs`.) Fiat on-ramp mints on the GROSS charged amount at \
      $1 = 100 $LH. $LH is a flat usage credit decoupled from the dollar, \
      NOT a stablecoin.";
 
@@ -273,25 +273,24 @@ fn chain_row(role: &str, c: &ChainConfig) -> String {
 fn render_chain() -> String {
     let mut s = String::new();
     s.push_str(
-        "Both the **live web platform** at `localharness.xyz` and the \
-         **`localharness` CLI** run on **Tempo mainnet** (chain 4217) by default. \
-         **Tempo Moderato** (chain 42431) is an opt-in, free-registration DEV \
-         sandbox — the CLI selects it with `LH_CHAIN=testnet` (or `--dev`); an \
-         unrecognized `LH_CHAIN` is an error, never a silent fallback. The web \
-         bundle is pinned to mainnet at build (`--features mainnet`).\n\n",
+        "The **live platform** (`localharness.xyz`) and the **`localharness` CLI** \
+         run on **Tempo mainnet** (chain 4217). The web bundle is MAINNET-ONLY — \
+         pinned at build, with the testnet config not even compiled into the shipped \
+         browser binary — so the live site only ever claims and transacts on \
+         mainnet. A separate **Tempo Moderato** testnet exists solely as a CLI \
+         developer sandbox (`localharness --dev` / `LH_CHAIN=testnet`); it is NOT \
+         reachable from the official site and NOT a place to claim real hosted \
+         subdomains.\n\n",
     );
     s.push_str("| Role | Network | chain_id | RPC | Diamond | `$LH` token |\n");
     s.push_str("|---|---|---|---|---|---|\n");
-    s.push_str(&chain_row("live platform + CLI default (mainnet)", &chain::MAINNET));
-    s.push('\n');
-    s.push_str(&chain_row("dev sandbox (opt-in: --dev)", &chain::MODERATO));
+    s.push_str(&chain_row("live platform + CLI (mainnet)", &chain::MAINNET));
     s.push('\n');
     s.push_str(&format!(
-        "\nSponsor fee token (NOT `$LH`): mainnet `{}`, testnet `{}`. The \
-         diamond is the only durable address — per-facet addresses churn on \
-         re-cut; query the live set via DiamondLoupeFacet.",
+        "\nSponsor fee token (NOT `$LH`): `{}`. The diamond is the only durable \
+         address — per-facet addresses churn on re-cut; query the live set via \
+         DiamondLoupeFacet.",
         chain::MAINNET.fee_token,
-        chain::MODERATO.fee_token,
     ));
     s
 }

@@ -47,8 +47,8 @@ async fn main() -> localharness::Result<()> {
 }
 ```
 
-Gemini and an offline Mock need no feature flag; Anthropic and OpenAI are
-additive (`Agent::start_anthropic` / `start_openai` / `start_mock`). The SAME
+Gemini and an offline Mock need no feature flag; Anthropic is additive
+(`Agent::start_anthropic` / `start_mock`). The SAME
 crate compiles to native (tokio) and to `wasm32-unknown-unknown`, and with
 `--features browser-app` the loop becomes the live in-browser agent at
 `<name>.localharness.xyz`.
@@ -75,14 +75,13 @@ below works immediately. No Rust? Install it (`https://rustup.rs`).
 ## Which chain you're on
 
 <!-- GEN:chain -->
-Both the **live web platform** at `localharness.xyz` and the **`localharness` CLI** run on **Tempo mainnet** (chain 4217) by default. **Tempo Moderato** (chain 42431) is an opt-in, free-registration DEV sandbox — the CLI selects it with `LH_CHAIN=testnet` (or `--dev`); an unrecognized `LH_CHAIN` is an error, never a silent fallback. The web bundle is pinned to mainnet at build (`--features mainnet`).
+The **live platform** (`localharness.xyz`) and the **`localharness` CLI** run on **Tempo mainnet** (chain 4217). The web bundle is MAINNET-ONLY — pinned at build, with the testnet config not even compiled into the shipped browser binary — so the live site only ever claims and transacts on mainnet. A separate **Tempo Moderato** testnet exists solely as a CLI developer sandbox (`localharness --dev` / `LH_CHAIN=testnet`); it is NOT reachable from the official site and NOT a place to claim real hosted subdomains.
 
 | Role | Network | chain_id | RPC | Diamond | `$LH` token |
 |---|---|---|---|---|---|
-| live platform + CLI default (mainnet) | Tempo mainnet | 4217 | `https://rpc.tempo.xyz` | `0x8ab4f3a57643410cdf4022cdaf1faeef234f3a77` | `0x7ba3c9a39596e438b05c56dfc779700b58aea814` |
-| dev sandbox (opt-in: --dev) | Tempo Moderato | 42431 | `https://rpc.moderato.tempo.xyz` | `0x6c31c01e10C44f4813FffDC7D5e671c1b26Da30c` | `0x90B84c7234Aae89BadA7f69160B9901B9bc37B17` |
+| live platform + CLI (mainnet) | Tempo mainnet | 4217 | `https://rpc.tempo.xyz` | `0x8ab4f3a57643410cdf4022cdaf1faeef234f3a77` | `0x7ba3c9a39596e438b05c56dfc779700b58aea814` |
 
-Sponsor fee token (NOT `$LH`): mainnet `0x20c000000000000000000000b9537d11c60e8b50`, testnet `0x20c0000000000000000000000000000000000001`. The diamond is the only durable address — per-facet addresses churn on re-cut; query the live set via DiamondLoupeFacet.
+Sponsor fee token (NOT `$LH`): `0x20c000000000000000000000b9537d11c60e8b50`. The diamond is the only durable address — per-facet addresses churn on re-cut; query the live set via DiamondLoupeFacet.
 <!-- /GEN:chain -->
 
 ## Fund it — you need `$LH`
@@ -99,13 +98,12 @@ funded first or the paid paths return 402. Four ways in:
   (`bounty list` → `bounty claim <id>` → `bounty submit <id> <result>`; the
   reward pays your wallet when the poster runs `bounty accept`).
 
-The per-request meter then tops up lazily from your wallet. (On the `--dev`
-testnet, registration is free.)
+The per-request meter then tops up lazily from your wallet.
 
 ### Pricing
 
 <!-- GEN:pricing -->
-1 $LH per message on the default model; premium models are tiered (Haiku/Sonnet/Opus = 1 / 5 / 20 $LH; GPT nano/mini = 1, gpt-5.1 = 5, gpt-5-pro = 20). Fiat on-ramp mints on the GROSS charged amount at $1 = 100 $LH. $LH is a flat usage credit decoupled from the dollar, NOT a stablecoin.
+1 $LH per message on the default model (Gemini Flash); Claude Opus is the premium tier at 20 $LH. (These two are the user-selectable models — `src/app/model.rs`.) Fiat on-ramp mints on the GROSS charged amount at $1 = 100 $LH. $LH is a flat usage credit decoupled from the dollar, NOT a stablecoin.
 <!-- /GEN:pricing -->
 
 ## Claim → publish → call (the core loop)
