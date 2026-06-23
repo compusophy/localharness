@@ -150,6 +150,36 @@ pub(crate) async fn read_view(sel: [u8; 4], words: &[[u8; 32]]) -> Result<String
     eth_call(REGISTRY_ADDRESS(), &encode_call_hex(sel, words)).await
 }
 
+/// HTTP GET returning the response body bytes for a 2xx, `None` for a 404, or
+/// `Err` for any other status / network failure. Cross-target (reqwest wraps
+/// `fetch` on wasm) and raced against [`RPC_TIMEOUT_MS`] exactly like the
+/// JSON-RPC reads. Backs the OFF-CHAIN app store ([`super::app_wasm_from_store`]):
+/// a published cartridge is fetched by name from the proxy's `/api/app` serve
+/// route — content lives in GitHub, not on-chain (the chain keeps only ownership).
+pub(crate) async fn http_get_bytes(url: &str) -> Result<Option<Vec<u8>>, String> {
+    let client = read_client();
+    timeout_send("http_get", async {
+        let resp = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| format!("GET {url}: {e}"))?;
+        let status = resp.status();
+        if status.as_u16() == 404 {
+            return Ok(None);
+        }
+        if !status.is_success() {
+            return Err(format!("GET {url}: HTTP {}", status.as_u16()));
+        }
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| format!("GET {url} body: {e}"))?;
+        Ok(Some(bytes.to_vec()))
+    })
+    .await?
+}
+
 /// `true` if `address` has deployed bytecode (i.e. is a contract, not a
 /// counterfactual / EOA). A token-bound account is deterministic — it
 /// exists as an address even before `createTokenBoundAccount` deploys it,

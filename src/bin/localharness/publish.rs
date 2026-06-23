@@ -348,9 +348,6 @@ pub(crate) async fn set_face(name: &str, choice: &str) -> i32 {
     }
 }
 
-/// The on-chain `setMetadata` publish cap for a compiled cartridge (bytes).
-pub(crate) const PUBLISH_CAP: usize = 16_384;
-
 /// Map a filesystem IO error to a clean, OS-agnostic message. `verb` is the
 /// attempted action ("read"/"write"). Addresses on-chain QA feedback: raw
 /// `std::fs` errors leaked "(os error 2)" to users instead of a readable
@@ -499,16 +496,16 @@ pub(crate) fn compile_check(source_path: &str, out_path: Option<&str>) -> i32 {
                 );
                 return 1;
             }
-            if wasm.len() > PUBLISH_CAP {
+            if wasm.len() > APPSTORE_PUBLISH_CAP {
                 eprintln!(
-                    "  ✗ {} bytes exceeds the {PUBLISH_CAP}-byte on-chain publish cap",
+                    "  ✗ {} bytes exceeds the {APPSTORE_PUBLISH_CAP}-byte app-store publish cap",
                     wasm.len()
                 );
                 return 1;
             }
             println!(
-                "  fits the {PUBLISH_CAP}-byte publish cap ({} bytes to spare)",
-                PUBLISH_CAP - wasm.len()
+                "  fits the {APPSTORE_PUBLISH_CAP}-byte publish cap ({} bytes to spare)",
+                APPSTORE_PUBLISH_CAP - wasm.len()
             );
             0
         }
@@ -599,27 +596,12 @@ pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
         }
     };
 
-    let id = match registry::id_of_name(name).await {
-        Ok(i) if i != 0 => i,
-        _ => {
-            eprintln!("no tokenId for {name}");
-            return 1;
-        }
-    };
-    let diamond = match parse_address(registry::REGISTRY_ADDRESS()) {
-        Ok(a) => a,
-        Err(_) => {
-            eprintln!("internal: bad registry address constant");
-            return 1;
-        }
-    };
-    let mk = |input: Vec<u8>| tempo_tx::TempoCall { to: diamond, value_wei: 0, input };
-
     // Route by extension: .html/.htm publishes the raw bytes as the HTML face
-    // (rasterized to every visitor's framebuffer); anything else compiles as a
-    // rustlite cartridge (the app face). Mirrors the browser studio's picker,
-    // which publishes content + choice in ONE sponsored tx either way.
-    let (calls, gas, byte_len, face) = if publishes_as_html(source_path) {
+    // ON-CHAIN (rasterized to every visitor's framebuffer); anything else
+    // compiles as a rustlite cartridge and publishes OFF-CHAIN to the app store
+    // (free, no gas — the blockchain keeps only the name's ownership, which we
+    // already verified above). HTML stays on-chain for now (smaller, rarer).
+    if publishes_as_html(source_path) {
         let html = src.as_bytes();
         if html.is_empty() {
             eprintln!("{source_path} is empty — nothing to publish");
@@ -634,78 +616,127 @@ pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
             );
             return 1;
         }
-        (
+        let id = match registry::id_of_name(name).await {
+            Ok(i) if i != 0 => i,
+            _ => {
+                eprintln!("no tokenId for {name}");
+                return 1;
+            }
+        };
+        let diamond = match parse_address(registry::REGISTRY_ADDRESS()) {
+            Ok(a) => a,
+            Err(_) => {
+                eprintln!("internal: bad registry address constant");
+                return 1;
+            }
+        };
+        let mk = |input: Vec<u8>| tempo_tx::TempoCall { to: diamond, value_wei: 0, input };
+        let sponsor = match load_sponsor() {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
+        println!(
+            "publishing {} bytes as the html face of {name}.localharness.xyz …",
+            html.len()
+        );
+        return match registry::submit_tempo_sponsored(
+            &signer,
+            &sponsor,
             vec![
                 mk(registry::encode_set_public_html(id, html)),
                 mk(registry::encode_set_public_face(id, "html")),
             ],
+            registry::ALPHA_USD_ADDRESS(),
             registry::set_metadata_gas(html.len()),
-            html.len(),
-            "html",
         )
-    } else {
-        let wasm = match compile_big_stack(&src) {
-            Ok(w) => w,
+        .await
+        {
+            Ok(tx) => {
+                println!("✓ published — https://{name}.localharness.xyz/ now serves your html");
+                println!("  to every visitor, 24/7, with no browser tab running.");
+                println!("  tx: {tx}");
+                0
+            }
             Err(e) => {
-                // Full rendering: LH code + line/col + caret snippet.
-                eprintln!("compile failed: {}", e.render(&src));
-                return 1;
+                eprintln!("publish failed: {e}");
+                1
             }
         };
-        // A cartridge with no entry point compiles but renders nothing — refuse
-        // to publish a dead face (the visitor would see a blank canvas forever).
-        if !cartridge_has_entry(&wasm) {
-            eprintln!(
-                "compiled cartridge has no `frame`/`render` export — it would render \
-                 nothing as a face; aborting before the on-chain write"
-            );
-            return 1;
-        }
-        // On-chain storage is metered per word; the studio caps published apps
-        // at 16 KB. Mirror it so a too-big app fails locally, not after gas.
-        if wasm.len() > PUBLISH_CAP {
-            eprintln!(
-                "compiled app is {} bytes; max {PUBLISH_CAP} to publish on-chain",
-                wasm.len()
-            );
-            return 1;
-        }
-        let len = wasm.len();
-        (
-            vec![
-                mk(registry::encode_set_app_wasm(id, &wasm)),
-                mk(registry::encode_set_public_face(id, "app")),
-            ],
-            // setMetadata stores the bytes ON-CHAIN; the public_face call fits
-            // in the formula's base headroom. Practically this caps useful
-            // apps at a couple KB.
-            registry::set_metadata_gas(len),
-            len,
-            "app",
-        )
-    };
+    }
 
-    let sponsor = match load_sponsor() {
-        Ok(s) => s,
-        Err(code) => return code,
+    // App (cartridge) face — OFF-CHAIN publish to the app store.
+    let wasm = match compile_big_stack(&src) {
+        Ok(w) => w,
+        Err(e) => {
+            // Full rendering: LH code + line/col + caret snippet.
+            eprintln!("compile failed: {}", e.render(&src));
+            return 1;
+        }
     };
+    // A cartridge with no entry point compiles but renders nothing — refuse to
+    // publish a dead face (the visitor would see a blank canvas forever).
+    if !cartridge_has_entry(&wasm) {
+        eprintln!(
+            "compiled cartridge has no `frame`/`render` export — it would render \
+             nothing as a face; aborting before publish"
+        );
+        return 1;
+    }
+    if wasm.len() > APPSTORE_PUBLISH_CAP {
+        eprintln!(
+            "compiled app is {} bytes; max {APPSTORE_PUBLISH_CAP} for the app store",
+            wasm.len()
+        );
+        return 1;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let token = registry::proxy_auth_token(&signer, now);
+    publish_app_offchain(name, &token, &wasm, &src).await
+}
+
+/// Max bytes of a compiled cartridge the app store accepts — the host::compose
+/// per-child wasm budget (256 KB). Off-chain has no gas cap; this just keeps a
+/// published cartridge always composable. Mirrors `proxy/api/publish.ts`.
+const APPSTORE_PUBLISH_CAP: usize = 256 * 1024;
+
+/// Publish a compiled cartridge (+ its source) to the OFF-CHAIN app store:
+/// `POST {proxy}/api/publish`, authed with a personal-sign `token`, gated
+/// server-side on the caller owning `name` on-chain. No gas, no sponsor — the
+/// blockchain keeps only ownership. A visitor's browser fetches it back via
+/// `registry::app_wasm_from_store`. Returns a process exit code.
+async fn publish_app_offchain(name: &str, token: &str, wasm: &[u8], source: &str) -> i32 {
+    let url = format!("{}api/publish", registry::CREDIT_PROXY_URL);
+    let body = serde_json::json!({
+        "name": name,
+        "wasm_hex": bytes_to_hex_str(wasm),
+        "source": source,
+    });
     println!(
-        "publishing {byte_len} bytes as the {face} face of {name}.localharness.xyz …"
+        "publishing {} bytes as the app face of {name}.localharness.xyz (off-chain, no gas) …",
+        wasm.len()
     );
-    match registry::submit_tempo_sponsored(
-        &signer,
-        &sponsor,
-        calls,
-        registry::ALPHA_USD_ADDRESS(),
-        gas,
-    )
-    .await
+    match reqwest::Client::new()
+        .post(&url)
+        .header("x-goog-api-key", token)
+        .json(&body)
+        .send()
+        .await
     {
-        Ok(tx) => {
-            println!("✓ published — https://{name}.localharness.xyz/ now serves your {face}");
-            println!("  to every visitor, 24/7, with no browser tab running.");
-            println!("  tx: {tx}");
-            0
+        Ok(r) => {
+            let status = r.status();
+            let text = r.text().await.unwrap_or_default();
+            if status.is_success() {
+                println!("✓ published — https://{name}.localharness.xyz/ now serves your app");
+                println!("  to every visitor, 24/7, with no browser tab running.");
+                println!("  content: app store (GitHub); ownership stays on-chain — no gas spent.");
+                0
+            } else {
+                eprintln!("publish failed: HTTP {} — {}", status.as_u16(), text.trim());
+                1
+            }
         }
         Err(e) => {
             eprintln!("publish failed: {e}");
@@ -1085,7 +1116,7 @@ mod tests {
             "starter cartridge must export frame/render"
         );
         assert!(
-            wasm.len() <= PUBLISH_CAP,
+            wasm.len() <= APPSTORE_PUBLISH_CAP,
             "starter cartridge must fit the publish cap"
         );
     }
@@ -1100,7 +1131,7 @@ mod tests {
                    host::display::present();\n}";
         let wasm = localharness::rustlite::compile(src).expect("minimal cartridge compiles");
         assert_eq!(&wasm[0..4], b"\0asm", "valid wasm magic header");
-        assert!(wasm.len() <= PUBLISH_CAP);
+        assert!(wasm.len() <= APPSTORE_PUBLISH_CAP);
     }
 
     #[test]

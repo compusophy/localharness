@@ -564,18 +564,21 @@ mod tests {
         assert!(report.changed.is_empty() && report.fresh.is_empty());
     }
 
-    /// The chain block is derived from `chain.rs` and must carry BOTH chains'
-    /// real values (never `ACTIVE`-flipped), so the doc is correct on any build.
+    /// The chain block is derived from `chain.rs` and is MAINNET-ONLY by design
+    /// (the web bundle is mainnet-pinned; the Moderato testnet is a CLI-only
+    /// `--dev` sandbox we do NOT advertise as a claim target — the doc-accuracy
+    /// purge). It must carry mainnet's REAL values (never `ACTIVE`-flipped) and
+    /// name the testnet only as a sandbox, without its chain id / addresses.
     #[test]
-    fn chain_block_carries_both_chains() {
+    fn chain_block_is_mainnet_only_with_real_values() {
         let block = render_chain();
-        assert!(block.contains("4217") && block.contains("42431"));
+        assert!(block.contains("4217"), "must state the mainnet chain id");
         assert!(block.contains(chain::MAINNET.diamond));
-        assert!(block.contains(chain::MODERATO.diamond));
         assert!(block.contains(chain::MAINNET.lh_token));
-        assert!(block.contains(chain::MODERATO.lh_token));
         assert!(block.contains("rpc.tempo.xyz"));
-        assert!(block.contains("rpc.moderato.tempo.xyz"));
+        // Testnet is named as a CLI sandbox, but NOT surfaced with its chain id
+        // / diamond / token (the live site is mainnet-only).
+        assert!(block.to_lowercase().contains("moderato"));
     }
 
     /// The version block must carry the live Cargo version.

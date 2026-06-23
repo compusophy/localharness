@@ -1510,24 +1510,24 @@ async fn local_public_html() -> Option<String> {
 /// subdomain publishes to the world. `None` if the name is unregistered or has
 /// published no app. Backs the iframe-free `?compose=` compositor.
 async fn compose_module_wasm(name: &str) -> Option<Vec<u8>> {
-    let id = registry::id_of_name(name).await.ok().filter(|&i| i != 0)?;
-    registry::app_wasm_of(id).await.ok().flatten()
+    // Apps are OFF-CHAIN now: fetch the published cartridge by NAME from the app
+    // store (the chain keeps only ownership). A 404 (unpublished/typo'd name) is
+    // a clean `None`.
+    registry::app_wasm_from_store(name).await.ok().flatten()
 }
 
 /// Cartridge bytes for the public face. When `prefer_local` (owner preview
 /// only), the device's unpublished `app.rl` working copy wins so the owner
 /// sees their edits; for a VISITOR `prefer_local` is false, so only the
-/// PUBLISHED on-chain wasm is shown — never the owner-device's local draft.
-async fn resolve_cartridge(id: Option<u64>, prefer_local: bool) -> Option<Vec<u8>> {
+/// PUBLISHED cartridge (off-chain app store, by name) is shown — never the
+/// owner-device's local draft.
+async fn resolve_cartridge(name: &str, prefer_local: bool) -> Option<Vec<u8>> {
     if prefer_local {
         if let Some(w) = local_cartridge_wasm().await {
             return Some(w);
         }
     }
-    match id {
-        Some(i) => registry::app_wasm_of(i).await.ok().flatten(),
-        None => None,
-    }
+    registry::app_wasm_from_store(name).await.ok().flatten()
 }
 
 /// Resolve the public face for tenant `name`. Reads the on-chain choice
@@ -1560,8 +1560,11 @@ async fn resolve_public_face(name: &str, is_owner_preview: bool) -> PublicFace {
             }
             PublicFace::Directory
         }
-        // "app" or unset/legacy — prefer a cartridge, fall back to directory.
-        _ => match resolve_cartridge(id, is_owner_preview).await {
+        // "app" or unset/legacy — prefer a cartridge (off-chain app store, by
+        // name), fall back to directory. With apps off-chain the publish no
+        // longer writes a `public_face="app"` choice, so the UNSET case is the
+        // normal path for a published app.
+        _ => match resolve_cartridge(name, is_owner_preview).await {
             Some(w) => PublicFace::Cartridge(w),
             None => PublicFace::Directory,
         },

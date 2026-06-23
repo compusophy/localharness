@@ -297,15 +297,47 @@ pub async fn discover_agents(query: &str, scan: u64) -> Result<Vec<(String, Stri
     Ok(rank_agent_matches(&pairs, query))
 }
 
-// --- Published app cartridge (cross-visitor) -------------------------
+// --- Published app cartridge (OFF-CHAIN app store) -------------------
 //
-// A subdomain's app is the compiled wasm cartridge stored on-chain under
-// a fixed metadata key, so ANY visitor (not just the owner's device)
-// boots into it. We store the wasm, not the source — it's smaller (less
-// gas) and the visitor runs it without recompiling. The owner publishes
-// via a sponsored `setMetadata` call (see `events::publish_app`).
+// A subdomain's app is a compiled wasm cartridge. It lives OFF-CHAIN now
+// (GitHub, fetched by NAME via the proxy's `/api/app` serve route) — the
+// blockchain keeps only OWNERSHIP/provenance (the name NFT + signature
+// proof that authorizes a publish). On-chain `setMetadata` publishing cost
+// ~$0.32–$2.80/cart and drained the gas sponsor; off-chain is free and
+// uncapped, mirroring the feedback/telemetry model. The owner publishes via
+// the CLI `publish` (→ `POST /api/publish`) or the studio; a visitor's device
+// fetches the bytes from the store and runs them. See `proxy/api/{publish,app}.ts`
+// and the off-chain-apps pivot.
 
-/// Storage key for the published app wasm: `keccak256("localharness.app.wasm")`.
+/// Base path of the off-chain app store's serve route. A published cartridge is
+/// `GET {CREDIT_PROXY_URL}api/app?name=<name>` → raw `application/wasm` bytes.
+fn app_store_url(name: &str) -> String {
+    format!("{CREDIT_PROXY_URL}api/app?name={name}")
+}
+
+/// Fetch a subdomain's published cartridge from the OFF-CHAIN app store by name.
+/// `Ok(None)` = no app published (a 404 — the visitor falls back to the
+/// directory/html face). Works on native AND wasm (the browser load path).
+pub async fn app_wasm_from_store(name: &str) -> Result<Option<Vec<u8>>, String> {
+    let n = name.trim();
+    if n.is_empty() {
+        return Ok(None);
+    }
+    http_get_bytes(&app_store_url(n)).await
+}
+
+/// Read a subdomain's published app wasm. Resolves `token_id`→name then fetches
+/// the off-chain store (kept for callers that only hold the id, e.g. the
+/// host::compose tool); name-holding callers should use [`app_wasm_from_store`]
+/// directly to skip the id→name round-trip.
+pub async fn app_wasm_of(token_id: u64) -> Result<Option<Vec<u8>>, String> {
+    let name = name_of_id(token_id).await?;
+    app_wasm_from_store(&name).await
+}
+
+/// Storage key for the legacy on-chain app wasm: `keccak256("localharness.app.wasm")`.
+/// Retained for back-compat reads of pre-off-chain publishes; new publishes go to
+/// the app store (no on-chain bytes).
 pub(crate) fn app_metadata_key() -> [u8; 32] {
     use sha3::{Digest, Keccak256};
     let digest = Keccak256::digest(b"localharness.app.wasm");
@@ -314,13 +346,8 @@ pub(crate) fn app_metadata_key() -> [u8; 32] {
     out
 }
 
-/// Read a subdomain's published app wasm from on-chain metadata, if any.
-pub async fn app_wasm_of(token_id: u64) -> Result<Option<Vec<u8>>, String> {
-    metadata_bytes_of(token_id, app_metadata_key()).await
-}
-
-/// Encode `setMetadata(tokenId, appKey, wasm)` calldata for a sponsored
-/// publish tx.
+/// Encode `setMetadata(tokenId, appKey, wasm)` calldata. LEGACY — the on-chain
+/// publish path; kept for tooling/tests. Live publishing is off-chain now.
 pub fn encode_set_app_wasm(token_id: u64, wasm: &[u8]) -> Vec<u8> {
     encode_set_metadata_bytes(token_id, app_metadata_key(), wasm)
 }

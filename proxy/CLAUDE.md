@@ -31,6 +31,18 @@ Stripe keys, GitHub PAT) — NEVER in the wasm bundle.
 - `telemetry.ts` — files GitHub ISSUES in the private telemetry repo = the off-chain
   feedback/error task list (PRIMARY path now). `MAX_BODY_BYTES` mirrors the Rust clamp
   in `src/app/telemetry.rs` — keep them equal.
+- `publish.ts` + `app.ts` — the OFF-CHAIN app store (cartridges live in GitHub, NOT
+  on-chain; the chain keeps only the name's ownership). `publish.ts` (POST, personal-
+  sign authed like telemetry) verifies the caller owns `name` on-chain (`ownerOf(
+  idOfName(name))`) then commits `<name>/app.wasm` (+ `app.rl`) to `GH_APPSTORE_REPO`
+  via the Contents API (`GH_APPSTORE_TOKEN` ?? `GH_TELEMETRY_TOKEN`). `app.ts` (GET
+  `?name=`) re-serves the cartridge as `application/wasm` from raw.githubusercontent
+  (public repo, no token) with CORS + 5-min CDN cache — the browser fetches it via
+  `registry::app_wasm_from_store`. Mirrors the feedback/telemetry off-chain model:
+  on-chain `setMetadata` publishing cost ~$0.32–$2.80/cart and drained the sponsor.
+  CLI `publish` (the app face) POSTs here; HTML face + the browser-studio/agent-tool
+  publish are still on-chain (the follow-up flip). The wasm magic + 256 KB cap (the
+  host::compose per-child budget) are enforced server-side.
 - `stripe-*.ts` — fiat on-ramp (Elements). The webhook once missed bare-PI
   `payment_intent.succeeded` (charged, no `$LH`); recovery = `contracts/script/
   MintForReceipt.s.sol`. READ Stripe docs before touching — guessing charged a card.
