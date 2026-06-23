@@ -342,11 +342,11 @@ async fn lh_publish(args: &[String], env: &WriteEnv<'_>, dry_run: bool) -> (Outp
         Ok(w) => w,
         Err(e) => return (Output::err(format!("lh-publish: compile failed: {}", e.render(source)), 1), none),
     };
-    const PUBLISH_CAP: usize = 16_384;
-    if wasm.len() > PUBLISH_CAP {
+    let cap = crate::registry::APP_STORE_MAX_WASM_BYTES;
+    if wasm.len() > cap {
         return (
             Output::err(
-                format!("lh-publish: {name}: {} bytes exceeds the {PUBLISH_CAP}-byte cap", wasm.len()),
+                format!("lh-publish: {name}: {} bytes exceeds the {cap}-byte cap", wasm.len()),
                 1,
             ),
             none,
@@ -385,43 +385,17 @@ async fn lh_publish(args: &[String], env: &WriteEnv<'_>, dry_run: bool) -> (Outp
             plan,
         );
     }
-    let token_id = match crate::registry::id_of_name(name).await {
-        Ok(id) if id != 0 => id,
-        Ok(_) => return (Output::err(format!("lh-publish: {name}: no tokenId"), 1), plan),
-        Err(e) => return (Output::err(format!("lh-publish: {e}"), 1), plan),
-    };
-    // app.wasm + public_face="app" in ONE sponsored Tempo tx (the admin/CLI
-    // publish-app shape). Length-scaled gas (~7.6k/BYTE).
-    let calls = vec![
-        crate::tempo_tx::TempoCall {
-            to: match crate::encoding::parse_address(crate::registry::REGISTRY_ADDRESS()) {
-                Ok(a) => a,
-                Err(e) => return (Output::err(format!("lh-publish: {e}"), 1), plan),
-            },
-            value_wei: 0,
-            input: crate::registry::encode_set_app_wasm(token_id, &wasm),
-        },
-        crate::tempo_tx::TempoCall {
-            to: match crate::encoding::parse_address(crate::registry::REGISTRY_ADDRESS()) {
-                Ok(a) => a,
-                Err(e) => return (Output::err(format!("lh-publish: {e}"), 1), plan),
-            },
-            value_wei: 0,
-            input: crate::registry::encode_set_public_face(token_id, "app"),
-        },
-    ];
-    let gas = crate::registry::set_metadata_gas(wasm.len());
-    match crate::registry::submit_tempo_sponsored(
-        env.signer,
-        env.sponsor,
-        calls,
-        env.fee_token,
-        gas,
-    )
-    .await
-    {
-        Ok(tx) => (
-            Output::ok(format!("published {name}.localharness.xyz  tx {tx}\n")),
+    // Publish OFF-CHAIN to the app store (free, no gas). The ownership gate above
+    // already proved THIS signer (an EOA) owns the name — exactly what the proxy
+    // re-checks server-side (ownerOf(name) == token signer). The blockchain keeps
+    // only ownership; the cartridge bytes live in GitHub. No tokenId lookup needed
+    // (the proxy resolves it).
+    let token = crate::registry::proxy_auth_token(env.signer, crate::runtime::now_unix_secs());
+    match crate::registry::publish_app_to_store(name, &token, &wasm, source).await {
+        Ok(()) => (
+            Output::ok(format!(
+                "published {name}.localharness.xyz (off-chain, no gas)\n"
+            )),
             plan,
         ),
         Err(e) => (Output::err(format!("lh-publish: {e}"), 1), plan),

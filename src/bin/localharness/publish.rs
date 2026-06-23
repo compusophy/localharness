@@ -531,10 +531,10 @@ pub(crate) async fn publish_scaffolded_face(name: &str) -> i32 {
     publish(name, "app.rl").await
 }
 
-/// Compile a rustlite cartridge and publish it as `<name>`'s on-chain
-/// public face — served to every visitor 24/7 with NO browser tab running.
-/// Mirrors the browser studio's "publish app" exactly: setMetadata(app.wasm)
-/// + setMetadata(public_face="app") in one sponsored Tempo tx.
+/// Compile a rustlite cartridge and publish it as `<name>`'s public face —
+/// served to every visitor 24/7 with NO browser tab running. The app (cartridge)
+/// face publishes OFF-CHAIN to the app store (`publish_app_offchain`, free, no
+/// gas); the HTML face stays on-chain (`setMetadata`). Ownership stays on-chain.
 pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
     // One command: if we don't hold this name's key yet (in cwd OR the config
     // home), claim the subdomain first (sponsored), then publish — no separate

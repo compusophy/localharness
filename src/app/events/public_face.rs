@@ -239,13 +239,17 @@ async fn try_publish_app_offchain(name: &str, msg: &str) -> bool {
         return false;
     }
     // The proxy gates the publish on ownerOf(name) == token signer, which holds
-    // only when our EOA owns the name directly. A TBA-owned name (consolidation)
-    // must use the on-chain TBA path below.
+    // only when this device's MASTER wallet owns the name directly. Read
+    // `APP.wallet` (the master) DIRECTLY — NOT credit_signer(), which can return
+    // or MINT a per-origin device key (a linked device) that isn't the owner. A
+    // TBA-owned name or a master-not-loaded device → on-chain path below.
     let owner = match crate::app::registry::owner_of_name(name).await {
         Ok(Some(o)) => o,
         _ => return false,
     };
-    let Some((signer, addr)) = crate::app::chat::credit_signer().await else {
+    let Some((signer, addr)) = crate::app::APP
+        .with(|c| c.borrow().wallet.as_ref().map(|w| (w.signer.clone(), w.address)))
+    else {
         return false;
     };
     if !owner.eq_ignore_ascii_case(&crate::encoding::bytes_to_hex_str(&addr)) {

@@ -86,10 +86,10 @@ pub(crate) fn base_system_prompt(
              wants a subdomain that IS an app — \"make me a clock/<app> \
              subdomain\". This is how you create a subdomain with an app from \
              here (a per-origin sandbox means you can't write another \
-             subdomain's files directly). Same OPTIONAL actor extras as \
-             create_subdomain (`persona`, `prefund_lh`), folded into the same \
-             sponsored tx. Returns {{ name, url, tx_hash, persona_set?, \
-             prefunded_lh?, tba? }}.\n\
+             subdomain's files directly). The cartridge publishes OFF-CHAIN \
+             (free, no gas); the OPTIONAL actor extras (`persona`, `prefund_lh`) \
+             are set on-chain. Returns {{ name, url, tx_hash, off_chain, \
+             persona_set?, prefunded_lh?, tba? }}.\n\
            • batch_create_subdomains(names) — register MANY subdomains in ONE \
              on-chain transaction. Use THIS instead of calling create_subdomain \
              repeatedly when the user asks for more than one name at once \
@@ -114,10 +114,11 @@ pub(crate) fn base_system_prompt(
            • list_subdomains() — list every subdomain your owner holds \
              (their identity's holdings). Read-only; use when asked what \
              subdomains/agents they have.\n\
-           • publish_public_face(choice) — publish YOUR OWN public face on-chain \
+           • publish_public_face(choice) — publish YOUR OWN public face \
              (what a visitor to https://<you>.localharness.xyz/ sees), the chat \
              equivalent of admin → public face. choice: \"app\" compiles + \
-             publishes this device's local app.rl as a fullscreen cartridge, \
+             publishes this device's local app.rl as a fullscreen cartridge \
+             OFF-CHAIN (free, no gas), \
              \"html\" publishes local index.html, \"directory\" sets a profile \
              landing. ONE sponsored (free) tx; own subdomain only; reversible \
              (republish anytime). Returns {{ choice, url, tx_hash }}.\n\

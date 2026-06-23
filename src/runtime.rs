@@ -48,6 +48,23 @@ where
     wasm_bindgen_futures::spawn_local(f);
 }
 
+/// Current UNIX time in whole seconds, on either target. Native: `SystemTime`.
+/// wasm32: `js_sys::Date::now()`. Used to stamp freshness-windowed personal-sign
+/// auth tokens (`registry::proxy_auth_token`) from code that runs on BOTH targets
+/// (e.g. bashlite `lh-publish`, which is the CLI `sh` AND browser `execute_script`).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn now_unix_secs() -> u64 {
+    (js_sys::Date::now() / 1000.0) as u64
+}
+
 /// Sleep for `ms` milliseconds on either target.
 ///
 /// Native: `tokio::time::sleep`. wasm32: a `setTimeout`-backed Promise on the
