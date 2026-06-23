@@ -1,41 +1,47 @@
-//! Sync guard (maintainer feedback #56): `README.md` and `web/skill.md` are ONE
-//! document. They used to be independently hand-written — the README minimal,
-//! skill.md the agent onboarding page — which let them drift apart and grow the
-//! "major dup issues" the maintainer flagged. Now `web/skill.md` is the SOURCE
-//! and `README.md` is a pure DERIVED COPY of its filled output (`gen-docs` fills
-//! skill.md's GEN blocks and writes the result to README.md).
+//! README minimalism guard (maintainer feedback — the user was FURIOUS when the
+//! README became a bloated copy of the full docs: "worst readme ive ever seen").
 //!
-//! This asserts README.md is byte-identical to the FILLED skill.md, so a stray
-//! hand-edit to either — or forgetting to rerun `gen-docs` — fails `cargo test`.
-//! Requires `--features wallet` (the manifest reads `registry::chain`). Skips if
-//! a file is absent (packaged crate).
+//! The README is the FRONT DOOR, not the manual. It is HAND-WRITTEN and minimal;
+//! it is deliberately NOT coupled to `web/skill.md` (an earlier `#56` "one
+//! document" experiment re-bloated it back to the 268-line onboarding doc and
+//! kept re-introducing testnet, which the maintainer rejected — telemetry #26).
+//!
+//! This asserts the README stays small + clean so a future change can't quietly
+//! turn it back into the full doc: no testnet, no GEN-block machinery, bounded
+//! length. Detail belongs in docs.rs + `web/llms.txt`, not here.
 
-#![cfg(feature = "wallet")]
-
-use localharness::docs_manifest;
 use std::path::Path;
 
 #[test]
-fn readme_is_identical_to_filled_skill_md() {
+fn readme_stays_minimal_and_testnet_free() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let skill_p = root.join("web/skill.md");
     let readme_p = root.join("README.md");
-    if !skill_p.exists() || !readme_p.exists() {
-        eprintln!("skip: README.md / web/skill.md not present");
+    if !readme_p.exists() {
+        eprintln!("skip: README.md not present");
         return;
     }
-    let skill = std::fs::read_to_string(&skill_p).expect("read web/skill.md");
     let readme = std::fs::read_to_string(&readme_p).expect("read README.md");
+    let lower = readme.to_lowercase();
 
-    // README.md must equal skill.md with its GEN blocks filled (the derived
-    // form gen-docs writes). Comparing against the FILLED source also catches a
-    // skill.md whose own GEN blocks are stale.
-    let (filled_skill, _) = docs_manifest::fill(&skill);
+    // The front door, not the manual: keep it short.
+    let lines = readme.lines().count();
+    assert!(
+        lines <= 60,
+        "README.md is {lines} lines — keep it MINIMAL (~30, a front door, not the \
+         manual). Detail goes in docs.rs / web/llms.txt, never the README."
+    );
 
-    assert_eq!(
-        readme, filled_skill,
-        "README.md drifted from web/skill.md. They are ONE document (#56): edit \
-         web/skill.md, then run `cargo run --bin gen-docs --features wallet` to \
-         resync README.md."
+    // NEVER testnet (telemetry #26 — "remove all the testnet stuff from the readme").
+    for needle in ["testnet", "moderato", "42431", "--dev"] {
+        assert!(
+            !lower.contains(needle),
+            "README.md mentions {needle:?} — the README must have ZERO testnet references."
+        );
+    }
+
+    // No GEN-block machinery — the README is hand-written, not generated.
+    assert!(
+        !readme.contains("<!-- GEN:"),
+        "README.md must not carry GEN blocks — it is hand-written, not gen-managed."
     );
 }
