@@ -51,9 +51,10 @@ is the only durable handle.
 > (EVM-subset compiler), `src/bashlite` (sandboxed shell — fuel + confirm-gate),
 > `src/connections` (L3 transport seam — wasm cfg-gating), `proxy/` (the
 > separate-deploy credit proxy / relay / metering), `contracts/` (Diamond
-> cut/storage/deploy gotchas; facet semantics in contracts/README.md), and `web/`
-> (cache-buster + cartridge-worker↔Rust parity). Every `src/` module dir + proxy +
-> contracts + web own a spec; the root stays a whole-repo MAP and detail lives there.
+> cut/storage/deploy gotchas; facet semantics in contracts/README.md), `web/`
+> (cache-buster + cartridge-worker↔Rust parity), and `scripts/` (release atomicity
+> + PS5 trap + feedback tooling). Every `src/` module dir + proxy + contracts + web +
+> scripts own a spec; the root stays a whole-repo MAP and detail lives in the specs.
 
 ```
 src/                  library crate
@@ -250,8 +251,10 @@ modules don't trip a default `cargo check`).
 > dir): on-chain gas/selectors + Tempo-tx wire + the two-$LH-pots bridge →
 > `src/registry/CLAUDE.md`; Gemini wire quirks (model-IDs flip, union-schema-400,
 > 3.x thought-parts/thoughtSignature echo, SSE CRLF) → `src/backends/CLAUDE.md`;
-> the no-DOM / one-box-input / centered-modal-overlay rules → `src/app/CLAUDE.md`.
-> The cross-cutting ones remain below.
+> the no-DOM / one-box-input / centered-modal-overlay rules → `src/app/CLAUDE.md`;
+> release atomicity + the PS5 stderr trap → `scripts/CLAUDE.md`; the /pkg
+> cache-buster + cartridge-worker parity → `web/CLAUDE.md`. The cross-cutting ones
+> remain below.
 
 - **Signer iframe is DEAD on mobile (cross-origin storage partitioning).** Mobile
   partitions cross-origin iframe storage → embedded `apex/?signer=1` sees an EMPTY
@@ -264,18 +267,6 @@ modules don't trip a default `cargo check`).
   On `NO_SESSION_ERR` the tool falls back to the proxy's x402 `ask_agent`
   (`app/remote_call.rs`, caller's $LH → target's TBA). Don't try to make the
   iframe path work cross-machine — there is no target browser involved.
-- **PowerShell 5.1 stderr trap.** `release.ps1` wraps native cmds in
-  `Invoke-Native` (PS5 turns cargo stderr into a terminating error) — don't call
-  `cargo`/`git`/`gh` directly there. ALSO a `"` inside a here-string commit
-  message shreds PS5 native-arg quoting into pathspecs — keep `"` out of messages.
-- **`/pkg/*` needs a per-build CACHE-BUSTER, not just headers.** `max-age=0,
-  must-revalidate` was NOT enough — Chrome's WASM code cache served a stale
-  module for the unchanged wasm url (redeploys invisible until a hard reload).
-  `build-web.sh` stamps the wasm content hash into `boot.js` (`?v=` on the shim
-  import + the EXPLICIT `init()` wasm url — the shim drops the query otherwise)
-  and `index.html` (`boot.js?v=`). A query can't 404 a static file.
-- **`release.{ps1,sh}` commits ONLY `Cargo.toml`/`Cargo.lock`/`CHANGELOG.md`** —
-  commit everything else FIRST. See RELEASING.md.
 
 ## Release process
 
