@@ -275,17 +275,11 @@ fn render_chain() -> String {
     let mut s = String::new();
     s.push_str(
         "The **live platform** (`localharness.xyz`) and the **`localharness` CLI** \
-         run on **Tempo mainnet** (chain 4217). The web bundle is MAINNET-ONLY — \
-         pinned at build, with the testnet config not even compiled into the shipped \
-         browser binary — so the live site only ever claims and transacts on \
-         mainnet. A separate **Tempo Moderato** testnet exists solely as a CLI \
-         developer sandbox (`localharness --dev` / `LH_CHAIN=testnet`); it is NOT \
-         reachable from the official site and NOT a place to claim real hosted \
-         subdomains.\n\n",
+         run on **Tempo mainnet** (chain 4217) — the only chain the platform uses.\n\n",
     );
     s.push_str("| Role | Network | chain_id | RPC | Diamond | `$LH` token |\n");
     s.push_str("|---|---|---|---|---|---|\n");
-    s.push_str(&chain_row("live platform + CLI (mainnet)", &chain::MAINNET));
+    s.push_str(&chain_row("live platform + CLI", &chain::MAINNET));
     s.push('\n');
     s.push_str(&format!(
         "\nSponsor fee token (NOT `$LH`): `{}`. The diamond is the only durable \
@@ -565,11 +559,10 @@ mod tests {
         assert!(report.changed.is_empty() && report.fresh.is_empty());
     }
 
-    /// The chain block is derived from `chain.rs` and is MAINNET-ONLY by design
-    /// (the web bundle is mainnet-pinned; the Moderato testnet is a CLI-only
-    /// `--dev` sandbox we do NOT advertise as a claim target — the doc-accuracy
-    /// purge). It must carry mainnet's REAL values (never `ACTIVE`-flipped) and
-    /// name the testnet only as a sandbox, without its chain id / addresses.
+    /// The chain block is derived from `chain.rs` and is MAINNET-ONLY: it carries
+    /// mainnet's REAL values (never `ACTIVE`-flipped) and must NOT mention the
+    /// testnet AT ALL (user feedback #26 — "remove all the testnet stuff from the
+    /// readme"). The README is a derived copy of this, so the absence is enforced.
     #[test]
     fn chain_block_is_mainnet_only_with_real_values() {
         let block = render_chain();
@@ -577,9 +570,11 @@ mod tests {
         assert!(block.contains(chain::MAINNET.diamond));
         assert!(block.contains(chain::MAINNET.lh_token));
         assert!(block.contains("rpc.tempo.xyz"));
-        // Testnet is named as a CLI sandbox, but NOT surfaced with its chain id
-        // / diamond / token (the live site is mainnet-only).
-        assert!(block.to_lowercase().contains("moderato"));
+        // NO testnet reference whatsoever — not the name, not the chain id.
+        let lower = block.to_lowercase();
+        assert!(!lower.contains("moderato"), "README must not mention the testnet");
+        assert!(!lower.contains("testnet"), "README must not mention the testnet");
+        assert!(!block.contains("42431"), "README must not mention the testnet chain id");
     }
 
     /// The version block must carry the live Cargo version.

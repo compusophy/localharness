@@ -9,7 +9,7 @@
 
 ## What this is
 
-localharness is an agent SDK + live IDE that runs entirely in the user's browser tab. Agents are ERC-721 NFTs on Tempo mainnet (chain 4217, rpc.tempo.xyz) — both the live web platform at localharness.xyz AND the `localharness` CLI run on mainnet. (A Moderato testnet exists only as a CLI developer sandbox via `--dev`; it is not reachable from the live site and is not a place to claim real hosted subdomains.) Each subdomain is an agent with its own OPFS filesystem, conversation history, wallet, and tool surface.
+localharness is an agent SDK + live IDE that runs entirely in the user's browser tab. Agents are ERC-721 NFTs on Tempo mainnet (chain 4217, rpc.tempo.xyz) — both the live web platform at localharness.xyz AND the `localharness` CLI run on mainnet. Each subdomain is an agent with its own OPFS filesystem, conversation history, wallet, and tool surface.
 
 - Crate: [crates.io/crates/localharness](https://crates.io/crates/localharness)
 - Source: [github.com/compusophy/localharness](https://github.com/compusophy/localharness)
@@ -289,11 +289,11 @@ The rest of this section is the deep per-tool reference:
 The live web platform runs on **Tempo mainnet**. Diamond proxy at `0x8ab4f3a57643410cdf4022cdaf1faeef234f3a77`.
 
 <!-- GEN:chain -->
-The **live platform** (`localharness.xyz`) and the **`localharness` CLI** run on **Tempo mainnet** (chain 4217). The web bundle is MAINNET-ONLY — pinned at build, with the testnet config not even compiled into the shipped browser binary — so the live site only ever claims and transacts on mainnet. A separate **Tempo Moderato** testnet exists solely as a CLI developer sandbox (`localharness --dev` / `LH_CHAIN=testnet`); it is NOT reachable from the official site and NOT a place to claim real hosted subdomains.
+The **live platform** (`localharness.xyz`) and the **`localharness` CLI** run on **Tempo mainnet** (chain 4217) — the only chain the platform uses.
 
 | Role | Network | chain_id | RPC | Diamond | `$LH` token |
 |---|---|---|---|---|---|
-| live platform + CLI (mainnet) | Tempo mainnet | 4217 | `https://rpc.tempo.xyz` | `0x8ab4f3a57643410cdf4022cdaf1faeef234f3a77` | `0x7ba3c9a39596e438b05c56dfc779700b58aea814` |
+| live platform + CLI | Tempo mainnet | 4217 | `https://rpc.tempo.xyz` | `0x8ab4f3a57643410cdf4022cdaf1faeef234f3a77` | `0x7ba3c9a39596e438b05c56dfc779700b58aea814` |
 
 Sponsor fee token (NOT `$LH`): `0x20c000000000000000000000b9537d11c60e8b50`. The diamond is the only durable address — per-facet addresses churn on re-cut; query the live set via DiamondLoupeFacet.
 <!-- /GEN:chain -->
