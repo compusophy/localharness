@@ -48,8 +48,9 @@ is the only durable handle.
 > `src/backends` (provider wire quirks), `src/bin/localharness` (CLI), `src/rustlite`
 > (cartridge compiler), `src/filesystem` (FS impls + at-rest encryption /
 > EXEMPT_FILES), `src/builtins` (tool schema-lint rule), `src/soliditylite`
-> (EVM-subset compiler), `src/bashlite` (sandboxed shell — fuel + confirm-gate).
-> The root stays a whole-repo MAP; detail lives in the specs.
+> (EVM-subset compiler), `src/bashlite` (sandboxed shell — fuel + confirm-gate),
+> `src/connections` (L3 transport seam — wasm cfg-gating). Every module dir now
+> owns its spec; the root stays a whole-repo MAP and detail lives in the specs.
 
 ```
 src/                  library crate
