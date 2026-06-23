@@ -21,18 +21,20 @@ NOT report — they only paint the "CARTRIDGE STOPPED" overlay (watchdog/brick f
 - **Verify (browser):** crash a cartridge → overlay still paints AND one telemetry
   report fires (check the telemetry repo / network), not N per frame.
 
-### Cartridge resumability bug  (user-reported)
+### Cartridge resumability bug  (user-reported)  ✅ FIXED (commit 7045a10) — NEEDS BROWSER-VERIFY
 "Open a cartridge → close the app → reopen → it's dead / CARTRIDGE STOPPED."
 - **Cause:** cartridges run in a Web Worker (terminated on page unload). On reopen,
   history replay repaints the inline card but the worker is NOT re-spawned and the
-  wasm bytes aren't persisted → black/dead canvas. (The #52a agent flagged exactly
-  this: "history replay paints the card (black canvas, no stashed bytes)".)
-- **Fix direction:** persist the cartridge's wasm bytes (or an OPFS-backed ref +
-  re-fetch) keyed to the card, and on replay re-launch the worker (or show a tap-to-
-  resume affordance) instead of a dead canvas. Ties into the broader resumability
-  ideation below — do the cartridge-scoped fix first.
-- **Verify (browser):** run a cartridge, reload, confirm it resumes (or offers
-  resume) rather than showing CARTRIDGE STOPPED.
+  wasm bytes aren't persisted → black/dead canvas.
+- **Fix shipped:** no new persistence — the transcript already holds the durable
+  input (run_cartridge SOURCE, embed_app NAME). `history.rs` records the most-recent
+  successfully-run cartridge card during replay paint, then `resume_last_cartridge`
+  re-derives the wasm (recompile source / re-fetch name from the off-chain store) and
+  relaunches it into its card via the live embed path. One worker/tab → only the
+  latest auto-resumes. Additive (only the already-dead replay path changes).
+- **Verify (browser, the user):** run a cartridge, reload, confirm it RESUMES rather
+  than CARTRIDGE STOPPED. (If auto-resume-on-reopen feels too eager, the follow-up is
+  a tap-to-resume affordance instead.)
 
 ## Ideation (parked, but captured — "something to think about")
 
