@@ -309,10 +309,37 @@ pub async fn discover_agents(query: &str, scan: u64) -> Result<Vec<(String, Stri
 // fetches the bytes from the store and runs them. See `proxy/api/{publish,app}.ts`
 // and the off-chain-apps pivot.
 
+/// Max compiled-cartridge bytes the app store accepts — the host::compose
+/// per-child wasm budget (256 KB). Off-chain has no gas cap; this keeps any
+/// published cartridge composable. Mirrors `proxy/api/publish.ts`'s server-side
+/// cap; shared by the CLI + browser publish paths so there's one number.
+pub const APP_STORE_MAX_WASM_BYTES: usize = 256 * 1024;
+
 /// Base path of the off-chain app store's serve route. A published cartridge is
 /// `GET {CREDIT_PROXY_URL}api/app?name=<name>` → raw `application/wasm` bytes.
 fn app_store_url(name: &str) -> String {
     format!("{CREDIT_PROXY_URL}api/app?name={name}")
+}
+
+/// Publish a compiled cartridge (+ its source) to the OFF-CHAIN app store via the
+/// proxy's `POST /api/publish`, authed by a personal-sign `token` (mint it with
+/// [`proxy_auth_token`]). The proxy gates on the token's signer OWNING `name`
+/// on-chain, then commits the bytes to GitHub. Cross-target (native CLI + the
+/// browser studio / agent tools). No gas, no sponsor — the chain keeps only
+/// ownership. `Ok(())` on success.
+pub async fn publish_app_to_store(
+    name: &str,
+    token: &str,
+    wasm: &[u8],
+    source: &str,
+) -> Result<(), String> {
+    let url = format!("{CREDIT_PROXY_URL}api/publish");
+    let body = serde_json::json!({
+        "name": name,
+        "wasm_hex": format!("0x{}", bytes_to_hex(wasm)),
+        "source": source,
+    });
+    http_post_json_authed(&url, token, &body).await
 }
 
 /// Fetch a subdomain's published cartridge from the OFF-CHAIN app store by name.

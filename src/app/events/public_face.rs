@@ -21,6 +21,14 @@ pub(super) async fn run_set_public_face(choice: &str) {
         return;
     };
 
+    // App face: publish OFF-CHAIN to the app store (free, no gas) when this
+    // device's EOA directly owns the name. Falls through to the on-chain path on
+    // ANY inability (TBA owner, no local signer, or a store error), so a publish
+    // never regresses from "works (on-chain gas)" to "broken".
+    if choice == "app" && try_publish_app_offchain(&name, msg).await {
+        return;
+    }
+
     // The verified-EOA address IF this device verified as the on-chain
     // owner directly. May be None when the owner is a TBA we sign for
     // (consolidation) — that path is decided in the submit branch below.
@@ -208,6 +216,57 @@ pub(super) async fn run_set_public_face(choice: &str) {
             super::admin::refresh_public_face_status().await;
         }
         Err(e) => set_err(&format!("failed: {e}")),
+    }
+}
+
+/// Try to publish this device's local `app.rl` to the OFF-CHAIN app store. `true`
+/// = published (UI updated; the caller should return); `false` = not handled here
+/// so the caller falls back to the on-chain path — no `app.rl`, a compile error,
+/// too large, no local signer, the name is TBA-owned (not our EOA), or the store
+/// POST failed. Reuses the SAME personal-sign token the model calls use; the
+/// proxy authorizes via on-chain ownership (`ownerOf(name) == signer`).
+async fn try_publish_app_offchain(name: &str, msg: &str) -> bool {
+    let fs = crate::app::shared_opfs();
+    let src = match fs.read("app.rl").await {
+        Ok(b) if !b.is_empty() => String::from_utf8_lossy(&b).into_owned(),
+        _ => return false, // no app.rl → let the on-chain path report it
+    };
+    let wasm = match crate::rustlite::compile(&src) {
+        Ok(w) => w,
+        Err(_) => return false, // compile error → on-chain path renders the caret
+    };
+    if wasm.len() > crate::app::registry::APP_STORE_MAX_WASM_BYTES {
+        return false;
+    }
+    // The proxy gates the publish on ownerOf(name) == token signer, which holds
+    // only when our EOA owns the name directly. A TBA-owned name (consolidation)
+    // must use the on-chain TBA path below.
+    let owner = match crate::app::registry::owner_of_name(name).await {
+        Ok(Some(o)) => o,
+        _ => return false,
+    };
+    let Some((signer, addr)) = crate::app::chat::credit_signer().await else {
+        return false;
+    };
+    if !owner.eq_ignore_ascii_case(&crate::encoding::bytes_to_hex_str(&addr)) {
+        return false; // TBA / different owner → on-chain path
+    }
+    let now = (js_sys::Date::now() / 1000.0) as u64;
+    let token = crate::registry::proxy_auth_token(&signer, now);
+    dom::swap_inner(
+        msg,
+        "<span style=\"color:var(--muted)\">publishing (off-chain)…</span>",
+    );
+    match crate::app::registry::publish_app_to_store(name, &token, &wasm, &src).await {
+        Ok(()) => {
+            dom::swap_inner(
+                msg,
+                &crate::app::templates::publish_share_fragment(name).into_string(),
+            );
+            super::admin::refresh_public_face_status().await;
+            true
+        }
+        Err(_) => false, // store hiccup → fall back to the on-chain publish
     }
 }
 

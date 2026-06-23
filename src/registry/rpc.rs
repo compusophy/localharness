@@ -180,6 +180,38 @@ pub(crate) async fn http_get_bytes(url: &str) -> Result<Option<Vec<u8>>, String>
     .await?
 }
 
+/// HTTP POST a JSON body with an `x-goog-api-key` auth header; `Ok(())` on a 2xx,
+/// else `Err` with the status + a truncated body. Cross-target (reqwest → fetch
+/// on wasm), raced against [`RPC_TIMEOUT_MS`]. Backs the OFF-CHAIN app-store
+/// publish ([`super::publish_app_to_store`]) from the CLI and the browser alike.
+pub(crate) async fn http_post_json_authed(
+    url: &str,
+    token: &str,
+    body: &serde_json::Value,
+) -> Result<(), String> {
+    let client = read_client();
+    timeout_send("http_post", async {
+        let resp = client
+            .post(url)
+            .header("x-goog-api-key", token)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| format!("POST {url}: {e}"))?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let text = resp.text().await.unwrap_or_default();
+        Err(format!(
+            "HTTP {} — {}",
+            status.as_u16(),
+            text.chars().take(200).collect::<String>()
+        ))
+    })
+    .await?
+}
+
 /// `true` if `address` has deployed bytecode (i.e. is a contract, not a
 /// counterfactual / EOA). A token-bound account is deterministic — it
 /// exists as an address even before `createTokenBoundAccount` deploys it,

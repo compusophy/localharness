@@ -697,46 +697,27 @@ pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
     publish_app_offchain(name, &token, &wasm, &src).await
 }
 
-/// Max bytes of a compiled cartridge the app store accepts — the host::compose
-/// per-child wasm budget (256 KB). Off-chain has no gas cap; this just keeps a
-/// published cartridge always composable. Mirrors `proxy/api/publish.ts`.
-const APPSTORE_PUBLISH_CAP: usize = 256 * 1024;
+/// Max bytes of a compiled cartridge the app store accepts (host::compose
+/// per-child wasm budget). Single source of truth in the registry so the CLI,
+/// browser, and proxy all agree.
+const APPSTORE_PUBLISH_CAP: usize = registry::APP_STORE_MAX_WASM_BYTES;
 
-/// Publish a compiled cartridge (+ its source) to the OFF-CHAIN app store:
-/// `POST {proxy}/api/publish`, authed with a personal-sign `token`, gated
-/// server-side on the caller owning `name` on-chain. No gas, no sponsor — the
-/// blockchain keeps only ownership. A visitor's browser fetches it back via
+/// Publish a compiled cartridge (+ its source) to the OFF-CHAIN app store via
+/// `registry::publish_app_to_store` (`POST /api/publish`, personal-sign authed,
+/// gated server-side on the caller owning `name` on-chain). No gas, no sponsor —
+/// the blockchain keeps only ownership. A visitor's browser fetches it back via
 /// `registry::app_wasm_from_store`. Returns a process exit code.
 async fn publish_app_offchain(name: &str, token: &str, wasm: &[u8], source: &str) -> i32 {
-    let url = format!("{}api/publish", registry::CREDIT_PROXY_URL);
-    let body = serde_json::json!({
-        "name": name,
-        "wasm_hex": bytes_to_hex_str(wasm),
-        "source": source,
-    });
     println!(
         "publishing {} bytes as the app face of {name}.localharness.xyz (off-chain, no gas) …",
         wasm.len()
     );
-    match reqwest::Client::new()
-        .post(&url)
-        .header("x-goog-api-key", token)
-        .json(&body)
-        .send()
-        .await
-    {
-        Ok(r) => {
-            let status = r.status();
-            let text = r.text().await.unwrap_or_default();
-            if status.is_success() {
-                println!("✓ published — https://{name}.localharness.xyz/ now serves your app");
-                println!("  to every visitor, 24/7, with no browser tab running.");
-                println!("  content: app store (GitHub); ownership stays on-chain — no gas spent.");
-                0
-            } else {
-                eprintln!("publish failed: HTTP {} — {}", status.as_u16(), text.trim());
-                1
-            }
+    match registry::publish_app_to_store(name, token, wasm, source).await {
+        Ok(()) => {
+            println!("✓ published — https://{name}.localharness.xyz/ now serves your app");
+            println!("  to every visitor, 24/7, with no browser tab running.");
+            println!("  content: app store (GitHub); ownership stays on-chain — no gas spent.");
+            0
         }
         Err(e) => {
             eprintln!("publish failed: {e}");
