@@ -607,54 +607,22 @@ pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
             eprintln!("{source_path} is empty — nothing to publish");
             return 1;
         }
-        // The studio caps published HTML at 24 KB; mirror it so a too-big
-        // page fails locally, not after gas.
-        if html.len() > HTML_PUBLISH_CAP {
-            eprintln!(
-                "{source_path} is {} bytes; max {HTML_PUBLISH_CAP} to publish on-chain",
-                html.len()
-            );
-            return 1;
-        }
-        let id = match registry::id_of_name(name).await {
-            Ok(i) if i != 0 => i,
-            _ => {
-                eprintln!("no tokenId for {name}");
-                return 1;
-            }
-        };
-        let diamond = match parse_address(registry::REGISTRY_ADDRESS()) {
-            Ok(a) => a,
-            Err(_) => {
-                eprintln!("internal: bad registry address constant");
-                return 1;
-            }
-        };
-        let mk = |input: Vec<u8>| tempo_tx::TempoCall { to: diamond, value_wei: 0, input };
-        let sponsor = match load_sponsor() {
-            Ok(s) => s,
-            Err(code) => return code,
-        };
+        // Off-chain HTML publish — no gas. The owner check at the top of publish()
+        // already proved this key owns the name (= what the proxy re-checks).
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let token = registry::proxy_auth_token(&signer, now);
         println!(
-            "publishing {} bytes as the html face of {name}.localharness.xyz …",
+            "publishing {} bytes as the html face of {name}.localharness.xyz (off-chain, no gas) …",
             html.len()
         );
-        return match registry::submit_tempo_sponsored(
-            &signer,
-            &sponsor,
-            vec![
-                mk(registry::encode_set_public_html(id, html)),
-                mk(registry::encode_set_public_face(id, "html")),
-            ],
-            registry::ALPHA_USD_ADDRESS(),
-            registry::set_metadata_gas(html.len()),
-        )
-        .await
-        {
-            Ok(tx) => {
+        return match registry::publish_html_to_store(name, &token, &src).await {
+            Ok(()) => {
                 println!("✓ published — https://{name}.localharness.xyz/ now serves your html");
                 println!("  to every visitor, 24/7, with no browser tab running.");
-                println!("  tx: {tx}");
+                println!("  content: app store (GitHub); ownership stays on-chain — no gas spent.");
                 0
             }
             Err(e) => {
@@ -733,10 +701,6 @@ pub(crate) fn publishes_as_html(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     lower.ends_with(".html") || lower.ends_with(".htm")
 }
-
-/// Max bytes of HTML `publish` puts on-chain — mirrors the browser studio's
-/// 24 KB cap (`events/public_face.rs`), so a too-big page fails locally.
-const HTML_PUBLISH_CAP: usize = 24_576;
 
 /// System prompt for a target that hasn't published a persona on-chain.
 pub(crate) fn default_persona(name: &str) -> String {

@@ -342,6 +342,26 @@ pub async fn publish_app_to_store(
     http_post_json_authed(&url, token, &body).await
 }
 
+/// Publish an HTML page as `name`'s public face to the OFF-CHAIN app store — the
+/// HTML-face sibling of [`publish_app_to_store`] (`POST /api/publish` with an
+/// `html` body, same personal-sign auth + on-chain ownership gate). The browser
+/// reads it back via [`html_from_store`]. No gas.
+pub async fn publish_html_to_store(name: &str, token: &str, html: &str) -> Result<(), String> {
+    let url = format!("{CREDIT_PROXY_URL}api/publish");
+    let body = serde_json::json!({ "name": name, "html": html });
+    http_post_json_authed(&url, token, &body).await
+}
+
+/// Fetch a subdomain's published HTML page from the OFF-CHAIN app store by name
+/// (`GET /api/app?name=<name>&kind=html`). `Ok(None)` = no page published.
+pub async fn html_from_store(name: &str) -> Result<Option<Vec<u8>>, String> {
+    let n = name.trim();
+    if n.is_empty() {
+        return Ok(None);
+    }
+    http_get_bytes(&format!("{CREDIT_PROXY_URL}api/app?name={n}&kind=html")).await
+}
+
 /// Fetch a subdomain's published cartridge from the OFF-CHAIN app store by name.
 /// `Ok(None)` = no app published (a 404 — the visitor falls back to the
 /// directory/html face). Works on native AND wasm (the browser load path).
@@ -456,12 +476,17 @@ pub fn encode_set_public_face(token_id: u64, choice: &str) -> Vec<u8> {
     encode_set_metadata_bytes(token_id, keccak_key(PUBLIC_FACE_LABEL), choice.as_bytes())
 }
 
-/// Read a subdomain's published public-face HTML, if any.
+/// Read a subdomain's published public-face HTML. OFF-CHAIN now (the app store,
+/// fetched by name) — resolves `token_id`→name then reads the store. Kept on the
+/// `token_id` signature for its callers (resolve_public_face).
 pub async fn public_html_of(token_id: u64) -> Result<Option<Vec<u8>>, String> {
-    metadata_bytes_of(token_id, keccak_key(PUBLIC_HTML_LABEL)).await
+    let name = name_of_id(token_id).await?;
+    html_from_store(&name).await
 }
 
-/// Encode `setMetadata` for the published public-face HTML.
+/// Encode `setMetadata` for the published public-face HTML. LEGACY — the on-chain
+/// HTML publish; retained for the TBA-owner on-chain fallback. Live HTML publishing
+/// is off-chain ([`publish_html_to_store`]).
 pub fn encode_set_public_html(token_id: u64, html: &[u8]) -> Vec<u8> {
     encode_set_metadata_bytes(token_id, keccak_key(PUBLIC_HTML_LABEL), html)
 }

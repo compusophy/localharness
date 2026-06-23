@@ -30,6 +30,7 @@ const GH_TOKEN = process.env.GH_APPSTORE_TOKEN ?? process.env.GH_TELEMETRY_TOKEN
 // budget (256 KB) so a published cartridge can always be composed.
 const MAX_WASM_BYTES = 262_144;
 const MAX_SOURCE_BYTES = 262_144;
+const MAX_HTML_BYTES = 262_144;
 
 // --- CORS (same policy as telemetry.ts / gemini.ts) --------------------------
 function corsHeaders(origin: string | null): Record<string, string> {
@@ -156,22 +157,47 @@ export default async function handler(req: Request): Promise<Response> {
   const name = String(payload.name ?? '').trim().toLowerCase();
   if (!/^[a-z0-9-]{1,63}$/.test(name)) return json({ error: 'invalid name' }, 400, origin);
 
-  // wasm arrives as hex (the CLI/browser already speak hex; no base64 dep needed
-  // client-side). Validate shape + the wasm magic before any GitHub write.
-  const wasmHex = String(payload.wasm_hex ?? '').replace(/^0x/, '');
-  if (wasmHex.length === 0 || wasmHex.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(wasmHex)) {
-    return json({ error: 'invalid wasm_hex' }, 400, origin);
-  }
-  const wasm = hexToBytes(wasmHex);
-  if (wasm.length > MAX_WASM_BYTES) {
-    return json({ error: `wasm too large (${wasm.length} > ${MAX_WASM_BYTES})` }, 413, origin);
-  }
-  if (!(wasm[0] === 0x00 && wasm[1] === 0x61 && wasm[2] === 0x73 && wasm[3] === 0x6d)) {
-    return json({ error: 'not a WebAssembly module (bad magic)' }, 400, origin);
-  }
+  // Two asset kinds, ONE auth/ownership gate: an APP cartridge (wasm) or an HTML
+  // page. `html` (a UTF-8 string) selects the page face; otherwise `wasm_hex`
+  // (the cartridge). Build the file commit list first, then gate, then write.
+  const htmlRaw = typeof payload.html === 'string' ? (payload.html as string) : '';
+  const isHtml = htmlRaw.trim() !== '';
+  type Commit = { path: string; b64: string; message: string };
+  const commits: Commit[] = [];
+  let bytes = 0;
+  let primaryPath = '';
 
-  const source = String(payload.source ?? '');
-  if (source.length > MAX_SOURCE_BYTES) return json({ error: 'source too large' }, 413, origin);
+  if (isHtml) {
+    const htmlBytes = new TextEncoder().encode(htmlRaw);
+    if (htmlBytes.length > MAX_HTML_BYTES) {
+      return json({ error: `html too large (${htmlBytes.length} > ${MAX_HTML_BYTES})` }, 413, origin);
+    }
+    bytes = htmlBytes.length;
+    primaryPath = `${name}/index.html`;
+    commits.push({ path: primaryPath, b64: bytesToBase64(htmlBytes), message: `publish ${name}/index.html (${bytes} bytes)` });
+  } else {
+    // wasm arrives as hex (the CLI/browser already speak hex; no base64 dep
+    // needed client-side). Validate shape + the wasm magic before any write.
+    const wasmHex = String(payload.wasm_hex ?? '').replace(/^0x/, '');
+    if (wasmHex.length === 0 || wasmHex.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(wasmHex)) {
+      return json({ error: 'invalid wasm_hex (or supply `html`)' }, 400, origin);
+    }
+    const wasm = hexToBytes(wasmHex);
+    if (wasm.length > MAX_WASM_BYTES) {
+      return json({ error: `wasm too large (${wasm.length} > ${MAX_WASM_BYTES})` }, 413, origin);
+    }
+    if (!(wasm[0] === 0x00 && wasm[1] === 0x61 && wasm[2] === 0x73 && wasm[3] === 0x6d)) {
+      return json({ error: 'not a WebAssembly module (bad magic)' }, 400, origin);
+    }
+    bytes = wasm.length;
+    primaryPath = `${name}/app.wasm`;
+    commits.push({ path: primaryPath, b64: bytesToBase64(wasm), message: `publish ${name}/app.wasm (${bytes} bytes)` });
+    const source = String(payload.source ?? '');
+    if (source.length > MAX_SOURCE_BYTES) return json({ error: 'source too large' }, 413, origin);
+    if (source.trim()) {
+      commits.push({ path: `${name}/app.rl`, b64: bytesToBase64(new TextEncoder().encode(source)), message: `publish ${name}/app.rl` });
+    }
+  }
 
   // Ownership: the authenticated caller MUST own the name on-chain. This is the
   // single authorization gate — the bytes are public, the NFT is the right to
@@ -193,22 +219,15 @@ export default async function handler(req: Request): Promise<Response> {
     return json({ error: `"${name}" is owned by ${owner ?? '(none)'}, not ${addr}` }, 403, origin);
   }
 
-  // Commit the cartridge (+ source) to the app-store repo.
+  // Commit the asset(s) to the app-store repo.
   try {
-    await ghPut(`${name}/app.wasm`, bytesToBase64(wasm), `publish ${name}/app.wasm (${wasm.length} bytes)`);
-    if (source.trim()) {
-      await ghPut(
-        `${name}/app.rl`,
-        bytesToBase64(new TextEncoder().encode(source)),
-        `publish ${name}/app.rl`,
-      );
-    }
+    for (const c of commits) await ghPut(c.path, c.b64, c.message);
   } catch (e) {
     return json({ error: 'github: ' + (e as Error).message }, 502, origin);
   }
 
   return json(
-    { published: true, name, bytes: wasm.length, repo: APPSTORE_REPO, path: `${name}/app.wasm` },
+    { published: true, name, kind: isHtml ? 'html' : 'app', bytes, repo: APPSTORE_REPO, path: primaryPath },
     200,
     origin,
   );

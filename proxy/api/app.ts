@@ -29,7 +29,12 @@ export default async function handler(req: Request): Promise<Response> {
   const name = (url.searchParams.get('name') ?? '').toLowerCase().replace(/[^a-z0-9-]/g, '');
   if (!name) return new Response('missing name', { status: 400, headers: CORS });
 
-  const raw = `https://raw.githubusercontent.com/${APPSTORE_REPO}/main/${name}/app.wasm`;
+  // kind=html serves the published HTML page face; default = the app cartridge.
+  const isHtml = (url.searchParams.get('kind') ?? '') === 'html';
+  const file = isHtml ? 'index.html' : 'app.wasm';
+  const contentType = isHtml ? 'text/html; charset=utf-8' : 'application/wasm';
+
+  const raw = `https://raw.githubusercontent.com/${APPSTORE_REPO}/main/${name}/${file}`;
   let res: Response;
   try {
     res = await fetch(raw, { headers: { 'user-agent': 'localharness-appstore' } });
@@ -37,7 +42,7 @@ export default async function handler(req: Request): Promise<Response> {
     return new Response('upstream error: ' + (e as Error).message, { status: 502, headers: CORS });
   }
   if (res.status === 404) {
-    // Short cache: a name with no app yet may publish one soon.
+    // Short cache: a name with no asset yet may publish one soon.
     return new Response('not found', {
       status: 404,
       headers: { ...CORS, 'cache-control': 'public, max-age=30' },
@@ -50,7 +55,7 @@ export default async function handler(req: Request): Promise<Response> {
     status: 200,
     headers: {
       ...CORS,
-      'content-type': 'application/wasm',
+      'content-type': contentType,
       // Edge + browser cache 5 min — repeat views never re-hit GitHub.
       'cache-control': 'public, max-age=300, s-maxage=300',
     },

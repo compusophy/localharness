@@ -28,6 +28,9 @@ pub(super) async fn run_set_public_face(choice: &str) {
     if choice == "app" && try_publish_app_offchain(&name, msg).await {
         return;
     }
+    if choice == "html" && try_publish_html_offchain(&name, msg).await {
+        return;
+    }
 
     // The verified-EOA address IF this device verified as the on-chain
     // owner directly. May be None when the owner is a TBA we sign for
@@ -271,6 +274,51 @@ async fn try_publish_app_offchain(name: &str, msg: &str) -> bool {
             true
         }
         Err(_) => false, // store hiccup → fall back to the on-chain publish
+    }
+}
+
+/// HTML-face sibling of [`try_publish_app_offchain`]: publish this device's local
+/// `index.html` to the OFF-CHAIN app store. `true` = published (caller returns);
+/// `false` = fall back to the on-chain path (no index.html, too large, not the
+/// master wallet, or a store error). Same MASTER-wallet (not credit_signer) rule.
+async fn try_publish_html_offchain(name: &str, msg: &str) -> bool {
+    let fs = crate::app::shared_opfs();
+    let html = match fs.read("index.html").await {
+        Ok(b) if !b.is_empty() => b,
+        _ => return false,
+    };
+    if html.len() > crate::app::registry::APP_STORE_MAX_WASM_BYTES {
+        return false;
+    }
+    let owner = match crate::app::registry::owner_of_name(name).await {
+        Ok(Some(o)) => o,
+        _ => return false,
+    };
+    let Some((signer, addr)) = crate::app::APP
+        .with(|c| c.borrow().wallet.as_ref().map(|w| (w.signer.clone(), w.address)))
+    else {
+        return false;
+    };
+    if !owner.eq_ignore_ascii_case(&crate::encoding::bytes_to_hex_str(&addr)) {
+        return false; // TBA / different owner → on-chain path
+    }
+    let now = (js_sys::Date::now() / 1000.0) as u64;
+    let token = crate::registry::proxy_auth_token(&signer, now);
+    let html_str = String::from_utf8_lossy(&html).into_owned();
+    dom::swap_inner(
+        msg,
+        "<span style=\"color:var(--muted)\">publishing (off-chain)…</span>",
+    );
+    match crate::app::registry::publish_html_to_store(name, &token, &html_str).await {
+        Ok(()) => {
+            dom::swap_inner(
+                msg,
+                &crate::app::templates::publish_share_fragment(name).into_string(),
+            );
+            super::admin::refresh_public_face_status().await;
+            true
+        }
+        Err(_) => false,
     }
 }
 

@@ -319,6 +319,64 @@ async fn publish_app_face(
     Ok(Some(tx))
 }
 
+/// Publish an HTML page as `name`'s public face — the HTML-face sibling of
+/// [`publish_app_face`]. OFF-CHAIN (free) when the device MASTER wallet owns the
+/// name (read `APP.wallet` directly — see publish_app_face for why not
+/// credit_signer); on-chain `setMetadata` fallback for a TBA-owned name. `Ok(Some
+/// (tx))` when on-chain, `Ok(None)` when off-chain.
+async fn publish_html_face(
+    name: &str,
+    token_id: u64,
+    html: &[u8],
+    owner: &str,
+) -> Result<Option<String>, crate::error::Error> {
+    if html.is_empty() {
+        return Err(crate::error::Error::other("index.html is empty"));
+    }
+    if html.len() > crate::app::registry::APP_STORE_MAX_WASM_BYTES {
+        return Err(crate::error::Error::other(format!(
+            "index.html too large to publish: {} bytes (max {})",
+            html.len(),
+            crate::app::registry::APP_STORE_MAX_WASM_BYTES
+        )));
+    }
+    let master = crate::app::APP
+        .with(|c| c.borrow().wallet.as_ref().map(|w| (w.signer.clone(), w.address)));
+    if let Some((signer, addr)) = master {
+        if owner.eq_ignore_ascii_case(&crate::encoding::bytes_to_hex_str(&addr)) {
+            let now = (js_sys::Date::now() / 1000.0) as u64;
+            let token = crate::registry::proxy_auth_token(&signer, now);
+            let html_str = String::from_utf8_lossy(html).into_owned();
+            crate::app::registry::publish_html_to_store(name, &token, &html_str)
+                .await
+                .map_err(|e| crate::error::Error::other(format!("publish failed: {e}")))?;
+            return Ok(None);
+        }
+    }
+    // ON-CHAIN fallback (TBA-owned name / no local master) — legacy sponsored
+    // setMetadata batch.
+    crate::app::debuglog::log(&format!(
+        "publish_html_face: off-chain unavailable for {name} (owner {owner} is not the \
+         local master wallet) — on-chain fallback"
+    ));
+    let registry_addr = parse_address(crate::app::registry::REGISTRY_ADDRESS())
+        .map_err(crate::error::Error::other)?;
+    let mk = |input: Vec<u8>| crate::tempo_tx::TempoCall {
+        to: registry_addr,
+        value_wei: 0,
+        input,
+    };
+    let calls = vec![
+        mk(crate::app::registry::encode_set_public_html(token_id, html)),
+        mk(crate::app::registry::encode_set_public_face(token_id, "html")),
+    ];
+    let gas = crate::app::gas::set_metadata_gas(html.len());
+    let tx = crate::app::events::run_sponsored_tempo_call(owner, calls, gas, "publish html")
+        .await
+        .map_err(|e| crate::error::Error::other(format!("publish failed: {e}")))?;
+    Ok(Some(tx))
+}
+
 /// Resolve a registered name's `(token_id, owner)` for an OWNER-AUTHORIZED
 /// write, asserting the master wallet that signs (`signer_owner`) holds it.
 /// `None` = unregistered (caller decides whether to register). `Err` = the
@@ -809,6 +867,8 @@ pub(crate) fn publish_public_face_tool() -> std::sync::Arc<dyn crate::tools::Too
                     }));
                 }
                 "html" => {
+                    // OFF-CHAIN: publish this device's local index.html to the app
+                    // store (free; on-chain fallback for a TBA owner). Early-return.
                     let fs = crate::app::shared_opfs();
                     let html = match fs.read("index.html").await {
                         Ok(b) if !b.is_empty() => b,
@@ -818,18 +878,14 @@ pub(crate) fn publish_public_face_tool() -> std::sync::Arc<dyn crate::tools::Too
                             ))
                         }
                     };
-                    if html.len() > 24_576 {
-                        return Err(crate::error::Error::other(
-                            "index.html too large to publish (max 24 KB)",
-                        ));
-                    }
-                    (
-                        vec![
-                            mk(crate::app::registry::encode_set_public_html(token_id, &html)),
-                            mk(crate::app::registry::encode_set_public_face(token_id, "html")),
-                        ],
-                        crate::app::gas::set_metadata_gas(html.len()),
-                    )
+                    let tx = publish_html_face(&name, token_id, &html, &owner).await?;
+                    let off_chain = tx.is_none();
+                    return Ok(serde_json::json!({
+                        "choice": choice,
+                        "url": format!("https://{name}.localharness.xyz/"),
+                        "tx_hash": tx.unwrap_or_else(|| "off-chain".to_string()),
+                        "off_chain": off_chain,
+                    }));
                 }
                 _ => unreachable!(),
             };
