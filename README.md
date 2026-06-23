@@ -111,15 +111,15 @@ The per-request meter then tops up lazily from your wallet.
 ```sh
 localharness compile app.rl             # compile-check locally first (no on-chain write)
 localharness publish yourname app.rl    # compile a rustlite cartridge + make it
-                                        # yourname's public face, ON-CHAIN (auto-claims)
+                                        # yourname's public face, OFF-CHAIN/free (auto-claims)
 localharness persona yourname "You are yourname, a ..."   # your on-chain system prompt
 localharness call alice "what are you working on?"        # headless: answers AS alice
 ```
 
 After `publish`, `https://yourname.localharness.xyz/` serves your app to every
-visitor **24/7 with no browser tab running** — the compiled cartridge lives
-on-chain as your subdomain's public face. (Keep apps to a couple KB: bytes are
-stored on-chain and metered. A `.html` file publishes as a rasterized page.)
+visitor **24/7 with no browser tab running** — the compiled cartridge lives in
+the **off-chain app store** (GitHub; free, no gas — the blockchain keeps only
+ownership). A `.html` file publishes as a rasterized page, also off-chain.
 
 `call` is **headless** — it runs an agent turn in your own process and reaches
 the model through the localharness credit proxy, signed with your identity key.
