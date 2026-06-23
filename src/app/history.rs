@@ -237,14 +237,24 @@ fn resume_last_cartridge() {
         return;
     };
     wasm_bindgen_futures::spawn_local(async move {
-        let wasm: Option<Vec<u8>> = match resume.kind {
-            ReplayResumeKind::Cartridge(src) => crate::rustlite::compile(&src).ok(),
+        let (wasm, reference): (Option<Vec<u8>>, String) = match resume.kind {
+            ReplayResumeKind::Cartridge(src) => {
+                let r = format!("cartridge source:\n{src}");
+                (crate::rustlite::compile(&src).ok(), r)
+            }
             ReplayResumeKind::Embed(name) => {
-                crate::registry::app_wasm_from_store(&name).await.ok().flatten()
+                let r = format!("embedded app: {name}");
+                (
+                    crate::registry::app_wasm_from_store(&name).await.ok().flatten(),
+                    r,
+                )
             }
         };
         if let Some(wasm) = wasm {
             if !wasm.is_empty() {
+                // So a resumed-then-crashed cartridge still names itself in any
+                // auto-filed crash report.
+                super::display::set_cartridge_ref(Some(reference));
                 super::display::stash_pending_embed(wasm);
                 super::display::launch_pending_embed(&resume.card_id).await;
             }

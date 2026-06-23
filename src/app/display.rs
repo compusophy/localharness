@@ -472,6 +472,37 @@ pub(crate) fn stash_pending_embed(wasm: Vec<u8>) {
 }
 
 thread_local! {
+    /// A human-readable reference to the cartridge that's CURRENTLY running, so an
+    /// auto-filed crash report (`worker::record_outcome`) can say WHAT crashed —
+    /// the `run_cartridge` SOURCE or the `embed_app` NAME — making cartridge
+    /// failures REPRODUCIBLE (the source/name lives in the tool ARGS, which the
+    /// report's recent-conversation block doesn't carry). Set at each launch site.
+    static CARTRIDGE_REF: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Remember what cartridge is about to run (for crash-report context). Call at a
+/// launch site BEFORE the worker can fail — `run_cartridge` (the source),
+/// `embed_app` (the name), and the history resume path. Capped so a huge source
+/// can't crowd the rest of the report (the proxy clamps the body anyway).
+pub(crate) fn set_cartridge_ref(reference: Option<String>) {
+    let capped = reference.map(|r| {
+        if r.chars().count() > 6000 {
+            let mut s: String = r.chars().take(6000).collect();
+            s.push_str("\n…(truncated)");
+            s
+        } else {
+            r
+        }
+    });
+    CARTRIDGE_REF.with(|c| *c.borrow_mut() = capped);
+}
+
+/// The current cartridge reference (for `worker::record_outcome`'s crash report).
+pub(super) fn cartridge_ref() -> Option<String> {
+    CARTRIDGE_REF.with(|c| c.borrow().clone())
+}
+
+thread_local! {
     /// Monotonic suffix for embed-canvas DOM ids. Every embed card —
     /// live OR history-replayed — must carry a UNIQUE canvas id: when all
     /// cards shared `#embed-canvas`, `by_id` resolved to the OLDEST card
@@ -1091,12 +1122,19 @@ mod worker {
                             "cartridge failed: {}",
                             detail.chars().take(100).collect::<String>()
                         );
+                        // Stamp in WHAT crashed (run_cartridge source / embed_app
+                        // name) so the report is REPRODUCIBLE — it rides the
+                        // freeform so it's redacted with everything else.
+                        let freeform = match super::cartridge_ref() {
+                            Some(r) if !r.is_empty() => format!("{detail}\n\n{r}"),
+                            _ => detail,
+                        };
                         wasm_bindgen_futures::spawn_local(crate::app::telemetry::report_event(
                             "cartridge".to_string(),
                             code,
                             title,
                             signature,
-                            detail,
+                            freeform,
                             String::new(),
                         ));
                     }

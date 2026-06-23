@@ -106,6 +106,9 @@ impl Tool for RunCartridge {
             // even when instantiation failed, the first frame trapped, or
             // the watchdog killed a hung loop — the agent only ever saw
             // success while the user stared at "CARTRIDGE STOPPED".
+            // Remember WHAT is running so an auto-filed crash report can carry
+            // the source (reproducible cartridge failures, not just an LH code).
+            crate::app::display::set_cartridge_ref(Some(format!("cartridge source:\n{source}")));
             match crate::app::display::run_wasm_reporting(&wasm_bytes).await {
                 Ok(()) => Ok(json!({
                     "status": "running on display",

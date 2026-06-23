@@ -758,7 +758,9 @@ pub(crate) fn embed_app_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 Err(e) => return Err(crate::error::Error::other(format!("app_wasm_of: {e}"))),
             };
             // Stash the bytes; `chat::stream_turn` launches them into the
-            // `#embed-canvas` card once the inline card has painted.
+            // `#embed-canvas` card once the inline card has painted. Remember
+            // WHICH app, so a crash report names the embedded cartridge.
+            crate::app::display::set_cartridge_ref(Some(format!("embedded app: {cleaned}")));
             crate::app::display::stash_pending_embed(wasm);
             Ok(serde_json::json!({
                 "name": cleaned,
