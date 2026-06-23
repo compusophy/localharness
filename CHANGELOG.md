@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.55.0] - 2026-06-23
 
 Feedback-ingest pass clearing the remaining open feedback (#62 / #63 / #64 +
 rawfeedback) and a repo-wide CLAUDE.md decomposition.
