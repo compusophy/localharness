@@ -1118,6 +1118,13 @@ fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, 
         "http::body_len" => (vec![I32], I32),
         "http::read_body" => (vec![I32, I32, I32], I32),
         "http::parse_text" => (vec![String, I32, I32, I32], I32),
+        // body_lines(handle) -> line count; draw_line(handle, line, x, y, rgb, scale)
+        // -> chars drawn. Render the HOST-HELD fetched body as TEXT by handle — no
+        // cartridge buffer needed (rustlite can only produce a string-LITERAL
+        // pointer, so read_body's out_ptr is unusable from rustlite). This is how a
+        // data-driven cartridge shows LIVE fetched text. Lines are '\n'-delimited.
+        "http::body_lines" => (vec![I32], I32),
+        "http::draw_line" => (vec![I32, I32, I32, I32, I32, I32], I32),
         // --- audio (host_audio): Web Audio (AudioContext) playback. Integer
         // ABI, fire-and-forget like host_net. `wave`: 0 sine, 1 square,
         // 2 sawtooth, 3 triangle. A handle >= 0 names a voice for `stop`;

@@ -618,6 +618,7 @@ function buildChildImports(child) {
   const child_http = {
     get: () => -1, ready: () => -1, status: () => -1,
     body_len: () => -1, read_body: () => -1, parse_text: () => 0,
+    body_lines: () => 0, draw_line: () => 0,
   };
   const child_audio = { tone: () => -1, tone_at: () => -1, noise: () => -1, stop: () => {}, set_volume: () => {} };
   const child_agent = {
@@ -1190,6 +1191,29 @@ const host_http = {
     const html = readString(htmlPtr);
     if (html === null) return -1;
     return writeString(outPtr, htmlToText(html), Math.max(0, max));
+  },
+  // body_lines / draw_line: render the HOST-HELD fetched body as text WITHOUT the
+  // cartridge needing a writable buffer (rustlite can only produce a string-LITERAL
+  // pointer, so read_body's out_ptr is unusable from rustlite — this is how a
+  // data-driven cartridge shows live fetched text). Lines are '\n'-delimited.
+  body_lines(handle) {
+    const r = httpReqs[handle];
+    if (!r || r.state !== HTTP_READY) return 0;
+    const b = r.body.replace(/\n+$/, '');
+    return b === '' ? 0 : b.split('\n').length;
+  },
+  draw_line(handle, line, x, y, rgb, scale) {
+    const r = httpReqs[handle];
+    if (!r || r.state !== HTTP_READY) return 0;
+    const lines = r.body.replace(/\n+$/, '').split('\n');
+    if (line < 0 || line >= lines.length) return 0;
+    const s = lines[line];
+    const sc = Math.max(1, scale | 0);
+    const packed = packRgb(rgb);
+    for (let i = 0; i < s.length; i++) {
+      blitGlyph((x | 0) + i * 6 * sc, y | 0, s.charCodeAt(i), packed, sc);
+    }
+    return s.length;
   },
 };
 

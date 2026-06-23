@@ -404,7 +404,7 @@ async function x402PriceOf(tokenId: bigint): Promise<bigint | null> {
 
 /** `nextId() -> uint256`. The next token id to mint; registered ids are
  * `1..nextId()-1` (ids start at 1 and are monotonic). 0/empty = nothing minted. */
-async function nextId(): Promise<bigint> {
+export async function nextId(): Promise<bigint> {
   const data = '0x' + selectorHex('nextId()');
   const res = await ethCall(REGISTRY, data);
   try {
@@ -416,7 +416,7 @@ async function nextId(): Promise<bigint> {
 
 /** `nameOfId(uint256) -> string`. Empty for an unregistered / burned id.
  * Decodes the ABI string return (offset|length|utf8). */
-async function nameOfId(tokenId: bigint): Promise<string> {
+export async function nameOfId(tokenId: bigint): Promise<string> {
   const sel = selectorHex('nameOfId(uint256)');
   const data = '0x' + sel + bytesToHex(uintWord(tokenId));
   const res = await ethCall(REGISTRY, data);

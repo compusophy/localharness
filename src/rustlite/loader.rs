@@ -294,16 +294,25 @@ fn build_host_imports(mem: &SharedMemory) -> Result<(js_sys::Object, NetRuntime)
     let http_one = Closure::<dyn Fn(i32) -> i32>::new(|_a| -1);
     let http_read = Closure::<dyn Fn(i32, i32, i32) -> i32>::new(|_a, _b, _c| -1);
     let http_parse = Closure::<dyn Fn(i32, i32, i32, i32) -> i32>::new(|_a, _b, _c, _d| 0);
+    // body_lines / draw_line: inert here (the native loader has no real HTTP host);
+    // the browser worker implements them over the held body. Stubs so a cartridge
+    // importing them still instantiates natively. ABI mirrors typecheck.rs http::*.
+    let http_lines = Closure::<dyn Fn(i32) -> i32>::new(|_a| 0);
+    let http_draw = Closure::<dyn Fn(i32, i32, i32, i32, i32, i32) -> i32>::new(|_a, _b, _c, _d, _e, _f| 0);
     let _ = Reflect::set(&host_http, &JsValue::from_str("get"), http_get.as_ref());
     let _ = Reflect::set(&host_http, &JsValue::from_str("ready"), http_one.as_ref());
     let _ = Reflect::set(&host_http, &JsValue::from_str("status"), http_one.as_ref());
     let _ = Reflect::set(&host_http, &JsValue::from_str("body_len"), http_one.as_ref());
     let _ = Reflect::set(&host_http, &JsValue::from_str("read_body"), http_read.as_ref());
     let _ = Reflect::set(&host_http, &JsValue::from_str("parse_text"), http_parse.as_ref());
+    let _ = Reflect::set(&host_http, &JsValue::from_str("body_lines"), http_lines.as_ref());
+    let _ = Reflect::set(&host_http, &JsValue::from_str("draw_line"), http_draw.as_ref());
     http_get.forget();
     http_one.forget();
     http_read.forget();
     http_parse.forget();
+    http_lines.forget();
+    http_draw.forget();
     let _ = Reflect::set(&imports, &JsValue::from_str("host_http"), &host_http);
 
     // host_net module — WebSocket-backed multiplayer / sync I/O. Mirrors
