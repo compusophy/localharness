@@ -49,9 +49,11 @@ is the only durable handle.
 > (cartridge compiler), `src/filesystem` (FS impls + at-rest encryption /
 > EXEMPT_FILES), `src/builtins` (tool schema-lint rule), `src/soliditylite`
 > (EVM-subset compiler), `src/bashlite` (sandboxed shell — fuel + confirm-gate),
-> `src/connections` (L3 transport seam — wasm cfg-gating), and `proxy/` (the
-> separate-deploy credit proxy / relay / metering). Every `src/` module dir + the
-> proxy own a spec; the root stays a whole-repo MAP and detail lives in the specs.
+> `src/connections` (L3 transport seam — wasm cfg-gating), `proxy/` (the
+> separate-deploy credit proxy / relay / metering), and `contracts/` (Diamond
+> cut/storage/deploy gotchas; facet semantics in contracts/README.md). Every
+> `src/` module dir + proxy + contracts own a spec; the root stays a whole-repo MAP
+> and detail lives in the specs.
 
 ```
 src/                  library crate
