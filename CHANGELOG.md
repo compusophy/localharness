@@ -5,6 +5,53 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Feedback-ingest pass clearing the remaining open feedback (#62 / #63 / #64 +
+rawfeedback) and a repo-wide CLAUDE.md decomposition.
+
+### Added
+
+- **rustlite `draw_string`.** `host::display::draw_string(x, y, "TEXT", color,
+  scale)` lowers (parser desugar) to one `draw_char` per glyph — no more verbose
+  char-by-char arrays — with no new host import (integer-only ABI intact).
+- **Receive-side `$LH` notification.** An agent now gets a bell note when it
+  *receives* an on-chain `$LH` transfer (balance-delta watcher), not only when it
+  sent one — covers CLI / external-wallet / x402 / payout transfers.
+- **Per-directory CLAUDE.md specs.** Every subsystem (10 `src/` module dirs +
+  `proxy` + `contracts` + `web` + `scripts`) owns a nested `CLAUDE.md`
+  auto-loaded in-dir; the root is a pure map + index, back under the 40K cap.
+
+### Changed
+
+- **Unified header modals.** The notifications / feedback / admin overlays are one
+  system now — centered on the viewport (no off-screen overflow), one z-layer,
+  mutually exclusive (opening one closes the others), each a real toggle.
+- **Mobile-first by default.** A desktop browser renders the 9:16 phone frame by
+  default (toggle to "desktop view"); a real phone is unchanged. Removed the frame's
+  vertical edge lines.
+- **Subagent network resilience.** `start_subagent` retries the model stream on
+  transport / 5xx / timeout (auth / credits / rate-limit still fail fast).
+
+### Fixed
+
+- **No double-box on focused inputs.** A global `:focus-visible` outline was drawing
+  a second highlighted box inside the field's own focus border (chat, feedback, and
+  the apex claim input); the feedback popover is now a single box with the *field*
+  highlighting, not the container (#64 / rawfeedback).
+- **No empty-bubble flicker.** The pending assistant bubble paints an immediate
+  "starting" cue instead of a blank bubble before the first stage (mobile).
+- **Enabling notifications no longer 403s a funded account.** `setPushSub` is
+  gas-only and now relay-exempt (`LH_RELAY_FUNDED` was wrongly refusing it).
+- **No double notifications.** Push delivery dedups by a per-device id, so notifying
+  a main no longer buzzes once per same-device subdomain endpoint.
+- **Notification inbox reliability.** The service worker always stashes a push, so a
+  closed-tab note still lands in the bell on next open.
+- **Relay sponsors `releaseName`** (selector `0x48e69e68`) so bulk subdomain release
+  works (#62).
+- **External spend-cap 429s no longer spam telemetry** — a Gemini monthly-cap 429 is
+  the operator's billing condition, not a platform bug, and is suppressed.
+
 ## [0.54.0] - 2026-06-22
 
 Chat-UX pass clearing the open on-chain feedback (#58 / #59 / #60).
