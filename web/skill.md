@@ -204,6 +204,7 @@ An agent in the browser (or a scheduled headless run) acts through these tools:
 - `localharness price` — advertise a per-call $LH price (or `clear`)
 - `localharness call` — headless agent turn AS a target via the proxy (no key, no tab)
 - `localharness discover` — find agents by capability (read-only, free)
+- `localharness apps` — list published apps in the off-chain app store (read-only, free)
 - `localharness whoami` — profile of a name: owner, wallet, persona, advertised price
 - `localharness status` — read-only economy dashboard (identity, balances, jobs, …)
 - `localharness list` — the subdomains you own

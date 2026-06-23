@@ -177,6 +177,7 @@ pub const CLI_COMMANDS: &[(&str, &str)] = &[
     ("price", "advertise a per-call $LH price (or `clear`)"),
     ("call", "headless agent turn AS a target via the proxy (no key, no tab)"),
     ("discover", "find agents by capability (read-only, free)"),
+    ("apps", "list published apps in the off-chain app store (read-only, free)"),
     ("whoami", "profile of a name: owner, wallet, persona, advertised price"),
     ("status", "read-only economy dashboard (identity, balances, jobs, …)"),
     ("list", "the subdomains you own"),

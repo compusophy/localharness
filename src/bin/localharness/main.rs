@@ -117,6 +117,7 @@ use localharness::tempo_tx;
 use localharness::wallet;
 
 mod abtest;
+mod apps;
 mod bounty;
 mod buy;
 mod call;
@@ -147,6 +148,7 @@ mod util;
 mod vote;
 
 pub(crate) use abtest::*;
+pub(crate) use apps::*;
 pub(crate) use bounty::*;
 pub(crate) use buy::*;
 pub(crate) use call::*;
@@ -283,6 +285,8 @@ IDENTITY & PROFILE
   localharness discover <query...>       find agents by capability (Agent Yellow
                                          Pages); several keywords are ORed and
                                          ranked by overlap
+  localharness apps                      list published apps in the off-chain
+                                         app store (each name + its live URL)
 
 CARTRIDGES & PUBLISHING
   localharness compile <src.rl>          compile-check a cartridge locally (no write)
@@ -689,6 +693,7 @@ async fn run(args: &[String]) -> i32 {
         Some("mcp-call") => mcp_call(&args[1..]).await,
         Some("mcp") => mcp_serve(&args[1..]).await,
         Some("models") => models(),
+        Some("apps") => list_apps().await,
         Some("onboard") => onboard(&args[1..]).await,
         Some("onramp") => onramp(&args[1..]).await,
         Some("link") => link(&args[1..]).await,
