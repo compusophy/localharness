@@ -235,3 +235,11 @@
 #            in ALWAYS_FREE; proxy redeployed) — bulk subdomain release works again.
 63  ae9521c  DEPLOYED: rustlite draw_string host macro (parser desugar → one draw_char
 #            per glyph; no new host import). No more verbose char arrays.
+#
+# --- 2026-06-24 (maintainer CONFIRMED the two pending-confirm items) ---------
+58  0.55.0   CONFIRMED by the maintainer: opening the keyboard no longer covers the
+#            chat bottom on mobile — install_keyboard_viewport_fix tracks
+#            window.visualViewport and lifts the input (--lh-vv-top / .lh-kb).
+64  0.55.0   CONFIRMED by the maintainer: the input + feedback fields no longer show a
+#            double-box (box-in-a-box) on focus — inputs/textareas are excluded from
+#            the global :focus-visible outline; only the field's own border lights.
