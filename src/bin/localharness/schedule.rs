@@ -205,6 +205,83 @@ pub(crate) async fn goal(caller_name: Option<&str>, rest: &[String]) -> i32 {
     }
 }
 
+/// Current UNIX seconds (native — the off-chain client takes `now` so it stays
+/// cross-target; the browser passes `js_sys::Date::now()`).
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+pub(crate) const REMIND_USAGE: &str = "usage: localharness remind [--as <me>] <text> --in <dur> [--runs <n>]\n  \
+                              dur: 60s / 15m / 1h (min 60s);  --runs N repeats it (default 1 = one-shot).\n  \
+                              Fires OFF-CHAIN (free, no $LH) and web-pushes you — enable notifications in \
+                              the browser app first to receive it.";
+
+/// `localharness remind [--as <me>] <text> --in <dur> [--runs <n>]` — schedule a
+/// tab-free REMINDER that web-pushes you at the due time. OFF-CHAIN (proxy GitHub
+/// store), so it's FREE — no `$LH`, no gas, no escrow (unlike `schedule`/`goal`,
+/// which escrow $LH on-chain to RUN an agent). The CLI twin of the browser's
+/// `schedule_task` reminder. Cancel with `unschedule <id>`.
+pub(crate) async fn remind(caller_name: Option<&str>, rest: &[String]) -> i32 {
+    let ([in_dur, runs_arg], positional) =
+        match collect_flags(rest, ["--in", "--runs"], REMIND_USAGE) {
+            Ok(v) => v,
+            Err(u) => {
+                eprintln!("{u}");
+                return 2;
+            }
+        };
+    if positional.is_empty() {
+        eprintln!("{REMIND_USAGE}");
+        return 2;
+    }
+    let task = positional.join(" ");
+    let interval_secs = match in_dur {
+        Some(d) => match parse_interval(&d) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{e}");
+                return 2;
+            }
+        },
+        None => {
+            eprintln!("{REMIND_USAGE}");
+            return 2;
+        }
+    };
+    let runs = match runs_arg {
+        None => 1u32,
+        Some(r) => match r.parse::<u32>().ok().filter(|&n| n > 0) {
+            Some(n) => n,
+            None => {
+                eprintln!("--runs must be a positive integer, got '{r}'");
+                return 2;
+            }
+        },
+    };
+    let signer = match load_signer(caller_name) {
+        Ok(s) => s,
+        Err(code) => return code,
+    };
+    println!("scheduling a reminder in {} (×{runs}) …", fmt_interval(interval_secs));
+    match registry::create_offchain_job(&signer, now_unix(), "reminder", "", &task, interval_secs, runs)
+        .await
+    {
+        Ok(id) => {
+            println!("✓ reminder scheduled — job {id} (off-chain, free)");
+            println!("  it web-pushes you at the due time (enable notifications in the browser app to receive it).");
+            println!("  cancel: localharness unschedule {id}");
+            0
+        }
+        Err(e) => {
+            eprintln!("remind failed: {e}");
+            1
+        }
+    }
+}
+
 /// Shared submission path for `schedule` + `goal`: resolve the target name →
 /// tokenId, escrow the budget (approve + scheduleJob in one sponsored tx),
 /// print the schedule. `goal_mode` only changes the confirmation copy (the
@@ -325,30 +402,67 @@ pub(crate) fn format_job_row(id: u64, target: &str, job: &registry::ScheduledJob
     )
 }
 
-/// `localharness jobs [--as <me>]` — list the caller's scheduled jobs
-/// (`jobsOf` + a `getJob`/`taskOf` per id). Read-only, no `$LH`.
+/// Render one OFF-CHAIN job row from the proxy's `list` JSON (reminders + agent
+/// jobs). Pure-ish (no I/O); mirrors `format_job_row`'s shape for the on-chain ones.
+fn format_offchain_row(j: &serde_json::Value, now: u64) -> String {
+    let id = j.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+    let kind = j.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+    let task = j.get("task").and_then(|v| v.as_str()).unwrap_or("");
+    let interval = j.get("intervalSecs").and_then(|v| v.as_u64()).unwrap_or(0);
+    let runs_left = j.get("runsLeft").and_then(|v| v.as_u64()).unwrap_or(0);
+    let next = j.get("nextRun").and_then(|v| v.as_u64()).unwrap_or(0);
+    let target = j.get("target").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+    let next_s = if next == 0 {
+        "—".to_string()
+    } else if next <= now {
+        "due".to_string()
+    } else {
+        format!("in {}", fmt_interval(next - now))
+    };
+    let tgt = target.map(|t| format!(" → {t}")).unwrap_or_default();
+    format!(
+        "  {id}  [{kind}]{tgt}  every {iv}  next {next_s}  runs-left {runs_left}\n      {snippet}",
+        iv = fmt_interval(interval),
+        snippet = truncate_words(task, 60),
+    )
+}
+
+/// `localharness jobs [--as <me>]` — list the caller's scheduled jobs: the
+/// OFF-CHAIN store (reminders + agent jobs) first, then any LEGACY on-chain
+/// ScheduleFacet jobs. Read-only, no `$LH`.
 pub(crate) async fn list_jobs(caller_name: Option<&str>) -> i32 {
     let signer = match load_signer(caller_name) {
         Ok(s) => s,
         Err(code) => return code,
     };
     let addr = bytes_to_hex_str(&wallet::address(&signer));
-    let ids = match registry::jobs_of(&addr).await {
-        Ok(ids) => ids,
+    let now = now_unix();
+
+    // OFF-CHAIN jobs (the primary store).
+    let offchain_jobs = match registry::list_offchain_jobs(&signer, now).await {
+        Ok(j) => j,
         Err(e) => {
-            eprintln!("RPC error: {e}");
-            return 1;
+            eprintln!("(off-chain list unavailable: {e})");
+            Vec::new()
         }
     };
-    if ids.is_empty() {
+    // LEGACY on-chain jobs (ScheduleFacet) — best-effort, shown after.
+    let ids = registry::jobs_of(&addr).await.unwrap_or_default();
+
+    if offchain_jobs.is_empty() && ids.is_empty() {
         println!("no scheduled jobs for {addr}");
         return 0;
     }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    println!("{} scheduled job(s) for {addr}:", ids.len());
+    if !offchain_jobs.is_empty() {
+        println!("{} off-chain job(s):", offchain_jobs.len());
+        for j in &offchain_jobs {
+            println!("{}", format_offchain_row(j, now));
+        }
+    }
+    if ids.is_empty() {
+        return 0;
+    }
+    println!("{} on-chain (legacy) job(s):", ids.len());
     for id in ids {
         let job = match registry::get_job(id).await {
             Ok(j) => j,
@@ -384,13 +498,39 @@ pub(crate) async fn list_jobs(caller_name: Option<&str>) -> i32 {
     0
 }
 
-/// `localharness unschedule [--as <me>] <jobId>` — cancel a scheduled job;
-/// the facet refunds the remaining escrowed `$LH` to the owner.
+/// `localharness unschedule [--as <me>] <jobId>` — cancel a scheduled job. Routes
+/// by id shape: a UUID (off-chain `remind`/store job — has non-digits) cancels via
+/// the proxy; a NUMERIC id (legacy on-chain ScheduleFacet job) cancels via the
+/// facet, which refunds the remaining escrowed `$LH`.
 pub(crate) async fn unschedule(caller_name: Option<&str>, job_id_arg: &str) -> i32 {
-    let job_id: u64 = match job_id_arg.trim().trim_start_matches('#').parse() {
+    let raw = job_id_arg.trim().trim_start_matches('#');
+    if raw.is_empty() {
+        eprintln!("unschedule: missing job id");
+        return 2;
+    }
+    // A purely-numeric id is a legacy ON-CHAIN job; anything else is an OFF-CHAIN
+    // store id (a uuid). Off-chain cancel is sponsor-free (just a signed POST).
+    let is_onchain = raw.chars().all(|c| c.is_ascii_digit());
+    if !is_onchain {
+        let signer = match load_signer(caller_name) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
+        return match registry::cancel_offchain_job(&signer, now_unix(), raw).await {
+            Ok(()) => {
+                println!("✓ cancelled off-chain job {raw}");
+                0
+            }
+            Err(e) => {
+                eprintln!("unschedule failed: {e}");
+                1
+            }
+        };
+    }
+    let job_id: u64 = match raw.parse() {
         Ok(n) => n,
         Err(_) => {
-            eprintln!("unschedule: '{job_id_arg}' is not a job id (a number, e.g. 3)");
+            eprintln!("unschedule: '{job_id_arg}' is not a job id");
             return 2;
         }
     };

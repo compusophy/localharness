@@ -60,8 +60,11 @@
 //!                            re-feeds the goal and the agent takes one step;
 //!                            the job SELF-CANCELS (refunding the unspent
 //!                            budget) when the agent declares the goal complete
-//!   jobs [--as <me>]         list your scheduled jobs (id, target, cadence, budget, …)
-//!   unschedule [--as <me>] <jobId>  cancel a scheduled job (refunds its remaining budget)
+//!   remind [--as <me>] <text> --in <dur> [--runs <n>]
+//!                            schedule a tab-free REMINDER (web-push at the due time)
+//!                            — OFF-CHAIN + FREE, no $LH/escrow; --runs N repeats it
+//!   jobs [--as <me>]         list your scheduled jobs (off-chain + on-chain legacy)
+//!   unschedule [--as <me>] <jobId>  cancel a job (off-chain id or numeric on-chain id)
 //!   invite create [--as <me>] --amount <X> [--ttl <dur>]
 //!                            escrow X $LH behind a fresh invite code + print the
 //!                            ?invite= link to share; refundable on expiry
@@ -401,12 +404,17 @@ SCHEDULING
                                          CANCELS, refunding the unspent budget, when the
                                          agent declares the goal complete (defaults:
                                          --every 5m, --runs 100; budget = the hard stop)
-  localharness jobs [--as <me>]          list your scheduled jobs (id, target, cadence, …)
+  localharness remind [--as <me>] <text> --in <dur> [--runs <n>]
+                                         schedule a tab-free REMINDER that web-pushes
+                                         you at the due time — OFF-CHAIN + FREE (no $LH,
+                                         no escrow); --runs N repeats it (default 1)
+  localharness jobs [--as <me>]          list your scheduled jobs (off-chain + on-chain)
   localharness keeper                     run a decentralized-keeper tick: find every
                                          DUE job on-chain + POKE the proxy to run each
                                          (P2P scheduler heartbeat, krafto #1.5) — works
                                          even if the Vercel cron stalls
-  localharness unschedule [--as <me>] <jobId>  cancel a job (refunds its remaining budget)
+  localharness unschedule [--as <me>] <jobId>  cancel a job (off-chain id or a numeric
+                                         on-chain id; on-chain refunds remaining budget)
 
 INVITES
   localharness invite create [--as <me>] --amount <X> [--ttl <dur>]
@@ -789,6 +797,13 @@ async fn run(args: &[String]) -> i32 {
                 2
             }
         },
+        Some("remind") => match take_as_flag(&args[1..]) {
+            Ok((caller, rest)) => remind(caller.as_deref(), &rest).await,
+            Err(e) => {
+                util::print_err(&e);
+                2
+            }
+        },
         Some("jobs") => match take_as_flag(&args[1..]) {
             Ok((caller, _)) => list_jobs(caller.as_deref()).await,
             Err(e) => {
@@ -1103,7 +1118,7 @@ mod tests {
             "create", "compile", "publish", "face", "persona", "call", "abtest", "list", "buy",
             "feedback", "probe", "triage", "threads", "forget", "whoami", "status",
             "invite", "bounty", "colony", "reputation", "guild", "party", "validation", "vote", "tba",
-            "room", "schedule", "goal", "jobs", "unschedule", "notify", "models", "sh",
+            "room", "schedule", "goal", "remind", "jobs", "unschedule", "notify", "models", "sh",
             "onboard", "onramp", "link",
         ] {
             assert!(

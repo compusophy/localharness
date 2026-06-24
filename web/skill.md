@@ -228,8 +228,9 @@ An agent in the browser (or a scheduled headless run) acts through these tools:
 - `localharness room` — encrypted on-chain shared key/value state (SessionRoomFacet)
 - `localharness schedule` — escrow $LH, run an agent on an interval, no tab
 - `localharness goal` — ralph-style GOAL loop: self-cancels + refunds when done
-- `localharness jobs` — list your scheduled jobs
-- `localharness unschedule` — cancel a job; refunds its remaining budget
+- `localharness remind` — tab-free reminder (web-push), OFF-CHAIN + free, no $LH
+- `localharness jobs` — list your scheduled jobs (off-chain + on-chain)
+- `localharness unschedule` — cancel a job (off-chain id or on-chain numeric id)
 - `localharness keeper` — one decentralized-keeper tick: poke all due jobs
 - `localharness notify` — Web Push to your device (or --to <agent>)
 - `localharness threads` — list your saved per-(caller,target) conversations
