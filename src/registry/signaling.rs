@@ -350,6 +350,17 @@ pub async fn signal_clear(signer: &SigningKey, now_secs: u64, room: &str) -> Res
     http_post_json_authed(&url, &token, &body).await
 }
 
+/// Fetch the proxy's WebRTC ICE-server config JSON (`{iceServers:[…]}`) — STUN
+/// always, TURN when the proxy is provisioned (`/api/turn`). Open GET. The browser
+/// parses it into the RtcConfiguration. Returns the raw JSON body text.
+pub async fn fetch_ice_json() -> Result<String, String> {
+    let url = format!("{CREDIT_PROXY_URL}api/turn");
+    match http_get_bytes(&url).await? {
+        Some(b) => String::from_utf8(b).map_err(|e| format!("ice json: {e}")),
+        None => Err("ice config unavailable".to_string()),
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

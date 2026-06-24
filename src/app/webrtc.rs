@@ -46,12 +46,45 @@ pub(crate) struct Peer {
     _on_message: Closure<dyn FnMut(MessageEvent)>,
 }
 
-/// Build a peer connection configured with the public STUN server.
-fn new_pc() -> Result<RtcPeerConnection, JsValue> {
+thread_local! {
+    // The proxy's ICE config (STUN + any provisioned TURN), fetched + cached once.
+    static ICE_SERVERS: std::cell::RefCell<Option<js_sys::Array>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// STUN-only fallback so a peer can always at least try a direct connection.
+fn default_ice() -> js_sys::Array {
     let ice = RtcIceServer::new();
     ice.set_urls(&JsValue::from_str(STUN_URL));
     let servers = js_sys::Array::new();
     servers.push(&ice);
+    servers
+}
+
+/// ICE servers for new peers: fetch `/api/turn` (STUN + TURN-when-provisioned)
+/// ONCE, cache the parsed array; STUN-only fallback on any failure. The JSON
+/// `iceServers` entries are already RTCIceServer-shaped ({urls, username?,
+/// credential?}), so they pass straight to setIceServers.
+async fn ice_servers() -> js_sys::Array {
+    if let Some(a) = ICE_SERVERS.with(|c| c.borrow().clone()) {
+        return a;
+    }
+    let arr = match crate::registry::fetch_ice_json().await {
+        Ok(text) => js_sys::JSON::parse(&text)
+            .ok()
+            .and_then(|j| js_sys::Reflect::get(&j, &JsValue::from_str("iceServers")).ok())
+            .and_then(|v| v.dyn_into::<js_sys::Array>().ok())
+            .filter(|a| a.length() > 0)
+            .unwrap_or_else(default_ice),
+        Err(_) => default_ice(),
+    };
+    ICE_SERVERS.with(|c| *c.borrow_mut() = Some(arr.clone()));
+    arr
+}
+
+/// Build a peer connection configured with the fetched ICE servers (STUN + TURN).
+async fn new_pc() -> Result<RtcPeerConnection, JsValue> {
+    let servers = ice_servers().await;
     let cfg = RtcConfiguration::new();
     cfg.set_ice_servers(&servers);
     RtcPeerConnection::new_with_configuration(&cfg)
@@ -111,7 +144,7 @@ impl Peer {
     pub(crate) async fn offer(
         on_msg: impl FnMut(Vec<u8>) + 'static,
     ) -> Result<(Self, String), JsValue> {
-        let pc = new_pc()?;
+        let pc = new_pc().await?;
         let (channel, on_message) = open_channel(&pc, on_msg);
         let offer = JsFuture::from(pc.create_offer()).await?;
         let sdp = js_sys::Reflect::get(&offer, &JsValue::from_str("sdp"))?
@@ -139,7 +172,7 @@ impl Peer {
         offer_sdp: &str,
         on_msg: impl FnMut(Vec<u8>) + 'static,
     ) -> Result<(Self, String), JsValue> {
-        let pc = new_pc()?;
+        let pc = new_pc().await?;
         let (channel, on_message) = open_channel(&pc, on_msg);
         let remote = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
         remote.set_sdp(offer_sdp);
