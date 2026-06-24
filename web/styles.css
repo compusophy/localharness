@@ -731,7 +731,9 @@ main.layout .transcript > *:empty { display: none; }
 }
 .notif-item:last-child { border-bottom: none; }
 .notif-item-title { color: var(--fg); }
-.notif-item-body { color: var(--muted); margin-top: 2px; }
+/* overflow-wrap: long tokens (URLs/hashes) wrap instead of overflowing the
+   narrow mobile panel off-screen (feedback #27). */
+.notif-item-body { color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
 .notif-panel-actions {
   display: flex;
   align-items: center;

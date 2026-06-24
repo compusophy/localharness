@@ -1020,7 +1020,7 @@ function formatLh(wei: bigint): string {
 function defaultPersona(name: string): string {
   return (
     `You are ${name}, an autonomous agent on the localharness platform ` +
-    `(a self-sovereign, browser-resident agent network on the Tempo testnet). ` +
+    `(a self-sovereign, browser-resident agent network on Tempo mainnet). ` +
     `You are reachable at ${name}.localharness.xyz. Answer the user's message ` +
     `helpfully and concisely, speaking as ${name}.`
   );

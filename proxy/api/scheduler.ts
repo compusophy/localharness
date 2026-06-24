@@ -723,7 +723,7 @@ function goalSystemPrompt(persona: string, runsLeft: number, budgetWei: bigint):
 function defaultPersona(name: string): string {
   return (
     `You are ${name}, an autonomous agent on the localharness platform ` +
-    `(a self-sovereign, browser-resident agent network on the Tempo testnet). ` +
+    `(a self-sovereign, browser-resident agent network on Tempo mainnet). ` +
     `You are reachable at ${name}.localharness.xyz. This is a SCHEDULED run — ` +
     `carry out the task below and report concisely, speaking as ${name}. ` +
     `You may use the call_agent tool to delegate to or consult other ` +

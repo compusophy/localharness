@@ -2694,12 +2694,26 @@ fn notif_body(body: &str) -> Markup {
         @for (i, tok) in body.split(' ').enumerate() {
             @if i > 0 { " " }
             @if tok.starts_with("https://") || tok.starts_with("http://") {
-                a href=(tok) target="_blank" rel="noopener" { (tok) }
+                a href=(tok) target="_blank" rel="noopener" { (notif_link_label(tok)) }
             } @else {
                 (tok)
             }
         }
     }
+}
+
+/// A SHORT, tappable label for a URL in a bell note — the host + ` ↗`, so a long
+/// changelog/GitHub link renders as a compact hyperlink instead of a full URL
+/// that overflows the narrow (mobile) notification panel (feedback #27: "we don't
+/// need the full GitHub link, it's overflowing off screen — use a hyperlink").
+/// The full URL stays in `href`; only the visible text shrinks.
+fn notif_link_label(url: &str) -> String {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    let host = rest.split('/').next().unwrap_or(rest).trim_start_matches("www.");
+    format!("{host} ↗")
 }
 
 fn format_bytes(n: u64) -> String {
