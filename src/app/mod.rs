@@ -389,6 +389,81 @@ fn apply_render_modes(doc: &web_sys::Document) {
     }
 }
 
+/// Parse `?webrtctest=1&room=X&role=offer|answer` (manual, no UrlSearchParams
+/// web-sys feature). `None` unless `webrtctest` is present. Defaults room=`test`,
+/// role=`offer`.
+fn webrtc_test_params() -> Option<(String, String)> {
+    let search = web_sys::window()?.location().search().ok()?;
+    if !search.contains("webrtctest") {
+        return None;
+    }
+    let (mut room, mut role) = ("test".to_string(), "offer".to_string());
+    for kv in search.trim_start_matches('?').split('&') {
+        let mut it = kv.splitn(2, '=');
+        match (it.next(), it.next()) {
+            (Some("room"), Some(v)) if !v.is_empty() => room = v.to_string(),
+            (Some("role"), Some(v)) if !v.is_empty() => role = v.to_string(),
+            _ => {}
+        }
+    }
+    Some((room, role))
+}
+
+/// Drive the `?webrtctest` harness: establish a relay-signaled WebRTC data
+/// channel as offerer/answerer with an EPHEMERAL identity, send a hello on open,
+/// and surface every step in `#webrtc-status`. Proves the handshake when two
+/// browsers run it with swapped roles + the same room.
+async fn run_webrtc_test(room: String, role: String) {
+    fn status(html: &str) {
+        if let Ok(d) = dom::document() {
+            if let Some(el) = d.get_element_by_id("webrtc-status") {
+                el.set_inner_html(html);
+            }
+        }
+        debuglog::log(&format!("[webrtctest] {html}"));
+    }
+    status(&format!("room <b>{room}</b> · role <b>{role}</b> — establishing WebRTC over the off-chain relay…"));
+    // Ephemeral identity just to authenticate the relay POST — the relay accepts
+    // any valid personal-sign, so no real wallet is needed for the test.
+    // `GeneratedWallet` zeroizes on Drop, so borrow its signer (keep it in scope
+    // through the whole connect, which signs the relay posts).
+    let gw = crate::wallet::generate();
+    let signer = &gw.signer;
+    let on_msg = move |bytes: Vec<u8>| {
+        status(&format!(
+            "✅ <b style=\"color:#5fd35f\">RECEIVED from peer:</b> {}",
+            String::from_utf8_lossy(&bytes)
+        ));
+    };
+    let result = if role == "answer" {
+        webrtc::Peer::connect_answerer(&room, signer, on_msg).await
+    } else {
+        webrtc::Peer::connect_offerer(&room, signer, on_msg).await
+    };
+    match result {
+        Ok(peer) => {
+            status("handshake exchanged — waiting for the data channel to open…");
+            for _ in 0..150 {
+                if peer.is_open() {
+                    break;
+                }
+                crate::runtime::sleep_ms(100).await;
+            }
+            if peer.is_open() {
+                let hello = format!("hello from {role}");
+                let _ = peer.send(hello.as_bytes());
+                status(&format!(
+                    "✅ <b style=\"color:#5fd35f\">CONNECTED</b> — data channel open; sent \"{hello}\". Waiting for the peer's hello…"
+                ));
+                std::mem::forget(peer); // keep the connection alive for the test
+            } else {
+                status("❌ data channel never opened (ICE/connectivity — a TURN server may be needed for this NAT).");
+            }
+        }
+        Err(e) => status(&format!("❌ connect failed: {e:?}")),
+    }
+}
+
 fn mount() -> Result<(), JsValue> {
     debuglog::log("mount (page load / reload)");
     let doc = dom::document()?;
@@ -521,6 +596,23 @@ fn mount() -> Result<(), JsValue> {
         wasm_bindgen_futures::spawn_local(async move {
             agent_rpc::paint_rpc().await;
         });
+        return Ok(());
+    }
+
+    // WebRTC test harness short-circuit (?webrtctest=1&room=X&role=offer|answer).
+    // Open in TWO tabs/browsers with the roles swapped (offer ↔ answer) and the
+    // same room → proves the OFF-CHAIN-signaled WebRTC data-channel handshake
+    // end-to-end (the one thing webrtc.rs has never had verified with two real
+    // browsers). Uses an EPHEMERAL identity, so it works on any origin with no
+    // wallet. Debug-only; no caller wires it otherwise.
+    if let Some((room, role)) = webrtc_test_params() {
+        root.set_inner_html(
+            "<main style=\"padding:40px;font:14px ui-monospace,Menlo,Consolas,monospace;color:#e6e6e6;background:#111;min-height:100vh\">\
+             <h2 style=\"color:#fff\">localharness · WebRTC test</h2>\
+             <div id=\"webrtc-status\" style=\"margin:16px 0;padding:16px;border:1px solid #333;border-radius:6px;line-height:1.6\">loading…</div>\
+             <p style=\"color:#7a8493\">Open this URL in a SECOND tab or browser with <b>role</b> swapped (offer↔answer), same <b>room</b>. Both should reach CONNECTED and exchange a hello.</p></main>",
+        );
+        wasm_bindgen_futures::spawn_local(run_webrtc_test(room, role));
         return Ok(());
     }
 
