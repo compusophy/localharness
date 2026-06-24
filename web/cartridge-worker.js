@@ -1385,8 +1385,86 @@ function applyAgentContext(msg) {
   if (typeof msg.feedSubscriberCount === 'number') feedSubscriberCount = msg.feedSubscriberCount | 0;
 }
 
+// ---- host_mp: browser-to-browser MULTIPLAYER over a WebRTC data channel -------
+// The cartridge calls host::mp::*; the Peer + relay live on MAIN (display.rs +
+// webrtc.rs). This worker side: open()/join() ask MAIN to connect; set()/send()
+// BUFFER outgoing → flushed once per frame as {mp:deltas}/{mp:events}; get()/event_*
+// read a LOCALLY-MIRRORED table MAIN fills via {mp:status}/{mp:peer}. So all host
+// calls are synchronous. 2-peer v1. PARITY with src/rustlite/loader.rs host_mp.
+const MP_SLOTS = 32;
+const MP_PEERS = 8;
+let mpConnected = 0;
+let mpSelfIndex = -1;
+let mpPeerCount = 0;
+const mpState = [];
+for (let mpi = 0; mpi < MP_PEERS; mpi++) mpState.push(new Int32Array(MP_SLOTS));
+let mpDirty = [];      // buffered outgoing [slot, value, ...] this frame
+let mpOutEvents = [];  // buffered outgoing event values this frame
+let mpInEvents = [];   // received events (FIFO)
+const MP_MAX_EVENTS = 256;
+
+const host_mp = {
+  open() {
+    // Pick a 4-digit room code, ask MAIN to host it, return the code to display.
+    const code = (1000 + Math.floor(Math.random() * 9000)) | 0;
+    self.postMessage({ type: 'mp:host', room: code });
+    return code;
+  },
+  join(code) {
+    self.postMessage({ type: 'mp:join', room: code | 0 });
+  },
+  connected: () => mpConnected,
+  self_index: () => mpSelfIndex,
+  peer_count: () => mpPeerCount,
+  set(slot, value) {
+    slot = slot | 0; value = value | 0;
+    if (slot < 0 || slot >= MP_SLOTS) return;
+    if (mpSelfIndex >= 0 && mpSelfIndex < MP_PEERS) mpState[mpSelfIndex][slot] = value; // mirror my own
+    mpDirty.push(slot, value);
+  },
+  get(peer, slot) {
+    peer = peer | 0; slot = slot | 0;
+    if (peer < 0 || peer >= MP_PEERS || slot < 0 || slot >= MP_SLOTS) return 0;
+    return mpState[peer][slot];
+  },
+  send(value) {
+    if (mpOutEvents.length < MP_MAX_EVENTS) mpOutEvents.push(value | 0);
+  },
+  event_count: () => mpInEvents.length,
+  event_next: () => (mpInEvents.length ? mpInEvents.shift() : 0),
+};
+
+// Flush buffered set()/send() to MAIN once per frame (called from tick()).
+function flushMp() {
+  if (mpDirty.length) { self.postMessage({ type: 'mp:deltas', deltas: mpDirty }); mpDirty = []; }
+  if (mpOutEvents.length) { self.postMessage({ type: 'mp:events', events: mpOutEvents }); mpOutEvents = []; }
+}
+// MAIN → worker: connection status + incoming peer state/events → the mirror.
+function applyMpStatus(msg) {
+  mpConnected = msg.connected | 0;
+  if (typeof msg.selfIndex === 'number') mpSelfIndex = msg.selfIndex | 0;
+  mpPeerCount = msg.peerCount | 0;
+}
+function applyMpPeer(msg) {
+  const peer = msg.peer | 0;
+  if (peer < 0 || peer >= MP_PEERS) return;
+  const d = msg.deltas || [];
+  for (let i = 0; i + 1 < d.length; i += 2) {
+    const slot = d[i] | 0;
+    if (slot >= 0 && slot < MP_SLOTS) mpState[peer][slot] = d[i + 1] | 0;
+  }
+  const ev = msg.events || [];
+  for (let i = 0; i < ev.length; i++) if (mpInEvents.length < MP_MAX_EVENTS) mpInEvents.push(ev[i] | 0);
+}
+function resetMp() {
+  mpConnected = 0; mpSelfIndex = -1; mpPeerCount = 0;
+  for (let i = 0; i < MP_PEERS; i++) mpState[i].fill(0);
+  mpDirty = []; mpOutEvents = []; mpInEvents = [];
+  if (typeof self !== 'undefined' && self.postMessage) self.postMessage({ type: 'mp:leave' });
+}
+
 function buildImports() {
-  return { host_display, host_net, host_http, host_audio, host_log, host_time, host_abort, host_agent, host_compose };
+  return { host_display, host_net, host_http, host_audio, host_log, host_time, host_abort, host_agent, host_compose, host_mp };
 }
 
 // ---- present + frame loop ----------------------------------------------------
@@ -1410,6 +1488,9 @@ function tick() {
     // a fully-composited frame. No-op when the parent never spawned a child
     // (composeChildren empty) — so a non-compose cartridge is byte-identical.
     composeCompositePass(t);
+    // host::mp: flush this frame's buffered set()/send() to MAIN (→ data channel).
+    // No-op when the cartridge never touched host_mp (mpDirty/mpOutEvents empty).
+    flushMp();
     present();
   } catch (e) {
     // ANY failure in the frame body — a wasm trap (unreachable / OOB), a compose
@@ -1433,6 +1514,7 @@ async function load(wasmBuf) {
   closeAllSockets();
   clearAllHttp();
   composeReset(); // a fresh parent clears the whole compose graph
+  resetMp(); // tear down any multiplayer session + clear the mirror
   state.fill(0);
   ptr.x = 0; ptr.y = 0; ptr.down = 0;
   memory = null;
@@ -1563,6 +1645,14 @@ if (IS_WORKER) {
         ptr.x = msg.x | 0;
         ptr.y = msg.y | 0;
         ptr.down = msg.down | 0;
+        break;
+      case 'mp:status':
+        // MAIN: connection state changed (connected/selfIndex/peerCount).
+        applyMpStatus(msg);
+        break;
+      case 'mp:peer':
+        // MAIN: a peer's state deltas / events arrived over the data channel.
+        applyMpPeer(msg);
         break;
       case 'stop':
         running = false;

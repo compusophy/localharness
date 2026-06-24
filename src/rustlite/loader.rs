@@ -315,6 +315,36 @@ fn build_host_imports(mem: &SharedMemory) -> Result<(js_sys::Object, NetRuntime)
     http_draw.forget();
     let _ = Reflect::set(&imports, &JsValue::from_str("host_http"), &host_http);
 
+    // host_mp module — browser-to-browser MULTIPLAYER over a WebRTC data channel
+    // (off-chain-signaled). The REAL impl is the Web Worker's host_mp +
+    // src/app/display.rs (which wires the proven webrtc.rs Peer + the relay); this
+    // bare loader (compile-check path) has no peer, so everything is inert:
+    // open/connected/peer_count/event_* → 0, self_index → -1, join/set/send no-op,
+    // get → 0. Without this a cartridge importing host_mp fails instantiation. ABI
+    // mirrors src/rustlite/typecheck.rs mp::* AND web/cartridge-worker.js host_mp.
+    let host_mp = Object::new();
+    let mp_zero = Closure::<dyn Fn() -> i32>::new(|| 0);
+    let mp_self = Closure::<dyn Fn() -> i32>::new(|| -1);
+    let mp_void1 = Closure::<dyn Fn(i32)>::new(|_a| {});
+    let mp_void2 = Closure::<dyn Fn(i32, i32)>::new(|_a, _b| {});
+    let mp_get = Closure::<dyn Fn(i32, i32) -> i32>::new(|_a, _b| 0);
+    let _ = Reflect::set(&host_mp, &JsValue::from_str("open"), mp_zero.as_ref());
+    let _ = Reflect::set(&host_mp, &JsValue::from_str("join"), mp_void1.as_ref());
+    let _ = Reflect::set(&host_mp, &JsValue::from_str("connected"), mp_zero.as_ref());
+    let _ = Reflect::set(&host_mp, &JsValue::from_str("self_index"), mp_self.as_ref());
+    let _ = Reflect::set(&host_mp, &JsValue::from_str("peer_count"), mp_zero.as_ref());
+    let _ = Reflect::set(&host_mp, &JsValue::from_str("set"), mp_void2.as_ref());
+    let _ = Reflect::set(&host_mp, &JsValue::from_str("get"), mp_get.as_ref());
+    let _ = Reflect::set(&host_mp, &JsValue::from_str("send"), mp_void1.as_ref());
+    let _ = Reflect::set(&host_mp, &JsValue::from_str("event_count"), mp_zero.as_ref());
+    let _ = Reflect::set(&host_mp, &JsValue::from_str("event_next"), mp_zero.as_ref());
+    mp_zero.forget();
+    mp_self.forget();
+    mp_void1.forget();
+    mp_void2.forget();
+    mp_get.forget();
+    let _ = Reflect::set(&imports, &JsValue::from_str("host_mp"), &host_mp);
+
     // host_net module — WebSocket-backed multiplayer / sync I/O. Mirrors
     // host_display: integer-only host functions a rustlite cartridge calls,
     // strings passed as length-prefixed pointers into cartridge memory.

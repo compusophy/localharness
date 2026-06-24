@@ -1458,6 +1458,22 @@ mod worker {
                             wasm_bindgen_futures::spawn_local(super::do_http_fetch(w, id, url));
                         }
                     }
+                    // host::mp — a multiplayer cartridge wants to connect (open as
+                    // HOST / JOIN a code), or has buffered state to broadcast. The
+                    // proven webrtc.rs Peer + the relay live HERE on main (the
+                    // worker can't sign the relay token or hold an RtcPeerConnection
+                    // cheaply); incoming peer frames come back as `mp:peer`.
+                    "mp:host" | "mp:join" => {
+                        let code = Reflect::get(&data, &JsValue::from_str("room"))
+                            .ok().and_then(|v| v.as_f64()).map(|n| n as i32).unwrap_or(0);
+                        let is_host = ty == "mp:host";
+                        wasm_bindgen_futures::spawn_local(mp_connect(
+                            worker_for_msg.clone(), code, is_host,
+                        ));
+                    }
+                    "mp:deltas" => mp_send(Some(mp_read_int_array(&data, "deltas")), None),
+                    "mp:events" => mp_send(None, Some(mp_read_int_array(&data, "events"))),
+                    "mp:leave" => mp_teardown(),
                     "done" => {
                         record_outcome(run_gen, RunOutcome::Live);
                         // A one-shot `render()` finished and posted its single
@@ -1515,6 +1531,7 @@ mod worker {
 
     /// Terminate + drop the current worker (clears its watchdog). Idempotent.
     pub(super) fn stop_worker() {
+        mp_teardown(); // close any multiplayer Peer this cartridge held
         WORKER.with(|cell| {
             // Mark terminated so an in-flight watchdog tick is a no-op, then
             // drop the handle (its `Drop` terminates the worker + clears the
@@ -1524,6 +1541,147 @@ mod worker {
             }
             *cell.borrow_mut() = None;
         });
+    }
+
+    // ── host::mp multiplayer bridge (worker ↔ the proven webrtc.rs Peer) ──────
+    // A multiplayer cartridge (worker) posts mp:host/mp:join → we connect the Peer
+    // over the off-chain relay; mp:deltas/mp:events → we frame + send over the data
+    // channel; the Peer's incoming frames → mp:peer back to the worker's mirror.
+    // 2-peer v1: host = offerer (index 0), joiner = answerer (index 1). The session
+    // (Peer + ephemeral relay-auth wallet) lives in a thread-local for the cartridge.
+    struct MpSession {
+        peer: crate::app::webrtc::Peer,
+        _gw: crate::wallet::GeneratedWallet, // keep the ephemeral signer alive
+    }
+    thread_local! {
+        static MP_SESSION: RefCell<Option<MpSession>> = const { RefCell::new(None) };
+    }
+
+    /// Connect this cartridge's peer for room code `code` (host=offerer / join=
+    /// answerer), wiring incoming data-channel frames back to the worker, then
+    /// report status. Spawned on `mp:host`/`mp:join`.
+    async fn mp_connect(worker: Worker, code: i32, is_host: bool) {
+        mp_teardown(); // a fresh connect replaces any prior session
+        let self_index = if is_host { 0 } else { 1 };
+        let room = format!("mp-{code}");
+        let gw = crate::wallet::generate();
+        let worker_for_msg = worker.clone();
+        let on_msg = move |bytes: Vec<u8>| mp_dispatch_peer_frame(&worker_for_msg, self_index, &bytes);
+        let result = if is_host {
+            crate::app::webrtc::Peer::connect_offerer(&room, &gw.signer, on_msg).await
+        } else {
+            crate::app::webrtc::Peer::connect_answerer(&room, &gw.signer, on_msg).await
+        };
+        match result {
+            Ok(peer) => {
+                // Wait for ICE to actually open the data channel (~15s cap).
+                for _ in 0..150 {
+                    if peer.is_open() {
+                        break;
+                    }
+                    crate::runtime::sleep_ms(100).await;
+                }
+                let connected = i32::from(peer.is_open());
+                MP_SESSION.with(|s| {
+                    *s.borrow_mut() = Some(MpSession { peer, _gw: gw });
+                });
+                mp_post_status(&worker, connected, self_index, if connected == 1 { 2 } else { 1 });
+            }
+            Err(e) => {
+                web_sys::console::warn_1(&JsValue::from_str(&format!("mp connect failed: {e:?}")));
+                mp_post_status(&worker, 0, -1, 0);
+            }
+        }
+    }
+
+    fn mp_post_status(worker: &Worker, connected: i32, self_index: i32, peer_count: i32) {
+        let m = Object::new();
+        let _ = Reflect::set(&m, &JsValue::from_str("type"), &JsValue::from_str("mp:status"));
+        let _ = Reflect::set(&m, &JsValue::from_str("connected"), &JsValue::from_f64(connected as f64));
+        let _ = Reflect::set(&m, &JsValue::from_str("selfIndex"), &JsValue::from_f64(self_index as f64));
+        let _ = Reflect::set(&m, &JsValue::from_str("peerCount"), &JsValue::from_f64(peer_count as f64));
+        let _ = worker.post_message(&m);
+    }
+
+    /// Read an i32[] off a worker message field (e.g. the flushed deltas/events).
+    fn mp_read_int_array(data: &JsValue, field: &str) -> Vec<i32> {
+        Reflect::get(data, &JsValue::from_str(field))
+            .ok()
+            .map(|v| {
+                js_sys::Array::from(&v)
+                    .iter()
+                    .map(|x| x.as_f64().unwrap_or(0.0) as i32)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Send buffered deltas/events over the data channel as a JSON frame
+    /// (`{"d":[slot,val,...]}` or `{"e":[val,...]}`). No-op if no open peer.
+    fn mp_send(deltas: Option<Vec<i32>>, events: Option<Vec<i32>>) {
+        MP_SESSION.with(|s| {
+            if let Some(sess) = s.borrow().as_ref() {
+                if !sess.peer.is_open() {
+                    return;
+                }
+                let json = if let Some(d) = deltas {
+                    format!("{{\"d\":{}}}", mp_ints_json(&d))
+                } else if let Some(ev) = events {
+                    format!("{{\"e\":{}}}", mp_ints_json(&ev))
+                } else {
+                    return;
+                };
+                let _ = sess.peer.send(json.as_bytes());
+            }
+        });
+    }
+
+    fn mp_ints_json(v: &[i32]) -> String {
+        let mut s = String::from("[");
+        for (i, n) in v.iter().enumerate() {
+            if i > 0 {
+                s.push(',');
+            }
+            s.push_str(&n.to_string());
+        }
+        s.push(']');
+        s
+    }
+
+    /// An incoming peer frame off the data channel → post `mp:peer` (deltas/events)
+    /// to the worker's mirror. 2-peer: the sender is the OTHER index.
+    fn mp_dispatch_peer_frame(worker: &Worker, self_index: i32, bytes: &[u8]) {
+        let text = match std::str::from_utf8(bytes) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let v: serde_json::Value = match serde_json::from_str(text) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let m = Object::new();
+        let _ = Reflect::set(&m, &JsValue::from_str("type"), &JsValue::from_str("mp:peer"));
+        let _ = Reflect::set(&m, &JsValue::from_str("peer"), &JsValue::from_f64((1 - self_index) as f64));
+        if let Some(d) = v.get("d").and_then(|x| x.as_array()) {
+            let arr = js_sys::Array::new();
+            for n in d {
+                arr.push(&JsValue::from_f64(n.as_i64().unwrap_or(0) as f64));
+            }
+            let _ = Reflect::set(&m, &JsValue::from_str("deltas"), &arr);
+        }
+        if let Some(ev) = v.get("e").and_then(|x| x.as_array()) {
+            let arr = js_sys::Array::new();
+            for n in ev {
+                arr.push(&JsValue::from_f64(n.as_i64().unwrap_or(0) as f64));
+            }
+            let _ = Reflect::set(&m, &JsValue::from_str("events"), &arr);
+        }
+        let _ = worker.post_message(&m);
+    }
+
+    /// Drop the multiplayer session (Peer::drop closes the connection). Idempotent.
+    fn mp_teardown() {
+        MP_SESSION.with(|s| *s.borrow_mut() = None);
     }
 
     /// Forward the latest pointer to the worker (poll model). No-op if no
