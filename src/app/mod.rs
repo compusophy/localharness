@@ -409,10 +409,10 @@ fn webrtc_test_params() -> Option<(String, String)> {
     Some((room, role))
 }
 
-/// Drive the `?webrtctest` harness: establish a relay-signaled WebRTC data
-/// channel as offerer/answerer with an EPHEMERAL identity, send a hello on open,
-/// and surface every step in `#webrtc-status`. Proves the handshake when two
-/// browsers run it with swapped roles + the same room.
+/// Drive the `?webrtctest` harness with GRANULAR status: each signaling step +
+/// a live poll countdown is shown in `#webrtc-status`, so a stuck handshake says
+/// exactly where (and a role mismatch is obvious). Inlines the relay steps (vs
+/// `connect_offerer/answerer`) purely for that per-step visibility.
 async fn run_webrtc_test(room: String, role: String) {
     fn status(html: &str) {
         if let Ok(d) = dom::document() {
@@ -422,45 +422,97 @@ async fn run_webrtc_test(room: String, role: String) {
         }
         debuglog::log(&format!("[webrtctest] {html}"));
     }
-    status(&format!("room <b>{room}</b> · role <b>{role}</b> — establishing WebRTC over the off-chain relay…"));
-    // Ephemeral identity just to authenticate the relay POST — the relay accepts
-    // any valid personal-sign, so no real wallet is needed for the test.
-    // `GeneratedWallet` zeroizes on Drop, so borrow its signer (keep it in scope
-    // through the whole connect, which signs the relay posts).
+    let now = || (js_sys::Date::now() / 1000.0) as u64;
+    let is_offerer = role != "answer";
+    let other = if is_offerer { "answer" } else { "offer" };
+    let banner = format!(
+        "room <b>{room}</b> · this tab is the <b>{}</b><br>\
+         👉 open the OTHER tab here: <a style=\"color:#7aa2f7\" href=\"?webrtctest=1&amp;room={room}&amp;role={other}\">?webrtctest=1&amp;room={room}&amp;role={other}</a><hr style=\"border-color:#333\">",
+        if is_offerer { "OFFERER 🅰️" } else { "ANSWERER 🅱️" },
+    );
+
+    // Poll a relay slot once/sec for `secs`, updating the countdown. None on timeout.
+    async fn poll_slot(banner: &str, room: &str, slot: &str, label: &str, secs: u32) -> Option<String> {
+        for i in 0..secs {
+            if let Ok(Some(sdp)) = crate::registry::signal_get(room, slot).await {
+                return Some(sdp);
+            }
+            status(&format!("{banner}⏳ {label} ({}/{secs}s)…", i + 1));
+            crate::runtime::sleep_ms(1000).await;
+        }
+        None
+    }
+
+    // Ephemeral identity (the relay accepts any valid personal-sign). Borrow the
+    // signer (GeneratedWallet zeroizes on Drop) — keep `gw` in scope through the run.
     let gw = crate::wallet::generate();
     let signer = &gw.signer;
-    let on_msg = move |bytes: Vec<u8>| {
-        status(&format!(
-            "✅ <b style=\"color:#5fd35f\">RECEIVED from peer:</b> {}",
-            String::from_utf8_lossy(&bytes)
-        ));
-    };
-    let result = if role == "answer" {
-        webrtc::Peer::connect_answerer(&room, signer, on_msg).await
-    } else {
-        webrtc::Peer::connect_offerer(&room, signer, on_msg).await
-    };
-    match result {
-        Ok(peer) => {
-            status("handshake exchanged — waiting for the data channel to open…");
-            for _ in 0..150 {
-                if peer.is_open() {
-                    break;
-                }
-                crate::runtime::sleep_ms(100).await;
-            }
-            if peer.is_open() {
-                let hello = format!("hello from {role}");
-                let _ = peer.send(hello.as_bytes());
-                status(&format!(
-                    "✅ <b style=\"color:#5fd35f\">CONNECTED</b> — data channel open; sent \"{hello}\". Waiting for the peer's hello…"
-                ));
-                std::mem::forget(peer); // keep the connection alive for the test
-            } else {
-                status("❌ data channel never opened (ICE/connectivity — a TURN server may be needed for this NAT).");
-            }
+    let on_msg = {
+        let banner = banner.clone();
+        move |bytes: Vec<u8>| {
+            status(&format!(
+                "{banner}✅ <b style=\"color:#5fd35f\">RECEIVED from peer:</b> {}",
+                String::from_utf8_lossy(&bytes)
+            ));
         }
-        Err(e) => status(&format!("❌ connect failed: {e:?}")),
+    };
+
+    let peer = if is_offerer {
+        status(&format!("{banner}🅰️ creating offer + gathering ICE…"));
+        let (peer, offer) = match webrtc::Peer::offer(on_msg).await {
+            Ok(v) => v,
+            Err(e) => return status(&format!("{banner}❌ create offer failed: {e:?}")),
+        };
+        status(&format!("{banner}🅰️ posting offer to the relay…"));
+        if let Err(e) = crate::registry::signal_post(signer, now(), &room, "offer", &offer).await {
+            return status(&format!("{banner}❌ relay POST (offer) failed: {e}"));
+        }
+        let answer = match poll_slot(&banner, &room, "answer", "offer posted ✓ · polling for the answerer", 90).await {
+            Some(a) => a,
+            None => return status(&format!("{banner}❌ timed out waiting for the ANSWERER — is the other tab open with role=answer + the same room?")),
+        };
+        status(&format!("{banner}🅰️ got answer ✓ · completing handshake…"));
+        if let Err(e) = peer.accept_answer(&answer).await {
+            return status(&format!("{banner}❌ accept_answer failed: {e:?}"));
+        }
+        let _ = crate::registry::signal_clear(signer, now(), &room).await;
+        peer
+    } else {
+        let offer = match poll_slot(&banner, &room, "offer", "polling for the offerer", 90).await {
+            Some(o) => o,
+            None => return status(&format!("{banner}❌ timed out waiting for the OFFERER — is the other tab open with role=offer + the same room?")),
+        };
+        status(&format!("{banner}🅱️ got offer ✓ · creating answer + gathering ICE…"));
+        let (peer, answer) = match webrtc::Peer::answer(&offer, on_msg).await {
+            Ok(v) => v,
+            Err(e) => return status(&format!("{banner}❌ create answer failed: {e:?}")),
+        };
+        status(&format!("{banner}🅱️ posting answer to the relay…"));
+        if let Err(e) = crate::registry::signal_post(signer, now(), &room, "answer", &answer).await {
+            return status(&format!("{banner}❌ relay POST (answer) failed: {e}"));
+        }
+        peer
+    };
+
+    // Signaling done — wait for ICE to actually open the data channel (~15s cap).
+    status(&format!("{banner}signaling done · waiting for the data channel (ICE) to open…"));
+    for _ in 0..150 {
+        if peer.is_open() {
+            break;
+        }
+        crate::runtime::sleep_ms(100).await;
+    }
+    if peer.is_open() {
+        let hello = format!("hello from the {}", if is_offerer { "offerer" } else { "answerer" });
+        let _ = peer.send(hello.as_bytes());
+        status(&format!(
+            "{banner}✅ <b style=\"color:#5fd35f\">CONNECTED</b> · data channel OPEN · sent \"{hello}\" · waiting for the peer's hello…"
+        ));
+        std::mem::forget(peer); // keep the connection alive
+    } else {
+        status(&format!(
+            "{banner}⚠️ signaling succeeded but the DATA CHANNEL never opened — ICE couldn't connect (likely a symmetric NAT; we have no TURN server yet)."
+        ));
     }
 }
 
