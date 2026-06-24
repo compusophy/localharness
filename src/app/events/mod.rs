@@ -27,8 +27,8 @@ mod devices;
 mod key_sync;
 mod layout;
 mod public_face;
-// `pub(crate)` so the schedule_task chat tool can reuse submit_schedule_job /
-// parse_schedule_interval (the same escrow core the chat tool uses).
+// `pub(crate)` so the schedule_task chat tool can reuse `parse_schedule_interval`
+// (the shared cadence parser; scheduling itself is off-chain via the proxy now).
 pub(crate) mod schedule;
 mod subdomains;
 

@@ -212,6 +212,39 @@ pub(crate) async fn http_post_json_authed(
     .await?
 }
 
+/// Like [`http_post_json_authed`] but returns the parsed JSON RESPONSE body on a
+/// 2xx (the off-chain scheduler endpoint returns the new job id / the job list).
+/// Same auth header + timeout + cross-target (reqwest → fetch on wasm) shape.
+pub(crate) async fn http_post_json_authed_returning(
+    url: &str,
+    token: &str,
+    body: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let client = read_client();
+    timeout_send("http_post", async {
+        let resp = client
+            .post(url)
+            .header("x-goog-api-key", token)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| format!("POST {url}: {e}"))?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if status.is_success() {
+            return serde_json::from_str::<serde_json::Value>(&text)
+                .map_err(|e| format!("POST {url}: bad JSON response: {e}"));
+        }
+        // Surface the proxy's JSON `error` field when present, else the raw body.
+        let msg = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+            .unwrap_or_else(|| text.chars().take(200).collect());
+        Err(format!("HTTP {} — {}", status.as_u16(), msg))
+    })
+    .await?
+}
+
 /// `true` if `address` has deployed bytecode (i.e. is a contract, not a
 /// counterfactual / EOA). A token-bound account is deterministic — it
 /// exists as an address even before `createTokenBoundAccount` deploys it,

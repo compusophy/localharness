@@ -665,56 +665,58 @@ pub(crate) fn clear_notifications_tool() -> std::sync::Arc<dyn crate::tools::Too
     )
 }
 
-/// `schedule_task(task, interval, budget, runs?, target?)` — escrow `$LH` to run
-/// a recurring or DELAYED task tab-free (durable, via ScheduleFacet + the cron
-/// worker) instead of faking it with a timer cartridge (on-chain feature
-/// request). Reuses the admin form's escrow core verbatim. Defaults `target` to
-/// THIS agent; the escrow is refundable (cancel under admin → account → schedule).
+/// `schedule_task(task, interval, runs?, kind?, target?)` — schedule a tab-free
+/// task OFF-CHAIN (proxy GitHub store; no gas, no escrow). A `reminder` (default)
+/// pushes you the task text at the due time — "remind me in 15 minutes" — for
+/// FREE (no `$LH`). An `agent` job runs an agent each fire, billed per run from
+/// the owner's meter. For a one-shot set `runs: 1` + `interval` to the delay.
+/// The teardown twin is `cancel_task`. (On-chain ScheduleFacet escrow is gone:
+/// it cost ~2.88M gas + locked $LH to push a single notification.)
 pub(crate) fn schedule_task_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     let schema = serde_json::json!({
         "type": "object",
         "properties": {
             "task": {
                 "type": "string",
-                "description": "The instruction the scheduled run executes on each \
-                    fire (a self-contained prompt). Prefix with \"GOAL: \" for a \
-                    goal-loop that ends + refunds early once finished."
+                "description": "What to do each fire. For a REMINDER, the note to push \
+                    you. For an AGENT job, a self-contained prompt. Prefix with \
+                    \"GOAL: \" for a goal-loop that ends early once done."
             },
             "interval": {
                 "type": "string",
-                "description": "Cadence between runs: \"60s\", \"5m\", \"1h\" (a bare \
-                    number = seconds; minimum 60s). For a ONE-SHOT delayed task, set \
-                    this to the delay and `runs` to 1."
-            },
-            "budget": {
-                "type": "string",
-                "description": "Total `$LH` to escrow across all runs, as a decimal \
-                    (e.g. \"1\", \"0.5\"). Each run draws from it; the job stops when it \
-                    runs out. Refundable on cancel."
+                "description": "Delay / cadence: \"60s\", \"15m\", \"1h\" (a bare number \
+                    = seconds; minimum 60s). For a ONE-SHOT (\"in 15 minutes\") set this \
+                    to the delay and `runs` to 1."
             },
             "runs": {
                 "type": "integer",
                 "minimum": 1,
-                "description": "OPTIONAL max number of runs (default 100). Set 1 for a \
-                    single delayed task."
+                "description": "How many times to fire (default 1 — a single delayed \
+                    task). Higher = a recurring job."
+            },
+            "kind": {
+                "type": "string",
+                "enum": ["reminder", "agent"],
+                "description": "\"reminder\" (default) = just push you the task text \
+                    (free, no agent run, no $LH). \"agent\" = run an agent each fire \
+                    (bills your meter per run)."
             },
             "target": {
                 "type": "string",
-                "description": "OPTIONAL subdomain that runs the task (defaults to THIS \
-                    agent). Another agent's name schedules work on them."
+                "description": "AGENT jobs only: the subdomain to run each fire \
+                    (defaults to THIS agent). Ignored for a reminder."
             }
         },
-        "required": ["task", "interval", "budget"]
+        "required": ["task", "interval"]
     });
     ClosureTool::new(
         "schedule_task",
-        "Escrow `$LH` to run a recurring or DELAYED task WITHOUT a tab open (durable, \
-         via ScheduleFacet + the platform cron worker) — use this for \"every hour…\" / \
-         \"in 10 minutes…\" instead of a fake timer cartridge. `interval` is the cadence \
-         (\"5m\", \"1h\"; min 60s); for a one-shot delayed task set `runs: 1` and \
-         `interval` to the delay. `budget` is the total `$LH` to escrow (refundable — \
-         the owner can cancel under admin → account → schedule). Defaults `target` to \
-         this agent. Returns { scheduled, job_id, target, interval_secs, runs, budget }.",
+        "Schedule a tab-free task OFF-CHAIN — a REMINDER (push you a note at a future \
+         time: \"remind me in 15 minutes\", \"every morning\") or an AGENT job (run an \
+         agent each fire). A reminder is FREE (no $LH, no gas); an agent job bills your \
+         meter per run. `interval` is the delay/cadence (min 60s); for a one-shot set \
+         `runs: 1`. Defaults kind:reminder, runs:1, target:this agent. Returns \
+         { scheduled, job_id, kind, runs }. Tear down with cancel_task.",
         schema,
         |args: serde_json::Value, _ctx| async move {
             let task = args.get("task").and_then(|v| v.as_str()).unwrap_or("").trim();
@@ -726,40 +728,47 @@ pub(crate) fn schedule_task_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 crate::app::events::schedule::parse_schedule_interval(interval_raw).ok_or_else(
                     || {
                         crate::error::Error::other(
-                            "interval must be at least 60s — e.g. \"60s\", \"5m\", \"1h\"",
+                            "interval must be at least 60s — e.g. \"60s\", \"15m\", \"1h\"",
                         )
                     },
                 )?;
-            let budget_raw = args.get("budget").and_then(|v| v.as_str()).unwrap_or("").trim();
-            let budget_wei = crate::encoding::parse_token_amount(budget_raw).ok_or_else(|| {
-                crate::error::Error::other(
-                    "could not parse budget — pass a decimal $LH figure like \"1\" or \"0.5\"",
-                )
-            })?;
-            if budget_wei == 0 {
-                return Err(crate::error::Error::other("budget must be greater than 0"));
-            }
             let runs = args
                 .get("runs")
                 .and_then(|v| v.as_u64())
                 .map(|r| r.max(1) as u32)
-                .unwrap_or(100);
-            let target = args
-                .get("target")
-                .and_then(|v| v.as_str())
-                .map(|s| s.trim().to_lowercase())
-                .filter(|s| !s.is_empty())
-                .or_else(crate::app::tenant::current_name)
-                .ok_or_else(|| {
-                    crate::error::Error::other(
-                        "no target — this isn't a named agent subdomain; pass an explicit target",
-                    )
-                })?;
-            let job_id = crate::app::events::schedule::submit_schedule_job(
+                .unwrap_or(1);
+            // "agent" runs an agent each fire (needs a target); anything else is a
+            // free reminder push (no target, no model, no $LH).
+            let kind = if args.get("kind").and_then(|v| v.as_str()) == Some("agent") {
+                "agent"
+            } else {
+                "reminder"
+            };
+            let target = if kind == "agent" {
+                args.get("target")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_lowercase())
+                    .filter(|s| !s.is_empty())
+                    .or_else(crate::app::tenant::current_name)
+                    .ok_or_else(|| {
+                        crate::error::Error::other(
+                            "agent job needs a target — pass one (this isn't a named subdomain)",
+                        )
+                    })?
+            } else {
+                String::new()
+            };
+            let (signer, _addr) = crate::app::chat::credit_signer().await.ok_or_else(|| {
+                crate::error::Error::other("no identity to schedule — claim a subdomain first")
+            })?;
+            let now = (js_sys::Date::now() / 1000.0) as u64;
+            let job_id = crate::registry::create_offchain_job(
+                &signer,
+                now,
+                kind,
                 &target,
                 task,
                 interval_secs,
-                budget_wei,
                 runs,
             )
             .await
@@ -767,53 +776,57 @@ pub(crate) fn schedule_task_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
             Ok(serde_json::json!({
                 "scheduled": true,
                 "job_id": job_id,
+                "kind": kind,
                 "target": target,
                 "interval_secs": interval_secs,
                 "runs": runs,
-                "budget": budget_raw,
             }))
         },
     )
 }
 
-/// `cancel_task(job_id)` — cancel a scheduled job this agent owns and REFUND its
-/// remaining `$LH` escrow (on-chain feedback #47: agents could `schedule_task`
-/// but had no way to tear one down without the admin UI). The in-chat twin of
-/// the CLI `unschedule`; `cancelJob` is owner-gated on-chain, so it only ever
-/// cancels the caller's own jobs. NOT confirm-gated — it returns funds (no value
-/// loss) and the whole point is autonomous teardown of an agent's own loops.
+/// `cancel_task(job_id)` — cancel a scheduled job this agent owns (off-chain
+/// store). The in-chat twin of the CLI `unschedule`; owner-gated server-side, so
+/// it only ever cancels the caller's own jobs. NOT confirm-gated — an off-chain
+/// job holds no escrow (moves no value) and the point is autonomous teardown.
 pub(crate) fn cancel_task_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
     let schema = serde_json::json!({
         "type": "object",
         "properties": {
             "job_id": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "The id of the scheduled job to cancel — from \
-                    schedule_task's returned job_id, or the admin → account → \
-                    schedule list."
+                "type": "string",
+                "description": "The id of the scheduled job to cancel — the `job_id` \
+                    string schedule_task returned."
             }
         },
         "required": ["job_id"]
     });
     ClosureTool::new(
         "cancel_task",
-        "Cancel a scheduled job YOU own and refund its remaining `$LH` escrow (via \
-         ScheduleFacet cancelJob) — the teardown counterpart to schedule_task, e.g. to \
-         stop a recurring task or goal-loop you started. Owner-gated on-chain: \
+        "Cancel a scheduled job YOU own — the teardown counterpart to schedule_task, \
+         e.g. to stop a recurring task, reminder, or goal-loop you started. Owner-gated: \
          cancelling a job you don't own (or an unknown id) fails. Returns \
-         { cancelled, job_id, tx }.",
+         { cancelled, job_id }.",
         schema,
         |args: serde_json::Value, _ctx| async move {
-            let job_id = args.get("job_id").and_then(|v| v.as_u64()).ok_or_else(|| {
-                crate::error::Error::other(
-                    "cancel_task: job_id must be a non-negative integer (from schedule_task)",
-                )
+            let job_id = args
+                .get("job_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    crate::error::Error::other(
+                        "cancel_task: job_id must be the id string from schedule_task",
+                    )
+                })?;
+            let (signer, _addr) = crate::app::chat::credit_signer().await.ok_or_else(|| {
+                crate::error::Error::other("no identity to cancel — claim a subdomain first")
             })?;
-            let tx = crate::app::events::schedule::cancel_schedule_job(job_id)
+            let now = (js_sys::Date::now() / 1000.0) as u64;
+            crate::registry::cancel_offchain_job(&signer, now, &job_id)
                 .await
                 .map_err(crate::error::Error::other)?;
-            Ok(serde_json::json!({ "cancelled": true, "job_id": job_id, "tx": tx }))
+            Ok(serde_json::json!({ "cancelled": true, "job_id": job_id }))
         },
     )
 }

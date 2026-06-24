@@ -134,6 +134,22 @@ const RUN_MODEL = process.env.MCP_ASK_MODEL ?? 'gemini-3.5-flash';
 import { COST_PER_REQUEST_WEI } from './_prices';
 const COST_WEI = COST_PER_REQUEST_WEI;
 
+// OFF-CHAIN job store (GitHub-backed) + the meter debit. Scheduled jobs moved
+// off-chain: the store holds the job records (no ScheduleFacet escrow / gas) and
+// an AGENT job bills the owner's existing meter per run (same as an interactive
+// message — no schedule tax); a REMINDER job is a pure web-push (zero chain,
+// zero $LH). The on-chain ScheduleFacet path below is UNTOUCHED — it keeps
+// firing any in-flight legacy jobs until they drain (dual-path migration).
+import {
+  listDue as listDueOffchain,
+  claimJob,
+  writeNextSlot,
+  jobStoreConfigured,
+  MAX_OFFCHAIN_JOBS_PER_TICK,
+  type OffchainJob,
+} from './_jobstore';
+import { meterDebit, creditOf } from './_auth';
+
 // ---- per-TICK spend caps (#1 — the strongest bill-shock fix) ----------------
 //
 // The per-JOB budget (budgetWei) bounds ONE job's run. These two caps bound the
@@ -1108,6 +1124,11 @@ async function runPingPong(
   owner: string,
   tb: TickBudget,
   modelDeadlineMs: number,
+  // OFF-CHAIN runs pass `false`: there is no on-chain parent escrow to draw a
+  // child job from, so `schedule_task` (→ scheduleChildJob(parentJobId)) MUST be
+  // refused — otherwise scheduleChildJob would run against a bogus parentJobId.
+  // On-chain `processJob` passes `true` (parentJobId = the running job's id).
+  allowChildJobs = true,
 ): Promise<PingPongResult> {
   const contents: GeminiContent[] = [
     { role: 'user', parts: [{ text: task }] },
@@ -1190,6 +1211,23 @@ async function runPingPong(
     let responsePayload: Record<string, unknown>;
 
     if (call.name === 'schedule_task') {
+      // OFF-CHAIN runs have no on-chain parent escrow: refuse child spawning
+      // (scheduleChildJob draws from parentJobId's ScheduleFacet escrow, which a
+      // GitHub-store job does not have). Fed back as a tool error — never hangs.
+      if (!allowChildJobs) {
+        contents.push({
+          role: 'function',
+          parts: [
+            {
+              functionResponse: {
+                name: 'schedule_task',
+                response: { error: 'scheduling child jobs is not available in this run' },
+              },
+            },
+          ],
+        });
+        continue;
+      }
       // CHILD-JOB SPAWN (cross-tick recursion). Counts toward the budget/cap like
       // a model call — it spends gas now AND sets up future spend (drawn from this
       // job's escrow). Gate it the same way.
@@ -1923,6 +1961,249 @@ async function processJob(
   };
 }
 
+// ---- OFF-CHAIN job firing (GitHub store; no chain) --------------------------
+//
+// The off-chain analog of processJob, reusing the SAME helpers (persona/lessons,
+// runPingPong, sendOwnerPush) so a scheduled run behaves identically — only the
+// STORE + BILLING differ:
+//   * REMINDER — no model call, no charge: web-push `task` to the owner, consume
+//     the run. Zero chain, zero $LH. This is the "notify me in 15 minutes" case.
+//   * AGENT — run the target agent (bounded ping-pong, child-jobs DISABLED since
+//     there's no on-chain parent escrow), then debit the OWNER's meter for the
+//     calls made (clamped to live balance, exactly like an interactive message).
+// Outcome is committed to the store: advance the file to nextRun+interval, or
+// delete it when exhausted / on a finish_goal. Per-tick caps (#1) bound agent
+// runs on top of the owner's balance, shared with the on-chain batch via `tb`.
+
+interface OffchainResult {
+  id: string;
+  kind: OffchainJob['kind'];
+  outcome: 'pushed' | 'ran' | 'skipped' | 'spilled' | 'exhausted' | 'error';
+  calls?: number;
+  spentWei?: string;
+  note?: string;
+}
+
+async function fireOffchainJob(
+  entry: { job: OffchainJob; path: string; sha: string },
+  tb: TickBudget,
+  modelDeadlineMs: number,
+): Promise<OffchainResult> {
+  const { job, path, sha } = entry;
+  const fallbackTokenId = (() => {
+    try {
+      return BigInt(job.targetId);
+    } catch {
+      return 0n;
+    }
+  })();
+
+  // REMINDER — pure web-push, no model, no charge. CLAIM first (CAS via the
+  // sha-conditional delete): only the delete-winner pushes + advances, so
+  // overlapping ticks can't double-push; a lost claim (another tick won, or a
+  // transient failure) skips and the file re-fires next tick if still present.
+  if (job.kind === 'reminder') {
+    if (!(await claimJob(path, sha))) {
+      return { id: job.id, kind: 'reminder', outcome: 'skipped', note: 'lost the fire race (or transient) — not pushed' };
+    }
+    let pushed = false;
+    try {
+      pushed = await sendOwnerPush(job.owner, fallbackTokenId, 'Reminder', job.task.slice(0, 200));
+    } catch {
+      /* a push failure never fails — or re-fires — the reminder */
+    }
+    const next = await writeNextSlot(job);
+    console.log(`[scheduler] offchain reminder ${job.id} owner ${job.owner.slice(0, 10)} pushed=${pushed} ${next ? `(${next.runsLeft} left)` : '(done)'}`);
+    return {
+      id: job.id,
+      kind: 'reminder',
+      outcome: next ? 'pushed' : 'exhausted',
+      note: pushed ? undefined : 'no on-chain push subscription (reminder consumed)',
+    };
+  }
+
+  // AGENT — per-tick cap gate FIRST, BEFORE any claim: if the tick can't afford
+  // one call, SPILL — do NOT claim (leave the file so it re-fires next tick).
+  if (!canSpend(tb, job.owner, COST_WEI)) {
+    return { id: job.id, kind: 'agent', outcome: 'spilled', note: 'per-tick spend cap — re-fires next tick' };
+  }
+
+  // CLAIM (CAS) — the serialization point that replaces the on-chain recordRun
+  // StaleNextRun guard. Only the delete-winner runs + bills; a lost claim
+  // (overlapping tick won, or a transient delete failure) skips WITHOUT billing.
+  // After a win the old slot is GONE: we MUST writeNextSlot (or leave it
+  // exhausted) so the job is represented again — lose-not-duplicate (a crash
+  // before that drops ONE fire, never a double-charge).
+  if (!(await claimJob(path, sha))) {
+    return { id: job.id, kind: 'agent', outcome: 'skipped', note: 'lost the fire race (or transient) — not billed' };
+  }
+
+  // The owner's LIVE meter balance is the budget (no escrow). If it can't fund
+  // even one call, skip the run but CONSUME it (write next slot) so a broke job
+  // never hot-loops every tick — mirrors the on-chain dust-close.
+  let credit: bigint;
+  try {
+    credit = await creditOf(job.owner);
+  } catch {
+    credit = 0n;
+  }
+  if (credit < COST_WEI) {
+    await writeNextSlot(job);
+    return { id: job.id, kind: 'agent', outcome: 'skipped', note: 'owner out of $LH (run skipped, consumed)' };
+  }
+
+  // Balance → max calls, additionally capped so one run can't drain a fat
+  // balance in a single fire (bound the per-run blast radius). Past the
+  // credit-floor check, so maxCalls >= 1.
+  const maxCalls = Math.max(1, Math.min(Number(credit / COST_WEI), MAX_PINGPONG_ROUNDS * 2));
+  const name = await nameOfId(fallbackTokenId);
+
+  let calls = 0;
+  let ran: 'ok' | 'error' = 'ok';
+  let note = '';
+  let goalReport: string | undefined;
+  try {
+    const basePersona = withLessons(
+      (await personaOf(fallbackTokenId)) ?? defaultPersona(name),
+      await lessonsOf(fallbackTokenId),
+    );
+    const rawTask = job.task.trim();
+    const isGoal = rawTask.startsWith(GOAL_PREFIX);
+    const persona = isGoal ? goalSystemPrompt(basePersona, job.runsLeft, credit) : basePersona;
+    const task = isGoal
+      ? `THE GOAL:\n${rawTask.slice(GOAL_PREFIX.length).trim()}`
+      : rawTask || 'Perform your scheduled task and report concisely.';
+    const result = await runPingPong(
+      persona,
+      task,
+      maxCalls,
+      0n, // parentJobId unused: child jobs are disabled for off-chain runs
+      fallbackTokenId,
+      job.owner,
+      tb,
+      modelDeadlineMs,
+      false, // allowChildJobs = false (no on-chain parent escrow)
+    );
+    calls = result.calls;
+    goalReport = result.goalReport;
+    note = result.output;
+    console.log(
+      `[scheduler] offchain agent ${job.id} target ${name} calls=${calls}/${maxCalls} reply: ${note.slice(0, 600)}`,
+    );
+  } catch (e) {
+    ran = 'error';
+    note = (e as Error).message;
+    // runPingPong commits its FIRST call to the ledger before awaiting; if it
+    // threw with calls still 0 the loop never committed, so bill one call and
+    // commit it so the ledger matches the meter debit below.
+    if (calls === 0) {
+      calls = 1;
+      commitSpend(tb, job.owner, COST_WEI);
+    }
+    console.error(`[scheduler] offchain agent ${job.id} target ${name} ERROR: ${note}`);
+  }
+
+  // DEBIT the owner's meter for the calls made, CLAMPED to live balance (mirrors
+  // gemini.ts: never debit more than the caller holds). A debit revert/timeout
+  // is non-fatal — the run already happened; we still commit the store outcome.
+  let spentWei = BigInt(calls) * COST_WEI;
+  let liveCredit = credit;
+  try {
+    liveCredit = await creditOf(job.owner);
+  } catch {
+    /* keep the start-of-run snapshot */
+  }
+  if (spentWei > liveCredit) spentWei = liveCredit;
+  if (spentWei > 0n) {
+    try {
+      await meterDebit(job.owner, spentWei, true);
+    } catch (e) {
+      console.warn(`[scheduler] offchain agent ${job.id} meter debit (${spentWei}) failed: ${(e as Error).message}`);
+    }
+  }
+
+  // COMMIT the store outcome (the claim already deleted the old slot). A
+  // finish_goal report ENDS the job — write NO next slot (it stays deleted) and
+  // push the report. Otherwise write the next (drift-corrected) slot, or leave it
+  // exhausted when runs are spent.
+  let outcome: OffchainResult['outcome'];
+  if (goalReport !== undefined) {
+    outcome = 'exhausted';
+    if (ran === 'ok') await notifyOwnerOfRun(job.owner, fallbackTokenId, job.id, `GOAL COMPLETE: ${name}`, goalReport);
+  } else {
+    const next = await writeNextSlot(job);
+    outcome = next ? 'ran' : 'exhausted';
+    // Push the result only on a TERMINAL run (last fire) — a recurring job that
+    // pushed every run would buzz the owner once an interval while it works.
+    if (ran === 'ok' && next === null) {
+      await notifyOwnerOfRun(job.owner, fallbackTokenId, job.id, name, note);
+    }
+  }
+
+  return {
+    id: job.id,
+    kind: 'agent',
+    outcome: ran === 'error' ? 'error' : outcome,
+    calls,
+    spentWei: spentWei.toString(),
+    note: ran === 'error' ? note.slice(0, 200) : undefined,
+  };
+}
+
+/**
+ * Fire the OFF-CHAIN due set this tick (after the on-chain batch). Shares the
+ * tick ledger `tb` so agent runs count against the SAME per-tick spend caps.
+ * Bounded by MAX_OFFCHAIN_JOBS_PER_TICK + the tick's remaining wall-clock.
+ */
+async function fireOffchainDue(
+  tb: TickBudget,
+  tickStart: number,
+): Promise<{ scanned: number; results: OffchainResult[] }> {
+  if (!jobStoreConfigured()) return { scanned: 0, results: [] };
+  const now = Math.floor(Date.now() / 1000);
+  let due: { job: OffchainJob; path: string; sha: string }[];
+  try {
+    due = await listDueOffchain(now, MAX_OFFCHAIN_JOBS_PER_TICK);
+  } catch (e) {
+    console.error(`[scheduler] offchain due scan failed: ${(e as Error).message}`);
+    return { scanned: 0, results: [] };
+  }
+  const results: OffchainResult[] = [];
+
+  // REMINDERS FIRST, exempt from the wall-clock gate: a reminder is ~one push
+  // (no model, no receipt wait), and the advertised "remind me in 15 minutes"
+  // case must NOT be starved by a slow on-chain/agent batch that already spent the
+  // tick's soft budget. Fire them all (claim-gated, so still single-fire).
+  const reminders = due.filter((d) => d.job.kind === 'reminder');
+  const agents = due.filter((d) => d.job.kind === 'agent');
+  for (const entry of reminders) {
+    try {
+      results.push(await fireOffchainJob(entry, tb, Date.now()));
+    } catch (e) {
+      console.error(`[scheduler] offchain reminder ${entry.job.id} unexpected error: ${(e as Error).message}`);
+      results.push({ id: entry.job.id, kind: 'reminder', outcome: 'error', note: (e as Error).message });
+    }
+  }
+
+  // AGENT jobs share the tick's remaining wall-clock with the on-chain batch:
+  // stop STARTING new ones once the soft budget is gone (they re-fire next tick —
+  // their file is untouched because we never claimed it).
+  for (let i = 0; i < agents.length; i++) {
+    if (Date.now() - tickStart >= TICK_SOFT_BUDGET_MS) {
+      console.warn(`[scheduler] offchain: ${agents.length - i} agent job(s) deferred — tick wall-clock budget exhausted`);
+      break;
+    }
+    const modelDeadline = tickStart + Math.floor((TICK_SOFT_BUDGET_MS * (i + 1)) / agents.length);
+    try {
+      results.push(await fireOffchainJob(agents[i], tb, modelDeadline));
+    } catch (e) {
+      console.error(`[scheduler] offchain agent ${agents[i].job.id} unexpected error: ${(e as Error).message}`);
+      results.push({ id: agents[i].job.id, kind: 'agent', outcome: 'error', note: (e as Error).message });
+    }
+  }
+  return { scanned: due.length, results };
+}
+
 // ---- handler ----------------------------------------------------------------
 
 function unauthorized(): Response {
@@ -2017,6 +2298,9 @@ export default async function handler(req: Request): Promise<Response> {
   // worker's total real (Gemini) spend this tick globally + per owner.
   const tickBudget = newTickBudget();
   let scanned = 0;
+  // On-chain scan failure is recorded (not a hard 502) so off-chain jobs —
+  // reminders especially — still fire this tick.
+  let onchainError: string | undefined;
   try {
     // Collect the FULL due set by FOLLOWING the cursor across pages.
     // jobsDue(startAfter, limit) scans the INDEX WINDOW
@@ -2086,14 +2370,21 @@ export default async function handler(req: Request): Promise<Response> {
       defer(id, `due but beyond the per-tick job cap (${MAX_JOBS_PER_TICK})`);
     }
   } catch (e) {
-    // Loud in the function logs too — a pre-loop failure (RPC scan, etc.)
-    // means NOTHING ran this tick, which must be diagnosable after the fact.
-    console.error(`[scheduler] tick FAILED before/while processing: ${(e as Error).message}`);
-    return new Response(
-      JSON.stringify({ error: 'scheduler tick failed: ' + (e as Error).message }),
-      { status: 502, headers: { 'content-type': 'application/json' } },
-    );
+    // Loud in the function logs — a pre-loop failure (RPC scan, etc.) means no
+    // ON-CHAIN job ran this tick. Record it but DON'T early-return: the off-chain
+    // jobs below (reminders/agent runs in the GitHub store) don't depend on the
+    // chain scan and must still fire. Surfaced in the summary as `onchainError`.
+    console.error(`[scheduler] on-chain tick portion FAILED: ${(e as Error).message}`);
+    onchainError = (e as Error).message;
   }
+
+  // OFF-CHAIN due set (GitHub store): fired AFTER the on-chain batch, sharing the
+  // per-tick spend ledger so agent runs count against the SAME caps. Self-bounded
+  // (job cap + remaining wall-clock); never throws (its own try/catch).
+  const offchain = await fireOffchainDue(tickBudget, tickStart);
+  const offchainPushed = offchain.results.filter((r) => r.outcome === 'pushed').length;
+  const offchainRan = offchain.results.filter((r) => r.outcome === 'ran' || r.outcome === 'exhausted').length;
+  const offchainErrored = offchain.results.filter((r) => r.outcome === 'error').length;
 
   const recorded = results.filter((r) => r.outcome === 'recorded').length;
   const stale = results.filter((r) => r.outcome === 'stale').length;
@@ -2108,7 +2399,9 @@ export default async function handler(req: Request): Promise<Response> {
   const goalsCompleted = results.filter((r) => r.goal === 'completed').length;
   // Total generateContent calls across the tick (agent + sub-agent turns) — the
   // metered unit; lets a dogfood POST see the ping-pong fan-out at a glance.
-  const totalCalls = results.reduce((acc, r) => acc + (r.calls ?? 0), 0);
+  const totalCalls =
+    results.reduce((acc, r) => acc + (r.calls ?? 0), 0) +
+    offchain.results.reduce((acc, r) => acc + (r.calls ?? 0), 0);
   const summary = {
     ok: true,
     scanned,
@@ -2132,9 +2425,19 @@ export default async function handler(req: Request): Promise<Response> {
     perOwnerTickCapWei: PER_OWNER_TICK_CAP_WEI.toString(),
     durationMs: Date.now() - tickStart,
     jobs: results,
+    // On-chain scan error (if any) — off-chain jobs still fired despite it.
+    onchainError,
+    // OFF-CHAIN (GitHub store) firing this tick.
+    offchainScanned: offchain.scanned,
+    offchainPushed,
+    offchainRan,
+    offchainErrored,
+    offchainJobs: offchain.results,
   };
   console.log(
-    `[scheduler] tick: scanned=${scanned} recorded=${recorded} stale=${stale} skipped=${skipped} spilled=${spilled} deferred=${deferred} errored=${errored} goalsCompleted=${goalsCompleted} calls=${totalCalls} spentWei=${tickBudget.global} in ${summary.durationMs}ms`,
+    `[scheduler] tick: scanned=${scanned} recorded=${recorded} stale=${stale} skipped=${skipped} spilled=${spilled} deferred=${deferred} errored=${errored} goalsCompleted=${goalsCompleted} calls=${totalCalls} spentWei=${tickBudget.global}` +
+      ` | offchain: scanned=${offchain.scanned} pushed=${offchainPushed} ran=${offchainRan} errored=${offchainErrored}` +
+      `${onchainError ? ` | ONCHAIN-ERR: ${onchainError}` : ''} in ${summary.durationMs}ms`,
   );
   return new Response(JSON.stringify(summary), {
     status: 200,
