@@ -188,6 +188,68 @@ impl Peer {
     pub(crate) fn sender(&self) -> RtcDataChannel {
         self.channel.clone()
     }
+
+    // ── Relay-mediated connect (OFF-CHAIN signaling) ───────────────────────
+    // The cross-owner multiplayer path: instead of the on-chain SignalingFacet
+    // (a sponsored write per blob), peers rendezvous on the proxy's `/api/signal`
+    // GitHub-backed relay (`registry::signal_*`), keyed on a shared `room` id.
+    // The app/cartridge assigns roles (the session HOST offers; joiners answer).
+    // Both sides are unproven until run with two real browsers (see the module
+    // header) — but the relay leg is live-verified.
+
+    /// OFFERER: create an offer, POST it to the relay under `room`, poll for the
+    /// peer's answer, complete the handshake, and best-effort clear the room.
+    /// Returns the connected `Peer` (poll `is_open()` before `send`).
+    pub(crate) async fn connect_offerer(
+        room: &str,
+        signer: &k256::ecdsa::SigningKey,
+        on_msg: impl FnMut(Vec<u8>) + 'static,
+    ) -> Result<Self, JsValue> {
+        let (peer, offer) = Self::offer(on_msg).await?;
+        crate::registry::signal_post(signer, now_secs(), room, "offer", &offer)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("signal_post offer: {e}")))?;
+        let answer = poll_signal(room, "answer", 60)
+            .await
+            .ok_or_else(|| JsValue::from_str("timed out waiting for the peer's answer"))?;
+        peer.accept_answer(&answer).await?;
+        // Cleanup once we have the answer — best-effort (a stale room self-expires).
+        let _ = crate::registry::signal_clear(signer, now_secs(), room).await;
+        Ok(peer)
+    }
+
+    /// ANSWERER: poll the relay for the offer under `room`, answer it, POST the
+    /// answer back, and return the connected `Peer`.
+    pub(crate) async fn connect_answerer(
+        room: &str,
+        signer: &k256::ecdsa::SigningKey,
+        on_msg: impl FnMut(Vec<u8>) + 'static,
+    ) -> Result<Self, JsValue> {
+        let offer = poll_signal(room, "offer", 60)
+            .await
+            .ok_or_else(|| JsValue::from_str("timed out waiting for the peer's offer"))?;
+        let (peer, answer) = Self::answer(&offer, on_msg).await?;
+        crate::registry::signal_post(signer, now_secs(), room, "answer", &answer)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("signal_post answer: {e}")))?;
+        Ok(peer)
+    }
+}
+
+/// Current UNIX seconds (browser clock) for the relay auth token freshness.
+fn now_secs() -> u64 {
+    (js_sys::Date::now() / 1000.0) as u64
+}
+
+/// Poll the relay for a slot's SDP, up to `secs` (1s interval). `None` on timeout.
+async fn poll_signal(room: &str, slot: &str, secs: u32) -> Option<String> {
+    for _ in 0..secs {
+        if let Ok(Some(sdp)) = crate::registry::signal_get(room, slot).await {
+            return Some(sdp);
+        }
+        crate::runtime::sleep_ms(1000).await;
+    }
+    None
 }
 
 impl Drop for Peer {

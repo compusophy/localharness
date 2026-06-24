@@ -303,6 +303,53 @@ pub async fn inbox_length(peer: &[u8; 20]) -> Result<u64, String> {
     Ok(u64::from_be_bytes(raw[24..32].try_into().map_err(|_| "bad len")?))
 }
 
+// ─── OFF-CHAIN signaling relay (proxy `/api/signal`) ────────────────────────
+// The cheap matchmaking path for ARBITRARY cross-owner WebRTC rooms (multiplayer):
+// peers exchange SDP via the proxy's GitHub-backed relay instead of sponsored
+// on-chain announce/postSignal (each ~1.2M gas — the pattern the scheduler moved
+// off-chain to escape). The on-chain SignalingFacet above stays for the trustless
+// same-owner device-sync path. webrtc.rs uses NON-TRICKLE ICE, so one SDP blob per
+// side ("offer"/"answer") completes a pairing; the data then flows P2P.
+
+/// POST this side's SDP blob to the relay under `room`/`slot` (personal-sign
+/// authed; anti-spam). `slot` is `"offer"` or `"answer"`. `now_secs` is passed in
+/// so this is cross-target (CLI `SystemTime` / browser `js_sys::Date::now()`).
+pub async fn signal_post(
+    signer: &SigningKey,
+    now_secs: u64,
+    room: &str,
+    slot: &str,
+    sdp: &str,
+) -> Result<(), String> {
+    let token = proxy_auth_token(signer, now_secs);
+    let url = format!("{CREDIT_PROXY_URL}api/signal");
+    let body = serde_json::json!({ "room": room, "slot": slot, "sdp": sdp });
+    http_post_json_authed(&url, &token, &body).await
+}
+
+/// Poll the relay for a peer's SDP blob at `room`/`slot` (open GET — the room id
+/// is the capability). `Ok(None)` = not posted yet, or stale (past the relay TTL).
+pub async fn signal_get(room: &str, slot: &str) -> Result<Option<String>, String> {
+    let url = format!("{CREDIT_PROXY_URL}api/signal?room={room}&slot={slot}");
+    match http_get_bytes(&url).await? {
+        Some(bytes) => {
+            let v: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|e| format!("signal_get: bad json: {e}"))?;
+            Ok(v.get("sdp").and_then(|s| s.as_str()).map(String::from))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Clear a room's slots once the peers have connected (best-effort cleanup;
+/// personal-sign authed).
+pub async fn signal_clear(signer: &SigningKey, now_secs: u64, room: &str) -> Result<(), String> {
+    let token = proxy_auth_token(signer, now_secs);
+    let url = format!("{CREDIT_PROXY_URL}api/signal");
+    let body = serde_json::json!({ "action": "clear", "room": room });
+    http_post_json_authed(&url, &token, &body).await
+}
+
 
 #[cfg(test)]
 mod tests {
