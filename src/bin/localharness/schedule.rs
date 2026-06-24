@@ -1,31 +1,42 @@
-use crate::{bytes_to_hex_str, collect_flags, ensure_wallet_covers, fmt_lh, load_signer, load_signer_and_sponsor, registry, truncate_words, wallet, SCHEDULE_DEFAULT_RUNS, SCHEDULE_MIN_INTERVAL_SECS};
+use crate::{bytes_to_hex_str, collect_flags, fmt_lh, load_signer, load_signer_and_sponsor, registry, truncate_words, wallet, SCHEDULE_DEFAULT_RUNS, SCHEDULE_MIN_INTERVAL_SECS};
 
-// ---- schedule / jobs / unschedule (ScheduleFacet) ------------------------
+// ---- schedule / goal / remind / jobs / unschedule ------------------------
 //
-// Durable, tab-independent recurring jobs: ESCROW `$LH` to back an agent that
-// runs on a fixed interval, on-chain, so the job + its budget survive any tab
-// or process dying. `schedule` creates one (approve + scheduleJob in one
-// sponsored tx), `jobs` lists the caller's, `unschedule` cancels one (refunds
-// the remaining budget). Mirrors `registry::schedule_job_sponsored` etc.
+// Durable, tab-independent jobs. NEW jobs are OFF-CHAIN (proxy GitHub store,
+// fired by the cron): `schedule`/`goal` create an AGENT job (run a target each
+// fire, billed per run from the caller's meter — no escrow), `remind` a free
+// reminder push, all via `registry::create_offchain_job`. `jobs` lists off-chain
+// + legacy on-chain; `unschedule` routes by id shape (uuid → off-chain,
+// numeric → legacy on-chain ScheduleFacet `cancelJob`).
 
-/// Parsed `schedule` arguments. `--every`/`--budget` are required, `--runs`
-/// defaults. Pure (no I/O) so it is unit-testable; `Err` carries the usage
-/// line. Leading `--as <me>` is stripped by `take_as_flag` before this.
+/// Parsed `schedule` arguments. `--every` is required, `--runs` defaults; a
+/// `--budget` is a hard error now (off-chain jobs bill the meter, no escrow).
+/// Pure (no I/O) so it is unit-testable; `Err` carries the usage / error line.
+/// Leading `--as <me>` is stripped by `take_as_flag` before this.
+#[derive(Debug)]
 pub(crate) struct ParsedSchedule {
     target: String,
     task: String,
     interval_secs: u64,
-    budget_wei: u128,
     max_runs: u32,
 }
 
 pub(crate) const SCHEDULE_USAGE: &str = "usage: localharness schedule [--as <me>] <target> <task> \
-                              --every <dur> --budget <amount> [--runs <n>]\n  \
-                              dur: 60s / 5m / 1h (min 60s)   amount: $LH (e.g. 1 or 0.5)";
+                              --every <dur> [--runs <n>]\n  \
+                              dur: 60s / 5m / 1h (min 60s).  Runs OFF-CHAIN, billed per run from \
+                              your meter (no escrow).";
 
 pub(crate) const GOAL_USAGE: &str = "usage: localharness goal [--as <me>] <target> <goal text> \
-                              --budget <amount> [--every <dur>] [--runs <n>]\n  \
-                              defaults: --every 5m, --runs 100   dur: 60s / 5m / 1h (min 60s)";
+                              [--every <dur>] [--runs <n>]\n  \
+                              defaults: --every 5m, --runs 100   dur: 60s / 5m / 1h (min 60s).  \
+                              Off-chain, billed per run from your meter.";
+
+/// The hard error when `--budget` is passed to `schedule`/`goal`: those jobs are
+/// OFF-CHAIN now and bill the meter per run, so an upfront `$LH` escrow no longer
+/// exists. A clean break (the user chose error-over-ignore).
+pub(crate) const BUDGET_REMOVED: &str = "--budget is no longer used: scheduled agent jobs run \
+    OFF-CHAIN now and bill your meter per run (~1 $LH/model call) — there is no upfront escrow. \
+    Remove --budget and re-run.";
 
 /// The EXACT on-chain task marker the scheduler worker recognises as a goal
 /// loop (ralph-on-chain): it wraps the run's persona with the goal-loop frame
@@ -101,8 +112,13 @@ pub(crate) fn fmt_interval(secs: u64) -> String {
 }
 
 pub(crate) fn parse_schedule_args(rest: &[String]) -> Result<ParsedSchedule, String> {
+    // `--budget` stays in the flag set so `--budget X` is CAPTURED (not silently
+    // swallowed into the task positional) and we can hard-error on it.
     let ([every, budget, runs], positional) =
         collect_flags(rest, ["--every", "--budget", "--runs"], SCHEDULE_USAGE)?;
+    if budget.is_some() {
+        return Err(BUDGET_REMOVED.to_string());
+    }
     if positional.len() < 2 {
         return Err(SCHEDULE_USAGE.to_string());
     }
@@ -111,11 +127,6 @@ pub(crate) fn parse_schedule_args(rest: &[String]) -> Result<ParsedSchedule, Str
     // multi-word task still works, matching `persona`/`call`).
     let task = positional[1..].join(" ");
     let interval_secs = parse_interval(&every.ok_or(SCHEDULE_USAGE)?)?;
-    let budget_raw = budget.ok_or(SCHEDULE_USAGE)?;
-    let budget_wei = match localharness::encoding::parse_token_amount(&budget_raw) {
-        Some(w) if w > 0 => w,
-        _ => return Err(format!("--budget must be a positive $LH amount, got '{budget_raw}'")),
-    };
     let max_runs = match runs {
         None => SCHEDULE_DEFAULT_RUNS,
         Some(r) => r
@@ -128,7 +139,6 @@ pub(crate) fn parse_schedule_args(rest: &[String]) -> Result<ParsedSchedule, Str
         target,
         task,
         interval_secs,
-        budget_wei,
         max_runs,
     })
 }
@@ -141,6 +151,9 @@ pub(crate) fn parse_schedule_args(rest: &[String]) -> Result<ParsedSchedule, Str
 pub(crate) fn parse_goal_args(rest: &[String]) -> Result<ParsedSchedule, String> {
     let ([every, budget, runs], positional) =
         collect_flags(rest, ["--every", "--budget", "--runs"], GOAL_USAGE)?;
+    if budget.is_some() {
+        return Err(BUDGET_REMOVED.to_string());
+    }
     if positional.len() < 2 {
         return Err(GOAL_USAGE.to_string());
     }
@@ -151,11 +164,6 @@ pub(crate) fn parse_goal_args(rest: &[String]) -> Result<ParsedSchedule, String>
     let interval_secs = match every {
         None => GOAL_DEFAULT_INTERVAL_SECS,
         Some(e) => parse_interval(&e)?,
-    };
-    let budget_raw = budget.ok_or(GOAL_USAGE)?;
-    let budget_wei = match localharness::encoding::parse_token_amount(&budget_raw) {
-        Some(w) if w > 0 => w,
-        _ => return Err(format!("--budget must be a positive $LH amount, got '{budget_raw}'")),
     };
     let max_runs = match runs {
         None => SCHEDULE_DEFAULT_RUNS,
@@ -169,15 +177,13 @@ pub(crate) fn parse_goal_args(rest: &[String]) -> Result<ParsedSchedule, String>
         target,
         task: format!("{GOAL_TASK_PREFIX}{goal_text}"),
         interval_secs,
-        budget_wei,
         max_runs,
     })
 }
 
-/// `localharness schedule [--as <me>] <target> <task> --every <dur> --budget
-/// <amount> [--runs <n>]` — escrow `$LH` to run `<target>` on a fixed interval,
-/// on-chain (no tab needed). Resolves the target name → tokenId, escrows the
-/// budget (approve + scheduleJob in one sponsored tx), and prints the schedule.
+/// `localharness schedule [--as <me>] <target> <task> --every <dur> [--runs <n>]`
+/// — run `<target>` on a fixed interval OFF-CHAIN (no tab needed), billed per run
+/// from your meter (no escrow). Submits an off-chain agent job via the proxy.
 pub(crate) async fn schedule(caller_name: Option<&str>, rest: &[String]) -> i32 {
     match parse_schedule_args(rest) {
         Ok(p) => submit_job(caller_name, p, false).await,
@@ -188,13 +194,11 @@ pub(crate) async fn schedule(caller_name: Option<&str>, rest: &[String]) -> i32 
     }
 }
 
-/// `localharness goal [--as <me>] <target> <goal text> --budget <amount>
-/// [--every <dur>] [--runs <n>]` — ralph-on-chain: schedule a recurring job
-/// whose task carries the `GOAL: ` marker. Every fire re-feeds the SAME goal
-/// to the agent (progress lives on-chain, not in model memory); the job ends
-/// ITSELF — `finish_goal` → the facet's `completeJob`, refunding the unspent
-/// escrow to you — once the agent verifies the goal is complete. The budget
-/// and `--runs` remain the hard stops if it never is.
+/// `localharness goal [--as <me>] <target> <goal text> [--every <dur>] [--runs
+/// <n>]` — ralph: schedule an OFF-CHAIN agent job whose task carries the `GOAL: `
+/// marker. Every fire re-feeds the SAME goal to the agent (no model memory across
+/// fires); the job ends ITSELF when the agent calls `finish_goal`. `--runs` is the
+/// hard stop if it never does; each fire bills your meter (no escrow/refund).
 pub(crate) async fn goal(caller_name: Option<&str>, rest: &[String]) -> i32 {
     match parse_goal_args(rest) {
         Ok(p) => submit_job(caller_name, p, true).await,
@@ -282,84 +286,48 @@ pub(crate) async fn remind(caller_name: Option<&str>, rest: &[String]) -> i32 {
     }
 }
 
-/// Shared submission path for `schedule` + `goal`: resolve the target name →
-/// tokenId, escrow the budget (approve + scheduleJob in one sponsored tx),
-/// print the schedule. `goal_mode` only changes the confirmation copy (the
-/// on-chain difference is entirely the task's `GOAL: ` marker).
+/// Shared submission path for `schedule` + `goal`: submit an OFF-CHAIN agent job
+/// via the proxy (the proxy validates the target + bills the caller's meter per
+/// run), print the schedule. `goal_mode` only changes the confirmation copy (the
+/// difference is entirely the task's `GOAL: ` marker, which the worker keys on).
 async fn submit_job(caller_name: Option<&str>, parsed: ParsedSchedule, goal_mode: bool) -> i32 {
     let ParsedSchedule {
         target,
         task,
         interval_secs,
-        budget_wei,
         max_runs,
     } = parsed;
-    // An empty / whitespace-only task escrowed real $LH behind a no-op job —
-    // reject it BEFORE any identity/escrow work (same guard as call/mcp-call).
+    // An empty / whitespace-only task is a no-op job — reject it before any work
+    // (same guard as call/mcp-call). A bare `GOAL: ` marker counts as blank too.
     if task_is_blank(&task) {
         let label = if goal_mode { "goal: goal text" } else { "schedule: task" };
         eprintln!("{label} is empty — nothing to send");
         return 1;
     }
 
-    let (signer, sponsor) = match load_signer_and_sponsor(caller_name) {
-        Ok(pair) => pair,
+    let signer = match load_signer(caller_name) {
+        Ok(s) => s,
         Err(code) => return code,
-    };
-    // The escrow pulls the budget from the WALLET pot — auto-bridge any
-    // shortfall out of the chat meter first (on-chain feedback #63).
-    let from_hex = bytes_to_hex_str(&wallet::address(&signer));
-    if let Err(code) = ensure_wallet_covers(&signer, &from_hex, budget_wei).await {
-        return code;
-    }
-
-    // Resolve the target agent's tokenId (the facet rejects an unregistered
-    // target with `UnregisteredTarget`, so fail early with a clear message).
-    let target_id = match registry::id_of_name(&target).await {
-        Ok(id) if id != 0 => id,
-        Ok(_) => {
-            eprintln!("schedule: '{target}' is not a registered agent");
-            return 1;
-        }
-        Err(e) => {
-            eprintln!("schedule: RPC error resolving '{target}': {e}");
-            return 1;
-        }
     };
 
     let every = fmt_interval(interval_secs);
-    println!(
-        "scheduling {target} every {every}, budget {}, up to {max_runs} run(s) …",
-        fmt_lh(budget_wei)
-    );
-    match registry::schedule_job_sponsored(
-        &signer,
-        &sponsor,
-        target_id,
-        task.as_bytes(),
-        interval_secs,
-        budget_wei,
-        max_runs,
-        registry::ALPHA_USD_ADDRESS(),
-    )
-    .await
+    println!("scheduling {target} every {every}, up to {max_runs} run(s) (off-chain) …");
+    // OFF-CHAIN agent job: the proxy validates the target is registered (404 if
+    // not), runs it each fire under its persona, and bills the CALLER's meter per
+    // run — no escrow, no sponsor, no on-chain tx. The `GOAL: ` marker in `task`
+    // still drives the ralph goal-loop (the worker keys on it).
+    match registry::create_offchain_job(&signer, now_unix(), "agent", &target, &task, interval_secs, max_runs)
+        .await
     {
-        Ok(tx) => {
-            // The new job id is the last entry in the owner's jobsOf index.
-            let addr = bytes_to_hex_str(&wallet::address(&signer));
-            let id_note = match registry::jobs_of(&addr).await {
-                Ok(ids) if !ids.is_empty() => format!("job #{}", ids[ids.len() - 1]),
-                _ => "scheduled".to_string(),
-            };
-            println!("✓ {id_note}: {target} every {every}, budget {}, ~{max_runs} runs", fmt_lh(budget_wei));
+        Ok(id) => {
+            println!("✓ job {id}: {target} every {every}, ~{max_runs} runs (off-chain)");
             if goal_mode {
                 println!("  goal loop: each fire re-feeds the goal and the agent takes ONE step;");
-                println!("  the job SELF-CANCELS (refunding the unspent budget to your wallet) when");
-                println!("  the agent declares the goal complete — budget/runs are the hard stops.");
+                println!("  it self-ends when the agent declares the goal complete (finish_goal).");
             } else {
-                println!("  the escrowed $LH backs it 24/7 — it fires with no browser tab open.");
+                println!("  runs tab-free; each fire bills your meter (~1 $LH/model call).");
             }
-            println!("  tx: {tx}");
+            println!("  cancel: localharness unschedule {id}");
             0
         }
         Err(e) => {
@@ -605,88 +573,69 @@ mod tests {
     #[test]
     fn parse_schedule_args_full_and_defaults() {
         let p = parse_schedule_args(&args(&[
-            "oracle", "check", "the", "price", "--every", "5m", "--budget", "1", "--runs", "50",
+            "oracle", "check", "the", "price", "--every", "5m", "--runs", "50",
         ]))
         .unwrap();
         assert_eq!(p.target, "oracle");
         assert_eq!(p.task, "check the price"); // joined multi-word task
         assert_eq!(p.interval_secs, 300);
-        assert_eq!(p.budget_wei, 1_000_000_000_000_000_000); // 1 $LH in wei
         assert_eq!(p.max_runs, 50);
 
-        // --runs defaults; flags may precede the task; fractional budget.
-        let p = parse_schedule_args(&args(&[
-            "bot", "--every", "1h", "--budget", "0.5", "ping",
-        ]))
-        .unwrap();
+        // --runs defaults; flags may precede the task.
+        let p = parse_schedule_args(&args(&["bot", "--every", "1h", "ping"])).unwrap();
         assert_eq!(p.target, "bot");
         assert_eq!(p.task, "ping");
         assert_eq!(p.interval_secs, 3600);
-        assert_eq!(p.budget_wei, 500_000_000_000_000_000); // 0.5 $LH
         assert_eq!(p.max_runs, SCHEDULE_DEFAULT_RUNS);
     }
 
     #[test]
     fn parse_schedule_args_rejects_bad_input() {
-        // Missing required flags.
+        // Missing --every.
         assert!(parse_schedule_args(&args(&["t", "task"])).is_err());
-        assert!(parse_schedule_args(&args(&["t", "task", "--every", "5m"])).is_err());
         // No task (only the target positional).
-        assert!(parse_schedule_args(&args(&["t", "--every", "5m", "--budget", "1"])).is_err());
-        // Zero / non-numeric budget + bad runs.
-        assert!(parse_schedule_args(&args(&["t", "x", "--every", "5m", "--budget", "0"])).is_err());
-        assert!(parse_schedule_args(&args(&["t", "x", "--every", "5m", "--budget", "nope"])).is_err());
-        assert!(
-            parse_schedule_args(&args(&["t", "x", "--every", "5m", "--budget", "1", "--runs", "0"]))
-                .is_err()
-        );
+        assert!(parse_schedule_args(&args(&["t", "--every", "5m"])).is_err());
+        // --budget is a HARD ERROR now (off-chain jobs bill the meter, no escrow).
+        let e = parse_schedule_args(&args(&["t", "x", "--every", "5m", "--budget", "1"])).unwrap_err();
+        assert!(e.contains("--budget"), "budget rejection message: {e}");
+        // Bad --runs.
+        assert!(parse_schedule_args(&args(&["t", "x", "--every", "5m", "--runs", "0"])).is_err());
         // Sub-minute interval bubbles up from parse_interval.
-        assert!(parse_schedule_args(&args(&["t", "x", "--every", "10s", "--budget", "1"])).is_err());
+        assert!(parse_schedule_args(&args(&["t", "x", "--every", "10s"])).is_err());
     }
 
     #[test]
     fn parse_goal_args_defaults_and_marker() {
-        // Only --budget is required: --every defaults to 5m, --runs to the
-        // schedule default, and the task gains the EXACT worker marker.
-        let p = parse_goal_args(&args(&[
-            "claude", "get", "my", "TBA", "to", "1", "$LH", "--budget", "0.5",
-        ]))
-        .unwrap();
+        // --every defaults to 5m, --runs to the schedule default; the task gains
+        // the EXACT worker marker.
+        let p = parse_goal_args(&args(&["claude", "get", "my", "TBA", "to", "1", "$LH"])).unwrap();
         assert_eq!(p.target, "claude");
         assert_eq!(p.task, "GOAL: get my TBA to 1 $LH"); // marker + joined text
         assert!(p.task.starts_with(GOAL_TASK_PREFIX));
         assert_eq!(p.interval_secs, GOAL_DEFAULT_INTERVAL_SECS); // 5m default
-        assert_eq!(p.budget_wei, 500_000_000_000_000_000); // 0.5 $LH
         assert_eq!(p.max_runs, SCHEDULE_DEFAULT_RUNS); // 100 default
     }
 
     #[test]
     fn parse_goal_args_explicit_flags() {
-        // Explicit --every/--runs override the defaults; flags may precede
-        // the goal text (collect_flags order-independence, like schedule).
-        let p = parse_goal_args(&args(&[
-            "bot", "--every", "1h", "--budget", "2", "--runs", "10", "win",
-        ]))
-        .unwrap();
+        // Explicit --every/--runs override the defaults; flags may precede the goal.
+        let p = parse_goal_args(&args(&["bot", "--every", "1h", "--runs", "10", "win"])).unwrap();
         assert_eq!(p.target, "bot");
         assert_eq!(p.task, "GOAL: win");
         assert_eq!(p.interval_secs, 3600);
-        assert_eq!(p.budget_wei, 2_000_000_000_000_000_000);
         assert_eq!(p.max_runs, 10);
     }
 
     #[test]
     fn parse_goal_args_rejects_bad_input() {
-        // --budget is required.
-        assert!(parse_goal_args(&args(&["t", "goal"])).is_err());
         // No goal text (only the target positional).
-        assert!(parse_goal_args(&args(&["t", "--budget", "1"])).is_err());
-        // Zero / non-numeric budget + bad runs.
-        assert!(parse_goal_args(&args(&["t", "x", "--budget", "0"])).is_err());
-        assert!(parse_goal_args(&args(&["t", "x", "--budget", "nope"])).is_err());
-        assert!(parse_goal_args(&args(&["t", "x", "--budget", "1", "--runs", "0"])).is_err());
+        assert!(parse_goal_args(&args(&["t"])).is_err());
+        // --budget is a HARD ERROR now.
+        assert!(parse_goal_args(&args(&["t", "x", "--budget", "1"])).is_err());
+        // Bad --runs.
+        assert!(parse_goal_args(&args(&["t", "x", "--runs", "0"])).is_err());
         // A sub-minute --every bubbles up from parse_interval.
-        assert!(parse_goal_args(&args(&["t", "x", "--budget", "1", "--every", "10s"])).is_err());
+        assert!(parse_goal_args(&args(&["t", "x", "--every", "10s"])).is_err());
     }
 
     #[test]

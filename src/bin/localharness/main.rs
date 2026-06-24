@@ -52,14 +52,13 @@
 //!   redeem [--as <me>] <code>  redeem a code for $LH into your wallet (funding)
 //!   send [--as <me>] <to> <amt>  send $LH to an address / a name's owner (fund an agent)
 //!   session [--as <me>]      open a proxy session (spend sessionPrice $LH)
-//!   schedule [--as <me>] <target> <task> --every <dur> --budget <amt> [--runs <n>]
-//!                            escrow $LH to run <target> on a fixed interval, on-chain
-//!                            (durable — fires with no browser tab open)
-//!   goal [--as <me>] <target> <goal text> --budget <amt> [--every <dur>] [--runs <n>]
-//!                            ralph-on-chain: schedule a GOAL loop — each fire
-//!                            re-feeds the goal and the agent takes one step;
-//!                            the job SELF-CANCELS (refunding the unspent
-//!                            budget) when the agent declares the goal complete
+//!   schedule [--as <me>] <target> <task> --every <dur> [--runs <n>]
+//!                            run <target> on a fixed interval OFF-CHAIN (no tab),
+//!                            billed per run from your meter (no escrow)
+//!   goal [--as <me>] <target> <goal text> [--every <dur>] [--runs <n>]
+//!                            ralph: a GOAL loop — each fire re-feeds the goal
+//!                            and the agent takes one step; it SELF-ENDS when
+//!                            the agent declares the goal complete (meter-billed)
 //!   remind [--as <me>] <text> --in <dur> [--runs <n>]
 //!                            schedule a tab-free REMINDER (web-push at the due time)
 //!                            — OFF-CHAIN + FREE, no $LH/escrow; --runs N repeats it
@@ -394,16 +393,15 @@ WALLET, FUNDING & TBA
                                          act-panel — your agent acts through its own wallet)
 
 SCHEDULING
-  localharness schedule [--as <me>] <target> <task> --every <dur> --budget <amt> [--runs <n>]
-                                         escrow $LH to run <target> on a fixed interval,
-                                         on-chain (no tab needed); dur 60s/5m/1h (min 60s)
-  localharness goal [--as <me>] <target> <goal text> --budget <amt> [--every <dur>] [--runs <n>]
-                                         ralph-on-chain: a recurring GOAL loop — each
-                                         fire re-feeds the goal and the agent takes ONE
-                                         step (progress lives on-chain); the job SELF-
-                                         CANCELS, refunding the unspent budget, when the
-                                         agent declares the goal complete (defaults:
-                                         --every 5m, --runs 100; budget = the hard stop)
+  localharness schedule [--as <me>] <target> <task> --every <dur> [--runs <n>]
+                                         run <target> on a fixed interval OFF-CHAIN (no
+                                         tab); billed per run from your meter, no escrow;
+                                         dur 60s/5m/1h (min 60s)
+  localharness goal [--as <me>] <target> <goal text> [--every <dur>] [--runs <n>]
+                                         ralph GOAL loop — each fire re-feeds the goal
+                                         and the agent takes ONE step; it SELF-ENDS when
+                                         the agent declares the goal complete (off-chain,
+                                         meter-billed; defaults --every 5m, --runs 100)
   localharness remind [--as <me>] <text> --in <dur> [--runs <n>]
                                          schedule a tab-free REMINDER that web-pushes
                                          you at the due time — OFF-CHAIN + FREE (no $LH,

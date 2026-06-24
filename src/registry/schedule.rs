@@ -48,102 +48,17 @@ impl ScheduledJob {
     }
 }
 
-/// Encode `scheduleJob(uint256 targetId, bytes task, uint64 interval,
-/// uint128 budgetWei, uint32 maxRuns)` calldata. `task` is a DYNAMIC `bytes`
-/// arg, so the head holds an OFFSET to a tail of `[length][padded data]`
-/// (same dynamic-bytes layout `encode_settle`'s signature uses). The four
-/// scalars are static head words (uint64/uint128/uint32 right-aligned, the
-/// 5-word fixed head means the bytes offset is always `5 * 32`).
-pub(crate) fn encode_schedule_job(
-    target_id: u64,
-    task: &[u8],
-    interval_secs: u64,
-    budget_wei: u128,
-    max_runs: u32,
-) -> Vec<u8> {
-    let padded_len = task.len().div_ceil(32) * 32;
-    let mut out = Vec::with_capacity(4 + 5 * 32 + 32 + padded_len);
-    out.extend_from_slice(&selector("scheduleJob(uint256,bytes,uint64,uint128,uint32)"));
-    // Head word 0: targetId (uint256).
-    out.extend_from_slice(&u256_be(target_id as u128));
-    // Head word 1: offset to the `bytes task` tail — 5 fixed head words.
-    out.extend_from_slice(&u256_be(5 * 32));
-    // Head words 2..5: interval / budgetWei / maxRuns (each right-aligned).
-    out.extend_from_slice(&u256_be(interval_secs as u128));
-    out.extend_from_slice(&u256_be(budget_wei));
-    out.extend_from_slice(&u256_be(max_runs as u128));
-    // Tail: length + the task bytes, right-padded to a 32-byte multiple.
-    out.extend_from_slice(&u256_be(task.len() as u128));
-    out.extend_from_slice(task);
-    out.resize(out.len() + (padded_len - task.len()), 0);
-    out
-}
+// `encode_schedule_job` + `schedule_job_sponsored[_bridged]` were REMOVED:
+// scheduling moved OFF-CHAIN, so the CLI no longer creates on-chain ScheduleFacet
+// jobs (it POSTs `create_offchain_job` below). `cancel_job_sponsored` +
+// `encode_cancel_job` STAY — `localharness unschedule <numeric-id>` still cancels
+// any in-flight LEGACY on-chain job (and refunds its escrow).
 
 pub(crate) fn encode_cancel_job(job_id: u64) -> Vec<u8> {
     let mut out = Vec::with_capacity(4 + 32);
     out.extend_from_slice(&selector("cancelJob(uint256)"));
     out.extend_from_slice(&u256_be(job_id as u128));
     out
-}
-
-/// Schedule a recurring job via a sponsored Tempo tx. Batches
-/// `approve(diamond, budgetWei)` on `$LH` + `scheduleJob(targetId, task,
-/// interval, budgetWei, maxRuns)` in ONE tx — `scheduleJob` then escrows the
-/// budget via `transferFrom` inside its own body (same cost-gate shape as
-/// `deposit_credits_sponsored`). Returns the tx hash once mined; read the new
-/// job id back from `jobs_of(owner)` (its last entry) or the `JobScheduled`
-/// event.
-#[allow(clippy::too_many_arguments)]
-pub async fn schedule_job_sponsored(
-    sender: &SigningKey,
-    fee_payer: &SigningKey,
-    target_id: u64,
-    task: &[u8],
-    interval_secs: u64,
-    budget_wei: u128,
-    max_runs: u32,
-    fee_token: &str,
-) -> Result<String, String> {
-    schedule_job_sponsored_bridged(
-        sender, fee_payer, target_id, task, interval_secs, budget_wei, max_runs, fee_token, 0,
-    )
-    .await
-}
-
-/// [`schedule_job_sponsored`] with the meter auto-bridge: `bridge_wei > 0`
-/// prepends `withdrawCredits(bridge_wei)` in the SAME atomic tx so unspent
-/// chat-meter credits can back the escrow (see
-/// `sponsored_escrow_diamond_call_bridged`).
-#[allow(clippy::too_many_arguments)]
-pub async fn schedule_job_sponsored_bridged(
-    sender: &SigningKey,
-    fee_payer: &SigningKey,
-    target_id: u64,
-    task: &[u8],
-    interval_secs: u64,
-    budget_wei: u128,
-    max_runs: u32,
-    fee_token: &str,
-    bridge_wei: u128,
-) -> Result<String, String> {
-    // approve (~46k) + scheduleJob + ~275k sponsorship overhead. MEASURED via
-    // `cast estimate`: scheduleJob alone is ~2.88M for a ~45-byte task (3 packed
-    // cold job slots + the cold `task` bytes ~7.6k/BYTE + the two enumerable-index
-    // pushes jobIds/jobsOfOwner + transferFrom + event). The old 1.5M base
-    // OUT-OF-GASSED at ~1.9M (receipt status=false). 3.5M base + 9k/byte gives
-    // comfortable headroom; the sponsor only pays gas USED, so over-budgeting is
-    // free. (See the CLAUDE.md "cast estimate, never guess" gotcha.)
-    let gas = 3_500_000 + (task.len() as u128) * 9_000;
-    sponsored_escrow_diamond_call_bridged(
-        sender,
-        fee_payer,
-        budget_wei,
-        encode_schedule_job(target_id, task, interval_secs, budget_wei, max_runs),
-        fee_token,
-        gas,
-        bridge_wei,
-    )
-    .await
 }
 
 /// Cancel a scheduled job via a sponsored Tempo tx — REFUNDS the job's full
@@ -399,55 +314,6 @@ pub async fn task_of(job_id: u64) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// `scheduleJob(uint256,bytes,uint64,uint128,uint32)` calldata: the
-    /// dynamic `bytes task` is the 2nd arg, so head word 1 must hold the
-    /// offset (5 fixed head words = 160) and the tail must be length-prefixed
-    /// then zero-padded to a 32-byte multiple. The four scalars are static head
-    /// words AFTER the offset. A wrong offset/length would make the facet read a
-    /// bogus task (or revert), and a mis-placed scalar would escrow the wrong
-    /// budget / set the wrong interval — so pin every word.
-    #[test]
-    fn schedule_job_calldata_layout() {
-        let task = b"ping the oracle"; // 15 bytes -> pads to 32
-        let cd = encode_schedule_job(0x42, task, 300, 1_500_000_000_000_000_000u128, 100);
-        assert_eq!(&cd[0..4], &selector("scheduleJob(uint256,bytes,uint64,uint128,uint32)"));
-        // 5 static head words + length word + 32 bytes of padded task tail.
-        assert_eq!(cd.len(), 4 + 5 * 32 + 32 + 32);
-        // Word 0: targetId.
-        assert_eq!(u64::from_be_bytes(cd[4 + 24..4 + 32].try_into().unwrap()), 0x42);
-        // Word 1: offset to the bytes tail = 5*32 = 160.
-        assert_eq!(u64::from_be_bytes(cd[4 + 32 + 24..4 + 2 * 32].try_into().unwrap()), 5 * 32);
-        // Word 2: interval (uint64, right-aligned).
-        assert_eq!(u64::from_be_bytes(cd[4 + 2 * 32 + 24..4 + 3 * 32].try_into().unwrap()), 300);
-        // Word 3: budgetWei (uint128 in the low 16 bytes).
-        assert_eq!(
-            u128::from_be_bytes(cd[4 + 3 * 32 + 16..4 + 4 * 32].try_into().unwrap()),
-            1_500_000_000_000_000_000u128
-        );
-        // Word 4: maxRuns (uint32, right-aligned).
-        assert_eq!(u64::from_be_bytes(cd[4 + 4 * 32 + 24..4 + 5 * 32].try_into().unwrap()), 100);
-        // Tail word 5: bytes length = 15.
-        assert_eq!(
-            u64::from_be_bytes(cd[4 + 5 * 32 + 24..4 + 6 * 32].try_into().unwrap()),
-            task.len() as u64
-        );
-        // The task bytes follow, then zero padding to the 32-byte boundary.
-        assert_eq!(&cd[4 + 6 * 32..4 + 6 * 32 + task.len()], task);
-        assert_eq!(&cd[4 + 6 * 32 + task.len()..], &[0u8; 32 - 15]);
-    }
-
-    /// A task that is an EXACT 32-byte multiple needs NO trailing padding —
-    /// guard the `div_ceil` boundary (a 32-byte task must not gain a phantom
-    /// 32-byte zero word).
-    #[test]
-    fn schedule_job_task_exact_multiple_no_extra_pad() {
-        let task = [0xABu8; 32];
-        let cd = encode_schedule_job(1, &task, 60, 1, 1);
-        // 5 head + length + exactly 32 bytes of task, no extra pad word.
-        assert_eq!(cd.len(), 4 + 5 * 32 + 32 + 32);
-        assert_eq!(&cd[4 + 6 * 32..], &task);
-    }
 
     #[test]
     fn cancel_job_calldata_layout() {

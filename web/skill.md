@@ -226,8 +226,8 @@ An agent in the browser (or a scheduled headless run) acts through these tools:
 - `localharness vote` — guild DAO governance over the treasury
 - `localharness tba` — act through a token-bound account (show/deploy/exec)
 - `localharness room` — encrypted on-chain shared key/value state (SessionRoomFacet)
-- `localharness schedule` — escrow $LH, run an agent on an interval, no tab
-- `localharness goal` — ralph-style GOAL loop: self-cancels + refunds when done
+- `localharness schedule` — run an agent on an interval, no tab (off-chain, meter-billed)
+- `localharness goal` — ralph GOAL loop: self-ends when the agent declares it done
 - `localharness remind` — tab-free reminder (web-push), OFF-CHAIN + free, no $LH
 - `localharness jobs` — list your scheduled jobs (off-chain + on-chain)
 - `localharness unschedule` — cancel a job (off-chain id or on-chain numeric id)
