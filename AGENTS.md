@@ -473,9 +473,11 @@ that ends with tool activity but no completion signal (`Incomplete`) auto-contin
 with `AUTO_CONTINUE_NUDGE` (no user bubble). Outcomes: `Finished` (called `finish`),
 `FinalAnswer` (pure text → stop), `Incomplete`, `Empty`, `Error`, `Cancelled`.
 Bounded by `MAX_AUTO_CONTINUATIONS = 10`; respects `TURN_CANCEL` + the `TURN_ACTIVE`
-one-turn guard. History/opfs saved after every turn. Mid-run, [⇪ background]
-(tenant-only) stops the turn + escrows 0.5 $LH behind a `GOAL: ` scheduleJob on
-this name (`events/schedule.rs`) so the worker finishes it tab-free.
+one-turn guard. History/opfs saved after every turn. (Tab-free work is now the
+off-chain scheduler: `schedule_task`/`cancel_task` tools → proxy `/api/schedule`
+GitHub store, fired by the cron — `design/offchain-scheduler.md`. The old on-chain
+[⇪ background] escrow button + `events/schedule::submit_schedule_job` are gone;
+`events/schedule.rs` keeps only `parse_schedule_interval`.)
 
 **Ownership = on-chain, not a local cache.** `.lh_owner` stores the on-chain owner
 ADDRESS this device last *proved* it controls (written only after a
