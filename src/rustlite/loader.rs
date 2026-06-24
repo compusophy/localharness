@@ -345,6 +345,41 @@ fn build_host_imports(mem: &SharedMemory) -> Result<(js_sys::Object, NetRuntime)
     mp_get.forget();
     let _ = Reflect::set(&imports, &JsValue::from_str("host_mp"), &host_mp);
 
+    // host_chat module — off-chain open CHATROOM (per-subdomain text message log).
+    // The REAL impl is the Web Worker's host_chat + src/app/display.rs (holds the
+    // received-line ring + compose buffer, polls /api/chat); this bare loader has no
+    // relay, so it's inert (empty ring / no-op compose). Integer-only ABI — mirrors
+    // typecheck.rs chat::* AND web/cartridge-worker.js host_chat.
+    let host_chat = Object::new();
+    let chat_poll = Closure::<dyn Fn() -> i32>::new(|| 0);
+    let chat_line_count = Closure::<dyn Fn() -> i32>::new(|| 0);
+    let chat_line_len = Closure::<dyn Fn(i32) -> i32>::new(|_a| 0);
+    let chat_line_char = Closure::<dyn Fn(i32, i32) -> i32>::new(|_a, _b| -1);
+    let chat_key = Closure::<dyn Fn(i32)>::new(|_a| {});
+    let chat_backspace = Closure::<dyn Fn()>::new(|| {});
+    let chat_compose_len = Closure::<dyn Fn() -> i32>::new(|| 0);
+    let chat_compose_char = Closure::<dyn Fn(i32) -> i32>::new(|_a| -1);
+    let chat_send = Closure::<dyn Fn() -> i32>::new(|| 0);
+    let _ = Reflect::set(&host_chat, &JsValue::from_str("poll"), chat_poll.as_ref());
+    let _ = Reflect::set(&host_chat, &JsValue::from_str("line_count"), chat_line_count.as_ref());
+    let _ = Reflect::set(&host_chat, &JsValue::from_str("line_len"), chat_line_len.as_ref());
+    let _ = Reflect::set(&host_chat, &JsValue::from_str("line_char"), chat_line_char.as_ref());
+    let _ = Reflect::set(&host_chat, &JsValue::from_str("key"), chat_key.as_ref());
+    let _ = Reflect::set(&host_chat, &JsValue::from_str("backspace"), chat_backspace.as_ref());
+    let _ = Reflect::set(&host_chat, &JsValue::from_str("compose_len"), chat_compose_len.as_ref());
+    let _ = Reflect::set(&host_chat, &JsValue::from_str("compose_char"), chat_compose_char.as_ref());
+    let _ = Reflect::set(&host_chat, &JsValue::from_str("send"), chat_send.as_ref());
+    chat_poll.forget();
+    chat_line_count.forget();
+    chat_line_len.forget();
+    chat_line_char.forget();
+    chat_key.forget();
+    chat_backspace.forget();
+    chat_compose_len.forget();
+    chat_compose_char.forget();
+    chat_send.forget();
+    let _ = Reflect::set(&imports, &JsValue::from_str("host_chat"), &host_chat);
+
     // host_net module — WebSocket-backed multiplayer / sync I/O. Mirrors
     // host_display: integer-only host functions a rustlite cartridge calls,
     // strings passed as length-prefixed pointers into cartridge memory.

@@ -1099,6 +1099,32 @@ fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, 
         "mp::send" => (vec![I32], Void),
         "mp::event_count" => (vec![], I32),
         "mp::event_next" => (vec![], I32),
+        // --- open chatroom (host_chat): a per-ROOM (= this subdomain) append-only
+        // text log over the proxy's off-chain /api/chat relay. rustlite has no
+        // String/Vec + arrays are read-only, so ALL text lives HOST-side (the
+        // worker holds the received-line ring + the outgoing compose buffer); the
+        // cartridge reads/writes it purely as INTEGERS (codepoints), keeping the
+        // host ABI integer-only. The host auto-polls the relay on first `poll()`.
+        //
+        //   poll() -> n           start polling (idempotent) + return # lines held.
+        //   line_count() -> n     received lines currently buffered (oldest first).
+        //   line_len(i) -> len    byte length of received line i (0 if out of range).
+        //   line_char(i,p) -> cp  codepoint at p of line i (-1 out of range).
+        //   key(cp)               append a char to the outgoing compose buffer.
+        //   backspace()           delete the last compose char.
+        //   compose_len() -> len  current compose-buffer length.
+        //   compose_char(p) -> cp codepoint at p of the compose buffer (-1 oob).
+        //   send() -> 1/0         flush the compose buffer as a message (1 if it
+        //                         was non-empty), then clear it.
+        "chat::poll" => (vec![], I32),
+        "chat::line_count" => (vec![], I32),
+        "chat::line_len" => (vec![I32], I32),
+        "chat::line_char" => (vec![I32, I32], I32),
+        "chat::key" => (vec![I32], Void),
+        "chat::backspace" => (vec![], Void),
+        "chat::compose_len" => (vec![], I32),
+        "chat::compose_char" => (vec![I32], I32),
+        "chat::send" => (vec![], I32),
         // --- http (host_http): one-shot HTTP GET + HTML→text, the SAME POLL
         // MODEL as host_net (open a request → get a handle, poll `ready` until
         // the body lands, then read it out of cartridge memory). A cartridge

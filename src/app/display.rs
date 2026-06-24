@@ -1474,6 +1474,18 @@ mod worker {
                     "mp:deltas" => mp_send(Some(mp_read_int_array(&data, "deltas")), None),
                     "mp:events" => mp_send(None, Some(mp_read_int_array(&data, "events"))),
                     "mp:leave" => mp_teardown(),
+                    // host::chat — an open-chatroom cartridge wants to start
+                    // receiving (begin polling the /api/chat relay for this
+                    // subdomain) or post a line. The relay + personal-sign auth
+                    // live HERE on main; new lines come back as `chat:msg`.
+                    "chat:start" => chat_start(worker_for_msg.clone()),
+                    "chat:send" => {
+                        let text = Reflect::get(&data, &JsValue::from_str("text"))
+                            .ok().and_then(|v| v.as_string()).unwrap_or_default();
+                        if !text.is_empty() {
+                            chat_send(text);
+                        }
+                    }
                     "done" => {
                         record_outcome(run_gen, RunOutcome::Live);
                         // A one-shot `render()` finished and posted its single
@@ -1532,6 +1544,7 @@ mod worker {
     /// Terminate + drop the current worker (clears its watchdog). Idempotent.
     pub(super) fn stop_worker() {
         mp_teardown(); // close any multiplayer Peer this cartridge held
+        chat_stop(); // halt the chatroom relay-poll loop
         WORKER.with(|cell| {
             // Mark terminated so an in-flight watchdog tick is a no-op, then
             // drop the handle (its `Drop` terminates the worker + clears the
@@ -1682,6 +1695,74 @@ mod worker {
     /// Drop the multiplayer session (Peer::drop closes the connection). Idempotent.
     fn mp_teardown() {
         MP_SESSION.with(|s| *s.borrow_mut() = None);
+    }
+
+    // ── host::chat open-chatroom bridge (worker ↔ the /api/chat relay) ────────
+    // An open-chatroom cartridge (worker) posts chat:start (begin polling) and
+    // chat:send (post a line). The relay GET/POST + personal-sign auth live HERE on
+    // main; the ROOM is this subdomain. A poll loop GETs new lines every ~2s and
+    // posts them back as `chat:msg`. CHAT_ACTIVE gates the loop (cleared on stop).
+    thread_local! {
+        static CHAT_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Begin polling the chatroom relay for this subdomain (idempotent — a
+    /// second chat:start while already active is a no-op). Spawned on the first
+    /// `host::chat` use. No tenant name (apex/preview) → inert.
+    fn chat_start(worker: Worker) {
+        if CHAT_ACTIVE.with(|a| a.get()) {
+            return;
+        }
+        let Some(room) = crate::app::tenant::current_name() else {
+            return;
+        };
+        CHAT_ACTIVE.with(|a| a.set(true));
+        wasm_bindgen_futures::spawn_local(chat_poll_loop(worker, room));
+    }
+
+    /// Poll `room` for new lines while CHAT_ACTIVE, posting each as `chat:msg`.
+    /// First poll (cursor -1) pulls the backlog; then only `n > cursor`.
+    async fn chat_poll_loop(worker: Worker, room: String) {
+        let mut cursor: i64 = -1;
+        while CHAT_ACTIVE.with(|a| a.get()) {
+            if let Ok(msgs) = crate::registry::chat_poll(&room, cursor).await {
+                for (n, name, text) in msgs {
+                    if n > cursor {
+                        cursor = n;
+                    }
+                    chat_post_to_worker(&worker, &format!("{name}: {text}"));
+                }
+            }
+            crate::runtime::sleep_ms(2000).await;
+        }
+    }
+
+    fn chat_post_to_worker(worker: &Worker, line: &str) {
+        let m = Object::new();
+        let _ = Reflect::set(&m, &JsValue::from_str("type"), &JsValue::from_str("chat:msg"));
+        let _ = Reflect::set(&m, &JsValue::from_str("text"), &JsValue::from_str(line));
+        let _ = worker.post_message(&m);
+    }
+
+    /// POST a line to the chatroom relay for this subdomain (personal-sign authed
+    /// off the viewer's identity). No identity → silently dropped (the cartridge
+    /// can still READ the room).
+    fn chat_send(text: String) {
+        wasm_bindgen_futures::spawn_local(async move {
+            let Some(room) = crate::app::tenant::current_name() else {
+                return;
+            };
+            let Some((signer, _)) = crate::app::chat::credit_signer().await else {
+                return;
+            };
+            let now = (js_sys::Date::now() / 1000.0) as u64;
+            let _ = crate::registry::chat_post(&signer, now, &room, &text).await;
+        });
+    }
+
+    /// Halt the chatroom relay-poll loop (the loop exits on its next tick).
+    fn chat_stop() {
+        CHAT_ACTIVE.with(|a| a.set(false));
     }
 
     /// Forward the latest pointer to the worker (poll model). No-op if no

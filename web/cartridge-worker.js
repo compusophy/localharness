@@ -1463,8 +1463,62 @@ function resetMp() {
   if (typeof self !== 'undefined' && self.postMessage) self.postMessage({ type: 'mp:leave' });
 }
 
+// ---- host_chat: open CHATROOM (per-subdomain off-chain message log) -----------
+// rustlite has no String/Vec + read-only arrays, so ALL chat text lives HERE (the
+// worker): chatLines = the received-line ring, chatCompose = the outgoing buffer.
+// The cartridge reads/writes them purely as INTEGER codepoint calls (integer-only
+// host ABI). The relay (/api/chat) + personal-sign auth live on MAIN (display.rs):
+// first poll() posts {chat:start} so MAIN begins polling; received lines arrive as
+// {chat:msg}; send() posts {chat:send}. PARITY with src/rustlite/loader.rs host_chat.
+let chatLines = []; // received "name: text" lines, oldest first
+let chatCompose = ''; // the line the user is typing
+let chatStarted = 0;
+const CHAT_MAX_LINES = 64; // ring cap
+const CHAT_MAX_COMPOSE = 200;
+function chatStart() {
+  if (!chatStarted) { chatStarted = 1; self.postMessage({ type: 'chat:start' }); }
+}
+const host_chat = {
+  poll() { chatStart(); return chatLines.length; }, // first poll kicks MAIN's relay loop
+  line_count() { return chatLines.length; },
+  line_len(i) { const s = chatLines[i | 0]; return typeof s === 'string' ? s.length : 0; },
+  line_char(i, p) {
+    const s = chatLines[i | 0];
+    if (typeof s !== 'string' || (p | 0) < 0 || (p | 0) >= s.length) return -1;
+    return s.charCodeAt(p | 0) | 0;
+  },
+  key(cp) {
+    if (chatCompose.length < CHAT_MAX_COMPOSE && (cp | 0) > 0) chatCompose += String.fromCharCode(cp | 0);
+  },
+  backspace() { chatCompose = chatCompose.slice(0, -1); },
+  compose_len() { return chatCompose.length; },
+  compose_char(p) {
+    if ((p | 0) < 0 || (p | 0) >= chatCompose.length) return -1;
+    return chatCompose.charCodeAt(p | 0) | 0;
+  },
+  send() {
+    const text = chatCompose.trim();
+    if (text.length === 0) return 0;
+    chatStart();
+    self.postMessage({ type: 'chat:send', text });
+    chatCompose = '';
+    return 1;
+  },
+};
+function applyChatMsg(msg) {
+  const line = typeof msg.text === 'string' ? msg.text : '';
+  if (!line) return;
+  chatLines.push(line);
+  if (chatLines.length > CHAT_MAX_LINES) chatLines = chatLines.slice(-CHAT_MAX_LINES);
+}
+function resetChat() {
+  chatLines = [];
+  chatCompose = '';
+  chatStarted = 0;
+}
+
 function buildImports() {
-  return { host_display, host_net, host_http, host_audio, host_log, host_time, host_abort, host_agent, host_compose, host_mp };
+  return { host_display, host_net, host_http, host_audio, host_log, host_time, host_abort, host_agent, host_compose, host_mp, host_chat };
 }
 
 // ---- present + frame loop ----------------------------------------------------
@@ -1515,6 +1569,7 @@ async function load(wasmBuf) {
   clearAllHttp();
   composeReset(); // a fresh parent clears the whole compose graph
   resetMp(); // tear down any multiplayer session + clear the mirror
+  resetChat(); // clear the chatroom inbox + poll-start flag
   state.fill(0);
   ptr.x = 0; ptr.y = 0; ptr.down = 0;
   memory = null;
@@ -1653,6 +1708,10 @@ if (IS_WORKER) {
       case 'mp:peer':
         // MAIN: a peer's state deltas / events arrived over the data channel.
         applyMpPeer(msg);
+        break;
+      case 'chat:msg':
+        // MAIN: a new chatroom line arrived from the relay poll.
+        applyChatMsg(msg);
         break;
       case 'stop':
         running = false;

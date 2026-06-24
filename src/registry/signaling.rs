@@ -361,6 +361,41 @@ pub async fn fetch_ice_json() -> Result<String, String> {
     }
 }
 
+// ─── Open chatroom relay (proxy `/api/chat`) ────────────────────────────────
+// Per-room append-only text log (room = the cartridge's subdomain). POST a
+// message (personal-sign authed); poll the log (open GET). Backs `host::chat`.
+
+/// Post a chat message to `room` (personal-sign authed; the relay stamps the
+/// sender's short address as the display name). `Ok(())` on success.
+pub async fn chat_post(signer: &SigningKey, now_secs: u64, room: &str, text: &str) -> Result<(), String> {
+    let token = proxy_auth_token(signer, now_secs);
+    let url = format!("{CREDIT_PROXY_URL}api/chat");
+    let body = serde_json::json!({ "room": room, "text": text });
+    http_post_json_authed(&url, &token, &body).await
+}
+
+/// Poll `room`'s log for messages with `n > after` (open GET). Returns
+/// `(n, name, text)` tuples, oldest-first.
+pub async fn chat_poll(room: &str, after: i64) -> Result<Vec<(i64, String, String)>, String> {
+    let url = format!("{CREDIT_PROXY_URL}api/chat?room={room}&after={after}");
+    let bytes = match http_get_bytes(&url).await? {
+        Some(b) => b,
+        None => return Ok(Vec::new()),
+    };
+    let v: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("chat poll: bad json: {e}"))?;
+    let mut out = Vec::new();
+    if let Some(msgs) = v.get("messages").and_then(|m| m.as_array()) {
+        for m in msgs {
+            let n = m.get("n").and_then(|x| x.as_i64()).unwrap_or(0);
+            let name = m.get("name").and_then(|x| x.as_str()).unwrap_or("?").to_string();
+            let text = m.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            out.push((n, name, text));
+        }
+    }
+    Ok(out)
+}
+
 
 #[cfg(test)]
 mod tests {
