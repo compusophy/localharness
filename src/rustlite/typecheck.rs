@@ -1072,6 +1072,33 @@ fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, 
         "net::poll" => (vec![I32, I32, I32], I32),
         "net::status" => (vec![I32], I32),
         "net::close" => (vec![I32], Void),
+        // --- multiplayer (host_mp): browser-to-browser P2P over a WebRTC data
+        // channel, off-chain-signaled (design/multiplayer-cartridges.md). DISTINCT
+        // from `net` (that's a WebSocket-to-server client). Integer-only: a SHARED
+        // STATE vector per peer (continuous "where is everyone") + an EVENT queue
+        // (discrete "something happened"). 2-peer v1.
+        //
+        // `open() -> code`           host a room; returns a numeric CODE to show the
+        //                            other player (they `join(code)`).
+        // `join(code)`               join the room with that code.
+        // `connected() -> i32`       1 once the data channel is open, else 0.
+        // `self_index() -> i32`      this peer's index (host 0 / joiner 1; -1 none).
+        // `peer_count() -> i32`      participants connected (self + peers).
+        // `set(slot, value)`         write MY shared-state slot (broadcast, coalesced).
+        // `get(peer, slot) -> i32`   read peer `peer`'s slot (last seen; 0 if unknown).
+        // `send(value)`              broadcast a discrete EVENT to peers.
+        // `event_count() -> i32`     received events queued.
+        // `event_next() -> i32`      pop + return the oldest received event (0 if none).
+        "mp::open" => (vec![], I32),
+        "mp::join" => (vec![I32], Void),
+        "mp::connected" => (vec![], I32),
+        "mp::self_index" => (vec![], I32),
+        "mp::peer_count" => (vec![], I32),
+        "mp::set" => (vec![I32, I32], Void),
+        "mp::get" => (vec![I32, I32], I32),
+        "mp::send" => (vec![I32], Void),
+        "mp::event_count" => (vec![], I32),
+        "mp::event_next" => (vec![], I32),
         // --- http (host_http): one-shot HTTP GET + HTML→text, the SAME POLL
         // MODEL as host_net (open a request → get a handle, poll `ready` until
         // the body lands, then read it out of cartridge memory). A cartridge
