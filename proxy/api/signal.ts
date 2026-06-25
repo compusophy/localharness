@@ -38,8 +38,13 @@ const ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
 // here — the store has no directory listing), and the forward-reserved trickle
 // candidate slots (cands-*; handlers land with trickle ICE, naming pinned now so
 // it never migrates). The slot namespace IS the signaling protocol.
-const SLOT_RE = /^(offer|answer|join|(?:offer|answer)-[a-z0-9]{1,32}|cands-(?:host|offerer|answerer|joiner-[a-z0-9]{1,32}))$/;
+// + `slots` (the MESH membership blob) and directed-pair SDP slots
+// `offer-{a}-{b}`/`answer-{a}-{b}` keyed by the two peers' slot indices (mesh:
+// the lower index offers, the higher answers — deterministic, no double-dial).
+const SLOT_RE = /^(offer|answer|join|slots|(?:offer|answer)-[a-z0-9]{1,32}|(?:offer|answer)-\d{1,2}-\d{1,2}|cands-(?:host|offerer|answerer|joiner-[a-z0-9]{1,32}))$/;
 const JOINER_RE = /^[a-z0-9]{1,32}$/;
+const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
+const MESH_SLOTS = 8; // fixed mesh capacity (mirrors host::mp MP_PEERS)
 
 function corsHeaders(origin: string | null): Record<string, string> {
   const h: Record<string, string> = {
@@ -83,11 +88,20 @@ function b64decodeUtf8(b64: string): string {
   return new TextDecoder().decode(bytes);
 }
 
-// SDP slots carry {sdp,ts}; the `join` roster carries {joiners,ts}. One loose
-// shape covers both (ts is always present and drives the TTL).
+// One MESH membership slot: a peer's short id, its FULL address (the
+// anti-spoof key — only the address owner may write its slot), and a
+// SERVER-STAMPED ts (skew-free freshness; a stale entry is reclaimable).
+interface SlotEntry {
+  id: string;
+  addr: string;
+  ts: number;
+}
+// SDP slots carry {sdp,ts}; the `join` roster carries {joiners,ts}; the mesh
+// `slots` blob carries {slots,ts}. One loose shape covers all (ts drives the TTL).
 interface Blob {
   sdp?: string;
   joiners?: string[];
+  slots?: (SlotEntry | null)[];
   ts: number;
 }
 
@@ -155,10 +169,13 @@ export default async function handler(req: Request): Promise<Response> {
       return json({ error: 'store: ' + (e as Error).message }, 502, origin);
     }
     const now = Math.floor(Date.now() / 1000);
-    if (!hit || now - hit.blob.ts > SIGNAL_TTL_SECS) return json({}, 200, origin);
-    // Return the stored blob verbatim: {sdp,ts} for SDP slots, {joiners,ts} for
-    // the roster — the client reads whichever field it asked for.
-    return json(hit.blob, 200, origin);
+    // Every GET carries the SERVER `now` so the mesh computes entry freshness on
+    // server time (skew-free) + the blob `sha` so it can CAS-write the next update.
+    if (!hit) return json({ now }, 200, origin);
+    // The mesh `slots` blob is NEVER TTL-hidden: per-entry freshness is computed
+    // client-side from `now` - entry.ts, so a quiet-but-alive room stays visible.
+    if (slot !== 'slots' && now - hit.blob.ts > SIGNAL_TTL_SECS) return json({ now }, 200, origin);
+    return json({ ...hit.blob, now, sha: hit.sha }, 200, origin);
   }
 
   if (req.method !== 'POST') return json({ error: 'GET or POST' }, 405, origin);
@@ -201,6 +218,51 @@ export default async function handler(req: Request): Promise<Response> {
       }
     }
     return json({ error: 'join busy' }, 409, origin);
+  }
+
+  // put-slots: write the MESH membership blob under a CAS sha guard. The caller
+  // may only claim/refresh the slot bearing ITS OWN address; the server STAMPS
+  // that slot's ts (skew-free freshness). Other slots carry through as-read. A
+  // 409 (someone wrote first) returns the live blob so the caller re-applies.
+  if (action === 'put-slots') {
+    const myIdx = Number(payload.my);
+    if (!Number.isInteger(myIdx) || myIdx < 0 || myIdx >= MESH_SLOTS) {
+      return json({ error: 'bad slot index' }, 400, origin);
+    }
+    const slotsIn = Array.isArray(payload.slots) ? (payload.slots as unknown[]) : null;
+    if (!slotsIn || slotsIn.length !== MESH_SLOTS) return json({ error: 'bad slots (need 8)' }, 400, origin);
+    const clean: (SlotEntry | null)[] = [];
+    for (let i = 0; i < MESH_SLOTS; i++) {
+      const e = slotsIn[i] as Record<string, unknown> | null;
+      if (e && typeof e === 'object' && ADDR_RE.test(String(e.addr)) && JOINER_RE.test(String(e.id))) {
+        clean.push({ id: String(e.id), addr: String(e.addr).toLowerCase(), ts: Number(e.ts) || 0 });
+      } else {
+        clean.push(null);
+      }
+    }
+    // Anti-spoof: my slot MUST carry my authenticated address; the server stamps ts.
+    const mine = clean[myIdx];
+    if (!mine || mine.addr !== auth.address.toLowerCase()) {
+      return json({ error: 'your slot must carry your own address' }, 403, origin);
+    }
+    clean[myIdx] = { id: mine.id, addr: auth.address.toLowerCase(), ts: now };
+    const path = pathFor(room, 'slots');
+    const expectSha = typeof payload.sha === 'string' && payload.sha ? (payload.sha as string) : undefined;
+    let existing: { blob: Blob; sha: string } | null;
+    try {
+      existing = await ghGet(path).catch(() => null);
+    } catch (e) {
+      return json({ error: 'store: ' + (e as Error).message }, 502, origin);
+    }
+    if ((existing?.sha ?? '') !== (expectSha ?? '')) {
+      return json({ conflict: true, slots: existing?.blob?.slots ?? null, sha: existing?.sha ?? '', now }, 409, origin);
+    }
+    try {
+      await ghPut(path, JSON.stringify({ slots: clean, ts: now }), `mesh ${room}/slots`, existing?.sha);
+    } catch (e) {
+      return json({ conflict: true, error: (e as Error).message, now }, 409, origin);
+    }
+    return json({ ok: true, my: myIdx, now }, 200, origin);
   }
 
   // clear: drop a room's slots once peers have connected (best-effort cleanup;

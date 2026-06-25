@@ -381,6 +381,87 @@ pub async fn signal_get_joiners(room: &str) -> Result<Vec<String>, String> {
     }
 }
 
+// ─── MESH membership (proxy `/api/signal` `slots` blob) ──────────────────────
+// The HOSTLESS-mesh roster: a fixed 8-slot blob where each peer OWNS one slot
+// {id, addr, ts}. The SERVER stamps `ts` (skew-free freshness) and returns its
+// `now` on every read; a stale slot (now - ts > a window) is reclaimable. CAS-
+// guarded by the blob `sha` so concurrent claims/heartbeats serialize.
+
+/// Mesh capacity (mirrors the worker's MP_PEERS + signal.ts MESH_SLOTS).
+pub const MESH_SLOTS: usize = 8;
+
+/// One mesh membership slot: a peer's short id, full address (the anti-spoof key
+/// — only the address owner may write its slot), and the server-stamped ts.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SlotEntry {
+    pub id: String,
+    pub addr: String,
+    pub ts: u64,
+}
+
+/// The mesh slots blob + the SERVER `now` (freshness anchor) + the blob `sha`
+/// (for the next CAS write). `slots` is always length [`MESH_SLOTS`].
+pub struct MeshSlots {
+    pub slots: Vec<Option<SlotEntry>>,
+    pub now: u64,
+    pub sha: Option<String>,
+}
+
+/// Read the mesh `slots` blob (open GET). Returns 8 slots (Nones if empty/new),
+/// the server `now`, and the blob sha.
+pub async fn signal_get_slots(room: &str) -> Result<MeshSlots, String> {
+    let url = format!("{CREDIT_PROXY_URL}api/signal?room={room}&slot=slots");
+    let mut slots: Vec<Option<SlotEntry>> = vec![None; MESH_SLOTS];
+    let mut now: u64 = 0;
+    let mut sha: Option<String> = None;
+    if let Some(bytes) = http_get_bytes(&url).await? {
+        let v: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|e| format!("get_slots: bad json: {e}"))?;
+        now = v.get("now").and_then(|x| x.as_u64()).unwrap_or(0);
+        sha = v.get("sha").and_then(|x| x.as_str()).map(String::from);
+        if let Some(arr) = v.get("slots").and_then(|s| s.as_array()) {
+            for (i, e) in arr.iter().take(MESH_SLOTS).enumerate() {
+                slots[i] = serde_json::from_value::<SlotEntry>(e.clone()).ok();
+            }
+        }
+    }
+    Ok(MeshSlots { slots, now, sha })
+}
+
+/// Outcome of a CAS `put-slots`: written, or a sha conflict (re-read + retry).
+pub enum PutSlots {
+    Written,
+    Conflict,
+}
+
+/// Write the mesh slots blob under a CAS sha guard. `slots[my_idx]` MUST carry
+/// the signer's own address (the server enforces it and stamps the entry's ts).
+/// `Conflict` = another peer wrote first; the caller re-reads + retries.
+pub async fn signal_put_slots(
+    signer: &SigningKey,
+    now_secs: u64,
+    room: &str,
+    slots: &[Option<SlotEntry>],
+    my_idx: usize,
+    sha: Option<&str>,
+) -> Result<PutSlots, String> {
+    let token = proxy_auth_token(signer, now_secs);
+    let url = format!("{CREDIT_PROXY_URL}api/signal");
+    let body = serde_json::json!({
+        "action": "put-slots",
+        "room": room,
+        "slots": slots,
+        "my": my_idx,
+        "sha": sha.unwrap_or(""),
+    });
+    let (code, _v) = http_post_json_authed_with_status(&url, &token, &body).await?;
+    match code {
+        200 => Ok(PutSlots::Written),
+        409 => Ok(PutSlots::Conflict),
+        c => Err(format!("put-slots: HTTP {c}")),
+    }
+}
+
 /// Fetch the proxy's WebRTC ICE-server config JSON (`{iceServers:[…]}`) — STUN
 /// always, TURN when the proxy is provisioned (`/api/turn`). Open GET. The browser
 /// parses it into the RtcConfiguration. Returns the raw JSON body text.

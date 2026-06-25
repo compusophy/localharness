@@ -245,6 +245,32 @@ pub(crate) async fn http_post_json_authed_returning(
     .await?
 }
 
+/// POST + return `(status_code, parsed_body)` — UNLIKE `*_returning`, a non-2xx
+/// status is NOT an error (the caller inspects the code). Used by the mesh CAS
+/// (`put-slots` returns 409 with the live blob on a sha conflict). `Err` only on
+/// a network/timeout failure; a non-JSON body parses to `Value::Null`.
+pub(crate) async fn http_post_json_authed_with_status(
+    url: &str,
+    token: &str,
+    body: &serde_json::Value,
+) -> Result<(u16, serde_json::Value), String> {
+    let client = read_client();
+    timeout_send("http_post", async {
+        let resp = client
+            .post(url)
+            .header("x-goog-api-key", token)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| format!("POST {url}: {e}"))?;
+        let code = resp.status().as_u16();
+        let text = resp.text().await.unwrap_or_default();
+        let v = serde_json::from_str::<serde_json::Value>(&text).unwrap_or(serde_json::Value::Null);
+        Ok((code, v))
+    })
+    .await?
+}
+
 /// `true` if `address` has deployed bytecode (i.e. is a contract, not a
 /// counterfactual / EOA). A token-bound account is deterministic — it
 /// exists as an address even before `createTokenBoundAccount` deploys it,

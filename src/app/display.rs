@@ -1472,10 +1472,11 @@ mod worker {
                         ));
                     }
                     "mp:auto" => {
-                        // Single shared room: elect the host (roster[0]) + connect.
+                        // Single shared room: FULL P2P MESH (no host) — claim a slot
+                        // + connect directly to every peer.
                         let code = Reflect::get(&data, &JsValue::from_str("room"))
                             .ok().and_then(|v| v.as_f64()).map(|n| n as i32).unwrap_or(0);
-                        wasm_bindgen_futures::spawn_local(mp_connect_auto(
+                        wasm_bindgen_futures::spawn_local(mp_connect_mesh(
                             worker_for_msg.clone(), code,
                         ));
                     }
@@ -1579,6 +1580,9 @@ mod worker {
     // ephemeral relay-auth wallet) lives in a thread-local for the cartridge.
     const MP_MAX_PEERS: i32 = 8; // mirrors web/cartridge-worker.js MP_PEERS
 
+    const MESH_FRESH_SECS: u64 = 40; // a slot not refreshed in this long is reclaimable
+    const MESH_BEAT_TICKS: u32 = 3; // heartbeat every 3rd loop tick (~12s at 4s/tick)
+
     enum MpRole {
         /// Hub: (joinerId, assignedIndex, peer) per joiner. The index is the
         /// joiner's ROSTER position + 1 (the SAME value the joiner derives for its
@@ -1590,6 +1594,15 @@ mod worker {
         /// Leaf: the single connection to the host (peer 0 from our view).
         Joiner {
             peer: crate::app::webrtc::Peer,
+        },
+        /// FULL MESH (no host): `peers[q]` is my direct connection to the peer at
+        /// slot q (`(theirId, Peer)`), `connecting[q]` guards an in-flight
+        /// handshake from being re-dialed. My own slot index is carried by the
+        /// mesh loop, not stored here. A peer leaving just nulls its slot; nothing
+        /// breaks. Backs `host::mp::auto`.
+        Mesh {
+            peers: Vec<Option<(String, crate::app::webrtc::Peer)>>,
+            connecting: Vec<bool>,
         },
     }
     struct MpSession {
@@ -1750,81 +1763,219 @@ mod worker {
         }
     }
 
-    /// SINGLE SHARED ROOM (`mp:auto`): everyone registers in the room roster; the
-    /// peer at roster[0] becomes the HOST (relay hub, index 0) and answers the
-    /// rest; everyone else JOINS it (index = their roster position). No host/join
-    /// choice, no codes. The CAS-ordered roster makes roster[0] unambiguous (each
-    /// peer reads AFTER its own append), so there's no split-brain.
-    async fn mp_connect_auto(worker: Worker, code: i32) {
+    /// SINGLE SHARED ROOM (`mp:auto`) — FULL P2P MESH, NO HOST. Claim a slot in the
+    /// 8-slot membership blob, then connect DIRECTLY to every other live peer (the
+    /// lower slot offers, the higher answers). A heartbeat keeps my slot fresh; a
+    /// peer that leaves just stops heartbeating and its slot frees for reuse — the
+    /// room never breaks and no host is sticky.
+    async fn mp_connect_mesh(worker: Worker, code: i32) {
         mp_teardown();
         let room = format!("mp-{code}");
         let gw = crate::wallet::generate();
         let signer = gw.signer.clone();
-        let my_id = joiner_id_from(&crate::wallet::address(&signer));
+        let addr_bytes = crate::wallet::address(&signer);
+        let my_id = joiner_id_from(&addr_bytes);
+        let my_addr = crate::encoding::bytes_to_hex_str(&addr_bytes);
 
-        // Register, then settle briefly so the read reflects every peer that
-        // joined before us (the relay serializes appends under a sha CAS).
-        let now = (js_sys::Date::now() / 1000.0) as u64;
-        let _ = crate::registry::signal_join(&signer, now, &room, &my_id).await;
-        crate::runtime::sleep_ms(900).await;
+        let my_slot = match mesh_claim_slot(&room, &signer, &my_id, &my_addr).await {
+            Ok(s) => s,
+            Err(e) => {
+                web_sys::console::warn_1(&JsValue::from_str(&format!("mesh claim failed: {e}")));
+                mp_post_status(&worker, 0, -1, 0);
+                return;
+            }
+        };
 
-        // Find my roster position; if absent (read lag) retry; default to host (0).
-        let mut my_pos: i32 = 0;
-        for _ in 0..4 {
-            let roster = crate::registry::signal_get_joiners(&room).await.unwrap_or_default();
-            if let Some(pos) = roster.iter().position(|id| id == &my_id) {
-                my_pos = pos as i32;
+        MP_SESSION.with(|s| {
+            *s.borrow_mut() = Some(MpSession {
+                role: MpRole::Mesh {
+                    peers: (0..MP_MAX_PEERS).map(|_| None).collect(),
+                    connecting: (0..MP_MAX_PEERS).map(|_| false).collect(),
+                },
+                _gw: gw,
+                room: room.clone(),
+            });
+        });
+        mp_post_status(&worker, 0, my_slot, 1); // self_index = my slot; no peers yet
+        wasm_bindgen_futures::spawn_local(mesh_loop(worker, room, signer, my_id, my_addr, my_slot));
+    }
+
+    /// Claim the LOWEST free-or-stale slot for my (id, addr). Re-entry keeps my
+    /// existing slot. Returns my slot index, or an error if the arena is full.
+    async fn mesh_claim_slot(
+        room: &str,
+        signer: &k256::ecdsa::SigningKey,
+        my_id: &str,
+        my_addr: &str,
+    ) -> Result<i32, String> {
+        for _ in 0..6 {
+            let ms = crate::registry::signal_get_slots(room).await?;
+            if let Some(pos) = ms.slots.iter().position(|e| {
+                e.as_ref().map(|x| x.addr.eq_ignore_ascii_case(my_addr)).unwrap_or(false)
+            }) {
+                return Ok(pos as i32); // already mine
+            }
+            let free = ms.slots.iter().position(|e| match e {
+                None => true,
+                Some(x) => ms.now.saturating_sub(x.ts) > MESH_FRESH_SECS,
+            });
+            let idx = free.ok_or_else(|| "arena full (8 players)".to_string())?;
+            let mut next = ms.slots.clone();
+            next[idx] = Some(crate::registry::SlotEntry {
+                id: my_id.to_string(),
+                addr: my_addr.to_string(),
+                ts: ms.now,
+            });
+            let now = (js_sys::Date::now() / 1000.0) as u64;
+            match crate::registry::signal_put_slots(signer, now, room, &next, idx, ms.sha.as_deref()).await {
+                Ok(crate::registry::PutSlots::Written) => return Ok(idx as i32),
+                Ok(crate::registry::PutSlots::Conflict) => crate::runtime::sleep_ms(250).await,
+                Err(e) => return Err(e),
+            }
+        }
+        Err("slot claim contention".to_string())
+    }
+
+    /// Mesh session loop: heartbeat my slot, discover live peers, and dial any I
+    /// don't hold. Exits when the session is gone/no-longer-mesh, or my slot was
+    /// reclaimed (my heartbeat lapsed and someone took it → I'm out).
+    async fn mesh_loop(
+        worker: Worker,
+        room: String,
+        signer: k256::ecdsa::SigningKey,
+        my_id: String,
+        my_addr: String,
+        my_slot: i32,
+    ) {
+        let mut tick: u32 = 0;
+        loop {
+            let is_mesh = MP_SESSION
+                .with(|s| matches!(s.borrow().as_ref().map(|x| &x.role), Some(MpRole::Mesh { .. })));
+            if !is_mesh {
+                return;
+            }
+            let ms = match crate::registry::signal_get_slots(&room).await {
+                Ok(m) => m,
+                Err(_) => {
+                    crate::runtime::sleep_ms(4000).await;
+                    tick += 1;
+                    continue;
+                }
+            };
+            // Liveness: if my slot no longer carries my address, I was reclaimed.
+            let still_mine = ms
+                .slots
+                .get(my_slot as usize)
+                .and_then(|e| e.as_ref())
+                .map(|x| x.addr.eq_ignore_ascii_case(&my_addr))
+                .unwrap_or(false);
+            if !still_mine && tick > 0 {
+                mp_teardown();
+                mp_post_status(&worker, 0, -1, 0);
+                return;
+            }
+            // Heartbeat (~every MESH_BEAT_TICKS ticks): refresh my slot ts via CAS.
+            if tick % MESH_BEAT_TICKS == 0 {
+                let mut next = ms.slots.clone();
+                next[my_slot as usize] = Some(crate::registry::SlotEntry {
+                    id: my_id.clone(),
+                    addr: my_addr.clone(),
+                    ts: ms.now,
+                });
+                let now = (js_sys::Date::now() / 1000.0) as u64;
+                let _ = crate::registry::signal_put_slots(
+                    &signer, now, &room, &next, my_slot as usize, ms.sha.as_deref(),
+                )
+                .await;
+            }
+            // Discover + connect every fresh peer I'm not holding / dialing.
+            for q in 0..(MP_MAX_PEERS as usize) {
+                if q as i32 == my_slot {
+                    continue;
+                }
+                let entry = ms.slots[q].as_ref();
+                let fresh = entry
+                    .map(|x| ms.now.saturating_sub(x.ts) <= MESH_FRESH_SECS)
+                    .unwrap_or(false);
+                if !fresh {
+                    continue;
+                }
+                let their_id = entry.map(|x| x.id.clone()).unwrap_or_default();
+                let skip = MP_SESSION.with(|s| {
+                    if let Some(MpSession { role: MpRole::Mesh { peers, connecting, .. }, .. }) =
+                        s.borrow().as_ref()
+                    {
+                        connecting[q] || peers[q].as_ref().map(|(id, _)| id == &their_id).unwrap_or(false)
+                    } else {
+                        true
+                    }
+                });
+                if skip {
+                    continue;
+                }
+                MP_SESSION.with(|s| {
+                    if let Some(MpSession { role: MpRole::Mesh { connecting, .. }, .. }) =
+                        s.borrow_mut().as_mut()
+                    {
+                        connecting[q] = true;
+                    }
+                });
+                wasm_bindgen_futures::spawn_local(mesh_connect_one(
+                    worker.clone(), room.clone(), signer.clone(), my_slot, q as i32, their_id,
+                ));
+            }
+            tick += 1;
+            crate::runtime::sleep_ms(4000).await;
+        }
+    }
+
+    /// Connect to the peer at slot `q`: I OFFER if I'm the lower index, else ANSWER.
+    /// Store the Peer in `peers[q]` on success; always clear `connecting[q]`.
+    async fn mesh_connect_one(
+        worker: Worker,
+        room: String,
+        signer: k256::ecdsa::SigningKey,
+        my_slot: i32,
+        q: i32,
+        their_id: String,
+    ) {
+        let worker_for_msg = worker.clone();
+        let on_msg = move |bytes: Vec<u8>| mp_dispatch_peer_frame(&worker_for_msg, q, &bytes);
+        let result = if my_slot < q {
+            crate::app::webrtc::Peer::mesh_offer(&room, my_slot, q, &signer, on_msg).await
+        } else {
+            crate::app::webrtc::Peer::mesh_answer(&room, q, my_slot, &signer, on_msg).await
+        };
+        MP_SESSION.with(|s| {
+            if let Some(MpSession { role: MpRole::Mesh { peers, connecting, .. }, .. }) =
+                s.borrow_mut().as_mut()
+            {
+                connecting[q as usize] = false;
+                if let Ok(peer) = result {
+                    peers[q as usize] = Some((their_id, peer));
+                }
+            }
+        });
+        // Let ICE open the channel (~10s), then report aggregate status.
+        for _ in 0..100 {
+            let open = MP_SESSION.with(|s| {
+                matches!(s.borrow().as_ref().map(|x| &x.role), Some(MpRole::Mesh { peers, .. })
+                    if peers.iter().flatten().any(|(_, p)| p.is_open()))
+            });
+            if open {
                 break;
             }
-            crate::runtime::sleep_ms(300).await;
+            crate::runtime::sleep_ms(100).await;
         }
-
-        if my_pos == 0 {
-            // HOST: the hub (index 0). Answer roster[1..] (skip ourselves at 0).
-            MP_SESSION.with(|s| {
-                *s.borrow_mut() = Some(MpSession {
-                    role: MpRole::Host { peers: Vec::new() },
-                    _gw: gw,
-                    room: room.clone(),
-                });
-            });
-            mp_post_status(&worker, 0, 0, 1);
-            wasm_bindgen_futures::spawn_local(mp_host_accept_loop(worker, room, signer, 0, true));
-            return;
-        }
-
-        // JOINER: offer to the host (roster[0]); our index = our roster position.
-        let self_index = my_pos;
-        let worker_for_msg = worker.clone();
-        let on_msg = move |bytes: Vec<u8>| mp_dispatch_peer_frame(&worker_for_msg, 0, &bytes);
-        match crate::app::webrtc::Peer::offer_to_host(&room, &my_id, &signer, on_msg).await {
-            Ok(peer) => {
-                for _ in 0..150 {
-                    if peer.is_open() {
-                        break;
-                    }
-                    crate::runtime::sleep_ms(100).await;
-                }
-                let connected = i32::from(peer.is_open());
-                MP_SESSION.with(|s| {
-                    *s.borrow_mut() = Some(MpSession {
-                        role: MpRole::Joiner { peer },
-                        _gw: gw,
-                        room: room.clone(),
-                    });
-                });
-                mp_post_status(
-                    &worker,
-                    connected,
-                    self_index,
-                    if connected == 1 { self_index + 1 } else { 1 },
-                );
+        let (connected, total) = MP_SESSION.with(|s| {
+            if let Some(MpSession { role: MpRole::Mesh { peers, .. }, .. }) = s.borrow().as_ref() {
+                let open = peers.iter().flatten().filter(|(_, p)| p.is_open()).count() as i32;
+                (i32::from(open > 0), open + 1)
+            } else {
+                (0, 0)
             }
-            Err(e) => {
-                web_sys::console::warn_1(&JsValue::from_str(&format!("mp auto-join failed: {e:?}")));
-                mp_post_status(&worker, 0, -1, 0);
-            }
-        }
+        });
+        mp_post_status(&worker, connected, my_slot, total);
     }
 
     fn mp_post_status(worker: &Worker, connected: i32, self_index: i32, peer_count: i32) {
@@ -1873,6 +2024,14 @@ mod worker {
                     MpRole::Joiner { peer } => {
                         if peer.is_open() {
                             let _ = peer.send_game(json.as_bytes());
+                        }
+                    }
+                    MpRole::Mesh { peers, .. } => {
+                        // direct to every connected peer — no host, no relay.
+                        for slot in peers.iter().flatten() {
+                            if slot.1.is_open() {
+                                let _ = slot.1.send_game(json.as_bytes());
+                            }
                         }
                     }
                 }

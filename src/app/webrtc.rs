@@ -320,6 +320,52 @@ impl Peer {
         Ok(peer)
     }
 
+    // ── Full P2P MESH (no host) — directed-pair handshake ─────────────────────
+    // Every peer connects to every other; for a pair of slot indices a<b the
+    // LOWER offers and the HIGHER answers (deterministic, no double-dial). Slots:
+    // `offer-{a}-{b}` / `answer-{a}-{b}`. Reuses the SAME proven offer/answer +
+    // dual data channel; frames attribute directly to the connection's peer (no
+    // host relay). Backs `host::mp::auto` → the hostless single shared room.
+
+    /// MESH offerer (the LOWER slot index `a`): offer to `b`, publish under
+    /// `offer-{a}-{b}`, await `answer-{a}-{b}`, complete. Returns the connected Peer.
+    pub(crate) async fn mesh_offer(
+        room: &str,
+        a: i32,
+        b: i32,
+        signer: &k256::ecdsa::SigningKey,
+        on_msg: impl FnMut(Vec<u8>) + 'static,
+    ) -> Result<Self, JsValue> {
+        let (peer, offer) = Self::offer(on_msg).await?;
+        crate::registry::signal_post(signer, now_secs(), room, &format!("offer-{a}-{b}"), &offer)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("mesh offer post: {e}")))?;
+        let answer = poll_signal(room, &format!("answer-{a}-{b}"), 40)
+            .await
+            .ok_or_else(|| JsValue::from_str("mesh: timed out waiting for the answer"))?;
+        peer.accept_answer(&answer).await?;
+        Ok(peer)
+    }
+
+    /// MESH answerer (the HIGHER slot index `b`): read `offer-{a}-{b}`, answer it,
+    /// publish under `answer-{a}-{b}`. Returns the connected Peer.
+    pub(crate) async fn mesh_answer(
+        room: &str,
+        a: i32,
+        b: i32,
+        signer: &k256::ecdsa::SigningKey,
+        on_msg: impl FnMut(Vec<u8>) + 'static,
+    ) -> Result<Self, JsValue> {
+        let offer = poll_signal(room, &format!("offer-{a}-{b}"), 40)
+            .await
+            .ok_or_else(|| JsValue::from_str("mesh: offer not found"))?;
+        let (peer, answer) = Self::answer(&offer, on_msg).await?;
+        crate::registry::signal_post(signer, now_secs(), room, &format!("answer-{a}-{b}"), &answer)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("mesh answer post: {e}")))?;
+        Ok(peer)
+    }
+
     /// OFFERER: create an offer, POST it to the relay under `room`, poll for the
     /// peer's answer, complete the handshake, and best-effort clear the room.
     /// Returns the connected `Peer` (poll `is_open()` before `send`). Legacy
