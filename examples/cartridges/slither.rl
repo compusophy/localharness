@@ -267,6 +267,17 @@ fn frame(t: i32) {
             host::mp::set(0, pack_meta(alive, host::display::state_get(6), host::display::state_get(7)));
         }
 
+        // (g2) faint arena grid so motion reads in the open field.
+        let mut gx: i32 = 24;
+        while gx < 512 {
+            let mut gy: i32 = 24;
+            while gy < 512 {
+                host::display::fill_rect(gx, gy, 2, 2, 1316637); // 0x14171d
+                gy = gy + 48;
+            }
+            gx = gx + 48;
+        }
+
         // (h) render every live snake from network state (alive-gated; pre/post relay).
         let mut rq: i32 = 0;
         while rq < 8 {
@@ -275,32 +286,65 @@ fn frame(t: i32) {
                 let rln: i32 = (rm / 256) % 256;
                 let rhpr: i32 = rm / 65536;
                 let rc: i32 = col[rq];
-                let mut rs: i32 = 0;
-                while rs < rln {
+                // body oldest -> newest so the head draws on top.
+                let mut rs: i32 = rln - 1;
+                while rs >= 0 {
                     let rslot: i32 = 1 + ((rhpr - rs + 30) % 30);
                     let rwp: i32 = host::mp::get(rq, rslot);
                     draw_disc(rwp / 512, rwp % 512, 8, rc);
-                    rs = rs + 1;
+                    rs = rs - 1;
                 }
+                // head: a bright cap + a facing eye (heading from the last 2 waypoints).
                 let rhwp: i32 = host::mp::get(rq, 1 + rhpr);
-                draw_disc(rhwp / 512, rhwp % 512, 9, 16777215);
+                let hxp: i32 = rhwp / 512;
+                let hyp: i32 = rhwp % 512;
+                let rpwp: i32 = host::mp::get(rq, 1 + ((rhpr - 1 + 30) % 30));
+                let mut ex: i32 = (hxp - (rpwp / 512)) / 3;
+                let mut ey: i32 = (hyp - (rpwp % 512)) / 3;
+                if ex > 8 { ex = 8; }
+                if ex < -8 { ex = -8; }
+                if ey > 8 { ey = 8; }
+                if ey < -8 { ey = -8; }
+                draw_disc(hxp, hyp, 10, rc);
+                draw_disc(hxp, hyp, 6, 16777215);
+                draw_disc(hxp + ex, hyp + ey, 3, 657426);
                 rq = rq + 1;
             } else {
                 rq = rq + 1;
             }
         }
 
-        // (i) food.
+        // (i) food — a pulsing glowing dot (the shared prize everyone races for).
         let mut gk: i32 = 0;
         let mut gp: i32 = 0;
         while gp < 8 {
             gk = gk + host::mp::get(gp, 31);
             gp = gp + 1;
         }
-        draw_disc(food_x(gk), food_y(gk), 5, 16724804);
+        let fxp: i32 = food_x(gk);
+        let fyp: i32 = food_y(gk);
+        let pulse: i32 = 6 + ((t / 6) % 3);
+        draw_disc(fxp, fyp, pulse + 2, 5574929); // 0x551111 glow ring
+        draw_disc(fxp, fyp, pulse, 16724804); // 0xff3344 food
+        draw_disc(fxp, fyp, 3, 16777215); // hot centre
 
-        // (j) HUD + death banner + tap-to-respawn (keeps score; resets length).
-        host::display::draw_number(12, 12, host::display::state_get(9), 16777215, 4);
+        // (j) scoreboard: every live snake's colour swatch + length, top-right.
+        let mut sq: i32 = 0;
+        let mut srow: i32 = 0;
+        while sq < 8 {
+            let sm: i32 = host::mp::get(sq, 0);
+            if (sm % 256) == 1 {
+                let slen: i32 = (sm / 256) % 256;
+                host::display::fill_rect(430, 14 + srow * 24, 16, 16, col[sq]);
+                host::display::draw_number(452, 14 + srow * 24, slen, 16777215, 2);
+                srow = srow + 1;
+            }
+            sq = sq + 1;
+        }
+
+        // (k) HUD score + death banner + tap-to-respawn (keeps score; resets length).
+        host::display::draw_string(12, 12, "LEN", 8030086, 2);
+        host::display::draw_number(12, 32, host::display::state_get(6), 3407752, 4);
         if alive == 0 {
             host::display::draw_string(150, 220, "YOU DIED", 16724787, 5);
             host::display::draw_string(132, 280, "TAP TO RESPAWN", 8030086, 2);
