@@ -1572,9 +1572,12 @@ mod worker {
     const MP_MAX_PEERS: i32 = 8; // mirrors web/cartridge-worker.js MP_PEERS
 
     enum MpRole {
-        /// Hub: (joinerId, peer) per joiner; the joiner's mirror index = pos + 1.
+        /// Hub: (joinerId, assignedIndex, peer) per joiner. The index is the
+        /// joiner's ROSTER position + 1 (the SAME value the joiner derives for its
+        /// own `self_index`), stored so the relay matches by index even if a
+        /// mid-roster joiner failed to connect (vector position ≠ index then).
         Host {
-            peers: Vec<(String, crate::app::webrtc::Peer)>,
+            peers: Vec<(String, i32, crate::app::webrtc::Peer)>,
         },
         /// Leaf: the single connection to the host (peer 0 from our view).
         Joiner {
@@ -1642,6 +1645,19 @@ mod worker {
                     crate::runtime::sleep_ms(100).await;
                 }
                 let connected = i32::from(peer.is_open());
+                // Our network-slot index must match the index everyone ELSE files
+                // us under — the host assigns by roster position, so derive it the
+                // same way. Retry briefly: our own join write can lag this read.
+                let mut self_index = 1;
+                for _ in 0..4 {
+                    let roster =
+                        crate::registry::signal_get_joiners(&room).await.unwrap_or_default();
+                    if let Some(pos) = roster.iter().position(|id| id == &joiner_id) {
+                        self_index = pos as i32 + 1;
+                        break;
+                    }
+                    crate::runtime::sleep_ms(300).await;
+                }
                 MP_SESSION.with(|s| {
                     *s.borrow_mut() = Some(MpSession {
                         role: MpRole::Joiner { peer },
@@ -1649,7 +1665,7 @@ mod worker {
                         room: room.clone(),
                     });
                 });
-                mp_post_status(&worker, connected, 1, if connected == 1 { 2 } else { 1 });
+                mp_post_status(&worker, connected, self_index, if connected == 1 { 2 } else { 1 });
             }
             Err(e) => {
                 web_sys::console::warn_1(&JsValue::from_str(&format!("mp join failed: {e:?}")));
@@ -1670,29 +1686,30 @@ mod worker {
                 return;
             }
             let joiners = crate::registry::signal_get_joiners(&room).await.unwrap_or_default();
-            for jid in joiners {
+            for (roster_pos, jid) in joiners.iter().enumerate() {
+                // The global index = roster position + 1 — the SAME formula the
+                // joiner uses for its own self_index, so the two always agree.
+                let idx = roster_pos as i32 + 1;
                 // Skip joiners we already hold, and cap the total at MP_MAX_PEERS.
-                let (known, full, next_index) = MP_SESSION.with(|s| {
+                let known = MP_SESSION.with(|s| {
                     if let Some(MpSession { role: MpRole::Host { peers }, .. }) = s.borrow().as_ref() {
-                        let count = peers.len() as i32;
-                        (peers.iter().any(|(id, _)| id == &jid), count + 1 >= MP_MAX_PEERS, count + 1)
+                        peers.iter().any(|(id, _, _)| id == jid)
                     } else {
-                        (true, true, 0)
+                        true
                     }
                 });
-                if known || full {
+                if known || idx >= MP_MAX_PEERS {
                     continue;
                 }
-                let idx = next_index; // 1..=MP_MAX_PEERS-1
                 let worker_for_msg = worker.clone();
                 let on_msg = move |bytes: Vec<u8>| mp_dispatch_peer_frame(&worker_for_msg, idx, &bytes);
-                match crate::app::webrtc::Peer::answer_joiner(&room, &jid, &signer, on_msg).await {
+                match crate::app::webrtc::Peer::answer_joiner(&room, jid, &signer, on_msg).await {
                     Ok(peer) => {
                         let count = MP_SESSION.with(|s| {
                             if let Some(MpSession { role: MpRole::Host { peers }, .. }) =
                                 s.borrow_mut().as_mut()
                             {
-                                peers.push((jid, peer));
+                                peers.push((jid.clone(), idx, peer));
                                 peers.len() as i32 + 1
                             } else {
                                 1
@@ -1749,7 +1766,7 @@ mod worker {
             if let Some(sess) = s.borrow().as_ref() {
                 match &sess.role {
                     MpRole::Host { peers } => {
-                        for (_, p) in peers {
+                        for (_, _, p) in peers {
                             if p.is_open() {
                                 let _ = p.send_game(json.as_bytes());
                             }
@@ -1778,8 +1795,16 @@ mod worker {
     }
 
     /// An incoming peer frame off the game channel → post `mp:peer` (deltas/events)
-    /// to the worker's mirror. `peer_index` is the sender's mirror index: the host
-    /// passes each joiner's assigned index; a joiner passes 0 (the host).
+    /// to the worker's mirror. `peer_index` is the connection's mirror index: the
+    /// host passes each joiner's assigned index; a joiner passes 0 (the host).
+    ///
+    /// STAR RELAY (for >2 players): the host re-broadcasts each joiner's frame to
+    /// the OTHER joiners so joiner↔joiner state is visible — tagged with the
+    /// origin index (`"p"`) so the receiver attributes it to that joiner, not the
+    /// host. A frame WITH a `"p"` tag is already relayed (never re-relay); an
+    /// untagged frame uses the connection index. Backward-compatible: a
+    /// host-authoritative game whose joiners send no body state just relays tiny
+    /// input frames everyone ignores.
     fn mp_dispatch_peer_frame(worker: &Worker, peer_index: i32, bytes: &[u8]) {
         let text = match std::str::from_utf8(bytes) {
             Ok(t) => t,
@@ -1789,9 +1814,15 @@ mod worker {
             Ok(v) => v,
             Err(_) => return,
         };
+        // Relayed frames carry "p":origin; direct frames use the connection index.
+        let origin = v
+            .get("p")
+            .and_then(|x| x.as_i64())
+            .map(|x| x as i32)
+            .unwrap_or(peer_index);
         let m = Object::new();
         let _ = Reflect::set(&m, &JsValue::from_str("type"), &JsValue::from_str("mp:peer"));
-        let _ = Reflect::set(&m, &JsValue::from_str("peer"), &JsValue::from_f64(peer_index as f64));
+        let _ = Reflect::set(&m, &JsValue::from_str("peer"), &JsValue::from_f64(origin as f64));
         if let Some(d) = v.get("d").and_then(|x| x.as_array()) {
             let arr = js_sys::Array::new();
             for n in d {
@@ -1807,6 +1838,31 @@ mod worker {
             let _ = Reflect::set(&m, &JsValue::from_str("events"), &arr);
         }
         let _ = worker.post_message(&m);
+        // HOST: fan an UNTAGGED joiner frame out to the other joiners (tagged with
+        // the origin index) so joiner↔joiner state is visible. No-op for a joiner
+        // (peer_index 0) and for already-tagged relayed frames.
+        if peer_index >= 1 && v.get("p").is_none() && v.is_object() {
+            mp_relay_from_host(peer_index, &v);
+        }
+    }
+
+    /// HOST-only: re-broadcast joiner `origin_idx`'s frame to every OTHER joiner,
+    /// stamped with `"p":origin_idx`. No-op unless this session is a host.
+    fn mp_relay_from_host(origin_idx: i32, v: &serde_json::Value) {
+        MP_SESSION.with(|s| {
+            if let Some(MpSession { role: MpRole::Host { peers }, .. }) = s.borrow().as_ref() {
+                let mut tagged = v.clone();
+                tagged["p"] = serde_json::json!(origin_idx);
+                let bytes = tagged.to_string();
+                // Send to every joiner EXCEPT the origin (matched by its stored
+                // index, robust to a mid-roster join that never connected).
+                for (_, pidx, p) in peers.iter() {
+                    if *pidx != origin_idx && p.is_open() {
+                        let _ = p.send_game(bytes.as_bytes());
+                    }
+                }
+            }
+        });
     }
 
     /// Drop the multiplayer session (Peer::drop closes the connection). Idempotent.

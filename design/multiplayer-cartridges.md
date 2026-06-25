@@ -45,6 +45,34 @@ present. **Verification residual:** compile + parity green here; the live N-peer
 handshake / dual-channel / TURN behavior needs a multi-browser E2E (no browser in
 the build env) — the per-connection handshake itself is the proven 2-peer flow.
 
+## SYMMETRIC games + the host relay (SHIPPED 2026-06-25 — slither.rl)
+
+A *symmetric* game (each peer owns its full state, e.g. a snake body) needs every
+peer to see every other peer — but the star only links joiners to the host. Two
+additive `display.rs` changes close that (backward-compatible; host-authoritative
+games are unaffected):
+
+1. **Host relay.** When the host receives an UNTAGGED joiner frame it re-broadcasts
+   it to the OTHER joiners stamped `"p":origin` (the joiner's global index), so a
+   joiner attributes it to that peer, not to the host. Already-tagged frames are
+   never re-relayed. `mp_dispatch_peer_frame` parses `"p"`; `mp_relay_from_host`
+   fans out (matched by each peer's STORED index, robust to a mid-roster join that
+   never connected).
+2. **Stable roster index.** Every peer derives its network-slot index = its
+   position in the `join` roster + 1 (host = 0). Host and joiner compute it the
+   SAME way so they always agree — the joiner retries the roster read briefly (its
+   own join write can lag).
+
+With both, all 8 peers' 32-slot regions (256 ints total) form the shared world,
+read via `get(peer,slot)` — the only storage big enough for snake bodies (local
+state is 64 ints). **`slither.localharness.xyz`** (`examples/cartridges/slither.rl`,
+512×512, ~4.7KB) is the proof: each snake is a 30-waypoint ring + meta in its own
+slots, peer-authoritative death (head vs others' bodies), trig-free motion
+(direction table + dot-product steer + squared-distance collision), deterministic
+LCG food. The HOST is solo-playable. Verified here: rustlite compiles AND a headless
+600-frame sim runs trap-free (snake moves, eats, grows). Residual: the 2+-browser
+join / relay / mutual-death path needs real tabs.
+
 ## Goal
 A rustlite cartridge becomes multiplayer by calling `host::net::*`: open/join a
 room, read+write a shared per-peer state vector, and send/receive discrete
