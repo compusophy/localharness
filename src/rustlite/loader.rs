@@ -330,6 +330,7 @@ fn build_host_imports(mem: &SharedMemory) -> Result<(js_sys::Object, NetRuntime)
     let mp_get = Closure::<dyn Fn(i32, i32) -> i32>::new(|_a, _b| 0);
     let _ = Reflect::set(&host_mp, &JsValue::from_str("open"), mp_zero.as_ref());
     let _ = Reflect::set(&host_mp, &JsValue::from_str("join"), mp_void1.as_ref());
+    let _ = Reflect::set(&host_mp, &JsValue::from_str("auto"), mp_void1.as_ref());
     let _ = Reflect::set(&host_mp, &JsValue::from_str("connected"), mp_zero.as_ref());
     let _ = Reflect::set(&host_mp, &JsValue::from_str("self_index"), mp_self.as_ref());
     let _ = Reflect::set(&host_mp, &JsValue::from_str("peer_count"), mp_zero.as_ref());

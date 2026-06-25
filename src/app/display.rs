@@ -1471,6 +1471,14 @@ mod worker {
                             worker_for_msg.clone(), code, is_host,
                         ));
                     }
+                    "mp:auto" => {
+                        // Single shared room: elect the host (roster[0]) + connect.
+                        let code = Reflect::get(&data, &JsValue::from_str("room"))
+                            .ok().and_then(|v| v.as_f64()).map(|n| n as i32).unwrap_or(0);
+                        wasm_bindgen_futures::spawn_local(mp_connect_auto(
+                            worker_for_msg.clone(), code,
+                        ));
+                    }
                     "mp:deltas" => mp_send(Some(mp_read_int_array(&data, "deltas")), None),
                     "mp:events" => mp_send(None, Some(mp_read_int_array(&data, "events"))),
                     "mp:leave" => mp_teardown(),
@@ -1627,7 +1635,8 @@ mod worker {
             // Hosting but no peer yet → connected=0 (a cartridge gates its game on
             // `connected()==1`, i.e. ≥1 other player present); peerCount=1 (just us).
             mp_post_status(&worker, 0, 0, 1);
-            wasm_bindgen_futures::spawn_local(mp_host_accept_loop(worker, room, signer));
+            // open()/join(): host is OUTSIDE the roster → joiner idx = roster_pos+1.
+            wasm_bindgen_futures::spawn_local(mp_host_accept_loop(worker, room, signer, 1, false));
             return;
         }
 
@@ -1675,9 +1684,20 @@ mod worker {
     }
 
     /// HOST: poll the relay roster; answer each NEW joiner on its own connection,
-    /// assign it the next peer index, and report the growing peer count. Exits when
-    /// the session is torn down or is no longer a host session.
-    async fn mp_host_accept_loop(worker: Worker, room: String, signer: k256::ecdsa::SigningKey) {
+    /// assign its peer index, and report the growing peer count. Exits when the
+    /// session is torn down or is no longer a host session.
+    ///
+    /// `idx_base`/`skip_first` differ by entry path so the host and joiner always
+    /// derive the SAME index: open()/join() keeps the host OUTSIDE the roster
+    /// (idx = roster_pos+1, skip nothing); auto() has the host AT roster[0]
+    /// (idx = roster_pos, skip position 0 = the host itself).
+    async fn mp_host_accept_loop(
+        worker: Worker,
+        room: String,
+        signer: k256::ecdsa::SigningKey,
+        idx_base: i32,
+        skip_first: bool,
+    ) {
         loop {
             // Stop if the session vanished (teardown) or is no longer a host.
             let is_host = MP_SESSION
@@ -1687,9 +1707,10 @@ mod worker {
             }
             let joiners = crate::registry::signal_get_joiners(&room).await.unwrap_or_default();
             for (roster_pos, jid) in joiners.iter().enumerate() {
-                // The global index = roster position + 1 — the SAME formula the
-                // joiner uses for its own self_index, so the two always agree.
-                let idx = roster_pos as i32 + 1;
+                if skip_first && roster_pos == 0 {
+                    continue; // roster[0] is the host (us) in auto mode
+                }
+                let idx = roster_pos as i32 + idx_base;
                 // Skip joiners we already hold, and cap the total at MP_MAX_PEERS.
                 let known = MP_SESSION.with(|s| {
                     if let Some(MpSession { role: MpRole::Host { peers }, .. }) = s.borrow().as_ref() {
@@ -1726,6 +1747,83 @@ mod worker {
                 }
             }
             crate::runtime::sleep_ms(2000).await;
+        }
+    }
+
+    /// SINGLE SHARED ROOM (`mp:auto`): everyone registers in the room roster; the
+    /// peer at roster[0] becomes the HOST (relay hub, index 0) and answers the
+    /// rest; everyone else JOINS it (index = their roster position). No host/join
+    /// choice, no codes. The CAS-ordered roster makes roster[0] unambiguous (each
+    /// peer reads AFTER its own append), so there's no split-brain.
+    async fn mp_connect_auto(worker: Worker, code: i32) {
+        mp_teardown();
+        let room = format!("mp-{code}");
+        let gw = crate::wallet::generate();
+        let signer = gw.signer.clone();
+        let my_id = joiner_id_from(&crate::wallet::address(&signer));
+
+        // Register, then settle briefly so the read reflects every peer that
+        // joined before us (the relay serializes appends under a sha CAS).
+        let now = (js_sys::Date::now() / 1000.0) as u64;
+        let _ = crate::registry::signal_join(&signer, now, &room, &my_id).await;
+        crate::runtime::sleep_ms(900).await;
+
+        // Find my roster position; if absent (read lag) retry; default to host (0).
+        let mut my_pos: i32 = 0;
+        for _ in 0..4 {
+            let roster = crate::registry::signal_get_joiners(&room).await.unwrap_or_default();
+            if let Some(pos) = roster.iter().position(|id| id == &my_id) {
+                my_pos = pos as i32;
+                break;
+            }
+            crate::runtime::sleep_ms(300).await;
+        }
+
+        if my_pos == 0 {
+            // HOST: the hub (index 0). Answer roster[1..] (skip ourselves at 0).
+            MP_SESSION.with(|s| {
+                *s.borrow_mut() = Some(MpSession {
+                    role: MpRole::Host { peers: Vec::new() },
+                    _gw: gw,
+                    room: room.clone(),
+                });
+            });
+            mp_post_status(&worker, 0, 0, 1);
+            wasm_bindgen_futures::spawn_local(mp_host_accept_loop(worker, room, signer, 0, true));
+            return;
+        }
+
+        // JOINER: offer to the host (roster[0]); our index = our roster position.
+        let self_index = my_pos;
+        let worker_for_msg = worker.clone();
+        let on_msg = move |bytes: Vec<u8>| mp_dispatch_peer_frame(&worker_for_msg, 0, &bytes);
+        match crate::app::webrtc::Peer::offer_to_host(&room, &my_id, &signer, on_msg).await {
+            Ok(peer) => {
+                for _ in 0..150 {
+                    if peer.is_open() {
+                        break;
+                    }
+                    crate::runtime::sleep_ms(100).await;
+                }
+                let connected = i32::from(peer.is_open());
+                MP_SESSION.with(|s| {
+                    *s.borrow_mut() = Some(MpSession {
+                        role: MpRole::Joiner { peer },
+                        _gw: gw,
+                        room: room.clone(),
+                    });
+                });
+                mp_post_status(
+                    &worker,
+                    connected,
+                    self_index,
+                    if connected == 1 { self_index + 1 } else { 1 },
+                );
+            }
+            Err(e) => {
+                web_sys::console::warn_1(&JsValue::from_str(&format!("mp auto-join failed: {e:?}")));
+                mp_post_status(&worker, 0, -1, 0);
+            }
         }
     }
 

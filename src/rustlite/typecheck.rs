@@ -1091,6 +1091,7 @@ fn resolve_host_fn(fn_name: &str) -> Option<(String, String, Vec<ResolvedType>, 
         // `event_next() -> i32`      pop + return the oldest received event (0 if none).
         "mp::open" => (vec![], I32),
         "mp::join" => (vec![I32], Void),
+        "mp::auto" => (vec![I32], Void),
         "mp::connected" => (vec![], I32),
         "mp::self_index" => (vec![], I32),
         "mp::peer_count" => (vec![], I32),

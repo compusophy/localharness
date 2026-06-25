@@ -1413,6 +1413,11 @@ const host_mp = {
   join(code) {
     self.postMessage({ type: 'mp:join', room: code | 0 });
   },
+  auto(code) {
+    // Join a SHARED room with no host/join choice: MAIN elects the host (the
+    // first peer in the room roster) and connects everyone else to it.
+    self.postMessage({ type: 'mp:auto', room: code | 0 });
+  },
   connected: () => mpConnected,
   self_index: () => mpSelfIndex,
   peer_count: () => mpPeerCount,

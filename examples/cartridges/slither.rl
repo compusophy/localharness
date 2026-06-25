@@ -60,71 +60,27 @@ fn frame(t: i32) {
         if prevdown == 0 { click = 1; }
     }
 
-    let mode: i32 = host::display::state_get(40);
-    let mut playing: i32 = 0;
-    if mode == 1 { playing = 1; }
-    if host::mp::connected() == 1 { playing = 1; }
+    // Auto-join the ONE shared arena on the first frame — no host/join choice,
+    // no code. MAIN elects the host (roster[0]) and connects everyone else to it.
+    if host::display::state_get(40) == 0 {
+        host::mp::auto(1); // room 1 = the global slither arena
+        host::display::state_set(40, 1);
+    }
 
-    if playing == 0 {
-        // ===================== LOBBY =====================
-        let px: i32 = host::display::pointer_x();
-        let py: i32 = host::display::pointer_y();
-        if mode == 0 {
-            host::display::draw_string(70, 110, "SLITHER", 3407752, 7);
-            host::display::draw_string(120, 250, "TAP TOP TO HOST", 16777215, 2);
-            host::display::draw_string(108, 300, "TAP BOTTOM TO JOIN", 16763955, 2);
-            if click == 1 {
-                if py < 256 {
-                    host::display::state_set(42, host::mp::open());
-                    host::display::state_set(40, 1);
-                } else {
-                    host::display::state_set(40, 2);
-                    host::display::state_set(41, 0);
-                }
-            }
-        } else {
-            // mode 2: joiner keypad — enter the host's 4-digit code.
-            host::display::draw_string(120, 40, "ENTER CODE", 16777215, 3);
-            host::display::draw_number(170, 110, host::display::state_get(41), 3407752, 7);
-            let bw: i32 = 51;
-            let mut d: i32 = 0;
-            while d < 10 {
-                host::display::fill_rect(d * bw + 2, 380, bw - 4, 70, 2240576);
-                host::display::draw_number(d * bw + 16, 402, d, 16777215, 3);
-                d = d + 1;
-            }
-            host::display::fill_rect(0, 300, 512, 64, 2775098);
-            host::display::draw_string(150, 320, "TAP TO JOIN", 10485952, 3);
-            if click == 1 {
-                if py >= 380 {
-                    let dig: i32 = px / bw;
-                    if dig >= 0 {
-                        if dig < 10 {
-                            let cur: i32 = host::display::state_get(41);
-                            if cur < 1000 {
-                                host::display::state_set(41, cur * 10 + dig);
-                            }
-                        }
-                    }
-                } else {
-                    if py >= 300 {
-                        if py < 364 {
-                            host::mp::join(host::display::state_get(41));
-                        }
-                    }
-                }
-            }
-            // tap the code readout to clear a mistype
-            if click == 1 {
-                if py < 200 {
-                    host::display::state_set(41, 0);
-                }
-            }
+    let me: i32 = host::mp::self_index();
+    if me < 0 {
+        // electing the host + connecting — a brief joining screen.
+        host::display::draw_string(64, 190, "SLITHER", 3407752, 7);
+        host::display::draw_string(118, 300, "JOINING ARENA", 8030086, 3);
+        let mut dots: i32 = (t / 18) % 4;
+        let mut dxp: i32 = 250;
+        while dots > 0 {
+            host::display::fill_rect(dxp, 350, 10, 10, 16763955);
+            dxp = dxp + 18;
+            dots = dots - 1;
         }
     } else {
         // ===================== GAME =====================
-        let mut me: i32 = host::mp::self_index();
-        if me < 0 { me = 0; }
 
         // (a) seed my snake on the first game frame (and on respawn)
         if host::display::state_get(5) == 0 {
