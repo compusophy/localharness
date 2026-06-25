@@ -5,12 +5,12 @@
 // (web/cartridge-worker.js, loaded as a module): a cartridge that exports
 // `dims() -> i32` returning a packed `(w<<16)|h` makes the worker allocate a
 // w×h framebuffer; `renderOnce` reflects the new size via `liveDims()`. A
-// cartridge with NO dims() export stays at the 256×144 default (backward
-// compatible). Also checks the clamp range: an out-of-range dims() falls back.
+// cartridge with NO dims() export stays at the 512×512 default. Also checks the
+// clamp range: an out-of-range dims() falls back.
 //
 //   1. compile a 64×64 dims() cartridge via the CLI -> instantiate through the
 //      worker host -> assert liveDims() == [64, 64] and pixels landed.
-//   2. compile a no-dims() cartridge -> assert liveDims() == [256, 144].
+//   2. compile a no-dims() cartridge -> assert liveDims() == [512, 512].
 //   3. decodeDims() unit checks: in-range packs decode, out-of-range -> null.
 //
 // Run standalone:  node scripts/test-variable-resolution.mjs
@@ -86,7 +86,7 @@ fn frame(t: i32) {
     `px(10,10) = [${fb[i]},${fb[i + 1]},${fb[i + 2]}]`);
 }
 
-// ---- 2. a cartridge WITHOUT dims() stays 256×144 (backward compatible) ------
+// ---- 2. a cartridge WITHOUT dims() stays at the 512×512 default -------------
 {
   const src = `
 fn frame(t: i32) {
@@ -97,8 +97,8 @@ fn frame(t: i32) {
   const wasm = compileSource(src);
   const fb = worker.renderOnce(wasm, 0);
   const [w, h] = worker.liveDims();
-  check('no dims() -> default 256×144', w === 256 && h === 144, `liveDims = ${w}×${h}`);
-  check('default framebuffer is 256*144*4 bytes', fb.length === 256 * 144 * 4, `len = ${fb.length}`);
+  check('no dims() -> default 512×512', w === 512 && h === 512, `liveDims = ${w}×${h}`);
+  check('default framebuffer is 512*512*4 bytes', fb.length === 512 * 512 * 4, `len = ${fb.length}`);
 }
 
 // ---- 3. decodeDims clamp range ---------------------------------------------
@@ -118,4 +118,4 @@ if (fail > 0) {
   console.error('VARIABLE RESOLUTION GATE FAILED.');
   process.exit(1);
 }
-console.log('VARIABLE RESOLUTION OK — dims() resizes the framebuffer; no-dims() stays 256×144; clamp range enforced.');
+console.log('VARIABLE RESOLUTION OK — dims() resizes the framebuffer; no-dims() stays 512×512; clamp range enforced.');
