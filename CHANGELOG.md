@@ -5,6 +5,48 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.56.0] - 2026-06-25
+
+Multiplayer cartridges land — real-time browser-to-browser WebRTC — alongside a
+full off-chain pivot for apps + scheduling and a 4× bigger cartridge budget.
+
+### Added
+
+- **Multiplayer cartridges (`host::mp`).** A rustlite cartridge becomes real-time
+  multiplayer over a P2P WebRTC data channel: `open()` / `join()` / `auto()` a
+  room, a 32-slot shared-state vector per peer (`set`/`get`) + discrete events
+  (`send`/`event_*`). Three topologies: 2-peer, an N-peer host-authoritative STAR
+  (the host relays peers to each other), and a hostless FULL P2P MESH (`auto` — one
+  shared room, no sticky host; a departing peer just frees its slot). A SEPARATE
+  unreliable/unordered data channel (id 1) carries fast game state while the
+  reliable channel (id 0) stays for shared-fs sync. Signaling is off-chain (the
+  proxy's `/api/signal`, GitHub-store); cross-network peers use a TURN relay
+  (`/api/turn`, env-provisioned). Demos: `slither.localharness.xyz` (a 512×512
+  multiplayer slither.io) + a 2-player Pong.
+- **Open-chatroom cartridges (`host::chat`).** An integer-only ABI to a
+  per-subdomain append-only message log over the proxy's `/api/chat` relay — the
+  `groupchat` reference room.
+- **Off-chain app store.** Cartridges + HTML faces publish to GitHub (free, no
+  gas) instead of on-chain `setMetadata`; the chain keeps only name ownership.
+  `/api/apps` catalog + `localharness apps` discovery; every publish path (CLI,
+  studio, agent tools, bashlite) goes off-chain.
+- **Off-chain scheduling.** `remind` / `schedule` / `goal` run off-chain (free
+  reminders, meter-billed agent runs) — no on-chain escrow per job.
+- **Cartridge crash telemetry** that names WHAT crashed (reproducible reports).
+
+### Changed
+
+- **Cartridge size cap 256 KB → 1 MB** — off-chain storage has no gas cap (the
+  GitHub Contents-API full-support ceiling).
+- **Default cartridge resolution 320×240 → 512×512.**
+- README is a minimal hand-written file again (decoupled from `skill.md`).
+
+### Fixed
+
+- A cartridge now resumes on reopen instead of showing a dead canvas.
+- The fullscreen public-face header used a legacy text brand menu — modernized to
+  the current icon design (kept visitor-slim, no owner-tool leak).
+
 ## [0.55.0] - 2026-06-23
 
 Feedback-ingest pass clearing the remaining open feedback (#62 / #63 / #64 +
