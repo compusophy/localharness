@@ -1473,10 +1473,19 @@ function resetMp() {
 let chatLines = []; // received "name: text" lines, oldest first
 let chatCompose = ''; // the line the user is typing
 let chatStarted = 0;
+let chatRecentSent = []; // normalized text of messages WE just sent (echo dedup)
 const CHAT_MAX_LINES = 64; // ring cap
 const CHAT_MAX_COMPOSE = 200;
+const CHAT_DEDUP_RING = 8; // how many recent sends to dedup against
 function chatStart() {
   if (!chatStarted) { chatStarted = 1; self.postMessage({ type: 'chat:start' }); }
+}
+// Collapse whitespace + lowercase so an optimistic echo matches the relay's
+// echoed copy regardless of case/spacing (the relay does .split(/\s+/).join(' ')).
+function chatNorm(s) { return String(s).trim().replace(/\s+/g, ' ').toLowerCase(); }
+function chatPushLine(line) {
+  chatLines.push(line);
+  if (chatLines.length > CHAT_MAX_LINES) chatLines = chatLines.slice(-CHAT_MAX_LINES);
 }
 const host_chat = {
   poll() { chatStart(); return chatLines.length; }, // first poll kicks MAIN's relay loop
@@ -1500,6 +1509,12 @@ const host_chat = {
     const text = chatCompose.trim();
     if (text.length === 0) return 0;
     chatStart();
+    // OPTIMISTIC ECHO: show our own line INSTANTLY (next frame) instead of waiting
+    // a full POST + poll round-trip (~2-5s). Remember its normalized text so the
+    // relay's echoed copy is dedup'd when it polls back, not shown twice.
+    chatPushLine('you: ' + text);
+    chatRecentSent.push(chatNorm(text));
+    if (chatRecentSent.length > CHAT_DEDUP_RING) chatRecentSent = chatRecentSent.slice(-CHAT_DEDUP_RING);
     self.postMessage({ type: 'chat:send', text });
     chatCompose = '';
     return 1;
@@ -1508,13 +1523,22 @@ const host_chat = {
 function applyChatMsg(msg) {
   const line = typeof msg.text === 'string' ? msg.text : '';
   if (!line) return;
-  chatLines.push(line);
-  if (chatLines.length > CHAT_MAX_LINES) chatLines = chatLines.slice(-CHAT_MAX_LINES);
+  // Dedup our own echo: a relay line is "name: text"; if its text matches one we
+  // just sent, consume that ring entry and skip (we already showed it as "you: …").
+  const idx = line.indexOf(': ');
+  const body = idx >= 0 ? line.slice(idx + 2) : line;
+  const hit = chatRecentSent.indexOf(chatNorm(body));
+  if (hit >= 0) {
+    chatRecentSent.splice(hit, 1);
+    return;
+  }
+  chatPushLine(line);
 }
 function resetChat() {
   chatLines = [];
   chatCompose = '';
   chatStarted = 0;
+  chatRecentSent = [];
 }
 
 function buildImports() {
