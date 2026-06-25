@@ -76,8 +76,8 @@ use super::templates;
 /// clamped to `[16, 1024]` in the worker; out of range falls back to the
 /// default. These consts remain the default + the composition/HTML-render path
 /// (single fixed surface).
-const FB_W: u32 = 320;
-const FB_H: u32 = 240;
+const FB_W: u32 = 512;
+const FB_H: u32 = 512;
 const FB_BYTES: usize = (FB_W * FB_H * 4) as usize;
 
 thread_local! {

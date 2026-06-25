@@ -41,8 +41,11 @@ const require = createRequire(import.meta.url);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
 
-const FB_W = 320;
-const FB_H = 240;
+// Must match the worker's default surface (web/cartridge-worker.js FB_*_DEFAULT)
+// — bitmask.rl declares no dims(), so it renders at the default; the reference
+// host below compares at the same size.
+const FB_W = 512;
+const FB_H = 512;
 
 let failures = 0;
 function check(cond, msg) {

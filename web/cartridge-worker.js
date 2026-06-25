@@ -73,8 +73,8 @@ function postError(code, detail) {
 // These are mutable (`let`): `applyDims()` rewrites them at load time. The
 // Node test surface still exports the DEFAULTS (FB_W_DEFAULT/FB_H_DEFAULT) and
 // the live values, and `renderOnce` honors a cartridge's `dims()` too.
-const FB_W_DEFAULT = 320;
-const FB_H_DEFAULT = 240;
+const FB_W_DEFAULT = 512;
+const FB_H_DEFAULT = 512;
 // Clamp range for a cartridge-declared dimension. The lower bound keeps a
 // cartridge from declaring a degenerate (0/negative) surface; the upper bound
 // caps the per-frame postMessage transfer cost (a frame is w*h*4 bytes, so

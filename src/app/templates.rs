@@ -2590,15 +2590,22 @@ pub(crate) fn public_face_header(owner_overlay: bool) -> Markup {
     html! {
         header.site-header.public-face-header {
             div.header-inner {
+                // CURRENT brand design — the lh glyph summary + three square icon
+                // buttons (home / github / crab), byte-identical to `site_header`
+                // so the public face matches the rest of the chrome (was the old
+                // TEXT "localharness" + text links — the "legacy header" report).
                 h1.header-brand {
                     details.brand-menu {
-                        summary.brand-summary { "localharness" }
+                        summary.brand-summary aria-label="localharness menu" title="localharness" { (lh_glyph()) }
                         nav.brand-menu-items {
-                            a href="https://localharness.xyz/" { "home" }
-                            a href="https://github.com/compusophy/localharness"
-                                target="_blank" rel="noopener" { "repo" }
-                            a href="https://crates.io/crates/localharness"
-                                target="_blank" rel="noopener" { "crate" }
+                            a.brand-icon-btn href="https://localharness.xyz/"
+                                title="home" aria-label="home" { (crate::landing::home_glyph()) }
+                            a.brand-icon-btn href="https://github.com/compusophy/localharness"
+                                target="_blank" rel="noopener"
+                                title="github" aria-label="github repo" { (crate::landing::github_glyph()) }
+                            a.brand-icon-btn href="https://crates.io/crates/localharness"
+                                target="_blank" rel="noopener"
+                                title="crates.io" aria-label="rust crate" { (crate::landing::crab_glyph()) }
                         }
                     }
                 }
