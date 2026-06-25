@@ -52,7 +52,10 @@ where
 /// wasm32: `js_sys::Date::now()`. Used to stamp freshness-windowed personal-sign
 /// auth tokens (`registry::proxy_auth_token`) from code that runs on BOTH targets
 /// (e.g. bashlite `lh-publish`, which is the CLI `sh` AND browser `execute_script`).
-#[cfg(not(target_arch = "wasm32"))]
+// Gated on `wallet`: the ONLY caller is `bashlite::platform` (the `lh-*`
+// platform reads/writes, feature = wallet). The default (no-wallet) build never
+// references it, so compiling it there is dead code under clippy `-D warnings`.
+#[cfg(all(not(target_arch = "wasm32"), feature = "wallet"))]
 pub fn now_unix_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -60,7 +63,7 @@ pub fn now_unix_secs() -> u64 {
         .unwrap_or(0)
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "wallet"))]
 pub fn now_unix_secs() -> u64 {
     (js_sys::Date::now() / 1000.0) as u64
 }
