@@ -33,7 +33,13 @@ const SIGNAL_DIR = 'signal';
 const SIGNAL_TTL_SECS = 120;
 // `room` + `slot` form the path; constrain both so they can't traverse the repo.
 const ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
-const SLOT_RE = /^[a-z]{1,16}$/;
+// Slots: the legacy 2-peer pair (offer/answer), the N-PEER STAR per-joiner SDP
+// slots (offer-{id}/answer-{id}), the `join` roster (the host discovers joiners
+// here — the store has no directory listing), and the forward-reserved trickle
+// candidate slots (cands-*; handlers land with trickle ICE, naming pinned now so
+// it never migrates). The slot namespace IS the signaling protocol.
+const SLOT_RE = /^(offer|answer|join|(?:offer|answer)-[a-z0-9]{1,32}|cands-(?:host|offerer|answerer|joiner-[a-z0-9]{1,32}))$/;
+const JOINER_RE = /^[a-z0-9]{1,32}$/;
 
 function corsHeaders(origin: string | null): Record<string, string> {
   const h: Record<string, string> = {
@@ -77,8 +83,11 @@ function b64decodeUtf8(b64: string): string {
   return new TextDecoder().decode(bytes);
 }
 
+// SDP slots carry {sdp,ts}; the `join` roster carries {joiners,ts}. One loose
+// shape covers both (ts is always present and drives the TTL).
 interface Blob {
-  sdp: string;
+  sdp?: string;
+  joiners?: string[];
   ts: number;
 }
 
@@ -147,7 +156,9 @@ export default async function handler(req: Request): Promise<Response> {
     }
     const now = Math.floor(Date.now() / 1000);
     if (!hit || now - hit.blob.ts > SIGNAL_TTL_SECS) return json({}, 200, origin);
-    return json({ sdp: hit.blob.sdp, ts: hit.blob.ts }, 200, origin);
+    // Return the stored blob verbatim: {sdp,ts} for SDP slots, {joiners,ts} for
+    // the roster — the client reads whichever field it asked for.
+    return json(hit.blob, 200, origin);
   }
 
   if (req.method !== 'POST') return json({ error: 'GET or POST' }, 405, origin);
@@ -169,10 +180,40 @@ export default async function handler(req: Request): Promise<Response> {
   if (!ID_RE.test(room)) return json({ error: 'bad room' }, 400, origin);
   const action = String(payload.action ?? 'post').trim();
 
-  // clear: drop both slots once the peers have connected (best-effort cleanup).
+  // join: append a joiner id to the room's roster (the host polls this single
+  // slot to discover joiners, since the store can't list per-joiner slots).
+  // Read-modify-write under sha, one retry on a concurrent-join conflict.
+  if (action === 'join') {
+    const joiner = String(payload.joiner ?? '').trim();
+    if (!JOINER_RE.test(joiner)) return json({ error: 'bad joiner id' }, 400, origin);
+    const path = pathFor(room, 'join');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const existing = await ghGet(path).catch(() => null);
+        const roster = Array.isArray(existing?.blob?.joiners) ? (existing!.blob.joiners as string[]) : [];
+        if (roster.includes(joiner)) return json({ joined: true, room, already: true }, 200, origin);
+        roster.push(joiner);
+        await ghPut(path, JSON.stringify({ joiners: roster, ts: now }), `signal ${room}/join (${roster.length})`, existing?.sha);
+        return json({ joined: true, room, count: roster.length }, 200, origin);
+      } catch (e) {
+        if (attempt === 1) return json({ error: 'store: ' + (e as Error).message }, 502, origin);
+        // conflict (concurrent join won the sha) — re-read + retry once
+      }
+    }
+    return json({ error: 'join busy' }, 409, origin);
+  }
+
+  // clear: drop a room's slots once peers have connected (best-effort cleanup;
+  // blobs also self-expire past the TTL). The 2-peer pair is always cleared; for
+  // the N-peer star the host passes its known joiner ids so their per-joiner
+  // offer/answer slots + the roster go too.
   if (action === 'clear') {
+    const joiners = Array.isArray(payload.joiners)
+      ? (payload.joiners as unknown[]).map(String).filter((s) => JOINER_RE.test(s))
+      : [];
+    const slots = ['offer', 'answer', 'join', ...joiners.flatMap((id) => [`offer-${id}`, `answer-${id}`])];
     try {
-      for (const slot of ['offer', 'answer']) await ghDelete(pathFor(room, slot));
+      for (const slot of slots) await ghDelete(pathFor(room, slot));
     } catch (e) {
       return json({ error: 'store: ' + (e as Error).message }, 502, origin);
     }

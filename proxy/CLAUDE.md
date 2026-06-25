@@ -51,6 +51,19 @@ Stripe keys, GitHub PAT) — NEVER in the wasm bundle.
 - `stripe-*.ts` — fiat on-ramp (Elements). The webhook once missed bare-PI
   `payment_intent.succeeded` (charged, no `$LH`); recovery = `contracts/script/
   MintForReceipt.s.sol`. READ Stripe docs before touching — guessing charged a card.
+- `signal.ts` — WebRTC matchmaking rendezvous (GitHub-store, like jobs/chat). POST
+  personal-sign authed; GET open. Slots: `offer`/`answer` (legacy 2-peer) +
+  `offer-{joinerId}`/`answer-{joinerId}` + `join` roster (N-PEER STAR: host polls
+  `join` to discover joiners, since the store can't list slots) + reserved
+  `cands-*` (trickle ICE, deferred). `SLOT_RE` is the one gate every slot passes —
+  widen it in lockstep with `webrtc.rs`. Blobs self-expire past `SIGNAL_TTL_SECS`.
+- `turn.ts` — serves `{iceServers}`: STUN always + static TURN when `TURN_URLS` +
+  `TURN_USERNAME` + `TURN_CREDENTIAL` env are set (Metered/Twilio/coturn), else
+  STUN-only. **Vercel CANNOT host the TURN relay** (always-on UDP) — this only
+  serves creds; the relay is external infra the operator provisions. `webrtc.rs`
+  consumes it with a STUN fallback, so it's a regression-free env toggle.
+- `chat.ts` — open-chatroom relay (GitHub-store). POST personal-sign authed (sender
+  short-addr = name, no meter gate = open room); GET open. Backs `host::chat`.
 
 ## Test before deploy
 `bash proxy/test/run.sh` (auth-parity, sponsor-handler incl. the funded-relay case,

@@ -30,10 +30,20 @@ use web_sys::{
 /// ~20-30% of NATs that need it) is a deferred add.
 const STUN_URL: &str = "stun:stun.l.google.com:19302";
 
-/// Label / negotiated id for the single shared-folder sync channel. Both peers
-/// open it with the SAME id so no `ondatachannel` negotiation is needed.
+/// Label / negotiated id for the RELIABLE, ordered shared-folder sync channel.
+/// Both peers open it with the SAME id so no `ondatachannel` negotiation is
+/// needed. Carries the SyncMsg protocol (teams-sync / shared-fs) — delivery
+/// guarantees here are LOAD-BEARING (file sync must not drop/reorder).
 const CHANNEL_LABEL: &str = "lh-sharedfs";
 const CHANNEL_ID: u16 = 0;
+
+/// Second negotiated channel (id 1) for fast game-state (`host::mp`): UNRELIABLE
+/// and UNORDERED (`maxRetransmits 0`, `ordered false`) — UDP-like, drop-on-loss,
+/// so a stale position/input frame is never retransmitted. SEPARATE from the sync
+/// channel so a game's twitchy traffic and the reliable file-sync never share a
+/// pipe (the old shared-channel-by-JSON-shape ambiguity is gone too).
+const GAME_CHANNEL_LABEL: &str = "lh-game";
+const GAME_CHANNEL_ID: u16 = 1;
 
 /// An owned WebRTC peer connection + its data channel, holding the message
 /// closure alive for the connection's lifetime (wasm needs the JS callback to
@@ -41,8 +51,13 @@ const CHANNEL_ID: u16 = 0;
 /// `CartridgeRuntime`). Drop it to tear the connection down.
 pub(crate) struct Peer {
     pc: RtcPeerConnection,
+    /// id 0, reliable + ordered: the sync channel (teams-sync / shared-fs). All
+    /// the existing `send`/`sender`/`is_open` callers route here, unchanged.
     channel: RtcDataChannel,
-    /// Kept alive; never read directly.
+    /// id 1, unreliable + unordered: the game channel (`host::mp`). `send_game`.
+    game: RtcDataChannel,
+    /// Kept alive; ONE closure serves BOTH channels' onmessage (each consumer
+    /// discriminates by frame shape, so cross-channel frames are simply ignored).
     _on_message: Closure<dyn FnMut(MessageEvent)>,
 }
 
@@ -90,18 +105,32 @@ async fn new_pc() -> Result<RtcPeerConnection, JsValue> {
     RtcPeerConnection::new_with_configuration(&cfg)
 }
 
-/// Open the negotiated sync channel and wire its `onmessage` to `on_msg`
-/// (decoding ArrayBuffer / string payloads to bytes). Returns the channel + the
-/// closure to keep alive.
-fn open_channel(
+/// Open BOTH negotiated channels — reliable sync (id 0) + unreliable game
+/// (id 1) — and wire ONE shared `on_msg` to both (decoding ArrayBuffer / string
+/// payloads to bytes). Each consumer discriminates by frame shape (sync =
+/// `SyncMsg` JSON; game = `{"d"/"e"}` integer frames), so a frame arriving on the
+/// "wrong" channel for a given consumer is simply ignored. Returns the two
+/// channels + the closure to keep alive.
+fn open_channels(
     pc: &RtcPeerConnection,
     mut on_msg: impl FnMut(Vec<u8>) + 'static,
-) -> (RtcDataChannel, Closure<dyn FnMut(MessageEvent)>) {
-    let init = RtcDataChannelInit::new();
-    init.set_negotiated(true);
-    init.set_id(CHANNEL_ID);
-    let dc = pc.create_data_channel_with_data_channel_dict(CHANNEL_LABEL, &init);
-    dc.set_binary_type(RtcDataChannelType::Arraybuffer);
+) -> (RtcDataChannel, RtcDataChannel, Closure<dyn FnMut(MessageEvent)>) {
+    // Reliable, ordered sync channel (id 0) — UNCHANGED semantics.
+    let sync_init = RtcDataChannelInit::new();
+    sync_init.set_negotiated(true);
+    sync_init.set_id(CHANNEL_ID);
+    let sync_dc = pc.create_data_channel_with_data_channel_dict(CHANNEL_LABEL, &sync_init);
+    sync_dc.set_binary_type(RtcDataChannelType::Arraybuffer);
+
+    // Unreliable, unordered game channel (id 1) — UDP-like: no retransmit, no
+    // ordering, so a lost/late frame is dropped rather than stalling the pipe.
+    let game_init = RtcDataChannelInit::new();
+    game_init.set_negotiated(true);
+    game_init.set_id(GAME_CHANNEL_ID);
+    game_init.set_ordered(false);
+    game_init.set_max_retransmits(0);
+    let game_dc = pc.create_data_channel_with_data_channel_dict(GAME_CHANNEL_LABEL, &game_init);
+    game_dc.set_binary_type(RtcDataChannelType::Arraybuffer);
 
     let cb = Closure::wrap(Box::new(move |ev: MessageEvent| {
         let data = ev.data();
@@ -114,8 +143,10 @@ fn open_channel(
         };
         on_msg(bytes);
     }) as Box<dyn FnMut(MessageEvent)>);
-    dc.set_onmessage(Some(cb.as_ref().unchecked_ref()));
-    (dc, cb)
+    // One JS function, set as the handler on BOTH channels.
+    sync_dc.set_onmessage(Some(cb.as_ref().unchecked_ref()));
+    game_dc.set_onmessage(Some(cb.as_ref().unchecked_ref()));
+    (sync_dc, game_dc, cb)
 }
 
 /// Non-trickle ICE: wait until candidate gathering completes so the local SDP
@@ -145,7 +176,7 @@ impl Peer {
         on_msg: impl FnMut(Vec<u8>) + 'static,
     ) -> Result<(Self, String), JsValue> {
         let pc = new_pc().await?;
-        let (channel, on_message) = open_channel(&pc, on_msg);
+        let (channel, game, on_message) = open_channels(&pc, on_msg);
         let offer = JsFuture::from(pc.create_offer()).await?;
         let sdp = js_sys::Reflect::get(&offer, &JsValue::from_str("sdp"))?
             .as_string()
@@ -159,6 +190,7 @@ impl Peer {
             Self {
                 pc,
                 channel,
+                game,
                 _on_message: on_message,
             },
             out,
@@ -173,7 +205,7 @@ impl Peer {
         on_msg: impl FnMut(Vec<u8>) + 'static,
     ) -> Result<(Self, String), JsValue> {
         let pc = new_pc().await?;
-        let (channel, on_message) = open_channel(&pc, on_msg);
+        let (channel, game, on_message) = open_channels(&pc, on_msg);
         let remote = RtcSessionDescriptionInit::new(RtcSdpType::Offer);
         remote.set_sdp(offer_sdp);
         JsFuture::from(pc.set_remote_description(&remote)).await?;
@@ -190,6 +222,7 @@ impl Peer {
             Self {
                 pc,
                 channel,
+                game,
                 _on_message: on_message,
             },
             out,
@@ -210,9 +243,16 @@ impl Peer {
         self.channel.ready_state() == web_sys::RtcDataChannelState::Open
     }
 
-    /// Send bytes over the sync channel. Errs if the channel isn't open yet.
+    /// Send bytes over the RELIABLE sync channel (id 0). Errs if not open yet.
     pub(crate) fn send(&self, bytes: &[u8]) -> Result<(), JsValue> {
         self.channel.send_with_u8_array(bytes)
+    }
+
+    /// Send bytes over the UNRELIABLE game channel (id 1, `host::mp`). Drops on
+    /// loss (no retransmit/ordering) — the caller resends fresh state each tick,
+    /// so a dropped frame is simply superseded. Errs if the channel isn't open.
+    pub(crate) fn send_game(&self, bytes: &[u8]) -> Result<(), JsValue> {
+        self.game.send_with_u8_array(bytes)
     }
 
     /// A cloneable handle to the data channel, so the sync layer (Layer 4) can
@@ -230,9 +270,61 @@ impl Peer {
     // Both sides are unproven until run with two real browsers (see the module
     // header) — but the relay leg is live-verified.
 
+    // ── N-peer host-authoritative STAR (off-chain signaling) ──────────────────
+    // Each host↔joiner link is the SAME proven offer/answer handshake, run once
+    // PER joiner: the JOINER offers (it owns an id), the HOST answers each. There
+    // are NO joiner↔joiner links — joiners read the HOST's broadcast (host = the
+    // hub + authority), so a frame's peer is just "the connection it arrived on".
+    // Slots: `offer-{id}` (joiner offer), `answer-{id}` (host answer), `join`
+    // (the roster the host polls to discover joiners). The 2-peer game is N=1.
+
+    /// JOINER: offer to the host — publish the offer under `offer-{joiner_id}`,
+    /// register in the `join` roster, await the host's `answer-{joiner_id}`, and
+    /// complete the handshake. Returns the connected `Peer` (poll `is_open()`).
+    pub(crate) async fn offer_to_host(
+        room: &str,
+        joiner_id: &str,
+        signer: &k256::ecdsa::SigningKey,
+        on_msg: impl FnMut(Vec<u8>) + 'static,
+    ) -> Result<Self, JsValue> {
+        let (peer, offer) = Self::offer(on_msg).await?;
+        crate::registry::signal_post(signer, now_secs(), room, &format!("offer-{joiner_id}"), &offer)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("signal_post offer: {e}")))?;
+        crate::registry::signal_join(signer, now_secs(), room, joiner_id)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("signal_join: {e}")))?;
+        let answer = poll_signal(room, &format!("answer-{joiner_id}"), 60)
+            .await
+            .ok_or_else(|| JsValue::from_str("timed out waiting for the host's answer"))?;
+        peer.accept_answer(&answer).await?;
+        Ok(peer)
+    }
+
+    /// HOST: answer ONE joiner — read its `offer-{joiner_id}`, create the answer,
+    /// publish it under `answer-{joiner_id}`. Returns the connected `Peer`. The
+    /// host calls this per joiner id discovered in the roster.
+    pub(crate) async fn answer_joiner(
+        room: &str,
+        joiner_id: &str,
+        signer: &k256::ecdsa::SigningKey,
+        on_msg: impl FnMut(Vec<u8>) + 'static,
+    ) -> Result<Self, JsValue> {
+        let offer = poll_signal(room, &format!("offer-{joiner_id}"), 30)
+            .await
+            .ok_or_else(|| JsValue::from_str("joiner offer not found"))?;
+        let (peer, answer) = Self::answer(&offer, on_msg).await?;
+        crate::registry::signal_post(signer, now_secs(), room, &format!("answer-{joiner_id}"), &answer)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("signal_post answer: {e}")))?;
+        Ok(peer)
+    }
+
     /// OFFERER: create an offer, POST it to the relay under `room`, poll for the
     /// peer's answer, complete the handshake, and best-effort clear the room.
-    /// Returns the connected `Peer` (poll `is_open()` before `send`).
+    /// Returns the connected `Peer` (poll `is_open()` before `send`). Legacy
+    /// 2-peer relay primitive — superseded by the star above, kept for reference.
+    #[allow(dead_code)]
     pub(crate) async fn connect_offerer(
         room: &str,
         signer: &k256::ecdsa::SigningKey,
@@ -252,7 +344,9 @@ impl Peer {
     }
 
     /// ANSWERER: poll the relay for the offer under `room`, answer it, POST the
-    /// answer back, and return the connected `Peer`.
+    /// answer back, and return the connected `Peer`. Legacy 2-peer relay
+    /// primitive — superseded by the star above, kept for reference.
+    #[allow(dead_code)]
     pub(crate) async fn connect_answerer(
         room: &str,
         signer: &k256::ecdsa::SigningKey,
@@ -288,7 +382,9 @@ async fn poll_signal(room: &str, slot: &str, secs: u32) -> Option<String> {
 impl Drop for Peer {
     fn drop(&mut self) {
         self.channel.set_onmessage(None);
+        self.game.set_onmessage(None);
         self.channel.close();
+        self.game.close();
         self.pc.close();
     }
 }

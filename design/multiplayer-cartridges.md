@@ -3,7 +3,47 @@
 > **STATUS: DESIGN (awaiting sign-off).** Transport is PROVEN (`webrtc.rs` +
 > off-chain relay connected two browsers + exchanged a message,
 > `project_webrtc_multiplayer`). This specs the cartridge-facing API + wire
-> protocol BEFORE the multi-file binding build.
+> protocol BEFORE the multi-file binding build. The API shipped as `host::mp`
+> (this doc kept `host::net` naming; the live module is `host::mp`).
+
+## Low-latency upgrade — SHIPPED 2026-06-25 (read this first)
+
+Three pieces landed to make `host::mp` viable for *fast-paced* games (the chat
+relay's polling latency never applied here — game data flows P2P, not through a
+server). Trickle ICE is DEFERRED (its slot names are pinned below so it layers on
+with no migration); it has no compile-time proof and needs a live two-browser run.
+
+1. **Unreliable game channel.** Each `Peer` now opens TWO negotiated data
+   channels: id 0 (`lh-sharedfs`, reliable+ordered) stays the SYNC channel
+   (teams-sync / shared-fs — `send`/`sender`/`is_open` unchanged), and id 1
+   (`lh-game`, `ordered:false` and `maxRetransmits:0`) is a new UDP-like channel
+   for `host::mp` frames (`send_game`). A stale position frame is dropped, never
+   retransmitted — the caller resends fresh state each tick.
+
+2. **N-peer host-authoritative STAR.** The host (index 0) answers EACH joiner on
+   its own connection; a joiner connects ONLY to the host. No joiner↔joiner links:
+   a host-authoritative game writes the world to the host's slots (peer 0) and
+   joiners read it there. A frame's peer index = the connection it arrived on (host
+   assigns join order; a joiner always sees the host as peer 0, itself as 1). N=1
+   reduces EXACTLY to the old 2-peer game. Cap = `MP_PEERS` (8). Signaling slots
+   (`signal.ts`): `offer-{joinerId}` (joiner offer), `answer-{joinerId}` (host
+   answer), `join` (the roster the host polls to discover joiners — the store has
+   no directory listing). Reserved for trickle: `cands-host` / `cands-joiner-{id}`.
+
+3. **TURN.** `webrtc.rs` already consumes `/api/turn`'s `{iceServers}` with a
+   STUN-only fallback — so TURN is a pure proxy/env toggle (`turn.ts` serves static
+   TURN creds when `TURN_URLS`/`TURN_USERNAME`/`TURN_CREDENTIAL` are set, else
+   STUN-only = today's behavior). **Vercel can't HOST a TURN relay** (always-on
+   UDP); the relay is external infra the operator provisions (Metered/Twilio/
+   coturn). Without it, ~20-30% symmetric-NAT peers can't connect — same as today.
+
+**Writing an N-player game (host-authoritative):** joiners `set()` their input
+(reaches the host as `peer[selfIndex]`) and read the world from `peer[0]` (the
+host); the host reads every `peer[1..N]` input, simulates, and `set()`s the world
+into its own slots (broadcast to all). `connected()==1` means ≥1 other player is
+present. **Verification residual:** compile + parity green here; the live N-peer
+handshake / dual-channel / TURN behavior needs a multi-browser E2E (no browser in
+the build env) — the per-connection handshake itself is the proven 2-peer flow.
 
 ## Goal
 A rustlite cartridge becomes multiplayer by calling `host::net::*`: open/join a

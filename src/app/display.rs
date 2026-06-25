@@ -1557,35 +1557,82 @@ mod worker {
     }
 
     // ── host::mp multiplayer bridge (worker ↔ the proven webrtc.rs Peer) ──────
-    // A multiplayer cartridge (worker) posts mp:host/mp:join → we connect the Peer
-    // over the off-chain relay; mp:deltas/mp:events → we frame + send over the data
-    // channel; the Peer's incoming frames → mp:peer back to the worker's mirror.
-    // 2-peer v1: host = offerer (index 0), joiner = answerer (index 1). The session
-    // (Peer + ephemeral relay-auth wallet) lives in a thread-local for the cartridge.
+    // A multiplayer cartridge (worker) posts mp:host/mp:join → we connect over the
+    // off-chain relay; mp:deltas/mp:events → we frame + send over the UNRELIABLE
+    // game channel (id 1); incoming peer frames → mp:peer back to the worker mirror.
+    //
+    // Topology = HOST-AUTHORITATIVE STAR. The host (index 0) answers EACH joiner on
+    // its own connection; a joiner connects ONLY to the host. There are no joiner↔
+    // joiner links — a host-authoritative game writes the world to the host's slots
+    // (peer 0) and joiners read it there. A frame's peer index is just the
+    // connection it arrived on (the host assigns join order; a joiner always sees
+    // the host as peer 0, itself as 1). N=1 reduces EXACTLY to the old 2-peer game
+    // (host 0 ↔ joiner 1). Up to MP_MAX_PEERS total. The session (peer(s) + the
+    // ephemeral relay-auth wallet) lives in a thread-local for the cartridge.
+    const MP_MAX_PEERS: i32 = 8; // mirrors web/cartridge-worker.js MP_PEERS
+
+    enum MpRole {
+        /// Hub: (joinerId, peer) per joiner; the joiner's mirror index = pos + 1.
+        Host {
+            peers: Vec<(String, crate::app::webrtc::Peer)>,
+        },
+        /// Leaf: the single connection to the host (peer 0 from our view).
+        Joiner {
+            peer: crate::app::webrtc::Peer,
+        },
+    }
     struct MpSession {
-        peer: crate::app::webrtc::Peer,
+        role: MpRole,
         _gw: crate::wallet::GeneratedWallet, // keep the ephemeral signer alive
+        #[allow(dead_code)]
+        room: String,
     }
     thread_local! {
         static MP_SESSION: RefCell<Option<MpSession>> = const { RefCell::new(None) };
     }
 
-    /// Connect this cartridge's peer for room code `code` (host=offerer / join=
-    /// answerer), wiring incoming data-channel frames back to the worker, then
-    /// report status. Spawned on `mp:host`/`mp:join`.
+    /// An 8-hex-char joiner id from the ephemeral wallet address (first 4 bytes) —
+    /// matches the relay's JOINER_RE (`[a-z0-9]{1,32}`).
+    fn joiner_id_from(addr: &[u8; 20]) -> String {
+        let mut s = String::with_capacity(8);
+        for b in &addr[0..4] {
+            s.push_str(&format!("{b:02x}"));
+        }
+        s
+    }
+
+    /// Connect this cartridge's session for room code `code`. HOST opens the room
+    /// and spawns a loop that answers each joiner as they appear; a JOINER offers
+    /// to the host. Incoming frames route to the worker mirror; status is reported
+    /// as peers connect. Spawned on `mp:host`/`mp:join`.
     async fn mp_connect(worker: Worker, code: i32, is_host: bool) {
         mp_teardown(); // a fresh connect replaces any prior session
-        let self_index = if is_host { 0 } else { 1 };
         let room = format!("mp-{code}");
         let gw = crate::wallet::generate();
+        let signer = gw.signer.clone(); // clone for the host's background answer loop
+
+        if is_host {
+            // The host IS the hub — connected immediately (index 0); joiners attach
+            // over time via the accept loop.
+            MP_SESSION.with(|s| {
+                *s.borrow_mut() = Some(MpSession {
+                    role: MpRole::Host { peers: Vec::new() },
+                    _gw: gw,
+                    room: room.clone(),
+                });
+            });
+            // Hosting but no peer yet → connected=0 (a cartridge gates its game on
+            // `connected()==1`, i.e. ≥1 other player present); peerCount=1 (just us).
+            mp_post_status(&worker, 0, 0, 1);
+            wasm_bindgen_futures::spawn_local(mp_host_accept_loop(worker, room, signer));
+            return;
+        }
+
+        // JOINER: offer to the host. The host is peer 0 from our view; we are 1.
+        let joiner_id = joiner_id_from(&crate::wallet::address(&signer));
         let worker_for_msg = worker.clone();
-        let on_msg = move |bytes: Vec<u8>| mp_dispatch_peer_frame(&worker_for_msg, self_index, &bytes);
-        let result = if is_host {
-            crate::app::webrtc::Peer::connect_offerer(&room, &gw.signer, on_msg).await
-        } else {
-            crate::app::webrtc::Peer::connect_answerer(&room, &gw.signer, on_msg).await
-        };
-        match result {
+        let on_msg = move |bytes: Vec<u8>| mp_dispatch_peer_frame(&worker_for_msg, 0, &bytes);
+        match crate::app::webrtc::Peer::offer_to_host(&room, &joiner_id, &signer, on_msg).await {
             Ok(peer) => {
                 // Wait for ICE to actually open the data channel (~15s cap).
                 for _ in 0..150 {
@@ -1596,14 +1643,72 @@ mod worker {
                 }
                 let connected = i32::from(peer.is_open());
                 MP_SESSION.with(|s| {
-                    *s.borrow_mut() = Some(MpSession { peer, _gw: gw });
+                    *s.borrow_mut() = Some(MpSession {
+                        role: MpRole::Joiner { peer },
+                        _gw: gw,
+                        room: room.clone(),
+                    });
                 });
-                mp_post_status(&worker, connected, self_index, if connected == 1 { 2 } else { 1 });
+                mp_post_status(&worker, connected, 1, if connected == 1 { 2 } else { 1 });
             }
             Err(e) => {
-                web_sys::console::warn_1(&JsValue::from_str(&format!("mp connect failed: {e:?}")));
+                web_sys::console::warn_1(&JsValue::from_str(&format!("mp join failed: {e:?}")));
                 mp_post_status(&worker, 0, -1, 0);
             }
+        }
+    }
+
+    /// HOST: poll the relay roster; answer each NEW joiner on its own connection,
+    /// assign it the next peer index, and report the growing peer count. Exits when
+    /// the session is torn down or is no longer a host session.
+    async fn mp_host_accept_loop(worker: Worker, room: String, signer: k256::ecdsa::SigningKey) {
+        loop {
+            // Stop if the session vanished (teardown) or is no longer a host.
+            let is_host = MP_SESSION
+                .with(|s| matches!(s.borrow().as_ref().map(|x| &x.role), Some(MpRole::Host { .. })));
+            if !is_host {
+                return;
+            }
+            let joiners = crate::registry::signal_get_joiners(&room).await.unwrap_or_default();
+            for jid in joiners {
+                // Skip joiners we already hold, and cap the total at MP_MAX_PEERS.
+                let (known, full, next_index) = MP_SESSION.with(|s| {
+                    if let Some(MpSession { role: MpRole::Host { peers }, .. }) = s.borrow().as_ref() {
+                        let count = peers.len() as i32;
+                        (peers.iter().any(|(id, _)| id == &jid), count + 1 >= MP_MAX_PEERS, count + 1)
+                    } else {
+                        (true, true, 0)
+                    }
+                });
+                if known || full {
+                    continue;
+                }
+                let idx = next_index; // 1..=MP_MAX_PEERS-1
+                let worker_for_msg = worker.clone();
+                let on_msg = move |bytes: Vec<u8>| mp_dispatch_peer_frame(&worker_for_msg, idx, &bytes);
+                match crate::app::webrtc::Peer::answer_joiner(&room, &jid, &signer, on_msg).await {
+                    Ok(peer) => {
+                        let count = MP_SESSION.with(|s| {
+                            if let Some(MpSession { role: MpRole::Host { peers }, .. }) =
+                                s.borrow_mut().as_mut()
+                            {
+                                peers.push((jid, peer));
+                                peers.len() as i32 + 1
+                            } else {
+                                1
+                            }
+                        });
+                        // connected once ≥1 peer is in (peerCount ≥ 2).
+                        mp_post_status(&worker, i32::from(count >= 2), 0, count);
+                    }
+                    Err(e) => {
+                        web_sys::console::warn_1(&JsValue::from_str(&format!(
+                            "mp answer_joiner failed: {e:?}"
+                        )));
+                    }
+                }
+            }
+            crate::runtime::sleep_ms(2000).await;
         }
     }
 
@@ -1629,22 +1734,33 @@ mod worker {
             .unwrap_or_default()
     }
 
-    /// Send buffered deltas/events over the data channel as a JSON frame
-    /// (`{"d":[slot,val,...]}` or `{"e":[val,...]}`). No-op if no open peer.
+    /// Send buffered deltas/events as a JSON frame (`{"d":[slot,val,...]}` or
+    /// `{"e":[val,...]}`) over the UNRELIABLE game channel: the HOST broadcasts to
+    /// every joiner; a JOINER sends to the host. No-op if no open peer.
     fn mp_send(deltas: Option<Vec<i32>>, events: Option<Vec<i32>>) {
+        let json = if let Some(d) = deltas {
+            format!("{{\"d\":{}}}", mp_ints_json(&d))
+        } else if let Some(ev) = events {
+            format!("{{\"e\":{}}}", mp_ints_json(&ev))
+        } else {
+            return;
+        };
         MP_SESSION.with(|s| {
             if let Some(sess) = s.borrow().as_ref() {
-                if !sess.peer.is_open() {
-                    return;
+                match &sess.role {
+                    MpRole::Host { peers } => {
+                        for (_, p) in peers {
+                            if p.is_open() {
+                                let _ = p.send_game(json.as_bytes());
+                            }
+                        }
+                    }
+                    MpRole::Joiner { peer } => {
+                        if peer.is_open() {
+                            let _ = peer.send_game(json.as_bytes());
+                        }
+                    }
                 }
-                let json = if let Some(d) = deltas {
-                    format!("{{\"d\":{}}}", mp_ints_json(&d))
-                } else if let Some(ev) = events {
-                    format!("{{\"e\":{}}}", mp_ints_json(&ev))
-                } else {
-                    return;
-                };
-                let _ = sess.peer.send(json.as_bytes());
             }
         });
     }
@@ -1661,9 +1777,10 @@ mod worker {
         s
     }
 
-    /// An incoming peer frame off the data channel → post `mp:peer` (deltas/events)
-    /// to the worker's mirror. 2-peer: the sender is the OTHER index.
-    fn mp_dispatch_peer_frame(worker: &Worker, self_index: i32, bytes: &[u8]) {
+    /// An incoming peer frame off the game channel → post `mp:peer` (deltas/events)
+    /// to the worker's mirror. `peer_index` is the sender's mirror index: the host
+    /// passes each joiner's assigned index; a joiner passes 0 (the host).
+    fn mp_dispatch_peer_frame(worker: &Worker, peer_index: i32, bytes: &[u8]) {
         let text = match std::str::from_utf8(bytes) {
             Ok(t) => t,
             Err(_) => return,
@@ -1674,7 +1791,7 @@ mod worker {
         };
         let m = Object::new();
         let _ = Reflect::set(&m, &JsValue::from_str("type"), &JsValue::from_str("mp:peer"));
-        let _ = Reflect::set(&m, &JsValue::from_str("peer"), &JsValue::from_f64((1 - self_index) as f64));
+        let _ = Reflect::set(&m, &JsValue::from_str("peer"), &JsValue::from_f64(peer_index as f64));
         if let Some(d) = v.get("d").and_then(|x| x.as_array()) {
             let arr = js_sys::Array::new();
             for n in d {

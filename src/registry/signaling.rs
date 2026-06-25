@@ -350,6 +350,37 @@ pub async fn signal_clear(signer: &SigningKey, now_secs: u64, room: &str) -> Res
     http_post_json_authed(&url, &token, &body).await
 }
 
+/// N-PEER STAR: append this joiner's id to the room's roster so the HOST (which
+/// can't list per-joiner slots in the store) discovers it. Personal-sign authed.
+pub async fn signal_join(
+    signer: &SigningKey,
+    now_secs: u64,
+    room: &str,
+    joiner_id: &str,
+) -> Result<(), String> {
+    let token = proxy_auth_token(signer, now_secs);
+    let url = format!("{CREDIT_PROXY_URL}api/signal");
+    let body = serde_json::json!({ "action": "join", "room": room, "joiner": joiner_id });
+    http_post_json_authed(&url, &token, &body).await
+}
+
+/// N-PEER STAR: poll the room's roster for joiner ids (open GET — the host calls
+/// this each tick). `Ok(vec![])` if no roster yet or it's past the relay TTL.
+pub async fn signal_get_joiners(room: &str) -> Result<Vec<String>, String> {
+    let url = format!("{CREDIT_PROXY_URL}api/signal?room={room}&slot=join");
+    match http_get_bytes(&url).await? {
+        Some(bytes) => {
+            let v: serde_json::Value = serde_json::from_slice(&bytes)
+                .map_err(|e| format!("signal_get_joiners: bad json: {e}"))?;
+            Ok(v.get("joiners")
+                .and_then(|j| j.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .unwrap_or_default())
+        }
+        None => Ok(Vec::new()),
+    }
+}
+
 /// Fetch the proxy's WebRTC ICE-server config JSON (`{iceServers:[…]}`) — STUN
 /// always, TURN when the proxy is provisioned (`/api/turn`). Open GET. The browser
 /// parses it into the RtcConfiguration. Returns the raw JSON body text.
