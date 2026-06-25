@@ -102,13 +102,13 @@ grep -q "^## \[$VERSION\] - $TODAY" CHANGELOG.md || fail "CHANGELOG promote did 
 
 step "regenerate managed docs (gen-docs) -> $VERSION"
 # The generator OWNS the version line (and every other GEN block) in
-# web/skill.md / web/llms.txt, and writes the filled web/skill.md verbatim to
-# README.md (the README is a DERIVED COPY of skill.md — feedback #56). Run it
-# AFTER the Cargo.toml bump so every `<!-- GEN:version -->` block picks up the
-# new crate version; this replaces the old per-file manual sed stamps.
+# web/skill.md / web/llms.txt. README.md is now HAND-WRITTEN + DECOUPLED from
+# gen-docs (it has no GEN blocks; it is no longer a derived copy of skill.md —
+# the minimal-README pass), so it is NOT stamped here. Run gen-docs AFTER the
+# Cargo.toml bump so every `<!-- GEN:version -->` block picks up the new version.
 cargo run --quiet --bin gen-docs --features wallet
+grep -q "version:\*\* $VERSION " web/skill.md || fail "gen-docs did not stamp skill.md version $VERSION"
 grep -q "version:\*\* $VERSION " web/llms.txt || fail "gen-docs did not stamp llms.txt version $VERSION"
-grep -q "version:\*\* $VERSION " README.md || fail "gen-docs did not sync README.md version $VERSION"
 
 # ---------------------------------------------------------------------------
 # Verify
@@ -138,9 +138,10 @@ cargo publish --dry-run --allow-dirty 2>&1 | tail -3
 # ---------------------------------------------------------------------------
 
 step "git commit"
-# web/skill.md + README.md join llms.txt: gen-docs stamps the new version into
-# each one's GEN:version block, so all three are part of the release commit.
-git add Cargo.toml Cargo.lock CHANGELOG.md web/llms.txt web/skill.md README.md
+# web/skill.md joins llms.txt: gen-docs stamps the new version into each one's
+# GEN:version block, so both are part of the release commit. README.md is
+# hand-written (decoupled) — not auto-included.
+git add Cargo.toml Cargo.lock CHANGELOG.md web/llms.txt web/skill.md
 git commit -m "release $TAG" >/dev/null
 
 step "git tag $TAG"

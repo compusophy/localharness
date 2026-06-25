@@ -135,17 +135,16 @@ if (-not (Select-String -Path CHANGELOG.md -Pattern "^## \[$([regex]::Escape($Ve
 
 Step "regenerate managed docs (gen-docs) -> $Version"
 # The generator OWNS the version line (and every GEN block) in web/skill.md /
-# web/llms.txt, and writes the filled web/skill.md verbatim to README.md (the
-# README is a DERIVED COPY of skill.md — feedback #56). Run it AFTER the
-# Cargo.toml bump so every `<!-- GEN:version -->` block picks up the new crate
-# version. This replaces the old per-file manual llms.txt version stamp AND the
-# old hand-stamped README badge — README has no hand-maintained content now.
+# web/llms.txt. README.md is now HAND-WRITTEN + DECOUPLED from gen-docs (it has no
+# GEN blocks; no longer a derived copy of skill.md — the minimal-README pass), so
+# it is NOT stamped here. Run gen-docs AFTER the Cargo.toml bump so every
+# `<!-- GEN:version -->` block picks up the new crate version.
 Invoke-Native "gen-docs" { cargo run --quiet --bin gen-docs --features wallet }
+if (-not (Select-String -Path web/skill.md -Pattern "version:\*\* $([regex]::Escape($Version)) " -Quiet)) {
+    Fail "gen-docs did not stamp skill.md version $Version"
+}
 if (-not (Select-String -Path web/llms.txt -Pattern "version:\*\* $([regex]::Escape($Version)) " -Quiet)) {
     Fail "gen-docs did not stamp llms.txt version $Version"
-}
-if (-not (Select-String -Path README.md -Pattern "version:\*\* $([regex]::Escape($Version)) " -Quiet)) {
-    Fail "gen-docs did not sync README.md to skill.md version $Version"
 }
 
 # ---------------------------------------------------------------------------
@@ -175,7 +174,7 @@ Invoke-Native "cargo publish --dry-run" { cargo publish --dry-run --allow-dirty 
 # ---------------------------------------------------------------------------
 
 Step "git commit"
-Invoke-Native "git add"    { git add Cargo.toml Cargo.lock CHANGELOG.md web/llms.txt web/skill.md README.md }
+Invoke-Native "git add"    { git add Cargo.toml Cargo.lock CHANGELOG.md web/llms.txt web/skill.md }
 Invoke-Native "git commit" { git commit -m "release $Tag" }
 
 Step "git tag $Tag"
