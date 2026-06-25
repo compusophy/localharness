@@ -26,11 +26,14 @@ const APPSTORE_REPO = process.env.GH_APPSTORE_REPO ?? 'compusophy/localharness-a
 // also write localharness-apps — so the store works the moment this ships,
 // before a dedicated token is provisioned.
 const GH_TOKEN = process.env.GH_APPSTORE_TOKEN ?? process.env.GH_TELEMETRY_TOKEN ?? '';
-// Off-chain storage has no gas cap; bound it to the host::compose per-child wasm
-// budget (256 KB) so a published cartridge can always be composed.
-const MAX_WASM_BYTES = 262_144;
-const MAX_SOURCE_BYTES = 262_144;
-const MAX_HTML_BYTES = 262_144;
+// Off-chain storage has no gas cap. GitHub's Contents API has FULL feature support
+// up to 1 MB (1–100 MB needs the raw media type / Git Data API; >100 MB
+// unsupported), so bound publishes at 1 MB. A top-level public face may use it
+// all; a cartridge embedded as a host::compose CHILD stays bounded by the compose
+// budget (16 KB/child) enforced at spawn. Mirrors registry::APP_STORE_MAX_WASM_BYTES.
+const MAX_WASM_BYTES = 1_048_576;
+const MAX_SOURCE_BYTES = 1_048_576;
+const MAX_HTML_BYTES = 1_048_576;
 
 // --- CORS (same policy as telemetry.ts / gemini.ts) --------------------------
 function corsHeaders(origin: string | null): Record<string, string> {

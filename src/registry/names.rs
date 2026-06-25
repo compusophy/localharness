@@ -309,11 +309,14 @@ pub async fn discover_agents(query: &str, scan: u64) -> Result<Vec<(String, Stri
 // fetches the bytes from the store and runs them. See `proxy/api/{publish,app}.ts`
 // and the off-chain-apps pivot.
 
-/// Max compiled-cartridge bytes the app store accepts — the host::compose
-/// per-child wasm budget (256 KB). Off-chain has no gas cap; this keeps any
-/// published cartridge composable. Mirrors `proxy/api/publish.ts`'s server-side
-/// cap; shared by the CLI + browser publish paths so there's one number.
-pub const APP_STORE_MAX_WASM_BYTES: usize = 256 * 1024;
+/// Max compiled-cartridge bytes the app store accepts. Off-chain storage has no
+/// gas cap; this is GitHub's Contents-API full-support ceiling (1 MB) — past it
+/// the publish path would need the raw media type / Git Data API (blobs). A
+/// top-level public-face cartridge may use the whole budget; a cartridge embedded
+/// as a `host::compose` CHILD is bounded SEPARATELY by the compose budget (16 KB
+/// per child, 256 KB per tree, enforced at spawn — `compose.rs`). Mirrors
+/// `proxy/api/publish.ts`'s server cap; shared by the CLI + browser publish paths.
+pub const APP_STORE_MAX_WASM_BYTES: usize = 1024 * 1024;
 
 /// Base path of the off-chain app store's serve route. A published cartridge is
 /// `GET {CREDIT_PROXY_URL}api/app?name=<name>` → raw `application/wasm` bytes.

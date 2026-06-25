@@ -46,8 +46,10 @@ Stripe keys, GitHub PAT) — NEVER in the wasm bundle.
   `lh-publish` — off-chain when the device's MASTER wallet owns the name (proxy
   re-checks `ownerOf`), with an on-chain fallback for TBA-owned names / linked
   devices. Only the HTML face + persona/lessons/x402-price metadata stay on-chain
-  (not cartridge bytes). The wasm magic + 256 KB cap (host::compose per-child
-  budget) are enforced server-side.
+  (not cartridge bytes). The wasm magic + a 1 MB cap (GitHub Contents-API
+  full-support ceiling; `registry::APP_STORE_MAX_WASM_BYTES`) are enforced
+  server-side. A cartridge over the SEPARATE compose budget (16 KB/child, 256 KB/
+  tree) just can't be a `host::compose` child — top-level faces use the full 1 MB.
 - `stripe-*.ts` — fiat on-ramp (Elements). The webhook once missed bare-PI
   `payment_intent.succeeded` (charged, no `$LH`); recovery = `contracts/script/
   MintForReceipt.s.sol`. READ Stripe docs before touching — guessing charged a card.
