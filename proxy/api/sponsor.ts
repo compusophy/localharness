@@ -28,7 +28,6 @@
 // (`test/tempo-feepayer.mjs`).
 
 import { keccak_256 } from '@noble/hashes/sha3';
-import { secp256k1 } from '@noble/curves/secp256k1';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import {
   feePayerHash,
@@ -41,6 +40,12 @@ import {
   type TempoCallIntent,
 } from './_tempo';
 import { TEMPO_RPC, REGISTRY, CHAIN_ID, LH_TOKEN, FEE_TOKEN } from './_chain';
+// Personal-sign auth token + CORS origin policy are the SHARED _authcore impls
+// (audit L7/L10 dedup): sponsor.ts no longer carries its own authenticate /
+// personalSignRecover / isAllowedOrigin copies. The `'sponsor'` route argument
+// (audit L9) binds a token to THIS endpoint so one minted for a cheap route
+// (metering) can't be replayed to the fee-payer relay inside the 300s window.
+import { verifyAuthToken, isAllowedOrigin } from './_authcore';
 import { SlidingWindow } from './_ratelimit';
 import { welcomeNewAgent } from './_welcome';
 import { waitUntil } from '@vercel/functions';
@@ -49,7 +54,6 @@ export const config = { runtime: 'edge' };
 
 // --- constants -------------------------------------------------------------
 
-const FRESHNESS_WINDOW_SECS = 300; // mirror gemini.ts — tight replay window
 // Absolute per-gas price ceiling, mirroring `src/registry/tx.rs::MAX_GAS_PRICE_WEI`
 // (1000 gwei). A hostile/MITM'd CLI RPC could otherwise submit an inflated price
 // to drain the sponsor's fee-token float — we refuse rather than clamp.
@@ -242,19 +246,7 @@ const ALWAYS_FREE_SELECTORS = new Set([
 const GATE_EXEMPT_SELECTORS = new Set([...SELF_PAY_SELECTORS, ...ALWAYS_FREE_SELECTORS]);
 
 // --- CORS / json -----------------------------------------------------------
-
-const ALLOWED_ORIGIN_SUFFIX = '.localharness.xyz';
-const ALLOWED_ORIGIN_EXACT = 'https://localharness.xyz';
-
-function isAllowedOrigin(origin: string): boolean {
-  if (origin === ALLOWED_ORIGIN_EXACT || origin.endsWith(ALLOWED_ORIGIN_SUFFIX)) return true;
-  try {
-    const u = new URL(origin);
-    return u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1');
-  } catch {
-    return false;
-  }
-}
+// isAllowedOrigin is the shared _authcore impl (imported above).
 
 function corsHeaders(origin: string | null): Record<string, string> {
   const h: Record<string, string> = {
@@ -271,54 +263,6 @@ function json(body: unknown, status: number, origin: string | null): Response {
     status,
     headers: { 'content-type': 'application/json', ...corsHeaders(origin) },
   });
-}
-
-// --- auth (personal-sign token, mirror of gemini.ts) -----------------------
-
-function isHexAddress(s: string): boolean {
-  return /^0x[0-9a-fA-F]{40}$/.test(s);
-}
-
-/** Recover the signer of an Ethereum personal_sign over `message`. */
-function personalSignRecover(message: string, sigHex: string): string {
-  const msgBytes = new TextEncoder().encode(message);
-  const prefix = new TextEncoder().encode(`\x19Ethereum Signed Message:\n${msgBytes.length}`);
-  const digest = keccak_256(concat(prefix, msgBytes));
-  const sig = hexToBytes(stripHex(sigHex));
-  if (sig.length !== 65) throw new Error('signature must be 65 bytes');
-  let v = sig[64];
-  if (v >= 27) v -= 27;
-  const signature = secp256k1.Signature.fromCompact(bytesToHex(sig.slice(0, 64))).addRecoveryBit(v);
-  const point = signature.recoverPublicKey(digest);
-  return '0x' + bytesToHex(keccak_256(point.toRawBytes(false).slice(1)).slice(12));
-}
-
-function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a, 0);
-  out.set(b, a.length);
-  return out;
-}
-
-/** Recovered lowercase address, or an error string mapped to a 401. */
-function authenticate(token: string): { address: string } | { error: string } {
-  const parts = token.split(':');
-  if (parts.length !== 3) return { error: 'malformed auth token' };
-  const [address, tsStr, signature] = parts;
-  if (!isHexAddress(address)) return { error: 'malformed auth token: address' };
-  const timestamp = Number(tsStr);
-  if (!Number.isInteger(timestamp) || timestamp < 0) return { error: 'malformed auth token: timestamp' };
-  const now = Math.floor(Date.now() / 1000);
-  if (Math.abs(now - timestamp) > FRESHNESS_WINDOW_SECS) return { error: 'stale or future timestamp' };
-  const message = `localharness-proxy:${address.toLowerCase()}:${timestamp}`;
-  let recovered: string;
-  try {
-    recovered = personalSignRecover(message, signature);
-  } catch (e) {
-    return { error: 'bad signature: ' + (e as Error).message };
-  }
-  if (recovered.toLowerCase() !== address.toLowerCase()) return { error: 'signature does not match address' };
-  return { address: address.toLowerCase() };
 }
 
 // --- request parsing -------------------------------------------------------
@@ -480,9 +424,12 @@ export default async function handler(req: Request): Promise<Response> {
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405, origin);
 
   const token = req.headers.get('x-goog-api-key') ?? '';
-  const auth = authenticate(token);
-  if ('error' in auth) return json({ error: auth.error, code: 'LH_RELAY_AUTH' }, 401, origin);
-  const caller = auth.address;
+  // Route-bind the token to THIS endpoint (audit L9): a token minted for a cheap
+  // route can't be replayed to the fee-payer relay inside the 300s window. The
+  // relay still lowercases the caller + compares it to senderHex below.
+  const auth = verifyAuthToken(token, Math.floor(Date.now() / 1000), 'sponsor');
+  if (!auth.ok) return json({ error: auth.error, code: 'LH_RELAY_AUTH' }, auth.status, origin);
+  const caller = auth.address.toLowerCase();
 
   // Rate limit AFTER auth (a fee signature is valuable — verify first).
   const globalWait = globalWindow.hit('*');

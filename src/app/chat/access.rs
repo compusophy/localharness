@@ -157,7 +157,7 @@ pub(crate) async fn resolve_credit_access() -> Option<ModelAccess> {
         let (signer, addr) = credit_signer().await?;
         let addr_hex = bytes_to_hex_str(&addr); // lowercase 0x — matches the proxy
         let ts = (js_sys::Date::now() / 1000.0) as u64;
-        let msg = format!("localharness-proxy:{addr_hex}:{ts}");
+        let msg = format!("localharness-proxy:{addr_hex}:{ts}:gemini");
         let sig = crate::wallet::personal_sign(&signer, msg.as_bytes());
         return Some(ModelAccess {
             cfg_auth: format!("{addr_hex}:{ts}:{}", bytes_to_hex_str(&sig)),

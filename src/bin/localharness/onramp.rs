@@ -318,7 +318,7 @@ async fn fetch_challenge(
     signer: &k256::ecdsa::SigningKey,
     usdce_units: u128,
 ) -> Result<MppChallenge, String> {
-    let token = registry::proxy_auth_token(signer, now_secs());
+    let token = registry::proxy_auth_token(signer, now_secs(), "mpp");
     // Request the parity $LH for the USDC.e we intend to pay (whole $LH; the
     // proxy re-derives the actual mint from the ON-CHAIN amount, this only sizes
     // the quote). 1 USDC.e = 100 $LH at parity.
@@ -356,7 +356,7 @@ async fn claim_mint(
     pay_to: &str,
     usdce_units: u128,
 ) -> Result<serde_json::Value, String> {
-    let token = registry::proxy_auth_token(signer, now_secs());
+    let token = registry::proxy_auth_token(signer, now_secs(), "mpp");
     let credential = build_payment_credential(settlement_tx, pay_to);
     let lh_amount = usdce_units_to_whole_lh(usdce_units);
     let body = serde_json::json!({ "lh_amount": lh_amount.to_string(), "pay_to": pay_to });

@@ -11,9 +11,8 @@
 //     PROXY_METER_KEY (asserted). Gas is paid by the (already-funded) meter key.
 
 import Stripe from 'stripe';
-import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { bytesToHex } from '@noble/hashes/utils';
 import {
   createPublicClient,
   createWalletClient,
@@ -22,6 +21,13 @@ import {
   http,
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
+// The personal-sign auth token + hex helper now live in the shared, dep-light
+// _authcore (audit L7/L10 dedup — ONE verifier behind every route). Re-export
+// the THROWING variant under the name this module's importers
+// (publish/telemetry/mpp/stripe-checkout/stripe-finalize) already use, plus
+// isHexAddress (used locally in mintSettledPayment below + by _mpp).
+import { verifyAuthTokenOrThrow, isHexAddress } from './_authcore';
+export { verifyAuthTokenOrThrow as verifyAuthToken, isHexAddress };
 
 // The on-ramp targets Tempo MAINNET, decoupled from `_chain.ts` (which the
 // AI-metering path still points at testnet). Override via ONRAMP_* env. Defaults
@@ -238,42 +244,6 @@ export function centsToWei(cents: number): bigint {
   return BigInt(cents) * PEG_WEI_PER_USD_CENT;
 }
 
-// --- caller auth (mirrors gemini.ts personal-sign auth token) ----------
-
-function keccak(data: Uint8Array): Uint8Array {
-  return keccak_256(data);
-}
-
-function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a, 0);
-  out.set(b, a.length);
-  return out;
-}
-
-function stripHex(h: string): string {
-  return h.startsWith('0x') ? h.slice(2) : h;
-}
-
-export function isHexAddress(s: string): boolean {
-  return /^0x[0-9a-fA-F]{40}$/.test(s);
-}
-
-function recoverAddress(message: string, sigHex: string): string {
-  const msgBytes = new TextEncoder().encode(message);
-  const prefix = new TextEncoder().encode(`\x19Ethereum Signed Message:\n${msgBytes.length}`);
-  const digest = keccak(concat(prefix, msgBytes));
-  const sig = hexToBytes(stripHex(sigHex));
-  if (sig.length !== 65) throw new Error('signature must be 65 bytes');
-  const r = sig.slice(0, 32);
-  const s = sig.slice(32, 64);
-  let v = sig[64];
-  if (v >= 27) v -= 27;
-  const signature = secp256k1.Signature.fromCompact(bytesToHex(concat(r, s))).addRecoveryBit(v);
-  const point = signature.recoverPublicKey(digest);
-  return '0x' + bytesToHex(keccak(point.toRawBytes(false).slice(1)).slice(12));
-}
-
 // --- mint orchestration (shared by the webhook + the client finalize path) ---
 
 // NET settled amount in cents: expand the PaymentIntent → latest charge →
@@ -346,29 +316,4 @@ export async function mintSettledPayment(
   const signature = await signFiatMint(lhAddress, amountWei, receiptId, validBefore);
   const tx = await submitMintFromFiat(lhAddress, amountWei, receiptId, validBefore, signature);
   return { minted: true, tx };
-}
-
-const FRESHNESS_WINDOW_SECS = 300;
-
-// Verify the `<address>:<timestamp>:<signature>` auth token (same scheme as the
-// gemini proxy). Returns the authenticated lowercase address or throws.
-export function verifyAuthToken(token: string): string {
-  const parts = (token ?? '').split(':');
-  if (parts.length !== 3) throw new Error('missing or malformed auth token');
-  const [address, tsStr, signature] = parts;
-  const timestamp = Number(tsStr);
-  if (!address || !signature || !Number.isInteger(timestamp) || timestamp < 0) {
-    throw new Error('malformed auth token');
-  }
-  if (!isHexAddress(address)) throw new Error('malformed auth token: address');
-  const now = Math.floor(Date.now() / 1000);
-  if (Math.abs(now - timestamp) > FRESHNESS_WINDOW_SECS) {
-    throw new Error('stale or future timestamp');
-  }
-  const message = `localharness-proxy:${address.toLowerCase()}:${timestamp}`;
-  const recovered = recoverAddress(message, signature);
-  if (recovered.toLowerCase() !== address.toLowerCase()) {
-    throw new Error('signature does not match address');
-  }
-  return address.toLowerCase();
 }

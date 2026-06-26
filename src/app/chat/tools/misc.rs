@@ -849,7 +849,7 @@ pub(crate) async fn notify_cross_agent(
         crate::error::Error::other("no identity to authenticate the notify — claim a subdomain first")
     })?;
     let now = (js_sys::Date::now() / 1000.0) as u64;
-    let token = crate::registry::proxy_auth_token(&signer, now);
+    let token = crate::registry::proxy_auth_token(&signer, now, "notify");
     let endpoint = format!(
         "{}/api/notify",
         crate::registry::CREDIT_PROXY_URL.trim_end_matches('/')
@@ -968,7 +968,7 @@ pub(crate) fn web_fetch_tool() -> std::sync::Arc<dyn crate::tools::Tool> {
                 )
             })?;
             let now = (js_sys::Date::now() / 1000.0) as u64;
-            let token = crate::registry::proxy_auth_token(&signer, now);
+            let token = crate::registry::proxy_auth_token(&signer, now, "fetch");
             let endpoint = format!(
                 "{}/api/fetch",
                 crate::registry::CREDIT_PROXY_URL.trim_end_matches('/')
@@ -1208,7 +1208,7 @@ pub(crate) fn spawn_recursive_subagent_tool(
                     if let Some((signer, _)) = crate::app::chat::credit_signer().await {
                         cfg = cfg.with_auth_provider(std::sync::Arc::new(move || {
                             let now = (js_sys::Date::now() / 1000.0) as u64;
-                            crate::registry::proxy_auth_token(&signer, now)
+                            crate::registry::proxy_auth_token(&signer, now, "gemini")
                         }));
                     }
                 }
@@ -1332,7 +1332,7 @@ pub(crate) fn consult_model_tool(
                     crate::app::chat::credit_signer().await.map(|(signer, _)| {
                         std::sync::Arc::new(move || {
                             let now = (js_sys::Date::now() / 1000.0) as u64;
-                            crate::registry::proxy_auth_token(&signer, now)
+                            crate::registry::proxy_auth_token(&signer, now, "gemini")
                         }) as crate::backends::KeyProvider
                     })
                 } else {

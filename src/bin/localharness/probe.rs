@@ -43,7 +43,7 @@ pub(crate) async fn probe_agent(caller_name: Option<&str>) -> i32 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let token = registry::proxy_auth_token(&caller, now);
+    let token = registry::proxy_auth_token(&caller, now, "gemini");
     let base = match url::Url::parse(registry::CREDIT_PROXY_URL) {
         Ok(u) => u,
         Err(e) => {

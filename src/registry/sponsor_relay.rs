@@ -96,7 +96,7 @@ pub async fn request_fee_payer_signature(
     sender_address: &[u8; 20],
     sender_sig: &[u8; 65],
 ) -> Result<[u8; 65], String> {
-    let token = proxy_auth_token(sender, now_secs());
+    let token = proxy_auth_token(sender, now_secs(), "sponsor");
     let body = build_request_json(tx, sender_address, sender_sig)?;
 
     let resp = reqwest::Client::new()

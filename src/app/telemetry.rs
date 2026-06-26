@@ -121,7 +121,7 @@ async fn post(kind: String, title: String, signature: String, body: String) {
         return; // no identity to authenticate the report
     };
     let now = (js_sys::Date::now() / 1000.0) as u64;
-    let token = crate::registry::proxy_auth_token(&signer, now);
+    let token = crate::registry::proxy_auth_token(&signer, now, "telemetry");
     let endpoint = format!(
         "{}/api/telemetry",
         crate::registry::CREDIT_PROXY_URL.trim_end_matches('/')

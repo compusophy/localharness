@@ -306,7 +306,7 @@ pub async fn signal_post(
     slot: &str,
     sdp: &str,
 ) -> Result<(), String> {
-    let token = proxy_auth_token(signer, now_secs);
+    let token = proxy_auth_token(signer, now_secs, "signal");
     let url = format!("{CREDIT_PROXY_URL}api/signal");
     let body = serde_json::json!({ "room": room, "slot": slot, "sdp": sdp });
     http_post_json_authed(&url, &token, &body).await
@@ -329,7 +329,7 @@ pub async fn signal_get(room: &str, slot: &str) -> Result<Option<String>, String
 /// Clear a room's slots once the peers have connected (best-effort cleanup;
 /// personal-sign authed).
 pub async fn signal_clear(signer: &SigningKey, now_secs: u64, room: &str) -> Result<(), String> {
-    let token = proxy_auth_token(signer, now_secs);
+    let token = proxy_auth_token(signer, now_secs, "signal");
     let url = format!("{CREDIT_PROXY_URL}api/signal");
     let body = serde_json::json!({ "action": "clear", "room": room });
     http_post_json_authed(&url, &token, &body).await
@@ -343,7 +343,7 @@ pub async fn signal_join(
     room: &str,
     joiner_id: &str,
 ) -> Result<(), String> {
-    let token = proxy_auth_token(signer, now_secs);
+    let token = proxy_auth_token(signer, now_secs, "signal");
     let url = format!("{CREDIT_PROXY_URL}api/signal");
     let body = serde_json::json!({ "action": "join", "room": room, "joiner": joiner_id });
     http_post_json_authed(&url, &token, &body).await
@@ -430,7 +430,7 @@ pub async fn signal_put_slots(
     my_idx: usize,
     sha: Option<&str>,
 ) -> Result<PutSlots, String> {
-    let token = proxy_auth_token(signer, now_secs);
+    let token = proxy_auth_token(signer, now_secs, "signal");
     let url = format!("{CREDIT_PROXY_URL}api/signal");
     let body = serde_json::json!({
         "action": "put-slots",
@@ -465,7 +465,7 @@ pub async fn fetch_ice_json() -> Result<String, String> {
 /// Post a chat message to `room` (personal-sign authed; the relay stamps the
 /// sender's short address as the display name). `Ok(())` on success.
 pub async fn chat_post(signer: &SigningKey, now_secs: u64, room: &str, text: &str) -> Result<(), String> {
-    let token = proxy_auth_token(signer, now_secs);
+    let token = proxy_auth_token(signer, now_secs, "chat");
     let url = format!("{CREDIT_PROXY_URL}api/chat");
     let body = serde_json::json!({ "room": room, "text": text });
     http_post_json_authed(&url, &token, &body).await

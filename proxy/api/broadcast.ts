@@ -306,7 +306,7 @@ export default async function handler(req: Request): Promise<Response> {
     // _auth.ts is byte-for-byte the prior inlined parse/freshness/recovery). The
     // recovered identity is only GATED here (broadcast pushes to the feed's
     // subscribers, not the caller), so we don't bind the address further. -------
-    const auth = verifyAuthToken(token, Math.floor(Date.now() / 1000));
+    const auth = verifyAuthToken(token, Math.floor(Date.now() / 1000), 'broadcast');
     if (!auth.ok) {
       return json({ error: auth.error }, auth.status, origin);
     }

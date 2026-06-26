@@ -56,7 +56,8 @@ export default async function handler(req: Request): Promise<Response> {
   const token = req.headers.get('x-goog-api-key') ?? req.headers.get('x-api-key') ?? bearer;
   let lhAddress: string;
   try {
-    lhAddress = verifyAuthToken(token ?? '');
+    // Route-bind the token to this endpoint (audit L9).
+    lhAddress = verifyAuthToken(token ?? '', 'stripe-checkout');
   } catch (e) {
     return json({ error: (e as Error).message }, 401, origin);
   }

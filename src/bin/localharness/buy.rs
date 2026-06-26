@@ -92,7 +92,7 @@ pub(crate) async fn buy(caller_name: Option<&str>, rest: &[String]) -> i32 {
     // Same `<address>:<ts>:<sig>` personal-sign token the gemini/notify proxy
     // routes use; the proxy binds lh_address from the RECOVERED signer, never a
     // client field, so the mint can only ever credit this caller.
-    let token = registry::proxy_auth_token(&signer, now);
+    let token = registry::proxy_auth_token(&signer, now, "stripe-checkout");
     let base = registry::CREDIT_PROXY_URL.trim_end_matches('/');
     let endpoint = format!("{base}/stripe/checkout");
 

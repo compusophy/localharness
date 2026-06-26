@@ -672,7 +672,7 @@ pub(crate) async fn run_agent_turn(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let token = registry::proxy_auth_token(&caller, now);
+    let token = registry::proxy_auth_token(&caller, now, "gemini");
     let base = url::Url::parse(registry::CREDIT_PROXY_URL)
         .map_err(|e| format!("internal: bad proxy url: {e}"))?;
 

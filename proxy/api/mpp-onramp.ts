@@ -109,7 +109,8 @@ export default async function handler(req: Request): Promise<Response> {
 
   let caller: string;
   try {
-    caller = verifyAuthToken(token);
+    // Route-bind the token to this endpoint (audit L9).
+    caller = verifyAuthToken(token, 'mpp');
   } catch (e) {
     return json({ error: (e as Error).message }, 401, origin);
   }

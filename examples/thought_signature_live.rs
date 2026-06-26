@@ -45,7 +45,7 @@ async fn main() -> localharness::Result<()> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let token = localharness::registry::proxy_auth_token(&signer, now);
+    let token = localharness::registry::proxy_auth_token(&signer, now, "gemini");
     let base = url::Url::parse(localharness::registry::CREDIT_PROXY_URL).unwrap();
 
     let calls = Arc::new(AtomicU64::new(0));

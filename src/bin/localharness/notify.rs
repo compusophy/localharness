@@ -52,7 +52,7 @@ pub(crate) async fn notify(caller: Option<&str>, rest: &[String]) -> i32 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let token = registry::proxy_auth_token(&signer, now);
+    let token = registry::proxy_auth_token(&signer, now, "notify");
     let endpoint = format!(
         "{}/api/notify",
         registry::CREDIT_PROXY_URL.trim_end_matches('/')

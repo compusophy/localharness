@@ -339,7 +339,8 @@ export default async function handler(req: Request): Promise<Response> {
     // ---- AUTH — same token scheme + headers as api/gemini.ts (verifyAuthToken
     // in _auth.ts is byte-for-byte the prior inlined parse/freshness/recovery) --
     const now = Math.floor(Date.now() / 1000);
-    const auth = verifyAuthToken(token, now);
+    // Route-bind the token to this endpoint (audit L9).
+    const auth = verifyAuthToken(token, now, 'notify');
     if (!auth.ok) {
       return json({ error: auth.error }, auth.status, origin);
     }

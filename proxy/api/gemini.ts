@@ -600,7 +600,9 @@ export default async function handler(req: Request): Promise<Response> {
     // identity match — same error strings + 401s. Same `now` clock read is then
     // reused for the session-expiry comparison below.
     const now = Math.floor(Date.now() / 1000);
-    const auth = verifyAuthToken(token, now);
+    // Route-bind the token to this endpoint (audit L9) — a token minted for one
+    // route can't be replayed to another inside the 300s freshness window.
+    const auth = verifyAuthToken(token, now, 'gemini');
     if (!auth.ok) {
       return json({ error: auth.error }, auth.status, origin);
     }

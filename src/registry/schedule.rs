@@ -98,7 +98,7 @@ pub async fn create_offchain_job(
     interval_secs: u64,
     runs: u32,
 ) -> Result<String, String> {
-    let token = proxy_auth_token(signer, now_secs);
+    let token = proxy_auth_token(signer, now_secs, "schedule");
     let url = format!("{CREDIT_PROXY_URL}api/schedule");
     let mut body = serde_json::json!({
         "action": "create",
@@ -121,7 +121,7 @@ pub async fn create_offchain_job(
 /// only deletes a job whose stored owner matches the token's signer). `Ok(())`
 /// on success; an unknown id / not-yours surfaces the proxy's error.
 pub async fn cancel_offchain_job(signer: &SigningKey, now_secs: u64, id: &str) -> Result<(), String> {
-    let token = proxy_auth_token(signer, now_secs);
+    let token = proxy_auth_token(signer, now_secs, "schedule");
     let url = format!("{CREDIT_PROXY_URL}api/schedule");
     let body = serde_json::json!({ "action": "cancel", "id": id });
     http_post_json_authed_returning(&url, &token, &body).await.map(|_| ())
@@ -132,7 +132,7 @@ pub async fn list_offchain_jobs(
     signer: &SigningKey,
     now_secs: u64,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let token = proxy_auth_token(signer, now_secs);
+    let token = proxy_auth_token(signer, now_secs, "schedule");
     let url = format!("{CREDIT_PROXY_URL}api/schedule");
     let body = serde_json::json!({ "action": "list" });
     let resp = http_post_json_authed_returning(&url, &token, &body).await?;

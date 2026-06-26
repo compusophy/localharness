@@ -678,11 +678,22 @@ pub const CREDIT_PROXY_URL: &str = "https://proxy-tau-ten-15.vercel.app/";
 
 /// Mint a credit-proxy auth token `address:timestamp:signature` for `signer`,
 /// where the signature is an Ethereum personal-sign over
-/// `localharness-proxy:<addr>:<ts>`. The proxy recovers the address and gates
-/// on an active session / credit balance. `now_secs` is the UNIX timestamp.
-pub fn proxy_auth_token(signer: &SigningKey, now_secs: u64) -> String {
+/// `localharness-proxy:<addr>:<ts>[:<route>]`. The proxy recovers the address and
+/// gates on an active session / credit balance. `now_secs` is the UNIX timestamp.
+///
+/// Route-binding (audit L9): pass the target endpoint as `route` (e.g. `"gemini"`,
+/// `"publish"`, `"stripe-checkout"`) so the token is bound to that endpoint — the
+/// proxy serving `route` recovers over THIS exact message, so a token minted for a
+/// cheap route can't be replayed to a high-value write within the freshness window.
+/// An empty `route` keeps the legacy unbound message (the proxy's dual-accept
+/// fallback still verifies it). MUST match `proxy/api/_authcore.ts verifyAuthToken`.
+pub fn proxy_auth_token(signer: &SigningKey, now_secs: u64, route: &str) -> String {
     let addr = format!("0x{}", bytes_to_hex(&crate::wallet::address(signer)));
-    let msg = format!("localharness-proxy:{addr}:{now_secs}");
+    let msg = if route.is_empty() {
+        format!("localharness-proxy:{addr}:{now_secs}")
+    } else {
+        format!("localharness-proxy:{addr}:{now_secs}:{route}")
+    };
     let sig = crate::wallet::personal_sign(signer, msg.as_bytes());
     format!("{addr}:{now_secs}:0x{}", bytes_to_hex(&sig))
 }
@@ -800,7 +811,7 @@ mod tests {
     #[test]
     fn proxy_auth_token_format_and_recovers_signer() {
         let w = crate::wallet::generate();
-        let token = proxy_auth_token(&w.signer, 1_700_000_000);
+        let token = proxy_auth_token(&w.signer, 1_700_000_000, "gemini");
         let parts: Vec<&str> = token.split(':').collect();
         assert_eq!(parts.len(), 3, "token is address:timestamp:signature");
 
@@ -811,8 +822,8 @@ mod tests {
         assert_eq!(parts[2].len(), 2 + 130, "signature is 65 bytes");
 
         // The signature must recover the signer over the exact message the
-        // proxy reconstructs: "localharness-proxy:<addr>:<ts>".
-        let msg = format!("localharness-proxy:{}:{}", parts[0], parts[1]);
+        // proxy reconstructs: "localharness-proxy:<addr>:<ts>:<route>".
+        let msg = format!("localharness-proxy:{}:{}:gemini", parts[0], parts[1]);
         let digest = crate::wallet::personal_sign_digest(msg.as_bytes());
         let sig: [u8; 65] = hex_to_bytes(parts[2]).unwrap().try_into().unwrap();
         let recovered = crate::wallet::recover_address(&sig, &digest).unwrap();

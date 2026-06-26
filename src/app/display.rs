@@ -772,7 +772,7 @@ async fn do_feed_broadcast(title: String, body: String) {
     let Some(feed_id) = feed_token_id().await else { return };
     let Some((signer, _)) = crate::app::chat::credit_signer().await else { return };
     let now = (js_sys::Date::now() / 1000.0) as u64;
-    let token = crate::registry::proxy_auth_token(&signer, now);
+    let token = crate::registry::proxy_auth_token(&signer, now, "broadcast");
     let url = format!(
         "{}api/broadcast",
         crate::registry::CREDIT_PROXY_URL
@@ -985,7 +985,7 @@ async fn do_http_fetch(worker: web_sys::Worker, id: i32, url: String) {
         return;
     };
     let now = (js_sys::Date::now() / 1000.0) as u64;
-    let token = crate::registry::proxy_auth_token(&signer, now);
+    let token = crate::registry::proxy_auth_token(&signer, now, "fetch");
     let endpoint = format!(
         "{}api/fetch",
         crate::registry::CREDIT_PROXY_URL

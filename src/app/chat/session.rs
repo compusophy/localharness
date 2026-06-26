@@ -256,7 +256,7 @@ pub(crate) async fn start_session(
         super::access::credit_signer().await.map(|(signer, _addr)| {
             std::sync::Arc::new(move || {
                 let now = (js_sys::Date::now() / 1000.0) as u64;
-                crate::registry::proxy_auth_token(&signer, now)
+                crate::registry::proxy_auth_token(&signer, now, "gemini")
             }) as crate::backends::KeyProvider
         })
     } else {

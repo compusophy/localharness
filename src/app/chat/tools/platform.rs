@@ -281,7 +281,7 @@ async fn publish_app_face(
     if let Some((signer, addr)) = master {
         if owner.eq_ignore_ascii_case(&crate::encoding::bytes_to_hex_str(&addr)) {
             let now = (js_sys::Date::now() / 1000.0) as u64;
-            let token = crate::registry::proxy_auth_token(&signer, now);
+            let token = crate::registry::proxy_auth_token(&signer, now, "publish");
             crate::app::registry::publish_app_to_store(name, &token, &wasm, source)
                 .await
                 .map_err(|e| crate::error::Error::other(format!("publish failed: {e}")))?;
@@ -342,7 +342,7 @@ async fn publish_html_face(
     if let Some((signer, addr)) = master {
         if owner.eq_ignore_ascii_case(&crate::encoding::bytes_to_hex_str(&addr)) {
             let now = (js_sys::Date::now() / 1000.0) as u64;
-            let token = crate::registry::proxy_auth_token(&signer, now);
+            let token = crate::registry::proxy_auth_token(&signer, now, "publish");
             let html_str = String::from_utf8_lossy(html).into_owned();
             crate::app::registry::publish_html_to_store(name, &token, &html_str)
                 .await

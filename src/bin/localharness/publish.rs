@@ -613,7 +613,7 @@ pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let token = registry::proxy_auth_token(&signer, now);
+        let token = registry::proxy_auth_token(&signer, now, "publish");
         println!(
             "publishing {} bytes as the html face of {name}.localharness.xyz (off-chain, no gas) …",
             html.len()
@@ -661,7 +661,7 @@ pub(crate) async fn publish(name: &str, source_path: &str) -> i32 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let token = registry::proxy_auth_token(&signer, now);
+    let token = registry::proxy_auth_token(&signer, now, "publish");
     publish_app_offchain(name, &token, &wasm, &src).await
 }
 

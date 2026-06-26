@@ -211,7 +211,8 @@ export default async function handler(req: Request): Promise<Response> {
     }
   }
   const now = Math.floor(Date.now() / 1000);
-  const auth = verifyAuthToken(token, now);
+  // Route-bind the token to this endpoint (audit L9).
+  const auth = verifyAuthToken(token, now, 'signal');
   if (!auth.ok) return json({ error: 'auth: ' + auth.error }, auth.status, origin);
 
   let payload: Record<string, unknown>;

@@ -574,7 +574,7 @@ async fn start_checkout_embedded(cents: u64) -> Result<(String, String), String>
         .ok_or_else(|| "no identity".to_string())?;
     let addr_hex = bytes_to_hex_str(&addr); // lowercase 0x — matches the proxy
     let ts = (js_sys::Date::now() / 1000.0) as u64;
-    let msg = format!("localharness-proxy:{addr_hex}:{ts}");
+    let msg = format!("localharness-proxy:{addr_hex}:{ts}:stripe-checkout");
     let sig = crate::wallet::personal_sign(&signer, msg.as_bytes());
     let token = format!("{addr_hex}:{ts}:{}", bytes_to_hex_str(&sig));
     let url = format!("{}stripe/checkout", crate::registry::CREDIT_PROXY_URL);
@@ -721,7 +721,7 @@ async fn finalize_mint(payment_intent: &str) -> Result<bool, String> {
         .ok_or_else(|| "no identity".to_string())?;
     let addr_hex = bytes_to_hex_str(&addr);
     let ts = (js_sys::Date::now() / 1000.0) as u64;
-    let msg = format!("localharness-proxy:{addr_hex}:{ts}");
+    let msg = format!("localharness-proxy:{addr_hex}:{ts}:stripe-finalize");
     let sig = crate::wallet::personal_sign(&signer, msg.as_bytes());
     let token = format!("{addr_hex}:{ts}:{}", bytes_to_hex_str(&sig));
     let url = format!("{}stripe/finalize", crate::registry::CREDIT_PROXY_URL);

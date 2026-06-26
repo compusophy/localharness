@@ -259,7 +259,7 @@ async fn try_publish_app_offchain(name: &str, msg: &str) -> bool {
         return false; // TBA / different owner → on-chain path
     }
     let now = (js_sys::Date::now() / 1000.0) as u64;
-    let token = crate::registry::proxy_auth_token(&signer, now);
+    let token = crate::registry::proxy_auth_token(&signer, now, "publish");
     dom::swap_inner(
         msg,
         "<span style=\"color:var(--muted)\">publishing (off-chain)…</span>",
@@ -303,7 +303,7 @@ async fn try_publish_html_offchain(name: &str, msg: &str) -> bool {
         return false; // TBA / different owner → on-chain path
     }
     let now = (js_sys::Date::now() / 1000.0) as u64;
-    let token = crate::registry::proxy_auth_token(&signer, now);
+    let token = crate::registry::proxy_auth_token(&signer, now, "publish");
     let html_str = String::from_utf8_lossy(&html).into_owned();
     dom::swap_inner(
         msg,

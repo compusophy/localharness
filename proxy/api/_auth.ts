@@ -1,19 +1,11 @@
-// _auth.ts — the proxy's SHARED auth + metering primitives (§5 dedup).
+// _auth.ts — the proxy's SHARED on-chain-read + meter primitives.
 //
-// fetch.ts / notify.ts / broadcast.ts / gemini.ts all repeated the SAME
-// origin/CORS allow-check, the `localharness-proxy:<address>:<timestamp>`
-// personal-sign recovery + freshness window, the `creditOf` / `sessionExpiryOf`
-// eth_call reads, and the `CreditMeterFacet.meter` debit. They live ONCE here.
-//
-// SECURITY-CRITICAL: these are byte-for-byte the inlined logic they replace —
-// SAME recovery (\x19 personal_sign prefix, ecrecover), SAME freshness window
-// (FRESHNESS_WINDOW_SECS = 300), SAME CORS rules (apex + *.localharness.xyz +
-// localhost/127.0.0.1 over http), SAME authoritative-receipt meter debit. Do not
-// change any of these semantics — every caller depends on them being identical.
+// The personal-sign auth token (recovery, freshness, route-binding) + CORS rules
+// now live in _authcore.ts — dep-light, shared by EVERY route incl. sponsor /
+// publish / telemetry (audit L7/L10). This module re-exports them unchanged and
+// adds the viem-backed reads (`creditOf` / `sessionExpiryOf`) + the
+// `CreditMeterFacet.meter` debit, which pull in viem and so stay OUT of the core.
 
-import { secp256k1 } from '@noble/curves/secp256k1';
-import { keccak_256 } from '@noble/hashes/sha3';
-import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
 import {
   createPublicClient,
   createWalletClient,
@@ -22,87 +14,46 @@ import {
   http,
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
+import { keccak_256 } from '@noble/hashes/sha3';
+import { bytesToHex } from '@noble/hashes/utils';
 
 import { TEMPO_RPC, REGISTRY, CHAIN_ID } from './_chain';
 
-// ---- CORS / origin policy ---------------------------------------------------
+// Re-export the shared auth/origin/hex primitives so existing importers
+// (gemini / schedule / notify / broadcast / chat / signal / fetch / mcp) keep
+// working unchanged — there is now ONE implementation behind them (_authcore).
+import {
+  isAllowedOrigin,
+  ALLOWED_ORIGIN_SUFFIX,
+  ALLOWED_ORIGIN_EXACT,
+  stripHex,
+  isHexAddress,
+  recoverAddress,
+  FRESHNESS_WINDOW_SECS,
+  verifyAuthToken,
+  verifyAuthTokenOrThrow,
+} from './_authcore';
+export {
+  isAllowedOrigin,
+  ALLOWED_ORIGIN_SUFFIX,
+  ALLOWED_ORIGIN_EXACT,
+  stripHex,
+  isHexAddress,
+  recoverAddress,
+  FRESHNESS_WINDOW_SECS,
+  verifyAuthToken,
+  verifyAuthTokenOrThrow,
+};
 
-// Only browser origins under our own domain (apex + subdomains) and localhost
-// dev may receive CORS headers / invoke the proxy. A server-side caller sends no
-// Origin header and is allowed through by the per-route handler.
-export const ALLOWED_ORIGIN_SUFFIX = '.localharness.xyz';
-export const ALLOWED_ORIGIN_EXACT = 'https://localharness.xyz';
-
-/** Whether `origin` may receive CORS headers (apex + subdomains + localhost
- * dev — hostname-parsed, not prefix-matched: a bare `startsWith('http://
- * localhost')` also matched `http://localhost.evil.com`, letting an attacker
- * origin read proxy responses cross-origin). */
-export function isAllowedOrigin(origin: string): boolean {
-  if (origin === ALLOWED_ORIGIN_EXACT || origin.endsWith(ALLOWED_ORIGIN_SUFFIX)) {
-    return true;
-  }
-  try {
-    const u = new URL(origin);
-    return (
-      u.protocol === 'http:' &&
-      (u.hostname === 'localhost' || u.hostname === '127.0.0.1')
-    );
-  } catch {
-    return false;
-  }
-}
-
-// ---- crypto helpers ---------------------------------------------------------
+// ---- ABI helpers (keccak-based; used by the eth_call reads below) -----------
 
 export function keccak(data: Uint8Array): Uint8Array {
   return keccak_256(data);
 }
 
-export function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a, 0);
-  out.set(b, a.length);
-  return out;
-}
-
-export function stripHex(h: string): string {
-  return h.startsWith('0x') ? h.slice(2) : h;
-}
-
 /** Lowercase 0x address from a 64-byte uncompressed pubkey (no 0x04 prefix). */
 export function toAddress(pubKeyXY: Uint8Array): string {
   return '0x' + bytesToHex(keccak(pubKeyXY).slice(12));
-}
-
-/** Whether `s` is a well-formed 0x-prefixed 20-byte hex address. */
-export function isHexAddress(s: string): boolean {
-  return /^0x[0-9a-fA-F]{40}$/.test(s);
-}
-
-/**
- * Recover the signer's address from an Ethereum personal_sign signature.
- * `message` is wrapped with "\x19Ethereum Signed Message:\n<len>", keccak'd,
- * then ecrecover'd. `sigHex` is 65 bytes (r||s||v), v ∈ {27,28} or {0,1}.
- */
-export function recoverAddress(message: string, sigHex: string): string {
-  const msgBytes = new TextEncoder().encode(message);
-  const prefix = new TextEncoder().encode(
-    `\x19Ethereum Signed Message:\n${msgBytes.length}`,
-  );
-  const digest = keccak(concat(prefix, msgBytes));
-
-  const sig = hexToBytes(stripHex(sigHex));
-  if (sig.length !== 65) throw new Error('signature must be 65 bytes');
-  const r = sig.slice(0, 32);
-  const s = sig.slice(32, 64);
-  let v = sig[64];
-  if (v >= 27) v -= 27;
-
-  const signature = secp256k1.Signature.fromCompact(
-    bytesToHex(concat(r, s)),
-  ).addRecoveryBit(v);
-  const point = signature.recoverPublicKey(digest);
-  return toAddress(point.toRawBytes(false).slice(1));
 }
 
 export function encodeAddressWord(address: string): string {
@@ -112,60 +63,6 @@ export function encodeAddressWord(address: string): string {
 /** 4-byte function selector hex (no 0x) — keccak256(sig)[..4]. */
 export function selector(sig: string): string {
   return bytesToHex(keccak(new TextEncoder().encode(sig)).slice(0, 4));
-}
-
-// ---- localharness auth token (personal-sign) --------------------------------
-
-// 5 min — tight replay window (clients sign per request). The auth token
-// `<address>:<timestamp>:<signature>` (personal-sign over
-// `localharness-proxy:<address>:<timestamp>`) is replayable within this window.
-export const FRESHNESS_WINDOW_SECS = 300;
-
-/**
- * Verify a localharness auth token (`<address>:<timestamp>:<signature>`): parse
- * shape, range-check the address + timestamp, enforce the freshness window, and
- * ecrecover the personal-sign over `localharness-proxy:<address>:<timestamp>`,
- * requiring the recovered address to match the claimed one.
- *
- * Returns the authenticated `address` (the CLAIMED casing, unchanged) on success
- * or a `{ status, error }` the caller maps straight to a `json(error, status)`
- * — all 401, with the SAME error strings the inlined blocks returned. `now` is
- * unix seconds (the caller passes its own `Math.floor(Date.now()/1000)` so the
- * freshness check uses the handler's single clock read).
- */
-export function verifyAuthToken(
-  token: string,
-  now: number,
-): { ok: true; address: string } | { ok: false; status: number; error: string } {
-  const parts = token.split(':');
-  if (parts.length !== 3) {
-    return { ok: false, status: 401, error: 'missing or malformed auth token' };
-  }
-  const [address, tsStr, signature] = parts;
-  const timestamp = Number(tsStr);
-  if (!address || !signature || !Number.isFinite(timestamp)) {
-    return { ok: false, status: 401, error: 'malformed auth token' };
-  }
-  if (!isHexAddress(address)) {
-    return { ok: false, status: 401, error: 'malformed auth token: address' };
-  }
-  if (!Number.isInteger(timestamp) || timestamp < 0) {
-    return { ok: false, status: 401, error: 'malformed auth token: timestamp' };
-  }
-  if (Math.abs(now - timestamp) > FRESHNESS_WINDOW_SECS) {
-    return { ok: false, status: 401, error: 'stale or future timestamp' };
-  }
-  const message = `localharness-proxy:${address.toLowerCase()}:${timestamp}`;
-  let recovered: string;
-  try {
-    recovered = recoverAddress(message, signature);
-  } catch (e) {
-    return { ok: false, status: 401, error: 'bad signature: ' + (e as Error).message };
-  }
-  if (recovered.toLowerCase() !== address.toLowerCase()) {
-    return { ok: false, status: 401, error: 'signature does not match address' };
-  }
-  return { ok: true, address };
 }
 
 // ---- on-chain reads + meter debit -------------------------------------------

@@ -390,7 +390,7 @@ async fn lh_publish(args: &[String], env: &WriteEnv<'_>, dry_run: bool) -> (Outp
     // re-checks server-side (ownerOf(name) == token signer). The blockchain keeps
     // only ownership; the cartridge bytes live in GitHub. No tokenId lookup needed
     // (the proxy resolves it).
-    let token = crate::registry::proxy_auth_token(env.signer, crate::runtime::now_unix_secs());
+    let token = crate::registry::proxy_auth_token(env.signer, crate::runtime::now_unix_secs(), "publish");
     match crate::registry::publish_app_to_store(name, &token, &wasm, source).await {
         Ok(()) => (
             Output::ok(format!(

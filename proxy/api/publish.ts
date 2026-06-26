@@ -145,7 +145,8 @@ export default async function handler(req: Request): Promise<Response> {
   const token = req.headers.get('x-goog-api-key') ?? req.headers.get('x-api-key') ?? '';
   let addr: string;
   try {
-    addr = verifyAuthToken(token);
+    // Route-bind the token to this endpoint (audit L9).
+    addr = verifyAuthToken(token, 'publish');
   } catch (e) {
     return json({ error: 'auth: ' + (e as Error).message }, 401, origin);
   }
